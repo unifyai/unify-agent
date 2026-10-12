@@ -47,7 +47,7 @@ CLIENT_DEFAULT_EFFORT = "high"
 LOCK_TIMEOUT_S = 60.0
 #: Memory v2.1: the evidence store's busy wait while a pass worker shares it (async_pass.BUSY_TIMEOUT_S; a
 #: constant here keeps the v2 path free of the async module).
-_V21_BUSY_TIMEOUT_S = 60.0
+_LIBRARY_BUSY_TIMEOUT_S = 60.0
 #: The most code-cell statuses a run keeps (use telemetry); every cell of a request fits many times over.
 MAX_STATUSES = 10_000
 _ERROR_CHARS = 2000
@@ -72,26 +72,26 @@ def actor_model() -> str:
     return resolve_default_model()[0]
 
 
-def check_v21_switches(settings: Any) -> None:
-    """Refuse a v2.1 run whose v2 settings contradict the v2.1 prompts or gate (spec §12.4; switch.V21_CONFLICTS)."""
-    from .switch import v21_conflicts
+def check_library_switches(settings: Any) -> None:
+    """Refuse a v2.1 run whose v2 settings contradict the v2.1 prompts or gate (spec §12.4; switch.LIBRARY_CONFLICTS)."""
+    from .switch import library_conflicts
 
-    bad = v21_conflicts(settings)
+    bad = library_conflicts(settings)
     if bad:
         raise MemoryV2Unavailable(
-            "UNIFY_MEMORY_V21=on cannot run with "
+            "UNIFY_MEMORY_LIBRARY=on cannot run with "
             + ", ".join(bad)
             + ": each is a v2 setting that the v2.1 prompts and gate contradict; turn it off",
         )
 
 
-def sol_effort(actor: str) -> str:
-    """Sol's reasoning effort for this run: ``UNIFY_MEMORY_V2_SOL_EFFORT`` when it fixes one (a declared mismatch
+def writer_effort(actor: str) -> str:
+    """Sol's reasoning effort for this run: ``UNIFY_MEMORY_V2_WRITER_EFFORT`` when it fixes one (a declared mismatch
     ablation), else the actor's (*actor*; the default ``actor``)."""
     from unify.settings import SETTINGS
 
     value = (
-        str(getattr(SETTINGS, "UNIFY_MEMORY_V2_SOL_EFFORT", "") or "actor")
+        str(getattr(SETTINGS, "UNIFY_MEMORY_V2_WRITER_EFFORT", "") or "actor")
         .strip()
         .lower()
     )
@@ -101,7 +101,7 @@ def sol_effort(actor: str) -> str:
 def actor_effort() -> str:
     """The actor's reasoning effort for this run, read from the setting the actor's client reads.
 
-    Sol's passes run at this effort too unless ``UNIFY_MEMORY_V2_SOL_EFFORT`` fixes another (:func:`sol_effort`).
+    Sol's passes run at this effort too unless ``UNIFY_MEMORY_V2_WRITER_EFFORT`` fixes another (:func:`writer_effort`).
     """
     from unify.common.llm_client import resolve_default_model
 
@@ -159,25 +159,25 @@ def dialogue_counterpart() -> str:
     return getattr(SETTINGS, "UNIFY_MEMORY_V2_DIALOGUE", "") or ""
 
 
-def memory_v21_on() -> bool:
-    """Whether ``UNIFY_MEMORY_V21`` is on (spec v2.1): the recorders keep full values and the episode is
+def memory_library_on() -> bool:
+    """Whether ``UNIFY_MEMORY_LIBRARY`` is on (spec v2.1): the recorders keep full values and the episode is
     written in record format 2."""
     from unify.settings import SETTINGS
 
-    from .switch import V21, parse_memory_v21
+    from .switch import LIBRARY_MODE, parse_memory_library_mode
 
-    return parse_memory_v21(getattr(SETTINGS, V21, "") or "") == "on"
+    return parse_memory_library_mode(getattr(SETTINGS, LIBRARY_MODE, "") or "") == "on"
 
 
 def checker_visible_on() -> bool:
-    """Whether the CLI takes ``{"checker": ...}`` lines (spec v2.1 §5, P9): ``UNIFY_MEMORY_V21`` and
-    ``UNIFY_MEMORY_V21_CHECKER_VISIBLE`` both on."""
+    """Whether the CLI takes ``{"checker": ...}`` lines (spec v2.1 §5, P9): ``UNIFY_MEMORY_LIBRARY`` and
+    ``UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE`` both on."""
     from unify.settings import SETTINGS
 
     from .switch import CHECKER_VISIBLE, parse_checker_visible
 
     return (
-        memory_v21_on()
+        memory_library_on()
         and parse_checker_visible(getattr(SETTINGS, CHECKER_VISIBLE, "") or "") == "on"
     )
 
@@ -186,11 +186,11 @@ def recorded_dialogue(
     lines: list[dict],
     counterpart: str,
     redactor: Any,
-    v21: bool = False,
+    library_mode: bool = False,
 ) -> list:
     """The dialogue actions a request's episode records under ``UNIFY_MEMORY_V2_DIALOGUE``: answered replies
     only, so a reply nothing followed (a single-turn request's final reply) adds no action and leaves the
-    episode as it is with the setting off. With *v21* the observation and the payload are kept whole.
+    episode as it is with the setting off. With *library_mode* the observation and the payload are kept whole.
     """
     from .adapters import dialogue
 
@@ -200,7 +200,7 @@ def recorded_dialogue(
             "max_payload_chars": None,
             "payload_scan_chars": None,
         }
-        if v21
+        if library_mode
         else {}
     )
     return dialogue.dialogue_actions(
@@ -224,10 +224,10 @@ def check_hidden(paths: Any, policy: Any) -> None:
         )
 
 
-def pinned_items(checkout: Path, v21: bool = False) -> list[str]:
-    """The ids of the memory functions in the export at *checkout* (listed or not), in id order; with *v21* the
+def pinned_items(checkout: Path, library_mode: bool = False) -> list[str]:
+    """The ids of the memory functions in the export at *checkout* (listed or not), in id order; with *library_mode* the
     v2.1 function items (spec §4.2)."""
-    if v21:
+    if library_mode:
         from ..layout import discover
 
         return sorted(f.item_id for f in discover(Path(checkout)).functions)
@@ -248,7 +248,7 @@ def memory_use(
     shown: dict | None = None,
     shown_text: str = "",
     cell_status: dict | None = None,
-    v21: bool = False,
+    library_mode: bool = False,
 ) -> dict:
     """The request's use record (:func:`..analysis.use.request_use`).
 
@@ -291,7 +291,7 @@ def memory_use(
             surface=surface,
             shown=shown,
             cell_status=cell_status,
-            v21=v21,
+            library_mode=library_mode,
         )
     except Exception as exc:  # noqa: BLE001 - telemetry never stops recording
         return {
@@ -320,22 +320,22 @@ async def wait_after_finish(
     relay: Callable[[dict], None] | None = None,
     events_from: int = 0,
 ) -> dict | None:
-    """``UNIFY_MEMORY_V21_WAIT_SLOT=on`` (MAIN, 10 Oct): before the CLI exits, wait for the pass slot this request
+    """``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on`` (MAIN, 10 Oct): before the CLI exits, wait for the pass slot this request
     spawned (:func:`.async_pass.wait_slot`), so a host whose sandbox ends the controller's processes with it does
     not kill the worker. Off: returns None at once, as built. Never raises."""
     import asyncio
 
-    from .switch import v21_pass_wall_s, v21_wait_slot
+    from .switch import library_pass_wall_s, library_wait_slot
 
     try:
-        if not v21_wait_slot(settings):
+        if not library_wait_slot(settings):
             return None
         if wait is None:
             from .async_pass import wait_slot as wait
         return await asyncio.to_thread(
             wait,
             paths,
-            float(v21_pass_wall_s(settings)),
+            float(library_pass_wall_s(settings)),
             relay=relay,
             events_from=events_from,
         )
@@ -356,7 +356,7 @@ class RequestRun:
         self.surfacing: Any = (
             None  # the v2.1 switches read at open (switch.SurfacingOptions)
         )
-        self.v21 = False  # UNIFY_MEMORY_V21, read at open (spec v2.1)
+        self.library_mode = False  # UNIFY_MEMORY_LIBRARY, read at open (spec v2.1)
         # What the memory section shows (``analysis.use.record_shown``), set where it is rendered (both modes).
         self.shown: dict | None = None
         # The memory functions of the export at the pin, taken before the actor runs (use telemetry).
@@ -388,7 +388,7 @@ class RequestRun:
         self._scope = contextlib.ExitStack()
         self._closed = False
         # memory v2.1 (P3's flag; set at open): passes run in a detached worker and the request pins ``served``
-        self.v21 = False
+        self.library_mode = False
         self._landed: list[dict] = (
             []
         )  # v2.1: worker results applied at open, reported at finish
@@ -427,31 +427,33 @@ class RequestRun:
         from . import consolidate, cost, worktree_capture
         from .checkout import export_checkout
         from .state import State
-        from .switch import surfacing_options, v21_enabled
+        from .switch import surfacing_options, library_enabled
 
         paths = self.paths
         policy = sandbox.build_policy(fresh=True)
         check_hidden(paths, policy)
-        self.v21 = v21_enabled(SETTINGS)
-        if self.v21:  # a refused run records nothing: begin cleans up and re-raises
-            check_v21_switches(SETTINGS)
+        self.library_mode = library_enabled(SETTINGS)
+        if (
+            self.library_mode
+        ):  # a refused run records nothing: begin cleans up and re-raises
+            check_library_switches(SETTINGS)
         self.stores = consolidate.open_stores(
             paths,
-            busy_timeout_s=_V21_BUSY_TIMEOUT_S if self.v21 else None,
+            busy_timeout_s=_LIBRARY_BUSY_TIMEOUT_S if self.library_mode else None,
         )
         self.state = State.load(paths.state)
         if (
-            self.v21
+            self.library_mode
         ):  # memory v2.1: the read-only copy and the index view (spec v2.1 §4.5, §6)
             from ..memory_writer import served_head
             from .async_pass import apply_results
 
-            # under the request lock (spec §6), before _open_v21 copies the pin (P7)
+            # under the request lock (spec §6), before _open_library_mode copies the pin (P7)
             self._landed = apply_results(self.state, paths)
             # P7 Amendment A: the served head, whose item records are already written
             self.pin = served_head(self.stores.memory)
             self.surfacing = surfacing_options(SETTINGS)
-            self._open_v21(consolidate)
+            self._open_library_mode(consolidate)
         else:
             self.pin = self.stores.memory.head()
             # the library test kit beside it when the library's tests use it (memory v2.1 stage 5)
@@ -481,8 +483,8 @@ class RequestRun:
             paths,
             Path(policy.workspace),
             self.redactor,
-            # UNIFY_MEMORY_V21: files stored whole (the keyword only when on: off, the call as at 4675a3c45)
-            **({"v21": True} if memory_v21_on() else {}),
+            # UNIFY_MEMORY_LIBRARY: files stored whole (the keyword only when on: off, the call as at 4675a3c45)
+            **({"library_mode": True} if memory_library_on() else {}),
         )
         self.worktree.begin()
         self._scope.enter_context(transcripts.resume_session(self.episode_id))
@@ -530,19 +532,19 @@ class RequestRun:
                     type(exc).__name__,
                 )
 
-    def _open_v21(self, consolidate: Any) -> None:
-        """``UNIFY_MEMORY_V21=on`` (spec v2.1 §4.5, §6). Writes the read-only copy of the pin: no tests, plus the
-        generated helper, INDEX.md and links.json (:func:`.checkout.export_actor_v21`). The memory section is
+    def _open_library_mode(self, consolidate: Any) -> None:
+        """``UNIFY_MEMORY_LIBRARY=on`` (spec v2.1 §4.5, §6). Writes the read-only copy of the pin: no tests, plus the
+        generated helper, INDEX.md and links.json (:func:`.checkout.export_actor_library_mode`). The memory section is
         the guide and the index view. No memory.diff is recorded, because the copy cannot be written.
         """
         from ..analysis import use
         from ..shape_rows import lookup_from
-        from .checkout import export_actor_v21
-        from .prompt import render_memory_v21
+        from .checkout import export_actor_library_mode
+        from .prompt import render_memory_library_mode
 
         paths = self.paths
         try:
-            shapes = lookup_from(self._shape_rows(consolidate, v21=True))
+            shapes = lookup_from(self._shape_rows(consolidate, library_mode=True))
         except (
             Exception
         ) as exc:  # noqa: BLE001 - find then matches nothing; the library stays usable
@@ -556,7 +558,7 @@ class RequestRun:
 
         # the item records at the pin (P5): statuses for the index and find, and what memory.show prints
         records, _ = records_at(Repo(paths.memory), self.pin)
-        self.generated = export_actor_v21(
+        self.generated = export_actor_library_mode(
             paths.memory,
             self.pin,
             paths.checkout,
@@ -564,18 +566,18 @@ class RequestRun:
             status_of=status_of(records),
             records=records,
         )
-        self.item_ids = pinned_items(paths.checkout, v21=True)
+        self.item_ids = pinned_items(paths.checkout, library_mode=True)
         self.export_roots = use.roots_of(paths.checkout)
         self.surface = use.library_surface(
             paths.checkout,
-            v21=True,
+            library_mode=True,
         )  # re-exports for the use record (P5)
-        self.index, self.shown = render_memory_v21(paths.checkout)
+        self.index, self.shown = render_memory_library_mode(paths.checkout)
 
     def _memory_diff(self) -> str:
         """What the request wrote into its export (v2), or ``""`` under v2.1, whose copy is read-only and records
         no memory.diff (spec v2.1 §6)."""
-        if self.v21:
+        if self.library_mode:
             return ""
         from .checkout import checkout_diff
 
@@ -587,7 +589,7 @@ class RequestRun:
             generated=self.generated,
         )
 
-    def _shape_rows(self, consolidate: Any, v21: bool = False) -> dict:
+    def _shape_rows(self, consolidate: Any, library_mode: bool = False) -> dict:
         """The pinned commit's input-shape rows, frozen on first export (:func:`..shape_rows.shapes_at`);
         functions without recorded shapes are backfilled from the evidence store's covers.
         """
@@ -602,7 +604,7 @@ class RequestRun:
             lookup=episodes(self.stores).action if episodes is not None else None,
             blobs=self.stores.blobs,
             freeze=True,
-            v21=v21,
+            library_mode=library_mode,
         )
 
     def redactor(self) -> Any:
@@ -631,7 +633,7 @@ class RequestRun:
                 result,
                 items=self.item_ids,
                 roots=self.export_roots,
-                v21=self.v21,
+                library_mode=self.library_mode,
             )
         else:
             status = use.runtime_status(
@@ -640,7 +642,7 @@ class RequestRun:
                 getattr(result, "session_created", None),
                 items=self.item_ids,
                 roots=self.export_roots,
-                v21=self.v21,
+                library_mode=self.library_mode,
             )
         self.cell_status[str(call_id)] = status
 
@@ -681,14 +683,14 @@ class RequestRun:
         """Keep one verdict the bed showed the actor (spec v2.1 §5, P9); the answer the CLI writes for a
         ``{"checker": {"label": "pass"|"fail"}}`` line. The bed sends it just before the message that shows the
         actor the same verdict, so the transcript's observation count now is that message's ordinal. Refused,
-        with nothing kept, unless ``UNIFY_MEMORY_V21`` and ``UNIFY_MEMORY_V21_CHECKER_VISIBLE`` are on, or when
+        with nothing kept, unless ``UNIFY_MEMORY_LIBRARY`` and ``UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE`` are on, or when
         the line is anything but exactly ``{"label": "pass"}`` or ``{"label": "fail"}``. The answer never quotes
         the line."""
         if not checker_visible_on():
             return {
                 "type": "checker",
                 "accepted": False,
-                "reason": "this session takes no checker lines (UNIFY_MEMORY_V21_CHECKER_VISIBLE is off)",
+                "reason": "this session takes no checker lines (UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE is off)",
             }
         if (
             not isinstance(raw, dict)
@@ -794,9 +796,9 @@ class RequestRun:
         emit: Callable[[dict], None] | None = None,
         consolidate: bool = True,
     ) -> None:
-        """Record the request and run the due passes (blocking; under ``UNIFY_MEMORY_V21=on`` a due pass starts
+        """Record the request and run the due passes (blocking; under ``UNIFY_MEMORY_LIBRARY=on`` a due pass starts
         in a detached worker and the request returns at once); never raises. The transcript is the record;
-        *handle* is read only by the episode-end fork (``UNIFY_MEMORY_V21_FORK=on``, design r5), which starts
+        *handle* is read only by the episode-end fork (``UNIFY_MEMORY_LIBRARY_FORK=on``, design r5), which starts
         after the episode is recorded and changes nothing in it. With *consolidate* False (a driver's
         ``{"quit": true, "consolidate": false}``) the episode is recorded and no pass starts; due passes stay
         due, and one ``held`` event says so."""
@@ -847,12 +849,12 @@ class RequestRun:
         eid: str,
         progress: Callable[[str], None],
     ) -> Any:
-        """Design r5: the episode-end fork, only under ``UNIFY_MEMORY_V21_FORK=on``; never raises."""
+        """Design r5: the episode-end fork, only under ``UNIFY_MEMORY_LIBRARY_FORK=on``; never raises."""
         from unify.settings import SETTINGS
 
-        from .switch import v21_enabled, v21_fork
+        from .switch import library_enabled, library_fork
 
-        if not (v21_enabled(SETTINGS) and v21_fork(SETTINGS)):
+        if not (library_enabled(SETTINGS) and library_fork(SETTINGS)):
             return None
         try:
             from . import fork as _fork
@@ -887,7 +889,7 @@ class RequestRun:
                     lines,
                     counterpart,
                     self.redactor(),
-                    v21=memory_v21_on(),
+                    library_mode=memory_library_on(),
                 ),
             ]
         ep, redactor = trajectory.assemble(
@@ -909,14 +911,14 @@ class RequestRun:
             shown=self.shown,
             shown_text=self.index,
             cell_status=dict(self.cell_status),
-            v21=self.v21,
+            library_mode=self.library_mode,
         )
         sha = EpisodeWriter(
             stores.episodes,
             stores.blobs,
             redactor,
             **(
-                {"v21": True} if memory_v21_on() else {}
+                {"library_mode": True} if memory_library_on() else {}
             ),  # record format 2; off, the call as at 4675a3c45
         ).write(ep)
         stores.evidence.index_episode(ep, sha)
@@ -977,7 +979,7 @@ class RequestRun:
 
         from . import consolidate
 
-        if self.v21:  # spec v2.1 §6: never wait for a pass
+        if self.library_mode:  # spec v2.1 §6: never wait for a pass
             self._report_landed(progress, emit)
             try:
                 from .async_pass import maybe_spawn
@@ -991,7 +993,7 @@ class RequestRun:
                     self.stores,
                     eid,
                     sha,
-                    effort=sol_effort(self.effort),
+                    effort=writer_effort(self.effort),
                     settings=SETTINGS,
                     emit=self._emitter(emit),
                 )
@@ -1010,7 +1012,7 @@ class RequestRun:
                 sha,
                 self.state,
                 # Sol's effort matches the actor's unless a mismatch ablation fixes it (the lead, 8 Oct)
-                effort=sol_effort(self.effort),
+                effort=writer_effort(self.effort),
                 settings=SETTINGS,
                 emit=self._emitter(emit),
                 clock=time.monotonic,

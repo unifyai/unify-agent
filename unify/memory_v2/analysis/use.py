@@ -119,8 +119,8 @@ from typing import Any, Iterable
 
 __all__ = [
     "HEADER_PREFIX",
-    "HELPER_FUNCTIONS_V21",
-    "LAYOUT_V21",
+    "HELPER_FUNCTIONS_LIBRARY",
+    "LAYOUT_LIBRARY",
     "VERSION",
     "attribute_errors",
     "dict_status",
@@ -207,15 +207,15 @@ HELPER_MODULE = "memory"
 HELPER_FUNCTIONS = ("catalog", "find", "describe")
 #: memory v2.1 (spec §4.2, §6): the library is the package ``memory``, whose generated ``__init__.py`` is the
 #: helper (these functions), and a function item is ``memory.<package>.<module>:<name>``. A record computed for a
-#: v2.1 pin carries ``"layout": LAYOUT_V21``; a v2 record has no such key, so v2's records are unchanged.
-LAYOUT_V21 = "v21"
-PACKAGE_V21 = "memory"
-HELPER_FUNCTIONS_V21 = ("show", "index", "find")
+#: v2.1 pin carries ``"layout": LAYOUT_LIBRARY``; a v2 record has no such key, so v2's records are unchanged.
+LAYOUT_LIBRARY = "library_mode"
+PACKAGE_LIBRARY = "memory"
+HELPER_FUNCTIONS_LIBRARY = ("show", "index", "find")
 
 _IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
 _IDENT_RE = re.compile(_IDENT)
 _ITEM_ID = re.compile(rf"^env/({_IDENT}):({_IDENT})\Z")
-_ITEM_ID_V21 = re.compile(rf"^memory\.({_IDENT})\.({_IDENT}):({_IDENT})\Z")
+_ITEM_ID_LIBRARY = re.compile(rf"^memory\.({_IDENT})\.({_IDENT}):({_IDENT})\Z")
 _FRAME = re.compile(r'^  File "(?P<file>.*)", line \d+, in (?P<func>.+)$')
 _TYPE = re.compile(r"^([A-Za-z_][A-Za-z0-9_.]*)(?::|$)")
 _HEADER = "Traceback (most recent call last):"
@@ -295,19 +295,19 @@ def _public_names(tree: ast.Module) -> list[str]:
     return [n for n in names if not n.startswith("_")]
 
 
-def library_surface(root: str | Path, *, v21: bool = False) -> dict:
+def library_surface(root: str | Path, *, library_mode: bool = False) -> dict:
     """The import surface of the library at *root* (the export, read before any cell runs):
     ``{"star": {channel: names a star import binds}, "reexports": {"env/a:g": "env/b:g"}}``.
 
     ``star`` is the module's ``__all__``, or its public top-level names without one. A re-export is a
     top-level ``from env.<b> import g [as h]`` (or ``from ..<b> import g``) in ``env/<a>/__init__.py``.
 
-    With *v21* (spec v2.1 §4.2) the keys are ``<package>`` and ``<package>.<module>`` of
+    With *library_mode* (spec v2.1 §4.2) the keys are ``<package>`` and ``<package>.<module>`` of
     ``memory/<package>/(__init__|<module>).py``, and a re-export is any top-level ``from`` import of a library name in
-    such a file (:func:`_library_surface_v21`).
+    such a file (:func:`_library_surface_library_mode`).
     """
-    if v21:
-        return _library_surface_v21(Path(root))
+    if library_mode:
+        return _library_surface_library_mode(Path(root))
     star: dict[str, list[str]] = {}
     reexports: dict[str, str] = {}
     for mod in sorted(Path(root).glob("env/*/__init__.py")):
@@ -342,7 +342,7 @@ def library_surface(root: str | Path, *, v21: bool = False) -> dict:
     return {"star": star, "reexports": dict(sorted(reexports.items()))}
 
 
-def _source_key_v21(key: str, node: ast.ImportFrom) -> str | None:
+def _source_key_library_mode(key: str, node: ast.ImportFrom) -> str | None:
     """The library key (``<package>`` or ``<package>.<module>``) a top-level ``from`` import in library file
     *key* names, or None (relative imports resolve against the file's package, ``memory.<package>``).
     """
@@ -350,7 +350,7 @@ def _source_key_v21(key: str, node: ast.ImportFrom) -> str | None:
         parts = (node.module or "").split(".")
         return (
             ".".join(parts[1:])
-            if parts[0] == PACKAGE_V21 and len(parts) in (2, 3)
+            if parts[0] == PACKAGE_LIBRARY and len(parts) in (2, 3)
             else None
         )
     sub = node.module.split(".") if node.module else []
@@ -361,13 +361,13 @@ def _source_key_v21(key: str, node: ast.ImportFrom) -> str | None:
     return None
 
 
-def _library_surface_v21(root: Path) -> dict:
+def _library_surface_library_mode(root: Path) -> dict:
     """:func:`library_surface` of a v2.1 export: ``star`` per key, and every name a library file binds by a
     top-level ``from`` import of another library file (``memory.<key>:<name>`` -> the source's id), so a name
     re-exported by a package or a module resolves to the module that defines it."""
     star: dict[str, list[str]] = {}
     reexports: dict[str, str] = {}
-    for mod in sorted(root.glob(f"{PACKAGE_V21}/*/*.py")):
+    for mod in sorted(root.glob(f"{PACKAGE_LIBRARY}/*/*.py")):
         pkg, name = mod.parent.name, mod.stem
         if not re.fullmatch(_IDENT, pkg) or not re.fullmatch(_IDENT, name):
             continue
@@ -387,13 +387,13 @@ def _library_surface_v21(root: Path) -> dict:
         for node in tree.body:
             if not isinstance(node, ast.ImportFrom):
                 continue
-            source = _source_key_v21(key, node)
+            source = _source_key_library_mode(key, node)
             if source is None or source == key:
                 continue
             for a in node.names:
                 if a.name != "*" and len(reexports) < MAX_REEXPORTS:
-                    reexports[f"{PACKAGE_V21}.{key}:{a.asname or a.name}"] = (
-                        f"{PACKAGE_V21}.{source}:{a.name}"
+                    reexports[f"{PACKAGE_LIBRARY}.{key}:{a.asname or a.name}"] = (
+                        f"{PACKAGE_LIBRARY}.{source}:{a.name}"
                     )
     return {"star": star, "reexports": dict(sorted(reexports.items()))}
 
@@ -474,7 +474,7 @@ class _Items21(_Items):
     def __init__(self, ids: Iterable[str], surface: Any = None) -> None:
         super().__init__((), surface)
         for raw in sorted({i for i in ids if isinstance(i, str)}):
-            m = _ITEM_ID_V21.match(raw)
+            m = _ITEM_ID_LIBRARY.match(raw)
             if m is None:
                 continue
             self.ids.append(raw)
@@ -492,10 +492,10 @@ class _Items21(_Items):
         self.channels = self.modules | self.packages
 
     def iid(self, channel: str, name: str) -> str:
-        return f"{PACKAGE_V21}.{channel}:{name}"
+        return f"{PACKAGE_LIBRARY}.{channel}:{name}"
 
     def channel_of(self, iid: str) -> str:
-        return iid.split(":", 1)[0][len(PACKAGE_V21) + 1 :]
+        return iid.split(":", 1)[0][len(PACKAGE_LIBRARY) + 1 :]
 
     def items_under(self, channel: str) -> list[str]:
         return [
@@ -507,7 +507,7 @@ class _Items21(_Items):
 
     def frame_channel(self, parts: list[str], anchored: bool) -> str | None:
         tail = parts if anchored else parts[-3:]
-        if len(tail) != 3 or tail[0] != PACKAGE_V21 or not tail[2].endswith(".py"):
+        if len(tail) != 3 or tail[0] != PACKAGE_LIBRARY or not tail[2].endswith(".py"):
             return None
         key = tail[1] if tail[2] == "__init__.py" else f"{tail[1]}.{tail[2][:-3]}"
         return key if key in self.by_channel else None
@@ -679,7 +679,7 @@ def runtime_status(
     *,
     items: Iterable[str] | _Items,
     roots: Iterable[str] = (),
-    v21: bool = False,
+    library_mode: bool = False,
 ) -> dict:
     """One cell's status from the runtime's structured result, as the use record keeps it.
 
@@ -691,7 +691,11 @@ def runtime_status(
     error longer than :data:`MAX_TRACEBACK_CHARS`, whose outcome is then unknown) and each exit is
     ``[kind, channel, function]`` (``kind`` ``refused`` or ``errored``; see :func:`attribute_errors`).
     """
-    its = items if isinstance(items, _Items) else (_Items21 if v21 else _Items)(items)
+    its = (
+        items
+        if isinstance(items, _Items)
+        else (_Items21 if library_mode else _Items)(items)
+    )
     exits: list[list[str]] = []
     if not isinstance(error, str) or not error:
         status = "ok"
@@ -733,7 +737,7 @@ def dict_status(
     *,
     items: Iterable[str] | _Items,
     roots: Iterable[str] = (),
-    v21: bool = False,
+    library_mode: bool = False,
 ) -> dict:
     """One cell's status from the code tool's plain ``dict`` result (the legacy projection returns one,
     unwrapped, for an empty cell and when the session executor itself raised).
@@ -753,7 +757,7 @@ def dict_status(
             get("session_created"),
             items=items,
             roots=roots,
-            v21=v21,
+            library_mode=library_mode,
         )
     if error is None:
         return _no_result("empty", "empty")
@@ -1628,7 +1632,7 @@ class _Cell21(_Cell):
     """:class:`_Cell` for a v2.1 library (spec §4.2, §6).
 
     ``memory`` is the package and the helper at once (``("helper",)``): its attributes are the helper's functions
-    (:data:`HELPER_FUNCTIONS_V21`) or packages; a package's attributes are its modules or the items it
+    (:data:`HELPER_FUNCTIONS_LIBRARY`) or packages; a package's attributes are its modules or the items it
     re-exports; a module's attributes are items. A call of the helper, or of ``help`` on a memory object, is a
     lookup (``cell_exposure``): it shows and does not use, so an item passed to it is neither called nor
     referenced.
@@ -1641,7 +1645,7 @@ class _Cell21(_Cell):
             if base is None:
                 return None
             if base[0] == "helper":
-                if node.attr in HELPER_FUNCTIONS_V21:
+                if node.attr in HELPER_FUNCTIONS_LIBRARY:
                     return ("helper_fn", node.attr)
                 return (
                     ("dynamic", "*")
@@ -1678,7 +1682,7 @@ class _Cell21(_Cell):
                 and isinstance(node.args[0].value, str)
             ):
                 parts = node.args[0].value.split(".")
-                if parts[0] == PACKAGE_V21:
+                if parts[0] == PACKAGE_LIBRARY:
                     return ("dynamic", ".".join(parts[1:3]) or "*")
             return None
         return super().resolve(node)
@@ -1686,14 +1690,14 @@ class _Cell21(_Cell):
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             parts = alias.name.split(".")
-            if parts[0] != PACKAGE_V21:
+            if parts[0] != PACKAGE_LIBRARY:
                 self._unbind(alias.asname or parts[0])
                 continue
             key = ".".join(parts[1:])
             if key:
                 self.t.add(self.t.module_imports, self._key(key))
             if alias.asname is None:
-                self._bind(PACKAGE_V21, ("helper",))
+                self._bind(PACKAGE_LIBRARY, ("helper",))
             elif not key:
                 self._bind(alias.asname, ("helper",))
             elif len(parts) <= 3:
@@ -1703,7 +1707,7 @@ class _Cell21(_Cell):
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         parts = (node.module or "").split(".")
-        if node.level or parts[0] != PACKAGE_V21 or len(parts) > 3:
+        if node.level or parts[0] != PACKAGE_LIBRARY or len(parts) > 3:
             for alias in node.names:
                 if alias.name != "*":
                     self._unbind(alias.asname or alias.name)
@@ -1711,11 +1715,11 @@ class _Cell21(_Cell):
         if len(parts) == 1:  # from memory import show / <package>
             for alias in node.names:
                 if alias.name == "*":
-                    for name in HELPER_FUNCTIONS_V21:
+                    for name in HELPER_FUNCTIONS_LIBRARY:
                         self._bind(name, ("helper_fn", name))
                     continue
                 target = alias.asname or alias.name
-                if alias.name in HELPER_FUNCTIONS_V21:
+                if alias.name in HELPER_FUNCTIONS_LIBRARY:
                     self._bind(target, ("helper_fn", alias.name))
                 else:
                     self.t.add(self.t.module_imports, self._key(alias.name))
@@ -1750,11 +1754,11 @@ class _Cell21(_Cell):
     def _named_item(self, text: str) -> str | None:
         """The item a constant names (``memory.<p>.<m>:<f>`` or ``memory.<p>.<m>.<f>``), or None."""
         text = text.strip()
-        m = _ITEM_ID_V21.match(text)
+        m = _ITEM_ID_LIBRARY.match(text)
         if m is not None:
             return self.items.item(f"{m.group(1)}.{m.group(2)}", m.group(3))
         parts = text.split(".")
-        if len(parts) == 4 and parts[0] == PACKAGE_V21:
+        if len(parts) == 4 and parts[0] == PACKAGE_LIBRARY:
             return self.items.item(f"{parts[1]}.{parts[2]}", parts[3])
         return None
 
@@ -1780,7 +1784,7 @@ class _Cell21(_Cell):
                     self._show_channel(package, items=False)
             elif const is not None:
                 self._show_channel(
-                    const.strip().removeprefix(PACKAGE_V21 + "."),
+                    const.strip().removeprefix(PACKAGE_LIBRARY + "."),
                     items=True,
                 )
         elif name in ("show", "help"):
@@ -1988,7 +1992,7 @@ def attribute_errors(
     *,
     roots: Iterable[str] = (),
     modified: Iterable[str] = (),
-    v21: bool = False,
+    library_mode: bool = False,
 ) -> list[tuple[str, str]]:
     """``(outcome, item or channel)`` per exception of a cell's traceback that left a memory item.
 
@@ -2000,7 +2004,11 @@ def attribute_errors(
     ``errored`` for any other type, each with ``_modified`` when the item's channel is in *modified*, and
     ``unattributed`` (with the channel) when that frame is not a public item.
     """
-    its = items if isinstance(items, _Items) else (_Items21 if v21 else _Items)(items)
+    its = (
+        items
+        if isinstance(items, _Items)
+        else (_Items21 if library_mode else _Items)(items)
+    )
     if not text:
         return []
     return _outcomes(
@@ -2059,7 +2067,7 @@ def request_use(
     surface: Any = None,
     shown: Any = None,
     cell_status: Any = None,
-    v21: bool = False,
+    library_mode: bool = False,
 ) -> dict:
     """The request's ``memory_use`` record (see the module docstring); deterministic and bounded.
 
@@ -2073,15 +2081,15 @@ def request_use(
     ``cell_status`` list. A cell it does not cover is ``unknown`` (cause from the harness's reply, else
     ``other``), and so are the outcomes of the items that cell's code could reach, in this request only.
 
-    With *v21* (spec v2.1 §4.2) *items* are ``memory.<package>.<module>:<name>`` ids, the helper is ``memory``
-    itself (``show``, ``index``, ``find``: lookups, never uses), and the record carries ``"layout": "v21"``. Its
+    With *library_mode* (spec v2.1 §4.2) *items* are ``memory.<package>.<module>:<name>`` ids, the helper is ``memory``
+    itself (``show``, ``index``, ``find``: lookups, never uses), and the record carries ``"layout": "library_mode"``. Its
     ``refused_then_accepted`` stays 0: a module has no environment channel to compare.
     """
     lines = list(lines)
-    its = (_Items21 if v21 else _Items)(items, surface)
+    its = (_Items21 if library_mode else _Items)(items, surface)
     roots = _roots(export_roots)
     changed, diff_truncated = modified_channels(memory_diff, its)
-    tally = _Tally(HELPER_FUNCTIONS_V21 if v21 else HELPER_FUNCTIONS)
+    tally = _Tally(HELPER_FUNCTIONS_LIBRARY if library_mode else HELPER_FUNCTIONS)
     sessions: dict[Any, dict] = {}
     cells = transcript_cells(lines)
     statuses = _statuses(cells[:MAX_CELLS], cell_status, its, _reply_causes(lines))
@@ -2114,7 +2122,12 @@ def request_use(
                     unparsed += 1
                     opaque = True
             if tree is not None:
-                visitor = (_Cell21 if v21 else _Cell)(its, bindings, tally, idx)
+                visitor = (_Cell21 if library_mode else _Cell)(
+                    its,
+                    bindings,
+                    tally,
+                    idx,
+                )
                 try:
                     for stmt in tree.body:
                         visitor.visit(stmt)
@@ -2198,8 +2211,8 @@ def request_use(
         },
         "truncated": truncated,
     }
-    if v21:
-        record["layout"] = LAYOUT_V21
+    if library_mode:
+        record["layout"] = LAYOUT_LIBRARY
     return record
 
 
@@ -2278,7 +2291,7 @@ def use_from_episode_dir(
     ``memory_use.json`` recorded.
 
     *items* default to the ``items_at_pin`` recorded there (empty without one). A record in format 2
-    (``UNIFY_MEMORY_V21``; ``record_format`` in ``meta.json``) stores large values as blob references, so its
+    (``UNIFY_MEMORY_LIBRARY``; ``record_format`` in ``meta.json``) stores large values as blob references, so its
     actions are resolved through *blobs* (a :class:`..blobs.BlobStore`); without it the call is refused rather
     than count references as values.
     """
@@ -2328,5 +2341,5 @@ def use_from_episode_dir(
         surface=recorded.get("surface"),
         shown=recorded.get("shown_record"),
         cell_status=recorded.get("cell_status"),
-        v21=recorded.get("layout") == LAYOUT_V21,
+        library_mode=recorded.get("layout") == LAYOUT_LIBRARY,
     )

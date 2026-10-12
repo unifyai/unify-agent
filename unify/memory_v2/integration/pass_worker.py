@@ -37,12 +37,12 @@ async def _work(args: argparse.Namespace, stop: asyncio.Event) -> dict | None:
     from . import async_pass as ap
     from . import consolidate
     from .paths import Paths
-    from .request import check_v21_switches
-    from .switch import sol_journal, v21_pass_wall_s
+    from .request import check_library_switches
+    from .switch import writer_journal, library_pass_wall_s
 
     paths = Paths.under(Path(args.home))
-    check_v21_switches(SETTINGS)
-    wall_s = float(v21_pass_wall_s(SETTINGS))
+    check_library_switches(SETTINGS)
+    wall_s = float(library_pass_wall_s(SETTINGS))
     pass_id = f"{args.episode}.p0"  # run_due_passes names a session's first pass .p0
     now = time.time()
     ap.write_inflight(
@@ -63,13 +63,13 @@ async def _work(args: argparse.Namespace, stop: asyncio.Event) -> dict | None:
     try:
         stores = consolidate.open_stores(paths, busy_timeout_s=ap.BUSY_TIMEOUT_S)
         view = ap.StateView.load(paths.state)
-        sol_model = consolidate.sol_settings(SETTINGS).model.split("@", 1)[0]
+        writer_model = consolidate.sol_settings(SETTINGS).model.split("@", 1)[0]
         # P7 Amendment D: the pass's calls are the Sol lane's journal rows in the window the supervisor records
         sup = ap.Supervisor(
             wall_s,
             stop,
-            journal=sol_journal(SETTINGS),
-            models=(sol_model,),
+            journal=writer_journal(SETTINGS),
+            models=(writer_model,),
         )
         outcomes = await consolidate.run_due_passes(
             stores,
@@ -124,10 +124,10 @@ def main(argv: list[str] | None = None) -> int:
         from unify.settings import SETTINGS
 
         from .async_pass import WORKER_PASSES, failsafe_s
-        from .switch import v21_pass_wall_s
+        from .switch import library_pass_wall_s
 
         signal.alarm(
-            int(failsafe_s(v21_pass_wall_s(SETTINGS), passes=WORKER_PASSES)) + 1,
+            int(failsafe_s(library_pass_wall_s(SETTINGS), passes=WORKER_PASSES)) + 1,
         )
         asyncio.run(_main(args))
         return 0

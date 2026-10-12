@@ -184,10 +184,10 @@ def _configure_environment(args: argparse.Namespace) -> Path:
     # Settings were read before .env: a Sol route value only there is refused
     # (it would leave Sol on the actor's route) and its token leaves the
     # environment.
-    from unify.memory_v2.integration.switch import settle_sol_route_env
+    from unify.memory_v2.integration.switch import settle_writer_route_env
     from unify.settings import SETTINGS
 
-    refusal = settle_sol_route_env(os.environ, SETTINGS)
+    refusal = settle_writer_route_env(os.environ, SETTINGS)
     if refusal is not None:
         print(f"memory v2: {refusal}", file=sys.stderr)
     if args.home:
@@ -314,8 +314,8 @@ def _stdin_reader(
 
 
 def _checker_lines_on() -> bool:
-    """Whether the CLI takes ``{"checker": ...}`` lines (memory v2.1 P9): ``UNIFY_MEMORY_V21`` and
-    ``UNIFY_MEMORY_V21_CHECKER_VISIBLE`` both on. Off, such a line is no control line at all.
+    """Whether the CLI takes ``{"checker": ...}`` lines (memory v2.1 P9): ``UNIFY_MEMORY_LIBRARY`` and
+    ``UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE`` both on. Off, such a line is no control line at all.
     """
     try:
         from unify.memory_v2.integration.request import checker_visible_on
@@ -494,7 +494,7 @@ class Act:
                         continue
                     if set(item) == {"checker"} and _checker_lines_on():
                         # memory v2.1 P9: a verdict the bed showed the actor; never a message. Only a checker-only
-                        # line, only with UNIFY_MEMORY_V21 and its checker switch on (review S4): any other line,
+                        # line, only with UNIFY_MEMORY_LIBRARY and its checker switch on (review S4): any other line,
                         # including one that also names message, quit or cancel, is handled exactly as before P9.
                         self._post_checker(item.get("checker"))
                         continue

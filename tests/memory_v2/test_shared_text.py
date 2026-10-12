@@ -7,8 +7,8 @@ from unify.memory_v2 import batch_map as bm
 from unify.memory_v2 import shared_text
 from unify.memory_v2.evidence import EvidenceStore
 from unify.memory_v2.trigger import PassRequest
-from tests.memory_v2.test_sol_pass import Turns, _call, _sol
-from tests.memory_v2.test_sol_v21_tools import _episode
+from tests.memory_v2.test_writer_pass import Turns, _call, _sol
+from tests.memory_v2.test_writer_library_tools import _episode
 
 PRE = "### Team record\n" + "You may work with other agents. " * 12
 
@@ -65,10 +65,10 @@ def test_batch_map_lists_the_block_file_and_reads_show_the_marker(tmp_path):
         _call("m", "read", {"path": "/inputs/batch_map.json"}),
     ]
     model = Turns(turns)
-    _, _, sol = _sol(tmp_path, model, v21=True, max_calls=10)
-    sol.load = eps.__getitem__
+    _, _, writer = _sol(tmp_path, model, library_mode=True, max_calls=10)
+    writer.load = eps.__getitem__
     out = asyncio.run(
-        sol.run(PassRequest("incremental", "svc", list(eps), False), "p1"),
+        writer.run(PassRequest("incremental", "svc", list(eps), False), "p1"),
     )
     request = json.loads(model.outputs["r"])
     assert request.startswith("[shared:") and request.endswith("Task 1")
@@ -86,7 +86,7 @@ def test_batch_map_lists_the_block_file_and_reads_show_the_marker(tmp_path):
     assert bm.part_text(eps["e1"], "request") != bm.part_text(
         eps["e1"],
         "request",
-        sol._shared,
+        writer._shared,
     )
 
 

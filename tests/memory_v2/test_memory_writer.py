@@ -17,7 +17,7 @@ from unify.memory_v2 import memory_writer as mw
 from unify.memory_v2.gitio import Repo
 
 try:  # P4's v2.1 gate fixture, visible to request.getfixturevalue once P4 is integrated
-    from tests.memory_v2.test_gate_v21 import world21  # noqa: F401
+    from tests.memory_v2.test_gate_library_mode import world21  # noqa: F401
 except ImportError:
     pass
 
@@ -207,13 +207,13 @@ def test_publish_reads_p5s_records_and_status_commits_are_p5s(mem):
     assert mw.is_status_commit(mem, status) and mw.moved_only_by_status(mem, c1, status)
 
 
-def _gate_v21():
-    return pytest.importorskip("tests.memory_v2.test_gate_v21")
+def _gate_library_mode():
+    return pytest.importorskip("tests.memory_v2.test_gate_library_mode")
 
 
 def test_the_gate_refuses_a_stale_pass_and_keeps_its_patch(request):
     """P4's v2.1 gate fixture; the candidate is made on a parent that a code commit then moves past."""
-    g = _gate_v21()
+    g = _gate_library_mode()
     mem, ev, blobs, gate = request.getfixturevalue("world21")
     parent = mem.head()
     files, fixtures = g._files_and_fixtures(blobs)
@@ -232,7 +232,7 @@ def test_the_gate_refuses_a_stale_pass_and_keeps_its_patch(request):
 
 
 def test_the_gate_retargets_over_a_status_commit(request):
-    g = _gate_v21()
+    g = _gate_library_mode()
     from unify.memory_v2.memory_repo import MemoryRepo
 
     mem, ev, blobs, gate = request.getfixturevalue("world21")

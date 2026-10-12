@@ -10,7 +10,7 @@ import subprocess
 
 import pytest
 
-from unify.memory_v2 import pool, sol_pass
+from unify.memory_v2 import pool, writer_pass
 from unify.memory_v2.blobs import BlobStore
 from unify.memory_v2.evidence import EvidenceStore
 from unify.memory_v2.gate import Gate
@@ -18,13 +18,13 @@ from unify.memory_v2.gitio import Repo
 from unify.memory_v2.integration import switch
 from unify.memory_v2.integration.checkout import export_checkout
 from unify.memory_v2.memory_writer import publish
-from unify.memory_v2.sol_pass import PassConfig, SolPass, sol_tools
+from unify.memory_v2.writer_pass import PassConfig, WriterPass, writer_tools
 from unify.memory_v2.staging import StagingView
 from unify.memory_v2.trigger import PassRequest
 from unify.settings import SETTINGS
 from tests.memory_v2.test_gate import ITEM, KIT, MAN, MOD, TEST
-from tests.memory_v2.test_sol_pass import Turns, _call, _e1, _ME, _write, needs_bwrap
-from tests.memory_v2.test_sol_v21_tools import EPS
+from tests.memory_v2.test_writer_pass import Turns, _call, _e1, _ME, _write, needs_bwrap
+from tests.memory_v2.test_writer_library_tools import EPS
 
 EMPTY = {**MAN, "items": [], "support": []}
 INDEX = "/inputs/pool/INDEX.md"
@@ -42,16 +42,16 @@ class _Stores:
         model = Turns(turns)
         cfg.setdefault("max_calls", 12)
         cfg.setdefault("pool", True)
-        sol = SolPass(
+        writer = WriterPass(
             self.mem,
             self.gate,
             self.ev,
             load=load,
             model_turn=model,
-            config=PassConfig(v21=True, **cfg),
+            config=PassConfig(library_mode=True, **cfg),
         )
         out = asyncio.run(
-            sol.run(PassRequest("incremental", "svc", list(eids), False), pass_id),
+            writer.run(PassRequest("incremental", "svc", list(eids), False), pass_id),
         )
         return out, model
 
@@ -60,7 +60,11 @@ class _Stores:
 
 
 def _finish_with(monkeypatch, manifest):
-    monkeypatch.setattr(sol_pass, "_read_manifest", lambda box: (True, manifest, None))
+    monkeypatch.setattr(
+        writer_pass,
+        "_read_manifest",
+        lambda box: (True, manifest, None),
+    )
 
 
 def _defer(eid, reason="a rule that may come back"):
@@ -178,7 +182,9 @@ def test_the_writer_sees_the_pool_after_the_requests_first_line(tmp_path, monkey
         in first
     )
     defer = next(
-        t for t in sol_tools(v21=True, pool=True) if t["function"]["name"] == "dismiss"
+        t
+        for t in writer_tools(library_mode=True, pool=True)
+        if t["function"]["name"] == "dismiss"
     )
     assert defer["function"]["parameters"]["properties"]["defer"]["type"] == "boolean"
     assert out.pool["open"] == 1 and out.pool["added"] == 0
@@ -335,7 +341,7 @@ def test_the_same_staged_candidate_from_two_episodes_is_one_entry(tmp_path):
         "cases/f.json": b"[[1, 1]]",
     }
     p = pool.Pool(repo).load()
-    for eid, src in (("e1", "fork"), ("e2", "sol_analyst")):
+    for eid, src in (("e1", "fork"), ("e2", "writer_analyst")):
         for e in pool.from_staging(eid, StagingView("ok", src, dict(files))):
             p.upsert(e, "p1")
     p.save("p1")
@@ -347,7 +353,7 @@ def test_the_same_staged_candidate_from_two_episodes_is_one_entry(tmp_path):
     }
     assert e.provenance["episodes"] == ["e1", "e2"] and e.provenance["sources"] == [
         "fork",
-        "sol_analyst",
+        "writer_analyst",
     ]
 
 
@@ -395,13 +401,16 @@ def test_off_there_is_no_pool_ref_no_inputs_pool_and_the_pass_is_m4hs(
     monkeypatch,
 ):
     _finish_with(monkeypatch, EMPTY)
-    assert switch.parse_v21_pool("") == "off" and switch.parse_v21_pool("on") == "on"
-    assert SETTINGS.UNIFY_MEMORY_V21_POOL == "off" and PassConfig().pool is False
-    assert switch.PARSERS[switch.V21_POOL] is switch.parse_v21_pool
+    assert (
+        switch.parse_library_pool("") == "off"
+        and switch.parse_library_pool("on") == "on"
+    )
+    assert SETTINGS.UNIFY_MEMORY_LIBRARY_POOL == "off" and PassConfig().pool is False
+    assert switch.PARSERS[switch.LIBRARY_POOL] is switch.parse_library_pool
     try:
-        switch.parse_v21_pool("maybe")
+        switch.parse_library_pool("maybe")
     except ValueError as exc:
-        assert "UNIFY_MEMORY_V21_POOL" in str(exc)
+        assert "UNIFY_MEMORY_LIBRARY_POOL" in str(exc)
     else:
         raise AssertionError("an unknown value was accepted")
 
@@ -413,16 +422,16 @@ def test_off_there_is_no_pool_ref_no_inputs_pool_and_the_pass_is_m4hs(
             _call("d", "dismiss", {"episode": "e2", "reason": "r", "defer": True}),
         ]
         model = Turns(turns)
-        sol = SolPass(
+        writer = WriterPass(
             st.mem,
             st.gate,
             st.ev,
             load=EPS.__getitem__,
             model_turn=model,
-            config=PassConfig(v21=True, max_calls=12, **cfg),
+            config=PassConfig(library_mode=True, max_calls=12, **cfg),
         )
         out = asyncio.run(
-            sol.run(PassRequest("incremental", "svc", ["e2"], False), "p1"),
+            writer.run(PassRequest("incremental", "svc", ["e2"], False), "p1"),
         )
         refs = st.mem.run("for-each-ref", "--format=%(refname)").split()
         assert out.pool is None and "refs/heads/pool" not in refs
@@ -433,11 +442,14 @@ def test_off_there_is_no_pool_ref_no_inputs_pool_and_the_pass_is_m4hs(
         assert not any(
             t["function"]["name"] == "dismiss"
             and "defer" in t["function"]["parameters"]["properties"]
-            for t in sol_tools(v21=True)
+            for t in writer_tools(library_mode=True)
         )
         seen[name] = [json.dumps(m, sort_keys=True) for m in model.seen[:2]]
     assert seen["default"] == seen["off"]
-    assert sol_tools(v21=True) == sol_tools(v21=True, pool=False)
+    assert writer_tools(library_mode=True) == writer_tools(
+        library_mode=True,
+        pool=False,
+    )
 
 
 # --- RUNTIME H-P1: a crafted pool commit never writes outside /inputs/pool ---------------------------------------

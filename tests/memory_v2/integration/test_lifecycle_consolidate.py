@@ -20,7 +20,7 @@ from tests.memory_v2.test_library_helper import _commit
 from unify.memory_v2 import lifecycle
 from unify.memory_v2.history_probe import ProbeRow
 from unify.memory_v2.integration import consolidate
-from unify.memory_v2.integration.checkout import export_actor_v21
+from unify.memory_v2.integration.checkout import export_actor_library_mode
 from unify.memory_v2.integration.state import State
 from unify.memory_v2.integration.switch import checker_visible
 from unify.memory_v2.item_records import read_records, records_at, status_of
@@ -52,7 +52,7 @@ def _episode(stores, eid, main, rows, regime="none"):
         "items": rows,
         "items_outcome_unknown": [],
         "outcomes_known": True,
-        "layout": "v21",
+        "layout": "library_mode",
     }
     stores.evidence.index_episode(
         _ep(episode_id=eid, memory_main=main, regime=regime, memory_use=rec),
@@ -72,7 +72,7 @@ def _consolidate(stores, tmp_path, probe=None):
 
 def _copy(stores, sha, dest):
     recs = records_at(stores.memory, sha)[0]
-    return export_actor_v21(
+    return export_actor_library_mode(
         stores.memory.git_dir,
         sha,
         dest,
@@ -93,7 +93,10 @@ def lib(tmp_path):
             "passed": 1,
             "items_merged": json.dumps([PD, WEEK]),
             "reasons": json.dumps(
-                ["v21-verification " + json.dumps(verification, sort_keys=True)],
+                [
+                    "library_mode-verification "
+                    + json.dumps(verification, sort_keys=True),
+                ],
             ),
         },
     )
@@ -208,7 +211,10 @@ def test_a_new_version_lands_with_its_pass_commit_and_restarts_its_count(lib, tm
     assert recs[WEEK]["bisect"] is None
 
 
-def test_after_passes_runs_only_under_v21_and_after_a_recorded_pass(lib, monkeypatch):
+def test_after_passes_runs_only_under_library_and_after_a_recorded_pass(
+    lib,
+    monkeypatch,
+):
     stores, _ = lib
     seen = []
 
@@ -219,28 +225,33 @@ def test_after_passes_runs_only_under_v21_and_after_a_recorded_pass(lib, monkeyp
     monkeypatch.setattr(lifecycle, "consolidate_records", spy)
     consolidate.after_passes(
         stores,
-        SimpleNamespace(UNIFY_MEMORY_V21="off"),
+        SimpleNamespace(UNIFY_MEMORY_LIBRARY="off"),
         ["p1"],
         None,
     )
-    consolidate.after_passes(stores, SimpleNamespace(UNIFY_MEMORY_V21="on"), [], None)
+    consolidate.after_passes(
+        stores,
+        SimpleNamespace(UNIFY_MEMORY_LIBRARY="on"),
+        [],
+        None,
+    )
     assert seen == []
     consolidate.after_passes(
         stores,
-        SimpleNamespace(UNIFY_MEMORY_V21="on"),
+        SimpleNamespace(UNIFY_MEMORY_LIBRARY="on"),
         ["p1"],
         None,
     )
     assert [kw["checker_visible"] for kw in seen] == [False]
 
 
-def test_a_v21_consolidation_records_the_map_of_main(tmp_path, monkeypatch):
+def test_a_library_consolidation_records_the_map_of_main(tmp_path, monkeypatch):
     monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
     settings = _settings()
-    settings.UNIFY_MEMORY_V21 = "on"
-    settings.UNIFY_MEMORY_V21_E = 1  # P7's E (D43: 100k by default)
+    settings.UNIFY_MEMORY_LIBRARY = "on"
+    settings.UNIFY_MEMORY_LIBRARY_E = 1  # P7's E (D43: 100k by default)
     asyncio.run(
         consolidate.run_due_passes(
             stores,
@@ -259,10 +270,11 @@ def test_a_v21_consolidation_records_the_map_of_main(tmp_path, monkeypatch):
 def test_checker_visibility_is_a_declared_switch():
     assert checker_visible(SimpleNamespace()) is False
     assert (
-        checker_visible(SimpleNamespace(UNIFY_MEMORY_V21_CHECKER_VISIBLE="on")) is True
+        checker_visible(SimpleNamespace(UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE="on"))
+        is True
     )
     with pytest.raises(ValueError):
-        checker_visible(SimpleNamespace(UNIFY_MEMORY_V21_CHECKER_VISIBLE="yes"))
+        checker_visible(SimpleNamespace(UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE="yes"))
 
 
 # --- the bisect bound (MAIN, 9 Oct; AGENTS.md: bounded runtime) ----------------------------------------------

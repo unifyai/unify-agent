@@ -18,7 +18,7 @@ from unify.memory_v2.evidence import EvidenceStore
 from unify.memory_v2.fingerprint import Generations
 from unify.memory_v2.gitio import GitError, Repo
 from unify.memory_v2.redact import Redactor
-from unify.memory_v2.sol_pass import export_for_sol
+from unify.memory_v2.writer_pass import export_for_writer
 
 
 def test_kind_language_replies_roundtrip(tmp_path):
@@ -96,9 +96,9 @@ def test_generations_json_roundtrip():
     assert Generations.from_json(g2.to_json()).generation("venmo") == 1
 
 
-def test_export_for_sol_carries_action_kind(tmp_path):
+def test_export_for_writer_carries_action_kind(tmp_path):
     ep = _ep(actions=[Action(0, "venmo", "me", [], {}, {"id": 1}, "ok", "read")])
-    export_for_sol(lambda eid: ep, ["e-0001"], tmp_path)
+    export_for_writer(lambda eid: ep, ["e-0001"], tmp_path)
     assert '"kind": "tool"' in (tmp_path / "e-0001.json").read_text()
 
 

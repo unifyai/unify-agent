@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unify.memory_v2 import testkit
 from unify.memory_v2.blobs import BlobStore
 from unify.memory_v2.qa import QAConfig
-from unify.memory_v2.sol_pass import SolPass, _MEMLAB_FILES
+from unify.memory_v2.writer_pass import WriterPass, _MEMLAB_FILES
 from tests.memory_v2.test_episodes import _ep
 
 USES_REPLAY = b"from memlab.replay import RecordedEnv\n\ndef test_x():\n    assert RecordedEnv([])\n"
@@ -222,7 +222,7 @@ def test_sols_box_gets_the_kit_when_a_switch_is_on_or_the_library_uses_it(tmp_pa
     for name, (qa, tree, kit) in cases.items():
         self, req = _sol(tmp_path, qa, store)
         inputs = tmp_path / name
-        SolPass._stage_inputs(self, req, inputs, tree)
+        WriterPass._stage_inputs(self, req, inputs, tree)
         lab = inputs / "memlab"
         assert (lab / "inputs.py").is_file() is kit, name
         assert (inputs / "_memv2_pin.py").is_file() is kit, name

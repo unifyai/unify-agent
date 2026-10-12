@@ -1,4 +1,4 @@
-"""Design r5 §2-§3: the episode-end fork. It runs only under UNIFY_MEMORY_V21_FORK=on, after the episode is recorded,
+"""Design r5 §2-§3: the episode-end fork. It runs only under UNIFY_MEMORY_LIBRARY_FORK=on, after the episode is recorded,
 through the actor's own proxy route, in a box whose only writable mount is the episode's staging dir. Nothing flows
 back (F3), off is off (F6), and the worker stages only the allowed files, from text and tool-call replies, executing
 nothing."""
@@ -57,16 +57,16 @@ def lane(monkeypatch):
     settled once; both names leave the environment."""
     sw = _fresh_lane_state(monkeypatch)
     fd = _token_fd()
-    env = {sw.V21_FORK_BASE_URL: BASE, sw.V21_FORK_TOKEN_FD: str(fd)}
+    env = {sw.LIBRARY_FORK_BASE_URL: BASE, sw.LIBRARY_FORK_TOKEN_FD: str(fd)}
     assert sw.settle_fork_route_env(env, SimpleNamespace(**env)) is None
     assert env == {}
     return TOKEN
 
 
 ON = SimpleNamespace(
-    UNIFY_MEMORY_V21="on",
-    UNIFY_MEMORY_V21_FORK="on",
-    UNIFY_MEMORY_V21_WAIT_SLOT="on",
+    UNIFY_MEMORY_LIBRARY="on",
+    UNIFY_MEMORY_LIBRARY_FORK="on",
+    UNIFY_MEMORY_LIBRARY_WAIT_SLOT="on",
 )
 CODE = 'def double(x):\n    """Twice x."""\n    return 2 * x\n'
 
@@ -153,10 +153,13 @@ def _reply(content=None, calls=None, cost="0.0012"):
 
 
 def test_the_switch_is_off_by_default_and_takes_only_on_or_off():
-    assert switch.parse_v21_fork("") == "off" and switch.parse_v21_fork("on") == "on"
-    assert SETTINGS.UNIFY_MEMORY_V21_FORK == "off"
-    with pytest.raises(ValueError, match="UNIFY_MEMORY_V21_FORK"):
-        switch.parse_v21_fork("maybe")
+    assert (
+        switch.parse_library_fork("") == "off"
+        and switch.parse_library_fork("on") == "on"
+    )
+    assert SETTINGS.UNIFY_MEMORY_LIBRARY_FORK == "off"
+    with pytest.raises(ValueError, match="UNIFY_MEMORY_LIBRARY_FORK"):
+        switch.parse_library_fork("maybe")
 
 
 # --- the route (fork-lane design; RUNTIME C3, C5): the key proxy's fork lane only ------------------------------
@@ -174,9 +177,12 @@ def test_the_route_is_the_fork_lane_with_its_token(lane):
 def test_the_token_descriptor_is_read_once_and_closed(monkeypatch):
     sw = _fresh_lane_state(monkeypatch)
     fd = _token_fd()
-    env = {sw.V21_FORK_BASE_URL: BASE, "unify_memory_v21_fork_token_fd": str(fd)}
+    env = {
+        sw.LIBRARY_FORK_BASE_URL: BASE,
+        "unify_memory_library_fork_token_fd": str(fd),
+    }
     settings = SimpleNamespace(
-        **{sw.V21_FORK_BASE_URL: BASE, sw.V21_FORK_TOKEN_FD: str(fd)},
+        **{sw.LIBRARY_FORK_BASE_URL: BASE, sw.LIBRARY_FORK_TOKEN_FD: str(fd)},
     )
     assert sw.settle_fork_route_env(env, settings) is None
     assert env == {}  # every case variant leaves the environment
@@ -195,20 +201,20 @@ def test_a_bad_fork_route_is_refused_never_used(monkeypatch, kind):
     sw = _fresh_lane_state(monkeypatch)
     if kind == "half_set":
         settings = SimpleNamespace(
-            **{sw.V21_FORK_BASE_URL: BASE, sw.V21_FORK_TOKEN_FD: ""},
+            **{sw.LIBRARY_FORK_BASE_URL: BASE, sw.LIBRARY_FORK_TOKEN_FD: ""},
         )
     elif kind == "not_inherited":
         settings = SimpleNamespace(
             **{
-                sw.V21_FORK_BASE_URL: BASE,
-                sw.V21_FORK_TOKEN_FD: str(_token_fd(inheritable=False)),
+                sw.LIBRARY_FORK_BASE_URL: BASE,
+                sw.LIBRARY_FORK_TOKEN_FD: str(_token_fd(inheritable=False)),
             },
         )
     else:
         settings = SimpleNamespace(
             **{
-                sw.V21_FORK_BASE_URL: "https://openrouter.ai/api/v1",
-                sw.V21_FORK_TOKEN_FD: str(_token_fd()),
+                sw.LIBRARY_FORK_BASE_URL: "https://openrouter.ai/api/v1",
+                sw.LIBRARY_FORK_TOKEN_FD: str(_token_fd()),
             },
         )
     why = sw.settle_fork_route_env({}, settings)
@@ -221,7 +227,10 @@ def test_the_fork_route_names_never_reach_a_box():
     from unify import sandbox
     from unify.memory_v2 import sandbox_run
 
-    for name in ("UNIFY_MEMORY_V21_FORK_BASE_URL", "UNIFY_MEMORY_V21_FORK_TOKEN_FD"):
+    for name in (
+        "UNIFY_MEMORY_LIBRARY_FORK_BASE_URL",
+        "UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD",
+    ):
         assert name in sandbox.HARNESS_ONLY_ENV and name in sandbox_run.HARNESS_ONLY_ENV
         assert sandbox._is_secret_env(name, "x")
 
@@ -435,7 +444,7 @@ def test_the_box_mounts_only_the_worker_and_the_staging_dir_writable(
 
 
 def _started(mv2, monkeypatch, replies, source=None):  # noqa: F811
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V21", "on")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
     run = _begin(mv2, "Double 21.")
     _transcript(run)
     _finish(mv2, run)  # recorded with the fork off
@@ -547,8 +556,8 @@ def test_finish_starts_the_fork_after_the_episode_is_recorded(
     mv2,
     monkeypatch,
 ):  # noqa: F811
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V21", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V21_FORK", "on")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_FORK", "on")
     calls = []
 
     def start(paths, handle, eid, settings, **kw):
@@ -563,8 +572,8 @@ def test_finish_starts_the_fork_after_the_episode_is_recorded(
 
 
 def test_f6_off_is_off_no_process_no_staging_dir(mv2, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V21", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V21_FORK", "off")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_FORK", "off")
     spawned = []
     real_start = (
         fork_mod.start
@@ -575,7 +584,7 @@ def test_f6_off_is_off_no_process_no_staging_dir(mv2, monkeypatch):  # noqa: F81
     _finish(mv2, run)
     assert spawned == []
     assert not (Path(mv2.paths.state_dir) / "memory-staging").exists()
-    off = SimpleNamespace(UNIFY_MEMORY_V21="on", UNIFY_MEMORY_V21_FORK="off")
+    off = SimpleNamespace(UNIFY_MEMORY_LIBRARY="on", UNIFY_MEMORY_LIBRARY_FORK="off")
     assert (
         real_start(
             mv2.paths,

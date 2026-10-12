@@ -23,7 +23,7 @@ def routed(monkeypatch):
     for name in HARNESS_ONLY_ENV:
         monkeypatch.setenv(name, SENTINEL)
     monkeypatch.setenv(
-        "unify_memory_v2_sol_base_url",
+        "unify_memory_v2_writer_base_url",
         SENTINEL,
     )  # any case of a route name
     monkeypatch.setenv("KEEP_ME", "kept")

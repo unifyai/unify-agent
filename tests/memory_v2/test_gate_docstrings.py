@@ -3,7 +3,7 @@ budget (G4), reserved generated paths, and the input shapes a merge records for 
 
 ``lab`` is the gate with every v2.1 switch on (``UNIFY_MEMORY_V2_DOCSTRINGS=on``,
 ``UNIFY_MEMORY_V2_SURFACING=catalogue``, ``UNIFY_MEMORY_V2_SOFT_BUDGET=on``); the defaults are covered by
-``test_v21_switch_defaults.py``.
+``test_library_switch_defaults.py``.
 
 Gates here run for real (confined pytest, held-out values), so bubblewrap is required.
 """
@@ -832,7 +832,7 @@ def test_a_headed_fixture_for_a_headerless_recorded_table_is_refused(tmp_path):
 # one; the whole file is not shaped like one input, so the check also shapes the collection's elements.
 
 _PICKS = {
-    "list": ("[{0}, {1}]", '[0]'),
+    "list": ("[{0}, {1}]", "[0]"),
     "records": ('{{"first": {0}, "second": {1}}}', '["first"]'),
     "wrapped": ('{{"rows": [{0}, {1}]}}', '["rows"][0]'),
 }
@@ -870,7 +870,7 @@ def test_a_collection_of_wrongly_shaped_elements_is_still_refused(lab):
     )
     res = gate.merge(
         mem.head(),
-        _candidate(mem, _dlg_files(module=module, fixture='[[1, 2], [3, 4]]')),
+        _candidate(mem, _dlg_files(module=module, fixture="[[1, 2], [3, 4]]")),
         DLG_MAN,
         "p-collection-wrong",
         "incremental",

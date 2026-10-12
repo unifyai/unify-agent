@@ -349,7 +349,7 @@ class RecordingObserver:
 
     def _value(self, value: Any) -> Any:
         # Bounded first (nodes and characters), redacted while copying, then capped as a whole. With
-        # max_value_bytes None (UNIFY_MEMORY_V21) no character budget and no size cap apply: the value is kept
+        # max_value_bytes None (UNIFY_MEMORY_LIBRARY) no character budget and no size cap apply: the value is kept
         # whole (the episode writer stores a large one as a blob); the structural guards (depth, items per
         # container, nodes, cycles) stay, each marked where it acts.
         if self.max_value_bytes is None:

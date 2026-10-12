@@ -1,23 +1,23 @@
 """The consolidation driver (integration Task 24, v1): checker signal, size trigger, Sol pass, gate.
 
-Under ``UNIFY_MEMORY_V21=on``, after a WRITE pass, a CURATE pass follows when the library's state warrants it (spec
+Under ``UNIFY_MEMORY_LIBRARY=on``, after a WRITE pass, a CURATE pass follows when the library's state warrants it (spec
 §10.3, :mod:`..curate`): overlap candidates, suspect items or an index over its view, each shown to CURATE once.
 
 After each request's episode is committed and indexed, :func:`run_due_passes` asks the batched size
 trigger (:class:`..trigger.Trigger`, spec §F1) whether the experience recorded since the last pass has
 reached E tokens. A due pass covers every channel with new evidence (there is no channel filter: the
 gate's G2 dispatches covers per action kind, so tool, shell, work-tree and dialogue channels all take
-part). The pass runs Sol (:class:`..sol_pass.SolPass`) behind the gate, blocking the next request.
+part). The pass runs Sol (:class:`..writer_pass.WriterPass`) behind the gate, blocking the next request.
 
 Bounds per pass: ``PassConfig(model, effort, max_calls=M[effort], deadline_s=900, max_usd=E x a_tok x S[effort])``,
-with S and M from ``UNIFY_MEMORY_V2_SOL_EFFORT_SCALE`` (``low:1,medium:2,high:5``) and
-``UNIFY_MEMORY_V2_SOL_MAX_CALLS`` (``low:40,medium:80,high:80``): one rule for every bed, by the pass's Sol effort
+with S and M from ``UNIFY_MEMORY_V2_WRITER_EFFORT_SCALE`` (``low:1,medium:2,high:5``) and
+``UNIFY_MEMORY_V2_WRITER_MAX_CALLS`` (``low:40,medium:80,high:80``): one rule for every bed, by the pass's Sol effort
 (an effort with no entry starts no pass and is logged; the request stays due).
-Sol's reasoning effort is the actor's for the run unless ``UNIFY_MEMORY_V2_SOL_EFFORT`` fixes another (a declared
+Sol's reasoning effort is the actor's for the run unless ``UNIFY_MEMORY_V2_WRITER_EFFORT`` fixes another (a declared
 mismatch ablation; the lead, 8 Oct), passed in by the caller.
-The run guard (``UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD``, empty for none) starts no further pass once the Sol
+The run guard (``UNIFY_MEMORY_V2_WRITER_RUN_GUARD_USD``, empty for none) starts no further pass once the Sol
 USD this home has committed plus the next pass's cap would exceed it; the request then stays due. The
-commitment is kept in a ledger in the state dir (:func:`committed_sol_usd`): a pass reserves its whole cap
+commitment is kept in a ledger in the state dir (:func:`committed_writer_usd`): a pass reserves its whole cap
 before it starts and settles at its end to its known USD plus a per-call reserve for each unpriced call,
 so a pass that never ends (a killed process) keeps its whole cap committed. No reason text is read. The
 last call of a pass can overshoot the pass's cap (the cap is checked before each call), and with it the
@@ -26,8 +26,8 @@ guard, by at most one call.
 Each pass sends two events through ``emit`` and appends them to the harness-only state dir's
 ``events.jsonl`` (:func:`events_path`):
 
-* ``{"type": "consolidation", "phase": "start", "pass_id", "trigger_tokens", "episodes", "sol_model",
-  "sol_effort", "cap_usd", "max_calls", "effort_scale"}`` (the ledger's reserve line also keeps the last two);
+* ``{"type": "consolidation", "phase": "start", "pass_id", "trigger_tokens", "episodes", "writer_model",
+  "writer_effort", "cap_usd", "max_calls", "effort_scale"}`` (the ledger's reserve line also keeps the last two);
 * ``{"type": "consolidation", "phase": "end", "pass_id", "usd", "unknown_cost_calls", "calls", "checks",
   "seconds", "gate_passed", "items", "index_tokens", "reason_codes", "items_merged", "items_refused"}``
   (``calls`` counts model calls and Sol's ``check`` calls; ``checks`` is the latter alone;
@@ -36,11 +36,11 @@ Each pass sends two events through ``emit`` and appends them to the harness-only
 
 ``reason_codes`` are codes only, never free text (deduplicated, at most 10): ``G1``..``G6`` for the gate
 checks that refused, ``no_manifest``, ``manifest_invalid``, ``over_quota``, ``deadline``, ``pass_cap``,
-``run_guard``, ``sol_error``, ``route_not_in_effect`` (a Sol call found Sol's declared route not in effect),
+``run_guard``, ``writer_error``, ``route_not_in_effect`` (a Sol call found Sol's declared route not in effect),
 and ``ok`` for a passed pass. They are structural: :attr:`PassOutcome.codes`
 (set where each cause arises in the pass and the gate), the type of an exception that ended a pass, or the
 run guard; reason text is never read. A failed pass with no listed cause (memory ``main`` moved during the
-merge) is ``sol_error``. A pass the run guard holds back sends one end event (``calls`` 0, ``usd`` "0",
+merge) is ``writer_error``. A pass the run guard holds back sends one end event (``calls`` 0, ``usd`` "0",
 ``reason_codes`` ``["run_guard"]``) and no start event, since no pass started. The full reasons stay
 harness-side in the evidence store's ``passes`` row.
 
@@ -53,7 +53,7 @@ null result of consolidation.
 
 Sol's transcript (its messages, tool calls and tool results, redacted by the environment's credentials
 and every registered secret, Sol's route token among them, then by :func:`..redact.redact_error`, then
-bounded: :func:`..sol_pass.transcript_lines`) goes as note lines on ``refs/notes/sol-transcripts`` of the
+bounded: :func:`..writer_pass.transcript_lines`) goes as note lines on ``refs/notes/sol-transcripts`` of the
 same episode commit, one JSON line per message with its ``pass_id``.
 
 Money is a plain decimal string, never an exponent; a measurement that could not be taken is ``None``.
@@ -62,7 +62,7 @@ can only start after that commit (the trigger and the export read it), and one e
 commit. :func:`episode_costs` merges the commit's ``cost.jsonl`` with those notes.
 
 Ruling R10: the checker contributes ``pass``/``fail`` only (:func:`post_checker`); Sol sees the episodes
-through :func:`..sol_pass.export_for_sol`, which carries no signal.
+through :func:`..writer_pass.export_for_writer`, which carries no signal.
 """
 
 from __future__ import annotations
@@ -83,7 +83,7 @@ from types import SimpleNamespace
 from typing import Any, Callable
 
 from .. import curate as _curate
-from .. import gate_v21
+from .. import library_checks
 from ..blobs import BlobStore
 from ..episodes import Action, CostRow, Episode, episode_dir, load_episode
 from ..evidence import EvidenceStore
@@ -96,15 +96,15 @@ from ..reconcile import unavailable as unavailable_reconcile
 from ..redact import Redactor, redact_error
 from ..signals import Signal, SignalMasked, post_signal
 from ..snapshot import listing, materialise
-from ..sol_pass import (
+from ..writer_pass import (
     CODE_ROUTE_NOT_IN_EFFECT,
     CODE_STEP_GUARD,
     STEP_GUARD,
     OTEL_REFUSAL,
     PassConfig,
     PassOutcome,
-    SolPass,
-    SolRoute,
+    WriterPass,
+    WriterRoute,
     TRANSCRIPT_REF,
     otel_on,
     unillm_turn,
@@ -113,44 +113,44 @@ from ..trigger import EXPERIENCE_BUDGET, USD_PER_TOKEN, PassRequest, Trigger
 from .cost import UNKNOWN, money, recording_turn
 from .paths import Paths
 from .switch import (
-    SOL_BASE_URL,
-    SOL_EFFORT_SCALE,
-    SOL_MAX_CALLS,
-    SolRouteRefused,
-    settle_sol_route_env,
-    sol_effort_scale_map,
-    sol_max_calls_map,
-    sol_route,
-    sol_token,
+    WRITER_BASE_URL,
+    WRITER_EFFORT_SCALE,
+    WRITER_MAX_CALLS,
+    WriterRouteRefused,
+    settle_writer_route_env,
+    writer_effort_scale_map,
+    writer_max_calls_map,
+    writer_route,
+    writer_token,
     checker_visible,
     surfacing_options,
-    v21_enabled,
-    v21_analysts,
-    v21_pool,
-    v21_compact,
-    v21_coverage,
-    v21_max_reads,
+    library_enabled,
+    library_analysts,
+    library_pool,
+    library_compact,
+    library_coverage,
+    library_max_reads,
 )
 
 __all__ = [
     "DEADLINE_S",
     "MAX_CALLS",
-    "SOL_MODEL",
+    "WRITER_MODEL",
     "EpisodeLookup",
-    "SolSettings",
+    "WriterSettings",
     "Stores",
-    "committed_sol_usd",
+    "committed_writer_usd",
     "episode_costs",
     "events_path",
     "open_stores",
     "post_checker",
     "post_visible_checkers",
     "run_due_passes",
-    "sol_settings",
+    "writer_settings",
 ]
 
-SOL_MODEL = "openai/gpt-6-sol"
-MAX_CALLS = 40  # the low-effort default of UNIFY_MEMORY_V2_SOL_MAX_CALLS
+WRITER_MODEL = "openai/gpt-6-sol"
+MAX_CALLS = 40  # the low-effort default of UNIFY_MEMORY_V2_WRITER_MAX_CALLS
 DEADLINE_S = 900.0
 # A pass ends itself at its deadline; this outer bound only catches a pass that overruns it (a cell or a
 # model call in flight at the deadline), after which the pass is cancelled and recorded failed.
@@ -167,7 +167,7 @@ REASON_CODES = frozenset(
         "pass_cap",
         CODE_STEP_GUARD,
         "run_guard",
-        "sol_error",
+        "writer_error",
         CODE_ROUTE_NOT_IN_EFFECT,
         "ok",
     },
@@ -385,23 +385,23 @@ def post_visible_checkers(
 
 
 @dataclass(frozen=True)
-class SolSettings:
+class WriterSettings:
     model: str
     experience_budget: int
     usd_per_token: Decimal
     run_guard_usd: Decimal | None
-    # Sol's own route (UNIFY_MEMORY_V2_SOL_BASE_URL / _SOL_TOKEN or _SOL_TOKEN_FD); None: as shipped
-    route: SolRoute | None = None
+    # Sol's own route (UNIFY_MEMORY_V2_WRITER_BASE_URL / _WRITER_TOKEN or _WRITER_TOKEN_FD); None: as shipped
+    route: WriterRoute | None = None
     show_usage: bool = (
-        False  # UNIFY_MEMORY_V2_SOL_USAGE: the use table in each pass's first message
+        False  # UNIFY_MEMORY_V2_WRITER_USAGE: the use table in each pass's first message
     )
-    # UNIFY_MEMORY_V2_SOL_EFFORT_SCALE / _SOL_MAX_CALLS, by Sol effort (low, medium, high)
+    # UNIFY_MEMORY_V2_WRITER_EFFORT_SCALE / _WRITER_MAX_CALLS, by Sol effort (low, medium, high)
     effort_scale: dict[str, Decimal] = field(
-        default_factory=lambda: sol_effort_scale_map(""),
+        default_factory=lambda: writer_effort_scale_map(""),
     )
-    max_calls: dict[str, int] = field(default_factory=lambda: sol_max_calls_map(""))
-    v21: bool = (
-        False  # UNIFY_MEMORY_V21: the writer's batch map, views and coverage (spec v2.1)
+    max_calls: dict[str, int] = field(default_factory=lambda: writer_max_calls_map(""))
+    library_mode: bool = (
+        False  # UNIFY_MEMORY_LIBRARY: the writer's batch map, views and coverage (spec v2.1)
     )
 
     @property
@@ -423,22 +423,28 @@ def _decimal(name: str, value: Any) -> Decimal:
         raise ValueError(f"{name} is not a decimal: {value!r}"[:200]) from exc
 
 
-def sol_settings(settings: Any) -> SolSettings:
+def writer_settings(settings: Any) -> WriterSettings:
     """The Sol model, E, the USD allowance per token, the run guard, Sol's route and whether Sol is shown
-    the use table (``UNIFY_MEMORY_V2_SOL_USAGE``) from *settings*.
+    the use table (``UNIFY_MEMORY_V2_WRITER_USAGE``) from *settings*.
 
     Defaults if unset. :func:`run_due_passes` reads them before anything else, so a refused value (Sol's
     route with one of its two settings empty, say) starts no pass and makes no call. Sol's route is settled
-    against the process environment again first (:func:`.switch.settle_sol_route_env`), so a value that
+    against the process environment again first (:func:`.switch.settle_writer_route_env`), so a value that
     reached the environment late (``.env`` loaded by an embedder after unify was imported) is refused here
     too, not only on the CLI's path. Every refusal of the route is a :class:`.switch.SolRouteRefused`.
     """
-    settle_sol_route_env(os.environ, settings)
-    model = str(getattr(settings, "UNIFY_MEMORY_V2_SOL_MODEL", "") or "").strip()
-    from .switch import v21_enabled, v21_experience_budget, v21_sol_usd_per_token
+    settle_writer_route_env(os.environ, settings)
+    model = str(getattr(settings, "UNIFY_MEMORY_V2_WRITER_MODEL", "") or "").strip()
+    from .switch import (
+        library_enabled,
+        library_experience_budget,
+        library_writer_usd_per_token,
+    )
 
-    if v21_enabled(settings):
-        e = v21_experience_budget(settings)  # D43: E = 100k recorded tokens under v2.1
+    if library_enabled(settings):
+        e = library_experience_budget(
+            settings,
+        )  # D43: E = 100k recorded tokens under v2.1
     else:
         raw_e = getattr(settings, "UNIFY_MEMORY_V2_E", "") or EXPERIENCE_BUDGET
         if isinstance(raw_e, bool):
@@ -453,47 +459,61 @@ def sol_settings(settings: Any) -> SolSettings:
             raise ValueError(
                 f"UNIFY_MEMORY_V2_E must be a positive integer, not {raw_e!r}"[:200],
             )
-    if v21_enabled(settings):
+    if library_enabled(settings):
         # spec §15 (F9): the v2.1 writer's rate is its own setting, so the offline replay can size it
-        a_tok = v21_sol_usd_per_token(settings)
+        a_tok = library_writer_usd_per_token(settings)
     else:
         a_tok = _decimal(
-            "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS",
-            getattr(settings, "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS", "")
+            "UNIFY_MEMORY_V2_WRITER_ALLOWANCE_USD_PER_TOKENS",
+            getattr(settings, "UNIFY_MEMORY_V2_WRITER_ALLOWANCE_USD_PER_TOKENS", "")
             or format(USD_PER_TOKEN, "f"),
         )
     if (
         a_tok <= 0
     ):  # a zero cap would consume experience with passes that can make no call
         raise ValueError(
-            "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS must be greater than zero",
+            "UNIFY_MEMORY_V2_WRITER_ALLOWANCE_USD_PER_TOKENS must be greater than zero",
         )
-    guard_raw = getattr(settings, "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD", "") or ""
+    guard_raw = getattr(settings, "UNIFY_MEMORY_V2_WRITER_RUN_GUARD_USD", "") or ""
     guard = (
-        _decimal("UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD", guard_raw)
+        _decimal("UNIFY_MEMORY_V2_WRITER_RUN_GUARD_USD", guard_raw)
         if str(guard_raw).strip()
         else None
     )
     # both or neither, checked here (before any pass starts); no error quotes a value
-    pair = sol_route(getattr(settings, SOL_BASE_URL, ""), sol_token(settings))
-    route = SolRoute(*pair) if pair is not None else None
-    model = model or SOL_MODEL
+    pair = writer_route(getattr(settings, WRITER_BASE_URL, ""), writer_token(settings))
+    route = WriterRoute(*pair) if pair is not None else None
+    model = model or WRITER_MODEL
     if route is not None and otel_on():
-        raise SolRouteRefused(OTEL_REFUSAL)
+        raise WriterRouteRefused(OTEL_REFUSAL)
     if route is not None and not (
         model if "@" in model else f"{model}@openrouter"
     ).endswith("@openrouter"):
-        raise SolRouteRefused(
-            f"{SOL_BASE_URL} replaces the OpenRouter transport; UNIFY_MEMORY_V2_SOL_MODEL must be an "
+        raise WriterRouteRefused(
+            f"{WRITER_BASE_URL} replaces the OpenRouter transport; UNIFY_MEMORY_V2_WRITER_MODEL must be an "
             "@openrouter endpoint (or a bare model id)",
         )
-    from .switch import V21, parse_memory_v21, parse_sol_usage
+    from .switch import LIBRARY_MODE, parse_memory_library_mode, parse_writer_usage
 
-    usage = parse_sol_usage(getattr(settings, "UNIFY_MEMORY_V2_SOL_USAGE", "") or "")
-    v21 = parse_memory_v21(getattr(settings, V21, "") or "") == "on"
-    scale = sol_effort_scale_map(getattr(settings, SOL_EFFORT_SCALE, "") or "")
-    calls = sol_max_calls_map(getattr(settings, SOL_MAX_CALLS, "") or "")
-    return SolSettings(model, e, a_tok, guard, route, usage == "on", scale, calls, v21)
+    usage = parse_writer_usage(
+        getattr(settings, "UNIFY_MEMORY_V2_WRITER_USAGE", "") or "",
+    )
+    library_mode = (
+        parse_memory_library_mode(getattr(settings, LIBRARY_MODE, "") or "") == "on"
+    )
+    scale = writer_effort_scale_map(getattr(settings, WRITER_EFFORT_SCALE, "") or "")
+    calls = writer_max_calls_map(getattr(settings, WRITER_MAX_CALLS, "") or "")
+    return WriterSettings(
+        model,
+        e,
+        a_tok,
+        guard,
+        route,
+        usage == "on",
+        scale,
+        calls,
+        library_mode,
+    )
 
 
 # --- money -----------------------------------------------------------------------------------------------
@@ -552,7 +572,7 @@ def _settle(
     _ledger(stores, row)
 
 
-def committed_sol_usd(stores: Stores) -> Decimal:
+def committed_writer_usd(stores: Stores) -> Decimal:
     """The Sol USD committed in this home, from the ledger's structured fields only.
 
     A pass with a ``settle`` line counts its known USD plus ``unknown_cost_calls`` times the per-call
@@ -646,7 +666,7 @@ def _note_costs(
             "usd": r.usd,
             "episode": eid,
             "pass_id": pass_id,
-            "sol_effort": effort,
+            "writer_effort": effort,
         }
         try:
             stores.episodes.add_note(
@@ -658,10 +678,19 @@ def _note_costs(
             _error(stores, f"cost note: {type(exc).__name__}: {exc}")
 
 
-def _note_transcript(stores: Stores, sha: str, pass_id: str, sol: SolPass) -> None:
-    """Sol's redacted, bounded transcript as note lines on :data:`..sol_pass.TRANSCRIPT_REF` of *sha*."""
+def _note_transcript(
+    stores: Stores,
+    sha: str,
+    pass_id: str,
+    writer: WriterPass,
+) -> None:
+    """Sol's redacted, bounded transcript as note lines on :data:`..writer_pass.TRANSCRIPT_REF` of *sha*."""
     try:
-        stores.episodes.append_note_lines(sha, sol.transcript(pass_id), TRANSCRIPT_REF)
+        stores.episodes.append_note_lines(
+            sha,
+            writer.transcript(pass_id),
+            TRANSCRIPT_REF,
+        )
     except Exception as exc:  # noqa: BLE001 - a record, never a failure of the pass
         _error(stores, f"{pass_id}: transcript: {type(exc).__name__}")
 
@@ -690,13 +719,15 @@ def _library_after(stores: Stores) -> tuple[int | None, int | None]:
 
 def reason_codes(outcome: PassOutcome | None, failure_code: str | None) -> list[str]:
     """The end event's codes: the outcome's structured codes (known ones, deduplicated, at most 10)."""
-    raw = list(outcome.codes) if outcome is not None else [failure_code or "sol_error"]
+    raw = (
+        list(outcome.codes) if outcome is not None else [failure_code or "writer_error"]
+    )
     out: list[str] = []
     for code in raw:
         if code in REASON_CODES and code not in out:
             out.append(code)
     if not out or (outcome is not None and not outcome.passed and out == ["ok"]):
-        out = ["ok"] if outcome is not None and outcome.passed else ["sol_error"]
+        out = ["ok"] if outcome is not None and outcome.passed else ["writer_error"]
     return out[:MAX_REASON_CODES]
 
 
@@ -733,8 +764,8 @@ def _start_event(
         "pass_id": pass_id,
         "trigger_tokens": req.experience_tokens,
         "episodes": list(req.episodes),
-        "sol_model": model,
-        "sol_effort": effort,
+        "writer_model": model,
+        "writer_effort": effort,
         "cap_usd": _usd(cap),
         "max_calls": int(max_calls),
         "effort_scale": _usd(scale),
@@ -757,7 +788,7 @@ def _end_event(
         "pass_id": pass_id,
         "usd": usd,
         "unknown_cost_calls": unknown,
-        "calls": calls,  # model calls plus check calls (SolPass counts both against max_calls)
+        "calls": calls,  # model calls plus check calls (WriterPass counts both against max_calls)
         "checks": int(outcome.checks) if outcome is not None else 0,
         "seconds": round(max(0.0, float(seconds)), 3),
         "gate_passed": bool(outcome is not None and outcome.passed),
@@ -770,12 +801,12 @@ def _end_event(
             if outcome is not None
             else {}
         ),
-        # memory v2.1 only (absent with UNIFY_MEMORY_V21 off): the writer's coverage, its reader calls and the
+        # memory v2.1 only (absent with UNIFY_MEMORY_LIBRARY off): the writer's coverage, its reader calls and the
         # blob bytes its /inputs held (uncapped under v2.1, so a disk-full stage leaves its size here)
         **(
             {
                 "coverage": outcome.coverage,
-                # UNIFY_MEMORY_V21_COVERAGE=optional only (absent otherwise): measures, read by no gate
+                # UNIFY_MEMORY_LIBRARY_COVERAGE=optional only (absent otherwise): measures, read by no gate
                 **(
                     {"coverage_measures": outcome.coverage_measures}
                     if getattr(outcome, "coverage_measures", None) is not None
@@ -822,16 +853,16 @@ def after_passes(
 ) -> None:
     """Memory v2.1 (spec §4.4, §10; D38, D40): once a consolidation's passes are recorded, the item records of
     ``main``'s head, the status changes and the bisects (:func:`..lifecycle.consolidate_records`). Nothing runs
-    with ``UNIFY_MEMORY_V21`` off, or when no pass was recorded (the run guard held them all back). Never raises:
+    with ``UNIFY_MEMORY_LIBRARY`` off, or when no pass was recorded (the run guard held them all back). Never raises:
     a failure is logged, and the next consolidation computes everything again from the same evidence.
     """
-    if not recorded or not v21_enabled(settings):
+    if not recorded or not library_enabled(settings):
         return
     from .. import lifecycle
     from .switch import checker_visible
 
     try:
-        with tempfile.TemporaryDirectory(prefix="memv21-records-") as work:
+        with tempfile.TemporaryDirectory(prefix="memlib-records-") as work:
             summary = lifecycle.consolidate_records(
                 stores,
                 checker_visible=checker_visible(settings),
@@ -944,7 +975,7 @@ def _curate_state(
             tree,
             lookup=lookup.action,
             blobs=stores.blobs,
-            v21=True,
+            library_mode=True,
         )
         lib = layout.discover(tree)
         state = _curate.CurateState(
@@ -988,7 +1019,7 @@ async def run_due_passes(
     *state* is the harness state (:class:`.state.State`): its drift channels ride with the pass and are
     cleared once it is recorded; a passed pass clears them from ``suspect``. A pass recorded passed or
     failed advances the trigger's cursor; a pass the run guard holds back stays due. *effort* is the
-    actor's effort unless ``UNIFY_MEMORY_V2_SOL_EFFORT`` fixes another (``request.sol_effort``); it picks the
+    actor's effort unless ``UNIFY_MEMORY_V2_WRITER_EFFORT`` fixes another (``request.sol_effort``); it picks the
     pass's scale of the allowance cap and its call limit.
 
     With *supervise* (memory v2.1's worker, :class:`.async_pass.Supervisor`), Sol's deadline is the supervisor's
@@ -998,8 +1029,8 @@ async def run_due_passes(
     adds ``ended`` and ``reconciled``, and only the first due pass runs.
     """
     try:
-        cfg = sol_settings(settings)
-    except SolRouteRefused:
+        cfg = writer_settings(settings)
+    except WriterRouteRefused:
         # visible in the run's own events, value-free; the request stays due and refuses again next time
         if stores is not None:
             _deliver(
@@ -1041,7 +1072,7 @@ async def run_due_passes(
     reserve = cap / max_calls
     # r5 S6 and RUNTIME B1 (F5 as amended): a v2.1 pass is uncapped only when Sol's calls go through a proxy route,
     # whose ceilings bound it in flight; with no route it keeps the allowance cap and the call limit
-    uncapped = bool(cfg.v21 and cfg.route is not None)
+    uncapped = bool(cfg.library_mode and cfg.route is not None)
     lookup = EpisodeLookup(stores)
     common = dict(
         action_lookup=lookup.action,
@@ -1055,13 +1086,13 @@ async def run_due_passes(
         stores.blobs,
         **common,
         # memory v2.1 (spec §9.1, P4 Amendment E): the v2.1 layout and checks for WRITE; v2 when the switch is off
-        v21=(
-            gate_v21.config_for(
+        library_mode=(
+            library_checks.config_for(
                 stores,
                 lookup,
                 checker_visible=checker_visible(settings),
             )
-            if v21_enabled(settings)
+            if library_enabled(settings)
             else None
         ),
     )
@@ -1078,10 +1109,10 @@ async def run_due_passes(
         **(
             {
                 "staging_root": str(Path(stores.paths.state_dir) / "memory-staging"),
-                "analysts": v21_analysts(settings),
-                "pool": v21_pool(settings),
-                "compact": v21_compact(settings),
-                "coverage_rule": v21_coverage(settings),
+                "analysts": library_analysts(settings),
+                "pool": library_pool(settings),
+                "compact": library_compact(settings),
+                "coverage_rule": library_coverage(settings),
                 "s0_cache": str(Path(stores.paths.state_dir) / "memory-s0"),
                 "worktree_git": (
                     str(stores.paths.worktree_git)
@@ -1089,14 +1120,14 @@ async def run_due_passes(
                     else None
                 ),
             }
-            if cfg.v21
+            if cfg.library_mode
             else {}
         ),
         show_usage=cfg.show_usage
-        or cfg.v21,  # r5 S3: v2.1 writers always see measured library use
-        v21=cfg.v21,
-        # memory v2.1: the writer's reader calls (UNIFY_MEMORY_V21_MAX_READS); off, PassConfig's default as before
-        **({"max_reads": v21_max_reads(settings)} if cfg.v21 else {}),
+        or cfg.library_mode,  # r5 S3: v2.1 writers always see measured library use
+        library_mode=cfg.library_mode,
+        # memory v2.1: the writer's reader calls (UNIFY_MEMORY_LIBRARY_MAX_READS); off, PassConfig's default as before
+        **({"max_reads": library_max_reads(settings)} if cfg.library_mode else {}),
     )
     outcomes: list[PassOutcome] = []
     queue = list(
@@ -1120,7 +1151,7 @@ async def run_due_passes(
                 stores.evidence,
                 stores.blobs,
                 **common,
-                v21=gate_v21.config_for(
+                library_mode=library_checks.config_for(
                     stores,
                     lookup,
                     role="curate",
@@ -1129,7 +1160,7 @@ async def run_due_passes(
             )
         if (
             cfg.run_guard_usd is not None
-            and committed_sol_usd(stores) + cap > cfg.run_guard_usd
+            and committed_writer_usd(stores) + cap > cfg.run_guard_usd
         ):
             # the run guard: no further pass starts; the request stays due
             _deliver(
@@ -1139,7 +1170,7 @@ async def run_due_passes(
             )
             break
         rows: list[CostRow] = []
-        sol = SolPass(
+        writer = WriterPass(
             stores.memory,
             curate_gate if curating else gate,
             stores.evidence,
@@ -1163,7 +1194,7 @@ async def run_due_passes(
             _error(stores, f"{pass_id}: ledger: {type(exc).__name__}: {exc}")
             break
         start = _start_event(req, pass_id, cfg.model, effort, cap, max_calls, scale)
-        if cfg.v21:
+        if cfg.library_mode:
             # the E and the read cap this pass ran with (v2's start event is unchanged)
             start["experience_budget"] = int(cfg.experience_budget)
             start["max_reads"] = int(
@@ -1191,23 +1222,27 @@ async def run_due_passes(
         try:
             if supervise is None:
                 outcome = await asyncio.wait_for(
-                    sol.run(req, pass_id),
+                    writer.run(req, pass_id),
                     timeout=DEADLINE_S + OVERRUN_S,
                 )
             else:  # memory v2.1: the worker's wall bound; SIGTERM cancels through the abort path
-                supervised = await supervise(lambda: sol.run(req, pass_id))
+                supervised = await supervise(lambda: writer.run(req, pass_id))
                 outcome = supervised.outcome
                 if outcome is None:
                     failure_code = (
-                        "deadline" if supervised.ended == "deadline" else "sol_error"
+                        "deadline" if supervised.ended == "deadline" else "writer_error"
                     )
-        except Exception as exc:  # noqa: BLE001 - SolPass recorded the pass as failed
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 - WriterPass recorded the pass as failed
             # the outer bound (a pass that overran its deadline) is a deadline; anything else an error
-            failure_code = "deadline" if isinstance(exc, TimeoutError) else "sol_error"
+            failure_code = (
+                "deadline" if isinstance(exc, TimeoutError) else "writer_error"
+            )
             failure = redact_error(f"pass error: {type(exc).__name__}: {exc}")
             _error(stores, f"{pass_id}: {failure}")
         except BaseException:
-            failure_code = "sol_error"  # cancelled or interrupted
+            failure_code = "writer_error"  # cancelled or interrupted
             raise
         finally:
             recon = None
@@ -1219,7 +1254,7 @@ async def run_due_passes(
                     _error(stores, f"{pass_id}: reconcile: {type(exc).__name__}")
                     recon = unavailable_reconcile()
             _note_costs(stores, sha, eid, pass_id, rows, effort)
-            _note_transcript(stores, sha, pass_id, sol)
+            _note_transcript(stores, sha, pass_id, writer)
             try:
                 if recon is None:
                     _settle(stores, pass_id, *_spend(outcome, rows)[:2])
@@ -1242,7 +1277,7 @@ async def run_due_passes(
                 clock() - started,
                 failure_code,
             )
-            if v21_enabled(settings):
+            if library_enabled(settings):
                 # Amendment C: the lag when the pass ended, before publishing
                 event["served_lag_commits"] = _served_lag(stores)
             if supervise is not None:
@@ -1274,7 +1309,7 @@ async def run_due_passes(
             # a model call ended by the deadline or an error may still be running at Sol's proxy, which serves
             # one Sol call at a time: start no further pass in this session (the requests stay due)
             break
-        if cfg.v21 and not curating:
+        if cfg.library_mode and not curating:
             # spec §7 (MAIN, 9 Oct): WRITE's item records and statuses first, so CURATE's trigger reads fresh
             # suspects and use; then CURATE if the library's state warrants it (§10.3)
             _records_step(stores, settings, recorded, emit, stopped)
@@ -1313,7 +1348,7 @@ async def run_due_passes(
         emit,
         stopped,
     )  # memory v2.1 only (CURATE's records, or every pass's without v2.1 CURATE); at once with the switch off
-    if v21_enabled(settings):
+    if library_enabled(settings):
         # P7 Amendment A: the pin-able head moves last, after the item records are written
         from ..memory_writer import publish
 
@@ -1375,4 +1410,4 @@ def _served_lag(stores: Stores) -> int | None:
 
 
 #: Pass end codes after which a model call may still be in flight at Sol's proxy.
-_CALL_MAY_BE_IN_FLIGHT = frozenset({"deadline", "sol_error", "route_not_in_effect"})
+_CALL_MAY_BE_IN_FLIGHT = frozenset({"deadline", "writer_error", "route_not_in_effect"})

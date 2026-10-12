@@ -1,7 +1,7 @@
 """Pricing a v2.1 pass's model calls after the fact, by lane and window (spec v2.1 §6; P7 Amendment D).
 
 Passes run one at a time (:mod:`.integration.async_pass`) and Sol has its own proxy lane, so a pass's calls are the
-Sol-lane requests of the proxy journal (``UNIFY_MEMORY_V2_SOL_JOURNAL``) that *started* inside the pass's window.
+Sol-lane requests of the proxy journal (``UNIFY_MEMORY_V2_WRITER_JOURNAL``) that *started* inside the pass's window.
 The journal is append-only and carries no clock, so the window is a byte range: the journal's size when the pass
 started and when its supervisor recorded its end (:func:`journal_offset`). A request belongs to the pass when its
 ``request_started`` row lies in that range; its terminal row is read wherever it was appended, so a call cancelled
@@ -9,7 +9,7 @@ at the wall bound, whose terminal row the proxy writes late, is still found.
 
 A request is priced by its last row's ``account_charge``. One with no charge (cancelled in flight, a transport
 error, a terminal row not yet written) stays ``unknown``, never zero, and the run guard books it at
-:data:`SOL_CALL_WORST_CASE_USD` (the guards' tier-1 catalogue maximum for one Sol request; the 8 Oct rule for
+:data:`WRITER_CALL_WORST_CASE_USD` (the guards' tier-1 catalogue maximum for one Sol request; the 8 Oct rule for
 never-priceable requests). No header is sent and no generation lookup is made: the proxy mints its own attempt id
 and the Sol lane refuses ``GET /generation`` (Amendment D). Money is a decimal string.
 """
@@ -30,7 +30,7 @@ RECONCILE_S = 120.0
 RETRY_S = 5.0
 #: One Sol request's worst case, as the programme guard bounds it (tier 1, catalogue cbb212a9: context x the highest
 #: input-side rate + context x the completion rate, for openai/gpt-6-sol). An unpriced call is booked at this.
-SOL_CALL_WORST_CASE_USD = Decimal("13.125")
+WRITER_CALL_WORST_CASE_USD = Decimal("13.125")
 _TERMINAL = frozenset({"completed", "failed", "cancelled", "error", "ok"})
 
 
@@ -130,7 +130,7 @@ def lane_calls(
     return calls
 
 
-def unavailable(worst_case_usd: Decimal = SOL_CALL_WORST_CASE_USD) -> dict:
+def unavailable(worst_case_usd: Decimal = WRITER_CALL_WORST_CASE_USD) -> dict:
     """The summary when the journal cannot be read: nothing priced, nothing known, the whole cap kept."""
     return {
         "journal": "unavailable",
@@ -149,7 +149,7 @@ async def reconcile_window(
     end: int | None,
     *,
     models: Iterable[str],
-    worst_case_usd: Decimal = SOL_CALL_WORST_CASE_USD,
+    worst_case_usd: Decimal = WRITER_CALL_WORST_CASE_USD,
     budget_s: float = RECONCILE_S,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,

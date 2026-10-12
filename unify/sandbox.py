@@ -309,11 +309,11 @@ _URL_CREDENTIALS = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s@:]*:[^/\s@]*@")
 # the descriptor number is harmless but stays with the controller), and the fork lane's route likewise (C2).
 HARNESS_ONLY_ENV = frozenset(
     {
-        "UNIFY_MEMORY_V2_SOL_BASE_URL",
-        "UNIFY_MEMORY_V2_SOL_TOKEN",
-        "UNIFY_MEMORY_V2_SOL_TOKEN_FD",
-        "UNIFY_MEMORY_V21_FORK_BASE_URL",
-        "UNIFY_MEMORY_V21_FORK_TOKEN_FD",
+        "UNIFY_MEMORY_V2_WRITER_BASE_URL",
+        "UNIFY_MEMORY_V2_WRITER_TOKEN",
+        "UNIFY_MEMORY_V2_WRITER_TOKEN_FD",
+        "UNIFY_MEMORY_LIBRARY_FORK_BASE_URL",
+        "UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD",
     },
 )
 

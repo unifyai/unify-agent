@@ -1,6 +1,6 @@
 """Memory v2.1 repair rounds (spec §9.2-9.3, D37): the round budget and the gate's full result as a file.
 
-After Sol's accepted ``finish``, :class:`.sol_pass.SolPass` runs :meth:`.gate.Gate.check` (the whole gate, no
+After Sol's accepted ``finish``, :class:`.writer_pass.WriterPass` runs :meth:`.gate.Gate.check` (the whole gate, no
 merge) on the round's candidate. A refusal is written in full to ``/inputs/gate/result-<n>.md`` and Sol gets
 another round, at most :data:`REPAIR_ROUNDS`, while the pass's budget holds one more round
 (:func:`may_repair`). Only the final candidate goes to :meth:`.gate.Gate.merge`, so per-item admission decides

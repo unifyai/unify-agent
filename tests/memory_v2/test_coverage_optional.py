@@ -1,30 +1,30 @@
-"""UNIFY_MEMORY_V21_COVERAGE (MAIN 11 Oct; prepared, ``required`` until the lead decides; the subtractive note
+"""UNIFY_MEMORY_LIBRARY_COVERAGE (MAIN 11 Oct; prepared, ``required`` until the lead decides; the subtractive note
 38c0bd35): ``optional`` lets the writer finish without covering; an episode left neither covered nor dismissed is
 recorded as unread (the pass's coverage and, with the pool, an ``unread`` entry), never dropped; ``dismiss`` stays a
 tool; the pass reports coverage measures that nothing reads back. ``required`` is today's behaviour, byte for byte.
 """
 
-from unify.memory_v2 import pool, prompts_v21 as pv, sol_pass
+from unify.memory_v2 import pool, library_prompts as pv, writer_pass
 from unify.memory_v2.integration import switch
-from unify.memory_v2.sol_pass import PassConfig, sol_tools
+from unify.memory_v2.writer_pass import PassConfig, writer_tools
 from unify.settings import SETTINGS
 from tests.memory_v2.test_pool import EMPTY, _finish_with, _Stores
-from tests.memory_v2.test_sol_pass import _call, needs_bwrap
-from tests.memory_v2.test_sol_v21_tools import _pass
+from tests.memory_v2.test_writer_pass import _call, needs_bwrap
+from tests.memory_v2.test_writer_library_tools import _pass
 
 FINISH = [_call("f", "finish", {"summary": "s"})]
 
 
 def test_the_switch_is_required_by_default_and_takes_only_its_two_values():
-    assert SETTINGS.UNIFY_MEMORY_V21_COVERAGE == "required"
+    assert SETTINGS.UNIFY_MEMORY_LIBRARY_COVERAGE == "required"
     assert PassConfig().coverage_rule == "required"
-    assert switch.parse_v21_coverage("") == "required"
-    assert switch.parse_v21_coverage(" Optional ") == "optional"
-    assert switch.PARSERS[switch.V21_COVERAGE] is switch.parse_v21_coverage
+    assert switch.parse_library_coverage("") == "required"
+    assert switch.parse_library_coverage(" Optional ") == "optional"
+    assert switch.PARSERS[switch.LIBRARY_COVERAGE] is switch.parse_library_coverage
     try:
-        switch.parse_v21_coverage("off")
+        switch.parse_library_coverage("off")
     except ValueError as exc:
-        assert "UNIFY_MEMORY_V21_COVERAGE" in str(exc)
+        assert "UNIFY_MEMORY_LIBRARY_COVERAGE" in str(exc)
     else:
         raise AssertionError("an unknown value must be refused")
 
@@ -63,7 +63,7 @@ def test_the_required_brief_is_unchanged_and_the_optional_one_states_the_contrac
 
 
 def test_dismiss_stays_a_tool_under_both_values():
-    names = {t["function"]["name"] for t in sol_tools(v21=True)}
+    names = {t["function"]["name"] for t in writer_tools(library_mode=True)}
     assert "dismiss" in names and "read_episode" in names
 
 
@@ -151,7 +151,7 @@ def test_the_measures_name_unread_episodes_that_carry_evidence():
         },
         {"episode_id": "c", "functions": [{"name": "h"}]},  # read: not unread
     ]
-    m = sol_pass._coverage_measures(coverage, ["c"], rows, [])
+    m = writer_pass._coverage_measures(coverage, ["c"], rows, [])
     assert m["unread_with_evidence"] == {
         "a": ["function", "cell_error", "s0", "staging"],
     }
@@ -161,10 +161,12 @@ def test_the_measures_name_unread_episodes_that_carry_evidence():
         and m["episodes_opened"] == 1
     )
     assert (
-        sol_pass._coverage_measures(coverage, ["c"], rows, ["x"])["empty_pass"] is False
+        writer_pass._coverage_measures(coverage, ["c"], rows, ["x"])["empty_pass"]
+        is False
     )
     assert (
-        sol_pass._coverage_measures({"missing": []}, [], [], [])["read_share"] is None
+        writer_pass._coverage_measures({"missing": []}, [], [], [])["read_share"]
+        is None
     )
 
 
@@ -174,7 +176,7 @@ def test_a_measures_failure_never_fails_the_pass(tmp_path, monkeypatch):
     def broken(*a, **k):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(sol_pass, "_coverage_measures", broken)
+    monkeypatch.setattr(writer_pass, "_coverage_measures", broken)
     out, _ = _pass(
         tmp_path,
         FINISH,

@@ -11,7 +11,7 @@ What goes with a refused item (:func:`with_dependents`, a closure over the manif
 * an environment function that calls it, directly or through the module's private helpers (by name, in
   the candidate's module: ``ast``, never text);
 * an item whose test files import it by name (``from env.<channel> import <name>``);
-* under memory v2.1 (D42, :func:`uses_v21`), an item whose module or tests import it: by name, through a package
+* under memory v2.1 (D42, :func:`uses_library_mode`), an item whose module or tests import it: by name, through a package
   that re-exports it (resolved to the module that defines it, Amendment A), or with its whole module.
 
 What the reduction does to each refused item (:func:`build`), from the materialised candidate tree:
@@ -86,7 +86,7 @@ _FUNCTION_KINDS = ("env_function", "function")
 _MAX_REEXPORT_DEPTH = 8
 
 
-def _v21_context(
+def _library_context(
     tree: Path,
 ) -> tuple[set[str], dict[str, dict[str, str]], dict[str, set[str]]]:
     """(library modules, package -> its init's bindings, module -> its function ids) of the candidate *tree*.
@@ -136,7 +136,7 @@ def _through(inits: dict[str, dict[str, str]], target: str) -> str:
     return target
 
 
-def _imports_v21(
+def _imports_library_mode(
     source: bytes,
     package: str,
     modules: set[str],
@@ -189,15 +189,15 @@ def _imports_v21(
     return out
 
 
-def uses_v21(tree: Path, it: ManifestItem, ctx=None) -> set[str]:
+def uses_library_mode(tree: Path, it: ManifestItem, ctx=None) -> set[str]:
     """v2.1 (D42): item ids *it* depends on in the candidate *tree*:
 
     - the functions of its own module it calls, directly or through private helpers (:func:`_called`);
-    - what its module and its tests import from the library (:func:`_imports_v21`): a name, resolved through
+    - what its module and its tests import from the library (:func:`_imports_library_mode`): a name, resolved through
       a package's re-exports to the module that defines it (Amendment A), or every function of a module
       imported whole.
     """
-    modules, inits, by_module = ctx or _v21_context(tree)
+    modules, inits, by_module = ctx or _library_context(tree)
     out = _called(tree, it) if it.kind in _FUNCTION_KINDS else set()
     for rel in ([it.path] if it.kind in _FUNCTION_KINDS else []) + list(it.tests):
         try:
@@ -205,7 +205,8 @@ def uses_v21(tree: Path, it: ManifestItem, ctx=None) -> set[str]:
         except OSError:
             continue
         for ref in (
-            _imports_v21(data, layout.package_of_path(rel), modules, inits) or set()
+            _imports_library_mode(data, layout.package_of_path(rel), modules, inits)
+            or set()
         ):
             if ":" in ref:
                 out.add(ref)
@@ -234,18 +235,18 @@ def with_dependents(
     failed: dict[str, list[str]],
     tree: Path,
     *,
-    v21: bool = False,
+    library_mode: bool = False,
 ) -> tuple[dict[str, list[str]], list[str]]:
     """Every refused item with its codes (the failed ones' checks, ``dependency`` for the rest) and why.
 
-    With *v21* (D42) an item goes with a refused item that its module or its tests import (:func:`uses_v21`),
+    With *library_mode* (D42) an item goes with a refused item that its module or its tests import (:func:`uses_library_mode`),
     and, through the loop, with what goes with that one."""
     refused = {i: list(c) for i, c in failed.items()}
     reasons: list[str] = []
     by_id = {it.item: it for it in man.items}
-    ctx = _v21_context(tree) if v21 else None
+    ctx = _library_context(tree) if library_mode else None
     needs = {
-        it.item: (uses_v21(tree, it, ctx) if v21 else uses(tree, it))
+        it.item: (uses_library_mode(tree, it, ctx) if library_mode else uses(tree, it))
         for it in man.items
     }
     grew = True

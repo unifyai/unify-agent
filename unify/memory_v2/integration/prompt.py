@@ -33,12 +33,12 @@ from pathlib import Path
 from ..catalogue import channel_lines
 from ..index import IndexOverBudget, index_with_names
 from ..memory_repo import items
-from .. import prompts_v21 as _prompts_v21
+from .. import library_prompts as _prompts_library_mode
 
 logger = logging.getLogger(__name__)
 
 #: The reviewed v2.1 actor guide (P7, spec §12.1): constant bytes, naming nothing the library holds.
-GUIDE_V21 = _prompts_v21.GUIDE_V21
+GUIDE_LIBRARY = _prompts_library_mode.GUIDE_LIBRARY
 
 INDEX_BUDGET_TOKENS = 4000
 
@@ -125,11 +125,11 @@ def location_line(checkout: Path) -> str:
     return f"Library files: `{checkout}`, holding INDEX.md, links.json, memory/ and notes/.\n"
 
 
-def render_memory_v21(
+def render_memory_library_mode(
     checkout: Path,
     budget_tokens: int | None = None,
 ) -> tuple[str, dict]:
-    """``UNIFY_MEMORY_V21=on`` (spec v2.1 §4.5, §6): the guide, the copy's location, then the index view
+    """``UNIFY_MEMORY_LIBRARY=on`` (spec v2.1 §4.5, §6): the guide, the copy's location, then the index view
     (:func:`..library_index.index_view` of the copy's ``INDEX.md``), or ``""`` while the index lists no item.
 
     The hooks append it last in the system prompt, after the clock line (:func:`.hooks.system_prompt`). The
@@ -148,11 +148,13 @@ def render_memory_v21(
     text = ""
     if listed(index):
         budget = INDEX_VIEW_TOKENS if budget_tokens is None else budget_tokens
-        text = GUIDE_V21 + location_line(checkout) + "\n" + index_view(index, budget)
+        text = (
+            GUIDE_LIBRARY + location_line(checkout) + "\n" + index_view(index, budget)
+        )
     # per-item exposure under v2.1 is P5's (use records); the record keeps the packages and the digest
     return text, record_shown(
         text,
         channels=packages_of(index),
         items=(),
-        renderer="index_v21",
+        renderer="index_library_mode",
     )

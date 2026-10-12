@@ -1,4 +1,4 @@
-"""With UNIFY_MEMORY_V21 off, P5 changes nothing: no note, no lifecycle, v2's use record, P3's copies."""
+"""With UNIFY_MEMORY_LIBRARY off, P5 changes nothing: no note, no lifecycle, v2's use record, P3's copies."""
 
 from __future__ import annotations
 
@@ -19,7 +19,10 @@ from unify.memory_v2.integration import consolidate
 from unify.memory_v2.integration.request import memory_use
 
 
-def test_v21_off_writes_no_notes_and_never_runs_the_lifecycle(tmp_path, monkeypatch):
+def test_library_off_writes_no_notes_and_never_runs_the_lifecycle(
+    tmp_path,
+    monkeypatch,
+):
     monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
     called = []
     monkeypatch.setattr(
@@ -35,10 +38,13 @@ def test_v21_off_writes_no_notes_and_never_runs_the_lifecycle(tmp_path, monkeypa
     assert not any(e.get("phase") == "records" for e in _events(stores))
 
 
-def test_v21_off_use_record_and_copies_are_unchanged(tmp_path):
+def test_library_off_use_record_and_copies_are_unchanged(tmp_path):
     root = _tree(tmp_path / "lib")
-    assert lx.generated_v21(root) == lx.generated_v21(root, records=None)
-    items = json.loads(lx.generated_v21(root)[".memory/items.json"])["items"]
+    assert lx.generated_library_mode(root) == lx.generated_library_mode(
+        root,
+        records=None,
+    )
+    items = json.loads(lx.generated_library_mode(root)[".memory/items.json"])["items"]
     assert all(
         r["status_reason"] is None and r["verification"] is None and r["use"] is None
         for r in items.values()

@@ -10,10 +10,10 @@ import pytest
 from unify.memory_v2 import sandbox_run as sr
 from unify.memory_v2.blobs import BlobStore
 from unify.memory_v2.gate import _shown
-from unify.memory_v2.gate_v21 import OUTPUT_VIEW_BYTES, keep_output
+from unify.memory_v2.library_checks import OUTPUT_VIEW_BYTES, keep_output
 from unify.memory_v2.sandbox_run import PytestOutcome, SandboxResult
 from tests.memory_v2.test_gate import _candidate
-from tests.memory_v2.test_gate_v21 import (
+from tests.memory_v2.test_gate_library_mode import (
     TEST,
     _files_and_fixtures,
     _man,

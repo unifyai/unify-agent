@@ -91,7 +91,7 @@ FIXTURE_MODULES = (
     "tests.memory_v2.test_gate",
     "tests.memory_v2.test_gate_docstrings",
     "tests.memory_v2.test_catalogue",
-    "tests.memory_v2.test_sol_pass",
+    "tests.memory_v2.test_writer_pass",
     "tests.memory_v2.test_kinds_gate",
     "tests.memory_v2.test_held_out",
     "tests.memory_v2.test_memory_repo",
@@ -351,16 +351,16 @@ def test_startup_hook_names_are_refused_with_any_suffix_anywhere():
         ), path
 
 
-def test_sol_and_the_gate_run_pytest_without_bytecode():
+def test_writer_and_the_gate_run_pytest_without_bytecode():
     """The gate's confined pytest runs with PYTHONDONTWRITEBYTECODE=1 (set by run_confined) and
     ``-p no:cacheprovider`` (run_pytest); Sol is told the same command."""
-    from unify.memory_v2 import sandbox_run, sol_pass
+    from unify.memory_v2 import sandbox_run, writer_pass
 
     src = Path(sandbox_run.__file__).read_text()
     confined = src[src.index("def run_confined(") : src.index("def run_pytest(")]
     assert re.search(r'"--setenv",\s*"PYTHONDONTWRITEBYTECODE",\s*"1"', confined)
     assert re.search(r'"-p",\s*"no:cacheprovider"', src[src.index("def run_pytest(") :])
     assert (
-        "no:cacheprovider" in sol_pass.SOL_SYSTEM
-        and '"PYTHONDONTWRITEBYTECODE": "1"' in sol_pass.SOL_SYSTEM
+        "no:cacheprovider" in writer_pass.SOL_SYSTEM
+        and '"PYTHONDONTWRITEBYTECODE": "1"' in writer_pass.SOL_SYSTEM
     )

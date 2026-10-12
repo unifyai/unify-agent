@@ -1527,7 +1527,7 @@ class WorkTreeRecorder:
         text = exportable_text(data)
         over = (
             self.blob_cap is not None and size > self.blob_cap
-        )  # None: UNIFY_MEMORY_V21, stored whole
+        )  # None: UNIFY_MEMORY_LIBRARY, stored whole
         hits = self.redactor.hits
         if text:
             clean = self._redact(data)

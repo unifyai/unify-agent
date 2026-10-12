@@ -520,7 +520,7 @@ def deferred(eid: str, reason: str) -> Entry:
 
 
 def unread(eid: str, parts_read: int, parts_required: int) -> Entry:
-    """UNIFY_MEMORY_V21_COVERAGE=optional: an episode a WRITE pass left neither covered nor dismissed; kept, never
+    """UNIFY_MEMORY_LIBRARY_COVERAGE=optional: an episode a WRITE pass left neither covered nor dismissed; kept, never
     dropped, until a writer closes it."""
     e = Entry(
         id=entry_id("unread", eid),

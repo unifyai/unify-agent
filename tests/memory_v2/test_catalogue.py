@@ -791,11 +791,11 @@ def test_a_huge_nested_value_is_shaped_in_bounded_time_and_marked_truncated():
 
 
 def test_sols_readme_message_is_capped_with_a_compact_view(library, tmp_path):
-    """M9: Sol's first message carries the README while it fits SOL_README_BUDGET_TOKENS; past it, the
+    """M9: Sol's first message carries the README while it fits WRITER_README_BUDGET_TOKENS; past it, the
     channel lines and one line per function as fit, and how to read the rest. Bounded at any size.
     """
     _, _, export, _, _ = library
-    small = catalogue.readme_for_sol(export)
+    small = catalogue.readme_for_writer(export)
     assert small == (
         "Current library (its README, which the harness generates; never write it):\n"
         + catalogue.render_readme(export)
@@ -812,7 +812,7 @@ def test_sols_readme_message_is_capped_with_a_compact_view(library, tmp_path):
     readme = catalogue.render_readme(tree)
     per_function = (catalogue.estimate_tokens(readme) - 150) / 800
     assert 30 < per_function < 60  # the README grows by about 40 tokens a function
-    text = catalogue.readme_for_sol(tree)
+    text = catalogue.readme_for_writer(tree)
     budget = catalogue.SOL_README_BUDGET_TOKENS
     assert catalogue.estimate_tokens(text) <= budget
     assert "compact view" in text and "help(env.<channel>.<function>)" in text
@@ -821,7 +821,7 @@ def test_sols_readme_message_is_capped_with_a_compact_view(library, tmp_path):
     )
     assert "- env.alpha.f0: Read one recorded kind of file" in text
     assert "more functions (help(env.<channel>) lists them)" in text
-    assert catalogue.readme_for_sol(tree, budget_tokens=10**6).startswith(
+    assert catalogue.readme_for_writer(tree, budget_tokens=10**6).startswith(
         "Current library (its README",
     )
 

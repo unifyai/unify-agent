@@ -1,0 +1,49 @@
+"""Former names of memory settings, read once at start-up as their current names (one release only).
+
+A process that still sets a former name gets the same value under the current name. Setting both names is refused,
+so a stale and a current value can never disagree silently."""
+
+from collections.abc import MutableMapping
+
+FORMER_NAMES: dict[str, str] = {
+    "UNIFY_MEMORY_V21": "UNIFY_MEMORY_LIBRARY",
+    "UNIFY_MEMORY_V21_ANALYSTS": "UNIFY_MEMORY_LIBRARY_ANALYSTS",
+    "UNIFY_MEMORY_V21_CHECKER_VISIBLE": "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE",
+    "UNIFY_MEMORY_V21_COMPACT": "UNIFY_MEMORY_LIBRARY_COMPACT",
+    "UNIFY_MEMORY_V21_COVERAGE": "UNIFY_MEMORY_LIBRARY_COVERAGE",
+    "UNIFY_MEMORY_V21_E": "UNIFY_MEMORY_LIBRARY_E",
+    "UNIFY_MEMORY_V21_FORK": "UNIFY_MEMORY_LIBRARY_FORK",
+    "UNIFY_MEMORY_V21_FORK_BASE_URL": "UNIFY_MEMORY_LIBRARY_FORK_BASE_URL",
+    "UNIFY_MEMORY_V21_FORK_TOKEN_FD": "UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD",
+    "UNIFY_MEMORY_V21_MAX_READS": "UNIFY_MEMORY_LIBRARY_MAX_READS",
+    "UNIFY_MEMORY_V21_PASS_WALL_S": "UNIFY_MEMORY_LIBRARY_PASS_WALL_S",
+    "UNIFY_MEMORY_V21_POOL": "UNIFY_MEMORY_LIBRARY_POOL",
+    "UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN": "UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN",
+    "UNIFY_MEMORY_V21_WAIT_SLOT": "UNIFY_MEMORY_LIBRARY_WAIT_SLOT",
+    "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS": "UNIFY_MEMORY_V2_WRITER_ALLOWANCE_USD_PER_TOKENS",
+    "UNIFY_MEMORY_V2_SOL_BASE_URL": "UNIFY_MEMORY_V2_WRITER_BASE_URL",
+    "UNIFY_MEMORY_V2_SOL_EFFORT": "UNIFY_MEMORY_V2_WRITER_EFFORT",
+    "UNIFY_MEMORY_V2_SOL_EFFORT_SCALE": "UNIFY_MEMORY_V2_WRITER_EFFORT_SCALE",
+    "UNIFY_MEMORY_V2_SOL_JOURNAL": "UNIFY_MEMORY_V2_WRITER_JOURNAL",
+    "UNIFY_MEMORY_V2_SOL_MAX_CALLS": "UNIFY_MEMORY_V2_WRITER_MAX_CALLS",
+    "UNIFY_MEMORY_V2_SOL_MODEL": "UNIFY_MEMORY_V2_WRITER_MODEL",
+    "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD": "UNIFY_MEMORY_V2_WRITER_RUN_GUARD_USD",
+    "UNIFY_MEMORY_V2_SOL_TOKEN": "UNIFY_MEMORY_V2_WRITER_TOKEN",
+    "UNIFY_MEMORY_V2_SOL_TOKEN_FD": "UNIFY_MEMORY_V2_WRITER_TOKEN_FD",
+    "UNIFY_MEMORY_V2_SOL_USAGE": "UNIFY_MEMORY_V2_WRITER_USAGE",
+}
+
+
+def apply_former_names(env: MutableMapping[str, str]) -> list[str]:
+    """Copy each former name set in *env* to its current name; return the former names found."""
+    found = []
+    for old, new in FORMER_NAMES.items():
+        if old not in env:
+            continue
+        if new in env and env[new] != env[old]:
+            raise ValueError(
+                f"{old} and {new} are both set, to different values; set {new} only",
+            )
+        env[new] = env[old]
+        found.append(old)
+    return found

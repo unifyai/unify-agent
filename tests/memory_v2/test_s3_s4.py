@@ -1,6 +1,6 @@
 """Memory v2.1 r5 S3 and S4: measured use for the writer, same-shape functions for CURATE, the when-to-use note."""
 
-from unify.memory_v2 import curate, prompts_v21 as pv
+from unify.memory_v2 import curate, library_prompts as pv
 from unify.memory_v2.evidence import EvidenceStore
 from unify.memory_v2.usage import MAX_TABLE_ROWS, usage_table
 
@@ -14,7 +14,7 @@ def test_curate_lists_library_functions_with_the_same_shape():
     assert curate.same_shape(bodies) == [["memory.a.b:first", "memory.a.c:second"]]
 
 
-def test_the_v21_usage_table_can_list_every_item(tmp_path):
+def test_the_library_usage_table_can_list_every_item(tmp_path):
     ev = EvidenceStore(tmp_path / "e.sqlite")
     ids = [f"memory.p.m:f{i:03d}" for i in range(MAX_TABLE_ROWS + 5)]
     head = usage_table(ev, [], ids)

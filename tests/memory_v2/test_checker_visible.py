@@ -1,7 +1,7 @@
 """Memory v2.1 P9 (spec §5): the verdicts a bed shows the actor, posted as agent-visible checker signals.
 
 The bed's runner sends ``{"checker": {"label": "pass"|"fail"}}`` just before the message that shows the actor the
-same verdict. Under ``UNIFY_MEMORY_V21`` and ``UNIFY_MEMORY_V21_CHECKER_VISIBLE`` the request keeps it, and at
+same verdict. Under ``UNIFY_MEMORY_LIBRARY`` and ``UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE`` the request keeps it, and at
 episode write it becomes one checker signal per line with ``visible_to_actor=True``, referring to the dialogue
 action that message answered (or to the episode when that is not certain). With the switch off nothing is kept.
 The grader channel (``{"outcome": ...}``) is unchanged and never visible. Every other signal's note and every
@@ -72,7 +72,8 @@ def _arc_lines() -> list[dict]:
 
 def test_switch_defaults_off_and_parses():
     assert (
-        type(SETTINGS).model_fields["UNIFY_MEMORY_V21_CHECKER_VISIBLE"].default == "off"
+        type(SETTINGS).model_fields["UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE"].default
+        == "off"
     )
     assert switch.PARSERS[switch.CHECKER_VISIBLE] is switch.parse_checker_visible
     assert switch.parse_checker_visible("") == "off"
@@ -82,7 +83,7 @@ def test_switch_defaults_off_and_parses():
 
 
 @pytest.mark.parametrize(
-    "v21,visible,expected",
+    "library_mode,visible,expected",
     [
         ("off", "off", False),
         ("off", "on", False),
@@ -90,9 +91,14 @@ def test_switch_defaults_off_and_parses():
         ("on", "on", True),
     ],
 )
-def test_checker_visible_needs_both_switches(monkeypatch, v21, visible, expected):
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V21", v21)
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V21_CHECKER_VISIBLE", visible)
+def test_checker_visible_needs_both_switches(
+    monkeypatch,
+    library_mode,
+    visible,
+    expected,
+):
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", library_mode)
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE", visible)
     assert request_mod.checker_visible_on() is expected
 
 
@@ -289,13 +295,13 @@ def test_outcome_channel_unchanged_and_not_visible(tmp_path):
 
 
 def _on(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V21", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V21_CHECKER_VISIBLE", "on")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE", "on")
 
 
 def test_checker_line_refused_when_switch_off(mv2, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V21", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V21_CHECKER_VISIBLE", "off")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE", "off")
     run = _begin(mv2, "hi")
     try:
         answer = run.take_checker({"label": "pass"})
@@ -305,9 +311,9 @@ def test_checker_line_refused_when_switch_off(mv2, monkeypatch):  # noqa: F811
         _abort(mv2, run)
 
 
-def test_checker_line_refused_without_v21(mv2, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V21", "off")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V21_CHECKER_VISIBLE", "on")
+def test_checker_line_refused_without_library_mode(mv2, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "off")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE", "on")
     run = _begin(mv2, "hi")
     try:
         assert run.take_checker({"label": "pass"})["accepted"] is False
@@ -470,8 +476,8 @@ def test_cli_without_a_memory_run_refuses_the_checker_line(monkeypatch):
 
 
 def _off(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V21", "off")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V21_CHECKER_VISIBLE", "off")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "off")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE", "off")
 
 
 def test_cli_with_the_switches_off_ignores_a_checker_line_as_before(monkeypatch):

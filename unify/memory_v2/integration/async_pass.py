@@ -1,7 +1,7 @@
 """Asynchronous consolidation for memory v2.1 (spec §6, D43; RUNTIME 11:24Z).
 
 A request never waits for a pass. When a request ends and the experience recorded since the last pass reaches E
-(:func:`.switch.v21_experience_budget`), :func:`maybe_spawn` starts one detached worker process
+(:func:`.switch.library_experience_budget`), :func:`maybe_spawn` starts one detached worker process
 (:mod:`.pass_worker`) and returns. The worker runs the pass under its wall-clock bound (:class:`Supervisor`).
 
 **Isolation.** Each request pins memory ``main`` when it starts (``RequestRun.pin``) and works on a read-only copy
@@ -91,7 +91,7 @@ class Supervised:
 
 class Supervisor:
     """Runs one pass coroutine under the wall-clock bound *wall_s*; *stop* (set by SIGTERM) cancels it early.
-    Cancellation goes through the pass's own abort path: :meth:`..sol_pass.SolPass.run` records the pass as
+    Cancellation goes through the pass's own abort path: :meth:`..writer_pass.WriterPass.run` records the pass as
     failed and, under v2.1, keeps its work as a draft."""
 
     def __init__(
@@ -330,7 +330,7 @@ def spawn(
     lock is held (a worker is running, starting or ending). Credentials never enter argv.
 
     *route_token* (Sol's own route, which the parent read once and removed from its environment): handed to the
-    worker through a fresh pipe named by ``UNIFY_MEMORY_V2_SOL_TOKEN_FD``, which the worker's settings read once and
+    worker through a fresh pipe named by ``UNIFY_MEMORY_V2_WRITER_TOKEN_FD``, which the worker's settings read once and
     close. The worker's environment is the parent's without any Sol token name; the token is never in argv, the
     environment or a file. Without one the worker starts exactly as before.
     """
@@ -342,7 +342,7 @@ def spawn(
     more: dict = {}
     try:
         if route_token:
-            from .switch import SOL_TOKEN, SOL_TOKEN_FD
+            from .switch import WRITER_TOKEN, WRITER_TOKEN_FD
 
             token_r, token_w = os.pipe()
             try:
@@ -353,9 +353,9 @@ def spawn(
             env = {
                 k: v
                 for k, v in os.environ.items()
-                if k.upper() not in (SOL_TOKEN, SOL_TOKEN_FD)
+                if k.upper() not in (WRITER_TOKEN, WRITER_TOKEN_FD)
             }
-            env[SOL_TOKEN_FD] = str(token_r)
+            env[WRITER_TOKEN_FD] = str(token_r)
             more = {"env": env}
         log = open(Path(paths.state_dir) / "pass-worker.log", "ab")
         argv = [
@@ -423,7 +423,7 @@ def maybe_spawn(
     """
     from ..trigger import Trigger
     from .consolidate import _deliver, _error
-    from .switch import v21_experience_budget, v21_pass_wall_s
+    from .switch import library_experience_budget, library_pass_wall_s
 
     paths = stores.paths
     try:
@@ -437,7 +437,7 @@ def maybe_spawn(
             }
             _deliver(stores, emit, event)
             return event
-        budget = v21_experience_budget(settings)
+        budget = library_experience_budget(settings)
         due = Trigger(
             stores.evidence,
             mode="batched",
@@ -445,7 +445,7 @@ def maybe_spawn(
         ).after_episode(eid)
         if not due:
             return {"phase": "not_due"}
-        wall_s = v21_pass_wall_s(settings)
+        wall_s = library_pass_wall_s(settings)
         rec = spawn(
             paths,
             eid,
@@ -485,11 +485,11 @@ def maybe_spawn(
 def _route_token(settings: Any) -> str | None:
     """Sol's own route token as this process holds it (read once from its descriptor, or the setting), or None
     when Sol uses no route of its own."""
-    from .switch import SOL_BASE_URL, sol_token
+    from .switch import WRITER_BASE_URL, writer_token
 
-    if not str(getattr(settings, SOL_BASE_URL, "") or "").strip():
+    if not str(getattr(settings, WRITER_BASE_URL, "") or "").strip():
         return None
-    token = sol_token(settings)
+    token = writer_token(settings)
     value = (
         token.get_secret_value()
         if hasattr(token, "get_secret_value")
@@ -606,7 +606,7 @@ def wait_slot(
     relay: Callable[[dict], None] | None = None,
     events_from: int = 0,
 ) -> dict:
-    """``UNIFY_MEMORY_V21_WAIT_SLOT=on``: wait for the in-flight worker until it ends, at most its slot's failsafe
+    """``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on``: wait for the in-flight worker until it ends, at most its slot's failsafe
     (:func:`failsafe_s` of :data:`WORKER_PASSES` passes, their bisects and reconciliations) plus a margin from its
     start (*budget_s* replaces that bound). A worker still alive then goes through :func:`drain` at once: SIGTERM,
     the grace, a verified end; its late result is reported as not counted. Nothing in flight: returns at once.

@@ -21,7 +21,7 @@ import pytest
 
 from tests.memory_v2.arc_transcript import (
     ITEM,
-    SOL_CELL,
+    WRITER_CELL,
     demos_feedback,
     grid,
     line,
@@ -30,7 +30,7 @@ from tests.memory_v2.arc_transcript import (
     visit,
 )
 from tests.memory_v2.test_episodes import _ep
-from tests.memory_v2.test_sol_pass import Script, _write
+from tests.memory_v2.test_writer_pass import Script, _write
 from unify.memory_v2.blobs import BlobStore
 from unify.memory_v2.episodes import (
     Action,
@@ -58,7 +58,7 @@ from unify.memory_v2.integration.adapters.dialogue import (
 from unify.memory_v2.integration.adapters.tool import action_fingerprints
 from unify.memory_v2.integration.trajectory import assemble
 from unify.memory_v2.redact import Redactor
-from unify.memory_v2.sol_pass import PassConfig, SolPass
+from unify.memory_v2.writer_pass import PassConfig, WriterPass
 from unify.memory_v2.trigger import PassRequest
 
 needs_bwrap = pytest.mark.skipif(
@@ -439,8 +439,8 @@ def test_a_scripted_pass_lands_an_env_item_covering_the_dialogue_actions(tmp_pat
         )[0],
     ]
     mem, ev, gate, by_id = _pass_world(tmp_path, eps)
-    script = Script([SOL_CELL], usd="0.0000005")
-    sol = SolPass(
+    script = Script([WRITER_CELL], usd="0.0000005")
+    writer = WriterPass(
         mem,
         gate,
         ev,
@@ -448,7 +448,9 @@ def test_a_scripted_pass_lands_an_env_item_covering_the_dialogue_actions(tmp_pat
         model_turn=script,
         config=PassConfig(max_calls=10),
     )
-    out = asyncio.run(sol.run(PassRequest("batched", None, sorted(by_id), False), "p1"))
+    out = asyncio.run(
+        writer.run(PassRequest("batched", None, sorted(by_id), False), "p1"),
+    )
     assert "COVERS 6 EPISODES 2" in script.outputs["c1"], script.outputs
     assert out.passed, out.reasons
     assert consolidate.reason_codes(out, None) == ["ok"]
@@ -480,7 +482,7 @@ def test_a_pass_with_an_empty_manifest_passes_and_changes_nothing(tmp_path):
         ],
         usd="0.0000005",
     )
-    sol = SolPass(
+    writer = WriterPass(
         mem,
         gate,
         ev,
@@ -488,7 +490,7 @@ def test_a_pass_with_an_empty_manifest_passes_and_changes_nothing(tmp_path):
         model_turn=script,
         config=PassConfig(max_calls=10),
     )
-    out = asyncio.run(sol.run(PassRequest("batched", None, [EID], False), "p0"))
+    out = asyncio.run(writer.run(PassRequest("batched", None, [EID], False), "p0"))
     assert out.passed, out.reasons
     assert consolidate.reason_codes(out, None) == ["ok"]
     assert mem.head() == parent and ev.covered() == set()

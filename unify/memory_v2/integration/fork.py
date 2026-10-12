@@ -1,4 +1,4 @@
-"""The episode-end fork (memory v2.1 design r5 §2-§3; ``UNIFY_MEMORY_V21_FORK``, off by default).
+"""The episode-end fork (memory v2.1 design r5 §2-§3; ``UNIFY_MEMORY_LIBRARY_FORK``, off by default).
 
 After the reply has been returned and the episode recorded, the actor's own conversation is continued once more by a
 separate process: its last request's messages, tools and tool choice unchanged, so the provider serves the prefix
@@ -23,7 +23,7 @@ from cache, plus one fixed instruction. The process writes what the reply stages
   the transcript or the record.
 * **F6:** with the switch off, :func:`start` returns at once: no import of the actor, no process, no staging dir.
 
-**Lifetime.** The fork runs in its own session. With ``UNIFY_MEMORY_V21_WAIT_SLOT=on`` (hosts whose sandbox ends
+**Lifetime.** The fork runs in its own session. With ``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on`` (hosts whose sandbox ends
 every process of the controller with it), :func:`wait` holds the CLI after the reply until the fork ends. That wait
 is bounded by :data:`WAIT_GUARD_S`, an operational guard reported in ``fork.json``, not a design limit.
 
@@ -197,7 +197,7 @@ def start(
     """Start the episode's fork, or record why not; never raises. Off: returns None and touches nothing."""
     from . import switch
 
-    if not (switch.v21_enabled(settings) and switch.v21_fork(settings)):
+    if not (switch.library_enabled(settings) and switch.library_fork(settings)):
         return None
     staging = staging_dir(paths, eid)
     try:
@@ -218,7 +218,7 @@ def start(
         log = open(Path(paths.state_dir) / "fork-worker.log", "ab")
         try:
             proc = popen(
-                box_argv(staging, die_with_parent=switch.v21_wait_slot(settings)),
+                box_argv(staging, die_with_parent=switch.library_wait_slot(settings)),
                 stdin=subprocess.PIPE,
                 stdout=log,
                 stderr=log,
@@ -257,7 +257,7 @@ def finish(
     settings: Any,
     progress: Callable[[str], None] = lambda _m: None,
 ) -> None:
-    """After the reply: hand over the request; with ``UNIFY_MEMORY_V21_WAIT_SLOT=on``, wait for the fork (bounded by
+    """After the reply: hand over the request; with ``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on``, wait for the fork (bounded by
     :data:`WAIT_GUARD_S`, operational). A fork that leaves no ``fork.json`` gets one saying why.
     """
     from . import switch
@@ -265,7 +265,7 @@ def finish(
     if fork is None:
         return
     fork.writer.join(WRITE_GUARD_S)
-    if not switch.v21_wait_slot(settings):
+    if not switch.library_wait_slot(settings):
         return
     try:
         fork.proc.wait(timeout=WAIT_GUARD_S)

@@ -133,7 +133,7 @@ def trailing_object(text: str, scan_chars: int | None = _SCAN_CHARS) -> dict | N
 
     Never raises: an over-long trailing segment, a parse failure, a too-deep nesting
     (``RecursionError`` inside the decoder) or a result deeper than ``_MAX_DEPTH`` all give None.
-    *scan_chars* ``None`` scans the whole text (``UNIFY_MEMORY_V21``); ``_SCAN_TRIES`` and ``_MAX_DEPTH`` still
+    *scan_chars* ``None`` scans the whole text (``UNIFY_MEMORY_LIBRARY``); ``_SCAN_TRIES`` and ``_MAX_DEPTH`` still
     bound the cost.
     """
     body = _strip_closing_fence(text)
@@ -167,7 +167,7 @@ def action_payload(text: str, scan_chars: int | None = _SCAN_CHARS) -> Any:
 
 def cap_text(text: str, cap: int | None) -> str:
     """At most ``cap`` characters, keeping the head and the tail (where counters and JSON sit); ``None`` keeps
-    the whole text (``UNIFY_MEMORY_V21``: the episode writer stores a large value as a blob).
+    the whole text (``UNIFY_MEMORY_LIBRARY``: the episode writer stores a large value as a blob).
     """
     if cap is None:
         return text
@@ -217,7 +217,7 @@ def _bounded(value: Any, cap: int | None) -> Any:
 def observation_value(text: str, cap: int | None = DEFAULT_OBSERVATION_CAP) -> Any:
     """An (already redacted) observation as recorded: the parsed object or array when the whole text is
     one JSON object or array of bounded depth and at most *cap* characters, else the text capped at *cap*.
-    ``None`` is no cap (``UNIFY_MEMORY_V21``).
+    ``None`` is no cap (``UNIFY_MEMORY_LIBRARY``).
     """
     if cap is None or len(text) <= cap:
         stripped = text.strip()
@@ -264,7 +264,7 @@ def dialogue_actions(
     are redacted before anything else (one pass over each text, so a secret is never cut in two), then
     bounded: the observation by :func:`observation_value` at ``max_observation_chars``, the arguments
     at ``max_payload_chars`` (arguments whose JSON is longer become their capped JSON text, as
-    ``args[0]``); a cap of ``None`` keeps the value whole (``UNIFY_MEMORY_V21``). Time is linear in the
+    ``args[0]``); a cap of ``None`` keeps the value whole (``UNIFY_MEMORY_LIBRARY``). Time is linear in the
     transcript's size.
     """
     if not isinstance(counterpart, str) or not COUNTERPART_RE.match(counterpart):

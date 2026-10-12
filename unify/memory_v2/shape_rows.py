@@ -88,11 +88,14 @@ def descriptors(actions: list[Any], input_kind: str | None, blobs: Any) -> list[
     return merge_shapes(out)
 
 
-def _functions(tree: Path, v21: bool = False) -> dict[str, tuple[str, str | None]]:
-    """item -> (body digest, declared input form or None) of the environment functions in *tree*; with *v21*
+def _functions(
+    tree: Path,
+    library_mode: bool = False,
+) -> dict[str, tuple[str, str | None]]:
+    """item -> (body digest, declared input form or None) of the environment functions in *tree*; with *library_mode*
     the v2.1 function items (spec §4.2), whose input form comes from P5's item records (None until then).
     """
-    if v21:
+    if library_mode:
         from .layout import function_bodies
 
         return {
@@ -117,11 +120,11 @@ def snapshot_rows(
     prev: Rows,
     new: dict[str, tuple[str, list[dict]]],
     *,
-    v21: bool = False,
+    library_mode: bool = False,
 ) -> Rows:
     """A candidate's snapshot: per function, the parent's shapes for the same body plus this merge's."""
     out: Rows = {}
-    for item, (digest, _) in sorted(_functions(tree, v21).items()):
+    for item, (digest, _) in sorted(_functions(tree, library_mode).items()):
         old = prev.get(item)
         carried = old["shapes"] if old and old["body"] == digest else []
         added = new[item][1] if item in new and new[item][0] == digest else []
@@ -159,11 +162,11 @@ def backfill(
     blobs: Any,
     only: set[str] | None = None,
     *,
-    v21: bool = False,
+    library_mode: bool = False,
 ) -> Rows:
     """Shapes derived from the evidence store's validated covers of each function (of *only*, if given)."""
     out: Rows = {}
-    for item, (digest, form) in sorted(_functions(tree, v21).items()):
+    for item, (digest, form) in sorted(_functions(tree, library_mode).items()):
         if only is not None and item not in only:
             continue
         actions = []
@@ -189,10 +192,10 @@ def shapes_at(
     lookup: Callable[[str, int], Any] | None = None,
     blobs: Any = None,
     freeze: bool = False,
-    v21: bool = False,
+    library_mode: bool = False,
 ) -> Rows:
     """The shape rows of commit *sha* (whose files are at *tree*); see the module docstring."""
-    functions = _functions(tree, v21)
+    functions = _functions(tree, library_mode)
     found = _nearest(repo, evidence, sha)
     if found is not None and found[0] == sha:
         return found[1]  # frozen
@@ -203,7 +206,16 @@ def shapes_at(
     }
     missing = {item for item in functions if item not in rows}
     if missing and lookup is not None and blobs is not None:
-        rows.update(backfill(tree, evidence, lookup, blobs, only=missing, v21=v21))
+        rows.update(
+            backfill(
+                tree,
+                evidence,
+                lookup,
+                blobs,
+                only=missing,
+                library_mode=library_mode,
+            ),
+        )
     if freeze:
         evidence.write_commit_shapes(sha, rows)
         return evidence.commit_shapes(sha) or {}

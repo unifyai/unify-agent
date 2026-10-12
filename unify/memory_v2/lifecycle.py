@@ -498,7 +498,7 @@ def next_records(
 
 # --- at consolidation (spec §4.4, §10; D38, D40) ------------------------------------------------------------
 
-VERIFICATION_LINE = "v21-verification "
+VERIFICATION_LINE = "library_mode-verification "
 
 
 def _json_list(raw: Any) -> list:
@@ -512,7 +512,7 @@ def _json_list(raw: Any) -> list:
 
 
 def verification_from_passes(ev: EvidenceStore) -> dict[str, dict]:
-    """The newest verification record (P4's ``v21-verification`` pass-row line) of each item a pass landed,
+    """The newest verification record (P4's ``library_mode-verification`` pass-row line) of each item a pass landed,
     with the pass that landed it."""
     import json
 

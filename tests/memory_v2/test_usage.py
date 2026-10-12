@@ -14,7 +14,7 @@ from unify.memory_v2.gate import Gate
 from unify.memory_v2.gitio import Repo
 from unify.memory_v2.index import build_index
 from unify.memory_v2.signals import Signal
-from unify.memory_v2.sol_pass import PassConfig, SolPass
+from unify.memory_v2.writer_pass import PassConfig, WriterPass
 from unify.memory_v2.trigger import PassRequest
 
 
@@ -119,7 +119,7 @@ class _First:
 
 def _first_message(tmp_path, mem, ev, eids, pass_id, show_usage=True) -> str:
     model = _First()
-    sol = SolPass(
+    writer = WriterPass(
         mem,
         Gate(mem, ev, BlobStore(tmp_path / "b")),
         ev,
@@ -127,7 +127,7 @@ def _first_message(tmp_path, mem, ev, eids, pass_id, show_usage=True) -> str:
         model_turn=model,
         config=PassConfig(max_calls=1, show_usage=show_usage),
     )
-    asyncio.run(sol.run(PassRequest("batched", None, list(eids), False), pass_id))
+    asyncio.run(writer.run(PassRequest("batched", None, list(eids), False), pass_id))
     return model.first[1]["content"]
 
 
@@ -142,7 +142,7 @@ def _library(tmp_path) -> Repo:
 
 
 def test_with_the_switch_off_sols_first_message_is_the_screen_builds(tmp_path):
-    """``UNIFY_MEMORY_V2_SOL_USAGE`` off (the default): the first message is byte for byte what the screen
+    """``UNIFY_MEMORY_V2_WRITER_USAGE`` off (the default): the first message is byte for byte what the screen
     build (9deefbfd1) sent, even with use rows recorded for the pass's requests."""
     mem = _library(tmp_path)
     ev = EvidenceStore(tmp_path / "e.sqlite")

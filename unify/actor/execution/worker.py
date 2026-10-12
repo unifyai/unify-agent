@@ -285,7 +285,7 @@ class PythonWorker:
 
         # UNIFY_MEMORY_V2=on: the request's memory export, read-write (v2) ...
         mounts = _mv2.worker_mounts()
-        # ... or read-only (UNIFY_MEMORY_V21=on, spec v2.1 §6)
+        # ... or read-only (UNIFY_MEMORY_LIBRARY=on, spec v2.1 §6)
         late_ro = _mv2.worker_readonly_mounts()
         wrapped = sandbox.wrap_argv(
             argv,

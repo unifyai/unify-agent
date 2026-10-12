@@ -9,7 +9,7 @@ from decimal import Decimal
 import pytest
 
 from unify.memory_v2.reconcile import (
-    SOL_CALL_WORST_CASE_USD,
+    WRITER_CALL_WORST_CASE_USD,
     UNKNOWN,
     journal_offset,
     lane_calls,
@@ -85,17 +85,18 @@ async def test_a_cancelled_pass_prices_two_and_books_the_unpriced_one_at_the_wor
         "priced": 2,
         "unknown": 1,
         "usd": "0.35",
-        "worst_case_usd": money(SOL_CALL_WORST_CASE_USD),
-        "booked_usd": money(Decimal("0.35") + SOL_CALL_WORST_CASE_USD),
+        "worst_case_usd": money(WRITER_CALL_WORST_CASE_USD),
+        "booked_usd": money(Decimal("0.35") + WRITER_CALL_WORST_CASE_USD),
     }
 
 
-def test_only_sol_lane_requests_started_in_the_window_belong_to_the_pass(tmp_path):
+def test_only_writer_lane_requests_started_in_the_window_belong_to_the_pass(tmp_path):
     j = tmp_path / "costs.jsonl"
     _write(j, [_started("x")])
     start = journal_offset(str(j))
     _write(
-        j, [_started("luna", LUNA), _done("x", "1.00")]
+        j,
+        [_started("luna", LUNA), _done("x", "1.00")],
     )  # x started before the window
     end = journal_offset(str(j))
     assert lane_calls(str(j), start, end, [SOL]) == {}
@@ -112,7 +113,8 @@ async def test_reconcile_waits_for_a_late_terminal_row_within_its_budget(tmp_pat
     async def sleep(s):
         clock[0] += s
         _write(
-            j, [_done("a", "0.02")]
+            j,
+            [_done("a", "0.02")],
         )  # the proxy writes the row while reconcile waits
 
     out = await reconcile_window(

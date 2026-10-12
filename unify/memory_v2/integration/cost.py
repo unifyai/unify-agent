@@ -24,13 +24,13 @@ from typing import Any
 from unify.common.llm_meter import decimal_string, to_decimal_usd
 
 from ..episodes import CostRow
-from ..sol_pass import ModelTurn
+from ..writer_pass import ModelTurn
 
 UNKNOWN = "unknown"
-SOL_ORIGIN = "memory_v2.sol"
+WRITER_ORIGIN = "memory_v2.sol"
 
 __all__ = [
-    "SOL_ORIGIN",
+    "WRITER_ORIGIN",
     "UNKNOWN",
     "CostListener",
     "install",
@@ -72,7 +72,7 @@ def _tokens(response: Any) -> tuple[int | None, int | None]:
 
 
 def _purpose(origin: str) -> str | None:
-    if origin == SOL_ORIGIN or origin.startswith(SOL_ORIGIN + "."):
+    if origin == WRITER_ORIGIN or origin.startswith(WRITER_ORIGIN + "."):
         return None
     return "embedding" if "embed" in origin else "actor"
 

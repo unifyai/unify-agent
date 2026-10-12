@@ -11,7 +11,7 @@ fingerprints each CURATE pass was shown, whatever its outcome, and :func:`due` r
 has been shown. A candidate CURATE kept apart, or could not resolve, fires again only once its content changes, so
 CURATE runs at most once per new library state.
 
-**Inputs** go under ``/inputs/curate/`` (:func:`stage_inputs`). **The brief** is :data:`CURATE_BRIEF_V21`, written
+**Inputs** go under ``/inputs/curate/`` (:func:`stage_inputs`). **The brief** is :data:`CURATE_BRIEF_LIBRARY`, written
 from §10.4 and §12.3; P7 owns its final text, which the lead reviews.
 """
 
@@ -25,13 +25,13 @@ from pathlib import Path
 from .library_index import INDEX_VIEW_TOKENS
 
 CURATE_DIR = "curate"
-# the paths CURATE's brief names (P7's prompts_v21), as stage_inputs writes them
+# the paths CURATE's brief names (P7's library_prompts), as stage_inputs writes them
 OVERLAPS_INPUT = "/inputs/curate/overlap.json"
 SUSPECTS_INPUT = "/inputs/curate/suspects.json"
 TRIGGER_INPUT = "/inputs/curate/trigger.json"
 
 #: CURATE's brief (spec §10.4 in prompt form, with §12.3's inputs). A placeholder: P7 writes the reviewed text.
-CURATE_BRIEF_V21 = """\
+CURATE_BRIEF_LIBRARY = """\
 You curate a shared library of tested Python functions and linked markdown notes. A cheaper working model uses
 the library while it works. Your job is to keep the library small, correct and easy to navigate. Another pass adds
 new work from recordings; you change what is already there.
@@ -117,11 +117,16 @@ to you under /inputs/gate/, and you get another round to repair it.
 
 
 def curate_system() -> str:
-    """CURATE's system message: :data:`CURATE_BRIEF_V21` with the box's bounds filled in."""
-    from .sol_pass import MAX_CHECKS, QUOTA_ENTRIES, QUOTA_FILE_BYTES, QUOTA_TOTAL_BYTES
+    """CURATE's system message: :data:`CURATE_BRIEF_LIBRARY` with the box's bounds filled in."""
+    from .writer_pass import (
+        MAX_CHECKS,
+        QUOTA_ENTRIES,
+        QUOTA_FILE_BYTES,
+        QUOTA_TOTAL_BYTES,
+    )
 
     return (
-        CURATE_BRIEF_V21.replace("{entries}", str(QUOTA_ENTRIES))
+        CURATE_BRIEF_LIBRARY.replace("{entries}", str(QUOTA_ENTRIES))
         .replace("{file_mib}", str(QUOTA_FILE_BYTES // 1024**2))
         .replace("{total_mib}", str(QUOTA_TOTAL_BYTES // 1024**2))
         .replace("{checks}", str(MAX_CHECKS))

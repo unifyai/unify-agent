@@ -7,8 +7,8 @@ import os
 from unify.memory_v2 import analysts, staging
 from unify.memory_v2.episodes import Cell
 from unify.memory_v2.trigger import PassRequest
-from tests.memory_v2.test_sol_pass import Turns, _call, _sol
-from tests.memory_v2.test_sol_v21_tools import _episode
+from tests.memory_v2.test_writer_pass import Turns, _call, _sol
+from tests.memory_v2.test_writer_library_tools import _episode
 
 
 def _staged(root, eid, status="fork.json"):
@@ -119,7 +119,7 @@ def test_analysts_share_one_prefix_and_write_staging(tmp_path):
         len({tuple(s) for s in seen}) == 1
     )  # every sibling's prefix is the same bytes
     v = staging.read(tmp_path, "e1")
-    assert v.source == "sol_analyst" and v.files == {"notes.md": b"lesson from e1"}
+    assert v.source == "writer_analyst" and v.files == {"notes.md": b"lesson from e1"}
 
 
 def test_flags_come_from_code_never_ids():
@@ -144,7 +144,13 @@ def test_the_pass_lists_each_episodes_staging_in_the_batch_map(tmp_path):
             _call("f", "read", {"path": "/inputs/staging/e2/candidates/f.py"}),
         ],
     )
-    _, _, sol = _sol(tmp_path, model, v21=True, max_calls=6, staging_root=str(root))
-    sol.load = {"e2": _episode("e2")}.__getitem__
-    asyncio.run(sol.run(PassRequest("incremental", "svc", ["e2"], False), "p1"))
+    _, _, writer = _sol(
+        tmp_path,
+        model,
+        library_mode=True,
+        max_calls=6,
+        staging_root=str(root),
+    )
+    writer.load = {"e2": _episode("e2")}.__getitem__
+    asyncio.run(writer.run(PassRequest("incremental", "svc", ["e2"], False), "p1"))
     assert '"source": "fork"' in model.outputs["m"] and "def f(x)" in model.outputs["f"]

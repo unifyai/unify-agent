@@ -454,11 +454,11 @@ def _input(raw: object, item: str, kind: str) -> str | None:
     return raw
 
 
-def _parse_v21(manifest: dict) -> Manifest:
+def _parse_library_mode(manifest: dict) -> Manifest:
     """The memory v2.1 manifest (spec §4, §8.2): ``function`` items ``memory.<package>.<module>:<name>`` and
     ``note`` items ``notes/<topic>/<slug>.md``, tests under ``memory/<package>/tests/``, test helpers as
     ``support``, and covers that are action covers ``[episode, index]`` or typed covers (:mod:`.procedures`).
-    The ``fixtures`` and ``tests_changed`` keys are read by the gate (:mod:`.gate_v21`).
+    The ``fixtures`` and ``tests_changed`` keys are read by the gate (:mod:`.library_checks`).
     """
     from . import layout
     from .procedures import parse_cover
@@ -559,15 +559,15 @@ def _parse_v21(manifest: dict) -> Manifest:
     return out
 
 
-def parse_manifest(manifest: object, *, v21: bool = False) -> Manifest:
+def parse_manifest(manifest: object, *, library_mode: bool = False) -> Manifest:
     """Validate the manifest's shape, its ids and its paths against the layout; raise ManifestError.
 
-    *v21*: the memory v2.1 layout (:func:`_parse_v21`); off, v2's, unchanged.
+    *library_mode*: the memory v2.1 layout (:func:`_parse_library_mode`); off, v2's, unchanged.
     """
     if not isinstance(manifest, dict):
         raise ManifestError("the manifest must be an object")
-    if v21:
-        return _parse_v21(manifest)
+    if library_mode:
+        return _parse_library_mode(manifest)
     raw_items = manifest.get("items", [])
     if not isinstance(raw_items, list):
         raise ManifestError("items must be a list")

@@ -57,11 +57,11 @@ ETC_ALLOW = (
 #: Never in a box's environment, whatever a caller passes: memory v2's route for Sol's own model calls.
 HARNESS_ONLY_ENV = frozenset(
     {
-        "UNIFY_MEMORY_V2_SOL_BASE_URL",
-        "UNIFY_MEMORY_V2_SOL_TOKEN",
-        "UNIFY_MEMORY_V2_SOL_TOKEN_FD",
-        "UNIFY_MEMORY_V21_FORK_BASE_URL",
-        "UNIFY_MEMORY_V21_FORK_TOKEN_FD",
+        "UNIFY_MEMORY_V2_WRITER_BASE_URL",
+        "UNIFY_MEMORY_V2_WRITER_TOKEN",
+        "UNIFY_MEMORY_V2_WRITER_TOKEN_FD",
+        "UNIFY_MEMORY_LIBRARY_FORK_BASE_URL",
+        "UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD",
     },
 )
 
@@ -572,7 +572,7 @@ class PytestOutcome:
     # nothing is cut silently). ``output`` stays the 4,000-character tail every v2 reason quotes; empty means
     # the same text as ``output``.
     full_output: str = ""
-    # memory v2.1: the whole output's blob id (the gate sets it; :func:`.gate_v21.keep_output`)
+    # memory v2.1: the whole output's blob id (the gate sets it; :func:`.library_checks.keep_output`)
     output_blob: str | None = None
 
     def __post_init__(self) -> None:

@@ -4,7 +4,7 @@ The goldens in ``v2_screen_9deefbfd1.json`` are what this prints, so they are ta
 by ``ast``, never typed by hand: Sol's brief template and tools, Sol's first message, the export line and
 index budget of the actor's prompt, and the evidence store's schema. ``python
 tests/memory_v2/golden/extract_v2_screen.py > tests/memory_v2/golden/v2_screen_9deefbfd1.json`` (in a clone
-holding the commit) rewrites the file; ``test_v21_switch_defaults.py`` checks it against the commit when the
+holding the commit) rewrites the file; ``test_library_switch_defaults.py`` checks it against the commit when the
 clone has it. Nothing here imports the repository's packages.
 """
 
@@ -18,7 +18,7 @@ from pathlib import Path
 
 BASE = "9deefbfd1"
 SOURCES = (
-    "unify/memory_v2/sol_pass.py",
+    "unify/memory_v2/writer_pass.py",
     "unify/memory_v2/integration/prompt.py",
     "unify/memory_v2/evidence.py",
     "unify/memory_v2/gate.py",
@@ -68,10 +68,10 @@ def _assigned(tree: ast.Module, name: str) -> ast.expr:
 def extract(repo: Path, base: str = BASE) -> dict:
     full = _git(repo, "rev-parse", f"{base}^{{commit}}").strip()
     src = {p: _git(repo, "show", f"{full}:{p}") for p in SOURCES}
-    sol = ast.parse(src["unify/memory_v2/sol_pass.py"])
-    tools = ast.literal_eval(_Templates().visit(_assigned(sol, "_TOOLS")))
+    writer = ast.parse(src["unify/memory_v2/writer_pass.py"])
+    tools = ast.literal_eval(_Templates().visit(_assigned(writer, "_TOOLS")))
     first = None
-    for n in ast.walk(sol):
+    for n in ast.walk(writer):
         if isinstance(n, ast.Dict):
             keys = [getattr(k, "value", None) for k in n.keys]
             if "role" in keys and "content" in keys:
@@ -98,9 +98,9 @@ def extract(repo: Path, base: str = BASE) -> dict:
     # (secret scanners flag them); this function, re-run on the commit, is the provenance.
     return {
         "commit": base,
-        "sol_prompt_template": ast.literal_eval(_assigned(sol, "_PROMPT")),
-        "sol_tools": tools,
-        "sol_first_message": first,
+        "writer_prompt_template": ast.literal_eval(_assigned(writer, "_PROMPT")),
+        "writer_tools": tools,
+        "writer_first_message": first,
         "export_line": export,
         "index_budget_tokens": ast.literal_eval(
             _assigned(prompt, "INDEX_BUDGET_TOKENS"),

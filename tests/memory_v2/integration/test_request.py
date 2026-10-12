@@ -322,7 +322,7 @@ def test_finish_records_the_episode_and_runs_the_passes(mv2):
     # the events reach the CLI's emitter, money as plain decimal strings (never an exponent)
     assert [e["phase"] for e in emitted] == ["start", "end"]
     assert emitted[0]["cap_usd"] == "0.00000073" and emitted[1]["usd"] == "0.0000001"
-    assert emitted[0]["sol_effort"] == run.effort
+    assert emitted[0]["writer_effort"] == run.effort
     assert emitted[1]["reason_codes"] == ["no_manifest"]
     assert progress == []
     assert f.cost_active == [True, False]
@@ -705,34 +705,34 @@ def test_cli_with_the_switch_off_is_as_shipped(monkeypatch):
 
 
 @pytest.mark.parametrize("actor_effort", ["low", "medium", "high"])
-@pytest.mark.parametrize("sol_effort", ["actor", "low", "medium"])
-def test_a_fixed_sol_effort_overrides_the_actors_only_when_declared(
+@pytest.mark.parametrize("writer_effort", ["actor", "low", "medium"])
+def test_a_fixed_writer_effort_overrides_the_actors_only_when_declared(
     mv2,
     monkeypatch,
     actor_effort,
-    sol_effort,
+    writer_effort,
 ):
     from unify.session_details import SESSION_DETAILS
 
     monkeypatch.setattr(SESSION_DETAILS.assistant, "default_model", "")
     monkeypatch.setattr(SETTINGS, "UNIFY_REASONING_EFFORT", actor_effort)
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2_SOL_EFFORT", sol_effort)
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2_WRITER_EFFORT", writer_effort)
     run = _begin(mv2, "hi")
     _transcript(run)
     _finish(mv2, run)
     _, kw = mv2.fakes.of("run_due_passes")
-    want = actor_effort if sol_effort == "actor" else sol_effort
+    want = actor_effort if writer_effort == "actor" else writer_effort
     assert kw["effort"] == want and run.effort == actor_effort
 
 
-def test_the_sol_effort_setting_is_validated():
+def test_the_writer_effort_setting_is_validated():
     from unify.memory_v2.integration import switch
 
-    assert switch.parse_sol_effort("") == "actor"
-    assert switch.parse_sol_effort("low") == "low"
-    assert switch.parse_sol_effort(" Medium ") == "medium"
+    assert switch.parse_writer_effort("") == "actor"
+    assert switch.parse_writer_effort("low") == "low"
+    assert switch.parse_writer_effort(" Medium ") == "medium"
     with pytest.raises(ValueError):
-        switch.parse_sol_effort("xhigh")
+        switch.parse_writer_effort("xhigh")
 
 
 def test_quit_without_consolidation_records_the_episode_and_starts_no_pass(mv2):

@@ -42,7 +42,7 @@ def _py(root: Path, code: str) -> str:
 
 def _library(tmp_path: Path, **kw) -> Path:
     root = _tree(tmp_path / "lib")
-    write_files(root, lx.generated_v21(root, **kw))
+    write_files(root, lx.generated_library_mode(root, **kw))
     return root
 
 
@@ -59,7 +59,7 @@ def _commit(mem: Repo, files: dict, message: str) -> str:
 
 def test_generated_files_are_the_seven_and_deterministic(tmp_path):
     root = _tree(tmp_path / "lib")
-    files = lx.generated_v21(root)
+    files = lx.generated_library_mode(root)
     assert set(files) == {
         RESERVED_INIT,
         INDEX_FILE,
@@ -69,7 +69,7 @@ def test_generated_files_are_the_seven_and_deterministic(tmp_path):
         MATCHER_FILE,
         SHAPES_FILE,
     }
-    assert lx.generated_v21(root) == files
+    assert lx.generated_library_mode(root) == files
     assert (
         files[RESERVED_INIT]
         == (Path(lx.__file__).parent / "library_helper.py").read_bytes()
@@ -224,7 +224,7 @@ def test_history_subjects_reach_the_actor_redacted(tmp_path):
     assert hist["memory.text.parse:words"] == [
         f"{a[:12]} add parse (<redacted:key-shaped>)",
     ]
-    out = lx.generated_v21(_tree(tmp_path / "lib"), history=(hist, True))
+    out = lx.generated_library_mode(_tree(tmp_path / "lib"), history=(hist, True))
     assert not any(key.encode() in data for data in out.values())
 
 

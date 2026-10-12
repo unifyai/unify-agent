@@ -2,7 +2,7 @@
 worktree), using only the recorders' default arguments, as they exist at 4675a3c45.
 
 :func:`off_records` is run once at 4675a3c45 (on a keyless worker) to write ``golden/p1_t7_off_4675a3c45.json``;
-``test_recorders_v21.py`` runs it again on this build and requires the same bytes, so with ``UNIFY_MEMORY_V21`` off
+``test_recorders_library_mode.py`` runs it again on this build and requires the same bytes, so with ``UNIFY_MEMORY_LIBRARY`` off
 every recorder cuts exactly as at 4675a3c45. Standard library plus unify only; no model, no network.
 """
 
@@ -13,7 +13,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-#: A key-shaped string the redactor knows (planted past every cap in the v21 tests).
+#: A key-shaped string the redactor knows (planted past every cap in the library_mode tests).
 KEY = "sk-or-v1-" + "ab" * 32
 
 

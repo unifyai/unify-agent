@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS commit_shapes(commit_sha TEXT, item TEXT, body TEXT, 
   PRIMARY KEY(commit_sha, item));
 """
 # Spec v2.1 §5 (P9): the checker signals the bed showed the actor, created by the first such signal, so a store
-# that never records one (every bed without UNIFY_MEMORY_V21_CHECKER_VISIBLE) keeps the schema above.
+# that never records one (every bed without UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE) keeps the schema above.
 _VISIBLE_TABLE = "CREATE TABLE IF NOT EXISTS signal_visible(signal_id TEXT PRIMARY KEY)"
 
 # Memory v2.1 (spec §8.4, §9.2): one row per v2.1 pass (its rounds, the blob ids of each refused round's full

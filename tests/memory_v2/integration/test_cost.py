@@ -52,7 +52,7 @@ def test_nothing_is_recorded_while_inactive():
     assert [r.usd for r in lis.rows] == ["0.1"]
 
 
-def test_sol_origin_is_skipped_and_embedding_is_its_own_purpose():
+def test_writer_origin_is_skipped_and_embedding_is_its_own_purpose():
     lis = CostListener()
     lis.activate()
     lis(_event(0.5, origin="memory_v2.sol"))
@@ -96,7 +96,7 @@ def test_money_is_a_plain_decimal_string_or_unknown(value, want):
     assert money(value) == want
 
 
-def test_recording_turn_appends_one_sol_row_per_turn_and_unknown_on_error():
+def test_recording_turn_appends_one_writer_row_per_turn_and_unknown_on_error():
     calls = {"n": 0}
 
     async def turn(messages, tools):

@@ -26,12 +26,12 @@ from unify.memory_v2.integration.consolidate import (
     open_stores,
     post_checker,
     run_due_passes,
-    sol_settings,
+    writer_settings,
 )
 from unify.memory_v2.integration.paths import Paths
 from unify.memory_v2.integration.state import State
 from unify.memory_v2.qa import QAConfig
-from unify.memory_v2.sol_pass import SOL_SYSTEM
+from unify.memory_v2.writer_pass import WRITER_SYSTEM
 from unify.memory_v2.redact import Redactor
 from unify.memory_v2.signals import Signal
 from unify.memory_v2.trigger import BATCHED_CURSOR
@@ -51,12 +51,12 @@ def _settings(e=1, guard="", model="openai/gpt-6-sol", usage="", scale="", calls
     return SimpleNamespace(
         UNIFY_MEMORY_V2="on",
         UNIFY_MEMORY_V2_E=e,
-        UNIFY_MEMORY_V2_SOL_MODEL=model,
-        UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS=A_TOK,
-        UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD=guard,
-        UNIFY_MEMORY_V2_SOL_USAGE=usage,
-        UNIFY_MEMORY_V2_SOL_EFFORT_SCALE=scale,
-        UNIFY_MEMORY_V2_SOL_MAX_CALLS=calls,
+        UNIFY_MEMORY_V2_WRITER_MODEL=model,
+        UNIFY_MEMORY_V2_WRITER_ALLOWANCE_USD_PER_TOKENS=A_TOK,
+        UNIFY_MEMORY_V2_WRITER_RUN_GUARD_USD=guard,
+        UNIFY_MEMORY_V2_WRITER_USAGE=usage,
+        UNIFY_MEMORY_V2_WRITER_EFFORT_SCALE=scale,
+        UNIFY_MEMORY_V2_WRITER_MAX_CALLS=calls,
     )
 
 
@@ -332,7 +332,7 @@ def test_unpriced_calls_count_at_the_reserve_for_the_guard(tmp_path, monkeypatch
     sha, _ = _record(stores, "e1")
     _run(stores, "e1", sha)
     reserve = Decimal(A_TOK) / consolidate.MAX_CALLS
-    assert consolidate.committed_sol_usd(stores) == reserve
+    assert consolidate.committed_writer_usd(stores) == reserve
 
 
 def test_the_guard_never_reads_reason_text(tmp_path, monkeypatch):
@@ -348,7 +348,7 @@ def test_the_guard_never_reads_reason_text(tmp_path, monkeypatch):
             "reasons": json.dumps(["note: 999 unpriced calls"]),
         },
     )
-    assert consolidate.committed_sol_usd(stores) == Decimal("0.0000001")
+    assert consolidate.committed_writer_usd(stores) == Decimal("0.0000001")
 
 
 def test_a_pass_that_starts_but_never_settles_counts_its_whole_cap(
@@ -364,7 +364,7 @@ def test_a_pass_that_starts_but_never_settles_counts_its_whole_cap(
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
     _run(stores, "e1", sha)
-    assert consolidate.committed_sol_usd(stores) == Decimal(A_TOK)
+    assert consolidate.committed_writer_usd(stores) == Decimal(A_TOK)
     sha2, _ = _record(stores, "e2", minute=1)
     guard = format(Decimal(A_TOK) * Decimal("1.5"), "f")
     assert (
@@ -416,8 +416,8 @@ def test_events_start_and_end_with_decimal_money_and_the_inherited_effort(
         "pass_id": "e1.p0",
         "trigger_tokens": start["trigger_tokens"],
         "episodes": ["e1"],
-        "sol_model": "openai/gpt-6-sol",
-        "sol_effort": "medium",
+        "writer_model": "openai/gpt-6-sol",
+        "writer_effort": "medium",
         "cap_usd": "0.00000146",  # E x a_tok x 2, the medium scale
         "max_calls": 80,
         "effort_scale": "2",
@@ -453,40 +453,40 @@ def test_events_start_and_end_with_decimal_money_and_the_inherited_effort(
 
 
 def test_cap_is_e_times_the_allowance_as_a_plain_decimal():
-    cfg = sol_settings(_settings(e=150000))
+    cfg = writer_settings(_settings(e=150000))
     assert format(cfg.cap_usd, "f") == "0.10950000"
     assert cfg.run_guard_usd is None and cfg.model == "openai/gpt-6-sol"
-    defaults = sol_settings(SimpleNamespace())
+    defaults = writer_settings(SimpleNamespace())
     assert (defaults.experience_budget, format(defaults.usd_per_token, "f")) == (
         150000,
         A_TOK,
     )
     with pytest.raises(ValueError):
-        sol_settings(
-            SimpleNamespace(UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS="7.3E-7"),
+        writer_settings(
+            SimpleNamespace(UNIFY_MEMORY_V2_WRITER_ALLOWANCE_USD_PER_TOKENS="7.3E-7"),
         )
     with pytest.raises(ValueError):
-        sol_settings(SimpleNamespace(UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD="1e1"))
+        writer_settings(SimpleNamespace(UNIFY_MEMORY_V2_WRITER_RUN_GUARD_USD="1e1"))
     with pytest.raises(ValueError):
-        sol_settings(SimpleNamespace(UNIFY_MEMORY_V2_E="0"))
+        writer_settings(SimpleNamespace(UNIFY_MEMORY_V2_E="0"))
     for zero in ("0", "0.0", "0.00000000"):
         with pytest.raises(ValueError):
-            sol_settings(
-                SimpleNamespace(UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS=zero),
+            writer_settings(
+                SimpleNamespace(UNIFY_MEMORY_V2_WRITER_ALLOWANCE_USD_PER_TOKENS=zero),
             )
-    assert sol_settings(_settings(guard="2.50")).run_guard_usd == Decimal("2.50")
+    assert writer_settings(_settings(guard="2.50")).run_guard_usd == Decimal("2.50")
     assert defaults.show_usage is False and cfg.show_usage is False
-    assert sol_settings(_settings(usage="on")).show_usage is True
-    assert sol_settings(_settings(usage="off")).show_usage is False
+    assert writer_settings(_settings(usage="on")).show_usage is True
+    assert writer_settings(_settings(usage="off")).show_usage is False
     with pytest.raises(ValueError):
-        sol_settings(SimpleNamespace(UNIFY_MEMORY_V2_SOL_USAGE="yes"))
+        writer_settings(SimpleNamespace(UNIFY_MEMORY_V2_WRITER_USAGE="yes"))
 
 
-# --- per-effort pass limits (UNIFY_MEMORY_V2_SOL_EFFORT_SCALE, UNIFY_MEMORY_V2_SOL_MAX_CALLS) ------------------
+# --- per-effort pass limits (UNIFY_MEMORY_V2_WRITER_EFFORT_SCALE, UNIFY_MEMORY_V2_WRITER_MAX_CALLS) ------------------
 
 
 def test_per_effort_limits_default_to_one_rule_for_every_bed():
-    cfg = sol_settings(SimpleNamespace())
+    cfg = writer_settings(SimpleNamespace())
     assert cfg.effort_scale == {
         "low": Decimal("1"),
         "medium": Decimal("2"),
@@ -494,10 +494,10 @@ def test_per_effort_limits_default_to_one_rule_for_every_bed():
     }
     assert cfg.max_calls == {"low": 40, "medium": 80, "high": 80}
     assert (
-        sol_settings(_settings()).effort_scale == cfg.effort_scale
+        writer_settings(_settings()).effort_scale == cfg.effort_scale
     )  # empty: the defaults
-    assert format(sol_settings(_settings(e=150000)).cap_usd * 5, "f") == "0.54750000"
-    custom = sol_settings(
+    assert format(writer_settings(_settings(e=150000)).cap_usd * 5, "f") == "0.54750000"
+    custom = writer_settings(
         _settings(scale="high:4, Low:1.5,medium:3", calls="low:10,medium:20,high:30"),
     )
     assert custom.effort_scale == {
@@ -525,8 +525,8 @@ def test_per_effort_limits_default_to_one_rule_for_every_bed():
     ],
 )
 def test_a_bad_effort_scale_map_is_refused(scale):
-    with pytest.raises(ValueError, match="UNIFY_MEMORY_V2_SOL_EFFORT_SCALE"):
-        sol_settings(_settings(scale=scale))
+    with pytest.raises(ValueError, match="UNIFY_MEMORY_V2_WRITER_EFFORT_SCALE"):
+        writer_settings(_settings(scale=scale))
 
 
 @pytest.mark.parametrize(
@@ -543,19 +543,19 @@ def test_a_bad_effort_scale_map_is_refused(scale):
     ],
 )
 def test_a_bad_max_calls_map_is_refused(calls):
-    with pytest.raises(ValueError, match="UNIFY_MEMORY_V2_SOL_MAX_CALLS"):
-        sol_settings(_settings(calls=calls))
+    with pytest.raises(ValueError, match="UNIFY_MEMORY_V2_WRITER_MAX_CALLS"):
+        writer_settings(_settings(calls=calls))
 
 
 def _spy_configs(monkeypatch) -> list:
     seen: list = []
-    real = consolidate.SolPass
+    real = consolidate.WriterPass
 
     def spy(*args, **kwargs):
         seen.append(args[5])  # the PassConfig
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(consolidate, "SolPass", spy)
+    monkeypatch.setattr(consolidate, "WriterPass", spy)
     return seen
 
 
@@ -580,7 +580,7 @@ def test_an_actor_effort_sets_the_pass_cap_and_calls(
     from unify.memory_v2.integration import request as request_mod
     from unify.settings import SETTINGS
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2_SOL_EFFORT", "actor")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2_WRITER_EFFORT", "actor")
     effort = request_mod.sol_effort(
         actor,
     )  # Sol follows the actor's effort (the default)
@@ -596,7 +596,7 @@ def test_an_actor_effort_sets_the_pass_cap_and_calls(
     (cfg,) = configs
     assert (cfg.effort, cfg.max_calls, cfg.max_usd) == (actor, calls, cap)
     start = got[0]
-    assert start["phase"] == "start" and start["sol_effort"] == actor
+    assert start["phase"] == "start" and start["writer_effort"] == actor
     assert (start["cap_usd"], start["max_calls"], start["effort_scale"]) == (
         format(cap, "f"),
         calls,
@@ -676,7 +676,7 @@ def test_an_effort_without_limits_runs_nothing_and_is_logged(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("usage, shown", [("", False), ("off", False), ("on", True)])
-def test_the_sol_usage_switch_reaches_the_passes_first_message(
+def test_the_writer_usage_switch_reaches_the_passes_first_message(
     tmp_path,
     monkeypatch,
     usage,
@@ -709,7 +709,7 @@ def test_emit_failures_never_stop_the_pass(tmp_path, monkeypatch):
 # --- (e) Sol's cost rows as notes ------------------------------------------------------------------------
 
 
-def test_sol_cost_rows_are_notes_on_the_episode_commit(tmp_path, monkeypatch):
+def test_writer_cost_rows_are_notes_on_the_episode_commit(tmp_path, monkeypatch):
     msg = {"role": "assistant", "content": "thinking"}
     fake = FakeSol(script=[(msg, "0.0000001"), RuntimeError("provider down")])
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
@@ -721,7 +721,7 @@ def test_sol_cost_rows_are_notes_on_the_episode_commit(tmp_path, monkeypatch):
         ("sol", "0.0000001", "e1", "e1.p0"),
         ("sol", "unknown", "e1", "e1.p0"),
     ]
-    assert {n["sol_effort"] for n in notes} == {
+    assert {n["writer_effort"] for n in notes} == {
         "low",
     }  # the inherited effort, on the pass's notes
     assert stores.episodes.notes(sha) == []  # nothing on the signals ref
@@ -734,7 +734,10 @@ def test_sol_cost_rows_are_notes_on_the_episode_commit(tmp_path, monkeypatch):
     assert out.usd == "0.0000001" and out.unknown_cost_calls == 1
 
 
-def test_sol_transcript_is_kept_redacted_on_the_episode_commit(tmp_path, monkeypatch):
+def test_writer_transcript_is_kept_redacted_on_the_episode_commit(
+    tmp_path,
+    monkeypatch,
+):
     secret = "planted-fake-token-6c1d2e"  # pragma: allowlist secret
     monkeypatch.setenv("UNIFY_TEST_FAKE_TOKEN", secret)
     msg = {"role": "assistant", "content": f"the token is {secret}"}
@@ -780,22 +783,22 @@ def test_drift_rides_with_the_pass_and_is_cleared_once_recorded(tmp_path, monkey
 SENTINEL = "SENTINEL-7f3a"
 
 
-def test_checker_text_reaches_no_event_note_evidence_row_or_sol_input(
+def test_checker_text_reaches_no_event_note_evidence_row_or_writer_input(
     tmp_path,
     monkeypatch,
 ):
-    from unify.memory_v2 import sol_pass
+    from unify.memory_v2 import writer_pass
 
     fake = FakeSol()
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     staged = tmp_path / "staged"
-    stage = sol_pass.SolPass._stage_inputs
+    stage = writer_pass.WriterPass._stage_inputs
 
     def keep(self, req, inputs, *tree):
         stage(self, req, inputs, *tree)
         shutil.copytree(inputs, staged)  # what Sol's box would see at /inputs
 
-    monkeypatch.setattr(sol_pass.SolPass, "_stage_inputs", keep)
+    monkeypatch.setattr(writer_pass.WriterPass, "_stage_inputs", keep)
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
     outcome = {
@@ -835,7 +838,7 @@ def test_checker_text_reaches_no_event_note_evidence_row_or_sol_input(
                 ({"role": "assistant", "content": "x"}, "0.0000001"),
                 RuntimeError("down"),
             ],
-            ["sol_error", "no_manifest"],
+            ["writer_error", "no_manifest"],
         ),
         (
             [({"role": "assistant", "content": "x"}, "0.00000073")],
@@ -861,7 +864,7 @@ def test_end_event_reason_codes_come_from_the_outcome(
 
 
 def test_reason_codes_are_known_codes_deduplicated_and_capped():
-    from unify.memory_v2.sol_pass import PassOutcome
+    from unify.memory_v2.writer_pass import PassOutcome
 
     def oc(passed, codes):
         return PassOutcome("p", passed, None, "0", 1, ["free text G1"], "", 0, codes)
@@ -871,15 +874,15 @@ def test_reason_codes_are_known_codes_deduplicated_and_capped():
         "G2",
         "G5",
     ]
-    assert consolidate.reason_codes(oc(False, []), None) == ["sol_error"]
+    assert consolidate.reason_codes(oc(False, []), None) == ["writer_error"]
     assert consolidate.reason_codes(None, "deadline") == ["deadline"]
-    assert consolidate.reason_codes(None, None) == ["sol_error"]
+    assert consolidate.reason_codes(None, None) == ["writer_error"]
     many = [f"G{n}" for n in range(1, 7)] + [
         "no_manifest",
         "over_quota",
         "deadline",
         "pass_cap",
-        "sol_error",
+        "writer_error",
     ]
     assert len(consolidate.reason_codes(oc(False, many), None)) == 10
 
@@ -1071,7 +1074,7 @@ def test_the_qa_switches_reach_the_gate_and_sols_brief(tmp_path, monkeypatch, on
     system = fake.seen[0][0]["content"]
     if on:
         assert g.qa == QAConfig(fixtures="strict", mutation=True)
-        assert system.startswith(SOL_SYSTEM.split("Run tests as the gate does")[0])
+        assert system.startswith(WRITER_SYSTEM.split("Run tests as the gate does")[0])
         assert (
             "Mutants:" in system
             and "Drawn inputs:" in system
@@ -1079,7 +1082,7 @@ def test_the_qa_switches_reach_the_gate_and_sols_brief(tmp_path, monkeypatch, on
         )
     else:
         assert g.qa == QAConfig() and not g.qa.on
-        assert system == SOL_SYSTEM
+        assert system == WRITER_SYSTEM
 
 
 @pytest.mark.parametrize("step", [RuntimeError("upstream failed"), "sleep"])
@@ -1108,43 +1111,50 @@ def test_no_further_pass_starts_after_a_call_that_may_still_be_in_flight(
     assert len(outcomes) <= 1
 
 
-# --- memory v2.1 P1 (UNIFY_MEMORY_V21) ------------------------------------------------------------------
+# --- memory v2.1 P1 (UNIFY_MEMORY_LIBRARY) ------------------------------------------------------------------
 
 
-def _v21_settings(raw):
+def _library_settings(raw):
     s = _settings()
-    s.UNIFY_MEMORY_V21 = raw
-    s.UNIFY_MEMORY_V21_E = (
+    s.UNIFY_MEMORY_LIBRARY = raw
+    s.UNIFY_MEMORY_LIBRARY_E = (
         1  # v2.1's own E (D43, 100k by default): one small episode makes a pass due
     )
     return s
 
 
-def test_sol_settings_reads_the_v21_switch():
-    assert sol_settings(_settings()).v21 is False
-    assert sol_settings(_v21_settings("on")).v21 is True
-    assert sol_settings(_v21_settings("off")).v21 is False
+def test_writer_settings_reads_the_library_switch():
+    assert writer_settings(_settings()).library_mode is False
+    assert writer_settings(_library_settings("on")).library_mode is True
+    assert writer_settings(_library_settings("off")).library_mode is False
     with pytest.raises(ValueError):
-        sol_settings(_v21_settings("maybe"))
+        writer_settings(_library_settings("maybe"))
 
 
-def test_v21_has_its_own_usd_per_token_and_the_off_path_ignores_it():
+def test_library_has_its_own_usd_per_token_and_the_off_path_ignores_it():
     """MAIN, 9 Oct (spec §15, F9): v2's rate by default; the replay can raise v2.1's without a code change."""
-    assert sol_settings(_v21_settings("on")).usd_per_token == Decimal("0.00000073")
-    raised = _v21_settings("on")
-    raised.UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN = "0.000002"
-    assert sol_settings(raised).usd_per_token == Decimal("0.000002")
-    off = _v21_settings("off")
-    off.UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN = "0.000002"
-    assert sol_settings(off).usd_per_token == Decimal("0.00000073")
+    assert writer_settings(_library_settings("on")).usd_per_token == Decimal(
+        "0.00000073",
+    )
+    raised = _library_settings("on")
+    raised.UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN = "0.000002"
+    assert writer_settings(raised).usd_per_token == Decimal("0.000002")
+    off = _library_settings("off")
+    off.UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN = "0.000002"
+    assert writer_settings(off).usd_per_token == Decimal("0.00000073")
     for bad in ("0", "-1", "1e-6", "abc"):
-        raised.UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN = bad
+        raised.UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN = bad
         with pytest.raises(ValueError):
-            sol_settings(raised)
+            writer_settings(raised)
 
 
-def test_v21_reaches_the_pass_and_its_end_event_records_coverage(tmp_path, monkeypatch):
-    fake = FakeSol()  # finishes every turn: refused under v21 until e1 is covered
+def test_library_reaches_the_pass_and_its_end_event_records_coverage(
+    tmp_path,
+    monkeypatch,
+):
+    fake = (
+        FakeSol()
+    )  # finishes every turn: refused under library_mode until e1 is covered
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
@@ -1155,7 +1165,7 @@ def test_v21_reaches_the_pass_and_its_end_event_records_coverage(tmp_path, monke
             sha,
             State(stores.paths.state),
             effort="low",
-            settings=_v21_settings("on"),
+            settings=_library_settings("on"),
             emit=None,
         ),
     )
@@ -1166,7 +1176,7 @@ def test_v21_reaches_the_pass_and_its_end_event_records_coverage(tmp_path, monke
     assert "coverage_measures" not in end and "unread" not in end["coverage"]
 
 
-def test_v21_optional_coverage_reaches_the_pass_and_its_end_event_records_the_measures(
+def test_library_optional_coverage_reaches_the_pass_and_its_end_event_records_the_measures(
     tmp_path,
     monkeypatch,
 ):
@@ -1174,8 +1184,8 @@ def test_v21_optional_coverage_reaches_the_pass_and_its_end_event_records_the_me
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
-    settings = _v21_settings("on")
-    settings.UNIFY_MEMORY_V21_COVERAGE = "optional"
+    settings = _library_settings("on")
+    settings.UNIFY_MEMORY_LIBRARY_COVERAGE = "optional"
     (out,) = asyncio.run(
         run_due_passes(
             stores,
@@ -1193,7 +1203,7 @@ def test_v21_optional_coverage_reaches_the_pass_and_its_end_event_records_the_me
     assert end["coverage_measures"] == out.coverage_measures
 
 
-def test_v21_off_leaves_the_end_event_unchanged(tmp_path, monkeypatch):
+def test_library_off_leaves_the_end_event_unchanged(tmp_path, monkeypatch):
     monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
@@ -1204,7 +1214,7 @@ def test_v21_off_leaves_the_end_event_unchanged(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("on", [False, True])
-def test_v21_gates_write_passes_with_the_v21_checks(tmp_path, monkeypatch, on):
+def test_library_gates_write_passes_with_the_library_checks(tmp_path, monkeypatch, on):
     monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
     made = []
 
@@ -1223,20 +1233,25 @@ def test_v21_gates_write_passes_with_the_v21_checks(tmp_path, monkeypatch, on):
             sha,
             State(stores.paths.state),
             effort="low",
-            settings=_v21_settings("on" if on else "off"),
+            settings=_library_settings("on" if on else "off"),
             emit=None,
         ),
     )
     (g,) = made
     if on:
-        assert g.v21 is not None and g.v21.checks and g.v21.role == "write" and g.qa.v21
+        assert (
+            g.library_mode is not None
+            and g.library_mode.checks
+            and g.library_mode.role == "write"
+            and g.qa.library_mode
+        )
     else:
-        assert g.v21 is None and not g.qa.v21
+        assert g.library_mode is None and not g.qa.library_mode
 
 
 # --- memory v2.1: CURATE after WRITE, triggered by library state (P6) ------------------------------------------
 
-from unify.memory_v2.prompts_v21 import curate_brief_now
+from unify.memory_v2.library_prompts import curate_brief_now
 from tests.memory_v2.test_gate import _merged
 from tests.memory_v2.test_layout import LIB
 from tests.memory_v2.test_overlap import SPLIT, SPLIT_ID, SPLIT_PATH, TOKENS
@@ -1251,8 +1266,8 @@ DUPLICATE = {
 
 def _settings21(on=True, **kw):
     s = _settings(**kw)
-    s.UNIFY_MEMORY_V21 = "on" if on else "off"
-    s.UNIFY_MEMORY_V21_E = 1  # v2.1's own E (P7, D43: 100k by default)
+    s.UNIFY_MEMORY_LIBRARY = "on" if on else "off"
+    s.UNIFY_MEMORY_LIBRARY_E = 1  # v2.1's own E (P7, D43: 100k by default)
     return s
 
 
@@ -1318,7 +1333,7 @@ def test_no_curate_on_a_library_with_nothing_to_curate(tmp_path, monkeypatch):
     assert [o.pass_id for o in _run21(stores, "e1", sha)] == ["e1.p0"]
 
 
-def test_curate_never_runs_with_v21_off(tmp_path, monkeypatch):
+def test_curate_never_runs_with_library_off(tmp_path, monkeypatch):
     monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
     monkeypatch.setattr(
         consolidate,
@@ -1369,20 +1384,20 @@ def test_no_curate_after_a_write_whose_call_may_still_be_in_flight(
     assert fake.calls == 1 and _kinds(stores) == ["batched"]
 
 
-def test_v21_max_reads_reaches_the_pass_and_the_off_path_keeps_the_default(
+def test_library_max_reads_reaches_the_pass_and_the_off_path_keeps_the_default(
     tmp_path,
     monkeypatch,
 ):
     """MAIN, 10 Oct: the replay and the reruns set the writer's reader calls without a code change."""
-    from unify.memory_v2.integration.switch import parse_v21_max_reads
+    from unify.memory_v2.integration.switch import parse_library_max_reads
 
     monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
     for on, value, want in ((True, "", 400), (True, "7", 7), (False, "7", 400)):
         seen = _spy_configs(monkeypatch)
         stores = _stores(tmp_path / f"{on}{value}")
         sha, _ = _record(stores, "e1")
-        settings = _v21_settings("on" if on else "off")
-        settings.UNIFY_MEMORY_V21_MAX_READS = value
+        settings = _library_settings("on" if on else "off")
+        settings.UNIFY_MEMORY_LIBRARY_MAX_READS = value
         asyncio.run(
             run_due_passes(
                 stores,
@@ -1402,4 +1417,4 @@ def test_v21_max_reads_reaches_the_pass_and_the_off_path_keeps_the_default(
             assert "experience_budget" not in start and "max_reads" not in start
     for bad in ("0", "-1", "x", True):
         with pytest.raises(ValueError):
-            parse_v21_max_reads(bad)
+            parse_library_max_reads(bad)

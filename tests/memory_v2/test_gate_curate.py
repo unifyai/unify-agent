@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from unify.memory_v2.gate import Gate, GateResult
-from unify.memory_v2.gate_v21 import V21Config
+from unify.memory_v2.library_checks import LibraryConfig
 from tests.memory_v2.test_gate import (
     FILES,
     MAN,
@@ -14,7 +14,7 @@ from tests.memory_v2.test_gate import (
     _merged,
     world,
 )  # noqa: F401 (fixture)
-from tests.memory_v2.test_gate_v21 import (
+from tests.memory_v2.test_gate_library_mode import (
     ITEM_ID,
     MOD,
     T,
@@ -119,12 +119,12 @@ def _parent(mem, ev, blobs):
     return parent
 
 
-def test_the_clean_up_pass_is_curate_under_v21():
+def test_the_clean_up_pass_is_curate_under_library_mode():
     gate = Gate.__new__(Gate)
     run = SimpleNamespace(man=SimpleNamespace(items=[]), p_bodies={})
-    gate.v21 = V21Config(role="curate")
+    gate.library_mode = LibraryConfig(role="curate")
     assert gate._cleanup(run) is True
-    gate.v21 = V21Config(role="write")
+    gate.library_mode = LibraryConfig(role="write")
     assert gate._cleanup(run) is False
 
 

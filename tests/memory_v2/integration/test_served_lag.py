@@ -42,7 +42,7 @@ def test_after_passes_failing_twice_leaves_a_lag_of_two_and_warns_twice(
                 sha,
                 State(stores.paths.state),
                 effort="low",
-                settings=tc._v21_settings("on"),
+                settings=tc._library_settings("on"),
                 emit=None,
             ),
         )

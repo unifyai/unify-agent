@@ -89,7 +89,7 @@ def make_read_only(root: Path) -> None:
     os.chmod(root, 0o555)
 
 
-def export_actor_v21(
+def export_actor_library_mode(
     memory_dir: Path,
     sha: str,
     dest: Path,
@@ -98,19 +98,19 @@ def export_actor_v21(
     shapes=None,
     records=None,
 ) -> dict[str, bytes]:
-    """``UNIFY_MEMORY_V21=on``: replace *dest* with the actor's read-only copy of memory commit *sha* (spec
+    """``UNIFY_MEMORY_LIBRARY=on``: replace *dest* with the actor's read-only copy of memory commit *sha* (spec
     v2.1 §6). It holds:
 
     - the commit's library modules, package docstrings and notes only (:func:`..layout.exported`): never a
       tests directory, a fixture, compiled code or a path outside the layout;
-    - the generated files (:func:`..library_export.generated_v21`), which replace any committed copy.
+    - the generated files (:func:`..library_export.generated_library_mode`), which replace any committed copy.
 
     Every write bit is then dropped, and the sandbox binds the copy read-only (:func:`.hooks.worker_readonly_mounts`).
     Returns the generated files.
     """
     from ..catalogue import write_files
     from ..layout import exported
-    from ..library_export import generated_v21, item_history
+    from ..library_export import generated_library_mode, item_history
 
     dest = Path(dest)
     _clear(dest)
@@ -122,7 +122,7 @@ def export_actor_v21(
             f"memory {sha[:12]} holds entries an export refuses: {refused[:5]}",
         )
     materialise(repo, {p: v for p, v in files.items() if exported(p)}, dest)
-    generated = generated_v21(
+    generated = generated_library_mode(
         dest,
         status_of=status_of,
         shapes=shapes,

@@ -34,7 +34,7 @@ def resolved_keys(monkeypatch, tmp_path):
 class TestLLMProviderValidation:
     """Tests for validate_llm_providers method."""
 
-    def test_default_model_is_gpt_5_6_sol(self):
+    def test_default_model_is_gpt_5_6_writer(self):
         """UNIFY_MODEL defaults to the primary production reasoning model."""
         field_info = ProductionSettings.model_fields["UNIFY_MODEL"]
         assert field_info.default == "openai/gpt-5.6-sol@openrouter"

@@ -12,10 +12,10 @@ from unify.memory_v2.episodes import Action, env_channel
 from unify.memory_v2.evidence import EvidenceStore
 from unify.memory_v2.gate import Gate
 from unify.memory_v2.gitio import Repo
-from unify.memory_v2.sol_pass import PassConfig, SolPass, export_blobs
+from unify.memory_v2.writer_pass import PassConfig, WriterPass, export_blobs
 from unify.memory_v2.trigger import PassRequest
 from tests.memory_v2.test_episodes import _ep
-from tests.memory_v2.test_sol_pass import Script, _write
+from tests.memory_v2.test_writer_pass import Script, _write
 
 needs_bwrap = pytest.mark.skipif(
     shutil.which("bwrap") is None,
@@ -367,7 +367,7 @@ def test_gate_g2_admits_shell_and_dialogue_covers_on_their_channels(
 
 # --- a pass end to end: Sol reads recorded blobs, writes fixtures, and the gate admits the reader ---------
 
-SOL_LOOKS = (
+WRITER_LOOKS = (
     "import json\n"
     "from memlab.analysis.recorded import worktree_files, load_blob\n"
     "from memlab.analysis.shapes import shape\n"
@@ -396,7 +396,7 @@ def test_scripted_pass_builds_a_reader_from_recorded_blobs(office):
     mem, ev, gate, ep = office
     script = Script(
         [
-            SOL_LOOKS,
+            WRITER_LOOKS,
             _write("/memory/env/worktree_workspace/__init__.py", READER),
             _write(
                 "/memory/env/worktree_workspace/tests/test_read_invoices.py",
@@ -408,7 +408,7 @@ def test_scripted_pass_builds_a_reader_from_recorded_blobs(office):
             ),
         ],
     )
-    sol = SolPass(
+    writer = WriterPass(
         mem,
         gate,
         ev,
@@ -417,7 +417,10 @@ def test_scripted_pass_builds_a_reader_from_recorded_blobs(office):
         config=PassConfig(max_calls=10),
     )
     out = asyncio.run(
-        sol.run(PassRequest("incremental", "worktree:workspace", ["o1"], False), "p1"),
+        writer.run(
+            PassRequest("incremental", "worktree:workspace", ["o1"], False),
+            "p1",
+        ),
     )
     lines = script.outputs["c1"].strip().splitlines()
     assert lines[:2] == [

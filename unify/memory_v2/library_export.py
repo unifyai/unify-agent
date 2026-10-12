@@ -209,7 +209,7 @@ def _json_bytes(data: dict) -> bytes:
     ).encode("utf-8")
 
 
-def generated_v21(
+def generated_library_mode(
     tree: Path,
     *,
     status_of: Callable[[str], str] | None = None,

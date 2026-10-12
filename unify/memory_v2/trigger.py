@@ -11,7 +11,7 @@ Two modes:
   timestamp the caller gave the last :meth:`Trigger.after_episode`. A queued drift channel rides with the
   next batched pass (it does not fire one on its own). The Sol budget of one pass is E x ``usd_per_token``
   (:meth:`Trigger.pass_budget_usd`); the caller passes it to ``PassConfig.max_usd``. Under
-  ``UNIFY_MEMORY_V21=on`` E is ``UNIFY_MEMORY_V21_E`` (default 100,000; D43).
+  ``UNIFY_MEMORY_LIBRARY=on`` E is ``UNIFY_MEMORY_LIBRARY_E`` (default 100,000; D43).
 * ``"d6"`` (v0 D6 as frozen; kept for offline comparison): after each episode, an incremental pass per
   channel the episode touched (or a drift channel queued), plus a maintenance pass every
   ``maintenance_every`` requests.
@@ -28,7 +28,7 @@ MODES = ("batched", "d6")
 EXPERIENCE_BUDGET = 150_000
 # Memory v2.1 (D43, the lead, 9 Oct): E is 100k recorded tokens. D29's 150k stays v2's; the offline replay
 # re-measures false refusals at 100k under v2.1's cross-episode check and repair.
-EXPERIENCE_BUDGET_V21 = 100_000
+EXPERIENCE_BUDGET_LIBRARY = 100_000
 USD_PER_TOKEN = Decimal("0.00000073")
 # The cursor of the batched mode in the evidence store's cursor table (no channel key starts with "@").
 BATCHED_CURSOR = "@batched"

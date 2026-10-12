@@ -7,7 +7,7 @@ import pytest
 
 from unify.memory_v2 import replay_verify as rv
 from unify.memory_v2.episodes import Cell
-from tests.memory_v2.test_sol_v21_tools import _episode
+from tests.memory_v2.test_writer_library_tools import _episode
 
 GRID = "g = [[8,8,0],[0,0,8],[8,0,8]]\nR, C = len(g), len(g[0])\nseen = set(); comps = []\n"
 FILL = (

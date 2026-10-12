@@ -10,8 +10,8 @@ from unify.memory_v2 import mining_behaviour, s0_pass
 from unify.memory_v2.episodes import Cell
 from unify.memory_v2.trigger import PassRequest
 from tests.memory_v2.test_mining_behaviour import FILL_A, FILL_B, GRID_A, GRID_B
-from tests.memory_v2.test_sol_pass import Turns, _call, _sol
-from tests.memory_v2.test_sol_v21_tools import _episode
+from tests.memory_v2.test_writer_pass import Turns, _call, _sol
+from tests.memory_v2.test_writer_library_tools import _episode
 
 EPS = {
     "e0": _episode(
@@ -85,15 +85,17 @@ def test_s0_failure_does_not_stop_the_pass(tmp_path, monkeypatch):
 
     monkeypatch.setattr(s0_pass, "_as_mining", boom)
     model = Turns([_call("c", "read", {"path": "/inputs/batch_map.json"})])
-    _, _, sol = _sol(
+    _, _, writer = _sol(
         tmp_path,
         model,
-        v21=True,
+        library_mode=True,
         max_calls=4,
         s0_cache=str(tmp_path / "cache"),
     )
-    sol.load = EPS.__getitem__
-    out = asyncio.run(sol.run(PassRequest("incremental", "svc", ["e1"], False), "p1"))
+    writer.load = EPS.__getitem__
+    out = asyncio.run(
+        writer.run(PassRequest("incremental", "svc", ["e1"], False), "p1"),
+    )
     assert out.s0 and "error" in out.s0 and out.coverage is not None
 
 
@@ -120,23 +122,23 @@ def test_s0_runs_on_every_pass_when_the_loader_is_bound_to_the_calling_thread(
     outs = []
     for pass_id, batch in (("p1", ["e0"]), ("p2", ["e1"])):
         model = Turns([_call("c", "read", {"path": "/inputs/batch_map.json"})])
-        _, _, sol = _sol(
+        _, _, writer = _sol(
             tmp_path / pass_id,
             model,
-            v21=True,
+            library_mode=True,
             max_calls=4,
             s0_cache=str(tmp_path / "cache"),
         )
-        sol.load = load
+        writer.load = load
         seen = ["e0"] if pass_id == "p2" else []
         monkeypatch.setattr(
-            sol.ev,
+            writer.ev,
             "experience_since",
             lambda after, _s=seen: [(e, 0) for e in _s],
         )
         outs.append(
             asyncio.run(
-                sol.run(PassRequest("incremental", "svc", batch, False), pass_id),
+                writer.run(PassRequest("incremental", "svc", batch, False), pass_id),
             ),
         )
     for out in outs:
@@ -160,14 +162,16 @@ def test_an_unreadable_history_episode_is_s0s_error_and_the_pass_goes_on(
         return EPS[eid]
 
     model = Turns([_call("c", "read", {"path": "/inputs/batch_map.json"})])
-    _, _, sol = _sol(
+    _, _, writer = _sol(
         tmp_path,
         model,
-        v21=True,
+        library_mode=True,
         max_calls=4,
         s0_cache=str(tmp_path / "cache"),
     )
-    sol.load = load
-    monkeypatch.setattr(sol.ev, "experience_since", lambda after: [("e0", 0)])
-    out = asyncio.run(sol.run(PassRequest("incremental", "svc", ["e1"], False), "p1"))
+    writer.load = load
+    monkeypatch.setattr(writer.ev, "experience_since", lambda after: [("e0", 0)])
+    out = asyncio.run(
+        writer.run(PassRequest("incremental", "svc", ["e1"], False), "p1"),
+    )
     assert out.s0 and "OSError" in out.s0["error"] and out.coverage is not None

@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from unify.memory_v2.gate_v21 import V21Checks, V21Config
-from tests.memory_v2.test_gate_v21_checks import _item, _Run
+from unify.memory_v2.library_checks import LibraryChecks, LibraryConfig
+from tests.memory_v2.test_gate_library_checks import _item, _Run
 from tests.memory_v2.test_layout import LIB, _tree
 from tests.memory_v2.test_overlap import SPLIT, SPLIT_ID, SPLIT_PATH, TOKENS
 
@@ -33,7 +33,7 @@ def _checks(
 ):
     p_tree, c_tree = _tree(tmp_path / "p", parent), _tree(tmp_path / "c", cand)
     gate = SimpleNamespace(
-        v21=V21Config(role=role),
+        library_mode=LibraryConfig(role=role),
         ev=SimpleNamespace(aliases=lambda: dict(live or {})),
     )
     man = SimpleNamespace(
@@ -63,7 +63,7 @@ def _checks(
         manifest_raw=raw,
         parent=PARENT,
     )
-    return V21Checks(gate, run)
+    return LibraryChecks(gate, run)
 
 
 def _merge(tmp_path, raw=OK, **kw):
@@ -282,8 +282,8 @@ def test_a_declared_wrapper_alias_is_not_an_edited_function(tmp_path):
 def test_the_static_checks_include_curates(tmp_path, monkeypatch):
     seen = []
     for name in ("g1", "_plain", "_test_changes"):
-        monkeypatch.setattr(V21Checks, name, lambda self: None)
-    monkeypatch.setattr(V21Checks, "curate", lambda self: seen.append("curate"))
+        monkeypatch.setattr(LibraryChecks, name, lambda self: None)
+    monkeypatch.setattr(LibraryChecks, "curate", lambda self: seen.append("curate"))
     _checks(tmp_path, BEFORE, AFTER, OK).static()
     assert seen == ["curate"]
 
@@ -291,7 +291,7 @@ def test_the_static_checks_include_curates(tmp_path, monkeypatch):
 # -- P6 Amendment B: G5 keeps procedures' typed covers through a remaining item's re-run (D28) ------------------
 import json  # noqa: E402
 
-from unify.memory_v2 import gate_v21 as gv  # noqa: E402
+from unify.memory_v2 import library_checks as gv  # noqa: E402
 from unify.memory_v2.procedures import Outcome  # noqa: E402
 
 COVER = json.dumps(
@@ -311,7 +311,7 @@ def _g5(
     live=None,
     role="curate",
 ):
-    """V21Checks.g5 on a stub run whose stored typed covers hold SPLIT_ID's work-tree procedure on e7; the fake
+    """LibraryChecks.g5 on a stub run whose stored typed covers hold SPLIT_ID's work-tree procedure on e7; the fake
     run_procedure answers *outcomes[(item, side)]* (side "p" for the parent tree, "c" for the candidate's).
     """
     v = _checks(
@@ -337,7 +337,7 @@ def _g5(
     v.gate.python, v.gate._blob = "/usr/bin/python3", lambda s: b""
     from dataclasses import replace
 
-    v.cfg = v.gate.v21 = replace(
+    v.cfg = v.gate.library_mode = replace(
         v.cfg,
         episodes=lambda eid: SimpleNamespace(episode_id=eid),
     )

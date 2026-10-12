@@ -81,7 +81,7 @@ def install(monkeypatch) -> Fakes:
         def __init__(self, paths, workspace, redactor_factory, **kw) -> None:
             f.calls.append(
                 ("WorktreeCapture", (paths, workspace), kw),
-            )  # kw: v21 only when on
+            )  # kw: library_mode only when on
             self.redactor_factory = redactor_factory
 
         def begin(self) -> None:
@@ -233,8 +233,8 @@ def install(monkeypatch) -> Fakes:
                     "pass_id": f"{eid}.p0",
                     "trigger_tokens": 1,
                     "episodes": [eid],
-                    "sol_model": settings.UNIFY_MEMORY_V2_SOL_MODEL,
-                    "sol_effort": effort,
+                    "writer_model": settings.UNIFY_MEMORY_V2_WRITER_MODEL,
+                    "writer_effort": effort,
                     "cap_usd": Decimal("0.00000073") * 1,  # a Decimal on purpose
                 },
             )

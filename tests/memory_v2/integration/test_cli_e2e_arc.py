@@ -39,13 +39,13 @@ from tests.actor.code_act.sandbox_world import needs_bwrap
 from tests.helpers import _handle_project
 from tests.memory_v2.arc_transcript import (
     ITEM,
-    SOL_CELL,
+    WRITER_CELL,
     demos_feedback,
     grid,
     observation,
     submit_feedback,
 )
-from tests.memory_v2.test_sol_pass import Script
+from tests.memory_v2.test_writer_pass import Script
 from tests.scripted_model import ScriptedModel, _text, cell, reply, scripted
 from unify import sandbox
 from unify.memory_v2.blobs import BlobStore
@@ -59,7 +59,7 @@ from unify.memory_v2.integration.paths import Paths
 from unify.settings import SETTINGS
 
 EFFORT = "medium"
-SOL_USD = "0.0000005"
+WRITER_USD = "0.0000005"
 HIGH_E = 10**9
 
 
@@ -219,26 +219,26 @@ async def test_arc_visits_capture_dialogue_and_merge_an_env_item(
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2_DIALOGUE", "env")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2_E", HIGH_E)
     for name in (
-        "UNIFY_MEMORY_V2_SOL_MODEL",
-        "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS",
-        "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD",
-        "UNIFY_MEMORY_V2_SOL_EFFORT",
-        "UNIFY_MEMORY_V2_SOL_EFFORT_SCALE",
-        "UNIFY_MEMORY_V2_SOL_MAX_CALLS",
+        "UNIFY_MEMORY_V2_WRITER_MODEL",
+        "UNIFY_MEMORY_V2_WRITER_ALLOWANCE_USD_PER_TOKENS",
+        "UNIFY_MEMORY_V2_WRITER_RUN_GUARD_USD",
+        "UNIFY_MEMORY_V2_WRITER_EFFORT",
+        "UNIFY_MEMORY_V2_WRITER_EFFORT_SCALE",
+        "UNIFY_MEMORY_V2_WRITER_MAX_CALLS",
     ):
         monkeypatch.setattr(SETTINGS, name, defaults[name].default)
     monkeypatch.setattr(SESSION_DETAILS.assistant, "default_model", "")
     monkeypatch.setattr(SETTINGS, "UNIFY_REASONING_EFFORT", EFFORT)
     monkeypatch.setattr(sandbox, "_POLICY_CACHE", None)
     monkeypatch.setattr(request_mod, "_CURRENT", None)
-    script = Script([SOL_CELL], usd=SOL_USD)
-    sol_calls: list[tuple[str, str]] = []
+    script = Script([WRITER_CELL], usd=WRITER_USD)
+    writer_calls: list[tuple[str, str]] = []
 
-    def sol_turn(model: str, effort: str, **_kw: Any):
-        sol_calls.append((model, effort))
+    def writer_turn(model: str, effort: str, **_kw: Any):
+        writer_calls.append((model, effort))
         return script
 
-    monkeypatch.setattr(consolidate, "unillm_turn", sol_turn)
+    monkeypatch.setattr(consolidate, "unillm_turn", writer_turn)
 
     # ── visit 1: dialogue actions recorded, no pass ─────────────────────────
     v1 = _visit_messages("task-3f2a9c1e", 0, solve_first=False)
@@ -279,7 +279,7 @@ async def test_arc_visits_capture_dialogue_and_merge_an_env_item(
         eid1,
     )
     assert "env.request_demos" in ep1.fingerprints
-    assert not paths.events.exists() and sol_calls == []
+    assert not paths.events.exists() and writer_calls == []
 
     # ── visit 2: a batched pass over both episodes merges an env/env item ───
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2_E", t1 + 1)
@@ -306,7 +306,7 @@ async def test_arc_visits_capture_dialogue_and_merge_an_env_item(
     assert start["phase"] == "start" and end["phase"] == "end"
     assert start["episodes"] == [eid1, eid2] and start["pass_id"] == end["pass_id"]
     assert start["trigger_tokens"] >= t1 + 1
-    assert sol_calls == [(defaults["UNIFY_MEMORY_V2_SOL_MODEL"].default, EFFORT)]
+    assert writer_calls == [(defaults["UNIFY_MEMORY_V2_WRITER_MODEL"].default, EFFORT)]
     assert "EPISODES 2" in script.outputs["c1"], script.outputs
     assert end["gate_passed"] is True, end
     assert end["reason_codes"] == ["ok"] and end["items"] == 1, end

@@ -12,10 +12,10 @@ from decimal import Decimal
 import pytest
 
 from unify.memory_v2.integration import async_pass as ap
-from unify.memory_v2.sol_pass import _Spend
+from unify.memory_v2.writer_pass import _Spend
 from unify.memory_v2.trigger import PassRequest
-from tests.memory_v2.test_sol_pass import _call, _sol, needs_bwrap
-from tests.memory_v2.test_sol_v21_tools import EPS
+from tests.memory_v2.test_writer_pass import _call, _sol, needs_bwrap
+from tests.memory_v2.test_writer_library_tools import EPS
 
 
 class _Out:
@@ -125,14 +125,14 @@ class _Blocking:
 
 
 async def _cancelled_pass(tmp_path):
-    _, ev, sol = _sol(tmp_path, _Blocking(), v21=True)
-    sol.load = EPS.__getitem__
-    # the brief is not under test here (it reads P2's and P4's constants; test_sol_v21_brief.py pins it)
-    sol._brief_v21 = lambda: "brief"
+    _, ev, writer = _sol(tmp_path, _Blocking(), library_mode=True)
+    writer.load = EPS.__getitem__
+    # the brief is not under test here (it reads P2's and P4's constants; test_writer_library_brief.py pins it)
+    writer._brief_library_mode = lambda: "brief"
     req = PassRequest("incremental", "svc", ["e1", "e2"], False)
-    task = asyncio.ensure_future(sol.run(req, "p9"))
+    task = asyncio.ensure_future(writer.run(req, "p9"))
     for _ in range(600):
-        live = getattr(sol, "_live", None)
+        live = getattr(writer, "_live", None)
         if live is not None and (live[0] / "text/extra.py").exists():
             break
         await asyncio.sleep(0.05)
@@ -146,14 +146,14 @@ async def _cancelled_pass(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_a_cancelled_pass_keeps_its_work_as_a_draft(tmp_path):
-    ev, sol = await _cancelled_pass(tmp_path)
+    ev, writer = await _cancelled_pass(tmp_path)
     patch_blob, refused, passed = ev.db.execute(
         "SELECT patch_blob, items_refused, passed FROM passes WHERE pass_id='p9'",
     ).fetchone()
-    assert patch_blob and b"text/extra.py" in sol.gate.blobs.get(patch_blob)
+    assert patch_blob and b"text/extra.py" in writer.gate.blobs.get(patch_blob)
     assert json.loads(refused) == {"memory.text.extra:more": ["cancelled"]}
     assert passed == 0
-    assert sol.mem.head() == sol.mem.head(
+    assert writer.mem.head() == writer.mem.head(
         "main",
     )  # nothing landed: main is where it was
 
@@ -164,18 +164,23 @@ async def test_a_cancelled_pass_keeps_its_work_as_a_draft(tmp_path):
 async def test_a_cancelled_pass_round_row_holds_the_cancelled_result(tmp_path):
     """Needs P2's pass_rounds (k) and P5's drafts: runs once they are integrated."""
     drafts = pytest.importorskip("unify.memory_v2.drafts")
-    ev, sol = await _cancelled_pass(tmp_path)
+    ev, writer = await _cancelled_pass(tmp_path)
     rows = ev.pass_rounds("write")
     assert rows[-1]["pass_id"] == "p9" and rows[-1]["rounds"] is None
-    assert b"cancelled before the gate ran" in sol.gate.blobs.get(rows[-1]["gate_blob"])
+    assert b"cancelled before the gate ran" in writer.gate.blobs.get(
+        rows[-1]["gate_blob"],
+    )
     assert drafts.draft_states(rows)["p9"] == "open"
 
 
 def test_v2_records_a_cancelled_pass_as_before(tmp_path):
     """Off the v2.1 switch, the failed row is v2's byte for byte: no patch and no refused items."""
-    _, ev, sol = _sol(tmp_path, _Blocking())
-    sol._cancel_patch = ("x" * 64, ["memory.text.extra:more"])  # ignored: v21 is off
-    sol._fail(
+    _, ev, writer = _sol(tmp_path, _Blocking())
+    writer._cancel_patch = (
+        "x" * 64,
+        ["memory.text.extra:more"],
+    )  # ignored: library_mode is off
+    writer._fail(
         PassRequest("incremental", "svc", [], False),
         "p0",
         "0" * 40,
@@ -202,12 +207,12 @@ def _supervised_driver(tmp_path, monkeypatch, journal=None):
         def transcript(self, pass_id):
             return []
 
-    monkeypatch.setattr(consolidate, "SolPass", _SlowSol)
+    monkeypatch.setattr(consolidate, "WriterPass", _SlowSol)
     monkeypatch.setattr(consolidate, "unillm_turn", lambda *a, **k: None)
     stores = tc._stores(tmp_path)
     sha, _ = tc._record(stores, "e1")
     settings = tc._settings(e=1)
-    settings.UNIFY_MEMORY_V21, settings.UNIFY_MEMORY_V21_E = "on", 1
+    settings.UNIFY_MEMORY_LIBRARY, settings.UNIFY_MEMORY_LIBRARY_E = "on", 1
     sup = ap.Supervisor(
         0.3,
         asyncio.Event(),
@@ -255,7 +260,7 @@ async def test_run_due_passes_under_the_supervisor_ends_at_the_bound_and_books_t
     )
     loop = asyncio.get_running_loop()
 
-    def sol_calls():  # the proxy journals two Sol requests while the pass runs; one is never priced
+    def writer_calls():  # the proxy journals two Sol requests while the pass runs; one is never priced
         rows = [
             {
                 "origin": "request_started",
@@ -284,7 +289,7 @@ async def test_run_due_passes_under_the_supervisor_ends_at_the_bound_and_books_t
         with open(j, "a") as fh:
             fh.writelines(json.dumps(r) + "\n" for r in rows)
 
-    loop.call_later(0.1, sol_calls)
+    loop.call_later(0.1, writer_calls)
     out = await _drive(consolidate, stores, sha, settings, sup)
     assert out == [] and sup.last.ended == "deadline"
     end = _end(consolidate, stores)
@@ -297,7 +302,7 @@ async def test_run_due_passes_under_the_supervisor_ends_at_the_bound_and_books_t
     assert settle["phase"] == "settle" and settle["usd"] == "0.40"
     assert settle["unknown_cost_calls"] == 1 and settle["unknown_usd_each"] == "13.125"
     # the run guard books the unpriced call at the worst case of one Sol call, not at the per-call reserve
-    assert consolidate.committed_sol_usd(stores) == Decimal("13.525")
+    assert consolidate.committed_writer_usd(stores) == Decimal("13.525")
 
 
 @pytest.mark.asyncio
@@ -312,7 +317,7 @@ async def test_with_no_journal_the_pass_is_not_settled_and_its_whole_cap_stays_c
     assert end["usd"] == "unknown" and end["unknown_cost_calls"] is None
     ledger = _ledger(consolidate, stores)
     assert [r["phase"] for r in ledger] == ["reserve"]
-    assert consolidate.committed_sol_usd(stores) == Decimal(ledger[0]["cap_usd"])
+    assert consolidate.committed_writer_usd(stores) == Decimal(ledger[0]["cap_usd"])
 
 
 @pytest.mark.asyncio
@@ -328,7 +333,7 @@ async def test_a_due_curate_runs_after_write_in_the_same_worker_and_served_is_pu
     from tests.memory_v2.integration import test_consolidate as tc
     from unify.memory_v2 import memory_writer
     from unify.memory_v2.integration import consolidate
-    from unify.memory_v2.sol_pass import PassOutcome
+    from unify.memory_v2.writer_pass import PassOutcome
 
     order = []
 
@@ -344,7 +349,7 @@ async def test_a_due_curate_runs_after_write_in_the_same_worker_and_served_is_pu
             return []
 
     due = iter([SimpleNamespace(suspects={}, fired={"index": "index over its view"})])
-    monkeypatch.setattr(consolidate, "SolPass", _QuickSol)
+    monkeypatch.setattr(consolidate, "WriterPass", _QuickSol)
     monkeypatch.setattr(consolidate, "unillm_turn", lambda *a, **k: None)
     monkeypatch.setattr(
         consolidate,
@@ -365,7 +370,7 @@ async def test_a_due_curate_runs_after_write_in_the_same_worker_and_served_is_pu
     stores = tc._stores(tmp_path)
     sha, _ = tc._record(stores, "e1")
     settings = tc._settings(e=1)
-    settings.UNIFY_MEMORY_V21, settings.UNIFY_MEMORY_V21_E = "on", 1
+    settings.UNIFY_MEMORY_LIBRARY, settings.UNIFY_MEMORY_LIBRARY_E = "on", 1
     sup = ap.Supervisor(30.0, asyncio.Event(), models=("openai/gpt-6-sol",))
     out = await _drive(consolidate, stores, sha, settings, sup)
     write = next(o for o in order if len(o) == 2)
@@ -387,7 +392,7 @@ async def test_a_stopped_worker_starts_no_curate(monkeypatch, tmp_path):
 
     from tests.memory_v2.integration import test_consolidate as tc
     from unify.memory_v2.integration import consolidate
-    from unify.memory_v2.sol_pass import PassOutcome
+    from unify.memory_v2.writer_pass import PassOutcome
 
     stop = asyncio.Event()
     kinds = []
@@ -404,7 +409,7 @@ async def test_a_stopped_worker_starts_no_curate(monkeypatch, tmp_path):
         def transcript(self, pass_id):
             return []
 
-    monkeypatch.setattr(consolidate, "SolPass", _StoppingSol)
+    monkeypatch.setattr(consolidate, "WriterPass", _StoppingSol)
     monkeypatch.setattr(consolidate, "unillm_turn", lambda *a, **k: None)
     monkeypatch.setattr(
         consolidate,
@@ -414,7 +419,7 @@ async def test_a_stopped_worker_starts_no_curate(monkeypatch, tmp_path):
     stores = tc._stores(tmp_path)
     sha, _ = tc._record(stores, "e1")
     settings = tc._settings(e=1)
-    settings.UNIFY_MEMORY_V21, settings.UNIFY_MEMORY_V21_E = "on", 1
+    settings.UNIFY_MEMORY_LIBRARY, settings.UNIFY_MEMORY_LIBRARY_E = "on", 1
     sup = ap.Supervisor(30.0, stop, models=("openai/gpt-6-sol",))
     await _drive(consolidate, stores, sha, settings, sup)
     assert "curate" not in kinds and len(sup.runs) == 1

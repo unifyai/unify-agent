@@ -21,9 +21,9 @@ from unify.memory_v2.memory_writer import land, publish, served_head
 
 SLEEPER = "import time; time.sleep(30)"
 SETTINGS = SimpleNamespace(
-    UNIFY_MEMORY_V21="on",
-    UNIFY_MEMORY_V21_E=1,
-    UNIFY_MEMORY_V21_PASS_WALL_S=60,
+    UNIFY_MEMORY_LIBRARY="on",
+    UNIFY_MEMORY_LIBRARY_E=1,
+    UNIFY_MEMORY_LIBRARY_PASS_WALL_S=60,
 )
 
 
@@ -40,17 +40,17 @@ def test_a_request_pins_the_served_head_and_never_sees_an_unrecorded_pass(tmp_pa
     checkout = pytest.importorskip("unify.memory_v2.integration.checkout")
     if not hasattr(
         checkout,
-        "export_actor_v21",
+        "export_actor_library_mode",
     ):  # importorskip skips only a missing module
-        pytest.skip("needs P3's checkout.export_actor_v21")
-    export_actor_v21 = checkout.export_actor_v21
+        pytest.skip("needs P3's checkout.export_actor_library_mode")
+    export_actor_library_mode = checkout.export_actor_library_mode
     write_records = pytest.importorskip("unify.memory_v2.item_records").write_records
     LIB = pytest.importorskip("tests.memory_v2.test_layout").LIB
     _commit = pytest.importorskip("tests.memory_v2.test_library_helper")._commit
 
     mem = Repo.init_bare(tmp_path / "memory")
     old = _commit(mem, LIB, "seed")
-    export_actor_v21(
+    export_actor_library_mode(
         mem.git_dir,
         served_head(mem),
         tmp_path / "a",
@@ -65,7 +65,7 @@ def test_a_request_pins_the_served_head_and_never_sees_an_unrecorded_pass(tmp_pa
     assert land(mem, candidate, old) == candidate  # one writer, one compare-and-swap
     # no records map yet: still not servable
     assert mem.head() == candidate and served_head(mem) == old
-    export_actor_v21(mem.git_dir, served_head(mem), tmp_path / "b")
+    export_actor_library_mode(mem.git_dir, served_head(mem), tmp_path / "b")
     assert _snapshot(tmp_path / "b") == before
     write_records(mem, candidate, {})  # P5's after_passes writes the map
     # the last step: the pin-able head advances
@@ -73,7 +73,7 @@ def test_a_request_pins_the_served_head_and_never_sees_an_unrecorded_pass(tmp_pa
     assert (
         _snapshot(tmp_path / "a") == before
     )  # the earlier request's copy is untouched
-    export_actor_v21(mem.git_dir, served_head(mem), tmp_path / "c")
+    export_actor_library_mode(mem.git_dir, served_head(mem), tmp_path / "c")
     assert "memory/text/extra.py" in _snapshot(tmp_path / "c")
 
 
@@ -167,7 +167,7 @@ def test_not_due_spawns_nothing(tmp_path):
         "1" * 40,
         effort="low",
         settings=SimpleNamespace(
-            UNIFY_MEMORY_V21="on",
+            UNIFY_MEMORY_LIBRARY="on",
         ),  # E = 100k: one episode is not enough
         emit=None,
         popen=lambda *a, **k: calls.append(a),
@@ -233,7 +233,7 @@ def test_a_record_without_a_start_time_owns_nothing():
     assert ap.owns(live)
 
 
-# --- UNIFY_MEMORY_V21_WAIT_SLOT (MAIN, 10 Oct: hosts whose sandbox ends the controller's processes with it) ---
+# --- UNIFY_MEMORY_LIBRARY_WAIT_SLOT (MAIN, 10 Oct: hosts whose sandbox ends the controller's processes with it) ---
 
 
 def _spawn(tmp_path, seconds):
@@ -271,7 +271,7 @@ def test_wait_slot_on_returns_only_after_the_worker_ends(tmp_path):
         out = asyncio.run(
             wait_after_finish(
                 paths,
-                SimpleNamespace(**vars(SETTINGS), UNIFY_MEMORY_V21_WAIT_SLOT="on"),
+                SimpleNamespace(**vars(SETTINGS), UNIFY_MEMORY_LIBRARY_WAIT_SLOT="on"),
             ),
         )
         assert out == {"waited": True, "ended": "worker_ended"} and not ap.owns(rec)
@@ -361,11 +361,11 @@ def test_wait_slot_relays_the_slots_pass_events_once_in_order(tmp_path):
 TOKEN_CHILD = """
 import hashlib, json, os, sys
 home = sys.argv[sys.argv.index("--home") + 1]
-fd = int(os.environ["UNIFY_MEMORY_V2_SOL_TOKEN_FD"])
+fd = int(os.environ["UNIFY_MEMORY_V2_WRITER_TOKEN_FD"])
 data = os.read(fd, 4096)
 out = {
     "read": hashlib.sha256(data).hexdigest(),
-    "names": sorted(k for k in os.environ if "SOL_TOKEN" in k.upper()),
+    "names": sorted(k for k in os.environ if "WRITER_TOKEN" in k.upper()),
     "values": [hashlib.sha256(v.encode()).hexdigest() for v in os.environ.values()],
 }
 json.dump(out, open(os.path.join(home, "token-child.json"), "w"))
@@ -374,13 +374,14 @@ json.dump(out, open(os.path.join(home, "token-child.json"), "w"))
 
 def test_the_route_token_reaches_the_worker_through_a_pipe_only(tmp_path, monkeypatch):
     """0f, 10 Oct: the parent removed Sol's token from its environment, so the worker gets it over a fresh pipe
-    named by UNIFY_MEMORY_V2_SOL_TOKEN_FD: never in argv, the environment or a file."""
+    named by UNIFY_MEMORY_V2_WRITER_TOKEN_FD: never in argv, the environment or a file.
+    """
     import hashlib
     import json as _json
 
     token = "test-route-token-0123456789abcdef"  # a stand-in, never a real credential
     monkeypatch.setenv(
-        "UNIFY_MEMORY_V2_SOL_TOKEN",
+        "UNIFY_MEMORY_V2_WRITER_TOKEN",
         token,
     )  # a stray name the worker must not see
     paths = Paths.under(tmp_path)
@@ -404,7 +405,7 @@ def test_the_route_token_reaches_the_worker_through_a_pipe_only(tmp_path, monkey
     finally:
         _stop(rec)
     assert got["read"] == hashlib.sha256((token + "\n").encode()).hexdigest()
-    assert got["names"] == ["UNIFY_MEMORY_V2_SOL_TOKEN_FD"]
+    assert got["names"] == ["UNIFY_MEMORY_V2_WRITER_TOKEN_FD"]
     assert hashlib.sha256(token.encode()).hexdigest() not in got["values"]
 
 

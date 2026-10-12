@@ -119,7 +119,7 @@ def _jsonl(rows: list[Any]) -> str:
 
 #: A reference to a value stored as a blob ({"__capped__": {excerpt, blob, bytes}}, BlobStore.cap_text).
 _REF = "__capped__"
-#: Record format 2 (UNIFY_MEMORY_V21): a recorded value that is itself a dict with a _REF or _LITERAL key is
+#: Record format 2 (UNIFY_MEMORY_LIBRARY): a recorded value that is itself a dict with a _REF or _LITERAL key is
 #: written as {_LITERAL: value}, so it is never read as a reference (RUNTIME's T7 checklist, point 2).
 _LITERAL = "__literal__"
 #: The record format a v2.1 writer stamps in meta.json; a record without the key is format 1.
@@ -150,7 +150,7 @@ class EpisodeWriter:
         redactor: Redactor,
         response_cap: int = 16384,
         *,
-        v21: bool = False,
+        library_mode: bool = False,
     ) -> None:
         self.repo, self.blobs, self.redactor, self.cap = (
             repo,
@@ -158,8 +158,8 @@ class EpisodeWriter:
             redactor,
             response_cap,
         )
-        # UNIFY_MEMORY_V21: record format 2 (every large value as a blob; values like a reference escaped)
-        self.v21 = v21
+        # UNIFY_MEMORY_LIBRARY: record format 2 (every large value as a blob; values like a reference escaped)
+        self.library_mode = library_mode
 
     def _capped(self, value: Any) -> Any:
         text = json.dumps(value, sort_keys=True, default=str)
@@ -201,7 +201,9 @@ class EpisodeWriter:
         actions = []
         for a in ep.actions:
             row = r.obj(asdict(a))
-            if self.v21:  # format 2: args, kwargs and the response, each stored whole
+            if (
+                self.library_mode
+            ):  # format 2: args, kwargs and the response, each stored whole
                 row["args"] = [self._stored(x) for x in row["args"]]
                 row["kwargs"] = {k: self._stored(v) for k, v in row["kwargs"].items()}
                 row["response"] = self._stored(row["response"])
@@ -209,7 +211,7 @@ class EpisodeWriter:
                 row["response"] = self._capped(row["response"])
             actions.append(row)
         request = r.obj(ep.request)
-        if self.v21:
+        if self.library_mode:
             meta["record_format"] = RECORD_FORMAT
             request = [self._stored(x) for x in request]
         files = {

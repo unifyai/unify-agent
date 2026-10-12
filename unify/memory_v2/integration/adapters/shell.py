@@ -126,7 +126,7 @@ def bounded_tail(
     """The redacted last ``limit`` bytes (UTF-8) of ``text``.
 
     Redaction runs on the whole text before the cut, so a secret that straddles
-    the cut is never left half-visible. ``None`` keeps the whole text (``UNIFY_MEMORY_V21``).
+    the cut is never left half-visible. ``None`` keeps the whole text (``UNIFY_MEMORY_LIBRARY``).
     """
     if limit is None:
         return redactor.text(_text_of(text))
@@ -166,7 +166,7 @@ def _argv(raw: Any, redactor: Redactor, full: bool = False) -> list[str]:
     if isinstance(raw, (str, bytes, os.PathLike)):
         return ["sh", "-c", _arg(raw, redactor, full)]
     if isinstance(raw, (list, tuple)):
-        if full:  # UNIFY_MEMORY_V21: every entry, whole
+        if full:  # UNIFY_MEMORY_LIBRARY: every entry, whole
             return [_arg(a, redactor, True) for a in raw]
         out = [_arg(a, redactor) for a in raw[:MAX_ARGV]]
         if len(raw) > MAX_ARGV:
@@ -231,7 +231,7 @@ def action_from_audit(
     tail_bytes: int | None = MAX_TAIL_BYTES,
     full: bool = False,
 ) -> Action:
-    """One process record from the audit adapter as a shell action (*full*: nothing cut; ``UNIFY_MEMORY_V21``)."""
+    """One process record from the audit adapter as a shell action (*full*: nothing cut; ``UNIFY_MEMORY_LIBRARY``)."""
     red = redactor or Redactor()
     args = _argv(record.get("argv", record.get("args")), red, full)
     channel = program_of(args, record.get("exe") or record.get("executable"), red)
@@ -308,7 +308,7 @@ def shell_actions(
     bash cells first, then process records in the order they were audited).
     Audit records of other events (file opens, listings) are skipped."""
     red = redactor or Redactor()
-    if full:  # UNIFY_MEMORY_V21: whole arguments and whole outputs
+    if full:  # UNIFY_MEMORY_LIBRARY: whole arguments and whole outputs
         tail_bytes = None
     rows = [
         action_from_cell(r, red, tail_bytes=tail_bytes, full=full) for r in cell_results

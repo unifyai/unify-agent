@@ -9,7 +9,7 @@ outcome whose check reason is ``SENTINEL-7f3a`` is posted, then ``{"quit": true}
 
 Sol is a fake model turn put over the turn the consolidation driver builds (``consolidate.unillm_turn``): it
 records every message it is sent and finishes at once with no manifest. What was staged for Sol is copied
-out as it is staged (``SolPass._stage_inputs``), so the sentinel check covers Sol's inputs too.
+out as it is staged (``WriterPass._stage_inputs``), so the sentinel check covers Sol's inputs too.
 
 Checked: the jsonl lines (the accepted outcome, a consolidation start and end with ``no_manifest``, decimal
 USD and Sol's effort equal to the actor's, then ``ended``); the system prompt ends with the memory section
@@ -49,7 +49,7 @@ from tests.memory_v2.integration.fake_tracks import dump_home
 from tests.memory_v2.integration.test_checkout import _seed
 from tests.scripted_model import ScriptedModel, _text, cell, reply, scripted
 from unify import sandbox
-from unify.memory_v2 import sol_pass
+from unify.memory_v2 import writer_pass
 from unify.memory_v2.blobs import BlobStore
 from unify.memory_v2.episodes import episode_dir, load_episode
 from unify.memory_v2.gitio import Repo
@@ -62,8 +62,8 @@ from unify.settings import SETTINGS
 
 SENTINEL = "SENTINEL-7f3a"
 EFFORT = "medium"  # the actor's reasoning effort for the run
-SOL_EFFORT = EFFORT  # Sol's matches the actor's by default (the lead, 8 Oct)
-SOL_USD = "0.0000005"  # what the fake Sol turn reports per call
+WRITER_EFFORT = EFFORT  # Sol's matches the actor's by default (the lead, 8 Oct)
+WRITER_USD = "0.0000005"  # what the fake Sol turn reports per call
 CHANNEL = "worktree:workspace"
 STRAY = "env/stray_note.py"
 PLAIN_DECIMAL = re.compile(r"^[0-9]+(\.[0-9]+)?\Z")
@@ -112,22 +112,26 @@ class _FakeSol:
         async def turn(messages: list[dict], tools: list[dict]) -> tuple[dict, str]:
             self.sent.append(json.dumps(messages, default=str))
             call = {
-                "id": f"sol_finish_{len(self.sent)}",
+                "id": f"writer_finish_{len(self.sent)}",
                 "type": "function",
                 "function": {
                     "name": "finish",
                     "arguments": json.dumps({"summary": "nothing to keep"}),
                 },
             }
-            return {"role": "assistant", "content": "", "tool_calls": [call]}, SOL_USD
+            return {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [call],
+            }, WRITER_USD
 
         return turn
 
 
-def _install_fake_sol(monkeypatch) -> _FakeSol:
+def _install_fake_writer(monkeypatch) -> _FakeSol:
     fake = _FakeSol()
     monkeypatch.setattr(consolidate, "unillm_turn", fake.factory)
-    original = sol_pass.SolPass._stage_inputs
+    original = writer_pass.WriterPass._stage_inputs
 
     def staging(self, req, inputs, *tree):
         original(self, req, inputs, *tree)
@@ -135,7 +139,7 @@ def _install_fake_sol(monkeypatch) -> _FakeSol:
             if path.is_file() and not path.is_symlink():
                 fake.staged.append(path.read_bytes())
 
-    monkeypatch.setattr(sol_pass.SolPass, "_stage_inputs", staging)
+    monkeypatch.setattr(writer_pass.WriterPass, "_stage_inputs", staging)
     return fake
 
 
@@ -214,12 +218,12 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch, surfacing):
         1,
     )  # the first episode makes a pass due
     for name in (
-        "UNIFY_MEMORY_V2_SOL_MODEL",
-        "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS",
-        "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD",
-        "UNIFY_MEMORY_V2_SOL_EFFORT",
-        "UNIFY_MEMORY_V2_SOL_EFFORT_SCALE",
-        "UNIFY_MEMORY_V2_SOL_MAX_CALLS",
+        "UNIFY_MEMORY_V2_WRITER_MODEL",
+        "UNIFY_MEMORY_V2_WRITER_ALLOWANCE_USD_PER_TOKENS",
+        "UNIFY_MEMORY_V2_WRITER_RUN_GUARD_USD",
+        "UNIFY_MEMORY_V2_WRITER_EFFORT",
+        "UNIFY_MEMORY_V2_WRITER_EFFORT_SCALE",
+        "UNIFY_MEMORY_V2_WRITER_MAX_CALLS",
         "UNIFY_MEMORY_V2_DOCSTRINGS",
         "UNIFY_MEMORY_V2_SOFT_BUDGET",
     ):
@@ -229,7 +233,7 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch, surfacing):
     monkeypatch.setattr(SETTINGS, "UNIFY_REASONING_EFFORT", EFFORT)
     monkeypatch.setattr(sandbox, "_POLICY_CACHE", None)
     monkeypatch.setattr(request_mod, "_CURRENT", None)
-    fake = _install_fake_sol(monkeypatch)
+    fake = _install_fake_writer(monkeypatch)
 
     # ── visit 1 ──────────────────────────────────────────────────────────────
     exports: list[list[str]] = (
@@ -266,7 +270,7 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch, surfacing):
     assert start["pass_id"] == end["pass_id"]
     eid = start["episodes"][0]
     assert start["episodes"] == [eid] and start["pass_id"] == f"{eid}.p0"
-    assert start["sol_model"] == defaults["UNIFY_MEMORY_V2_SOL_MODEL"].default
+    assert start["writer_model"] == defaults["UNIFY_MEMORY_V2_WRITER_MODEL"].default
     # E x the default allowance x the medium scale (2), a plain decimal; medium's 80 calls
     assert start["cap_usd"] == "0.00000146"
     assert (start["max_calls"], start["effort_scale"]) == (80, "2")
@@ -274,11 +278,11 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch, surfacing):
     assert "no_manifest" in end["reason_codes"], end
     assert end["gate_passed"] is False and end["calls"] == 1
     assert isinstance(end["usd"], str) and PLAIN_DECIMAL.match(end["usd"]), end
-    assert Decimal(end["usd"]) == Decimal(SOL_USD)
+    assert Decimal(end["usd"]) == Decimal(WRITER_USD)
     # Sol's effort matches the actor's: the event and the turn Sol was given
-    assert start["sol_effort"] == SOL_EFFORT
-    assert fake.efforts == [SOL_EFFORT] and len(fake.sent) == 1
-    assert fake.models == [start["sol_model"]]
+    assert start["writer_effort"] == WRITER_EFFORT
+    assert fake.efforts == [WRITER_EFFORT] and len(fake.sent) == 1
+    assert fake.models == [start["writer_model"]]
     actor_calls = model.of("actor")
     assert actor_calls[0].request.get("reasoning_effort") in (None, EFFORT)
 
@@ -381,8 +385,8 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch, surfacing):
     assert len(passes) == 1 and passes[0][:2] == (start["pass_id"], 0), passes
     assert "no manifest" in passes[0][2]
     costs = [json.loads(x) for x in episodes.notes(sha, ref="costs")]
-    assert [(c["purpose"], c["usd"], c["sol_effort"]) for c in costs] == [
-        ("sol", SOL_USD, SOL_EFFORT),
+    assert [(c["purpose"], c["usd"], c["writer_effort"]) for c in costs] == [
+        ("sol", WRITER_USD, WRITER_EFFORT),
     ]
     events = [json.loads(x) for x in paths.events.read_text().splitlines() if x.strip()]
     assert events == [start, end]

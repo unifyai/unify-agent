@@ -207,11 +207,14 @@ def render_readme(tree: Path) -> str:
 
 # Sol's first message carries the README while it fits this many estimated tokens (M9); past it, a compact
 # view (channel lines and one line per function) cut to the same budget.
-SOL_README_BUDGET_TOKENS = 2000
+WRITER_README_BUDGET_TOKENS = 2000
 _COMPACT_SUMMARY_CHARS = 100
 
 
-def readme_for_sol(tree: Path, budget_tokens: int = SOL_README_BUDGET_TOKENS) -> str:
+def readme_for_writer(
+    tree: Path,
+    budget_tokens: int = WRITER_README_BUDGET_TOKENS,
+) -> str:
     """The library part of Sol's first message under ``catalogue``: the README, or past *budget_tokens*
     the channel lines and one ``env.<channel>.<function>: <summary>`` line per function, as many as fit,
     with how to read the rest (``help()`` in the box, or the module's source). Bounded however large the

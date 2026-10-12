@@ -133,10 +133,10 @@ FIXTURE_MAX_BYTES = 64 * 1024
 MIN_KILL = Decimal("0.5")
 # memory v2.1 (spec §13.4, the test-quality study): the mutation kill share is gated per changed function at
 # MUTATION_MIN (0.7 after the first replay). Guard coverage, the kill rate of dropped-guard (``drop_raise``) mutants,
-# is measured and recorded only; GUARD_MIN_V211 is the gate it gets from v2.1.1. MAX_GUARD_MUTANTS bounds the
+# is measured and recorded only; GUARD_MIN_KILL is the gate it gets from v2.1.1. MAX_GUARD_MUTANTS bounds the
 # extra dropped-guard mutants run to measure it.
 MUTATION_MIN = Decimal("0.6")
-GUARD_MIN_V211 = Decimal("0.5")
+GUARD_MIN_KILL = Decimal("0.5")
 MAX_GUARD_MUTANTS = 8
 # Under the fixture-size switch, an exported response at least 1/RESPONSE_BLOB_SHARE of the fixture bound also
 # becomes a blob (1024 bytes at the default 64 KiB bound): a test file then holds at least 64 inline copies of
@@ -180,7 +180,7 @@ class QAConfig:
     mutant_s: float = MUTANT_S
     budget_s: float = BUDGET_S
     fixture_max_bytes: int = FIXTURE_MAX_BYTES
-    v21: bool = (
+    library_mode: bool = (
         False  # memory v2.1: plain recorded-inputs files, recorded measures, guard coverage
     )
     guard_mutants: int = MAX_GUARD_MUTANTS
@@ -254,14 +254,14 @@ def pytest_env(cfg: QAConfig, variant: int = 0) -> dict[str, str]:
     return env
 
 
-def v21_config(base: QAConfig) -> QAConfig:
+def library_config(base: QAConfig) -> QAConfig:
     """The stage-5 checks memory v2.1 gates (spec §13.4): drawn inputs ``strict``, mutation at MUTATION_MIN."""
     return dataclasses.replace(
         base,
         fixtures="strict",
         mutation=True,
         min_kill=MUTATION_MIN,
-        v21=True,
+        library_mode=True,
     )
 
 
@@ -869,7 +869,7 @@ class QAChecks:
         ]
 
     def _item_path(self, item: str) -> str:
-        if self.cfg.v21:
+        if self.cfg.library_mode:
             from .fixtures import module_path
 
             return module_path(item)
@@ -1246,7 +1246,7 @@ class QAChecks:
                     "an argument no recording names, or no input in its form) and "
                     f"{timeouts} past the {PROBE_CASE_S} s limit",
                 )
-        if self.cfg.v21:
+        if self.cfg.library_mode:
             self._appended(it, drawn, samples)
             return
         # the function's own tests on the drawn inputs
@@ -1382,7 +1382,9 @@ class QAChecks:
         from .gate import _green
 
         run, cfg, item = self.run, self.cfg, it.item
-        record = run.verification.setdefault(item, {}) if cfg.v21 else {}  # v2.1
+        record = (
+            run.verification.setdefault(item, {}) if cfg.library_mode else {}
+        )  # v2.1
         record["mutation"], record["guard"] = None, None
         tests = self._tests(it)
         if not tests:
@@ -1400,7 +1402,7 @@ class QAChecks:
         chosen = mutation.choose(all_sites, self.seed, item, cfg.max_mutants)
         extra: list[mutation.Site] = []
         if (
-            cfg.v21
+            cfg.library_mode
         ):  # guard coverage (spec §13.4): every dropped-guard mutant up to the bound, measured only
             have = sum(1 for s in chosen if s.op == "drop_raise")
             extra = [s for s in all_sites if s.op == "drop_raise" and s not in chosen][
@@ -1449,7 +1451,7 @@ class QAChecks:
                     survived.append((site, text))
                 else:
                     killed.append(site)
-            if cfg.v21 and guard_total:
+            if cfg.library_mode and guard_total:
                 record["guard"] = {"killed": guard_killed, "total": guard_total}
             equivalent: list[mutation.Site] = []
             if survived and samples is not None and base:
@@ -1473,7 +1475,7 @@ class QAChecks:
                     f"{item}: no mutant changed its outputs on the recorded inputs; not judged",
                 )
                 return
-            if cfg.v21:
+            if cfg.library_mode:
                 record["mutation"] = {
                     "killed": len(killed),
                     "total": judged,
@@ -1523,7 +1525,7 @@ def _first_param(tree: Path, item: str) -> str | None:
 # --- the consolidator's brief --------------------------------------------------------------------------------
 
 # Sentences of the base brief that the stage-5 switches change: (switch test, old text, new text). A test keeps
-# every old text present in :data:`.sol_pass.SOL_SYSTEM`, so the brief cannot drift from these rewrites.
+# every old text present in :data:`.writer_pass.SOL_SYSTEM`, so the brief cannot drift from these rewrites.
 REWRITES: tuple[tuple[str, str, str], ...] = (
     (
         "on",

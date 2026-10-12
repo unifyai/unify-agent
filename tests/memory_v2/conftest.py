@@ -6,7 +6,7 @@ At import, before any test here runs:
   Manager source because its service-account key file exists), comparing values only, never printing them;
 * replace every provider key, in the environment and in unillm's loaded settings, with a placeholder, so request
   bodies a test builds can only ever hold the placeholder;
-* do the same check for memory v2's Sol route (``UNIFY_MEMORY_V2_SOL_TOKEN`` / ``_BASE_URL``) and drop it from the
+* do the same check for memory v2's Sol route (``UNIFY_MEMORY_V2_WRITER_TOKEN`` / ``_BASE_URL``) and drop it from the
   environment.
 
 ``test_no_real_provider_key_is_loadable`` then fails the suite on a host where a real key was loadable: these tests
@@ -63,15 +63,15 @@ def _real_key_seen() -> list[str]:
 #: Sol's route (unify/memory_v2/integration/switch.py): its token is a credential as well, and a test never runs
 #: with a real route. The controller's settings may already hold it (unify.settings removes it from the
 #: environment once read), so both places are looked at; names only, never values.
-SOL_ROUTE = (
-    "UNIFY_MEMORY_V2_SOL_TOKEN",
-    "UNIFY_MEMORY_V2_SOL_BASE_URL",
-    "UNIFY_MEMORY_V2_SOL_TOKEN_FD",
+WRITER_ROUTE = (
+    "UNIFY_MEMORY_V2_WRITER_TOKEN",
+    "UNIFY_MEMORY_V2_WRITER_BASE_URL",
+    "UNIFY_MEMORY_V2_WRITER_TOKEN_FD",
 )
 
 
-def _sol_token_seen() -> list[str]:
-    name = SOL_ROUTE[0]
+def _writer_token_seen() -> list[str]:
+    name = WRITER_ROUTE[0]
     seen = [
         n for n in os.environ if n.upper() == name and (os.environ[n] or "").strip()
     ]
@@ -80,13 +80,13 @@ def _sol_token_seen() -> list[str]:
         seen.append(f"{name} (loaded)")
     switch = sys.modules.get("unify.memory_v2.integration.switch")
     if getattr(switch, "_FD_TOKEN", None) is not None:  # read from its descriptor
-        seen.append(f"{SOL_ROUTE[2]} (read)")
+        seen.append(f"{WRITER_ROUTE[2]} (read)")
     return seen
 
 
-REAL_KEY_SEEN = sorted(set(_real_key_seen() + _sol_token_seen()))
+REAL_KEY_SEEN = sorted(set(_real_key_seen() + _writer_token_seen()))
 
-for _name in [n for n in os.environ if n.upper() in SOL_ROUTE]:  # any letter case
+for _name in [n for n in os.environ if n.upper() in WRITER_ROUTE]:  # any letter case
     os.environ.pop(_name, None)
 
 for _name in PROVIDER_KEYS:

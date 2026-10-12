@@ -219,7 +219,7 @@ from .held_out import (
     seen_actions,
 )
 from . import reduction
-from .gate_v21 import V21Config
+from .library_checks import LibraryConfig
 from .manifest import (
     MODULE_PATH,
     NOTES_PATH,
@@ -327,7 +327,7 @@ class GateResult:
     # an item refused only because the whole pass was).
     items_merged: list[str] = field(default_factory=list)
     items_refused: dict[str, list[str]] = field(default_factory=dict)
-    # memory v2.1 (gate_v21): the item verification records (spec §4.4) and whether CURATE is due (G4)
+    # memory v2.1 (library_checks): the item verification records (spec §4.4) and whether CURATE is due (G4)
     verification: dict[str, dict] = field(default_factory=dict)
     curate_due: bool = False
     # memory v2.1 CURATE (P6): the aliases, retirements and dropped aliases of the checked candidate; a landed
@@ -714,10 +714,10 @@ class _Run:
     episode_inputs: dict[str, list[tuple[str, int, Action]]] = field(
         default_factory=dict,
     )
-    # memory v2.1: per item, what the checks measured (gate_v21, qa); whether the index is over its view (G4)
+    # memory v2.1: per item, what the checks measured (library_checks, qa); whether the index is over its view (G4)
     verification: dict[str, dict] = field(default_factory=dict)
     curate_due: bool = False
-    # memory v2.1 CURATE (P6): what V21Checks.curate found the candidate does to aliases and retirements
+    # memory v2.1 CURATE (P6): what LibraryChecks.curate found the candidate does to aliases and retirements
     curations: list[dict] = field(default_factory=list)
     # run label -> the whole recorded output of a failing run (GateResult.outputs; memory v2.1)
     outputs: dict[str, str] = field(default_factory=dict)
@@ -794,7 +794,7 @@ class Gate:
         surfacing: str = "index",
         soft_budget: bool = False,
         qa: QAConfig | None = None,
-        v21: V21Config | None = None,
+        library_mode: LibraryConfig | None = None,
     ) -> None:
         """The v2.1 switches (:mod:`.integration.switch`; each default is the v2 behaviour):
         *docstring_standard* turns on the lean docstring standard (G1) and its examples run (G3) for new or
@@ -802,9 +802,9 @@ class Gate:
         commit for the export's catalogue; *soft_budget* makes *budget_tokens* G4's soft budget (a note,
         never a refusal) instead of the index's hard cap. *qa* is the stage-5 test checks' configuration
         (:class:`.qa.QAConfig`; None runs none of them). Sol's brief follows the gate's switches.
-        *v21* (``UNIFY_MEMORY_V21``, :class:`.gate_v21.V21Config`; None is v2): with ``layout``, covers have
+        *library_mode* (``UNIFY_MEMORY_LIBRARY``, :class:`.library_checks.LibraryConfig`; None is v2): with ``layout``, covers have
         no channel rule (G2), and G3's behaviour check and per-item reduction are scoped by the import graph
-        (D42). With ``checks``, the v2.1 gate checks (:mod:`.gate_v21`) and stage 5
+        (D42). With ``checks``, the v2.1 gate checks (:mod:`.library_checks`) and stage 5
         in v2.1 mode.
         """
         if surfacing not in ("index", "catalogue"):
@@ -825,21 +825,21 @@ class Gate:
         self.pytest = pytest_runner
         # stage-5 test checks (memory v2.1); the default runs none of them
         self.qa = qa if qa is not None else QAConfig()
-        self.v21 = v21
-        if v21 is not None and v21.checks:
-            if not v21.layout:
+        self.library_mode = library_mode
+        if library_mode is not None and library_mode.checks:
+            if not library_mode.layout:
                 raise ValueError(
-                    "the v2.1 gate checks need the v2.1 library layout (V21Config.layout)",
+                    "the v2.1 gate checks need the v2.1 library layout (LibraryConfig.layout)",
                 )
-            from .qa import v21_config
+            from .qa import library_config
 
-            self.qa = v21_config(self.qa)
+            self.qa = library_config(self.qa)
 
     @property
     def _layout21(self) -> bool:
         """Memory v2.1's library layout rules (D42) are on."""
-        v21 = getattr(self, "v21", None)
-        return v21 is not None and bool(v21.layout)
+        library_mode = getattr(self, "library_mode", None)
+        return library_mode is not None and bool(library_mode.layout)
 
     # -- public API ---------------------------------------------------------------------------------------
     def check(
@@ -957,7 +957,7 @@ class Gate:
                 self._g5(run)  # needs G2's validated covers
             self._g4(run)
             self._g6(run)
-            v = self._v21(run)
+            v = self._library_mode(run)
             if v is not None:
                 v.static()
             qa = QAChecks(self, run)
@@ -1020,7 +1020,7 @@ class Gate:
             )
             return res
         landed, landed_manifest = c_sha, manifest
-        if seed is None and self._v21_checks():
+        if seed is None and self._library_checks():
             from .qa import seed_of
 
             seed = seed_of(
@@ -1076,7 +1076,7 @@ class Gate:
             raise
         if res.passed:
             try:
-                if isinstance(self.v21, V21Config):
+                if isinstance(self.library_mode, LibraryConfig):
                     # memory v2.1 (P7 Amendment A): the one writer; re-targets over status commits only
                     from .memory_writer import land
 
@@ -1098,7 +1098,7 @@ class Gate:
                     self.ev.add_item_evidence(it.item, eid, "source")
             for item, eid, idx in sorted(covers):
                 self.ev.add_cover(item, eid, idx)
-            if self._v21_checks():
+            if self._library_checks():
                 # Amendment C: typed covers persist beside covers, for the behaviour check and deletion (G5)
                 from .procedures import cover_raw
 
@@ -1120,35 +1120,38 @@ class Gate:
             res.items_merged = []
             res.items_refused = {i: res.items_refused.get(i) or ["pass"] for i in ids}
         self._record(p_sha, c_sha, pass_id, kind, channel, usd, res)
-        if self._v21_checks() and res.verification:
+        if self._library_checks() and res.verification:
             # the item verification records (spec §4.4), for P5's item records; measured, never a refusal
             self.ev.add_pass_notes(
                 pass_id,
                 [
-                    "v21-verification "
+                    "library_mode-verification "
                     + json.dumps(res.verification, sort_keys=True, default=str),
                 ],
             )
-        if self.v21 is not None and res.passed and res.curations:
+        if self.library_mode is not None and res.passed and res.curations:
             # CURATE's aliases, retirements and dropped aliases (spec §10.4), for P5's records (alias_of, deprecated)
             self.ev.record_curations(pass_id, res.merged, res.curations)
         return res
 
     # -- helpers ------------------------------------------------------------------------------------------
-    def _v21_checks(self) -> bool:
-        return self.v21 is not None and self.v21.checks
+    def _library_checks(self) -> bool:
+        return self.library_mode is not None and self.library_mode.checks
 
     def _parse_manifest(self, manifest: object) -> Manifest:
-        """The manifest under the gate's layout: v2.1's (:func:`.manifest.parse_manifest` ``v21``) or v2's."""
-        return parse_manifest(manifest, v21=self.v21 is not None and self.v21.layout)
+        """The manifest under the gate's layout: v2.1's (:func:`.manifest.parse_manifest` ``library_mode``) or v2's."""
+        return parse_manifest(
+            manifest,
+            library_mode=self.library_mode is not None and self.library_mode.layout,
+        )
 
-    def _v21(self, run: _Run):
-        """The memory v2.1 checks of *run* (:mod:`.gate_v21`), or None with them off."""
-        if not self._v21_checks():
+    def _library_mode(self, run: _Run):
+        """The memory v2.1 checks of *run* (:mod:`.library_checks`), or None with them off."""
+        if not self._library_checks():
             return None
-        from .gate_v21 import V21Checks
+        from .library_checks import LibraryChecks
 
-        return V21Checks(self, run)
+        return LibraryChecks(self, run)
 
     def _resolve(self, rev: str) -> str | None:
         if not isinstance(rev, str) or not rev or rev.startswith("-") or "\n" in rev:
@@ -1173,7 +1176,9 @@ class Gate:
     ) -> PytestOutcome:
         # memory v2.1 (spec P5): the whole output is spooled and kept as a blob; v2 passes nothing new
         spool = (
-            Path(tempfile.mkdtemp(prefix="memv21-out-")) if self._v21_checks() else None
+            Path(tempfile.mkdtemp(prefix="memlib-out-"))
+            if self._library_checks()
+            else None
         )
         more = {"spool_dir": spool} if spool is not None else {}
         try:
@@ -1203,7 +1208,7 @@ class Gate:
                     **more,
                 )
             if spool is not None:
-                from .gate_v21 import keep_output
+                from .library_checks import keep_output
 
                 keep_output(o, spool, self.blobs)
             return o
@@ -1273,7 +1278,7 @@ class Gate:
         reduced = None
         try:
             if self._prepare(run):
-                v = self._v21(run)
+                v = self._library_mode(run)
                 self._g1(run)
                 if v is not None:
                     v.g1()
@@ -1332,7 +1337,7 @@ class Gate:
                 run.man,
                 run.item_fail,
                 run.c_tree,
-                v21=self._layout21,
+                library_mode=self._layout21,
             )
             manifest = reduction.build(
                 run.man,
@@ -1534,8 +1539,8 @@ class Gate:
             ch + f for ch in man.skeleton for f in ("/__init__.py", "/NOTES.md")
         }
         raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
-        if self._v21_checks() and isinstance(raw.get("fixtures"), dict):
-            # the fixtures the harness recorded: the only files under tests/data/ a pass may add (gate_v21)
+        if self._library_checks() and isinstance(raw.get("fixtures"), dict):
+            # the fixtures the harness recorded: the only files under tests/data/ a pass may add (library_checks)
             declared |= {p for p in raw["fixtures"] if isinstance(p, str)}
         for it in man.items:
             declared.add(it.path)
@@ -1730,7 +1735,7 @@ class Gate:
     def _retired_ok(self, run: _Run, test: str) -> None:
         """A retired test file is removed and imports only items this manifest deletes.
 
-        Memory v2.1: removed only; whether it may go is the ``tests_changed`` reason rule (:mod:`.gate_v21`,
+        Memory v2.1: removed only; whether it may go is the ``tests_changed`` reason rule (:mod:`.library_checks`,
         and :meth:`_suites`).
         """
         if test not in run.p_files or test in run.c_files:
@@ -1931,13 +1936,23 @@ class Gate:
                 run.p_tree,
                 lookup=self.lookup,
                 blobs=self.blobs,
-                v21=self._layout21,
+                library_mode=self._layout21,
             )
-            return snapshot_rows(run.c_tree, prev, run.shapes, v21=self._layout21)
+            return snapshot_rows(
+                run.c_tree,
+                prev,
+                run.shapes,
+                library_mode=self._layout21,
+            )
         except (
             Exception
         ):  # noqa: BLE001 - shapes are a catalogue aid, never a gate reason
-            return snapshot_rows(run.c_tree, {}, run.shapes, v21=self._layout21)
+            return snapshot_rows(
+                run.c_tree,
+                {},
+                run.shapes,
+                library_mode=self._layout21,
+            )
 
     @staticmethod
     def _rule(run: _Run, item: str, valid: list[tuple[str, int, Action]]) -> None:
@@ -2209,7 +2224,10 @@ class Gate:
 
     def _declared_aliases(self, run: _Run) -> dict[str, str]:
         """A v2.1 CURATE gate's declared aliases (old id -> target) of the checked manifest; {} otherwise."""
-        if not (self._v21_checks() and getattr(self.v21, "role", "write") == "curate"):
+        if not (
+            self._library_checks()
+            and getattr(self.library_mode, "role", "write") == "curate"
+        ):
             return {}
         raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
         found = raw.get("aliases")
@@ -2239,7 +2257,7 @@ class Gate:
     def _behaviour_targets(
         run: _Run,
         recorded: dict[str, set[tuple[str, int]]],
-        v21: bool = False,
+        library_mode: bool = False,
     ) -> list[str]:
         """The functions G3's behaviour check compares (D28), in order, before :meth:`_behaviour`'s skips.
 
@@ -2250,7 +2268,7 @@ class Gate:
         one, directly or through others. The scope uses :func:`..layout.dependants` over the import graphs of
         both versions. The graph is kept on the run for :meth:`_behaviour_owner`.
         """
-        if v21:
+        if library_mode:
             run.graph = layout.merge_graphs(
                 layout.import_graph(run.p_tree),
                 layout.import_graph(run.c_tree),
@@ -2517,9 +2535,9 @@ class Gate:
         protected: set[str] = set()
         if not run.changed:
             return protected
-        v21 = self._v21_checks()
+        library_mode = self._library_checks()
         retired = set(run.man.deleted_tests)
-        if v21:
+        if library_mode:
             raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
             stated = (
                 raw.get("tests_changed")
@@ -2535,7 +2553,11 @@ class Gate:
         touched = {p.split("/")[1] for p in run.changed if p.startswith("env/")}
 
         def file_of(t: str, rel: str) -> str:
-            return _test_file(t, rel, self._layout21) if v21 else t.split("::", 1)[0]
+            return (
+                _test_file(t, rel, self._layout21)
+                if library_mode
+                else t.split("::", 1)[0]
+            )
 
         def kept(ids: set[str], rel: str) -> set[str]:
             return {t for t in ids if file_of(t, rel) not in retired}
@@ -2548,7 +2570,7 @@ class Gate:
             },
         )
         suites = [(f"env/{ch}/tests", ch in touched, f"env/{ch}") for ch in channels]
-        if v21:
+        if library_mode:
             from .layout import classify
 
             pkgs = sorted(
@@ -2663,10 +2685,10 @@ class Gate:
 
         Memory v2.1 (D36): a CURATE pass is the clean-up pass, by its role, and a WRITE pass never is. D26's size
         measure reads v2's channel modules only; under v2.1, D28's strict comparison on the import-graph scope is
-        what proves each exempted edit keeps behaviour, and CURATE's growth rule (:meth:`.gate_v21.V21Checks.curate`)
+        what proves each exempted edit keeps behaviour, and CURATE's growth rule (:meth:`.library_checks.LibraryChecks.curate`)
         bounds the library.
         """
-        role = getattr(getattr(self, "v21", None), "role", None)
+        role = getattr(getattr(self, "library_mode", None), "role", None)
         if role is not None:
             return role == "curate"
         added = any(it.item not in run.p_bodies for it in run.man.items)
@@ -2714,7 +2736,7 @@ class Gate:
         candidate); v2's report reads only environment functions, which left every v2.1 form unknown.
         """
         if self._layout21:
-            return self._forms_v21(run, item)
+            return self._forms_library_mode(run, item)
         if run.p_inputs is None:
             try:
                 p_report = items(run.p_tree)
@@ -2737,7 +2759,7 @@ class Gate:
         return p_form, (known(c_docs[item]) if item in c_docs else p_form)
 
     @staticmethod
-    def _forms_v21(run: _Run, item: str) -> tuple[str | None, str | None]:
+    def _forms_library_mode(run: _Run, item: str) -> tuple[str | None, str | None]:
         from . import layout
 
         def doc_form(tree: Path) -> str | None:
@@ -2953,7 +2975,11 @@ class Gate:
 
         changed = self._changed_channels(run)
         scope: set[str] | None = None
-        if self.v21 is not None and self.v21.layout and run.same is not None:
+        if (
+            self.library_mode is not None
+            and self.library_mode.layout
+            and run.same is not None
+        ):
             # v2.1 (D42): the modules this pass changed, and every module that imports one of them
             from . import layout
 

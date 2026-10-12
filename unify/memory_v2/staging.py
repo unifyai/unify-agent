@@ -44,7 +44,7 @@ __all__ = [
 STAGING_DIR = "memory-staging"
 STATUS_FILES = {
     "fork.json": "fork",
-    "analyst.json": "sol_analyst",
+    "analyst.json": "writer_analyst",
     "replay_fork.json": "replay_fork",
 }
 

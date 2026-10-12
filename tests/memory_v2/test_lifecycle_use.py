@@ -24,7 +24,7 @@ def _use_rec(rows, unknown=()):
         "items_outcome_unknown": list(unknown),
         "outcomes_known": not unknown,
         "items_at_pin": [PD, WEEK, TOK],
-        "layout": "v21",
+        "layout": "library_mode",
     }
 
 

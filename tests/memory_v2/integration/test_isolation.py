@@ -182,7 +182,7 @@ def test_checker_text_never_lands_anywhere(monkeypatch, tmp_path):
         "UNIFY_MEMORY_V2_E",
         1,
     )  # the first episode makes a pass due
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD", "")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2_WRITER_RUN_GUARD_USD", "")
     monkeypatch.setattr(sandbox, "_POLICY_CACHE", None)
     monkeypatch.setattr(request_mod, "_CURRENT", None)
     _seed(home)

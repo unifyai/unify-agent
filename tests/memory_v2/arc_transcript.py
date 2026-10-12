@@ -302,7 +302,7 @@ def test_every_recorded_observation_has_lines():
 """
 # One Sol cell: read the exported episodes, cover every recorded dialogue observation on the memory
 # channel ``env``, write the item, its test and fixture, and the manifest.
-SOL_CELL = f"""import json, pathlib
+WRITER_CELL = f"""import json, pathlib
 covers, observations, sources = [], [], []
 for f in sorted(pathlib.Path("/inputs/episodes").glob("*.json")):
     ep = json.loads(f.read_text())
