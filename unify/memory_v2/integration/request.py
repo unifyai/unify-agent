@@ -812,6 +812,7 @@ class RequestRun:
             except Exception as exc:  # noqa: BLE001
                 self._error("episode", exc, progress)
                 return
+            self._index_similar(progress)
             fork = self._start_fork(handle, eid, progress)
             if consolidate:
                 await self._consolidate(eid, sha, progress, emit)
@@ -842,6 +843,19 @@ class RequestRun:
 
             # after the reply and the lock: hand over the request, and wait where the host needs it
             await asyncio.to_thread(_fork.finish, fork, SETTINGS, progress)
+
+    def _index_similar(self, progress: Callable[[str], None]) -> None:
+        """The ``similar`` tool's index entry for the episode just recorded (library mode only), built here once,
+        under its time limit, so no writer pass spends its time on it; never raises."""
+        recorded, self._recorded = getattr(self, "_recorded", None), None
+        if recorded is None or not memory_library_on():
+            return
+        try:
+            from .. import similar
+
+            similar.record_episode(self.paths.state_dir, *recorded)
+        except Exception as exc:  # noqa: BLE001 - the index never stops a request
+            self._error("similar index", exc, progress)
 
     def _start_fork(
         self,
@@ -922,6 +936,8 @@ class RequestRun:
             ),  # record format 2; off, the call as at 4675a3c45
         ).write(ep)
         stores.evidence.index_episode(ep, sha)
+        # the episode and the redactor it was stored with, for the similar index (:meth:`_index_similar`)
+        self._recorded = (ep, redactor)
         consolidate.post_checker(
             stores,
             ep.episode_id,

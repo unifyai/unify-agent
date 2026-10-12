@@ -1,7 +1,7 @@
-"""S0 / S2 helper processes never inherit the pass worker's environment (M3b, 10 Oct: the runner's live token audit
-found ``tar`` and the box's ``bwrap`` holding the Sol base URL). Each spawn site runs through its real code; every
-``subprocess.run`` it makes is answered by a real child (``env -0``) started with exactly the environment the site
-passed, and that child's environment must hold no route name and no sentinel value.
+"""Helper processes of the memory passes (the workspace export's ``git`` and ``tar``, the replay box's ``bwrap``)
+never inherit the pass worker's environment, which holds the writer's model route. Each spawn site runs through its
+real code; every ``subprocess.run`` it makes is answered by a real child (``env -0``) started with exactly the
+environment the site passed, and that child's environment must hold no route name and no sentinel value.
 """
 
 from __future__ import annotations
@@ -15,9 +15,9 @@ import pytest
 
 from unify.memory_v2 import mining
 from unify.memory_v2 import mining_behaviour
-from unify.memory_v2 import s0_pass
+from unify.memory_v2 import workspace_trees
 
-SENTINEL = "http://127.0.0.1:1/sol/v1/sentinel-route"
+SENTINEL = "http://127.0.0.1:1/writer/v1/sentinel-route"
 ROUTE_NAMES = (
     "UNIFY_MEMORY_V2_WRITER_BASE_URL",
     "UNIFY_MEMORY_V2_WRITER_TOKEN_FD",
@@ -72,24 +72,12 @@ def _clean(seen):
         assert set(env) <= {"PATH", "HOME"}, (name, sorted(env))
 
 
-def test_s0_export_tree_runs_git_and_tar_without_the_route(spawns, tmp_path):
+def test_the_workspace_export_runs_git_and_tar_without_the_route(spawns, tmp_path):
     assert (
-        s0_pass._export_tree("/no/worktree.git", "abc123", tmp_path / "t") is not None
+        workspace_trees.export_tree("/no/worktree.git", "abc123", tmp_path / "t")
+        is not None
     )
     assert [n for n, _ in spawns] == ["git", "tar"]
-    _clean(spawns)
-
-
-def test_behaviour_export_trees_runs_git_and_tar_without_the_route(spawns, tmp_path):
-    out = mining_behaviour.export_trees(
-        "/no/worktree.git",
-        "/no/episodes.git",
-        "main",
-        ["ep1"],
-        tmp_path,
-    )
-    assert list(out) == ["ep1"]
-    assert {n for n, _ in spawns} == {"git", "tar"}
     _clean(spawns)
 
 
@@ -99,13 +87,8 @@ def test_the_box_s_bwrap_starts_without_the_route(spawns, monkeypatch):
         "which",
         lambda name: "/usr/bin/" + name,
     )
-    assert mining_behaviour.in_box({"mode": "replay"}, 5) == {}
+    assert mining_behaviour.in_box({"mode": "verify"}, 5) == {}
     assert [n for n, _ in spawns] == ["bwrap"]
-    _clean(spawns)
-
-
-def test_the_recorded_episodes_git_reader_runs_without_the_route(spawns):
-    mining._git("/no/episodes.git", "ls-tree", "-r", "--name-only", "main")
     _clean(spawns)
 
 

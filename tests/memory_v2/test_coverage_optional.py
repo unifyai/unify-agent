@@ -139,7 +139,6 @@ def test_the_measures_name_unread_episodes_that_carry_evidence():
             "episode_id": "a",
             "functions": [{"name": "f"}],
             "signals": [{"kind": "cell_error", "cell": 1}],
-            "s0_clusters": [{"key": "k"}],
             "pool_entries": [],
             "staging": {"candidates": [{"name": "g"}]},
         },
@@ -153,7 +152,7 @@ def test_the_measures_name_unread_episodes_that_carry_evidence():
     ]
     m = writer_pass._coverage_measures(coverage, ["c"], rows, [])
     assert m["unread_with_evidence"] == {
-        "a": ["function", "cell_error", "s0", "staging"],
+        "a": ["function", "cell_error", "staging"],
     }
     assert (
         m["read_share"] == 0.03

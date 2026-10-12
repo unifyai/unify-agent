@@ -231,7 +231,7 @@ def test_parts_given_as_text_are_read_as_the_list_they_name(tmp_path):
 from unify.memory_v2 import fixtures as fx  # noqa: E402
 from unify.memory_v2.manifest import ManifestError, parse_manifest  # noqa: E402
 
-ALL_INPUTS = (pv.STAGING_INPUT, pv.S0_INPUT, pv.POOL_INPUT)
+ALL_INPUTS = (pv.STAGING_INPUT, pv.POOL_INPUT)
 
 
 def _brief_of(tmp_path, **cfg):
@@ -244,7 +244,6 @@ def test_the_write_brief_names_each_input_the_pass_prepares(tmp_path):
     full = _brief_of(
         tmp_path / "a",
         staging_root=str(tmp_path),
-        s0_cache=str(tmp_path),
         pool=True,
     )
     for bullet in ALL_INPUTS:
@@ -253,24 +252,20 @@ def test_the_write_brief_names_each_input_the_pass_prepares(tmp_path):
     assert (
         inputs.index("/inputs/gate/previous.md")
         < inputs.index("/inputs/staging/")
-        < inputs.index(
-            "/inputs/s0/",
-        )
         < inputs.index("/inputs/pool/")
     )
+    assert "/inputs/s0" not in full  # the writer's path has no miner input
     plain = _brief_of(tmp_path / "b")
     assert plain == pv.write_brief_now() and not any(b in plain for b in ALL_INPUTS)
     fork_off = _brief_of(
         tmp_path / "c",
         staging_root=str(tmp_path),
-        s0_cache=str(tmp_path),
     )
     assert pv.POOL_INPUT not in fork_off and pv.STAGING_INPUT in fork_off
     # byte-stable within a run: the same configuration gives the same bytes
     assert full == _brief_of(
         tmp_path / "d",
         staging_root=str(tmp_path),
-        s0_cache=str(tmp_path),
         pool=True,
     )
 

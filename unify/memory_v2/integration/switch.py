@@ -661,8 +661,8 @@ LIBRARY_FORK = "UNIFY_MEMORY_LIBRARY_FORK"
 #: Design r5 arm C: ``writer`` runs one Sol analyst per flagged batch episode before the writer, writing staging
 #: (analysts.py); ``off`` (default): none, as built.
 LIBRARY_ANALYSTS = "UNIFY_MEMORY_LIBRARY_ANALYSTS"
-#: The lead, 11 Oct: the candidate pool (pool.py): ``on`` keeps every proposal (staging, S0 clusters, drafts,
-#: deferrals) open across passes on the memory repo's refs/heads/pool until the writer closes it; ``off``: none.
+#: The candidate pool (pool.py): ``on`` keeps every proposal (staging, drafts, deferrals) open across passes on the
+#: memory repo's refs/heads/pool until the writer closes it; ``off``: none.
 LIBRARY_POOL = "UNIFY_MEMORY_LIBRARY_POOL"
 #: MAIN 11 Oct (prepared; off until the lead decides): ``on`` moves old tool results out of the writer's
 #: conversation once it passes a size (writer_pass._compact); ``off``: the conversation is never changed.

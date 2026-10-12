@@ -4,6 +4,7 @@ names what is missing, the brief states the batch map's schema and no longer spe
 exact-assertion refusal shows a form that passes."""
 
 import json
+from pathlib import Path
 
 from unify.memory_v2 import pool, library_prompts as pv, writer_pass
 from unify.memory_v2.batch_map import build_batch_map
@@ -59,39 +60,35 @@ def test_each_row_points_at_its_staged_candidates_and_the_pool_entries_citing_it
     assert row["pool_entries"] == [
         {"id": did, "kind": "deferred", "title": "episode e2 deferred: seen before"},
     ]
-    assert row["s0_clusters"] == []
+    assert "s0_clusters" not in row
 
 
-def test_s0_clusters_are_listed_under_each_episode_they_include():
-    tier_a = [
-        {
-            "key": "k" * 64,
-            "at": [
-                {"episode": "e1", "cell": 2, "lines": [1, 3]},
-                {"episode": "e2", "cell": 0, "lines": [4, 6]},
-            ],
-        },
-    ]
-    tier_b = {
-        "units": {
-            "u1": {"episode": "e1", "cell": 3},
-            "u2": {"episode": "e3", "cell": 1},
-        },
-        "clusters": [{"units": ["u1", "u2"], "akeys": ["x", "y"]}],
-    }
-    refs = writer_pass._s0_by_episode(tier_a, tier_b)
-    assert [r["tier"] for r in refs["e1"]] == ["a", "b"] and refs["e1"][0]["cells"] == [
-        2,
-    ]
-    assert refs["e2"][0]["pool_entry"] == pool.entry_id("cluster", "a:" + "k" * 64)
-    assert (
-        refs["e3"][0]["pool_entry"] == pool.entry_id("cluster", "b:x,y")
-        and refs["e3"][0]["episodes"] == 2
+def test_a_write_pass_stages_no_miner_input_and_no_cluster_fields(tmp_path, monkeypatch):
+    """The miner is not on the writer's path: no /inputs/s0, no cluster field in any batch-map row, no cluster entry
+    fed to the pool, and no miner summary on the outcome."""
+    seen: dict = {}
+    staged = writer_pass.WriterPass._staging_library_mode
+
+    async def spy(self, req, inputs, *args, **kwargs):
+        await staged(self, req, inputs, *args, **kwargs)
+        seen["inputs"] = sorted(p.name for p in Path(inputs).iterdir())
+        seen["rows"] = json.loads((Path(inputs) / "batch_map.json").read_text())["episodes"]
+
+    monkeypatch.setattr(writer_pass.WriterPass, "_staging_library_mode", spy)
+    st = _Stores(tmp_path)
+    _finish_with(monkeypatch, EMPTY)
+    out, _ = st.run(
+        [_call("x", "dismiss", {"episode": "e2", "reason": "r"})],
+        "p1",
+        staging_root=str(tmp_path / "staging-root"),
     )
-    assert (
-        writer_pass._s0_by_episode([], {}) == {}
-        and writer_pass._s0_by_episode("bad", "bad") == {}
+    assert seen["inputs"] and "s0" not in seen["inputs"]
+    assert seen["rows"] and all(
+        not any(k.startswith("s0") or "cluster" in k for k in row) for row in seen["rows"]
     )
+    assert not hasattr(out, "s0")
+    assert all(e.kind != "cluster" for e in st.pool().entries.values())
+    assert not hasattr(writer_pass, "_s0_by_episode")
 
 
 # --- 2. read_episode pages past its parts bound --------------------------------------------------------------------
@@ -151,7 +148,7 @@ def test_the_brief_names_every_batch_map_key_and_its_shape():
     keys = (
         set(bmap)
         | set(bmap["episodes"][0])
-        | {"staging", "s0_clusters", "pool_entries", "candidates"}
+        | {"staging", "pool_entries", "candidates"}
     )
     for k in sorted(keys):
         assert f"`{k}`" in text or f'\\"{k}\\"' in text or f'"{k}"' in text, k

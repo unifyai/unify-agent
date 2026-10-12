@@ -95,6 +95,7 @@ from ..qa import QAConfig
 from ..reconcile import unavailable as unavailable_reconcile
 from ..redact import Redactor, redact_error
 from ..signals import Signal, SignalMasked, post_signal
+from .. import similar as _similar
 from ..snapshot import listing, materialise
 from ..writer_pass import (
     CODE_ROUTE_NOT_IN_EFFECT,
@@ -827,12 +828,11 @@ def _end_event(
                 ),
                 "finished": bool(outcome.finished),
                 "nothing_to_store": bool(outcome.nothing_to_store),
-                # r5: spend by category (the fork's is in the proxy journal, session fork.<episode>), the analysts,
-                # the batch's staging by source, and S0's summary
+                # spend by category (the fork's is in the proxy journal, session fork.<episode>), the analysts
+                # and the batch's staging by source
                 "usd_by_category": _by_category(usd, outcome.analysts),
                 "analysts": list(outcome.analysts),
                 "staging": outcome.staging,
-                "s0": outcome.s0,
                 **({"pool": outcome.pool} if outcome.pool is not None else {}),
             }
             if outcome is not None and outcome.coverage is not None
@@ -1113,7 +1113,8 @@ async def run_due_passes(
                 "pool": library_pool(settings),
                 "compact": library_compact(settings),
                 "coverage_rule": library_coverage(settings),
-                "s0_cache": str(Path(stores.paths.state_dir) / "memory-s0"),
+                "trees_cache": str(Path(stores.paths.state_dir) / "memory-workspace-trees"),
+                "similar_index": str(_similar.index_dir(stores.paths.state_dir)),
                 "worktree_git": (
                     str(stores.paths.worktree_git)
                     if Path(stores.paths.worktree_git).is_dir()

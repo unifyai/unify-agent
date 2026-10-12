@@ -1,4 +1,4 @@
-"""Memory v2.1 S0 (design r3): the deterministic code miner."""
+"""Normalised code units: renaming, literal lifting, and names kept from each unit's own text."""
 
 from unify.memory_v2 import mining as m
 from unify.memory_v2.mining import Cell
@@ -15,17 +15,6 @@ PARSE_B = (
     "print(a, b)\n"
 )
 OTHER = "import json\nd = json.loads(raw)\nprint(sorted(d.keys())[:5], len(d), type(d).__name__)\n"
-
-
-def _ep(eid, req, *codes, errors=()):
-    return (
-        eid,
-        req,
-        [
-            Cell(i, c, "out", "boom" if i in errors else None)
-            for i, c in enumerate(codes)
-        ],
-    )
 
 
 def test_renaming_and_literal_lifting_make_the_same_shape_hash_equal():
@@ -53,81 +42,43 @@ def test_a_different_call_is_a_different_shape():
     assert m.normalise(a, m.keep_names([a]))[0] != m.normalise(b, m.keep_names([b]))[0]
 
 
-def test_a_cluster_needs_two_independent_requests():
-    same = [
-        _ep("e1", "r1", PARSE_A),
-        _ep("e2", "r1", PARSE_B),
-    ]  # a revisit: the same request bytes
-    clusters, _ = m.mine(same)
-    assert clusters == []
-    clusters, per = m.mine([_ep("e1", "r1", PARSE_A), _ep("e2", "r2", PARSE_B)])
-    assert clusters and clusters[0].episodes == 2
-    top = clusters[0]
-    assert {i.episode for i in top.instances} == {"e1", "e2"}
-    assert per["e1"]["cells_in_clusters"] == 1 and per["e2"]["successful_cells"] == 1
+def test_failed_cells_and_tracebacks_are_not_successful():
+    assert m.successful(Cell(0, PARSE_A, "out"))
+    assert not m.successful(Cell(0, PARSE_A, "out", "boom"))
+    assert not m.successful(Cell(0, PARSE_A, "Traceback (most recent call last):\n  ..."))
+    assert not m.successful(Cell(0, "ls", "", None, "bash"))
 
 
-def test_failed_cells_and_tracebacks_are_not_mined():
-    eps = [
-        _ep("e1", "r1", PARSE_A, errors=(0,)),
-        ("e2", "r2", [Cell(0, PARSE_B, "Traceback (most recent call last):\n  ...")]),
-    ]
-    clusters, per = m.mine(eps)
-    assert clusters == [] and per["e1"]["successful_cells"] == 0
+def test_code_that_does_not_parse_has_no_units():
+    assert m.units(Cell(0, "def (:")) == []
 
 
-def test_implied_sub_clusters_are_dropped_and_windows_are_found():
-    eps = [
-        _ep("e1", "r1", PARSE_A, OTHER),
-        _ep("e2", "r2", PARSE_B, OTHER.replace("d = ", "e = ").replace("(d", "(e")),
-    ]
-    clusters, _ = m.mine(eps)
-    kinds = [c.kind for c in clusters]
-    # the two-cell run covers both whole cells and every statement in them: one maximal cluster remains
-    assert kinds == ["window"], [(c.kind, c.size, c.template[:40]) for c in clusters]
-    assert clusters[0].instances[0].lines == (1, 2)
+def test_units_are_the_whole_cell_and_each_large_statement():
+    us = m.units(Cell(3, PARSE_A + OTHER))
+    assert us[0].kind == "cell" and us[0].lines == (1, 6) and us[0].cell == 3
+    assert {u.kind for u in us[1:]} == {"stmt"} and all(u.size >= m.MIN_NODES for u in us)
+    # renamed code gives the same keys, unit for unit
+    assert [u.key for u in m.units(Cell(0, PARSE_B))] == [u.key for u in m.units(Cell(0, PARSE_A))]
 
 
-def test_code_that_does_not_parse_is_skipped():
-    clusters, per = m.mine([_ep("e1", "r1", "def (:"), _ep("e2", "r2", "def (:")])
-    assert clusters == [] and per["e1"]["successful_cells"] == 1
+def test_the_same_code_hashes_the_same_whatever_other_cells_import():
+    """The kept names come from the unit's own text: an import elsewhere in the episode changes nothing."""
+    code = "path = os.path.join(base, name)\nrows = json.loads(open(path).read())\nprint(len(rows), rows[:3])\n"
+    t = m._parse(code)
+    # an episode-wide import set (`from os import path` in one episode, `import os` in another) splits the hash
+    one = m.normalise(t, m.keep_names([m._parse("from os import path"), t]))[0]
+    other = m.normalise(t, m.keep_names([m._parse("import os"), t]))[0]
+    assert one != other
+    # the unit's own text decides: the whole cell hashes the same in both episodes
+    assert m.normalise(t, m.own_keep(t))[0] == m.units(Cell(5, code))[0].key
+    assert "path" not in m.own_keep(m._parse(code)) and "len" in m.own_keep(m._parse(code))
+    with_import = m.own_keep(m._parse("import numpy as np\nx = np.zeros(3)\n"))
+    assert "np" in with_import and "x" not in with_import
+    # a builtin the code rebinds is a variable there
+    assert "list" not in m.own_keep(m._parse("list = [1, 2]\nprint(list)\n"))
 
 
-def test_the_script_reads_a_git_copy(tmp_path):
-    import json
-    import subprocess
-
-    repo = tmp_path / "eps.git"
-    work = tmp_path / "w"
-    subprocess.run(["git", "init", "-q", "-b", "main", str(work)], check=True)
-    for eid, req, code in (("e1", ["a"], PARSE_A), ("e2", ["b"], PARSE_B)):
-        d = work / "2026" / "10" / eid
-        d.mkdir(parents=True)
-        (d / "request.json").write_text(json.dumps(req))
-        (d / "cells.jsonl").write_text(
-            json.dumps({"index": 0, "code": code, "output": "", "error": None}) + "\n",
-        )
-    subprocess.run(["git", "-C", str(work), "add", "-A"], check=True)
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(work),
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "commit",
-            "-q",
-            "-m",
-            "x",
-        ],
-        check=True,
-    )
-    subprocess.run(["git", "clone", "-q", "--bare", str(work), str(repo)], check=True)
-    out = tmp_path / "out"
-    assert m.main(["--git", str(repo), "--out", str(out)]) == 0
-    clusters = json.loads((out / "clusters.json").read_text())
-    assert clusters and clusters[0]["episodes"] == 2
-    assert {a["episode"] for a in clusters[0]["at"]} == {"e1", "e2"}
-    assert set(json.loads((out / "episodes.json").read_text())) == {"e1", "e2"}
+def test_a_stop_ends_the_walk_with_the_units_found_so_far():
+    whole = m.units(Cell(0, PARSE_A + OTHER))
+    cut = m.units(Cell(0, PARSE_A + OTHER), stop=lambda: True)
+    assert [u.kind for u in cut] == ["cell"] and cut[0].key == whole[0].key

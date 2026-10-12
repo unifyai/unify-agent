@@ -85,25 +85,3 @@ def test_no_compaction_without_a_real_drop(tmp_path):
         writer_pass._compact(msgs, tmp_path, at=100_000) == 0
         and json.dumps(msgs) == before
     )
-
-
-def test_each_s0_reference_carries_a_gist_and_its_instances():
-    tier_a = [{
-        "key": "k" * 64, "template": "\nfor r in range(__q0):\n    row = g[r]\n    out.append(row)\n",
-        "at": [{"episode": "e1", "cell": 0}, {"episode": "e1", "cell": 2}, {"episode": "e2", "cell": 0}],
-    }]  # fmt: skip
-    tier_b = {
-        "units": {"u1": {"episode": "e3", "cell": 1, "src": "def fill(g):\n    return g\n"}},
-        "clusters": [{"units": ["u1"], "akeys": ["x"]}],
-    }  # fmt: skip
-    refs = writer_pass._s0_by_episode(tier_a, tier_b)
-    a = refs["e1"][0]
-    assert (
-        a["gist"] == "for r in range(__q0):\n    row = g[r]\n    out.append(row)"
-        and a["instances"] == 3
-    )
-    b = refs["e3"][0]
-    assert b["gist"] == "def fill(g):\n    return g" and b["instances"] == 1
-    assert (
-        writer_pass._gist(None) == "" and writer_pass._gist("x\n" * 9).count("\n") == 2
-    )
