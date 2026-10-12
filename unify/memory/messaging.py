@@ -147,7 +147,7 @@ STOP_SPEC = ToolSpec(
     name="stop",
     description=(
         "Stop a running helper at once. A model call it has in flight is cancelled and may be lost; what it "
-        "staged and its helper.json are kept under /inputs/helpers/<call>/ (its name is its call id), and its "
+        "staged and its helper.json are kept under /inputs/helpers/<name>/, and its "
         "status says it was stopped. "
         "Finishing the pass stops every helper still running too, but lets a call in flight finish first."
     ),

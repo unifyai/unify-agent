@@ -480,7 +480,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "produces": [
             {
                 "artifact": "helper output",
-                "path": "<state>/memory-helpers/<pass>/<call>/ (the writer's /inputs/helpers/<call>/)",
+                "path": "<state>/memory-helpers/<pass>/<name>/ (the writer's /inputs/helpers/<name>/)",
                 "consumer": "writer",
             },
             # helper to helper included: any agent on the record can address any other

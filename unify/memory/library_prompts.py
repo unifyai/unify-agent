@@ -761,7 +761,7 @@ def write_brief(
             "5. When it helps, hand a reading or drafting task to a helper with `delegate`. It returns at once and "
             "the helper works while you go on; it messages you on the record as it goes (`messages` reads them, "
             "`wait` waits for the next, `reply` answers) and ends with a summary and claims, each with the episode "
-            "parts it rests on, and its files under /inputs/helpers/<call>/. Read those parts yourself before you "
+            "parts it rests on, and its files under /inputs/helpers/<name>/. Read those parts yourself before you "
             "rely on a claim. You decide when you have enough: `stop` ends a helper, and finishing ends every "
             "helper still running, keeping what it staged. Using helpers is your choice.\n"
             if helpers

@@ -199,7 +199,7 @@ def test_delegate_stages_in_the_fork_format_and_the_writer_reads_it(tmp_path, fa
             "sources": ["e1/cell:0", "e1/request"],
         },
     ]
-    # the writer reads the helper's files with its own reader, under /inputs/helpers/<call>/
+    # the writer reads the helper's files with its own reader, under /inputs/helpers/<name>/
     roots = {"/inputs": ctx.inputs}
     assert "def area" in views.read("/inputs/helpers/call-0/candidates/area.py", roots)
     assert '"status": "ok"' in views.read("/inputs/helpers/call-0/helper.json", roots)

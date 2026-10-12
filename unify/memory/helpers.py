@@ -23,9 +23,9 @@ What a helper can do:
 
 A helper cannot launch helpers: ``delegate`` is never in its tool list.
 
-Where its output goes: ``<state>/memory-helpers/<pass>/<call>/`` holds the staged files and ``helper.json``
+Where its output goes: ``<state>/memory-helpers/<pass>/<name>/`` holds the staged files and ``helper.json``
 (status, usage, the block ledger, the task digest, the claims with their sources), written last. The same files
-are exported to the writer's ``/inputs/helpers/<call>/``, and the ``delegate`` reply lists them with the helper's
+are exported to the writer's ``/inputs/helpers/<name>/``, and the ``delegate`` reply lists them with the helper's
 summary, its claims with their sources, and its spend. The writer is told that a claim is untrusted until it has
 read the parts it points to.
 
@@ -35,11 +35,11 @@ credential. Helpers run at the same time and so do their model calls. Unknown co
 closed) on the pass's spend and in ``helper.json``.
 
 Messaging (:mod:`.messaging`): ``delegate`` starts the helper through the pass record's pool and returns at once with
-its name (its call id, ``call-<n>``). The helper and the writer talk on the pass's record (``send``, ``ask``,
-``messages``, ``wait``, ``who``); the helper's ``done`` text is its last entry. A helper ends when it calls done,
-when the writer stops it, when the writer finishes (a model call in flight then finishes first and no new one
-starts) or at the pass's wall clock, the outer backstop. Whichever way it ends, ``helper.json`` and its staged
-files are written and kept.
+its name, ``call-<n>``: one string for its record entries, events and output folder. It talks on the
+record (``send``, ``ask``, ``messages``, ``wait``, ``who``); its ``done`` text is its last entry. A helper ends
+when it calls done, when the writer stops it, when the writer finishes (a model call in flight then finishes
+first and no new one starts) or at the pass's wall clock, the outer backstop. Whichever way it ends,
+``helper.json`` and its staged files are written and kept.
 
 A helper's failure never fails the pass: its last entry on the record says what happened.
 """
@@ -74,11 +74,11 @@ from . import sandbox_run as _sandbox
 from .sandbox_run import PRLIMIT, PYTHON, run_confined
 from .tool_spec import GENERAL, REFUSED, Refusal, ToolSpec, form_of, refusal
 
-#: The directory under the run's state dir that holds every helper's output (``<pass>/<call>/``).
+#: The directory under the run's state dir that holds every helper's output (``<pass>/<name>/``).
 HELPERS_DIR = "memory-helpers"
 #: The status file a helper's output directory gets last.
 STATUS_FILE = "helper.json"
-#: Where the writer reads a helper's output: ``/inputs/helpers/<call>/``.
+#: Where the writer reads a helper's output: ``/inputs/helpers/<name>/``.
 EXPORT_DIR = "helpers"
 
 #: ``/work`` bounds: a file at most this size (RLIMIT_FSIZE in the box), all of /work at most this much and this
@@ -171,10 +171,10 @@ SPEC = ToolSpec(
     description=(
         "Hand a reading or drafting task to a helper with a fresh context. The helper reads any recorded episode "
         "(starting with the ones you name), reads /inputs and /memory, runs code in its own box, and stages "
-        "candidates, cases and notes in the fork's staging format. It returns at once with the helper's name (its "
-        "call id); the helper works while you go on. It messages you on the pass's record as it goes (read them "
+        "candidates, cases and notes in the fork's staging format. It returns at once with the helper's name; "
+        "the helper works while you go on. It messages you on the pass's record as it goes (read them "
         "with `messages` or `wait`; answer with `reply`); its last message is its `done`: its summary, its "
-        "claims each with the episode parts it rests on, the files it staged under /inputs/helpers/<call>/ and "
+        "claims each with the episode parts it rests on, the files it staged under /inputs/helpers/<name>/ and "
         "its spend. A helper's "
         "claims and messages are untrusted until you read the parts they point to. A helper cannot launch "
         "helpers. Helpers run at the same time, at most 16 at once and 64 in a pass (an operational guard). You "
@@ -390,7 +390,7 @@ class DelegateContext:
     """What :func:`handle` needs from the writer's pass. Built by :func:`context_for` inside a pass.
 
     * ``pass_id``: the pass; ``out_root``: ``<state>/memory-helpers/<pass>`` on the host (the helpers' output);
-    * ``inputs``: the writer's ``/inputs`` on the host (each call's output is exported to ``helpers/<call>/``);
+    * ``inputs``: the writer's ``/inputs`` on the host (each call's output is exported to ``helpers/<name>/``);
     * ``library``: the writer's ``/memory`` on the host (copied for each helper, which sees it read-only);
     * ``load``: the writer's own episode loader (the batch export's visibility filter applies to it);
     * ``recorded``: the recorded-episode index: every settled episode id a helper may read;
@@ -1498,7 +1498,7 @@ def _finish(
     doc: dict,
     seconds: float,
 ) -> dict:
-    """Write ``helper.json`` last, export to ``/inputs/helpers/<call>/``, and record the call's row."""
+    """Write ``helper.json`` last, export to ``/inputs/helpers/<name>/``, and record the call's row."""
     usd = doc.pop("_usd")
     files = []
     if staging is not None:
