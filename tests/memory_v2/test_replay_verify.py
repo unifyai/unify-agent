@@ -148,7 +148,9 @@ def test_replay_nondeterministic_is_not_verified(tmp_path):
         _lib(tmp_path, "def components(v):\n    return sorted(v)\n"),
         scratch=tmp_path,
     )
-    assert got[0]["verdict"] == "not replayable: nondeterministic"
+    assert got[0]["verdict"] == "unknown: oracle unsuitable: nondeterministic", got
+    assert got[0]["oracle"]["recording"] == "reproduced"
+    assert got[0]["oracle"]["deterministic"] is False and "case" not in got[0]
 
 
 def test_a_bad_entry_is_a_verdict_not_a_crash(tmp_path):
@@ -162,8 +164,9 @@ def test_a_bad_entry_is_a_verdict_not_a_crash(tmp_path):
     assert got[0]["verdict"].startswith("refused: ")
 
 
-def _one(tmp_path, cells, lines, call, source, trees=None):
-    ep = _episode("e9", [Cell(i, c, "") for i, c in enumerate(cells)])
+def _one(tmp_path, cells, lines, call, source, trees=None, outputs=None):
+    outputs = outputs or [""] * len(cells)
+    ep = _episode("e9", [Cell(i, c, o) for i, (c, o) in enumerate(zip(cells, outputs))])
     inst = [{"episode": "e9", "cell": len(cells) - 1, "lines": lines, "call": call}]
     lib = tmp_path / f"lib-{abs(hash(source)) % 10**8}"
     pkg = lib / "memory" / "grids"
@@ -210,9 +213,10 @@ PRINT = "rows = [3, 1]\nfor r in sorted(rows):\n    print(r)\n"
 
 @needs_bwrap
 def test_stdout_decides_when_printing_is_the_only_effect(tmp_path):
-    good = _one(tmp_path, [PRINT], [2, 3], "fn(rows)", "def fn(rows):\n    for r in sorted(rows):\n        print(r)\n")
-    bad = _one(tmp_path, [PRINT], [2, 3], "fn(rows)", "def fn(rows):\n    for r in rows:\n        print(r)\n")
-    silent = _one(tmp_path, [PRINT], [2, 3], "fn(rows)", "def fn(rows):\n    pass\n")
+    rec = ["1\n3\n"]
+    good = _one(tmp_path, [PRINT], [2, 3], "fn(rows)", "def fn(rows):\n    for r in sorted(rows):\n        print(r)\n", outputs=rec)
+    bad = _one(tmp_path, [PRINT], [2, 3], "fn(rows)", "def fn(rows):\n    for r in rows:\n        print(r)\n", outputs=rec)
+    silent = _one(tmp_path, [PRINT], [2, 3], "fn(rows)", "def fn(rows):\n    pass\n", outputs=rec)
     assert good["verdict"] == "verified", good
     assert bad["verdict"] == "differs" and bad["differs_in"] == "stdout", bad
     assert silent["verdict"] == "differs" and silent["differs_in"] == "stdout", silent
@@ -221,7 +225,7 @@ def test_stdout_decides_when_printing_is_the_only_effect(tmp_path):
 @needs_bwrap
 def test_a_stdout_difference_beside_another_effect_is_a_tag(tmp_path):
     cell = "vals = [1, 2]\ntotal = sum(vals)\nprint('debug', total)\n"
-    got = _one(tmp_path, [cell], [2, 3], "total = fn(vals)", "def fn(v):\n    return sum(v)\n")
+    got = _one(tmp_path, [cell], [2, 3], "total = fn(vals)", "def fn(v):\n    return sum(v)\n", outputs=["debug 3\n"])
     assert got["verdict"] == "verified" and got.get("stdout_differs") is True, got
 
 
@@ -311,3 +315,131 @@ def test_a_result_of_another_observation_version_is_not_compared():
     assert rv.verdict(job, {"first": run, "second": run, "third": run})["verdict"] == (
         "not replayable: observation version mismatch"
     )
+
+
+# --- the recording is the oracle only when the original run reproduces it -------------------------------------
+
+
+@needs_bwrap
+def test_an_original_that_does_not_reproduce_the_recording_is_unknown(tmp_path):
+    cell = "rows = [3, 1]\nprint(sorted(rows))\nn = len(rows)\n"
+    src = "def fn(r):\n    return len(r)\n"
+    got = _one(tmp_path, [cell], [3, 3], "n = fn(rows)", src, outputs=["[3, 1]\n"])
+    assert got["verdict"] == "unknown: oracle unsuitable: the original does not reproduce the recorded output", got
+    assert got["oracle"] == {
+        "recording": "not reproduced",
+        "differs_at": [0],
+        "unrecorded": [],
+        "deterministic": None,
+    }
+    assert "case" not in got and rv.summary([got])["unknown"] == 1
+    same = _one(tmp_path, [cell], [3, 3], "n = fn(rows)", src, outputs=["[1, 3]\n"])
+    assert same["verdict"] == "verified", same
+    assert same["oracle"] == {
+        "recording": "reproduced",
+        "differs_at": [],
+        "unrecorded": [],
+        "deterministic": True,
+    }
+
+
+@needs_bwrap
+def test_a_deterministic_reproducing_original_gets_the_usual_verdicts(tmp_path):
+    good = _one(tmp_path, [SCALAR], [3, 4], "n = fn(vals, n)", "def fn(v, n):\n    return n + sum(v)\n")
+    bad = _one(tmp_path, [SCALAR], [3, 4], "n = fn(vals, n)", "def fn(v, n):\n    return n - sum(v)\n")
+    for got in (good, bad):
+        assert got["oracle"]["recording"] == "reproduced" and got["oracle"]["deterministic"] is True, got
+    assert good["verdict"] == "verified" and bad["verdict"] == "differs"
+    assert rv.summary([good, bad]) == {
+        "verified": 1,
+        "differs": 1,
+        "unknown": 0,
+        "not_replayable": 0,
+        "refused": 0,
+        "tested": True,
+    }
+
+
+JOB = {
+    "cells": [{"index": 0, "code": "n = 1\nprint('hi')\n", "output": "hi\n"}],
+    "targets": ["n"],
+    "names": [],
+    "rewritten_call": "n = f()",
+}
+
+
+def _run(printed="hi", n=1, stdout=(3, "a")):
+    return {
+        "after": {"n": n},
+        "bound": [],
+        "stdout": [list(stdout)],
+        "printed": [rv._mb.printed_digest(printed)],
+        "files": [],
+        "obs": rv._mb.OBS_VERSION,
+    }
+
+
+def test_the_original_must_reproduce_the_recording_before_anything_is_compared():
+    got = rv.verdict(JOB, {"first": _run("bye"), "second": _run("bye"), "third": _run("bye")})
+    assert got["verdict"].startswith("unknown: oracle unsuitable: ") and got["oracle"]["differs_at"] == [0]
+    # a wrong function does not turn an unsuitable oracle into a failure
+    got = rv.verdict(JOB, {"first": _run("bye"), "second": _run("bye"), "third": _run("bye", n=2)})
+    assert got["verdict"].startswith("unknown: oracle unsuitable: "), got
+
+
+def test_a_nondeterministic_original_is_unknown_whatever_differs():
+    for second in (_run(n=2), _run(stdout=(3, "b")), {"error": "ValueError"}):
+        got = rv.verdict(JOB, {"first": _run(), "second": second, "third": _run()})
+        assert got["verdict"] == "unknown: oracle unsuitable: nondeterministic", (second, got)
+        assert got["oracle"]["recording"] == "reproduced" and got["oracle"]["deterministic"] is False
+
+
+def test_an_original_that_raises_is_unknown():
+    got = rv.verdict(JOB, {"first": {"error": "NameError"}, "second": _run(), "third": _run()})
+    assert got["verdict"] == "unknown: oracle unsuitable: the original raised NameError", got
+    assert got["oracle"]["recording"] == "not reproduced"
+
+
+def test_a_reproducing_deterministic_original_is_compared_as_usual():
+    ok = rv.verdict(JOB, {"first": _run(), "second": _run(), "third": _run()})
+    bad = rv.verdict(JOB, {"first": _run(), "second": _run(), "third": _run(n=2)})
+    assert ok["verdict"] == "verified" and ok["oracle"] == {
+        "recording": "reproduced",
+        "differs_at": [],
+        "unrecorded": [],
+        "deterministic": True,
+    }
+    assert bad["verdict"] == "differs" and bad["oracle"]["deterministic"] is True
+
+
+def test_a_missing_recording_is_said_not_taken_as_reproduced():
+    job = {**JOB, "cells": [{**JOB["cells"][0], "output": None}]}
+    got = rv.verdict(job, {"first": _run(), "second": _run(), "third": _run()})
+    assert got["verdict"] == "verified"
+    assert got["oracle"]["recording"] == "not available" and got["oracle"]["unrecorded"] == [0]
+
+
+def test_recorded_output_readings_drop_what_the_recorder_adds():
+    assert rv.recorded_readings(None) is None
+    assert "" in rv.recorded_readings("(no output)")
+    assert "" in rv.recorded_readings('{\n  "duration_ms": 12\n}\n[variables] n: int')
+    assert "hi" in rv.recorded_readings("hi\n\n[variables] n: int")
+    assert "" not in rv.recorded_readings("hi")
+
+
+def test_the_summary_counts_unknowns_apart():
+    got = rv.summary(
+        [
+            {"verdict": "unknown: oracle unsuitable: nondeterministic"},
+            {"verdict": "not replayable: box timeout", "transient": True},
+            {"verdict": "refused: KeyError: 'episode'"},
+        ],
+    )
+    assert got == {
+        "verified": 0,
+        "differs": 0,
+        "unknown": 1,
+        "not_replayable": 1,
+        "refused": 1,
+        "tested": False,
+    }
