@@ -3513,12 +3513,7 @@ class WriterPass:
             if name == "read":
                 where = ({"path": virtual, "mode": "read"},)
                 try:
-                    text, mode = await asyncio.to_thread(
-                        _views.read_entry,
-                        vpath,
-                        roots,
-                        offset,
-                    )
+                    text, mode = _views.read_entry(vpath, roots, offset)
                 except _safe.Outside:
                     return _wt.refused("read", "outside_roots", path=vpath[:200])
                 except (_safe.LinkFound, _safe.NotRegular) as exc:
