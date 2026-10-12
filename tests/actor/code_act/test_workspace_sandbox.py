@@ -178,13 +178,13 @@ async def test_writes_land_only_in_the_workspace_and_private_tmp(world):
             "c.execute('create table evil (x)'); c.commit()\"",
         )
         assert store.read_bytes() == before
-        # The transcripts are readable, never writable.
-        out, res = await bash(ex, f"echo x >> {world['state']}/transcripts/s.jsonl")
+        # The transcripts are readable, never writable (at their fixed path).
+        out, res = await bash(ex, "echo x >> /transcripts/s.jsonl")
         assert "Read-only file system" in out
         assert (world["state"] / "transcripts" / "s.jsonl").read_text() == (
             '{"seq": 0}\n'
         )
-        out, _ = await bash(ex, f"cat {world['state']}/transcripts/s.jsonl")
+        out, _ = await bash(ex, "cat /transcripts/s.jsonl")
         assert out.strip() == '{"seq": 0}'
         # /tmp is writable and private.
         out, _ = await bash(ex, "echo t > /tmp/private.txt && cat /tmp/private.txt")
@@ -208,7 +208,7 @@ async def test_transcripts_written_after_the_session_started_are_searchable(
         await bash(ex, "true")
         later = world["state"] / "transcripts" / "later.jsonl"
         later.write_text('{"type": "message", "content": "the fact is 7"}\n')
-        out, _ = await bash(ex, f"grep -h 'fact is' {later.parent}/*.jsonl")
+        out, _ = await bash(ex, "grep -h 'fact is' /transcripts/*.jsonl")
         assert "the fact is 7" in out
     finally:
         await ex.close()
@@ -237,12 +237,10 @@ async def test_masked_paths_read_as_a_notice_naming_the_rule(world):
         assert "needle one" not in out and out.count("No such file") == 2
         out, _ = await bash(ex, f"cat {state}/logs/unify.log 2>&1")
         assert STATE_SECRET not in out
+        # What may be seen of the state directory is shown at fixed paths,
+        # never at its host path.
         out, _ = await bash(ex, f"ls -A {state}")
-        assert set(out.split()) == {
-            sandbox.MASK_NOTICE_NAME,
-            "transcripts",
-            "workspace",
-        }
+        assert set(out.split()) == {sandbox.MASK_NOTICE_NAME}
         out, _ = await bash(ex, f"cat {state}/{sandbox.MASK_NOTICE_NAME}")
         assert "rule mask-unify-state" in out
         out, _ = await bash(ex, f"grep -r {STATE_SECRET} {state} 2>/dev/null | wc -l")

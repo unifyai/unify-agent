@@ -25,7 +25,8 @@ LABEL = "runlabel-qz7-arm-k4"
 
 _PROBE = (
     "import os\n"
-    "print('NS', sorted(n for n in ('primitives', 'functions', 'guidance') if n in globals()))\n"
+    "names = set(dir())\n"
+    "print('NS', sorted(n for n in ('primitives', 'functions', 'guidance') if n in names))\n"
     "print('CWD', os.getcwd())\n"
 )
 

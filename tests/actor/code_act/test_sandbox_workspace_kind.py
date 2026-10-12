@@ -46,6 +46,13 @@ def _seed_state(state: Path) -> dict[str, Path]:
     }
 
 
+def _box(*paths: Path) -> str:
+    """*paths* as a cell's sandbox names them: the workspace and the
+    transcripts at their fixed paths, anything else (hidden) as it is."""
+    policy = sandbox.build_policy()
+    return " ".join(sandbox.box_path(p, policy) for p in paths)
+
+
 def _use(monkeypatch, *, state: Path, workspace: str, log_dir: Path) -> None:
     monkeypatch.setenv("UNIFY_HOME", str(state))
     monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_ROOT", workspace)
@@ -228,22 +235,25 @@ async def test_a_workspace_holding_the_state_hides_the_store(
 
     ex = SessionExecutor()
     try:
-        out, _ = await bash(ex, "cat " + " ".join(map(str, hidden)) + " 2>&1")
+        out, _ = await bash(ex, "cat " + _box(*hidden) + " 2>&1")
         assert STATE_SECRET not in out and ENV_SECRET not in out, out
-        out, _ = await bash(ex, f"cat {seeded['transcript']} {workspace}/notes.txt")
+        out, _ = await bash(
+            ex,
+            f"cat {_box(seeded['transcript'])} {_box(workspace / 'notes.txt')}",
+        )
         assert out.split() == ['{"seq":', "0}", "needle", "one"], out
         out, _ = await bash(
             ex,
-            f"grep -rl -e {STATE_SECRET} -e {ENV_SECRET} {workspace} {log_dir} "
+            f"grep -rl -e {STATE_SECRET} -e {ENV_SECRET} {_box(workspace, log_dir)} "
             "2>/dev/null | wc -l",
         )
         assert out.strip() == "0", out
-        out, _ = await bash(ex, f"ls -A {state}/internal-transcripts")
+        out, _ = await bash(ex, f"ls -A {_box(state / 'internal-transcripts')}")
         assert "review.jsonl" not in out
         # Transcripts are readable, never writable; the store stays as it was.
-        out, _ = await bash(ex, f"echo x >> {seeded['transcript']} 2>&1")
+        out, _ = await bash(ex, f"echo x >> {_box(seeded['transcript'])} 2>&1")
         assert "Read-only file system" in out, out
-        await bash(ex, f"echo x > {seeded['store.sqlite']} 2>&1")
+        await bash(ex, f"echo x > {_box(seeded['store.sqlite'])} 2>&1")
         out, _ = await bash(ex, "echo made > made.txt && cat made.txt")
         assert out.strip() == "made"
     finally:
@@ -293,17 +303,16 @@ async def test_the_runner_layout_builds_runs_and_hides_the_state(world, monkeypa
 
     ex = SessionExecutor()
     try:
+        # The cell starts in the workspace, shown at its fixed path.
         out, _ = await bash(ex, "pwd -P; cat task.txt")
-        assert out.split() == [str(policy.workspace), "the", "task"], out
-        out, _ = await bash(ex, "cat " + " ".join(map(str, hidden)) + " 2>&1")
+        assert out.split() == ["/workspace", "the", "task"], out
+        out, _ = await bash(ex, "cat " + _box(*hidden) + " 2>&1")
         assert STATE_SECRET not in out, out
+        # The state directory's host path shows only its mask: what may be
+        # seen of it is shown at fixed paths.
         out, _ = await bash(ex, f"ls -A {state}")
-        assert set(out.split()) == {
-            sandbox.MASK_NOTICE_NAME,
-            "transcripts",
-            "workspace",
-        }, out
-        out, _ = await bash(ex, f"cat {seeded['transcript']}")
+        assert set(out.split()) == {sandbox.MASK_NOTICE_NAME}, out
+        out, _ = await bash(ex, f"cat {_box(seeded['transcript'])}")
         assert out.strip() == '{"seq": 0}'
     finally:
         await ex.close()

@@ -289,6 +289,8 @@ class PythonWorker:
         # The policy as it is now: a restarted worker sees the current one.
         policy = sandbox.build_policy(fresh=created)
         argv = [sys.executable, "-I", "-S", "-c", _BOOTSTRAP, str(Path(child.__file__))]
+        # The sandbox's whole environment (wrap_argv clears the inherited one):
+        # anything the child needs must be in it before wrap_argv is called.
         env = sandbox.sandbox_env(policy)
         workspace = str(policy.workspace)
         from unify.memory.integration import hooks as _mv2
