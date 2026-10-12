@@ -114,55 +114,8 @@ def test_grep_output_is_bounded_and_marked(tmp_path: Path):
     assert nxt.splitlines()[0].startswith(f"/inputs/f.txt:{shown + 1}: needle")
 
 
-def test_coverage_requires_full_reads_or_dismissal():
-    cov = v.Coverage(
-        required={"e1": ["request", "cell:0"], "e2": ["request"]},
-        sizes={("e1", "request"): 10, ("e1", "cell:0"): 20000, ("e2", "request"): 5},
-    )
-    assert cov.missing() == ["e1", "e2"]
-    cov.credit("e1", "request", 0, 10)
-    cov.credit("e1", "cell:0", 0, 8000)
-    cov.credit("e1", "cell:0", 16000, 20000)
-    assert "e1" in cov.missing()  # 8000–16000 never read
-    cov.credit("e1", "cell:0", 8000, 16000)
-    assert cov.missing() == ["e2"]
-    assert cov.dismiss("e2", "") == "refused: give a one-line reason"
-    assert cov.dismiss("e2", "duplicate of e1's request") == "ok"
-    s = cov.summary()
-    assert s == {
-        "episodes": 2,
-        "covered": 1,
-        "dismissed": {"e2": "duplicate of e1's request"},
-        "missing": [],
-        "parts_required": 3,
-        "parts_read": 2,
-        "bytes_required": 20015,
-        "bytes_read": 20010,
-    }
-
-
-def test_coverage_fails_closed_on_a_missing_or_bad_size():
-    with pytest.raises(ValueError, match="size"):
-        v.Coverage(required={"e1": ["request", "cell:0"]}, sizes={("e1", "request"): 3})
-    with pytest.raises(ValueError, match="size"):
-        v.Coverage(required={"e1": ["request"]}, sizes={("e1", "request"): -1})
-
-
-def test_coverage_counts_an_empty_part_as_read_and_bytes_are_clipped():
-    cov = v.Coverage(
-        required={"e1": ["request", "observation:0"]},
-        sizes={("e1", "request"): 3, ("e1", "observation:0"): 0},
-    )
-    cov.credit(
-        "e1",
-        "request",
-        0,
-        8000,
-    )  # a range past the end counts only the part's bytes
-    s = cov.summary()
-    assert s["missing"] == [] and s["covered"] == 1
-    assert (s["parts_required"], s["parts_read"]) == (2, 2)
-    assert (s["bytes_required"], s["bytes_read"]) == (3, 3)
+def test_the_reading_rule_is_gone():
+    assert not hasattr(v, "Coverage")
 
 
 def test_grep_refuses_an_invalid_pattern(tmp_path: Path):

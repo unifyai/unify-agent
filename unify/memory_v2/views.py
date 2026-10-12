@@ -1,4 +1,4 @@
-"""Bounded, explicit, pageable views for the writer (spec v2.1 P5, §7.3). Data is never cut silently."""
+"""Bounded, explicit, pageable views for the writer's read tools. Data is never cut silently."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ def _cont(byte: int) -> bool:
 
 def _bounds(get, n: int, offset: int, length: int) -> tuple[int, int]:
     """The page [a, b) of an *n*-byte text: at most VIEW_BYTES long, its edges moved onto character boundaries
-    (a forward, b back), so a page never shows half a character and coverage counts exactly what was shown.
+    (a forward, b back), so a page never shows half a character and the read log counts exactly what was shown.
     """
     a = max(0, min(int(offset), n))
     while a < n and _cont(get(a)):
@@ -208,137 +208,6 @@ def grep_bounded(
         last = " ".join(r.stderr.decode(errors="replace").strip().splitlines()[-1:])
         return f"refused: grep failed ({last})"[:300]
     return r.stdout.decode("utf-8", errors="replace")
-
-
-class Coverage:
-    """Which required parts of each episode reached the writer in full (spec v2.1 §7.4)."""
-
-    def __init__(
-        self,
-        required: dict[str, list[str]],
-        sizes: dict[tuple[str, str], int],
-    ) -> None:
-        self.required = {e: list(p) for e, p in required.items()}
-        self.sizes = dict(sizes)
-        for (
-            e,
-            ps,
-        ) in (
-            self.required.items()
-        ):  # fail closed: a part with no size would count as read
-            for part in ps:
-                n = self.sizes.get((e, part))
-                if not isinstance(n, int) or isinstance(n, bool) or n < 0:
-                    raise ValueError(
-                        f"coverage: no valid size for {e!r} {part!r}: {n!r}",
-                    )
-        self._ranges: dict[tuple[str, str], list[tuple[int, int]]] = {}
-        self.dismissed: dict[str, str] = {}
-        # design r2 §1: parts credited because identical bytes were already shown complete in this pass, with
-        # that source
-        self.identical: dict[tuple[str, str], tuple[str, str]] = {}
-
-    def credit(self, eid: str, part: str, a: int, b: int) -> None:
-        rs = sorted(self._ranges.get((eid, part), []) + [(a, b)])
-        merged: list[tuple[int, int]] = []
-        for s, e in rs:
-            if merged and s <= merged[-1][1]:
-                merged[-1] = (merged[-1][0], max(merged[-1][1], e))
-            else:
-                merged.append((s, e))
-        self._ranges[(eid, part)] = merged
-
-    def _part_done(self, eid: str, part: str) -> bool:
-        n = self.sizes.get((eid, part))
-        if (
-            n is None
-        ):  # not a required part (an overview's end cell may not be): never "done"
-            return False
-        r = self._ranges.get((eid, part), [])
-        return n == 0 or (len(r) == 1 and r[0][0] <= 0 and r[0][1] >= n)
-
-    def _covered(self, eid: str) -> bool:
-        return all(self._part_done(eid, p) for p in self.required[eid])
-
-    def dismiss(self, eid: str, reason: str) -> str:
-        if eid not in self.required:
-            return f"refused: {eid!r} is not in this batch"
-        reason = (
-            (reason or "").strip().splitlines()[0][:300]
-            if (reason or "").strip()
-            else ""
-        )
-        if not reason:
-            return "refused: give a one-line reason"
-        self.dismissed[eid] = reason
-        return "ok"
-
-    def credit_identical(self, eid: str, part: str, source: tuple[str, str]) -> None:
-        """Credit *part* whole: its bytes equal *source*'s, already shown complete in this pass (RUNTIME P2)."""
-        self.credit(eid, part, 0, self.sizes[(eid, part)])
-        self.identical[(eid, part)] = tuple(source)
-
-    def part_done(self, eid: str, part: str) -> bool:
-        return self._part_done(eid, part)
-
-    def opened(self) -> list[str]:
-        """The episodes with any required part shown (in full or in part, or credited as identical)."""
-        return [
-            e
-            for e, ps in self.required.items()
-            if any(self._part_done(e, p) or self._bytes_read(e, p) > 0 for p in ps)
-        ]
-
-    def progress(self, eid: str, part: str) -> str:
-        """A required part's state: ``read`` (in full, or credited as identical), ``partly read`` or ``not read``."""
-        if self._part_done(eid, part):
-            return "read"
-        return "partly read" if self._ranges.get((eid, part)) else "not read"
-
-    def parts_read(self, eid: str) -> int:
-        return sum(self._part_done(eid, p) for p in self.required.get(eid, []))
-
-    def missing_parts(self, eid: str) -> list[str]:
-        """*eid*'s required parts not yet shown in full (m4k: named in finish's refusal)."""
-        return [p for p in self.required.get(eid, []) if not self._part_done(eid, p)]
-
-    def missing(self) -> list[str]:
-        return [
-            e for e in self.required if not self._covered(e) and e not in self.dismissed
-        ]
-
-    def summary(self) -> dict:
-        covered = [e for e in self.required if self._covered(e)]
-        out = {
-            "episodes": len(self.required),
-            "covered": len(covered),
-            "dismissed": {e: r for e, r in self.dismissed.items() if e not in covered},
-            "missing": self.missing(),
-            "parts_required": sum(len(p) for p in self.required.values()),
-            "parts_read": sum(
-                self._part_done(e, p) for e, ps in self.required.items() for p in ps
-            ),
-            "bytes_required": sum(
-                self.sizes[(e, p)] for e, ps in self.required.items() for p in ps
-            ),
-            "bytes_read": sum(
-                self._bytes_read(e, p) for e, ps in self.required.items() for p in ps
-            ),
-        }
-        if (
-            self.identical
-        ):  # design r2 §1: present only when a part was credited as identical
-            out["identical_parts"] = {
-                f"{e}/{p}": f"{se}/{sp}"
-                for (e, p), (se, sp) in sorted(self.identical.items())
-            }
-        return out
-
-    def _bytes_read(self, eid: str, part: str) -> int:
-        n = self.sizes[(eid, part)]
-        return sum(
-            max(0, min(e, n) - max(s, 0)) for s, e in self._ranges.get((eid, part), [])
-        )
 
 
 if __name__ == "__main__":  # grep_bounded's child: one job on stdin, the page on stdout

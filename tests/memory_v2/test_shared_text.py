@@ -70,7 +70,9 @@ def test_batch_map_lists_the_block_file_and_reads_show_the_marker(tmp_path):
     out = asyncio.run(
         writer.run(PassRequest("incremental", "svc", list(eps), False), "p1"),
     )
-    request = json.loads(model.outputs["r"])
+    head, body = model.outputs["r"].split("\n", 1)
+    assert head == "== request =="
+    request = json.loads(body)
     assert request.startswith("[shared:") and request.endswith("Task 1")
     bmap = (
         json.loads(model.outputs["m"].split("\n[…")[0])
@@ -80,6 +82,7 @@ def test_batch_map_lists_the_block_file_and_reads_show_the_marker(tmp_path):
     assert bmap is None or bmap["shared_blocks"][0]["file"].startswith(
         "/inputs/shared/",
     )
+    assert out.coverage["parts_read"] == {"e1": ["request"]}  # the read log
     assert bm.part_text(eps["e1"], "request") != bm.part_text(
         eps["e1"],
         "request",

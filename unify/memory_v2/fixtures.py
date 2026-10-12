@@ -1,4 +1,4 @@
-"""Fixture provenance for memory v2.1 (spec §7.4, §9.1, §13.4).
+"""Fixture provenance for the writer's library.
 
 A fixture is a file under ``memory/<package>/tests/data/``. It reaches the library only through the writer's
 ``fixture`` tool, which copies recorded bytes and records where they came from. The gate re-derives every new or
@@ -8,14 +8,19 @@ changed fixture from the recording and refuses one that differs (:func:`verify`)
   - an action's recorded response, as stored: a string as its UTF-8 text, anything else as canonical JSON;
   - a work-tree action's file blob;
   - the action's own arguments (``args:<i>``, a value the episode used);
-  - each user message (``request:<j>``: the request, then the observations).
+  - each user message (``request:<j>``: the request, then the observations; ``observation:<i>`` names the same
+    message as ``request:<i+1>``, the numbering ``read_episode`` uses).
   The episode loader resolves capped responses, so a source is never the recorder's excerpt.
 * **Copies** (``kind: copy``): the file equals a source, or a contiguous byte slice ``[a, b)`` of one.
 * **Assembled** (``kind: assembled``, a ``.jsonl`` file): each line is ``{"input": <value>, "source": {...}}``.
   The value is the JSON-decoded slice, or its text when it is not JSON. A function's recorded-inputs file
   (:func:`inputs_file`) is assembled this way, and the gate appends its drawn inputs to a copy of it (:mod:`.qa`).
-* **Trust** (§13.1): a response, blob or message is trust 1 (the environment's own). Arguments are trust 2 (a
-  value an episode used).
+* **Trust**: a response, blob or message is trust 1 (the environment's own). Arguments are trust 2 (a value an
+  episode used).
+* **The ledger is the files** (:func:`derive_ledger`): an assembled file's lines name their own sources, and a copied
+  file is listed in ``.pass/fixtures.json`` with its sha256. A file that is deleted, or whose bytes no longer match
+  its listing, has no entry. Nothing else is kept, so the ledger cannot drift from what the writer sees; the gate
+  re-derives every entry's bytes from the recording, so an edited listing proves nothing by itself.
 
 Pure: no git, no network, no clock. Reasons carry paths, episode ids, source ids and byte offsets, never a
 recorded value.
@@ -25,7 +30,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import stat as _stat
+from pathlib import Path
 from typing import Any, Callable
 
 from .episodes import Episode
@@ -101,8 +109,20 @@ def _index(text: str, n: int, what: str) -> int:
     return i
 
 
-def source_bytes(ep: Episode, source: object, blob: Callable[[str], bytes]) -> bytes:
+#: The copied-fixture listing, relative to the writer's box (``/memory/.pass/fixtures.json``; never committed).
+LEDGER_FILE = ".pass/fixtures.json"
+_OBSERVATION = re.compile(r"observation:(\d{1,9})\Z")
+
+
+def canonical_source(source: object) -> str:
+    """``observation:<i>`` as the ``request:<i+1>`` it names; any other source id as it is."""
     s = str(source)
+    m = _OBSERVATION.match(s)
+    return f"request:{int(m.group(1)) + 1}" if m else s
+
+
+def source_bytes(ep: Episode, source: object, blob: Callable[[str], bytes]) -> bytes:
+    s = canonical_source(source)
     if s.startswith("request:"):
         return ep.request[_index(s[8:], len(ep.request), "request")].encode("utf-8")
     if s.startswith("args:"):
@@ -147,10 +167,18 @@ def _cut(data: bytes, cut: object) -> bytes:
 
 
 def _clamped(data: bytes, cut: object, notes: list[str] | None) -> object:
-    """m4k-c4 (rehearsal 3: a slice longer than the record was the main MED/HIGH tool refusal): a well-formed slice
-    that starts inside the record but ends past it is cut at the record's end, and *notes* says so. The clamped
+    """A slice whose end is null or left out (``[start, null]`` or ``[start]``) runs to the record's end. A well-formed
+    slice that starts inside the record but ends past it is cut at the record's end, and *notes* says so. The clamped
     slice is the one recorded, so the gate re-derives the same bytes. Anything else is left to :func:`_cut`.
     """
+    if (
+        isinstance(cut, (list, tuple))
+        and 1 <= len(cut) <= 2
+        and isinstance(cut[0], int)
+        and not isinstance(cut[0], bool)
+        and (len(cut) == 1 or cut[1] is None)
+    ):
+        return [cut[0], len(data)]
     if (
         isinstance(cut, (list, tuple))
         and len(cut) == 2
@@ -206,12 +234,13 @@ def make(
         raise FixtureError(
             f"{dest[:200]} is not a file name under memory/<package>/tests/data/",
         )
+    source = canonical_source(source)
     data = source_bytes(ep, source, blob)
     cut = _clamped(data, cut, notes)
     piece = _cut(data, cut)
     where = {
         "episode": ep.episode_id,
-        "source": str(source),
+        "source": source,
         "slice": list(cut) if cut is not None else None,
         "trust": trust_of(str(source)),
     }
@@ -300,6 +329,145 @@ def verify(
     except (UnicodeDecodeError, ValueError) as exc:
         return f"{path} cannot be read as recorded lines ({type(exc).__name__})"
     return f"{path} has an unknown provenance kind"
+
+
+def assembled_entry(data: bytes) -> dict | None:
+    """The provenance an assembled file's own lines state, or None when *data* is not a non-empty file of input
+    lines (``{"input": value, "source": {"episode", "source", "slice"}}``)."""
+    try:
+        lines = data.decode("utf-8").splitlines()
+    except UnicodeDecodeError:
+        return None
+    rows = []
+    for text in lines:
+        try:
+            got = json.loads(text)
+        except ValueError:
+            return None
+        src = got.get("source") if isinstance(got, dict) else None
+        if (
+            not isinstance(got, dict)
+            or set(got) != {"input", "source"}
+            or not isinstance(src, dict)
+            or set(src) != {"episode", "source", "slice"}
+        ):
+            return None
+        rows.append(
+            {
+                **src,
+                "trust": trust_of(str(src.get("source"))),
+                "sha256": hashlib.sha256(canonical(got["input"]).encode()).hexdigest(),
+            },
+        )
+    return {"kind": "assembled", "lines": rows} if rows else None
+
+
+def _read_plain(path, limit: int | None = None) -> bytes | None:
+    """*path*'s bytes when it is a regular file reached through no link (None otherwise)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        if not _stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        chunks = []
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            if limit is not None and sum(map(len, chunks)) > limit:
+                return None
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def _no_link_on_the_way(box, rel: str) -> bool:
+    cur = Path(box)
+    for part in Path(rel).parts[:-1]:
+        cur = cur / part
+        if cur.is_symlink():
+            return False
+    return True
+
+
+def read_listing(box) -> dict:
+    """``.pass/fixtures.json`` in *box*: dest -> copied-fixture entry ({} when absent or unreadable)."""
+    if (Path(box) / ".pass").is_symlink():
+        return {}
+    raw = _read_plain(Path(box) / LEDGER_FILE, 16 * 1024 * 1024)
+    try:
+        val = json.loads(raw.decode("utf-8")) if raw is not None else {}
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return {}
+    return val if isinstance(val, dict) else {}
+
+
+def derive_ledger(box) -> dict[str, dict]:
+    """The fixture provenance of the files now in *box*, derived from the files alone.
+
+    * copied fixtures: each ``.pass/fixtures.json`` entry whose file still exists and still hashes to the listed
+      sha256 (a deleted or rewritten file has no entry);
+    * assembled fixtures: every ``.jsonl`` file under ``memory/**/tests/data/`` whose lines are all input lines, with
+      the sources those lines name.
+    """
+    box = Path(box)
+    out: dict[str, dict] = {}
+    for dest, entry in sorted(read_listing(box).items()):
+        if (
+            not isinstance(dest, str)
+            or not isinstance(entry, dict)
+            or entry.get("kind") != "copy"
+            or not DATA_PATH.match(dest)
+            or not _no_link_on_the_way(box, dest)
+        ):
+            continue
+        data = _read_plain(box / dest)
+        if data is not None and hashlib.sha256(data).hexdigest() == entry.get("sha256"):
+            out[dest] = {
+                k: entry.get(k)
+                for k in ("kind", "episode", "source", "slice", "trust", "sha256")
+            }
+    root = box / "memory"
+    if root.is_dir() and not root.is_symlink():
+        for d, dirs, files in os.walk(root, followlinks=False):
+            for name in sorted(files):
+                if not name.endswith(".jsonl"):
+                    continue
+                rel = str((Path(d) / name).relative_to(box))
+                if (
+                    rel in out
+                    or not DATA_PATH.match(rel)
+                    or rel.split("/tests/data/", 1)[1].startswith(DRAWN_DIR)
+                ):
+                    continue
+                data = _read_plain(box / rel)
+                entry = assembled_entry(data) if data is not None else None
+                if entry is not None:
+                    out[rel] = entry
+    return out
+
+
+def write_listing(box, dest: str, entry: dict | None) -> None:
+    """Set (or, with None, remove) *dest*'s copied-fixture entry in ``.pass/fixtures.json``; never through a link."""
+    pass_dir = Path(box) / ".pass"
+    if pass_dir.is_symlink():
+        raise FixtureError("/memory/.pass is a link")
+    pass_dir.mkdir(exist_ok=True)
+    listing = read_listing(box)
+    if entry is None:
+        listing.pop(dest, None)
+    else:
+        listing[dest] = entry
+    fd = os.open(
+        Path(box) / LEDGER_FILE,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o644,
+    )
+    with os.fdopen(fd, "w") as fh:
+        fh.write(json.dumps(listing, indent=1, sort_keys=True) + "\n")
 
 
 class HashIndex:

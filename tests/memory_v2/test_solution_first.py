@@ -94,7 +94,7 @@ def test_overview_without_cells():
     assert end == [] and "(no cell, action or observation was recorded)" in view
 
 
-def test_the_overview_credits_the_end_parts_it_shows_in_full(tmp_path):
+def test_the_overview_logs_the_end_parts_it_shows_in_full(tmp_path):
     ep = _ep(CELLS, ACTIONS)
     model = Turns([_call("o", "read_episode", {"episode": "e1", "part": "overview"})])
     _, _, writer = _writer(tmp_path, model, library_mode=True, max_calls=5)
@@ -103,7 +103,7 @@ def test_the_overview_credits_the_end_parts_it_shows_in_full(tmp_path):
         writer.run(PassRequest("incremental", "svc", ["e1"], False), "p1"),
     )
     assert model.outputs["o"].startswith("== end ==")
-    assert out is not None
+    assert out.coverage["opened"] == ["e1"] and out.coverage["parts_read"]["e1"]
 
 
 def test_the_notes_sentence_is_in_write_and_passes_the_guards():

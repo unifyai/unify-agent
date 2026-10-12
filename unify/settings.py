@@ -444,10 +444,9 @@ class ProductionSettings(BaseSettings):
     # MAIN 11 Oct (prepared; off until the lead decides): ``on`` moves old tool results out of the memory writer's
     # conversation once it passes a size; ``off`` (default): never.
     UNIFY_MEMORY_LIBRARY_COMPACT: str = "off"
-    # MAIN 11 Oct (prepared; ``required`` until the lead decides): ``required`` keeps the writer's batch rule (finish
-    # needs every episode covered or dismissed); ``optional``: finish never needs it, and the episodes left are
-    # recorded as unread.
-    UNIFY_MEMORY_LIBRARY_COVERAGE: str = "required"
+    # The former reading rule: empty or ``optional`` (a no-op; finish never waits on reading). ``required`` is
+    # refused at start-up.
+    UNIFY_MEMORY_LIBRARY_COVERAGE: str = ""
     # How the actor's prompt reaches the library index: ``inline`` (default) ends it with the index view;
     # ``pointer`` ends it with a constant guide pointing to memory.index(), memory.show() and memory.find().
     UNIFY_MEMORY_LIBRARY_ACTOR_INDEX: str = "inline"

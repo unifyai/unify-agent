@@ -60,11 +60,11 @@ from .docstrings import describe_standard as describe_docstring_standard
 from .gitio import GitError, Repo
 from .index import build_index
 from .memory_repo import items as memory_items
-from . import batch_map as _bm
 from . import curate as _curate
 from . import qa as _qa
 from . import repair as _repair
 from . import views as _views
+from . import writer_tools as _wt
 from . import testkit as _testkit
 from .qa_static import cuts as _cuts
 from .redact import Redactor, redact_error
@@ -347,256 +347,8 @@ _TOOL_TEMPLATES = [
 ]
 
 
-#: Spec v2.1 §7.3 (P1): the writer's bounded readers and its coverage tools, added only under ``library_mode``.
-_LIBRARY_TOOL_TEMPLATES = [
-    {
-        "type": "function",
-        "function": {
-            "name": "read",
-            "description": (
-                "Read a file or list a directory under /inputs, /memory or /outputs. Returns at most 8000 bytes "
-                "from offset; a marker gives the next offset. Nothing is ever cut silently."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "offset": {"type": "integer"},
-                },
-                "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "grep",
-            "description": (
-                "Search files under a path with a Python regular expression; returns path:line: text hits, "
-                "one bounded page at a time (a marker gives the next offset)."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "pattern": {"type": "string"},
-                    "path": {"type": "string"},
-                    "offset": {"type": "integer"},
-                },
-                "required": ["pattern"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_episode",
-            "description": (
-                "Read one part of a batch episode: 'request', 'observation:<i>', 'cell:<i>', 'action:<i>' or "
-                "'diff'. Reading every part the batch map lists as required covers the episode. parts=[...] reads up "
-                "to 8 parts on one page: 8000 bytes of content in all, each part marked and credited for what is shown. "
-                "'overview' shows the episode's end first (its last working cell, last action and last observation) "
-                "and then every step, newest first, with the part name that reads it. 'parts' lists the episode's "
-                "parts with their sizes, which are required and which are read."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "episode": {"type": "string"},
-                    "part": {"type": "string"},
-                    "offset": {"type": "integer"},
-                },
-                "required": ["episode", "part"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "dismiss",
-            "description": (
-                "Mark a batch episode as read enough, with a one-line reason, when it holds nothing to store."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "episode": {"type": "string"},
-                    "reason": {"type": "string"},
-                },
-                "required": ["episode", "reason"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "replay",
-            "description": (
-                "Verify a function item by replaying the recorded code it replaces. In the item's manifest entry, "
-                'list "replaces": [{"episode", "cell", "lines": [first, last], "call": "<one statement calling the '
-                'function, e.g. result = name(args)>"}]. Each instance is replayed with those lines replaced by the '
-                "call; it is verified when everything the original code left behind is the same. The verified "
-                "instances become a test file under memory/<package>/tests/, which you add to the item's tests."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {"item": {"type": "string"}},
-                "required": ["item"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "fixture",
-            "description": (
-                "Copy recorded bytes of a batch episode into a test fixture under memory/<package>/tests/data/. "
-                "action is an action index (its recorded response, or a work-tree action's file), 'args:<i>' (the "
-                "arguments that action was called with) or 'request:<j>' (a user message: the request, then the "
-                "observations). slice [start, end] keeps bytes start to end-1 of the recorded value's UTF-8 bytes "
-                "(0 <= start < end <= its length; omit it for the whole value). append=true adds one line "
-                '{"input": value, "source": ...} to a .jsonl file, such as a function\'s recorded-inputs file '
-                "tests/data/<module>.<function>.inputs.jsonl. The gate accepts only fixtures made this way, "
-                "unchanged."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "episode": {"type": "string"},
-                    "action": {"type": ["integer", "string"]},
-                    "dest": {"type": "string"},
-                    "slice": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                        "minItems": 2,
-                        "maxItems": 2,
-                    },
-                    "append": {"type": "boolean"},
-                },
-                "required": ["episode", "action", "dest"],
-            },
-        },
-    },
-]
-
-
-def _fixture_call(
-    args: dict,
-    eps: dict,
-    box: Path,
-    blob: Callable[[str], bytes],
-    made: dict,
-) -> str:
-    """The ``fixture`` tool (spec v2.1 §7.4): recorded bytes into ``tests/data/``, provenance kept by the harness.
-
-    Refuses an episode outside the batch, a destination the fixture rules refuse (:func:`.fixtures.make`), a link on
-    the way to it, and appending to a file that did not come through this tool. Its output earns no coverage.
-    """
-    from .fixtures import FixtureError, make
-
-    eid = str(args.get("episode", ""))
-    if eid not in eps:
-        return f"refused: {eid[:80]!r} is not in this batch"
-    dest = str(args.get("dest", ""))
-    append = bool(args.get("append", False))
-    notes: list[str] = []
-    try:
-        data, entry = make(
-            eps[eid],
-            args.get("action"),
-            dest,
-            blob=blob,
-            cut=args.get("slice"),
-            append=append,
-            existing=made.get(dest),
-            notes=notes,
-        )
-    except FixtureError as exc:
-        return f"refused: {exc}"[:300]
-    cur = Path(box)
-    for part in Path(dest).parts[:-1]:
-        cur = cur / part
-        if cur.is_symlink():
-            return "refused: a directory on the way to dest is a link"
-    target = Path(box) / dest
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.is_symlink():
-        return "refused: dest is a link"
-    if append and dest not in made and target.exists():
-        return "refused: dest exists and did not come through fixture()"
-    flags = (
-        os.O_WRONLY
-        | os.O_CREAT
-        | os.O_NOFOLLOW
-        | (os.O_APPEND if append else os.O_TRUNC)
-    )
-    with os.fdopen(os.open(target, flags, 0o644), "wb") as f:
-        f.write(data)
-    made[dest] = entry
-    verb = "appended a line to" if append else "wrote"
-    return (
-        f"ok: {verb} {dest} ({len(data)} bytes, sha256 {hashlib.sha256(data).hexdigest()[:12]})"
-        + "".join(f"; {n}" for n in notes)
-    )
-
-
 # design r2 §3: finish refuses an unparseable manifest at most this many times in a pass
 FINISH_G1_REFUSALS = 2
-
-
-def _identical(
-    shown: dict[str, tuple[str, str]],
-    cov: Any,
-    eid: str,
-    part: str,
-    data: bytes,
-) -> str | None:
-    """Design r2 §1 (RUNTIME P2): when *part*'s whole recorded bytes equal a part already shown COMPLETE in this
-    pass, credit it with that source and return the one-line reference; else None (the part is shown).
-    """
-    if not data or cov.part_done(eid, part):
-        return None
-    key = hashlib.sha256(data).hexdigest()
-    src = shown.get(key)
-    if src is None or src == (eid, part):
-        return None
-    cov.credit_identical(eid, part, src)
-    return f"identical to {src[0]}/{src[1]} (sha256 {key[:12]}), already shown in full; covered"
-
-
-def _shown_complete(
-    shown: dict[str, tuple[str, str]],
-    cov: Any,
-    eid: str,
-    part: str,
-    data: bytes,
-) -> None:
-    if data and cov.part_done(eid, part):
-        shown.setdefault(hashlib.sha256(data).hexdigest(), (eid, part))
-
-
-def _parts_from_text(args: dict) -> dict:
-    """m4j: ``read_episode``'s parts given as text are read as the list they name: ``parts`` as a string (a JSON
-    list, ``parts=[...]`` or names separated by commas), or a ``part`` naming several parts that way.
-    """
-    several = "parts" in args
-    raw = args.get("parts") if several else args.get("part")
-    if not isinstance(raw, str):
-        return args
-    text = raw.strip()
-    for prefix in ("parts=", "parts:"):
-        if text.startswith(prefix):
-            text, several = text[len(prefix) :].strip(), True
-    if not several and not text.startswith("[") and "," not in text:
-        return args  # one part's name
-    try:
-        val = json.loads(text)
-    except ValueError:
-        val = None
-    if not isinstance(val, list):
-        val = [x.strip().strip("'\"") for x in text.strip("[]").split(",")]
-    out = {k: v for k, v in args.items() if k not in ("part", "parts")}
-    out["parts"] = [v for v in val if not (isinstance(v, str) and not v.strip())]
-    return out
 
 
 #: UNIFY_MEMORY_LIBRARY_COMPACT: the conversation size (prompt text, :func:`_prompt_chars`) that triggers a compaction,
@@ -697,127 +449,56 @@ def _prompt_chars(m: object) -> int:
     return n
 
 
-def _finish_refusal(cov: Any, missing: list[str]) -> str:
-    """m4k: the refusal names each uncovered episode's unread required parts and what is already dismissed, so one
-    call can act on it (the rehearsal's writer re-called finish six times on one named episode).
-    """
-    lines = [f"not finished: {len(missing)} episode(s) neither covered nor dismissed:"]
-    for eid in missing:
-        parts = cov.missing_parts(eid)
-        lines.append(
-            f"- {eid}: not yet read in full: {', '.join(parts) if parts else '(none)'}",
-        )
-    lines.append(
-        "Read those parts with read_episode, or dismiss the episode with a reason. Dismissed so far: "
-        + (", ".join(sorted(cov.dismissed)) or "(none)")
-        + ".",
-    )
-    return "\n".join(lines)
+def _usage_of(msg: object, usd: object) -> dict:
+    """The usage of the model call that produced a turn's tool calls; an unreported count stays None (unknown)."""
+    u = msg.get("usage") if isinstance(msg, dict) else None
+    u = u if isinstance(u, dict) else {}
 
+    def num(*path: str) -> int | None:
+        for key in path:
+            cur: object = u
+            for part in key.split("."):
+                cur = cur.get(part) if isinstance(cur, dict) else None
+            if isinstance(cur, int) and not isinstance(cur, bool):
+                return cur
+        return None
 
-def _parts_list(
-    ep: Any,
-    eid: str,
-    cov: Any,
-    shared: dict[str, str] | None = None,
-) -> str:
-    """``read_episode(part="parts")``: every part name of *ep* with its size, and for each required one whether it
-    is read; it shows no content and credits nothing."""
-    required = list(cov.required.get(eid, [])) if cov is not None else []
-    names = (
-        ["request"]
-        + [f"observation:{i}" for i in range(max(0, len(ep.request) - 1))]
-        + [f"cell:{c.index}" for c in ep.cells]
-        + [f"action:{i}" for i in range(len(ep.actions))]
-        + (["diff"] if ep.worktree_diff else [])
-        + [p for p in required if p.startswith("shared:")]
-    )
-    lines = [f"{eid}: {len(names)} part(s), {len(required)} required"]
-    for name in names:
-        try:
-            size = len(_bm.part_text(ep, name, shared).encode())
-        except (KeyError, ValueError, IndexError, StopIteration):
-            continue
-        canon = _bm.canonical_part(ep, name)
-        line = f"- {name}: {size} bytes"
-        if canon != name:
-            line += f", identical to {canon}"
-        elif name in required:
-            line += f", required, {cov.progress(eid, name)}"
-        lines.append(line)
-    lines.append(
-        f"Read parts with parts=[...] ({READ_PARTS_PER_CALL} per call) or one with part=<name>.",
-    )
-    return "\n".join(lines)
-
-
-def _unknown_part(
-    ep: Any,
-    eid: str,
-    name: str,
-    cov: Any,
-    shared: dict[str, str] | None = None,
-) -> str:
-    """``read_episode`` with a part *ep* does not have: nothing is read, and the answer lists the parts it has."""
-    return (
-        f"no part {name[:80]!r} in {eid}; nothing was read. Its parts:\n"
-        + _parts_list(
-            ep,
-            eid,
-            cov,
-            shared,
-        )
-    )
-
-
-def _coverage_measures(
-    coverage: dict,
-    opened: list[str],
-    rows: list[dict],
-    merged: list[str],
-) -> dict:
-    """UNIFY_MEMORY_LIBRARY_COVERAGE=optional: what the writer read and left, as measures only (MAIN 11 Oct, the
-    subtractive note 38c0bd35: M1 read share and episodes opened; M2 unread episodes whose batch-map row carries
-    evidence; M3 an empty pass. M4, the unread backlog, is the pool's ``unread_open``; M5, the outcome, is the
-    pass's merged items and the library's use). Nothing reads these back: no gate, no prompt.
-    """
-    unread = list(coverage.get("missing") or [])
-    need = int(coverage.get("bytes_required") or 0)
-    share = round(int(coverage.get("bytes_read") or 0) / need, 4) if need else None
-    evidence: dict[str, list[str]] = {}
-    for r in rows:
-        eid = r.get("episode_id")
-        if eid not in unread:
-            continue
-        staging = r.get("staging") if isinstance(r.get("staging"), dict) else {}
-        kinds = [
-            k
-            for k, held in (
-                ("function", r.get("functions")),
-                (
-                    "cell_error",
-                    any(
-                        isinstance(s, dict) and s.get("kind") == "cell_error"
-                        for s in r.get("structural_events") or []
-                    ),
-                ),
-                ("pool", r.get("pool_entries")),
-                ("staging", staging.get("candidates")),
-            )
-            if held
-        ]
-        if kinds:
-            evidence[eid] = kinds
+    cost = _money(usd)
     return {
-        "read_share": share,
-        "bytes_read": int(coverage.get("bytes_read") or 0),
-        "bytes_required": need,
-        "episodes": int(coverage.get("episodes") or 0),
-        "episodes_opened": len(opened),
-        "unread": len(unread),
-        "unread_with_evidence": evidence,
-        "empty_pass": bool(share is not None and share < 0.05 and not merged),
+        "input": num("prompt_tokens", "input_tokens"),
+        "cache_read": num(
+            "prompt_tokens_details.cached_tokens",
+            "cache_read_input_tokens",
+        ),
+        "cache_write": num(
+            "cache_creation_input_tokens",
+            "prompt_tokens_details.cache_write_tokens",
+        ),
+        "output": num("completion_tokens", "output_tokens"),
+        "reasoning": num(
+            "completion_tokens_details.reasoning_tokens",
+            "reasoning_tokens",
+        ),
+        "usd": _usd(cost) if cost is not None else "unknown",
     }
+
+
+def _agent_tool_json(agent: str) -> list[dict]:
+    from . import agent_profiles
+
+    return agent_profiles.tool_json(agent)
+
+
+def _unread_entry(pool_mod: Any, eid: str) -> Any:
+    """The pool's ``unread`` entry for a batch episode the writer never opened (kept until a writer closes it)."""
+    e = pool_mod.Entry(
+        id=pool_mod.entry_id("unread", eid),
+        kind="unread",
+        title=f"episode {eid} was not opened by the writer",
+        data={},
+    )
+    e.add_provenance([eid], [], ["writer"])
+    return e
 
 
 def _staged_candidates(entry: dict) -> list[dict]:
@@ -884,27 +565,26 @@ def _trailers(
     return out
 
 
-def _library_check_description() -> str:
-    """``check`` under v2.1 (spec §12.4; P2 Amendment B): no channel wording; the static checks, then the manifest
-    items' own tests and the gate's drawn recorded inputs."""
-    return (
-        "Check a manifest against your current /memory files: the gate's static checks (the manifest, the "
-        "layout and links, fixtures, covers and safety), then the items' own tests and the recorded inputs the "
-        "gate draws. Returns 'ok' or the gate's reasons, with the output of any failing test. "
-        "Changes nothing; each check counts as a call."
-    )
-
-
 def writer_tools(
     *,
     docstrings: bool = False,
     soft_budget: bool = False,
     library_mode: bool = False,
     pool: bool = False,
+    role: str = "write",
 ) -> list[dict]:
-    """Sol's tools under the v2.1 switches; all off, v2's byte for byte (only ``check``'s text varies). *pool*
-    (UNIFY_MEMORY_LIBRARY_POOL): ``dismiss`` takes an optional ``defer``, which keeps the episode in the candidate pool.
+    """The writer's tool JSON. With *library_mode* it is rendered from the shared tool spec for the agent of *role*
+    (``write``: the writer, ``curate``: the curator) through :mod:`.agent_profiles`; *pool* turns on the tools that
+    need the candidate pool. With *library_mode* off: the original three tools (only ``check``'s text varies).
     """
+    if library_mode:
+        from . import agent_profiles
+
+        flags = frozenset({"pool"} if pool else ())
+        return agent_profiles.tool_json(
+            "curator" if role == "curate" else "writer",
+            flags,
+        )
     description = (
         "Check a manifest against your current /memory files with the gate's cheap checks (manifest, "
         "provenance and scope, "
@@ -916,37 +596,19 @@ def writer_tools(
         + "). Returns 'ok' "
         f"or the gate's reasons. Changes nothing; at most {MAX_CHECKS} per pass, each counted as a call."
     )
-    if library_mode:
-        description = _library_check_description()
     tools = copy.deepcopy(_TOOL_TEMPLATES)
     for tool in tools:
         if tool["function"]["name"] == "check":
             tool["function"]["description"] = description
-    if library_mode:
-        tools += copy.deepcopy(_LIBRARY_TOOL_TEMPLATES)
-        if pool:
-            for tool in tools:
-                if tool["function"]["name"] == "dismiss":
-                    tool["function"]["parameters"]["properties"]["defer"] = {
-                        "type": "boolean",
-                        "description": "true: keep the episode in the candidate pool for a later pass",
-                    }
-                    tool["function"]["parameters"]["properties"]["pool_entry"] = {
-                        "type": "string",
-                        "description": (
-                            "with defer=true, optional: the id of an open pool entry this episode is more evidence "
-                            "for; the episode and reason are added to that entry instead of opening a new one"
-                        ),
-                    }
     return tools
 
 
 #: The v2 tools (every v2.1 switch at its default).
 _TOOLS = writer_tools()
 _OUTPUT_CAP = 8000
-#: spec v2.1 §7.4: parts per read_episode call (one shared page) and reader calls per model turn
-READ_PARTS_PER_CALL = 8
-READERS_PER_TURN = 16
+#: parts per read_episode call (one shared page) and reader calls per model turn (stated in the tool descriptions)
+READ_PARTS_PER_CALL = _wt.READ_PARTS_PER_CALL
+READERS_PER_TURN = _wt.READERS_PER_TURN
 
 
 def _library_on(writer: object) -> bool:
@@ -959,7 +621,7 @@ def _head_marked(text: str) -> tuple[str, str]:
     return _views.view(text.encode("utf-8", errors="replace"), 0, _OUTPUT_CAP), text
 
 
-_MAX_CELLS_PER_TURN = 8
+_MAX_CELLS_PER_TURN = _wt.CELLS_PER_TURN
 _MANIFEST_MAX_BYTES = 1024**2
 _MANIFEST_MAX_DEPTH = 16
 # Never mirrored out of the box: git metadata (anywhere), the pass directory (top level), caches. Test-run
@@ -1025,7 +687,7 @@ class PassConfig:
     show_usage: bool = False
     # UNIFY_MEMORY_LIBRARY (spec v2.1, P1): the writer's batch map, signals, views, coverage (off: as at 4675a3c45)
     library_mode: bool = False
-    # spec v2.1 §7.4: reader calls (read, grep, read_episode, dismiss) count here, never against max_calls
+    # reader calls (read, grep, overview, read_episode, pool) count here, never against max_calls
     max_reads: int = 400
     # memory v2.1 ROUND_RESERVE (spec §15), once offline replay calibrates it; None: the pass's own median
     # round cost (repair.round_reserve)
@@ -1047,12 +709,11 @@ class PassConfig:
     # MAIN 11 Oct (prepared, off until the lead decides): UNIFY_MEMORY_LIBRARY_COMPACT moves old tool results out of
     # Sol's conversation when it grows past COMPACT_AT_CHARS (:func:`_compact`)
     compact: bool = False
-    # where each pass keeps its records after it ends (tool events, box opens, refusal codes): <root>/<pass id>/;
-    # None keeps them in memory only
+    # UNIFY_MEMORY_LIBRARY_COVERAGE: only "optional" exists (finish never waits on reading); kept for older callers
+    coverage_rule: str = "optional"
+    # where the pass's structured records go: <pass_record_root>/<pass id>/tool-events.jsonl (None: kept in memory
+    # only, on WriterPass.tool_events)
     pass_record_root: str | None = None
-    # MAIN 11 Oct (prepared; "required" until the lead decides): UNIFY_MEMORY_LIBRARY_COVERAGE. "optional": finish never
-    # needs coverage, the episodes left are recorded as unread, and the pass reports coverage measures (no gate)
-    coverage_rule: str = "required"
 
 
 @dataclass
@@ -1074,7 +735,8 @@ class PassOutcome:
     # per-item admission (the gate's): the manifest items that landed, and each refused item's codes
     items_merged: list[str] = field(default_factory=list)
     items_refused: dict[str, list[str]] = field(default_factory=dict)
-    # spec v2.1 §7.4: views.Coverage.summary() of the writer's reads (None with library_mode off)
+    # the writer's read log (writer_tools.ReadLog.summary: episodes opened, unread batch episodes, parts and bytes
+    # read); a measure only (None with library_mode off)
     coverage: dict | None = None
     reads: int = 0  # reader calls made (library_mode)
     exported_bytes: int | None = (
@@ -1095,7 +757,7 @@ class PassOutcome:
     staging: dict | None = None
     # the candidate pool after this pass: open entries, added, status changes, its commit (or its error); None off
     pool: dict | None = None
-    # UNIFY_MEMORY_LIBRARY_COVERAGE=optional: :func:`_coverage_measures` (measures only); None otherwise
+    # no longer computed (the read log in ``coverage`` replaces it); kept so older readers find the field
     coverage_measures: dict | None = None
     # library layout: counts of staged candidates at each hand-off, fork reply to adoption (:func:`.chain.counts`)
     chain: dict | None = None
@@ -2200,10 +1862,21 @@ class WriterPass:
         # text before compaction (message index -> text)
         self._tools_json: list[dict] = []
         self._precompact: dict[int, str] = {}
-        # v2.1: fixture provenance the fixture tool recorded this pass (spec §7.4); the manifest's own is ignored
+        # the fixture provenance last derived from the box's files (fixtures.derive_ledger); the manifest's own is ignored
         self.fixtures_made: dict[str, dict] = {}
-        # v2.1 (design r2 §1, RUNTIME P2): sha256 of a part shown complete in this pass -> (episode, part)
-        self._shown_full: dict[str, tuple[str, str]] = {}
+        # per agent: sha256 of a part shown to that agent in full -> (episode, part), so a byte-identical part is
+        # answered with a pointer; and that agent's read log (a measure only)
+        self._shown_full: dict[str, dict[str, tuple[str, str]]] = {}
+        self._read_logs: dict[str, _wt.ReadLog] = {}
+        # the recorded-episode index (loaded once per pass) and the episodes loaded through it
+        self._recorded: set[str] | None = None
+        self._episodes: dict[str, Episode] = {}
+        self._batch: list[str] = []
+        self._bmap_rows: list[dict] = []
+        # one structured event per tool call (tool-events.jsonl rows), in call order; and the pass's events file
+        # (None: not opened yet; False: not written this pass)
+        self.tool_events: list[dict] = []
+        self._events_file: Path | None | bool = None
         # v2.1 r5 (r4 §1): request blocks shared by most episodes (id -> text), shown as markers; {} until staged
         self._shared: dict[str, str] = {}
         self._inputs_dir: Path | None = (
@@ -2224,9 +1897,6 @@ class WriterPass:
         self._chain_rows: list[dict] = (
             []
         )  # the batch map's rows once staging is listed in it
-        self._deferred: dict[str, tuple[str, str | None]] = (
-            {}
-        )  # episode -> (reason, the entry it extends)
         self._pool_manifest: object = None
         # v2.1: the open drafts the last _stage_inputs staged (spec §8.4); always [] with library_mode off
         self._drafts: list[dict] = []
@@ -2573,7 +2243,7 @@ class WriterPass:
             p = self._pool
             changed = _pool_mod.apply_block(
                 p,
-                self._pool_manifest,
+                _wt.without_defer(self._pool_manifest),
                 pass_id,
                 landed=set(out.items_merged or []),
                 finished=bool(out.finished),
@@ -2582,24 +2252,20 @@ class WriterPass:
             new: list = []
             extended: list[str] = []
             if req.kind != "curate":
-                for e, (r, target) in sorted(self._deferred.items()):
-                    if target is None:
-                        new.append(_pool_mod.deferred(e, r))
-                    elif p.add_evidence(target, e, r, pass_id):
-                        extended.append(target)
-                if self.cfg.coverage_rule == "optional" and self._cov is not None:
-                    done = self._cov.summary()
-                    for e in done[
-                        "missing"
-                    ]:  # neither covered nor dismissed: kept as unread, never dropped
-                        if e not in self._deferred:
-                            new.append(
-                                _pool_mod.unread(
-                                    e,
-                                    self._cov.parts_read(e),
-                                    len(self._cov.required.get(e, [])),
-                                ),
-                            )
+                # the manifest's defer rows (pool decide defer): episodes join a named entry, or open deferred entries
+                deferred: set[str] = set()
+                for row in _wt.defer_rows(self._pool_manifest):
+                    deferred.update(row["episodes"])
+                    for e in row["episodes"]:
+                        if row["id"] == "new":
+                            new.append(_pool_mod.deferred(e, row["reason"]))
+                        elif p.add_evidence(row["id"], e, row["reason"], pass_id):
+                            extended.append(row["id"])
+                # a batch episode the writer never opened is kept as unread (a measure: nothing gates on it)
+                log = self._read_logs.get("writer") or _wt.ReadLog()
+                for e in self._batch:
+                    if e not in log.parts and e not in deferred:
+                        new.append(_unread_entry(_pool_mod, e))
                 if not out.passed:
                     new += self._pool_draft(pass_id)
             added = 0
@@ -2615,12 +2281,8 @@ class WriterPass:
                 "commit": p.save(pass_id),
                 "at_start": self._pool_at_start,
             }
-            if (
-                self.cfg.coverage_rule == "optional"
-            ):  # M4: the backlog of unread episodes (a measure, no gate)
-                res["unread_open"] = sum(
-                    1 for e in p.open_entries() if e.kind == "unread"
-                )
+            # the backlog of episodes no writer opened (a measure, no gate)
+            res["unread_open"] = sum(1 for e in p.open_entries() if e.kind == "unread")
             return res
         except Exception as exc:  # noqa: BLE001 - the pool never fails a pass
             return {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
@@ -2659,8 +2321,6 @@ class WriterPass:
         inputs: Path,
         box: Path,
         roots,
-        required,
-        sizes,
         spend,
         *,
         pass_id: str = "",
@@ -2864,8 +2524,10 @@ class WriterPass:
         raw: object,
         box: Path,
         base: ParentSnapshot | str,
+        reasons_out: list[str] | None = None,
     ) -> tuple[str, str | None]:
-        """The ``check`` tool: (reply, host-side detail of an error). Runs on the loop's thread.
+        """The ``check`` tool: (reply, host-side detail of an error). Runs on the loop's thread. *reasons_out*, when
+        given, receives every reason the gate gave (the reply shows the first :data:`_CHECK_REASONS`).
 
         :meth:`.gate.Gate.preview` of a manifest against a copy of *box*: the copy is what the commit would
         hold (:func:`_mirror` without ``.pass``), so the box is only read. Called between cells, when no box
@@ -2880,7 +2542,7 @@ class WriterPass:
         if found:
             return _layout_refusal(found), None
         if _library_on(self):
-            manifest = _with_fixtures(manifest, self.fixtures_made)
+            manifest = _with_fixtures(manifest, self._ledger(box))
         try:
             with tempfile.TemporaryDirectory(prefix="memv2-check-") as tmp:
                 tree = Path(tmp) / "tree"
@@ -2892,79 +2554,13 @@ class WriterPass:
         except Exception as exc:  # a broken check never ends the pass
             detail = _redact(f"check error: {type(exc).__name__}: {exc}")[:300]
             return f"check error: {type(exc).__name__}", detail
+        if reasons_out is not None:
+            reasons_out.extend(_redact(r) for r in reasons)
         return _check_reply(reasons), None
 
-    @staticmethod
-    def _read_parts(
-        ep: Episode,
-        eid: str,
-        parts: object,
-        cov: _views.Coverage,
-        shown: dict[str, tuple[str, str]] | None = None,
-        shared: dict[str, str] | None = None,
-    ) -> str:
-        """``read_episode(parts=[...])``: up to READ_PARTS_PER_CALL parts sharing ONE VIEW_BYTES page, filled in
-        order. Each part has its own marked view and is credited for the range shown; a part reached with the
-        page full is listed, not shown. A part is a name or ``{"part": name, "offset": n}``.
-        """
-        if not isinstance(parts, list) or not parts:
-            return "refused: parts must be a non-empty list"
-        rest: list = []
-        if (
-            len(parts) > READ_PARTS_PER_CALL
-        ):  # m4k: page, never refuse (the rest is named for the next call)
-            parts, rest = parts[:READ_PARTS_PER_CALL], parts[READ_PARTS_PER_CALL:]
-        items: list[tuple[str, int, bytes]] = []
-        for item in parts:  # every item is checked before anything is shown or credited
-            name, off = (
-                (item.get("part"), item.get("offset", 0))
-                if isinstance(item, dict)
-                else (item, 0)
-            )
-            name = str(name)
-            if isinstance(off, bool) or not isinstance(off, int) or off < 0:
-                return f"refused: offset must be an integer >= 0 (part {name!r}); nothing was read"[
-                    :300
-                ]
-            try:
-                data = _bm.part_text(ep, name, shared).encode()
-            except (KeyError, ValueError, IndexError, StopIteration):
-                # m4k-c4: answer with the episode's part names (rehearsal 3 refused here)
-                return _unknown_part(ep, eid, name, cov, shared)
-            items.append((name, off, data))
-        left, out = _views.VIEW_BYTES, []
-        for name, off, data in items:
-            canon = _bm.canonical_part(ep, name)
-            same = (
-                _identical(shown, cov, eid, canon, data)
-                if shown is not None and off == 0
-                else None
-            )
-            if same is not None:
-                out.append(f"== {name} ==\n{same}")
-                continue
-            if left <= 0:
-                out.append(
-                    f"== {name} ==\nnot shown (page full): read again with parts={json.dumps([name])}",
-                )
-                continue
-            text, a, b = _views.view_range(data, off, left)
-            cov.credit(eid, canon, a, b)
-            if shown is not None:
-                _shown_complete(shown, cov, eid, canon, data)
-            left -= b - a
-            out.append(f"== {name} ==\n{text}")
-        text = "\n\n".join(out)
-        if rest:
-            text += (
-                f"\n\n[{len(rest)} more part(s) not read in this call ({READ_PARTS_PER_CALL} per call); "
-                f"next: parts={json.dumps(rest)}]"
-            )
-        return text
-
     def _finish_manifest_problem(self, box: Path) -> tuple[str | None, bool]:
-        """Design r2 §3 (RUNTIME P6): (the G1 refusal ``finish`` would meet, from the gate's own manifest parser;
-        whether the parsed manifest lists no item and no deletion).
+        """(The G1 refusal ``finish`` would meet, from the gate's own manifest parser; whether the parsed manifest
+        lists no item and no deletion).
 
         No refusal when the manifest parses. A manifest the host cannot read yet (the final check restores access
         first) is left to the final check rather than refused here.
@@ -2985,131 +2581,243 @@ class WriterPass:
             return (None if "cannot be read" in problem else f"G1: {problem}"), False
         try:
             man = self.gate._parse_manifest(
-                _with_fixtures(manifest, self.fixtures_made),
+                _with_fixtures(manifest, self._ledger(box)),
             )
         except _manifest.ManifestError as exc:
             return _redact(f"G1: malformed manifest: {exc}")[:600], False
         if self._pool is not None:
             from .pool import block_problems
 
-            probs = block_problems(manifest, self._pool, self._role)
+            probs = block_problems(_wt.without_defer(manifest), self._pool, self._role)
+            block = manifest.get("pool") if isinstance(manifest, dict) else None
+            raw_defer = block.get("defer") if isinstance(block, dict) else None
+            rows = _wt.defer_rows(manifest)
+            if raw_defer is not None and (
+                not isinstance(raw_defer, list) or len(rows) != len(raw_defer)
+            ):
+                probs.append(
+                    'pool.defer must be a list of {"id", "episodes", "reason"} rows (pool decide writes them)',
+                )
+            open_ids = {e.id for e in self._pool.open_entries()}
+            for row in rows:
+                if row["id"] != "new" and row["id"] not in open_ids:
+                    probs.append(f"pool.defer: {row['id'][:20]} is not an open entry")
+                elif row["id"] == "new" and not row["episodes"]:
+                    probs.append("pool.defer: a new deferral needs its episodes")
             if probs:
                 return _redact(f"G1: {probs[0]}")[:600], False
             self._pool_manifest = manifest
         return None, not man.items and not man.deleted
+
+    def _event(
+        self,
+        pass_id: str,
+        tool: object,
+        raw_args: object,
+        reply: "_wt.Reply | None",
+        usage: dict | None,
+    ) -> None:
+        """One ``tool_call`` row of tool-events.jsonl, from the tool layer's own reply (never from transcript text)."""
+        reply = reply or _wt.Reply("")
+        args_text = (
+            raw_args if isinstance(raw_args, str) else json.dumps(raw_args, default=str)
+        )
+        text_bytes = len(reply.text.encode("utf-8", errors="replace"))
+        row = {
+            "event": "tool_call",
+            "agent": "curator" if self._role == "curate" else "writer",
+            "pass_id": pass_id,
+            "call": len(self.tool_events),
+            "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "tool": tool if isinstance(tool, str) else None,
+            "status": reply.status,
+            "refusal": (
+                {"form": reply.form, "text_bytes": text_bytes}
+                if reply.status == "refused"
+                else None
+            ),
+            "paths": [dict(p) for p in reply.paths],
+            "args_bytes": len(str(args_text or "").encode("utf-8", errors="replace")),
+            "result_bytes": text_bytes,
+            "result_truncated": "; next: offset=" in reply.text,
+            "usage": usage,
+        }
+        self.tool_events.append(row)
+        self._write_event(pass_id, row)
+
+    def _write_event(self, pass_id: str, row: dict) -> None:
+        """Append *row* to ``<pass_record_root>/<pass id>/tool-events.jsonl``. The file is created new (never through
+        a link, never over an existing file) at the pass's first event; a failure stops the file, never the pass.
+        """
+        root = getattr(self.cfg, "pass_record_root", None)
+        if not root or self._events_file is False:
+            return
+        try:
+            if self._events_file is None:
+                self._events_file = False
+                folder = Path(root) / pass_id
+                for d in (Path(root), folder):
+                    d.mkdir(parents=True, exist_ok=True)
+                    if d.is_symlink() or not d.is_dir():
+                        return
+                path = folder / "tool-events.jsonl"
+                flags = (
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+                )
+            else:
+                path = self._events_file
+                flags = os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC
+            fd = os.open(path, flags, 0o644)
+            with os.fdopen(fd, "a") as fh:
+                if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                    self._events_file = False
+                    return
+                fh.write(json.dumps(row, sort_keys=True) + "\n")
+            self._events_file = path
+        except OSError:
+            self._events_file = False  # a measurement never stops a pass
+
+    def _recorded_ids(self) -> set[str]:
+        """The recorded-episode index: every episode id the evidence store has recorded (an episode is listed once it
+        is recorded in full). Ids resolve only through this index and the batch, never through a path.
+        """
+        if self._recorded is None:
+            since = getattr(self.ev, "experience_since", None)
+            try:
+                self._recorded = (
+                    {e for e, _ in since(0)} if since is not None else set()
+                )
+            except Exception:  # noqa: BLE001 - an unreadable index: the batch alone
+                self._recorded = set()
+        return self._recorded
+
+    def _episode(self, eid: object) -> Episode | None:
+        """A recorded episode by id (the batch's, or any in the recorded-episode index), loaded once per pass; None
+        for an id the index does not hold. Read tools show only the parts the batch export shows (request,
+        observations, cells, actions, the work-tree diff): no checker or outcome field is a part.
+        """
+        if not isinstance(eid, str) or not _EPISODE_ID.match(eid):
+            return None
+        if eid in self._episodes:
+            return self._episodes[eid]
+        if eid not in self._recorded_ids():
+            return None
+        try:
+            ep = self.load(eid)
+        except (
+            Exception
+        ):  # noqa: BLE001 - an episode that cannot be loaded is not readable
+            return None
+        self._episodes[eid] = ep
+        return ep
+
+    def _ledger(self, box: Path) -> dict[str, dict]:
+        """Fixture provenance derived from the files now in *box* (:func:`.fixtures.derive_ledger`)."""
+        from .fixtures import derive_ledger
+
+        self.fixtures_made = derive_ledger(box)
+        return self.fixtures_made
 
     async def _library_tool(
         self,
         name: str,
         args: dict,
         roots: dict[str, Path],
-        cov: _views.Coverage,
-        eps: dict[str, Episode],
-    ) -> str:
-        """The v2.1 readers (spec §7.3) and dismiss. Only ``read_episode`` credits coverage, with the range
-        :func:`.views.view_range` actually showed, on the part it stands for (:func:`.batch_map.canonical_part`).
-        grep runs in a bounded child process. A bad argument is answered with a refusal, never raised.
-        """
-        try:
-            offset = int(args.get("offset", 0) or 0)
-            if name == "read":
-                return _views.read(str(args.get("path", "")), roots, offset)
-            if name == "grep":
-                return await asyncio.to_thread(
-                    _views.grep_bounded,
-                    str(args.get("pattern", "")),
-                    str(args.get("path", "/inputs")),
-                    roots,
-                    offset,
-                )
-            if name == "dismiss":
-                defer = bool(self.cfg.pool and args.get("defer") is True)
-                target = args.get("pool_entry") if self.cfg.pool else None
-                target = str(target).strip() if target not in (None, "") else None
-                if target is not None:
-                    # the lead, 11 Oct (m4j): a revisit adds evidence to an entry the writer names
-                    if not defer:
-                        return "refused: pool_entry needs defer=true; nothing was dismissed"
-                    if self._pool is None or not any(
-                        e.id == target for e in self._pool.open_entries()
-                    ):
-                        return f"refused: {target[:40]!r} is not an open pool entry; nothing was dismissed"
-                out = cov.dismiss(
-                    str(args.get("episode", "")),
-                    str(args.get("reason", "")),
-                )
-                if out == "ok" and defer:
-                    self._deferred[str(args.get("episode", ""))] = (
-                        str(args.get("reason", "")),
-                        target,
-                    )
-                return out
-            eid = str(args.get("episode", ""))
-            if eid not in eps:
-                return f"refused: {eid!r} is not in this batch"[:300]
-            args = _parts_from_text(args)
-            if "parts" not in args and str(args.get("part", "")).strip() == "parts":
-                # rehearsal 3 (0f 50352fbb): the writer asks for the list itself; answer it (credits nothing)
-                return _parts_list(eps[eid], eid, cov, self._shared)
-            if "parts" not in args and str(args.get("part", "")) == "overview":
-                # r5 (r4 §5): end first, then every step's handle; credits the end parts only when all of it shows
-                text_, end_parts = _bm.solution_first(eps[eid], self._shared)
-                data = text_.encode()
-                text, a, b = _views.view_range(data, offset)
-                if offset == 0 and b >= len(data):
-                    for part in end_parts:
-                        whole = len(
-                            _bm.part_text(eps[eid], part, self._shared).encode(),
-                        )
-                        canon = _bm.canonical_part(eps[eid], part)
-                        cov.credit(eid, canon, 0, whole)
-                        _shown_complete(
-                            self._shown_full,
-                            cov,
-                            eid,
-                            canon,
-                            _bm.part_text(eps[eid], part, self._shared).encode(),
-                        )
-                return text
-            if "parts" not in args:
-                part = str(args.get("part", ""))
-                try:
-                    data = _bm.part_text(eps[eid], part, self._shared).encode()
-                except (KeyError, ValueError, IndexError, StopIteration):
-                    return _unknown_part(eps[eid], eid, part, cov, self._shared)
-                canon = _bm.canonical_part(eps[eid], part)
-                same = (
-                    _identical(self._shown_full, cov, eid, canon, data)
-                    if offset == 0
-                    else None
-                )
-                if same is not None:
-                    return same
-                text, a, b = _views.view_range(data, offset)
-                cov.credit(eid, canon, a, b)
-                _shown_complete(self._shown_full, cov, eid, canon, data)
-                return text
-            return self._read_parts(
-                eps[eid],
-                eid,
-                args.get("parts"),
-                cov,
-                self._shown_full,
-                self._shared,
+        agent: str = "writer",
+    ) -> _wt.Reply:
+        """The reader tools (read, grep, overview, read_episode, pool) for *agent*. Each agent has its own read log
+        and its own record of parts it was shown in full. A bad argument is answered, never raised; the answer names
+        the domain problem, never an exception type."""
+        readers = ("read", "grep", "overview", "read_episode", "pool")
+        if name not in readers:
+            return _wt.general(
+                "unknown_tool",
+                name=str(name)[:80],
+                tools=", ".join(readers),
             )
-        except (
-            OSError,
-            KeyError,
-            ValueError,
-            TypeError,
-            StopIteration,
-            IndexError,
-        ) as exc:
-            return (
-                str(exc)
-                if isinstance(exc, PermissionError)
-                else f"refused: {type(exc).__name__}: {exc}"
-            )[:300]
+        log = self._read_logs.setdefault(agent, _wt.ReadLog())
+        shown = self._shown_full.setdefault(agent, {})
+        batch = list(self._batch)
+        offset = args.get("offset", 0)
+        offset = (
+            offset
+            if isinstance(offset, int) and not isinstance(offset, bool) and offset >= 0
+            else 0
+        )
+        if name in ("read", "grep"):
+            vpath = str(args.get("path") or ("/inputs" if name == "grep" else ""))
+            try:
+                real = _views.resolve(vpath, roots)
+            except PermissionError:
+                return _wt.refused(name, "outside_roots", path=vpath[:200])
+            virtual = _views._virtual(real, roots)
+            if virtual.endswith("/."):
+                virtual = virtual[:-2]
+            if name == "read":
+                if not real.exists():
+                    return _wt.refused(
+                        "read",
+                        "not_found",
+                        ({"path": virtual, "mode": "read"},),
+                        path=vpath[:200],
+                    )
+                mode = "list" if real.is_dir() else "read"
+                try:
+                    text = _views.read(vpath, roots, offset)
+                except OSError:
+                    return _wt.refused(
+                        "read",
+                        "not_found",
+                        ({"path": virtual, "mode": mode},),
+                        path=vpath[:200],
+                    )
+                return _wt.Reply(text, paths=({"path": virtual, "mode": mode},))
+            where = ({"path": virtual, "mode": "search"},)
+            text = await asyncio.to_thread(
+                _views.grep_bounded,
+                str(args.get("pattern", "")),
+                vpath,
+                roots,
+                offset,
+            )
+            if text.startswith("refused: "):
+                return _wt.refused(
+                    "grep",
+                    "bad_pattern",
+                    where,
+                    reason=text[len("refused: ") :],
+                )
+            return _wt.Reply(text, paths=where)
+        if name == "pool":
+            return _wt.pool(args, roots["/inputs"] / "pool", roots["/memory"])
+        eid = args.get("episode")
+        if name == "overview" and eid in (None, ""):
+            return _wt.overview_batch(self._bmap_rows, offset)
+        ep = self._episode(eid)
+        if ep is None:
+            return _wt.refused(
+                name,
+                "unknown_episode",
+                episode=str(eid)[:80],
+                batch=", ".join(batch) or "-",
+            )
+        if name == "overview":
+            return _wt.overview_episode(
+                ep,
+                str(eid),
+                offset,
+                log=log,
+                shared=self._shared,
+            )
+        return _wt.read_episode(
+            ep,
+            str(eid),
+            args,
+            blob=self.gate._blob,
+            log=log,
+            shown=shown,
+            shared=self._shared,
+        )
 
     async def _run_cell(self, *args) -> str:
         """The confined cell on a worker thread; on cancellation, wait for the box before the pass cleans up."""
@@ -3277,7 +2985,11 @@ class WriterPass:
         self.messages = []
         self._tools_json, self._precompact = [], {}
         self.fixtures_made = {}
-        self._shown_full = {}
+        self._shown_full, self._read_logs = {}, {}
+        self._recorded, self._episodes = None, {}
+        self._batch = list(req.episodes)
+        self.tool_events = []
+        self._events_file = None
         self._shared = {}
         self._helper_rows = []
         self._staging_counts = None
@@ -3286,8 +2998,8 @@ class WriterPass:
         self._pool_at_start = None
         self._staged_views, self._staging_read_root, self._provenance = {}, None, []
         self._chain_rows = []
-        self._deferred, self._pool_manifest = {}, None
-        self._cov, self._bmap_rows = None, []
+        self._pool_manifest = None
+        self._bmap_rows = []
         self._live, self._cancel_patch = None, (None, [])
         self._role = "curate" if req.kind == "curate" else "write"
         if req.kind == "curate" and (
@@ -3424,9 +3136,7 @@ class WriterPass:
         errored = False
         reads = 0  # library_mode reader calls, against cfg.max_reads
         self._exported_bytes = None
-        cov: _views.Coverage | None = (
-            None  # spec v2.1 §7.4, built after /inputs is staged
-        )
+        library = bool(self.cfg.library_mode)
 
         def cause(code: str) -> None:
             if code not in causes:
@@ -3455,27 +3165,16 @@ class WriterPass:
                 checks,
                 list(merged or []),
                 dict(refused or {}),
-                cov.summary() if cov is not None else None,
+                (
+                    (self._read_logs.get("writer") or _wt.ReadLog()).summary(
+                        self._batch,
+                    )
+                    if library
+                    else None
+                ),
                 reads,
                 self._exported_bytes,
             )
-            if (
-                self.cfg.library_mode
-                and self.cfg.coverage_rule == "optional"
-                and cov is not None
-            ):
-                o.coverage = {**(o.coverage or {}), "unread": cov.missing()}
-                try:  # measures only (RUNTIME 21:12Z): they never fail a pass
-                    o.coverage_measures = _coverage_measures(
-                        o.coverage,
-                        cov.opened(),
-                        self._bmap_rows,
-                        list(merged or []),
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    o.coverage_measures = {
-                        "error": f"{type(exc).__name__}: {str(exc)[:200]}",
-                    }
             if self.cfg.library_mode:
                 o.rounds, o.round_results = round_no + 1, list(round_paths)
                 o.finished = bool(phase["finish_accepted"])
@@ -3527,18 +3226,9 @@ class WriterPass:
                     json.loads(bmap_path.read_text())
                     if bmap_path.is_file()
                     else {"episodes": []}
-                )
-                # the batch rows no longer name parts a writer must read: nothing is required, and every
-                # episode of the request stays readable (a curate pass reads its suspects' episodes)
-                required: dict[str, list[str]] = {e: [] for e in req.episodes}
-                eps = {e: self.load(e) for e in required}
-                sizes = {
-                    (e, part): len(_bm.part_text(eps[e], part, self._shared).encode())
-                    for e, ps in required.items()
-                    for part in ps
-                }
-                cov = _views.Coverage(required, sizes)
-                self._cov, self._bmap_rows = cov, list(bmap["episodes"])
+                )  # a curate pass has no batch map
+                self._episodes = {e: self.load(e) for e in req.episodes}
+                self._bmap_rows = list(bmap["episodes"])
                 outputs = Path(tmp) / "outputs"
                 outputs.mkdir()
                 roots = {"/inputs": inputs, "/memory": box, "/outputs": outputs}
@@ -3549,7 +3239,9 @@ class WriterPass:
                 soft_budget=switches["soft_budget"],
                 library_mode=self.cfg.library_mode,
                 pool=bool(self.cfg.library_mode and self.cfg.pool),
+                role=self._role,
             )
+            tool_names = [t["function"]["name"] for t in tools]
             if self.cfg.library_mode:
                 # spec v2.1 §4, §7.2: the writer-chosen tree with its generated helper and index; no channel
                 # folders and no library.json (P2's gate inputs replace previous_gate.json)
@@ -3576,11 +3268,15 @@ class WriterPass:
                         inputs,
                         box,
                         roots,
-                        required,
-                        sizes,
                         spend,
                         pass_id=pass_id,
                     )
+                    # the staging rows were added to the batch map: overview reads them
+                    staged_map = inputs / "batch_map.json"
+                    if staged_map.is_file():
+                        self._bmap_rows = list(
+                            json.loads(staged_map.read_text()).get("episodes", []),
+                        )
                 if (
                     self._pool is not None and req.kind != "curate"
                 ):  # the curator has no pool
@@ -3667,7 +3363,7 @@ class WriterPass:
                 manifest, problem = _check_manifest(raw)
                 if problem is not None:
                     return problem
-                manifest = _with_fixtures(manifest, self.fixtures_made)
+                manifest = _with_fixtures(manifest, self._ledger(box))
                 try:
                     candidate, res = commit_and_check(manifest)
                 except (
@@ -3692,6 +3388,64 @@ class WriterPass:
                 (inputs / "gate" / f"check-{check_files[0]}.md").write_text(text)
                 check_files[0] += 1
                 return _views.view(text.encode()) + f"\n(full result: {vpath})"
+
+            def check_file(args: dict, base: ParentSnapshot | str) -> _wt.Reply:
+                """``check`` with the library on: it judges /memory/.pass/manifest.json, the file finish and the gate
+                judge; a ``manifest`` argument is written there first. Every reason the static checks give is saved
+                in /inputs/gate/check-<k>.md and the reply names that file."""
+                where = [{"path": "/memory/.pass/manifest.json", "mode": "read"}]
+                given = args.get("manifest")
+                if given is not None:
+                    parsed, problem = _check_manifest(given)
+                    if problem is not None:
+                        return _wt.refused(
+                            "check",
+                            "manifest_problem",
+                            tuple(where),
+                            reason=problem,
+                        )
+                    try:
+                        _wt.write_manifest(
+                            box,
+                            given if isinstance(given, str) else parsed,
+                        )
+                    except OSError as exc:
+                        return _wt.refused(
+                            "check",
+                            "manifest_problem",
+                            tuple(where),
+                            reason=f"cannot write /memory/.pass/manifest.json ({type(exc).__name__})",
+                        )
+                    where.insert(
+                        0,
+                        {"path": "/memory/.pass/manifest.json", "mode": "write"},
+                    )
+                found, manifest, problem = _read_manifest(box)
+                if not found or problem is not None:
+                    return _wt.refused(
+                        "check",
+                        "manifest_problem",
+                        tuple(where),
+                        reason=problem
+                        or "no manifest: write /memory/.pass/manifest.json (or pass it as manifest), then check",
+                    )
+                reasons: list[str] = []
+                content, detail = self._check(manifest, box, base, reasons)
+                if detail is not None:
+                    notes.append(detail)
+                    return _wt.Reply(content, "error", None, tuple(where))
+                if content == "ok":
+                    return _wt.Reply(check_tests(manifest), paths=tuple(where))
+                vpath = f"/inputs/gate/check-{check_files[0]}.md"
+                (inputs / "gate").mkdir(exist_ok=True)
+                (inputs / "gate" / f"check-{check_files[0]}.md").write_text(
+                    "\n".join(reasons) + "\n",
+                )
+                check_files[0] += 1
+                return _wt.Reply(
+                    f"{content}\n(full result: {vpath})",
+                    paths=tuple(where),
+                )
 
             def repair() -> bool:
                 """v2.1, after an accepted finish (spec §9.2): True opens repair round ``round_no + 1``.
@@ -3739,7 +3493,7 @@ class WriterPass:
                     return False
                 started = time.monotonic()
                 found, manifest, problem = _read_manifest(box)
-                manifest = _with_fixtures(manifest, self.fixtures_made)
+                manifest = _with_fixtures(manifest, self._ledger(box))
                 candidate = None
                 if not found or problem is not None:
                     res = GateResult(False, {}, [problem or "no manifest"], [])
@@ -3788,7 +3542,12 @@ class WriterPass:
                 messages.append(
                     {
                         "role": "user",
-                        "content": _repair.repair_message(round_no, vpath, res),
+                        "content": _repair.repair_message(
+                            round_no,
+                            vpath,
+                            res,
+                            None if uncapped else _repair.REPAIR_ROUNDS,
+                        ),
                     },
                 )
                 mark[0], mark[1] = charged(), time.monotonic()
@@ -3852,6 +3611,7 @@ class WriterPass:
                 tool_calls = tool_calls if isinstance(tool_calls, list) else []
                 ran = 0
                 readers = 0  # library_mode reader calls in this turn
+                turn_usage: dict | None = _usage_of(msg, usd)
                 for n, tc in enumerate(tool_calls):
                     if not isinstance(tc, dict):
                         messages.append(
@@ -3861,6 +3621,14 @@ class WriterPass:
                                 "content": "unreadable tool call",
                             },
                         )
+                        self._event(
+                            pass_id,
+                            None,
+                            None,
+                            _wt.general("bad_arguments", reason="unreadable tool call"),
+                            turn_usage,
+                        )
+                        turn_usage = None
                         continue
                     if not isinstance(tc.get("id"), str) or not tc["id"]:
                         tc["id"] = (
@@ -3870,46 +3638,52 @@ class WriterPass:
                     fn = fn if isinstance(fn, dict) else {}
                     name = fn.get("name")
                     args, content = _parse_args(fn.get("arguments"))
+                    reply: _wt.Reply | None = None
                     if args is None:
-                        pass  # content says why
+                        reply = _wt.Reply(str(content), "refused", "bad_arguments")
                     elif finished:
-                        content = "not run: pass finished"
+                        reply = _wt.general("pass_finished")
                     elif name == "finish":
-                        missing = (
-                            cov.missing()
-                            if cov is not None and self.cfg.coverage_rule != "optional"
-                            else []
-                        )
                         g1, empty = (
                             self._finish_manifest_problem(box)
                             if self.cfg.library_mode
-                            and not missing
                             and (uncapped or phase["g1_refusals"] < FINISH_G1_REFUSALS)
                             else (None, False)
+                        )
+                        manifest_path = (
+                            {"path": "/memory/.pass/manifest.json", "mode": "read"},
                         )
                         if g1 is not None:
                             phase[
                                 "g1_refusals"
                             ] += 1  # bounded: past it the final check refuses by name
                             content = f"not finished: {g1}"
-                        elif missing:
-                            content = _finish_refusal(cov, missing)
+                            reply = _wt.Reply(
+                                content,
+                                "refused",
+                                "manifest_problem",
+                                manifest_path,
+                            )
                         else:
                             summary, finished = str(args.get("summary", "")), True
                             phase.update(finish_accepted=True, nothing_to_store=empty)
                             content = "ok"
+                            reply = _wt.Reply(
+                                content,
+                                paths=manifest_path if library else (),
+                            )
                     elif name == "check":
                         if stop is not None:
-                            content = f"not run: {stop}"
+                            reply = _wt.general("stopped", reason=stop)
                         elif not uncapped and checks >= MAX_CHECKS:
-                            content = (
-                                f"not run: at most {MAX_CHECKS} check calls per pass"
-                            )
+                            reply = _wt.general("check_limit", limit=MAX_CHECKS)
                         elif calls >= max_calls:
-                            content = "not run: the pass's call cap is reached"
+                            reply = _wt.general("call_limit")
                         elif remaining() < CHECK_FLOOR_S:
-                            content = (
-                                "not run: too little time left before the pass deadline"
+                            reply = _wt.Reply(
+                                "not run: too little time left before the pass deadline",
+                                "refused",
+                                "too_late",
                             )
                         else:
                             checks += 1
@@ -3927,17 +3701,28 @@ class WriterPass:
                                 ):  # GitError, OSError: the preview retries
                                     base = None
                                 base = base or parent
-                            content, detail = self._check(
-                                args.get("manifest"),
-                                box,
-                                base,
-                            )
-                            if detail is not None:
-                                notes.append(detail)
-                            elif self.cfg.library_mode and content == "ok":
-                                content = check_tests(args.get("manifest"))
-                    elif cov is not None and name == "replay":
-                        calls += 1  # a writer action, against the step guard; it earns no coverage
+                            if library:
+                                reply = check_file(args, base)
+                            else:
+                                content, detail = self._check(
+                                    args.get("manifest"),
+                                    box,
+                                    base,
+                                )
+                                if detail is not None:
+                                    notes.append(detail)
+                                reply = _wt.Reply(
+                                    content,
+                                    "error" if detail is not None else "ok",
+                                )
+                    elif library and name not in tool_names:
+                        reply = _wt.general(
+                            "unknown_tool",
+                            name=str(name)[:80],
+                            tools=", ".join(tool_names),
+                        )
+                    elif library and name == "replay":
+                        calls += 1  # a writer action, against the step guard
                         writing()
                         content = await asyncio.to_thread(
                             self._replay_call,
@@ -3945,57 +3730,59 @@ class WriterPass:
                             box,
                             Path(tmp),
                         )
-                    elif cov is not None and name == "fixture":
-                        calls += 1  # a writer action, against max_calls; it earns no coverage
+                        reply = _wt.Reply(
+                            content,
+                            (
+                                "error"
+                                if content.startswith("replay error")
+                                else (
+                                    "refused" if content.startswith("not run") else "ok"
+                                )
+                            ),
+                            "not_run" if content.startswith("not run") else None,
+                        )
+                    elif library and name == "fixture":
+                        calls += 1  # a writer action, against the step guard
                         writing()
-                        content = _fixture_call(
+                        reply = _wt.fixture(
                             args,
-                            eps,
+                            self._episode,
                             box,
                             self.gate._blob,
-                            self.fixtures_made,
+                            self._batch,
                         )
-                    elif cov is not None and name in (
-                        "read",
-                        "grep",
-                        "read_episode",
-                        "dismiss",
-                    ):
+                    elif library and name != "execute_code":
                         if readers >= READERS_PER_TURN:
-                            content = f"not run: at most {READERS_PER_TURN} reader calls per turn"
-                        elif (
-                            not uncapped
-                            and name != "dismiss"
-                            and reads >= int(self.cfg.max_reads)
-                        ):
-                            content = "not run: reader budget reached"  # dismiss still runs, so a pass can end
+                            reply = _wt.general("readers_per_turn")
+                        elif not uncapped and reads >= int(self.cfg.max_reads):
+                            reply = _wt.general(
+                                "reads_limit",
+                                limit=int(self.cfg.max_reads),
+                            )
                         else:
                             readers += 1
                             reads += 1
-                            content = await self._library_tool(
+                            reply = await self._library_tool(
                                 name,
                                 args,
                                 roots,
-                                cov,
-                                eps,
+                                agent="curator" if self._role == "curate" else "writer",
                             )
                     elif name != "execute_code":
                         content = (
-                            f"unknown tool {name!r}; use execute_code, check, finish, read, grep, "
-                            "read_episode, dismiss or fixture"
-                            if cov is not None
-                            else f"unknown tool {name!r}; use execute_code, check or finish"
-                        )[:300]
-                    elif stop is not None:
-                        content = f"not run: {stop}"
-                    elif ran >= _MAX_CELLS_PER_TURN:
-                        content = (
-                            f"not run: at most {_MAX_CELLS_PER_TURN} cells per turn"
+                            f"unknown tool {name!r}; use execute_code, check or finish"[
+                                :300
+                            ]
                         )
+                        reply = _wt.Reply(content, "refused", "unknown_tool")
+                    elif stop is not None:
+                        reply = _wt.general("stopped", reason=stop)
+                    elif ran >= _MAX_CELLS_PER_TURN:
+                        reply = _wt.general("cells_per_turn")
                     elif remaining() <= 0:
                         stop = f"pass deadline of {self.cfg.deadline_s} s reached"
                         cause(CODE_DEADLINE)
-                        content = f"not run: {stop}"
+                        reply = _wt.general("stopped", reason=stop)
                     else:
                         ran += 1
                         if self.cfg.library_mode:
@@ -4015,14 +3802,25 @@ class WriterPass:
                         if over_quota is not None:
                             stop = over_quota
                             content += f"\n({over_quota}; the pass is refused)"
+                        reply = _wt.Reply(content)
+                    if reply is not None:
+                        content = reply.text
                     messages.append(
                         {"role": "tool", "tool_call_id": tc["id"], "content": content},
                     )
+                    self._event(pass_id, name, fn.get("arguments"), reply, turn_usage)
+                    turn_usage = None
                 if not tool_calls:
                     messages.append(
                         {
                             "role": "user",
-                            "content": "Use execute_code, check, or finish.",
+                            "content": (
+                                "Use your tools: "
+                                + ", ".join(tool_names)
+                                + "; finish ends the pass."
+                                if library
+                                else "Use execute_code, check, or finish."
+                            ),
                         },
                     )
                 if finished and self.cfg.library_mode and stop is None and repair():
@@ -4083,7 +3881,7 @@ class WriterPass:
                 notes.append(problem)
                 cause(CODE_MANIFEST_INVALID)
             if self.cfg.library_mode:
-                manifest = _with_fixtures(manifest, self.fixtures_made)
+                manifest = _with_fixtures(manifest, self._ledger(box))
             _remove(box / ".pass")
             _clear_checkout(wt)
             left_out = _mirror(box, wt, skip_top=frozenset({".pass"}))

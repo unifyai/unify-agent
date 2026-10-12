@@ -5,16 +5,15 @@ two read_episode refusals are gone.
 
 import json
 
-from unify.memory_v2 import batch_map, pool, library_prompts as pv, writer_pass
+from unify.memory_v2 import batch_map, pool, library_prompts as pv
 from unify.memory_v2.writer_pass import writer_tools
-from unify.memory_v2.views import Coverage
 from tests.memory_v2.test_gate import _candidate
 from tests.memory_v2.test_gate_library_mode import (
     _files_and_fixtures,
     _man,
     world21,
 )  # noqa: F401 (a fixture)
-from tests.memory_v2.test_pool import EMPTY, INDEX, _defer, _finish_with, _Stores
+from tests.memory_v2.test_pool import EMPTY, INDEX, _defer, _finish_with, _open, _Stores
 from unify.memory_v2.episodes import Cell
 from tests.memory_v2.test_writer_pass import _call, _writer
 from tests.memory_v2.test_writer_library_tools import EPS, _episode, _pass
@@ -27,23 +26,36 @@ def test_the_first_message_points_to_the_pool_and_the_brief_stays_the_same(
     monkeypatch,
 ):
     st = _Stores(tmp_path)
+    _finish_with(monkeypatch, _defer("e2"))
+    _, m1 = st.run([], "p1")
+    _finish_with(monkeypatch, EMPTY)
+    _, m2 = st.run([_open("e2")], "p2")
+    did = pool.entry_id("deferred", "e2")
+    first = m2.seen[1]["content"]
+    assert first.splitlines()[0].startswith("Pass p2: ")
+    # no index, no entry line and no count is inlined; the brief names /inputs/pool/INDEX.md
+    assert "Candidate pool" not in first and did not in first
+    assert "/inputs/pool/INDEX.md" in m2.seen[0]["content"]
+    assert (
+        m1.seen[0] == m2.seen[0]
+    )  # the system brief is the same bytes with 0 and 1 open entries
+
+
+def test_a_long_pool_puts_no_list_in_the_first_message(tmp_path, monkeypatch):
+    st = _Stores(tmp_path)
     p = st.pool()
     for i in range(120):
         p.upsert(pool.deferred(f"e{i:03d}", "a rule " * 20), "p0")
     p.save("p0")
     _finish_with(monkeypatch, EMPTY)
-    _, m1 = st.run([_defer("e2")], "p1")
-    _, m2 = st.run([_call("x", "dismiss", {"episode": "e2", "reason": "seen"})], "p2")
-    first = m2.seen[1]["content"]
-    assert first.splitlines()[0].startswith("Pass p2: ")
-    # no index, no entry line and no count of entries is inlined; the brief names /inputs/pool/INDEX.md
+    _, model = st.run([_open("e2")], "p1")
+    first = model.seen[1]["content"]
     assert (
-        "Candidate pool" not in first and "deferred" not in first and "120" not in first
+        "Candidate pool" not in first
+        and "120" not in first
+        and "a rule a rule" not in first
     )
-    assert "/inputs/pool/INDEX.md" in m2.seen[0]["content"]
-    assert (
-        m1.seen[0] == m2.seen[0]
-    )  # the system brief is the same bytes whatever the pool holds
+    assert "/inputs/pool/INDEX.md" in model.seen[0]["content"]
 
 
 # --- (b) a revisit adds evidence to the entry the writer names ------------------------------------------------
@@ -51,25 +63,22 @@ def test_the_first_message_points_to_the_pool_and_the_brief_stays_the_same(
 
 def test_a_deferral_can_add_its_episode_to_an_open_entry(tmp_path, monkeypatch):
     st = _Stores(tmp_path)
-    _finish_with(monkeypatch, EMPTY)
-    st.run([_defer("e2")], "p1")
+    _finish_with(monkeypatch, _defer("e2"))
+    st.run([], "p1")
     did = pool.entry_id("deferred", "e2")
-    turn = _call(
-        "d",
-        "dismiss",
+    _finish_with(
+        monkeypatch,
         {
-            "episode": "e1",
-            "reason": "the same fill again",
-            "defer": True,
-            "pool_entry": did,
+            **EMPTY,
+            "pool": {
+                "defer": [
+                    {"id": did, "episodes": ["e1"], "reason": "the same fill again"},
+                ],
+            },
         },
     )
-    out, model = st.run([turn], "p2", eids=("e1",))
-    assert (
-        model.outputs["d"] == "ok"
-        and out.pool["extended"] == [did]
-        and out.pool["added"] == 0
-    )
+    out, model = st.run([], "p2", eids=("e1",))
+    assert out.pool["extended"] == [did] and out.pool["added"] == 0
     e = st.pool().entries[did]
     assert e.status == "open" and e.provenance["episodes"] == ["e2", "e1"]
     assert e.data["evidence"] == [
@@ -78,60 +87,35 @@ def test_a_deferral_can_add_its_episode_to_an_open_entry(tmp_path, monkeypatch):
     assert (
         pool.entry_id("deferred", "e1") not in st.pool().entries
     )  # no second entry for the revisit
-    _, m3 = st.run(
-        [
-            _call("r", "read", {"path": INDEX}),
-            _call("x", "dismiss", {"episode": "e2", "reason": "s"}),
-        ],
-        "p3",
-    )
+    _finish_with(monkeypatch, EMPTY)
+    _, m3 = st.run([_call("r", "read", {"path": INDEX}), _open("e2")], "p3")
     assert (
         f"`{did}` deferred: a rule that may come back (2 episodes;" in m3.outputs["r"]
     )
 
 
-def test_pool_entry_must_name_an_open_entry_and_needs_defer(tmp_path, monkeypatch):
+def test_a_deferral_must_name_an_open_entry_or_new(tmp_path, monkeypatch):
     st = _Stores(tmp_path)
-    _finish_with(monkeypatch, EMPTY)
-    st.run([_defer("e2")], "p1")
+    _finish_with(monkeypatch, _defer("e2"))
+    st.run([], "p1")
     did = pool.entry_id("deferred", "e2")
-    turns = [
-        _call(
-            "u",
-            "dismiss",
-            {"episode": "e2", "reason": "r", "defer": True, "pool_entry": "0" * 16},
-        ),
-        _call("n", "dismiss", {"episode": "e2", "reason": "r", "pool_entry": did}),
-        _call("ok", "dismiss", {"episode": "e2", "reason": "seen"}),
-    ]
-    out, model = st.run(turns, "p2")
-    assert (
-        model.outputs["u"]
-        == f"refused: {'0' * 16!r} is not an open pool entry; nothing was dismissed"
+    _finish_with(
+        monkeypatch,
+        {
+            **EMPTY,
+            "pool": {"defer": [{"id": "0" * 16, "episodes": ["e2"], "reason": "r"}]},
+        },
     )
+    out, model = st.run([_open("e2"), _call("f", "finish", {"summary": "s"})], "p2")
     assert (
-        model.outputs["n"]
-        == "refused: pool_entry needs defer=true; nothing was dismissed"
+        model.outputs["f"]
+        == f"not finished: G1: pool.defer: {'0' * 16} is not an open entry"
     )
     assert out.pool["extended"] == [] and st.pool().entries[did].provenance[
         "episodes"
     ] == ["e2"]
-    dismiss = next(
-        t
-        for t in writer_tools(library_mode=True, pool=True)
-        if t["function"]["name"] == "dismiss"
-    )
-    assert set(dismiss["function"]["parameters"]["properties"]) == {
-        "episode",
-        "reason",
-        "defer",
-        "pool_entry",
-    }
-    assert dismiss["function"]["parameters"]["required"] == ["episode", "reason"]
-    plain = next(
-        t for t in writer_tools(library_mode=True) if t["function"]["name"] == "dismiss"
-    )
-    assert set(plain["function"]["parameters"]["properties"]) == {"episode", "reason"}
+    names = {t["function"]["name"] for t in writer_tools(library_mode=True, pool=True)}
+    assert "pool" in names and "dismiss" not in names
 
 
 # --- (c) the WRITE brief ---------------------------------------------------------------------------------------
@@ -155,13 +139,6 @@ def test_the_write_brief_says_new_items_are_experimental_and_revised_later():
 
 
 # --- (d) read_episode ------------------------------------------------------------------------------------------
-
-
-def test_a_part_that_is_not_required_is_never_done_and_never_raises():
-    cov = Coverage({"e1": ["request"]}, {("e1", "request"): 3})
-    assert cov.part_done("e1", "cell:25") is False
-    cov.credit("e1", "cell:25", 0, 10)
-    assert cov.part_done("e1", "cell:25") is False and cov.missing() == ["e1"]
 
 
 def test_the_overview_shows_an_end_cell_that_is_not_a_required_part(
@@ -195,16 +172,17 @@ def test_parts_given_as_text_are_read_as_the_list_they_name(tmp_path):
     _, model = _pass(tmp_path, turns, max_calls=12)
     for k in forms:
         assert model.outputs[k].startswith("== request =="), (k, model.outputs[k][:120])
-    assert writer_pass._parts_from_text({"part": "shared:0affb0d119ea"}) == {
-        "part": "shared:0affb0d119ea",
-    }
-    assert writer_pass._parts_from_text({"part": "request"}) == {"part": "request"}
+    from unify.memory_v2.writer_tools import _wanted_parts
+
+    assert _wanted_parts({"part": "request"}) == (
+        [{"part": "request", "offset": 0}],
+        None,
+    )
     assert (
-        json.dumps(
-            writer_pass._parts_from_text({"parts": "[request, 'cell:0']"})["parts"],
-        )
+        json.dumps(_wanted_parts({"parts": "[request, 'cell:0']"})[0])
         == '["request", "cell:0"]'
     )
+    assert _wanted_parts({}) == (None, None)  # the table of contents
 
 
 # --- m4k folded into m4j (MAIN for the lead, 11 Oct; writer audit writer-audit-m4i-20261011T1238Z) ---------------
@@ -340,10 +318,7 @@ def test_a_fixture_slice_refusal_names_the_valid_range():
     tool = next(
         t for t in writer_tools(library_mode=True) if t["function"]["name"] == "fixture"
     )
-    assert (
-        "keeps bytes start to end-1 of the recorded value's UTF-8 bytes"
-        in tool["function"]["description"]
-    )
+    assert "keeps raw bytes start to end-1" in tool["function"]["description"]
 
 
 HELPER = '''"""Shared account helpers."""

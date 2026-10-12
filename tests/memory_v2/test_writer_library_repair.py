@@ -73,14 +73,7 @@ def test_repair_round_lands_one_commit_on_the_parent(tmp_path):
     )
     model = Turns(
         [
-            _call(
-                "dm",
-                "dismiss",
-                {
-                    "episode": "e1",
-                    "reason": "one recorded call; the item below covers it",
-                },
-            ),
+            _call("dm", "read_episode", {"episode": "e1", "parts": ["request"]}),
             _call("w0", "execute_code", {"code": first_try}),
             _call("f0", "finish", {"summary": "first try"}),
             _call("r1", "read", {"path": "/inputs/gate/result-0.md"}),
@@ -251,14 +244,7 @@ def test_check_runs_the_items_own_tests_under_library_mode(tmp_path):
     )
     model = Turns(
         [
-            _call(
-                "dm",
-                "dismiss",
-                {
-                    "episode": "e1",
-                    "reason": "one recorded call; the item below covers it",
-                },
-            ),
+            _call("dm", "read_episode", {"episode": "e1", "parts": ["request"]}),
             _call("w0", "execute_code", {"code": bad}),
             _call("c0", "check", {"manifest": json.dumps(manifest)}),
             _call(
@@ -316,14 +302,7 @@ def test_a_long_check_result_is_a_file_read_can_page(tmp_path):
     manifest = {**MAN, "items": [ITEM], "summary": "s"}
     model = Turns(
         [
-            _call(
-                "dm",
-                "dismiss",
-                {
-                    "episode": "e1",
-                    "reason": "one recorded call; the item below covers it",
-                },
-            ),
+            _call("dm", "read_episode", {"episode": "e1", "parts": ["request"]}),
             _call("w0", "execute_code", {"code": FILES_CODE}),
             _call("c0", "check", {"manifest": json.dumps(manifest)}),
             _call("r0", "read", {"path": "/inputs/gate/check-0.md", "offset": 8000}),

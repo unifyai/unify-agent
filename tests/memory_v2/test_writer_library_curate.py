@@ -93,11 +93,13 @@ def test_a_curate_pass_merges_through_its_own_brief_inputs_role_and_gate(world21
     }  # P7's brief
     first = model.seen[1]["content"]
     # why the pass runs is a file (trigger.json), never a list in the first message
-    assert first.startswith("Pass c1: a curate pass.") and FIRED["overlap:f1"] not in first
+    assert (
+        first.startswith("Pass c1: a curate pass.") and FIRED["overlap:f1"] not in first
+    )
     assert "/inputs/curate/trigger.json" in first
     assert json.loads(model.outputs["t"])["reasons"] == list(FIRED.values())
     assert "'curate'" in model.outputs["ls"] and "'drafts'" not in model.outputs["ls"]
-    assert out.coverage["missing"] == [] and out.coverage["episodes"] == 0
+    assert out.coverage["unread"] == [] and out.coverage["episodes"] == 0
     assert (
         ev.db.execute("SELECT kind FROM passes WHERE pass_id='c1'").fetchone()[0]
         == "curate"

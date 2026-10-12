@@ -8,7 +8,6 @@ from pathlib import Path
 
 from unify.memory_v2 import pool, library_prompts as pv, writer_pass
 from unify.memory_v2.batch_map import build_batch_map
-from unify.memory_v2.views import Coverage
 from tests.memory_v2.test_gate import _candidate
 from unify.memory_v2 import fixtures as fx
 from tests.memory_v2.test_gate_library_mode import (
@@ -44,7 +43,6 @@ def test_each_row_points_at_its_staged_candidates_and_the_pool_entries_citing_it
     _, model = st.run(
         [
             _call("m", "read", {"path": "/inputs/batch_map.json"}),
-            _call("x", "dismiss", {"episode": "e2", "reason": "r"}),
         ],
         "p1",
         staging_root=str(root),
@@ -118,39 +116,25 @@ def test_more_parts_than_a_call_holds_are_paged_not_refused(tmp_path):
     assert out.startswith("== request ==") and out.endswith(
         'next: parts=["request", "request"]]',
     )
-    assert writer_pass._parts_from_text({"part": 'parts:["request", "cell:0"]'}) == {
-        "parts": ["request", "cell:0"],
-    }
+    from unify.memory_v2.writer_tools import _wanted_parts
+
+    assert _wanted_parts({"part": 'parts:["request", "cell:0"]'}) == (
+        ["request", "cell:0"],
+        None,
+    )
 
 
-# --- 3. finish's refusal names what is missing ----------------------------------------------------------------------
+# --- 3. finish never waits on reading -------------------------------------------------------------------------------
 
 
-def test_the_finish_refusal_names_each_missing_part_and_what_is_dismissed():
-    cov = Coverage(
-        {"e1": ["request", "cell:0"], "e2": ["request"], "e3": ["request"]},
-        {("e1", "request"): 3, ("e1", "cell:0"): 5, ("e2", "request"): 3, ("e3", "request"): 4},
-    )  # fmt: skip
-    cov.credit("e1", "request", 0, 3)
-    assert cov.dismiss("e2", "nothing here") == "ok"
-    text = writer_pass._finish_refusal(cov, cov.missing())
-    assert text.splitlines() == [
-        "not finished: 2 episode(s) neither covered nor dismissed:",
-        "- e1: not yet read in full: cell:0",
-        "- e3: not yet read in full: request",
-        "Read those parts with read_episode, or dismiss the episode with a reason. Dismissed so far: e2.",
-    ]
-
-
-def test_finish_is_never_refused_for_unread_episodes(tmp_path):
-    """The batch map names no reading list, so nothing about reading gates finish."""
+def test_finish_is_refused_only_for_its_manifest(tmp_path):
     _, model = _pass(
         tmp_path,
         [_call("f", "finish", {"summary": "s"})],
         eids=("e2",),
         max_calls=4,
     )
-    assert "neither covered nor dismissed" not in model.outputs["f"]
+    assert model.outputs["f"].startswith("not finished: G1: no manifest")
 
 
 # --- 4. the brief states the batch map's schema; 6. no sentence about the pass's time ---------------------------
