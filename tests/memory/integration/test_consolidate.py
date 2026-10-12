@@ -1533,3 +1533,52 @@ def test_the_pass_reads_the_window_through_the_turn_consolidate_builds(
     )
     end = [e for e in _events(stores) if e.get("phase") == "end"][-1]
     assert end["context_window"] == 1_000
+
+
+def test_with_no_compaction_setting_the_writer_and_its_helpers_compact(
+    tmp_path,
+    monkeypatch,
+):
+    """Every agent compacts by default: a library pass run with no compaction setting at all builds its writer with
+    compaction on, and the helper context it makes compacts too (helpers.context_for).
+    """
+    from unify.memory import helpers
+
+    built = []
+
+    class Recording(consolidate.WriterPass):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            built.append(self)
+
+    monkeypatch.setattr(consolidate, "WriterPass", Recording)
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter())
+    stores = _stores(tmp_path)
+    sha, _ = _record(stores, "e1")
+    settings = _library_settings("on")
+    assert not hasattr(settings, "UNIFY_MEMORY_LIBRARY_COMPACT")
+    asyncio.run(
+        run_due_passes(
+            stores,
+            "e1",
+            sha,
+            State(stores.paths.state),
+            effort="low",
+            settings=settings,
+            emit=None,
+        ),
+    )
+    assert built and all(
+        w.cfg.compact is True and w.cfg.library_mode is True for w in built
+    )  # write, any curate
+    writer = built[0]
+    ctx = helpers.context_for(
+        writer,
+        pass_id="p1",
+        inputs=tmp_path / "inputs",
+        box=tmp_path / "box",
+        scratch=tmp_path / "scratch",
+        deadline=0.0,
+        spend=SimpleNamespace(usd=Decimal("0"), unknown=0),
+    )
+    assert ctx.compact is True
