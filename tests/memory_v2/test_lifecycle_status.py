@@ -230,3 +230,58 @@ def test_curate_aliases_and_retirements_deprecate_items():
     assert changes == {NOTE: "deprecated"}
     dropped, _ = lc.next_records(**base, aliases={}, curations=[])
     assert dropped[PD]["alias_of"] is None
+
+
+IMPORTED = lc.ItemUse(False, 0, False, False, False, seen=True)
+REFUSED = lc.ItemUse(False, 1, True, False, False, seen=True)
+REFUSED_THEN_RETURNED = lc.ItemUse(True, 2, True, False, False)
+
+
+def test_an_import_alone_never_makes_an_item_stable():
+    imported = [_f(f"e{i}", WEEK, IMPORTED) for i in range(5)]
+    assert lc.decide_status(WEEK, None, imported) == ("experimental", None, None, [])
+    # a negative signal in an episode that only imported it is not counted against it
+    quiet = [_f(f"e{i}", WEEK, IMPORTED, neg=True) for i in range(3)]
+    assert lc.decide_status(WEEK, None, quiet)[0] == "experimental"
+
+
+def test_a_refusal_is_never_a_failure():
+    refused = [_f(f"e{i}", WEEK, REFUSED) for i in range(4)]
+    status, rule, reason, evidence = lc.decide_status(WEEK, None, refused)
+    assert (status, rule, evidence) == ("experimental", None, [])
+    assert "refused inputs it was not built for in 4 episodes" in reason
+    assert "not a failure" in reason
+    # refusals beside calls that returned: the item can still become stable
+    mixed = [_f(f"e{i}", WEEK, REFUSED_THEN_RETURNED) for i in range(3)]
+    assert lc.decide_status(WEEK, None, mixed)[:2] == ("stable", None)
+    # nor do they demote a stable item
+    assert lc.decide_status(WEEK, "stable", refused)[0] == "stable"
+
+
+def test_suspect_fires_on_errors_and_on_negative_signals_after_a_use():
+    assert lc.decide_status(
+        WEEK,
+        None,
+        [_f("e1", WEEK, RAISED), _f("e2", WEEK, RAISED)],
+    ) == ("suspect", "errors", "it raised in 2 episodes", ["e1", "e2"])
+    used = [_f("e1", WEEK, OK, neg=True), _f("e2", WEEK, REFUSED_THEN_RETURNED, neg=True)]
+    assert lc.decide_status(WEEK, None, used)[:2] == ("suspect", "negative_signals")
+
+
+def test_the_effect_the_gate_derived_reaches_the_record():
+    base = dict(
+        items={WEEK: "function", PD: "function"},
+        prev={},
+        facts=[],
+        since={WEEK: {A}, PD: {A}},
+        changed_at={WEEK: A, PD: A},
+        functions={WEEK: "memory.text.dates", PD: "memory.text.dates"},
+        graph={"memory.text.dates": set()},
+        note_uses={},
+    )
+    recs, _ = lc.next_records(
+        **base,
+        verification={WEEK: {"effect": "write"}, PD: {"effect": "bogus"}},
+    )
+    assert recs[WEEK]["effect"] == "write" and recs[PD]["effect"] is None
+    assert lc.next_records(**base)[0][WEEK]["effect"] is None

@@ -83,7 +83,8 @@ def test_reading_the_use_record_and_the_evidence_index_agree(tmp_path):
     assert direct == indexed
     assert direct.items == {
         PD: lc.ItemUse(True, 2, False, False, False),
-        WEEK: lc.ItemUse(True, 1, True, False, True),
+        # its one call refused: exposure, not use, and the refusal is no error
+        WEEK: lc.ItemUse(False, 1, True, False, True, seen=True),
     }
     assert direct.negative and not direct.positive
 
@@ -121,6 +122,7 @@ def test_use_records_are_kept_per_library_commit():
             A: {
                 "episodes": 2,
                 "uses": 3,
+                "seen": 0,
                 "errors": 1,
                 "refused": 0,
                 "negative_signals": 1,
@@ -130,7 +132,8 @@ def test_use_records_are_kept_per_library_commit():
             B: {
                 "episodes": 1,
                 "uses": 1,
-                "errors": 1,
+                "seen": 0,
+                "errors": 0,  # a refusal is counted apart, never as an error
                 "refused": 1,
                 "negative_signals": 0,
                 "positive_signals": 0,
@@ -141,6 +144,7 @@ def test_use_records_are_kept_per_library_commit():
             B: {
                 "episodes": 0,
                 "uses": 0,
+                "seen": 0,
                 "errors": 1,
                 "refused": 0,
                 "negative_signals": 0,
@@ -176,3 +180,41 @@ def test_a_checker_verdict_counts_only_when_the_signal_is_marked_visible():
         "dense",
         checker_visible=True,
     ) == (True, False)
+
+
+def test_a_call_that_returned_is_a_use_and_an_import_alone_is_only_seen():
+    rec = _use_rec(
+        {
+            PD: {"imported": 1},  # imported, never called
+            WEEK: {"imported": 1, "called": 2, "refused": 1},  # one call refused, the other returned
+            TOK: {"called": 1, "errored": 1},  # its only call raised
+        },
+    )
+    f = lc.facts_from_use("e1", A, "dense", rec, [], checker_visible=False)
+    assert f.items == {
+        PD: lc.ItemUse(False, 0, False, False, False, seen=True),
+        WEEK: lc.ItemUse(True, 2, True, False, False),
+        TOK: lc.ItemUse(False, 1, False, True, False, seen=True),
+    }
+    use = lc.aggregate_use([f])
+    assert (use[PD][A]["episodes"], use[PD][A]["seen"]) == (0, 1)
+    assert (use[WEEK][A]["episodes"], use[WEEK][A]["refused"], use[WEEK][A]["errors"]) == (1, 1, 0)
+    assert (use[TOK][A]["episodes"], use[TOK][A]["errors"]) == (0, 1)
+
+
+def test_returned_compares_call_sites_with_the_exceptions_that_left_the_item():
+    assert lc.returned(1, 0, 0) and lc.returned(2, 1, 0) and lc.returned(3, 1, 1)
+    assert not lc.returned(0, 0, 0) and not lc.returned(1, 1, 0) and not lc.returned(1, 0, 1)
+
+
+def test_a_signal_after_an_import_alone_is_not_counted_for_the_item():
+    f = lc.EpisodeUse(
+        "e1",
+        A,
+        "dense",
+        True,
+        True,
+        {PD: lc.ItemUse(False, 0, False, False, False, seen=True)},
+    )
+    row = lc.aggregate_use([f])[PD][A]
+    assert (row["negative_signals"], row["positive_signals"], row["seen"]) == (0, 0, 1)

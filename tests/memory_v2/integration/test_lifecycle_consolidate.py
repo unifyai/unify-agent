@@ -1,4 +1,4 @@
-"""Item records at consolidation (spec §4.4, §10; D38, D40): one map per commit, status commits, bisect, copies."""
+"""Item records at consolidation: one map per commit, status commits, bisect, copies."""
 
 from __future__ import annotations
 
@@ -118,8 +118,9 @@ def test_a_consolidation_records_the_map_on_main_and_hides_a_suspect(lib, tmp_pa
     assert (recs[SUM]["status_rule"], recs[SUM]["status_evidence"]) == ("taint", [WEEK])
     assert recs[WEEK]["use"] == {
         head: {
-            "episodes": 2,
+            "episodes": 0,  # each call raised: no call returned, so no use
             "uses": 2,
+            "seen": 2,
             "errors": 2,
             "refused": 0,
             "negative_signals": 0,

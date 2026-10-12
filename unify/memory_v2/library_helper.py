@@ -159,7 +159,8 @@ def _summary(record: Any) -> str:
 
 def show(item: Any) -> str:
     """One item in full: a function's source with its docstring, or a note's text. Then its links both ways,
-    its status (and, for an item left out of the index, why), its verification and use records, and the
+    its status with, for a function, its effect (and why, for an item left out of the index or given a
+    reason), its verification and use records, and the
     subjects of the library commits that changed it, newest first."""
     wanted = _item_id(item)
     data = _json(ITEMS_FILE)
@@ -172,7 +173,8 @@ def show(item: Any) -> str:
     links = _json(LINKS_FILE).get("items", {}).get(wanted, {})
     status = row.get("status", "experimental")
     if row["kind"] == "function":
-        out = [f"{row['signature']}  [{status}]"]
+        effect = row.get("effect")
+        out = [f"{row['signature']}  [{status}" + (f", effect: {effect}" if effect else "") + "]"]
     else:
         out = [
             f"{wanted}  [{status}]" + (f"  {row['title']}" if row.get("title") else ""),
@@ -181,6 +183,8 @@ def show(item: Any) -> str:
         out.append(
             f"Not in the index: {row.get('status_reason') or 'its status is ' + status}.",
         )
+    elif row.get("status_reason"):
+        out.append(f"Status: {row['status_reason']}.")
     out.append("")
     if row["kind"] == "function":
         out.append(_source(row["path"], wanted.split(":", 1)[1]))
