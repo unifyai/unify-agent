@@ -9,6 +9,7 @@ name tools that exist.
 from __future__ import annotations
 
 from . import tool_spec as _tool_spec
+from .example_calls import CALLS_DIR, CALLS_OUT
 
 #: Which spec role each tool-using agent draws from.
 SPEC_ROLE = {"writer": "write", "curator": "curate", "helper": "helper"}
@@ -57,6 +58,16 @@ _BOX_MOUNTS = [
     {"path": "/memory/memory/__init__.py", "mode": "ro"},
     # host-side only: `read` opens the saved cell outputs; cells cannot open /outputs
     {"path": "/outputs", "mode": "ro", "via": "read"},
+]
+
+
+#: The record of the calls a function's tests make, written by the observe-only plugin in the gate's test box while
+#: the gate runs the tests the writer or curator wrote. Gate-internal: no writer-visible artifact.
+_CALL_RECORD = {"artifact": "call record", "path": CALLS_OUT}
+#: The gate's test box mounts the plugin read-only and a fresh directory for the record read-write.
+_CALL_RECORD_MOUNTS = [
+    {"path": CALLS_DIR, "mode": "ro"},
+    {"path": CALLS_OUT.rsplit("/", 1)[0], "mode": "rw"},
 ]
 
 
@@ -238,6 +249,8 @@ AGENT_PROFILES: tuple[dict, ...] = (
                 "path": "/memory/.pass/fixtures.json",
                 "consumer": "gate",
             },
+            # its tests, run by the gate, give the call record
+            {**_CALL_RECORD, "consumer": "gate"},
             {"artifact": "task", "path": "delegate arguments", "consumer": "helper"},
         ],
         "limits": list(_PASS_LIMITS),
@@ -354,6 +367,8 @@ AGENT_PROFILES: tuple[dict, ...] = (
                 "path": "/memory/.pass/manifest.json",
                 "consumer": "gate",
             },
+            # its tests, run by the gate, give the call record
+            {**_CALL_RECORD, "consumer": "gate"},
         ],
         "limits": list(_PASS_LIMITS),
         "inlined": [{"what": "brief (constant)", "bound": _INLINE_BOUND}],
@@ -504,12 +519,13 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "instructions": "unify.memory.repair:repair_message",
         "tools": [],
         # it reads the candidate library copy, its manifest and fixture listing under /memory/.pass
-        "mounts": [{"path": "/memory", "mode": "ro"}],
+        "mounts": [{"path": "/memory", "mode": "ro"}, *_CALL_RECORD_MOUNTS],
         "denied": ["network"],
         "consumes": [
             {"artifact": "library item", "path": "/memory/memory/"},
             {"artifact": "manifest", "path": "/memory/.pass/manifest.json"},
             {"artifact": "fixture listing", "path": "/memory/.pass/fixtures.json"},
+            dict(_CALL_RECORD),
         ],
         "produces": [
             {
