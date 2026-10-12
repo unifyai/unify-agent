@@ -130,6 +130,15 @@ SIMILAR_LINE = (
 )
 
 
+def _call_estimate(ctx: "DelegateContext") -> float:
+    """The expected length of a helper model call: the median of this pass's measured calls, else the context's
+    first estimate."""
+    measured = sorted(ctx.call_seconds)
+    if not measured:
+        return float(ctx.first_call_estimate_s)
+    return measured[len(measured) // 2]
+
+
 def helper_brief(similar: bool) -> str:
     """The helper's system message; it names exactly the tools :func:`helper_tools` gives for *similar*."""
     return HELPER_BRIEF.replace("{similar}", SIMILAR_LINE if similar else "")
@@ -346,6 +355,14 @@ class DelegateContext:
     #: host-stamped open rows from the helpers' boxes (also appended to ``box-opens.jsonl`` beside ``events``)
     box_opens: list[dict] = field(default_factory=list)
     next_call: int = 0
+    #: the pass's own deadline: a model call already running when the helper's time is up may finish, but never
+    #: past this (None: the helper's stop is also the hard bound)
+    hard_deadline: float | None = None
+    #: how long a helper model call takes, until this pass has measured some (seconds); a call is started only when
+    #: the median measured call (or this) fits before the helper's stop, so no call is cut off mid-flight
+    first_call_estimate_s: float = 30.0
+    #: the durations of this pass's helper model calls, shared by its helpers
+    call_seconds: list[float] = field(default_factory=list)
 
 
 def context_for(
@@ -356,6 +373,7 @@ def context_for(
     box: Path,
     scratch: Path,
     deadline: float,
+    hard_deadline: float | None = None,
     spend: Any,
     events: Path | None = None,
 ) -> DelegateContext:
@@ -385,6 +403,7 @@ def context_for(
         new_turn=factory,
         lane_refusal=getattr(writer, "helper_refusal", None) or "no helper lane",
         deadline=deadline,
+        hard_deadline=hard_deadline,
         spend=spend,
         scratch=Path(scratch),
         shared=dict(getattr(writer, "_shared", {}) or {}),
@@ -1060,15 +1079,20 @@ async def _run_helper(
     n = 0
     while doc["turns"] < ctx.step_guard:
         left = ctx.deadline - time.monotonic()
-        if left <= 0:
+        # start a model call only when one is expected to finish before this helper's time is up
+        if left <= _call_estimate(ctx):
             doc["status"] = "time up"
             return
-        # helpers' model calls run at the same time: each helper waits only for its own call
+        hard = ctx.hard_deadline if ctx.hard_deadline is not None else ctx.deadline
+        # helpers' model calls run at the same time: each helper waits only for its own call, which may run past
+        # the helper's stop to finish but never past the pass's own deadline
+        began = time.monotonic()
         try:
             msg, usd = await asyncio.wait_for(
                 turn(messages, tools),
-                timeout=max(0.1, ctx.deadline - time.monotonic()),
+                timeout=max(0.1, hard - time.monotonic()),
             )
+            ctx.call_seconds.append(time.monotonic() - began)
         except asyncio.TimeoutError:
             doc["unknown_cost_calls"] += 1
             ctx.spend.unknown += 1

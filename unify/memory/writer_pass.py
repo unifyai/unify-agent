@@ -2299,8 +2299,9 @@ class WriterPass:
                 inputs=inputs,
                 box=box,
                 scratch=scratch,
-                # helpers stop where the writer's finishing window begins
+                # helpers stop where the writer's finishing window begins; a call already running may finish
                 deadline=deadline - finish_window_s(self.cfg.deadline_s),
+                hard_deadline=deadline,
                 spend=spend,
                 events=self._events_path(pass_id),
             )
