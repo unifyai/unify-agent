@@ -189,6 +189,22 @@ COMPRESSION_FORK_INSTRUCTION = (
     "is no longer needed."
 )
 
+#: The same instruction when tools are called from code (``UNIFY_TOOLS_IN_CODE=on``): what the agent used from earlier
+#: work is the memory library's items, not stored functions and guidance.
+COMPRESSION_FORK_INSTRUCTION_IN_CODE = COMPRESSION_FORK_INSTRUCTION.replace(
+    "(stored functions and guidance used included)",
+    "(library items used included)",
+)
+
+
+def compression_fork_instruction() -> str:
+    """The summary turn's instruction every agent reads: :data:`COMPRESSION_FORK_INSTRUCTION`, or its in-code form."""
+    from unify.common import in_code_switch
+
+    if in_code_switch.tools_in_code():
+        return COMPRESSION_FORK_INSTRUCTION_IN_CODE
+    return COMPRESSION_FORK_INSTRUCTION
+
 
 def completion_text(content: Any) -> str:
     """The visible text of a reply's content (a string or content parts)."""

@@ -420,7 +420,7 @@ async def compact_by_summary(
     from unify.common._async_tool import context_compression as _cc
     from unify.common._async_tool.messages import loop_user_notice
 
-    request = [*messages, {"role": "user", "content": _cd.COMPRESSION_FORK_INSTRUCTION}]
+    request = [*messages, {"role": "user", "content": _cd.compression_fork_instruction()}]
     reply, usd = await turn(request, tools)
     summary = (
         _cd.completion_text(reply.get("content")) if isinstance(reply, dict) else ""

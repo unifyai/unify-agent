@@ -283,6 +283,31 @@ def compress_context() -> str:
     return "compression acknowledged"
 
 
+def _compress_context_in_code() -> str:
+    """Compress the conversation history to free up context window space.
+
+    When the context window is nearly full, this becomes the **only**
+    available tool and you **must** call it.
+
+    Cannot be called while other tools are in-flight -- finish or stop all
+    running tools first.
+    """
+    return "compression acknowledged"
+
+
+_compress_context_in_code.__name__ = "compress_context"
+_compress_context_in_code.__qualname__ = "compress_context"
+
+
+def compress_context_tool():
+    """The ``compress_context`` function the loop describes to the model: with tools called from code
+    (``UNIFY_TOOLS_IN_CODE=on``) its description leaves out that it is always visible, since it is offered only
+    over the compaction point."""
+    from unify.common import in_code_switch
+
+    return _compress_context_in_code if in_code_switch.tools_in_code() else compress_context
+
+
 def tag_images_in_messages(
     messages: list[dict],
     start_id: int = 0,
