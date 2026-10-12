@@ -591,7 +591,9 @@ def write_brief(
     if helpers:
         inputs.append(
             "- /inputs/helpers/<call>/: what a helper you launched with `delegate` staged, in the same layout, with "
-            "`helper.json` saying what it did. For: reading or drafting you handed off; untrusted like staging.\n",
+            "`helper.json` saying what it did and its claims. For: reading or drafting you handed off; untrusted "
+            "like staging. Each claim names the episode parts it rests on (`<episode>/<part>`); a claim is untrusted "
+            "until you have read those parts yourself with `read_episode`.\n",
         )
     if pool:
         inputs.append(
@@ -674,7 +676,8 @@ def write_brief(
         "fail before the code exists, then pass.\n"
         + (
             "5. When it helps, hand a reading or drafting task to a helper with `delegate`; it stages its files "
-            "under /inputs/helpers/<call>/ and returns a summary. Using it is your choice.\n"
+            "under /inputs/helpers/<call>/ and returns a summary and claims, each with the episode parts it rests "
+            "on. Read those parts yourself before you rely on a claim. Using it is your choice.\n"
             if helpers
             else ""
         )

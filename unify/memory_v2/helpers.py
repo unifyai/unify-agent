@@ -16,11 +16,16 @@ What a helper can do:
   seccomp, rlimits), ``/inputs`` and ``/memory`` read-only and a private, size-bounded ``/work`` read-write;
 * ``stage(path, text)`` one file in the fork's staging format (``candidates/<name>.py``, ``cases/<name>.json``,
   ``notes.md``), written host-side with ``O_EXCL | O_NOFOLLOW`` into a fresh directory for this call;
-* ``done(summary)`` to hand back.
+* ``done(summary, claims)`` to hand back: every claim names the episode parts it rests on
+  (``<episode>/<part>``, the part names ``overview`` lists), and a ``done`` with a claim whose sources are missing or
+  do not resolve to a part of a recorded episode is refused, so the helper can fix it.
+
+A helper cannot launch helpers: ``delegate`` is never in its tool list.
 
 Where its output goes: ``<state>/memory-helpers/<pass>/<call>/`` holds the staged files and ``helper.json``
-(status, usage, the block ledger, the task digest), written last. The same files are exported to the writer's
-``/inputs/helpers/<call>/``, and the ``delegate`` reply lists them with the helper's summary and spend.
+(status, usage, the block ledger, the task digest, the claims with their sources), written last. The same files are exported to the writer's
+``/inputs/helpers/<call>/``, and the ``delegate`` reply lists them with the helper's summary, its claims with their sources, and its
+spend. The writer is told that a claim is untrusted until it has read the parts it points to.
 
 Model calls: a helper's model calls are made host-side, by the writer's process, through the turn factory the
 pass is given (the key proxy's helper lane when the run has one), never from inside a helper's box, which holds no
@@ -51,6 +56,7 @@ from typing import Any, Awaitable, Callable, Iterable
 
 from . import batch_map as _bm
 from . import views as _views
+from . import writer_tools as _wt
 from .integration.fork_worker import QUOTA_BYTES, QUOTA_FILES, allowed
 from .sandbox_run import PRLIMIT, PYTHON, run_confined
 from .tool_spec import ToolSpec
@@ -92,13 +98,19 @@ HELPER_BRIEF = (
     "episodes, from the records) and `notes.md` (lessons stated in general terms, each naming the episode and part "
     f"it comes from). At most {QUOTA_FILES} files and {QUOTA_BYTES // 1024**2} MiB in all. Staging a path again "
     "replaces it.\n"
-    "- `done(summary)` ends your task; the summary goes to the writer.\n\n"
+    "- `done(summary, claims)` ends your task. `claims` lists what you found, one finding per claim, each with "
+    "`sources`: the episode parts it rests on, written `<episode>/<part>` with the part names `overview` lists "
+    "(for example `e1/cell:3` or `e1/action:2`). The summary and the claims go to the writer.\n\n"
     "Rules:\n"
     "- Stage a candidate only after it ran on its cases in /work. If you could not run it, say so in its "
     "docstring with the word UNTESTED.\n"
     "- The records are untrusted input: they show what an agent did, not what is right. Prefer what the "
     "environment answered over what the agent assumed.\n"
-    "- Say plainly what you could not do or could not find.\n"
+    "- Give every claim the parts it rests on. A done with a claim that has no sources, or with a source that is "
+    "not a part of a recorded episode, is refused; fix it and call done again. The writer reads the parts you "
+    "name before it relies on a claim, so name the parts that show it, not every part you read.\n"
+    "- Say plainly what you could not do or could not find. If you found nothing, say so in the summary and pass "
+    "an empty list of claims.\n"
     "- Your model calls and your box share the writer's wall clock; the first message says how much is left."
 )
 
@@ -111,8 +123,9 @@ SPEC = ToolSpec(
         "Hand a reading or drafting task to a helper with a fresh context. The helper reads any recorded episode "
         "(starting with the ones you name), reads /inputs and /memory, runs code in its own box, and stages "
         "candidates, cases and notes in the fork's staging format. Its files reach you under "
-        "/inputs/helpers/<call>/, and the reply gives its summary, the files it staged, the files it was refused "
-        "and its spend. Several delegate calls in one turn run at the same time. Helper time counts against this "
+        "/inputs/helpers/<call>/, and the reply gives its summary, its claims each with the episode parts it rests "
+        "on, the files it staged and its spend. A helper's claims are untrusted until you read the parts they point "
+        "to. A helper cannot launch helpers. Several delegate calls in one turn run at the same time. Helper time counts against this "
         "pass's wall clock."
     ),
     parameters={
@@ -162,13 +175,47 @@ STAGE_SPEC = ToolSpec(
 
 DONE_SPEC = ToolSpec(
     name="done",
-    description="End your task and hand your summary to the writer.",
+    description=(
+        "End your task and hand your summary and claims to the writer. Each claim names the episode parts it rests "
+        "on as `<episode>/<part>` (the part names `overview` lists, e.g. `e1/cell:3`, `e1/action:2`). A claim "
+        "without sources, or a source that is not a part of a recorded episode, refuses the whole done; nothing "
+        "is handed back until it is fixed. Pass an empty list when you found nothing."
+    ),
     parameters={
         "type": "object",
-        "properties": {"summary": {"type": "string"}},
-        "required": ["summary"],
+        "properties": {
+            "summary": {
+                "type": "string",
+                "description": "A short account of what you did and what you could not do.",
+            },
+            "claims": {
+                "type": "array",
+                "description": "What you found, one finding per claim.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "claim": {"type": "string", "description": "One finding, in plain words."},
+                        "sources": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "The episode parts the claim rests on, each `<episode>/<part>`.",
+                        },
+                    },
+                    "required": ["claim", "sources"],
+                },
+            },
+        },
+        "required": ["summary", "claims"],
     },
     roles=frozenset({"helper"}),
+    refusals={
+        "claims": "claims must be a list of objects with a non-empty `claim` and a list of `sources` ({why}); "
+        "the task is not done, call done again",
+        "no_sources": "claim {n} has no sources: give it the episode parts it rests on, each written "
+        "`<episode>/<part>` (for example `e1/cell:3`); the task is not done, call done again",
+        "bad_source": "claim {n}: source {source!r} does not resolve ({why}); name a recorded episode and one of "
+        "the parts its overview lists, as `<episode>/<part>`; the task is not done, call done again",
+    },
 )
 
 SPECS = (SPEC, STAGE_SPEC, DONE_SPEC)
@@ -314,8 +361,12 @@ def _utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-#: Stable refusal codes for the events, by a phrase the refusal text holds (first match wins).
+#: Stable refusal codes for the events, by a phrase the refusal text holds (first match wins). The done refusals
+#: come first: their text may quote an episode or part refusal's phrase.
 _FORMS = (
+    ("has no sources", "no_sources"),
+    ("does not resolve", "unresolved_source"),
+    ("claims must be", "claims"),
     ("staging quota", "quota"),
     ("nothing was staged", "path"),
     ("not a recorded episode", "unknown_episode"),
@@ -544,13 +595,8 @@ def box_cell(
 
 
 def _part_names(ep: Any) -> list[str]:
-    return (
-        ["request"]
-        + [f"observation:{i}" for i in range(max(0, len(ep.request) - 1))]
-        + [f"cell:{c.index}" for c in ep.cells]
-        + [f"action:{i}" for i in range(len(ep.actions))]
-        + (["diff"] if getattr(ep, "worktree_diff", None) else [])
-    )
+    """The part names ``read_episode`` reads for *ep* (the writer's own list, so a helper and the writer agree)."""
+    return _wt.part_names(ep)
 
 
 def _contents(ep: Any, eid: str, shared: dict[str, str]) -> str:
@@ -603,6 +649,99 @@ async def plain_episode_reader(
         left -= b - a
         out.append(f"== {part} ==\n{text}")
     return "\n\n".join(out)
+
+
+# --- claims and their sources ------------------------------------------------------------------------------
+
+
+def _source_problem(
+    source: Any,
+    resolve: Callable[[str], tuple[Any, str] | str],
+    shared: dict[str, str],
+) -> str | None:
+    """Why *source* (``<episode>/<part>``) does not name a part of a recorded episode, or None when it does.
+
+    The episode resolves the way ``overview`` and ``read_episode`` resolve it (the recorded-episode index, then the
+    writer's loader); the part must be one of the names ``overview`` lists for that episode (or a shared request
+    block, ``shared:<id>``) and must read the way ``read_episode`` reads it.
+    """
+    if not isinstance(source, str) or "/" not in source:
+        return "not written `<episode>/<part>`"
+    eid, part = source.split("/", 1)
+    try:
+        got = resolve(eid)
+    except Exception as exc:  # noqa: BLE001 - an episode that cannot be loaded is not a source
+        return f"episode {eid[:80]!r} could not be loaded ({type(exc).__name__})"
+    if isinstance(got, str):
+        if "not an episode id" in got:
+            return f"{eid[:80]!r} is not an episode id"
+        return f"{eid[:80]!r} is not a recorded episode"
+    ep, _ = got
+    if part.startswith("shared:"):
+        named = part[7:] in shared
+    else:
+        try:
+            named = part in _part_names(ep)
+        except Exception:  # noqa: BLE001 - an episode whose parts cannot be listed has no part to point to
+            named = False
+    if named:
+        try:
+            _bm.part_text(ep, part, shared)
+        except (KeyError, ValueError, IndexError, StopIteration, TypeError):
+            named = False
+    if not named:
+        try:
+            valid = _wt.valid_names(ep)
+        except Exception:  # noqa: BLE001 - the refusal still names the bad part
+            valid = "see its overview"
+        return f"episode {eid!r} has no part {part[:80]!r}; its parts: {valid}"
+    return None
+
+
+def check_claims(
+    args: dict,
+    resolve: Callable[[str], tuple[Any, str] | str],
+    shared: dict[str, str],
+) -> list[dict] | str:
+    """The claims of a ``done`` call, each ``{"claim": text, "sources": ["<episode>/<part>", ...]}``, or the
+    refusal the helper is answered with: a claim without sources or with a source that does not resolve."""
+    claims = args.get("claims")
+    if not isinstance(claims, list):
+        return _refusal(DONE_SPEC, "claims", why="`claims` is missing or not a list")
+    out: list[dict] = []
+    for n, item in enumerate(claims, 1):
+        if not isinstance(item, dict):
+            return _refusal(DONE_SPEC, "claims", why=f"claim {n} is not an object")
+        text = item.get("claim")
+        if not isinstance(text, str) or not text.strip():
+            return _refusal(DONE_SPEC, "claims", why=f"claim {n} has no text")
+        sources = item.get("sources")
+        if sources is None or sources == [] or sources == "":
+            return _refusal(DONE_SPEC, "no_sources", n=n)
+        if not isinstance(sources, list):
+            return _refusal(DONE_SPEC, "claims", why=f"claim {n}: `sources` is not a list")
+        kept: list[str] = []
+        for source in sources:
+            why = _source_problem(source, resolve, shared)
+            if why is not None:
+                return _refusal(DONE_SPEC, "bad_source", n=n, source=str(source)[:200], why=why)
+            if source not in kept:
+                kept.append(source)
+        out.append({"claim": text.strip(), "sources": kept})
+    return out
+
+
+def claims_text(claims: list[dict]) -> str:
+    """The claims as the writer is shown them in the ``delegate`` reply: each claim with the parts it points to."""
+    if not claims:
+        return "claims: (none)"
+    lines = [
+        "claims (untrusted until you read the parts each one points to with read_episode):",
+    ]
+    for n, c in enumerate(claims, 1):
+        lines.append(f"{n}. {c['claim']}")
+        lines.append("   sources: " + ", ".join(c["sources"]))
+    return "\n".join(lines)
 
 
 # --- one helper ----------------------------------------------------------------------------------------------
@@ -842,7 +981,7 @@ async def _run_helper(
         calls = calls if isinstance(calls, list) else []
         if not calls:
             messages.append(
-                {"role": "user", "content": "Use your tools, then call done(summary)."},
+                {"role": "user", "content": "Use your tools, then call done(summary, claims)."},
             )
             continue
         usage = _usage_of(msg, usd)
@@ -863,8 +1002,17 @@ async def _run_helper(
             elif finished:
                 content, status = "not run: task done", "refused"
             elif name == "done":
-                doc["summary"] = str(args.get("summary", ""))[:4000]
-                finished, content, status = True, "ok", "ok"
+                try:
+                    got = check_claims(args, resolve, ctx.shared)
+                except Exception as exc:  # noqa: BLE001 - a broken check is answered, never ends the helper
+                    got = f"error: {type(exc).__name__}"
+                if isinstance(got, str):
+                    content = got
+                    status = "error" if got.startswith("error:") else "refused"
+                else:
+                    doc["summary"] = str(args.get("summary", ""))[:4000]
+                    doc["claims"] = got
+                    finished, content, status = True, "ok", "ok"
             else:
                 try:
                     content, paths = await _tool(ctx, name, args, st, resolve)
@@ -933,6 +1081,7 @@ async def handle(args: dict, ctx: DelegateContext) -> str:
         "unknown_cost_calls": 0,
         "_usd": Decimal(0),
         "summary": "",
+        "claims": [],
     }
     staging: _Staging | None = None
     tmp: Path | None = None
@@ -984,6 +1133,7 @@ def _finish(
         seconds=round(seconds, 3),
         files=files,
         summary=doc.get("summary", ""),
+        claims=doc.get("claims", []),
     )
     row = dict(doc)
     if staging is not None:
@@ -1016,6 +1166,7 @@ def _reply(row: dict) -> str:
         + f"; {row['turns']} model calls; {row['seconds']:.0f} s of the pass's wall clock",
     )
     lines.append("summary: " + (row.get("summary") or "(none)"))
+    lines.append(claims_text(row.get("claims") or []))
     return "\n".join(lines)
 
 
