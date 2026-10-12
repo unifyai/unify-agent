@@ -32,6 +32,10 @@ import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .example_calls import CallRecord
 
 
 def _account_home() -> Path:
@@ -815,6 +819,9 @@ class PytestOutcome:
     full_output: str = ""
     # library mode: the whole output's blob id (the gate sets it; :func:`.library_checks.keep_output`)
     output_blob: str | None = None
+    # library mode: the calls of the observed functions this run recorded (:mod:`.example_calls`), when the run
+    # asked for them; None otherwise
+    calls: "CallRecord | None" = None
 
     def __post_init__(self) -> None:
         if not self.full_output:
@@ -985,14 +992,18 @@ def _skip_mark(case: ET.Element) -> str | None:
     return None
 
 
-def _skipmark_loaded(root: ET.Element) -> bool:
+def _suite_property(root: ET.Element, name: str) -> bool:
     suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
     for suite in suites:
         props = suite.find("properties")
         for p in props.iter("property") if props is not None else ():
-            if p.get("name") == SKIPMARK_LOADED:
+            if p.get("name") == name:
                 return True
     return False
+
+
+def _skipmark_loaded(root: ET.Element) -> bool:
+    return _suite_property(root, SKIPMARK_LOADED)
 
 
 def run_pytest(
@@ -1006,6 +1017,7 @@ def run_pytest(
     env: dict[str, str] | None = None,
     import_skips_fail: bool = False,
     spool_dir: Path | None = None,
+    calls: list[str] | None = None,
 ) -> PytestOutcome:
     """Run pytest on *tests_dir_in_box* in the box; see :class:`PytestOutcome` for ids and validity.
 
@@ -1013,6 +1025,11 @@ def run_pytest(
     by a failed import as a failure, ``<file>::test module skipped`` for a module skipped at collection and
     the test's id for a test. *spool_dir* (library mode) receives the run's whole ``stdout`` and ``stderr``
     (:func:`run_confined`'s *spool*); without it the call is v2's.
+
+    *calls* (library mode): the function ids whose calls from test code the run records. The observe-only plugin
+    (:data:`.example_calls.CALLS_SOURCE`) is mounted read-only and loaded like the skip-marking plugin, a fresh host
+    directory is mounted read-write at ``/calls`` for its record, and :attr:`PytestOutcome.calls` holds the parsed
+    record. A report without the plugin's suite property is invalid: nothing goes unrecorded silently.
     """
     more = (
         {"spool": (spool_dir / "stdout", spool_dir / "stderr")}
@@ -1038,6 +1055,29 @@ def run_pytest(
             path = env2.get("PYTHONPATH")
             env2["PYTHONPATH"] = f"{path}:{SKIPMARK_DIR}" if path else SKIPMARK_DIR
             plugin = ["-p", SKIPMARK_MODULE]
+        record_dir: Path | None = None
+        if calls is not None:
+            from . import example_calls
+
+            plug = Path(
+                stack.enter_context(
+                    tempfile.TemporaryDirectory(prefix="memory-calls-plugin-"),
+                ),
+            )
+            example_calls.plugin_files(plug)
+            record_dir = Path(
+                stack.enter_context(
+                    tempfile.TemporaryDirectory(prefix="memory-calls-"),
+                ),
+            )
+            ro2 = {**ro2, plug: example_calls.CALLS_DIR}
+            rw2[record_dir] = posixpath.dirname(example_calls.CALLS_OUT)
+            env2 = {**(env2 or {}), **example_calls.calls_env(calls)}
+            path = env2.get("PYTHONPATH")
+            env2["PYTHONPATH"] = (
+                f"{path}:{example_calls.CALLS_DIR}" if path else example_calls.CALLS_DIR
+            )
+            plugin = [*plugin, "-p", example_calls.CALLS_MODULE]
         r = run_confined(
             [
                 str(python),
@@ -1070,11 +1110,18 @@ def run_pytest(
             output=(r.stdout + r.stderr)[-4000:],
             full_output=r.stdout + r.stderr,
         )
-        if r.timed_out:
-            out.valid = False
-            return out
-        root = _read_junit(Path(tmp))
-        if root is None:
+        root = None if r.timed_out else _read_junit(Path(tmp))
+        if record_dir is not None:
+            from .example_calls import CALLS_LOADED, CALLS_OUT, read_calls
+
+            loaded = root is not None and _suite_property(root, CALLS_LOADED)
+            out.calls = read_calls(
+                record_dir / posixpath.basename(CALLS_OUT),
+                loaded_property=loaded,
+            )
+            if not loaded:
+                out.valid = False
+        if r.timed_out or root is None:
             out.valid = False
             return out
         cases = list(root.iter("testcase"))
@@ -1107,6 +1154,8 @@ def run_pytest(
             or (rc == 5 and len(cases) == module_skips)
         )
         if import_skips_fail and not _skipmark_loaded(root):
+            out.valid = False
+        if record_dir is not None and not _suite_property(root, CALLS_LOADED):
             out.valid = False
         out.failed |= missing
         return out

@@ -43,18 +43,11 @@ from typing import Any, Callable
 
 from .admission import is_rejection
 from .batch_map import actor_functions
-from .code_lint import LINT_MIN, input_value, literal_problems, varying_values
+from .code_lint import LINT_MIN
 from .episodes import Action, Episode
 from .fixtures import DATA_PATH, DRAWN_DIR, HashIndex, module_path, package_dir, verify
 from .gitio import Repo
-from .held_out import (
-    OUTPUTS_BUDGET_S,
-    _doc,
-    _unfit_reason,
-    family,
-    output_cases,
-    run_outputs,
-)
+from .held_out import OUTPUTS_BUDGET_S
 from .catalogue import estimate_tokens
 from . import layout
 from .aliases import forwards, uses_name
@@ -67,8 +60,6 @@ from .procedures import (
     run_procedure,
     snapshot_files,
 )
-from .qa import builtin_error
-from .qa_static import truncated
 from .sandbox_run import SandboxResult, run_confined
 from .redact import KEY_SHAPED
 from .quality import (
@@ -87,6 +78,8 @@ CROSS_CASES = (
 )
 # the procedure re-runs of the behaviour check, bounded like v2's (held_out.OUTPUTS_BUDGET_S)
 BEHAVIOUR_MAX_PROCEDURES = 16
+# a function's replay case file under tests/data/ (fixtures.REPLAY_SUFFIX), verified by replay, not by its bytes
+REPLAY_SUFFIX = ".replay.jsonl"
 OUTPUT_VIEW_BYTES = (
     4000  # the head of a test run's output kept in memory and quoted (explicit, marked)
 )
@@ -136,27 +129,23 @@ def _tool_effect(effects: set[str]) -> str:
 
 def derive_effect(
     typed_covers: list[Any],
-    covers: list[tuple[str, int, Action]],
-    form: str | None,
     episode: Callable[[str], Episode | None],
 ) -> str | None:
-    """A library function's effect, derived from what it reproduces: ``write``, ``read`` or ``unknown``.
+    """A library function's effect, derived from the procedures it reproduces: ``write``, ``read`` or ``unknown``.
 
     Structural, from the recording only; the writer declares nothing (no docstring line):
     - an ``episode`` cover run by the ``tool`` runner repeats the episode's tool calls, so it writes when the
       episode recorded a write call, and is unknown when the episode's calls declare no effect;
     - an ``episode`` cover run by the ``worktree`` runner changes files: it writes;
-    - an action cover on a tool call has that call's recorded effect, unless the function's declared input is
-      a recorded value (it parses what a call returned and makes no call itself);
-    - other covers (a cell, a diff, a dialogue procedure, files, shell output) record no call it makes.
-    The strongest wins: ``write``, then ``unknown``, then ``read``. None for a function with no cover at all.
+    - an ``episode`` cover run by another runner (a dialogue) records no call it makes: it reads.
+    The strongest wins: ``write``, then ``unknown``, then ``read``. None for a function with no ``episode`` cover:
+    its examples are calls its tests make, which record no call it makes itself, so no effect is guessed.
     """
-    from .gate import _VALUE_FORMS
-
     found: set[str] = set()
     for c in typed_covers:
         if getattr(c, "type", None) != "episode":
             continue
+        found.add("read")
         if c.runner == "worktree":
             found.add("write")
         elif c.runner == "tool":
@@ -167,24 +156,31 @@ def derive_effect(
                 if getattr(a, "kind", "tool") == "tool"
             }
             found.add(_tool_effect(effects))
-    if form not in _VALUE_FORMS:
-        for _, _, a in covers:
-            if getattr(a, "kind", "tool") == "tool":
-                found.add(_tool_effect({str(getattr(a, "effect", "unknown"))}))
     for effect in ("write", "unknown", "read"):
         if effect in found:
             return effect
-    return "read" if (typed_covers or covers) else None
+    return None
 
 
 def _no_snapshot(sha: str, dest: Path) -> Path | None:
     return None
 
 
-def _index_tokens(tree: Path) -> int:
-    """The tokens of the ``INDEX.md`` the harness would generate for *tree* (the layout's renderer and estimator)."""
+def _index_tokens(tree: Path, examples: dict[str, dict] | None = None) -> int:
+    """The tokens of the ``INDEX.md`` the harness would generate for *tree* (the layout's renderer and estimator),
+    with each function's example line when *examples* (item -> its recorded example) holds one the tree still
+    quotes."""
+    from .example_view import example_of, tree_reader
+
     lib = discover(tree)
-    return estimate_tokens(render_index(lib, build_links(lib)))
+    records = {item: {"example": ex} for item, ex in (examples or {}).items()}
+    return estimate_tokens(
+        render_index(
+            lib,
+            build_links(lib),
+            example_of=example_of(records, tree_reader(tree)),
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -345,6 +341,7 @@ class LibraryChecks:
         raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
         entries = raw.get("fixtures") if isinstance(raw.get("fixtures"), dict) else {}
         index: HashIndex | None = None
+        replays: dict[str, bytes] = {}
         for p in run.changed:
             if (
                 p not in run.c_files
@@ -363,8 +360,19 @@ class LibraryChecks:
                 )
                 continue
             data = (run.c_tree / p).read_bytes()
+            if p.endswith(REPLAY_SUFFIX):
+                replays[p] = (
+                    data  # verified by replaying its instances again, not by its bytes
+                )
+                continue
             problem = verify(p, data, entries.get(p), self.ep, self.gate._blob)
             if problem is None:
+                if isinstance(entries.get(p), dict):
+                    # verified this pass: the examples checks' provenance, persisted on merge
+                    run.fixtures_verified[p] = (
+                        hashlib.sha256(data).hexdigest(),
+                        entries[p],
+                    )
                 continue
             if entries.get(p) is None:
                 if index is None:
@@ -379,20 +387,44 @@ class LibraryChecks:
                 if hits:
                     problem += f" (its bytes equal source {hits[0][1]} of {hits[0][0]}: make it with fixture())"
             run.fail("G1", f"fixture provenance: {problem}", owners)
+        if replays:
+            self._replays(raw, replays)
+
+    def _replays(self, raw: dict, replays: dict[str, bytes]) -> None:
+        """New or changed replay case files: their instances are replayed again (:func:`.replay_verify.reverify`);
+        a file whose every line verifies is verified provenance this pass, any other is refused.
+        """
+        from . import replay_verify
+
+        run = self.run
+        replaces_of = {
+            r["item"]: r["replaces"]
+            for r in (raw.get("items") if isinstance(raw.get("items"), list) else [])
+            if isinstance(r, dict)
+            and isinstance(r.get("item"), str)
+            and isinstance(r.get("replaces"), list)
+        }
+        scratch = run.tmp / "replay-reverify"
+        scratch.mkdir(parents=True, exist_ok=True)
+        found, reasons = replay_verify.reverify(
+            self.ep,
+            replays,
+            replaces_of,
+            run.c_tree,
+            scratch=scratch,
+        )
+        for p, entry in sorted(found.items()):
+            run.fixtures_verified[p] = (hashlib.sha256(replays[p]).hexdigest(), entry)
+        owners = sorted({o for p in replays for o in (self._owners(p) or [])})
+        for r in reasons:
+            run.fail("G1", r, owners or None)
 
     # -- G2 -------------------------------------------------------------------------------------------------
     def effects(self) -> None:
         """Record each manifest function's effect (:func:`derive_effect`) in its verification record, from which
         the item record and the index take it. Measured, never a refusal."""
         for it in self._functions():
-            forms = getattr(self.gate, "_forms_library_mode", None)
-            form = forms(self.run, it.item)[1] if forms is not None else it.input
-            effect = derive_effect(
-                list(getattr(it, "typed_covers", [])),
-                self._covers(it),
-                form,
-                self.ep,
-            )
+            effect = derive_effect(list(getattr(it, "typed_covers", [])), self.ep)
             if effect is not None:
                 self._record(it.item)["effect"] = effect
 
@@ -403,9 +435,6 @@ class LibraryChecks:
             for cover in getattr(it, "typed_covers", []):
                 self._typed_cover(it, cover, n)
                 n += 1
-        for it in self._edited():
-            self._cross_episode(it)
-            self._lint(it)
 
     def _typed_cover(self, it: Any, cover: Any, n: int) -> None:
         run = self.run
@@ -460,122 +489,6 @@ class LibraryChecks:
                     it.item,
                 )
 
-    def _cross_episode(self, it: Any) -> None:
-        """An input with nothing to perturb (plain text) also runs on recorded inputs of its family
-        from episodes outside its provenance. It must return or raise MemoryInputError, never another exception.
-        """
-        run, form = self.run, it.input
-        covers = self._covers(it)
-        flat = [c for c in covers if _doc(c[2], self.gate._blob, form) is None]
-        if not flat:
-            return
-        prov = set(self._provenance(it))
-        fams = {family(a) for _, _, a in flat}
-        pool, _ = self.gate._pool(run, covers)
-        chosen: dict[str, tuple[str, int, Action]] = {}
-        for k, (eid, a) in enumerate(pool):
-            if eid in prov or family(a) not in fams:
-                continue
-            if (
-                a.status != "ok"
-                or is_rejection(a)
-                or _unfit_reason(a, form) is not None
-                or truncated(a)
-            ):
-                continue
-            chosen[hashlib.sha256(f"{it.item}\0{eid}\0{k}".encode()).hexdigest()] = (
-                eid,
-                k,
-                a,
-            )
-        picked = [chosen[h] for h in sorted(chosen)[: self.cfg.cross_cases]]
-        record = self._record(it.item)
-        record["cross_episode"] = {"ran": 0, "ok": 0}
-        if not picked:
-            run.note(
-                f"G2 cross-episode: {it.item} has no recorded input of its family outside its provenance",
-            )
-            return
-        cases, _ = output_cases(picked, self.gate._blob, form)
-        work = run.tmp / f"cross-{hashlib.sha256(it.item.encode()).hexdigest()[:12]}"
-        got = run_outputs(
-            it.item,
-            cases,
-            tree=run.c_tree,
-            python=self.gate.python,
-            work=work,
-            runner=self.cfg.runner,
-            timeout_s=OUTPUTS_BUDGET_S,
-        )
-        ran = ok = 0
-        raised: dict[str, int] = {}
-        for value in got.values():
-            if value is None:
-                continue
-            ran += 1
-            outcome, result, _ = value
-            if outcome in ("handled", "refused"):
-                ok += 1
-            else:
-                # run_outputs names the class with its module (builtins.IndexError): only builtins are named
-                cls = (
-                    result[len("builtins.") :]
-                    if isinstance(result, str) and result.startswith("builtins.")
-                    else None
-                )
-                name = builtin_error(cls) or "another exception"
-                raised[name] = raised.get(name, 0) + 1
-        record["cross_episode"] = {"ran": ran, "ok": ok}
-        if raised:
-            kinds = ", ".join(f"{k} ({v})" for k, v in sorted(raised.items()))
-            run.fail(
-                "G2",
-                f"{it.item} raises on {ran - ok} of {ran} recorded inputs of its family from episodes outside its "
-                f"provenance ({kinds}); it must return or raise MemoryInputError",
-                it.item,
-            )
-        if ran < len(cases):
-            # fail closed, as every check the gate could not complete
-            run.fail(
-                "G2",
-                f"{it.item}: the cross-episode check did not complete: {len(cases) - ran} of {len(cases)} recorded "
-                "inputs not judged (timed out, or a result that is not JSON)",
-                it.item,
-            )
-
-    def _lint(self, it: Any) -> None:
-        run = self.run
-        values = [
-            input_value(a, it.input, self.gate._blob) for _, _, a in self._covers(it)
-        ]
-        values += [
-            c.params
-            for c in getattr(it, "typed_covers", [])
-            if c.type == "episode" and c.params
-        ]
-        if len(values) < 2:
-            run.note(
-                f"G2 literal lint: {it.item} has fewer than 2 recorded inputs, so nothing varies yet",
-            )
-            return
-        try:
-            source = (run.c_tree / module_path(it.item)).read_bytes()
-        except OSError:
-            return  # an absent module is refused elsewhere
-        name = it.item.split(":", 1)[1]
-        for line, what in literal_problems(
-            source,
-            name,
-            varying_values(values),
-            lint_min=self.cfg.lint_min,
-        )[:5]:
-            run.fail(
-                "G2",
-                f"{it.item} line {line}: a {what} literal equals a value that varies across its recorded inputs; "
-                "make it a parameter",
-                it.item,
-            )
-
     # -- G3 -------------------------------------------------------------------------------------------------
     def g3(self) -> None:
         self._plain()
@@ -583,6 +496,10 @@ class LibraryChecks:
         for it in self._edited():
             self._exact(it)
         self._procedure_behaviour()
+        # last: the examples checks read G3's candidate runs (example_checks)
+        from .example_checks import ExampleChecks
+
+        ExampleChecks(self.gate, self.run).judge()
 
     def _plain(self) -> None:
         run = self.run
@@ -709,7 +626,13 @@ class LibraryChecks:
     def g4(self) -> None:
         run = self.run
         try:
-            size = _index_tokens(run.c_tree)
+            # the example lines the index will show count too (the examples check, in G3, recorded them)
+            examples = {
+                item: v["examples"].get("example")
+                for item, v in getattr(run, "verification", {}).items()
+                if isinstance(v, dict) and isinstance(v.get("examples"), dict)
+            }
+            size = _index_tokens(run.c_tree, examples)
         except (ValueError, OSError) as exc:
             run.fail("G4", f"index not built: {exc}"[:300])
             return

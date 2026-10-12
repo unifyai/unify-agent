@@ -1284,6 +1284,46 @@ def test_check_names_a_declared_input_form_the_covers_cannot_give_before_finish(
     assert out.checks == 1 and not out.passed
 
 
+def test_check_refuses_a_declared_input_in_library_mode(tmp_path):
+    """The library-mode counterpart of the v2 test above: a library function takes any arguments, so the check
+    refuses an item that still declares an input form, naming the item, before finish.
+    """
+    from unify.memory.library_checks import LibraryConfig
+    from tests.memory import library_example_world as w
+
+    declared = w.manifest({}, w.item(input="observation"))
+    model = Turns([_checks("k", [json.dumps(declared)])])
+    mem = Repo.init_bare(tmp_path / "mem.git")
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    for n, ep in enumerate(w.EPISODES.values()):
+        ev.index_episode(ep, str(n + 1) * 40)
+    gate = Gate(
+        mem,
+        ev,
+        BlobStore(tmp_path / "b"),
+        action_lookup=w.lookup,
+        library_mode=LibraryConfig(episodes=w.EPISODES.get),
+    )
+    writer = WriterPass(
+        mem,
+        gate,
+        ev,
+        load=w.EPISODES.__getitem__,
+        model_turn=model,
+        config=PassConfig(library_mode=True, max_calls=10),
+    )
+    out = asyncio.run(
+        writer.run(PassRequest("incremental", "acct", ["e1", "e2"], False), "pl"),
+    )
+    reply = model.outputs["k1"].splitlines()
+    text = (
+        f"{w.ITEM_ID}: input is no longer read: a function takes any arguments and its examples are the calls its "
+        "tests make on fixtures; remove input"
+    )
+    assert any(line.startswith("G1:") and line.endswith(text) for line in reply), reply
+    assert out.checks == 1 and not out.passed
+
+
 @pytest.mark.parametrize("surfacing", ["index", "catalogue"])
 def test_the_writers_first_message_follows_the_surfacing_switch(tmp_path, surfacing):
     """index (default): v2's "Current index"; catalogue: the README (capped) and never the index."""

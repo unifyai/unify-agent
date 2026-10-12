@@ -73,8 +73,14 @@ from .fork_worker import (
 
 FORMAT_EXAMPLE = (
     "```path: candidates/double.py\n"
+    "class MemoryInputError(ValueError):\n"
+    '    """An input of a shape this module was not built for."""\n'
+    "\n"
+    "\n"
     "def double(x):\n"
-    '    """Return twice x."""\n'
+    '    """Return twice the number x."""\n'
+    "    if isinstance(x, bool) or not isinstance(x, (int, float)):\n"
+    '        raise MemoryInputError(f"x is a number, not {type(x).__name__}")\n'
     "    return 2 * x\n"
     "```\n"
     "\n"
@@ -99,7 +105,9 @@ INSTRUCTION = (
     "say code worked if it did not. " + CANDIDATE_CONTRACT + "\n"
     "- `cases/<name>.json`, with the same <name>: the inputs that function had in this conversation and the "
     'outputs it should give, as a JSON list of objects with "inputs" (the list of arguments) and "expected" '
-    "(the return value).\n"
+    "(the return value). Each value must appear in this conversation as it is (a tool's reply, a file's content "
+    "or a cell's printed output), so it can be copied from the record; leave out a case with a value that does "
+    "not.\n"
     "- `notes.md`: each thing that failed and why, and any other lesson, in general terms so it applies beyond this "
     "request, each quoting the short line or error message from this conversation it comes from. If nothing here "
     "is worth keeping, write `notes.md` saying so.\n\n"

@@ -230,9 +230,10 @@ FIXTURE = ToolSpec(
     description=(
         "Copy recorded bytes of an episode into a test fixture under memory/<package>/tests/data/. source: an "
         "action index (its recorded response, or a work-tree action's file), 'args:<i>' (the arguments that action "
-        "was called with), 'request:<j>' (a user message: 0 is the request, then the observations) or "
-        "'observation:<i>' (the same message as request:<i+1>); read_episode's table of contents gives each part's "
-        "source and raw length. slice [start, end] keeps raw bytes start to end-1; an end that is null or left out "
+        "was called with), 'request:<j>' (a user message: 0 is the request, then the observations), "
+        "'observation:<i>' (the same message as request:<i+1>) or 'cell:<i>' (the recorded output text of code "
+        "cell i; not a cell that raised); read_episode's table of contents gives each part's source and raw "
+        "length. slice [start, end] keeps raw bytes start to end-1; an end that is null or left out "
         "runs to the end, and an end past the source is clamped to its length (the reply says so); a start at or "
         "past the end is refused with the length. append=true adds one line "
         '{"input": value, "source": ...} to a .jsonl file, such as a function\'s recorded-inputs file '
@@ -246,7 +247,7 @@ FIXTURE = ToolSpec(
             "episode": {"type": "string"},
             "source": {
                 "type": ["integer", "string"],
-                "description": "'<i>', 'args:<i>', 'request:<j>' or 'observation:<i>'",
+                "description": "'<i>', 'args:<i>', 'request:<j>', 'observation:<i>' or 'cell:<i>'",
             },
             "action": {
                 "type": ["integer", "string"],
@@ -331,7 +332,14 @@ POOL = ToolSpec(
             },
             "decision": {
                 "type": "string",
-                "enum": ["merged", "superseded", "retired", "defer", "reopened", "open"],
+                "enum": [
+                    "merged",
+                    "superseded",
+                    "retired",
+                    "defer",
+                    "reopened",
+                    "open",
+                ],
             },
             "target": {"type": "string"},
             "reason": {"type": "string"},
@@ -481,6 +489,8 @@ def _sources_of_part(ep: Any, name: str) -> list[str]:
         i = name[7:]
         have = set(_fx.sources_of(ep))
         return [s for s in (i, f"args:{i}") if s in have]
+    if name.startswith("cell:"):
+        return [name] if name in set(_fx.sources_of(ep)) else []
     return []
 
 
@@ -800,7 +810,9 @@ def _entries(pool_dir: Path) -> list[dict]:
     return out
 
 
-_RELATED_UNREADABLE = f"/inputs/pool/{_pool.RELATED_FILE} could not be read, so the links are unknown"
+_RELATED_UNREADABLE = (
+    f"/inputs/pool/{_pool.RELATED_FILE} could not be read, so the links are unknown"
+)
 
 
 def _related(pool_dir: Path) -> dict | None:
@@ -838,7 +850,10 @@ def _line(e: dict) -> str:
 
 def _link_line(link: dict) -> str:
     """One related closed entry: what it is, how it closed, its evidence and what it shares."""
-    shared = [f"{n} code unit(s) with {label}" for label, n in sorted((link.get("shared_code") or {}).items())]
+    shared = [
+        f"{n} code unit(s) with {label}"
+        for label, n in sorted((link.get("shared_code") or {}).items())
+    ]
     if link.get("shared_episodes"):
         shared.append("episode(s) " + ", ".join(link["shared_episodes"]))
     return (
@@ -960,9 +975,11 @@ def pool(args: dict, pool_dir: Path, box: Path) -> Reply:
                 links = _related(Path(pool_dir))
                 if links is None:
                     return Reply(_RELATED_UNREADABLE, paths=listed)
-                got = (links.get("entries") or {}).get(related) or (
-                    links.get("episodes") or {}
-                ).get(related) or []
+                got = (
+                    (links.get("entries") or {}).get(related)
+                    or (links.get("episodes") or {}).get(related)
+                    or []
+                )
                 linked = [str(x.get("id")) for x in got if isinstance(x, dict)]
                 rows = sorted(
                     (e for e in rows if str(e.get("id")) in linked),

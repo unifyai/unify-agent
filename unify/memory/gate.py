@@ -197,7 +197,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from . import docstrings, layout
 from .admission import cover_problem, is_rejection
@@ -344,6 +344,8 @@ class GateResult:
     # library layout: one ``{"item", "adopts"}`` row per landed item, the proposals (staged files, helper output,
     # pool entries) its manifest entry says it came from; empty when nothing landed
     provenance: list[dict] = field(default_factory=list)
+    # library mode: the fixture provenance entries G1 verified (path -> (sha256, entry)), persisted on merge
+    fixtures_verified: dict[str, tuple[str, dict]] = field(default_factory=dict)
 
 
 def _failed(reason: str, check: str | None = None) -> GateResult:
@@ -733,6 +735,16 @@ class _Run:
     seed: bytes | None = None
     # library mode: the import graph of both versions (G3's behaviour scope; None in v2)
     graph: dict[str, set[str]] | None = None
+    # library mode: the fixture provenance entries G1 verified in this pass (path -> (sha256, entry)), persisted on
+    # merge
+    fixtures_verified: dict[str, tuple[str, dict]] = field(default_factory=dict)
+    # library mode: each function's input fixtures (example_perturb.InputFixture), for stage 5's drawn inputs
+    input_fixtures: dict[str, list] = field(default_factory=dict)
+    # library mode: the call records of the parent's suites on the parent's library (baseline), on the
+    # candidate's library (regression run), and of the candidate's suites (suite path -> record; example_calls)
+    calls_base: dict[str, Any] = field(default_factory=dict)
+    calls_reg: dict[str, Any] = field(default_factory=dict)
+    calls_cand: dict[str, Any] = field(default_factory=dict)
 
     def fail(
         self,
@@ -1131,6 +1143,10 @@ class Gate:
                             c.episode,
                             json.dumps(cover_raw(c), sort_keys=True),
                         )
+            if self._library_checks():
+                # fixture provenance this pass verified, for later passes (fixtures.ledger_for)
+                for path, (sha, entry) in sorted(res.fixtures_verified.items()):
+                    self.ev.add_fixture_provenance(path, sha, entry, landed)
             if self.surfacing == "catalogue" or self._library_layout:
                 # library mode: shapes per library id, frozen per commit for the actor's find (library_export)
                 self.ev.write_commit_shapes(landed, shapes)
@@ -1196,6 +1212,7 @@ class Gate:
         target: str,
         extra_env: dict[str, str] | None = None,
         qa_env: QAEnv | None = None,
+        calls: list[str] | None = None,
     ) -> PytestOutcome:
         # library mode: the whole output is spooled and kept as a blob; v2 passes nothing new
         spool = (
@@ -1203,7 +1220,10 @@ class Gate:
             if self._library_checks()
             else None
         )
-        more = {"spool_dir": spool} if spool is not None else {}
+        more: dict = {"spool_dir": spool} if spool is not None else {}
+        if calls is not None:
+            # library mode: record the calls test code makes of these functions (example_calls)
+            more["calls"] = list(calls)
         try:
             if qa_env is not None:
                 # a stage-5 switch is on or the library's tests use the test kit: memlab and the referenced
@@ -1344,6 +1364,7 @@ class Gate:
         res.curate_due = run.curate_due
         res.curations = [dict(r) for r in run.curations]
         res.outputs = dict(run.outputs)
+        res.fixtures_verified = dict(run.fixtures_verified)
         passed = res.passed
         return res, (run.covers if passed else set()), run.notes, snapshot, reduced
 
@@ -1845,7 +1866,12 @@ class Gate:
         seen: list[Action] | None = (
             None  # the recorded actions of every episode the manifest names
         )
+        library = self._library_checks()
         for n, it in enumerate(run.man.items):
+            if library and it.kind == "function":
+                # library mode: a function's examples are the calls its listed tests make, judged after G3's runs
+                # (example_checks); its typed covers are validated by library_checks
+                continue
             if it.kind in ("env_function", "function"):
                 if not it.covers and not getattr(it, "typed_covers", None):
                     run.fail("G2", f"{it.item} covers no recorded action", it.item)
@@ -2100,9 +2126,14 @@ class Gate:
                 if rel in run.c_files:
                     (red_tree / rel).parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(run.c_tree / rel, red_tree / rel)
+            targets = self._example_targets(run)
             for t in runnable:
                 on_parent = self._pytest(red_tree, t, qa_env=run.qa_env)
-                on_cand = self._pytest(run.c_tree, t, qa_env=run.qa_env)
+                on_cand = (
+                    self._pytest(run.c_tree, t, qa_env=run.qa_env, calls=targets)
+                    if targets is not None
+                    else self._pytest(run.c_tree, t, qa_env=run.qa_env)
+                )
                 run.qa_first[t] = on_cand
                 # a parent library that hangs on the test is red once the candidate's run is green
                 if _red(on_parent) or (on_parent.timed_out and _green(on_cand)):
@@ -2139,6 +2170,53 @@ class Gate:
         if self.docstring_standard:
             self._examples(run)
 
+    def _example_targets(self, run: _Run) -> list[str] | None:
+        """Library mode: the manifest's functions present in the candidate, whose calls G3's candidate runs record;
+        None otherwise (nothing is recorded)."""
+        if not self._library_checks():
+            return None
+        return sorted(
+            {
+                it.item
+                for it in run.man.items
+                if it.kind == "function" and it.item in run.c_bodies
+            },
+        )
+
+    def _call_scope(self, run: _Run) -> set[str]:
+        """Library mode: the stored functions of the parent in the changed modules and in every module importing
+        one, whose name the candidate's module still binds (a ``def``, or an import or assignment such as an alias
+        to another function); the behaviour check compares their calls in the parent's tests.
+        """
+        if run.graph is None:
+            run.graph = layout.merge_graphs(
+                layout.import_graph(run.p_tree),
+                layout.import_graph(run.c_tree),
+            )
+        changed = {m for p in run.changed if (m := layout.module_of(p)) is not None}
+        modules = layout.dependants(run.graph, changed)
+        bound: dict[str, dict[str, bool]] = {}
+
+        def still_bound(item: str) -> bool:
+            module, name = item.split(":", 1)
+            if module not in bound:
+                rel = layout.module_path(module)
+                bound[module] = (
+                    public_bindings(
+                        (run.c_tree / rel).read_bytes() if rel in run.c_files else None,
+                    )
+                    or {}
+                )
+            return name in bound[module]
+
+        return {
+            item
+            for item, body in run.p_bodies.items()
+            if body[0] == "function"
+            and item.split(":", 1)[0] in modules
+            and (item in run.c_bodies or still_bound(item))
+        }
+
     def _behaviour(
         self,
         run: _Run,
@@ -2159,7 +2237,12 @@ class Gate:
         and is compared on every recorded cover (none unread, at most :data:`.held_out.MAX_OUTPUT_COVERS`).
         Sets ``run.same``. A refused exemption belongs to its item; another refused function to the item
         :meth:`_behaviour_owner` names, else to the pass; a budget run out refuses the pass.
+
+        Library mode: :meth:`_behaviour_library`, on the calls the parent's tests make.
         """
+        if self._library_checks():
+            self._behaviour_library(run, unseen, declared, refused, protected)
+            return
         recorded: dict[str, set[tuple[str, int]]] = {}
         for it, e, i in self.ev.covers():
             recorded.setdefault(it, set()).add((e, i))
@@ -2242,6 +2325,98 @@ class Gate:
                     "and were not compared",
                 )
         run.same = same
+
+    def _behaviour_library(
+        self,
+        run: _Run,
+        unseen: set[str],
+        declared: set[str],
+        refused: set[str],
+        protected: set[str],
+    ) -> None:
+        """Library mode's behaviour check (:meth:`.example_checks.ExampleChecks.behaviour`): every stored function of
+        the changed modules and their importers (:meth:`_call_scope`) must return, refuse and raise alike on every
+        call the parent's tests make of it, on the parent's library and on the candidate's, unless a test of it in
+        this pass is red on the parent (*declared*) or it is already *refused*. An edited function claiming the
+        clean-up exemption (*unseen*) must be called by a *protected* parent test and is compared strictly.
+
+        A stored function no parent test calls is compared on its stored covers as before when it has covers and
+        its parent docstring an ``Input:`` line (a transition for functions stored before tests were their
+        examples); with neither its behaviour cannot be compared, and it is refused.
+        """
+        from .example_checks import ExampleChecks
+
+        ex = ExampleChecks(self, run)
+        run.same = set()
+        strict: set[str] = set()
+        for item in sorted(unseen):
+            if self._held(run, item, protected):
+                strict.add(item)
+            else:
+                run.fail(
+                    "G3",
+                    self._exemption_refused(
+                        item,
+                        "no parent test that passed on the parent calls it",
+                    ),
+                    item,
+                )
+        scope = {
+            i
+            for i in self._call_scope(run)
+            if i not in declared and i not in refused and i not in unseen
+        }
+        ex.behaviour(
+            run.calls_base,
+            run.calls_reg,
+            scope | strict,
+            strict=strict,
+            owner=lambda i: self._behaviour_owner(run, i, _Probe(i, False)),
+        )
+        recorded: dict[str, set[tuple[str, int]]] = {}
+        for it, e, i in self.ev.covers():
+            recorded.setdefault(it, set()).add((e, i))
+        probes: dict[str, _Probe] = {}
+        for item in sorted(ex.uncalled):
+            if item in strict:
+                run.fail(
+                    "G3",
+                    self._exemption_refused(item, "no test of the parent calls it"),
+                    item,
+                )
+            elif recorded.get(item) and self._parent_input(run, item) is not None:
+                run.note(
+                    f"G3 behaviour check: {item} has no example call in the parent's tests; compared on its stored "
+                    "covers",
+                )
+                probes[item] = self._probe(run, item, recorded, strict=False)
+            else:
+                ex.no_comparison(item)
+        budget = _Budget(BEHAVIOUR_BUDGET_S)
+        for k, item in enumerate(sorted(probes)):
+            pr = probes[item]
+            if pr.why is None and not self._run_probe(
+                run,
+                pr,
+                run.tmp / f"same-{k}",
+                budget,
+            ):
+                run.fail(
+                    "G3",
+                    f"behaviour check not completed: its {BEHAVIOUR_BUDGET_S:g} s budget ran out at {item}",
+                )
+                break
+            why = pr.verdict()
+            if why is None:
+                run.same.add(item)
+            else:
+                run.fail(
+                    "G3",
+                    f"{item} changes behaviour without a test: {why}; any change in what a stored function "
+                    "returns on recorded inputs needs a test, listed under it in the manifest, that fails on "
+                    "the parent's library and passes on the candidate's",
+                    self._behaviour_owner(run, item, pr),
+                )
 
     def _declared_aliases(self, run: _Run) -> dict[str, str]:
         """A library-mode CURATE gate's declared aliases (old id -> target) of the checked manifest; {} otherwise."""
@@ -2505,12 +2680,24 @@ class Gate:
         """The parent tree (its tests and test kit) with only the candidate's channel modules and notes.
 
         None when it would equal the parent tree. Retired test files are left out.
+
+        Library mode: the candidate's library modules, package inits and notes take the place of the parent's.
         """
+        if self._library_layout:
+            from .layout import classify
+
+            def library(p: str) -> bool:
+                return classify(p) in ("module", "package_init", "note")
+
+        else:
+
+            def library(p: str) -> bool:
+                return bool(MODULE_PATH.match(p) or NOTES_PATH.match(p))
+
         swapped = sorted(
             p
             for p in set(run.p_files) | set(run.c_files)
-            if (MODULE_PATH.match(p) or NOTES_PATH.match(p))
-            and run.p_files.get(p) != run.c_files.get(p)
+            if library(p) and run.p_files.get(p) != run.c_files.get(p)
         )
         retired = set(run.man.deleted_tests)
         if not swapped and not retired:
@@ -2610,12 +2797,43 @@ class Gate:
                 (f"memory/{pkg}/tests", pkg in changed_pkgs, f"memory/{pkg}")
                 for pkg in pkgs
             ]
+        # library mode: the calls of the stored functions in scope (and of deleted ones) that the parent's tests make,
+        # on the parent's library and on the candidate's (behaviour, G3), and of every candidate function in the
+        # candidate's suites when items are deleted (their fixtures stay used, G5); example_checks
+        scope = sorted(self._call_scope(run)) if library_mode else []
+        base_targets = sorted(
+            (
+                {*scope, *(d for d in run.man.deleted if d in run.p_bodies)}
+                if library_mode
+                else set()
+            ),
+        )
+        cand_targets = (
+            sorted(i for i, b in run.c_bodies.items() if b[0] == "function")
+            if library_mode and run.man.deleted
+            else []
+        )
+
+        def calls_for(rel: str, targets: list[str]) -> dict:
+            return {"calls": targets} if targets and rel.startswith("memory/") else {}
+
         for rel, is_touched, area in suites:
             before: set[str] = set()  # protected: passed on the parent
             known_red: set[str] = set()  # failed on the parent
             broken: str | None = None  # the baseline cannot be read
             if (run.p_tree / rel).is_dir():
-                base = self._pytest(run.p_tree, rel, qa_env=run.qa_env)
+                base = self._pytest(
+                    run.p_tree,
+                    rel,
+                    qa_env=run.qa_env,
+                    **calls_for(rel, base_targets),
+                )
+                if (
+                    getattr(base, "calls", None) is not None
+                    and not base.timed_out
+                    and base.valid
+                ):
+                    run.calls_base[rel] = base.calls
                 if base.timed_out or not base.valid:
                     broken = _describe(base)
                     run.note(
@@ -2627,7 +2845,14 @@ class Gate:
                     protected |= {file_of(t, rel) for t in before}
             after: set[str] = set()
             if (run.c_tree / rel).is_dir():
-                suite = self._pytest(run.c_tree, rel, qa_env=run.qa_env)
+                suite = self._pytest(
+                    run.c_tree,
+                    rel,
+                    qa_env=run.qa_env,
+                    **calls_for(rel, cand_targets),
+                )
+                if getattr(suite, "calls", None) is not None:
+                    run.calls_cand[rel] = suite.calls
                 readable = suite.valid and not suite.timed_out
                 new_red = sorted(suite.failed - known_red)
                 if (
@@ -2673,8 +2898,15 @@ class Gate:
                     "G3",
                     f"the candidate's suite {rel} no longer passes the parent's tests {lost[:5]}",
                 )
-            if regression is not None and before:
-                reg = self._pytest(regression, rel, qa_env=run.qa_env)
+            if regression is not None and (before or (rel in run.calls_base and scope)):
+                reg = self._pytest(
+                    regression,
+                    rel,
+                    qa_env=run.qa_env,
+                    **calls_for(rel, scope),
+                )
+                if getattr(reg, "calls", None) is not None:
+                    run.calls_reg[rel] = reg.calls
                 if reg.timed_out or not reg.valid:
                     run.output(f"regression run of {rel}", reg)
                     run.fail(
@@ -2757,7 +2989,9 @@ class Gate:
         candidate); v2's report reads only environment functions, which left every library-mode form unknown.
         """
         if self._library_layout:
-            return self._forms_library_mode(run, item)
+            # library mode reads no Input: line, except the parent's for the behaviour check's transition path
+            form = self._parent_input(run, item)
+            return form, form
         if run.p_inputs is None:
             try:
                 p_report = items(run.p_tree)
@@ -2780,32 +3014,27 @@ class Gate:
         return p_form, (known(c_docs[item]) if item in c_docs else p_form)
 
     @staticmethod
-    def _forms_library_mode(run: _Run, item: str) -> tuple[str | None, str | None]:
-        from . import layout
-
-        def doc_form(tree: Path) -> str | None:
-            try:
-                module = ast.parse((Path(tree) / layout.item_path(item)).read_bytes())
-            except (OSError, SyntaxError, ValueError):
-                return None
-            name = item.split(":", 1)[1]
-            for node in module.body:
-                if (
-                    isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and node.name == name
-                ):
-                    m = re.search(
-                        r"^\s*Input:\s*([a-z]+)\s*$",
-                        ast.get_docstring(node) or "",
-                        re.M,
-                    )
-                    return m.group(1) if m and m.group(1) in INPUT_KINDS else None
-            return None  # bound by assignment or import: no docstring of its own
-
-        listed = {it.item: it.input for it in run.man.items}
-        p_form = doc_form(run.p_tree)
-        c_form = listed.get(item) or doc_form(run.c_tree) or p_form
-        return (p_form or c_form), c_form
+    def _parent_input(run: _Run, item: str) -> str | None:
+        """Library mode: the ``Input:`` line of *item*'s docstring in the parent, for a function stored before tests
+        were its examples (the behaviour check's transition path); None when it has none.
+        """
+        try:
+            module = ast.parse((Path(run.p_tree) / layout.item_path(item)).read_bytes())
+        except (OSError, SyntaxError, ValueError):
+            return None
+        name = item.split(":", 1)[1]
+        for node in module.body:
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == name
+            ):
+                m = re.search(
+                    r"^\s*Input:\s*([a-z]+)\s*$",
+                    ast.get_docstring(node) or "",
+                    re.M,
+                )
+                return m.group(1) if m and m.group(1) in INPUT_KINDS else None
+        return None  # bound by assignment or import: no docstring of its own
 
     def _episode_inputs(self, run: _Run, channel: str) -> list[tuple[str, int, Action]]:
         """The recorded actions on *channel* (``env/<name>``) in the pass's own episodes (its manifest's source
@@ -2989,6 +3218,16 @@ class Gate:
                     "G5",
                     "the library grew without covering any new recorded call",
                 )
+        if self._library_checks():
+            # library mode: a deleted function's fixtures stay used by a remaining function's examples
+            from .example_checks import ExampleChecks
+
+            parent_calls: dict[str, list] = {}
+            for rec in run.calls_base.values():
+                for c in rec.calls:
+                    parent_calls.setdefault(c.item, []).append(c)
+            ExampleChecks(self, run).retained(parent_calls)
+            return
         # a deleted function's recorded covers must stay covered by a remaining item
         deleted = set(run.man.deleted)
         recorded = self.ev.covers()

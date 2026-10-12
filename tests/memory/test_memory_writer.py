@@ -18,7 +18,7 @@ from unify.memory import memory_writer as mw
 from unify.memory.gitio import Repo
 
 try:  # the library-mode gate fixture, visible to request.getfixturevalue once it is integrated
-    from tests.memory.test_gate_library_mode import library_gate_world  # noqa: F401
+    from tests.memory.library_example_world import library_example_world  # noqa: F401
 except ImportError:
     pass
 
@@ -209,22 +209,30 @@ def test_publish_reads_item_records_and_recognises_memory_repo_status_commits(me
 
 
 def _gate_library_mode():
-    return pytest.importorskip("tests.memory.test_gate_library_mode")
+    return pytest.importorskip("tests.memory.library_example_world")
 
 
 def test_the_gate_refuses_a_stale_pass_and_keeps_its_patch(request):
     """The library-mode gate fixture; the candidate is made on a parent that a code commit then moves past."""
     g = _gate_library_mode()
-    mem, ev, blobs, gate = request.getfixturevalue("library_gate_world")
+    mem, ev, blobs, gate = request.getfixturevalue("library_example_world")
     parent = mem.head()
-    files, fixtures = g._files_and_fixtures(blobs)
-    candidate = g._candidate(mem, files)
+    files, fixtures = g.files_and_fixtures(blobs.get)
+    candidate = g.candidate(mem, files)
     mw.land(
         mem,
         _candidate_on(mem, parent, {"memory/zz/__init__.py": '"""Other."""\n'}),
         parent,
     )
-    res = gate().merge(parent, candidate, g._man(fixtures), "p1", "write", None, "0.01")
+    res = gate().merge(
+        parent,
+        candidate,
+        g.manifest(fixtures),
+        "p1",
+        "write",
+        None,
+        "0.01",
+    )
     assert not res.passed and any("stale" in r for r in res.reasons)
     (patch,) = ev.db.execute(
         "SELECT patch_blob FROM passes WHERE pass_id='p1'",
@@ -236,12 +244,20 @@ def test_the_gate_retargets_over_a_status_commit(request):
     g = _gate_library_mode()
     from unify.memory.memory_repo import MemoryRepo
 
-    mem, ev, blobs, gate = request.getfixturevalue("library_gate_world")
+    mem, ev, blobs, gate = request.getfixturevalue("library_example_world")
     parent = mem.head()
-    files, fixtures = g._files_and_fixtures(blobs)
-    candidate = g._candidate(mem, files)
+    files, fixtures = g.files_and_fixtures(blobs.get)
+    candidate = g.candidate(mem, files)
     status = MemoryRepo(mem).status_commit({ITEM: "suspect"}, ["e1"])
-    res = gate().merge(parent, candidate, g._man(fixtures), "p1", "write", None, "0.01")
+    res = gate().merge(
+        parent,
+        candidate,
+        g.manifest(fixtures),
+        "p1",
+        "write",
+        None,
+        "0.01",
+    )
     assert res.passed, res.reasons
     assert mem.head() == res.merged
     assert mem.run("rev-parse", f"{res.merged}^").strip() == status

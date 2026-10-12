@@ -664,7 +664,10 @@ def next_records(
         )
         v = verification.get(item) or (old.get("verification") if same else None)
         rec["verification"] = v
-        rec["input"] = v.get("input") if isinstance(v, dict) else None
+        # the example call the gate picked from the item's tests (example_view.pick_example); None: none
+        examples = v.get("examples") if isinstance(v, dict) else None
+        example = examples.get("example") if isinstance(examples, dict) else None
+        rec["example"] = example if isinstance(example, dict) else None
         # the effect the gate derived from the item's covers (library_checks.derive_effect); None: not derived
         effect = v.get("effect") if isinstance(v, dict) else None
         rec["effect"] = effect if effect in EFFECTS else None

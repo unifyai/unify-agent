@@ -3,9 +3,10 @@
 * ``memory/__init__.py``: :mod:`.library_helper`, byte for byte (``index``, ``show``, ``find``);
 * ``INDEX.md`` and ``links.json``: :mod:`.library_index`;
 * ``.memory/items.json``: what ``show`` reads per item, namely its kind, path, signature or title, status, the
-  verification and use records (None without item records) and the subjects of the commits that changed it;
-* ``.memory/find.json``: the listed functions with their recorded input shapes, keyed by body digest
-  (:mod:`.shape_rows`);
+  verification and use records (None without item records), a function's example call (its record's, shown only
+  while its test file still quotes it: :mod:`.example_view`) and the subjects of the commits that changed it;
+* ``.memory/find.json``: the listed functions with the recorded shapes of their example calls' arguments, each
+  naming its parameter, keyed by body digest (:mod:`.shape_rows`);
 * ``.memory/matcher.py``: v2's matcher (:mod:`.memory_helper` up to its catalogue section, so none of v2's
   catalogue or its footer ships);
 * ``.memory/shapes.py``: :mod:`.analysis.shapes`, byte for byte.
@@ -34,6 +35,7 @@ from .layout import (
     module_of,
 )
 from .library_helper import FIND_FILE, ITEMS_FILE, MATCHER_FILE, SHAPES_FILE
+from .example_view import ReadFile, example_text, examples_of, tree_reader
 from .item_records import effect_of, use_totals, verification_summary
 from .library_index import HIDDEN, build_links, render_index, render_links
 from .redact import redact_error
@@ -131,8 +133,12 @@ def items_data(
     history: dict[str, list[str]],
     complete: bool,
     records: Mapping[str, dict] | None = None,
+    examples: Callable[[str], dict | None] | None = None,
 ) -> dict:
-    """``.memory/items.json``: everything :func:`.library_helper.show` needs that the files do not hold."""
+    """``.memory/items.json``: everything :func:`.library_helper.show` needs that the files do not hold.
+
+    *examples* gives a function's shown example call (:func:`.example_view.examples_of`); None shows none.
+    """
     rows: dict[str, dict] = {}
 
     def common(item: str) -> dict:
@@ -157,6 +163,8 @@ def items_data(
             "summary": f.summary,
             # the effect the gate derived from its covers (None: not derived)
             "effect": effect_of(records)(f.item_id) if records else None,
+            # {"test", "line", "call"}: a call quoted from its tests, re-checked against them (None: none shown)
+            "example": examples(f.item_id) if examples is not None else None,
             **common(f.item_id),
         }
     for n in lib.notes:
@@ -183,7 +191,12 @@ def find_data(
     shapes: ShapeLookup | None,
     records: Mapping[str, dict] | None = None,
 ) -> dict:
-    """``.memory/find.json``: each listed function with the recorded input shapes of its current body."""
+    """``.memory/find.json``: each listed function with the recorded input shapes of its current body.
+
+    ``input_shapes`` are the shapes of the arguments its example calls returned on, each naming its parameter
+    (``"param"``; a row recorded before arguments were shaped has none). *records* are accepted for the export's
+    signature and not read: a function's shapes come only from *shapes*.
+    """
     bodies = function_bodies(tree) if shapes is not None else {}
     out: list[dict] = []
     for f in lib.functions:
@@ -194,9 +207,8 @@ def find_data(
             "module": f.module,
             "name": f.name,
             "signature": f.signature,
-            "input": ((records or {}).get(f.item_id) or {}).get("input") or "",
             "summary": f.summary,
-        }  # input: the item record's form
+        }
         if shapes is not None and f.item_id in bodies:
             found = shapes(f.item_id, body_digest(bodies[f.item_id]))
             if found and found[0]:
@@ -218,15 +230,24 @@ def generated_library_mode(
     shapes: ShapeLookup | None = None,
     history: History | None = None,
     records: Mapping[str, dict] | None = None,
+    tests: ReadFile | None = None,
 ) -> dict[str, bytes]:
     """Every generated file of the copy of the library at *tree*, by relative path (module docstring).
 
     *records* are the item records at the copy's commit (:func:`.item_records.records_at`); None gives the files
-    without item records, byte for byte."""
+    without item records, byte for byte. *tests* reads a test file of the commit by its tree-relative path, to
+    re-check each recorded example call before it is shown; None reads them from *tree* (a copy without its
+    tests, as the actor's export is, then shows no example)."""
     tree = Path(tree)
     lib = discover(tree)
     links = build_links(lib)
     found, complete = history if history is not None else ({}, True)
+    shown = examples_of(records, tests if tests is not None else tree_reader(tree))
+
+    def example_of(item: str) -> str | None:
+        ex = shown(item)
+        return example_text(ex) if ex is not None else None
+
     return {
         RESERVED_INIT: (_HERE / "library_helper.py").read_bytes(),
         INDEX_FILE: render_index(
@@ -234,9 +255,12 @@ def generated_library_mode(
             links,
             status_of,
             effect_of(records) if records is not None else None,
+            example_of if records is not None else None,
         ).encode("utf-8"),
         LINKS_FILE: render_links(links).encode("utf-8"),
-        ITEMS_FILE: _json_bytes(items_data(lib, status_of, found, complete, records)),
+        ITEMS_FILE: _json_bytes(
+            items_data(lib, status_of, found, complete, records, shown),
+        ),
         FIND_FILE: _json_bytes(find_data(tree, lib, status_of, shapes, records)),
         MATCHER_FILE: matcher_source(),
         SHAPES_FILE: (_HERE / "analysis" / "shapes.py").read_bytes(),

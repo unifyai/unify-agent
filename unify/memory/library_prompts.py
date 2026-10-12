@@ -32,15 +32,17 @@ GUIDE_LIBRARY = (
     "\n"
     "Finding items:\n"
     "- The index at the end of this prompt lists every function (its id, signature, one-line summary and "
-    "status) and every note (its path, description and the functions it uses). When the index is long, it "
-    "shows package headings only.\n"
+    "status, then a call quoted from the function's tests, when it has one) and every note (its path, "
+    "description and the functions it uses). When the index is long, it shows package headings only.\n"
     '- `print(memory.index("<package>"))` prints one package\'s full section, and `print(memory.index())` the '
     "whole index.\n"
     "- `print(memory.show(\"<id>\"))` prints one item in full: a function's source and docstring, or a note's "
     "text, then its links, status, test and use records, and recent changes.\n"
-    "- `memory.find(value)` lists the functions built on inputs shaped like a structured value you hold (a "
-    "dict, a list of records, JSON text, or a CSV file with a header). It cannot match plain text: for text, "
-    "use the index or grep.\n" + FILES_LINE + "\n"
+    "- `memory.find(value)` lists the functions whose tests call them on arguments shaped like a structured "
+    "value you hold (a dict, a list of records, JSON text, or a CSV file with a header), and which parameter "
+    "matched. It cannot match plain text: for text, use the index or grep.\n"
+    + FILES_LINE
+    + "\n"
     "Using items:\n"
     "- Import a function by its id: `memory.text.dates:parse_date` is "
     "`from memory.text.dates import parse_date`.\n"
@@ -82,13 +84,16 @@ GUIDE_POINTER = (
     "\n"
     "Finding items:\n"
     "- `print(memory.index())` prints the library index: every function (its id, signature, one-line summary, "
-    "status and effect: whether it reads, writes or is unknown) and every note (its path, description and the functions it uses). "
+    "status and effect: whether it reads, writes or is unknown, then a call quoted from the function's tests, "
+    "when it has one) and every note (its path, description and the functions it uses). "
     '`print(memory.index("<package>"))` prints one package\'s section.\n'
     "- `print(memory.show(\"<id>\"))` prints one item in full: a function's source and docstring, or a note's "
     "text, then its links, status, test and use records, and recent changes.\n"
-    "- `memory.find(value)` lists the functions built on inputs shaped like a structured value you hold (a "
-    "dict, a list of records, JSON text, or a CSV file with a header). It cannot match plain text: for text, "
-    "use the index or grep.\n" + FILES_LINE + "\n"
+    "- `memory.find(value)` lists the functions whose tests call them on arguments shaped like a structured "
+    "value you hold (a dict, a list of records, JSON text, or a CSV file with a header), and which parameter "
+    "matched. It cannot match plain text: for text, use the index or grep.\n"
+    + FILES_LINE
+    + "\n"
     "Using items:\n"
     "- Import a function by its id: `memory.text.dates:parse_date` is "
     "`from memory.text.dates import parse_date`.\n"
@@ -109,16 +114,6 @@ GUIDE_POINTER = (
 # library index, the pool, use counts, drafts, why a curate pass runs) is inlined: those live in files the brief
 # points to. The Tools section is rendered from the tool spec registry (:func:`.tool_spec.tools_section`), so it
 # names exactly the tools the role gets.
-
-#: The input forms of a function's first parameter, in ``manifest.INPUT_KINDS`` order, described without any
-#: environment's vocabulary.
-INPUT_FORMS_LIBRARY: dict[str, str] = {
-    "path": "a path to a work-tree file",
-    "text": "the text of a file or of an output",
-    "bytes": "the raw bytes of a file",
-    "observation": "an observation value, as recorded",
-    "env": "the object through which the request's tools are called",
-}
 
 #: What a drafting agent (the episode-end fork, a helper) is told about its drafts: draft what it saw; fitting the
 #: drafts to the shared library and generalising them is the writer's work.
@@ -237,9 +232,12 @@ _REPAIR = (
 _CHECK_NAMES = (
     "Its results and refusals name the check: G1, layout and provenance (only `memory/` and `notes/` change and "
     "never the generated files, the manifest is well formed, every link names an item that exists, and every "
-    "fixture came through `fixture` unchanged); G2, evidence (each function's covers are recorded evidence of "
-    "their type, a function given a same-shaped input from another episode returns a value or raises "
-    "`MemoryInputError`, and the literal rule); G3, tests (plain pytest, an exact assertion against a trusted "
+    "fixture came through `fixture` unchanged); G2, evidence (each function's listed tests call it, and a call "
+    "of it returns on values loaded from fixtures or computed from them; it raises nothing but `MemoryInputError` "
+    "on those calls; the fixture values its calls use come from at least 2 episodes; with those values replaced by "
+    "unseen values of the same type, a call it accepted neither refuses nor raises; its docstring's `Example:` "
+    "names one of its tests; typed covers are recorded evidence of their type; and the literal rule); G3, tests "
+    "(plain pytest, an exact assertion against a trusted "
     "value on a recorded fixture for each changed function, no test that recomputes the function, the tests pass "
     "on the candidate and on the drawn recorded inputs and catch enough small mutations, a behaviour change has a "
     "test that fails on the parent, and no test is lost or weakened without a reason); G4, the index (it never "
@@ -248,20 +246,24 @@ _CHECK_NAMES = (
     "key-shaped strings).\n"
 )
 
-_G5_WRITE = "a store pass never ends with fewer items, and every recorded input a function covered stays covered"
+_G5_WRITE = (
+    "a store pass never ends with fewer items, and every fixture a function's calls ran on is still used by a "
+    "function's calls"
+)
 _G5_CURATE = (
-    "every recorded input a deleted function covered stays covered by a remaining item, and each alias and "
+    "the fixtures a deleted function's calls ran on are used by a remaining function's calls, and each alias and "
     "retirement names an item"
 )
 
 _GATE = (
     "# The gate\n"
     "After `finish` a deterministic gate checks the candidate: the layout and the links; that every fixture "
-    "came through `fixture` unchanged; each function's covers; its tests on the candidate, and on the parent "
-    "where behaviour changed; the appended recorded inputs; that its tests catch at least <<mutation_min_pct>>% "
-    "of small mutations of each changed function; that a function given a same-shaped input from another "
-    "episode returns a value or raises `MemoryInputError`; the literal rule; and that no test is lost or "
-    "weakened without a reason. An item that breaks a rule is refused together with the items that import it, "
+    "came through `fixture` unchanged; that each function's tests call it on fixture values from at least 2 "
+    "episodes and it returns on such a call; its tests on the candidate, and on the parent where behaviour "
+    "changed; that a call it accepted neither refuses nor raises when the fixture values its tests load are "
+    "replaced by unseen values of the same type; the appended recorded inputs; that its tests catch at least "
+    "<<mutation_min_pct>>% of small mutations of each changed function; the literal rule; and that no test is "
+    "lost or weakened without a reason. An item that breaks a rule is refused together with the items that import it, "
     "and the rest can land; a breach of a pass-wide rule (the layout, lost tests, fewer items) refuses the "
     "round. " + _CHECK_NAMES.replace("<<g5>>", _G5_WRITE)
 )
@@ -269,8 +271,9 @@ _GATE = (
 _CURATE_GATE = (
     "# The gate\n"
     "After `finish` a deterministic gate checks the candidate: the layout and the links, the aliases and "
-    "retirements, every test on the candidate (and on the parent where behaviour changed), and that every "
-    "recorded input a deleted function covered stays covered. An item that breaks a rule is refused together with "
+    "retirements, every test on the candidate (and on the parent where behaviour changed), and that the "
+    "fixtures a deleted function's tests called it on are still used by a remaining function's tests. An item "
+    "that breaks a rule is refused together with "
     "the items that import it, and the rest can land. "
     + _CHECK_NAMES.replace("<<g5>>", _G5_CURATE)
 )
@@ -303,8 +306,9 @@ _WHAT_TO_WRITE = (
     "package has an `__init__.py` whose docstring is one paragraph on what lives there. A function's id is "
     "`memory.<package>.<module>:<name>`; a name starting with `_` is private and is not an item.\n"
     "- A function's docstring has a one-line summary; `Args:`, `Returns:` and `Raises:` sections "
-    "(`MemoryInputError` on an input it was not built for); an `Example:` section with a doctest over a "
-    "fixture; and, optionally, a `Notes:` line naming note paths.\n"
+    "(`MemoryInputError` on an input it was not built for); an `Example:` section of one line naming one of "
+    "the function's tests, `memory/<package>/tests/test_<module>.py::test_<case>`, with no doctest and no "
+    "`Input:` line; and, optionally, a `Notes:` line naming note paths.\n"
     "- Notes go in `notes/<topic>/<slug>.md`: free-form markdown of any kind (a fact, a pitfall, a how-to, or "
     "how to combine functions), starting with front matter: `title`, `description` (one line, shown in the "
     "index) and `uses` (the ids of the functions it uses). A link is written only in a note's `uses` or a "
@@ -317,17 +321,23 @@ _WHAT_TO_WRITE = (
     "standard library, with fixtures under `memory/<package>/tests/data/`. `tests/` takes no `__init__.py`: "
     "pytest imports each test file by its path. " + _RUN_TESTS + "\n"
     "- The manifest is /memory/.pass/manifest.json (never committed):\n"
-    '  {"items": [{"item": "<id>", "kind": "function" or "note", "input": "<form>", '
-    '"source_episodes": [...], "tests": [...], "covers": [...]<<item_extra>>}], "support": [], "tests_changed": {}, '
-    '"renames": {}, <<manifest_extra>>"why": "<one line>", "summary": "<what changed>"}\n'
+    '  {"items": [{"item": "<id>", "kind": "function" or "note", "source_episodes": [...], "tests": [...], '
+    '"covers": [...]<<item_extra>>}], "support": [], "tests_changed": {}, "renames": {}, <<manifest_extra>>"why": '
+    '"<one line>", "summary": "<what changed>"}\n'
     "  - A note's entry takes `item`, `kind` and `source_episodes`: "
-    '`{"item": "notes/<topic>/<slug>.md", "kind": "note", "source_episodes": [...]}`; `input` and `covers` '
-    "are for functions.\n"
-    "  - `input` is the form a function's first parameter takes, one of: <<input_forms>>.\n"
-    "  - `covers` are the recorded evidence a function's tests check: `[episode, action index]` for a recorded "
-    'action; `{"episode": e, "type": "cell", "cell": i}` or `{"episode": e, "type": "diff"}` for '
-    'the working model\'s own code; `{"episode": e, "type": "episode", "runner": "worktree" | "tool" '
-    '| "dialogue", ...}` for a whole procedure.\n'
+    '`{"item": "notes/<topic>/<slug>.md", "kind": "note", "source_episodes": [...]}`; `tests`, `covers` and '
+    "`field_types` are for functions.\n"
+    "  - A function takes any arguments; its examples are the calls its listed tests make, so its `tests` name at "
+    "least one test file.\n"
+    '  - `field_types` (`{"<fixture path>#<field>": "<type>"}`) declares a field with a fixed domain: the path is '
+    "a fixture of the function's package under `memory/<package>/tests/data/`; the field is a JSON or YAML key path "
+    "(`a.b`, `items[]`), a CSV column (`#3` for the third column of a file without a header) or, in a JSON-lines "
+    "file made with `append=true`, a key path under `[].input`; the type is one of <<semantic_types>>. Leave it out "
+    "when no field has a fixed domain.\n"
+    "  - `covers` takes typed covers only, the recorded work a function's tests check: "
+    '`{"episode": e, "type": "cell", "cell": i}` or `{"episode": e, "type": "diff"}` for the working model\'s own '
+    'code; `{"episode": e, "type": "episode", "runner": "worktree" | "tool" | "dialogue", ...}` for a whole '
+    "procedure. A recorded action is not a cover: a function's evidence is its tests' calls on fixtures.\n"
     "  - `support` lists helper files: a test helper under a package's `tests/` directory, or a shared module "
     "`memory/<package>/<module>.py` that the package's items import, holding private (`_`) functions and classes "
     "such as the package's `MemoryInputError` (a public function is an item). The harness records "
@@ -349,7 +359,10 @@ _WRITE_RULES = (
     "2. Start from the working model's own code when it already wrote it (its cells and its work-tree diff). "
     "Generalise it: values that vary become parameters, and the function raises "
     '`MemoryInputError("<what was expected>")` on an input it was not built for. Check shapes, not observed '
-    "values.<<replay_rule>>\n"
+    "values. The gate replaces the fixture values the tests load with unseen values of the same type and reruns "
+    "the tests: the function must not then raise `MemoryInputError` or another exception on a call it accepted "
+    "before. Refuse shapes, not values; a field with a fixed domain is declared in `field_types`."
+    "<<replay_rule>>\n"
     "3. Judge outcomes from the records. The harness never reads environment text for a verdict: "
     "`structural_events` lists only cell errors, action errors and retries, and an empty list says nothing about "
     "success. Whether the work succeeded is in the environment's own replies, if anywhere; `end_parts` names "
@@ -363,8 +376,12 @@ _WRITE_RULES = (
     "with fewer items or tests. If an existing test must change, name it in `tests_changed` with the reason.\n"
     "5. Write the tests first, against trusted expected values, "
     + _TRUST
-    + " Each function needs at least one test asserting that its result on a recorded fixture equals an exact "
-    "trusted value, and one test that it refuses an input of another shape. A procedure's test checks the "
+    + " A function takes any arguments, and its examples are the calls its tests make. At least one call returns on "
+    "arguments loaded from fixtures made with `fixture`, or computed in the test from such a fixture: the test's "
+    "code is the transformation, and the gate checks that the argument changes when the fixture changes. "
+    "Examples must use recorded values from at least 2 episodes. Each function needs at least one test asserting "
+    "that its result on a recorded fixture equals an exact trusted value, and one test that it refuses an input of "
+    "another shape. A procedure's test checks the "
     "effect the environment later confirmed, not only that it ran. Never compute an expected value with the "
     "function's own expression. "
     + _DETERMINISM
@@ -390,8 +407,8 @@ _CURATE = (
     "# Inputs\n"
     "- <<trigger_path>>: why this pass runs (its reasons, and the library commit it starts from). For: where to "
     "begin.\n"
-    "- <<overlaps_path>>: the overlap candidates the harness found: functions with matching recorded input "
-    "shapes and overlapping covers, functions whose bodies share a common generalisation (given with it), and "
+    "- <<overlaps_path>>: the overlap candidates the harness found: functions with matching argument "
+    "shapes and overlapping input fixtures, functions whose bodies share a common generalisation (given with it), and "
     "notes that use the same functions. For: what to merge or generalise.\n"
     "- /inputs/curate/same_shape.json: groups of functions whose bodies have the same structure. For: more "
     "merge and generalisation candidates.\n"
@@ -430,15 +447,16 @@ _CURATE = (
     "- Leave alone what is fine, and say why in `kept`: changing nothing is a valid result when no candidate is "
     "really one job.\n"
     "- Write the manifest, /memory/.pass/manifest.json (never committed):\n"
-    '  {"items": [{"item": "<id>", "kind": "function" or "note", "input": "<form>", '
-    '"source_episodes": [...], "tests": [...], "covers": [...]}], "deleted": ["<retired id>"], '
+    '  {"items": [{"item": "<id>", "kind": "function" or "note", "source_episodes": [...], "tests": [...], '
+    '"covers": [...]}], "deleted": ["<retired id>"], '
     '"retired": {"<retired id>": "<one-line reason>"}, "deleted_tests": ["<test file removed with them>"], '
     '"aliases": {"<old id>": "<new id>"}, "renames": {"<old id>": "<new id>"}, '
     '"kept": {"<item id, or INDEX.md>": "<why it stays as it is>"}, '
     '"tests_changed": {"<test>": "<reason>"}, "why": "<one line>", "summary": "<what changed>"}\n'
     "  `renames` moves an item to a new id without keeping the old name (its history follows it); `aliases` "
     "keeps the old name forwarding to the new one.\n"
-    "  `items` lists every item you added or changed, with the covers of the items it replaces. `kept` names each "
+    "  `items` lists every item you added or changed, with the tests and fixtures of the items it replaces. "
+    "`kept` names each "
     "item a reason in your inputs points at that you leave as it is, with why. "
     + _RUN_TESTS
     + "\n"
@@ -448,7 +466,7 @@ _CURATE = (
     "`tests_changed`. The tests of a merged item stay and run through its alias.\n"
     "2. A change in what a function returns on its recorded inputs needs a test that fails on the parent and "
     "passes on yours; a repair always changes behaviour.\n"
-    "3. Every recorded input a retired function covered stays covered by a remaining function.\n"
+    "3. The fixtures a retired function's tests called it on stay used by a remaining function's tests.\n"
     "4. New tests check exact expected values, " + _TRUST + " " + _DETERMINISM + "\n"
     "5. Act on records that span at least two episodes: one episode never decides.\n"
     "6. Fixture files stay where they are: a test may read a fixture from any package's `tests/data/`.\n"
@@ -619,7 +637,6 @@ def write_brief(
     sample_k: int,
     lint_min: int,
     pytest_env: Mapping[str, str],
-    input_forms: Mapping[str, str] = INPUT_FORMS_LIBRARY,
     staging: bool = False,
     pool: bool = False,
     tools: str = "",
@@ -631,6 +648,8 @@ def write_brief(
     gets, so a sentence that relies on an optional tool (``pool``, ``similar``, ``delegate``, ``replay``) appears
     only when that tool exists. Every input is constant for a run, so the brief is byte-stable for the run.
     """
+    from .manifest import describe_semantic_types
+
     has = tool_names.__contains__
     helpers = has("delegate")
     proposals_from = (
@@ -867,7 +886,7 @@ def write_brief(
             "sample_k": sample_k,
             "lint_min": lint_min,
             "pytest_env": _env(pytest_env),
-            "input_forms": ", ".join(f"`{k}` ({v})" for k, v in input_forms.items()),
+            "semantic_types": describe_semantic_types(),
         },
     )
 
@@ -1037,8 +1056,8 @@ _BENCHMARK = re.compile(
 #: An environment's verdict text, which the harness never matches: upper case only.
 _VERDICT = re.compile(r"\bCORRECT\b")
 
-#: Instructions to check a task's examples. A function docstring's ``Example:`` section is a
-#: doctest over a fixture, not a task's example, and matches none of these.
+#: Instructions to check a task's examples. A function docstring's ``Example:`` line names one of its tests, not a
+#: task's example, and matches none of these.
 _EXAMPLE_CHECKS = (
     re.compile(
         r"\b(check|verify|validate|confirm|test|try|run)\w*\b[^.\n]{0,60}?\bexamples?\b",
@@ -1171,10 +1190,10 @@ RULES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
         "keeps the library's existing tests green",
     ),
     (
-        "retired covers stay covered",
+        "retired fixtures stay used",
         "retirement",
         ("curate",),
-        "stays covered by a remaining function",
+        "stay used by a remaining function's tests",
     ),
     ("two episodes decide", "evidence count", ("curate",), "one episode never decides"),
 )

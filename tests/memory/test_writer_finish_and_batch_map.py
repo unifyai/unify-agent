@@ -5,18 +5,14 @@ time, and G3's exact-assertion refusal shows a form that passes."""
 import json
 from pathlib import Path
 
+
 from unify.memory import pool, library_prompts as pv, writer_pass
 from unify.memory.batch_map import build_batch_map
 from tests.memory.test_gate import _candidate
 from unify.memory import fixtures as fx
-from tests.memory.test_gate_library_mode import (
-    E1,
-    ITEM_ID,
-    TEST,
-    WEAK_TEST,
-    _files_and_fixtures,
-    _man,
-    library_gate_world,
+from tests.memory import library_example_world as w
+from tests.memory.library_example_world import (
+    library_example_world,
 )  # noqa: F401 (a fixture)
 from tests.memory.test_pool import EMPTY, _finish_with, _Stores
 from tests.memory.test_writer_pass import _call
@@ -158,10 +154,10 @@ def test_neither_brief_speaks_of_the_pass_time():
 # --- 5b. G3's exact-assertion refusal shows a passing form ----------------------------------------------------------
 
 
-def test_the_exact_assertion_refusal_shows_a_form_that_passes(library_gate_world):
-    mem, ev, blobs, gate = library_gate_world
-    files, fixtures = _files_and_fixtures(blobs, test=WEAK_TEST)
-    res = gate().check(mem.head(), _candidate(mem, files), _man(fixtures))
+def test_the_exact_assertion_refusal_shows_a_form_that_passes(library_example_world):
+    mem, ev, blobs, gate = library_example_world
+    files, fixtures = w.files_and_fixtures(blobs.get, test=w.WEAK_TEST_SOURCE)
+    res = gate().check(mem.head(), _candidate(mem, files), w.manifest(fixtures))
     reason = next(r for r in res.reasons if "[library_mode:exact]" in r)
     # the passing form loads the expected value from a fixture (no literal answer in code)
     assert (
@@ -171,30 +167,27 @@ def test_the_exact_assertion_refusal_shows_a_form_that_passes(library_gate_world
     assert "literal" not in reason.split("A form that passes")[1]
 
 
-FIXTURE_FORM_TEST = TEST.replace(
-    '''    observation = json.loads((DATA / "me.json").read_text())
-    assert user_id(observation) == "u-1"''',
-    """    observation = json.loads((DATA / "me.json").read_text())
-    expected = json.loads((DATA / "expected.json").read_text())
-    assert user_id(observation) == expected""",
+FIXTURE_FORM_TEST = w.TEST_SOURCE.replace(
+    '    assert user_id(load("me_1.json")) == "u-1"',
+    '    assert user_id(load("me_1.json")) == load("expected.json")',
 )
 
 
-def test_the_fixture_form_the_refusal_shows_passes_g3(library_gate_world):
+def test_the_fixture_form_the_refusal_shows_passes_g3(library_example_world):
     """The form G3's refusal shows must pass the gate itself. Both sides are harness-recorded fixtures (the
     expected value a byte slice of the recorded response), with no literal in the test.
     """
     assert (
-        FIXTURE_FORM_TEST != TEST
+        FIXTURE_FORM_TEST != w.TEST_SOURCE
         and '"u-1"'
         not in FIXTURE_FORM_TEST.split("def test_reads")[1].split("@pytest")[0]
     )
-    mem, ev, blobs, gate = library_gate_world
-    files, fixtures = _files_and_fixtures(blobs, test=FIXTURE_FORM_TEST)
-    whole = files["memory/acct/tests/data/me.json"].encode()
+    mem, ev, blobs, gate = library_example_world
+    files, fixtures = w.files_and_fixtures(blobs.get, test=FIXTURE_FORM_TEST)
+    whole = files[w.FIXTURE_PATHS[0]].encode()
     at = whole.index(b'"u-1"')
     out, entry = fx.make(
-        E1,
+        w.E1,
         0,
         "memory/acct/tests/data/expected.json",
         blob=blobs.get,
@@ -206,13 +199,13 @@ def test_the_fixture_form_the_refusal_shows_passes_g3(library_gate_world):
     res = gate().merge(
         mem.head(),
         _candidate(mem, files),
-        _man(fixtures),
+        w.manifest(fixtures),
         "p1",
         "write",
         None,
         "0.01",
     )
     assert res.passed, res.reasons
-    assert (
-        res.verification[ITEM_ID]["exact_assertions"] == 2
-    )  # the fixture-form assertion counts, as the literal did
+    # the fixture-form assertion counts, as the literal did: with the other fixture's literal assertion and the
+    # recorded-inputs test's (its expected value comes from its fixture), three, as on the literal form
+    assert res.verification[w.ITEM_ID]["exact_assertions"] == 3

@@ -171,7 +171,115 @@ def test_the_vocabulary_check_is_live():
 def test_no_benchmark_vocabulary_anywhere():
     for name, text in _texts().items():
         assert pv.benchmark_words(text) == [], name
-    assert pv.benchmark_words(" ".join(pv.INPUT_FORMS_LIBRARY.values())) == []
+
+
+def _contract_texts():
+    """The texts that state the function contract outside the writer's briefs: the fork's instruction and its
+    format block, both helper briefs, the curator's system brief, and the actor's two guides.
+    """
+    from unify.memory import curate, helpers
+    from unify.memory.integration import fork
+
+    return {
+        "contract": pv.CANDIDATE_CONTRACT,
+        "fork": fork.fork_instruction(),
+        "fork format": fork.FORMAT_EXAMPLE,
+        "helper": helpers.helper_brief(False),
+        "helper with similar": helpers.helper_brief(True),
+        "curate": curate.curate_system(),
+        "guide": pv.GUIDE_LIBRARY,
+        "pointer guide": pv.GUIDE_POINTER,
+    }
+
+
+def test_the_contract_texts_carry_no_benchmark_words_and_no_example_checking():
+    for name, text in _contract_texts().items():
+        assert pv.benchmark_words(text) == [], name
+        assert pv.example_checks(text) == [], name
+
+
+def test_the_guides_say_find_matches_argument_shapes_and_the_index_quotes_a_call():
+    for guide in (pv.GUIDE_LIBRARY, pv.GUIDE_POINTER):
+        assert (
+            "`memory.find(value)` lists the functions whose tests call them on arguments shaped like a structured "
+            "value you hold" in guide
+        )
+        assert "and which parameter matched" in guide
+        assert "a call quoted from the function's tests" in guide
+        assert "built on inputs shaped like" not in guide
+
+
+def test_the_fork_format_block_follows_the_contract_it_states():
+    """The format's candidate defines MemoryInputError in its module and raises it on another shape; its cases
+    return the expected values."""
+    import json
+
+    from unify.memory.integration import fork, fork_worker
+
+    blocks, _ = fork_worker.parse_reply(fork.FORMAT_EXAMPLE)
+    by_path = {b["path"]: b["content"] for b in blocks}
+    ns: dict = {}
+    exec(compile(by_path["candidates/double.py"], "double.py", "exec"), ns)
+    for case in json.loads(by_path["cases/double.json"]):
+        assert ns["double"](*case["inputs"]) == case["expected"]
+    with pytest.raises(ns["MemoryInputError"]):
+        ns["double"]("21")
+
+
+def test_the_curate_template_round_trips_through_the_library_parser():
+    """Every key of the curator's manifest template parses at its level, and the parsed item equals the one
+    written; a typed cover is the only cover the template's items carry."""
+    from unify.memory import curate, manifest
+    from unify.memory.procedures import Cover
+
+    text = curate.curate_system()
+    start = text.index('{"why": ')
+    template = text[start : text.index("}\nList in items", start) + 1]
+    assert '"input"' not in template
+    items_part = template[template.index("[{") : template.index("}]") + 2]
+    item_keys = set(re.findall(r'"([a-z_]+)":', items_part))
+    top_keys = set(re.findall(r'"([a-z_]+)":', template.replace(items_part, "[]")))
+    item = {
+        "item": "memory.acct.users:user_id",
+        "kind": "function",
+        "source_episodes": ["e1", "e2"],
+        "tests": ["memory/acct/tests/test_users.py"],
+        "covers": [{"episode": "e1", "type": "cell", "cell": 3}],
+    }
+    assert set(item) == item_keys
+    allowed_items = getattr(manifest, "LIBRARY_ITEM_FIELDS", None)
+    allowed_top = getattr(manifest, "LIBRARY_MANIFEST_FIELDS", None)
+    if allowed_items is not None:
+        assert item_keys <= set(allowed_items), item_keys - set(allowed_items)
+    if allowed_top is not None:
+        assert top_keys <= set(allowed_top), top_keys - set(allowed_top)
+    values = {
+        "why": "w",
+        "summary": "s",
+        "items": [item],
+        "deleted": ["memory.acct.users:old_id"],
+        "deleted_tests": ["memory/acct/tests/test_old.py"],
+        "aliases": {"memory.acct.users:old_id": "memory.acct.users:user_id"},
+        "retired": {},
+        "tests_changed": {"memory/acct/tests/test_old.py": "merged into test_users"},
+        "skeleton": ["memory.acct.users"],
+    }
+    assert set(values) == top_keys
+    got = manifest.parse_manifest(values, library_mode=True)
+    (parsed,) = got.items
+    assert (parsed.item, parsed.kind, parsed.source_episodes, parsed.tests) == (
+        item["item"],
+        "function",
+        ["e1", "e2"],
+        ["memory/acct/tests/test_users.py"],
+    )
+    assert parsed.covers == [] and parsed.typed_covers == [Cover("e1", "cell", index=3)]
+    assert parsed.input is None
+    assert (got.deleted, got.deleted_tests, got.skeleton) == (
+        values["deleted"],
+        values["deleted_tests"],
+        values["skeleton"],
+    )
 
 
 def test_no_example_verification_instruction_and_the_check_is_live():
@@ -209,10 +317,41 @@ def test_no_role_carries_another_roles_instructions():
         ), marker
 
 
-def test_input_forms_match_the_manifest():
-    from unify.memory.manifest import INPUT_KINDS
+#: How the library briefs described a first parameter's recorded input forms, before a function took any arguments.
+FORMER_INPUT_FORMS = (
+    "a path to a work-tree file",
+    "the text of a file or of an output",
+    "the raw bytes of a file",
+    "an observation value, as recorded",
+    "the object through which the request's tools are called",
+)
 
-    assert list(pv.INPUT_FORMS_LIBRARY) == list(INPUT_KINDS)
+
+def test_no_input_form_is_named_in_library_briefs():
+    """Replaces test_input_forms_match_the_manifest. The rule that replaces it: a library function takes any
+    arguments and its examples are the calls its tests make on fixtures, so no library text names an input form, the
+    manifest's ``input`` key or a first-parameter rule (``INPUT_KINDS`` stays for v2 only).
+    """
+    from unify.memory import helpers
+    from unify.memory.integration import fork
+
+    texts = {
+        "write": pv.write_brief_now(staging=True, pool=True, helper=True, similar=True),
+        "write plain": pv.write_brief_now(),
+        "curate": pv.curate_brief_now(),
+        "guide": pv.GUIDE_LIBRARY,
+        "pointer": pv.GUIDE_POINTER,
+        "contract": pv.CANDIDATE_CONTRACT,
+        "fork": fork.fork_instruction(),
+        "helper": helpers.helper_brief(False),
+        "helper similar": helpers.helper_brief(True),
+    }
+    assert not hasattr(pv, "INPUT_FORMS_LIBRARY")
+    for name, text in texts.items():
+        assert '"input"' not in text and "<<input_forms>>" not in text, name
+        assert "first parameter takes one recorded form" not in text, name
+        for form in FORMER_INPUT_FORMS:
+            assert form not in text, (name, form)
 
 
 def test_rendered_from_the_constants_that_enforce_them():
