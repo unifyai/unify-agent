@@ -89,8 +89,8 @@ def test_a_curate_pass_merges_through_its_own_brief_inputs_role_and_gate(world21
     assert out.passed, out.reasons
     assert model.seen[0] == {
         "role": "system",
-        "content": curate_brief_now(),
-    }  # P7's brief
+        "content": curate_brief_now(finish_capped=True),  # a capped pass states finish's refusal cap
+    }
     first = model.seen[1]["content"]
     # why the pass runs is a file (trigger.json), never a list in the first message
     assert (
