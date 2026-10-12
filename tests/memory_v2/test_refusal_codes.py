@@ -187,8 +187,9 @@ def test_final_manifest_is_set_by_an_accepted_finish_only(tmp_path):
     writer.load = EPS.__getitem__
     assert writer.final_manifest is None
     asyncio.run(writer.run(PassRequest("incremental", "svc", ["e1"], False), "p1"))
+    # the first finish (no manifest yet) is refused; the second is accepted (the pass ends there, so the model
+    # never sees its reply)
     assert model.outputs["f0"].startswith("not finished: ")
-    assert model.outputs["f1"] == "ok"
     assert writer.final_manifest == manifest
 
 
