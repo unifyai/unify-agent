@@ -1469,6 +1469,7 @@ def _check(specs: tuple[RegisteredTool, ...]) -> None:
 
 
 _check(_REGISTRY)
+_REGISTRY_BY_NAME = {s.name: s for s in _REGISTRY}
 
 
 def registry() -> dict[str, RegisteredTool]:
@@ -1504,31 +1505,33 @@ def earlier_refusal_template(agent: str, tool: str, form: str) -> Optional[str]:
     return own.refusals.get(form) if own is not None else None
 
 
-def tools_for(role: str, flags: frozenset = frozenset()) -> list:
+def tools_for(role: str, flags: frozenset = frozenset(), specs: Optional[Iterable] = None) -> list:
     """The model-API tools a memory *role* (``write``, ``curate`` or ``helper``) got with the configuration *flags*
     on, before every agent had one ``execute_code``: the registry's tools for it, in registry order, with each
-    agent's earlier text where it differed. A helper's ``execute_code`` came with its own tools, not from here."""
+    agent's earlier text where it differed. A helper's ``execute_code`` came with its own tools, not from here.
+    *specs*: the registered tools to choose from (default: all)."""
     if role not in OLD_ROLES:
         raise ValueError(f"unknown role {role!r}")
     agent = OLD_ROLES[role]
     out = []
-    for s in _REGISTRY:
+    for s in _REGISTRY if specs is None else specs:
         if agent not in s.roles or s.name in _IN_CODE_ONLY or (s.requires and s.requires not in flags):
             continue
         if s.name == "execute_code" and agent == _H:
             continue
-        out.append(_EARLIER.get((agent, s.name), s) if agent != _H else s)
+        registered = _REGISTRY_BY_NAME.get(s.name) is s
+        out.append(_EARLIER.get((agent, s.name), s) if agent != _H and registered else s)
     return out
 
 
-def tool_json(role: str, flags: frozenset = frozenset()) -> list[dict]:
-    return [s.as_tool() for s in tools_for(role, flags)]
+def tool_json(role: str, flags: frozenset = frozenset(), specs: Optional[Iterable] = None) -> list[dict]:
+    return [s.as_tool() for s in tools_for(role, flags, specs)]
 
 
-def tools_section(role: str, flags: frozenset = frozenset()) -> str:
+def tools_section(role: str, flags: frozenset = frozenset(), specs: Optional[Iterable] = None) -> str:
     """The Tools section of a memory role's instructions: one bullet per tool it actually gets."""
     lines = []
-    for s in tools_for(role, flags):
+    for s in tools_for(role, flags, specs):
         text = s.summary or s.description.split(". ")[0].rstrip(".") + "."
         lines.append(f"- `{s.name}`: {text}")
     return "\n".join(lines)
