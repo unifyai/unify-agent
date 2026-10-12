@@ -583,6 +583,7 @@ def check(
         # a field a recorded rejection behind the fixture varied may be refused: it runs on its own
         d.cases = [fc for fc in chosen if fc.name not in exempt(d)]
         d.exempt = [fc for fc in chosen if fc.name in exempt(d)]
+    parsed = list(docs)  # a joined value is replaced in every parsed input fixture, changed fields or not
     docs = [d for d in docs if d.cases or d.outs or d.exempt]
     v.fields = sum(len(d.cases) + len(d.exempt) for d in docs)
     if not docs:
@@ -676,7 +677,7 @@ def check(
     group_fields = [(d.fx.path, fc.name) for d, fc in every]
     group: dict[CallKey, _Finding] = {}
     if every:
-        rec = run(_render(docs, every))
+        rec = run(_render(parsed, every))
         if rec == "budget":
             return fail("the budget ran out before the run with every field changed")
         if not isinstance(rec, CallRecord):
@@ -687,7 +688,7 @@ def check(
             )
         group = judge.judge(
             rec,
-            set(_render(docs, every)),
+            set(_render(parsed, every)),
             [d.fx.path for d in docs if d.cases],
             group_fields,
             v.derived,
@@ -723,13 +724,13 @@ def check(
         )
         for d in order:
             chosen = [(d, fc) for fc in d.cases]
-            rec = run(_render(docs, chosen))
+            rec = run(_render(parsed, chosen))
             if not isinstance(rec, CallRecord):
                 out_of_runs = True
                 break
             per_fixture[d.fx.path] = judge.judge(
                 rec,
-                set(_render(docs, chosen)),
+                set(_render(parsed, chosen)),
                 [d.fx.path],
                 [(d.fx.path, fc.name) for fc in d.cases],
                 v.derived,
@@ -773,7 +774,7 @@ def check(
             keys = [k for k in keys if k not in narrowed]
             if not keys:
                 break
-            rendered = _render(docs, [(d, fc)])
+            rendered = _render(parsed, [(d, fc)])
             rec = run(rendered)
             if not isinstance(rec, CallRecord):
                 out_of_runs = True
@@ -817,7 +818,7 @@ def check(
         )
     ex = [(d, fc) for d in docs for fc in d.exempt]
     if ex:
-        rendered = _render(docs, ex)
+        rendered = _render(parsed, ex)
         rec = run(rendered)
         ex_paths = sorted({d.fx.path for d, _ in ex})
         ex_names = _one_of([fc.name for _, fc in ex])
@@ -926,7 +927,7 @@ def check(
     accepted_out: set[str] = set()
     for n in sorted(rounds):
         chosen = rounds[n]
-        rendered = _render(docs, chosen)
+        rendered = _render(parsed, chosen)
         rec = run(rendered)
         if not isinstance(rec, CallRecord):
             names = sorted({f"{fc.name} of {d.fx.path}" for d, fc in outs})
