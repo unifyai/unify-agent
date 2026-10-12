@@ -1345,12 +1345,18 @@ class FieldCase:
 class _Tally:
     """What :func:`field_cases` saw across documents, for the notes and the declared-type check."""
 
-    declared: set[str] = field(default_factory=set)  # declared fields present in a document
-    mismatched: dict[str, str] = field(default_factory=dict)  # recorded values contradict the type
-    unwritten: dict[str, str] = field(default_factory=dict)  # not written as a value of their type
-    all_seen: dict[str, str] = field(default_factory=dict)  # whole domain already recorded
-    typed: set[str] = field(default_factory=set)  # checked as their declared type somewhere
-    kept: list[str] = field(default_factory=list)  # kept as identity or format
+    # declared fields present in a document
+    declared: set[str] = field(default_factory=set)
+    # declared fields whose recorded values contradict the type
+    mismatched: dict[str, str] = field(default_factory=dict)
+    # declared fields not written as a value of their type
+    unwritten: dict[str, str] = field(default_factory=dict)
+    # declared fields whose whole domain is already recorded
+    all_seen: dict[str, str] = field(default_factory=dict)
+    # declared fields checked as their type somewhere
+    typed: set[str] = field(default_factory=set)
+    # fields kept as identity or format
+    kept: list[str] = field(default_factory=list)
 
     def add(self, other: "_Tally") -> None:
         self.declared |= other.declared
@@ -1371,7 +1377,9 @@ def _tally_notes(t: _Tally, field_types: dict[str, str]) -> list[str]:
         notes.append(
             "fields with one value across the recorded observations of their shape, kept as identity "
             "or format and "
-            "not perturbed: " + ", ".join(k[:80] for k in t.kept[:_NAMED]) + _more(t.kept),
+            "not perturbed: "
+            + ", ".join(k[:80] for k in t.kept[:_NAMED])
+            + _more(t.kept),
         )
     unwritten = {n: s for n, s in t.unwritten.items() if n not in t.typed}
     for name, sem in list(unwritten.items())[:5]:
