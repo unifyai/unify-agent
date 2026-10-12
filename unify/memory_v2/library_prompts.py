@@ -880,7 +880,7 @@ _BENCHMARK = re.compile(
     r"minecraft|sokoban|submission)\b",
     re.IGNORECASE,
 )
-#: An environment's verdict text, which the harness never matches (spec §5): upper case only.
+#: An environment's verdict text, which the harness never matches: upper case only.
 _VERDICT = re.compile(r"\bCORRECT\b")
 
 #: Instructions to check a task's examples. A function docstring's ``Example:`` section is a
@@ -922,97 +922,97 @@ WRITE_ONLY = (
 CURATE_ONLY = ("overlap", "roll it back", "alias", "retire an item")
 WRITER_ONLY = ("manifest", "the gate", "finish(")
 
-#: Each rule the prompts state: (rule, spec, owners, the phrase that states it). The phrase must be in every
+#: Each rule the prompts state: (rule, topic, owners, the phrase that states it). The phrase must be in every
 #: owner's text and in no other prompt (tests/memory_v2/test_prompts_library_contradictions.py).
 RULES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
     (
         "status meanings",
-        "§10.1, §12.1",
+        "library item status",
         ("guide",),
         "`experimental` items are candidates",
     ),
-    ("find matches structure only", "§6", ("guide",), "It cannot match plain text"),
+    ("find matches structure only", "how find matches", ("guide",), "It cannot match plain text"),
     (
         "an input refusal means do the step yourself",
-        "§4.3, §12.1",
+        "input refusals",
         ("guide",),
         "Then do that step with your own code",
     ),
     (
         "store anything that repeats",
-        "§8.2.1, P3, D33",
+        "what to store",
         ("write",),
         "Store anything that repeats",
     ),
     (
         "procedures are replayed",
-        "§8.2.1",
+        "procedure verification",
         ("write",),
         "A procedure is verified by replaying its episode",
     ),
     (
         "start from the actor's code",
-        "§8.2.2, P2, D32",
+        "where code comes from",
         ("write",),
         "Start from the working model's own code",
     ),
     (
         "outcomes are judged from the records",
-        "§8.2.3",
+        "outcome evidence",
         ("write",),
         "Judge outcomes from the records",
     ),
-    ("failure-only work is a note", "§8.2.3, §11.1", ("write",), "becomes a note"),
+    ("failure-only work is a note", "notes", ("write",), "becomes a note"),
     (
         "WRITE never removes",
-        "§9.1",
+        "pass roles",
         ("write",),
         "This pass never removes library items",
     ),
-    ("trust order", "§13.1, D39", ("write", "curate"), "in this order of trust"),
+    ("trust order", "trusted sources", ("write", "curate"), "in this order of trust"),
     (
         "exact trusted assertion",
-        "§13.2, §13.4",
+        "test assertions",
         ("write",),
         "equals an exact trusted value",
     ),
     (
         "no self-oracle",
-        "§13.4",
+        "test assertions",
         ("write",),
         "Never compute an expected value with the function's own expression",
     ),
     (
         "drawn inputs appended",
-        "§9.1, §13.4",
+        "drawn test inputs",
         ("write",),
         "more recorded inputs of the same kind to a copy of that file",
     ),
-    ("literal rule", "§9.1", ("write",), "make it a parameter"),
+    ("literal rule", "literals", ("write",), "make it a parameter"),
     (
         "deterministic tests",
         "qa determinism",
         ("write", "curate"),
         "never assert on the clock",
     ),
-    ("no credentials", "§2", ("write", "curate"), "Never store credentials"),
-    ("why trailer", "§8.2.6", ("write", "curate"), '"why"'),
-    ("repair rounds", "§9.2, P6", ("write", "curate"), "you get a repair round"),
-    ("drafts", "§8.4, D41", ("write", "curate"), "kept as a draft"),
-    ("merge keeps aliases", "§10.4", ("curate",), "keeping each old name as an alias"),
+    ("no credentials", "credentials", ("write", "curate"), "Never store credentials"),
+    ("why trailer", "commit trailer", ("write", "curate"), '"why"'),
+    ("repair rounds", "repair rounds", ("write", "curate"), "you get a repair round"),
+    ("drafts", "drafts", ("write", "curate"), "kept as a draft"),
+    ("merge keeps aliases", "aliases", ("curate",), "keeping each old name as an alias"),
     (
         "standing tests green",
-        "§10.4",
+        "existing tests",
         ("curate",),
         "keeps the library's existing tests green",
     ),
     (
         "retired covers stay covered",
-        "§10.4, D13",
+        "retirement",
         ("curate",),
         "stays covered by a remaining function",
     ),
-    ("two episodes decide", "§10.1, §11.4", ("curate",), "one episode never decides"),
+    ("two episodes decide", "evidence count", ("curate",), "one episode never decides"),
 )
 
 #: Instructions and surfaces of the earlier memory design that are retired: none may appear in any text the actor or
