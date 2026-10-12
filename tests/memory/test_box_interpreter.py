@@ -223,7 +223,8 @@ async def test_the_kill_is_verified(tmp_path, monkeypatch):
     pid = interp._backend.host_pid
     assert sr._descendants(pid)
     monkeypatch.setattr(sr, "_KILL_GRACE_S", 0.5)
-    monkeypatch.setattr(sr, "_alive", lambda p, start: True)  # a survivor that SIGKILL did not remove
+    # a survivor that SIGKILL did not remove (the kill is shared: unify/common/process_tree.py)
+    monkeypatch.setattr(sr.process_tree, "alive", lambda p, start: True)
     with pytest.raises(RuntimeError, match="survived SIGKILL"):
         await interp.stop()
     monkeypatch.undo()
