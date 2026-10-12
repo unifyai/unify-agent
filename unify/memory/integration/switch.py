@@ -87,6 +87,7 @@ read the same way by every consumer.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import select
@@ -685,6 +686,11 @@ LIBRARY_MAX_READS_DEFAULT = 400
 LIBRARY_WRITER_USD_PER_TOKEN = "UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN"
 LIBRARY_PASS_WALL_S = "UNIFY_MEMORY_LIBRARY_PASS_WALL_S"
 WRITER_JOURNAL = "UNIFY_MEMORY_WRITER_JOURNAL"
+#: The writer model's prices, USD per million tokens, as the run pins them: a JSON object with ``input`` and
+#: ``output`` and optionally ``cache_write``. Empty: a writer call with no charge stays unpriced.
+WRITER_PRICES = "UNIFY_MEMORY_WRITER_PRICES_USD_PER_MILLION"
+WRITER_PRICE_KEYS = ("input", "output")
+WRITER_OPTIONAL_PRICE_KEYS = ("cache_write",)
 #: The pass's wall-clock bound in seconds: calibrated with the budget by the offline replay.
 LIBRARY_PASS_WALL_S_DEFAULT = 2700
 
@@ -737,6 +743,47 @@ def parse_library_writer_usd_per_token(v: Any) -> str:
         v,
         positive=True,
     )
+
+
+def parse_writer_prices(v: Any) -> str:
+    """``UNIFY_MEMORY_WRITER_PRICES_USD_PER_MILLION``: empty, or a JSON object of non-negative decimal prices with
+    ``input`` and ``output`` (and optionally ``cache_write``) and no other key; returned in one canonical form.
+    """
+    text = _stripped(v)
+    if text == "":
+        return ""
+    refusal = (
+        f"{WRITER_PRICES} must be a JSON object with input and output (and optionally cache_write) USD per million "
+        "tokens"
+    )
+    try:
+        raw = json.loads(text)
+    except ValueError:
+        raise ValueError(refusal) from None
+    allowed = set(WRITER_PRICE_KEYS) | set(WRITER_OPTIONAL_PRICE_KEYS)
+    if (
+        not isinstance(raw, dict)
+        or not set(WRITER_PRICE_KEYS) <= set(raw)
+        or set(raw) - allowed
+    ):
+        raise ValueError(refusal)
+    out = {}
+    for key, value in raw.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            raise ValueError(refusal)
+        out[key] = _plain_decimal(
+            f"{WRITER_PRICES} {key}",
+            str(value).strip(),
+            v,
+            positive=False,
+        )
+    return json.dumps(out, sort_keys=True)
+
+
+def writer_prices(settings: Any) -> dict[str, Decimal] | None:
+    """The pinned writer prices per million tokens, or None when none are set."""
+    text = parse_writer_prices(getattr(settings, WRITER_PRICES, ""))
+    return {k: Decimal(v) for k, v in json.loads(text).items()} if text else None
 
 
 def library_writer_usd_per_token(settings: Any) -> Decimal:
@@ -1191,6 +1238,7 @@ PARSERS = {
     LIBRARY_ACTOR_INDEX: parse_library_actor_index,
     LIBRARY_COVERAGE: parse_library_coverage,
     LIBRARY_WRITER_USD_PER_TOKEN: parse_library_writer_usd_per_token,
+    WRITER_PRICES: parse_writer_prices,
     LIBRARY_PASS_WALL_S: parse_library_pass_wall_s,
     WRITER_JOURNAL: parse_writer_journal,
 }

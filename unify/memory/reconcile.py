@@ -8,8 +8,10 @@ started and when its supervisor recorded its end (:func:`journal_offset`). A req
 ``request_started`` row lies in that range; its terminal row is read wherever it was appended, so a call cancelled
 at the wall bound, whose terminal row the proxy writes late, is still found.
 
-A request is priced by its last row's ``account_charge``. One with no charge (cancelled in flight, a transport
-error, a terminal row not yet written) stays ``unknown``, never zero, and the run guard books it at
+A request is priced as the key proxy books a writer call: by its last ``account_charge``; else, when the run pins
+the writer's prices (``UNIFY_MEMORY_WRITER_PRICES_USD_PER_MILLION``) and the journal shows the request's tokens,
+``input x p_input + output x p_output (+ cache_write x p_cache_write)`` per million (:func:`estimate`, counted as
+``estimated``); else it stays ``unknown``, never zero, and the run guard books it at
 :data:`WRITER_CALL_WORST_CASE_USD` (the guards' tier-1 catalogue maximum for one writer request, so a
 never-priceable request is booked at its worst case). No header is sent and no generation lookup is made: the proxy
 mints its own attempt id and the writer lane refuses ``GET /generation``. Money is a decimal string.
@@ -66,6 +68,8 @@ class LaneCall:
     status: str = "started"
     usd: str = UNKNOWN
     generation_id: str | None = None
+    #: the request's token counts from its last row that has any (input, output, cache_write …), else None
+    tokens: dict | None = None
 
     @property
     def terminal(self) -> bool:
@@ -128,7 +132,33 @@ def lane_calls(
         gid = row.get("generation_id")
         if isinstance(gid, str) and gid:
             c.generation_id = gid
+        tokens = row.get("tokens")
+        if isinstance(tokens, dict) and any(v is not None for v in tokens.values()):
+            c.tokens = tokens
     return calls
+
+
+def estimate(tokens: Any, prices: dict[str, Decimal] | None) -> Decimal | None:
+    """A call's USD from its tokens at the pinned *prices* (per million tokens), as the key proxy estimates an
+    unpriced writer call; None without prices, without input and output counts, or with an unreadable count.
+    """
+    if not prices or not isinstance(tokens, dict):
+        return None
+    t_in, t_out = tokens.get("input"), tokens.get("output")
+    if t_in is None and t_out is None:
+        return None
+    try:
+        counts = {
+            k: int(tokens.get(k) or 0) for k in ("input", "output", "cache_write")
+        }
+    except (TypeError, ValueError):
+        return None
+    if any(n < 0 for n in counts.values()):
+        return None
+    usd = prices["input"] * counts["input"] + prices["output"] * counts["output"]
+    if "cache_write" in prices:
+        usd += prices["cache_write"] * counts["cache_write"]
+    return usd / Decimal(1000000)
 
 
 def unavailable(worst_case_usd: Decimal = WRITER_CALL_WORST_CASE_USD) -> dict:
@@ -154,13 +184,15 @@ async def reconcile_window(
     budget_s: float = RECONCILE_S,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
+    prices: dict[str, Decimal] | None = None,
 ) -> dict:
     """The pass's writer calls priced from the journal, re-read until each started call has a terminal row or
     *budget_s* has passed. Returns the summary the pass's end event and the run guard's settle line carry:
 
     ``journal`` (``read`` or ``unavailable``: no path, no window, or unreadable; then nothing is priced and the run
-    guard keeps the pass's whole cap), ``calls``, ``priced``, ``unknown``, ``usd`` (the priced sum), and
-    ``booked_usd`` = ``usd`` + ``unknown`` x *worst_case_usd* (the worst case the run guard books).
+    guard keeps the pass's whole cap), ``calls``, ``priced`` (by charge), ``estimated`` (from tokens at *prices*),
+    ``estimated_usd``, ``unknown``, ``usd`` (the charged and estimated sum), and ``booked_usd`` = ``usd`` +
+    ``unknown`` x *worst_case_usd* (the worst case the run guard books).
     """
     models = tuple(models)
     if not path or start is None or end is None or end < start:
@@ -175,12 +207,20 @@ async def reconcile_window(
             break
         await sleep(min(RETRY_S, max(0.0, deadline - clock())))
     priced = [c for c in calls.values() if c.usd != UNKNOWN]
-    unknown = len(calls) - len(priced)
-    usd = sum((Decimal(c.usd) for c in priced), Decimal(0))
+    estimates = [
+        e
+        for c in calls.values()
+        if c.usd == UNKNOWN and (e := estimate(c.tokens, prices)) is not None
+    ]
+    unknown = len(calls) - len(priced) - len(estimates)
+    estimated_usd = sum(estimates, Decimal(0))
+    usd = sum((Decimal(c.usd) for c in priced), Decimal(0)) + estimated_usd
     return {
         "journal": "read",
         "calls": len(calls),
         "priced": len(priced),
+        "estimated": len(estimates),
+        "estimated_usd": money(estimated_usd),
         "unknown": unknown,
         "usd": money(usd),
         "worst_case_usd": money(worst_case_usd),

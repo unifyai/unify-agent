@@ -121,6 +121,7 @@ from .switch import (
     settle_writer_route_env,
     writer_effort_scale_map,
     writer_max_calls_map,
+    writer_prices,
     writer_route,
     writer_token,
     checker_visible,
@@ -1352,7 +1353,7 @@ async def run_due_passes(
             recon = None
             if supervise is not None:
                 try:
-                    recon = await supervise.reconcile()
+                    recon = await supervise.reconcile(prices=writer_prices(settings))
                 except Exception as exc:  # noqa: BLE001
                     # unreconciled: no settle line, so the whole cap stays committed
                     _error(stores, f"{pass_id}: reconcile: {type(exc).__name__}")

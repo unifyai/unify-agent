@@ -455,6 +455,10 @@ class ProductionSettings(BaseSettings):
     UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN: str = "0.00000073"
     UNIFY_MEMORY_LIBRARY_PASS_WALL_S: int = 2700
     UNIFY_MEMORY_WRITER_JOURNAL: str = ""
+    # The writer model's prices in USD per million tokens, as the run pins them (JSON: input, output, optionally
+    # cache_write). A writer call the journal shows with tokens but no charge is priced from them; empty: it stays
+    # unpriced and the run guard books it at the worst case.
+    UNIFY_MEMORY_WRITER_PRICES_USD_PER_MILLION: str = ""
     # Stage-5 test checks in the memory v2 gate (unify/memory/qa.py), each
     # off by default and read only while UNIFY_MEMORY is on: ``_QA_FIXTURES``
     # (``on``/``strict``) draws seeded random recorded inputs per new function;
@@ -697,6 +701,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN",
         "UNIFY_MEMORY_LIBRARY_PASS_WALL_S",
         "UNIFY_MEMORY_WRITER_JOURNAL",
+        "UNIFY_MEMORY_WRITER_PRICES_USD_PER_MILLION",
         "UNIFY_MEMORY_QA_FIXTURES",
         "UNIFY_MEMORY_QA_MUTATION",
         "UNIFY_MEMORY_QA_MUTATION_MIN_KILL",

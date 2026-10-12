@@ -11,6 +11,7 @@ import pytest
 from unify.memory.reconcile import (
     WRITER_CALL_WORST_CASE_USD,
     UNKNOWN,
+    estimate,
     journal_offset,
     lane_calls,
     money,
@@ -83,6 +84,8 @@ async def test_a_cancelled_pass_prices_two_and_books_the_unpriced_one_at_the_wor
         "journal": "read",
         "calls": 3,
         "priced": 2,
+        "estimated": 0,
+        "estimated_usd": "0",
         "unknown": 1,
         "usd": "0.35",
         "worst_case_usd": money(WRITER_CALL_WORST_CASE_USD),
@@ -153,3 +156,89 @@ async def test_no_journal_prices_nothing_and_never_says_zero(tmp_path):
 def test_money_is_a_decimal_string_or_unknown():
     assert money("0.10") == "0.10" and money(0) == "0" and money("-1") == UNKNOWN
     assert money(None) == UNKNOWN and money(True) == UNKNOWN and money("nan") == UNKNOWN
+
+
+PRICES = {
+    "input": Decimal("2.0"),
+    "output": Decimal("10.0"),
+    "cache_write": Decimal("2.5"),
+}
+
+
+@pytest.mark.asyncio
+async def test_a_call_with_tokens_but_no_charge_is_priced_from_the_pinned_prices(
+    tmp_path,
+):
+    j = tmp_path / "costs.jsonl"
+    start = journal_offset(str(j)) or 0
+    tokens = {
+        "input": 100000,
+        "output": 2000,
+        "cache_write": 4000,
+        "cache_read": None,
+        "reasoning": None,
+    }
+    _write(
+        j,
+        [
+            _started("a"),
+            _done("a", "0.10"),
+            _started("t"),
+            {
+                "origin": "response",
+                "request_attempt_id": "t",
+                "requested_model": WRITER_MODEL,
+                "status": "completed",
+                "account_charge": None,
+                "tokens": tokens,
+            },
+            _started("n"),  # no charge and no tokens: still the worst case
+        ],
+    )
+    end = journal_offset(str(j))
+    out = await reconcile_window(
+        str(j),
+        start,
+        end,
+        models=[WRITER_MODEL],
+        budget_s=0,
+        prices=PRICES,
+    )
+    # 100000 x 2.0 + 2000 x 10.0 + 4000 x 2.5 = 230000 per million
+    assert out["priced"] == 1 and out["estimated"] == 1 and out["unknown"] == 1
+    assert out["estimated_usd"] == "0.23" and out["usd"] == "0.33"
+    assert out["booked_usd"] == money(Decimal("0.33") + WRITER_CALL_WORST_CASE_USD)
+    # without pinned prices the same call stays unknown
+    bare = await reconcile_window(str(j), start, end, models=[WRITER_MODEL], budget_s=0)
+    assert bare["estimated"] == 0 and bare["unknown"] == 2
+
+
+def test_the_estimate_needs_prices_and_input_or_output_counts():
+    assert estimate({"input": 10, "output": None}, PRICES) == Decimal("0.00002")
+    assert estimate({"input": None, "output": None, "cache_write": 5}, PRICES) is None
+    assert estimate({"input": "x"}, PRICES) is None
+    assert estimate({"input": -1, "output": 1}, PRICES) is None
+    assert estimate({"input": 10}, None) is None
+    no_cache = {"input": Decimal("2.0"), "output": Decimal("10.0")}
+    assert estimate({"input": 0, "output": 0, "cache_write": 1000000}, no_cache) == 0
+
+
+def test_the_prices_setting_is_parsed_strictly():
+    from unify.memory.integration import switch
+
+    assert switch.parse_writer_prices("") == ""
+    got = switch.parse_writer_prices(
+        '{"output": 10.0, "input": "2.0", "cache_write": 2.5}',
+    )
+    assert got == '{"cache_write": "2.5", "input": "2.0", "output": "10.0"}'
+    for bad in (
+        '{"input": 2}',
+        '{"input": 2, "output": 1, "other": 1}',
+        "[1]",
+        "x",
+        '{"input": -1, "output": 1}',
+        '{"input": true, "output": 1}',
+    ):
+        with pytest.raises(ValueError):
+            switch.parse_writer_prices(bad)
+    assert switch.PARSERS[switch.WRITER_PRICES] is switch.parse_writer_prices
