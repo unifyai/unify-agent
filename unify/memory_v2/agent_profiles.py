@@ -238,7 +238,8 @@ AGENT_PROFILES: tuple[dict, ...] = (
             {"path": "/memory", "mode": "ro"},
             {"path": "/work", "mode": "rw"},
         ],
-        "denied": ["library writes", "pool", "writer staging", "network", "credentials"],
+        # a helper never launches helpers: delegate is the writer's alone
+        "denied": ["library writes", "pool", "writer staging", "delegate", "network", "credentials"],
         "consumes": [
             {"artifact": "task", "path": "delegate arguments"},
             {"artifact": "episode record", "path": "read_episode"},
@@ -253,6 +254,11 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "expectations": [
             {"expectation": "read the named episodes", "tool": "read_episode", "permission": "recorded episodes ro"},
             {"expectation": "try a draft on its cases", "tool": "execute_code", "permission": "/work rw"},
+            {
+                "expectation": "name the episode parts each claim rests on",
+                "tool": "done",
+                "permission": "recorded episodes ro",
+            },
         ],
         "fields": ["candidates/<name>.py", "cases/<name>.json", "notes.md", "helper.json"],
         "emits": list(_EVENTS),

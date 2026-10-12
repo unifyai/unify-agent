@@ -118,7 +118,21 @@ def _drafting(task_key="draft area"):
                 _tc("k", "stage", {"path": "cases/area.json", "text": CASE}),
                 _tc("bad", "stage", {"path": "../escape.py", "text": "x"}),
             ),
-            _msg(_tc("d", "done", {"summary": "drafted area from e1"})),
+            _msg(
+                _tc(
+                    "d",
+                    "done",
+                    {
+                        "summary": "drafted area from e1",
+                        "claims": [
+                            {
+                                "claim": "e1 computes a rectangle's area as w * h",
+                                "sources": ["e1/cell:0", "e1/request"],
+                            },
+                        ],
+                    },
+                ),
+            ),
         ],
     }
 
@@ -163,6 +177,12 @@ def test_delegate_stages_in_the_fork_format_and_the_writer_reads_it(tmp_path, fa
         "cases/area.json",
     ]
     assert status["task_sha256"] and status["episodes"] == ["e1"]
+    assert status["claims"] == [
+        {
+            "claim": "e1 computes a rectangle's area as w * h",
+            "sources": ["e1/cell:0", "e1/request"],
+        },
+    ]
     # the writer reads the helper's files with its own reader, under /inputs/helpers/<call>/
     roots = {"/inputs": ctx.inputs}
     assert "def area" in views.read("/inputs/helpers/call-0/candidates/area.py", roots)
@@ -207,7 +227,7 @@ def test_delegate_calls_in_one_turn_run_concurrently_with_serialised_model_calls
             _msg(
                 _tc(f"{key}s", "stage", {"path": "notes.md", "text": f"lesson {key}"}),
             ),
-            _msg(_tc(f"{key}d", "done", {"summary": key})),
+            _msg(_tc(f"{key}d", "done", {"summary": key, "claims": []})),
         ]
 
     script = Script({"A": two("A"), "B": two("B")}, gap=0.01)
@@ -290,7 +310,7 @@ def test_a_failing_helper_returns_a_clear_result_and_never_fails_the_pass(
 
 def test_unpriced_helper_calls_stay_unknown(tmp_path, fake_box):
     script = Script(
-        {"t": [_msg(_tc("d", "done", {"summary": "nothing"}))]},
+        {"t": [_msg(_tc("d", "done", {"summary": "nothing", "claims": []}))]},
         usd="unknown",
     )
     ctx = _ctx(tmp_path, script)
@@ -331,7 +351,7 @@ def test_helpers_read_any_recorded_episode_but_only_through_the_index(
                     _tc("pathy", "overview", {"episode": "../../etc/passwd"}),
                     _tc("pool", "read", {"path": "/inputs/pool/INDEX.md"}),
                 ),
-                _msg(_tc("d", "done", {"summary": "read"})),
+                _msg(_tc("d", "done", {"summary": "read", "claims": []})),
             ],
         },
     )
@@ -352,6 +372,138 @@ def test_helpers_read_any_recorded_episode_but_only_through_the_index(
     assert script.outputs["pool"].startswith(
         "refused",
     )  # the writer's pool is not in a helper's /inputs
+
+
+def _done_then(cid, claims, then=None):
+    """A helper that calls done with *claims*, then (if refused) done again with *then*."""
+    turns = [_msg(_tc(cid, "done", {"summary": "s", "claims": claims}))]
+    if then is not None:
+        turns.append(_msg(_tc("again", "done", {"summary": "s", "claims": then})))
+    return {"t": turns}
+
+
+def test_done_with_resolving_sources_is_recorded_and_shown_to_the_writer(
+    tmp_path,
+    fake_box,
+):
+    claims = [
+        {"claim": "area is w * h", "sources": ["e1/cell:0"]},
+        {"claim": "e3 asked for nothing", "sources": ["e3/request", "e3/request"]},
+        {"claim": "a shared block holds the rules", "sources": ["e1/shared:b1"]},
+    ]
+    script = Script(_done_then("d", claims))
+    ctx = _ctx(tmp_path, script, shared={"b1": "shared block"})
+    reply = asyncio.run(helpers.handle({"task": "t", "episodes": ["e1"]}, ctx))
+    rows = [json.loads(x) for x in ctx.events.read_text().splitlines()]
+    assert [(r["tool"], r["status"]) for r in rows] == [("done", "ok")]
+    status = json.loads((ctx.out_root / "call-0" / "helper.json").read_text())
+    assert status["status"] == "ok"
+    assert status["claims"] == [
+        {"claim": "area is w * h", "sources": ["e1/cell:0"]},
+        {"claim": "e3 asked for nothing", "sources": ["e3/request"]},
+        {"claim": "a shared block holds the rules", "sources": ["e1/shared:b1"]},
+    ]
+    exported = json.loads((ctx.inputs / "helpers" / "call-0" / "helper.json").read_text())
+    assert exported["claims"] == status["claims"]
+    assert ctx.records[0]["claims"] == status["claims"]
+    # the writer's reply lists every claim with its pointers and says they are untrusted until read
+    assert "untrusted until you read the parts" in reply
+    assert "1. area is w * h\n   sources: e1/cell:0" in reply
+    assert "2. e3 asked for nothing\n   sources: e3/request" in reply
+    assert "3. a shared block holds the rules\n   sources: e1/shared:b1" in reply
+
+
+def test_no_claims_is_stated_in_the_reply(tmp_path, fake_box):
+    ctx = _ctx(tmp_path, Script(_done_then("d", [])))
+    reply = asyncio.run(helpers.handle({"task": "t", "episodes": ["e1"]}, ctx))
+    assert reply.splitlines()[-1] == "claims: (none)"
+
+
+@pytest.mark.parametrize(
+    "claims, phrase, form",
+    [
+        ([{"claim": "x", "sources": []}], "claim 1 has no sources", "no_sources"),
+        ([{"claim": "x"}], "claim 1 has no sources", "no_sources"),
+        (
+            [{"claim": "x", "sources": ["e1/cell:0"]}, {"claim": "y", "sources": []}],
+            "claim 2 has no sources",
+            "no_sources",
+        ),
+        (
+            [{"claim": "x", "sources": ["e1/cell:7"]}],
+            "source 'e1/cell:7' does not resolve (episode 'e1' has no part 'cell:7'; its parts: request, cell:0",
+            "unresolved_source",
+        ),
+        (
+            [{"claim": "x", "sources": ["e1/action:-1"]}],
+            "has no part 'action:-1'",
+            "unresolved_source",
+        ),
+        (
+            [{"claim": "x", "sources": ["e9/request"]}],
+            "'e9' is not a recorded episode",
+            "unresolved_source",
+        ),
+        (
+            [{"claim": "x", "sources": ["../e1/request"]}],
+            "is not an episode id",
+            "unresolved_source",
+        ),
+        (
+            [{"claim": "x", "sources": ["cell:0"]}],
+            "not written `<episode>/<part>`",
+            "unresolved_source",
+        ),
+        (
+            [{"claim": "x", "sources": ["e1/shared:nope"]}],
+            "has no part 'shared:nope'",
+            "unresolved_source",
+        ),
+        ("all good", "claims must be a list", "claims"),
+        ([{"claim": "", "sources": ["e1/cell:0"]}], "claim 1 has no text", "claims"),
+    ],
+)
+def test_done_with_a_missing_or_unresolved_source_is_refused_and_can_be_fixed(
+    tmp_path,
+    fake_box,
+    claims,
+    phrase,
+    form,
+):
+    fixed = [{"claim": "area is w * h", "sources": ["e1/cell:0"]}]
+    script = Script(_done_then("d", claims, then=fixed))
+    ctx = _ctx(tmp_path, script)
+    reply = asyncio.run(helpers.handle({"task": "t", "episodes": ["e1"]}, ctx))
+    refused = script.outputs["d"]
+    assert refused.startswith("refused: ") and phrase in refused, refused
+    assert "the task is not done, call done again" in refused
+    # the helper went on and fixed it
+    rows = [json.loads(x) for x in ctx.events.read_text().splitlines()]
+    assert [(r["tool"], r["status"]) for r in rows] == [("done", "refused"), ("done", "ok")]
+    assert rows[0]["refusal"]["form"] == form
+    status = json.loads((ctx.out_root / "call-0" / "helper.json").read_text())
+    assert status["status"] == "ok" and status["claims"] == fixed
+    assert "sources: e1/cell:0" in reply
+
+
+def test_a_helper_that_never_fixes_its_claims_hands_back_none(tmp_path, fake_box):
+    script = Script({"t": [_msg(_tc("d", "done", {"summary": "s", "claims": [{"claim": "x"}]}))] * 3})
+    ctx = _ctx(tmp_path, script, step_guard=3)
+    reply = asyncio.run(helpers.handle({"task": "t", "episodes": ["e1"]}, ctx))
+    assert reply.startswith("helper call-0: operational step guard")
+    status = json.loads((ctx.out_root / "call-0" / "helper.json").read_text())
+    assert status["claims"] == [] and status["summary"] == ""
+
+
+def test_the_done_spec_asks_for_sources_and_the_briefs_say_claims_are_untrusted():
+    props = helpers.DONE_SPEC.parameters["properties"]
+    assert helpers.DONE_SPEC.parameters["required"] == ["summary", "claims"]
+    assert props["claims"]["items"]["required"] == ["claim", "sources"]
+    assert "<episode>/<part>" in helpers.DONE_SPEC.description
+    assert "done(summary, claims)" in helpers.HELPER_BRIEF
+    assert "is refused" in helpers.HELPER_BRIEF and "<episode>/<part>" in helpers.HELPER_BRIEF
+    assert "untrusted until you read the parts" in helpers.SPEC.description
+    assert "cannot launch helpers" in helpers.SPEC.description
 
 
 def test_staging_again_replaces_and_the_quota_is_stated(tmp_path, monkeypatch):
@@ -375,6 +527,9 @@ def test_delegate_is_a_write_tool_offered_only_with_a_helper_lane():
     ]
     names = [t["function"]["name"] for t in helpers.helper_tools()]
     assert "delegate" not in names and {"stage", "done", "execute_code"} <= set(names)
+    # a helper never launches helpers, whatever flags the pass has
+    for flags in (frozenset(), frozenset({"helper"}), frozenset({"helper", "pool", "fork"})):
+        assert "delegate" not in [s.name for s in tool_spec.tools_for("helper", flags)]
 
 
 def test_the_analysts_setting_is_retired_loudly():
@@ -467,7 +622,7 @@ def test_the_real_helper_box_writes_only_work(tmp_path):
         {
             "t": [
                 _msg(_tc("x", "execute_code", {"code": code})),
-                _msg(_tc("d", "done", {"summary": "s"})),
+                _msg(_tc("d", "done", {"summary": "s", "claims": []})),
             ],
         },
     )
