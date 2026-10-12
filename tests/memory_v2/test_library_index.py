@@ -139,3 +139,18 @@ def test_sections_are_found_by_package_or_notes_topic(tmp_path):
         match="no index section 'memory.nope'; the sections are: memory.text",
     ):
         find_section(index, "nope")
+
+
+def test_a_functions_derived_effect_shows_beside_its_status(tmp_path):
+    lib = _lib(tmp_path)
+    links = build_links(lib)
+    effects = {"memory.text.dates:week": "write", "memory.text.parse:tokens": "read"}
+    index = render_index(lib, links, None, effects.get)
+    assert "- `memory.text.dates:week(s)` — The ISO week of a date. [experimental, effect: write]\n" in index
+    assert "Split text on whitespace. [experimental, effect: read]\n" in index
+    assert "Count the words of a text. [experimental]\n" in index  # none derived: status only
+    assert "effect: write" in INDEX_HEAD  # the head says what the bracket means
+    # no effect function: the index is byte for byte the one without effects
+    assert render_index(lib, links) == render_index(lib, links, None, lambda i: None)
+    # a value outside the known effects is never rendered
+    assert "effect" not in render_index(lib, links, None, lambda i: "bogus").split("\n## ", 1)[1]

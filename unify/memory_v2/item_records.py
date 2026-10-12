@@ -20,19 +20,28 @@ import json
 from collections.abc import Callable, Mapping
 
 from .gitio import GitError, Repo
-from .library_index import STATUSES
+from .library_index import EFFECTS, STATUSES
 
 NOTES_REF = "items"
 RECORD_VERSION = 1
 SCAN = 200
 _HEADER = "items_map"
-_USE_TOTAL_KEYS = ("episodes", "uses", "errors", "negative_signals", "positive_signals")
+_USE_TOTAL_KEYS = (
+    "episodes",
+    "uses",
+    "seen",
+    "errors",
+    "refused",
+    "negative_signals",
+    "positive_signals",
+)
 
 
 def empty_record(item: str, kind: str) -> dict:
-    """A record (spec §4.4) with the harness's own fields: why a status was given (``status_rule``,
-    ``status_reason``, ``status_evidence``), the commit that last changed the item, its input form and source
-    channels (D42), and the bisect result with the rollback proposal (§10.2)."""
+    """A record with the harness's own fields: why a status was given (``status_rule``, ``status_reason``,
+    ``status_evidence``), the commit that last changed the item, its input form and source channels, its
+    effect as the gate derived it from its covers (``read``, ``write``, ``unknown``; None: not derived), and
+    the bisect result with the rollback proposal."""
     return {
         "item": item,
         "kind": kind,
@@ -46,6 +55,7 @@ def empty_record(item: str, kind: str) -> dict:
         "use": {},
         "alias_of": None,
         "input": None,
+        "effect": None,
         "source_channels": [],
         "bisect": None,
         "rollback": None,
@@ -134,6 +144,17 @@ def status_of(records: Mapping[str, dict]) -> Callable[[str], str]:
         rec = records.get(item)
         s = rec.get("status") if isinstance(rec, dict) else None
         return s if s in STATUSES else "experimental"
+
+    return get
+
+
+def effect_of(records: Mapping[str, dict]) -> Callable[[str], str | None]:
+    """An item's recorded effect (``read``, ``write`` or ``unknown``), None when none was derived."""
+
+    def get(item: str) -> str | None:
+        rec = records.get(item)
+        e = rec.get("effect") if isinstance(rec, dict) else None
+        return e if e in EFFECTS else None
 
     return get
 

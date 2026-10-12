@@ -1,18 +1,22 @@
-"""The item lifecycle of memory v2.1 (spec §4.4, §10.1, §11; D38, D40). Deterministic; no model calls; run only
-at consolidation, so the prompt prefix changes only when a commit lands.
+"""The item lifecycle of a memory library (statuses, taint, failure-only provenance). Deterministic; no model
+calls; run only at consolidation, so the prompt prefix changes only when a commit lands.
 
 Use records come from each request's ``memory_use.json`` (:func:`.analysis.use.request_use`), keyed by the
 library commit the request was pinned to (``memory_main`` in its ``meta.json``). The evidence store indexes both
 when the episode is recorded (``episodes`` and ``item_use``), and :func:`facts_from_evidence` reads that index;
 :func:`facts_from_use` reads one record directly, and a test keeps the two equal.
 
-What counts (spec §5, §10.1):
-- an item is *used* in an episode when the episode imported or called it; a lookup through ``memory.show``,
-  ``index`` or ``find`` is not a use;
-- an *error* is a refusal (``MemoryInputError`` left it) or any other exception that left it;
+What counts:
+- an item is *used* in an episode when a call to it returned: the episode has more call sites of it than
+  exceptions that left it. An import, or a call that only raised, is exposure (*seen*), not use; a lookup
+  through ``memory.show``, ``index`` or ``find`` is neither;
+- an *error* is any exception other than a refusal that left it;
+- a *refusal* (``MemoryInputError`` left it: it declined an input it was not built for) is the input contract
+  working. Refusals are counted and reported in the use record and the status reason, and are never a failure;
 - a *positive* or *negative* signal is an episode-level signal the episode's regime can observe
   (``signals.REGIME_SOURCES``): checker ``pass``/``fail`` (only when the bed declares the verdict
   agent-visible), provenance ``support``/``correct``, reader ``correct``/``re_ask``, recurrence ``re_ask``;
+  it counts for an item only in an episode that used it;
 - in the regime with no signal (``none``) nothing but errors counts.
 
 Environment text is never read here.
@@ -28,11 +32,12 @@ from .evidence import EvidenceStore, _unknown_items
 from .signals import _CONTRARY, _SUPPORT, REGIME_SOURCES, Signal
 
 K_STABLE = 3
-MIN_EPISODES = 2  # one episode never decides a status (spec §10.1, §11 rule 4)
+MIN_EPISODES = 2  # one episode never decides a status
 NO_SIGNAL_REGIME = "none"
 USE_KEYS = (
     "episodes",
     "uses",
+    "seen",
     "errors",
     "refused",
     "negative_signals",
@@ -43,11 +48,41 @@ USE_KEYS = (
 
 @dataclass(frozen=True)
 class ItemUse:
-    used: bool  # imported or called
+    used: bool  # a call to it returned (see :func:`returned`)
     uses: int  # call sites (a static count, as analysis.use records it)
-    refused: bool  # its input check failed (MemoryInputError left it)
+    refused: bool  # it refused an input (MemoryInputError left it): reported, never a failure
     errored: bool  # another exception left it
     unknown: bool  # a cell with an unknown outcome could reach it: its counts are lower bounds
+    seen: bool = False  # imported or called without a call that returned: exposure only
+
+
+def returned(called: int, refused: int, errored: int) -> bool:
+    """Whether a call to an item returned in an episode, from its use record's static counts: more call sites
+    than exceptions that left it. Each exception that left it ended one call; a call site in a loop that raised
+    on a later iteration counts as not returned, so this errs towards "not used"."""
+    return called > refused + errored
+
+
+def _item_use(
+    imported: int,
+    called: int,
+    refused: int,
+    errored: int,
+    unknown: bool,
+) -> ItemUse | None:
+    """One item's facts in one episode, or None when the episode neither imported, called nor had an
+    exception leave it (a lookup or a bare reference)."""
+    if not (imported or called or refused or errored):
+        return None
+    used = returned(called, refused, errored)
+    return ItemUse(
+        used,
+        called,
+        refused > 0,
+        errored > 0,
+        unknown,
+        seen=not used and bool(imported or called),
+    )
 
 
 @dataclass(frozen=True)
@@ -68,9 +103,9 @@ def counted_signals(
 ) -> tuple[bool, bool]:
     """``(positive, negative)`` for one episode, from the signals the lifecycle may use (module docstring).
 
-    A ``checker`` verdict counts only when the signal itself carries ``visible_to_actor`` (P9) and the run allows
+    A ``checker`` verdict counts only when the signal itself carries ``visible_to_actor`` and the run allows
     such signals at all (*checker_visible*, the bed's ``checker_visible_to_actor``): a grader the actor never sees
-    is never used (P5 Amendment A). A source the regime cannot observe never counts, and in the no-signal regime
+    is never used. A source the regime cannot observe never counts, and in the no-signal regime
     nothing does."""
     if regime == NO_SIGNAL_REGIME:
         return False, False
@@ -110,17 +145,15 @@ def facts_from_use(
     for item, r in rows.items():
         if not isinstance(item, str) or not isinstance(r, dict):
             continue
-        imported, called = _n(r.get("imported")), _n(r.get("called"))
-        refused, errored = _n(r.get("refused")), _n(r.get("errored"))
-        if not (imported or called or refused or errored):
-            continue
-        items[item] = ItemUse(
-            bool(imported or called),
-            called,
-            refused > 0,
-            errored > 0,
+        u = _item_use(
+            _n(r.get("imported")),
+            _n(r.get("called")),
+            _n(r.get("refused")),
+            _n(r.get("errored")),
             item in unknown,
         )
+        if u is not None:
+            items[item] = u
     positive, negative = counted_signals(
         signals,
         regime,
@@ -151,14 +184,15 @@ def facts_from_evidence(
         "SELECT item, episode_id, imported, called, refused, errored, outcome_unknown FROM item_use "
         "ORDER BY episode_id, item",
     ):
-        if imported or called or refused or errored:
-            by_episode.setdefault(eid, {})[item] = ItemUse(
-                bool(imported or called),
-                int(called or 0),
-                (refused or 0) > 0,
-                (errored or 0) > 0,
-                bool(unknown),
-            )
+        u = _item_use(
+            int(imported or 0),
+            int(called or 0),
+            int(refused or 0),
+            int(errored or 0),
+            bool(unknown),
+        )
+        if u is not None:
+            by_episode.setdefault(eid, {})[item] = u
     out: list[EpisodeUse] = []
     for eid, main, regime in ev.db.execute(
         "SELECT episode_id, memory_main, regime FROM episodes ORDER BY seq",
@@ -185,10 +219,12 @@ def facts_from_evidence(
 
 
 def aggregate_use(facts: Iterable[EpisodeUse]) -> dict[str, dict[str, dict]]:
-    """The use record of every item (spec §4.4 ``use``): library commit -> counts. ``episodes`` used it,
-    ``uses`` are its call sites, ``errors`` the episodes in which it refused or raised (``refused`` those that
-    refused), ``negative_signals`` and ``positive_signals`` the episodes that used it and carry such a signal
-    (positive only without a negative one), ``unknown`` the episodes whose outcome for it is unknown.
+    """The use record of every item: library commit -> counts. ``episodes`` used it (a call returned),
+    ``uses`` are its call sites, ``seen`` the episodes that imported or called it without a call that returned,
+    ``errors`` the episodes in which an exception other than a refusal left it, ``refused`` those in which it
+    refused an input (reported, never a failure), ``negative_signals`` and ``positive_signals`` the episodes
+    that used it and carry such a signal (positive only without a negative one), ``unknown`` the episodes whose
+    outcome for it is unknown.
     """
     out: dict[str, dict[str, dict]] = {}
     for f in facts:
@@ -199,7 +235,8 @@ def aggregate_use(facts: Iterable[EpisodeUse]) -> dict[str, dict[str, dict]]:
             )
             row["uses"] += u.uses
             row["episodes"] += int(u.used)
-            row["errors"] += int(u.refused or u.errored)
+            row["seen"] += int(u.seen)
+            row["errors"] += int(u.errored)
             row["refused"] += int(u.refused)
             row["unknown"] += int(u.unknown)
             row["negative_signals"] += int(u.used and f.negative)
@@ -207,7 +244,7 @@ def aggregate_use(facts: Iterable[EpisodeUse]) -> dict[str, dict[str, dict]]:
     return {i: dict(sorted(c.items())) for i, c in sorted(out.items())}
 
 
-# --- statuses (spec §10.1) ----------------------------------------------------------------------------------
+# --- statuses -----------------------------------------------------------------------------------------------
 
 _HIDDEN_BY_RULE = ("suspect", "deprecated")
 
@@ -223,25 +260,27 @@ def decide_status(
 ) -> tuple[str, str | None, str | None, list[str]]:
     """``(status, rule, reason, evidence episodes)`` of *item* from the episodes that ran its current version.
 
-    - ``deprecated`` is CURATE's (P6) and is kept as it is.
-    - ``suspect`` (rule ``errors``): its input check failed or it raised in at least :data:`MIN_EPISODES`
-      episodes, in any regime.
+    - ``deprecated`` is CURATE's and is kept as it is.
+    - ``suspect`` (rule ``errors``): an exception other than a refusal left it in at least
+      :data:`MIN_EPISODES` episodes, in any regime.
     - ``suspect`` (rule ``negative_signals``): a negative signal followed its use in at least
       :data:`MIN_EPISODES` episodes, in regimes that have signals.
-    - ``stable``: used in at least :data:`K_STABLE` episodes, each with a known outcome, no error and no
-      negative signal, and no episode with an error or a negative signal. A ``stable`` item stays ``stable``
-      until a ``suspect`` rule fires: one episode never decides a status.
-    - otherwise ``experimental``.
+    - ``stable``: used (a call returned) in at least :data:`K_STABLE` episodes, each with a known outcome, no
+      error and no negative signal, and no episode with an error or a negative signal. A ``stable`` item stays
+      ``stable`` until a ``suspect`` rule fires: one episode never decides a status.
+    - otherwise ``experimental``. An import alone never promotes an item, and a refusal never demotes one: an
+      item that has only ever refused its inputs stays ``experimental``, and its reason says how often it
+      refused.
     """
     if prior == "deprecated":
         return "deprecated", None, None, []
     rows = [(f, f.items[item]) for f in facts if item in f.items]
-    failed = sorted({f.episode_id for f, u in rows if u.refused or u.errored})
+    failed = sorted({f.episode_id for f, u in rows if u.errored})
     if len(failed) >= MIN_EPISODES:
         return (
             "suspect",
             "errors",
-            f"its input check failed or it raised in {len(failed)} episodes",
+            f"it raised in {len(failed)} episodes",
             failed,
         )
     negative = sorted({f.episode_id for f, u in rows if u.used and _negative(f)})
@@ -256,14 +295,20 @@ def decide_status(
         {
             f.episode_id
             for f, u in rows
-            if u.used
-            and not u.unknown
-            and not (u.refused or u.errored)
-            and not _negative(f)
+            if u.used and not u.unknown and not u.errored and not _negative(f)
         },
     )
     if prior == "stable" or (not failed and not negative and len(clean) >= K_STABLE):
         return "stable", None, None, clean
+    refused = sorted({f.episode_id for f, u in rows if u.refused})
+    if refused and not any(u.used for _, u in rows):
+        return (
+            "experimental",
+            None,
+            f"it refused inputs it was not built for in {len(refused)} episodes and no call to it has "
+            "returned yet; a refusal is not a failure",
+            [],
+        )
     return "experimental", None, None, []
 
 
@@ -273,9 +318,9 @@ def taint(
     graph: Mapping[str, set[str]],
     note_uses: Mapping[str, list[str]],
 ) -> dict[str, tuple[str, list[str]]]:
-    """Items that depend on a ``suspect`` function (spec §10.1(c), §11 rule 3), with the reason and the items
+    """Items that depend on a ``suspect`` function, with the reason and the items
     behind it: every function of a module that imports the suspect function's module, directly or through
-    others (P3's import graph, whose package imports resolve to the defining module), and every note whose
+    others (the library's import graph, whose package imports resolve to the defining module), and every note whose
     ``uses:`` names a suspect or tainted function. Functions of the suspect function's own module are not
     tainted (the graph is per module). Items already ``suspect`` or ``deprecated`` are left out.
     """
@@ -298,11 +343,11 @@ def taint(
     return out
 
 
-# --- poisoning (spec §8.2 rule 3, §11 rule 1) ---------------------------------------------------------------
+# --- poisoning ----------------------------------------------------------------------------------------------
 
 
 def typed_cover_episodes(ev: EvidenceStore, item: str) -> list[str]:
-    """The episodes of *item*'s procedure covers (P4's ``typed_covers`` table, when the store has it)."""
+    """The episodes of *item*'s procedure covers (the ``typed_covers`` table, when the store has it)."""
     if (
         ev.db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='typed_covers'",
@@ -330,7 +375,7 @@ def failure_only(
 
     They are found through each negative episode's citing items (``signals.tainted_items``). A function is
     exempt when one of its recorded inputs (its covers, typed covers included) comes from an episode with a
-    positive signal: its tests then check a value from a successful episode (§8.2 rule 3's exception).
+    positive signal: its tests then check a value from a successful episode.
     """
     from .signals import tainted_items
 
@@ -404,11 +449,12 @@ def next_records(
     A function with failure-only provenance in at least :data:`MIN_EPISODES` episodes is ``suspect`` (rule
     ``failure_only``: it belongs in a note); with one such episode it is only flagged. Taint is applied last.
 
-    CURATE's decisions (P6, ``EvidenceStore.aliases()`` and ``curations()``), when given: a live alias is
+    CURATE's decisions (``EvidenceStore.aliases()`` and ``curations()``), when given: a live alias is
     ``deprecated`` with ``alias_of`` its target, and an item a landed CURATE pass retired is ``deprecated`` with
     its reason (rule ``curate``). Without them ``alias_of`` and ``deprecated`` carry over.
     """
     from .item_records import empty_record
+    from .library_index import EFFECTS
 
     verification, provenance = verification or {}, provenance or {}
     failure, channels = failure or {}, channels or {}
@@ -440,6 +486,9 @@ def next_records(
         v = verification.get(item) or (old.get("verification") if same else None)
         rec["verification"] = v
         rec["input"] = v.get("input") if isinstance(v, dict) else None
+        # the effect the gate derived from the item's covers (library_checks.derive_effect); None: not derived
+        effect = v.get("effect") if isinstance(v, dict) else None
+        rec["effect"] = effect if effect in EFFECTS else None
         rec["source_channels"] = sorted(channels.get(item, []))
         flagged = sorted(failure.get(item, []))
         p = provenance.get(item) or {}
@@ -454,10 +503,10 @@ def next_records(
         mine = [f for f in facts if f.memory_main in since.get(item, set())]
         status, rule, reason, evidence = decide_status(item, prior, mine)
         if item in unknown and status == "stable" and prior != "stable":
-            # its current version is not known (RUNTIME S1): the use counted may be an older version's
+            # its current version is not known: the use counted may be an older version's
             status, rule, evidence = "experimental", None, []
             reason = "not promoted to stable: the commit that last changed it is beyond the scanned history"
-        if rec["alias_of"]:  # CURATE (P6): the name forwards to its target
+        if rec["alias_of"]:  # CURATE: the name forwards to its target
             status, rule, evidence = "deprecated", "curate", []
             reason = f"an alias of {rec['alias_of']}"
         elif item in retired:
@@ -496,7 +545,7 @@ def next_records(
     return records, changes
 
 
-# --- at consolidation (spec §4.4, §10; D38, D40) ------------------------------------------------------------
+# --- at consolidation ---------------------------------------------------------------------------------------
 
 VERIFICATION_LINE = "library_mode-verification "
 
@@ -512,7 +561,7 @@ def _json_list(raw: Any) -> list:
 
 
 def verification_from_passes(ev: EvidenceStore) -> dict[str, dict]:
-    """The newest verification record (P4's ``library_mode-verification`` pass-row line) of each item a pass landed,
+    """The newest verification record (the gate's ``library_mode-verification`` pass-row line) of each item a pass landed,
     with the pass that landed it."""
     import json
 
@@ -556,7 +605,7 @@ def source_channels(
     items: Iterable[str],
     action_lookup: Any,
 ) -> dict[str, list[str]]:
-    """The channels of the recorded actions each item covers (D42: the source channel lives in the record)."""
+    """The channels of the recorded actions each item covers (the source channel lives in the record)."""
     out: dict[str, list[str]] = {}
     for item in sorted(items):
         seen: set[str] = set()
@@ -622,7 +671,7 @@ def consolidate_records(
     budget_s: float | None = None,
     clock: Any = None,
 ) -> dict:
-    """The item records of ``main``'s head, after a consolidation's passes (spec §4.4, §10).
+    """The item records of ``main``'s head, after a consolidation's passes.
 
     The bisects of one call share :data:`.item_bisect.BISECT_BUDGET_S` (*budget_s*), and *stop* (a callable, the
     worker's SIGTERM) is checked between probe runs. An item they do not reach is ``{"skipped": "budget"}`` (or
@@ -636,7 +685,7 @@ def consolidate_records(
     - When the head has a map and a status changed, one empty status commit lands on ``main`` and carries the
       new map (:meth:`.memory_repo.MemoryRepo.status_commit`). Otherwise nothing is written, and the use counts
       of this consolidation appear with the next commit's map.
-    - The map is written BEFORE any bisect (RUNTIME S1), so a bisect that is killed or runs long never holds back
+    - The map is written BEFORE any bisect, so a bisect that is killed or runs long never holds back
       the records. Then each ``suspect`` function (rules ``errors`` and ``negative_signals``) with no bisect of
       its current version is bisected (:func:`.item_bisect.bisect_item`), and a rollback target is proposed. A
       commit's map is never rewritten, so the result is stored in the evidence store (:func:`bisect_results`)
@@ -679,7 +728,7 @@ def consolidate_records(
     for i in sorted(items):
         if (
             changed_at[i] is None
-        ):  # beyond item_history's scan: read its own file's history (RUNTIME S1)
+        ):  # beyond item_history's scan: read its own file's history
             try:
                 own = versions_of(mem, i, head)
             except GitError:
@@ -706,7 +755,7 @@ def consolidate_records(
         provenance=provenance_from_evidence(ev, items),
         failure=failure_only(ev, functions, {f.episode_id: f for f in facts}),
         channels=source_channels(ev, items, action_lookup),
-        # CURATE's decisions (P6); getattr until P6 is integrated (a1 drops it)
+        # CURATE's decisions: live aliases and landed retirements
         aliases=ev.aliases(),
         curations=ev.curations(),
         unknown_version=unknown_version,
@@ -718,7 +767,7 @@ def consolidate_records(
         s = stored.get(item)
         if rec["bisect"] is None and s is not None and s[0] == rec["changed_at"]:
             rec["bisect"], rec["rollback"] = s[1], s[2]
-    # RUNTIME S1: the map is published BEFORE any bisect, so a killed or long bisect never holds back the records
+    # the map is published BEFORE any bisect, so a killed or long bisect never holds back the records
     noted = _publish(mem, head, records, changes)
     import time
 
@@ -814,7 +863,7 @@ def _publish(
 
         with main_lock(
             mem,
-        ):  # P7 Amendment A: the one writer of main; served exists before main moves
+        ):  # the one writer of main; served exists before main moves
             ensure_served(mem)
             noted = MemoryRepo(mem).status_commit(changes, evidence)
         write_records(mem, noted, records)

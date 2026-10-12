@@ -16,6 +16,9 @@ may touch and keep every old test passing against the new library. Documented li
   function taking the environment that covers a tool call recorded with effect ``write`` must declare
   ``Effect: write``. A call the environment did not declare an effect for (``unknown``) proves nothing,
   and a ``read`` or ``unknown`` declaration on a function covering no recorded write is not checked.
+  These docstring checks apply to environment functions only. A library function (``memory/<package>``)
+  declares no effect: its effect is derived from what it reproduces and recorded in its item record
+  (:func:`.library_checks.derive_effect`), so nothing is asked of the writer.
 * **Covers** prove that a real recorded observation of the right kind on the item's channel exists (a
   successful tool call, a shell output tail, a file blob, a dialogue observation; :mod:`.admission`), not
   that the item agrees with it: the item's own tests over recorded fixtures check that (spec F3).
@@ -145,7 +148,8 @@ The checks:
   environment function in ``items`` that covers a tool call whose recorded effect is ``write``
   (:attr:`.episodes.Action.effect`, the effect the environment declared for the method; never inferred from
   names) declares ``Effect: write``, unless its declared input is a recorded value (``path``, ``text``,
-  ``bytes``, ``observation``: it parses what a call returned and makes no call).
+  ``bytes``, ``observation``: it parses what a call returned and makes no call). A library function's effect
+  is derived, not declared (:func:`.library_checks.derive_effect`).
 
 Per-item admission (:meth:`Gate.merge`): a failure that belongs to manifest items refuses those items
 (and what depends on them, :mod:`.reduction`) instead of the pass, when no failure is pass-wide; the
@@ -3059,9 +3063,11 @@ class Gate:
                         f"{i.item_id} has no Effect: line",
                         i.item_id if i.item_id in listed_ids else None,
                     )
-            # structural Effect: a function that covers a recorded write call is a writer
-            for item in sorted(run.writes):
-                if effects.get(item, "write") != "write":
+            # structural Effect: an environment function that covers a recorded write call declares it. A
+            # library function in run.writes has no Effect: line to check; its effect is derived and recorded
+            # instead (library_checks.derive_effect)
+            for item in sorted(run.writes & set(effects)):
+                if effects[item] != "write":
                     run.fail(
                         "G6",
                         f"{item} covers a recorded write call, so it must declare Effect: write "

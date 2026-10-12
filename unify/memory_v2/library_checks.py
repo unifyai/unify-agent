@@ -125,6 +125,56 @@ def _no_episode(eid: str) -> Episode | None:
     return None
 
 
+def _tool_effect(effects: set[str]) -> str:
+    """The effect of a set of recorded tool-call effects: any write writes; an undeclared one says nothing."""
+    if "write" in effects:
+        return "write"
+    return "read" if effects and effects <= {"read"} else "unknown"
+
+
+def derive_effect(
+    typed_covers: list[Any],
+    covers: list[tuple[str, int, Action]],
+    form: str | None,
+    episode: Callable[[str], Episode | None],
+) -> str | None:
+    """A library function's effect, derived from what it reproduces: ``write``, ``read`` or ``unknown``.
+
+    Structural, from the recording only; the writer declares nothing (no docstring line):
+    - an ``episode`` cover run by the ``tool`` runner repeats the episode's tool calls, so it writes when the
+      episode recorded a write call, and is unknown when the episode's calls declare no effect;
+    - an ``episode`` cover run by the ``worktree`` runner changes files: it writes;
+    - an action cover on a tool call has that call's recorded effect, unless the function's declared input is
+      a recorded value (it parses what a call returned and makes no call itself);
+    - other covers (a cell, a diff, a dialogue procedure, files, shell output) record no call it makes.
+    The strongest wins: ``write``, then ``unknown``, then ``read``. None for a function with no cover at all.
+    """
+    from .gate import _VALUE_FORMS
+
+    found: set[str] = set()
+    for c in typed_covers:
+        if getattr(c, "type", None) != "episode":
+            continue
+        if c.runner == "worktree":
+            found.add("write")
+        elif c.runner == "tool":
+            ep = episode(c.episode)
+            effects = {
+                str(getattr(a, "effect", "unknown"))
+                for a in (ep.actions if ep is not None else [])
+                if getattr(a, "kind", "tool") == "tool"
+            }
+            found.add(_tool_effect(effects))
+    if form not in _VALUE_FORMS:
+        for _, _, a in covers:
+            if getattr(a, "kind", "tool") == "tool":
+                found.add(_tool_effect({str(getattr(a, "effect", "unknown"))}))
+    for effect in ("write", "unknown", "read"):
+        if effect in found:
+            return effect
+    return "read" if (typed_covers or covers) else None
+
+
 def _no_snapshot(sha: str, dest: Path) -> Path | None:
     return None
 
@@ -334,7 +384,23 @@ class LibraryChecks:
             run.fail("G1", f"fixture provenance: {problem}", owners)
 
     # -- G2 -------------------------------------------------------------------------------------------------
+    def effects(self) -> None:
+        """Record each manifest function's effect (:func:`derive_effect`) in its verification record, from which
+        the item record and the index take it. Measured, never a refusal."""
+        for it in self._functions():
+            forms = getattr(self.gate, "_forms_library_mode", None)
+            form = forms(self.run, it.item)[1] if forms is not None else it.input
+            effect = derive_effect(
+                list(getattr(it, "typed_covers", [])),
+                self._covers(it),
+                form,
+                self.ep,
+            )
+            if effect is not None:
+                self._record(it.item)["effect"] = effect
+
     def g2(self) -> None:
+        self.effects()
         n = 0
         for it in self._functions():
             for cover in getattr(it, "typed_covers", []):

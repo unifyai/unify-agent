@@ -16,7 +16,9 @@ ZERO = {
     "commits": 0,
     "episodes": 0,
     "uses": 0,
+    "seen": 0,
     "errors": 0,
+    "refused": 0,
     "negative_signals": 0,
     "positive_signals": 0,
 }
@@ -143,8 +145,21 @@ def test_summaries_for_show():
         "commits": 2,
         "episodes": 3,
         "uses": 4,
+        "seen": 0,  # a record written before "seen" existed reads as 0
         "errors": 1,
+        "refused": 1,  # refusals are reported beside errors
         "negative_signals": 0,
         "positive_signals": 1,
     }
     assert ir.verification_summary(_rec()) is None and ir.use_totals(_rec()) == ZERO
+
+
+def test_the_effect_is_a_record_field_read_through_effect_of():
+    assert ir.empty_record(ITEM, "function")["effect"] is None
+    recs = {
+        ITEM: _rec(effect="write"),
+        "memory.text.dates:day": _rec("memory.text.dates:day", effect="nonsense"),
+    }
+    get = ir.effect_of(recs)
+    assert get(ITEM) == "write"
+    assert get("memory.text.dates:day") is None and get("memory.x.y:z") is None

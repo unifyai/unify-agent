@@ -1,18 +1,23 @@
-"""CURATE, the writer's second role (spec v2.1 §10.3-10.4, §12.3, D36): when it runs, what it reads, its brief.
+"""CURATE, the writer's second role: when it runs, what it reads, its brief.
 
-**When.** CURATE runs only after a WRITE pass's gate, and only when the library's state warrants it (§10.3):
-there are overlap candidates (:mod:`.overlap`), there are ``suspect`` items (P5's item records), or the index the
+**When.** CURATE runs only after a WRITE pass's gate, and only when the library's state warrants it:
+there are overlap candidates (:mod:`.overlap`), there are ``suspect`` items (the item records), or the index the
 prompt would carry exceeds ``INDEX_VIEW_TOKENS``. :func:`due` reads one library commit, its records and the
-fingerprints earlier CURATE passes were shown. It reads no episode count, stream position or stream boundary.
+fingerprints earlier CURATE passes settled. It reads no episode count, stream position or stream boundary.
 
-**Shown once.** Each reason has a fingerprint: an overlap candidate's (:func:`.overlap.fingerprint`); a suspect
-item's, from its definition and its reasons; the index's, from the library commit. The driver records the
-fingerprints each CURATE pass was shown, whatever its outcome, and :func:`due` returns only those no CURATE pass
-has been shown. A candidate CURATE kept apart, or could not resolve, fires again only once its content changes, so
-CURATE runs at most once per new library state.
+**Settled, not just shown.** Each reason has a fingerprint: an overlap candidate's (:func:`.overlap.fingerprint`);
+a suspect item's, from its definition and its reasons; the index's, from the library commit. Each reason also
+names the items it is about (:func:`named`). After a CURATE pass the driver records as settled only the reasons
+the pass dealt with (:func:`settled`): it changed an item the reason names (the gate landed it changed, aliased,
+retired or deleted it), or its manifest keeps one of them with a reason (``kept``: item id, or ``INDEX.md`` for the
+index, -> a one-line reason). :func:`due` returns the reasons not settled, so a reason a pass left untouched fires
+again next time, and a settled one fires again only once its content changes.
 
-**Inputs** go under ``/inputs/curate/`` (:func:`stage_inputs`). **The brief** is :data:`CURATE_BRIEF_LIBRARY`, written
-from §10.4 and §12.3; P7 owns its final text, which the lead reviews.
+Closed candidate-pool entries are not a CURATE input: the pool is the WRITE role's (CURATE gets no pool tool), so
+new evidence on a closed entry reaches the next WRITE pass through the pool's own index, never this trigger.
+
+**Inputs** go under ``/inputs/curate/`` (:func:`stage_inputs`). **The brief** placeholder is :data:`CURATE_BRIEF_LIBRARY`;
+the brief the writer gets lives with the other writer briefs (:mod:`.library_prompts`).
 """
 
 from __future__ import annotations
@@ -25,12 +30,12 @@ from pathlib import Path
 from .library_index import INDEX_VIEW_TOKENS
 
 CURATE_DIR = "curate"
-# the paths CURATE's brief names (P7's library_prompts), as stage_inputs writes them
+# the paths CURATE's brief names (library_prompts), as stage_inputs writes them
 OVERLAPS_INPUT = "/inputs/curate/overlap.json"
 SUSPECTS_INPUT = "/inputs/curate/suspects.json"
 TRIGGER_INPUT = "/inputs/curate/trigger.json"
 
-#: CURATE's brief (spec §10.4 in prompt form, with §12.3's inputs). A placeholder: P7 writes the reviewed text.
+#: CURATE's brief, a placeholder: the reviewed text lives in library_prompts.
 CURATE_BRIEF_LIBRARY = """\
 You curate a shared library of tested Python functions and linked markdown notes. A cheaper working model uses
 the library while it works. Your job is to keep the library small, correct and easy to navigate. Another pass adds
@@ -50,8 +55,9 @@ Your inputs, read-only, under /inputs/curate/:
   recorded input shapes match and whose covers overlap; functions whose bodies anti-unify, with the generalised
   body (each hole is a place where they differ); and notes that use the same set of functions. A candidate is
   evidence, not an order: merge only what does the same job.
-- suspects.json: items whose use went wrong in two or more requests (an input check failed, an error was raised,
-  or a negative signal followed their use), or that depend on such an item. For each: the requests involved, the
+- suspects.json: items whose use went wrong in two or more requests (an error was raised, or a negative signal
+  followed their use; refusing an input the item was not built for is not a failure), or that depend on such an
+  item. For each: the requests involved, the
   bisect result (the first version whose behaviour changed on its recorded inputs) and, when an earlier version
   has a clean use record, that version as the proposed rollback target. rollback/ holds its files.
 - use.json: how each item was used (imported, called, shown, found), with errors and signals, per library commit.
@@ -142,14 +148,14 @@ class CurateState:
     suspects: dict[
         str,
         dict,
-    ]  # P5: item -> {"reasons", "episodes", "bisect", "rollback"}
+    ]  # item -> {"reasons", "episodes", "bisect", "rollback"}
     index_tokens: (
         int | None
     )  # tokens of the INDEX.md the prompt would carry (None: not built)
     bodies: dict[str, str] = field(
         default_factory=dict,
     )  # item -> unparsed definition (layout.function_bodies)
-    use: dict[str, dict] = field(default_factory=dict)  # P5's use records by item
+    use: dict[str, dict] = field(default_factory=dict)  # the use records by item
     history: dict[str, list[str]] = field(
         default_factory=dict,
     )  # library_export.item_history
@@ -174,23 +180,98 @@ def _canon(obj: object) -> str:
     )
 
 
-def reasons(state: CurateState, *, budget: int = INDEX_VIEW_TOKENS) -> dict[str, str]:
-    """fingerprint -> reason line, for every reason CURATE is warranted on *state* (shown before or not)."""
-    out: dict[str, str] = {}
+#: the name a ``kept`` entry uses for the index reason (it names no item)
+INDEX_NAME = "INDEX.md"
+
+
+def _reasons(
+    state: CurateState,
+    budget: int,
+) -> dict[str, tuple[str, list[str]]]:
+    out: dict[str, tuple[str, list[str]]] = {}
     for c in state.overlap.get("candidates", []):
-        out[c["fingerprint"]] = f"overlap ({c['rule']}): " + ", ".join(c["items"])
+        items = [str(i) for i in c["items"]]
+        out[c["fingerprint"]] = (f"overlap ({c['rule']}): " + ", ".join(items), items)
     for item in sorted(state.suspects):
         why = sorted(str(r) for r in (state.suspects[item] or {}).get("reasons", []))
         digest = hashlib.sha256(
             _canon([item, state.bodies.get(item, ""), why]).encode("utf-8"),
         ).hexdigest()
-        out["suspect:" + digest] = f"suspect: {item}" + (
-            f" ({'; '.join(why)})" if why else ""
-        )
+        line = f"suspect: {item}" + (f" ({'; '.join(why)})" if why else "")
+        out["suspect:" + digest] = (line, [item])
     if state.index_tokens is not None and state.index_tokens > budget:
         out[f"index:{state.commit}"] = (
-            f"index: {state.index_tokens} tokens, over its {budget}-token view"
+            f"index: {state.index_tokens} tokens, over its {budget}-token view",
+            [INDEX_NAME],
         )
+    return out
+
+
+def reasons(state: CurateState, *, budget: int = INDEX_VIEW_TOKENS) -> dict[str, str]:
+    """fingerprint -> reason line, for every reason CURATE is warranted on *state* (settled before or not)."""
+    return {fp: line for fp, (line, _) in _reasons(state, budget).items()}
+
+
+def named(state: CurateState, *, budget: int = INDEX_VIEW_TOKENS) -> dict[str, list[str]]:
+    """fingerprint -> the items each reason names (the index reason names :data:`INDEX_NAME`)."""
+    return {fp: items for fp, (_, items) in _reasons(state, budget).items()}
+
+
+def kept(manifest: object) -> dict[str, str]:
+    """The manifest's ``kept`` block: item id (or :data:`INDEX_NAME`) -> the one-line reason it stays as it is.
+    An entry without a non-empty reason is no keep."""
+    block = manifest.get("kept") if isinstance(manifest, dict) else None
+    if not isinstance(block, dict):
+        return {}
+    return {
+        k: " ".join(v.split())
+        for k, v in block.items()
+        if isinstance(k, str) and isinstance(v, str) and v.strip()
+    }
+
+
+def changed_items(
+    pass_id: str,
+    landed: bool,
+    items_merged: list[str],
+    curations: list[dict],
+    manifest: object = None,
+) -> set[str]:
+    """The items CURATE pass *pass_id* changed: nothing unless the gate landed it; then every item it landed
+    (added or changed), aliased, retired or dropped an alias of (its curation rows), and every item its manifest
+    deleted."""
+    if not landed:
+        return set()
+    out = {i for i in items_merged if isinstance(i, str)}
+    for r in curations:
+        if r.get("pass_id") == pass_id:
+            out |= {x for x in (r.get("item"), r.get("target")) if isinstance(x, str)}
+    if isinstance(manifest, dict) and isinstance(manifest.get("deleted"), list):
+        out |= {x for x in manifest["deleted"] if isinstance(x, str)}
+    return out
+
+
+def settled(
+    state: CurateState,
+    changed: set[str],
+    keeps: dict[str, str],
+    *,
+    budget: int = INDEX_VIEW_TOKENS,
+) -> list[str]:
+    """The fingerprints of the reasons this pass fired that it dealt with, sorted: it changed an item the reason
+    names, or kept one with a reason. The index reason is dealt with by any landed change (the index is rebuilt
+    from the changed library) or a keep of :data:`INDEX_NAME`. Every other fired reason fires again."""
+    names = named(state, budget=budget)
+    out = []
+    for fp in sorted(state.fired):
+        items = names.get(fp, [])
+        if any(i in keeps for i in items):
+            out.append(fp)
+        elif INDEX_NAME in items:
+            if changed:
+                out.append(fp)
+        elif any(i in changed for i in items):
+            out.append(fp)
     return out
 
 
@@ -200,7 +281,8 @@ def due(
     *,
     budget: int = INDEX_VIEW_TOKENS,
 ) -> dict[str, str]:
-    """The reasons on *state* that no CURATE pass has been shown (spec §10.3); empty when CURATE is not due."""
+    """The reasons on *state* that no CURATE pass has settled (*seen*: the settled fingerprints); empty when
+    CURATE is not due."""
     return {
         fp: line for fp, line in reasons(state, budget=budget).items() if fp not in seen
     }
@@ -222,7 +304,7 @@ def _safe(rel: str) -> bool:
 
 
 def same_shape(bodies: dict[str, str]) -> list[list[str]]:
-    """r5 S3: groups of library functions whose definitions are the same after renaming names and lifting
+    """Groups of library functions whose definitions are the same after renaming names and lifting
     literals (:mod:`.mining`'s tier (a)); each group sorted, groups sorted."""
     from .mining import _parse, keep_names, normalise
 
@@ -237,7 +319,7 @@ def same_shape(bodies: dict[str, str]) -> list[list[str]]:
 
 
 def stage_inputs(inputs: Path, state: CurateState) -> list[str]:
-    """Write CURATE's inputs under ``<inputs>/curate/`` (spec §12.3) and return their virtual paths, sorted.
+    """Write CURATE's inputs under ``<inputs>/curate/`` and return their virtual paths, sorted.
 
     trigger.json (why this pass runs), overlap.json, suspects.json (with bisect results and rollback targets),
     use.json, history.json, aliases.json (each live alias, and whether this pass may remove it: one added by the
@@ -250,7 +332,7 @@ def stage_inputs(inputs: Path, state: CurateState) -> list[str]:
         root / "trigger.json",
         {"commit": state.commit, "reasons": sorted(state.fired.values())},
     )
-    # r5 S3: functions with the same shape, for merging (by structure; the use counts are in use.json)
+    # functions with the same shape, for merging (by structure; the use counts are in use.json)
     _write_json(root / "same_shape.json", {"groups": same_shape(state.bodies)})
     _write_json(root / "overlap.json", state.overlap)
     _write_json(root / "suspects.json", state.suspects)
@@ -295,12 +377,16 @@ def message(state: CurateState) -> str:
         "This CURATE pass runs because:\n"
         + "\n".join(f"- {line}" for line in lines)
         + "\n\nIts inputs are under /inputs/curate/: trigger.json, overlap.json, suspects.json, use.json, "
-        "history.json, aliases.json and rollback/."
+        "history.json, aliases.json and rollback/.\n\n"
+        "A reason counts as dealt with when this pass lands a change to an item it names (changed, aliased, "
+        "retired or deleted), or when the manifest keeps one of its items as it is with a one-line reason: "
+        '"kept": {"<item>": "<why it stays as it is>"} ("INDEX.md" for the index reason). Any other reason is '
+        "listed again in the next CURATE pass."
     )
 
 
 def trailers(manifest: object) -> dict[str, list[str]]:
-    """``Why:`` and ``Items:`` trailers of a CURATE commit (spec §10.4) from its manifest: the one-line why, and every
+    """``Why:`` and ``Items:`` trailers of a CURATE commit from its manifest: the one-line why, and every
     item it adds, changes, deletes, aliases or retires. Values are one line each (a trailer holds no newline).
     """
     if not isinstance(manifest, dict):

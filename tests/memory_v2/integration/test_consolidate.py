@@ -1323,10 +1323,53 @@ def test_curate_runs_after_write_when_the_library_state_warrants_it(
         "role": "system",
         "content": curate_brief_now(),
     }  # P7's brief
-    # the library is unchanged and CURATE was shown these reasons: the next WRITE pass runs alone
+    # CURATE changed nothing and kept nothing with a reason: its reasons are not settled, so they fire again
+    assert stores.evidence.curate_seen() == set()
     sha2, _ = _record(stores, "e2", minute=1)
-    assert [o.pass_id for o in _run21(stores, "e2", sha2)] == ["e2.p0"]
-    assert _kinds(stores) == ["batched", "curate", "batched"]
+    assert [o.pass_id for o in _run21(stores, "e2", sha2)] == ["e2.p0", "e2.p1"]
+    assert _kinds(stores) == ["batched", "curate", "batched", "curate"]
+
+
+def test_a_curate_reason_is_settled_by_a_kept_entry_in_the_writers_manifest(tmp_path):
+    from unify.memory_v2 import curate as cu
+
+    stores = _stores(tmp_path)
+    state = cu.CurateState(
+        commit="c" * 40,
+        overlap={
+            "version": 1,
+            "candidates": [
+                {
+                    "rule": "antiunify",
+                    "items": [TOKENS, SPLIT_ID],
+                    "fingerprint": "overlap:1",
+                },
+            ],
+            "truncated": [],
+        },
+        suspects={},
+        index_tokens=None,
+    )
+    state.fired = cu.due(state, set())
+    unfinished = SimpleNamespace(passed=False, commit=None, items_merged=[])
+    keep = SimpleNamespace(
+        final_manifest={"kept": {SPLIT_ID: "splits on a different separator"}},
+    )
+    assert consolidate._curate_settled(stores, "c1", state, unfinished, keep) == [
+        "overlap:1",
+    ]
+    # no accepted manifest (the pass never finished) and nothing landed: nothing is settled
+    assert (
+        consolidate._curate_settled(stores, "c1", state, None, SimpleNamespace()) == []
+    )
+    landed = SimpleNamespace(passed=True, commit="d" * 40, items_merged=[TOKENS])
+    assert consolidate._curate_settled(
+        stores,
+        "c1",
+        state,
+        landed,
+        SimpleNamespace(),
+    ) == ["overlap:1"]
 
 
 def test_no_curate_on_a_library_with_nothing_to_curate(tmp_path, monkeypatch):

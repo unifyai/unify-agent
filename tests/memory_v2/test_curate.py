@@ -257,3 +257,71 @@ def test_curate_tables_are_lazy_and_round_trip(tmp_path):
         "INSERT INTO typed_covers VALUES('memory.a.b:f', 'e1', '{\"type\": \"diff\"}')",
     )
     assert ev.typed_covers() == [("memory.a.b:f", "e1", '{"type": "diff"}')]
+
+
+def _fired(**kw):
+    st = _state(
+        overlap=OVERLAP,
+        suspects={F: {"reasons": ["raised in 2 episodes"]}},
+        bodies={F: BODY},
+        index_tokens=5000,
+        **kw,
+    )
+    st.fired = cu.due(st, set())
+    return st
+
+
+def _fp(st, prefix):
+    (fp,) = [f for f in st.fired if f.startswith(prefix)]
+    return fp
+
+
+def test_each_reason_names_its_items():
+    st = _fired()
+    names = cu.named(st)
+    assert names[_fp(st, "overlap:")] == [F, "memory.a.c:g"]
+    assert names[_fp(st, "suspect:")] == [F]
+    assert names[_fp(st, "index:")] == [cu.INDEX_NAME]
+
+
+def test_a_pass_that_changed_nothing_and_kept_nothing_settles_nothing():
+    st = _fired()
+    assert cu.settled(st, set(), {}) == []
+    # every reason fires again next time
+    assert cu.due(st, set(cu.settled(st, set(), {}))) == st.fired
+
+
+def test_a_reason_is_settled_when_the_pass_changed_an_item_it_names():
+    st = _fired()
+    # an alias of the overlap's second item: the overlap and the index are dealt with, the suspect is not
+    got = cu.settled(st, {"memory.a.c:g"}, {})
+    assert got == sorted([_fp(st, "overlap:"), _fp(st, "index:")])
+    assert list(cu.due(st, set(got)).values()) == ["suspect: memory.a.b:f (raised in 2 episodes)"]
+
+
+def test_a_reason_is_settled_by_an_explicit_keep_with_a_reason():
+    st = _fired()
+    keeps = cu.kept({"kept": {"memory.a.c:g": "different jobs: one parses, one prints"}})
+    assert cu.settled(st, set(), keeps) == [_fp(st, "overlap:")]
+    assert cu.settled(st, set(), cu.kept({"kept": {cu.INDEX_NAME: "every section is needed"}})) == [
+        _fp(st, "index:"),
+    ]
+    # a keep without a reason is no keep
+    assert cu.kept({"kept": {F: "  ", "memory.a.c:g": None, 3: "x"}}) == {}
+    assert cu.kept({"kept": ["memory.a.c:g"]}) == {} and cu.kept(None) == {}
+
+
+def test_changed_items_come_only_from_a_landed_pass():
+    curations = [
+        {"pass_id": "c1", "item": "memory.a.b:old", "action": "alias", "target": F},
+        {"pass_id": "c1", "item": "memory.a.b:gone", "action": "retire", "target": None},
+        {"pass_id": "c0", "item": "memory.z.z:z", "action": "retire", "target": None},
+    ]
+    manifest = {"deleted": ["memory.a.b:old", "memory.a.b:gone", "memory.a.b:dropped"]}
+    assert cu.changed_items("c1", False, [F], curations, manifest) == set()
+    assert cu.changed_items("c1", True, [F], curations, manifest) == {
+        F,
+        "memory.a.b:old",
+        "memory.a.b:gone",
+        "memory.a.b:dropped",
+    }
