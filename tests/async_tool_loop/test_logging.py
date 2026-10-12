@@ -1,17 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 import re
 import pytest
 
+from tests.scripted_model import ScriptedModel, reply, scripted
 from unify.common.async_tool_loop import start_async_tool_loop
 from unify.events.event_bus import EVENT_BUS
 from unify.common.llm_client import new_llm_client, PendingThinkingLog
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 async def test_nested_logging_hierarchy_labels(llm_config):
     """
     Verify that nested async tool loops emit ToolLoop events with hierarchical
@@ -21,6 +22,9 @@ async def test_nested_logging_hierarchy_labels(llm_config):
     (loop_id="Inner"). We assert that events exist for both levels:
     - hierarchy == ["Outer"]
     - hierarchy == ["Outer", "Inner"] with label "Outer -> Inner"
+
+    The model is scripted. The outer loop awaits the inner loop, so the
+    requests come in a fixed order: outer, inner, inner, outer.
     """
 
     # ── inner tool: trivial sync function ──────────────────────────────────
@@ -54,25 +58,43 @@ async def test_nested_logging_hierarchy_labels(llm_config):
     outer_tool.__qualname__ = "outer_tool"
 
     # ── top-level loop: uses the outer tool ────────────────────────────────
-    client = new_llm_client(**llm_config)
-    client.set_system_message(
-        "You are running inside an automated test. Perform the steps exactly:\n"
-        "1️⃣  Call `outer_tool` with no arguments.\n"
-        "2️⃣  Once it is completed, respond with exactly 'outer done'.",
+    model = ScriptedModel(
+        actor=[
+            reply(calls=[("outer_tool", {})]),
+            reply(calls=[("inner_tool", {})]),
+            reply("done"),
+            reply("outer done"),
+        ],
     )
+    with scripted(model):
+        client = new_llm_client(**llm_config)
+        client.set_system_message(
+            "You are running inside an automated test. Perform the steps exactly:\n"
+            "1️⃣  Call `outer_tool` with no arguments.\n"
+            "2️⃣  Once it is completed, respond with exactly 'outer done'.",
+        )
 
-    handle = start_async_tool_loop(
-        client=client,
-        message="start",
-        tools={"outer_tool": outer_tool},
-        loop_id="Outer",
-        max_steps=10,
-        timeout=240,
-    )
+        handle = start_async_tool_loop(
+            client=client,
+            message="start",
+            tools={"outer_tool": outer_tool},
+            loop_id="Outer",
+            max_steps=10,
+            timeout=240,
+        )
 
-    # Wait for completion
-    final_reply = await handle.result()
-    assert final_reply is not None, "Loop should complete with a response"
+        # Wait for completion
+        final_reply = await asyncio.wait_for(handle.result(), 60)
+    assert final_reply == "outer done"
+    # The inner loop's requests offer the inner tool, the outer loop's the
+    # outer one: each reply went to the loop it was written for.
+    tools_per_request = [set(c.tool_names) for c in model.calls]
+    assert [("outer_tool" in t, "inner_tool" in t) for t in tools_per_request] == [
+        (True, False),
+        (False, True),
+        (False, True),
+        (True, False),
+    ]
 
     # Gather recent ToolLoop events
     events = EVENT_BUS.search(filter="type == 'ToolLoop'", limit=200)
@@ -107,10 +129,10 @@ async def test_nested_logging_hierarchy_labels(llm_config):
     assert (
         has_outer_inner_label
     ), "No ToolLoop event recorded with hierarchy_label 'Outer -> Inner'"
+    assert model.kinds() == ["actor"] * 4
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 async def test_single_loop_logging_hierarchy_label(llm_config):
     """
     Verify that a single (non-nested) async tool loop emits ToolLoop events
@@ -126,22 +148,24 @@ async def test_single_loop_logging_hierarchy_label(llm_config):
     def noop_tool() -> str:  # noqa: D401
         return "ok"
 
-    client = new_llm_client(**llm_config)
-    client.set_system_message(
-        "1️⃣  Call `noop_tool`. 2️⃣ Then reply exactly 'done'.",
-    )
+    model = ScriptedModel(actor=[reply(calls=[("noop_tool", {})]), reply("done")])
+    with scripted(model):
+        client = new_llm_client(**llm_config)
+        client.set_system_message(
+            "1️⃣  Call `noop_tool`. 2️⃣ Then reply exactly 'done'.",
+        )
 
-    handle = start_async_tool_loop(
-        client=client,
-        message="start",
-        tools={"noop_tool": noop_tool},
-        loop_id="Solo",
-        max_steps=10,
-        timeout=120,
-    )
+        handle = start_async_tool_loop(
+            client=client,
+            message="start",
+            tools={"noop_tool": noop_tool},
+            loop_id="Solo",
+            max_steps=10,
+            timeout=120,
+        )
 
-    final_reply = await handle.result()
-    assert final_reply is not None, "Loop should complete with a response"
+        final_reply = await asyncio.wait_for(handle.result(), 60)
+    assert final_reply == "done"
 
     events = EVENT_BUS.search(filter="type == 'ToolLoop'", limit=200)
 
@@ -169,10 +193,10 @@ async def test_single_loop_logging_hierarchy_label(llm_config):
     assert has_solo, "No ToolLoop event recorded with hierarchy ['Solo']"
     assert has_solo_label, "No ToolLoop event recorded with hierarchy_label 'Solo'"
     assert not has_nested_under_solo, "Unexpected nested hierarchy found under 'Solo'"
+    assert model.kinds() == ["actor", "actor"]
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 async def test_litellm_logs_are_suppressed(llm_config, caplog):
     """
     Verify that LiteLLM logs are suppressed by our logging configuration.
@@ -180,6 +204,13 @@ async def test_litellm_logs_are_suppressed(llm_config, caplog):
     LiteLLM creates loggers like 'LiteLLM', 'LiteLLM Proxy', 'LiteLLM Router'.
     These should be muted to WARNING level so INFO logs don't pollute output.
     This test catches regressions if LiteLLM changes logger names or adds new ones.
+
+    The model is scripted, and the scripted transport sits below the request
+    building but above LiteLLM, so no LiteLLM code runs during the loop and
+    the loop alone would prove nothing. So after the loop every logger whose
+    name contains "litellm" is checked directly: its effective level is
+    WARNING or higher, and an INFO record emitted on it does not reach the
+    captured records.
     """
     import logging
 
@@ -189,21 +220,24 @@ async def test_litellm_logs_are_suppressed(llm_config, caplog):
     def noop_tool() -> str:
         return "ok"
 
-    client = new_llm_client(**llm_config)
-    client.set_system_message("Call noop_tool, then reply 'done'.")
+    model = ScriptedModel(actor=[reply(calls=[("noop_tool", {})]), reply("done")])
+    with scripted(model):
+        client = new_llm_client(**llm_config)
+        client.set_system_message("Call noop_tool, then reply 'done'.")
 
-    handle = start_async_tool_loop(
-        client=client,
-        message="start",
-        tools={"noop_tool": noop_tool},
-        loop_id="LiteLLMTest",
-        max_steps=5,
-        timeout=60,
-    )
+        handle = start_async_tool_loop(
+            client=client,
+            message="start",
+            tools={"noop_tool": noop_tool},
+            loop_id="LiteLLMTest",
+            # Room for the tool call, its result and the final reply.
+            max_steps=10,
+            timeout=60,
+        )
 
-    await handle.result()
+        assert await asyncio.wait_for(handle.result(), 60) == "done"
 
-    # Check that no log records come from LiteLLM loggers
+    # Check that no log records came from LiteLLM loggers during the loop
     litellm_logs = [
         record for record in caplog.records if "litellm" in record.name.lower()
     ]
@@ -212,6 +246,28 @@ async def test_litellm_logs_are_suppressed(llm_config, caplog):
         f"Found {len(litellm_logs)} log(s) from LiteLLM loggers that should be suppressed. "
         f"Logger names: {sorted(set(r.name for r in litellm_logs))}"
     )
+
+    # Every LiteLLM logger is muted below WARNING. Placeholders (names only
+    # used as a dotted prefix) are not loggers and are skipped.
+    names = sorted(
+        name
+        for name, obj in logging.root.manager.loggerDict.items()
+        if "litellm" in name.lower() and isinstance(obj, logging.Logger)
+    )
+    assert "LiteLLM" in names, f"LiteLLM's logger was not found: {names}"
+    too_verbose = {
+        name: logging.getLevelName(logging.getLogger(name).getEffectiveLevel())
+        for name in names
+        if logging.getLogger(name).getEffectiveLevel() < logging.WARNING
+    }
+    assert not too_verbose, f"LiteLLM loggers below WARNING: {too_verbose}"
+
+    caplog.clear()
+    for name in names:
+        logging.getLogger(name).info("an INFO record that must be suppressed")
+    leaked = sorted({r.name for r in caplog.records})
+    assert not leaked, f"INFO records from LiteLLM loggers were captured: {leaked}"
+    assert model.kinds() == ["actor", "actor"]
 
 
 @pytest.mark.asyncio
@@ -319,11 +375,13 @@ async def test_inline_log_file_paths(unify_logs, tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 async def test_thinking_log_fallback_without_log_dir(llm_config, unify_logs):
     """
     When UNILLM_LOG_DIR is NOT set, the async tool loop should still emit
     plain "🧠 LLM thinking…" lines (without a filepath) as a fallback.
+
+    The model is scripted; as test_inline_log_file_paths shows, the thinking
+    lines are emitted with a scripted transport too.
     """
     import unillm.logger as unillm_logger
 
@@ -336,19 +394,24 @@ async def test_thinking_log_fallback_without_log_dir(llm_config, unify_logs):
         def noop_tool() -> str:
             return "ok"
 
-        client = new_llm_client(**llm_config)
-        client.set_system_message("Call noop_tool, then reply 'done'.")
-
-        handle = start_async_tool_loop(
-            client=client,
-            message="start",
-            tools={"noop_tool": noop_tool},
-            loop_id="FallbackTest",
-            max_steps=5,
-            timeout=60,
+        model = ScriptedModel(
+            actor=[reply(calls=[("noop_tool", {})]), reply("done")],
         )
+        with scripted(model):
+            client = new_llm_client(**llm_config)
+            client.set_system_message("Call noop_tool, then reply 'done'.")
 
-        await handle.result()
+            handle = start_async_tool_loop(
+                client=client,
+                message="start",
+                tools={"noop_tool": noop_tool},
+                loop_id="FallbackTest",
+                # Room for the tool call, its result and the final reply.
+                max_steps=10,
+                timeout=60,
+            )
+
+            assert await asyncio.wait_for(handle.result(), 60) == "done"
 
         logged_lines = unify_logs.text.splitlines()
 
@@ -368,6 +431,7 @@ async def test_thinking_log_fallback_without_log_dir(llm_config, unify_logs):
             assert (
                 "→" not in line
             ), f"Fallback thinking line should NOT contain '→' filepath: {line}"
+        assert model.kinds() == ["actor", "actor"]
 
     finally:
         if old_env is not None:
