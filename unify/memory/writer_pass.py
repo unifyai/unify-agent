@@ -514,8 +514,24 @@ def _agent_tool_json(agent: str) -> list[dict]:
     return agent_profiles.tool_json(agent)
 
 
-#: Tools in code: how long the pass's end waits for its tool handler threads before refusing to start the gate.
-_IN_CODE_IDLE_S = 60.0
+class _PassTemp:
+    """The pass's temporary folder (``tempfile.TemporaryDirectory``), removed on the way out unless :attr:`keep`
+    names why it stays (a tool handler thread may still use it)."""
+
+    def __init__(self, prefix: str) -> None:
+        self._dir = tempfile.TemporaryDirectory(prefix=prefix)
+        self.keep: str | None = None
+
+    def __enter__(self) -> str:
+        return self._dir.name
+
+    def __exit__(self, *exc: object) -> None:
+        if self.keep is None:
+            self._dir.cleanup()
+        else:
+            self._dir._finalizer.detach()  # noqa: SLF001 - kept on purpose; never removed at exit either
+
+
 
 
 def _args_sha256(args: object) -> str:
@@ -2091,6 +2107,8 @@ class WriterPass:
 
     #: tools in code: how an agent's persistent interpreter starts (``BoxInterpreter.start``'s signature); None
     #: uses :class:`unify.common.box_interpreter.BoxInterpreter`
+    #: tools in code: how long the pass's end waits for its tool handler threads before it refuses its gate
+    in_code_idle_s: float = 60.0
     interpreter_start: Any = None
 
     def __init__(
@@ -2673,6 +2691,12 @@ class WriterPass:
                 "record_error": getattr(self, "_record_error", None),
                 "record_entries": len(pr.record.entries),
                 "helper_transcripts": transcripts,
+                # tools in code: the pass ended with a handler thread still running, so its folder was kept
+                **(
+                    {"temp_kept": self._temp_kept}
+                    if getattr(self, "_temp_kept", None)
+                    else {}
+                ),
             },
         )
 
@@ -3992,6 +4016,7 @@ class WriterPass:
         reads = 0  # library_mode reader calls, against cfg.max_reads
         self._exported_bytes = None
         library = bool(self.cfg.library_mode)
+        self._temp_kept = None
         # tools in code (UNIFY_TOOLS_IN_CODE=on, library mode): one JSON tool, the rest called from cells
         in_code = library and bool(getattr(self.cfg, "tools_in_code", False))
 
@@ -4081,9 +4106,8 @@ class WriterPass:
 
         async with contextlib.AsyncExitStack() as scope:
             wt = scope.enter_context(self.mem.temp_checkout())
-            tmp = scope.enter_context(
-                tempfile.TemporaryDirectory(prefix="memory-writer-"),
-            )
+            pass_temp = _PassTemp(prefix="memory-writer-")
+            tmp = scope.enter_context(pass_temp)
             scope.enter_context(_KeepOnCancel(self, parent, pass_id))
             # on every way out (finish, deadline, error, cancellation) no helper outlives the pass: they end before
             # the pass's directories go
@@ -4918,10 +4942,25 @@ class WriterPass:
             if ic is not None:
                 # no box can write /memory and no tool handler of the pass may run while the gate judges it
                 await session.close()
-                if session.box_alive() or not await ic.threads.wait_idle(_IN_CODE_IDLE_S):
-                    raise RuntimeError(
-                        "a box or a tool handler of this pass is still running; the gate does not start",
+                alive = session.box_alive()
+                if alive or not await ic.threads.wait_idle(self.in_code_idle_s):
+                    why = (
+                        "a box of this pass is still running"
+                        if alive
+                        else "a tool handler of this pass is still running"
                     )
+                    # fail closed: no gate, and the pass's folders stay for the thread that may still use them
+                    pass_temp.keep = why
+                    self._temp_kept = {"reason": why, "path": str(tmp)}
+                    cause(CODE_WRITER_ERROR)
+                    reasons = self._fail(
+                        req,
+                        pass_id,
+                        parent,
+                        spend,
+                        notes + [f"{why}: the gate did not start; the pass's temporary folder was kept"],
+                    )
+                    return outcome(False, None, reasons)
             if (
                 not finished
                 and stop is None

@@ -10,6 +10,7 @@ import asyncio
 import importlib.util
 import json
 import os
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -573,3 +574,50 @@ def test_the_worker_pool_reads_the_evidence_store_through_its_own_connection(tmp
         undo()
     assert type(ev.db).__name__ == "Connection"
 
+
+
+def test_a_pass_that_ends_with_a_handler_thread_alive_keeps_its_folder_and_says_why(tmp_path, monkeypatch):
+    release = threading.Event()
+    seen = {}
+
+    def stuck_read(ctx, args):
+        seen["box"] = str(ctx.state.box)
+        release.wait(30)
+        return Reply("late")
+
+    monkeypatch.setattr(tool_handlers, "read", stuck_read)
+    monkeypatch.setitem(tool_handlers.TOOL_FIELDS, "read", ("reader", True, 0.2))
+    monkeypatch.setattr(tc, "HANDLER_GRACE_S", 0.1)
+    FakeBox.started = []
+    model = ToolsSeen([_cell("c1", ("read", {"path": "/inputs"}))])
+    _, _, writer = _writer(
+        tmp_path,
+        model,
+        library_mode=True,
+        tools_in_code=True,
+        max_calls=3,
+        pass_record_root=str(tmp_path / "out"),
+    )
+    writer.load = EPS.__getitem__
+    writer.interpreter_start = FakeBox.start
+    writer.in_code_idle_s = 0.2
+    try:
+        out = asyncio.run(writer.run(PassRequest("incremental", "svc", ["e1"], False), "p1"))
+        rows = [
+            json.loads(line)
+            for line in (tmp_path / "out" / "p1" / "tool-events.jsonl").read_text().splitlines()
+        ]
+        box = Path(seen["box"])
+        # fail closed: no gate, and the folder the thread may still use is left in place
+        assert not out.passed and out.commit is None
+        assert any("the gate did not start" in r for r in out.reasons), out.reasons
+        assert any("temporary folder was kept" in r for r in out.reasons), out.reasons
+        assert box.is_dir()
+        (end,) = [r for r in rows if r["event"] == "pass_end"]
+        assert end["temp_kept"]["reason"] == "a tool handler of this pass is still running"
+        assert Path(end["temp_kept"]["path"]) == box.parent
+        closed = [r for r in rows if r["event"] == "channel_closed"]
+        assert [r["reason"] for r in closed] == ["handler_stuck"]
+    finally:
+        release.set()
+    shutil.rmtree(Path(seen["box"]).parent, ignore_errors=True)

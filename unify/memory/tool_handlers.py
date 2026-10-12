@@ -606,20 +606,64 @@ def in_code_json_tools(agent: str) -> list[dict]:
         return [_wt.EXECUTE_CODE.as_tool()]
 
 
-def stub_source(names: tuple[str, ...]) -> str | None:
-    """The box module ``tools`` for *names* (the registry's renderer), or None until it exists."""
+def stub_source(names: tuple[str, ...]) -> str:
+    """The box module ``tools`` for *names*: the shared registry's renderer when it exists, else
+    :func:`plain_stub`."""
     try:
         from unify.common import tool_registry  # type: ignore[attr-defined]
 
-        return tool_registry.render_stub(tuple(names))
-    except ImportError:
-        return None
+        render = tool_registry.render_stub
+    except (ImportError, AttributeError):
+        return plain_stub(names)
+    return render(tuple(names))
+
+
+def plain_stub(names: tuple[str, ...]) -> str:
+    """A box module ``tools`` built from the box-side client's source and the memory registry's parameter names
+    only (no host path, run id, route or environment value): one function per tool in *names*; positional arguments
+    take the schema's names in order (required first), keywords pass as they are, and the host checks everything."""
+    from unify.common import tool_channel_client
+    from .tool_spec import registry
+
+    specs = {s.name: s for s in registry()}
+    out = [Path(tool_channel_client.__file__).read_text(encoding="utf-8"), "", "_NAMES = {}", ""]
+    for name in names:
+        spec = specs.get(name)
+        if spec is None or not name.isidentifier():
+            continue
+        props = list((spec.parameters or {}).get("properties") or {})
+        required = [p for p in (spec.parameters or {}).get("required") or [] if p in props]
+        order = required + [p for p in props if p not in required]
+        out += [
+            f"_NAMES[{name!r}] = {order!r}",
+            "",
+            "",
+            f"def {name}(*args, **kwargs):",
+            f"    {spec.summary or name!r}",
+            f"    return _call({name!r}, _args({name!r}, args, kwargs))",
+            "",
+        ]
+    out += [
+        "",
+        "def _args(tool, args, kwargs):",
+        "    names = _NAMES[tool]",
+        "    if len(args) > len(names):",
+        "        raise TypeError('%s() takes at most %d positional arguments' % (tool, len(names)))",
+        "    out = dict(zip(names, args))",
+        "    for key in kwargs:",
+        "        if key in out:",
+        "            raise TypeError('%s() got two values for %r' % (tool, key))",
+        "    out.update(kwargs)",
+        "    return out",
+        "",
+    ]
+    return "\n".join(out)
 
 
 class _ThreadReads:
-    """An evidence store connection that the worker pool can read from: the owning thread keeps the store's own
-    connection; any other thread gets its own read-only connection to the same file (SQLite connections belong to
-    the thread that made them). A write from another thread fails, as it should: handlers only read the store."""
+    """An evidence store connection the worker pool can use: the owning thread keeps the store's own connection; any
+    other thread gets its own connection to the same file (SQLite connections belong to the thread that made them),
+    with the store's busy timeout, so reads and any write from a pool thread take SQLite's own file locks."""
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
@@ -631,14 +675,16 @@ class _ThreadReads:
         for row in conn.execute("PRAGMA database_list"):
             if row[1] == "main":
                 self._path = row[2] or ""
+        # the same busy timeout as the store's own connection, so a pool thread waits on a lock as the loop does
+        busy = conn.execute("PRAGMA busy_timeout").fetchone()
+        self._timeout_s = (busy[0] / 1000.0) if busy and busy[0] else 5.0
 
     def _pick(self) -> sqlite3.Connection:
         if threading.get_ident() == self._owner or not self._path:
             return self._conn
         own = getattr(self._local, "conn", None)
         if own is None:
-            uri = Path(self._path).as_uri() + "?mode=ro"
-            own = sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=30.0)
+            own = sqlite3.connect(self._path, check_same_thread=False, timeout=self._timeout_s)
             self._local.conn = own
             with self._lock:
                 self._opened.append(own)
@@ -664,8 +710,9 @@ class _ThreadReads:
 
 
 def thread_reads(*stores: Any) -> Callable[[], None]:
-    """Let the worker pool read each distinct evidence store in *stores* (objects with a SQLite ``db``) for the rest
-    of the pass; returns the undo, which restores each store's own connection and closes the readers."""
+    """Let the worker pool use each distinct evidence store in *stores* (objects with a SQLite ``db``; the writer's,
+    the gate's and the episode lookup's, one store or several) for the rest of the pass; returns the undo, which
+    restores each store's own connection and closes the pool's."""
     done: list[tuple[Any, _ThreadReads]] = []
     seen: set[int] = set()
     for s in stores:
