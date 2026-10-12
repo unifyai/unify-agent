@@ -309,7 +309,10 @@ async def test_arc_visits_capture_dialogue_and_merge_an_env_item(
     assert writer_calls == [(defaults["UNIFY_MEMORY_WRITER_MODEL"].default, EFFORT)]
     assert "EPISODES 2" in script.outputs["c1"], script.outputs
     assert end["gate_passed"] is True, end
-    assert end["reason_codes"] == ["ok"] and end["items"] == 1, end
+    # the earlier layout's gate merges within the pass, so main already holds the item when the end is recorded
+    assert (
+        end["reason_codes"] == ["ok"] and end["library_items_before_landing"] == 1
+    ), end
     memory = Repo(paths.memory)
     tree = memory.run("ls-tree", "-r", "--name-only", "main").split()
     assert "env/env/__init__.py" in tree

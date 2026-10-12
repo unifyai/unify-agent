@@ -727,8 +727,9 @@ def library_items_at(stores: Stores, commit: str | None) -> int | None:
 
 
 def _library_after(stores: Stores) -> tuple[int | None, int | None]:
-    """(items, index tokens) of memory ``main`` when the pass's end is recorded, which is before the gate's commit
-    lands; None for what could not be measured. The landed event counts the library at the landed commit.
+    """(items, index tokens) of memory ``main`` when the pass's end is recorded; None for what could not be
+    measured. In the library mode that is before the pass's commit lands, and the landed event counts the library at
+    the landed commit; the earlier layout's gate has merged by then.
     """
     tmp = Path(tempfile.mkdtemp(prefix="memory-after-"))
     try:
