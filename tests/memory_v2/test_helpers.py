@@ -431,7 +431,7 @@ def test_no_claims_is_stated_in_the_reply(tmp_path, fake_box):
         ),
         (
             [{"claim": "x", "sources": ["e1/cell:7"]}],
-            "source 'e1/cell:7' does not resolve (episode 'e1' has no part 'cell:7')",
+            "source 'e1/cell:7' does not resolve (episode 'e1' has no part 'cell:7'; its parts: request, cell:0",
             "unresolved_source",
         ),
         (

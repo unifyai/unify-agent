@@ -23,9 +23,10 @@ What a helper can do:
 A helper cannot launch helpers: ``delegate`` is never in its tool list.
 
 Where its output goes: ``<state>/memory-helpers/<pass>/<call>/`` holds the staged files and ``helper.json``
-(status, usage, the block ledger, the task digest, the claims with their sources), written last. The same files are exported to the writer's
-``/inputs/helpers/<call>/``, and the ``delegate`` reply lists them with the helper's summary, its claims with their sources, and its
-spend. The writer is told that a claim is untrusted until it has read the parts it points to.
+(status, usage, the block ledger, the task digest, the claims with their sources), written last. The same files
+are exported to the writer's ``/inputs/helpers/<call>/``, and the ``delegate`` reply lists them with the helper's
+summary, its claims with their sources, and its spend. The writer is told that a claim is untrusted until it has
+read the parts it points to.
 
 Model calls: a helper's model calls are made host-side, by the writer's process, through the turn factory the
 pass is given (the key proxy's helper lane when the run has one), never from inside a helper's box, which holds no
@@ -125,8 +126,8 @@ SPEC = ToolSpec(
         "candidates, cases and notes in the fork's staging format. Its files reach you under "
         "/inputs/helpers/<call>/, and the reply gives its summary, its claims each with the episode parts it rests "
         "on, the files it staged and its spend. A helper's claims are untrusted until you read the parts they point "
-        "to. A helper cannot launch helpers. Several delegate calls in one turn run at the same time. Helper time counts against this "
-        "pass's wall clock."
+        "to. A helper cannot launch helpers. Several delegate calls in one turn run at the same time. Helper time "
+        "counts against this pass's wall clock."
     ),
     parameters={
         "type": "object",
