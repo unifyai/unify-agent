@@ -32,7 +32,7 @@ from unify.memory_v2.integration.consolidate import (
 from unify.memory_v2.integration.paths import Paths
 from unify.memory_v2.integration.state import State
 from unify.memory_v2.qa import QAConfig
-from unify.memory_v2.writer_pass import WRITER_SYSTEM
+from unify.memory_v2.writer_pass import TRANSCRIPT_REF, WRITER_SYSTEM
 from unify.memory_v2.redact import Redactor
 from unify.memory_v2.signals import Signal
 from unify.memory_v2.trigger import BATCHED_CURSOR
@@ -749,7 +749,7 @@ def test_writer_transcript_is_kept_redacted_on_the_episode_commit(
     (out,) = _run(stores, "e1", sha)
     assert secret in json.dumps(fake.seen)  # the writer itself saw it; the record must not
     head, *rows = [
-        json.loads(n) for n in stores.episodes.notes(sha, ref="sol-transcripts")
+        json.loads(n) for n in stores.episodes.notes(sha, ref=TRANSCRIPT_REF)
     ]
     # the header names the brief and the tool JSON by hash; then the messages
     assert head["pass_id"] == "e1.p0" and head["header"]["brief_sha256"]
