@@ -1,11 +1,11 @@
-"""Memory v2.1 r5 (r4 §4): S0 at the start of each WRITE pass, as files for the writer and facts for the analysts.
+"""Memory v2.1 r5 (r4 §4): S0 at the start of each WRITE pass, as files for the writer and facts for the pass.
 
 Tier (a) (:mod:`.mining`) runs over the batch and every earlier episode; tier (b) (:mod:`.mining_behaviour`)
 replays each episode once in its lifetime (the replay results are kept in a cache folder beside the state) and
 cross-runs only pairs with a unit from the batch. Office code is replayed in the episode's recorded workspace,
 exported once from the run's worktree repo. The writer gets ``/inputs/s0/clusters.json`` (tier a, the clusters that
-touch the batch) and ``/inputs/s0/behaviour.json`` (tier b's clusters and their units). The analysts get the batch
-episodes in a cluster and the code shapes seen before the batch (:func:`.analysts.flagged`).
+touch the batch) and ``/inputs/s0/behaviour.json`` (tier b's clusters and their units). The pass gets the batch
+episodes in a cluster and the code shapes seen before the batch.
 
 S0 never stops a pass: any failure (no bubblewrap, a box error, an unreadable episode) is returned as ``error`` and
 the pass goes on without clusters. Nothing is keyed on a task id or the stream: episodes are distinguished by
@@ -23,6 +23,18 @@ from typing import Callable
 
 from . import mining as _mining
 from . import mining_behaviour as _behaviour
+
+
+def _cell_keys(ep) -> set[str]:
+    """The normalised shapes of *ep*'s cells that ran without an error."""
+    trees = [t for t in (_mining._parse(c.code) for c in ep.cells) if t is not None]
+    keep = _mining.keep_names(trees)
+    out = set()
+    for c in ep.cells:
+        t = _mining._parse(c.code) if _mining.successful(c) else None
+        if t is not None:
+            out.add(_mining.normalise(t, keep)[0])
+    return out
 
 
 def _as_mining(ep) -> tuple[str, str, list]:
@@ -98,8 +110,6 @@ def run(
         seen: set[str] = set()
         for e in order:
             if e not in in_batch:
-                from .analysts import _cell_keys
-
                 seen |= _cell_keys(eps[e])
         summary = {
             "tier_a_clusters": len(touching),
