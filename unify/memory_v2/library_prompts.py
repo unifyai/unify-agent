@@ -211,7 +211,7 @@ _REPAIR = (
     "# Repair\n"
     "If the gate refuses anything, its full result (every check, every failing test's output and every note) is "
     "written to /inputs/gate/result-<round>.md and you get a repair round: fix what it refused, keep the manifest "
-    "current, and call `finish` again. There is no set number of repair rounds; only the limits below end them. "
+    "current, and call `finish` again. The limits below say how many repair rounds a pass has. "
     "The items that pass land, and the rest is kept as a draft for a later pass, with its failure.\n"
 )
 
@@ -268,7 +268,7 @@ _LIMITS = (
     "clock (its "
     "length in seconds is in the first message<<helper_time>>) or after <<step_guard>> model and check calls, "
     "whichever comes first, and a `check` starts only while at least <<check_floor>> s of the wall clock remain."
-    "<<finish_cap>><<compaction>>\n"
+    "<<repair_cap>><<finish_cap>><<compaction>>\n"
 )
 
 _LIBRARY_BULLET = (
@@ -485,6 +485,8 @@ class Limits:
     readers_per_turn: int | None = None
     #: finish's refusals of a manifest that does not parse before the final check judges it instead (None: no cap)
     finish_refusals: int | None = None
+    #: repair rounds after the first refused `finish` (None: no set number; only the other limits end them)
+    repair_rounds: int | None = None
     #: the conversation size in characters that moves old tool results out (None: compaction off), and the
     #: messages at the end that are never moved
     compact_at_chars: int | None = None
@@ -518,6 +520,11 @@ def _limits_text(limits: Limits, helper_time: bool) -> str:
             ),
             "step_guard": limits.step_guard,
             "check_floor": _num(limits.check_floor_s),
+            "repair_cap": (
+                f" At most {limits.repair_rounds} repair rounds follow the first refused `finish` in this pass."
+                if limits.repair_rounds is not None
+                else " There is no set number of repair rounds; only these limits end them."
+            ),
             "finish_cap": (
                 f" While /memory/.pass/manifest.json is missing or does not parse, `finish` is refused with the reason "
                 f"up to {limits.finish_refusals} times in a pass; after that, `finish` ends the pass and the final "
@@ -831,6 +838,7 @@ def limits_now(
     """The limits from the constants that enforce them (imported here: they import this module's callers).
     *compact*: the pass compacts its conversation; *finish_capped*: finish's manifest refusals are capped.
     """
+    from . import repair as _repair
     from . import views, writer_pass
     from .integration import fork_worker
 
@@ -845,6 +853,8 @@ def limits_now(
         cells_per_turn=getattr(writer_pass, "_MAX_CELLS_PER_TURN", None),
         readers_per_turn=getattr(writer_pass, "READERS_PER_TURN", None),
         finish_refusals=writer_pass.FINISH_G1_REFUSALS if finish_capped else None,
+        # a capped pass also caps its repair rounds (repair.may_repair); repair_message states the same count
+        repair_rounds=_repair.REPAIR_ROUNDS if finish_capped else None,
         compact_at_chars=writer_pass.COMPACT_AT_CHARS if compact else None,
         compact_keep_last=writer_pass.COMPACT_KEEP_LAST,
         stage_files=fork_worker.QUOTA_FILES,
