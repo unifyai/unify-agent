@@ -1,4 +1,4 @@
-"""Overlap candidates: shapes and covers, anti-unified bodies, notes with the same uses."""
+"""Overlap candidates: shapes and input fixtures, anti-unified bodies, notes with the same uses."""
 
 from __future__ import annotations
 
@@ -37,6 +37,9 @@ EXTRA = {
 }
 SHAPE_1 = {"kind": "text", "lines": 1}
 SHAPE_2 = {"kind": "text", "lines": 2}
+DATA_1 = "memory/text/tests/data/e1_line.json"
+DATA_2 = "memory/text/tests/data/e2_line.json"
+DATA_9 = "memory/calc/tests/data/e9_rows.json"
 
 
 def _lib(root, **changes):
@@ -62,48 +65,71 @@ def test_names_never_decide(tmp_path):
     assert all(tuple(c["items"]) != pair for c in res["candidates"])
 
 
-def test_shapes_and_covers_need_both(tmp_path):
+def _records(fixtures: dict) -> dict:
+    """Item records whose verification lists each item's input fixtures, as the gate records them."""
+    return {
+        item: {"item": item, "verification": {"examples": {"fixtures": paths}}}
+        for item, paths in fixtures.items()
+    }
+
+
+def test_shapes_and_fixtures_need_both(tmp_path):
     shapes = {
         TOKENS: {"shapes": [SHAPE_1]},
         SPLIT_ID: {"shapes": [SHAPE_1, SHAPE_2]},
         "memory.calc.a:total": {
             "shapes": [SHAPE_1],
-        },  # a shared shape and no shared cover: not a candidate
+        },  # a shared shape and no shared fixture: not a candidate
     }
-    covers = [
-        (TOKENS, "e1", 0),
-        (SPLIT_ID, "e1", 0),
-        (SPLIT_ID, "e2", 3),
-        ("memory.calc.a:total", "e9", 1),
-        (
-            "memory.text.parse:gone",
-            "e1",
-            0,
-        ),  # a deleted item's recorded covers are ignored
-    ]
-    res = ov.overlap_candidates(_lib(tmp_path), shapes=shapes, covers=covers)
-    found = _by(res, "shapes_and_covers")
+    records = _records(
+        {
+            TOKENS: [DATA_1],
+            SPLIT_ID: [DATA_1, DATA_2],
+            "memory.calc.a:total": [DATA_9],
+            "memory.text.parse:gone": [DATA_1],  # a deleted item's fixtures are left out
+        },
+    )
+    res = ov.overlap_candidates(
+        _lib(tmp_path),
+        shapes=shapes,
+        fixtures=ov.fixture_signatures(records),
+    )
+    assert res["version"] == ov.OVERLAP_VERSION == 2
+    found = _by(res, "shapes_and_fixtures")
     assert list(found) == [(TOKENS, SPLIT_ID)]
     assert found[(TOKENS, SPLIT_ID)]["reasons"] == [
-        "recorded input shapes: 1 shared of 2",
-        "covers: 1 shared of 2",
-        f"covers: every cover of {TOKENS} is a cover of {SPLIT_ID}",
+        "recorded argument shapes: 1 shared of 2",
+        "input fixtures: 1 shared of 2",
+        f"input fixtures: every input fixture of {TOKENS} is one of {SPLIT_ID}",
     ]
 
 
-def test_typed_covers_overlap_too(tmp_path):
-    cell = '{"index": 0, "type": "cell"}'
+def test_shapes_match_whatever_parameter_they_were_passed_as(tmp_path):
     shapes = {
-        "memory.calc.a:total": {"shapes": [SHAPE_1]},
-        "memory.files.b:total": {"shapes": [SHAPE_1]},
+        "memory.calc.a:total": {"shapes": [{**SHAPE_1, "param": "rows"}]},
+        "memory.files.b:total": {"shapes": [{**SHAPE_1, "param": "path"}]},
     }
-    typed = [("memory.calc.a:total", "e5", cell), ("memory.files.b:total", "e5", cell)]
-    res = ov.overlap_candidates(_lib(tmp_path), shapes=shapes, typed=typed)
-    (c,) = _by(res, "shapes_and_covers").values()
+    fixtures = {
+        "memory.calc.a:total": [DATA_1],
+        "memory.files.b:total": [DATA_1],
+    }
+    res = ov.overlap_candidates(_lib(tmp_path), shapes=shapes, fixtures=fixtures)
+    (c,) = _by(res, "shapes_and_fixtures").values()
     assert c["items"] == ["memory.calc.a:total", "memory.files.b:total"]
     assert c["reasons"][-1] == (
-        "covers: every cover of memory.calc.a:total is a cover of memory.files.b:total (the same covers)"
+        "input fixtures: every input fixture of memory.calc.a:total is one of memory.files.b:total "
+        "(the same fixtures)"
     )
+
+
+def test_fixture_sets_come_only_from_the_examples_record():
+    records = {
+        TOKENS: {"verification": {"examples": {"fixtures": [DATA_1, "", 3]}}},
+        SPLIT_ID: {"verification": {"tests": ["memory/text/tests/test_split.py"]}},
+        "memory.calc.a:total": {"verification": None},
+        "memory.files.b:total": {"verification": {"examples": {"fixtures": []}}},
+    }
+    assert ov.fixture_signatures(records) == {TOKENS: {DATA_1}}
 
 
 def test_notes_using_the_same_functions(tmp_path):
@@ -116,15 +142,19 @@ def test_notes_using_the_same_functions(tmp_path):
 
 def test_deterministic_and_fingerprinted_by_content(tmp_path):
     shapes = {TOKENS: {"shapes": [SHAPE_1]}, SPLIT_ID: {"shapes": [SHAPE_1]}}
-    covers = [(TOKENS, "e1", 0), (SPLIT_ID, "e1", 0)]
-    first = ov.overlap_candidates(_lib(tmp_path / "a"), shapes=shapes, covers=covers)
+    fixtures = {TOKENS: [DATA_1, DATA_2], SPLIT_ID: [DATA_2, DATA_1]}
+    first = ov.overlap_candidates(
+        _lib(tmp_path / "a"),
+        shapes=shapes,
+        fixtures=fixtures,
+    )
     again = ov.overlap_candidates(
         _lib(tmp_path / "b"),
         shapes=dict(reversed(shapes.items())),
-        covers=covers[::-1],
+        fixtures={k: v[::-1] for k, v in reversed(fixtures.items())},
     )
     assert ov.render_overlap(first) == ov.render_overlap(again)
-    fp = _by(first, "shapes_and_covers")[(TOKENS, SPLIT_ID)]["fingerprint"]
+    fp = _by(first, "shapes_and_fixtures")[(TOKENS, SPLIT_ID)]["fingerprint"]
     commented = SPLIT.replace(
         "    return text.split()",
         "    # split on any whitespace\n    return text.split()",
@@ -132,16 +162,16 @@ def test_deterministic_and_fingerprinted_by_content(tmp_path):
     same = ov.overlap_candidates(
         _lib(tmp_path / "c", **{SPLIT_PATH: commented}),
         shapes=shapes,
-        covers=covers,
+        fixtures=fixtures,
     )
-    assert _by(same, "shapes_and_covers")[(TOKENS, SPLIT_ID)]["fingerprint"] == fp
+    assert _by(same, "shapes_and_fixtures")[(TOKENS, SPLIT_ID)]["fingerprint"] == fp
     edited = SPLIT.replace("text.split()", "text.split(' ')")
     other = ov.overlap_candidates(
         _lib(tmp_path / "d", **{SPLIT_PATH: edited}),
         shapes=shapes,
-        covers=covers,
+        fixtures=fixtures,
     )
-    assert _by(other, "shapes_and_covers")[(TOKENS, SPLIT_ID)]["fingerprint"] != fp
+    assert _by(other, "shapes_and_fixtures")[(TOKENS, SPLIT_ID)]["fingerprint"] != fp
 
 
 def test_bounds_are_named_never_silent(tmp_path):

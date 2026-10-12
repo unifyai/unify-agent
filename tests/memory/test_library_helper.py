@@ -132,11 +132,22 @@ def test_show_explains_a_hidden_item(tmp_path):
 
 
 def test_find_ranks_like_v2s_matcher(tmp_path, monkeypatch):
+    """Ranking is v2's matcher's for single-parameter shapes; ``Found.param`` names the parameter that matched."""
     value = {"date": "2026-10-09", "zone": "UTC"}
     shapes = {
-        DATE: [memory_helper.value_shape({"date": "2025-01-01", "zone": "CET"})],
+        DATE: [
+            {
+                **memory_helper.value_shape({"date": "2025-01-01", "zone": "CET"}),
+                "param": "s",
+            },
+        ],
         "memory.text.parse:tokens": [
-            memory_helper.value_shape({"date": "2025-01-01", "zone": "CET", "n": 1}),
+            {
+                **memory_helper.value_shape(
+                    {"date": "2025-01-01", "zone": "CET", "n": 1},
+                ),
+                "param": "s",
+            },
         ],
     }
     root = _library(
@@ -150,15 +161,27 @@ def test_find_ranks_like_v2s_matcher(tmp_path, monkeypatch):
         ),
     )
     entries = json.loads((root / FIND_FILE).read_text())["functions"]
-    monkeypatch.setattr(memory_helper, "_catalog", lambda: {"functions": entries})
+    assert all("input" not in e for e in entries)
+    # v2's matcher on the same shapes without the parameter key: what v2 would rank
+    stripped = [
+        {
+            **e,
+            "input_shapes": [
+                {k: v for k, v in d.items() if k != "param"}
+                for d in e.get("input_shapes", [])
+            ],
+        }
+        for e in entries
+    ]
+    monkeypatch.setattr(memory_helper, "_catalog", lambda: {"functions": stripped})
     want = [
-        [":".join(f.name.rsplit(".", 1)), *list(f)[1:]]
+        [":".join(f.name.rsplit(".", 1)), f.signature, "s", *list(f)[3:]]
         for f in memory_helper.find(value)
     ]
     assert got == want
-    assert [(g[0], g[3]) for g in got] == [
-        (DATE, "exact"),
-        ("memory.text.parse:tokens", "structure"),
+    assert [(g[0], g[2], g[3]) for g in got] == [
+        (DATE, "s", "exact"),
+        ("memory.text.parse:tokens", "s", "structure"),
     ]
     assert (
         json.loads(

@@ -2,11 +2,12 @@
 
 Three rules. None of them reads a name, a docstring, a description or any other text:
 
-* ``shapes_and_covers``: two functions whose recorded input shapes match (at least one shape descriptor in
-  common) and whose covers overlap (at least one recorded input admitted for both: an action, or a typed cover
-  such as an actor cell). When every cover of one is a cover of the other, the reason says so: the narrower one
-  may be retired behind an alias of the wider one. Matching shapes alone are not overlap (two readers of one file
-  can do different jobs), nor are shared covers without a shared shape.
+* ``shapes_and_fixtures``: two functions whose recorded argument shapes match (at least one shape descriptor in
+  common, whichever parameter it was passed as) and whose input fixtures overlap (at least one fixture file that
+  both functions' example calls ran on, as their item records' ``examples.fixtures`` list them). When every input
+  fixture of one is an input fixture of the other, the reason says so: the narrower one may be retired behind an
+  alias of the wider one. Matching shapes alone are not overlap (two readers of one file can do different jobs),
+  nor are shared fixtures without a shared shape.
 * ``antiunify``: two functions whose bodies anti-unify (:mod:`.analysis.fn_antiunify`: the most specific
   generalisation of their normalised ASTs, locals renamed, docstrings dropped) with a kept share of at least
   :data:`ANTIUNIFY_MIN_SHARE`. The generalisation, holes as parameters, is the proposed merged body.
@@ -16,7 +17,7 @@ Each candidate carries a fingerprint: a hash of its rule, its items and their cu
 unparsed definition, each note's bytes), so formatting and comments in code never change it. CURATE's trigger
 (:mod:`.curate`) counts a candidate once per fingerprint.
 
-Bounds are explicit, never silent: the shape and cover graphs keep :mod:`.analysis.library_graph`'s bounds, and at
+Bounds are explicit, never silent: the shape and fixture graphs keep :mod:`.analysis.library_graph`'s bounds, and at
 most *max_pairs* function pairs are anti-unified, in sorted order. What stopped early is named in the result's
 ``truncated``. Pure: it reads files and never imports or runs library code.
 """
@@ -33,13 +34,13 @@ from . import layout
 from .analysis.fn_antiunify import antiunify, function_defs
 from .analysis.library_graph import shape_graph
 
-OVERLAP_VERSION = 1
+OVERLAP_VERSION = 2
 #: Two bodies "anti-unify" at this kept share or more. In the hygiene study the real near-duplicates
 #: kept 0.7-1.0 and unrelated functions under 0.15 (test_hygiene_analysis.py); offline replay calibrates it.
 ANTIUNIFY_MIN_SHARE = 0.7
 #: Function pairs anti-unified per call, in sorted order (77 functions, the largest v2 library, make 2,926).
 MAX_ANTIUNIFY_PAIRS = 5000
-RULES = ("shapes_and_covers", "antiunify", "same_uses")
+RULES = ("shapes_and_fixtures", "antiunify", "same_uses")
 
 
 def _canon(obj: object) -> str:
@@ -53,62 +54,70 @@ def _canon(obj: object) -> str:
 
 
 def shape_signatures(rows: Mapping[str, Mapping]) -> dict[str, set[str]]:
-    """item -> the canonical JSON of each recorded input-shape descriptor (rows of :func:`.shape_rows.shapes_at`)."""
+    """item -> the canonical JSON of each recorded shape descriptor (rows of :func:`.shape_rows.shapes_at`),
+    without the parameter it was passed as: two functions taking one shape under different names share it."""
     return {
-        item: {_canon(d) for d in (row.get("shapes") or [])}
+        item: {
+            _canon({k: v for k, v in d.items() if k != "param"})
+            for d in (row.get("shapes") or [])
+            if isinstance(d, Mapping)
+        }
         for item, row in rows.items()
     }
 
 
-def cover_signatures(
-    covers: Iterable[tuple[str, str, int]],
-    typed: Iterable[tuple[str, str, str]] = (),
-) -> dict[str, set[str]]:
-    """item -> one string per recorded cover: ``action <episode> <index>`` or ``typed <episode> <cover JSON>``."""
+def fixture_signatures(records: Mapping[str, Mapping]) -> dict[str, set[str]]:
+    """item -> the input fixtures its example calls ran on: the paths in its item record's
+    ``verification.examples.fixtures`` (an item without that record has none)."""
     out: dict[str, set[str]] = {}
-    for item, eid, idx in covers:
-        out.setdefault(item, set()).add(f"action {eid} {int(idx)}")
-    for item, eid, cover in typed:
-        out.setdefault(item, set()).add(f"typed {eid} {cover}")
+    for item, rec in records.items():
+        v = rec.get("verification") if isinstance(rec, Mapping) else None
+        ex = v.get("examples") if isinstance(v, Mapping) else None
+        paths = ex.get("fixtures") if isinstance(ex, Mapping) else None
+        if isinstance(paths, list):
+            found = {p for p in paths if isinstance(p, str) and p}
+            if found:
+                out[str(item)] = found
     return out
 
 
-def by_shapes_and_covers(
+def by_shapes_and_fixtures(
     shapes: Mapping[str, set[str]],
-    covers: Mapping[str, set[str]],
+    fixtures: Mapping[str, set[str]],
     functions: set[str],
 ) -> tuple[list[dict], list[str]]:
-    """Pairs of *functions* with a shared shape and a shared cover, and what the two graphs left out."""
+    """Pairs of *functions* with a shared argument shape and a shared input fixture, and what the two graphs left
+    out."""
 
     def keep(m: Mapping[str, set[str]]) -> dict[str, set[str]]:
         return {i: set(s) for i, s in m.items() if i in functions and s}
 
     by_shape = shape_graph(keep(shapes))
-    by_cover = shape_graph(keep(covers))
+    by_fixture = shape_graph(keep(fixtures))
     shared_shapes = {(e.a, e.b): e for e in by_shape.edges}
-    within = {(s.narrow, s.wide): s for s in by_cover.subsumptions}
+    within = {(s.narrow, s.wide): s for s in by_fixture.subsumptions}
     out = []
-    for e in sorted(by_cover.edges, key=lambda e: (e.a, e.b)):
+    for e in sorted(by_fixture.edges, key=lambda e: (e.a, e.b)):
         s = shared_shapes.get((e.a, e.b))
         if s is None:
             continue
         reasons = [
-            f"recorded input shapes: {s.shared} shared of {s.union}",
-            f"covers: {e.shared} shared of {e.union}",
+            f"recorded argument shapes: {s.shared} shared of {s.union}",
+            f"input fixtures: {e.shared} shared of {e.union}",
         ]
         for narrow, wide in ((e.a, e.b), (e.b, e.a)):
             sub = within.get((narrow, wide))
             if sub is not None:
-                same = " (the same covers)" if sub.equal else ""
+                same = " (the same fixtures)" if sub.equal else ""
                 reasons.append(
-                    f"covers: every cover of {narrow} is a cover of {wide}{same}",
+                    f"input fixtures: every input fixture of {narrow} is one of {wide}{same}",
                 )
                 break
         out.append(
-            {"rule": "shapes_and_covers", "items": [e.a, e.b], "reasons": reasons},
+            {"rule": "shapes_and_fixtures", "items": [e.a, e.b], "reasons": reasons},
         )
     cut = [f"shapes:{t}" for t in by_shape.truncated] + [
-        f"covers:{t}" for t in by_cover.truncated
+        f"fixtures:{t}" for t in by_fixture.truncated
     ]
     return out, cut
 
@@ -225,25 +234,24 @@ def overlap_candidates(
     tree: Path,
     *,
     shapes: Mapping[str, Mapping] | None = None,
-    covers: Iterable[tuple[str, str, int]] = (),
-    typed: Iterable[tuple[str, str, str]] = (),
+    fixtures: Mapping[str, Iterable[str]] | None = None,
     min_share: float = ANTIUNIFY_MIN_SHARE,
     max_pairs: int = MAX_ANTIUNIFY_PAIRS,
 ) -> dict:
     """Every overlap candidate of the library at *tree*.
 
-    *shapes* are the commit's shape rows (:func:`.shape_rows.shapes_at`), *covers* the evidence store's
-    ``(item, episode, action)`` covers and *typed* its typed covers ``(item, episode, cover JSON)``. Rows of items
-    the tree no longer holds are ignored. Returns ``{"version", "candidates", "truncated"}``, the candidates in
+    *shapes* are the commit's shape rows (:func:`.shape_rows.shapes_at`), *fixtures* each function's input
+    fixtures (:func:`fixture_signatures` of the commit's item records). Rows of items the tree no longer holds
+    are left out: a deleted item is no candidate. Returns ``{"version", "candidates", "truncated"}``, the candidates in
     rule order, then by items.
     """
     tree = Path(tree)
     lib = layout.discover(tree)
     functions = {f.item_id for f in lib.functions}
     bodies = layout.function_bodies(tree)
-    found, cut = by_shapes_and_covers(
+    found, cut = by_shapes_and_fixtures(
         shape_signatures(shapes or {}),
-        cover_signatures(covers, typed),
+        {item: set(paths) for item, paths in (fixtures or {}).items()},
         functions,
     )
     merged, cut_au = by_antiunify(tree, lib, min_share=min_share, max_pairs=max_pairs)
