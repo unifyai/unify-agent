@@ -58,15 +58,18 @@ FORMER_NAMES: dict[str, str] = {
 
 
 def apply_former_names(env: MutableMapping[str, str]) -> list[str]:
-    """Copy each former name set in *env* to its current name; return the former names found."""
+    """Move each former name set in *env* (in any case, as settings match names) to its current name; return the
+    former names found. The former name leaves *env*, so a value the settings then keep out of the environment (a
+    token) is not left behind under its former name."""
     found = []
-    for old, new in FORMER_NAMES.items():
-        if old not in env:
-            continue
-        if new in env and env[new] != env[old]:
+    for name in [k for k in env if k.upper() in FORMER_NAMES]:
+        new = FORMER_NAMES[name.upper()]
+        value = env[name]
+        if new in env and env[new] != value:
             raise ValueError(
-                f"{old} and {new} are both set, to different values; set {new} only",
+                f"{name} and {new} are both set, to different values; set {new} only",
             )
-        env[new] = env[old]
-        found.append(old)
+        env[new] = value
+        del env[name]
+        found.append(name)
     return found

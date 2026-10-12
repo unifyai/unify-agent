@@ -6,7 +6,16 @@ from unify.setting_aliases import FORMER_NAMES, apply_former_names
 def test_a_former_name_is_read_as_its_current_name():
     old, new = next(iter(FORMER_NAMES.items()))
     env = {old: "on"}
-    assert apply_former_names(env) == [old] and env[new] == "on"
+    assert apply_former_names(env) == [old] and env == {new: "on"}
+
+
+def test_a_former_token_name_leaves_the_environment():
+    env = {"unify_memory_v2_sol_token": "t", "OTHER": "x"}  # pragma: allowlist secret
+    assert apply_former_names(env) == ["unify_memory_v2_sol_token"]
+    assert env == {
+        "UNIFY_MEMORY_WRITER_TOKEN": "t",
+        "OTHER": "x",
+    }  # pragma: allowlist secret
 
 
 def test_both_names_with_different_values_are_refused():
