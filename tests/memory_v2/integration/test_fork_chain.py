@@ -214,8 +214,10 @@ def test_the_worker_writes_the_ledger_and_the_raw_reply_with_its_digest(tmp_path
     ledger = json.loads((tmp_path / fw.BLOCKS_JSON).read_text())
     raw = (tmp_path / fw.REPLY_JSON).read_bytes()
     assert ledger["reply_sha256"] == hashlib.sha256(text.encode()).hexdigest() == doc["reply_sha256"]
-    assert ledger["reply_file_sha256"] == hashlib.sha256(raw).hexdigest()
-    assert json.loads(raw)["replies"][0]["content"] == json.loads(raw)["text"] == text
+    reply = json.loads(raw)
+    assert reply["reply_text"] == text and reply["turns"] == [text] and reply["reply_sha256"] == doc["reply_sha256"]
+    # the worker's ledger is the parse of the joined reply text, as the offline replay computes it
+    assert {k: v for k, v in ledger.items() if k not in ("episode", "reply_sha256")} == fw.parse_reply(text)[1]
     assert ledger["counts"] == doc["blocks"] == {"blocks": 3, "parsed": 1, "refused": 1, "dropped": 1}
     assert [f["path"] for f in doc["files"]] == ["candidates/double.py"]  # files written = parsed
     assert ledger["episode"] == "e1" and all("content" not in b for b in ledger["blocks"])
@@ -468,7 +470,9 @@ def test_write_record_keeps_the_raw_reply_and_the_ledger_in_the_staging_dir(tmp_
     assert json.loads((tmp_path / fw.BLOCKS_JSON).read_text()) == doc
     assert doc["episode"] == "e9" and doc["reply_sha256"] == hashlib.sha256(text.encode()).hexdigest()
     assert doc["counts"] == {"blocks": 2, "parsed": 1, "refused": 1, "dropped": 0}
-    assert json.loads((tmp_path / fw.REPLY_JSON).read_text())["text"] == text
+    reply = json.loads((tmp_path / fw.REPLY_JSON).read_text())
+    assert (reply["episode"], reply["reply_text"], reply["turns"]) == ("e9", text, [text])
+    assert reply["reply_sha256"] == doc["reply_sha256"]
     (tmp_path / "fork.json").write_text('{"status": "ok"}')
     view = staging.read(tmp_path.parent, tmp_path.name)
     assert view.files == {} and [r["path"] for r in view.refused] == ["x.txt"]  # record files are never content
@@ -492,11 +496,44 @@ def test_request_from_source_builds_the_fork_request_directly():
         "tools": [{"type": "function", "function": {"name": "execute_code", "parameters": {}}}],
         "tool_choice": "required",
     }
-    doc = fork_mod.request_from_source("e1", source, "http://127.0.0.1:9/fork/v1", "tok")
-    assert doc["url"] == "http://127.0.0.1:9/fork/v1/chat/completions"
+    doc, why = fork_mod.request_from_source("e1", source, "http://127.0.0.1:9/fork/v1", "tok")
+    assert why is None and doc["url"] == "http://127.0.0.1:9/fork/v1/chat/completions"
     assert doc["headers"]["Authorization"] == "Bearer tok" and doc["headers"]["x-unify-session"] == "fork.e1"
     body = doc["body"]
     assert body["model"] == "provider/model" and body["tool_choice"] == "auto" and body["reasoning_effort"] == "xhigh"
     assert body["messages"] == [*source["sent_messages"], {"role": "user", "content": fork_mod.fork_instruction()}]
-    same = fork_mod.request_from_source("e1", source, doc["url"], "tok")
+    same, _ = fork_mod.request_from_source("e1", source, doc["url"], "tok")
     assert same["url"] == doc["url"]
+    assert fork_mod.request_from_source("e1", {**source, "client": SimpleNamespace()}, "u", "t") == (
+        None,
+        "the session's client names no model",
+    )
+
+
+def test_the_reply_text_joins_every_turn_and_tool_call_blocks_are_kept(tmp_path):
+    turns = [
+        {"role": "assistant", "content": "```path: notes.md\nfirst\n```", "tool_calls": [
+            {"id": "c", "function": {"name": "execute_code", "arguments": json.dumps(
+                {"code": "```path: cases/x.json\n{}\n```"})}}]},
+        {"role": "assistant", "content": "```path: candidates/double.py\n" + CODE + "```"},
+    ]
+    blocks, hop, text = fw.parse_turns(turns)
+    assert text == turns[0]["content"] + "\n" + turns[1]["content"]
+    assert [(b["path"], b["source"]) for b in blocks] == [
+        ("notes.md", "text"),
+        ("candidates/double.py", "text"),
+        ("cases/x.json", "tool_call:execute_code"),
+    ]
+    fw.write_record(tmp_path, "e1", text, hop, turns)
+    reply = json.loads((tmp_path / fw.REPLY_JSON).read_text())
+    assert reply["turns"] == [t["content"] for t in turns] and reply["tool_calls"][1] == []
+
+
+def test_any_status_file_settles_and_helpers_are_a_source(tmp_path):
+    from unify.memory_v2.trigger import admit_settled
+
+    for eid, name in (("r", "replay_fork.json"), ("h", "helper.json"), ("a", "analyst.json")):
+        (tmp_path / eid).mkdir()
+        (tmp_path / eid / name).write_text('{"status": "ok"}')
+    assert admit_settled(tmp_path, ["r", "h", "a"]) == (["r", "h"], ["a"])
+    assert staging.read(tmp_path, "h").source == "helper"

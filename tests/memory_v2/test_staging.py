@@ -118,8 +118,9 @@ def test_analysts_share_one_prefix_and_write_staging(tmp_path):
     assert (
         len({tuple(s) for s in seen}) == 1
     )  # every sibling's prefix is the same bytes
-    v = staging.read(tmp_path, "e1")
-    assert v.source == "writer_analyst" and v.files == {"notes.md": b"lesson from e1"}
+    assert (tmp_path / "e1" / "notes.md").read_bytes() == b"lesson from e1"
+    assert (tmp_path / "e1" / "analyst.json").is_file()
+    assert staging.read(tmp_path, "e1") is None  # analyst output is no longer a staging source
 
 
 def test_flags_come_from_code_never_ids():

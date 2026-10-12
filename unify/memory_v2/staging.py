@@ -1,8 +1,8 @@
 """Staging: the findings an episode's reader leaves for the writer.
 
 Readers write the same files under ``<state>/memory-staging/<episode>/``: the actor's episode-end fork
-(:mod:`.integration.fork_worker`, which writes ``fork.json`` last), writer-side analysts (:mod:`.analysts`, which
-write ``analyst.json`` last) and the offline replay of the fork. A directory without its status file is still being
+(:mod:`.integration.fork_worker`, which writes ``fork.json`` last), writer-launched helpers (``helper.json``) and
+the offline replay of the fork (``replay_fork.json``). A directory without its status file is still being
 written and counts as no staging; with the fork on, admission (:func:`.integration.fork.settled`) keeps such an
 episode out of a pass batch until it settles.
 
@@ -48,9 +48,10 @@ __all__ = [
 ]
 
 STAGING_DIR = "memory-staging"
+#: The file that marks a staging dir settled, and the source it names. Any of them settles an episode for admission.
 STATUS_FILES = {
     "fork.json": "fork",
-    "analyst.json": "writer_analyst",
+    "helper.json": "helper",
     "replay_fork.json": "replay_fork",
 }
 
