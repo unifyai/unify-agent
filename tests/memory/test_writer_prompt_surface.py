@@ -28,7 +28,8 @@ def _spec(name, roles, requires=None):
         name=name,
         description=f"The {name} tool. More text.",
         parameters=_SCHEMA,
-        roles=frozenset(roles),
+        # the registry names the agents (writer, curator, helper), not the earlier pass roles
+        roles=tuple(sorted({"write": "writer", "curate": "curator"}.get(r, r) for r in roles)),
         requires=requires,
     )
 

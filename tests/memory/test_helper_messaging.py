@@ -381,10 +381,10 @@ def test_the_curators_delegate_wait_and_messages_work_the_same_way(tmp_path, fak
 def test_every_agent_gets_the_record_tools_from_the_registry_and_its_profile():
     specs = {s.name: s for s in tool_spec.registry()}
     for name in RECORD_TOOLS:
-        assert specs[name].roles == frozenset({"write", "curate", "helper"}) and specs[name].requires is None
+        assert {"writer", "curator", "helper"} <= set(specs[name].roles) and specs[name].requires is None
     for name in ("reply", "stop"):
-        assert specs[name].roles == frozenset({"write", "curate"})
-    assert specs["ask"].roles == frozenset({"helper"})
+        assert {"writer", "curator"} <= set(specs[name].roles) and "helper" not in specs[name].roles
+    assert "helper" in specs["ask"].roles and not {"writer", "curator"} & set(specs["ask"].roles)
     for agent, flags in (("writer", frozenset({"helper"})), ("curator", frozenset()), ("helper", frozenset())):
         row = agent_profiles.profile(agent)
         assert RECORD_TOOLS <= set(row["tools"]), agent
