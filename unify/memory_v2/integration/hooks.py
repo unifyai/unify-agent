@@ -201,11 +201,20 @@ def tool_result(
 
 
 def worker_cell_done(events: Any) -> None:
-    """Hand one cell's drained audit records (the ``done`` message's ``audit``) to the request's work-tree
-    capture, stamped now on the harness clock; worker-side times are never used. Inert while off, with no
-    run or no capture; never raises."""
-    if events is None or _run() is None:
+    """Hand one cell's drained audit records (the ``done`` message's ``audit``) to the request: its library
+    calls to the use record's runtime counts (``RequestRun.note_calls``), its path records to the work-tree
+    capture, stamped now on the harness clock; worker-side times are never used. Inert while off or with no
+    run; never raises."""
+    run = _run()
+    if events is None or run is None:
         return
+    try:
+        run.note_calls(events)
+    except Exception as exc:  # noqa: BLE001 - recording never fails a cell
+        logger.warning(
+            "memory v2: a cell's library calls were lost (%s)",
+            type(exc).__name__,
+        )
     try:
         from .worktree_capture import active
 

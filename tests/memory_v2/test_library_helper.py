@@ -271,3 +271,147 @@ def test_the_derived_effect_shows_beside_the_status_in_the_index_and_show(tmp_pa
         "Status: it refused inputs it was not built for in 2 episodes and no call to it has returned yet; "
         "a refusal is not a failure.",
     ]
+
+
+GUARD = '''class MemoryInputError(ValueError):
+    pass
+
+
+def double(x):
+    """Double a whole number."""
+    if not isinstance(x, int):
+        raise MemoryInputError("not an int")
+    if x < 0:
+        raise ValueError("negative")
+    return x * 2
+
+
+async def later(x):
+    """Add one, later."""
+    return x + 1
+'''
+CALLS_PRELUDE = """
+import asyncio, inspect, json
+events = []
+sys.addaudithook(lambda e, a: events.append(list(a)) if e == "memory.call" else None)
+import memory
+"""
+
+
+def _guarded(tmp_path: Path) -> Path:
+    from tests.memory_v2.test_layout import LIB
+
+    root = _tree(tmp_path / "lib", {**LIB, "memory/text/guard.py": GUARD})
+    write_files(root, lx.generated_library_mode(root))
+    return root
+
+
+def test_each_library_call_raises_one_event_with_its_outcome(tmp_path):
+    root = _guarded(tmp_path)
+    out = _py(
+        root,
+        CALLS_PRELUDE + """
+from memory.text.guard import double, later, MemoryInputError
+assert double(2) == 4 and double(2) == 4
+try:
+    double("a private value")
+except MemoryInputError as exc:
+    assert str(exc) == "not an int" and type(exc) is MemoryInputError
+    tb = exc.__traceback__
+    while tb.tb_next is not None:
+        tb = tb.tb_next
+    assert tb.tb_frame.f_code.co_filename.endswith("guard.py")  # raised where it was, unchanged
+try:
+    double(-1)
+except ValueError as exc:
+    assert type(exc) is ValueError and str(exc) == "negative"
+assert asyncio.run(later(1)) == 2
+assert inspect.iscoroutinefunction(later) and double.__name__ == "double"
+assert double.__doc__ == "Double a whole number." and str(inspect.signature(double)) == "(x)"
+from memory.text.dates import parse_date
+assert parse_date("2026-10-09") == "2026-10-09"
+print(json.dumps(events))
+""",
+    )
+    events = json.loads(out)
+    item = "memory.text.guard:double"
+    assert [(e[0], e[2]) for e in events] == [
+        (item, "ok"),
+        (item, "ok"),
+        (item, "refused"),
+        (item, "error"),
+        ("memory.text.guard:later", "ok"),
+        (
+            "memory.text.parse:tokens",
+            "ok",
+        ),  # a library call made by another library function
+        (DATE, "ok"),
+    ]
+    assert (
+        events[0][1] == events[1][1] != events[2][1]
+    )  # equal arguments, equal digests
+    assert all(len(e[1]) == 16 and int(e[1], 16) >= 0 for e in events)
+    assert "private" not in out
+
+
+def test_the_digest_never_runs_argument_code_and_a_failing_hook_changes_nothing(
+    tmp_path,
+):
+    root = _guarded(tmp_path)
+    out = _py(
+        root,
+        """
+import json
+def loud(event, args):
+    if event == "memory.call":
+        raise RuntimeError("hook failed")
+sys.addaudithook(loud)
+import memory
+from memory.text.guard import double, MemoryInputError
+ran = []
+class Odd:
+    def __repr__(self):
+        ran.append("repr")
+        return "odd"
+    def __len__(self):
+        ran.append("len")
+        return 1
+    def __iter__(self):
+        ran.append("iter")
+        return iter(())
+try:
+    double(Odd())
+except MemoryInputError:
+    pass
+assert double(3) == 6
+assert memory.args_digest((Odd(), [Odd()], {"k": Odd()}), {}) == memory.args_digest((Odd(), [Odd()], {"k": Odd()}), {})
+print(json.dumps(ran))
+""",
+    )
+    assert json.loads(out) == []
+
+
+def test_lookups_work_on_wrapped_functions_and_tests_are_left_unwrapped(tmp_path):
+    root = _guarded(tmp_path)
+    out = _py(
+        root,
+        CALLS_PRELUDE + """
+from memory.text.guard import double
+import memory.text.tests.test_dates as t
+assert getattr(double, "__memory_item__") == "memory.text.guard:double"
+assert not hasattr(t.test_parse_date, "__memory_item__")
+text = memory.show(double)
+assert "def double(x):" in text and "[experimental" in text
+assert memory.index("text")
+memory.find({"date": "2026-10-09"})
+print(json.dumps(events))
+""",
+    )
+    assert json.loads(out) == []  # lookups are not calls
+
+
+def test_the_harness_import_of_the_helper_installs_no_finder():
+    from unify.memory_v2 import library_helper
+
+    assert library_helper.__name__ != "memory"
+    assert not any(getattr(f, "memory_call_finder", False) for f in sys.meta_path)

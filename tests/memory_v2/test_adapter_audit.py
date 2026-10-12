@@ -405,14 +405,23 @@ def test_a_clip_drops_a_cut_token_in_linear_time():
     # the old trailing-token regex search was quadratic on a long run of token characters
     import time
 
-    for text in ("a" * 200_000 + "!", "x " + "Ab0_-+/=.:~" * 20_000, "sk-" + "z" * 100_000):
+    for text in (
+        "a" * 200_000 + "!",
+        "x " + "Ab0_-+/=.:~" * 20_000,
+        "sk-" + "z" * 100_000,
+    ):
         start = time.perf_counter()
         out = audit_mod._drop_trailing_token(text)
         assert time.perf_counter() - start < 0.5
         assert not out or out[-1] not in audit_mod._TOKEN_CHARS
-    assert audit_mod._drop_trailing_token("path/to/file name-with.token") == "path/to/file "
+    assert (
+        audit_mod._drop_trailing_token("path/to/file name-with.token")
+        == "path/to/file "
+    )
     assert audit_mod._drop_trailing_token("") == ""
-    assert audit_mod._drop_trailing_token("a b-c\n") == "a \n"  # as the old search: before one final newline
+    assert (
+        audit_mod._drop_trailing_token("a b-c\n") == "a \n"
+    )  # as the old search: before one final newline
 
 
 def test_the_linear_clip_equals_the_old_trailing_token_search():
@@ -424,3 +433,113 @@ def test_the_linear_clip_equals_the_old_trailing_token_search():
     for _ in range(20_000):
         text = "".join(rng.choice("ab=/ \n!~.") for _ in range(rng.randrange(12)))
         assert audit_mod._drop_trailing_token(text) == old.sub("", text)
+
+
+# --- memory calls -----------------------------------------------------------------------------------------
+
+CALL = "memory.text.dates:parse_date"
+
+
+def test_memory_calls_are_counted_per_item_and_outcome(tmp_path):
+    a = audit_mod.CellAudit([str(tmp_path)])
+    a(audit_mod.CALL_EVENT, (CALL, "ab12", "ok"))  # off between cells: not counted
+    a.begin()
+    for outcome in ("ok", "ok", "refused", "error"):
+        a(audit_mod.CALL_EVENT, (CALL, "ab12", outcome))
+    a(audit_mod.CALL_EVENT, ("memory.text.parse:tokens", "cd34", "ok"))
+    out = a.drain()
+    assert out["records"] == [] and out["dropped"] == 0
+    calls = out["calls"]
+    assert calls["counts"] == {
+        CALL: {"ok": 2, "refused": 1, "error": 1},
+        "memory.text.parse:tokens": {"ok": 1, "refused": 0, "error": 0},
+    }
+    assert [(r["item"], r["args_digest"], r["outcome"]) for r in calls["records"]][
+        :2
+    ] == [
+        (CALL, "ab12", "ok"),
+        (CALL, "ab12", "ok"),
+    ]
+    assert all(r["cell_thread"] for r in calls["records"])
+    assert (calls["dropped"], calls["records_dropped"], calls["malformed"]) == (0, 0, 0)
+    assert "calls" not in a.drain()  # drained, and a cell without calls adds no block
+
+
+def test_malformed_memory_calls_are_counted_never_read():
+    class Loud(str):
+        def __eq__(self, other):  # never called: only exact str arguments are read
+            raise AssertionError("argument code ran")
+
+        __hash__ = str.__hash__
+
+    a = audit_mod.CellAudit([])
+    a.begin()
+    for args in (
+        (CALL, "ab12"),
+        (Loud(CALL), "ab12", "ok"),
+        (CALL, "not-hex", "ok"),
+        (CALL, "ab12", "maybe"),
+        ("os.system", "ab12", "ok"),
+        (CALL + FAKE_KEY, "ab12", "ok"),
+        ("memory." + "a" * 400 + ":f", "ab12", "ok"),
+    ):
+        a(audit_mod.CALL_EVENT, args)
+    calls = a.drain()["calls"]
+    assert calls["counts"] == {} and calls["malformed"] == 7 and a.failed == 0
+
+
+def test_memory_call_bounds_drop_by_count_and_never_crowd_out_path_records(tmp_path):
+    a = audit_mod.CellAudit([str(tmp_path)])
+    a.begin()
+    for i in range(audit_mod.MAX_CALL_ITEMS + 5):
+        a(audit_mod.CALL_EVENT, (f"memory.p.m:f{i}", "ab", "ok"))
+    for _ in range(audit_mod.MAX_CALL_RECORDS):
+        a(audit_mod.CALL_EVENT, ("memory.p.m:f0", "ab", "ok"))
+    a("os.listdir", (str(tmp_path),))
+    out = a.drain()
+    calls = out["calls"]
+    assert len(calls["counts"]) == audit_mod.MAX_CALL_ITEMS and calls["dropped"] == 5
+    assert (
+        calls["counts"]["memory.p.m:f0"]["ok"] == 1 + audit_mod.MAX_CALL_RECORDS
+    )  # counts stay exact
+    assert len(calls["records"]) == audit_mod.MAX_CALL_RECORDS
+    # counted calls: MAX_CALL_ITEMS + MAX_CALL_RECORDS, of which MAX_CALL_RECORDS are listed
+    assert calls["records_dropped"] == audit_mod.MAX_CALL_ITEMS
+    assert [r["event"] for r in out["records"]] == ["os.listdir"] and out[
+        "dropped"
+    ] == 0
+
+
+def test_the_generated_library_reports_its_calls_to_the_installed_hook(tmp_path):
+    from unify.memory_v2 import library_helper
+
+    ws, outside = make_tree(tmp_path)
+    (ws / "memory" / "m").mkdir(parents=True)
+    (ws / "memory" / "__init__.py").write_bytes(
+        Path(library_helper.__file__).read_bytes(),
+    )
+    (ws / "memory" / "m" / "f.py").write_text(
+        "class MemoryInputError(ValueError):\n    pass\n\n\n"
+        "def half(x):\n"
+        "    if not isinstance(x, int):\n        raise MemoryInputError('not an int')\n"
+        "    return x // 2\n",
+    )
+    out = run_child(
+        """
+        sys.path.insert(0, ws)
+        from memory.m.f import half, MemoryInputError
+        audit.begin()
+        assert half(4) == 2
+        try:
+            half("x")
+        except MemoryInputError:
+            pass
+        emit(audit.drain())
+        """,
+        ws,
+        outside,
+    )
+    assert out["calls"]["counts"] == {
+        "memory.m.f:half": {"ok": 1, "refused": 1, "error": 0},
+    }
+    assert all(len(r["args_digest"]) == 16 for r in out["calls"]["records"])

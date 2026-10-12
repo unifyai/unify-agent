@@ -7,10 +7,15 @@ when the episode is recorded (``episodes`` and ``item_use``), and :func:`facts_f
 :func:`facts_from_use` reads one record directly, and a test keeps the two equal.
 
 What counts:
-- an item is *used* in an episode when a call to it returned: the episode has more call sites of it than
-  exceptions that left it. An import, or a call that only raised, is exposure (*seen*), not use; a lookup
-  through ``memory.show``, ``index`` or ``find`` is neither;
-- an *error* is any exception other than a refusal that left it;
+- an item is *used* in an episode when a call to it returned. The evidence is the runtime record of the calls
+  the actor's cells made (the generated library package raises one audit event per call, the worker's audit
+  hook counts them, and the use record carries ``runtime`` = {ok, refused, error} per item): used means at
+  least one ``ok`` call. Only a record without that evidence (an older record, or a run without the hook)
+  falls back to the static estimate: more call sites of it than exceptions that left it. Each item's facts
+  name the basis they rest on (``runtime`` or ``static``). An import, or a call that only raised, is
+  exposure (*seen*), not use; a lookup through ``memory.show``, ``index`` or ``find`` is neither;
+- an *error* is any exception other than a refusal that left it (on the runtime basis, the calls that
+  ended in one);
 - a *refusal* (``MemoryInputError`` left it: it declined an input it was not built for) is the input contract
   working. Refusals are counted and reported in the use record and the status reason, and are never a failure;
 - a *positive* or *negative* signal is an episode-level signal the episode's regime can observe
@@ -28,7 +33,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from .evidence import EvidenceStore, _unknown_items
+from .evidence import EvidenceStore, _unknown_items, runtime_counts
 from .signals import _CONTRARY, _SUPPORT, REGIME_SOURCES, Signal
 
 K_STABLE = 3
@@ -44,6 +49,8 @@ USE_KEYS = (
     "positive_signals",
     "unknown",
 )
+RUNTIME = "runtime"
+STATIC = "static"
 
 
 @dataclass(frozen=True)
@@ -54,12 +61,19 @@ class ItemUse:
     errored: bool  # another exception left it
     unknown: bool  # a cell with an unknown outcome could reach it: its counts are lower bounds
     seen: bool = False  # imported or called without a call that returned: exposure only
+    basis: str = (
+        STATIC  # what used/refused/errored rest on: observed calls (runtime) or call sites (static)
+    )
+    calls: tuple[int, int, int] | None = (
+        None  # observed calls (ok, refused, error) on the runtime basis
+    )
 
 
 def returned(called: int, refused: int, errored: int) -> bool:
     """Whether a call to an item returned in an episode, from its use record's static counts: more call sites
     than exceptions that left it. Each exception that left it ended one call; a call site in a loop that raised
-    on a later iteration counts as not returned, so this errs towards "not used"."""
+    on a later iteration counts as not returned, so this errs towards "not used". Only the fallback for a
+    record without runtime call counts (:func:`_item_use`)."""
     return called > refused + errored
 
 
@@ -69,9 +83,32 @@ def _item_use(
     refused: int,
     errored: int,
     unknown: bool,
+    runtime: tuple[int, int, int] | None = None,
 ) -> ItemUse | None:
     """One item's facts in one episode, or None when the episode neither imported, called nor had an
-    exception leave it (a lookup or a bare reference)."""
+    exception leave it (a lookup or a bare reference).
+
+    With *runtime* (the observed calls ``(ok, refused, error)``), they rest on it alone: used when a call
+    ended ``ok``, refused and errored when calls ended so; the static counts then only mark exposure (an
+    import or a call site that never ran is *seen*). Without it, on the static counts (:func:`returned`).
+    """
+    if runtime is not None:
+        ok, r_refused, r_errored = runtime
+        if not (
+            imported or called or refused or errored or ok or r_refused or r_errored
+        ):
+            return None
+        used = ok > 0
+        return ItemUse(
+            used,
+            called,
+            r_refused > 0,
+            r_errored > 0,
+            unknown,
+            seen=not used and bool(imported or called or r_refused or r_errored),
+            basis=RUNTIME,
+            calls=(ok, r_refused, r_errored),
+        )
     if not (imported or called or refused or errored):
         return None
     used = returned(called, refused, errored)
@@ -151,6 +188,7 @@ def facts_from_use(
             _n(r.get("refused")),
             _n(r.get("errored")),
             item in unknown,
+            runtime_counts(use, item),
         )
         if u is not None:
             items[item] = u
@@ -180,9 +218,21 @@ def facts_from_evidence(
     """
     want = set(eids) if eids is not None else None
     by_episode: dict[str, dict[str, ItemUse]] = {}
-    for item, eid, imported, called, refused, errored, unknown in ev.db.execute(
-        "SELECT item, episode_id, imported, called, refused, errored, outcome_unknown FROM item_use "
-        "ORDER BY episode_id, item",
+    for (
+        item,
+        eid,
+        imported,
+        called,
+        refused,
+        errored,
+        unknown,
+        basis,
+        r_ok,
+        r_refused,
+        r_errored,
+    ) in ev.db.execute(
+        "SELECT item, episode_id, imported, called, refused, errored, outcome_unknown, runtime_basis, "
+        "runtime_ok, runtime_refused, runtime_errored FROM item_use ORDER BY episode_id, item",
     ):
         u = _item_use(
             int(imported or 0),
@@ -190,6 +240,11 @@ def facts_from_evidence(
             int(refused or 0),
             int(errored or 0),
             bool(unknown),
+            (
+                (int(r_ok or 0), int(r_refused or 0), int(r_errored or 0))
+                if basis
+                else None
+            ),
         )
         if u is not None:
             by_episode.setdefault(eid, {})[item] = u
@@ -224,7 +279,8 @@ def aggregate_use(facts: Iterable[EpisodeUse]) -> dict[str, dict[str, dict]]:
     ``errors`` the episodes in which an exception other than a refusal left it, ``refused`` those in which it
     refused an input (reported, never a failure), ``negative_signals`` and ``positive_signals`` the episodes
     that used it and carry such a signal (positive only without a negative one), ``unknown`` the episodes whose
-    outcome for it is unknown.
+    outcome for it is unknown. ``runtime_basis`` (present only when non-zero) counts the episodes whose facts
+    rest on observed calls rather than static call sites.
     """
     out: dict[str, dict[str, dict]] = {}
     for f in facts:
@@ -241,6 +297,8 @@ def aggregate_use(facts: Iterable[EpisodeUse]) -> dict[str, dict[str, dict]]:
             row["unknown"] += int(u.unknown)
             row["negative_signals"] += int(u.used and f.negative)
             row["positive_signals"] += int(u.used and f.positive and not f.negative)
+            if u.basis == RUNTIME:
+                row["runtime_basis"] = row.get("runtime_basis", 0) + 1
     return {i: dict(sorted(c.items())) for i, c in sorted(out.items())}
 
 
@@ -457,7 +515,8 @@ def identities(
     the nearest recorded ancestor's uid, with the ids it passed through appended to the lineage. A new function
     that live CURATE aliases (*aliases*: old id -> ``{"target"}``) forward to takes the uid of the first such
     alias (by id) that has one, the alias's id joining its lineage; the alias keeps its uid as well, since calls
-    to it reach the target. Anything else gets a new uid (:func:`.item_records.new_uid`)."""
+    to it reach the target. Anything else gets a new uid (:func:`.item_records.new_uid`).
+    """
     from .item_records import new_uid
 
     renamed_to: dict[str, str] = {}
@@ -473,7 +532,11 @@ def identities(
             # a record written before uids existed: derive it the way a first record does
             uid = new_uid(name, rec.get("changed_at"))
         lineage = rec.get("renamed_from")
-        lineage = [x for x in lineage if isinstance(x, str)] if isinstance(lineage, list) else []
+        lineage = (
+            [x for x in lineage if isinstance(x, str)]
+            if isinstance(lineage, list)
+            else []
+        )
         return uid, lineage
 
     by_target: dict[str, list[str]] = {}

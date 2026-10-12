@@ -99,6 +99,10 @@ _USE_COUNTS = (
     "exposure_unknown",
     "outcome_unknown",
     "prompt_unconfirmed",
+    "runtime_basis",
+    "runtime_ok",
+    "runtime_refused",
+    "runtime_errored",
 )
 # Added with ``DEFAULT 1``: a row indexed before the column existed reads as unknown (its outcomes and
 # where its shown lists came from), never as known. Every insert sets every column, so the default only
@@ -170,6 +174,31 @@ def _exposure_source(use: dict) -> str:
     return "unknown"
 
 
+def runtime_counts(use: dict, item: str) -> tuple[int, int, int] | None:
+    """``(ok, refused, error)``: the calls of *item* the request's cells were observed making (the worker's
+    audit hook, ``integration.request.with_runtime_calls``), or None when the record has no runtime evidence
+    for it: no ``runtime_calls`` block (an older record, or no hook), or calls of some items were dropped
+    and this item has no counted call. An item of a record with runtime evidence and no ``runtime`` row made
+    no call: ``(0, 0, 0)``."""
+    block = use.get("runtime_calls")
+    if not isinstance(block, dict):
+        return None
+
+    def n(value: object) -> int:
+        return value if type(value) is int and value > 0 else 0
+
+    if n(block.get("cells")) == 0:
+        return None
+    rows = use.get("items") if isinstance(use.get("items"), dict) else {}
+    row = rows.get(item) if isinstance(rows.get(item), dict) else {}
+    counts = row.get("runtime")
+    if isinstance(counts, dict):
+        return n(counts.get("ok")), n(counts.get("refused")), n(counts.get("error"))
+    if n(block.get("dropped")):
+        return None
+    return 0, 0, 0
+
+
 def _unknown_items(use: dict, items: set[str]) -> set[str]:
     """The items whose outcome the record leaves unknown: its ``items_outcome_unknown`` (every item when
     that list was cut short), or, for a record without the list (an older or failed record), every item
@@ -200,7 +229,10 @@ def _use_rows(eid: str, use: dict) -> list[tuple]:
     is 1 when the shown lists came from the record but no recorded system prompt ends with its text;
     ``outcome_unknown`` is 1 for the items a cell with an unknown outcome could reach in this request
     (``items_outcome_unknown``; for a record without that list, every item unless ``outcomes_known``),
-    and that row's refusal and error columns are then lower bounds.
+    and that row's refusal and error columns are then lower bounds. ``runtime_basis`` is 1 when the record
+    carries runtime call evidence for the item (:func:`runtime_counts`), with its observed calls in
+    ``runtime_ok``, ``runtime_refused`` and ``runtime_errored``; 0 (and zeros) when only the static counts
+    exist.
     """
 
     def listed(key: str) -> set[str]:
@@ -256,6 +288,7 @@ def _use_rows(eid: str, use: dict) -> list[tuple]:
     for item in sorted(every):
         r = rows.get(item) if isinstance(rows.get(item), dict) else {}
         channel = item.split(":", 1)[0].removeprefix("env/")
+        runtime = runtime_counts(use, item)
         out.append(
             (
                 item,
@@ -276,6 +309,7 @@ def _use_rows(eid: str, use: dict) -> list[tuple]:
                 *exposure,
                 int(item in unknown_items),
                 unconfirmed,
+                *((1, *runtime) if runtime is not None else (0, 0, 0, 0)),
             ),
         )
     return out
