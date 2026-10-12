@@ -19,7 +19,7 @@ from unify.memory_v2.staging import StagingView
 from tests.memory_v2.test_gate import ITEM, MAN
 from tests.memory_v2.test_pool import EMPTY, INDEX, _finish_with, _open, _Stores
 from tests.memory_v2.test_writer_pass import _call, needs_bwrap
-from tests.memory_v2.test_gate_library_mode import world21  # noqa: F401 (a fixture)
+from tests.memory_v2.test_gate_library_mode import library_gate_world  # noqa: F401 (a fixture)
 
 FILL = (
     "def fill(grid, colour=0):\n"
@@ -500,7 +500,7 @@ def test_chain_counts_read_events_and_unknown_parse_records(tmp_path):
 
 
 @needs_bwrap
-def test_the_gate_records_each_landed_items_adopts(world21):  # noqa: F811
+def test_the_gate_records_each_landed_items_adopts(library_gate_world):  # noqa: F811
     from tests.memory_v2.test_gate import _candidate
     from tests.memory_v2.test_gate_library_mode import (
         ITEM_ID,
@@ -508,7 +508,7 @@ def test_the_gate_records_each_landed_items_adopts(world21):  # noqa: F811
         _man,
     )
 
-    mem, ev, blobs, gate = world21
+    mem, ev, blobs, gate = library_gate_world
     files, fixtures = _files_and_fixtures(blobs)
     res = gate().merge(
         mem.head(),

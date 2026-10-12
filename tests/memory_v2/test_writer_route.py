@@ -222,7 +222,7 @@ def test_route_sends_to_its_base_url_with_its_token_and_header(
     ]
     t = seen["transport"]
     assert t["api_base"] == WRITER_BASE
-    assert t["api_key"] == _digest(WRITER_TOKEN)  # Sol's token, not the actor's key
+    assert t["api_key"] == _digest(WRITER_TOKEN)  # the writer's token, not the actor's key
     assert t["extra_headers"] == {"X-Unify-Call-Kind": "memory_writer"}
     # pricing as shipped: the request still asks the OpenRouter API for its charged cost
     assert t["extra_body"]["usage"]["include"] is True

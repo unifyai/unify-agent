@@ -747,7 +747,7 @@ def test_writer_transcript_is_kept_redacted_on_the_episode_commit(
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
     (out,) = _run(stores, "e1", sha)
-    assert secret in json.dumps(fake.seen)  # Sol itself saw it; the record must not
+    assert secret in json.dumps(fake.seen)  # the writer itself saw it; the record must not
     head, *rows = [
         json.loads(n) for n in stores.episodes.notes(sha, ref="sol-transcripts")
     ]
@@ -1165,7 +1165,7 @@ def test_library_reaches_the_pass_and_its_end_event_records_the_read_log(
         "",
         "optional",
     ):  # the former reading rule's accepted values change nothing
-        fake = FakeSol()  # finishes every turn: finish never waits on reading
+        fake = FakeWriter()  # finishes every turn: finish never waits on reading
         monkeypatch.setattr(consolidate, "unillm_turn", fake)
         stores = _stores(tmp_path / (value or "empty"))
         sha, _ = _record(stores, "e1")
@@ -1307,11 +1307,11 @@ def test_curate_runs_after_write_when_the_library_state_warrants_it(
     assert fake.seen[-1][0] == {
         "role": "system",
         "content": curate_brief_now(),
-    }  # P7's brief
+    }  # the curate brief
     # CURATE changed nothing and kept nothing with a reason: its reasons are not settled, so they fire again
     assert stores.evidence.curate_seen() == set()
     sha2, _ = _record(stores, "e2", minute=1)
-    assert [o.pass_id for o in _run21(stores, "e2", sha2)] == ["e2.p0", "e2.p1"]
+    assert [o.pass_id for o in _run_library(stores, "e2", sha2)] == ["e2.p0", "e2.p1"]
     assert _kinds(stores) == ["batched", "curate", "batched", "curate"]
 
 
