@@ -205,10 +205,12 @@ def child_replay(job: dict) -> dict:
 
 
 #: The replay verifier's observation contract. Each run records its live-out values (every plain value its namespace
-#: ends with, scalars and empty containers included), its stdout per cell and its working tree's file deltas as
-#: ``[path, created | modified | deleted, sha256]``. Alias groups, deleted names and values that cannot be encoded
-#: are recorded as unknown and never compared. Results of another version are never mixed with these.
-OBS_VERSION = 2
+#: ends with, scalars and empty containers included), its stdout per cell (``stdout``, ``[length, sha256]`` of the
+#: text as printed; ``printed``, the sha256 of the text with surrounding whitespace stripped, which is compared with
+#: the cell's recorded output) and its working tree's file deltas as ``[path, created | modified | deleted, sha256]``.
+#: Alias groups, deleted names and values that cannot be encoded are recorded as unknown and never compared. Results
+#: of another version are never mixed with these.
+OBS_VERSION = 3
 
 
 def _tree_state(root: str | None) -> dict[str, str]:
@@ -258,6 +260,13 @@ def _stdout_digest(text: str) -> list:
     ]
 
 
+def printed_digest(text: str) -> str:
+    """The sha256 of *text* with surrounding whitespace stripped: how a run's stdout is compared with a recording."""
+    import hashlib
+
+    return hashlib.sha256(text.strip().encode("utf-8", "surrogatepass")).hexdigest()
+
+
 def _not_a_value(v) -> bool:
     """Code objects a namespace holds besides data (functions, classes, modules): neither values nor unknowns."""
     import types
@@ -295,7 +304,8 @@ def _run_cells(
     """Replay *cells* in one namespace with *cwd* (the run's own working tree) as the working directory; at line
     *snap* = (cell index, line) record the names then bound and the values of *names*. The run's observation
     (:data:`OBS_VERSION`): ``after``, every plain value the namespace ends with, tagged; ``stdout``, each cell's
-    ``[length, sha256]``; ``files``, the working tree's deltas; ``unknown``, what is recorded but not compared.
+    ``[length, sha256]``; ``printed``, each cell's :func:`printed_digest`; ``files``, the working tree's deltas;
+    ``unknown``, what is recorded but not compared.
     """
     if cwd:
         os.chdir(cwd)
@@ -307,6 +317,7 @@ def _run_cells(
             return {"error": f"prelude {err}"}
     seen: dict = {}
     stdout: list = []
+    printed: list = []
     flags = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
     for cell in cells:
         fname = f"<cell-{cell['index']}>"
@@ -345,6 +356,7 @@ def _run_cells(
             finally:
                 sys.settrace(None)
         stdout.append(_stdout_digest(out.getvalue()))
+        printed.append(printed_digest(out.getvalue()))
         if err:
             return {"error": err}
     after, unobservable, ids = {}, [], {}
@@ -365,6 +377,7 @@ def _run_cells(
     return {
         "after": after,
         "stdout": stdout,
+        "printed": printed,
         "files": _file_deltas(files0, _tree_state(cwd)),
         "unknown": unknown,
         "obs": OBS_VERSION,
