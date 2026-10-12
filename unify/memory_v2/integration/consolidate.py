@@ -802,6 +802,7 @@ def _start_event(
         "pass_id": pass_id,
         "trigger_tokens": req.experience_tokens,
         "episodes": list(req.episodes),
+        "held": list(getattr(req, "held", []) or []),
         "writer_model": model,
         "writer_effort": effort,
         "cap_usd": _usd(cap),
@@ -1131,11 +1132,15 @@ async def run_due_passes(
         )
         return []  # nothing recorded; the request stays due
     scale, max_calls = cfg.effort_scale[level], cfg.max_calls[level]
+    from . import fork as _fork
+
     trig = Trigger(
         stores.evidence,
         mode="batched",
         experience_budget=cfg.experience_budget,
         usd_per_token=cfg.usd_per_token,
+        # with the fork on, an episode joins a batch only once its fork has settled; the rest roll to the next pass
+        admission=_fork.admission(stores.paths, settings),
     )
     drift = sorted(getattr(state, "drift", set()) or set())
     for ch in drift:
@@ -1184,6 +1189,8 @@ async def run_due_passes(
         **(
             {
                 "staging_root": str(Path(stores.paths.state_dir) / "memory-staging"),
+                # each pass's tool events, box opens and refusal codes, kept after the pass (one folder per pass)
+                "pass_record_root": str(Path(stores.paths.state_dir) / "passes"),
                 "pool": library_pool(settings),
                 "compact": library_compact(settings),
                 "coverage_rule": library_coverage(settings),
@@ -1355,6 +1362,9 @@ async def run_due_passes(
                 clock() - started,
                 failure_code,
             )
+            event["episodes"] = list(
+                req.episodes,
+            )  # ties the fork's and the helpers' spend to this pass's batch
             if library_enabled(settings):
                 # Amendment C: the lag when the pass ended, before publishing
                 event["served_lag_commits"] = _served_lag(stores)

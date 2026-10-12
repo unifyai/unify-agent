@@ -1035,6 +1035,9 @@ class PassConfig:
     # MAIN 11 Oct (prepared, off until the lead decides): UNIFY_MEMORY_LIBRARY_COMPACT moves old tool results out of
     # Sol's conversation when it grows past COMPACT_AT_CHARS (:func:`_compact`)
     compact: bool = False
+    # where each pass keeps its records after it ends (tool events, box opens, refusal codes): <root>/<pass id>/;
+    # None keeps them in memory only
+    pass_record_root: str | None = None
     # MAIN 11 Oct (prepared; "required" until the lead decides): UNIFY_MEMORY_LIBRARY_COVERAGE. "optional": finish never
     # needs coverage, the episodes left are recorded as unread, and the pass reports coverage measures (no gate)
     coverage_rule: str = "required"
