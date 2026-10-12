@@ -294,6 +294,7 @@ class InCodeTools:
             started = time.monotonic()
             res: Any = None
             raised: Optional[BaseException] = None
+            failed: Optional[str] = None
             try:
                 interp = await self._interpreter()
                 if self.channel is not None:
@@ -302,20 +303,41 @@ class InCodeTools:
                 res = await interp.run_cell(code, call=call)
             except asyncio.CancelledError:
                 raise
-            except BaseException as exc:  # a cell's reply() (a BaseException) or a control exception
+            except Exception as exc:  # noqa: BLE001 - the interpreter failed: told as the cell's error, never a host trace
+                logger.warning("an in-code cell could not run", exc_info=True)
+                failed = (
+                    f"(the cell could not run: {type(exc).__name__}; the interpreter starts again with the next "
+                    "cell: variables are gone, files remain)"
+                )
+                await self._drop_interpreter()
+            except BaseException as exc:  # a cell's reply() (a BaseException) or another control exception
                 raised = exc
             finally:
                 self._cell_call = None
                 if not persistent() and self.interp is not None:
                     interp, self.interp = self.interp, None
                     await interp.stop()
-            out = self._result(res, raised, started)
+            out = self._result(res, raised, started, failed)
             self._cell_row(call, code, out)
             if raised is not None and not _is_reply(raised):
                 raise raised
             return out
 
-    def _result(self, res: Any, raised: Optional[BaseException], started: float) -> Any:
+    async def _drop_interpreter(self) -> None:
+        interp, self.interp = self.interp, None
+        if interp is not None:
+            try:
+                await interp.stop()
+            except Exception:  # noqa: BLE001 - logged; close() checks the box again at the end
+                logger.warning("stopping a failed interpreter failed", exc_info=True)
+
+    def _result(
+        self,
+        res: Any,
+        raised: Optional[BaseException],
+        started: float,
+        failed: Optional[str] = None,
+    ) -> Any:
         from unify.actor.execution.types import ExecutionResult, TextPart, parts_to_text
         from unify.common._async_tool import cell_reply
 
@@ -344,6 +366,8 @@ class InCodeTools:
         if raised is not None and _is_reply(raised):
             refused = cell_reply.deliver(raised.text, raised.from_value)
             error = refused if refused is not None else error
+        if failed is not None:
+            error = failed
         stdout += [TextPart(text=n + "\n") for n in after]
         return ExecutionResult(
             stdout=stdout,
