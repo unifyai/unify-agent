@@ -128,6 +128,7 @@ from .switch import (
     library_enabled,
     library_pool,
     library_compact,
+    library_fork,
     library_coverage,
     library_max_reads,
 )
@@ -1188,7 +1189,13 @@ async def run_due_passes(
         # staging lives beside the fork's (fork.staging_dir); helpers write beside it
         **(
             {
-                "staging_root": str(Path(stores.paths.state_dir) / "memory-staging"),
+                # staging exists only with the episode-end fork (or its offline replay, which runs with the fork
+                # setting on): with the fork off the writer is told about no staging and its batch map has none
+                "staging_root": (
+                    str(Path(stores.paths.state_dir) / "memory-staging")
+                    if library_fork(settings)
+                    else None
+                ),
                 # each pass's tool events, box opens and refusal codes, kept after the pass (one folder per pass)
                 "pass_record_root": str(Path(stores.paths.state_dir) / "passes"),
                 "pool": library_pool(settings),
