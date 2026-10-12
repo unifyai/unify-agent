@@ -41,6 +41,17 @@ informative row (every input missed the replay or was unbound), the check is "no
 pass. First the tests run on the module re-printed unchanged (the control): if that is not
 green, nothing is judged.
 
+**Library mode** (a library function takes any arguments; its examples are the calls its tests make). The
+covers of the draw are the recorded actions behind the function's whole-source copied input fixtures, and each
+drawn input takes the form its fixture's kind gives (:data:`SOURCE_FORMS`: a tool response or a dialogue
+observation as ``observation``, a work-tree file as ``path``); a sliced fixture, a message or a cell's output
+has no family to draw from, which is noted. No probe runs: the drawn inputs are appended to a copy of the
+recorded-inputs file and the function's listed tests run with its calls recorded (:mod:`.example_calls`). A
+call on an appended line (a call key the run without them did not make) that raises refuses the pass, as one
+that refuses an input whose arguments have the field names of an accepted call's. A surviving mutant is likely
+equivalent when every call of its tests returns, refuses or raises as on the original, with an equal result
+digest; with no recorded call to compare, mutation is not judged, which refuses the pass.
+
 **Determinism** (``UNIFY_MEMORY_QA_DETERMINISM``). Every gate pytest run gets ``PYTHONHASHSEED=0``,
 ``TZ=UTC`` and the plugin :mod:`.pin` (``-p _memory_pin``: a stepping clock from a fixed epoch, ``random`` seeded
 before each test). Each new or changed test file green in G3 runs once more under the other pin variant
@@ -747,6 +758,100 @@ def same_outputs(base: dict[int, dict] | None, other: dict[int, dict] | None) ->
     )
 
 
+# --- library mode: judged from the tests' recorded calls ----------------------------------------------------
+
+#: The form a drawn input of an input fixture's family takes, by the kind of the recorded action behind it.
+SOURCE_FORMS = {"tool": "observation", "worktree": "path", "dialogue": "observation"}
+
+
+def _call_outputs(item: str, records: list[Any]) -> dict | None:
+    """(outcome, result digest, raised) per call key of *item* across *records*; None when one is missing or
+    incomplete, so nothing is compared on it."""
+    out: dict = {}
+    for rec in records:
+        if rec is None or not rec.complete:
+            return None
+        for c in rec.calls:
+            if c.item == item:
+                out[c.key] = (c.outcome, c.result_sha, c.raised)
+    return out
+
+
+def _records_seen(outputs: dict | None) -> bool:
+    """Whether the runs recorded calls at all (a dict, possibly empty), as library-mode runs do."""
+    return outputs is not None
+
+
+def _same_calls(base: dict, other: dict | None) -> bool:
+    """Every call of *base* is in *other* with the same outcome, digest and raised class; a returned call
+    without a digest cannot be compared."""
+    if not base or other is None:
+        return False
+    for key, got in base.items():
+        if key not in other or other[key] != got:
+            return False
+        if got[0] == "returned" and got[1] is None:
+            return False
+    return True
+
+
+def _arg_shape(arg: Any, tree: Path) -> Any:
+    """What an argument's shape is compared by: its field names (a structured value, or a file it names), else
+    its type; None when not recorded."""
+    from .fixtures import _read_plain
+    from .held_out import _Json, _file_doc
+
+    if arg.path is not None:
+        data = _read_plain(tree / arg.path, MAX_INPUT_FILE_BYTES)
+        doc = _file_doc(arg.path, data) if data is not None else None
+        return ("file", frozenset(doc.fields())) if doc is not None else ("file", None)
+    if isinstance(arg.json, (dict, list)):
+        return ("value", frozenset(_Json(arg.json, lambda o: o).fields()))
+    if arg.json is None and (arg.cut or arg.sha is None):
+        return None
+    return ("type", arg.type)
+
+
+@dataclass
+class _DrawnCalls:
+    """The calls of a function on the lines appended to its recorded-inputs file, as verdict counts."""
+
+    calls: int = 0
+    crashed: int = 0
+    refused: int = 0
+    allowed: int = 0
+    unknown: int = 0
+    raised: dict[str, int] = field(default_factory=dict)
+    unrecorded: list[str] = field(default_factory=list)
+
+    def add(self, item: str, test: str, first: Any, after: Any, tree: Path, appended: Path) -> None:
+        """Count *after*'s calls of *item* whose keys *first* (the run without the lines) did not make."""
+        if first is None or after is None or not first.complete or not after.complete:
+            self.unrecorded.append(test)
+            return
+        before = [c for c in first.calls if c.item == item]
+        keys = {c.key for c in before}
+        accepted = [
+            {a.name: _arg_shape(a, tree) for a in c.args} for c in before if c.outcome == "returned"
+        ]
+        for c in after.calls:
+            if c.item != item or c.key in keys:
+                continue
+            self.calls += 1
+            if c.outcome == "raised":
+                self.crashed += 1
+                name = builtin_error(c.raised) or "another exception"
+                self.raised[name] = self.raised.get(name, 0) + 1
+            elif c.outcome == "refused":
+                shape = {a.name: _arg_shape(a, appended) for a in c.args}
+                if any(v is None for v in shape.values()):
+                    self.unknown += 1
+                elif shape in accepted:
+                    self.refused += 1
+                else:
+                    self.allowed += 1
+
+
 # --- the checks ----------------------------------------------------------------------------------------------
 
 
@@ -843,8 +948,11 @@ class QAChecks:
         ro: dict[Path, str] | None = None,
         rw: dict[Path, str] | None = None,
         env: dict[str, str] | None = None,
+        calls: list[str] | None = None,
     ):
         qa_env = self.run.qa_env
+        # library mode: the calls of *calls* (item ids) are recorded (:mod:`.example_calls`)
+        extra = {} if calls is None else {"calls": list(calls)}
         return self.gate.pytest(
             target,
             python=self.gate.python,
@@ -854,6 +962,7 @@ class QAChecks:
             timeout_s=timeout_s,
             env=dict(env if env is not None else qa_env.env),
             import_skips_fail=True,  # as every run with the kit mounted (Gate._pytest)
+            **extra,
         )
 
     def _edited(self) -> list[Any]:
@@ -880,6 +989,8 @@ class QAChecks:
         return sorted(t for t in it.tests if t in changed and t in self.run.c_files)
 
     def _form(self, it: Any) -> str | None:
+        if self.cfg.library_mode:
+            return None  # a library function takes any arguments; a drawn input's form is its fixture's
         declared = self.gate._doc_inputs(self.run).get(it.item, "")
         return it.input or (declared if declared in INPUT_KINDS else None)
 
@@ -1079,6 +1190,11 @@ class QAChecks:
             return
         rows: dict[str, list[Row]] = {}
         for it in edited:
+            if cfg.library_mode:
+                got = self._draw_library(it)
+                if got:
+                    rows[it.item] = got
+                continue
             covers = self._covers(it.item, self.gate.lookup)
             if not covers:
                 continue
@@ -1111,7 +1227,8 @@ class QAChecks:
             )
         base: dict[str, dict[int, dict] | None] = {}
         for it in edited:
-            if written.get(it.item):
+            # library mode: no probe; the function's own tests are run with its calls recorded
+            if written.get(it.item) and not cfg.library_mode:
                 base[it.item] = self._probe(it.item, run.c_tree, samples)
         if cfg.fixtures:
             for it in edited:
@@ -1124,6 +1241,64 @@ class QAChecks:
                     samples if written.get(it.item) else None,
                     base.get(it.item),
                 )
+
+    def _draw_library(self, it: Any) -> list[Row]:
+        """Library mode: drawn inputs of the families of the function's input fixtures.
+
+        The covers are the recorded actions behind its whole-source copied input fixtures (the gate's
+        ``input_fixtures`` per item); each gives its rows' form by its kind (:data:`SOURCE_FORMS`). A slice, a
+        message, a cell's output or an action's arguments has no family of recorded inputs to draw from.
+        """
+        run, item = self.run, it.item
+        fixtures = (getattr(run, "input_fixtures", None) or {}).get(item, [])
+        groups: dict[str, list[tuple[str, int, Action]]] = {}
+        undrawable = 0
+        for f in fixtures:
+            entry = f.entry if isinstance(f.entry, dict) else {}
+            source, episode = str(entry.get("source", "")), entry.get("episode")
+            a = None
+            if (
+                entry.get("kind") == "copy"
+                and entry.get("slice") is None
+                and source.isdigit()
+                and isinstance(episode, str)
+            ):
+                a = self.gate.lookup(episode, int(source))
+            form = SOURCE_FORMS.get(getattr(a, "kind", "")) if a is not None else None
+            if form is None:
+                undrawable += 1
+                continue
+            groups.setdefault(form, []).append((episode, int(source), a))
+        if not groups:
+            self._note(
+                "fixtures",
+                f"{item}: its input fixtures are slices or messages; no recorded inputs of their family "
+                "can be drawn",
+            )
+            return []
+        if undrawable:
+            self._note(
+                "fixtures",
+                f"{item}: {undrawable} of its input fixtures are slices or messages; no recorded inputs of "
+                "their family are drawn for them",
+            )
+
+        def blob(sha: str) -> bytes:
+            if not self.gate.blobs.has(sha):
+                raise KeyError(sha)
+            return self.gate.blobs.get(sha)
+
+        out: list[Row] = []
+        left = self.cfg.sample_k
+        for form in sorted(groups):
+            covers = sorted(groups[form], key=lambda c: (c[0], c[1]))
+            pool, _ = self.gate._pool(run, covers)
+            got, notes = draw(item, covers, pool, form=form, blob=blob, seed=self.seed, k=left)
+            for n in notes:
+                self._note("fixtures", f"{item}: {n}")
+            left -= sum(1 for r in got if r.role == "sample")
+            out += got
+        return out
 
     def _probe(self, item: str, tree: Path, samples: Path) -> dict[int, dict] | None:
         to = self._timeout(self.cfg.run_s, f"the probe of {item}")
@@ -1182,6 +1357,9 @@ class QAChecks:
 
         drawn = [r for r in rows if r["role"] == "sample"]
         if not drawn:
+            return
+        if self.cfg.library_mode:
+            self._appended(it, drawn, samples)
             return
         item = it.item
         covers = [r["id"] for r in rows if r["role"] == "cover"]
@@ -1246,9 +1424,6 @@ class QAChecks:
                     "an argument no recording names, or no input in its form) and "
                     f"{timeouts} past the {PROBE_CASE_S} s limit",
                 )
-        if self.cfg.library_mode:
-            self._appended(it, drawn, samples)
-            return
         # the function's own tests on the drawn inputs
         kit = self._kit()
         tests = [
@@ -1337,10 +1512,11 @@ class QAChecks:
         sep = b"" if not old or old.endswith(b"\n") else b"\n"
         target.write_bytes(old + sep + ("\n".join(lines) + "\n").encode("utf-8"))
         new_cases: set[str] = set()
+        verdict = _DrawnCalls()
         # every test file of the item the candidate holds, changed or not (a CURATE refactor changes none)
         for t in sorted(x for x in it.tests if x in run.c_files):
             to = self._timeout(self.cfg.run_s, f"the drawn-inputs run of {t}")
-            outcome = self._pytest(tree, t, to)
+            outcome = self._pytest(tree, t, to, calls=[item])
             if not _green(outcome):
                 self._fail(
                     "fixtures",
@@ -1349,15 +1525,18 @@ class QAChecks:
                     item,
                 )
             first = run.qa_first.get(t)
-            if first is None:
+            if first is None or first.calls is None:
                 # a test file this pass did not change has no first run (G3 runs new and changed tests only):
                 # the candidate's own run without the appended lines is the baseline (not kept in qa_first)
                 first = self._pytest(
                     run.c_tree,
                     t,
                     self._timeout(self.cfg.run_s, f"the baseline run of {t}"),
+                    calls=[item],
                 )
             new_cases |= outcome.passed - first.passed
+            verdict.add(item, t, first.calls, outcome.calls, run.c_tree, tree)
+        self._drawn_verdict(item, verdict)
         record["drawn_inputs_read"] = min(len(drawn), len(new_cases))
         if len(new_cases) < len(drawn):
             text = (
@@ -1372,6 +1551,46 @@ class QAChecks:
                 )
             else:
                 self._note("fixtures", text)
+
+    def _drawn_verdict(self, item: str, v: "_DrawnCalls") -> None:
+        """Library mode: the calls of *item* on the appended lines, judged as the probe's rows were."""
+        for t in v.unrecorded:
+            text = (
+                f"{item}: the call record of {t} with the drawn inputs appended is missing or incomplete; "
+                "its drawn inputs are not judged"
+            )
+            if self.cfg.strict:
+                self._fail("fixtures", text, item)
+            else:
+                self._note("fixtures", text)
+        n = v.calls
+        if v.crashed:
+            kinds = ", ".join(f"{k} ({c})" for k, c in sorted(v.raised.items()))
+            self._fail(
+                "fixtures",
+                f"{item} raises on {v.crashed} of {n} drawn recorded inputs of its family ({kinds}); it "
+                "must return or raise MemoryInputError",
+                item,
+            )
+        if v.refused:
+            self._fail(
+                "fixtures",
+                f"{item} refuses {v.refused} of {n} drawn recorded inputs shaped like its covers, which "
+                "the environment accepted",
+                item,
+            )
+        if v.allowed:
+            self._note(
+                "fixtures",
+                f"{item} refuses {v.allowed} of {n} drawn inputs whose fields differ from its covers' "
+                "(a precondition)",
+            )
+        if v.unknown:
+            self._note(
+                "fixtures",
+                f"{item}: {v.unknown} refusal(s) of drawn inputs whose argument shape is not recorded (a value "
+                "too large to record, or not JSON); not judged",
+            )
 
     def _mutants(
         self,
@@ -1416,12 +1635,17 @@ class QAChecks:
             shutil.copytree(run.c_tree, tree)
         target = tree / rel
         original = target.read_bytes()
+        records: list[Any] = []  # library mode: the call records of the last tests_green's runs
+        calls = [item] if cfg.library_mode else None
 
         def tests_green(text: str) -> bool:
             target.write_text(text, encoding="utf-8")
+            records.clear()
             for t in tests:
                 to = self._timeout(cfg.mutant_s, f"the mutants of {item}")
-                if not _green(self._pytest(tree, t, to)):
+                outcome = self._pytest(tree, t, to, calls=calls)
+                records.append(outcome.calls)
+                if not _green(outcome):
                     return False
             return True
 
@@ -1434,8 +1658,10 @@ class QAChecks:
                     f"{item}'s tests are not green on its module re-printed unchanged; mutants not judged",
                 )
                 return
+            control_calls = _call_outputs(item, records)
             killed: list[mutation.Site] = []
             survived: list[tuple[mutation.Site, str]] = []
+            survived_calls: list[dict | None] = []
             guard_killed = guard_total = 0
             for site in chosen + extra:
                 text = mutation.apply(source, function, site)
@@ -1449,12 +1675,26 @@ class QAChecks:
                     continue  # measured for guard coverage only
                 if green:
                     survived.append((site, text))
+                    survived_calls.append(_call_outputs(item, records))
                 else:
                     killed.append(site)
             if cfg.library_mode and guard_total:
                 record["guard"] = {"killed": guard_killed, "total": guard_total}
             equivalent: list[mutation.Site] = []
-            if survived and samples is not None and base:
+            if survived and cfg.library_mode and _records_seen(control_calls):
+                # equivalence from the tests' own calls: every call of the control returns, refuses or
+                # raises alike, with an equal result digest
+                if not control_calls:
+                    why = (
+                        f"{item}: mutation not judged: {len(survived)} of {len(killed) + len(survived)} "
+                        "mutants survive and its tests made no recorded call of it to compare their outputs on"
+                    )
+                    self._fail("mutation", why, item)
+                    return
+                for (site, _), got in zip(survived, survived_calls):
+                    if _same_calls(control_calls, got):
+                        equivalent.append(site)
+            elif survived and samples is not None and base:
                 if not informative(base):
                     why = (
                         f"{item}: mutation not judged: {len(survived)} of {len(killed) + len(survived)} "
