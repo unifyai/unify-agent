@@ -68,7 +68,13 @@ def _finish_with(monkeypatch, manifest):
 
 
 def _defer(eid, reason="a rule that may come back"):
-    return _call("d", "dismiss", {"episode": eid, "reason": reason, "defer": True})
+    """A manifest that defers *eid* (what ``pool`` decide defer with id 'new' writes)."""
+    return {**EMPTY, "pool": {"defer": [{"id": "new", "episodes": [eid], "reason": reason}]}}
+
+
+def _open(eid):
+    """A read of *eid*, so the pass does not record it as unread."""
+    return _call(f"o-{eid}", "read_episode", {"episode": eid, "parts": ["request"]})
 
 
 # --- 1. persistence -------------------------------------------------------------------------------------------
@@ -86,8 +92,8 @@ def test_a_deferred_episode_is_listed_next_pass_merged_there_and_then_gone(
     did = pool.entry_id("deferred", "e1")
 
     with monkeypatch.context() as m:
-        _finish_with(m, EMPTY)
-        out1, _ = st.run([_defer("e1")], "p1", eids=("e1",), load=lambda e: ep)
+        _finish_with(m, _defer("e1"))
+        out1, _ = st.run([], "p1", eids=("e1",), load=lambda e: ep)
     assert out1.finished and out1.pool["added"] == 1 and out1.pool["commit"]
     assert st.pool().entries[did].status == "open"
 
@@ -108,11 +114,7 @@ def test_a_deferred_episode_is_listed_next_pass_merged_there_and_then_gone(
     out2, model2 = st.run(
         [
             _call("r", "read", {"path": INDEX}),
-            _call(
-                "x",
-                "dismiss",
-                {"episode": "e1", "reason": "the item below covers it"},
-            ),
+            _open("e1"),
             _call("w", "execute_code", {"code": files}),
             _call("f", "finish", {"summary": "merged the deferred rule"}),
         ],
@@ -134,7 +136,7 @@ def test_a_deferred_episode_is_listed_next_pass_merged_there_and_then_gone(
         _, model3 = st.run(
             [
                 _call("r", "read", {"path": INDEX}),
-                _call("x", "dismiss", {"episode": "e1", "reason": "seen"}),
+                _open("e1"),
             ],
             "p3",
             eids=("e1",),
@@ -167,26 +169,25 @@ def test_a_deferred_episode_is_listed_next_pass_merged_there_and_then_gone(
 
 def test_the_writer_sees_the_pool_after_the_requests_first_line(tmp_path, monkeypatch):
     st = _Stores(tmp_path)
+    _finish_with(monkeypatch, _defer("e2"))
+    st.run([], "p1")
     _finish_with(monkeypatch, EMPTY)
-    st.run([_defer("e2")], "p1")
-    out, model = st.run(
-        [_call("x", "dismiss", {"episode": "e2", "reason": "seen"})],
-        "p2",
-    )
+    out, model = st.run([_open("e2")], "p2")
     first = model.seen[1]["content"]
     assert first.splitlines()[0].startswith(
         'Pass p2: {"kind": "incremental"',
     )  # the fakes read the ids here
     assert (
-        "\n\nCandidate pool: 1 open entries: proposals earlier passes left open"
+        "\n\nCandidate pool: 1 open entries, proposals earlier passes left open"
         in first
     )
-    defer = next(
+    assert "deferred: episode e2" not in first  # a pointer, not the list
+    tool = next(
         t
         for t in writer_tools(library_mode=True, pool=True)
-        if t["function"]["name"] == "dismiss"
+        if t["function"]["name"] == "pool"
     )
-    assert defer["function"]["parameters"]["properties"]["defer"]["type"] == "boolean"
+    assert "defer" in tool["function"]["parameters"]["properties"]["decision"]["enum"]
     assert out.pool["open"] == 1 and out.pool["added"] == 0
 
 
@@ -243,13 +244,14 @@ def test_an_s0_cluster_gains_a_later_passes_instance_and_keeps_one_id(tmp_path):
 
 def test_an_entry_stays_open_through_passes_that_do_not_name_it(tmp_path, monkeypatch):
     st = _Stores(tmp_path)
+    _finish_with(monkeypatch, _defer("e2"))
+    st.run([], "p1")
     _finish_with(monkeypatch, EMPTY)
-    st.run([_defer("e2")], "p1")
     for k in range(2, 5):
         out, model = st.run(
             [
                 _call("r", "read", {"path": INDEX}),
-                _call("x", "dismiss", {"episode": "e2", "reason": "nothing new"}),
+                _open("e2"),
             ],
             f"p{k}",
         )
@@ -264,12 +266,12 @@ def test_retired_needs_a_reason_and_applies_once_finish_is_accepted(
 ):
     st = _Stores(tmp_path)
     did = pool.entry_id("deferred", "e2")
-    _finish_with(monkeypatch, EMPTY)
-    st.run([_defer("e2")], "p1")
+    _finish_with(monkeypatch, _defer("e2"))
+    st.run([], "p1")
     _finish_with(monkeypatch, {**EMPTY, "pool": {"retired": {did: " "}}})
     out, model = st.run(
         [
-            _call("x", "dismiss", {"episode": "e2", "reason": "seen"}),
+            _open("e2"),
             _call("f", "finish", {"summary": "s"}),
         ],
         "p2",
@@ -280,7 +282,7 @@ def test_retired_needs_a_reason_and_applies_once_finish_is_accepted(
         monkeypatch,
         {**EMPTY, "pool": {"retired": {did: "the request never needed it"}}},
     )
-    out, _ = st.run([_call("x", "dismiss", {"episode": "e2", "reason": "seen"})], "p3")
+    out, _ = st.run([_open("e2")], "p3")
     e = st.pool().entries[did]
     assert out.finished and out.pool["changed"] == [did]
     assert e.status == "retired" and e.status_detail == {
@@ -383,7 +385,7 @@ def test_the_index_is_the_same_bytes_for_the_same_pool_and_long_indexes_page(
     _, model = st.run(
         [
             _call("r", "read", {"path": INDEX}),
-            _call("x", "dismiss", {"episode": "e2", "reason": "seen"}),
+            _open("e2"),
         ],
         "p1",
     )
@@ -419,7 +421,7 @@ def test_off_there_is_no_pool_ref_no_inputs_pool_and_the_pass_is_m4hs(
         st = _Stores(tmp_path / name)
         turns = [
             _call("r", "read", {"path": "/inputs"}),
-            _call("d", "dismiss", {"episode": "e2", "reason": "r", "defer": True}),
+            _call("d", "pool", {"op": "list"}),
         ]
         model = Turns(turns)
         writer = WriterPass(
@@ -439,11 +441,8 @@ def test_off_there_is_no_pool_ref_no_inputs_pool_and_the_pass_is_m4hs(
             "pool" not in model.outputs["r"]
             and "Candidate pool" not in model.seen[1]["content"]
         )
-        assert not any(
-            t["function"]["name"] == "dismiss"
-            and "defer" in t["function"]["parameters"]["properties"]
-            for t in writer_tools(library_mode=True)
-        )
+        assert "pool" not in {t["function"]["name"] for t in writer_tools(library_mode=True)}
+        assert model.outputs["d"].startswith("refused: unknown tool 'pool'")
         seen[name] = [json.dumps(m, sort_keys=True) for m in model.seen[:2]]
     assert seen["default"] == seen["off"]
     assert writer_tools(library_mode=True) == writer_tools(

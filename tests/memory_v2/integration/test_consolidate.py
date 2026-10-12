@@ -1148,59 +1148,33 @@ def test_library_has_its_own_usd_per_token_and_the_off_path_ignores_it():
             writer_settings(raised)
 
 
-def test_library_reaches_the_pass_and_its_end_event_records_coverage(
+def test_library_reaches_the_pass_and_its_end_event_records_the_read_log(
     tmp_path,
     monkeypatch,
 ):
-    fake = (
-        FakeSol()
-    )  # finishes every turn: refused under library_mode until e1 is covered
-    monkeypatch.setattr(consolidate, "unillm_turn", fake)
-    stores = _stores(tmp_path)
-    sha, _ = _record(stores, "e1")
-    (out,) = asyncio.run(
-        run_due_passes(
-            stores,
-            "e1",
-            sha,
-            State(stores.paths.state),
-            effort="low",
-            settings=_library_settings("on"),
-            emit=None,
-        ),
-    )
-    assert not out.passed and out.coverage["missing"] == ["e1"]
-    end = [e for e in _events(stores) if e.get("phase") == "end"][-1]
-    assert end["coverage"] == out.coverage
-    assert end["reads"] == 0 and end["exported_bytes"] == 0
-    assert "coverage_measures" not in end and "unread" not in end["coverage"]
-
-
-def test_library_optional_coverage_reaches_the_pass_and_its_end_event_records_the_measures(
-    tmp_path,
-    monkeypatch,
-):
-    fake = FakeSol()  # finishes every turn: under "optional" coverage never refuses it
-    monkeypatch.setattr(consolidate, "unillm_turn", fake)
-    stores = _stores(tmp_path)
-    sha, _ = _record(stores, "e1")
-    settings = _library_settings("on")
-    settings.UNIFY_MEMORY_LIBRARY_COVERAGE = "optional"
-    (out,) = asyncio.run(
-        run_due_passes(
-            stores,
-            "e1",
-            sha,
-            State(stores.paths.state),
-            effort="low",
-            settings=settings,
-            emit=None,
-        ),
-    )
-    assert out.coverage["unread"] == ["e1"] and out.coverage_measures["unread"] == 1
-    end = [e for e in _events(stores) if e.get("phase") == "end"][-1]
-    assert end["coverage"] == out.coverage
-    assert end["coverage_measures"] == out.coverage_measures
+    for value in ("", "optional"):  # the former reading rule's accepted values change nothing
+        fake = FakeSol()  # finishes every turn: finish never waits on reading
+        monkeypatch.setattr(consolidate, "unillm_turn", fake)
+        stores = _stores(tmp_path / (value or "empty"))
+        sha, _ = _record(stores, "e1")
+        settings = _library_settings("on")
+        settings.UNIFY_MEMORY_LIBRARY_COVERAGE = value
+        (out,) = asyncio.run(
+            run_due_passes(
+                stores,
+                "e1",
+                sha,
+                State(stores.paths.state),
+                effort="low",
+                settings=settings,
+                emit=None,
+            ),
+        )
+        assert out.coverage["unread"] == ["e1"] and out.coverage["opened"] == []
+        end = [e for e in _events(stores) if e.get("phase") == "end"][-1]
+        assert end["coverage"] == out.coverage
+        assert end["reads"] == 0 and end["exported_bytes"] == 0
+        assert "coverage_measures" not in end
 
 
 def test_library_off_leaves_the_end_event_unchanged(tmp_path, monkeypatch):

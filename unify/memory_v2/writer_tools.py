@@ -320,7 +320,7 @@ GENERAL_REFUSALS: dict[str, str] = {
     "stopped": "not run: {reason}",
     "pass_finished": "not run: pass finished",
     "check_limit": "not run: at most {limit} check calls per pass",
-    "call_limit": "not run: the pass's call limit is reached",
+    "call_limit": "not run: the pass's call cap is reached",
 }
 
 
@@ -466,7 +466,9 @@ def _wanted_parts(args: dict) -> tuple[list | None, str | None]:
         raw = one if isinstance(one, list) else str(one)
         if isinstance(raw, str) and raw.strip() in ("", "parts", "contents", "toc"):
             return None, None
-        if isinstance(raw, str) and not (raw.strip().startswith("[") or "," in raw):
+        if isinstance(raw, str) and not (
+            raw.strip().startswith(("[", "parts=", "parts:")) or "," in raw
+        ):
             return [{"part": raw.strip(), "offset": args.get("offset", 0) or 0}], None
     if isinstance(raw, str):
         text = raw.strip()

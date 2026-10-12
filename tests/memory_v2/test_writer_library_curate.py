@@ -95,7 +95,7 @@ def test_a_curate_pass_merges_through_its_own_brief_inputs_role_and_gate(world21
     assert first.startswith("Pass c1: curate\n") and f"- {FIRED['overlap:f1']}" in first
     assert json.loads(model.outputs["t"])["reasons"] == list(FIRED.values())
     assert "'curate'" in model.outputs["ls"] and "'drafts'" not in model.outputs["ls"]
-    assert out.coverage["missing"] == [] and out.coverage["episodes"] == 0
+    assert out.coverage["unread"] == [] and out.coverage["episodes"] == 0
     assert (
         ev.db.execute("SELECT kind FROM passes WHERE pass_id='c1'").fetchone()[0]
         == "curate"

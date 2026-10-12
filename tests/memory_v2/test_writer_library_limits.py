@@ -18,13 +18,11 @@ def test_an_uncapped_pass_has_no_usd_stop_or_read_limit(tmp_path, monkeypatch):
     # the fake model costs USD 0.001 a call: a USD 0.0025 cap would end it after 3 calls; max_reads 2 would refuse
     # the third read. With no manifest written, the pass ends at the (lowered) operational step guard.
     monkeypatch.setattr(writer_pass, "STEP_GUARD", 30)
-    turns = _reads(12) + [
-        _call("d", "dismiss", {"episode": "e2", "reason": "nothing reusable"}),
-    ]
+    turns = _reads(12)
     out, model = _pass(tmp_path, turns, eids=("e2",), max_usd=None, max_reads=2)
     assert CODE_PASS_CAP not in out.codes and out.reads >= 12
     assert not any(
-        str(v).startswith("not run: reader budget") for v in model.outputs.values()
+        "reader-call limit" in str(v) for v in model.outputs.values()
     )
 
 
@@ -54,8 +52,7 @@ def test_an_uncapped_finish_keeps_refusing_an_unparseable_manifest(
     monkeypatch,
 ):
     monkeypatch.setattr(writer_pass, "STEP_GUARD", 8)
-    turns = [_call("d", "dismiss", {"episode": "e2", "reason": "nothing reusable"})]
-    out, model = _pass(tmp_path, turns, eids=("e2",), max_usd=None)
+    out, model = _pass(tmp_path, [], eids=("e2",), max_usd=None)
     refused = [
         m
         for m in model.seen
@@ -105,4 +102,5 @@ def test_the_library_briefs_state_no_count_limits_but_numbers_still_render_when_
         semantic_types="",
     )
     assert "at most 7 times per pass" in numbered and "up to 3 of them" in numbered
-    assert "at most" not in writer_pass._library_check_description()
+    check = next(t for t in writer_pass.writer_tools(library_mode=True) if t["function"]["name"] == "check")
+    assert "at most" not in check["function"]["description"]

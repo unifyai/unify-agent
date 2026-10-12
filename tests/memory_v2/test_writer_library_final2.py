@@ -1,6 +1,6 @@
-"""Memory v2.1 final2 (design r2 §1 and §3, as the lead kept them on 10 Oct): identical parts credited once with
-their source, finish validating the manifest with the gate's own parser, and the first repair round priced on
-the write phase. Built on test_writer_pass's and test_writer_library_tools' helpers."""
+"""Identical parts answered with a pointer to where the same agent saw them, finish validating the manifest with
+the gate's own parser, and the first repair round priced on the write phase. Built on test_writer_pass's and
+test_writer_library_tools' helpers."""
 
 import asyncio
 import json
@@ -21,7 +21,7 @@ from tests.memory_v2.test_writer_library_tools import EPS, _episode, _pass
 # --- §1: identical parts (RUNTIME P2) ----------------------------------------------------------------------
 
 
-def test_an_identical_part_is_credited_once_with_its_source(tmp_path):
+def test_an_identical_part_is_answered_with_where_it_was_shown(tmp_path):
     turns = [
         _call("a", "read_episode", {"episode": "e1", "part": "request"}),
         _call(
@@ -29,27 +29,31 @@ def test_an_identical_part_is_credited_once_with_its_source(tmp_path):
             "read_episode",
             {"episode": "e2", "part": "request"},
         ),  # the same bytes as e1's
-        _call("d", "dismiss", {"episode": "e1", "reason": "nothing reusable"}),
     ]
     out, model = _pass(tmp_path, turns, max_calls=10)
-    assert model.outputs["a"] == '"req"'
-    assert model.outputs["b"].startswith("identical to e1/request (sha256 ")
-    assert model.outputs["b"].endswith("already shown in full; covered")
-    s = out.coverage
-    assert s["identical_parts"] == {"e2/request": "e1/request"}
-    assert "e2" not in s["missing"] and s["covered"] == 1
+    assert model.outputs["a"] == '== request ==\n"req"'
+    assert model.outputs["b"].startswith("== request ==\nidentical to e1 request (sha256 ")
+    assert model.outputs["b"].endswith('read e1 parts=["request"] to see it again')
+    assert out.coverage["opened"] == ["e1"]
 
 
-def test_the_parts_form_credits_an_identical_part_too(tmp_path):
-    turns = [
-        _call("a", "read_episode", {"episode": "e1", "parts": ["request"]}),
-        _call("b", "read_episode", {"episode": "e2", "parts": ["request"]}),
-    ]
-    out, model = _pass(tmp_path, turns, max_calls=10)
-    assert model.outputs["b"].startswith(
-        "== request ==\nidentical to e1/request (sha256 ",
+def test_what_one_agent_was_shown_never_counts_for_another():
+    from unify.memory_v2 import writer_tools as wt
+
+    helper_shown: dict = {}
+    writer_shown: dict = {}
+    log = wt.ReadLog()
+    args = {"episode": "e1", "parts": ["request"]}
+    wt.read_episode(EPS["e1"], "e1", args, blob=lambda s: b"", log=log, shown=helper_shown)
+    got = wt.read_episode(
+        EPS["e2"],
+        "e2",
+        {"episode": "e2", "parts": ["request"]},
+        blob=lambda s: b"",
+        log=log,
+        shown=writer_shown,
     )
-    assert out.coverage["identical_parts"] == {"e2/request": "e1/request"}
+    assert got.text == '== request ==\n"req"'  # the writer was never shown e1's request
 
 
 def test_a_part_shown_only_in_part_earns_no_identical_credit(tmp_path):
@@ -78,16 +82,14 @@ def test_a_part_shown_only_in_part_earns_no_identical_credit(tmp_path):
     finally:
         for e in ("e3", "e4", "e5", "e6", "e7"):
             EPS.pop(e, None)
-    assert not model.outputs["b"].startswith("identical to")
-    assert "identical_parts" not in out.coverage
+    assert "identical to" not in model.outputs["b"]
 
 
 # --- §3: finish validates the manifest (RUNTIME P6) -------------------------------------------------------
 
 
 def test_finish_refuses_a_missing_manifest_a_bounded_number_of_times(tmp_path):
-    turns = [_call("d", "dismiss", {"episode": "e2", "reason": "nothing reusable"})]
-    out, model = _pass(tmp_path, turns, eids=("e2",), max_calls=10)
+    out, model = _pass(tmp_path, [], eids=("e2",), max_calls=10)
     refused = [
         m
         for m in model.seen
@@ -106,7 +108,6 @@ def test_finish_names_the_gates_parse_error(tmp_path, monkeypatch):
         lambda box: (True, {**MAN, "items": "x"}, None),
     )
     turns = [
-        _call("d", "dismiss", {"episode": "e2", "reason": "nothing reusable"}),
         _call("f", "finish", {"summary": "s"}),
     ]
     _, model = _pass(tmp_path, turns, eids=("e2",), max_calls=10)
@@ -120,7 +121,6 @@ def test_an_empty_manifest_at_finish_records_nothing_to_store(tmp_path, monkeypa
     empty = {**MAN, "items": [], "support": []}
     monkeypatch.setattr(writer_pass, "_read_manifest", lambda box: (True, empty, None))
     turns = [
-        _call("d", "dismiss", {"episode": "e2", "reason": "nothing reusable"}),
         _call("f", "finish", {"summary": "nothing to store"}),
     ]
     out, _ = _pass(tmp_path, turns, eids=("e2",), max_calls=10)
@@ -167,11 +167,7 @@ def test_a_long_read_still_leaves_a_repair_round(tmp_path):
     reads = [_call(f"r{i}", "read", {"path": "/inputs"}) for i in range(12)]
     model = Turns(
         [
-            _call(
-                "dm",
-                "dismiss",
-                {"episode": "e1", "reason": "the item below covers it"},
-            ),
+            _call("dm", "read_episode", {"episode": "e1", "parts": ["request"]}),
             *reads,
             _call("w0", "execute_code", {"code": first_try}),
             _call("f0", "finish", {"summary": "first try"}),

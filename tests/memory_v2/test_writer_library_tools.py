@@ -1,6 +1,5 @@
-"""P1 Task 5 (spec v2.1 §7.3–7.4, P1, P5): the writer's read, grep, read_episode and dismiss tools, head-first cell
-output, and coverage at finish. Built on test_writer_pass's own helpers (``_call``, ``Turns``, ``_writer``): the plan's
-``_pass``/``_scripted`` sketches do not exist in that file."""
+"""The writer's read, grep and read_episode tools, head-first cell output and the read log (a measure: finish never
+waits on reading). Built on test_writer_pass's own helpers (``_call``, ``Turns``, ``_writer``)."""
 
 import asyncio
 
@@ -58,11 +57,12 @@ def test_tools_present_only_with_library_mode():
         "finish",
         "read",
         "grep",
+        "overview",
         "read_episode",
-        "dismiss",
         "fixture",
         "replay",
     }
+    assert "pool" in names(writer_tools(library_mode=True, pool=True))
     desc = next(
         t
         for t in writer_tools(library_mode=True)
@@ -81,47 +81,30 @@ def test_cell_output_is_head_first_and_marked():
     assert full == text
 
 
-def test_finish_refused_until_covered_then_cap(tmp_path):
+def test_finish_never_waits_on_reading(tmp_path):
     out, model = _pass(tmp_path, [], max_calls=5)  # Turns finishes on every turn
-    assert out.coverage["missing"] == ["e1", "e2"]
-    assert any(
-        c.startswith("not finished: 2 episode(s)") for c in model.outputs.values()
-    )
-    assert not out.passed and CODE_PASS_CAP in out.codes
+    assert not any("neither covered" in str(c) for c in model.outputs.values())
+    assert out.coverage["unread"] == ["e1", "e2"] and out.coverage["opened"] == []
 
 
-def test_read_episode_credits_shown_ranges_and_finish_succeeds(tmp_path):
+def test_read_episode_pages_and_logs_what_was_shown(tmp_path):
     ep = EPS["e1"]
     cell = bm.part_text(ep, "cell:0").encode()
     _, _, b = views.view_range(cell, 0)
     assert b < len(cell)  # the cell needs two pages
     turns = [
         _call("r1", "read_episode", {"episode": "e1", "part": "request"}),
-        _call(
-            "r2",
-            "read_episode",
-            {"episode": "e1", "part": "observation:1"},
-        ),  # a copy credits observation:0
         _call("r3", "read_episode", {"episode": "e1", "part": "cell:0"}),
         _call("r4", "read_episode", {"episode": "e1", "part": "cell:0", "offset": b}),
-        _call("d1", "dismiss", {"episode": "e2", "reason": "no reusable work"}),
         _call("f1", "finish", {"summary": "done"}),
     ]
     out, model = _pass(tmp_path, turns, max_calls=20)
+    assert model.outputs["r1"] == '== request ==\n"req"'
     assert model.outputs["r3"].endswith(f"next: offset={b}]")
-    assert (
-        out.summary == "done"
-    )  # finish accepted (Turns sees no reply after the last turn)
     s = out.coverage
-    assert (
-        s["missing"] == []
-        and s["covered"] == 1
-        and s["dismissed"] == {"e2": "no reusable work"}
-    )
-    dismissed = len(
-        bm.part_text(EPS["e2"], "request").encode(),
-    )  # e2 was dismissed, not read
-    assert s["bytes_read"] == s["bytes_required"] - dismissed
+    assert s["opened"] == ["e1"] and s["unread"] == ["e2"]
+    assert s["parts_read"] == {"e1": ["cell:0", "request"]}
+    assert s["bytes_read"] == len(b'"req"') + len(cell)
 
 
 def test_read_and_grep_tools_are_confined_and_bounded(tmp_path, monkeypatch):
@@ -139,14 +122,16 @@ def test_read_and_grep_tools_are_confined_and_bounded(tmp_path, monkeypatch):
         out, model = _pass(tmp_path, turns, eids=("e3",), max_calls=10)
     finally:
         del EPS["e3"]
-    assert model.outputs["esc"] == "refused: outside the readable roots"
+    assert model.outputs["esc"] == (
+        "refused: /inputs/../../etc/passwd is outside /inputs, /memory and /outputs"
+    )
     assert '"episode_id": "e3"' in model.outputs["ok"]
     assert model.outputs["bad"].startswith("refused: invalid pattern:")
     assert (
         model.outputs["slow"]
         == "[grep timed out after 1 s: narrow the pattern or the path]"
     )
-    assert out.coverage["parts_read"] == 0  # read, grep and cells earn no credit
+    assert out.coverage["opened"] == []  # read, grep and cells are not episode reads
 
 
 @needs_bwrap
@@ -183,30 +168,21 @@ def test_reader_calls_use_their_own_budget_not_max_calls(tmp_path):
         "read_episode",
         {"episode": "e2", "part": "request"},
     )  # noqa: E731
-    turns = [
-        read("a"),
-        read("b"),
-        _calls(
-            read("c"),
-            _call("d", "dismiss", {"episode": "e1", "reason": "nothing reusable"}),
-        ),
-    ]
+    turns = [read("a"), read("b"), read("c")]
     out, model = _pass(tmp_path, turns, max_calls=6, max_reads=2)
-    assert model.outputs["a"] == '"req"' and model.outputs["b"] == '"req"'
-    assert model.outputs["c"] == "not run: reader budget reached"
-    assert (
-        model.outputs["d"] == "ok"
-    )  # dismiss still runs past the budget, so the pass can finish
-    # model turns only, reader calls counted apart; finish is refused twice for its missing manifest (r2 §3)
-    assert out.reads == 3 and out.calls == 6
-    assert out.coverage["missing"] == [] and out.summary == "done"
+    assert model.outputs["a"] == '== request ==\n"req"'
+    assert model.outputs["b"] == '== request ==\n"req"'
+    assert model.outputs["c"] == "not run: the pass's reader-call limit (2) is reached"
+    assert out.reads == 2
 
 
 def test_at_most_16_reader_calls_per_turn(tmp_path):
     many = [_call(f"r{i}", "read", {"path": "/inputs"}) for i in range(17)]
     _, model = _pass(tmp_path, [_calls(*many)], max_calls=3)
     assert model.outputs["r15"].startswith("batch_map.json")
-    assert model.outputs["r16"] == "not run: at most 16 reader calls per turn"
+    assert model.outputs["r16"] == (
+        "not run: at most 16 reader calls run per model turn; send it again"
+    )
 
 
 def test_read_episode_parts_share_one_page(tmp_path):
@@ -232,10 +208,10 @@ def test_read_episode_parts_share_one_page(tmp_path):
     # m4k: more than 8 parts page instead of refusing; the rest is named for the next call
     assert model.outputs["many"].endswith('next: parts=["request"]]')
     s = out.coverage
-    assert s["bytes_read"] == len(b'"req"') + shown and s["parts_read"] == 1
+    assert s["parts_read"] == {"e1": ["cell:0", "request"]}
 
 
-def test_read_episode_parts_refuses_the_whole_call_before_any_credit(tmp_path):
+def test_read_episode_bad_offsets_refuse_the_whole_call(tmp_path):
     turns = [
         _call(
             "bogus",
@@ -254,18 +230,21 @@ def test_read_episode_parts_refuses_the_whole_call_before_any_credit(tmp_path):
         ),
     ]
     out, model = _pass(tmp_path, turns, max_calls=5)
+    # an unknown name is answered with the valid names, while the valid parts are shown
     assert model.outputs["bogus"].startswith(
-        "no part 'bogus' in e1; nothing was read. Its parts:\ne1: 4 part(s)",
-    )  # m4k-c4: an unknown part answers with the episode's parts
+        "unknown part(s) in e1: 'bogus'; valid: request, observation:0..1, cell:0..0",
+    )
+    assert '== request ==\n"req"' in model.outputs["bogus"]
     assert model.outputs["neg"].startswith("refused: offset must be an integer >= 0")
     assert model.outputs["txt"].startswith("refused: offset must be an integer >= 0")
-    assert out.coverage["bytes_read"] == 0 and out.coverage["parts_read"] == 0
+    assert out.coverage["parts_read"] == {"e1": ["request"]}
 
 
-def test_read_episode_says_its_page_is_content_bytes():
+def test_read_episode_says_its_page_is_one_8000_byte_page():
     desc = next(
         t
         for t in writer_tools(library_mode=True)
         if t["function"]["name"] == "read_episode"
     )
-    assert "8000 bytes of content in all" in desc["function"]["description"]
+    assert "on one page of 8000 bytes" in desc["function"]["description"]
+    assert "parts" in desc["function"]["parameters"]["properties"]
