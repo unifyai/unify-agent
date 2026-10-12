@@ -32,15 +32,17 @@ GUIDE_LIBRARY = (
     "\n"
     "Finding items:\n"
     "- The index at the end of this prompt lists every function (its id, signature, one-line summary and "
-    "status) and every note (its path, description and the functions it uses). When the index is long, it "
-    "shows package headings only.\n"
+    "status, then a call quoted from the function's tests, when it has one) and every note (its path, "
+    "description and the functions it uses). When the index is long, it shows package headings only.\n"
     '- `print(memory.index("<package>"))` prints one package\'s full section, and `print(memory.index())` the '
     "whole index.\n"
     "- `print(memory.show(\"<id>\"))` prints one item in full: a function's source and docstring, or a note's "
     "text, then its links, status, test and use records, and recent changes.\n"
-    "- `memory.find(value)` lists the functions built on inputs shaped like a structured value you hold (a "
-    "dict, a list of records, JSON text, or a CSV file with a header). It cannot match plain text: for text, "
-    "use the index or grep.\n" + FILES_LINE + "\n"
+    "- `memory.find(value)` lists the functions whose tests call them on arguments shaped like a structured "
+    "value you hold (a dict, a list of records, JSON text, or a CSV file with a header), and which parameter "
+    "matched. It cannot match plain text: for text, use the index or grep.\n"
+    + FILES_LINE
+    + "\n"
     "Using items:\n"
     "- Import a function by its id: `memory.text.dates:parse_date` is "
     "`from memory.text.dates import parse_date`.\n"
@@ -82,13 +84,16 @@ GUIDE_POINTER = (
     "\n"
     "Finding items:\n"
     "- `print(memory.index())` prints the library index: every function (its id, signature, one-line summary, "
-    "status and effect: whether it reads, writes or is unknown) and every note (its path, description and the functions it uses). "
+    "status and effect: whether it reads, writes or is unknown, then a call quoted from the function's tests, "
+    "when it has one) and every note (its path, description and the functions it uses). "
     '`print(memory.index("<package>"))` prints one package\'s section.\n'
     "- `print(memory.show(\"<id>\"))` prints one item in full: a function's source and docstring, or a note's "
     "text, then its links, status, test and use records, and recent changes.\n"
-    "- `memory.find(value)` lists the functions built on inputs shaped like a structured value you hold (a "
-    "dict, a list of records, JSON text, or a CSV file with a header). It cannot match plain text: for text, "
-    "use the index or grep.\n" + FILES_LINE + "\n"
+    "- `memory.find(value)` lists the functions whose tests call them on arguments shaped like a structured "
+    "value you hold (a dict, a list of records, JSON text, or a CSV file with a header), and which parameter "
+    "matched. It cannot match plain text: for text, use the index or grep.\n"
+    + FILES_LINE
+    + "\n"
     "Using items:\n"
     "- Import a function by its id: `memory.text.dates:parse_date` is "
     "`from memory.text.dates import parse_date`.\n"
@@ -111,7 +116,7 @@ GUIDE_POINTER = (
 # names exactly the tools the role gets.
 
 #: The input forms of a function's first parameter, in ``manifest.INPUT_KINDS`` order, described without any
-#: environment's vocabulary.
+#: environment's vocabulary. Read only by the WRITE brief's input-form bullet; no other text names these forms.
 INPUT_FORMS_LIBRARY: dict[str, str] = {
     "path": "a path to a work-tree file",
     "text": "the text of a file or of an output",
@@ -121,13 +126,13 @@ INPUT_FORMS_LIBRARY: dict[str, str] = {
 }
 
 #: What makes a proposed function one the library's gate can take as it is (the fork's and the helpers' texts
-#: state it): its first parameter in one recorded form, its own shape check, cases from recorded values.
+#: state it): any arguments, its own shape check, and cases whose values are recorded, so that they can become its
+#: tests on fixtures copied from the recording.
 CANDIDATE_CONTRACT = (
-    "The library takes a function as it is when its first parameter takes one recorded form, "
-    + ", ".join(f"`{k}` ({v})" for k, v in INPUT_FORMS_LIBRARY.items())
-    + ", and it parses that input itself; when it raises `MemoryInputError` (defined in its module) on an input "
-    "of another shape; and when its cases are inputs and outputs recorded here, so they can become its tests. "
-    "A function on an already parsed value (a grid, a list) is kept only once it is wrapped to take the recorded form."
+    "The library takes a function as it is when it raises `MemoryInputError` (defined in its module) on an input "
+    "of another shape, and when its cases are values recorded here (the inputs it had and the outputs it should "
+    "give), so they can become its tests on recorded fixtures. A function may take any arguments: a parsed value "
+    "such as a list of records or a nested list is fine."
 )
 
 #: The keys of a batch-map row as :func:`.batch_map.build_batch_map` writes them, each with its type and meaning.

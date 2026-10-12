@@ -89,18 +89,29 @@ def test_the_write_template_round_trips_through_the_parser():
 
 
 def test_the_fork_and_the_helpers_are_told_the_function_contract_the_gate_enforces():
-    from unify.memory import helpers
+    """A function takes any arguments and refuses other shapes with MemoryInputError; its cases are recorded values,
+    so the writer can copy them into fixtures. No text names a first-parameter input form any more.
+    """
+    from unify.memory import curate, helpers
     from unify.memory.integration import fork
     from unify.memory.manifest import INPUT_KINDS
 
-    for text in (
-        fork.fork_instruction(),
-        helpers.helper_brief(False),
-        helpers.helper_brief(True),
-    ):
-        assert (
-            "first parameter takes one recorded form" in text
-            and "MemoryInputError" in text
-        )
+    texts = {
+        "fork": fork.fork_instruction(),
+        "helper": helpers.helper_brief(False),
+        "helper with similar": helpers.helper_brief(True),
+        "curate": curate.curate_system(),
+    }
+    for name, text in texts.items():
+        assert "MemoryInputError" in text and "any arguments" in text, name
+        assert "first parameter" not in text and "recorded form" not in text, name
         for form in INPUT_KINDS:
-            assert f"`{form}`" in text, form
+            assert f"`{form}`" not in text, (name, form)
+    assert lp.CANDIDATE_CONTRACT in texts["fork"]
+    assert "Each value must appear in this conversation as it is" in texts["fork"]
+    for name in ("helper", "helper with similar"):
+        assert (
+            lp.CANDIDATE_CONTRACT.replace("recorded here", "recorded in the episodes")
+            in texts[name]
+        )
+        assert "each value as the records hold it" in texts[name]
