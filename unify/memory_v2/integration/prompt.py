@@ -1,8 +1,8 @@
-"""The memory section at the end of the cached system prompt (spec §G2, G6–G9; v2.1 surfacing).
+"""The memory section at the end of the cached system prompt (the library mode's surfacing).
 
 ``UNIFY_MEMORY_V2_SURFACING`` picks it (:mod:`.switch`). ``index`` (the default) is the v2 section, kept
 byte for byte: the per-function index (:func:`render_index`) and the export line. ``catalogue``
-(:func:`render_memory_section`) is the v2.1 section described next.
+(:func:`render_memory_section`) is the library mode's section described next.
 
 Memory is a Python library the working model discovers the way it would any internal package: in its cells.
 The prompt carries only :data:`GUIDE`, a constant paragraph saying that ``import memory;
