@@ -1515,7 +1515,10 @@ def tools_for(role: str, flags: frozenset = frozenset(), specs: Optional[Iterabl
     agent = OLD_ROLES[role]
     out = []
     for s in _REGISTRY if specs is None else specs:
-        if agent not in s.roles or s.name in _IN_CODE_ONLY or (s.requires and s.requires not in flags):
+        # a spec may name the agent or, as specs did before, the pass role
+        if (agent not in s.roles and role not in s.roles) or s.name in _IN_CODE_ONLY or (
+            s.requires and s.requires not in flags
+        ):
             continue
         if s.name == "execute_code" and agent == _H:
             continue
