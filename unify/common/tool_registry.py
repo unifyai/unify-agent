@@ -1723,11 +1723,12 @@ def _signature(params: dict) -> tuple[list[str], list[str]]:
 
 
 def signature_text(name: str, agent: Optional[str] = None) -> str:
-    """``name(required, *, optional=None)`` as a cell calls it."""
+    """``name(required, optional=None)`` as a cell calls it: the required arguments, then the optional ones in the
+    schema's order, every one positional or keyword (a model may write either)."""
     spec = registry()[name]
     params = spec.params_for(agent) if agent else spec.parameters
     first, rest = _signature(params)
-    parts = list(first) + (["*"] if rest else []) + [f"{p}=None" for p in rest]
+    parts = list(first) + [f"{p}=None" for p in rest]
     return f"{name}({', '.join(parts)})"
 
 
@@ -1805,7 +1806,8 @@ def _function_source(name: str, agent: Optional[str]) -> str:
     for p in first + rest:
         if not p.isidentifier() or keyword.iskeyword(p):
             raise ValueError(f"{name}: argument {p!r} is not a Python name")
-    sig = ", ".join(list(first) + (["*"] if rest else []) + [f"{p}=None" for p in rest])
+    # positional or keyword, required first: tools.grep("x", "/inputs") and tools.grep("x", path="/inputs") both work
+    sig = ", ".join(list(first) + [f"{p}=None" for p in rest])
     args = ", ".join(f"{p}={p}" for p in first + rest)
     doc = help_text(name, agent)
     return (

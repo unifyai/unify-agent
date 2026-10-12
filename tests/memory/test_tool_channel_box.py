@@ -92,7 +92,7 @@ READERS = """
 toc = tools.read_episode("e1", parts=["request"])
 print("EPISODE", len(toc) > 0, type(toc).__name__)
 print("LISTING", "batch_map.json" in tools.read("/inputs"))
-print("GREP", type(tools.grep("venmo", path="/inputs")).__name__)
+print("GREP", type(tools.grep("venmo", "/inputs")).__name__)
 try:
     tools.read("/etc/passwd")
 except tools.Refused as exc:
