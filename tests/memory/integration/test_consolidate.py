@@ -1483,3 +1483,52 @@ def test_the_landed_event_counts_the_library_at_the_landed_commit(tmp_path):
     assert consolidate.library_items_at(stores, landed) == 3  # two functions and a note
     assert consolidate.library_items_at(stores, before) == 0
     assert consolidate.library_items_at(stores, None) is None
+
+
+class WindowedWriter(FakeWriter):
+    """A fake writer whose turns carry a known context window, as unillm_turn's carry the model's."""
+
+    def __call__(self, model, effort, **kw):
+        turn = super().__call__(model, effort, **kw)
+        turn.max_input_tokens = 1_000
+        return turn
+
+
+def test_the_cost_recording_turn_keeps_the_turns_context_window():
+    from unify.memory.integration.cost import recording_turn
+
+    async def turn(messages, tools):
+        return {"role": "assistant", "content": "x"}, "0.01"
+
+    turn.max_input_tokens = 4_096
+    rows: list[CostRow] = []
+    wrapped = recording_turn(turn, rows, "m")
+    assert wrapped.max_input_tokens == 4_096
+    assert (
+        asyncio.run(wrapped([], [])) == ({"role": "assistant", "content": "x"}, "0.01")
+        and len(rows) == 1
+    )
+
+
+def test_the_pass_reads_the_window_through_the_turn_consolidate_builds(
+    tmp_path,
+    monkeypatch,
+):
+    """The writer's turn reaches WriterPass wrapped by the cost recorder; the compaction trigger and the end event
+    still see the model's window."""
+    monkeypatch.setattr(consolidate, "unillm_turn", WindowedWriter())
+    stores = _stores(tmp_path)
+    sha, _ = _record(stores, "e1")
+    asyncio.run(
+        run_due_passes(
+            stores,
+            "e1",
+            sha,
+            State(stores.paths.state),
+            effort="low",
+            settings=_library_settings("on"),
+            emit=None,
+        ),
+    )
+    end = [e for e in _events(stores) if e.get("phase") == "end"][-1]
+    assert end["context_window"] == 1_000

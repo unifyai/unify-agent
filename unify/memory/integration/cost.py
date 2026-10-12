@@ -152,7 +152,8 @@ def recording_turn(turn: ModelTurn, rows: list[CostRow], model: str) -> ModelTur
     """*turn*, appending one ``writer`` row per call to *rows*; a raising call appends ``unknown`` and re-raises.
 
     The turn's own return value is passed through unchanged, so the pass's spend accounting is the same
-    with or without the wrapper.
+    with or without the wrapper; so are its attributes (the model's context window, ``max_input_tokens``, which the
+    pass's compaction trigger reads from its turn).
     """
 
     async def recorded(messages: list[dict], tools: list[dict]) -> tuple[dict, str]:
@@ -166,4 +167,5 @@ def recording_turn(turn: ModelTurn, rows: list[CostRow], model: str) -> ModelTur
         rows.append(CostRow("writer", model, None, None, money(usd)))
         return msg, usd
 
+    recorded.__dict__.update(getattr(turn, "__dict__", None) or {})
     return recorded
