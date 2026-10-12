@@ -143,3 +143,17 @@ The three long-horizon switches share the step-limit reply path.
 - **Default:** empty.
 - **What it does:** As shipped, the system prompt carries a "Current Time" section that tells the model to resolve "today" against it and to prefer it over any clock read in code. With `first_message`, the system prompt has no clock section, and the session's first user message opens with one line: "The host clock reads <time>. Dates stated in the request or in the files and records you work with take precedence." The time is sampled once, when the session starts. Later requests in a persistent session do not repeat the line. The system prompt, and the cache affinity key derived from it, are then the same for every session of one configuration, whenever it starts.
 - **Evidence:** office-v2 defect note P2c (the clock read as an authority over dates in the work, and a per-minute timestamp that breaks the cross-session prompt cache); unscreened. To be compared with the shipped placement under the per-instance fake clock, reporting the cache-hit rate and clock-attributable losses from traces.
+
+## UNIFY_TOOLS_IN_CODE
+
+- **Values:** `on` or `off`.
+- **Default:** `off`.
+- **What it does:** When on, every agent (the actor, its teammates, and the memory writer, curator and helpers) keeps exactly one model-API tool, `execute_code`. Every other tool is a Python call in a cell, `tools.<name>(...)`, defined once in the shared registry (`unify/common/tool_registry.py`) and run on the host with the same handler, limits and refusal texts. For the actor and its teammates the loop also compacts by itself when the prompt reaches the compaction point (no forced `compress_context` turn), and `tools.finish(answer)` replaces the response tool. When off, every agent's requests are byte for byte as before.
+- **Evidence:** It is the treatment arm of a paired replay against the build without it (same requests and passes, LOW and HIGH), reported with task outcome, cost, prompt tokens, cache-read share, turns and compactions per request.
+
+## UNIFY_CELL_STATE
+
+- **Values:** `persistent` or `fresh`.
+- **Default:** `fresh`.
+- **What it does:** With `persistent`, each agent's cells run in one interpreter that keeps its variables between cells until it is restarted (a cell that runs out of time restarts it; files stay). With `fresh`, every cell starts as before.
+- **Evidence:** Set together with `UNIFY_TOOLS_IN_CODE=on` in the same paired replay.

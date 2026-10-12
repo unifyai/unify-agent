@@ -99,6 +99,12 @@ def bind(reply_channel: bool) -> Optional[contextvars.Token]:
     return _SLOT.set(ReplySlot() if reply_channel else None)
 
 
+def bind_always() -> contextvars.Token:
+    """Set the running loop's slot whatever the switch says (``UNIFY_TOOLS_IN_CODE=on``: a cell's
+    ``tools.finish(answer)`` fills it)."""
+    return _SLOT.set(ReplySlot())
+
+
 def unbind(token: Optional[contextvars.Token]) -> None:
     if token is not None:
         _SLOT.reset(token)
@@ -239,6 +245,7 @@ __all__ = [
     "ReplySlot",
     "SOURCE_KEY",
     "bind",
+    "bind_always",
     "current",
     "deliver",
     "enabled",
