@@ -23,6 +23,8 @@ pytestmark = pytest.mark.skipif(
 JUDGED = "needs example_checks.ExampleChecks.judge"
 #: the manifest takes a function item without ``input``, and the gate reads no Input: line
 PARSED = "needs manifest._parse_library_mode"
+#: G2 no longer refuses a function that covers no recorded action (its examples are its tests' calls)
+UNCOVERED = "needs gate.Gate._g2"
 
 # --- the gate on the shared world ------------------------------------------------------------------------------
 
@@ -77,7 +79,7 @@ def test_a_fixture_not_made_by_fixture_tool_is_refused(library_example_world):
     assert any("me_1.json did not come through fixture()" in r for r in res.reasons)
 
 
-@pytest.mark.xfail(reason=PARSED, strict=False)
+@pytest.mark.xfail(reason=UNCOVERED, strict=False)
 def test_no_trusted_exact_assertion_is_refused(library_example_world):
     mem, ev, blobs, gate = library_example_world
     assert w.WEAK_TEST_SOURCE != w.TEST_SOURCE

@@ -212,7 +212,7 @@ def _gate_library_mode():
     return pytest.importorskip("tests.memory.library_example_world")
 
 
-@pytest.mark.xfail(reason="needs manifest._parse_library_mode", strict=False)
+@pytest.mark.xfail(reason="needs gate.Gate._g2", strict=False)
 def test_the_gate_refuses_a_stale_pass_and_keeps_its_patch(request):
     """The library-mode gate fixture; the candidate is made on a parent that a code commit then moves past."""
     g = _gate_library_mode()

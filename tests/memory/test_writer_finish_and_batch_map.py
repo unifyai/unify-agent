@@ -153,7 +153,7 @@ def test_neither_brief_speaks_of_the_pass_time():
 # --- 5b. G3's exact-assertion refusal shows a passing form ----------------------------------------------------------
 
 
-@pytest.mark.xfail(reason="needs manifest._parse_library_mode", strict=False)
+@pytest.mark.xfail(reason="needs gate.Gate._g2", strict=False)
 def test_the_exact_assertion_refusal_shows_a_form_that_passes(library_example_world):
     mem, ev, blobs, gate = library_example_world
     files, fixtures = w.files_and_fixtures(blobs.get, test=w.WEAK_TEST_SOURCE)
