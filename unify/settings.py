@@ -429,9 +429,15 @@ class ProductionSettings(BaseSettings):
     # descriptor carrying its token, read once at start-up and then removed from the environment (empty: no fork lane).
     UNIFY_MEMORY_LIBRARY_FORK_BASE_URL: str = ""
     UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD: str = ""
-    # Memory v2.1 design r5 arm C: ``writer`` runs one Sol analyst per flagged batch episode before the writer (staging);
-    # ``off`` (default): none.
+    # Retired: helpers are launched by the writer with its delegate tool; empty or ``off`` only (anything else is
+    # refused, so a configuration that still asks for harness-launched helpers fails loudly).
     UNIFY_MEMORY_LIBRARY_ANALYSTS: str = "off"
+    # The model of writer-launched helpers; empty: the model the episode-end fork uses (the actor's UNIFY_MODEL).
+    UNIFY_MEMORY_LIBRARY_HELPER_MODEL: str = ""
+    # The helper lane's route: the key proxy's /helper/v1 base URL and the inherited descriptor carrying its token,
+    # read once at start-up and then removed from the environment (empty: no helper lane).
+    UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL: str = ""
+    UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD: str = ""
     # The lead, 11 Oct: ``on`` keeps every proposal open across passes in the candidate pool (memory repo
     # refs/heads/pool) until the writer closes it; ``off`` (default): none.
     UNIFY_MEMORY_LIBRARY_POOL: str = "off"
@@ -679,6 +685,9 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_LIBRARY_FORK_BASE_URL",
         "UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD",
         "UNIFY_MEMORY_LIBRARY_ANALYSTS",
+        "UNIFY_MEMORY_LIBRARY_HELPER_MODEL",
+        "UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL",
+        "UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD",
         "UNIFY_MEMORY_LIBRARY_POOL",
         "UNIFY_MEMORY_LIBRARY_COMPACT",
         "UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN",
@@ -877,3 +886,7 @@ settle_writer_route_env(os.environ, SETTINGS)
 from unify.memory_v2.integration.switch import settle_fork_route_env  # noqa: E402
 
 settle_fork_route_env(os.environ, SETTINGS)
+# The helper lane's token likewise: read once from its descriptor, both route names out of the environment.
+from unify.memory_v2.integration.switch import settle_helper_route_env  # noqa: E402
+
+settle_helper_route_env(os.environ, SETTINGS)

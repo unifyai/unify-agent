@@ -126,7 +126,6 @@ from .switch import (
     checker_visible,
     surfacing_options,
     library_enabled,
-    library_analysts,
     library_pool,
     library_compact,
     library_coverage,
@@ -732,14 +731,52 @@ def reason_codes(outcome: PassOutcome | None, failure_code: str | None) -> list[
     return out[:MAX_REASON_CODES]
 
 
-def _by_category(usd: str, analysts: list[dict]) -> dict:
-    """r5: the pass's known USD split into Sol's writer and Sol's analysts (decimal strings; unknown stays unknown)."""
+#: The call kind (origin) of helper model calls, as the key proxy and the cost records see it.
+HELPER_ORIGIN = "memory_v2.helper"
+
+
+def _helper_turns(settings: Any, effort: str, library_mode: bool) -> dict:
+    """``WriterPass`` keywords for writer-launched helpers: a factory of fresh host-side turns on the key proxy's
+    helper lane (its own token and ledger; the helper model at the pass's effort), or ``helper_turn=None`` with why.
+
+    Fail closed: with no helper lane configured, or a refused one, ``delegate`` is not offered, and there is never a
+    fallback to the writer's or the actor's route. The token stays in this process; helper boxes never see it.
+    """
+    if not library_mode:
+        return {}
+    from .switch import helper_lane_route, library_helper_model, settle_helper_route_env
+
+    settle_helper_route_env(os.environ, settings)
+    pair, why = helper_lane_route()
+    model = library_helper_model(settings)
+    if pair is None or not model:
+        return {"helper_turn": None, "helper_refusal": why or "no helper model"}
+    route = WriterRoute(*pair)
+    endpoint = model if "@" in model else f"{model}@openrouter"
+
+    def factory():
+        return unillm_turn(endpoint, effort, origin=HELPER_ORIGIN, route=route)
+
+    return {"helper_turn": factory, "helper_refusal": None}
+
+
+def _by_category(usd: str, helpers: list[dict]) -> dict:
+    """The pass's known USD split by lane: the writer's own calls and its helpers' (one row per delegate call), never
+    by model, since a helper's model may equal another lane's. Decimal strings; unknown stays unknown: the helpers'
+    share is unknown when any helper call was unpriced."""
     try:
-        spent = sum((Decimal(str(r.get("usd") or 0)) for r in analysts), Decimal(0))
+        spent = sum(
+            (Decimal(str(r.get("usd_known", r.get("usd")) or 0)) for r in helpers),
+            Decimal(0),
+        )
         total = Decimal(usd)
     except (InvalidOperation, ValueError):
-        return {"writer": UNKNOWN, "analysts": UNKNOWN}
-    return {"writer": _usd(total - spent), "analysts": _usd(spent)}
+        return {"writer": UNKNOWN, "helpers": UNKNOWN}
+    unpriced = any(int(r.get("unknown_cost_calls") or 0) for r in helpers)
+    return {
+        "writer": _usd(total - spent),
+        "helpers": UNKNOWN if unpriced else _usd(spent),
+    }
 
 
 def _spend(outcome: PassOutcome | None, rows: list[CostRow]) -> tuple[str, int, int]:
@@ -828,10 +865,10 @@ def _end_event(
                 ),
                 "finished": bool(outcome.finished),
                 "nothing_to_store": bool(outcome.nothing_to_store),
-                # spend by category (the fork's is in the proxy journal, session fork.<episode>), the analysts
-                # and the batch's staging by source
-                "usd_by_category": _by_category(usd, outcome.analysts),
-                "analysts": list(outcome.analysts),
+                # spend by lane (the fork's is in the proxy journal, session fork.<episode>), one row per delegate
+                # call, the batch's staging by source
+                "usd_by_category": _by_category(usd, outcome.helpers),
+                "helpers": list(outcome.helpers),
                 "staging": outcome.staging,
                 **({"pool": outcome.pool} if outcome.pool is not None else {}),
             }
@@ -1111,11 +1148,10 @@ async def run_due_passes(
         max_calls=STEP_GUARD if uncapped else max_calls,
         deadline_s=supervise.pass_deadline_s if supervise is not None else DEADLINE_S,
         max_usd=None if uncapped else cap,
-        # r5: staging lives beside the fork's (fork.staging_dir), and arm C's analysts follow their switch
+        # staging lives beside the fork's (fork.staging_dir); helpers write beside it
         **(
             {
                 "staging_root": str(Path(stores.paths.state_dir) / "memory-staging"),
-                "analysts": library_analysts(settings),
                 "pool": library_pool(settings),
                 "compact": library_compact(settings),
                 "coverage_rule": library_coverage(settings),
@@ -1196,6 +1232,7 @@ async def run_due_passes(
             config,
             redactor=Redactor.from_environ(os.environ),
             curate=curate_state if curating else None,
+            **({} if curating else _helper_turns(settings, effort, cfg.library_mode)),
         )
         try:
             _reserve(stores, pass_id, cap, reserve, max_calls, scale)

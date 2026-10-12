@@ -1,11 +1,10 @@
-"""Memory v2.1 r5 (§2-§4, §6): staging reaches the writer read-only as untrusted input; Sol analysts (arm C)."""
+"""Staging reaches the writer read-only as untrusted input."""
 
 import asyncio
 import json
 import os
 
-from unify.memory_v2 import analysts, staging
-from unify.memory_v2.episodes import Cell
+from unify.memory_v2 import staging
 from unify.memory_v2.trigger import PassRequest
 from tests.memory_v2.test_writer_pass import Turns, _call, _writer
 from tests.memory_v2.test_writer_library_tools import _episode
@@ -55,84 +54,6 @@ def test_a_staging_dir_that_is_a_link_is_ignored(tmp_path):
     (tmp_path / "root").mkdir()
     os.symlink(real, tmp_path / "root" / "e3")
     assert staging.read(tmp_path / "root", "e3") is None
-
-
-def _turns_for(eid):
-    return [
-        {
-            "role": "assistant",
-            "tool_calls": [
-                {
-                    "id": "s",
-                    "type": "function",
-                    "function": {
-                        "name": "stage",
-                        "arguments": json.dumps(
-                            {"path": "notes.md", "text": f"lesson from {eid}"},
-                        ),
-                    },
-                },
-            ],
-        },
-        {
-            "role": "assistant",
-            "tool_calls": [
-                {
-                    "id": "d",
-                    "type": "function",
-                    "function": {"name": "done", "arguments": "{}"},
-                },
-            ],
-        },
-    ]
-
-
-def test_analysts_share_one_prefix_and_write_staging(tmp_path):
-    seen = []
-    queues = {}
-
-    async def model_turn(messages, tools):
-        eid = messages[2]["content"].split("`")[1]
-        seen.append([json.dumps(m, sort_keys=True) for m in messages[:2]])
-        q = queues.setdefault(eid, _turns_for(eid))
-        return (q.pop(0) if q else {"role": "assistant", "content": "done"}), "0.01"
-
-    async def reader(name, args):
-        return "text"
-
-    rows = asyncio.run(
-        analysts.run(
-            {"e1": ["signal"], "e2": ["novel_code"], "e3": []},
-            model_turn=model_turn,
-            reader=reader,
-            reader_tools=[],
-            index_view="Current library index: (empty)",
-            root=tmp_path,
-            step_guard=10,
-        ),
-    )
-    assert sorted(r["episode"] for r in rows) == [
-        "e1",
-        "e2",
-    ]  # e3 was not flagged: no analyst
-    assert (
-        len({tuple(s) for s in seen}) == 1
-    )  # every sibling's prefix is the same bytes
-    v = staging.read(tmp_path, "e1")
-    assert v.source == "writer_analyst" and v.files == {"notes.md": b"lesson from e1"}
-
-
-def test_flags_come_from_code_never_ids():
-    ep = _episode(
-        "e9",
-        [
-            Cell(0, "x = 1/0", "Traceback (most recent call last):\n", None),
-            Cell(1, "y = [i * 2 for i in range(9)]\nprint(y)", "", None),
-        ],
-    )
-    why = analysts.flagged(ep, clustered=set(), seen_keys=set())
-    assert "fail_then_succeed" in why and "novel_code" in why and "signal" not in why
-    assert analysts.flagged(_episode("e8"), clustered=set(), seen_keys=set()) == []
 
 
 def test_the_pass_lists_each_episodes_staging_in_the_batch_map(tmp_path):

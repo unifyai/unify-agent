@@ -43,7 +43,7 @@ class ToolSpec:
 
 
 #: Modules holding ``SPEC`` (or ``SPECS``, a tuple) for their tools, in the order the tools are listed.
-SPEC_MODULES: tuple[str, ...] = (".similar",)
+SPEC_MODULES: tuple[str, ...] = (".similar", ".helpers")
 
 
 def registry() -> tuple[ToolSpec, ...]:

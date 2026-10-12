@@ -1021,10 +1021,9 @@ class PassConfig:
     # memory v2.1 ROUND_RESERVE (spec §15), once offline replay calibrates it; None: the pass's own median
     # round cost (repair.round_reserve)
     round_reserve_usd: Decimal | None = None
-    # memory v2.1 r5: where readers leave staging (<state>/memory-staging; None: a scratch dir in the pass), and
-    # arm C's analysts ("off" or "writer", UNIFY_MEMORY_LIBRARY_ANALYSTS)
+    # where the fork leaves staging (<state>/memory-staging; None: a scratch dir in the pass); writer-launched
+    # helpers write beside it (<state>/memory-helpers, helpers.py)
     staging_root: str | None = None
-    analysts: str = "off"
     # the run's worktree repo and the folder its recorded office workspaces are exported to, once each, for
     # replay (workspace_trees.py; None: replays run without a recorded workspace)
     worktree_git: str | None = None
@@ -1074,9 +1073,10 @@ class PassOutcome:
     # finish, listed no item and no deletion: the writer's explicit decision that the batch holds nothing to store
     finished: bool = False
     nothing_to_store: bool = False
-    # r5 arm C: one row per Sol analyst (episode, status, flags, turns, usd, files); their spend is in usd too
-    analysts: list[dict] = field(default_factory=list)
-    # r5: the batch's staging by source (fork, writer_analyst, replay_fork, none); None with library_mode off
+    # one row per delegate call (helpers.py: call, status, episodes, turns, usd, unknown_cost_calls, files); their
+    # spend is in usd too, and the rows split it by lane
+    helpers: list[dict] = field(default_factory=list)
+    # the batch's staging by source (fork, replay_fork, none); None with library_mode off
     staging: dict | None = None
     # the candidate pool after this pass: open entries, added, status changes, its commit (or its error); None off
     pool: dict | None = None
@@ -2069,8 +2069,14 @@ class WriterPass:
         *,
         redactor: Redactor | None = None,
         curate: "_curate.CurateState | None" = None,
+        helper_turn: Callable[[], ModelTurn] | None = None,
+        helper_refusal: str | None = None,
     ) -> None:
         self.mem, self.gate, self.ev = memory, gate, evidence
+        # writer-launched helpers (helpers.py): a fresh host-side model turn per helper on the helper lane, or None
+        # (no helper lane: delegate is not offered; helper_refusal says why)
+        self.helper_turn, self.helper_refusal = helper_turn, helper_refusal
+        self._helper_rows: list[dict] = []
         self.load, self.turn, self.cfg = load, model_turn, config
         self.redactor = redactor  # for the transcript: the run's registered secrets
         # the last run's message list, kept for :meth:`transcript`
@@ -2081,7 +2087,6 @@ class WriterPass:
         self._shown_full: dict[str, tuple[str, str]] = {}
         # v2.1 r5 (r4 §1): request blocks shared by most episodes (id -> text), shown as markers; {} until staged
         self._shared: dict[str, str] = {}
-        self._analyst_rows: list[dict] = []
         self._inputs_dir: Path | None = (
             None  # the pass's /inputs on the host, once staged
         )
@@ -2538,44 +2543,18 @@ class WriterPass:
         *,
         pass_id: str = "",
     ) -> None:
-        """Analysts per flagged episode (``analysts == "writer"``; their spend joins the pass's), then, with staging
-        on (:meth:`_staging_on`), each batch episode's staging: entered into the pool at once (so this pass can merge
-        it), copied to ``/inputs/staging/<episode>/`` and listed in batch_map.json. Staging is untrusted:
-        :mod:`.staging` takes only allowed regular files and nothing staged is run.
+        """With staging on (:meth:`_staging_on`), each batch episode's staging: entered into the pool at once (so
+        this pass can merge it), copied to ``/inputs/staging/<episode>/`` and listed in batch_map.json. Staging is
+        untrusted: :mod:`.staging` takes only allowed regular files and nothing staged is run. Helpers are launched
+        by the writer itself (the ``delegate`` tool, :mod:`.helpers`), never here.
         """
-        from . import analysts as _analysts
         from . import staging as _staging
 
-        eps = {e: self.load(e) for e in req.episodes}
         root = (
             Path(self.cfg.staging_root)
             if self.cfg.staging_root
             else Path(inputs).parent / "staging-local"
         )
-        if self.cfg.analysts == "writer":
-            flags = {e: _analysts.flagged(ep, set(), set()) for e, ep in eps.items()}
-            scratch = _views.Coverage(
-                required,
-                sizes,
-            )  # analysts' reads never credit the writer's coverage
-
-            async def reader(name: str, args: dict) -> str:
-                return await self._library_tool(name, args, roots, scratch, eps)
-
-            self._analyst_rows = await _analysts.run(
-                flags,
-                model_turn=self.turn,
-                reader=reader,
-                reader_tools=writer_tools(library_mode=True),
-                index_view=self._library_message_library_mode(box),
-                root=root,
-                step_guard=STEP_GUARD,
-            )
-            for row in self._analyst_rows:
-                usd = _analysts._usd(row.get("usd"))
-                if usd is not None:
-                    spend.usd += usd
-                spend.unknown += int(row.get("unknown_cost_calls", 0) or 0)
         path = Path(inputs) / "batch_map.json"
         bmap = json.loads(path.read_text())
         counts: dict[str, int] = {}
@@ -2622,9 +2601,9 @@ class WriterPass:
 
     def _staging_on(self) -> bool:
         """Whether any reader leaves staging for this pass: a staging root (the episode-end fork or its offline
-        replay) or analysts. Off, the writer sees no staging directory, batch-map field or staged pool entry.
+        replay). Off, the writer sees no staging directory, batch-map field or staged pool entry.
         """
-        return bool(self.cfg.staging_root) or self.cfg.analysts == "writer"
+        return bool(self.cfg.staging_root)
 
     def _chain_counts(self) -> dict:
         """This store pass's hop counts (:func:`.chain.counts`); reads come from the read tool calls' arguments and
@@ -3154,7 +3133,7 @@ class WriterPass:
         self.fixtures_made = {}
         self._shown_full = {}
         self._shared = {}
-        self._analyst_rows = []
+        self._helper_rows = []
         self._staging_counts = None
         self._inputs_dir = None
         self._pool, self._pool_open, self._pool_error = None, None, None
@@ -3361,20 +3340,22 @@ class WriterPass:
                     except Exception as exc:  # noqa: BLE001
                         o.chain = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
                 o.staging = self._staging_counts
-                o.analysts = [
+                o.helpers = [
                     {
                         k: r.get(k)
                         for k in (
-                            "episode",
+                            "call",
                             "status",
-                            "flags",
+                            "episodes",
                             "turns",
                             "usd",
+                            "usd_known",
                             "unknown_cost_calls",
+                            "seconds",
                         )
                     }
                     | {"files": len(r.get("files") or [])}
-                    for r in self._analyst_rows
+                    for r in self._helper_rows
                 ]
                 o.nothing_to_store = bool(
                     phase["finish_accepted"] and phase["nothing_to_store"],
@@ -3442,7 +3423,7 @@ class WriterPass:
                             f"load: {type(exc).__name__}: {str(exc)[:200]}"
                         )
                 if req.kind != "curate":
-                    # analysts (when on), then every batch episode's staging (pooled at once), read-only for the writer
+                    # every batch episode's staging, read-only for the writer
                     await self._staging_library_mode(
                         req,
                         inputs,
