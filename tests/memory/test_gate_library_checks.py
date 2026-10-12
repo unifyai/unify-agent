@@ -122,7 +122,9 @@ def test_episode_cover_runs_its_procedure_and_records_it(tmp_path, monkeypatch):
 
 
 def test_g4_notes_curate_and_never_refuses(tmp_path, monkeypatch):
-    monkeypatch.setattr(library_checks, "_index_tokens", lambda tree: 5000)
+    monkeypatch.setattr(
+        library_checks, "_index_tokens", lambda tree, examples=None: 5000
+    )
     v = _checks(tmp_path, [])
     v.g4()
     assert v.run.fails == [] and v.run.curate_due
@@ -469,8 +471,8 @@ def test_a_check_with_unseen_fixture_values_that_cannot_complete_refuses(tmp_pat
     )
     assert runs == [] and verdict.refused == [] and verdict.special == []
     assert verdict.unjudged == [
-        f"[examples:unjudged] {w.ITEM_ID}: the check with unseen fixture values did not complete (budget); "
-        "a function is admitted only once it is judged",
+        f"[examples:unjudged] {w.ITEM_ID}: the check with unseen fixture values did not complete (the budget ran "
+        "out before the control run); a function is admitted only once it is judged",
     ], verdict.unjudged
 
 
