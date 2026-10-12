@@ -2224,7 +2224,14 @@ class WriterPass:
 
         text = _similar.handle(args, self.similar_context())
         if not text.startswith("refused: "):
-            return _wt.Reply(text)
+            eid = args.get("episode")
+            # the episode a cell lookup named; a lookup by code names none
+            paths = (
+                ({"path": f"/episodes/{eid}", "mode": "search"},)
+                if isinstance(eid, str)
+                else ()
+            )
+            return _wt.Reply(text, paths=paths)
         return _wt.Reply(text, "refused", _refusal_form(_similar.SPEC, text))
 
     async def _similar_async(self, args: dict) -> str:

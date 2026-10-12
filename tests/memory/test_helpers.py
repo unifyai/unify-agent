@@ -683,3 +683,23 @@ def test_the_real_helper_box_writes_only_work(tmp_path):
     )
     assert "# library" in out
     assert not (ctx.library / "y.txt").exists() and not (ctx.inputs / "z.txt").exists()
+
+
+def test_a_helpers_episode_reads_record_the_paths_the_writer_records():
+    assert helpers.episode_paths("overview", {"episode": "e1"}, "e1") == [
+        {"path": "/episodes/e1", "mode": "read"},
+    ]
+    assert helpers.episode_paths("read_episode", {"episode": "e1"}, "e1") == [
+        {"path": "/episodes/e1", "mode": "read"},
+    ]
+    assert helpers.episode_paths(
+        "read_episode",
+        {"parts": ["cell:1", "action:0"]},
+        "e1",
+    ) == [
+        {"path": "/episodes/e1/cell:1", "mode": "read"},
+        {"path": "/episodes/e1/action:0", "mode": "read"},
+    ]
+    assert helpers.episode_paths("read_episode", {"part": "cell:2"}, "e1") == [
+        {"path": "/episodes/e1/cell:2", "mode": "read"},
+    ]

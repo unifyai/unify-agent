@@ -651,6 +651,22 @@ def _contents(ep: Any, eid: str, shared: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
+def episode_paths(name: str, args: dict, eid: str) -> list[dict]:
+    """The episode paths an answered ``overview`` or ``read_episode`` call read, as the writer's events name them:
+    ``/episodes/<id>`` for the overview or the table of contents, ``/episodes/<id>/<part>`` for each named part.
+    """
+    parts = args.get("parts")
+    if isinstance(args.get("part"), str) and parts in (None, []):
+        parts = [args["part"]]
+    if name == "overview" or not isinstance(parts, list) or not parts:
+        return [{"path": f"/episodes/{eid}", "mode": "read"}]
+    return [
+        {"path": f"/episodes/{eid}/{p}", "mode": "read"}
+        for p in parts
+        if isinstance(p, str)
+    ]
+
+
 async def plain_episode_reader(
     name: str,
     args: dict,
@@ -670,6 +686,8 @@ async def plain_episode_reader(
         text, _ = _bm.solution_first(ep, shared)
         return _views.view(text.encode(), offset)
     parts = args.get("parts")
+    if parts in (None, []) and isinstance(args.get("part"), str):
+        parts = [args["part"]]  # the schema's one-part form
     if parts in (None, []):
         return _views.view(_contents(ep, eid, shared).encode(), offset)
     if not isinstance(parts, list):
@@ -884,9 +902,15 @@ async def _tool(
         vpath = str(args.get("path", "") or ("/inputs" if name == "grep" else ""))
         try:
             offset = int(args.get("offset", 0) or 0)
+            # the resolved virtual path, as the writer's events record it
+            real = _views.resolve(vpath, roots)
+            virtual = _views._virtual(real, roots)
+            if virtual.endswith("/."):
+                virtual = virtual[:-2]
             if name == "read":
+                mode = "list" if real.is_dir() else "read"
                 return _views.read(vpath, roots, offset), [
-                    {"path": vpath, "mode": "read"},
+                    {"path": virtual, "mode": mode},
                 ]
             out = await asyncio.to_thread(
                 _views.grep_bounded,
@@ -895,7 +919,7 @@ async def _tool(
                 roots,
                 offset,
             )
-            return out, [{"path": vpath, "mode": "search"}]
+            return out, [{"path": virtual, "mode": "search"}]
         except PermissionError:
             return refusal(name, "outside_box", path=vpath[:200]), []
         except _views.PatternProblem as exc:
@@ -912,12 +936,17 @@ async def _tool(
             return got, []
         ep, eid = got
         if ctx.episode_reader is not None:
-            return await ctx.episode_reader(name, args, resolve), []
-        return await plain_episode_reader(name, args, ep, eid, ctx.shared), []
+            out = await ctx.episode_reader(name, args, resolve)
+        else:
+            out = await plain_episode_reader(name, args, ep, eid, ctx.shared)
+        return out, ([] if form_of(out) else episode_paths(name, args, eid))
     if name == "similar":
         if ctx.similar is None:
             return refusal("similar", "not_available"), []
-        return await ctx.similar(args), []
+        out = await ctx.similar(args)
+        eid = args.get("episode")
+        named = isinstance(eid, str) and not form_of(out)
+        return out, ([{"path": f"/episodes/{eid}", "mode": "search"}] if named else [])
     if name == "execute_code":
         if st["work_over"] is not None:
             return refusal("execute_code", "work_full", why=st["work_over"]), []
@@ -941,7 +970,9 @@ async def _tool(
             st["work_over"] = over
             out += f"\n({over}; execute_code is closed for the rest of this task)"
         return out, []
-    tools = ", ".join(t["function"]["name"] for t in helper_tools())
+    tools = ", ".join(
+        t["function"]["name"] for t in helper_tools(similar=ctx.similar is not None)
+    )
     return refusal(GENERAL, "unknown_tool", name=str(name)[:80], tools=tools), []
 
 
