@@ -1117,7 +1117,7 @@ class Gate:
             for item, eid, idx in sorted(covers):
                 self.ev.add_cover(item, eid, idx)
             if self._library_checks():
-                # Amendment C: typed covers persist beside covers, for the behaviour check and deletion (G5)
+                # typed covers persist beside covers, for the behaviour check and deletion (G5)
                 from .procedures import cover_raw
 
                 for it in landed_items:

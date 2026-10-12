@@ -20,11 +20,11 @@ With ``Gate(library_mode=None)`` (the default) nothing here runs and the gate is
   - no test deleted or weakened without a reason in the manifest's ``tests_changed``;
   - for WRITE, no fewer tests.
   - a stored function's episode covers re-run on the parent and the candidate: green to red is a behaviour change
-    (Amendment C; the covers are persisted at merge, :meth:`.evidence.EvidenceStore.add_typed_cover`).
+    (the covers are persisted at merge, :meth:`.evidence.EvidenceStore.add_typed_cover`).
 * **G4** never refuses growth: over the index view budget it notes that CURATE is due.
 * **G5:**
   - for WRITE, no fewer items (removal belongs to CURATE);
-  - a deleted function's typed episode covers stay covered by a remaining item (Amendment C).
+  - a deleted function's typed episode covers stay covered by a remaining item.
 
 The stage-5 checks run with drawn inputs ``strict`` and mutation gated at :data:`.qa.MUTATION_MIN`
 (:func:`.qa.library_config`). Measures go to the item verification record (``GateResult.verification``). The merge
@@ -85,7 +85,7 @@ ROLES = ("write", "curate")
 CROSS_CASES = (
     16  # recorded inputs from other episodes per function (cross-episode held-out)
 )
-# Amendment C: the procedure re-runs of the behaviour check, bounded like v2's (held_out.OUTPUTS_BUDGET_S)
+# the procedure re-runs of the behaviour check, bounded like v2's (held_out.OUTPUTS_BUDGET_S)
 BEHAVIOUR_MAX_PROCEDURES = 16
 OUTPUT_VIEW_BYTES = 4000  # the head of a test run's output kept in memory and quoted (explicit, marked)
 _KEY_SHAPED_BYTES = re.compile(KEY_SHAPED.pattern.encode())
@@ -722,7 +722,7 @@ class LibraryChecks:
                 "growth is not refused",
             )
 
-    # -- Amendment C: procedures in the behaviour check and in deletion ---------------------------------------
+    # -- procedures in the behaviour check and in deletion ---------------------------------------
     # -- CURATE --------------------------------------------------------------------------------------
     def curate(self) -> None:
         """CURATE's own rules, static: they read the manifest and both trees and run nothing.
