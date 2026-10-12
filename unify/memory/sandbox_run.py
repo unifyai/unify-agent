@@ -32,6 +32,10 @@ import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .example_calls import CallRecord
 
 
 def _account_home() -> Path:
@@ -795,6 +799,9 @@ class PytestOutcome:
     full_output: str = ""
     # library mode: the whole output's blob id (the gate sets it; :func:`.library_checks.keep_output`)
     output_blob: str | None = None
+    # library mode: the calls of the observed functions this run recorded (:mod:`.example_calls`), when the run
+    # asked for them; None otherwise
+    calls: "CallRecord | None" = None
 
     def __post_init__(self) -> None:
         if not self.full_output:
