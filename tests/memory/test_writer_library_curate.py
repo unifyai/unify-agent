@@ -130,7 +130,7 @@ def test_a_curate_pass_merges_through_its_own_brief_inputs_role_and_gate(
 
 @needs_bwrap
 def test_finish_names_a_reason_the_curate_manifest_neither_changes_nor_keeps(
-    library_gate_world,
+    library_example_world,
     monkeypatch,
 ):
     """Rule 7 at finish: a curator that lands only notes leaves the overlap it was shown to fire again after a later
@@ -138,7 +138,7 @@ def test_finish_names_a_reason_the_curate_manifest_neither_changes_nor_keeps(
     """
     from unify.memory import writer_pass
 
-    mem, ev, blobs, gate = library_gate_world
+    mem, ev, blobs, gate = library_example_world
     parent = _merged(mem, _parent_files(blobs))
     nothing = {
         **_curate_man(),
@@ -167,7 +167,7 @@ def test_finish_names_a_reason_the_curate_manifest_neither_changes_nor_keeps(
         mem,
         gate(role="curate"),
         ev,
-        load=lambda e: EPS[e],
+        load=lambda e: EPISODES[e],
         model_turn=model,
         config=PassConfig(max_calls=10, library_mode=True),
         curate=_state(parent),

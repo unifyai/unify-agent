@@ -10,6 +10,7 @@ import pytest
 
 from unify.memory import library_prompts as lp
 from unify.memory.manifest import (
+    INPUT_KINDS,
     LIBRARY_ITEM_FIELDS,
     Manifest,
     ManifestError,
