@@ -19,6 +19,7 @@ from unify.memory_v2.admission import cover_problem
 from unify.memory_v2.episodes import Action, CostRow, EpisodeWriter
 from unify.memory_v2.experience import experience_tokens
 from unify.memory_v2.integration import consolidate
+from unify.memory_v2 import chain
 from unify.memory_v2.integration.consolidate import (
     EpisodeLookup,
     episode_costs,
@@ -1174,6 +1175,9 @@ def test_library_reaches_the_pass_and_its_end_event_records_coverage(
     assert end["coverage"] == out.coverage
     assert end["reads"] == 0 and end["exported_bytes"] == 0
     assert "coverage_measures" not in end and "unread" not in end["coverage"]
+    # the store pass's hop counts and the landed items' provenance ride on the same end event
+    assert end["chain"] == out.chain and set(out.chain) == set(chain.KEYS)
+    assert end["provenance"] == out.provenance == []
 
 
 def test_library_optional_coverage_reaches_the_pass_and_its_end_event_records_the_measures(
@@ -1210,7 +1214,7 @@ def test_library_off_leaves_the_end_event_unchanged(tmp_path, monkeypatch):
     (out,) = _run(stores, "e1", sha)
     assert out.coverage is None
     end = [e for e in _events(stores) if e.get("phase") == "end"][-1]
-    assert not {"coverage", "reads", "exported_bytes"} & set(end)
+    assert not {"coverage", "reads", "exported_bytes", "chain", "provenance"} & set(end)
 
 
 @pytest.mark.parametrize("on", [False, True])
