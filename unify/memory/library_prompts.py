@@ -604,6 +604,9 @@ class Limits:
     finish_refusals: int | None = None
     #: repair rounds after the first refused `finish` (None: no set number; only the other limits end them)
     repair_rounds: int | None = None
+    #: with no set number of rounds: the consecutive rounds after which a refusal repeated for the same item and
+    #: reason gets no further round (repair.STUCK_REPEATS; None: not stated)
+    stuck_repeats: int | None = None
     #: compaction (the agent loop's, writer_pass.compact_by_summary): the share of the model's context window, in
     #: percent, a call's prompt reaches before the conversation is summarised (None: compaction off), and whether
     #: the request messages are kept before the summary (UNIFY_COMPACTION_KEEP_PREFIX=on)
@@ -646,6 +649,13 @@ def _limits_text(limits: Limits, helper_time: bool) -> str:
                 f" At most {limits.repair_rounds} repair rounds follow the first refused `finish` in this pass."
                 if limits.repair_rounds is not None
                 else " There is no set number of repair rounds; only these limits end them."
+                + (
+                    f" A refusal the gate repeats for the same item and reason in {limits.stuck_repeats} rounds in a "
+                    "row gets no further round of its own (the repair message names it), and once every refusal "
+                    "of a round is such a repeat, the final merge follows."
+                    if limits.stuck_repeats is not None
+                    else ""
+                )
             ),
             "finish_cap": (
                 f" While /memory/.pass/manifest.json is missing or does not parse, `finish` is refused with the reason "
@@ -1060,6 +1070,8 @@ def limits_now(
         finish_refusals=writer_pass.FINISH_G1_REFUSALS if finish_capped else None,
         # a capped pass also caps its repair rounds (repair.may_repair); repair_message states the same count
         repair_rounds=_repair.REPAIR_ROUNDS if finish_capped else None,
+        # an uncapped pass stops offering rounds for a refusal repeated this many rounds in a row
+        stuck_repeats=None if finish_capped else _repair.STUCK_REPEATS,
         compact_threshold_percent=(
             _num(_cc.COMPACTION_THRESHOLD * 100) if compact else None
         ),

@@ -825,6 +825,11 @@ class PassOutcome:
     # model's context window as the compaction trigger reads it (None: unknown, so it never compacts)
     max_prompt_tokens: int | None = None
     context_window: int | None = None
+    # library mode, uncapped: the refusals the gate repeated for the same reason in repair.STUCK_REPEATS consecutive
+    # rounds, so no further round was offered for them (repair.StuckRefusals.report: "repeats", "stopped" (every
+    # refusal of a round was stuck, so repair ended there) and one {"check", "item", "reason", "rounds"} row each);
+    # None when none became stuck
+    repair_stuck: dict | None = None
 
 
 # --- inputs ------------------------------------------------------------------------------------------------
@@ -3542,6 +3547,19 @@ class WriterPass:
         )
         return reasons
 
+    def _candidate_key(self, candidate: str | None, manifest: object) -> tuple | None:
+        """What a repair round's check judged: the candidate commit's tree and the manifest, so a round that
+        changed neither compares equal to the last one (a commit's own id differs every round). None when
+        unknown."""
+        if candidate is None:
+            return None
+        try:
+            tree = self.mem.run("rev-parse", f"{candidate}^{{tree}}").strip()
+            judged = json.dumps(manifest, sort_keys=True, default=str)
+        except Exception:  # noqa: BLE001 - unknown is never a repeat
+            return None
+        return (tree, judged)
+
     def _commit_round(
         self,
         box: Path,
@@ -3821,6 +3839,8 @@ class WriterPass:
         )  # each completed round's seconds, its gate check included
         round_paths: list[str] = []  # /inputs/gate/result-<n>.md written for the writer
         round_blobs: list[str] = []  # the same texts in the blob store
+        # uncapped passes: the refusals repeated round to round (repair.py states the stuck rule)
+        stuck = _repair.StuckRefusals()
         mark = [
             Decimal("0"),
             time.monotonic(),
@@ -3888,6 +3908,7 @@ class WriterPass:
             )
             if self.cfg.library_mode:
                 o.rounds, o.round_results = round_no + 1, list(round_paths)
+                o.repair_stuck = stuck.report()
                 o.compactions = self._compaction["compactions"]
                 o.chars_moved = self._compaction["chars_moved"]
                 o.messages_moved = self._compaction["messages_moved"]
@@ -4265,11 +4286,23 @@ class WriterPass:
                 store = getattr(self.gate, "blobs", None)
                 if isinstance(store, BlobStore):
                     round_blobs.append(store.put(text.encode()))
+                held: list[tuple[str, str, str]] = []
+                if uncapped:
+                    # no round count here: a refusal repeated round to round is stuck instead (repair.py)
+                    was = set(stuck.rows)
+                    held = stuck.update(res, self._candidate_key(candidate, manifest))
+                    fresh = [h for h in held if (h[0], h[1]) not in was]
+                    if fresh:
+                        notes.append(_repair.stuck_note(fresh, stuck.repeats))
                 why = refused_round(
                     check_s,
                 )  # after the check, with its time: this one decides
                 if why is not None:
                     notes.append(why)
+                    return False
+                if uncapped and stuck.all_stuck():
+                    stuck.stopped = True
+                    notes.append(_repair.stopped_note(round_no + 1, held, stuck.repeats))
                     return False
                 round_no += 1
                 checked["current"] = False  # the writer may change the box again
@@ -4281,6 +4314,8 @@ class WriterPass:
                             vpath,
                             res,
                             None if uncapped else _repair.REPAIR_ROUNDS,
+                            stuck=held,
+                            repeats=stuck.repeats,
                         ),
                     },
                 )
