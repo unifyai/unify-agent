@@ -1877,3 +1877,48 @@ def test_a_failure_raised_inside_the_model_client_keeps_its_text_out():
     assert (
         category == "other" and detail == " at x.py:2 in call" and "echo" not in detail
     )
+
+
+def test_a_failure_with_any_client_frame_or_client_cause_keeps_its_text_out():
+    from unify.memory import writer_pass
+
+    # an error raised in the standard library, called from inside the client
+    ns: dict = {}
+    exec(
+        compile("def call(f):\n    return f()\n", "/site/httpx/_client.py", "exec"),
+        ns,
+    )
+
+    def stdlib_side():
+        raise ValueError("echo of the request")
+
+    try:
+        ns["call"](stdlib_side)
+    except ValueError as exc:
+        _, category, detail = writer_pass._call_failure(exc)
+    assert category == "other" and "echo" not in detail and detail.startswith(" at ")
+
+    # a local error raised from a client error carries its text on
+    exec(
+        compile(
+            "def fail():\n    raise Exception('echo of the request')\n",
+            "/site/unillm/c.py",
+            "exec",
+        ),
+        ns,
+    )
+    try:
+        try:
+            ns["fail"]()
+        except Exception as inner:
+            raise RuntimeError(f"wrapped: {inner}") from inner
+    except RuntimeError as exc:
+        _, category, detail = writer_pass._call_failure(exc)
+    assert category == "other" and "echo" not in detail
+
+    # a purely local error still says what happened
+    try:
+        raise TypeError("cannot copy the messages")
+    except TypeError as exc:
+        _, _, detail = writer_pass._call_failure(exc)
+    assert detail.endswith(": cannot copy the messages")

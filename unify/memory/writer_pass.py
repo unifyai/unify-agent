@@ -4233,6 +4233,26 @@ _CLASS_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
 _CLIENT_LIBRARIES = ("unillm", "litellm", "openai", "httpx", "httpcore", "aiohttp")
 
 
+def _touches_client(exc: BaseException) -> bool:
+    """Whether any frame of *exc*'s traceback, or of any exception in its cause and context chain, ran in a package
+    of :data:`_CLIENT_LIBRARIES`."""
+    seen: set[int] = set()
+    todo: list[BaseException] = [exc]
+    while todo:
+        e = todo.pop()
+        if id(e) in seen:
+            continue
+        seen.add(id(e))
+        tb = e.__traceback__
+        while tb is not None:
+            path = tb.tb_frame.f_code.co_filename
+            if any(f"/{lib}/" in path for lib in _CLIENT_LIBRARIES):
+                return True
+            tb = tb.tb_next
+        todo.extend(x for x in (e.__cause__, e.__context__) if x is not None)
+    return False
+
+
 def _call_failure(exc: BaseException) -> tuple[str, str, str]:
     """``(class name, category, detail)`` of a failed call. The category comes from its type and status code only.
     *detail* is empty for an answer from the provider or the route (an HTTP status, a timeout, a connection or
@@ -4261,15 +4281,15 @@ def _call_failure(exc: BaseException) -> tuple[str, str, str]:
         category = "other"
     detail = ""
     if category == "other":
-        tb, where, path = exc.__traceback__, "", ""
+        tb, where = exc.__traceback__, ""
         while tb is not None:
             code = tb.tb_frame.f_code
-            path = code.co_filename
-            where = f"{Path(path).name}:{tb.tb_lineno} in {code.co_name}"
+            where = f"{Path(code.co_filename).name}:{tb.tb_lineno} in {code.co_name}"
             tb = tb.tb_next
         detail = f" at {where}" if where else ""
-        # the message only when the model client did not raise it: a client's error text may echo the request
-        if not any(f"/{lib}/" in path for lib in _CLIENT_LIBRARIES):
+        # the message only when no frame of the error or of any error it was raised from or during ran in the model
+        # client: a client's error text may echo the request, and a local error may carry it on
+        if not _touches_client(exc):
             message = redact_error(str(exc)).replace("\n", " ")[:200]
             detail += f": {message}" if message else ""
     return name, category, detail
