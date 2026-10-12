@@ -19,11 +19,10 @@ from unify.common.async_tool_loop import (
 )
 from unify.common._async_tool.loop import async_tool_loop_inner
 from tests.helpers import _handle_project, capture_events
+from tests.scripted_model import ScriptedModel, reply, scripted
 from unify.common.llm_client import new_llm_client
 
 _SUFFIX_RE = re.compile(r"\(([0-9a-f]{4})\)$")
-
-pytestmark = pytest.mark.llm_call
 
 
 async def echo(text: str) -> str:  # noqa: D401 – simple echo tool
@@ -97,30 +96,46 @@ async def test_interjection_publishes_user_event(llm_config) -> None:
     """
     Verify that interjections are published to the event bus as user messages.
 
-    This test is purely about event bus mechanics, not model behavior.
-    Model response quality and instruction-following are tested separately
-    in test_interjections.py.
+    This test is purely about event bus mechanics, not model behavior, so
+    the model is scripted. Its first reply is held until the interjection is
+    submitted, so the interjection arrives while that model call runs; the
+    loop appends it at the next turn boundary and gives the model a turn
+    for it.
     """
-    client = new_llm_client(**llm_config)
     opening_turn = "Event bus check: this is the opening user turn."
     interjected_turn = "Event bus check: this is the interjected user turn."
-    client.set_system_message(
-        "You are in an automated event-bus test. "
-        "Briefly acknowledge each user message. Do not call tools.",
-    )
+    first_call_started = asyncio.Event()
+    release_first_reply = asyncio.Event()
 
-    async with capture_events("ToolLoop") as captured_events:
-        handle = start_async_tool_loop(
-            client=client,
-            message=opening_turn,
-            tools={},
-            max_consecutive_failures=1,
+    async def held_first_reply(_call):
+        first_call_started.set()
+        await release_first_reply.wait()
+        return reply("Acknowledged the opening turn.")
+
+    model = ScriptedModel(
+        actor=[held_first_reply, reply("Acknowledged the interjected turn.")],
+    )
+    with scripted(model):
+        client = new_llm_client(**llm_config)
+        client.set_system_message(
+            "You are in an automated event-bus test. "
+            "Briefly acknowledge each user message. Do not call tools.",
         )
 
-        await handle.submit(interjected_turn)
+        async with capture_events("ToolLoop") as captured_events:
+            handle = start_async_tool_loop(
+                client=client,
+                message=opening_turn,
+                tools={},
+                max_consecutive_failures=1,
+            )
 
-        # We don't need to verify model output - just let it complete
-        await handle.result()
+            await asyncio.wait_for(first_call_started.wait(), 30)
+            await handle.submit(interjected_turn)
+            release_first_reply.set()
+
+            result = await asyncio.wait_for(handle.result(), 30)
+    assert result == "Acknowledged the interjected turn."
 
     # Filter out internal runtime context events
     events = _filter_runtime_context(captured_events)
@@ -142,6 +157,12 @@ async def test_interjection_publishes_user_event(llm_config) -> None:
     assert any(
         "interjected user turn" in c for c in user_contents
     ), "Interjection should be recorded"
+    # The model's second turn is the one that sees the interjection.
+    second_users = [
+        str(m.get("content")) for m in model.calls[1].messages if m["role"] == "user"
+    ]
+    assert any("interjected user turn" in c for c in second_users)
+    assert model.kinds() == ["actor", "actor"]
 
 
 # --------------------------------------------------------------------------- #
@@ -167,22 +188,32 @@ async def test_tool_result_content_is_not_placeholder(llm_config) -> None:
         """A tool that returns a predictable result for testing."""
         return expected_result
 
-    client = new_llm_client(**llm_config).set_system_message(
-        "You are an automated test agent.\n"
-        "You MUST call the tool named `deterministic_tool` exactly once, "
-        "passing any text as the `input_text` argument.\n"
-        "After the tool returns, reply with the tool result.",
+    model = ScriptedModel(
+        actor=[
+            reply(calls=[("deterministic_tool", {"input_text": "x"})]),
+            reply(expected_result),
+        ],
     )
-
-    async with capture_events("ToolLoop") as captured_events:
-        await async_tool_loop_inner(
-            client=client,
-            message="please call the tool",
-            tools={"deterministic_tool": deterministic_tool},
-            interject_queue=asyncio.Queue(),
-            cancel_event=asyncio.Event(),
-            prune_tool_duplicates=True,
+    with scripted(model):
+        client = new_llm_client(**llm_config).set_system_message(
+            "You are an automated test agent.\n"
+            "You MUST call the tool named `deterministic_tool` exactly once, "
+            "passing any text as the `input_text` argument.\n"
+            "After the tool returns, reply with the tool result.",
         )
+
+        async with capture_events("ToolLoop") as captured_events:
+            await asyncio.wait_for(
+                async_tool_loop_inner(
+                    client=client,
+                    message="please call the tool",
+                    tools={"deterministic_tool": deterministic_tool},
+                    interject_queue=asyncio.Queue(),
+                    cancel_event=asyncio.Event(),
+                    prune_tool_duplicates=True,
+                ),
+                60,
+            )
 
     # Filter out internal runtime context events
     events = _filter_runtime_context(captured_events)
@@ -212,6 +243,7 @@ async def test_tool_result_content_is_not_placeholder(llm_config) -> None:
     assert (
         expected_result in tool_content
     ), f"Tool content should contain '{expected_result}', got: {tool_content!r}"
+    assert model.kinds() == ["actor", "actor"]
 
 
 # --------------------------------------------------------------------------- #

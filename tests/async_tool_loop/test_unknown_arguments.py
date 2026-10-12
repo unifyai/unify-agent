@@ -299,6 +299,7 @@ async def test_a_tool_taking_arbitrary_keywords_receives_them():
 
 
 @pytest.mark.llm_call
+@pytest.mark.live_provider
 @pytest.mark.eval
 @pytest.mark.asyncio
 @_handle_project
