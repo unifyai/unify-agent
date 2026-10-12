@@ -16,6 +16,7 @@ Models never write these records. The writer and the actor read them through ``m
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable, Mapping
 
@@ -41,9 +42,13 @@ def empty_record(item: str, kind: str) -> dict:
     """A record with the harness's own fields: why a status was given (``status_rule``, ``status_reason``,
     ``status_evidence``), the commit that last changed the item, its input form and source channels, its
     effect as the gate derived it from its covers (``read``, ``write``, ``unknown``; None: not derived), and
-    the bisect result with the rollback proposal."""
+    the bisect result with the rollback proposal. ``uid`` is the item's persistent identity, assigned once at its
+    first record and carried across renames and aliases (:func:`new_uid`); ``renamed_from`` lists the ids it had
+    before, oldest first."""
     return {
         "item": item,
+        "uid": None,
+        "renamed_from": [],
         "kind": kind,
         "status": "experimental",
         "status_rule": None,
@@ -60,6 +65,12 @@ def empty_record(item: str, kind: str) -> dict:
         "bisect": None,
         "rollback": None,
     }
+
+
+def new_uid(item: str, changed_at: str | None) -> str:
+    """A fresh persistent identity for *item* first recorded at library commit *changed_at*. Derived, not random,
+    so that recomputing a map gives the same bytes; after that it is copied, never recomputed."""
+    return hashlib.sha256(f"{item}\0{changed_at or ''}".encode()).hexdigest()[:16]
 
 
 def _line(obj: dict) -> str:

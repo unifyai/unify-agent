@@ -299,7 +299,7 @@ _WHAT_TO_WRITE = (
     "- The manifest is /memory/.pass/manifest.json (never committed):\n"
     '  {"items": [{"item": "<id>", "kind": "function" or "note", "input": "<form>", '
     '"source_episodes": [...], "tests": [...], "covers": [...]}], "support": [], "tests_changed": {}, '
-    '<<manifest_extra>>"why": "<one line>", "summary": "<what changed>"}\n'
+    '"renames": {}, <<manifest_extra>>"why": "<one line>", "summary": "<what changed>"}\n'
     "  - A note's entry takes `item`, `kind` and `source_episodes`: "
     '`{"item": "notes/<topic>/<slug>.md", "kind": "note", "source_episodes": [...]}`; `input` and `covers` '
     "are for functions.\n"
@@ -313,6 +313,8 @@ _WHAT_TO_WRITE = (
     "such as the package's `MemoryInputError` (a public function is an item). The harness records "
     "fixtures itself.\n"
     "<<manifest_extra_docs>>"
+    '  - `renames` (`{"<old item id>": "<new item id>"}`) declares an item you moved or renamed: it keeps its '
+    "history (use, status, provenance) under the new id.\n"
     "  - `why` is one line on why the change helps. The harness writes it, the episodes and the item ids into "
     "the commit.\n"
 )
@@ -411,8 +413,11 @@ _CURATE = (
     '  {"items": [{"item": "<id>", "kind": "function" or "note", "input": "<form>", '
     '"source_episodes": [...], "tests": [...], "covers": [...]}], "deleted": ["<retired id>"], '
     '"retired": {"<retired id>": "<one-line reason>"}, "deleted_tests": ["<test file removed with them>"], '
-    '"aliases": {"<old id>": "<new id>"}, "kept": {"<item id, or INDEX.md>": "<why it stays as it is>"}, '
+    '"aliases": {"<old id>": "<new id>"}, "renames": {"<old id>": "<new id>"}, '
+    '"kept": {"<item id, or INDEX.md>": "<why it stays as it is>"}, '
     '"tests_changed": {"<test>": "<reason>"}, "why": "<one line>", "summary": "<what changed>"}\n'
+    "  `renames` moves an item to a new id without keeping the old name (its history follows it); `aliases` "
+    "keeps the old name forwarding to the new one.\n"
     "  `items` lists every item you added or changed, with the covers of the items it replaces. `kept` names each "
     "item a reason in your inputs points at that you leave as it is, with why. "
     + _RUN_TESTS
