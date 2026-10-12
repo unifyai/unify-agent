@@ -228,13 +228,50 @@ _REPAIR = (
     "The items that pass land, and the rest is kept as a draft for a later pass, with its failure.\n"
 )
 
+#: The cross-episode rule exactly as the gate checks it (``example_evidence.evidence_check``, whose
+#: ``MIN_EXAMPLE_EPISODES`` a test keeps equal to this): the brief states it in these words, and the example refusals end
+#: with the fix that satisfies them.
+EXAMPLE_EPISODES = 2
+EPISODES_RULE = (
+    f"the calls of a function that return take fixture values from at least {EXAMPLE_EPISODES} recorded episodes "
+    "between them (an episode named by one of its verified typed covers counts too). Besides the test with an exact "
+    "expected value, one call that returns on a same-shaped value recorded in another episode, in this batch or "
+    "not, is enough for that, and that call needs no exact expected value: checking the result's type or shape "
+    "will do. A call that refuses or raises counts for nothing"
+)
+EPISODES_FIX = (
+    f"to reach {EXAMPLE_EPISODES}, add a test call that returns on a same-shaped value from a fixture of another "
+    "recorded episode; it needs no exact expected value, and a refused or raised call counts for nothing"
+)
+GROUNDED_FIX = (
+    "make one call that returns take each structured argument (a list, a mapping or a path; plain numbers and "
+    "strings may stay literal) from a fixture made with `fixture`, or compute it in the test from one"
+)
+#: ``[examples:unjudged]``: why the check with unseen fixture values did not complete -> what lets it complete.
+UNJUDGED_FIX = {
+    "budget": (
+        "the check runs the listed tests that open an input fixture of every function in this gate run within "
+        "{budget_s:.0f} s in all; make those tests quicker"
+    ),
+    "failed": "its listed tests that open an input fixture must pass, within their time limit, when run on their own",
+    "record": (
+        "its tests must end normally (no exit, no killed process) and make at most {max_calls} recorded calls of "
+        "library functions"
+    ),
+    "unmatched": (
+        "each call of it in its tests must still be reached when the fixture values change: what a test computes "
+        "from a fixture before the call (parsing, slicing, checks) must work on any values of the same shape"
+    ),
+}
+
 #: What each check the gate names in its refusals and results means (the same names: G1 to G6).
 _CHECK_NAMES = (
     "Its results and refusals name the check: G1, layout and provenance (only `memory/` and `notes/` change and "
     "never the generated files, the manifest is well formed, every link names an item that exists, and every "
     "fixture came through `fixture` unchanged); G2, evidence (each function's listed tests call it, and a call "
     "of it returns on values loaded from fixtures or computed from them; it raises nothing but `MemoryInputError` "
-    "on those calls; the fixture values its calls use come from at least 2 episodes; with those values replaced by "
+    "on those calls; the calls that return take fixture values from at least "
+    f"{EXAMPLE_EPISODES} recorded episodes between them; with those values replaced by "
     "unseen values of the same type, a call it accepted neither refuses nor raises; its docstring's `Example:` "
     "names one of its tests; typed covers are recorded evidence of their type; and the literal rule); G3, tests "
     "(plain pytest, an exact assertion against a trusted "
@@ -258,8 +295,8 @@ _G5_CURATE = (
 _GATE = (
     "# The gate\n"
     "After `finish` a deterministic gate checks the candidate: the layout and the links; that every fixture "
-    "came through `fixture` unchanged; that each function's tests call it on fixture values from at least 2 "
-    "episodes and it returns on such a call; its tests on the candidate, and on the parent where behaviour "
+    "came through `fixture` unchanged; that the calls of each function that return take fixture values from "
+    f"at least {EXAMPLE_EPISODES} recorded episodes between them; its tests on the candidate, and on the parent where behaviour "
     "changed; that a call it accepted neither refuses nor raises when the fixture values its tests load are "
     "replaced by unseen values of the same type; the appended recorded inputs; that its tests catch at least "
     "<<mutation_min_pct>>% of small mutations of each changed function; the literal rule; and that no test is "
@@ -379,7 +416,9 @@ _WRITE_RULES = (
     + " A function takes any arguments, and its examples are the calls its tests make. At least one call returns on "
     "arguments loaded from fixtures made with `fixture`, or computed in the test from such a fixture: the test's "
     "code is the transformation, and the gate checks that the argument changes when the fixture changes. "
-    "Examples must use recorded values from at least 2 episodes. Each function needs at least one test asserting "
+    "Across its examples, "
+    + EPISODES_RULE
+    + ". Each function needs at least one test asserting "
     "that its result on a recorded fixture equals an exact trusted value, and one test that it refuses an input of "
     "another shape. A procedure's test checks the "
     "effect the environment later confirmed, not only that it ran. Never compute an expected value with the "
@@ -839,7 +878,8 @@ def write_brief(
             '{"<id>": "<id or item>"}, "retired": {"<id>": "<reason>"}}`. An entry is merged into an item this '
             "manifest lists, superseded by another entry or an item, or retired with a reason. `retired` closes an "
             "entry for good: it is wrong or not reusable. To keep an entry open for a later pass, defer it "
-            "(`pool` with decision `defer`, which writes the block's `defer` rows). "
+            "(`pool` with decision `defer`, which writes the block's `defer` rows): an entry that lacks only "
+            "another episode's evidence can wait there for later episodes to supply it. "
             '`"reopened": {"<id>": "<reason>"}` opens a closed entry again.\n'
         )
     replay_rule = (

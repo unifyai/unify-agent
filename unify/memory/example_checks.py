@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .example_calls import CallKey, CallRecord, ExampleCall, unresolved_kind
+from .library_prompts import GROUNDED_FIX
 
 #: How many places (file:line or call keys) one reason names.
 MAX_NAMED = 5
@@ -67,7 +68,9 @@ def key_text(key: CallKey) -> str:
 
 def merge_records(records: list[CallRecord | None]) -> CallRecord:
     """One record of several runs: complete only when every run's record is."""
-    out = CallRecord(loaded=bool(records) and all(r is not None and r.loaded for r in records))
+    out = CallRecord(
+        loaded=bool(records) and all(r is not None and r.loaded for r in records),
+    )
     out.ended = bool(records) and all(r is not None and r.ended for r in records)
     for r in records:
         if r is None:
@@ -108,7 +111,10 @@ def docstring_of(tree: Path, item: str) -> str:
         return ""
     name = item.split(":", 1)[1]
     for node in mod.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == name
+        ):
             return ast.get_docstring(node) or ""
     return ""
 
@@ -137,10 +143,14 @@ class ExampleChecks:
             "fixtures": ledger,
         }
         self._calls: dict[str, list[ExampleCall]] | None = None
-        self.records: dict[str, CallRecord | None] = {}  # listed test file -> its candidate run's record
+        self.records: dict[str, CallRecord | None] = (
+            {}
+        )  # listed test file -> its candidate run's record
         self.incomplete: set[str] = set()  # items whose examples are not judged
         self.unresolved: dict[str, str] = {}  # item -> what it is
-        self.uncalled: set[str] = set()  # behaviour: stored functions no parent test calls
+        self.uncalled: set[str] = (
+            set()
+        )  # behaviour: stored functions no parent test calls
         self._episodes: dict[str, Any] = {}
 
     def part(self, name: str) -> Any:
@@ -151,7 +161,9 @@ class ExampleChecks:
     # -- the record -------------------------------------------------------------------------------------------
     def functions(self) -> list[Any]:
         return [
-            it for it in self.run.man.items if it.kind == "function" and it.item in self.run.c_bodies
+            it
+            for it in self.run.man.items
+            if it.kind == "function" and it.item in self.run.c_bodies
         ]
 
     def targets(self) -> list[str]:
@@ -163,7 +175,8 @@ class ExampleChecks:
 
     def record(self) -> dict[str, list[ExampleCall]]:
         """Item -> its example calls in its listed tests. A new or changed listed test's record comes from G3's
-        candidate run (``run.qa_first``); an unchanged listed test runs once more on the candidate."""
+        candidate run (``run.qa_first``); an unchanged listed test runs once more on the candidate.
+        """
         if self._calls is not None:
             return self._calls
         run, targets = self.run, self.targets()
@@ -173,7 +186,12 @@ class ExampleChecks:
             o = run.qa_first.get(t)
             rec = getattr(o, "calls", None) if o is not None else None
             if rec is None:
-                o = self.gate._pytest(run.c_tree, t, qa_env=getattr(run, "qa_env", None), calls=targets)
+                o = self.gate._pytest(
+                    run.c_tree,
+                    t,
+                    qa_env=getattr(run, "qa_env", None),
+                    calls=targets,
+                )
                 rec = o.calls
             self.records[t] = rec
         for it in self.functions():
@@ -188,7 +206,9 @@ class ExampleChecks:
                     if item == it.item:
                         self.unresolved[it.item] = kind
                 keys = {c.key for c in out[it.item]}
-                out[it.item] += [c for c in rec.calls if c.item == it.item and c.key not in keys]
+                out[it.item] += [
+                    c for c in rec.calls if c.item == it.item and c.key not in keys
+                ]
         for t in tests:
             why = incomplete_why(self.records.get(t))
             if why is not None:
@@ -203,7 +223,9 @@ class ExampleChecks:
         with the record."""
         calls = self.record()
         perturb = self.part("example_perturb")
-        deadline = self.clock() + float(getattr(perturb, "PERTURB_BUDGET_S", DEFAULT_PERTURB_BUDGET_S))
+        deadline = self.clock() + float(
+            getattr(perturb, "PERTURB_BUDGET_S", DEFAULT_PERTURB_BUDGET_S),
+        )
         for it in self.functions():
             if it.item in self.incomplete:
                 continue
@@ -278,7 +300,11 @@ class ExampleChecks:
             self._package_episodes(item),
         )
         notes = list(notes)
-        views = {p: fx.value_views(p, files[p], ledger[p], notes) for p in files if p in ledger}
+        views = {
+            p: fx.value_views(p, files[p], ledger[p], notes)
+            for p in files
+            if p in ledger
+        }
         for n in notes:
             run.note(n)
         return ledger, views
@@ -288,7 +314,9 @@ class ExampleChecks:
         covers = []
         for f in fixtures:
             entry = f.entry if isinstance(f.entry, dict) else {}
-            rows = entry.get("lines") if isinstance(entry.get("lines"), list) else [entry]
+            rows = (
+                entry.get("lines") if isinstance(entry.get("lines"), list) else [entry]
+            )
             for row in rows:
                 found = fx.source_action(row, self._episode)
                 if found is not None:
@@ -302,7 +330,12 @@ class ExampleChecks:
             from .sandbox_run import PytestOutcome
 
             outs = [
-                self.gate._pytest(Path(tree), t, qa_env=getattr(self.run, "qa_env", None), calls=[item])
+                self.gate._pytest(
+                    Path(tree),
+                    t,
+                    qa_env=getattr(self.run, "qa_env", None),
+                    calls=[item],
+                )
                 for t in tests
             ]
             merged = PytestOutcome(valid=all(o.valid for o in outs) and bool(outs))
@@ -335,7 +368,15 @@ class ExampleChecks:
         by_key = {c.key: c for c in calls}
         ledger, views = self._ledger(item)
         notes: list[str] = []
-        inputs = perturb.input_fixtures(item, calls, views, ledger, run.c_tree, load=self._episode, notes=notes)
+        inputs = perturb.input_fixtures(
+            item,
+            calls,
+            views,
+            ledger,
+            run.c_tree,
+            load=self._episode,
+            notes=notes,
+        )
         for n in notes:
             run.note(n)
         # stage 5 draws recorded inputs of the input fixtures' families (qa)
@@ -372,15 +413,20 @@ class ExampleChecks:
             if not any(k in GROUNDED_KINDS for k in kinds.values()):
                 continue
             grounded.add(c.key)
-            if all(kinds[a.name] in GROUNDED_KINDS or not self._structured(a) for a in c.args):
+            if all(
+                kinds[a.name] in GROUNDED_KINDS or not self._structured(a)
+                for a in c.args
+            ):
                 examples_ok.add(c.key)
-                literal |= {a.name for a in c.args if kinds[a.name] not in GROUNDED_KINDS}
+                literal |= {
+                    a.name for a in c.args if kinds[a.name] not in GROUNDED_KINDS
+                }
         if not examples_ok:
             run.fail(
                 "G2",
                 f"[examples:grounded] {item}: no call of it in its tests returns on fixture values ({len(calls)} "
-                f"calls; each passes only literal values: {_places(calls)}); load an argument from a fixture made "
-                "with fixture, or compute it in the test from one",
+                f"calls; none that returns takes its structured arguments from fixtures: {_places(calls)}); "
+                + GROUNDED_FIX,
                 item,
             )
         raised = [c for c in calls if c.outcome == "raised"]
@@ -410,12 +456,22 @@ class ExampleChecks:
             self._docstring(it, calls, grounded)
         view = self.part("example_view")
         doc = docstring_of(run.c_tree, item)
-        example = view.pick_example(item, calls, grounded, view.docstring_example(doc), run.c_tree)
+        example = view.pick_example(
+            item,
+            calls,
+            grounded,
+            view.docstring_example(doc),
+            run.c_tree,
+        )
         body = run.c_bodies.get(item)
         if body is not None:
             from .catalogue import body_digest
 
-            found = self.part("shape_rows").arg_descriptors(calls, run.c_tree, note=run.note)
+            found = self.part("shape_rows").arg_descriptors(
+                calls,
+                run.c_tree,
+                note=run.note,
+            )
             if found:
                 run.shapes[item] = (body_digest(body[1]), found)
         examples = rec.setdefault("examples", {})
@@ -433,7 +489,13 @@ class ExampleChecks:
             },
         )
 
-    def _perturbation(self, item: str, verdict: Any, by_key: dict[CallKey, ExampleCall], rec: dict) -> None:
+    def _perturbation(
+        self,
+        item: str,
+        verdict: Any,
+        by_key: dict[CallKey, ExampleCall],
+        rec: dict,
+    ) -> None:
         run = self.run
 
         def where(key: CallKey) -> str:
@@ -474,13 +536,21 @@ class ExampleChecks:
         for note in getattr(verdict, "notes", []):
             run.note(f"G2 examples: {item}: {note}")
         changes = list(getattr(verdict, "type_changes", None) or [])
-        perturbation = {k: getattr(verdict, k, 0) for k in ("runs", "fields", "judged", "unstable")}
+        perturbation = {
+            k: getattr(verdict, k, 0) for k in ("runs", "fields", "judged", "unstable")
+        }
         perturbation["type_changes"] = changes
         examples = rec.setdefault("examples", {})
         examples["perturbation"] = perturbation
         examples["type_changes"] = len(changes)
         if changes:
-            fixtures = sorted({str(c.get("fixture")) for c in changes if isinstance(c, dict) and c.get("fixture")})
+            fixtures = sorted(
+                {
+                    str(c.get("fixture"))
+                    for c in changes
+                    if isinstance(c, dict) and c.get("fixture")
+                },
+            )
             run.note(
                 f"G2 examples: {item}: {len(changes)} calls return None or another type with unseen fixture "
                 f"values ({', '.join(fixtures[:MAX_NAMED]) or 'no fixture named'}); recorded for review",
@@ -488,7 +558,10 @@ class ExampleChecks:
 
     def _edited(self, item: str) -> bool:
         run = self.run
-        return item in run.c_bodies and run.p_bodies.get(item, ("", ""))[:2] != run.c_bodies[item][:2]
+        return (
+            item in run.c_bodies
+            and run.p_bodies.get(item, ("", ""))[:2] != run.c_bodies[item][:2]
+        )
 
     def _lint(self, it: Any, calls: list[ExampleCall], ground: dict) -> None:
         """The literal lint on an added or changed function, over its grounded arguments' values and its typed
@@ -501,7 +574,11 @@ class ExampleChecks:
             source = (run.c_tree / module_path(item)).read_bytes()
         except OSError:
             return  # an absent module is refused elsewhere
-        extra = [c.params for c in getattr(it, "typed_covers", []) if c.type == "episode" and c.params]
+        extra = [
+            c.params
+            for c in getattr(it, "typed_covers", [])
+            if c.type == "episode" and c.params
+        ]
         cfg = getattr(self.gate, "library_mode", None)
         reasons, notes = self.part("example_evidence").lint(
             item,
@@ -520,7 +597,9 @@ class ExampleChecks:
         """An added or changed function that replaces a computed value under a condition needs examples from
         ``RULE_EPISODES`` episodes."""
         run = self.run
-        found = [i for i in (run.c_report.items if run.c_report else []) if i.item_id == item]
+        found = [
+            i for i in (run.c_report.items if run.c_report else []) if i.item_id == item
+        ]
         if not found:
             return  # an absent item (or an unreadable module) is refused elsewhere
         info = found[0]
@@ -536,10 +615,21 @@ class ExampleChecks:
         for n in notes:
             run.note(n)
 
-    def _docstring(self, it: Any, calls: list[ExampleCall], grounded: set[CallKey]) -> None:
+    def _docstring(
+        self,
+        it: Any,
+        calls: list[ExampleCall],
+        grounded: set[CallKey],
+    ) -> None:
         view = self.part("example_view")
         doc = docstring_of(self.run.c_tree, it.item)
-        for problem in view.docstring_problems(it.item, doc, list(it.tests), calls, grounded):
+        for problem in view.docstring_problems(
+            it.item,
+            doc,
+            list(it.tests),
+            calls,
+            grounded,
+        ):
             self.run.fail("G1", problem, it.item)
 
     # -- G3: behaviour of stored functions ------------------------------------------------------------------
@@ -588,13 +678,18 @@ class ExampleChecks:
                     o is None
                     or (c.outcome, c.raised) != (o.outcome, o.raised)
                     or c.result_sha != o.result_sha
-                    or (c.outcome == "returned" and (c.result_sha is None or o.result_sha is None))
+                    or (
+                        c.outcome == "returned"
+                        and (c.result_sha is None or o.result_sha is None)
+                    )
                 ):
                     differ.append(key)
             if not differ:
                 same.add(item)
                 continue
-            keys = ", ".join(key_text(k) for k in differ[:MAX_NAMED]) + (", …" if len(differ) > MAX_NAMED else "")
+            keys = ", ".join(key_text(k) for k in differ[:MAX_NAMED]) + (
+                ", …" if len(differ) > MAX_NAMED else ""
+            )
             what = (
                 f"{len(differ)} of {len(mine)} calls of it in the parent's tests return, refuse or raise differently "
                 f"on the candidate's library ({keys})"
@@ -633,12 +728,17 @@ class ExampleChecks:
         out: set[str] = set()
         for c in calls:
             out |= {p for p in c.opened if "/tests/data/" in p}
-            out |= {a.path for a in c.args if a.path is not None and "/tests/data/" in a.path}
+            out |= {
+                a.path
+                for a in c.args
+                if a.path is not None and "/tests/data/" in a.path
+            }
         return out
 
     def retained(self, parent_calls: dict[str, list[ExampleCall]]) -> None:
         """Each deleted function's fixtures (from the parent's calls, *parent_calls*: item -> calls) must be used by
-        a remaining function's examples on the candidate (its suites' records, ``run.calls_cand``)."""
+        a remaining function's examples on the candidate (its suites' records, ``run.calls_cand``).
+        """
         run = self.run
         deleted = set(run.man.deleted)
         kept_calls = [
@@ -653,7 +753,9 @@ class ExampleChecks:
             lost = sorted(self.ran_on(parent_calls.get(item, [])) - used)
             if not lost:
                 continue
-            shown = ", ".join(lost[:MAX_NAMED]) + (", …" if len(lost) > MAX_NAMED else "")
+            shown = ", ".join(lost[:MAX_NAMED]) + (
+                ", …" if len(lost) > MAX_NAMED else ""
+            )
             run.fail(
                 "G5",
                 f"{item} is deleted, but the fixtures its examples ran on ({shown}) are used by no remaining "

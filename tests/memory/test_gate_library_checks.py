@@ -11,6 +11,9 @@ from unify.memory import library_checks
 from unify.memory.episodes import Cell
 from unify.memory.library_checks import LibraryChecks, LibraryConfig
 from unify.memory.evidence import EvidenceStore
+from unify.memory.example_calls import MAX_CALL_LINES
+from unify.memory.example_perturb import PERTURB_BUDGET_S
+from unify.memory.library_prompts import UNJUDGED_FIX
 from unify.memory.manifest import ManifestError, parse_manifest
 from unify.memory.procedures import Cover, Outcome, cover_raw, parse_cover
 from unify.memory.sandbox_run import PYTHON
@@ -123,7 +126,9 @@ def test_episode_cover_runs_its_procedure_and_records_it(tmp_path, monkeypatch):
 
 def test_g4_notes_curate_and_never_refuses(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        library_checks, "_index_tokens", lambda tree, examples=None: 5000
+        library_checks,
+        "_index_tokens",
+        lambda tree, examples=None: 5000,
     )
     v = _checks(tmp_path, [])
     v.g4()
@@ -472,7 +477,11 @@ def test_a_check_with_unseen_fixture_values_that_cannot_complete_refuses(tmp_pat
     assert runs == [] and verdict.refused == [] and verdict.special == []
     assert verdict.unjudged == [
         f"[examples:unjudged] {w.ITEM_ID}: the check with unseen fixture values did not complete (the budget ran "
-        "out before the control run); a function is admitted only once it is judged",
+        "out before the control run); a function is admitted only once it is judged: "
+        + UNJUDGED_FIX["budget"].format(
+            budget_s=PERTURB_BUDGET_S,
+            max_calls=MAX_CALL_LINES,
+        ),
     ], verdict.unjudged
 
 

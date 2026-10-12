@@ -26,6 +26,7 @@ from typing import Any, Iterable
 from .code_lint import LINT_MIN, literal_problems, varying_values
 from .example_calls import CallKey, ExampleCall
 from .fixtures import View
+from .library_prompts import EPISODES_FIX
 
 #: Examples need recorded values from at least this many episodes.
 MIN_EXAMPLE_EPISODES = 2
@@ -125,8 +126,8 @@ def evidence_check(
         return [], fields
     ids = ", ".join(sorted(episodes)) or "none"
     return [
-        f"[examples:episodes] {item}'s examples run on recorded values from {len(episodes)} episode(s) ({ids}); "
-        f"cross-episode evidence needs examples on values from at least {MIN_EXAMPLE_EPISODES} episodes",
+        f"[examples:episodes] {item}'s calls that return use recorded values from {len(episodes)} episode(s) "
+        f"({ids}); {EPISODES_FIX}",
     ], fields
 
 
@@ -160,7 +161,8 @@ def lint(
     lint_min: int = LINT_MIN,
 ) -> tuple[list[str], list[str]]:
     """The literal lint on *item* (its module's *source*): (reasons, notes). Its recorded inputs are
-    :func:`lint_values` plus *extra* (the parameters of its typed ``episode`` covers)."""
+    :func:`lint_values` plus *extra* (the parameters of its typed ``episode`` covers).
+    """
     values = lint_values(calls, ground) + [v for v in extra if v]
     if len(values) < 2:
         return [], [

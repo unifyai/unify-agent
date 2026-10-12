@@ -141,9 +141,11 @@ def test_examples_on_values_from_one_episode_are_refused(library_example_world):
     man = w.manifest(fixtures, w.item(source_episodes=["e1"]))
     res = gate().check(mem.head(), w.candidate(mem, files), man)
     assert not res.passed
+    from unify.memory.library_prompts import EPISODES_FIX
+
     assert (
-        f"G2: [examples:episodes] {w.ITEM_ID}'s examples run on recorded values from 1 episode(s) (e1); "
-        "cross-episode evidence needs examples on values from at least 2 episodes"
+        f"G2: [examples:episodes] {w.ITEM_ID}'s calls that return use recorded values from 1 episode(s) (e1); "
+        + EPISODES_FIX
     ) in res.reasons, res.reasons
     assert res.verification[w.ITEM_ID]["examples"]["episodes"] == ["e1"]
 

@@ -7,6 +7,7 @@ import sqlite3
 
 from unify.memory import example_evidence as xe
 from unify.memory import fixtures as fx
+from unify.memory.library_prompts import EPISODES_FIX
 from unify.memory.evidence import EvidenceStore
 from unify.memory.example_calls import ArgRecord, CallKey, ExampleCall
 
@@ -20,7 +21,14 @@ EPISODE = {A: "e1", A2: "e1", B: "e2"}
 
 
 def _entry(path, **extra):
-    return {"kind": "copy", "episode": EPISODE[path], "source": "0", "slice": None, "trust": 1, "sha256": "-"} | extra
+    return {
+        "kind": "copy",
+        "episode": EPISODE[path],
+        "source": "0",
+        "slice": None,
+        "trust": 1,
+        "sha256": "-",
+    } | extra
 
 
 VIEWS = {
@@ -29,7 +37,14 @@ VIEWS = {
 
 
 def arg(name, value, *, sha=None, path=None):
-    return ArgRecord(name, fx.value_digest(value) if sha is None else sha, type(value).__name__, value, False, path)
+    return ArgRecord(
+        name,
+        fx.value_digest(value) if sha is None else sha,
+        type(value).__name__,
+        value,
+        False,
+        path,
+    )
 
 
 def call(ordinal, *args, outcome="returned"):
@@ -56,8 +71,8 @@ def check(calls, derived=None, typed=frozenset()):
 
 def c1(n, ids):
     return [
-        f"[examples:episodes] {ITEM}'s examples run on recorded values from {n} episode(s) ({ids}); cross-episode "
-        "evidence needs examples on values from at least 2 episodes",
+        f"[examples:episodes] {ITEM}'s calls that return use recorded values from {n} episode(s) ({ids}); "
+        + EPISODES_FIX,
     ]
 
 
@@ -66,7 +81,13 @@ def c1(n, ids):
 
 def test_an_argument_equal_to_a_fixture_view_is_copied_a_path_too_and_a_scalar_is_literal():
     got = xe.grounding(
-        call(0, arg("response", VALUES[A]), arg("colour", 3), arg("where", A, path=A), arg("blob", None, sha="")),
+        call(
+            0,
+            arg("response", VALUES[A]),
+            arg("colour", 3),
+            arg("where", A, path=A),
+            arg("blob", None, sha=""),
+        ),
         VIEWS,
         {},
     )
@@ -85,7 +106,11 @@ def test_an_argument_the_perturbation_changed_is_derived_from_that_fixture():
 def test_a_value_from_an_assembled_file_is_grounded_in_its_own_line_s_episode():
     rel = "memory/acct/tests/data/users.me.inputs.jsonl"
     data = "".join(
-        json.dumps({"input": v, "source": {"episode": e, "source": "0", "slice": None}}, sort_keys=True) + "\n"
+        json.dumps(
+            {"input": v, "source": {"episode": e, "source": "0", "slice": None}},
+            sort_keys=True,
+        )
+        + "\n"
         for v, e in (({"user_id": "u-8"}, "e5"), ({"user_id": "u-9"}, "e6"))
     ).encode()
     views = {rel: fx.value_views(rel, data, fx.assembled_entry(data))}
@@ -125,16 +150,29 @@ def test_derived_arguments_and_typed_episode_covers_count():
 
 
 def test_no_grounded_call_names_no_episode():
-    assert check([call(0, arg("colour", 3))]) == (c1(0, "none"), {"episodes": [], "fixtures": []})
+    assert check([call(0, arg("colour", 3))]) == (
+        c1(0, "none"),
+        {"episodes": [], "fixtures": []},
+    )
 
 
 def test_a_backfilled_entry_counts():
     path = "memory/acct/tests/data/old.json"
     data = json.dumps({"user_id": "u-5"}).encode()
-    entry = {"kind": "copy", "episode": "e7", "source": "0", "slice": None, "trust": 1, "sha256": "-",
-             "backfilled": True}
+    entry = {
+        "kind": "copy",
+        "episode": "e7",
+        "source": "0",
+        "slice": None,
+        "trust": 1,
+        "sha256": "-",
+        "backfilled": True,
+    }
     views = dict(VIEWS, **{path: fx.value_views(path, data, entry)})
-    calls = [call(0, arg("response", VALUES[A])), call(1, arg("response", {"user_id": "u-5"}))]
+    calls = [
+        call(0, arg("response", VALUES[A])),
+        call(1, arg("response", {"user_id": "u-5"})),
+    ]
     ground = xe.groundings(calls, views, {})
     assert xe.evidence_check(ITEM, calls, ground, set())[1]["episodes"] == ["e1", "e7"]
 
@@ -171,10 +209,14 @@ def test_the_literal_lint_reads_grounded_arguments_of_accepted_calls():
     assert notes == []
     assert xe.lint(ITEM, SOURCE, calls[:1], ground) == (
         [],
-        [f"G2 literal lint: {ITEM} has fewer than 2 recorded inputs, so nothing varies yet"],
+        [
+            f"G2 literal lint: {ITEM} has fewer than 2 recorded inputs, so nothing varies yet",
+        ],
     )
     # a typed episode cover's parameters are recorded inputs too
-    assert xe.lint(ITEM, SOURCE, calls[:1], ground, extra=[{"response": b}])[0] == reasons
+    assert (
+        xe.lint(ITEM, SOURCE, calls[:1], ground, extra=[{"response": b}])[0] == reasons
+    )
 
 
 def test_the_rule_check_needs_examples_from_the_gate_s_rule_episodes():
@@ -186,14 +228,41 @@ def test_the_rule_check_needs_examples_from_the_gate_s_rule_episodes():
         f"{ITEM} replaces a value it computed from its input under a condition (line 3 of {path}); a function "
         "that encodes such a rule needs examples from at least 2 episodes"
     )
-    assert xe.rule_problems(ITEM, path=path, rule_line=3, unchecked=False, episodes={"e1"}) == ([want], [])
-    assert xe.rule_problems(ITEM, path=path, rule_line=3, unchecked=False, episodes={"e1", "e2"}) == ([], [])
-    assert xe.rule_problems(ITEM, path=path, rule_line=None, unchecked=False, episodes=set()) == ([], [])
-    assert xe.rule_problems(ITEM, path=path, rule_line=3, unchecked=True, episodes=set()) == (
+    assert xe.rule_problems(
+        ITEM,
+        path=path,
+        rule_line=3,
+        unchecked=False,
+        episodes={"e1"},
+    ) == ([want], [])
+    assert xe.rule_problems(
+        ITEM,
+        path=path,
+        rule_line=3,
+        unchecked=False,
+        episodes={"e1", "e2"},
+    ) == ([], [])
+    assert xe.rule_problems(
+        ITEM,
+        path=path,
+        rule_line=None,
+        unchecked=False,
+        episodes=set(),
+    ) == ([], [])
+    assert xe.rule_problems(
+        ITEM,
+        path=path,
+        rule_line=3,
+        unchecked=True,
+        episodes=set(),
+    ) == (
         [],
         [f"G2 rule check: {ITEM} is too large to analyse; not checked"],
     )
-    calls = [call(0, arg("response", VALUES[A])), call(1, arg("response", VALUES[B]), outcome="refused")]
+    calls = [
+        call(0, arg("response", VALUES[A])),
+        call(1, arg("response", VALUES[B]), outcome="refused"),
+    ]
     ground = xe.groundings(calls, VIEWS, {})
     assert xe.rule_episodes(ground) == {"e1", "e2"}
     assert xe.rule_episodes(ground, calls) == {"e1"}
@@ -205,7 +274,10 @@ def test_the_rule_check_needs_examples_from_the_gate_s_rule_episodes():
 def _tables(path):
     con = sqlite3.connect(str(path))
     try:
-        return {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        return {
+            r[0]
+            for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
     finally:
         con.close()
 
@@ -222,10 +294,15 @@ def test_fixture_provenance_is_created_lazily_and_keyed_by_path_and_bytes(tmp_pa
     # the first landed entry for the same bytes is kept
     ev.add_fixture_provenance(A, "aa", _entry(B, sha256="aa"), "c2")
     assert ev.fixture_provenance(A, "aa") == first
-    assert ev.fixture_provenance(A, "bb") is None and ev.fixture_provenance(B, "aa") is None
+    assert (
+        ev.fixture_provenance(A, "bb") is None
+        and ev.fixture_provenance(B, "aa") is None
+    )
     con = sqlite3.connect(str(db))
     try:
-        stored = con.execute("SELECT entry, commit_sha FROM fixture_provenance").fetchall()
+        stored = con.execute(
+            "SELECT entry, commit_sha FROM fixture_provenance",
+        ).fetchall()
     finally:
         con.close()
     assert stored == [(json.dumps(first, sort_keys=True, separators=(",", ":")), "c1")]
@@ -236,8 +313,22 @@ def test_a_kept_row_is_provenance_only_for_the_same_bytes(tmp_path):
     data = json.dumps(VALUES[A]).encode()
     sha = hashlib.sha256(data).hexdigest()
     ev.add_fixture_provenance(A, sha, _entry(A, sha256=sha), "c1")
-    ledger, notes = fx.ledger_for({A: data}, {}, ev.fixture_provenance, lambda e: None, lambda s: b"", [])
+    ledger, notes = fx.ledger_for(
+        {A: data},
+        {},
+        ev.fixture_provenance,
+        lambda e: None,
+        lambda s: b"",
+        [],
+    )
     assert ledger == {A: _entry(A, sha256=sha)} and notes == []
     edited = data + b" "
-    ledger, notes = fx.ledger_for({A: edited}, {}, ev.fixture_provenance, lambda e: None, lambda s: b"", [])
+    ledger, notes = fx.ledger_for(
+        {A: edited},
+        {},
+        ev.fixture_provenance,
+        lambda e: None,
+        lambda s: b"",
+        [],
+    )
     assert ledger == {} and "has no recorded provenance" in notes[0]

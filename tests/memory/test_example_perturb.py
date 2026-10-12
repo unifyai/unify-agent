@@ -19,6 +19,18 @@ from unify.memory.example_perturb import InputFixture, check, input_fixtures
 from unify.memory.fixtures import canonical
 from unify.memory.sandbox_run import PytestOutcome
 
+
+def _fix(cause: str) -> str:
+    """What the unjudged refusal says lets the check complete, for *cause*."""
+    from unify.memory.example_calls import MAX_CALL_LINES
+    from unify.memory.library_prompts import UNJUDGED_FIX
+
+    return UNJUDGED_FIX[cause].format(
+        budget_s=example_perturb.PERTURB_BUDGET_S,
+        max_calls=MAX_CALL_LINES,
+    )
+
+
 ITEM = "memory.acct.users:pick"
 DATA = "memory/acct/tests/data/"
 TEST = "memory/acct/tests/test_users.py"
@@ -33,7 +45,12 @@ def _sha(v: Any) -> str:
 
 
 def _call(
-    fn: Callable, args: dict, *, opened: tuple = (), ordinal: int = 0, line: int = 7
+    fn: Callable,
+    args: dict,
+    *,
+    opened: tuple = (),
+    ordinal: int = 0,
+    line: int = 7,
 ) -> ExampleCall:
     try:
         result, outcome, raised = fn(**args), "returned", None
@@ -69,7 +86,9 @@ class _Runner:
     """A fake test run: *script(tree)* gives the calls; every run's fixture bytes are kept."""
 
     def __init__(
-        self, script: Callable[[Path], list[ExampleCall]], failing: bool = False
+        self,
+        script: Callable[[Path], list[ExampleCall]],
+        failing: bool = False,
     ) -> None:
         self.script, self.failing, self.files = script, failing, []
 
@@ -138,7 +157,8 @@ def test_a_function_that_accepts_only_a_recorded_id_is_refused_naming_the_field_
     tmp_path,
 ):
     tree, fx = _tree(
-        tmp_path, {"row.json": {"id": "E1243", "amount": 12, "note": "paid"}}
+        tmp_path,
+        {"row.json": {"id": "E1243", "amount": 12, "note": "paid"}},
     )
 
     def pick(row):
@@ -148,8 +168,8 @@ def test_a_function_that_accepts_only_a_recorded_id_is_refused_naming_the_field_
 
     runner = _Runner(
         lambda t: [
-            _call(pick, {"row": _load(t, "row.json")}, opened=(DATA + "row.json",))
-        ]
+            _call(pick, {"row": _load(t, "row.json")}, opened=(DATA + "row.json",)),
+        ],
     )
     v = _check(tmp_path, tree, fx, runner)
     assert [(f, name) for _, f, name in v.refused] == [(DATA + "row.json", "id")]
@@ -161,7 +181,7 @@ def test_a_function_that_accepts_only_a_recorded_id_is_refused_naming_the_field_
     ]
     assert v.runs <= example_perturb.PERTURB_MAX_RUNS and v.fields == 3
     assert "E1243" not in " ".join(
-        v.reasons + v.notes
+        v.reasons + v.notes,
     )  # no recorded value in a reason or note
 
 
@@ -173,12 +193,12 @@ def test_a_lookup_table_of_recorded_inputs_raises_and_is_special_cased(tmp_path)
 
     runner = _Runner(
         lambda t: [
-            _call(pick, {"row": _load(t, "row.json")}, opened=(DATA + "row.json",))
-        ]
+            _call(pick, {"row": _load(t, "row.json")}, opened=(DATA + "row.json",)),
+        ],
     )
     v = _check(tmp_path, tree, fx, runner)
     assert [(f, name, raised) for _, f, name, raised in v.special] == [
-        (DATA + "row.json", "id", "KeyError")
+        (DATA + "row.json", "id", "KeyError"),
     ]
     assert v.reasons == [
         f"[examples:special-cased] {ITEM} handles {DATA}row.json only for its recorded values: with id replaced "
@@ -206,7 +226,7 @@ def test_a_join_of_two_fixtures_stays_joined_under_consistent_replacement(tmp_pa
                 pick,
                 {"users": _load(t, "users.json"), "orders": _load(t, "orders.json")},
                 opened=opened,
-            )
+            ),
         ],
     )
     v = _check(tmp_path, tree, fx, runner)
@@ -229,7 +249,7 @@ def test_an_exact_assertion_failing_on_changed_values_is_never_itself_a_refusal(
 
     runner = _Runner(
         lambda t: [
-            _call(pick, {"row": _load(t, "row.json")}, opened=(DATA + "row.json",))
+            _call(pick, {"row": _load(t, "row.json")}, opened=(DATA + "row.json",)),
         ],
         failing=True,
     )
@@ -304,7 +324,7 @@ def test_a_rejection_sourced_fixture_exempts_only_the_field_it_varied(tmp_path):
             _entry(data, "args:0"),
             ("tool", "bank", "pay"),
             rejected,
-        )
+        ),
     ]
 
     def pick(request):
@@ -315,8 +335,8 @@ def test_a_rejection_sourced_fixture_exempts_only_the_field_it_varied(tmp_path):
 
     runner = _Runner(
         lambda t: [
-            _call(pick, {"request": _load(t, "pay.json")}, opened=(DATA + "pay.json",))
-        ]
+            _call(pick, {"request": _load(t, "pay.json")}, opened=(DATA + "pay.json",)),
+        ],
     )
     v = _check(tmp_path, tree, fx, runner, seen=[accepted])
     assert [name for _, _, name in v.refused] == ["kwargs.to"]
@@ -339,7 +359,7 @@ def test_a_declared_month_accepts_unseen_months_and_may_refuse_thirteen(tmp_path
 
     def script(t):
         return [
-            _call(pick, {"rows": _load(t, "rows.json")}, opened=(DATA + "rows.json",))
+            _call(pick, {"rows": _load(t, "rows.json")}, opened=(DATA + "rows.json",)),
         ]
 
     undeclared = _check(tmp_path, tree, fx, _Runner(script))
@@ -347,7 +367,11 @@ def test_a_declared_month_accepts_unseen_months_and_may_refuse_thirteen(tmp_path
 
     runner = _Runner(script)
     declared = _check(
-        tmp_path, tree, fx, runner, field_types={DATA + "rows.json#[].month": "month"}
+        tmp_path,
+        tree,
+        fx,
+        runner,
+        field_types={DATA + "rows.json#[].month": "month"},
     )
     assert declared.reasons == [] and declared.refused == []
     months = [json.loads(run["rows.json"])[0]["month"] for run in runner.files]
@@ -377,7 +401,8 @@ def test_running_out_of_budget_leaves_the_function_unjudged(tmp_path, monkeypatc
         == late.reasons
         == [
             f"[examples:unjudged] {ITEM}: the check with unseen fixture values did not complete (the budget ran out "
-            "before the control run); a function is admitted only once it is judged",
+            "before the control run); a function is admitted only once it is judged: "
+            + _fix("budget"),
         ]
     )
     monkeypatch.setattr(example_perturb, "PERTURB_MAX_RUNS", 1)
@@ -385,7 +410,8 @@ def test_running_out_of_budget_leaves_the_function_unjudged(tmp_path, monkeypatc
     assert short.runs == 1
     assert short.unjudged == [
         f"[examples:unjudged] {ITEM}: the check with unseen fixture values did not complete (the budget ran out "
-        "before the run with every field changed); a function is admitted only once it is judged",
+        "before the run with every field changed); a function is admitted only once it is judged: "
+        + _fix("budget"),
     ]
 
 
@@ -398,7 +424,11 @@ def test_an_incomplete_call_record_of_the_control_leaves_the_function_unjudged(
         return row["amount"]
 
     calls = [
-        _call(pick, {"row": {"id": "E1243", "amount": 12}}, opened=(DATA + "row.json",))
+        _call(
+            pick,
+            {"row": {"id": "E1243", "amount": 12}},
+            opened=(DATA + "row.json",),
+        ),
     ]
 
     def run(tree, files):
@@ -421,7 +451,8 @@ def test_an_incomplete_call_record_of_the_control_leaves_the_function_unjudged(
     )
     assert v.unjudged == [
         f"[examples:unjudged] {ITEM}: the check with unseen fixture values did not complete (the call record of "
-        "the control run is incomplete); a function is admitted only once it is judged",
+        "the control run is incomplete); a function is admitted only once it is judged: "
+        + _fix("record"),
     ]
 
 
@@ -487,8 +518,8 @@ def test_a_lookup_returning_none_on_an_unseen_id_is_recorded_as_a_type_change_no
 
     runner = _Runner(
         lambda t: [
-            _call(pick, {"row": _load(t, "row.json")}, opened=(DATA + "row.json",))
-        ]
+            _call(pick, {"row": _load(t, "row.json")}, opened=(DATA + "row.json",)),
+        ],
     )
     v = _check(tmp_path, tree, fx, runner)
     assert v.refused == [] and v.special == [] and v.reasons == []
@@ -518,8 +549,8 @@ def test_a_large_result_in_a_type_change_is_kept_as_its_digest(tmp_path):
 
     runner = _Runner(
         lambda t: [
-            _call(pick, {"row": _load(t, "row.json")}, opened=(DATA + "row.json",))
-        ]
+            _call(pick, {"row": _load(t, "row.json")}, opened=(DATA + "row.json",)),
+        ],
     )
     v = _check(tmp_path, tree, fx, runner)
     (entry,) = v.type_changes
@@ -528,7 +559,8 @@ def test_a_large_result_in_a_type_change_is_kept_as_its_digest(tmp_path):
 
 def test_input_fixtures_are_the_package_fixtures_the_calls_load(tmp_path):
     tree, _ = _tree(
-        tmp_path, {"a.json": {"id": 1}, "b.json": {"id": 2}, "c.json": {"id": 3}}
+        tmp_path,
+        {"a.json": {"id": 1}, "b.json": {"id": 2}, "c.json": {"id": 3}},
     )
     (tree / "memory/other/tests/data").mkdir(parents=True)
     (tree / "memory/other/tests/data/d.json").write_text("{}")

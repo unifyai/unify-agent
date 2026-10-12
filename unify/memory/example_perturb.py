@@ -69,7 +69,8 @@ VALUE_RECORD_BYTES = 1024  # a value recorded in a type change past this canonic
 _NAMED = 5  # ids named per note or reason; the rest are counted
 
 RunTests = Callable[
-    [Path, list[str]], PytestOutcome
+    [Path, list[str]],
+    PytestOutcome,
 ]  # (tree, test files) -> outcome with .calls
 
 
@@ -89,7 +90,7 @@ class InputFixture:
 @dataclass
 class PerturbVerdict:
     refused: list[tuple[CallKey, str, str]] = field(
-        default_factory=list
+        default_factory=list,
     )  # (call, fixture, field)
     special: list[tuple[CallKey, str, str, str]] = field(
         default_factory=list,
@@ -99,7 +100,7 @@ class PerturbVerdict:
     )  # call -> param -> fixtures whose perturbation changed it
     notes: list[str] = field(default_factory=list)
     unjudged: list[str] = field(
-        default_factory=list
+        default_factory=list,
     )  # why the check did not complete, as reason text
     runs: int = 0
     fields: int = 0
@@ -175,7 +176,7 @@ def input_fixtures(
         data = _fixtures._read_plain(Path(tree) / p)
         if data is None:
             notes.append(
-                f"{item}: input fixture {p} is not a plain file; its values are not perturbed"
+                f"{item}: input fixture {p} is not a plain file; its values are not perturbed",
             )
             continue
         entry = ledger[p]
@@ -290,7 +291,7 @@ class _Doc:
     cases: list  # held_out.FieldCase, one per field, not out-of-domain, in hashed field order
     outs: list  # out-of-domain cases of declared fields
     exempt: list = field(
-        default_factory=list
+        default_factory=list,
     )  # fields a recorded rejection behind the fixture varied
 
 
@@ -351,10 +352,19 @@ def _one_of(names: list[str]) -> str:
     return f"one of {shown}{more}"
 
 
-def _unjudged(item: str, why: str) -> str:
+def _unjudged(item: str, why: str, cause: str) -> str:
+    """The refusal of a function the check could not judge, ending with what lets the check complete (*cause*: a key
+    of :data:`.library_prompts.UNJUDGED_FIX`)."""
+    from .example_calls import MAX_CALL_LINES
+    from .library_prompts import UNJUDGED_FIX
+
+    fix = UNJUDGED_FIX[cause].format(
+        budget_s=PERTURB_BUDGET_S,
+        max_calls=MAX_CALL_LINES,
+    )
     return (
         f"[examples:unjudged] {item}: the check with unseen fixture values did not complete ({why}); "
-        "a function is admitted only once it is judged"
+        f"a function is admitted only once it is judged: {fix}"
     )
 
 
@@ -376,7 +386,10 @@ def _names_changed(call: ExampleCall, changed: set[str]) -> bool:
 
 class _Check:
     def __init__(
-        self, item: str, base: dict[CallKey, ExampleCall], deadline: float
+        self,
+        item: str,
+        base: dict[CallKey, ExampleCall],
+        deadline: float,
     ) -> None:
         self.item, self.base, self.deadline = item, base, deadline
         self.unmatched = 0
@@ -413,7 +426,7 @@ class _Check:
                 continue
             self.judged += 1
             sources = [p for p in origins if p in opened.get(key, set())] or list(
-                origins
+                origins,
             )
             for name in moved:
                 if derived is None:
@@ -471,7 +484,7 @@ def check(
             )
     if not fixtures:
         v.notes.append(
-            f"{item}: no input fixture to change; its examples are not checked with unseen values"
+            f"{item}: no input fixture to change; its examples are not checked with unseen values",
         )
         return v
 
@@ -492,7 +505,7 @@ def check(
                 f"{f.path} has no recorded action behind it; none of its fields is kept as identity or format",
             )
         elif f.family[0] == "tool" and not str(f.entry.get("source", "")).startswith(
-            ("args:", "request:")
+            ("args:", "request:"),
         ):
             fam = ("tool_response", f.family[1], f.family[2])
         else:
@@ -527,10 +540,18 @@ def check(
                 ranged(rfam, od)
     responses = {f for f in families if f[0] == "tool_response"}
     c_env, notes_env = held_out.constancy(
-        pool, families - responses, blob, None, pool_capped=pool_capped
+        pool,
+        families - responses,
+        blob,
+        None,
+        pool_capped=pool_capped,
     )
     c_obs, notes_obs = held_out.constancy(
-        pool, responses, blob, "observation", pool_capped=pool_capped
+        pool,
+        responses,
+        blob,
+        "observation",
+        pool_capped=pool_capped,
     )
     for n in notes_env + [n for n in notes_obs if n not in notes_env]:
         v.notes.append(f"{item}: {n}")
@@ -583,12 +604,14 @@ def check(
         # a field a recorded rejection behind the fixture varied may be refused: it runs on its own
         d.cases = [fc for fc in chosen if fc.name not in exempt(d)]
         d.exempt = [fc for fc in chosen if fc.name in exempt(d)]
-    parsed = list(docs)  # a joined value is replaced in every parsed input fixture, changed fields or not
+    parsed = list(
+        docs,
+    )  # a joined value is replaced in every parsed input fixture, changed fields or not
     docs = [d for d in docs if d.cases or d.outs or d.exempt]
     v.fields = sum(len(d.cases) + len(d.exempt) for d in docs)
     if not docs:
         v.notes.append(
-            f"{item}: no field of its input fixtures can take an unseen value; nothing to judge"
+            f"{item}: no field of its input fixtures can take an unseen value; nothing to judge",
         )
         return v
     docs.sort(key=lambda d: _rank(item, d.fx.path))
@@ -605,7 +628,7 @@ def check(
     )
     if not files:
         v.notes.append(
-            f"{item}: none of its listed tests opens an input fixture; nothing to judge"
+            f"{item}: none of its listed tests opens an input fixture; nothing to judge",
         )
         return v
     opened = {c.key: set(c.opened) | {a.path for a in c.args if a.path} for c in calls}
@@ -631,8 +654,8 @@ def check(
             return "record"
         return outcome.calls
 
-    def fail(why: str) -> PerturbVerdict:
-        text = _unjudged(item, why)
+    def fail(why: str, cause: str) -> PerturbVerdict:
+        text = _unjudged(item, why, cause)
         v.unjudged.append(text)
         v.reasons.append(text)
         return v
@@ -640,11 +663,11 @@ def check(
     # run 0: the control
     control = run({})
     if control == "budget":
-        return fail("the budget ran out before the control run")
+        return fail("the budget ran out before the control run", "budget")
     if control == "failed":
-        return fail("the control run failed")
+        return fail("the control run failed", "failed")
     if control == "record":
-        return fail("the call record of the control run is incomplete")
+        return fail("the call record of the control run is incomplete", "record")
     assert isinstance(control, CallRecord)
     mine = {c.key: c for c in calls if c.item == item and _test_file(c.key) in files}
     again = {c.key: c for c in control.calls if c.item == item}
@@ -657,7 +680,7 @@ def check(
     v.unstable = len(unstable)
     if unstable:
         v.notes.append(
-            f"{len(unstable)} calls of {item} differ between two unperturbed runs; not judged"
+            f"{len(unstable)} calls of {item} differ between two unperturbed runs; not judged",
         )
     base = {
         k: c
@@ -666,7 +689,7 @@ def check(
     }
     if not base:
         v.notes.append(
-            f"{item}: no call of it returned in both unperturbed runs; nothing to judge"
+            f"{item}: no call of it returned in both unperturbed runs; nothing to judge",
         )
         return v
     judge = _Check(item, base, deadline)
@@ -679,12 +702,18 @@ def check(
     if every:
         rec = run(_render(parsed, every))
         if rec == "budget":
-            return fail("the budget ran out before the run with every field changed")
+            return fail(
+                "the budget ran out before the run with every field changed",
+                "budget",
+            )
         if not isinstance(rec, CallRecord):
             return fail(
-                "the call record of the run with every field changed is incomplete"
-                if rec == "record"
-                else "the run with every field changed did not finish"
+                (
+                    "the call record of the run with every field changed is incomplete"
+                    if rec == "record"
+                    else "the run with every field changed did not finish"
+                ),
+                "record" if rec == "record" else "failed",
             )
         group = judge.judge(
             rec,
@@ -698,17 +727,20 @@ def check(
         if judge.judged == 0 and judge.unmatched:
             v.judged = judge.judged
             return fail(
-                f"no call of it could be matched across runs ({judge.unmatched} unmatched)"
+                f"no call of it could be matched across runs ({judge.unmatched} unmatched)",
+                "unmatched",
             )
 
     # narrowing: per fixture, then per field
     narrowed: dict[
-        CallKey, tuple[str, str, ExampleCall, str]
+        CallKey,
+        tuple[str, str, ExampleCall, str],
     ] = {}  # key -> (fixture, field, call, kind)
     pending_fixture: dict[CallKey, list[str]] = {}
     out_of_runs = False
     tried: dict[
-        str, set[str]
+        str,
+        set[str],
     ] = {}  # fixture -> fields run alone (a finding not narrowed is in none of them)
     per_fixture: dict[str, dict[CallKey, _Finding]] = {}
     with_cases = [d for d in docs if d.cases]
@@ -780,7 +812,13 @@ def check(
                 out_of_runs = True
                 break
             got = judge.judge(
-                rec, set(rendered), [path], [(path, fc.name)], None, set(), opened
+                rec,
+                set(rendered),
+                [path],
+                [(path, fc.name)],
+                None,
+                set(),
+                opened,
             )
             tried.setdefault(path, set()).add(fc.name)
             for k in keys:
@@ -814,7 +852,7 @@ def check(
             or [fc.name for p in cands for fc in by_path[p].cases],
         )
         found.append(
-            (key, _one_of(cands), fname, finding.call, finding.kind, None, False)
+            (key, _one_of(cands), fname, finding.call, finding.kind, None, False),
         )
     ex = [(d, fc) for d in docs for fc in d.exempt]
     if ex:
@@ -829,7 +867,13 @@ def check(
         else:
             fields_run = [(d.fx.path, fc.name) for d, fc in ex]
             got = judge.judge(
-                rec, set(rendered), ex_paths, fields_run, None, set(), opened
+                rec,
+                set(rendered),
+                ex_paths,
+                fields_run,
+                None,
+                set(),
+                opened,
             )
             for key in sorted(got):
                 case = ex[0][1] if len(ex) == 1 else None
@@ -842,7 +886,7 @@ def check(
                         got[key].kind,
                         case,
                         True,
-                    )
+                    ),
                 )
 
     grouped: dict[tuple[str, str, str, str], list[CallKey]] = {}
@@ -870,10 +914,14 @@ def check(
                 "fixture": path,
                 "field": fname,
                 "before": _value_record(
-                    before.result_type, before.result_json, before.result_sha
+                    before.result_type,
+                    before.result_json,
+                    before.result_sha,
                 ),
                 "after": _value_record(
-                    after.result_type, after.result_json, after.result_sha
+                    after.result_type,
+                    after.result_json,
+                    after.result_sha,
                 ),
                 "field_before": None,
                 "field_after": None,
@@ -882,10 +930,14 @@ def check(
                 old_value = _value_at(by_path[path].doc, case.changes[0][0])
                 new_value = case.changes[0][1]
                 entry["field_before"] = _value_record(
-                    type(old_value).__name__, old_value, None
+                    type(old_value).__name__,
+                    old_value,
+                    None,
                 )
                 entry["field_after"] = _value_record(
-                    type(new_value).__name__, new_value, None
+                    type(new_value).__name__,
+                    new_value,
+                    None,
                 )
             v.type_changes.append(entry)
             grouped.setdefault(("type", path, fname, ""), []).append(key)
@@ -943,7 +995,7 @@ def check(
                 continue
             if _moved(before, after) or _names_changed(after, set(rendered)):
                 accepted_out.add(
-                    _one_of([f"{fc.name[:80]} of {d.fx.path}" for d, fc in chosen])
+                    _one_of([f"{fc.name[:80]} of {d.fx.path}" for d, fc in chosen]),
                 )
     if accepted_out:
         v.notes.append(
@@ -975,6 +1027,6 @@ def check(
     v.judged = judge.judged
     if v.judged == 0:
         v.notes.append(
-            f"{item}: no call of it took a changed value; nothing was judged"
+            f"{item}: no call of it took a changed value; nothing was judged",
         )
     return v
