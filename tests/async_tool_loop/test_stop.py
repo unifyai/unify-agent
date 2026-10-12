@@ -15,6 +15,7 @@ from unify.common._async_tool import loop as _loop
 from unify.common.async_tool_loop import AsyncToolLoopHandle, start_async_tool_loop
 from unify.common.llm_client import new_llm_client
 from tests.baked_defaults import as_shipped  # noqa: F401
+from tests.scripted_model import ScriptedModel, reply, scripted
 
 _STOPPED = "processed stopped early, no result"
 
@@ -152,28 +153,28 @@ async def test_stop_with_a_tool_running_sends_no_further_request(
 
 # as_shipped: deleted in step 5 (steer(stop) of steerable handles)
 @pytest.mark.usefixtures("as_shipped")
-@pytest.mark.llm_call
 @pytest.mark.asyncio
 async def test_stop_while_persist_waits_logs_the_stop(
     llm_config,
-    monkeypatch,
     unify_logs,
 ):
     """A persist loop stopped while it waits for the next interjection logs
     the stop and ends without another request."""
-    requests = _count_llm_requests(monkeypatch)
-    handle = start_async_tool_loop(
-        new_llm_client(**llm_config),
-        "Say 'ready' and nothing else.",
-        {},
-        persist=True,
-    )
-    # The loop reports its turn as a response when it starts to wait.
-    notification = await asyncio.wait_for(handle.next_notification(), timeout=120)
-    assert notification["type"] == "response"
+    model = ScriptedModel(actor=[reply("ready")])
+    with scripted(model):
+        handle = start_async_tool_loop(
+            new_llm_client(**llm_config),
+            "Say 'ready' and nothing else.",
+            {},
+            persist=True,
+        )
+        # The loop reports its turn as a response when it starts to wait.
+        notification = await asyncio.wait_for(handle.next_notification(), timeout=30)
+        assert notification["type"] == "response"
+        assert notification["content"] == "ready"
 
-    await handle.stop("done for now")
+        await handle.stop("done for now")
 
-    assert await handle.result() == _STOPPED
-    assert requests["n"] == 1
+        assert await handle.result() == _STOPPED
     assert "Stop requested – reason: done for now" in unify_logs.text
+    assert model.kinds() == ["actor"]
