@@ -192,9 +192,7 @@ def test_similar_dispatch_returns_the_handlers_answer(tmp_path, monkeypatch):
     def handle(args, ctx):
         seen.append((args, ctx))
         if args.get("episode") == "e9":
-            return "refused: " + similar.SPEC.refusals["unknown_episode"].format(
-                episode="e9",
-            )
+            return similar._refuse("unknown_episode", episode="e9")
         return "whole cell: e2 cell 0 (1 time)"
 
     monkeypatch.setattr(similar, "handle", handle)

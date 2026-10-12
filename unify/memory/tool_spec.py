@@ -86,6 +86,9 @@ def tools_section(role: str, flags: frozenset[str] = frozenset()) -> str:
 
 #: Answers the pass loop gives on any tool (limits, unknown tools, malformed calls), by stable form code. A text
 #: starting with "not run: " is a call that was not run (it can be sent again); any other is a refusal.
+#: How every refusal text that is not a "not run" answer starts.
+REFUSED = "refused: "
+
 GENERAL_REFUSALS: dict[str, str] = {
     "unknown_tool": "unknown tool {name!r}; your tools: {tools}",
     "bad_arguments": "{reason}",
@@ -157,7 +160,7 @@ def refusal(tool: str, form: str, **fields: object) -> Refusal:
         raise KeyError(f"{tool}: no refusal form {form!r}")
     text = template.format(**fields)
     if not text.startswith(KEPT_STARTS):
-        text = "refused: " + text
+        text = REFUSED + text
     return Refusal(text, tool, form)
 
 

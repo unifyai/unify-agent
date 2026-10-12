@@ -47,6 +47,7 @@ from typing import Callable
 
 from . import mining_behaviour as _mb
 from .mining import successful
+from .tool_spec import REFUSED
 
 _ITEM = re.compile(
     r"memory\.(?P<pkg>[a-z_][a-z0-9_]*)\.(?P<mod>[a-z_][a-z0-9_]*):(?P<fn>[A-Za-z_][A-Za-z0-9_]*)\Z",
@@ -271,7 +272,7 @@ def summary(results: list[dict]) -> dict:
             "verified" if v == "verified"
             else "differs" if v == "differs"
             else "unknown" if v.startswith("unknown:")
-            else "refused" if v.startswith("refused:")
+            else "refused" if v.startswith(REFUSED)  # results recorded before replay stopped refusing
             else "not_replayable"
         )  # fmt: skip
         out[key] += 1

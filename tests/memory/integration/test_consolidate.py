@@ -440,6 +440,7 @@ def test_events_start_and_end_with_decimal_money_and_the_inherited_effort(
         "reason_codes",
         "items_merged",
         "items_refused",
+        "episodes",
     }
     assert end["phase"] == "end" and end["pass_id"] == "e1.p0"
     assert end["usd"] == "0.0000001" and MONEY.match(end["usd"])
