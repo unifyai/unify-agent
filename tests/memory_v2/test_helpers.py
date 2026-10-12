@@ -183,16 +183,21 @@ def test_the_helper_box_is_ro_ro_rw_and_holds_only_what_the_task_needs(
     (call,) = fake_box
     assert sorted(call["ro"].values()) == ["/cell", "/inputs", "/memory"]
     assert list(call["rw"].values()) == ["/work"] and call["cwd"] == "/work"
-    assert call["env"] == {"PYTHONPATH": "/inputs:/memory"}
+    # the open log's pipe is the one extra descriptor and variable; the interpreter skips the user site
+    (fd,) = call["pass_fds"]
+    assert call["env"] == {"PYTHONPATH": "/inputs:/memory", "MEMORY_BOX_OPEN_LOG": f"fd:{fd}"}
+    assert call["argv"][-2:] == ["-s", "/cell/code.py"]
     assert (
         f"--fsize={helpers.WORK_FILE_BYTES}:{helpers.WORK_FILE_BYTES}" in call["argv"]
     )
-    # /inputs: the named episode's record and the shared blocks; no pool, gate, drafts or other helpers' output
+    # /inputs: the named episode's record, the shared blocks and the open-log hook; no pool, gate, drafts or other
+    # helpers' output
     assert call["listing"]["/inputs"] == [
         "episodes",
         "episodes/e1.json",
         "shared",
         "shared/b1.txt",
+        "sitecustomize.py",
     ]
     # /memory: the library as the writer sees it, without the writer's .pass
     assert call["listing"]["/memory"] == ["INDEX.md"]
