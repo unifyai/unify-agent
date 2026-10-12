@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
 import contextvars
 import copy
 import hashlib
@@ -61,6 +62,7 @@ from .gitio import GitError, Repo
 from .index import build_index
 from .memory_repo import items as memory_items
 from . import curate as _curate
+from . import messaging as _messaging
 from . import qa as _qa
 from . import repair as _repair
 from . import views as _views
@@ -90,18 +92,6 @@ EXPORT_TOTAL_BYTES = 32 * 1024**2
 MAX_CHECKS = 5
 # library mode: a pass with no USD cap (PassConfig.max_usd None) has no count limits either; this many model
 # and check calls end a runaway pass, labelled operational (a safety stop), never a design budget
-#: The end of every pass is the writer's own: helpers still working when it begins stop and hand back what they
-#: staged, so the writer always has time to check and finish. Its length: this share of the pass's wall clock, and
-#: never less than FINISH_WINDOW_MIN_S. Stated in the brief and in each delegate reply.
-FINISH_WINDOW_SHARE = 0.25
-FINISH_WINDOW_MIN_S = 300.0
-
-
-def finish_window_s(wall_s: float) -> float:
-    """The finishing window of a pass whose wall clock is *wall_s* seconds."""
-    return max(FINISH_WINDOW_MIN_S, FINISH_WINDOW_SHARE * float(wall_s))
-
-
 STEP_GUARD = 500
 _CHECK_REASONS = 20
 _CHECK_REASON_CHARS = 200
@@ -503,9 +493,14 @@ def _agent_tool_json(agent: str) -> list[dict]:
     return agent_profiles.tool_json(agent)
 
 
+def _messaging_extra(info: dict) -> dict:
+    """The event fields of a delegate or record tool call: its ``messaging`` object (``helper`` names the helper a
+    delegate or stop is about)."""
+    return {"messaging": dict(info)}
+
+
 def _delegate_reply(text: str) -> "_wt.Reply":
-    """A ``delegate`` call's reply: the helper's report, or the refusal that started no helper. The helper's staged
-    files are listed in the text under ``/inputs/helpers/<call>/``."""
+    """A ``delegate`` or record tool call's reply: what it did, or the refusal (its own form code) that did nothing."""
     form = _form_of(text)
     return _wt.Reply(text, "refused" if form else "ok", form)
 
@@ -1188,8 +1183,10 @@ def transcript_lines(
     tools: list | None = None,
     originals: Mapping[int, str] | None = None,
     store: Callable[[bytes], str] | None = None,
+    label: Mapping[str, str] | None = None,
 ) -> list[str]:
     """The writer's message list as JSON lines ``{"pass_id", "i", "message"}``: redacted first, then bounded.
+    *label* (for a helper: ``{"agent": "helper", "helper": <name>}``) is added to every line.
 
     The first line is a header ``{"pass_id", "header": {...}}`` naming the brief (the system message) and the tool
     JSON by sha256 with their sizes. With *store* (a content-addressed store such as the gate's blob store) their
@@ -1208,6 +1205,7 @@ def transcript_lines(
     """
     red = redactor if redactor is not None else Redactor()
     originals = originals or {}
+    label = dict(label or {})
     marker_room = 200
     lines: list[str] = []
     used = 0
@@ -1255,7 +1253,7 @@ def transcript_lines(
             header |= text_ref("tools", tools_text, inline)
         if not header:
             return None
-        return json.dumps({"pass_id": pass_id, "header": header}, sort_keys=True)
+        return json.dumps({"pass_id": pass_id, "header": header, **label}, sort_keys=True)
 
     line = header_line(True)
     if (
@@ -1293,7 +1291,7 @@ def transcript_lines(
             whole = i == first_user or (i == 0 and isinstance(brief, str))
             msg = plain if whole else _plain(plain, string_chars)
             line = json.dumps(
-                {"pass_id": pass_id, "i": i, "message": msg, **extra},
+                {"pass_id": pass_id, "i": i, "message": msg, **extra, **label},
                 sort_keys=True,
             )
         except (RecursionError, ValueError, TypeError):
@@ -1302,13 +1300,39 @@ def transcript_lines(
                     "pass_id": pass_id,
                     "i": i,
                     "message": f"(unserialisable {type(m).__name__})",
+                    **label,
                 },
             )
         size = len(line.encode("utf-8")) + 1
         if used + size > max_bytes - marker_room:
             lines.append(
-                json.dumps({"pass_id": pass_id, "truncated": len(messages) - i}),
+                json.dumps({"pass_id": pass_id, "truncated": len(messages) - i, **label}),
             )
+            break
+        lines.append(line)
+        used += size
+    return lines
+
+
+def record_lines(
+    entries: list,
+    pass_id: str,
+    redactor: Redactor | None = None,
+    *,
+    max_bytes: int = TRANSCRIPT_MAX_BYTES,
+    string_chars: int = TRANSCRIPT_STRING_CHARS,
+) -> list[str]:
+    """The pass record's entries (:mod:`.messaging`) as JSON lines ``{"pass_id", "record": {seq, ts, author, kind,
+    text, mentions}}``, redacted and bounded as :func:`transcript_lines` bounds a transcript."""
+    red = redactor if redactor is not None else Redactor()
+    lines: list[str] = []
+    used = 0
+    for n, e in enumerate(entries):
+        entry = _plain(_scrub(red.obj(e.to_dict())), string_chars)
+        line = json.dumps({"pass_id": pass_id, "record": entry}, sort_keys=True)
+        size = len(line.encode("utf-8")) + 1
+        if used + size > max_bytes - 200:
+            lines.append(json.dumps({"pass_id": pass_id, "record_truncated": len(entries) - n}))
             break
         lines.append(line)
         used += size
@@ -1904,6 +1928,8 @@ class WriterPass:
         self._delegate_ctx: Any = (
             None  # the current pass run's helpers.DelegateContext, made at its first delegate
         )
+        # the current pass run's record (messaging.PassRecord): the writer or curator and every helper it starts
+        self._pass_record: Any = None
         self.load, self.turn, self.cfg = load, model_turn, config
         self.redactor = redactor  # for the transcript: the run's registered secrets
         # the last run's message list, kept for :meth:`transcript`
@@ -1968,14 +1994,31 @@ class WriterPass:
         tool JSON by sha256 (their bytes in the gate's blob store when it has one), the first user message uncut,
         and each compacted tool result as it was before the compaction."""
         blobs = getattr(self.gate, "blobs", None)
-        return transcript_lines(
+        store = blobs.put if isinstance(blobs, BlobStore) else None
+        lines = transcript_lines(
             self.messages,
             pass_id,
             self.redactor,
             tools=self._tools_json,
             originals=self._precompact,
-            store=blobs.put if isinstance(blobs, BlobStore) else None,
+            store=store,
         )
+        # each helper's own transcript, bounded the same way, every line naming the helper; then the pass's record
+        ctx = self._delegate_ctx
+        if ctx is not None and ctx.pass_id == pass_id:
+            for name, (messages, tools) in ctx.transcripts.items():
+                lines += transcript_lines(
+                    messages,
+                    pass_id,
+                    self.redactor,
+                    tools=tools,
+                    store=store,
+                    label={"agent": "helper", "helper": name},
+                )
+        pr = self._pass_record
+        if pr is not None and pr.record.entries:
+            lines += record_lines(list(pr.record.entries), pass_id, self.redactor)
+        return lines
 
     def _stage_context(
         self,
@@ -2273,34 +2316,18 @@ class WriterPass:
         self._events_file = path
         return path
 
-    async def _delegate_turn(
+    def _helper_context(
         self,
-        tool_calls: list,
-        first: int,
         pass_id: str,
         inputs: Path,
         box: Path,
         scratch: Path,
         deadline: float,
         spend: Any,
-    ) -> dict[int, str]:
-        """Every ``delegate`` call of this turn from index *first* up to the turn's ``finish`` (if any), run
-        together (:func:`.helpers.handle_turn`); call index -> reply. Unreadable arguments are left to the loop.
-        """
+    ) -> Any:
+        """This pass run's delegate context (made at its first delegate), on the pass's own record."""
         from . import helpers as _helpers
 
-        picked: list[tuple[int, dict]] = []
-        for i in range(first, len(tool_calls)):
-            tc = tool_calls[i]
-            fn = tc.get("function") if isinstance(tc, dict) else None
-            fn = fn if isinstance(fn, dict) else {}
-            if fn.get("name") == "finish":
-                break
-            if fn.get("name") != "delegate":
-                continue
-            args, _ = _parse_args(fn.get("arguments"))
-            if args is not None:
-                picked.append((i, args))
         # one context per pass run (its spend object is the run's own), so call ids never repeat within a pass
         ctx = self._delegate_ctx
         if ctx is None or ctx.pass_id != pass_id or ctx.spend is not spend:
@@ -2310,28 +2337,61 @@ class WriterPass:
                 inputs=inputs,
                 box=box,
                 scratch=scratch,
-                # helpers stop where the writer's finishing window begins; a call already running may finish
-                deadline=deadline - finish_window_s(self.cfg.deadline_s),
-                hard_deadline=deadline,
+                deadline=deadline,
                 spend=spend,
                 events=self._events_path(pass_id),
+                pass_record=self._pass_record,
             )
             if self.cfg.similar_index:
                 ctx.similar = self._similar_async
             self._delegate_ctx = ctx
-        replies = await _helpers.handle_turn([a for _, a in picked], ctx)
-        # every answer states the time left, so the writer knows how much of its pass remains
-        now = time.monotonic()
-        left, window = max(0, int(deadline - now)), max(0, int(ctx.deadline - now))
-        timing = (
-            f"\n{left} s of this pass remain; the finishing window, yours alone, begins in {window} s."
-            if window
-            else f"\n{left} s of this pass remain, all of them yours: the finishing window has begun."
+        return ctx
+
+    async def _close_record(self) -> None:
+        """End every helper of this pass run still running (:func:`.messaging.close`); finishing and the end of the
+        writer's loop call it."""
+        pr = self._pass_record
+        if pr is not None:
+            await _messaging.close(pr, f"the {pr.root} finished")
+
+    async def _end_record(self) -> None:
+        """Every way out of the pass: end its helpers, then write the ``pass_end`` event with ``helpers_closed``
+        (each helper: ended or still running) and where the record is."""
+        pr = self._pass_record
+        if pr is None:
+            return
+        await self._close_record()
+        self._write_event(
+            pr.pass_id,
+            {
+                "event": "pass_end",
+                "agent": pr.root,
+                "name": pr.root,
+                "pass_id": pr.pass_id,
+                "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "helpers_closed": dict(pr.closed),
+                "helpers": pr.agents()[1:],
+                "record": str(pr.log.path) if pr.log is not None else None,
+                "record_error": getattr(self, "_record_error", None),
+                "record_entries": len(pr.record.entries),
+            },
         )
-        return {
-            i: (r if _form_of(r) else str(r) + timing)
-            for (i, _), r in zip(picked, replies)
-        }
+
+    def _record_log(self, pass_id: str) -> Any:
+        """``<pass_record_root>/<pass id>/record.jsonl`` (created new) for the pass's record, or None when the pass
+        keeps no record folder or the file cannot be made (the record then lives in memory only, and the pass end
+        event says so with ``record: null``)."""
+        from unify.agents.log import RecordLog
+
+        self._record_error = None
+        root = getattr(self.cfg, "pass_record_root", None)
+        if not root:
+            return None
+        try:
+            return RecordLog(Path(root) / pass_id / "record.jsonl", create=True)
+        except OSError as exc:
+            self._record_error = type(exc).__name__
+            return None
 
     def _replay_call(self, args: dict, box: Path, tmp: Path) -> str:
         """Verify one manifest item's ``replaces`` by replay (:mod:`.replay_verify`); write the verified instances
@@ -2811,8 +2871,10 @@ class WriterPass:
         raw_args: object,
         reply: "_wt.Reply | None",
         usage: dict | None,
+        extra: dict | None = None,
     ) -> None:
-        """One ``tool_call`` row of tool-events.jsonl, from the tool layer's own reply (never from transcript text)."""
+        """One ``tool_call`` row of tool-events.jsonl, from the tool layer's own reply (never from transcript text),
+        appended when the call ends; *extra* adds fields (delegate and the record's tools: ``messaging``)."""
         reply = reply or _wt.Reply("")
         args_text = (
             raw_args if isinstance(raw_args, str) else json.dumps(raw_args, default=str)
@@ -2821,6 +2883,8 @@ class WriterPass:
         row = {
             "event": "tool_call",
             "agent": "curator" if self._role == "curate" else "writer",
+            # the agent's name on the pass's record
+            "name": "curator" if self._role == "curate" else "writer",
             "pass_id": pass_id,
             "call": len(self.tool_events),
             "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -2836,6 +2900,7 @@ class WriterPass:
             "result_bytes": text_bytes,
             "result_truncated": "; next: offset=" in reply.text,
             "usage": usage,
+            **(extra or {}),
         }
         opens: list[dict] = []
         if tool == "execute_code":
@@ -3243,6 +3308,7 @@ class WriterPass:
         self.final_manifest = None
         self._shared = {}
         self._helper_rows = []
+        self._pass_record = None
         self._staging_counts = None
         self._inputs_dir = None
         self._pool, self._pool_open, self._pool_error = None, None, None
@@ -3344,6 +3410,15 @@ class WriterPass:
             Decimal(0) if uncapped else (cap / max_calls if max_calls > 0 else cap)
         )
         deadline = time.monotonic() + float(self.cfg.deadline_s)
+        if self.cfg.library_mode:
+            # one record per pass for its agent and every helper it starts (messaging.py), kept beside the pass's
+            # events when the pass has a record folder
+            self._pass_record = _messaging.PassRecord(
+                root="curator" if self._role == "curate" else "writer",
+                deadline=deadline,
+                log=self._record_log(pass_id),
+                pass_id=pass_id,
+            )
         calls, checks, summary = 0, 0, ""
         # repair rounds (repair.py states the budget rule)
         round_no = 0  # the round the writer is in: 0 until its first accepted finish
@@ -3459,13 +3534,13 @@ class WriterPass:
                 )
             return o
 
-        with (
-            self.mem.temp_checkout() as wt,
-            tempfile.TemporaryDirectory(
-                prefix="memory-writer-",
-            ) as tmp,
-            _KeepOnCancel(self, parent, pass_id),
-        ):
+        async with contextlib.AsyncExitStack() as scope:
+            wt = scope.enter_context(self.mem.temp_checkout())
+            tmp = scope.enter_context(tempfile.TemporaryDirectory(prefix="memory-writer-"))
+            scope.enter_context(_KeepOnCancel(self, parent, pass_id))
+            # on every way out (finish, deadline, error, cancellation) no helper outlives the pass: they end before
+            # the pass's directories go
+            scope.push_async_callback(self._end_record)
             box, inputs, cells = (Path(tmp) / n for n in ("memory", "inputs", "cells"))
             box.mkdir()
             cells.mkdir()
@@ -3496,8 +3571,6 @@ class WriterPass:
                 similar=bool(self.cfg.similar_index),
             )
             tool_names = [t["function"]["name"] for t in tools]
-            # the writer's delegate calls of the current turn, run together at the first one (call index -> reply)
-            delegated: dict[int, str] = {}
             if self.cfg.library_mode:
                 # the writer-chosen tree with its generated helper and index; no channel
                 # folders and no library.json (the gate inputs replace previous_gate.json)
@@ -3898,6 +3971,8 @@ class WriterPass:
                     name = fn.get("name")
                     args, content = _parse_args(fn.get("arguments"))
                     reply: _wt.Reply | None = None
+                    # delegate and the record's tools: the event row's `messaging` object (and the helper's name)
+                    event_extra: dict | None = None
                     if args is None:
                         reply = _wt.general("bad_arguments", reason=str(content))
                     elif finished:
@@ -3931,6 +4006,8 @@ class WriterPass:
                             summary, finished = str(args.get("summary", "")), True
                             phase.update(finish_accepted=True, nothing_to_store=empty)
                             self.final_manifest = _accepted_manifest(box)
+                            # finishing ends every helper still running; what each staged is kept
+                            await self._close_record()
                             content = "ok"
                             reply = _wt.Reply(
                                 content,
@@ -4004,20 +4081,19 @@ class WriterPass:
                     elif library and name == "similar":
                         reply = self._similar_call(args)
                     elif library and name == "delegate":
-                        if n not in delegated:
-                            delegated.update(
-                                await self._delegate_turn(
-                                    tool_calls,
-                                    n,
-                                    pass_id,
-                                    inputs,
-                                    box,
-                                    Path(tmp),
-                                    deadline,
-                                    spend,
-                                ),
-                            )
-                        reply = _delegate_reply(delegated.pop(n))
+                        from . import helpers as _helpers
+
+                        ctx = self._helper_context(pass_id, inputs, box, Path(tmp), deadline, spend)
+                        info: dict = {}
+                        reply = _delegate_reply(await _helpers.handle(args, ctx, info))
+                        event_extra = _messaging_extra(info)
+                    elif library and name in _messaging.NAMES:
+                        # the record's tools (send, messages, wait, who, reply, stop): messaging.py
+                        info = {}
+                        reply = _delegate_reply(
+                            await _messaging.call(self._pass_record, self._pass_record.root, name, args, info),
+                        )
+                        event_extra = _messaging_extra(info)
                     elif library and name == "fixture":
                         calls += 1  # a writer action, against the step guard
                         writing()
@@ -4089,7 +4165,7 @@ class WriterPass:
                             "content": str(content),
                         },
                     )
-                    self._event(pass_id, name, fn.get("arguments"), reply, turn_usage)
+                    self._event(pass_id, name, fn.get("arguments"), reply, turn_usage, event_extra)
                     turn_usage = None
                 if not tool_calls:
                     messages.append(
@@ -4108,6 +4184,8 @@ class WriterPass:
                     finished = (
                         False  # a repair round: the loop goes on under the same caps
                     )
+            # the loop has ended: every helper still running ends now, so its row is in the outcome
+            await self._close_record()
             if (
                 not finished
                 and stop is None

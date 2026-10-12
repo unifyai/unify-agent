@@ -126,15 +126,11 @@ def test_the_write_brief_states_the_material_and_the_reach_as_facts():
         similar=True,
     )
     with_helpers = lp.write_brief_now(helper=True)
-    assert (
-        writer_pass.FINISH_WINDOW_SHARE == 0.25
-        and "its last quarter (at least 300 s)" in with_helpers
-    )
-    assert "finishing window" not in lp.write_brief_now()
-    assert (
-        writer_pass.finish_window_s(2100) == 525
-        and writer_pass.finish_window_s(600) == 300
-    )
+    # the wall clock is a fact; there is no finishing window and no time allowance for helpers
+    assert "the helpers you start work within the same wall clock" in with_helpers
+    for brief in (with_helpers, lp.write_brief_now()):
+        assert "finishing window" not in brief and "last quarter" not in brief
+    assert not hasattr(writer_pass, "finish_window_s") and not hasattr(writer_pass, "FINISH_WINDOW_SHARE")
     _template(
         with_helpers,
     )  # the manifest template still parses out of the changed brief

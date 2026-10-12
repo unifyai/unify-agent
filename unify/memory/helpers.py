@@ -9,11 +9,12 @@ What a helper can do:
 * read every recorded, settled episode by id (``overview``, ``read_episode``; ids resolve only through the
   recorded-episode index, never by joining a path, and through the writer's own loader, so the same visibility
   filter as the batch export applies), starting from the episodes the writer named;
-* ``read`` and ``grep`` its ``/inputs`` (the named episodes' records and the shared request blocks only: never
-  the writer's pool, gate results, drafts or other helpers' output) and ``/memory`` (a copy of the library as the
-  writer sees it);
+* ``read`` and ``grep`` ``/inputs`` (the writer's own inputs, read-only and live: staging, pool, batch map,
+  drafts, gate results, shared request blocks and other helpers' output), ``/task`` (the named episodes'
+  records) and ``/memory`` (a copy of the library as the writer sees it);
 * ``execute_code`` in its own box: the writer's box profile (bubblewrap, no network, cleared environment,
-  seccomp, rlimits), ``/inputs`` and ``/memory`` read-only and a private, size-bounded ``/work`` read-write;
+  seccomp, rlimits), ``/inputs``, ``/task`` and ``/memory`` read-only and a private, size-bounded ``/work``
+  read-write;
 * ``stage(path, text)`` one file in the fork's staging format (``candidates/<name>.py``, ``cases/<name>.json``,
   ``notes.md``), written host-side with ``O_EXCL | O_NOFOLLOW`` into a fresh directory for this call;
 * ``done(summary, claims)`` to hand back: every claim names the episode parts it rests on
@@ -30,18 +31,22 @@ read the parts it points to.
 
 Model calls: a helper's model calls are made host-side, by the writer's process, through the turn factory the
 pass is given (the key proxy's helper lane when the run has one), never from inside a helper's box, which holds no
-credential. Helper model calls are serialised (one in flight per pass, across all of its helpers), so the helper
-lane's ledger needs room for one call's reserve at a time; their tools still run concurrently. Unknown cost is
-counted as unknown (fail closed) on the pass's spend and in ``helper.json``. Several ``delegate`` calls of one
-writer turn run concurrently (:func:`handle_turn`), and helper time counts against the pass's wall clock.
+credential. Helpers run at the same time and so do their model calls. Unknown cost is counted as unknown (fail
+closed) on the pass's spend and in ``helper.json``.
 
-A helper's failure never fails the pass: :func:`handle` always returns a reply for the writer.
+Messaging (:mod:`.messaging`): ``delegate`` starts the helper through the pass record's pool and returns at once with
+its name (its call id, ``call-<n>``). The helper and the writer talk on the pass's record (``send``, ``ask``,
+``messages``, ``wait``, ``who``); the helper's ``done`` text is its last entry. A helper ends when it calls done,
+when the writer stops it, when the writer finishes (a model call in flight then finishes first and no new one
+starts) or at the pass's wall clock, the outer backstop. Whichever way it ends, ``helper.json`` and its staged
+files are written and kept.
+
+A helper's failure never fails the pass: its last entry on the record says what happened.
 """
 
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import hashlib
 import inspect
 import json
@@ -57,14 +62,17 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable
 
+from unify.agents.pool import Pool
+
 from . import batch_map as _bm
+from . import messaging as _messaging
 from . import views as _views
 from . import writer_tools as _wt
 from .integration.fork_worker import QUOTA_BYTES, QUOTA_FILES, allowed
 from .library_prompts import CANDIDATE_CONTRACT
 from . import sandbox_run as _sandbox
 from .sandbox_run import PRLIMIT, PYTHON, run_confined
-from .tool_spec import GENERAL, ToolSpec, form_of, refusal
+from .tool_spec import GENERAL, REFUSED, Refusal, ToolSpec, form_of, refusal
 
 #: The directory under the run's state dir that holds every helper's output (``<pass>/<call>/``).
 HELPERS_DIR = "memory-helpers"
@@ -93,11 +101,18 @@ HELPER_BRIEF = (
     "What you can reach:\n"
     "- `overview(episode)` and `read_episode(episode, parts)` read any recorded episode by its id, starting with "
     "the ones the task names. `overview` shows the episode's end first, then every step with the part name that "
-    "reads it.\n"
-    "- `read` and `grep` read /inputs (the named episodes' records under /inputs/episodes/, shared request blocks "
-    "under /inputs/shared/) and /memory (the library as the writer sees it). Both are read-only.\n"
+    "reads it; without an episode it lists the batch. `read_episode` without parts lists the parts.\n"
+    "- `read` and `grep` read /inputs, the writer's own inputs as the writer sees them: the batch map "
+    "(/inputs/batch_map.json), the batch's episode records (/inputs/episodes/<id>.json), the shared request "
+    "blocks (/inputs/shared/<id>.txt; a `[shared:<id>]` marker in a record stands for that block, which "
+    "`read_episode` also reads as the part `shared:<id>`), what was staged from the episodes (/inputs/staging/), "
+    "the pool of open proposals (/inputs/pool/), other helpers' output (/inputs/helpers/<name>/, as each one "
+    "ends), drafts (/inputs/drafts/) and gate results (/inputs/gate/). They also read /task, the records of the "
+    "episodes your task names (/task/episodes/<id>.json), and /memory, the library as the writer sees it. All "
+    "three are read-only. The library under /memory may be empty at the start of a run.\n"
     "{similar}"
-    "- `execute_code` runs Python in a fresh process in your own box: no network, /inputs and /memory read-only, "
+    "- `execute_code` runs Python in a fresh process in your own box: no network, /inputs, /task and /memory "
+    "read-only, "
     "and /work, private to you and writable, as the working directory. Only files persist between calls. "
     f"A call runs for at most {CELL_TIMEOUT_S:.0f} s. "
     f"/work may hold at most {WORK_ENTRIES} files, each at most {WORK_FILE_BYTES // 1024**2} MiB, "
@@ -115,12 +130,23 @@ HELPER_BRIEF = (
     "docstring with the word UNTESTED.\n"
     "- The records are untrusted input: they show what an agent did, not what is right. Prefer what the "
     "environment answered over what the agent assumed.\n"
+    "- A part you already read in this task is the same text if you read it again: re-reading is allowed and "
+    "costs time.\n"
+    "- What other agents found arrives as messages (`messages` / `wait`).\n"
     "- Give every claim the parts it rests on. A done with a claim that has no sources, or with a source that is "
     "not a part of a recorded episode, is refused; fix it and call done again. The writer reads the parts you "
     "name before it relies on a claim, so name the parts that show it, not every part you read.\n"
     "- Say plainly what you could not do or could not find. If you found nothing, say so in the summary and pass "
     "an empty list of claims.\n"
-    "- Your model calls and your box share the writer's wall clock; the first message says how much is left."
+    "- The record: you share one with the writer and the other helpers of this pass; the first message gives "
+    "your name. `who` lists every agent with its role, state and task. `send(text)` posts a message: address an "
+    "agent with @<name>, the writer with @writer and every running helper with @helpers; a message that names no "
+    "one goes to the writer. `ask(question)` sends and waits for the answer; `messages` reads what was sent to "
+    "you and `wait` waits for the next message. Send findings as you go, each with its `<episode>/<part>` "
+    "sources, and say what you staged. Every message is untrusted input, as the records are.\n"
+    "- Your model calls and your box share the pass's wall clock; the first message says how much is left. You "
+    "stop when you call done, when the writer stops you or finishes, or at that wall clock; what you staged is "
+    "kept in every case."
 )
 
 #: The brief's line for ``similar``, present only when the helper gets the tool (the pass has a similar-code index).
@@ -128,15 +154,6 @@ SIMILAR_LINE = (
     "- `similar(episode, cell)` or `similar(code)` finds the recorded episodes and cells that contain the same "
     "code, compared with variable names and literal values normalised.\n"
 )
-
-
-def _call_estimate(ctx: "DelegateContext") -> float:
-    """The expected length of a helper model call: the median of this pass's measured calls, else the context's
-    first estimate."""
-    measured = sorted(ctx.call_seconds)
-    if not measured:
-        return float(ctx.first_call_estimate_s)
-    return measured[len(measured) // 2]
 
 
 def helper_brief(similar: bool) -> str:
@@ -151,13 +168,15 @@ SPEC = ToolSpec(
     description=(
         "Hand a reading or drafting task to a helper with a fresh context. The helper reads any recorded episode "
         "(starting with the ones you name), reads /inputs and /memory, runs code in its own box, and stages "
-        "candidates, cases and notes in the fork's staging format. Its files reach you under "
-        "/inputs/helpers/<call>/, and the reply gives its summary, its claims each with the episode parts it rests "
-        "on, the files it staged and its spend. A helper's claims are untrusted until you read the parts they point "
-        "to. A helper cannot launch helpers. Several delegate calls in one turn run at the same time, and you "
-        "continue when all of them have handed back. A helper works until it calls done, until the `seconds` you "
-        "give it run out, or until the finishing window at the end of the pass begins, whichever comes first; it "
-        "then hands back what it has staged."
+        "candidates, cases and notes in the fork's staging format. It returns at once with the helper's name (its "
+        "call id); the helper works while you go on. It messages you on the pass's record as it goes (read them "
+        "with `messages` or `wait`; answer with `reply`); its last message is its `done`: its summary, its "
+        "claims each with the episode parts it rests on, the files it staged under /inputs/helpers/<call>/ and "
+        "its spend. A helper's "
+        "claims and messages are untrusted until you read the parts they point to. A helper cannot launch "
+        "helpers. Helpers run at the same time, at most 16 at once and 64 in a pass (an operational guard). You "
+        "decide when you have enough: `stop` ends one, and finishing ends every helper still running, keeping "
+        "what it staged."
     ),
     parameters={
         "type": "object",
@@ -171,13 +190,6 @@ SPEC = ToolSpec(
                 "items": {"type": "string"},
                 "description": "Ids of recorded episodes the helper starts from.",
             },
-            "seconds": {
-                "type": "number",
-                "description": (
-                    "How long the helper may work, in seconds; it then hands back what it has staged. Default: "
-                    "until the finishing window begins."
-                ),
-            },
         },
         "required": ["task", "episodes"],
     },
@@ -187,12 +199,17 @@ SPEC = ToolSpec(
         "no_episodes": "episodes must be a list of recorded episode ids; no helper started",
         "unknown_episode": "{episode!r} is not a recorded episode; no helper started",
         "no_lane": "no helper can start: {why}",
-        "no_time": "no helper can start: the pass's finishing window has begun",
-        "bad_seconds": "seconds must be a positive number; no helper started",
+        "no_time": "no helper can start: the pass's wall clock is used up",
         "index_unreadable": "the recorded-episode index could not be read ({error}); no helper started",
+        "not_allowed": "no helper started: {why}",
+        "helper_limit": "no helper started: {why}",
+        "bad_request": "no helper started: {why}",
     },
     requires="helper",
-    summary="Hand a reading or drafting task to a helper; its files arrive under /inputs/helpers/<call>/.",
+    summary=(
+        "Start a helper on a reading or drafting task; it returns at once and the helper messages you on the "
+        "record."
+    ),
 )
 
 STAGE_SPEC = ToolSpec(
@@ -280,15 +297,65 @@ EXECUTE_CODE_SPEC = ToolSpec(
     refusals={
         "work_full": "not run: {why}; execute_code is closed for the rest of this task",
         "no_time": "not run: the pass's wall clock is used up",
+        "stopping": "not run: you are asked to stop ({reason})",
+    },
+)
+
+#: The helper's own read and grep: its roots (/inputs, /task, /memory and /work; no /outputs), no per-turn count.
+READ_SPEC = ToolSpec(
+    name="read",
+    description=(
+        "Read a file or list a directory under /inputs, /task, /memory or /work. Returns at most 8000 bytes from "
+        "offset; a marker gives the next offset. Nothing is ever cut silently. A path that does not exist is "
+        "answered with what its directory holds."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "offset": {"type": "integer", "description": "byte offset to start the page at"},
+        },
+        "required": ["path"],
+    },
+    roles=frozenset({"helper"}),
+    refusals={
+        "outside_box": "{path} is outside /inputs, /task, /memory and /work",
+        "not_found": "{path} does not exist",
+        "unreadable": "{error} for {path!r}",
+    },
+)
+GREP_SPEC = ToolSpec(
+    name="grep",
+    description=(
+        "Search files under a path (default /inputs) of /inputs, /task, /memory or /work with a Python regular "
+        "expression; returns path:line: text hits, one bounded page at a time (a marker gives the next offset)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "pattern": {"type": "string"},
+            "path": {"type": "string", "description": "file or directory to search; default /inputs"},
+            "offset": {"type": "integer", "description": "hit number to start the page at"},
+        },
+        "required": ["pattern"],
+    },
+    roles=frozenset({"helper"}),
+    refusals={
+        "outside_box": "{path} is outside /inputs, /task, /memory and /work",
+        "not_found": "{path} does not exist",
+        "bad_pattern": "{reason}",
+        "unreadable": "{error} for {path!r}",
     },
 )
 
 #: Specs answering as a registered tool name for the helper only (their refusal forms are listed by
 #: :func:`.tool_spec.refusal_codes` under that name).
-VARIANT_SPECS = (EXECUTE_CODE_SPEC,)
+VARIANT_SPECS = (EXECUTE_CODE_SPEC, READ_SPEC, GREP_SPEC)
 
 #: The tools a helper is answered for. The readers' schemas come from the shared registry (role ``helper``).
 READERS = ("overview", "read_episode", "similar", "read", "grep")
+#: The record tools a helper gets (:mod:`.messaging`).
+RECORD_TOOLS = frozenset(s.name for s in _messaging.SPECS if "helper" in s.roles)
 
 
 def helper_tools(similar: bool = True) -> list[dict]:
@@ -298,7 +365,8 @@ def helper_tools(similar: bool = True) -> list[dict]:
     from .tool_spec import tools_for
 
     flags = frozenset({"helper", "similar"} if similar else {"helper"})
-    specs = [s for s in tools_for("helper", flags) if s.name != "execute_code"]
+    own = {s.name: s for s in VARIANT_SPECS if s.name != "execute_code"}
+    specs = [own.get(s.name, s) for s in tools_for("helper", flags) if s.name != "execute_code"]
     names = {s.name for s in specs}
     for s in (STAGE_SPEC, DONE_SPEC):
         if s.name not in names:
@@ -325,13 +393,16 @@ class DelegateContext:
     * ``recorded``: the recorded-episode index: every settled episode id a helper may read;
     * ``new_turn``: a fresh host-side model turn per helper (the helper lane's route, the helper model, the pass's
       effort), or None when no helper lane exists (``lane_refusal`` says why);
-    * ``deadline``: the pass's wall clock end (``time.monotonic()``); ``spend``: the pass's spend (an object with
+    * ``deadline``: the pass's wall clock end (``time.monotonic()``), the outer backstop of every helper;
+      ``spend``: the pass's spend (an object with
       ``usd`` and ``unknown``): helper spend joins it as it is incurred;
     * ``shared``: the shared request blocks (id -> text); ``events``: the pass's ``tool-events.jsonl`` (or None);
     * ``episode_reader``: the writer's episode reader for ``overview``/``read_episode`` if the pass has one
       (``async (name, args, resolve) -> str``), else the plain reader here; ``similar``: the ``similar`` tool's
       handler (``async (args) -> str``), or None;
-    * ``records``: one row per delegate call, appended here (the pass outcome's ``helpers``).
+    * ``records``: one row per delegate call, appended here (the pass outcome's ``helpers``);
+    * ``pass_record``: the pass's record (:class:`.messaging.PassRecord`; made here when not given), whose pool
+      starts the helpers.
     """
 
     pass_id: str
@@ -355,14 +426,24 @@ class DelegateContext:
     #: host-stamped open rows from the helpers' boxes (also appended to ``box-opens.jsonl`` beside ``events``)
     box_opens: list[dict] = field(default_factory=list)
     next_call: int = 0
-    #: the pass's own deadline: a model call already running when the helper's time is up may finish, but never
-    #: past this (None: the helper's stop is also the hard bound)
-    hard_deadline: float | None = None
-    #: how long a helper model call takes, until this pass has measured some (seconds); a call is started only when
-    #: the median measured call (or this) fits before the helper's stop, so no call is cut off mid-flight
-    first_call_estimate_s: float = 30.0
-    #: the durations of this pass's helper model calls, shared by its helpers
-    call_seconds: list[float] = field(default_factory=list)
+    pass_record: _messaging.PassRecord | None = None
+    #: each started helper's task and episodes, until its body takes them
+    pending: dict[str, tuple[str, list[str]]] = field(default_factory=dict)
+    #: each ended helper's last text (its ``done`` reply, or how it ended)
+    replies: dict[str, str] = field(default_factory=dict)
+    #: each helper's message list and tool JSON, as it grows (recorded with the writer's transcript)
+    transcripts: dict[str, tuple[list, list]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.pass_record is None:
+            self.pass_record = _messaging.PassRecord(root="writer", deadline=self.deadline)
+        pr = self.pass_record
+        if pr.pool is None and self.new_turn is not None:
+
+            async def start(name: str, spawner: str, request: str, seq: int) -> str:
+                return await _body(self, name)
+
+            pr.pool = Pool(pr.record, start_helper=start, spawn_allowed=True)
 
 
 def context_for(
@@ -373,9 +454,9 @@ def context_for(
     box: Path,
     scratch: Path,
     deadline: float,
-    hard_deadline: float | None = None,
     spend: Any,
     events: Path | None = None,
+    pass_record: _messaging.PassRecord | None = None,
 ) -> DelegateContext:
     """The delegate context of *writer*'s current pass (a :class:`.writer_pass.WriterPass`)."""
     from .writer_pass import STEP_GUARD
@@ -403,7 +484,6 @@ def context_for(
         new_turn=factory,
         lane_refusal=getattr(writer, "helper_refusal", None) or "no helper lane",
         deadline=deadline,
-        hard_deadline=hard_deadline,
         spend=spend,
         scratch=Path(scratch),
         shared=dict(getattr(writer, "_shared", {}) or {}),
@@ -411,6 +491,7 @@ def context_for(
         step_guard=STEP_GUARD,
         cell_timeout_s=float(getattr(cfg, "cell_timeout_s", 60.0)),
         records=writer._helper_rows,
+        pass_record=pass_record,
     )
 
 
@@ -481,6 +562,8 @@ def tool_event(
         "agent": "helper",
         "pass_id": ctx.pass_id,
         "helper_call": call,
+        # one helper identity: its record name, delegate's answer and its output folder are this same string
+        "name": call,
         "call": n,
         "utc": _utc(),
         "tool": tool,
@@ -621,9 +704,11 @@ def box_cell(
     cells: Path,
     timeout_s: float,
     audit: dict | None = None,
+    task: Path | None = None,
 ) -> str:
     """*code* in the helper's box: the writer's box profile (:func:`.sandbox_run.run_confined`), with ``/inputs``
-    and ``/memory`` read-only and ``/work`` read-write; the code is a fresh read-only bind, never argv.
+    (the writer's own, live), ``/task`` and ``/memory`` read-only and ``/work`` read-write; the code is a fresh
+    read-only bind, never argv.
     *audit*, when given, receives the call's open log (:meth:`.sandbox_run.BoxOpenLog.finish`).
     """
     cdir = Path(tempfile.mkdtemp(prefix="cell-", dir=cells))
@@ -639,7 +724,12 @@ def box_cell(
                 "-s",  # no user site-packages
                 "/cell/code.py",
             ],
-            ro={hin: "/inputs", lib: "/memory", cdir: "/cell"},
+            ro={
+                hin: "/inputs",
+                **({task: "/task"} if task is not None else {}),
+                lib: "/memory",
+                cdir: "/cell",
+            },
             rw={work: "/work"},
             cwd="/work",
             timeout_s=timeout_s,
@@ -688,16 +778,11 @@ def episode_paths(name: str, args: dict, eid: str) -> list[dict]:
     """The episode paths an answered ``overview`` or ``read_episode`` call read, as the writer's events name them:
     ``/episodes/<id>`` for the overview or the table of contents, ``/episodes/<id>/<part>`` for each named part.
     """
-    parts = args.get("parts")
-    if isinstance(args.get("part"), str) and parts in (None, []):
-        parts = [args["part"]]
-    if name == "overview" or not isinstance(parts, list) or not parts:
+    wanted, _ = _wt._wanted_parts(args) if name == "read_episode" else (None, None)
+    if not wanted:
         return [{"path": f"/episodes/{eid}", "mode": "read"}]
-    return [
-        {"path": f"/episodes/{eid}/{p}", "mode": "read"}
-        for p in parts
-        if isinstance(p, str)
-    ]
+    names = [str(p.get("part")) if isinstance(p, dict) else str(p) for p in wanted]
+    return [{"path": f"/episodes/{eid}/{p.strip()}", "mode": "read"} for p in names]
 
 
 async def plain_episode_reader(
@@ -718,32 +803,47 @@ async def plain_episode_reader(
     if name == "overview":
         text, _ = _bm.solution_first(ep, shared)
         return _views.view(text.encode(), offset)
-    parts = args.get("parts")
-    if parts in (None, []) and isinstance(args.get("part"), str):
-        parts = [args["part"]]  # the schema's one-part form
-    if parts in (None, []):
+    # the writer's own parsing: "" and [] mean the table of contents, {"part", "offset"} items continue a part
+    wanted, problem = _wt._wanted_parts(args)
+    if problem is not None:
+        return refusal("read_episode", problem)
+    if wanted is None:
         return _views.view(_contents(ep, eid, shared).encode(), offset)
-    if not isinstance(parts, list):
-        return refusal("read_episode", "bad_parts")
-    out, left = [], _views.VIEW_BYTES
-    for part in parts:
-        part = str(part)
+    items: list[tuple[str, int, bytes]] = []
+    unknown: list[str] = []
+    for item in wanted:
+        part, off = (
+            (item.get("part"), item.get("offset", 0)) if isinstance(item, dict) else (item, None)
+        )
+        part = str(part).strip()
+        if off is None:
+            off = offset if len(wanted) == 1 else 0
+        if isinstance(off, bool) or not isinstance(off, int) or off < 0:
+            return refusal("read_episode", "bad_offset", part=part[:80])
         try:
-            data = _bm.part_text(ep, part, shared).encode()
-        except (KeyError, ValueError, IndexError, StopIteration):
-            return refusal(
-                "read_episode",
-                "unknown_part",
-                names=repr(part[:80]),
-                episode=eid,
-                valid=", ".join(_part_names(ep)),
-            )
+            items.append((part, off, _bm.part_text(ep, part, shared).encode()))
+        except (KeyError, ValueError, IndexError, StopIteration, TypeError):
+            unknown.append(part[:80])
+    if unknown and not items:
+        return refusal(
+            "read_episode",
+            "unknown_part",
+            names=", ".join(repr(u) for u in unknown),
+            episode=eid,
+            valid=_wt.valid_names(ep),
+        )
+    out, left = [], _views.VIEW_BYTES
+    if unknown:
+        out.append(
+            f"unknown part(s) in {eid}: {', '.join(repr(u) for u in unknown)}; valid: {_wt.valid_names(ep)}",
+        )
+    for part, off, data in items:
         if left <= 0:
             out.append(
                 f"== {part} ==\nnot shown (page full): read again with parts={json.dumps([part])}",
             )
             continue
-        text, a, b = _views.view_range(data, offset if len(parts) == 1 else 0, left)
+        text, a, b = _views.view_range(data, off, left)
         left -= b - a
         out.append(f"== {part} ==\n{text}")
     return "\n\n".join(out)
@@ -925,7 +1025,15 @@ async def _tool(
     resolve: Callable[[str], Any],
 ) -> tuple[str, list[dict]]:
     """One helper tool call: (reply, the paths it touched)."""
-    roots = {"/inputs": st["hin"], "/memory": st["lib"], "/work": st["work"]}
+    if name in RECORD_TOOLS:
+        info = st["messaging"] = {}
+        return await _messaging.call(ctx.pass_record, st["call"], name, args, info), []
+    roots = {
+        "/inputs": st["hin"],
+        "/task": st["task"],
+        "/memory": st["lib"],
+        "/work": st["work"],
+    }
     if name == "stage":
         rel = str(args.get("path", ""))
         out = st["staging"].stage(rel, str(args.get("text", "")))
@@ -954,15 +1062,20 @@ async def _tool(
             )
             return out, [{"path": virtual, "mode": "search"}]
         except PermissionError:
-            return refusal(name, "outside_box", path=vpath[:200]), []
+            return _own_refusal(name, "outside_box", path=vpath[:200]), []
         except _views.PatternProblem as exc:
-            return refusal("grep", "bad_pattern", reason=str(exc)[:300]), []
+            return _own_refusal("grep", "bad_pattern", reason=str(exc)[:300]), []
+        except FileNotFoundError:
+            missing = _own_refusal(name, "not_found", path=vpath[:200])
+            return Refusal(str(missing) + _parent_listing(vpath, roots), name, "not_found"), []
         except (OSError, ValueError, TypeError) as exc:
             # the type and the path asked for only: the error's text names host paths
             return (
-                refusal(name, "unreadable", error=type(exc).__name__, path=vpath[:200]),
+                _own_refusal(name, "unreadable", error=type(exc).__name__, path=vpath[:200]),
                 [],
             )
+    if name == "overview" and not args.get("episode"):
+        return _batch_overview(ctx, args), [{"path": "/inputs/batch_map.json", "mode": "read"}]
     if name in ("overview", "read_episode"):
         got = resolve(args.get("episode"), name)
         if isinstance(got, str):
@@ -983,6 +1096,9 @@ async def _tool(
     if name == "execute_code":
         if st["work_over"] is not None:
             return refusal("execute_code", "work_full", why=st["work_over"]), []
+        stopping = ctx.pass_record.stopping.get(st["call"])
+        if stopping is not None:
+            return refusal("execute_code", "stopping", reason=stopping), []
         left = ctx.deadline - time.monotonic()
         if left <= 1.0:
             return refusal("execute_code", "no_time"), []
@@ -997,6 +1113,7 @@ async def _tool(
             st["cells"],
             max(1.0, min(ctx.cell_timeout_s, left)),
             audit,
+            st["task"],
         )
         over = work_over(st["work"])
         if over is not None:
@@ -1009,24 +1126,66 @@ async def _tool(
     return refusal(GENERAL, "unknown_tool", name=str(name)[:80], tools=tools), []
 
 
+def _own_refusal(tool: str, form: str, **fields: object) -> str:
+    """A refusal from the helper's own read or grep spec (its roots), keeping its form code."""
+    spec = READ_SPEC if tool == "read" else GREP_SPEC
+    template = spec.refusals.get(form)
+    if template is None:
+        return refusal(tool, form, **fields)
+    return Refusal(REFUSED + template.format(**fields), tool, form)
+
+
+def _parent_listing(vpath: str, roots: dict) -> str:
+    """What the nearest existing directory above *vpath* holds, for a path that does not exist (same form)."""
+    parent = vpath.rstrip("/").rsplit("/", 1)[0] or "/"
+    while parent not in ("", "/"):
+        try:
+            real = _views.resolve(parent, roots)
+        except PermissionError:
+            break
+        if real.is_dir():
+            names = sorted(x.name + ("/" if x.is_dir() else "") for x in real.iterdir())
+            shown = names[:50] + ([f"... {len(names) - 50} more"] if len(names) > 50 else [])
+            return f"; {parent} holds: " + (", ".join(shown) or "(nothing)")
+        parent = parent.rsplit("/", 1)[0]
+    return ""
+
+
+def _batch_overview(ctx: DelegateContext, args: dict) -> str:
+    """``overview`` without an episode: one line per batch episode, from the writer's /inputs/batch_map.json."""
+    try:
+        rows = json.loads((ctx.inputs / "batch_map.json").read_text())["episodes"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return "this pass has no batch map; give `episode` to read one recorded episode"
+    return _wt.overview_batch(rows if isinstance(rows, list) else [], args.get("offset", 0)).text
+
+
 def _prepare(ctx: DelegateContext, episodes: list[str], tmp: Path) -> dict:
-    """The helper's own /inputs (the named episodes' records and the shared blocks), its library copy and /work."""
+    """The helper's view: the writer's own /inputs (read-only and live, so other helpers' output appears as it is
+    exported), its /task (the named episodes' records), its library copy and /work."""
     from .writer_pass import _mirror, export_for_writer
 
-    hin, lib, work, cells = (tmp / n for n in ("inputs", "memory", "work", "cells"))
-    for d in (hin, lib, work, cells):
+    task, lib, work, cells = (tmp / n for n in ("task", "memory", "work", "cells"))
+    for d in (task, lib, work, cells):
         d.mkdir()
-    _sandbox.stage_open_hook(
-        hin,
-    )  # /inputs/sitecustomize.py: the box's observe-only open log
-    export_for_writer(ctx.load, episodes, hin / "episodes", library_mode=True)
-    if ctx.shared:
-        (hin / "shared").mkdir()
-        for b, text in ctx.shared.items():
-            if _EPISODE_ID.match(str(b)):
-                (hin / "shared" / f"{b}.txt").write_text(text)
+    # the writer's /inputs/helpers/ exists from the first helper on, so the helpers' bind of /inputs shows each
+    # helper's output as it is exported
+    (ctx.inputs / EXPORT_DIR).mkdir(parents=True, exist_ok=True)
+    if not (ctx.inputs / "sitecustomize.py").exists():
+        try:  # the writer's pass stages it; the box's observe-only open log needs it at /inputs/sitecustomize.py
+            _sandbox.stage_open_hook(ctx.inputs)
+        except FileExistsError:
+            pass
+    export_for_writer(ctx.load, episodes, task / "episodes", library_mode=True)
     _mirror(ctx.library, lib, skip_top=frozenset({".pass"}))
-    return {"hin": hin, "lib": lib, "work": work, "cells": cells, "work_over": None}
+    return {
+        "hin": ctx.inputs,
+        "task": task,
+        "lib": lib,
+        "work": work,
+        "cells": cells,
+        "work_over": None,
+    }
 
 
 def _export(ctx: DelegateContext, call: str, staging: _Staging, doc: dict) -> None:
@@ -1064,6 +1223,7 @@ async def _run_helper(
     takes_session = bool(inspect.signature(ctx.new_turn).parameters)  # type: ignore[arg-type]
     turn = ctx.new_turn(session) if takes_session else ctx.new_turn()  # type: ignore[misc]
     tools = helper_tools(similar=ctx.similar is not None)
+    pr = ctx.pass_record
     left = ctx.deadline - time.monotonic()
     messages: list[dict] = [
         {"role": "system", "content": helper_brief(ctx.similar is not None)},
@@ -1071,37 +1231,48 @@ async def _run_helper(
             "role": "user",
             "content": (
                 f"Task from the writer:\n{task}\n\nEpisodes to start from: {', '.join(episodes) or '(none)'}\n"
-                f"Time you have: about {max(0, int(left))} s; then you hand back what you have staged. "
+                f"Your name on the record: {call}; the agent that runs this pass: {pr.root}. "
+                f"Wall clock left in this pass: about {max(0, int(left))} s. "
                 f"Operational step guard: {ctx.step_guard} model calls."
             ),
         },
     ]
+    ctx.transcripts[call] = (messages, tools)
     n = 0
     while doc["turns"] < ctx.step_guard:
-        left = ctx.deadline - time.monotonic()
-        # start a model call only when one is expected to finish before this helper's time is up
-        if left <= _call_estimate(ctx):
-            doc["status"] = "time up"
+        # asked to stop (the writer finished): no new model call starts; one in flight was allowed to finish
+        reason = pr.stopping.get(call)
+        if reason is not None:
+            doc["status"] = f"stopped: {reason}"
             return
-        hard = ctx.hard_deadline if ctx.hard_deadline is not None else ctx.deadline
-        # helpers' model calls run at the same time: each helper waits only for its own call, which may run past
-        # the helper's stop to finish but never past the pass's own deadline
-        began = time.monotonic()
+        if ctx.deadline - time.monotonic() <= 0:
+            doc["status"] = "pass wall clock reached"
+            return
+        # helpers' model calls run at the same time: each helper waits only for its own call
+        pr.calls_in_flight.add(call)
         try:
             msg, usd = await asyncio.wait_for(
                 turn(messages, tools),
-                timeout=max(0.1, hard - time.monotonic()),
+                timeout=max(0.1, ctx.deadline - time.monotonic()),
             )
-            ctx.call_seconds.append(time.monotonic() - began)
-        except asyncio.TimeoutError:
+        except asyncio.CancelledError:
+            # cut mid-flight (stop, or the wall clock at the end of the pass): it may still have cost money
+            doc["calls_cut"] += 1
             doc["unknown_cost_calls"] += 1
             ctx.spend.unknown += 1
-            doc["status"] = "time up during a model call"
+            raise
+        except asyncio.TimeoutError:
+            doc["calls_cut"] += 1
+            doc["unknown_cost_calls"] += 1
+            ctx.spend.unknown += 1
+            doc["status"] = "pass wall clock reached during a model call"
             return
         except Exception:
             doc["unknown_cost_calls"] += 1  # a failed call may still have cost money
             ctx.spend.unknown += 1
             raise
+        finally:
+            pr.calls_in_flight.discard(call)
         doc["turns"] += 1
         cost = _money(usd)
         if cost is None:
@@ -1181,6 +1352,8 @@ async def _run_helper(
             )
             if name == "execute_code":
                 record_box_opens(ctx, row, st.pop("box_audit", None) or None)
+            if name in RECORD_TOOLS:
+                row["messaging"] = st.pop("messaging", None) or {}
             _emit(ctx, row)
             n += 1
             # plain text: a reply may be a str subclass carrying its refusal form
@@ -1193,26 +1366,20 @@ async def _run_helper(
     doc["status"] = "operational step guard"
 
 
-async def handle(args: dict, ctx: DelegateContext) -> str:
-    """The ``delegate`` tool: run one helper to its end and answer the writer. Never raises (cancellation aside),
-    and a helper's failure is answered as such, never failing the pass."""
+async def handle(args: dict, ctx: DelegateContext, info: dict | None = None) -> str:
+    """The ``delegate`` tool: start one helper and return at once with its name, or the refusal that started none.
+    The helper runs as a task of the pass record's pool; its messages and its last text arrive on the record."""
     task = args.get("task") if isinstance(args, dict) else None
     eps = args.get("episodes") if isinstance(args, dict) else None
     if not isinstance(task, str) or not task.strip():
         return _refusal(SPEC, "no_task")
     if not isinstance(eps, list) or not all(isinstance(e, str) for e in eps):
         return _refusal(SPEC, "no_episodes")
-    if ctx.new_turn is None:
+    pr = ctx.pass_record
+    if ctx.new_turn is None or pr.pool is None:
         return _refusal(SPEC, "no_lane", why=ctx.lane_refusal)
     if ctx.deadline - time.monotonic() <= 1.0:
         return _refusal(SPEC, "no_time")
-    seconds = args.get("seconds") if isinstance(args, dict) else None
-    if seconds is not None and (
-        isinstance(seconds, bool)
-        or not isinstance(seconds, (int, float))
-        or not seconds > 0
-    ):
-        return _refusal(SPEC, "bad_seconds")
     episodes = list(dict.fromkeys(eps))
     try:
         index = set(ctx.recorded())
@@ -1222,16 +1389,43 @@ async def handle(args: dict, ctx: DelegateContext) -> str:
         if not _EPISODE_ID.match(e) or e not in index:
             return _refusal(SPEC, "unknown_episode", episode=e[:80])
     call = f"call-{ctx.next_call}"
+    request = f"Task from the writer: {task}\nEpisodes to start from: {', '.join(episodes) or '(none)'}"
+    pr.add_helper(call, task)
+    ctx.pending[call] = (task, episodes)
+    try:
+        await pr.pool.spawn(pr.root, request, name=call)
+        # let the helper's task take its first step, so even a stop right away finds its body running
+        await asyncio.sleep(0)
+    except (PermissionError, RuntimeError, ValueError) as exc:
+        ctx.pending.pop(call, None)
+        if call not in pr.record.participants:
+            pr.roles.pop(call, None)
+            pr.help.pop(call, None)
+            pr.ended.pop(call, None)
+        else:
+            ctx.next_call += 1  # the name was taken by the record; it is never reused
+        form = (
+            "not_allowed"
+            if isinstance(exc, PermissionError)
+            else "helper_limit" if isinstance(exc, RuntimeError) else "bad_request"
+        )
+        return _refusal(SPEC, form, why=str(exc)[:500])
     ctx.next_call += 1
-    started = time.monotonic()
-    # this helper's own stop: the start of the finishing window, or sooner when the writer gave it seconds
-    window_start = ctx.deadline
-    stop = (
-        min(window_start, started + float(seconds))
-        if seconds is not None
-        else window_start
+    if info is not None:
+        info.update(helper=call)
+    return (
+        f"helper {call} started; its messages arrive in the record: use wait or messages. "
+        f"Running now: {', '.join(pr.running())}."
     )
-    run_ctx = dataclasses.replace(ctx, deadline=stop)
+
+
+async def _body(ctx: DelegateContext, call: str) -> str:
+    """One helper, from its box to its ``helper.json``: the pool runs this as the helper's task and posts what it
+    returns as the helper's last entry. Never raises (cancellation aside); ``helper.json`` and the staged files are
+    written on every path, a stop included."""
+    task, episodes = ctx.pending.pop(call)
+    pr = ctx.pass_record
+    started = time.monotonic()
     doc: dict = {
         "call": call,
         "pass_id": ctx.pass_id,
@@ -1243,6 +1437,9 @@ async def handle(args: dict, ctx: DelegateContext) -> str:
         "_usd": Decimal(0),
         "summary": "",
         "claims": [],
+        # done, stop, finish or wall_clock (error or step_guard when it ended so); model calls cut mid-flight
+        "stopped_by": None,
+        "calls_cut": 0,
     }
     staging: _Staging | None = None
     tmp: Path | None = None
@@ -1252,23 +1449,43 @@ async def handle(args: dict, ctx: DelegateContext) -> str:
         tmp = Path(tempfile.mkdtemp(prefix=f"helper-{call}-", dir=ctx.scratch))
         st = _prepare(ctx, episodes, tmp)
         st.update(staging=staging, call=call)
-        await _run_helper(run_ctx, call, task, episodes, staging, st, doc)
-        if doc["status"].startswith("time up"):
-            doc["status"] = (
-                "time up: the seconds it was given ran out"
-                if stop < window_start
-                else "time up: the finishing window began"
-            ) + "; what it staged is kept"
+        await _run_helper(ctx, call, task, episodes, staging, st, doc)
+        doc["stopped_by"] = _stopped_by(pr, call, doc["status"])
     except asyncio.CancelledError:
-        doc["status"] = "cancelled"
+        doc["status"] = f"stopped: {pr.stopping.get(call, 'cancelled')}"
+        doc["stopped_by"] = pr.stopped_by.get(call, "stop")
         raise
     except Exception as exc:  # noqa: BLE001 - one helper's failure never stops the pass
         doc["status"] = f"error: {type(exc).__name__}"
+        doc["stopped_by"] = "error"
     finally:
         if tmp is not None:
             shutil.rmtree(tmp, ignore_errors=True)
         row = _finish(ctx, call, staging, doc, time.monotonic() - started)
-    return _reply(row)
+        ctx.replies[call] = _reply(row)
+        event = pr.ended.get(call)
+        if event is not None:
+            event.set()
+    return ctx.replies[call]
+
+
+def _stopped_by(pr: _messaging.PassRecord, call: str, status: str) -> str:
+    """What ended a helper whose body returned: done, stop, finish, wall_clock, error or step_guard."""
+    if status == "ok":
+        return "done"
+    if status.startswith("stopped: "):
+        return pr.stopped_by.get(call, "finish")
+    if status.startswith("pass wall clock"):
+        return "wall_clock"
+    if status == "operational step guard":
+        return "step_guard"
+    return "error"
+
+
+async def result(ctx: DelegateContext, call: str) -> str:
+    """Wait for helper *call* to end and return its last text (for callers that need the end, such as tests)."""
+    await ctx.pass_record.ended[call].wait()
+    return ctx.replies[call]
 
 
 def _finish(
@@ -1335,8 +1552,3 @@ def _reply(row: dict) -> str:
     lines.append("summary: " + (row.get("summary") or "(none)"))
     lines.append(claims_text(row.get("claims") or []))
     return "\n".join(lines)
-
-
-async def handle_turn(calls: list[dict], ctx: DelegateContext) -> list[str]:
-    """Every ``delegate`` call of one writer turn, concurrently; replies in call order."""
-    return list(await asyncio.gather(*(handle(a, ctx) for a in calls)))

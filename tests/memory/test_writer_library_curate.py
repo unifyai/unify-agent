@@ -75,6 +75,7 @@ def test_a_curate_pass_merges_through_its_own_brief_inputs_role_and_gate(
                 {"code": "import os\nprint(sorted(os.listdir('/inputs')))"},
             ),
             _call("w", "execute_code", {"code": write}),
+            _call("who", "who", {}),
             _call("f", "finish", {"summary": "account_id is user_id"}),
         ],
     )
@@ -89,6 +90,9 @@ def test_a_curate_pass_merges_through_its_own_brief_inputs_role_and_gate(
     )
     out = asyncio.run(writer.run(PassRequest("curate", None, [], False), "c1"))
     assert out.passed, out.reasons
+    # a curate pass runs on its own record too, with the curator as its agent
+    assert writer._pass_record.root == "curator"
+    assert model.outputs["who"].splitlines()[1].startswith("- curator (curator, running): curates the library")
     assert model.seen[0] == {
         "role": "system",
         "content": curate_brief_now(

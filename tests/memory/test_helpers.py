@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from unify.memory import helpers, tool_spec, views
+from unify.memory import helpers, messaging, tool_spec, views
 from unify.memory.episodes import Cell
 from unify.memory.integration import consolidate, switch
 from unify.memory.sandbox_run import SandboxResult
@@ -82,7 +82,7 @@ class Script:
 def _ctx(tmp_path, script=None, **kw):
     inputs, lib = tmp_path / "inputs", tmp_path / "memory"
     inputs.mkdir(parents=True)
-    (inputs / "pool").mkdir()  # the writer's own inputs: never shown to a helper
+    (inputs / "pool").mkdir()  # the writer's own inputs: a helper reads them read-only
     (inputs / "pool" / "INDEX.md").write_text("pool")
     lib.mkdir()
     (lib / "INDEX.md").write_text("# library\n")
@@ -103,6 +103,22 @@ def _ctx(tmp_path, script=None, **kw):
     )
     base.update(kw)
     return helpers.DelegateContext(**base)
+
+
+def _run(args, ctx):
+    """``delegate`` (it returns at once), then the helper's last text once it has ended; the pool is closed and its
+    termination checked. A refusal comes back as it is."""
+
+    async def go():
+        out = await helpers.handle(args, ctx)
+        if tool_spec.form_of(out):
+            return out
+        name = out.split()[1]
+        reply = await helpers.result(ctx, name)
+        assert await messaging.close(ctx.pass_record, "the writer finished") == {name: "ended"}
+        return reply
+
+    return asyncio.run(go())
 
 
 def _drafting(task_key="draft area"):
@@ -156,7 +172,7 @@ def fake_box(monkeypatch):
 def test_delegate_stages_in_the_fork_format_and_the_writer_reads_it(tmp_path, fake_box):
     script = Script(_drafting())
     ctx = _ctx(tmp_path, script)
-    reply = asyncio.run(helpers.handle({"task": "draft area", "episodes": ["e1"]}, ctx))
+    reply = _run({"task": "draft area", "episodes": ["e1"]}, ctx)
     assert reply.startswith("helper call-0: ok")
     assert (
         "candidates/area.py" in reply
@@ -194,14 +210,15 @@ def test_delegate_stages_in_the_fork_format_and_the_writer_reads_it(tmp_path, fa
     assert ctx.records[0]["usd"] == "0.004" and len(ctx.records[0]["files"]) == 2
 
 
-def test_the_helper_box_is_ro_ro_rw_and_holds_only_what_the_task_needs(
+def test_the_helper_box_reads_the_writers_inputs_its_task_and_the_library_and_writes_only_work(
     tmp_path,
     fake_box,
 ):
     ctx = _ctx(tmp_path, Script(_drafting()), shared={"b1": "shared block"})
-    asyncio.run(helpers.handle({"task": "draft area", "episodes": ["e1"]}, ctx))
+    _run({"task": "draft area", "episodes": ["e1"]}, ctx)
     (call,) = fake_box
-    assert sorted(call["ro"].values()) == ["/cell", "/inputs", "/memory"]
+    assert sorted(call["ro"].values()) == ["/cell", "/inputs", "/memory", "/task"]
+    assert call["ro"][ctx.inputs] == "/inputs"  # the writer's own /inputs, read-only
     assert list(call["rw"].values()) == ["/work"] and call["cwd"] == "/work"
     # the open log's pipe is the one extra descriptor and variable; the interpreter skips the user site
     (fd,) = call["pass_fds"]
@@ -213,20 +230,15 @@ def test_the_helper_box_is_ro_ro_rw_and_holds_only_what_the_task_needs(
     assert (
         f"--fsize={helpers.WORK_FILE_BYTES}:{helpers.WORK_FILE_BYTES}" in call["argv"]
     )
-    # /inputs: the named episode's record, the shared blocks and the open-log hook; no pool, gate, drafts or other
-    # helpers' output
-    assert call["listing"]["/inputs"] == [
-        "episodes",
-        "episodes/e1.json",
-        "shared",
-        "shared/b1.txt",
-        "sitecustomize.py",
-    ]
+    # /inputs: what the writer has (here its pool) with the open-log hook and the helpers' output folder; /task:
+    # the named episode's record
+    assert call["listing"]["/inputs"] == ["helpers", "pool", "pool/INDEX.md", "sitecustomize.py"]
+    assert call["listing"]["/task"] == ["episodes", "episodes/e1.json"]
     # /memory: the library as the writer sees it, without the writer's .pass
     assert call["listing"]["/memory"] == ["INDEX.md"]
 
 
-def test_delegate_calls_in_one_turn_run_concurrently_and_so_do_their_model_calls(
+def test_helpers_run_concurrently_and_so_do_their_model_calls(
     tmp_path,
     fake_box,
 ):
@@ -240,12 +252,15 @@ def test_delegate_calls_in_one_turn_run_concurrently_and_so_do_their_model_calls
 
     script = Script({"A": two("A"), "B": two("B")}, gap=0.01)
     ctx = _ctx(tmp_path, script)
-    replies = asyncio.run(
-        helpers.handle_turn(
-            [{"task": "A", "episodes": ["e1"]}, {"task": "B", "episodes": ["e2"]}],
-            ctx,
-        ),
-    )
+
+    async def go():
+        for task, eps in (("A", ["e1"]), ("B", ["e2"])):
+            await helpers.handle({"task": task, "episodes": eps}, ctx)
+        replies = [await helpers.result(ctx, c) for c in ("call-0", "call-1")]
+        await messaging.close(ctx.pass_record, "the writer finished")
+        return replies
+
+    replies = asyncio.run(go())
     assert replies[0].startswith("helper call-0: ok") and replies[1].startswith(
         "helper call-1: ok",
     )
@@ -258,7 +273,7 @@ def test_delegate_calls_in_one_turn_run_concurrently_and_so_do_their_model_calls
 
 def test_every_helper_tool_call_is_an_event(tmp_path, fake_box):
     ctx = _ctx(tmp_path, Script(_drafting()))
-    asyncio.run(helpers.handle({"task": "draft area", "episodes": ["e1"]}, ctx))
+    _run({"task": "draft area", "episodes": ["e1"]}, ctx)
     rows = [json.loads(x) for x in ctx.events.read_text().splitlines()]
     assert [r["tool"] for r in rows] == [
         "overview",
@@ -303,7 +318,7 @@ def test_a_failing_helper_returns_a_clear_result_and_never_fails_the_pass(
 ):
     script = Script({"boom": [RuntimeError("upstream said no")]})
     ctx = _ctx(tmp_path, script)
-    reply = asyncio.run(helpers.handle({"task": "boom", "episodes": ["e1"]}, ctx))
+    reply = _run({"task": "boom", "episodes": ["e1"]}, ctx)
     assert (
         reply.startswith("helper call-0: error: RuntimeError")
         and "upstream said no" not in reply
@@ -322,13 +337,13 @@ def test_unpriced_helper_calls_stay_unknown(tmp_path, fake_box):
         usd="unknown",
     )
     ctx = _ctx(tmp_path, script)
-    reply = asyncio.run(helpers.handle({"task": "t", "episodes": []}, ctx))
+    reply = _run({"task": "t", "episodes": []}, ctx)
     assert "spend: unknown USD (1 unpriced calls" in reply and ctx.spend.unknown == 1
 
 
 def test_refusals_start_no_helper(tmp_path):
     ctx = _ctx(tmp_path, None, lane_refusal="no helper lane")
-    assert asyncio.run(helpers.handle({"task": "t", "episodes": ["e1"]}, ctx)) == (
+    assert _run({"task": "t", "episodes": ["e1"]}, ctx) == (
         "refused: no helper can start: no helper lane"
     )
     ctx = _ctx(tmp_path / "b", Script({}))
@@ -338,11 +353,9 @@ def test_refusals_start_no_helper(tmp_path):
         ({"task": "t", "episodes": ["nope"]}, "'nope' is not a recorded episode"),
         ({"task": "t", "episodes": ["../e1"]}, "is not a recorded episode"),
     ):
-        assert phrase in asyncio.run(helpers.handle(args, ctx))
+        assert phrase in _run(args, ctx)
     late = _ctx(tmp_path / "c", Script({}), deadline=time.monotonic())
-    assert "wall clock is used up" in asyncio.run(
-        helpers.handle({"task": "t", "episodes": []}, late),
-    )
+    assert "wall clock is used up" in _run({"task": "t", "episodes": []}, late)
     assert not (tmp_path / "b" / "state").exists()
 
 
@@ -370,16 +383,15 @@ def test_helpers_read_any_recorded_episode_but_only_through_the_index(
         return {**EPS, "e4": _episode("e4")}[eid]
 
     ctx = _ctx(tmp_path, script, load=load)
-    asyncio.run(helpers.handle({"task": "t", "episodes": ["e1"]}, ctx))
+    _run({"task": "t", "episodes": ["e1"]}, ctx)
     assert "request" in script.outputs["other"]  # e3 was not named, and is readable
     assert (
         "not a recorded episode" in script.outputs["hidden"]
     )  # loadable, but not in the index
     assert "not an episode id" in script.outputs["pathy"]
     assert "e4" not in loads and all(".." not in e for e in loads)
-    assert script.outputs["pool"].startswith(
-        "refused",
-    )  # the writer's pool is not in a helper's /inputs
+    # the writer's /inputs, its pool included, is readable by a helper
+    assert "pool" in script.outputs["pool"] and not script.outputs["pool"].startswith("refused")
 
 
 def _done_then(cid, claims, then=None):
@@ -401,7 +413,7 @@ def test_done_with_resolving_sources_is_recorded_and_shown_to_the_writer(
     ]
     script = Script(_done_then("d", claims))
     ctx = _ctx(tmp_path, script, shared={"b1": "shared block"})
-    reply = asyncio.run(helpers.handle({"task": "t", "episodes": ["e1"]}, ctx))
+    reply = _run({"task": "t", "episodes": ["e1"]}, ctx)
     rows = [json.loads(x) for x in ctx.events.read_text().splitlines()]
     assert [(r["tool"], r["status"]) for r in rows] == [("done", "ok")]
     status = json.loads((ctx.out_root / "call-0" / "helper.json").read_text())
@@ -425,7 +437,7 @@ def test_done_with_resolving_sources_is_recorded_and_shown_to_the_writer(
 
 def test_no_claims_is_stated_in_the_reply(tmp_path, fake_box):
     ctx = _ctx(tmp_path, Script(_done_then("d", [])))
-    reply = asyncio.run(helpers.handle({"task": "t", "episodes": ["e1"]}, ctx))
+    reply = _run({"task": "t", "episodes": ["e1"]}, ctx)
     assert reply.splitlines()[-1] == "claims: (none)"
 
 
@@ -483,7 +495,7 @@ def test_done_with_a_missing_or_unresolved_source_is_refused_and_can_be_fixed(
     fixed = [{"claim": "area is w * h", "sources": ["e1/cell:0"]}]
     script = Script(_done_then("d", claims, then=fixed))
     ctx = _ctx(tmp_path, script)
-    reply = asyncio.run(helpers.handle({"task": "t", "episodes": ["e1"]}, ctx))
+    reply = _run({"task": "t", "episodes": ["e1"]}, ctx)
     refused = script.outputs["d"]
     assert refused.startswith("refused: ") and phrase in refused, refused
     assert "the task is not done, call done again" in refused
@@ -507,7 +519,7 @@ def test_a_helper_that_never_fixes_its_claims_hands_back_none(tmp_path, fake_box
         },
     )
     ctx = _ctx(tmp_path, script, step_guard=3)
-    reply = asyncio.run(helpers.handle({"task": "t", "episodes": ["e1"]}, ctx))
+    reply = _run({"task": "t", "episodes": ["e1"]}, ctx)
     assert reply.startswith("helper call-0: operational step guard")
     status = json.loads((ctx.out_root / "call-0" / "helper.json").read_text())
     assert status["claims"] == [] and status["summary"] == ""
@@ -542,6 +554,13 @@ def test_the_helper_brief_names_exactly_the_tools_the_helper_gets():
             "stage",
             "done",
             "delegate",
+            "send",
+            "ask",
+            "messages",
+            "wait",
+            "who",
+            "reply",
+            "stop",
         ):
             assert (f"`{name}(" in brief or f"`{name}`" in brief) == (name in names), (
                 similar,
@@ -674,7 +693,7 @@ def test_the_real_helper_box_writes_only_work(tmp_path):
         },
     )
     ctx = _ctx(tmp_path, script)
-    asyncio.run(helpers.handle({"task": "t", "episodes": ["e1"]}, ctx))
+    _run({"task": "t", "episodes": ["e1"]}, ctx)
     out = script.outputs["x"]
     assert (
         "DENIED /memory/y.txt" in out
@@ -703,61 +722,3 @@ def test_a_helpers_episode_reads_record_the_paths_the_writer_records():
     assert helpers.episode_paths("read_episode", {"part": "cell:2"}, "e1") == [
         {"path": "/episodes/e1/cell:2", "mode": "read"},
     ]
-
-
-class _Forever:
-    """A helper that stages one note, then keeps reading until it is stopped."""
-
-    def __init__(self, gap=0.05):
-        self.gap, self.calls = gap, 0
-
-    def factory(self, session=None):
-        async def turn(messages, tools):
-            self.calls += 1
-            await asyncio.sleep(self.gap)
-            if self.calls == 1:
-                return (
-                    _msg(_tc("s", "stage", {"path": "notes.md", "text": "a lesson"})),
-                    "0.001",
-                )
-            return _msg(_tc(f"r{self.calls}", "overview", {"episode": "e1"})), "0.001"
-
-        return turn
-
-
-def test_a_helper_still_working_when_the_finishing_window_begins_hands_back_what_it_staged(
-    tmp_path,
-    fake_box,
-):
-    model = _Forever()
-    ctx = _ctx(
-        tmp_path,
-        model,
-        deadline=time.monotonic() + 1.0,
-    )  # the window begins in 1 s
-    reply = asyncio.run(helpers.handle({"task": "draft area", "episodes": ["e1"]}, ctx))
-    assert reply.startswith(
-        "helper call-0: time up: the finishing window began; what it staged is kept",
-    ), reply
-    assert (ctx.out_root / "call-0" / "notes.md").read_text() == "a lesson"
-    assert model.calls >= 2
-
-
-def test_seconds_bounds_a_helper_and_bad_seconds_start_none(tmp_path, fake_box):
-    ctx = _ctx(tmp_path, _Forever())  # the window is 600 s away
-    started = time.monotonic()
-    reply = asyncio.run(
-        helpers.handle({"task": "draft area", "episodes": ["e1"], "seconds": 0.5}, ctx),
-    )
-    assert reply.startswith(
-        "helper call-0: time up: the seconds it was given ran out",
-    ), reply
-    assert time.monotonic() - started < 30
-    for bad in (0, -1, "10", True):
-        out = asyncio.run(
-            helpers.handle({"task": "x", "episodes": ["e1"], "seconds": bad}, ctx),
-        )
-        assert out == tool_spec.refusal("delegate", "bad_seconds"), bad
-    props = helpers.SPEC.parameters["properties"]
-    assert "seconds" in props and "seconds" not in helpers.SPEC.parameters["required"]
-    assert "finishing window" in helpers.SPEC.description

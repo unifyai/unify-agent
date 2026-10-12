@@ -24,6 +24,13 @@ CURATE_TOOLS = {
     "execute_code",
     "check",
     "finish",
+    # every agent on the pass's record
+    "send",
+    "messages",
+    "wait",
+    "who",
+    "reply",
+    "stop",
 }
 
 
@@ -296,7 +303,9 @@ def test_every_call_is_one_tool_event_with_status_paths_and_usage(tmp_path):
         .read_text()
         .splitlines()
     ]
-    assert written == rows
+    # the tool calls, then the pass's end (its helpers_closed: here none were started)
+    assert written[:-1] == rows
+    assert written[-1]["event"] == "pass_end" and written[-1]["helpers_closed"] == {}
 
 
 def test_the_empty_turn_nudge_names_the_real_tools(tmp_path):

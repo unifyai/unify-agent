@@ -49,6 +49,15 @@ _HELPER_LIMITS = [
 #: What any memory prompt may inline: constant text, ids and numbers; never a list past these bounds.
 _INLINE_BOUND = {"items": 10, "bytes": 1000, "tokens": 250}
 _EVENTS = [{"event": "tool_call", "path": "<pass output dir>/tool-events.jsonl"}]
+#: The pass's own agent also writes the pass's end (each helper: ended or still running) and keeps the record.
+_PASS_EVENTS = [
+    *_EVENTS,
+    {"event": "pass_end", "path": "<pass output dir>/tool-events.jsonl"},
+    {"event": "record entry", "path": "<pass output dir>/record.jsonl"},
+]
+#: Every agent on a pass's record reads it and posts to it (messaging.py: one in-memory record per pass).
+_RECORD = "the pass's record (send, messages, wait, who)"
+_RECORD_TOOLS = ["send", "messages", "wait", "who"]
 _BOX_MOUNTS = [
     {"path": "/inputs", "mode": "ro"},
     {"path": "/memory", "mode": "rw"},
@@ -211,6 +220,9 @@ AGENT_PROFILES: tuple[dict, ...] = (
             "fixture",
             "replay",
             "delegate",
+            *_RECORD_TOOLS,
+            "reply",
+            "stop",
             "execute_code",
             "check",
             "finish",
@@ -225,6 +237,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
             {"artifact": "gate result", "path": "/inputs/gate"},
             {"artifact": "drafts", "path": "/inputs/drafts"},
             {"artifact": "helper output", "path": "/inputs/helpers"},
+            {"artifact": "record", "path": _RECORD},
         ],
         "produces": [
             {"artifact": "library item", "path": "/memory/memory/", "consumer": "gate"},
@@ -239,6 +252,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
                 "consumer": "gate",
             },
             {"artifact": "task", "path": "delegate arguments", "consumer": "helper"},
+            {"artifact": "record", "path": _RECORD, "consumer": "helper"},
         ],
         "limits": list(_PASS_LIMITS),
         "inlined": [
@@ -306,7 +320,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
             "manifest.adopts",
             "manifest.pool",
         ],
-        "emits": list(_EVENTS),
+        "emits": list(_PASS_EVENTS),
         "pointers": [
             {"pointer": "/inputs/batch_map.json", "tool": "overview"},
             {"pointer": "recorded episodes", "tool": "read_episode"},
@@ -315,6 +329,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
             {"pointer": "/memory/INDEX.md", "tool": "read"},
             {"pointer": "/inputs/gate/previous.md", "tool": "read"},
             {"pointer": "/outputs/cell-<n>.txt", "tool": "read"},
+            {"pointer": "agents on the record", "tool": "who"},
         ],
     },
     {
@@ -327,6 +342,9 @@ AGENT_PROFILES: tuple[dict, ...] = (
             "overview",
             "read_episode",
             "fixture",
+            *_RECORD_TOOLS,
+            "reply",
+            "stop",
             "execute_code",
             "check",
             "finish",
@@ -346,6 +364,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
             {"artifact": "curate inputs", "path": "/inputs/curate"},
             {"artifact": "gate result", "path": "/inputs/gate"},
             {"artifact": "episode record", "path": "read_episode"},
+            {"artifact": "record", "path": _RECORD},
         ],
         "produces": [
             {"artifact": "library item", "path": "/memory/memory/", "consumer": "gate"},
@@ -354,6 +373,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
                 "path": "/memory/.pass/manifest.json",
                 "consumer": "gate",
             },
+            {"artifact": "record", "path": _RECORD, "consumer": "helper"},
         ],
         "limits": list(_PASS_LIMITS),
         "inlined": [{"what": "brief (constant)", "bound": _INLINE_BOUND}],
@@ -410,12 +430,13 @@ AGENT_PROFILES: tuple[dict, ...] = (
             "manifest.why",
             "manifest.summary",
         ],
-        "emits": list(_EVENTS),
+        "emits": list(_PASS_EVENTS),
         "pointers": [
             {"pointer": "/inputs/curate/trigger.json", "tool": "read"},
             {"pointer": "recorded episodes", "tool": "read_episode"},
             {"pointer": "an episode's end and steps", "tool": "overview"},
             {"pointer": "/memory/INDEX.md", "tool": "read"},
+            {"pointer": "agents on the record", "tool": "who"},
         ],
     },
     {
@@ -432,18 +453,21 @@ AGENT_PROFILES: tuple[dict, ...] = (
             "similar",
             "execute_code",
             "stage",
+            *_RECORD_TOOLS,
+            "ask",
             "done",
         ],
         "mounts": [
+            # the writer's own /inputs (staging, pool, batch map, drafts, gate results, other helpers' output)
             {"path": "/inputs", "mode": "ro"},
+            {"path": "/task", "mode": "ro"},
             {"path": "/memory", "mode": "ro"},
             {"path": "/work", "mode": "rw"},
         ],
         # a helper never launches helpers: delegate is the writer's alone
         "denied": [
             "library writes",
-            "pool",
-            "writer staging",
+            "writes under /inputs",
             "delegate",
             "network",
             "credentials",
@@ -451,6 +475,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "consumes": [
             {"artifact": "task", "path": "delegate arguments"},
             {"artifact": "episode record", "path": "read_episode"},
+            {"artifact": "record", "path": _RECORD},
         ],
         "produces": [
             {
@@ -458,6 +483,10 @@ AGENT_PROFILES: tuple[dict, ...] = (
                 "path": "<state>/memory-helpers/<pass>/<call>/ (the writer's /inputs/helpers/<call>/)",
                 "consumer": "writer",
             },
+            # helper to helper included: any agent on the record can address any other
+            {"artifact": "record", "path": _RECORD, "consumer": "writer"},
+            {"artifact": "record", "path": _RECORD, "consumer": "curator"},
+            {"artifact": "record", "path": _RECORD, "consumer": "helper"},
         ],
         # the helper's own limits, as its brief and first message state them (helpers.py constants)
         "limits": list(_HELPER_LIMITS),
@@ -471,7 +500,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
             "read any recorded episode read-only",
             "run Python in its own box",
         ],
-        "absent_paths": ["/inputs/pool", "/memory/.pass"],
+        "absent_paths": ["/memory/.pass"],
         "expectations": [
             {
                 "expectation": "read the named episodes",
@@ -496,7 +525,10 @@ AGENT_PROFILES: tuple[dict, ...] = (
             "helper.json",
         ],
         "emits": list(_EVENTS),
-        "pointers": [{"pointer": "recorded episodes", "tool": "read_episode"}],
+        "pointers": [
+            {"pointer": "recorded episodes", "tool": "read_episode"},
+            {"pointer": "agents on the record", "tool": "who"},
+        ],
     },
     {
         "agent": "gate",

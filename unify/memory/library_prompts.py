@@ -500,8 +500,6 @@ class Limits:
     #: messages at the end that are never moved
     compact_at_chars: int | None = None
     compact_keep_last: int = 0
-    #: the shortest finishing window at the end of a pass with helpers (writer_pass.finish_window_s)
-    finish_window_min_s: float = 300.0
     #: what the episode-end fork (and each helper call) can stage: files and bytes
     stage_files: int | None = None
     stage_bytes: int | None = None
@@ -527,9 +525,7 @@ def _limits_text(limits: Limits, helper_time: bool) -> str:
             "total_mib": _num(limits.total_bytes / 1024**2),
             "entries": limits.entries,
             "helper_time": (
-                "; time helpers spend counts toward it, and its last quarter (at least "
-                f"{_num(limits.finish_window_min_s)} s) is your finishing window: helpers still working when it "
-                "begins stop and hand back what they have staged, so you always have time to check and finish"
+                "; the helpers you start work within the same wall clock and stop when it is reached"
                 if helper_time
                 else ""
             ),
@@ -762,9 +758,12 @@ def write_brief(
         "4. Write tests first, against trusted values (rule 5), with fixtures made by `fixture`; see each new test "
         "fail before the code exists, then pass.\n"
         + (
-            "5. When it helps, hand a reading or drafting task to a helper with `delegate`; it stages its files "
-            "under /inputs/helpers/<call>/ and returns a summary and claims, each with the episode parts it rests "
-            "on. Read those parts yourself before you rely on a claim. Using it is your choice.\n"
+            "5. When it helps, hand a reading or drafting task to a helper with `delegate`. It returns at once and "
+            "the helper works while you go on; it messages you on the record as it goes (`messages` reads them, "
+            "`wait` waits for the next, `reply` answers) and ends with a summary and claims, each with the episode "
+            "parts it rests on, and its files under /inputs/helpers/<call>/. Read those parts yourself before you "
+            "rely on a claim. You decide when you have enough: `stop` ends a helper, and finishing ends every "
+            "helper still running, keeping what it staged. Using helpers is your choice.\n"
             if helpers
             else ""
         )
@@ -810,6 +809,8 @@ def write_brief(
         + "\n# Tools\n"
         + (tools + "\n" if tools else "")
         + "\n"
+        + _record_text()
+        + "\n"
         + procedure
         + "\n"
         + _WHAT_TO_WRITE
@@ -844,6 +845,13 @@ def write_brief(
     )
 
 
+def _record_text() -> str:
+    """The pass record's facts (:data:`.messaging.RECORD_TEXT`), stated in every brief of an agent on a record."""
+    from .messaging import RECORD_TEXT
+
+    return RECORD_TEXT
+
+
 def curate_brief(
     *,
     limits: Limits,
@@ -857,7 +865,7 @@ def curate_brief(
     return _fill(
         _CURATE,
         {
-            "tools": tools + "\n" if tools else "",
+            "tools": (tools + "\n" if tools else "") + "\n" + _record_text(),
             "limits": _limits_text(limits, helper_time=False),
             "pytest_env": _env(pytest_env),
             "overlaps_path": overlaps_path,
@@ -890,7 +898,6 @@ def limits_now(
         cells_per_turn=getattr(writer_pass, "_MAX_CELLS_PER_TURN", None),
         readers_per_turn=getattr(writer_pass, "READERS_PER_TURN", None),
         finish_refusals=writer_pass.FINISH_G1_REFUSALS if finish_capped else None,
-        finish_window_min_s=writer_pass.FINISH_WINDOW_MIN_S,
         # a capped pass also caps its repair rounds (repair.may_repair); repair_message states the same count
         repair_rounds=_repair.REPAIR_ROUNDS if finish_capped else None,
         compact_at_chars=writer_pass.COMPACT_AT_CHARS if compact else None,
