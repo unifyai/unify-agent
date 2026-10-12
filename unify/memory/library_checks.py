@@ -136,7 +136,8 @@ def derive_effect(
     Structural, from the recording only; the writer declares nothing (no docstring line):
     - an ``episode`` cover run by the ``tool`` runner repeats the episode's tool calls, so it writes when the
       episode recorded a write call, and is unknown when the episode's calls declare no effect;
-    - an ``episode`` cover run by the ``worktree`` runner changes files: it writes.
+    - an ``episode`` cover run by the ``worktree`` runner changes files: it writes;
+    - an ``episode`` cover run by another runner (a dialogue) records no call it makes: it reads.
     The strongest wins: ``write``, then ``unknown``, then ``read``. None for a function with no ``episode`` cover:
     its examples are calls its tests make, which record no call it makes itself, so no effect is guessed.
     """
@@ -144,6 +145,7 @@ def derive_effect(
     for c in typed_covers:
         if getattr(c, "type", None) != "episode":
             continue
+        found.add("read")
         if c.runner == "worktree":
             found.add("write")
         elif c.runner == "tool":

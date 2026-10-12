@@ -483,3 +483,10 @@ def test_rendered_perturbation_reasons_are_filed_as_they_are_and_input_fixtures_
     ex.judge()
     assert _reasons(run) == ["[examples:unjudged] rendered by the perturbation check"]
     assert run.input_fixtures == {ITEM: fakes.inputs}
+
+
+def test_a_dialogue_procedure_reads():
+    from unify.memory.library_checks import derive_effect
+    from unify.memory.procedures import Cover
+
+    assert derive_effect([Cover("d", "episode", runner="dialogue", action=0)], lambda eid: None) == "read"
