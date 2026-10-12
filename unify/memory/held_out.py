@@ -1081,12 +1081,6 @@ def plan(
     """
     out = Plan()
     field_types = dict(field_types or {})
-    declared_seen: set[str] = set()
-    unwritten: dict[str, str] = (
-        {}
-    )  # declared fields not written as a value of their type
-    all_seen: dict[str, str] = {}  # declared fields whose whole domain is recorded
-    typed_any: set[str] = set()  # declared fields some cover checked as their type
     shell = sum(1 for _, _, a in covers if getattr(a, "kind", "tool") == "shell")
     if shell:
         out.notes.append(f"skips {shell} shell cover(s) (not supported yet)")
@@ -1150,136 +1144,53 @@ def plan(
             d = _observation_doc(a.response)
             if d is not None:
                 ranged(rfam, d)
-    # constancy: the pool's distinct observations (by content) by family and field-name set, each with the
-    # first episode that showed it and its fields' values
-    shapes: dict[tuple, dict[str, tuple[str, dict[str, set[str]]]]] = {}
-    parses = 0
-    parse_capped: set[tuple] = set()  # families with a file the parse cap left unread
-    for eid, a in pool:
-        kind = getattr(a, "kind", "tool")
-        if kind == "shell":
+    for _, a in pool:
+        if getattr(a, "kind", "tool") != "tool":
             continue
-        if kind == "tool" and _form(a, input_kind) == "env":
-            fam = family(a)
-            if fam not in families or not isinstance(a.kwargs, dict):
-                continue
-            d = _Json(dict(a.kwargs), lambda o: o)
-            ranged(fam, d)
-            content = "kwargs:" + _key(a.kwargs)
-        elif kind == "tool":
-            fam = ("tool_response", a.channel, a.method)
-            if fam not in families or a.status != "ok":
-                continue
+        if _form(a, input_kind) == "env":
+            if family(a) in families and isinstance(a.kwargs, dict):
+                ranged(family(a), _Json(dict(a.kwargs), lambda o: o))
+            continue
+        rfam = ("tool_response", a.channel, a.method)
+        if rfam in families and a.status == "ok":
             d = _observation_doc(a.response)
             if d is not None:
-                ranged(fam, d)
-            content = "response:" + _key(a.response)
-        else:
-            fam = family(a)
-            if fam not in families or a.status != "ok" or is_rejection(a):
-                continue
-            if kind == "worktree":
-                if parses >= MAX_HOST_PARSES:
-                    parse_capped.add(fam)
-                    continue
-                parses += 1
-            content = (
-                f"blob:{_blob_sha(a)}"
-                if kind == "worktree"
-                else "observation:" + _key(a.response)
-            )
-            d = _doc(a, blob, input_kind)
-        if d is None:
-            continue
-        fields = d.fields()
-        seen_contents = shapes.setdefault((fam, frozenset(fields)), {})
-        if (
-            content not in seen_contents
-        ):  # identical content in two episodes is one observation
-            seen_contents[content] = (
-                eid,
-                {n: {_key(v) for v in vals} for n, (_, _, vals) in fields.items()},
-            )
-    if pool_capped:
-        out.notes.append(
-            "the recorded-observation pool stopped at its read cap; no field is kept as identity or "
-            "format",
-        )
-    if parse_capped:
-        out.notes.append(
-            f"constancy parsed its cap of {MAX_HOST_PARSES} recorded files; no field of a family with "
-            "unread files is kept as identity or format",
-        )
+                ranged(rfam, d)
+    constant, constancy_notes = constancy(
+        pool,
+        families,
+        blob,
+        input_kind,
+        pool_capped=pool_capped,
+    )
+    out.notes.extend(constancy_notes)
 
-    def constant(fam: tuple, shape: frozenset, name: str) -> bool:
-        if pool_capped or fam in parse_capped:
-            return False  # an unread observation could vary the field: fail safe
-        obs = list(shapes.get((fam, shape), {}).values())
-        values: set[str] = set()
-        for _, by_name in obs:
-            values |= by_name.get(name, set())
-        return (
-            len(obs) >= MIN_CONSTANT_OBSERVATIONS
-            and len({eid for eid, _ in obs if eid}) >= MIN_CONSTANT_EPISODES
-            and len(values) == 1
-        )
-
-    kept: list[str] = []  # fields kept as identity or format, for the note
+    tally = _Tally()
     if any(isinstance(d, _Yaml) for d in docs.values()):
         strings |= _YAML_LITERALS
 
     for c, d in docs.items():  # in the hashed cover order
         a = chosen[c]
         kind, fam, form = getattr(a, "kind", "tool"), dfam[c], _form(a, input_kind)
-        perturbed: list[tuple] = []
-        fields = list(d.fields().items())
-        shape = frozenset(name for name, _ in fields)
-        typed: set[str] = set()
-        # declared fields first, outside the field limit
-        for name, (loc, value, _) in fields:
-            sem = field_types.get(name)
-            if sem is None:
-                continue
-            declared_seen.add(name)
-            got = declared_values(
-                sem,
-                value,
-                stats.get((fam, name), []),
-                seed_of(item, c[0], c[1], name),
-                strings,
-            )
-            if got.why == "contradicts":
-                out.mismatched[name] = sem
-                typed.add(name)
-                continue
-            if got.why == "format":
-                unwritten.setdefault(name, sem)
-                continue  # the field keeps the untagged shape check below
-            if got.why == "all_seen":
-                all_seen.setdefault(name, sem)
-            perturbed += [(name, loc, [(loc, v)], "in", sem) for v in got.ins]
-            perturbed += [(name, loc, [(loc, v)], "out", sem) for v in got.outs]
-            typed.add(name)
-        typed_any.update(typed)
-        checked = 0
-        for name, (loc, value, _) in fields:
-            if name in typed:
-                continue
-            if constant(fam, shape, name):
-                if name not in kept:
-                    kept.append(name)
-                continue
-            if checked >= MAX_FIELDS_PER_COVER:
-                break
-            seed = seed_of(item, c[0], c[1], name)
-            new = perturb_value(value, stats.get((fam, name), []), seed, strings)
-            if new is not None:
-                same = _same_record(d, loc, value, new)
-                perturbed.append((name, loc, [(loc, new)] + same, None, None))
-                checked += 1
+        perturbed, _ = field_cases(
+            item,
+            c,
+            d,
+            fam,
+            stats=stats,
+            strings=strings,
+            constant=constant,
+            field_types=field_types,
+            tally=tally,
+        )
         if not perturbed:
             continue
-        for name, loc, changes, side, sem in [(None, None, [], None, None)] + perturbed:
+        for fc in [None] + perturbed:
+            name = None if fc is None else fc.name
+            changes = [] if fc is None else fc.changes
+            loc = changes[0][0] if changes else None
+            side = None if fc is None else fc.side
+            sem = None if fc is None else fc.semantic
             n = len(out.cases)
             case = Case(c, name, fam, kind, {}, side=side, semantic=sem)
             rendered = d.render(changes)
@@ -1323,31 +1234,241 @@ def plan(
             else:
                 case.payload = {"kind": kind, "form": form, "observation": rendered}
             out.cases.append(case)
-    if kept:
-        out.notes.append(
+    out.mismatched.update(tally.mismatched)
+    out.notes.extend(_tally_notes(tally, field_types))
+    return out
+
+
+def constancy(
+    pool: list[tuple[str, Action]],
+    families: set[tuple[str, str, str]],
+    blob: Callable[[str], bytes],
+    input_kind: str | None,
+    *,
+    pool_capped: bool,
+) -> tuple[Callable[[tuple, frozenset, str], bool], list[str]]:
+    """Which fields hold one value across the recorded observations of their family and field-name set.
+
+    Returns ``constant(family, field-name set, field)`` and the notes on what could not be read. The pool's
+    distinct observations (by content) are grouped by family and field-name set, each with the first
+    episode that showed it and its fields' values (see the module docstring). When *pool_capped*, or a
+    family has a file the parse cap left unread, no field (of that family) is constant: fail safe.
+    """
+    shapes: dict[tuple, dict[str, tuple[str, dict[str, set[str]]]]] = {}
+    parses = 0
+    parse_capped: set[tuple] = set()  # families with a file the parse cap left unread
+    for eid, a in pool:
+        kind = getattr(a, "kind", "tool")
+        if kind == "shell":
+            continue
+        if kind == "tool" and _form(a, input_kind) == "env":
+            fam = family(a)
+            if fam not in families or not isinstance(a.kwargs, dict):
+                continue
+            d = _Json(dict(a.kwargs), lambda o: o)
+            content = "kwargs:" + _key(a.kwargs)
+        elif kind == "tool":
+            fam = ("tool_response", a.channel, a.method)
+            if fam not in families or a.status != "ok":
+                continue
+            d = _observation_doc(a.response)
+            content = "response:" + _key(a.response)
+        else:
+            fam = family(a)
+            if fam not in families or a.status != "ok" or is_rejection(a):
+                continue
+            if kind == "worktree":
+                if parses >= MAX_HOST_PARSES:
+                    parse_capped.add(fam)
+                    continue
+                parses += 1
+            content = (
+                f"blob:{_blob_sha(a)}"
+                if kind == "worktree"
+                else "observation:" + _key(a.response)
+            )
+            d = _doc(a, blob, input_kind)
+        if d is None:
+            continue
+        fields = d.fields()
+        seen_contents = shapes.setdefault((fam, frozenset(fields)), {})
+        if (
+            content not in seen_contents
+        ):  # identical content in two episodes is one observation
+            seen_contents[content] = (
+                eid,
+                {n: {_key(v) for v in vals} for n, (_, _, vals) in fields.items()},
+            )
+    notes: list[str] = []
+    if pool_capped:
+        notes.append(
+            "the recorded-observation pool stopped at its read cap; no field is kept as identity or "
+            "format",
+        )
+    if parse_capped:
+        notes.append(
+            f"constancy parsed its cap of {MAX_HOST_PARSES} recorded files; no field of a family with "
+            "unread files is kept as identity or format",
+        )
+
+    def constant(fam: tuple, shape: frozenset, name: str) -> bool:
+        if pool_capped or fam in parse_capped:
+            return False  # an unread observation could vary the field: fail safe
+        obs = list(shapes.get((fam, shape), {}).values())
+        values: set[str] = set()
+        for _, by_name in obs:
+            values |= by_name.get(name, set())
+        return (
+            len(obs) >= MIN_CONSTANT_OBSERVATIONS
+            and len({eid for eid, _ in obs if eid}) >= MIN_CONSTANT_EPISODES
+            and len(values) == 1
+        )
+
+    return constant, notes
+
+
+@dataclass
+class FieldCase:
+    """One field's perturbation of a document.
+
+    *changes* are (locator, new value) pairs: the field's own first, then the same-record date moves.
+    *side* is ``"in"`` (must be accepted) or ``"out"`` (must be refused) for a declared semantic type.
+    """
+
+    name: str
+    changes: list[tuple[Any, Any]]
+    side: str | None
+    semantic: str | None
+
+
+@dataclass
+class _Tally:
+    """What :func:`field_cases` saw across documents, for the notes and the declared-type check."""
+
+    declared: set[str] = field(default_factory=set)  # declared fields present in a document
+    mismatched: dict[str, str] = field(default_factory=dict)  # recorded values contradict the type
+    unwritten: dict[str, str] = field(default_factory=dict)  # not written as a value of their type
+    all_seen: dict[str, str] = field(default_factory=dict)  # whole domain already recorded
+    typed: set[str] = field(default_factory=set)  # checked as their declared type somewhere
+    kept: list[str] = field(default_factory=list)  # kept as identity or format
+
+    def add(self, other: "_Tally") -> None:
+        self.declared |= other.declared
+        self.mismatched.update(other.mismatched)
+        for name, sem in other.unwritten.items():
+            self.unwritten.setdefault(name, sem)
+        for name, sem in other.all_seen.items():
+            self.all_seen.setdefault(name, sem)
+        self.typed |= other.typed
+        for name in other.kept:
+            if name not in self.kept:
+                self.kept.append(name)
+
+
+def _tally_notes(t: _Tally, field_types: dict[str, str]) -> list[str]:
+    notes: list[str] = []
+    if t.kept:
+        notes.append(
             "fields with one value across the recorded observations of their shape, kept as identity "
             "or format and "
-            "not perturbed: " + ", ".join(k[:80] for k in kept[:_NAMED]) + _more(kept),
+            "not perturbed: " + ", ".join(k[:80] for k in t.kept[:_NAMED]) + _more(t.kept),
         )
-    unwritten = {n: t for n, t in unwritten.items() if n not in typed_any}
+    unwritten = {n: s for n, s in t.unwritten.items() if n not in t.typed}
     for name, sem in list(unwritten.items())[:5]:
-        out.notes.append(
+        notes.append(
             f"declared {sem} field {name[:80]} is not written as a {sem} value in a covered "
             "input; it keeps the untagged shape check",
         )
-    for name, sem in list(all_seen.items())[:5]:
-        out.notes.append(
+    for name, sem in list(t.all_seen.items())[:5]:
+        notes.append(
             f"declared {sem} field {name[:80]}: every in-domain value is already recorded; "
             "only out-of-domain values are checked",
         )
-    missing = sorted(set(field_types) - declared_seen)
+    missing = sorted(set(field_types) - t.declared)
     if missing:
-        out.notes.append(
+        notes.append(
             "declared fields not in any covered input, not checked: "
             + ", ".join(m[:80] for m in missing[:5])
             + (f" and {len(missing) - 5} more" if len(missing) > 5 else ""),
         )
-    return out
+    return notes
+
+
+def field_cases(
+    item: str,
+    key: tuple[str, int],
+    doc: Any,
+    fam: tuple[str, str, str],
+    *,
+    stats: dict,
+    strings: set[str],
+    constant: Callable[[tuple, frozenset, str], bool],
+    field_types: dict[str, str],
+    limit: int = MAX_FIELDS_PER_COVER,
+    tally: _Tally | None = None,
+) -> tuple[list[FieldCase], list[str]]:
+    """The perturbations of one document *doc* of family *fam*, and the notes on its fields.
+
+    Declared fields (*field_types*, field name to semantic type) come first, outside *limit*, with their
+    in-domain and out-of-domain values; then at most *limit* other fields, each replaced by a type-valid
+    unseen value (:func:`perturb_value`), skipping fields *constant* keeps as identity or format. Seeds
+    are :func:`seed_of` (*item*, *key*, field). *stats* maps (family, field) to the field's observed
+    values; *strings* every recorded string. A declared field whose recorded values contradict its type is
+    not perturbed and is noted. *tally*, when given, gathers what was seen across documents.
+    """
+    own = _Tally()
+    cases: list[FieldCase] = []
+    fields = list(doc.fields().items())
+    shape = frozenset(name for name, _ in fields)
+    # declared fields first, outside the field limit
+    for name, (loc, value, _) in fields:
+        sem = field_types.get(name)
+        if sem is None:
+            continue
+        own.declared.add(name)
+        got = declared_values(
+            sem,
+            value,
+            stats.get((fam, name), []),
+            seed_of(item, key[0], key[1], name),
+            strings,
+        )
+        if got.why == "contradicts":
+            own.mismatched[name] = sem
+            own.typed.add(name)
+            continue
+        if got.why == "format":
+            own.unwritten.setdefault(name, sem)
+            continue  # the field keeps the untagged shape check below
+        if got.why == "all_seen":
+            own.all_seen.setdefault(name, sem)
+        cases += [FieldCase(name, [(loc, v)], "in", sem) for v in got.ins]
+        cases += [FieldCase(name, [(loc, v)], "out", sem) for v in got.outs]
+        own.typed.add(name)
+    checked = 0
+    for name, (loc, value, _) in fields:
+        if name in own.typed:
+            continue
+        if constant(fam, shape, name):
+            if name not in own.kept:
+                own.kept.append(name)
+            continue
+        if checked >= limit:
+            break
+        seed = seed_of(item, key[0], key[1], name)
+        new = perturb_value(value, stats.get((fam, name), []), seed, strings)
+        if new is not None:
+            same = _same_record(doc, loc, value, new)
+            cases.append(FieldCase(name, [(loc, new)] + same, None, None))
+            checked += 1
+    if tally is not None:
+        tally.add(own)
+    notes = [
+        f"declared {sem} field {name[:80]} holds recorded values outside its type; it is not "
+        "perturbed as declared"
+        for name, sem in list(own.mismatched.items())[:5]
+    ]
+    return cases, notes + _tally_notes(own, field_types)
 
 
 # --- the confined run --------------------------------------------------------------------------------------
