@@ -94,12 +94,12 @@ TAKEN_TEST = w.TEST_SOURCE.replace(
 )
 
 
-def _parent_files(blobs, ids_mod=IDS_MOD):
+def _parent_files(blobs, ids_mod=IDS_MOD, users=w.MODULE_SOURCE + NAME_FN):
     files, _ = w.files_and_fixtures(blobs.get)
     me_3, _ = fx.make(w.E3, 0, ME_3, blob=blobs.get)
     return {
         **files,
-        USERS: w.MODULE_SOURCE + NAME_FN,
+        USERS: users,
         IDS: ids_mod,
         T_IDS: IDS_TEST,
         ME_3: me_3.decode(),
@@ -290,15 +290,18 @@ def test_a_retirement_needs_a_reason_and_keeps_its_fixtures_used(library_example
 def test_an_edit_without_a_red_test_lands_only_in_curate_and_only_when_behaviour_is_kept(
     library_example_world,
 ):
+    """Every stored function of the edited module is compared on the calls the parent's tests make. The untested
+    account_name is left out of this library: a function in a changed module that no parent test calls and no
+    stored cover holds cannot be compared, so it would refuse the pass on its own."""
     mem, ev, blobs, gate = library_example_world
-    parent = _parent(mem, blobs)
+    parent = _parent(mem, blobs, users=w.MODULE_SOURCE)
     man = _curate_man(
         items=[_entry(ITEM_ID, [T], ["e1", "e2"])],
         deleted=[],
         aliases={},
         skeleton=[],
     )
-    kept = _candidate(mem, {USERS: REFACTOR + NAME_FN})
+    kept = _candidate(mem, {USERS: REFACTOR})
     res = gate(role="curate").check(parent, kept, man)
     assert res.passed, res.reasons
     res = gate(role="write").check(parent, kept, man)
@@ -307,14 +310,14 @@ def test_an_edit_without_a_red_test_lands_only_in_curate_and_only_when_behaviour
     ), res.reasons
     res = gate(role="curate").check(
         parent,
-        _candidate(mem, {USERS: TWISTED + NAME_FN}),
+        _candidate(mem, {USERS: TWISTED}),
         man,
     )
     assert not res.passed
     assert any(
         r.startswith(f"G3: {ITEM_ID} is edited in a clean-up pass without a red test")
         for r in res.reasons
-    )
+    ), res.reasons
 
 
 # --- an old name no parent test calls -------------------------------------------------------------------------
