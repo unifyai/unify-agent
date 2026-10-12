@@ -333,7 +333,7 @@ def test_an_original_that_does_not_reproduce_the_recording_is_unknown(tmp_path):
         "deterministic": None,
     }
     assert "case" not in got and rv.summary([got])["unknown"] == 1
-    same = _one(tmp_path, [cell], [3, 3], "n = fn(rows)", src, outputs=["[1, 3]\n"])
+    same = _one(tmp_path / "again", [cell], [3, 3], "n = fn(rows)", src, outputs=["[1, 3]\n"])
     assert same["verdict"] == "verified", same
     assert same["oracle"] == {
         "recording": "reproduced",
