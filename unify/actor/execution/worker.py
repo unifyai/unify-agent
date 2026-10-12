@@ -219,6 +219,12 @@ class PythonWorker:
         self.pid: Optional[int] = None
         # UNIFY_VARIABLE_INVENTORY=on: the line the last cell's run returned.
         self.inventory: Optional[str] = None
+        # The persistent interpreter (unify/common/box_interpreter.py) sets these before each start: the tool
+        # channel's two box ends (pipes, inherited under the same numbers), the box environment entry naming them,
+        # and a callback run once the sandbox has started (the channel closes the host's copies of the box ends).
+        self.box_fds: tuple = ()
+        self.box_env: Dict[str, str] = {}
+        self.on_spawn: Optional[Callable[[], None]] = None
 
     # -- lifecycle -------------------------------------------------------------
     @property
@@ -287,6 +293,7 @@ class PythonWorker:
         mounts = _mv2.worker_mounts()
         # ... or read-only (UNIFY_MEMORY_LIBRARY=on, spec v2.1 §6)
         late_ro = _mv2.worker_readonly_mounts()
+        env = {**env, **self.box_env}
         wrapped = sandbox.wrap_argv(
             argv,
             policy,
@@ -304,7 +311,15 @@ class PythonWorker:
                 cwd=workspace,
                 start_new_session=True,
                 limit=MAX_MESSAGE_BYTES,
+                # close_fds stays on: the box inherits only the standard streams and these pipes
+                pass_fds=tuple(self.box_fds),
             )
+        if self.on_spawn is not None:
+            try:
+                self.on_spawn()
+            except BaseException:
+                await self.close()
+                raise
         self._stderr_tail.clear()
         self._stderr_task = asyncio.create_task(self._drain_stderr(self._proc))
         self._synced = {}
