@@ -25,7 +25,7 @@ Environment text is never read here.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .evidence import EvidenceStore, _unknown_items
@@ -414,11 +414,97 @@ def failure_only(
 # --- the next map ------------------------------------------------------------------------------------------
 
 
+def _as_item(f: EpisodeUse, item: str, group: list[str]) -> EpisodeUse:
+    """*f* with the use of any id of *item*'s identity (*group*) counted as *item*'s own: its own use when it
+    has one, else the first other id's."""
+    if item in f.items or len(group) == 1:
+        return f
+    for n in group:
+        if n in f.items:
+            return replace(f, items={**f.items, item: f.items[n]})
+    return f
+
+
 def _status_in(rec: Mapping | None) -> str:
     from .library_index import STATUSES
 
     s = rec.get("status") if isinstance(rec, Mapping) else None
     return s if s in STATUSES else "experimental"
+
+
+def _combined_use(rows: Iterable[Mapping[str, dict]]) -> dict[str, dict]:
+    """Per-commit use rows of several ids of one item, summed key by key."""
+    out: dict[str, dict] = {}
+    for by_commit in rows:
+        for commit, row in by_commit.items():
+            acc = out.setdefault(commit, {})
+            for key, value in row.items():
+                acc[key] = acc.get(key, 0) + _n(value)
+    return dict(sorted(out.items()))
+
+
+def identities(
+    items: Iterable[str],
+    prev: Mapping[str, dict],
+    changed_at: Mapping[str, str | None],
+    renames: Iterable[tuple[str, str]] = (),
+    aliases: Mapping[str, dict] | None = None,
+) -> dict[str, tuple[str, list[str]]]:
+    """Each item's persistent identity: ``(uid, renamed_from)``.
+
+    An item with a record keeps that record's uid and lineage. An item without one that a landed pass renamed
+    from an older id (*renames*: ``(old, new)`` in landing order, followed back through several renames) takes
+    the nearest recorded ancestor's uid, with the ids it passed through appended to the lineage. A new function
+    that live CURATE aliases (*aliases*: old id -> ``{"target"}``) forward to takes the uid of the first such
+    alias (by id) that has one, the alias's id joining its lineage; the alias keeps its uid as well, since calls
+    to it reach the target. Anything else gets a new uid (:func:`.item_records.new_uid`)."""
+    from .item_records import new_uid
+
+    renamed_to: dict[str, str] = {}
+    for old, new in renames:
+        renamed_to[new] = old
+
+    def recorded(name: str) -> tuple[str, list[str]] | None:
+        rec = prev.get(name)
+        if not isinstance(rec, Mapping):
+            return None
+        uid = rec.get("uid")
+        if not isinstance(uid, str) or not uid:
+            # a record written before uids existed: derive it the way a first record does
+            uid = new_uid(name, rec.get("changed_at"))
+        lineage = rec.get("renamed_from")
+        lineage = [x for x in lineage if isinstance(x, str)] if isinstance(lineage, list) else []
+        return uid, lineage
+
+    by_target: dict[str, list[str]] = {}
+    for alias, row in sorted((aliases or {}).items()):
+        target = row.get("target") if isinstance(row, Mapping) else None
+        if isinstance(target, str):
+            by_target.setdefault(target, []).append(alias)
+    out: dict[str, tuple[str, list[str]]] = {}
+    for item in sorted(items):
+        found = recorded(item)
+        if found is None:
+            name, lineage, seen = item, [], {item}
+            while name in renamed_to and renamed_to[name] not in seen:
+                name = renamed_to[name]
+                seen.add(name)
+                lineage.insert(0, name)
+                ancestor = recorded(name)
+                if ancestor is not None:
+                    found = (ancestor[0], ancestor[1] + lineage)
+                    break
+            if found is None and lineage:
+                # renamed from ids no map recorded: a new identity that still names where it came from
+                found = (new_uid(lineage[0], changed_at.get(item)), lineage)
+        if found is None:
+            for alias in by_target.get(item, []):
+                ancestor = recorded(alias)
+                if ancestor is not None:
+                    found = (ancestor[0], ancestor[1] + [alias])
+                    break
+        out[item] = found or (new_uid(item, changed_at.get(item)), [])
+    return out
 
 
 def next_records(
@@ -452,6 +538,11 @@ def next_records(
     CURATE's decisions (``EvidenceStore.aliases()`` and ``curations()``), when given: a live alias is
     ``deprecated`` with ``alias_of`` its target, and an item a landed CURATE pass retired is ``deprecated`` with
     its reason (rule ``curate``). Without them ``alias_of`` and ``deprecated`` carry over.
+
+    Identity (:func:`identities`): every record has a ``uid`` and its ``renamed_from`` lineage, from the
+    ``rename`` rows of *curations* and the live aliases. Use, the status rules' episodes and source episodes are
+    joined through the uid: the ids an item had before (and an alias sharing its uid) count as the item, so its
+    counts survive a rename.
     """
     from .item_records import empty_record
     from .library_index import EFFECTS
@@ -468,10 +559,31 @@ def next_records(
     }
     use = aggregate_use(facts)
     unknown = set(unknown_version)
+    renames = [
+        (r["item"], r["target"])
+        for r in (curations or ())
+        if isinstance(r, Mapping)
+        and r.get("action") == "rename"
+        and isinstance(r.get("item"), str)
+        and isinstance(r.get("target"), str)
+    ]
+    ident = identities(
+        items,
+        prev,
+        changed_at,
+        renames,
+        live if live is not None else {},
+    )
+    names: dict[str, set[str]] = {}  # uid -> every id that stands for it
+    for item, (uid, lineage) in ident.items():
+        names.setdefault(uid, set()).update([item, *lineage])
     records: dict[str, dict] = {}
     for item in sorted(items):
         old = prev.get(item) or {}
         rec = empty_record(item, items[item])
+        uid, lineage = ident[item]
+        rec["uid"], rec["renamed_from"] = uid, list(lineage)
+        group = sorted(names[uid])
         rec["changed_at"] = changed_at.get(item)
         same = old.get("changed_at") == rec["changed_at"]
         alias = live.get(item) if live is not None else None
@@ -482,7 +594,11 @@ def next_records(
         )
         if same:
             rec["bisect"], rec["rollback"] = old.get("bisect"), old.get("rollback")
-        rec["use"] = use.get(item, {})
+        rec["use"] = (
+            use.get(item, {})
+            if group == [item]
+            else _combined_use(use.get(n, {}) for n in group)
+        )
         v = verification.get(item) or (old.get("verification") if same else None)
         rec["verification"] = v
         rec["input"] = v.get("input") if isinstance(v, dict) else None
@@ -492,15 +608,27 @@ def next_records(
         rec["source_channels"] = sorted(channels.get(item, []))
         flagged = sorted(failure.get(item, []))
         p = provenance.get(item) or {}
+        episodes = list(p.get("episodes", []))
+        for n in group:
+            if n != item:
+                episodes += [
+                    e
+                    for e in (provenance.get(n) or {}).get("episodes", [])
+                    if e not in episodes
+                ]
         rec["provenance"] = {
-            "episodes": list(p.get("episodes", [])),
+            "episodes": episodes,
             "pass": p.get("pass"),
             "failure_only": bool(flagged),
         }
         prior = (
             old.get("status") if (same or old.get("status") == "deprecated") else None
         )
-        mine = [f for f in facts if f.memory_main in since.get(item, set())]
+        mine = [
+            _as_item(f, item, group)
+            for f in facts
+            if f.memory_main in since.get(item, set())
+        ]
         status, rule, reason, evidence = decide_status(item, prior, mine)
         if item in unknown and status == "stable" and prior != "stable":
             # its current version is not known: the use counted may be an older version's
@@ -752,7 +880,12 @@ def consolidate_records(
         graph=graph,
         note_uses=note_uses,
         verification=verification_from_passes(ev),
-        provenance=provenance_from_evidence(ev, items),
+        # an item's source episodes include those recorded under the ids it was renamed from
+        provenance=provenance_from_evidence(
+            ev,
+            set(items)
+            | {r["item"] for r in ev.curations() if r.get("action") == "rename"},
+        ),
         failure=failure_only(ev, functions, {f.episode_id: f for f in facts}),
         channels=source_channels(ev, items, action_lookup),
         # CURATE's decisions: live aliases and landed retirements

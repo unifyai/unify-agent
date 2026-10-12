@@ -1101,8 +1101,16 @@ class Gate:
             landed_items = self._parse_manifest(landed_manifest).items
             res.items_merged = [it.item for it in landed_items]
             if self.library_mode is not None and self.library_mode.layout:
+                # a renamed item names its old id, so adoption joins across the rename (the item records' uid)
+                was = {
+                    r["target"]: r["item"]
+                    for r in res.curations
+                    if r.get("action") == "rename"
+                }
                 res.provenance = [
-                    {"item": it.item, "adopts": list(it.adopts)} for it in landed_items
+                    {"item": it.item, "adopts": list(it.adopts)}
+                    | ({"renamed_from": was[it.item]} if it.item in was else {})
+                    for it in landed_items
                 ]
             for it in landed_items:
                 for eid in it.source_episodes:
@@ -1141,7 +1149,8 @@ class Gate:
                 ],
             )
         if self.library_mode is not None and res.passed and res.curations:
-            # CURATE's aliases, retirements and dropped aliases (spec §10.4), for P5's records (alias_of, deprecated)
+            # CURATE's aliases, retirements and dropped aliases (spec §10.4), for the item records (alias_of,
+            # deprecated), and any pass's renames, which carry an item's uid to its new id
             self.ev.record_curations(pass_id, res.merged, res.curations)
         return res
 

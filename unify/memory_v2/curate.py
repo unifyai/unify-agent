@@ -387,7 +387,7 @@ def message(state: CurateState) -> str:
 
 def trailers(manifest: object) -> dict[str, list[str]]:
     """``Why:`` and ``Items:`` trailers of a CURATE commit from its manifest: the one-line why, and every
-    item it adds, changes, deletes, aliases or retires. Values are one line each (a trailer holds no newline).
+    item it adds, changes, deletes, aliases, renames or retires. Values are one line each (a trailer holds no newline).
     """
     if not isinstance(manifest, dict):
         return {}
@@ -400,7 +400,7 @@ def trailers(manifest: object) -> dict[str, list[str]]:
         if isinstance(it, dict) and isinstance(it.get("item"), str):
             ids.add(it["item"])
     ids |= {x for x in manifest.get("deleted") or [] if isinstance(x, str)}
-    for key in ("aliases", "retired"):
+    for key in ("aliases", "retired", "renames"):
         if isinstance(manifest.get(key), dict):
             ids |= {x for x in manifest[key] if isinstance(x, str)}
     if ids:

@@ -744,7 +744,9 @@ class LibraryChecks:
         raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
         aliases, retired = raw.get("aliases") or {}, raw.get("retired") or {}
         live = dict(self.gate.ev.aliases())
+        renamed = self._renames(raw)
         if self.cfg.role != "curate":
+            run.curations = renamed
             if aliases or retired:
                 run.fail(
                     "G1",
@@ -798,7 +800,8 @@ class LibraryChecks:
                 {"item": alias, "action": "alias", "target": target, "reason": why},
             )
             self._alias_tests(alias, target, listed, p_mods)
-        for item in sorted(deleted - set(aliases)):
+        renamed_old = {r["item"] for r in renamed}
+        for item in sorted(deleted - set(aliases) - renamed_old):
             if not retired.get(item, "").strip():
                 run.fail(
                     "G5",
@@ -850,7 +853,7 @@ class LibraryChecks:
                 "only as the target that old names become aliases of",
             )
         else:
-            targets = set(aliases.values())
+            targets = set(aliases.values()) | {r["target"] for r in renamed}
             for new in sorted(c_ids - p_ids - aliased - targets):
                 run.fail(
                     "G5",
@@ -858,7 +861,44 @@ class LibraryChecks:
                     "become aliases of",
                     new if new in listed else None,
                 )
-        run.curations = rows
+        run.curations = rows + renamed
+
+    def _renames(self, raw: dict) -> list[dict]:
+        """The manifest's ``renames`` (old item id -> new item id), any role: the item keeps its identity (its
+        record's ``uid``, use and lineage) under the new id. Refused: an old id that is not an item of the parent,
+        a new id that is not an item of the candidate or is already an item of the parent (merging two items is an
+        alias), and two old ids renamed to one new id. Returns the ``rename`` rows the gate records on landing."""
+        run = self.run
+        renames = raw.get("renames") or {}
+        if not isinstance(renames, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in renames.items()
+        ):
+            run.fail("G1", "renames maps old item ids to new item ids (strings)")
+            return []
+        if not renames:
+            return []
+        p_lib, c_lib = layout.discover(run.p_tree), layout.discover(run.c_tree)
+        p_ids = {f.item_id for f in p_lib.functions} | {n.item_id for n in p_lib.notes}
+        c_ids = {f.item_id for f in c_lib.functions} | {n.item_id for n in c_lib.notes}
+        rows: list[dict] = []
+        taken: dict[str, str] = {}
+        for old, new in sorted(renames.items()):
+            if old not in p_ids:
+                run.fail("G1", f"rename of {old}: it is not an item of the parent")
+            elif new not in c_ids:
+                run.fail("G1", f"rename of {old} to {new}: {new} is not an item of the candidate")
+            elif new in p_ids:
+                run.fail(
+                    "G1",
+                    f"rename of {old} to {new}: {new} is already an item of the parent; to merge two items, keep "
+                    "the old name as an alias (CURATE)",
+                )
+            elif new in taken:
+                run.fail("G1", f"rename of {old} to {new}: {taken[new]} is also renamed to {new}")
+            else:
+                taken[new] = old
+                rows.append({"item": old, "action": "rename", "target": new, "reason": ""})
+        return rows
 
     def _parent_chain(self) -> set[str]:
         """Review S3(b): the parent and the commits under it reached through harness status commits only, so a

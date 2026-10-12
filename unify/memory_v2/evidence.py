@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS curate_seen(fingerprint TEXT PRIMARY KEY, pass_id TEX
 CREATE TABLE IF NOT EXISTS curations(seq INTEGER PRIMARY KEY AUTOINCREMENT, pass_id TEXT, commit_sha TEXT,
   item TEXT, action TEXT, target TEXT, reason TEXT, UNIQUE(pass_id, item, action))
 """
-CURATION_ACTIONS = ("alias", "retire", "drop_alias")
+CURATION_ACTIONS = ("alias", "retire", "drop_alias", "rename")
 
 
 def _json_as(raw: object, default: list | dict) -> list | dict:
@@ -765,7 +765,7 @@ class EvidenceStore:
 
     def record_curations(self, pass_id: str, commit: str, rows: list[dict]) -> int:
         """Record what landed CURATE pass *pass_id* (commit *commit*) did: ``alias``, ``retire`` or ``drop_alias``
-        rows with ``item``, ``target`` and ``reason``. Returns the rows written; a pass's rows are written once.
+        rows with ``item``, ``target`` and ``reason``, and the ``rename`` rows (old id -> new id) of any landed pass. Returns the rows written; a pass's rows are written once.
         """
         with self.db:
             self._curate_tables()
