@@ -3,16 +3,10 @@
 * ``memory/__init__.py``: :mod:`.library_helper`, byte for byte (``index``, ``show``, ``find``);
 * ``INDEX.md`` and ``links.json``: :mod:`.library_index`;
 * ``.memory/items.json``: what ``show`` reads per item, namely its kind, path, signature or title, status, the
-<<<<<<< HEAD
-  verification and use records (None without item records) and the subjects of the commits that changed it;
-* ``.memory/find.json``: the listed functions with the recorded shapes of their example calls' arguments, each
-  naming its parameter, keyed by body digest (:mod:`.shape_rows`);
-=======
   verification and use records (None without item records), a function's example call (its record's, shown only
   while its test file still quotes it: :mod:`.example_view`) and the subjects of the commits that changed it;
-* ``.memory/find.json``: the listed functions with their recorded input shapes, keyed by body digest
-  (:mod:`.shape_rows`);
->>>>>>> rb-args-f
+* ``.memory/find.json``: the listed functions with the recorded shapes of their example calls' arguments, each
+  naming its parameter, keyed by body digest (:mod:`.shape_rows`);
 * ``.memory/matcher.py``: v2's matcher (:mod:`.memory_helper` up to its catalogue section, so none of v2's
   catalogue or its footer ships);
 * ``.memory/shapes.py``: :mod:`.analysis.shapes`, byte for byte.
