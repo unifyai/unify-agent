@@ -474,9 +474,23 @@ def _prompt_chars(m: object) -> int:
     return n
 
 
-def _usage_of(msg: object, usd: object) -> dict:
-    """The usage of the model call that produced a turn's tool calls; an unreported count stays None (unknown)."""
-    u = msg.get("usage") if isinstance(msg, dict) else None
+def split_usage(msg: dict) -> tuple[dict, object]:
+    """A turn's message as the conversation sends it next, and the provider's ``usage`` report it came with (None:
+    none). The report is a reply-only field, never sent back to the provider, so the message is a copy without it;
+    the turn's own dict is left as it is."""
+    if "usage" not in msg:
+        return msg, None
+    return {k: v for k, v in msg.items() if k != "usage"}, msg["usage"]
+
+
+def _usage_of(msg: object, usd: object, reported: object = None) -> dict:
+    """The usage of the model call that produced a turn's tool calls: *reported* (taken off the message by
+    :func:`split_usage`), else the message's own ``usage``; an unreported count stays None (unknown)."""
+    u = (
+        reported
+        if reported is not None
+        else (msg.get("usage") if isinstance(msg, dict) else None)
+    )
     u = u if isinstance(u, dict) else {}
 
     def num(*path: str) -> int | None:
@@ -4335,12 +4349,14 @@ class WriterPass:
                     errored = True
                     cause(CODE_WRITER_ERROR)
                     break
+                # the call's usage report stays with this turn; the next request never carries it
+                msg, reported = split_usage(msg)
                 messages.append(msg)
                 tool_calls = msg.get("tool_calls") or []
                 tool_calls = tool_calls if isinstance(tool_calls, list) else []
                 ran = 0
                 readers = 0  # library_mode reader calls in this turn
-                turn_usage: dict | None = _usage_of(msg, usd)
+                turn_usage: dict | None = _usage_of(msg, usd, reported)
                 last_prompt[0] = turn_usage["input"]
                 self._count_cache(turn_usage)
                 for n, tc in enumerate(tool_calls):
@@ -5022,6 +5038,10 @@ def unillm_turn(
       ``add_llm_event_listener``, so concurrent calls elsewhere in the process are never billed to the pass.
       The turn's USD is the sum of ``provider_cost``; it is ``unknown`` when no event arrived or any event's
       cost is ``None`` (cache hits, errors), which :class:`WriterPass` then reserves against its cap.
+    * Usage: the kept reply carries no ``usage``; unillm reports it only on each event's ``response``. The
+      returned message is a copy of the reply with the last such report as its ``usage`` (the call that produced
+      the reply), so the compaction trigger and the pass's token counts see the prompt size. The loops take it
+      off (:func:`split_usage`) before the message joins the conversation, so no request sends it back.
     * Credentials: unillm reads the provider key from the controller's environment. It never enters argv,
       logs, the box (whose environment is cleared) or anything this module writes.
 
@@ -5087,6 +5107,9 @@ def unillm_turn(
         costs: list[float | None] = []
         misrouted: list[bool] = []
 
+        # each call's usage report, from its event's response (the client's kept message carries none)
+        usages: list[dict] = []
+
         def hook(event) -> None:
             if route is not None and isinstance(event.request, dict):
                 event.request.pop("api_key", None)
@@ -5094,6 +5117,12 @@ def unillm_turn(
                 misrouted.append(base != route.base_url)
             if event.origin == origin:
                 costs.append(event.provider_cost)
+                response = event.response
+                usage = (
+                    response.get("usage") if isinstance(response, dict) else None
+                )
+                if isinstance(usage, dict):
+                    usages.append(usage)
 
         failure: tuple[str, str, str] | None = None
         timed_out = False
@@ -5131,8 +5160,11 @@ def unillm_turn(
             raise WriterRouteError(
                 "a writer call did not take the writer's declared route",
             )
-        msg = client.messages[-1]
-        msg = msg if isinstance(msg, dict) else dict(msg)
+        # a copy, so the client's own history is never changed; with retries, the last call that reported usage
+        # is the one whose reply this is
+        msg = dict(client.messages[-1])
+        if usages:
+            msg["usage"] = copy.deepcopy(usages[-1])
         if not costs or any(c is None for c in costs):
             return msg, _UNKNOWN
         return msg, _usd(sum((Decimal(str(c)) for c in costs), Decimal("0")))

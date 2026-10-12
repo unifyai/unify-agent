@@ -1005,13 +1005,21 @@ def _args(raw: Any) -> dict | None:
     return val if isinstance(val, dict) else None
 
 
-def _usage_of(msg: dict, usd: Any) -> dict:
-    u = msg.get("usage") if isinstance(msg, dict) else None
+def _usage_of(msg: dict, usd: Any, reported: Any = None) -> dict:
+    """A helper call's usage: *reported* (taken off the message by ``writer_pass.split_usage``), else the
+    message's own ``usage``; flat keys or the provider's nested ones (``prompt_tokens_details.cached_tokens``)."""
+    u = (
+        reported
+        if reported is not None
+        else (msg.get("usage") if isinstance(msg, dict) else None)
+    )
     u = u if isinstance(u, dict) else {}
 
     def n(*keys: str) -> int:
         for k in keys:
-            v = u.get(k)
+            v: Any = u
+            for part in k.split("."):
+                v = v.get(part) if isinstance(v, dict) else None
             if isinstance(v, int) and not isinstance(v, bool):
                 return v
         return 0
@@ -1019,10 +1027,23 @@ def _usage_of(msg: dict, usd: Any) -> dict:
     cost = _money(usd)
     return {
         "input": n("prompt_tokens", "input"),
-        "cache_read": n("cache_read", "cached_tokens"),
-        "cache_write": n("cache_write"),
+        "cache_read": n(
+            "cache_read",
+            "cached_tokens",
+            "prompt_tokens_details.cached_tokens",
+            "cache_read_input_tokens",
+        ),
+        "cache_write": n(
+            "cache_write",
+            "cache_creation_input_tokens",
+            "prompt_tokens_details.cache_write_tokens",
+        ),
         "output": n("completion_tokens", "output"),
-        "reasoning": n("reasoning_tokens", "reasoning"),
+        "reasoning": n(
+            "reasoning_tokens",
+            "reasoning",
+            "completion_tokens_details.reasoning_tokens",
+        ),
         "usd": _usd(cost) if cost is not None else _UNKNOWN,
     }
 
@@ -1419,6 +1440,15 @@ async def _run_helper(
         if not isinstance(msg, dict):
             doc["status"] = "error: the model returned no message"
             return
+        from .writer_pass import split_usage
+
+        # the call's usage report stays with this turn; the next request never carries it
+        msg, reported = split_usage(msg)
+        last_prompt = (
+            reported.get("prompt_tokens") if isinstance(reported, dict) else None
+        )
+        if isinstance(last_prompt, int) and not isinstance(last_prompt, bool):
+            doc["max_prompt_tokens"] = max(doc["max_prompt_tokens"] or 0, last_prompt)
         messages.append(msg)
         calls = msg.get("tool_calls") or []
         calls = calls if isinstance(calls, list) else []
@@ -1430,14 +1460,7 @@ async def _run_helper(
                 },
             )
             continue
-        usage = _usage_of(msg, usd)
-        last_prompt = (
-            (msg.get("usage") or {}).get("prompt_tokens")
-            if isinstance(msg.get("usage"), dict)
-            else None
-        )
-        if isinstance(last_prompt, int) and not isinstance(last_prompt, bool):
-            doc["max_prompt_tokens"] = max(doc["max_prompt_tokens"] or 0, last_prompt)
+        usage = _usage_of(msg, usd, reported)
         finished = False
         for i, tc in enumerate(calls):
             tc = tc if isinstance(tc, dict) else {}
