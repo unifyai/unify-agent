@@ -337,6 +337,9 @@ class GateResult:
     # only by the sandbox's marked capture), key-shaped strings redacted, by run label. Never stored in the pass
     # row, whose reasons keep v2's 300-character tail.
     outputs: dict[str, str] = field(default_factory=dict)
+    # library layout: one ``{"item", "adopts"}`` row per landed item, the proposals (staged files, helper output,
+    # pool entries) its manifest entry says it came from; empty when nothing landed
+    provenance: list[dict] = field(default_factory=list)
 
 
 def _failed(reason: str, check: str | None = None) -> GateResult:
@@ -1093,6 +1096,10 @@ class Gate:
             res.merged = landed
             landed_items = self._parse_manifest(landed_manifest).items
             res.items_merged = [it.item for it in landed_items]
+            if self.library_mode is not None and self.library_mode.layout:
+                res.provenance = [
+                    {"item": it.item, "adopts": list(it.adopts)} for it in landed_items
+                ]
             for it in landed_items:
                 for eid in it.source_episodes:
                     self.ev.add_item_evidence(it.item, eid, "source")
