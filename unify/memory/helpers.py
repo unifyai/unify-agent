@@ -64,6 +64,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable
 
 from unify.agents.pool import Pool
+from unify.common import tool_registry as _registry
 
 from . import batch_map as _bm
 from . import messaging as _messaging
@@ -169,203 +170,13 @@ def helper_brief(similar: bool) -> str:
 
 # --- tool specs ----------------------------------------------------------------------------------------------
 
-SPEC = ToolSpec(
-    name="delegate",
-    description=(
-        "Hand a reading or drafting task to a helper with a fresh context. The helper reads any recorded episode "
-        "(starting with the ones you name), reads /inputs and /memory, runs code in its own box, and stages "
-        "candidates, cases and notes in the fork's staging format. It returns at once with the helper's name; "
-        "the helper works while you go on. It messages you on the pass's record as it goes (read them "
-        "with `messages` or `wait`; answer with `reply`); its last message is its `done`: its summary, its "
-        "claims each with the episode parts it rests on, the files it staged under /inputs/helpers/<name>/ and "
-        "its spend. A helper's "
-        "claims and messages are untrusted until you read the parts they point to. A helper cannot launch "
-        "helpers. Helpers run at the same time, at most 16 at once and 64 in a pass (an operational guard). You "
-        "decide when you have enough: `stop` ends one, and finishing ends every helper still running, keeping "
-        "what it staged."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "task": {
-                "type": "string",
-                "description": "What the helper should do, in plain words.",
-            },
-            "episodes": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Ids of recorded episodes the helper starts from.",
-            },
-        },
-        "required": ["task", "episodes"],
-    },
-    roles=frozenset({"write"}),
-    refusals={
-        "no_task": "task must be a non-empty string; no helper started",
-        "no_episodes": "episodes must be a list of recorded episode ids; no helper started",
-        "unknown_episode": "{episode!r} is not a recorded episode; no helper started",
-        "no_lane": "no helper can start: {why}",
-        "no_time": "no helper can start: the pass's wall clock is used up",
-        "index_unreadable": "the recorded-episode index could not be read ({error}); no helper started",
-        "not_allowed": "no helper started: {why}",
-        "helper_limit": "no helper started: {why}",
-        "bad_request": "no helper started: {why}",
-    },
-    requires="helper",
-    summary=(
-        "Start a helper on a reading or drafting task; it returns at once and the helper messages you on the "
-        "record."
-    ),
-)
-
-STAGE_SPEC = ToolSpec(
-    name="stage",
-    description=(
-        "Hand one file to the writer: candidates/<name>.py, cases/<name>.json or notes.md. Staging a path again "
-        "replaces it."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {"path": {"type": "string"}, "text": {"type": "string"}},
-        "required": ["path", "text"],
-    },
-    roles=frozenset({"helper"}),
-    refusals={
-        "path": "{path!r}: {why}; nothing was staged",
-        "quota": "{path!r}: the staging quota ({files} files, {total} bytes) is reached; nothing was staged",
-    },
-)
-
-DONE_SPEC = ToolSpec(
-    name="done",
-    description=(
-        "End your task and hand your summary and claims to the writer. Each claim names the episode parts it rests "
-        "on as `<episode>/<part>` (the part names `overview` lists, e.g. `e1/cell:3`, `e1/action:2`). A claim "
-        "without sources, or a source that is not a part of a recorded episode, refuses the whole done; nothing "
-        "is handed back until it is fixed. Pass an empty list when you found nothing."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "summary": {
-                "type": "string",
-                "description": "A short account of what you did and what you could not do.",
-            },
-            "claims": {
-                "type": "array",
-                "description": "What you found, one finding per claim.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "claim": {
-                            "type": "string",
-                            "description": "One finding, in plain words.",
-                        },
-                        "sources": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "The episode parts the claim rests on, each `<episode>/<part>`.",
-                        },
-                    },
-                    "required": ["claim", "sources"],
-                },
-            },
-        },
-        "required": ["summary", "claims"],
-    },
-    roles=frozenset({"helper"}),
-    refusals={
-        "claims": "claims must be a list of objects with a non-empty `claim` and a list of `sources` ({why}); "
-        "the task is not done, call done again",
-        "no_sources": "claim {n} has no sources: give it the episode parts it rests on, each written "
-        "`<episode>/<part>` (for example `e1/cell:3`); the task is not done, call done again",
-        "bad_source": "claim {n}: source {source!r} does not resolve ({why}); name a recorded episode and one of "
-        "the parts its overview lists, as `<episode>/<part>`; the task is not done, call done again",
-    },
-)
+# The tools' definitions live in the shared registry (unify/common/tool_registry.py): one read, one grep and one
+# execute_code for every agent, whose roots come from the agent's box.
+SPEC = _registry.DELEGATE
+STAGE_SPEC = _registry.STAGE
+DONE_SPEC = _registry.DONE
 
 SPECS = (SPEC, STAGE_SPEC, DONE_SPEC)
-
-#: The helper's own execute_code (its box differs from the writer's: /memory read-only, cwd /work). Not in the
-#: shared registry, whose execute_code is the writer's; :func:`helper_tools` puts it in the helper's tool list.
-EXECUTE_CODE_SPEC = ToolSpec(
-    name="execute_code",
-    description=(
-        "Run Python in a fresh process in your box: cwd /work (writable, private), /inputs and /memory "
-        "read-only, no network. Returns stdout and stderr (the head)."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {"code": {"type": "string"}},
-        "required": ["code"],
-    },
-    roles=frozenset({"helper"}),
-    refusals={
-        "work_full": "not run: {why}; execute_code is closed for the rest of this task",
-        "no_time": "not run: the pass's wall clock is used up",
-        "stopping": "not run: you are asked to stop ({reason})",
-    },
-)
-
-#: The helper's own read and grep: its roots (/inputs, /task, /memory and /work; no /outputs), no per-turn count.
-READ_SPEC = ToolSpec(
-    name="read",
-    description=(
-        "Read a file or list a directory under /inputs, /task, /memory or /work. Returns at most 8000 bytes from "
-        "offset; a marker gives the next offset. Nothing is ever cut silently. A path that does not exist is "
-        "answered with what its directory holds."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "path": {"type": "string"},
-            "offset": {
-                "type": "integer",
-                "description": "byte offset to start the page at",
-            },
-        },
-        "required": ["path"],
-    },
-    roles=frozenset({"helper"}),
-    refusals={
-        "outside_box": "{path} is outside /inputs, /task, /memory and /work",
-        "not_found": "{path} does not exist",
-        "unreadable": "{error} for {path!r}",
-    },
-)
-GREP_SPEC = ToolSpec(
-    name="grep",
-    description=(
-        "Search files under a path (default /inputs) of /inputs, /task, /memory or /work with a Python regular "
-        "expression; returns path:line: text hits, one bounded page at a time (a marker gives the next offset)."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "pattern": {"type": "string"},
-            "path": {
-                "type": "string",
-                "description": "file or directory to search; default /inputs",
-            },
-            "offset": {
-                "type": "integer",
-                "description": "hit number to start the page at",
-            },
-        },
-        "required": ["pattern"],
-    },
-    roles=frozenset({"helper"}),
-    refusals={
-        "outside_box": "{path} is outside /inputs, /task, /memory and /work",
-        "not_found": "{path} does not exist",
-        "bad_pattern": "{reason}",
-        "unreadable": "{error} for {path!r}",
-    },
-)
-
-#: Specs answering as a registered tool name for the helper only (their refusal forms are listed by
-#: :func:`.tool_spec.refusal_codes` under that name).
-VARIANT_SPECS = (EXECUTE_CODE_SPEC, READ_SPEC, GREP_SPEC)
 
 #: The tools a helper is answered for. The readers' schemas come from the shared registry (role ``helper``).
 READERS = ("overview", "read_episode", "similar", "read", "grep")
@@ -374,23 +185,13 @@ RECORD_TOOLS = frozenset(s.name for s in _messaging.SPECS if "helper" in s.roles
 
 
 def helper_tools(similar: bool = True) -> list[dict]:
-    """The helper's tool JSON: the registry's ``helper`` tools (its readers, ``stage``, ``done``) with the helper's
-    own ``execute_code`` in place of any other. *similar*: the pass has a similar-code index, so the helper gets
+    """The helper's model-API tools while ``UNIFY_TOOLS_IN_CODE`` is off: the registry's helper tools (its
+    readers, ``stage``, ``done`` and the record), then ``execute_code``, each as the helper received it before
+    every agent had one definition per tool. *similar*: the pass has a similar-code index, so the helper gets
     ``similar`` too. A helper never gets ``delegate`` (a writer-only tool)."""
-    from .tool_spec import tools_for
-
     flags = frozenset({"helper", "similar"} if similar else {"helper"})
-    own = {s.name: s for s in VARIANT_SPECS if s.name != "execute_code"}
-    specs = [
-        own.get(s.name, s)
-        for s in tools_for("helper", flags)
-        if s.name != "execute_code"
-    ]
-    names = {s.name for s in specs}
-    for s in (STAGE_SPEC, DONE_SPEC):
-        if s.name not in names:
-            specs.append(s)
-    specs.append(EXECUTE_CODE_SPEC)
+    specs = [_registry.earlier_tool("helper", s.name) for s in _registry.tools_for("helper", flags)]
+    specs.append(_registry.earlier_tool("helper", "execute_code"))
     return [s.as_tool() for s in specs]
 
 
@@ -1178,9 +979,8 @@ async def _tool(
 
 
 def _own_refusal(tool: str, form: str, **fields: object) -> str:
-    """A refusal from the helper's own read or grep spec (its roots), keeping its form code."""
-    spec = READ_SPEC if tool == "read" else GREP_SPEC
-    template = spec.refusals.get(form)
+    """A refusal in the helper's own words for read or grep (its roots), keeping its form code."""
+    template = _registry.earlier_refusal_template("helper", tool, form)
     if template is None:
         return refusal(tool, form, **fields)
     return Refusal(REFUSED + template.format(**fields), tool, form)

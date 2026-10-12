@@ -52,19 +52,18 @@ def test_no_refusal_text_is_written_outside_the_tool_spec():
             if _REFUSED_LITERAL.search(line):
                 found.append(f"{name}:{i}: {line.strip()}")
     assert found == []
-    assert _REFUSED_LITERAL.search((PKG / "tool_spec.py").read_text())
+    # the templates live in the shared registry
+    assert _REFUSED_LITERAL.search((PKG.parent / "common" / "tool_registry.py").read_text())
 
 
 def test_refusal_codes_list_every_form_of_every_tool_and_each_renders():
     codes = tool_spec.refusal_codes()
     for spec in tool_spec.registry():
         assert set(spec.refusals) <= set(codes[spec.name]), spec.name
-    for spec in helpers.VARIANT_SPECS:
-        assert set(spec.refusals) <= set(codes[spec.name]), spec.name
     assert codes[tool_spec.GENERAL] == sorted(tool_spec.GENERAL_REFUSALS)
     templates = {
         (s.name, f): t
-        for s in (*tool_spec.registry(), *helpers.VARIANT_SPECS)
+        for s in tool_spec.registry()
         for f, t in s.refusals.items()
     }
     for tool, forms in codes.items():

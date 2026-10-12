@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from . import mining
-from .tool_spec import ToolSpec
+from unify.common import tool_registry as _registry
 
 FORMAT = 1  # the index file's layout; a file of another format is rebuilt
 INDEX_TIME_LIMIT_S = (
@@ -35,48 +35,8 @@ EXCERPT_LINES = 3
 EXCERPT_WIDTH = 120
 INDEX_FOLDER = "memory-similar"
 
-SPEC = ToolSpec(
-    name="similar",
-    description=(
-        "Find the other recorded episodes that contain the same code as one cell of an episode, or as code you "
-        "give. Code is compared after normalising it: variable names are renamed in order of use and literal "
-        "values are lifted out, while builtins, names the code imports, attribute names and keyword names are "
-        "kept, so the same code written with other variable names or constants matches. The reply lists, for the "
-        "whole cell and for each statement of at least "
-        f"{mining.MIN_NODES} AST nodes, the episodes and cells where it occurs, with counts and a short excerpt "
-        "as written there. Episodes are indexed when they are recorded; the reply names any recorded episode "
-        "that is not indexed. Give `episode` and `cell`, or `code`."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "episode": {"type": "string", "description": "A recorded episode id."},
-            "cell": {
-                "type": "integer",
-                "description": "The index of a cell of that episode.",
-            },
-            "code": {
-                "type": "string",
-                "description": "Python source to look for, instead of an episode's cell.",
-            },
-        },
-        "additionalProperties": False,
-    },
-    roles=frozenset({"write", "helper"}),
-    # offered only when the run has an index folder to search
-    requires="similar",
-    refusals={
-        "args": "give `episode` and `cell` together, or `code` alone.",
-        "unknown_episode": "no recorded episode {episode}.",
-        "unknown_cell": "episode {episode} has no cell {cell}; its cells are {cells}.",
-        "no_parse": "the code does not parse as Python ({error}).",
-        "not_available": "similar is not available in this pass",
-    },
-    summary=(
-        "other recorded episodes containing the same normalised code as a cell (`episode`, `cell`) or as "
-        "given `code`, with counts and excerpts."
-    ),
-)
+# The tool's definition lives in the shared registry (unify/common/tool_registry.py).
+SPEC = _registry.SIMILAR
 
 
 def _refuse(form: str, **fields: object) -> str:
