@@ -159,7 +159,9 @@ def test_a_scripted_writer_pass_runs_its_tools_from_cells_in_a_real_box(tmp_path
     assert out.finished, (out.reasons, model.outputs, summary)
     assert out.passed, (out.reasons, model.outputs, summary)
     assert took < 600
-    c1, c2, c3, c4 = (model.outputs[k] for k in ("c1", "c2", "c3", "c4"))
+    # the tool results the conversation holds (the last one is never sent back to the model)
+    outputs = {m["tool_call_id"]: m["content"] for m in writer.messages if m.get("role") == "tool"}
+    c1, c2, c3, c4 = (outputs[k] for k in ("c1", "c2", "c3", "c4"))
     assert "EPISODE True Result" in c1 and "LISTING True" in c1 and "GREP Result" in c1, c1
     assert "REFUSED outside_roots" in c1, c1
     assert "ok: created env/venmo/__init__.py" in c2 and "FIXTURE" in c2, c2
