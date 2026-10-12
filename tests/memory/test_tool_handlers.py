@@ -406,7 +406,7 @@ def test_no_writer_reply_or_row_carries_an_environment_value_a_host_path_or_a_ro
         [_cell("c1", *WRITER_REFUSALS)],
         helper=_helper_factory([("done", {"summary": "s", "claims": []})], []),
         edit_tools=True,
-        max_calls=2,
+        max_calls=12,  # check, replay, fixture, write and edit each count against it as today
         deadline_s=90.0,
     )
     assert "c1" in model.outputs, _summary(out, rows)
