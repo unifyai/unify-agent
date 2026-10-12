@@ -211,7 +211,11 @@ def test_a_function_grounded_on_one_episode_passes_and_a_memorising_one_still_fa
         w.manifest(fixtures, w.item(source_episodes=["e1"])),
     )
     assert not res.passed
-    assert any(SPECIAL.match(r) for r in res.reasons), res.reasons
+    # both fixtures hold the one episode's values, so the reason names the candidates together ("one of ...")
+    assert any(
+        r.startswith(f"G2: [examples:special-cased] {w.ITEM_ID} handles ")
+        for r in res.reasons
+    ), res.reasons
 
 
 def test_a_function_that_handles_only_its_recorded_values_is_refused(
