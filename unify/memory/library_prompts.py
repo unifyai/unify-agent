@@ -565,6 +565,8 @@ class Limits:
     #: percent, a call's prompt reaches before the conversation is summarised (None: compaction off), and whether
     #: the request messages are kept before the summary (UNIFY_COMPACTION_KEEP_PREFIX=on)
     compact_threshold_percent: str | None = None
+    #: and the fixed prompt size at which it compacts first (context_compression.compaction_at_tokens)
+    compact_at_tokens: int | None = None
     compact_keep_prefix: bool = False
     #: what the episode-end fork (and each helper call) can stage: files and bytes
     stage_files: int | None = None
@@ -611,7 +613,13 @@ def _limits_text(limits: Limits, helper_time: bool) -> str:
             ),
             "compaction": (
                 f" When a model call's prompt reaches {limits.compact_threshold_percent}% of the model's context "
-                "window, you are asked to summarise the work so far, and the conversation restarts from these "
+                "window"
+                + (
+                    f" or {limits.compact_at_tokens:,} tokens, whichever comes first"
+                    if limits.compact_at_tokens
+                    else ""
+                )
+                + ", you are asked to summarise the work so far, and the conversation restarts from these "
                 "instructions"
                 + (", the pass's request" if limits.compact_keep_prefix else "")
                 + " and your summary; nothing under /memory, /inputs or /outputs changes, so `read` shows any of it "
@@ -989,6 +997,7 @@ def limits_now(
         compact_threshold_percent=(
             _num(_cc.COMPACTION_THRESHOLD * 100) if compact else None
         ),
+        compact_at_tokens=_cc.compaction_at_tokens() if compact else None,
         compact_keep_prefix=bool(compact and _cc.keep_prefix_enabled()),
         stage_files=fork_worker.QUOTA_FILES,
         stage_bytes=fork_worker.QUOTA_BYTES,

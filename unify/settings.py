@@ -207,6 +207,10 @@ class ProductionSettings(BaseSettings):
     # request is never compacted around the same prefix twice in a row.
     # Empty (also ``off``): as shipped.
     UNIFY_COMPACTION_KEEP_PREFIX: str = ""
+    # The fixed prompt size, in tokens, at which every agent (the agent loop and the memory agents) compacts its
+    # context, unless 85% of the model's context window comes first; with no known window it applies alone. A
+    # context-management point, not a limit on what an agent reads or writes. A positive whole number.
+    UNIFY_COMPACTION_AT_TOKENS: int = 75_000
     # Where the actor's session states the host clock. Empty (also
     # ``system``): as shipped, a "Current Time" section near the end of the
     # system prompt, which tells the model to resolve "today" against it and
@@ -719,6 +723,16 @@ class ProductionSettings(BaseSettings):
         from unify.memory.integration import switch
 
         return switch.PARSERS[info.field_name](v)
+
+    @field_validator("UNIFY_COMPACTION_AT_TOKENS", mode="before")
+    @classmethod
+    def parse_compaction_at_tokens(cls, v: Any) -> int:
+        text = str(v).strip() if v is not None else ""
+        if isinstance(v, bool) or not text.isdigit() or int(text) <= 0:
+            raise ValueError(
+                f"UNIFY_COMPACTION_AT_TOKENS must be a positive whole number of tokens, not {v!r}",
+            )
+        return int(text)
 
     @field_validator("UNIFY_COMPACTION_KEEP_PREFIX", mode="before")
     @classmethod

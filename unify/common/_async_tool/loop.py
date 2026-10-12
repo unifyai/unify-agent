@@ -2651,11 +2651,8 @@ async def async_tool_loop_inner(
             if enable_compression:
                 with suppress(Exception):
                     _usage = getattr(_full_completion, "usage", None)
-                    if (
-                        _usage
-                        and getattr(_usage, "prompt_tokens", None)
-                        and _max_input_tokens
-                    ):
+                    # the window may be unknown: the fixed compaction point then applies alone
+                    if _usage and getattr(_usage, "prompt_tokens", None):
                         _over_threshold = context_over_threshold(
                             _usage.prompt_tokens,
                             COMPACTION_THRESHOLD,

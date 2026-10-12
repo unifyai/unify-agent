@@ -161,6 +161,27 @@ def test_no_compaction_with_the_switch_off_or_an_unknown_window(tmp_path):
         assert out.context_window == (None if name == "unknown" else 1_000), name
 
 
+def test_with_no_known_window_the_fixed_point_compacts(tmp_path):
+    fixed = context_compression.COMPACTION_AT_TOKENS
+    model = Compacting(_reads(3), window=None, prompt=fixed)
+    out, _ = _run(tmp_path / "at", model, compact=True)
+    assert out.compactions >= 1 and _summaries(model) and out.context_window is None
+    model = Compacting(_reads(3), window=None, prompt=fixed - 1)
+    out, _ = _run(tmp_path / "below", model, compact=True)
+    assert out.compactions == 0 and not _summaries(model)
+
+
+def test_the_brief_states_both_compaction_points():
+    from unify.memory import library_prompts as lp
+
+    brief = lp.write_brief_now(compact=True)
+    pct = lp._num(context_compression.COMPACTION_THRESHOLD * 100)
+    assert (
+        f"reaches {pct}% of the model's context window or 75,000 tokens, whichever comes first"
+        in brief
+    )
+
+
 def test_under_the_threshold_nothing_is_compacted(tmp_path):
     below = int(1_000 * context_compression.COMPACTION_THRESHOLD) - 1
     model = Compacting(_reads(3), window=1_000, prompt=below)
@@ -353,9 +374,61 @@ def _replay(window: int) -> dict:
 REPLAY_WINDOW = 128_000
 
 
-def test_the_recorded_pass_compacts_at_most_once_and_its_cache_rate_is_recorded():
+def test_the_recorded_pass_compacts_at_the_shared_point_without_forced_rereads_and_its_cache_rate_is_recorded():
+    """Under the shared rule (85% of the window or the fixed point, whichever comes first) the recorded pass, whose
+    prompt grew to about 92k tokens, compacts at the fixed 75,000-token point: once, and no result a compaction took
+    out is re-read within the kept turns."""
     r = _replay(REPLAY_WINDOW)
     print("replay", json.dumps(r))  # the measurement, in the test log
-    assert len(r["events"]) <= 1, r
+    assert (
+        context_compression.compaction_point(REPLAY_WINDOW)
+        == context_compression.COMPACTION_AT_TOKENS
+        == 75_000
+    )
+    assert r["events"] == [7], r
     assert r["rereads"] == [], r
     assert 0.0 < r["cache_hit_rate"] <= 1.0
+
+
+def test_every_agent_reads_one_compaction_point():
+    """The agent loop and the memory agents decide with the same constants and function."""
+    cc = context_compression
+    # a large window: the fixed point comes first
+    assert cc.compaction_point(1_000_000) == 75_000
+    assert writer_pass.compaction_due(
+        75_000,
+        1_000_000,
+    ) and not writer_pass.compaction_due(74_999, 1_000_000)
+    assert cc.context_over_threshold(75_000, cc.COMPACTION_THRESHOLD, 1_000_000)
+    # a smaller window: 85% of it comes first
+    assert cc.compaction_point(40_000) == 34_000
+    assert writer_pass.compaction_due(
+        34_000,
+        40_000,
+    ) and not writer_pass.compaction_due(33_999, 40_000)
+    # no known window: the fixed point alone
+    for unknown in (None, 0, "x"):
+        assert cc.compaction_point(unknown) == 75_000
+        assert writer_pass.compaction_due(
+            75_000,
+            unknown,
+        ) and not writer_pass.compaction_due(74_999, unknown)
+    # an unknown prompt size never triggers
+    assert not writer_pass.compaction_due(None, 1_000)
+
+
+def test_the_fixed_point_is_one_setting_with_a_validator(monkeypatch):
+    import pytest
+
+    from unify.settings import SETTINGS, ProductionSettings
+
+    assert (
+        ProductionSettings.model_fields["UNIFY_COMPACTION_AT_TOKENS"].default == 75_000
+    )
+    monkeypatch.setattr(SETTINGS, "UNIFY_COMPACTION_AT_TOKENS", 20_000)
+    assert context_compression.compaction_point(None) == 20_000
+    assert context_compression.compaction_point(1_000_000) == 20_000
+    for bad in ("0", "-5", "lots", "1.5"):
+        with pytest.raises(ValueError):
+            ProductionSettings.parse_compaction_at_tokens(bad)
+    assert ProductionSettings.parse_compaction_at_tokens("60000") == 60_000

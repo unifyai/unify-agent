@@ -13,17 +13,51 @@ from unify.common.llm_client import new_llm_client
 from unify.common.token_utils import count_tokens
 from unify.function_manager.execution_env import create_base_globals
 
-#: A loop compacts its context once a model call's prompt reaches this share of the model's context window
-#: (``unillm.get_max_input_tokens``): the agent loop's trigger, and the memory agents' (writer, curator, helpers).
-COMPACTION_THRESHOLD = 0.7
+#: Every agent (the agent loop, and the memory writer, curator and helpers) compacts its context once a model call's
+#: prompt reaches whichever comes first: this share of the model's context window (``unillm.get_max_input_tokens``)
+#: or a fixed number of prompt tokens (:func:`compaction_at_tokens`). With no known window, the fixed number applies.
+COMPACTION_THRESHOLD = 0.85
+#: The fixed number of prompt tokens, unless ``UNIFY_COMPACTION_AT_TOKENS`` sets another: a point where the
+#: conversation is summarised and restarted, not a limit on what an agent may read or write.
+COMPACTION_AT_TOKENS = 75_000
+
+
+def compaction_at_tokens() -> int:
+    """The fixed compaction point in prompt tokens: ``UNIFY_COMPACTION_AT_TOKENS``, else :data:`COMPACTION_AT_TOKENS`."""
+    from unify.settings import SETTINGS
+
+    v = getattr(SETTINGS, "UNIFY_COMPACTION_AT_TOKENS", None)
+    return (
+        v
+        if isinstance(v, int) and not isinstance(v, bool) and v > 0
+        else COMPACTION_AT_TOKENS
+    )
+
+
+def compaction_point(
+    max_input_tokens: object,
+    threshold: float = COMPACTION_THRESHOLD,
+) -> int:
+    """The prompt size at which a call's context is compacted: the smaller of *threshold* of the model's window
+    and the fixed point, or the fixed point alone when the window is unknown (None, zero or not a number).
+    """
+    fixed = compaction_at_tokens()
+    if (
+        isinstance(max_input_tokens, int)
+        and not isinstance(max_input_tokens, bool)
+        and max_input_tokens > 0
+    ):
+        return min(fixed, int(max_input_tokens * threshold))
+    return fixed
 
 
 def context_over_threshold(
     n_tokens: int,
     threshold: float,
-    max_input_tokens: int,
+    max_input_tokens: int | None,
 ) -> bool:
-    return n_tokens >= max_input_tokens * threshold
+    """Whether a call that used *n_tokens* of prompt has reached the compaction point (:func:`compaction_point`)."""
+    return n_tokens >= compaction_point(max_input_tokens, threshold)
 
 
 _COMPRESSED_HEADER = "## Compressed Prior Context\n"

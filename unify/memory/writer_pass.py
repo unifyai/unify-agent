@@ -372,8 +372,9 @@ RESTART_POINTER = (
 
 
 def compaction_due(prompt_tokens: object, window: object) -> bool:
-    """The agent loop's trigger (``context_over_threshold`` at ``COMPACTION_THRESHOLD``) for a call that used
-    *prompt_tokens* on a model with a context window of *window* tokens; False when either is unknown.
+    """The agent loop's trigger (``context_over_threshold``: :data:`COMPACTION_THRESHOLD` of *window*, or the fixed
+    compaction point, whichever comes first) for a call that used *prompt_tokens*; with no known *window* the fixed
+    point applies alone, and an unknown prompt size never triggers.
     """
     from unify.common._async_tool.context_compression import (
         COMPACTION_THRESHOLD,
@@ -386,8 +387,7 @@ def compaction_due(prompt_tokens: object, window: object) -> bool:
         or prompt_tokens <= 0
     ):
         return False
-    if not isinstance(window, int) or isinstance(window, bool) or window <= 0:
-        return False
+    # an unknown window leaves the fixed compaction point, as in the agent loop
     return context_over_threshold(prompt_tokens, COMPACTION_THRESHOLD, window)
 
 

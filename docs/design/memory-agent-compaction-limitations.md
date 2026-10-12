@@ -48,15 +48,13 @@ records exactly what is shared, what is not, and why, with file:line evidence at
 4. Step-cap compaction. The agent loop also compacts at its step limit (`UNIFY_STEP_CAP_COMPACT`); the memory agents
    have no step-cap compaction (their operational step guard ends a helper; the writer's calls are bounded by
    `max_calls`).
-5. No known window, no compaction. The trigger needs the model's context window from `unillm.get_max_input_tokens`
-   (the agent loop's source, `loop.py:1080`; the memory agents', `writer_pass.py:5049`). For a model unillm has no
-   window for, it returns None and neither the agent loop nor a memory agent compacts on size. On a keyless test
-   worker on 12 Oct, both `openai/gpt-6-sol@openrouter` and `openai/gpt-6-luna@openrouter` returned None. A run
-   that configures those models and sets `UNIFY_MEMORY_LIBRARY_COMPACT=on` compacts only if the run's unillm knows
-   their windows; check `get_max_input_tokens` for every configured endpoint before such a run.
+5. The trigger. Every agent, the agent loop included, compacts when a model call's prompt reaches whichever comes
+   first: 85% of the model's context window (`COMPACTION_THRESHOLD`, from `unillm.get_max_input_tokens`) or a fixed
+   75,000 prompt tokens (`COMPACTION_AT_TOKENS`, set by `UNIFY_COMPACTION_AT_TOKENS`); with no known window the fixed
+   point applies alone (`context_compression.compaction_point`, read by the loop through `context_over_threshold`
+   and by the memory agents through `writer_pass.compaction_due`). The fixed point is where a conversation is
+   summarised and restarted, not a limit on what an agent reads or writes.
 
-Parity. With no window known, a memory agent does not compact, exactly as the agent loop does not: both read the
-same trigger (`context_over_threshold` at `COMPACTION_THRESHOLD`) over the same window source. Giving the configured
-models a window would turn compaction on for the agent loop as well, so it is a change to both, decided for both.
-Each pass records the largest prompt each memory agent sent (`max_prompt_tokens` in the end event and in each
-`helper.json`) beside the window the trigger read (`context_window`, null when unknown), so a run shows the headroom.
+Parity. The agent loop and the memory agents decide with the same function and constants. Each pass records the
+largest prompt each memory agent sent (`max_prompt_tokens` in the end event and in each `helper.json`) beside the
+window the trigger read (`context_window`, null when unknown).
