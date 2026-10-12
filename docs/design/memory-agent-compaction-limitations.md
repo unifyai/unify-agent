@@ -48,3 +48,9 @@ records exactly what is shared, what is not, and why, with file:line evidence at
 4. Step-cap compaction. The agent loop also compacts at its step limit (`UNIFY_STEP_CAP_COMPACT`); the memory agents
    have no step-cap compaction (their operational step guard ends a helper; the writer's calls are bounded by
    `max_calls`).
+5. No known window, no compaction. The trigger needs the model's context window from `unillm.get_max_input_tokens`
+   (the agent loop's source, `loop.py:1080`; the memory agents', `writer_pass.py:5049`). For a model unillm has no
+   window for, it returns None and neither the agent loop nor a memory agent compacts on size. On a keyless test
+   worker on 12 Oct, both `openai/gpt-6-sol@openrouter` and `openai/gpt-6-luna@openrouter` returned None. A run
+   that configures those models and sets `UNIFY_MEMORY_LIBRARY_COMPACT=on` compacts only if the run's unillm knows
+   their windows; check `get_max_input_tokens` for every configured endpoint before such a run.
