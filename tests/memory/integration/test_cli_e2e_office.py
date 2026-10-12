@@ -242,7 +242,8 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch, surfacing):
 
     def first_turn(call):
         exports.append(_files(paths.checkout))
-        return reply(calls=[cell(_code(paths.checkout))])
+        # The cell names the export where the worker's sandbox binds it.
+        return reply(calls=[cell(_code(Path(sandbox.LIBRARY_MOUNT)))])
 
     model = ScriptedModel(actor=[first_turn, reply(FINAL)])
     code, lines = await _visit(core_world, monkeypatch, model, REQUEST, outcome=OUTCOME)
@@ -345,7 +346,7 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch, surfacing):
         STRAY in json.dumps(a) for a in raw_actions
     )  # the export is not the work tree
     assert len(ep.cells) == 1
-    assert ep.cells[0].code == _code(paths.checkout)
+    assert ep.cells[0].code == _code(Path(sandbox.LIBRARY_MOUNT))
     # the cell's structured result reached the use record through the tool loop (hooks.tool_result)
     assert ep.memory_use["cells"] == 1 and ep.memory_use["cells_without_metadata"] == 0
     assert [c["status"] for c in ep.memory_use["cell_status"]] == ["ok"]
