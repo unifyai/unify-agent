@@ -1192,7 +1192,13 @@ def _reasoning_text(m: Mapping) -> str | None:
 
     psf = m.get("provider_specific_fields")
     for src in (m, psf if isinstance(psf, Mapping) else {}):
-        for key in ("reasoning_details", "reasoning_content", "reasoning", "summary", "thinking_blocks"):
+        for key in (
+            "reasoning_details",
+            "reasoning_content",
+            "reasoning",
+            "summary",
+            "thinking_blocks",
+        ):
             take(src.get(key))
     return "\n".join(found) if found else None
 
@@ -1277,7 +1283,10 @@ def transcript_lines(
             header |= text_ref("tools", tools_text, inline)
         if not header:
             return None
-        return json.dumps({"pass_id": pass_id, "header": header, **label}, sort_keys=True)
+        return json.dumps(
+            {"pass_id": pass_id, "header": header, **label},
+            sort_keys=True,
+        )
 
     line = header_line(True)
     if (
@@ -1314,7 +1323,10 @@ def transcript_lines(
             extra["message_keys"] = sorted(str(k) for k in m)
             summary = _reasoning_text(m)
             if summary is not None:
-                extra["reasoning_summary"] = _plain(_scrub(red.obj(summary)), string_chars)
+                extra["reasoning_summary"] = _plain(
+                    _scrub(red.obj(summary)),
+                    string_chars,
+                )
         try:
             plain = _scrub(red.obj(json.loads(json.dumps(m, default=str))))
             # the first user message and the brief's name are kept whole; every other string is cut
@@ -1336,7 +1348,9 @@ def transcript_lines(
         size = len(line.encode("utf-8")) + 1
         if used + size > max_bytes - marker_room:
             lines.append(
-                json.dumps({"pass_id": pass_id, "truncated": len(messages) - i, **label}),
+                json.dumps(
+                    {"pass_id": pass_id, "truncated": len(messages) - i, **label},
+                ),
             )
             break
         lines.append(line)
@@ -1356,7 +1370,8 @@ def record_transcript(
 ) -> dict:
     """Write *agent*'s transcript (:func:`transcript_lines`: redacted, then bounded) to
     ``<root>/<pass_id>/transcripts/<agent>.jsonl``, created new; return its manifest (agent, path, lines, bytes,
-    sha256), or the error that kept it from being written. The one place a helper's transcript is stored."""
+    sha256), or the error that kept it from being written. The one place a helper's transcript is stored.
+    """
     lines = transcript_lines(messages, pass_id, redactor, tools=tools, label=label)
     data = "".join(line + "\n" for line in lines).encode("utf-8")
     path = Path(root) / pass_id / "transcripts" / f"{agent}.jsonl"
@@ -1369,7 +1384,11 @@ def record_transcript(
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
+        fd = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o644,
+        )
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
     except OSError as exc:
@@ -1386,7 +1405,8 @@ def record_lines(
     string_chars: int = TRANSCRIPT_STRING_CHARS,
 ) -> list[str]:
     """The pass record's entries (:mod:`.messaging`) as JSON lines ``{"pass_id", "record": {seq, ts, author, kind,
-    text, mentions}}``, redacted and bounded as :func:`transcript_lines` bounds a transcript."""
+    text, mentions}}``, redacted and bounded as :func:`transcript_lines` bounds a transcript.
+    """
     red = redactor if redactor is not None else Redactor()
     lines: list[str] = []
     used = 0
@@ -1395,7 +1415,9 @@ def record_lines(
         line = json.dumps({"pass_id": pass_id, "record": entry}, sort_keys=True)
         size = len(line.encode("utf-8")) + 1
         if used + size > max_bytes - 200:
-            lines.append(json.dumps({"pass_id": pass_id, "record_truncated": len(entries) - n}))
+            lines.append(
+                json.dumps({"pass_id": pass_id, "record_truncated": len(entries) - n}),
+            )
             break
         lines.append(line)
         used += size
@@ -2718,7 +2740,9 @@ class WriterPass:
                     },
                     index_root=self.cfg.similar_index,
                 )
-            except Exception as exc:  # noqa: BLE001 - the pool never stops a pass; the rows say why
+            except (
+                Exception
+            ) as exc:  # noqa: BLE001 - the pool never stops a pass; the rows say why
                 for row in bmap.get("episodes", []):
                     row["related_closed"] = {
                         "count": None,
@@ -2969,6 +2993,19 @@ class WriterPass:
                 return _redact(f"G1: {probs[0]}")[:600], False
             self._pool_manifest = manifest
             self._pool_library_items = library_items
+        if self.curate_state is not None:
+            # rule 7 of the curate brief, checked while the pass can still act on it: a reason left without a
+            # change to an item it names, or a keep, fires again after a later WRITE pass
+            left = _curate.unaddressed(self.curate_state, manifest)
+            if left:
+                return (
+                    _redact(
+                        f"G1: {len(left)} reason(s) in your inputs have no change to an item they name and no "
+                        "keep; change one of each one's items, or keep it with why in `kept`: "
+                        + "; ".join(left),
+                    )[:600],
+                    False,
+                )
         return None, not man.items and not man.deleted
 
     def _event(
@@ -2981,7 +3018,8 @@ class WriterPass:
         extra: dict | None = None,
     ) -> None:
         """One ``tool_call`` row of tool-events.jsonl, from the tool layer's own reply (never from transcript text),
-        appended when the call ends; *extra* adds fields (delegate and the record's tools: ``messaging``)."""
+        appended when the call ends; *extra* adds fields (delegate and the record's tools: ``messaging``).
+        """
         reply = reply or _wt.Reply("")
         args_text = (
             raw_args if isinstance(raw_args, str) else json.dumps(raw_args, default=str)
@@ -3643,7 +3681,9 @@ class WriterPass:
 
         async with contextlib.AsyncExitStack() as scope:
             wt = scope.enter_context(self.mem.temp_checkout())
-            tmp = scope.enter_context(tempfile.TemporaryDirectory(prefix="memory-writer-"))
+            tmp = scope.enter_context(
+                tempfile.TemporaryDirectory(prefix="memory-writer-"),
+            )
             scope.enter_context(_KeepOnCancel(self, parent, pass_id))
             # on every way out (finish, deadline, error, cancellation) no helper outlives the pass: they end before
             # the pass's directories go
@@ -4190,7 +4230,14 @@ class WriterPass:
                     elif library and name == "delegate":
                         from . import helpers as _helpers
 
-                        ctx = self._helper_context(pass_id, inputs, box, Path(tmp), deadline, spend)
+                        ctx = self._helper_context(
+                            pass_id,
+                            inputs,
+                            box,
+                            Path(tmp),
+                            deadline,
+                            spend,
+                        )
                         info: dict = {}
                         reply = _delegate_reply(await _helpers.handle(args, ctx, info))
                         event_extra = _messaging_extra(info)
@@ -4198,7 +4245,13 @@ class WriterPass:
                         # the record's tools (send, messages, wait, who, reply, stop): messaging.py
                         info = {}
                         reply = _delegate_reply(
-                            await _messaging.call(self._pass_record, self._pass_record.root, name, args, info),
+                            await _messaging.call(
+                                self._pass_record,
+                                self._pass_record.root,
+                                name,
+                                args,
+                                info,
+                            ),
                         )
                         event_extra = _messaging_extra(info)
                     elif library and name == "fixture":
@@ -4272,7 +4325,14 @@ class WriterPass:
                             "content": str(content),
                         },
                     )
-                    self._event(pass_id, name, fn.get("arguments"), reply, turn_usage, event_extra)
+                    self._event(
+                        pass_id,
+                        name,
+                        fn.get("arguments"),
+                        reply,
+                        turn_usage,
+                        event_extra,
+                    )
                     turn_usage = None
                 if not tool_calls:
                     messages.append(

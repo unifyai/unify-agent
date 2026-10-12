@@ -280,6 +280,46 @@ def settled(
     return out
 
 
+def unaddressed(
+    state: CurateState,
+    manifest: object,
+    *,
+    budget: int = INDEX_VIEW_TOKENS,
+) -> list[str]:
+    """The reason lines this pass fired that its *manifest* neither changes nor keeps an item of: the reasons
+    :func:`settled` would leave to fire again even if every change lands. A named item is changed when the
+    manifest lists it in ``items``, ``deleted`` or ``retired``, or names it on either side of ``aliases`` or
+    ``renames``; kept when ``kept`` gives it a reason. The index reason is met by any change or a keep of
+    :data:`INDEX_NAME`."""
+    m = manifest if isinstance(manifest, dict) else {}
+    touched: set[str] = set()
+    for it in m.get("items") or []:
+        if isinstance(it, dict) and isinstance(it.get("item"), str):
+            touched.add(it["item"])
+    for key in ("deleted",):
+        touched |= {x for x in m.get(key) or [] if isinstance(x, str)}
+    for key in ("retired", "aliases", "renames"):
+        block = m.get(key)
+        if isinstance(block, dict):
+            touched |= {x for x in block if isinstance(x, str)}
+            if key != "retired":
+                touched |= {x for x in block.values() if isinstance(x, str)}
+    keeps = kept(m)
+    names = named(state, budget=budget)
+    out = []
+    for fp, line in sorted(state.fired.items()):
+        items = names.get(fp, [])
+        if any(i in keeps for i in items):
+            continue
+        if INDEX_NAME in items:
+            if touched:
+                continue
+        elif any(i in touched for i in items):
+            continue
+        out.append(line)
+    return out
+
+
 def due(
     state: CurateState,
     seen: set[str],

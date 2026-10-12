@@ -319,6 +319,33 @@ def test_a_reason_is_settled_by_an_explicit_keep_with_a_reason():
     assert cu.kept({"kept": ["memory.a.c:g"]}) == {} and cu.kept(None) == {}
 
 
+def test_a_manifest_that_lands_only_new_notes_leaves_the_reasons_it_was_shown_unaddressed():
+    st = _fired()
+    notes_only = {"items": [{"item": "notes/a/region_filling.md", "kind": "note"}]}
+    left = cu.unaddressed(st, notes_only)
+    # the overlap and the suspect name functions the manifest leaves alone; any change meets the index reason
+    assert left == [
+        line for fp, line in sorted(st.fired.items()) if not fp.startswith("index:")
+    ]
+    assert set(cu.unaddressed(st, {})) == set(st.fired.values())
+
+
+def test_a_manifest_addresses_a_reason_by_changing_or_keeping_an_item_it_names():
+    st = _fired()
+    whole = {
+        "aliases": {"memory.a.c:g": F},
+        "kept": {F: "the suspect reports come from one caller's bad input"},
+    }
+    assert cu.unaddressed(st, whole) == []
+    assert (
+        cu.unaddressed(st, {"deleted": ["memory.a.c:g"], "retired": {F: "wrong"}}) == []
+    )
+    assert cu.unaddressed(st, {"renames": {"memory.a.x:h": F}}) == []
+    # what it addresses is what settled() settles once the changes land
+    changed = {"memory.a.c:g", F}
+    assert cu.settled(st, changed, cu.kept(whole)) == sorted(st.fired)
+
+
 def test_changed_items_come_only_from_a_landed_pass():
     curations = [
         {"pass_id": "c1", "item": "memory.a.b:old", "action": "alias", "target": F},

@@ -92,7 +92,11 @@ def test_a_curate_pass_merges_through_its_own_brief_inputs_role_and_gate(
     assert out.passed, out.reasons
     # a curate pass runs on its own record too, with the curator as its agent
     assert writer._pass_record.root == "curator"
-    assert model.outputs["who"].splitlines()[1].startswith("- curator (curator, running): curates the library")
+    assert (
+        model.outputs["who"]
+        .splitlines()[1]
+        .startswith("- curator (curator, running): curates the library")
+    )
     assert model.seen[0] == {
         "role": "system",
         "content": curate_brief_now(
@@ -122,3 +126,54 @@ def test_a_curate_pass_merges_through_its_own_brief_inputs_role_and_gate(
         and f"Items: {ITEM_ID}" in body
     )
     assert ev.aliases()[ACCOUNT]["target"] == ITEM_ID
+
+
+@needs_bwrap
+def test_finish_names_a_reason_the_curate_manifest_neither_changes_nor_keeps(
+    library_gate_world,
+    monkeypatch,
+):
+    """Rule 7 at finish: a curator that lands only notes leaves the overlap it was shown to fire again after a later
+    WRITE pass, so finish names the reason while the pass can still change or keep an item of it.
+    """
+    from unify.memory import writer_pass
+
+    mem, ev, blobs, gate = library_gate_world
+    parent = _merged(mem, _parent_files(blobs))
+    nothing = {
+        **_curate_man(),
+        "items": [],
+        "deleted": [],
+        "aliases": {},
+        "skeleton": [],
+    }
+    keep = {
+        **nothing,
+        "kept": {ACCOUNT: "account_id and user_id read different tables"},
+    }
+    shown = iter([nothing, keep])
+    monkeypatch.setattr(
+        writer_pass,
+        "_read_manifest",
+        lambda box: (True, next(shown), None),
+    )
+    model = Turns(
+        [
+            _call("f1", "finish", {"summary": "notes only"}),
+            _call("f2", "finish", {"summary": "kept with its reason"}),
+        ],
+    )
+    writer = WriterPass(
+        mem,
+        gate(role="curate"),
+        ev,
+        load=lambda e: EPS[e],
+        model_turn=model,
+        config=PassConfig(max_calls=10, library_mode=True),
+        curate=_state(parent),
+    )
+    out = asyncio.run(writer.run(PassRequest("curate", None, [], False), "c2"))
+    refused = model.outputs["f1"]
+    assert "G1: 1 reason(s)" in refused and FIRED["overlap:f1"] in refused
+    assert "`kept`" in refused
+    assert model.outputs.get("f2", "ok") == "ok" and out.finished
