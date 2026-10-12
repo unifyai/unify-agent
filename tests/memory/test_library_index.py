@@ -162,3 +162,59 @@ def test_a_functions_derived_effect_shows_beside_its_status(tmp_path):
         "effect"
         not in render_index(lib, links, None, lambda i: "bogus").split("\n## ", 1)[1]
     )
+
+
+EXAMPLE_TEST = "memory/text/tests/test_dates.py::test_parse_date"
+EXAMPLE_LINE = f"  e.g. `parse_date('2026-10-09')` ({EXAMPLE_TEST})\n"
+
+
+def _example_of(tmp_path):
+    from unify.memory.example_view import example_of, tree_reader
+    from unify.memory.item_records import empty_record
+
+    example = {"test": EXAMPLE_TEST, "line": 5, "call": "parse_date('2026-10-09')"}
+    records = {PARSE_DATE: {**empty_record(PARSE_DATE, "function"), "example": example}}
+    return example_of(records, tree_reader(tmp_path))
+
+
+def test_an_example_call_is_a_second_line_under_its_function_byte_stable(tmp_path):
+    lib = _lib(tmp_path)
+    links = build_links(lib)
+    index = render_index(lib, links, None, None, _example_of(tmp_path))
+    first = (
+        "- `memory.text.dates:parse_date(s: str) -> str` — Parse a date written as YYYY-MM-DD. [experimental]; "
+        "notes: notes/text/dates.md\n"
+    )
+    assert first + EXAMPLE_LINE in index
+    assert index == EXPECTED_INDEX.replace(first, first + EXAMPLE_LINE)
+    assert render_index(lib, links, None, None, _example_of(tmp_path)) == index
+    assert "`e.g.` line" in INDEX_HEAD  # the head says what the second line is
+    # the example line is not an item: counts, sections and the collapsed view are unchanged
+    assert listed(index) == 7 and packages_of(index) == ["text", "web"]
+    assert "e.g." not in index_view(index, budget_tokens=10).split("\n## ", 1)[1]
+    assert find_section(index, "text").count("  e.g. ") == 1
+    # no example function, or none known: the index is byte for byte the one without examples
+    assert render_index(lib, links) == render_index(
+        lib, links, None, None, lambda i: None
+    )
+
+
+def test_the_index_grows_by_the_example_lines_only(tmp_path):
+    from unify.memory.catalogue import estimate_tokens
+
+    lib = _lib(tmp_path)
+    links = build_links(lib)
+    plain = render_index(lib, links)
+    shown = render_index(lib, links, None, None, _example_of(tmp_path))
+    assert shown.replace(EXAMPLE_LINE, "") == plain
+    assert len(shown) - len(plain) == len(EXAMPLE_LINE)
+    grown = estimate_tokens(shown) - estimate_tokens(plain)
+    assert 0 < grown <= estimate_tokens(EXAMPLE_LINE) + 1
+
+
+def test_a_stale_example_is_never_quoted_in_the_index(tmp_path):
+    lib = _lib(tmp_path)
+    links = build_links(lib)
+    test_file = tmp_path / "memory/text/tests/test_dates.py"
+    test_file.write_text("# edited\n" + test_file.read_text())
+    assert render_index(lib, links, None, None, _example_of(tmp_path)) == EXPECTED_INDEX

@@ -40,7 +40,8 @@ _USE_TOTAL_KEYS = (
 
 def empty_record(item: str, kind: str) -> dict:
     """A record with the harness's own fields: why a status was given (``status_rule``, ``status_reason``,
-    ``status_evidence``), the commit that last changed the item, its input form and source channels, its
+    ``status_evidence``), the commit that last changed the item, its example call (``{"test", "line", "call"}``:
+    a call quoted from its tests that the gate picked, None: none) and source channels, its
     effect as the gate derived it from its covers (``read``, ``write``, ``unknown``; None: not derived), and
     the bisect result with the rollback proposal. ``uid`` is the item's persistent identity, assigned once at its
     first record and carried across renames and aliases (:func:`new_uid`); ``renamed_from`` lists the ids it had
@@ -59,7 +60,7 @@ def empty_record(item: str, kind: str) -> dict:
         "verification": None,
         "use": {},
         "alias_of": None,
-        "input": None,
+        "example": None,
         "effect": None,
         "source_channels": [],
         "bisect": None,

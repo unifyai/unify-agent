@@ -174,9 +174,10 @@ def _summary(record: Any) -> str:
 
 
 def show(item: Any) -> str:
-    """One item in full: a function's source with its docstring, or a note's text. Then its links both ways,
-    its status with, for a function, its effect (and why, for an item left out of the index or given a
-    reason), its verification and use records, and the
+    """One item in full: a function's signature, with an example call quoted from its tests (``Example (from
+    <test id>): <call>``) when one is recorded and still in its test file, then its source with its docstring;
+    or a note's text. Then its links both ways, its status with, for a function, its effect (and why, for an
+    item left out of the index or given a reason), its verification and use records, and the
     subjects of the library commits that changed it, newest first."""
     wanted = _item_id(item)
     data = _json(ITEMS_FILE)
@@ -195,6 +196,9 @@ def show(item: Any) -> str:
             + (f", effect: {effect}" if effect else "")
             + "]",
         ]
+        example = row.get("example")
+        if isinstance(example, dict) and example.get("call"):
+            out.append(f"Example (from {example.get('test')}): {example['call']}")
     else:
         out = [
             f"{wanted}  [{status}]" + (f"  {row['title']}" if row.get("title") else ""),
@@ -287,7 +291,8 @@ def _param(desc: dict) -> str:
 
 def _match(m: Any, mine: dict, recorded: dict) -> Any:
     """v2's match; else, for two shapes without a named key (a grid, a list of numbers),
-    their exact equality as the weakest match, so such an argument is still found, after every v2 match."""
+    their exact equality as the weakest match, so such an argument is still found, after every v2 match.
+    """
     found = m.match(mine, recorded)
     if found is None and m.signature(mine) and m.same_shape(mine, recorded):
         return 0, 0.0, []
