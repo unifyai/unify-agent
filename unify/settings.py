@@ -345,20 +345,20 @@ class ProductionSettings(BaseSettings):
     # process, so with Python in the sandboxed worker it is refused and
     # start-up stops. Empty stores without the check.
     UNIFY_STORE_VERIFY: str = ""
-    # Memory v2's dialogue capture (applies only with UNIFY_MEMORY_V2 on;
-    # parsed by unify/memory_v2/integration/switch.py): ``env`` also records
+    # Memory v2's dialogue capture (applies only with UNIFY_MEMORY on;
+    # parsed by unify/memory/integration/switch.py): ``env`` also records
     # each request's dialogue actions (every turn-ending reply's action with
     # the counterpart's next message) on the channel ``env``, so a benchmark
     # whose actions are text in the replies (Continual-ARC) leaves coverable
     # actions. Empty (also ``off``): episodes as shipped.
-    UNIFY_MEMORY_V2_DIALOGUE: str = ""
+    UNIFY_MEMORY_DIALOGUE: str = ""
     # Memory v2 (continual-harness-research docs/design/memory-redesign-spec.md):
     # ``on`` replaces the storage review, the ``functions``/``guidance``
     # objects and the library shortlist with a per-request export of the
     # memory repo (``<UNIFY_HOME>/memory``) on the worker's import path and
-    # its index at the end of the system prompt (unify/memory_v2/integration).
+    # its index at the end of the system prompt (unify/memory/integration).
     # Needs the sandboxed worker and the core tool surface. Empty or ``off``:
-    # as shipped. The companions (parsed by unify/memory_v2/integration/
+    # as shipped. The companions (parsed by unify/memory/integration/
     # switch.py) apply only when it is on: ``_E`` is the experience budget in
     # tokens at which a batched consolidation pass becomes due; ``_WRITER_MODEL``
     # runs the passes, at the actor's reasoning effort for the run;
@@ -388,25 +388,25 @@ class ProductionSettings(BaseSettings):
     # turns G4's 4,000-token index refusal into a hygiene note.
     # ``_WRITER_USAGE`` (empty/off or on) ends each pass's first message with
     # the table of how requests used each library function.
-    UNIFY_MEMORY_V2: str = ""
-    UNIFY_MEMORY_V2_E: int = 150000
-    UNIFY_MEMORY_V2_WRITER_MODEL: str = "openai/gpt-6-sol"
-    UNIFY_MEMORY_V2_WRITER_ALLOWANCE_USD_PER_TOKENS: str = "0.00000073"
-    UNIFY_MEMORY_V2_WRITER_RUN_GUARD_USD: str = ""
+    UNIFY_MEMORY: str = ""
+    UNIFY_MEMORY_E: int = 150000
+    UNIFY_MEMORY_WRITER_MODEL: str = "openai/gpt-6-sol"
+    UNIFY_MEMORY_WRITER_ALLOWANCE_USD_PER_TOKENS: str = "0.00000073"
+    UNIFY_MEMORY_WRITER_RUN_GUARD_USD: str = ""
     # In the library mode a pass with a writer route runs with no pass cap, bounded in flight only by the route's
     # ceilings; point this only at a proxy with a spend ceiling (the runner's writer lane, the replay proxy), never
     # at an uncapped relay.
-    UNIFY_MEMORY_V2_WRITER_BASE_URL: str = ""
-    UNIFY_MEMORY_V2_WRITER_TOKEN: SecretStr = SecretStr("")
-    UNIFY_MEMORY_V2_WRITER_TOKEN_FD: str = ""
-    UNIFY_MEMORY_V2_WRITER_EFFORT: str = "actor"
-    UNIFY_MEMORY_V2_WRITER_EFFORT_SCALE: str = "low:1,medium:2,high:5"
-    UNIFY_MEMORY_V2_WRITER_MAX_CALLS: str = "low:40,medium:80,high:80"
-    UNIFY_MEMORY_V2_SURFACING: str = "index"
-    UNIFY_MEMORY_V2_DOCSTRINGS: str = "off"
-    UNIFY_MEMORY_V2_SOFT_BUDGET: str = "off"
-    UNIFY_MEMORY_V2_WRITER_USAGE: str = ""
-    # The library mode (unify/memory_v2): ``off`` (default; empty means it) or
+    UNIFY_MEMORY_WRITER_BASE_URL: str = ""
+    UNIFY_MEMORY_WRITER_TOKEN: SecretStr = SecretStr("")
+    UNIFY_MEMORY_WRITER_TOKEN_FD: str = ""
+    UNIFY_MEMORY_WRITER_EFFORT: str = "actor"
+    UNIFY_MEMORY_WRITER_EFFORT_SCALE: str = "low:1,medium:2,high:5"
+    UNIFY_MEMORY_WRITER_MAX_CALLS: str = "low:40,medium:80,high:80"
+    UNIFY_MEMORY_SURFACING: str = "index"
+    UNIFY_MEMORY_DOCSTRINGS: str = "off"
+    UNIFY_MEMORY_SOFT_BUDGET: str = "off"
+    UNIFY_MEMORY_WRITER_USAGE: str = ""
+    # The library mode (unify/memory): ``off`` (default; empty means it) or
     # ``on``. On: the writer reads a batch map and bounded views and keeps a
     # function library. Off: the earlier memory mode as built.
     UNIFY_MEMORY_LIBRARY: str = "off"
@@ -454,21 +454,21 @@ class ProductionSettings(BaseSettings):
     # sizes it).
     UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN: str = "0.00000073"
     UNIFY_MEMORY_LIBRARY_PASS_WALL_S: int = 2700
-    UNIFY_MEMORY_V2_WRITER_JOURNAL: str = ""
-    # Stage-5 test checks in the memory v2 gate (unify/memory_v2/qa.py), each
-    # off by default and read only while UNIFY_MEMORY_V2 is on: ``_QA_FIXTURES``
+    UNIFY_MEMORY_WRITER_JOURNAL: str = ""
+    # Stage-5 test checks in the memory v2 gate (unify/memory/qa.py), each
+    # off by default and read only while UNIFY_MEMORY is on: ``_QA_FIXTURES``
     # (``on``/``strict``) draws seeded random recorded inputs per new function;
     # ``_QA_MUTATION`` mutation-tests it, refusing below
     # ``_QA_MUTATION_MIN_KILL`` (a decimal string share, 0.5); ``_QA_DETERMINISM``
     # pins clock and randomness and runs new tests twice; ``_QA_REPLAY`` refuses
     # stand-in environments; ``_QA_FIXTURE_SIZE`` bounds test files and
     # references recorded payloads by blob id.
-    UNIFY_MEMORY_V2_QA_FIXTURES: str = ""
-    UNIFY_MEMORY_V2_QA_MUTATION: str = ""
-    UNIFY_MEMORY_V2_QA_MUTATION_MIN_KILL: str = "0.5"
-    UNIFY_MEMORY_V2_QA_DETERMINISM: str = ""
-    UNIFY_MEMORY_V2_QA_REPLAY: str = ""
-    UNIFY_MEMORY_V2_QA_FIXTURE_SIZE: str = ""
+    UNIFY_MEMORY_QA_FIXTURES: str = ""
+    UNIFY_MEMORY_QA_MUTATION: str = ""
+    UNIFY_MEMORY_QA_MUTATION_MIN_KILL: str = "0.5"
+    UNIFY_MEMORY_QA_DETERMINISM: str = ""
+    UNIFY_MEMORY_QA_REPLAY: str = ""
+    UNIFY_MEMORY_QA_FIXTURE_SIZE: str = ""
     # When a provider refuses a forced tool choice ("required", "any" or one
     # named tool) with HTTP 400 because the model does not support it, retry
     # that call once with tool_choice "auto" and an instruction to make the
@@ -664,21 +664,21 @@ class ProductionSettings(BaseSettings):
         return value
 
     @field_validator(
-        "UNIFY_MEMORY_V2",
-        "UNIFY_MEMORY_V2_E",
-        "UNIFY_MEMORY_V2_WRITER_MODEL",
-        "UNIFY_MEMORY_V2_WRITER_ALLOWANCE_USD_PER_TOKENS",
-        "UNIFY_MEMORY_V2_WRITER_RUN_GUARD_USD",
-        "UNIFY_MEMORY_V2_WRITER_BASE_URL",
-        "UNIFY_MEMORY_V2_WRITER_TOKEN",
-        "UNIFY_MEMORY_V2_WRITER_TOKEN_FD",
-        "UNIFY_MEMORY_V2_WRITER_EFFORT",
-        "UNIFY_MEMORY_V2_WRITER_EFFORT_SCALE",
-        "UNIFY_MEMORY_V2_WRITER_MAX_CALLS",
-        "UNIFY_MEMORY_V2_SURFACING",
-        "UNIFY_MEMORY_V2_DOCSTRINGS",
-        "UNIFY_MEMORY_V2_SOFT_BUDGET",
-        "UNIFY_MEMORY_V2_WRITER_USAGE",
+        "UNIFY_MEMORY",
+        "UNIFY_MEMORY_E",
+        "UNIFY_MEMORY_WRITER_MODEL",
+        "UNIFY_MEMORY_WRITER_ALLOWANCE_USD_PER_TOKENS",
+        "UNIFY_MEMORY_WRITER_RUN_GUARD_USD",
+        "UNIFY_MEMORY_WRITER_BASE_URL",
+        "UNIFY_MEMORY_WRITER_TOKEN",
+        "UNIFY_MEMORY_WRITER_TOKEN_FD",
+        "UNIFY_MEMORY_WRITER_EFFORT",
+        "UNIFY_MEMORY_WRITER_EFFORT_SCALE",
+        "UNIFY_MEMORY_WRITER_MAX_CALLS",
+        "UNIFY_MEMORY_SURFACING",
+        "UNIFY_MEMORY_DOCSTRINGS",
+        "UNIFY_MEMORY_SOFT_BUDGET",
+        "UNIFY_MEMORY_WRITER_USAGE",
         "UNIFY_MEMORY_LIBRARY",
         "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE",
         "UNIFY_MEMORY_LIBRARY_E",
@@ -696,18 +696,18 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_LIBRARY_ACTOR_INDEX",
         "UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN",
         "UNIFY_MEMORY_LIBRARY_PASS_WALL_S",
-        "UNIFY_MEMORY_V2_WRITER_JOURNAL",
-        "UNIFY_MEMORY_V2_QA_FIXTURES",
-        "UNIFY_MEMORY_V2_QA_MUTATION",
-        "UNIFY_MEMORY_V2_QA_MUTATION_MIN_KILL",
-        "UNIFY_MEMORY_V2_QA_DETERMINISM",
-        "UNIFY_MEMORY_V2_QA_REPLAY",
-        "UNIFY_MEMORY_V2_QA_FIXTURE_SIZE",
+        "UNIFY_MEMORY_WRITER_JOURNAL",
+        "UNIFY_MEMORY_QA_FIXTURES",
+        "UNIFY_MEMORY_QA_MUTATION",
+        "UNIFY_MEMORY_QA_MUTATION_MIN_KILL",
+        "UNIFY_MEMORY_QA_DETERMINISM",
+        "UNIFY_MEMORY_QA_REPLAY",
+        "UNIFY_MEMORY_QA_FIXTURE_SIZE",
         mode="before",
     )
     @classmethod
-    def parse_memory_v2(cls, v: Any, info: Any) -> Any:
-        from unify.memory_v2.integration import switch
+    def parse_memory(cls, v: Any, info: Any) -> Any:
+        from unify.memory.integration import switch
 
         return switch.PARSERS[info.field_name](v)
 
@@ -723,10 +723,10 @@ class ProductionSettings(BaseSettings):
             )
         return value
 
-    @field_validator("UNIFY_MEMORY_V2_DIALOGUE", mode="before")
+    @field_validator("UNIFY_MEMORY_DIALOGUE", mode="before")
     @classmethod
-    def parse_memory_v2_dialogue(cls, v: Any) -> str:
-        from unify.memory_v2.integration import switch
+    def parse_memory_dialogue(cls, v: Any) -> str:
+        from unify.memory.integration import switch
 
         return switch.parse_dialogue(v)
 
@@ -876,21 +876,21 @@ from unify.setting_aliases import apply_former_names  # noqa: E402
 
 apply_former_names(os.environ)
 SETTINGS = ProductionSettings()
-# UNIFY_MEMORY_V2_WRITER_TOKEN lives in SETTINGS (this, the controller process)
+# UNIFY_MEMORY_WRITER_TOKEN lives in SETTINGS (this, the controller process)
 # only: every case variant is removed from the environment once read, so no
 # subprocess inherits it, and its value stays registered with the value-based
-# redactors. With UNIFY_MEMORY_V2_WRITER_TOKEN_FD set, this first settle reads the
+# redactors. With UNIFY_MEMORY_WRITER_TOKEN_FD set, this first settle reads the
 # token from that inherited descriptor and closes it, before the CLI or any
 # controller code can spawn a child. The CLI checks again after loading .env.
 # Unset, nothing changes.
-from unify.memory_v2.integration.switch import settle_writer_route_env  # noqa: E402
+from unify.memory.integration.switch import settle_writer_route_env  # noqa: E402
 
 settle_writer_route_env(os.environ, SETTINGS)
 # The fork lane's token likewise: read once from its descriptor, both route names out of the environment.
-from unify.memory_v2.integration.switch import settle_fork_route_env  # noqa: E402
+from unify.memory.integration.switch import settle_fork_route_env  # noqa: E402
 
 settle_fork_route_env(os.environ, SETTINGS)
 # The helper lane's token likewise: read once from its descriptor, both route names out of the environment.
-from unify.memory_v2.integration.switch import settle_helper_route_env  # noqa: E402
+from unify.memory.integration.switch import settle_helper_route_env  # noqa: E402
 
 settle_helper_route_env(os.environ, SETTINGS)

@@ -53,7 +53,7 @@ further line is a follow-up in the same sandbox, /quit ends the session.
 With --jsonl the session speaks newline-delimited JSON instead, for a
 program driving the actor: each stdin line is {"message": "..."} (a
 follow-up, which may span lines), {"cancel": true} or {"quit": true}
-(with UNIFY_MEMORY_V2=on, "consolidate": false on any line, e.g. with the
+(with UNIFY_MEMORY=on, "consolidate": false on any line, e.g. with the
 stream's last request or with quit, makes the session record its episode but
 start no due consolidation pass whenever it ends, also at a step or time
 limit: a driver ending its stream uses it, since no pass may be tied to the
@@ -184,7 +184,7 @@ def _configure_environment(args: argparse.Namespace) -> Path:
     # Settings were read before .env: a Sol route value only there is refused
     # (it would leave Sol on the actor's route) and its token leaves the
     # environment.
-    from unify.memory_v2.integration.switch import settle_writer_route_env
+    from unify.memory.integration.switch import settle_writer_route_env
     from unify.settings import SETTINGS
 
     refusal = settle_writer_route_env(os.environ, SETTINGS)
@@ -318,7 +318,7 @@ def _checker_lines_on() -> bool:
     ``UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE`` both on. Off, such a line is no control line at all.
     """
     try:
-        from unify.memory_v2.integration.request import checker_visible_on
+        from unify.memory.integration.request import checker_visible_on
     except ImportError:
         return False
     return checker_visible_on()
@@ -343,7 +343,7 @@ class Act:
         self._cancel_answered = threading.Event()
         self._cancel_answered.set()
         self._main_thread = threading.main_thread().ident
-        # UNIFY_MEMORY_V2: this request's memory run (None while the switch is off).
+        # UNIFY_MEMORY: this request's memory run (None while the switch is off).
         self._mv2 = None
         # "consolidate": false on any stdin line: when the session ends, record the episode, start no pass.
         self._mv2_consolidate = True
@@ -486,7 +486,7 @@ class Act:
                     if not isinstance(item, dict):
                         continue
                     if item.get("consolidate") is False:
-                        # UNIFY_MEMORY_V2: on any line (with the stream's last request, or with
+                        # UNIFY_MEMORY: on any line (with the stream's last request, or with
                         # quit): whenever this session ends, record the episode, start no pass.
                         self._mv2_consolidate = False
                     if "outcome" in item:
@@ -644,7 +644,7 @@ class Act:
         from unify import outcome as outcome_mod
 
         if self._mv2 is not None:
-            # UNIFY_MEMORY_V2: only the checker's pass/fail is kept.
+            # UNIFY_MEMORY: only the checker's pass/fail is kept.
             answer = self._mv2.take_outcome(raw)
             if not answer["accepted"]:
                 self._progress(f"outcome refused: {answer['reason']}")
@@ -677,9 +677,9 @@ class Act:
     async def _run(self, request: str) -> int:
         await self.start()
         args = self._args
-        from unify.memory_v2.integration import hooks as _mv2
+        from unify.memory.integration import hooks as _mv2
 
-        # UNIFY_MEMORY_V2=on: export memory and open the request's record
+        # UNIFY_MEMORY=on: export memory and open the request's record
         # before the actor builds its prompt.
         self._mv2 = _mv2.begin_request(request)
         interactive = sys.stdin.isatty()

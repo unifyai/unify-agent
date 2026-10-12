@@ -1700,9 +1700,9 @@ def start_session(
     if store_skills and "store_skills" in tools:
         session_tools["store_skills"] = tools["store_skills"]
     objects = sandbox_objects(actor, policy=policy)
-    # UNIFY_MEMORY_V2=on: no ``functions``/``guidance`` (so no library prompt
+    # UNIFY_MEMORY=on: no ``functions``/``guidance`` (so no library prompt
     # sections, shortlist or snapshot line either).
-    from unify.memory_v2.integration import hooks as _mv2
+    from unify.memory.integration import hooks as _mv2
 
     objects = _mv2.sandbox_objects(objects)
     sandbox.global_state.update(objects)

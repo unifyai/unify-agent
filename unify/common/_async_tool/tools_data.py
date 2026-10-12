@@ -83,11 +83,11 @@ async def _raise(exc: BaseException) -> None:
     raise exc
 
 
-def _memory_v2_result_hook():
-    """UNIFY_MEMORY_V2=on with a request run: memory v2's hook for a finished tool
+def _memory_result_hook():
+    """UNIFY_MEMORY=on with a request run: memory v2's hook for a finished tool
     call (``hooks.tool_result``); None otherwise, and then the loop never enters
     it, so with memory v2 off a call is processed exactly as without it."""
-    from unify.memory_v2.integration import hooks
+    from unify.memory.integration import hooks
 
     return hooks.result_hook()
 
@@ -750,13 +750,13 @@ class ToolsData:
                             },
                         )
 
-        # UNIFY_MEMORY_V2=on with a request run: the hook noting a code cell's
+        # UNIFY_MEMORY=on with a request run: the hook noting a code cell's
         # structured result, by call id, for the request's use record. None
         # otherwise, and then it is never entered; it never fails the call.
         _mv2_note = None
         _returned = False
         try:
-            _mv2_note = _memory_v2_result_hook()
+            _mv2_note = _memory_result_hook()
             raw = task.result()
             _returned = True
             if _mv2_note is not None:

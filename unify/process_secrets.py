@@ -2,7 +2,7 @@
 
 A credential removed from ``os.environ`` once read (so that no subprocess inherits it, as memory v2's Sol
 token is) also drops out of every redactor that finds secrets by scanning the environment. It is registered
-here instead, and those redactors (``unify.transcripts.scrub``, ``unify.memory_v2.redact``) consult this as
+here instead, and those redactors (``unify.transcripts.scrub``, ``unify.memory.redact``) consult this as
 well, for the life of the process. Values are never removed or shown. Standard library only, so any module
 may import it.
 """

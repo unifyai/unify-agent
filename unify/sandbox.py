@@ -170,7 +170,7 @@ RULES: dict[str, str] = {
 }
 
 # The state directory's entries wrap_argv may bind read-only after the masks
-# (late_readonly): memory v2.1's library copy only (memory_v2/integration/paths.py).
+# (late_readonly): memory v2.1's library copy only (memory/integration/paths.py).
 LATE_READONLY_DIRS = ("memory-checkout",)
 
 SECRET_ENV_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
@@ -309,9 +309,9 @@ _URL_CREDENTIALS = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s@:]*:[^/\s@]*@")
 # the descriptor number is harmless but stays with the controller), and the fork lane's route likewise (C2).
 HARNESS_ONLY_ENV = frozenset(
     {
-        "UNIFY_MEMORY_V2_WRITER_BASE_URL",
-        "UNIFY_MEMORY_V2_WRITER_TOKEN",
-        "UNIFY_MEMORY_V2_WRITER_TOKEN_FD",
+        "UNIFY_MEMORY_WRITER_BASE_URL",
+        "UNIFY_MEMORY_WRITER_TOKEN",
+        "UNIFY_MEMORY_WRITER_TOKEN_FD",
         "UNIFY_MEMORY_LIBRARY_FORK_BASE_URL",
         "UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD",
         "UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL",
@@ -2114,7 +2114,7 @@ def require_bwrap() -> str:
 # seccomp: socket families, user namespaces, io_uring
 # ---------------------------------------------------------------------------
 
-# Pattern from the memory-v2 runner (unify/memory_v2/sandbox_run.py at
+# Pattern from the memory runner (unify/memory/sandbox_run.py at
 # 6ec1e9821), extended to aarch64.
 _SECCOMP_FD = 9
 _SECCOMP_EXEC = 'exec "$@" 9<"$0"'

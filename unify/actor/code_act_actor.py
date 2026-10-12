@@ -3872,8 +3872,8 @@ class CodeActActor(BaseCodeActActor):
             self.can_compose if can_compose is None else bool(can_compose)
         )
         effective_can_store = self.can_store if can_store is None else bool(can_store)
-        # UNIFY_MEMORY_V2=on: no storage review and no library writes.
-        from unify.memory_v2.integration import hooks as _mv2
+        # UNIFY_MEMORY=on: no storage review and no library writes.
+        from unify.memory.integration import hooks as _mv2
 
         effective_can_store = _mv2.can_store(effective_can_store)
         # UNIFY_STORE_ADMISSION: the post-session review is the only writer,
@@ -4174,7 +4174,7 @@ class CodeActActor(BaseCodeActActor):
             # UNIFY_CODE_PROJECTION=notebook: the magics, where the prompt
             # named the session fields and tools.
             system_prompt = notebook_cells.rewrite_prompt(system_prompt)
-        # UNIFY_MEMORY_V2=on: the memory index ends the cached system prompt.
+        # UNIFY_MEMORY=on: the memory index ends the cached system prompt.
         system_prompt = _mv2.system_prompt(system_prompt)
         # What opens the session's first user message (first_message_context),
         # in this order: the host clock (UNIFY_CLOCK_PLACEMENT=first_message),

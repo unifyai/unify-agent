@@ -239,9 +239,9 @@ class PythonWorker:
             if spec is not None:
                 specs[name] = spec
                 self._base[name] = value
-        from unify.memory_v2.integration import hooks as _mv2
+        from unify.memory.integration import hooks as _mv2
 
-        # UNIFY_MEMORY_V2=on: the request's memory export is imported first.
+        # UNIFY_MEMORY=on: the request's memory export is imported first.
         memory_paths = _mv2.worker_paths()
         paths = [*memory_paths, *(p for p in sys.path if p)]
         # Packages the harness installs later land here; visible once it exists.
@@ -256,10 +256,10 @@ class PythonWorker:
         }
         msg["help"] = True
         if memory_paths:
-            # UNIFY_MEMORY_V2=on: the child writes no bytecode (the child runs under -I, so
+            # UNIFY_MEMORY=on: the child writes no bytecode (the child runs under -I, so
             # PYTHONDONTWRITEBYTECODE would be ignored); otherwise no key at all.
             msg["no_bytecode"] = True
-        # UNIFY_MEMORY_V2=on, while the request's work tree is captured: the
+        # UNIFY_MEMORY=on, while the request's work tree is captured: the
         # child installs the audit hook (spec §3a); otherwise no key at all.
         audit = _mv2.worker_audit()
         if audit is not None:
@@ -281,9 +281,9 @@ class PythonWorker:
         argv = [sys.executable, "-I", "-S", "-c", _BOOTSTRAP, str(Path(child.__file__))]
         env = sandbox.sandbox_env(policy)
         workspace = str(policy.workspace)
-        from unify.memory_v2.integration import hooks as _mv2
+        from unify.memory.integration import hooks as _mv2
 
-        # UNIFY_MEMORY_V2=on: the request's memory export, read-write (v2) ...
+        # UNIFY_MEMORY=on: the request's memory export, read-write (v2) ...
         mounts = _mv2.worker_mounts()
         # ... or read-only (UNIFY_MEMORY_LIBRARY=on, spec v2.1 §6)
         late_ro = _mv2.worker_readonly_mounts()
@@ -871,9 +871,9 @@ class PythonWorker:
                 "variables, imports and definitions are reset.",
             ) from None
 
-        from unify.memory_v2.integration import hooks as _mv2
+        from unify.memory.integration import hooks as _mv2
 
-        # UNIFY_MEMORY_V2=on: the cell's audit records, stamped on this clock.
+        # UNIFY_MEMORY=on: the cell's audit records, stamped on this clock.
         _mv2.worker_cell_done(done.get("audit"))
         listed = done.get("inventory")
         self.inventory = listed if isinstance(listed, str) else None
@@ -893,7 +893,7 @@ class PythonWorker:
                 and done.get("error_type") == "ControlledInterruption"
             ):
                 raise ControlledInterruption(str(done.get("message") or "steered"))
-            # UNIFY_MEMORY_V2_SURFACING=catalogue: a suspect channel's refusal says so.
+            # UNIFY_MEMORY_SURFACING=catalogue: a suspect channel's refusal says so.
             raise WorkerCellError(_mv2.cell_error(str(done["error"])))
         return self.decode(done.get("result"), shadow)
 

@@ -1,0 +1,610 @@
+"""The episode-end fork (``UNIFY_MEMORY_LIBRARY_FORK``, off by default).
+
+After the reply has been returned and the episode recorded, the actor's own conversation is continued once more by a
+separate process: its last request's messages and tools unchanged, so the provider serves the prefix from cache,
+plus one fixed instruction (:func:`fork_instruction`). The process writes what the reply stages into
+``<state>/memory-staging/<episode>/`` and nothing else.
+
+* **The boundary:**
+  - :mod:`.fork_worker` runs by path with the system python (``/usr/bin/python3 -I /s/fork_worker.py``). It is
+    standard library only.
+  - The request reaches it on stdin, a fresh pipe, never argv, the environment or a file.
+  - Its environment is PATH and PYTHONDONTWRITEBYTECODE, nothing else.
+  - It calls the key proxy's fork lane (``/fork/v1``): its base URL and token come from the descriptor the runner
+    hands this controller (``switch.settle_fork_route_env``), and the token reaches the worker only inside its stdin
+    request. Without the lane there is no fork (``refused: no fork lane``): never the actor's route, never a
+    provider directly, never a provider key.
+* **Mounts:** a bubblewrap box with a read-only root (``/usr``) and a private ``/tmp``. Home, the state dir and the
+  library are not mounted. The worker file is read-only at ``/s``. The only writable bind is the episode's fresh
+  staging dir.
+  - It keeps only the network of the process that starts it (``--share-net``). Under the runner that is the
+    controller's relay to the proxy.
+* It starts after the episode is recorded, from bytes serialised once. Nothing flows back to the reply, the
+  transcript or the record.
+* With the switch off, :func:`start` returns at once: no import of the actor, no process, no staging dir.
+
+**Settling and admission.** ``fork.json`` is written last and means the fork has settled, whatever its status. With
+the fork on, an episode enters a pass batch only once it has settled (:class:`Admission`, used by
+:class:`..trigger.Trigger`); an unsettled one rolls to the next pass. Settlement is always reached:
+
+* the request reserves the staging dir before the episode is recorded (:func:`reserve`) and holds an exclusive lock
+  on its ``fork.lock``; the lock passes to the worker process when it starts, so the lock is held exactly while the
+  request or the worker is alive;
+* the worker's own wall bound (:data:`.fork_worker.WALL_GUARD_S`) ends it with status ``"timeout"``;
+* a worker that dies without writing ``fork.json`` (killed, out of memory) releases the lock with it; the first
+  admission check that finds the lock free and no ``fork.json`` records status ``"lost"`` (:func:`settled`);
+* a lock still held past :data:`STALE_S` is recorded as ``"timeout"`` and admitted, so no episode waits forever.
+
+This keys on a per-episode signal only, never on the stream.
+
+**Lifetime.** The fork runs in its own session. With ``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on`` (hosts whose sandbox ends
+every process of the controller with it), :func:`finish` holds the CLI after the reply until the fork ends. That
+wait is bounded by :data:`WAIT_GUARD_S`, an operational guard reported in ``fork.json``, not a design limit.
+
+**Spend.** The calls carry ``x-unify-call-kind: actor_fork``, journaled as ``other`` by the proxy. They also carry
+``x-unify-session: fork.<episode>``, which is what separates their spend, and ``x-unify-parent: <episode>``. There is
+no token cap; the run-level proxy guards bound the money.
+"""
+
+from __future__ import annotations
+
+import errno
+import fcntl
+import json
+import os
+import shutil
+import stat
+import subprocess
+import threading
+import time
+from pathlib import Path
+from typing import Any, Callable
+
+from .fork_worker import FORK_JSON, LOCK_FILE, atomic_json
+
+FORMAT_EXAMPLE = (
+    "```path: candidates/double.py\n"
+    "def double(x):\n"
+    '    """Return twice x."""\n'
+    "    return 2 * x\n"
+    "```\n"
+    "\n"
+    "```path: cases/double.json\n"
+    '[{"inputs": [21], "expected": 42}, {"inputs": [-3], "expected": -6}]\n'
+    "```\n"
+    "\n"
+    "```path: notes.md\n"
+    "- Reading the size from the first line failed when the file had a header line; skip lines until the first "
+    'number. From the error "ValueError: invalid literal for int()".\n'
+    "```"
+)
+
+INSTRUCTION = (
+    "Your work on this request is finished and your reply has been sent; nothing you write now changes it. "
+    "Now write down what would help with similar requests later, as files: write each file as a fenced block in "
+    "your reply, in the format below. Do not call any tool: tools are not available here, and any call gets only a "
+    "reply saying so.\n\n"
+    "What to write:\n"
+    "- `candidates/<name>.py`: for code you wrote here that ran and worked and could be reused, a general function "
+    "with a docstring. <name> uses only letters, digits and underscores. Only code that actually ran here; never "
+    "say code worked if it did not.\n"
+    "- `cases/<name>.json`, with the same <name>: the inputs that function had in this conversation and the "
+    'outputs it should give, as a JSON list of objects with "inputs" (the list of arguments) and "expected" '
+    "(the return value).\n"
+    "- `notes.md`: each thing that failed and why, and any other lesson, in general terms so it applies beyond this "
+    "request, each quoting the short line or error message from this conversation it comes from. If nothing here "
+    "is worth keeping, write `notes.md` saying so.\n\n"
+    "Format: each file is one fenced block. Its opening line is three backticks followed by `path: ` and the "
+    "file's relative path; then the file's full content; then a line of three backticks. If a file itself contains "
+    "a line of three backticks, open and close its block with four. Example:\n\n"
+    + FORMAT_EXAMPLE
+)
+WORKER_FILE = Path(__file__).resolve().parent / "fork_worker.py"
+BOX_WORKER = "/s/fork_worker.py"
+#: The live audit's mark for the fork worker in a process's command line (runner token audits).
+FORK_MARK = BOX_WORKER
+STAGING_IN_BOX = "/staging"
+#: Operational guard on the CLI's wait for the fork (run safety, reported; not a design limit).
+WAIT_GUARD_S = 1800.0
+WRITE_GUARD_S = 120.0
+#: A staging dir with no lock file this long after it was made was never started: recorded as lost.
+UNSTARTED_S = 120.0
+#: A lock still held this long after the reservation: the fork is recorded as timed out and admitted.
+STALE_S = WAIT_GUARD_S + 300.0
+#: The file that keeps which episodes earlier passes rolled over (under the state dir).
+ROLLED_FILE = "pass-admission.json"
+
+
+def fork_instruction() -> str:
+    """The fixed instruction appended to the actor's conversation for the fork: what to write, the one block
+    format with an example, and that tools are not available."""
+    return INSTRUCTION
+
+
+def staging_dir(paths: Any, eid: str) -> Path:
+    return Path(paths.state_dir) / "memory-staging" / eid
+
+
+def route() -> tuple[tuple[str, str] | None, str | None]:
+    """The fork lane's route ``(chat completions URL, token)``, or why the fork has none: only the key proxy's own
+    fork lane, read once from its descriptor (``switch.settle_fork_route_env``); never the actor's route, never a
+    provider. With the fork on and no lane, the episode records ``refused: no fork lane``.
+    """
+    from . import switch
+
+    switch.settle_fork_route_env(os.environ, _settings())
+    return switch.fork_lane_route()
+
+
+def _settings() -> Any:
+    from unify.settings import SETTINGS
+
+    return SETTINGS
+
+
+def _model(client: Any) -> str | None:
+    endpoint = str(
+        getattr(client, "endpoint", "") or getattr(client, "model", "") or "",
+    )
+    return endpoint.rsplit("@", 1)[0] or None
+
+
+def fork_tool_choice(choice: Any) -> Any:
+    """The fork's tool choice. The actor's tool schemas stay in the request for the cached prefix, but a choice that
+    forces a tool call would never let the fork answer in text, so anything other than ``auto`` or ``none`` becomes
+    ``auto``."""
+    if choice is None or choice in ("auto", "none"):
+        return choice
+    return "auto"
+
+
+def request_doc(
+    handle: Any,
+    eid: str,
+    url: str,
+    key: str,
+) -> tuple[dict | None, str | None]:
+    """The fork's request, from the session's last request as sent, or why the session cannot be forked."""
+    from unify.actor.code_act_actor import _session_fork_source
+
+    inner = getattr(handle, "_inner", None) or handle
+    source, why = _session_fork_source(inner, getattr(handle, "_actor", None))
+    if source is None:
+        return None, why
+    return request_from_source(eid, source, url, key)
+
+
+def request_from_source(
+    episode_id: str,
+    source: dict,
+    base_url: str,
+    token: str,
+) -> tuple[dict | None, str | None]:
+    """``(request document, None)`` for the fork from a conversation *source* (``client``, ``sent_messages``,
+    ``tools`` and optionally ``tool_choice``, as the actor's session reader gives them), or ``(None, why)`` when it
+    cannot be forked: the messages and tool schemas unchanged, then :func:`fork_instruction`. *base_url* is the fork
+    lane's URL (``/chat/completions`` is added when it is not already there); *token* goes only into the headers,
+    which reach the worker on its stdin."""
+    eid = episode_id
+    url = (
+        base_url
+        if base_url.rstrip("/").endswith("/chat/completions")
+        else base_url.rstrip("/") + "/chat/completions"
+    )
+    key = token
+    client = source.get("client")
+    model = _model(client)
+    if not model:
+        return None, "the session's client names no model"
+    body: dict = {
+        "model": model,
+        "messages": [
+            *source["sent_messages"],
+            {"role": "user", "content": fork_instruction()},
+        ],
+        "tools": source["tools"],
+    }
+    choice = fork_tool_choice(source.get("tool_choice"))
+    if choice is not None:
+        body["tool_choice"] = choice
+    effort = getattr(client, "reasoning_effort", None)
+    if isinstance(effort, str) and effort:
+        # as the actor's own transport sends it: LiteLLM's OpenRouter route passes reasoning_effort at the top level
+        body["reasoning_effort"] = "xhigh" if effort == "max" else effort
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "x-unify-call-kind": "actor_fork",
+        "x-unify-session": f"fork.{eid}",
+        "x-unify-parent": eid,
+    }
+    return {"episode": eid, "url": url, "headers": headers, "body": body}, None
+
+
+def _record(staging: Path, eid: str, status: str, detail: str | None = None) -> None:
+    doc = {
+        "episode": eid,
+        "status": status,
+        "model": None,
+        "turns": 0,
+        "usage": {},
+        "usd": None,
+        "files": [],
+        "refused_files": [],
+    }
+    if detail:
+        doc["detail"] = detail
+    atomic_json(staging / FORK_JSON, doc)
+
+
+# --- the reservation and its lock ----------------------------------------------------------------------------------
+
+
+class Reservation:
+    """An episode's fresh staging dir and the exclusive lock on its ``fork.lock``, held by this process until the
+    worker inherits it (:func:`start`) or the reservation is closed."""
+
+    def __init__(self, staging: Path, eid: str, fd: int | None):
+        self.staging, self.eid, self.fd = staging, eid, fd
+
+    def close(self) -> None:
+        if self.fd is not None:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+            self.fd = None
+
+    def abandon(self, status: str, detail: str | None = None) -> None:
+        """Settle the episode without a fork (``fork.json`` with *status*), then release the lock."""
+        try:
+            if not (self.staging / FORK_JSON).exists():
+                _record(self.staging, self.eid, status, detail)
+        except OSError:
+            pass
+        self.close()
+
+
+def reserve(
+    paths: Any,
+    eid: str,
+    settings: Any,
+    progress: Callable[[str], None] = lambda _m: None,
+) -> Reservation | None:
+    """With the fork on, make the episode's fresh staging dir and lock it, before the episode is recorded, so that an
+    admission check never sees a recorded episode without its dir. Off, or when the dir exists: None.
+    """
+    from . import switch
+
+    if not (switch.library_enabled(settings) and switch.library_fork(settings)):
+        return None
+    staging = staging_dir(paths, eid)
+    try:
+        staging.parent.mkdir(parents=True, exist_ok=True)
+        staging.mkdir(exist_ok=False)
+    except OSError as exc:
+        progress(f"memory: fork not started: staging dir: {type(exc).__name__}")
+        return None
+    fd = None
+    try:
+        fd = os.open(
+            staging / LOCK_FILE,
+            os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+        )
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        if fd is not None:
+            os.close(fd)
+        _record(staging, eid, f"error: lock: {type(exc).__name__}")
+        return None
+    return Reservation(staging, eid, fd)
+
+
+def _age_s(path: Path) -> float:
+    return time.time() - os.lstat(path).st_mtime
+
+
+def settled(root: Path | str, eid: str) -> bool:
+    """Whether *eid*'s fork has settled under *root* (``<state>/memory-staging``): first :func:`resolve` (which records
+    ``"lost"`` or ``"timeout"`` for a fork that can no longer settle itself), then the pure rule
+    :func:`..trigger.admit_settled`."""
+    from ..trigger import admit_settled
+
+    resolve(root, eid)
+    return bool(admit_settled(root, [eid])[0])
+
+
+def resolve(root: Path | str, eid: str) -> None:
+    """Record ``"lost"`` when *eid*'s fork process is gone without its record (its lock is free) or was never
+    started, and ``"timeout"`` when its lock is still held past :data:`STALE_S`; otherwise leave it alone.
+    """
+    from ..staging import STATUS_FILES
+
+    try:
+        _resolve(Path(root), eid, STATUS_FILES)
+    except OSError:
+        pass  # unreadable state: nothing recorded; the pure rule decides on the files as they are
+
+
+def _resolve(root: Path, eid: str, status_files: Any) -> bool:
+    d = root / eid
+    try:
+        st = os.lstat(d)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return True
+    if not stat.S_ISDIR(st.st_mode):
+        return True  # a link or a file is never read as staging
+    if any(os.path.lexists(d / name) for name in status_files):
+        return True
+    try:
+        fd = os.open(d / LOCK_FILE, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        if _age_s(d) < UNSTARTED_S:
+            return False
+        _settle_record(d, eid, "lost", "the fork was never started: no lock file")
+        return True
+    except OSError as exc:
+        _settle_record(
+            d,
+            eid,
+            "lost",
+            f"the fork's lock cannot be opened: {type(exc).__name__}",
+        )
+        return True
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
+                raise
+            # held: the request or its fork worker is alive
+            if _age_s(d / LOCK_FILE) < STALE_S:
+                return False
+            _settle_record(
+                d,
+                eid,
+                "timeout",
+                f"the fork was still running {STALE_S:g} s after it was reserved; admitted without it",
+            )
+            return True
+        if not os.path.lexists(d / FORK_JSON):
+            _settle_record(
+                d,
+                eid,
+                "lost",
+                "the fork process ended without writing its record",
+            )
+        return True
+    finally:
+        os.close(fd)
+
+
+def _settle_record(d: Path, eid: str, status: str, detail: str) -> None:
+    try:
+        _record(d, eid, status, detail)
+    except OSError:
+        pass
+
+
+class Admission:
+    """With the fork on: which pending episodes may enter a pass batch (:func:`settled`), and the episodes earlier
+    passes rolled over, kept in ``<state>/pass-admission.json`` so they enter a later batch.
+    """
+
+    def __init__(self, state_dir: Path | str):
+        self.state_dir = Path(state_dir)
+        self.root = self.state_dir / "memory-staging"
+        self.file = self.state_dir / ROLLED_FILE
+
+    def settled(self, eid: str) -> bool:
+        return settled(self.root, eid)
+
+    def rolled(self) -> list[str]:
+        try:
+            doc = json.loads(self.file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        rolled = doc.get("rolled") if isinstance(doc, dict) else None
+        return [e for e in rolled or [] if isinstance(e, str)]
+
+    def set_rolled(self, eids: list[str]) -> None:
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        atomic_json(self.file, {"rolled": list(dict.fromkeys(eids))})
+
+
+def admission(paths: Any, settings: Any) -> Admission | None:
+    """The admission rule when the fork is on, else None (every recorded episode is admitted)."""
+    from . import switch
+
+    if not (switch.library_enabled(settings) and switch.library_fork(settings)):
+        return None
+    return Admission(paths.state_dir)
+
+
+# --- the box and the process ---------------------------------------------------------------------------------------
+
+
+def box_argv(staging: Path, *, die_with_parent: bool) -> list[str]:
+    """bubblewrap around the system python: read-only /usr, private /tmp, the worker file read-only, the staging
+    dir the only writable bind, the starting process's network only."""
+    bwrap, prlimit = shutil.which("bwrap"), shutil.which("prlimit")
+    if not bwrap or not prlimit:
+        raise RuntimeError(
+            "bubblewrap and prlimit are required: the fork never runs outside a box",
+        )
+    args = [bwrap, "--unshare-all", "--share-net", "--new-session"]
+    if die_with_parent:
+        args.append("--die-with-parent")
+    args += ["--ro-bind", "/usr", "/usr"]
+    for link, target in (
+        ("/lib", "usr/lib"),
+        ("/lib64", "usr/lib64"),
+        ("/bin", "usr/bin"),
+        ("/sbin", "usr/sbin"),
+    ):
+        if os.path.islink(link):
+            args += ["--symlink", target, link]
+    for path in ("/etc/hosts", "/etc/ssl", "/etc/ca-certificates"):
+        if os.path.exists(path):
+            args += ["--ro-bind", path, path]
+    args += [
+        "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+        "--ro-bind", str(WORKER_FILE), BOX_WORKER,
+        "--bind", str(staging), STAGING_IN_BOX,
+        "--chdir", "/tmp", "--clearenv", "--setenv", "PATH", "/usr/bin", "--setenv", "PYTHONDONTWRITEBYTECODE", "1",
+        prlimit, "--nproc=64:64", "--nofile=256:256", "--as=2147483648:2147483648", "--fsize=8388608:8388608",
+        "--", "/usr/bin/python3", "-I", BOX_WORKER, "--staging", STAGING_IN_BOX,
+    ]  # fmt: skip
+    return args
+
+
+class Fork:
+    """A started fork: its process, the thread writing its request, and its staging dir."""
+
+    def __init__(self, proc: Any, writer: threading.Thread, staging: Path, eid: str):
+        self.proc, self.writer, self.staging, self.eid = proc, writer, staging, eid
+
+
+def launch(
+    reservation: Reservation,
+    argv: list[str],
+    data: bytes,
+    log_path: Path,
+    *,
+    popen: Callable[..., Any] = subprocess.Popen,
+) -> Fork:
+    """Start *argv* in its own session with *data* on its stdin and the reservation's lock passed to it; this process
+    then closes its copy, so the lock is held exactly while the process (or a child that kept the descriptor) lives.
+    """
+    log = open(log_path, "ab")
+    try:
+        os.set_inheritable(reservation.fd, True)
+        try:
+            proc = popen(
+                argv,
+                stdin=subprocess.PIPE,
+                stdout=log,
+                stderr=log,
+                start_new_session=True,
+                close_fds=True,
+                pass_fds=(reservation.fd,),
+                env={"PATH": "/usr/bin:/bin"},
+            )
+        finally:
+            reservation.close()
+    finally:
+        log.close()
+
+    def feed() -> None:
+        try:
+            proc.stdin.write(data)
+        except (BrokenPipeError, OSError):
+            pass
+        finally:
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+
+    writer = threading.Thread(
+        target=feed,
+        name=f"fork-request-{reservation.eid}",
+        daemon=True,
+    )
+    writer.start()
+    return Fork(proc, writer, reservation.staging, reservation.eid)
+
+
+def start(
+    paths: Any,
+    handle: Any,
+    eid: str,
+    settings: Any,
+    *,
+    popen: Callable[..., Any] = subprocess.Popen,
+    progress: Callable[[str], None] = lambda _m: None,
+    reservation: Reservation | None = None,
+) -> Fork | None:
+    """Start the episode's fork, or record why not; never raises. Off: returns None and touches nothing. Without a
+    *reservation* (made before the episode was recorded), one is made here."""
+    from . import switch
+
+    if not (switch.library_enabled(settings) and switch.library_fork(settings)):
+        return None
+    if reservation is not None and reservation.eid != eid:
+        reservation.abandon("error: reserved for another episode")
+        reservation = None
+    if reservation is None:
+        reservation = reserve(paths, eid, settings, progress)
+        if reservation is None:
+            return None
+    staging = reservation.staging
+    try:
+        r, why = route()
+        doc = None
+        if r is not None:
+            doc, why = request_doc(handle, eid, *r)
+        if doc is None:
+            reservation.abandon(f"refused: {why}")
+            progress(f"memory: fork refused: {why}")
+            return None
+        data = json.dumps(doc, default=str).encode("utf-8")
+        fork = launch(
+            reservation,
+            box_argv(staging, die_with_parent=switch.library_wait_slot(settings)),
+            data,
+            Path(paths.state_dir) / "fork-worker.log",
+            popen=popen,
+        )
+        progress("memory: fork started")
+        return fork
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 - the request is already answered and recorded
+        reservation.abandon(f"error: {type(exc).__name__}")
+        progress(f"memory: fork failed to start: {type(exc).__name__}")
+        return None
+
+
+def finish(
+    fork: Fork | None,
+    settings: Any,
+    progress: Callable[[str], None] = lambda _m: None,
+) -> None:
+    """After the reply: hand over the request; with ``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on``, wait for the fork (bounded
+    by :data:`WAIT_GUARD_S`, operational). A fork that leaves no ``fork.json`` gets one: ``"timeout"`` when the wait
+    guard stopped it, ``"lost"`` when it ended without one.
+    """
+    from . import switch
+
+    if fork is None:
+        return
+    fork.writer.join(WRITE_GUARD_S)
+    if not switch.library_wait_slot(settings):
+        return
+    try:
+        fork.proc.wait(timeout=WAIT_GUARD_S)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(fork.proc.pid, 9)
+        except OSError:
+            pass
+        fork.proc.wait()
+        if not (fork.staging / FORK_JSON).exists():
+            _record(
+                fork.staging,
+                fork.eid,
+                "timeout",
+                f"the operational wait guard ({WAIT_GUARD_S:g} s) stopped the fork",
+            )
+    if not (fork.staging / FORK_JSON).exists():
+        _record(
+            fork.staging,
+            fork.eid,
+            "lost",
+            f"the fork process exited with code {fork.proc.returncode} without writing its record",
+        )
+    progress("memory: fork ended")

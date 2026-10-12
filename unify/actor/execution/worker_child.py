@@ -15,7 +15,7 @@ Harness -> worker::
 
     {"op": "init", "sys_path": [...], "builtins": [...], "globals": {...},
      "help": bool, "audit": {"roots": [...], "path": str}, "no_bytecode": true}
-                                              (audit, no_bytecode: only under UNIFY_MEMORY_V2)
+                                              (audit, no_bytecode: only under UNIFY_MEMORY)
     {"op": "exec", "id": n, "source": str, "sync": {...}, "scratch": bool,
      "inventory": true}                       (only when asked)
     {"op": "reply", "id": k, "value": ..., "coroutine": bool}
@@ -959,7 +959,7 @@ class Worker:
         self.reply = Reply()
         # UNIFY_VARIABLE_INVENTORY=on: what this namespace's cells bound.
         self.inventory = Inventory()
-        # UNIFY_MEMORY_V2 (spec §3a): the work-tree audit hook, only when the
+        # UNIFY_MEMORY (spec §3a): the work-tree audit hook, only when the
         # harness asks for it in init; ``audit_state`` is "on" or why not.
         self.audit: Any = None
         self.audit_state: Optional[str] = None
@@ -1224,7 +1224,7 @@ class Worker:
     # -- namespace -------------------------------------------------------------
     def init(self, msg: dict) -> dict:
         if msg.get("no_bytecode") is True:
-            # UNIFY_MEMORY_V2: importing the memory export writes no __pycache__ into it
+            # UNIFY_MEMORY: importing the memory export writes no __pycache__ into it
             sys.dont_write_bytecode = True
         sys.path[:] = [p for p in msg.get("sys_path", []) if isinstance(p, str) and p]
         names = msg.get("builtins") or []
@@ -1250,7 +1250,7 @@ class Worker:
         return missing
 
     def _install_audit(self, spec: dict) -> str:
-        """Install the memory-v2 audit hook (``unify/memory_v2/integration/
+        """Install the memory audit hook (``unify/memory/integration/
         adapters/audit.py``), loaded by its file path so no ``unify`` package
         code runs here; "on", or why it is not installed."""
         try:
@@ -1258,7 +1258,7 @@ class Worker:
 
             roots = [r for r in spec.get("roots") or [] if isinstance(r, str)]
             found = importlib.util.spec_from_file_location(
-                "_unify_memory_v2_audit",
+                "_unify_memory_audit",
                 str(spec.get("path")),
             )
             module = importlib.util.module_from_spec(found)
