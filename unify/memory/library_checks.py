@@ -166,10 +166,21 @@ def _no_snapshot(sha: str, dest: Path) -> Path | None:
     return None
 
 
-def _index_tokens(tree: Path) -> int:
-    """The tokens of the ``INDEX.md`` the harness would generate for *tree* (the layout's renderer and estimator)."""
+def _index_tokens(tree: Path, examples: dict[str, dict] | None = None) -> int:
+    """The tokens of the ``INDEX.md`` the harness would generate for *tree* (the layout's renderer and estimator),
+    with each function's example line when *examples* (item -> its recorded example) holds one the tree still
+    quotes."""
+    from .example_view import example_of, tree_reader
+
     lib = discover(tree)
-    return estimate_tokens(render_index(lib, build_links(lib)))
+    records = {item: {"example": ex} for item, ex in (examples or {}).items()}
+    return estimate_tokens(
+        render_index(
+            lib,
+            build_links(lib),
+            example_of=example_of(records, tree_reader(tree)),
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -350,13 +361,18 @@ class LibraryChecks:
                 continue
             data = (run.c_tree / p).read_bytes()
             if p.endswith(REPLAY_SUFFIX):
-                replays[p] = data  # verified by replaying its instances again, not by its bytes
+                replays[p] = (
+                    data  # verified by replaying its instances again, not by its bytes
+                )
                 continue
             problem = verify(p, data, entries.get(p), self.ep, self.gate._blob)
             if problem is None:
                 if isinstance(entries.get(p), dict):
                     # verified this pass: the examples checks' provenance, persisted on merge
-                    run.fixtures_verified[p] = (hashlib.sha256(data).hexdigest(), entries[p])
+                    run.fixtures_verified[p] = (
+                        hashlib.sha256(data).hexdigest(),
+                        entries[p],
+                    )
                 continue
             if entries.get(p) is None:
                 if index is None:
@@ -376,18 +392,27 @@ class LibraryChecks:
 
     def _replays(self, raw: dict, replays: dict[str, bytes]) -> None:
         """New or changed replay case files: their instances are replayed again (:func:`.replay_verify.reverify`);
-        a file whose every line verifies is verified provenance this pass, any other is refused."""
+        a file whose every line verifies is verified provenance this pass, any other is refused.
+        """
         from . import replay_verify
 
         run = self.run
         replaces_of = {
             r["item"]: r["replaces"]
             for r in (raw.get("items") if isinstance(raw.get("items"), list) else [])
-            if isinstance(r, dict) and isinstance(r.get("item"), str) and isinstance(r.get("replaces"), list)
+            if isinstance(r, dict)
+            and isinstance(r.get("item"), str)
+            and isinstance(r.get("replaces"), list)
         }
         scratch = run.tmp / "replay-reverify"
         scratch.mkdir(parents=True, exist_ok=True)
-        found, reasons = replay_verify.reverify(self.ep, replays, replaces_of, run.c_tree, scratch=scratch)
+        found, reasons = replay_verify.reverify(
+            self.ep,
+            replays,
+            replaces_of,
+            run.c_tree,
+            scratch=scratch,
+        )
         for p, entry in sorted(found.items()):
             run.fixtures_verified[p] = (hashlib.sha256(replays[p]).hexdigest(), entry)
         owners = sorted({o for p in replays for o in (self._owners(p) or [])})
@@ -601,7 +626,13 @@ class LibraryChecks:
     def g4(self) -> None:
         run = self.run
         try:
-            size = _index_tokens(run.c_tree)
+            # the example lines the index will show count too (the examples check, in G3, recorded them)
+            examples = {
+                item: v["examples"].get("example")
+                for item, v in getattr(run, "verification", {}).items()
+                if isinstance(v, dict) and isinstance(v.get("examples"), dict)
+            }
+            size = _index_tokens(run.c_tree, examples)
         except (ValueError, OSError) as exc:
             run.fail("G4", f"index not built: {exc}"[:300])
             return

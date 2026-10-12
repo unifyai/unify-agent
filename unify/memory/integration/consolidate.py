@@ -1010,6 +1010,7 @@ def _curate_state(
     from .. import layout
     from ..library_export import item_history
     from ..item_records import effect_of, records_at
+    from ..example_view import example_of, tree_reader
     from ..library_index import build_links, render_index
     from ..overlap import fixture_signatures, overlap_candidates
     from ..shape_rows import shapes_at
@@ -1046,6 +1047,7 @@ def _curate_state(
                     build_links(lib),
                     status_of,
                     effect_of(records),
+                    example_of=example_of(records, tree_reader(tree)),
                 ),
             ),
             bodies=layout.function_bodies(tree),
