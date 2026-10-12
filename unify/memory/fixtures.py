@@ -9,18 +9,25 @@ changed fixture from the recording and refuses one that differs (:func:`verify`)
   - a work-tree action's file blob;
   - the action's own arguments (``args:<i>``, a value the episode used);
   - each user message (``request:<j>``: the request, then the observations; ``observation:<i>`` names the same
-    message as ``request:<i+1>``, the numbering ``read_episode`` uses).
+    message as ``request:<i+1>``, the numbering ``read_episode`` uses);
+  - a code cell's recorded output text (``cell:<i>``, ``Episode.cells[i].output``); a cell that raised, or that
+    recorded no output, is not a source.
   The episode loader resolves capped responses, so a source is never the recorder's excerpt.
 * **Copies** (``kind: copy``): the file equals a source, or a contiguous byte slice ``[a, b)`` of one.
 * **Assembled** (``kind: assembled``, a ``.jsonl`` file): each line is ``{"input": <value>, "source": {...}}``.
   The value is the JSON-decoded slice, or its text when it is not JSON. A function's recorded-inputs file
   (:func:`inputs_file`) is assembled this way, and the gate appends its drawn inputs to a copy of it (:mod:`.qa`).
-* **Trust**: a response, blob or message is trust 1 (the environment's own). Arguments are trust 2 (a value an
-  episode used).
+* **Trust**: a response, blob or message is trust 1 (the environment's own). Arguments and cell outputs are trust 2
+  (a value an episode used or computed).
 * **The ledger is the files** (:func:`derive_ledger`): an assembled file's lines name their own sources, and a copied
   file is listed in ``.pass/fixtures.json`` with its sha256. A file that is deleted, or whose bytes no longer match
   its listing, has no entry. Nothing else is kept, so the ledger cannot drift from what the writer sees; the gate
   re-derives every entry's bytes from the recording, so an edited listing proves nothing by itself.
+* **Across passes** (:func:`ledger_for`): the gate keeps each verified entry by ``(path, sha256)``, so a fixture
+  made in an earlier pass keeps its provenance; an older file is re-derived from its bytes where it can be.
+* **Views** (:func:`value_views`): the values a test can load from a fixture (its bytes, its text, its parsed value
+  and every part of it, its lines and rows and columns), each by the digest an example call's argument has when it
+  holds that value, with the episode and source it came from.
 
 Pure: no git, no network, no clock. Reasons carry paths, episode ids, source ids and byte offsets, never a
 recorded value.
@@ -28,15 +35,19 @@ recorded value.
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import json
 import os
 import re
 import stat as _stat
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from .episodes import Episode
+from .analysis import shapes as _shapes
+from .episodes import Action, Episode
 from .held_out import _blob_sha
 
 DATA_PATH = re.compile(
@@ -44,6 +55,10 @@ DATA_PATH = re.compile(
     r"(?:[A-Za-z0-9_][A-Za-z0-9._-]*/)*[A-Za-z0-9_][A-Za-z0-9._-]*\Z",
 )
 INPUTS_SUFFIX = ".inputs.jsonl"
+#: A function's replay case file (``tests/data/<function>.replay.jsonl``): the inputs of the recorded instances its
+#: replay verified, re-verified by replay rather than by bytes (:mod:`.replay_verify`).
+REPLAY_SUFFIX = ".replay.jsonl"
+_REPLAY_SOURCE = re.compile(r"replay:(\d{1,9}):(\d{1,9})-(\d{1,9})\Z")
 DRAWN_DIR = "_drawn/"  # reserved under tests/data/ for the gate's appended drawn inputs
 _INDEX = re.compile(r"\d{1,9}\Z")
 
@@ -65,6 +80,16 @@ def inputs_file(item: str) -> str:
     """The function's recorded-inputs file, e.g. ``memory/office/tests/data/payroll.export.inputs.jsonl``."""
     module, name = item.split(":", 1)
     return f"{package_dir(item)}/tests/data/{module.rsplit('.', 1)[1]}.{name}{INPUTS_SUFFIX}"
+
+
+def is_replay_file(path: str) -> bool:
+    return str(path).endswith(REPLAY_SUFFIX)
+
+
+def replay_source(source: object) -> tuple[int, int, int] | None:
+    """``replay:<cell>:<a>-<b>`` as ``(cell, a, b)``; None for any other source."""
+    m = _REPLAY_SOURCE.match(str(source))
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
 
 
 def canonical(value: Any) -> str:
@@ -93,11 +118,14 @@ def sources_of(ep: Episode) -> list[str]:
         if has:
             out.append(str(i))
         out.append(f"args:{i}")
+    for i, c in enumerate(getattr(ep, "cells", None) or []):
+        if not c.error and c.output:
+            out.append(f"cell:{i}")
     return out
 
 
 def trust_of(source: str) -> int:
-    return 2 if str(source).startswith("args:") else 1
+    return 2 if str(source).startswith(("args:", "cell:", "replay:")) else 1
 
 
 def _index(text: str, n: int, what: str) -> int:
@@ -128,6 +156,17 @@ def source_bytes(ep: Episode, source: object, blob: Callable[[str], bytes]) -> b
     if s.startswith("args:"):
         a = ep.actions[_index(s[5:], len(ep.actions), "action")]
         return _json_bytes({"args": list(a.args), "kwargs": dict(a.kwargs or {})})
+    if s.startswith("cell:"):
+        cells = getattr(ep, "cells", None) or []
+        i = _index(s[5:], len(cells), "cell")
+        c = cells[i]
+        if c.error:
+            raise FixtureError(
+                f"cell {i} of {ep.episode_id} raised; its output is not a recorded value",
+            )
+        if not isinstance(c.output, str) or not c.output:
+            raise FixtureError(f"cell {i} of {ep.episode_id} has no recorded output")
+        return c.output.encode("utf-8")
     a = ep.actions[_index(s, len(ep.actions), "action")]
     if a.kind == "worktree":
         sha = _blob_sha(a)
@@ -328,6 +367,8 @@ def verify(
         return f"{path}: {exc}"
     except (UnicodeDecodeError, ValueError) as exc:
         return f"{path} cannot be read as recorded lines ({type(exc).__name__})"
+    if isinstance(entry, dict) and entry.get("kind") == "replay":
+        return f"{path} is a replay case file; it is verified by replaying its cases, not by its bytes"
     return f"{path} has an unknown provenance kind"
 
 
@@ -359,7 +400,12 @@ def assembled_entry(data: bytes) -> dict | None:
                 "sha256": hashlib.sha256(canonical(got["input"]).encode()).hexdigest(),
             },
         )
-    return {"kind": "assembled", "lines": rows} if rows else None
+    if not rows:
+        return None
+    replay = [replay_source(r.get("source")) is not None for r in rows]
+    if all(replay):
+        return {"kind": "replay", "lines": rows}
+    return {"kind": "assembled", "lines": rows} if not any(replay) else None
 
 
 def _read_plain(path, limit: int | None = None) -> bytes | None:
@@ -488,3 +534,404 @@ class HashIndex:
 
     def find(self, data: bytes) -> list[tuple[str, str]]:
         return list(self.by_sha.get(hashlib.sha256(data).hexdigest(), []))
+
+
+# --- views: the values a test can load from a fixture -----------------------------------------------------------
+
+#: At most this many parts of one fixture's parsed value (subtrees, rows, columns) are views; past it a note says so.
+MAX_VIEW_NODES = 5000
+#: At most this many assembled files without a kept entry are re-verified from the recording per gate run.
+MAX_REVERIFY = 32
+_LINES_EXT = (".jsonl", ".ndjson")
+_YAML_EXT = (".yaml", ".yml")
+
+
+@dataclass(frozen=True)
+class View:
+    """One value a test can load from a fixture: ``name`` says which (``whole``, ``text``, ``value``,
+    ``value:a.b[2]``, ``line:4``, ``line:4:input``, ``rows``, ``row:3``, ``column:amount``), and ``episode``,
+    ``source`` and ``trust`` where it came from (per line for an assembled file, whose ``line`` is then set)."""
+
+    name: str
+    episode: str
+    source: str
+    trust: int
+    line: int | None
+
+
+def value_digest(value: Any) -> str:
+    """SHA-256 of the canonical JSON of *value*: the digest an example call's argument has when it holds *value*."""
+    return hashlib.sha256(canonical(value).encode("utf-8")).hexdigest()
+
+
+def _origins(entry: dict) -> list[tuple[str, str, int, int | None]]:
+    """(episode, source, trust, line) of a copy (line None) or of each assembled line (line from 1)."""
+
+    def one(row: Any, line: int | None) -> tuple[str, str, int, int | None] | None:
+        if not isinstance(row, dict) or not isinstance(row.get("episode"), str):
+            return None
+        src = canonical_source(row.get("source"))
+        trust = row.get("trust")
+        if not isinstance(trust, int) or isinstance(trust, bool):
+            trust = trust_of(src)
+        return row["episode"], src, trust, line
+
+    if entry.get("kind") == "copy":
+        got = one(entry, None)
+        return [got] if got else []
+    if entry.get("kind") in ("assembled", "replay") and isinstance(entry.get("lines"), list):
+        rows = [one(r, n) for n, r in enumerate(entry["lines"], 1)]
+        return [r for r in rows if r is not None]
+    return []
+
+
+class _Views:
+    def __init__(self, path: str, notes: list[str] | None) -> None:
+        self.path = path
+        self.notes = notes
+        self.out: dict[str, list[View]] = {}
+        self.parts = 0
+        self.full = False
+
+    def add(
+        self,
+        value: Any,
+        name: str,
+        who: list[tuple[str, str, int, int | None]],
+        *,
+        part: bool = True,
+    ) -> bool:
+        """Add *value* as view *name* for each origin in *who*; False once the parts bound is reached."""
+        if part:
+            if self.parts >= MAX_VIEW_NODES:
+                if not self.full and self.notes is not None:
+                    self.notes.append(
+                        f"G2 examples: fixture {self.path} has more than {MAX_VIEW_NODES} parts; only the first "
+                        f"{MAX_VIEW_NODES} are matched against arguments",
+                    )
+                self.full = True
+                return False
+            self.parts += 1
+        try:
+            digest = value_digest(value)
+        except (TypeError, ValueError, RecursionError):
+            return True
+        views = self.out.setdefault(digest, [])
+        for episode, source, trust, line in who:
+            v = View(name, episode, source, trust, line)
+            if v not in views:
+                views.append(v)
+        return True
+
+
+def _walk(
+    acc: _Views,
+    value: Any,
+    who: list[tuple[str, str, int, int | None]],
+    per_item: list[tuple[str, str, int, int | None]] | None = None,
+) -> None:
+    """Every subtree of *value* as ``value`` / ``value:<path>``, breadth first. *per_item*: for a list of JSON
+    lines whose origins differ per line, the origin of each top-level item."""
+    queue: list[tuple[Any, str, list]] = [(value, "", who)]
+    i = 0
+    while i < len(queue):
+        node, path, origin = queue[i]
+        i += 1
+        if not acc.add(node, f"value:{path}" if path else "value", origin):
+            return
+        if isinstance(node, dict):
+            for k, v in node.items():
+                queue.append((v, f"{path}.{k}" if path else str(k), origin))
+        elif isinstance(node, list):
+            for j, v in enumerate(node):
+                o = (
+                    [per_item[j]]
+                    if per_item is not None and not path and j < len(per_item)
+                    else origin
+                )
+                queue.append((v, f"{path}[{j}]", o))
+
+
+def _table_views(
+    acc: _Views,
+    text: str,
+    delimiter: str,
+    header: bool,
+    who: list,
+) -> None:
+    rows = list(csv.reader(io.StringIO(text), delimiter=delimiter))
+    if not acc.add(rows, "rows", who):
+        return
+    first = rows[0] if rows else []
+    body = rows[1:] if header else rows
+    if header and not acc.add(body, "rows:body", who):
+        return
+    dicts: list[dict] = []
+    if header:
+        for r in body:
+            if not r:
+                continue
+            dicts.append({k: (r[j] if j < len(r) else None) for j, k in enumerate(first)})
+        if not acc.add(dicts, "rows:dicts", who):
+            return
+    for n, r in enumerate(rows, 1):
+        if r and not acc.add(r, f"row:{n}", who):
+            return
+    if header:
+        n0 = 2
+        for d in dicts:
+            while n0 <= len(rows) and not rows[n0 - 1]:
+                n0 += 1
+            if not acc.add(d, f"row:{n0}", who):
+                return
+            n0 += 1
+    width = max((len(r) for r in rows), default=0)
+    for j in range(width):
+        name = first[j] if header and j < len(first) else f"#{j + 1}"
+        col = [r[j] for r in body if j < len(r)]
+        if not acc.add(col, f"column:{name}", who):
+            return
+
+
+def value_views(
+    path: str,
+    data: bytes,
+    entry: dict | None,
+    notes: list[str] | None = None,
+) -> dict[str, list[View]]:
+    """The values a test can load from the fixture at *path* (bytes *data*, provenance *entry*), as digest -> views.
+
+    * the whole bytes as ``{"__bytes__": sha256}``, and the text as one string (UTF-8 only);
+    * JSON: the parsed value and every subtree of it; JSON lines (``.jsonl``/``.ndjson``, or any assembled file):
+      the list of parsed lines and every subtree, each line, and an assembled line's ``input``;
+    * a table (``analysis.shapes`` format ``csv``): the rows as lists (all, and without the header), the rows as
+      dicts keyed by the header, each row, and each column (by header name, or ``#<n>`` from 1) as a list;
+    * YAML and any other text: the whole bytes and the text only; bytes that are not UTF-8: the whole bytes only.
+
+    A file without an entry (no provenance) has no views: it grounds nothing. Parts past :data:`MAX_VIEW_NODES`
+    are not views, and *notes* (when given) says so.
+    """
+    if not isinstance(entry, dict):
+        return {}
+    origins = _origins(entry)
+    if not origins:
+        return {}
+    acc = _Views(path, notes)
+    acc.add({"__bytes__": hashlib.sha256(data).hexdigest()}, "whole", origins, part=False)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return acc.out
+    acc.add(text, "text", origins, part=False)
+    ext = _shapes.extension(path)
+    assembled = entry.get("kind") in ("assembled", "replay")
+    replay = entry.get("kind") == "replay"
+    if ext in _YAML_EXT:
+        return acc.out
+    if assembled or ext in _LINES_EXT:
+        values: list[Any] = []
+        numbers: list[int] = []
+        for n, ln in enumerate(text.splitlines(), 1):
+            if not ln.strip():
+                continue
+            try:
+                values.append(json.loads(ln))
+            except (ValueError, RecursionError):
+                if notes is not None:
+                    notes.append(
+                        f"G2 examples: fixture {path} line {n} is not JSON; its lines are matched as text only",
+                    )
+                return acc.out
+            numbers.append(n)
+        per_line = [
+            next((o for o in origins if o[3] == n), None) if assembled else None
+            for n in numbers
+        ]
+        per_item = (
+            [p if p is not None else origins[0] for p in per_line] if assembled else None
+        )
+        for k, (n, v) in enumerate(zip(numbers, values)):
+            who = [per_item[k]] if per_item is not None else [o[:3] + (n,) for o in origins]
+            acc.add(v, f"line:{n}", who, part=False)
+            if assembled and isinstance(v, dict) and "input" in v:
+                acc.add(v["input"], f"line:{n}:input", who, part=False)
+                if replay and isinstance(v["input"], dict):
+                    for param, value in v["input"].items():
+                        got = _replay_value(value)
+                        if got is not _UNNORMAL:
+                            acc.add(got, f"line:{n}:input.{param}", who, part=False)
+        _walk(acc, values, origins, per_item)
+        return acc.out
+    try:
+        parsed = json.loads(text)
+    except (ValueError, RecursionError):
+        shape = _shapes.shape(path, data)
+        if shape.get("format") == "csv" and isinstance(shape.get("delimiter"), str):
+            _table_views(acc, text, shape["delimiter"], bool(shape.get("header")), origins)
+        return acc.out
+    _walk(acc, parsed, origins)
+    return acc.out
+
+
+_UNNORMAL = object()
+
+
+def normalise(value: Any, depth: int = 0) -> Any:
+    """*value* as the JSON form an example call's argument digest is taken of: a tuple as a list; a set as the list
+    of its normalised items in canonical order; bytes as ``{"__bytes__": sha256}``; a Decimal as its text; a date as
+    its ISO text; an object with a plain ``__dict__`` as ``{"__type__": name, "vars": ...}`` (depth at most 8). Anything
+    else gives a sentinel the caller treats as no digest."""
+    import datetime as _dt
+    import decimal as _decimal
+
+    if depth > 8:
+        return _UNNORMAL
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        items = [normalise(v, depth + 1) for v in value]
+        return _UNNORMAL if any(i is _UNNORMAL for i in items) else items
+    if isinstance(value, (set, frozenset)):
+        items = [normalise(v, depth + 1) for v in value]
+        if any(i is _UNNORMAL for i in items):
+            return _UNNORMAL
+        return sorted(items, key=canonical)
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            got = normalise(v, depth + 1)
+            if not isinstance(k, str) or got is _UNNORMAL:
+                return _UNNORMAL
+            out[k] = got
+        return out
+    if isinstance(value, (bytes, bytearray)):
+        return {"__bytes__": hashlib.sha256(bytes(value)).hexdigest()}
+    if isinstance(value, _decimal.Decimal):
+        return str(value)
+    if isinstance(value, (_dt.date, _dt.datetime)):
+        return value.isoformat()
+    attrs = getattr(value, "__dict__", None)
+    if isinstance(attrs, dict):
+        got = normalise(dict(attrs), depth + 1)
+        return _UNNORMAL if got is _UNNORMAL else {"__type__": type(value).__name__, "vars": got}
+    return _UNNORMAL
+
+
+def _replay_value(encoded: Any) -> Any:
+    """A replay case input (tagged JSON, :func:`.mining_behaviour.enc`) as the normalised value the call receives."""
+    from .mining_behaviour import dec
+
+    try:
+        return normalise(dec(encoded))
+    except (TypeError, ValueError, KeyError, RecursionError):
+        return _UNNORMAL
+
+
+# --- the recorded action behind a fixture -----------------------------------------------------------------------
+
+_ACTION_SOURCE = re.compile(r"(?:args:)?(\d{1,9})\Z")
+
+
+def source_action(
+    row: dict,
+    load: Callable[[str], Episode | None],
+) -> tuple[str, int, Action] | None:
+    """The recorded action behind a copy entry or an assembled line: ``(episode, index, action)`` for a source
+    ``<i>`` (its response or file) or ``args:<i>`` (its arguments); None for a message or cell source, an unknown
+    episode, or an index out of range."""
+    if not isinstance(row, dict) or not isinstance(row.get("episode"), str):
+        return None
+    m = _ACTION_SOURCE.match(canonical_source(row.get("source")))
+    if m is None:
+        return None
+    ep = load(row["episode"])
+    if ep is None:
+        return None
+    i = int(m.group(1))
+    if i >= len(ep.actions):
+        return None
+    return row["episode"], i, ep.actions[i]
+
+
+# --- provenance across passes ------------------------------------------------------------------------------------
+
+
+def ledger_for(
+    files: dict[str, bytes],
+    in_pass: dict[str, dict],
+    stored: Callable[[str, str], dict | None],
+    load: Callable[[str], Episode | None],
+    blob: Callable[[str], bytes],
+    episodes: list[str],
+) -> tuple[dict[str, dict], list[str]]:
+    """The provenance of each fixture in *files* (path -> bytes of the candidate), and notes.
+
+    For each file, the first that applies:
+    1. its entry in *in_pass* (G1 verified it in this pass);
+    2. a kept entry with the same ``(path, sha256)`` (*stored*, the evidence store's ``fixture_provenance``);
+    3. an assembled file whose lines re-derive from the recording now (:func:`verify`; at most
+       :data:`MAX_REVERIFY` files per call, the rest are noted);
+    4. bytes equal to a whole recorded source of one of *episodes* (the episodes the package's items cite): a copy
+       entry with ``"backfilled": true``, noted;
+    5. none: the file grounds no argument, noted.
+    """
+    out: dict[str, dict] = {}
+    notes: list[str] = []
+    index: HashIndex | None = None
+    reverified = 0
+    for path in sorted(files):
+        data = files[path]
+        entry = in_pass.get(path)
+        if isinstance(entry, dict):
+            out[path] = entry
+            continue
+        sha = hashlib.sha256(data).hexdigest()
+        kept = stored(path, sha)
+        if isinstance(kept, dict):
+            out[path] = kept
+            continue
+        lines = assembled_entry(data) if path.endswith(".jsonl") else None
+        if lines is not None and lines.get("kind") == "replay":
+            notes.append(
+                f"G2 examples: replay case file {path} was not re-verified by replay in this pass; it grounds no "
+                "argument",
+            )
+            continue
+        if lines is not None:
+            if reverified < MAX_REVERIFY:
+                reverified += 1
+                if verify(path, data, lines, load, blob) is None:
+                    out[path] = lines
+                    continue
+            else:
+                notes.append(
+                    f"G2 examples: fixture {path} was not re-verified (more than {MAX_REVERIFY} assembled files "
+                    "without kept provenance in one gate run)",
+                )
+        if index is None:
+            index = HashIndex()
+            for eid in sorted(set(episodes)):
+                ep = load(eid)
+                if ep is not None:
+                    index.add(ep, blob)
+        hits = sorted(index.find(data))
+        if hits:
+            eid, src = hits[0]
+            out[path] = {
+                "kind": "copy",
+                "episode": eid,
+                "source": src,
+                "slice": None,
+                "trust": trust_of(src),
+                "sha256": sha,
+                "backfilled": True,
+            }
+            notes.append(
+                f"G2 examples: fixture {path}'s provenance was re-derived from its bytes ({eid} {src})",
+            )
+            continue
+        notes.append(
+            f"G2 examples: fixture {path} has no recorded provenance (made before provenance was kept, and its "
+            "bytes match no recorded source); it grounds no argument",
+        )
+    return out, notes

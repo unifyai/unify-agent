@@ -88,10 +88,10 @@ def test_a_function_that_reproduces_the_instance_is_verified_and_gets_a_test(tmp
         scratch=tmp_path,
     )
     assert [g["verdict"] for g in got] == ["verified"], got
-    rel, src = rv.test_source(
-        "memory.grids.regions:components",
-        [{**got[0]["case"], "at": "e1:1"}],
-    )
+    cases = [{**got[0]["case"], "at": "e1:1", "episode": "e1", "cell": 1, "lines": [1, 9]}]
+    rel, src = rv.test_source("memory.grids.regions:components", cases)
+    data_rel, data = rv.case_file("memory.grids.regions:components", cases)
+    assert data_rel == "memory/grids/tests/data/components.replay.jsonl"
     assert (
         rel == "memory/grids/tests/test_components_replay.py"
         and "from memory.grids.regions import components" in src
@@ -99,7 +99,9 @@ def test_a_function_that_reproduces_the_instance_is_verified_and_gets_a_test(tmp
     test = lib / rel
     test.parent.mkdir(parents=True)
     test.write_text(src)
-    ns = {}
+    (lib / data_rel).parent.mkdir(parents=True)
+    (lib / data_rel).write_bytes(data)
+    ns = {"__file__": str(test)}
     import sys
 
     sys.path.insert(0, str(lib))

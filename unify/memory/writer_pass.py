@@ -2344,7 +2344,13 @@ class WriterPass:
         ) as exc:  # noqa: BLE001 - a replay failure is the reply, never a crash
             return f"replay error: {type(exc).__name__}"
         cases = [
-            {**g["case"], "at": f"{g.get('episode')}:{g.get('cell')}:{g.get('lines')}"}
+            {
+                **g["case"],
+                "at": f"{g.get('episode')}:{g.get('cell')}:{g.get('lines')}",
+                "episode": g.get("episode"),
+                "cell": g.get("cell"),
+                "lines": g.get("lines"),
+            }
             for g in got
             if g.get("verdict") == "verified"
         ]
@@ -2361,13 +2367,23 @@ class WriterPass:
         if not cases:
             return "\n".join(lines + ["No instance verified: no test written."])
         rel, src = _rv.test_source(item, cases)
+        data_rel, data = _rv.case_file(item, cases)
+        from . import fixtures as _fixtures
+
+        if not _fixtures._no_link_on_the_way(box, data_rel) or (box / data_rel).is_symlink():
+            return _wt.refusal("replay", "not_run", reason=f"a link is on the way to {data_rel}")
         dest = box / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(src)
+        (box / data_rel).parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(box / data_rel, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
         return "\n".join(
             lines
             + [
-                f"Test written: {rel} ({len(cases)} case(s)); add it to the item's tests.",
+                f"Test written: {rel} ({len(cases)} case(s)), reading its inputs from {data_rel}; add the test to "
+                "the item's tests.",
             ],
         )
 
