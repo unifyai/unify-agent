@@ -1344,6 +1344,39 @@ def transcript_lines(
     return lines
 
 
+def record_transcript(
+    root: str | Path,
+    pass_id: str,
+    agent: str,
+    messages: list,
+    *,
+    redactor: Redactor | None = None,
+    tools: list | None = None,
+    label: Mapping[str, str] | None = None,
+) -> dict:
+    """Write *agent*'s transcript (:func:`transcript_lines`: redacted, then bounded) to
+    ``<root>/<pass_id>/transcripts/<agent>.jsonl``, created new; return its manifest (agent, path, lines, bytes,
+    sha256), or the error that kept it from being written. The one place a helper's transcript is stored."""
+    lines = transcript_lines(messages, pass_id, redactor, tools=tools, label=label)
+    data = "".join(line + "\n" for line in lines).encode("utf-8")
+    path = Path(root) / pass_id / "transcripts" / f"{agent}.jsonl"
+    manifest = {
+        "agent": agent,
+        "path": str(path),
+        "lines": len(lines),
+        "bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+    except OSError as exc:
+        manifest["error"] = type(exc).__name__
+    return manifest
+
+
 def record_lines(
     entries: list,
     pass_id: str,
@@ -2391,6 +2424,23 @@ class WriterPass:
         if pr is None:
             return
         await self._close_record()
+        # each helper's transcript beside the pass's events (record_transcript), named in the end event
+        transcripts: list[dict] = []
+        ctx = self._delegate_ctx
+        root = getattr(self.cfg, "pass_record_root", None)
+        if root and ctx is not None and ctx.pass_id == pr.pass_id:
+            for name, (messages, tools) in ctx.transcripts.items():
+                transcripts.append(
+                    record_transcript(
+                        root,
+                        pr.pass_id,
+                        name,
+                        messages,
+                        redactor=self.redactor,
+                        tools=tools,
+                        label={"agent": "helper", "helper": name},
+                    ),
+                )
         self._write_event(
             pr.pass_id,
             {
@@ -2404,6 +2454,7 @@ class WriterPass:
                 "record": str(pr.log.path) if pr.log is not None else None,
                 "record_error": getattr(self, "_record_error", None),
                 "record_entries": len(pr.record.entries),
+                "helper_transcripts": transcripts,
             },
         )
 

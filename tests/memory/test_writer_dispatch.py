@@ -206,6 +206,12 @@ def test_a_writer_that_delegates_gets_the_helpers_messages_and_staged_files(tmp_
     assert any("candidates/perimeter.py" in json.dumps(ln["message"]) for ln in turns_of)
     record = [ln["record"] for ln in lines if "record" in ln]
     assert any(r["author"] == "call-1" and r["kind"] == "reply" for r in record)
+    # and each helper's transcript is stored beside the pass's events, named in the end event
+    (end,) = [r for r in rows if r["event"] == "pass_end"]
+    stored = {m["agent"]: m for m in end["helper_transcripts"]}
+    assert set(stored) == {"call-0", "call-1", "call-2"} and not any("error" in m for m in stored.values())
+    kept = (tmp_path / "records" / "p1" / "transcripts" / "call-1.jsonl").read_text().splitlines()
+    assert len(kept) == stored["call-1"]["lines"] and all(json.loads(x)["helper"] == "call-1" for x in kept)
 
 
 class Slow:
