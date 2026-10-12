@@ -667,11 +667,10 @@ LIBRARY_POOL = "UNIFY_MEMORY_LIBRARY_POOL"
 #: MAIN 11 Oct (prepared; off until the lead decides): ``on`` moves old tool results out of the writer's
 #: conversation once it passes a size (writer_pass._compact); ``off``: the conversation is never changed.
 LIBRARY_COMPACT = "UNIFY_MEMORY_LIBRARY_COMPACT"
-#: MAIN 11 Oct (prepared; ``required`` until the lead decides): ``required`` keeps the batch rule (finish needs every
-#: episode covered or dismissed, spec v2.1 §7.4); ``optional``: finish never needs it, and an episode left neither
-#: covered nor dismissed is recorded as unread (the pass's coverage and, with the pool, an ``unread`` entry).
+#: The former reading rule. Finish never waits on reading: empty and ``optional`` are accepted and change nothing;
+#: ``required`` (the removed rule) is refused, so a configuration that still asks for it fails loudly at start-up.
 LIBRARY_COVERAGE = "UNIFY_MEMORY_LIBRARY_COVERAGE"
-LIBRARY_COVERAGE_VALUES = ("required", "optional")
+LIBRARY_COVERAGE_VALUES = ("optional",)
 LIBRARY_MAX_READS_DEFAULT = 400
 #: The v2.1 writer's USD per recorded token (spec §15, F9): v2's rate until the offline replay sizes it for coverage.
 LIBRARY_WRITER_USD_PER_TOKEN = "UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN"
@@ -871,13 +870,17 @@ def library_compact(settings: Any) -> bool:
 
 
 def parse_library_coverage(v: Any) -> str:
-    """``UNIFY_MEMORY_LIBRARY_COVERAGE``: ``required`` (also for empty) or ``optional``."""
-    value = _stripped(v).lower() or "required"
+    """``UNIFY_MEMORY_LIBRARY_COVERAGE``: empty or ``optional`` (a no-op: finish never waits on reading). The removed
+    ``required`` rule, and anything else, is refused."""
+    value = _stripped(v).lower() or "optional"
+    if value == "required":
+        raise ValueError(
+            f"{LIBRARY_COVERAGE}=required is no longer supported: the reading rule was removed and finish never "
+            "waits on reading; leave the setting empty or set it to 'optional'",
+        )
     if value not in LIBRARY_COVERAGE_VALUES:
         raise ValueError(
-            f"{LIBRARY_COVERAGE} must be empty, 'required' or 'optional', not {v!r}"[
-                :200
-            ],
+            f"{LIBRARY_COVERAGE} must be empty or 'optional', not {v!r}"[:200],
         )
     return value
 

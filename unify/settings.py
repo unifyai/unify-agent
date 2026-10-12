@@ -438,10 +438,9 @@ class ProductionSettings(BaseSettings):
     # MAIN 11 Oct (prepared; off until the lead decides): ``on`` moves old tool results out of the memory writer's
     # conversation once it passes a size; ``off`` (default): never.
     UNIFY_MEMORY_LIBRARY_COMPACT: str = "off"
-    # MAIN 11 Oct (prepared; ``required`` until the lead decides): ``required`` keeps the writer's batch rule (finish
-    # needs every episode covered or dismissed); ``optional``: finish never needs it, and the episodes left are
-    # recorded as unread.
-    UNIFY_MEMORY_LIBRARY_COVERAGE: str = "required"
+    # The former reading rule: empty or ``optional`` (a no-op; finish never waits on reading). ``required`` is
+    # refused at start-up.
+    UNIFY_MEMORY_LIBRARY_COVERAGE: str = ""
     # Memory v2.1: USD per recorded token of a pass's cap (v2's rate until the offline replay sizes it).
     UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN: str = "0.00000073"
     UNIFY_MEMORY_LIBRARY_PASS_WALL_S: int = 2700

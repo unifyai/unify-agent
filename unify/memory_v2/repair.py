@@ -146,8 +146,15 @@ def render_result(
     return "\n".join(lines) + "\n"
 
 
-def repair_message(n: int, path: str, res: GateResult) -> str:
-    """Sol's message opening repair round *n* (>= 1) after round ``n - 1``'s refused check."""
+def repair_message(
+    n: int,
+    path: str,
+    res: GateResult,
+    limit: int | None = REPAIR_ROUNDS,
+) -> str:
+    """The writer's message opening repair round *n* (>= 1) after round ``n - 1``'s refused check. *limit* is the
+    number of repair rounds the pass allows; None when no such limit exists (only the deadline and step guard end
+    the pass), and then no round count is stated."""
     items = (
         ", ".join(
             f"{i} ({', '.join(c or [])})" for i, c in sorted(res.items_refused.items())
@@ -158,6 +165,12 @@ def repair_message(n: int, path: str, res: GateResult) -> str:
         f"The gate refused round {n - 1}'s candidate (checks: {', '.join(res.refused) or 'none'}; items: "
         f"{items}). Its full result, with every check line, every failing test's output and every note, is "
         f"{path}; read it with read. Fix what it refused in /memory, keep /memory/.pass/manifest.json up to "
-        f"date, then call finish again. This is repair round {n} of {REPAIR_ROUNDS}. After the last round the "
-        "items that pass land and the rest are kept as a draft for the next pass."
+        f"date, then call finish again. "
+        + (
+            f"This is repair round {n} of {limit}. After the last round the items that pass land and the rest are "
+            "kept as a draft for the next pass."
+            if limit is not None
+            else f"This is repair round {n}. When the pass ends, the items that pass land and the rest are kept as "
+            "a draft for the next pass."
+        )
     )

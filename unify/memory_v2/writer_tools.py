@@ -1,0 +1,861 @@
+"""The writer's tools: one :class:`.tool_spec.ToolSpec` per tool, and the handlers that need no pass state.
+
+Every tool JSON the writer, the curator or a helper receives is rendered from :data:`SPECS` (through
+:mod:`.agent_profiles`), and every refusal text comes from a spec's ``refusals`` (or :data:`GENERAL_REFUSALS` for the
+answers the pass loop itself gives), each with a stable form code that the structured tool events record.
+
+Tool state is derived from files the model can see: fixture provenance from the fixture files themselves
+(:func:`.fixtures.derive_ledger`), pool decisions from the manifest's ``pool`` block, and the pool from
+``/inputs/pool``. Reading records nothing that changes what a later call may do; the read log is a measure only.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable
+
+from . import batch_map as _bm
+from . import fixtures as _fx
+from . import views as _views
+from .tool_spec import ToolSpec, refusal
+
+#: parts per read_episode call (one shared page) and reader calls per model turn; both stated in the descriptions
+READ_PARTS_PER_CALL = 8
+READERS_PER_TURN = 16
+#: cells run per model turn (stated in execute_code's description)
+CELLS_PER_TURN = 8
+#: where the manifest lives in the writer's box
+MANIFEST = ".pass/manifest.json"
+
+_W, _C, _H = "write", "curate", "helper"
+_ALL = frozenset({_W, _C, _H})
+_WRITE_CURATE = frozenset({_W, _C})
+
+
+def _obj(props: dict, required: list[str] | None = None) -> dict:
+    out: dict = {"type": "object", "properties": props}
+    if required:
+        out["required"] = required
+    return out
+
+
+_OFFSET = {
+    "type": "integer",
+    "description": "byte offset to start the page at (a page marker names the next one)",
+}
+
+EXECUTE_CODE = ToolSpec(
+    name="execute_code",
+    description=(
+        "Run Python code as a script in a fresh confined process: cwd /memory (read-write), /inputs read-only, no "
+        "network, up to the cell time limit stated in the first message. Returns stdout and stderr: the first 8000 "
+        "bytes, with the full output saved as /outputs/cell-<n>.txt, which `read` opens (cells cannot open "
+        f"/outputs). At most {CELLS_PER_TURN} cells run per model turn; more are answered 'not run' and can be sent "
+        "again."
+    ),
+    parameters=_obj({"code": {"type": "string"}}, ["code"]),
+    roles=_ALL,
+    summary="run Python in a fresh confined process (cwd /memory; /inputs read-only).",
+)
+
+CHECK = ToolSpec(
+    name="check",
+    description=(
+        "Check the manifest at /memory/.pass/manifest.json against your current /memory files: the gate's static "
+        "checks (the manifest, the layout and links, fixtures, covers and safety), then the items' own tests and "
+        "the recorded inputs the gate draws. Returns 'ok' or the gate's reasons, with the output of any failing "
+        "test; the full result is saved under /inputs/gate/ and the reply names the file. With `manifest` given, "
+        "that JSON is first written to /memory/.pass/manifest.json (replacing it), so check, finish and the gate "
+        "always judge the same file. Changes nothing else."
+    ),
+    parameters=_obj(
+        {
+            "manifest": {
+                "type": "string",
+                "description": "optional: the manifest JSON, written to /memory/.pass/manifest.json before the check",
+            },
+        },
+    ),
+    roles=_WRITE_CURATE,
+    refusals={
+        "manifest_problem": "{reason}",
+        "too_late": "too little time left before the pass deadline for a check",
+        "stopped": "{reason}",
+    },
+    summary="run the gate's checks on /memory/.pass/manifest.json and your files; changes nothing.",
+)
+
+FINISH = ToolSpec(
+    name="finish",
+    description=(
+        "End the pass: the gate then judges /memory/.pass/manifest.json and your /memory files. Refused, with the "
+        "reason, while the manifest is missing or does not parse. When the gate refuses items you get a repair "
+        "round with its full result."
+    ),
+    parameters=_obj({"summary": {"type": "string"}}, ["summary"]),
+    roles=_WRITE_CURATE,
+    refusals={"manifest_problem": "{reason}"},
+    summary="end the pass; the gate judges the manifest and files.",
+)
+
+READ = ToolSpec(
+    name="read",
+    description=(
+        "Read a file or list a directory under /inputs, /memory or /outputs. Returns at most 8000 bytes from "
+        f"offset; a marker gives the next offset. Nothing is ever cut silently. At most {READERS_PER_TURN} "
+        "reader calls (read, grep, overview, read_episode, pool) run per model turn; more are answered 'not run' "
+        "and can be sent again."
+    ),
+    parameters=_obj({"path": {"type": "string"}, "offset": _OFFSET}, ["path"]),
+    roles=_ALL,
+    refusals={"outside_roots": "{path} is outside /inputs, /memory and /outputs", "not_found": "{path} does not exist"},
+    summary="read a file or list a directory under /inputs, /memory or /outputs, 8000 bytes a page.",
+)
+
+GREP = ToolSpec(
+    name="grep",
+    description=(
+        "Search files under a path (default /inputs) with a Python regular expression; returns path:line: text "
+        "hits, one bounded page at a time (a marker gives the next offset)."
+    ),
+    parameters=_obj(
+        {
+            "pattern": {"type": "string"},
+            "path": {"type": "string", "description": "file or directory to search; default /inputs"},
+            "offset": {"type": "integer", "description": "hit number to start the page at"},
+        },
+        ["pattern"],
+    ),
+    roles=_ALL,
+    refusals={"outside_roots": "{path} is outside /inputs, /memory and /outputs", "bad_pattern": "{reason}"},
+    summary="search files with a regular expression (default under /inputs).",
+)
+
+OVERVIEW = ToolSpec(
+    name="overview",
+    description=(
+        "Without episode: one line per batch episode (its id, observations, cells, actions, errors, staged "
+        "candidates and open pool entries), from /inputs/batch_map.json. With episode (any recorded episode): its "
+        "end first (its last working cell, last action and last observation, in full), then every step, newest "
+        "first, with the part name read_episode reads it by. Paged at 8000 bytes."
+    ),
+    parameters=_obj({"episode": {"type": "string"}, "offset": _OFFSET}),
+    roles=frozenset({_W, _H}),
+    refusals={"unknown_episode": "{episode!r} is not a recorded episode; this batch: {batch}"},
+    summary="the batch at a glance, or one episode's end and every step.",
+)
+
+READ_EPISODE = ToolSpec(
+    name="read_episode",
+    description=(
+        "Read any recorded episode by its id (read-only). Without parts: its table of contents: every part name "
+        "with its size in bytes, and for each part the fixture source id it is copied with and that source's raw "
+        "length in bytes (fixture slices count raw bytes, not the JSON shown here). parts=[...] shows those parts "
+        f"on one page of 8000 bytes, each marked, at most {READ_PARTS_PER_CALL} per call (the rest are named for "
+        "the next call); a part reached with the page full is named, not shown; a part given as "
+        '{"part": name, "offset": n} continues it. Part names: \'request\', \'observation:<i>\' (the i-th user '
+        "message after the request; fixture source request:<i+1>, also called observation:<i>), 'cell:<i>', "
+        "'action:<i>' (fixture sources '<i>' for its response or file and 'args:<i>' for its arguments) and "
+        "'diff'. An unknown name is answered with the valid names while the valid parts are shown."
+    ),
+    parameters=_obj(
+        {
+            "episode": {"type": "string"},
+            "parts": {
+                "type": "array",
+                "items": {
+                    "anyOf": [
+                        {"type": "string"},
+                        _obj({"part": {"type": "string"}, "offset": {"type": "integer"}}, ["part"]),
+                    ],
+                },
+                "description": "the parts to show; omit for the table of contents",
+            },
+            "part": {"type": "string", "description": "one part: the same as parts=[part]"},
+            "offset": {"type": "integer", "description": "with part: the byte offset to continue it at"},
+        },
+        ["episode"],
+    ),
+    roles=_ALL,
+    refusals={
+        "unknown_episode": "{episode!r} is not a recorded episode; this batch: {batch}",
+        "bad_offset": "offset must be an integer >= 0 (part {part!r}); nothing was shown",
+        "bad_parts": "parts must be a list of part names; nothing was shown",
+        "unknown_part": "no part {names} in {episode}; nothing was shown. Valid: {valid}",
+    },
+    summary="read any recorded episode: its table of contents, or named parts.",
+)
+
+FIXTURE = ToolSpec(
+    name="fixture",
+    description=(
+        "Copy recorded bytes of an episode into a test fixture under memory/<package>/tests/data/. source: an "
+        "action index (its recorded response, or a work-tree action's file), 'args:<i>' (the arguments that action "
+        "was called with), 'request:<j>' (a user message: 0 is the request, then the observations) or "
+        "'observation:<i>' (the same message as request:<i+1>); read_episode's table of contents gives each part's "
+        "source and raw length. slice [start, end] keeps raw bytes start to end-1; an end that is null or left out "
+        "runs to the end, and an end past the source is clamped to its length (the reply says so); a start at or "
+        "past the end is refused with the length. append=true adds one line "
+        '{"input": value, "source": ...} to a .jsonl file, such as a function\'s recorded-inputs file '
+        "tests/data/<module>.<function>.inputs.jsonl; replace=true starts the file over with this content. The "
+        "provenance is the files themselves: each appended line names its source, and a copied file is listed in "
+        "/memory/.pass/fixtures.json with its sha256. A file you delete or rewrite loses its provenance (make it "
+        "again with fixture). The gate re-derives every fixture from the recording and refuses one that differs."
+    ),
+    parameters=_obj(
+        {
+            "episode": {"type": "string"},
+            "source": {
+                "type": ["integer", "string"],
+                "description": "'<i>', 'args:<i>', 'request:<j>' or 'observation:<i>'",
+            },
+            "action": {"type": ["integer", "string"], "description": "the same as source"},
+            "dest": {"type": "string"},
+            "slice": {
+                "type": "array",
+                "items": {"type": ["integer", "null"]},
+                "minItems": 1,
+                "maxItems": 2,
+            },
+            "append": {"type": "boolean"},
+            "replace": {"type": "boolean"},
+        },
+        ["episode", "dest"],
+    ),
+    roles=_WRITE_CURATE,
+    refusals={
+        "unknown_episode": "{episode!r} is not a recorded episode; this batch: {batch}",
+        "no_source": "name the recorded value with source (or action)",
+        "bad_fixture": "{reason}",
+        "link": "{what} is a link",
+        "not_input_lines": (
+            "{dest} holds lines that are not fixture input lines; append to it with replace=true to start it "
+            "over, or choose another dest"
+        ),
+    },
+    summary="copy recorded bytes of an episode into a test fixture; its provenance is kept in the files.",
+)
+
+REPLAY = ToolSpec(
+    name="replay",
+    description=(
+        "Verify a function item by replaying the recorded code it replaces. In the item's manifest entry, "
+        'list "replaces": [{"episode", "cell", "lines": [first, last], "call": "<one statement calling the '
+        'function, e.g. result = name(args)>"}]. Each instance is replayed with those lines replaced by the '
+        "call; it is verified when everything the original code left behind is the same. The verified "
+        "instances become a test file under memory/<package>/tests/, which you add to the item's tests."
+    ),
+    parameters=_obj({"item": {"type": "string"}}, ["item"]),
+    roles=frozenset({_W}),
+    refusals={"not_run": "{reason}"},
+    summary="verify an item by replaying the recorded code it replaces; writes the verified cases as a test.",
+)
+
+POOL = ToolSpec(
+    name="pool",
+    description=(
+        "The candidate pool: open proposals earlier passes left, as files under /inputs/pool/<id>/. "
+        "op='list': one line per open entry (id, kind, episode count, title), optionally of one kind, paged by "
+        "offset. op='filter': the entries matching text (in the title or the entry's files), kind or episode. "
+        "op='show': one entry's entry.json and the paths of its files. op='decide': records a decision in "
+        "/memory/.pass/manifest.json's pool block and returns that block; decision 'merged' (target: the item this "
+        "manifest lists that holds it), 'superseded' (target: the item or entry that replaces it), 'retired' "
+        "(reason), 'defer' (reason; with episodes, those episodes join the entry as more evidence; id='new' with "
+        "episodes opens a deferred entry for them) or 'open' (removes an earlier decision on that id). Decisions "
+        "take effect when the gate judges the pass."
+    ),
+    parameters=_obj(
+        {
+            "op": {"type": "string", "enum": ["list", "filter", "show", "decide"]},
+            "id": {"type": "string", "description": "an entry id (decide defer also takes 'new')"},
+            "kind": {"type": "string"},
+            "text": {"type": "string"},
+            "episode": {"type": "string"},
+            "decision": {
+                "type": "string",
+                "enum": ["merged", "superseded", "retired", "defer", "open"],
+            },
+            "target": {"type": "string"},
+            "reason": {"type": "string"},
+            "episodes": {"type": "array", "items": {"type": "string"}},
+            "offset": {"type": "integer", "description": "entry number to start a list page at"},
+        },
+        ["op"],
+    ),
+    roles=frozenset({_W}),
+    requires="pool",
+    refusals={
+        "bad_op": "op must be list, filter, show or decide",
+        "unknown_entry": "{id!r} is not an open pool entry (op='list' lists them)",
+        "bad_decision": "{reason}",
+        "manifest_unreadable": "{reason}; fix /memory/.pass/manifest.json, then decide again",
+    },
+    summary="list, filter, show and decide on open candidate-pool entries.",
+)
+
+SPECS: tuple[ToolSpec, ...] = (
+    READ,
+    GREP,
+    OVERVIEW,
+    READ_EPISODE,
+    POOL,
+    FIXTURE,
+    REPLAY,
+    EXECUTE_CODE,
+    CHECK,
+    FINISH,
+)
+
+#: Answers the pass loop gives on any tool (limits, unknown tools, malformed calls), by stable form code.
+GENERAL_REFUSALS: dict[str, str] = {
+    "unknown_tool": "unknown tool {name!r}; your tools: {tools}",
+    "bad_arguments": "{reason}",
+    "readers_per_turn": f"not run: at most {READERS_PER_TURN} reader calls run per model turn; send it again",
+    "cells_per_turn": f"not run: at most {CELLS_PER_TURN} cells run per model turn; send it again",
+    "reads_limit": "not run: the pass's reader-call limit ({limit}) is reached",
+    "stopped": "not run: {reason}",
+    "pass_finished": "not run: pass finished",
+    "check_limit": "not run: at most {limit} check calls per pass",
+    "call_limit": "not run: the pass's call limit is reached",
+}
+
+
+@dataclass(frozen=True)
+class Reply:
+    """A tool's answer: its text, its status (``ok``, ``refused`` or ``error``), the refusal's form code and the
+    resolved paths it touched (``{"path", "mode"}``; mode ``read``, ``write``, ``list`` or ``search``)."""
+
+    text: str
+    status: str = "ok"
+    form: str | None = None
+    paths: tuple = ()
+
+
+def refused(tool: str, form: str, paths: tuple = (), **fields: object) -> Reply:
+    return Reply(refusal(tool, form, **fields)[:600], "refused", form, tuple(paths))
+
+
+def general(form: str, **fields: object) -> Reply:
+    text = GENERAL_REFUSALS[form].format(**fields)
+    if not text.startswith("not run: "):
+        text = "refused: " + text
+    return Reply(text[:600], "refused", form)
+
+
+def path_row(path: str, mode: str) -> dict:
+    return {"path": path, "mode": mode}
+
+
+# --- reading episodes ----------------------------------------------------------------------------------------
+
+
+@dataclass
+class ReadLog:
+    """What one agent was shown through read_episode and overview: a measure only (no tool reads it back)."""
+
+    parts: dict[str, dict[str, int]] = field(default_factory=dict)
+
+    def record(self, eid: str, part: str, nbytes: int) -> None:
+        got = self.parts.setdefault(eid, {})
+        got[part] = got.get(part, 0) + max(0, int(nbytes))
+
+    def opened(self) -> list[str]:
+        return sorted(self.parts)
+
+    def summary(self, batch: list[str]) -> dict:
+        return {
+            "episodes": len(batch),
+            "opened": self.opened(),
+            "unread": [e for e in batch if e not in self.parts],
+            "parts_read": {e: sorted(ps) for e, ps in sorted(self.parts.items())},
+            "bytes_read": sum(n for ps in self.parts.values() for n in ps.values()),
+        }
+
+
+def part_names(ep: Any) -> list[str]:
+    """Every part name of *ep*, in the order the table of contents lists them."""
+    return (
+        ["request"]
+        + [f"observation:{i}" for i in range(max(0, len(ep.request) - 1))]
+        + [f"cell:{c.index}" for c in ep.cells]
+        + [f"action:{i}" for i in range(len(ep.actions))]
+        + (["diff"] if ep.worktree_diff else [])
+    )
+
+
+def valid_names(ep: Any) -> str:
+    """*ep*'s part names in short: ranges for the numbered kinds."""
+    n_obs, n_act = max(0, len(ep.request) - 1), len(ep.actions)
+    cells = [c.index for c in ep.cells]
+    bits = ["request"]
+    if n_obs:
+        bits.append(f"observation:0..{n_obs - 1}")
+    if cells:
+        bits.append(
+            f"cell:{cells[0]}..{cells[-1]}"
+            if cells == list(range(cells[0], cells[-1] + 1))
+            else "cell:" + "/".join(map(str, cells))
+        )
+    if n_act:
+        bits.append(f"action:0..{n_act - 1}")
+    if ep.worktree_diff:
+        bits.append("diff")
+    return ", ".join(bits)
+
+
+def _part_bytes(ep: Any, name: str, shared: dict[str, str] | None) -> bytes | None:
+    if name.startswith("shared:") and not shared:
+        return None
+    try:
+        return _bm.part_text(ep, name, shared).encode()
+    except (KeyError, ValueError, IndexError, StopIteration, TypeError):
+        return None
+
+
+def _sources_of_part(ep: Any, name: str) -> list[str]:
+    if name == "request":
+        return ["request:0"]
+    if name.startswith("observation:"):
+        return [f"request:{int(name[12:]) + 1}"]
+    if name.startswith("action:"):
+        i = name[7:]
+        have = set(_fx.sources_of(ep))
+        return [s for s in (i, f"args:{i}") if s in have]
+    return []
+
+
+def _raw_len(ep: Any, src: str, blob: Callable[[str], bytes]) -> str:
+    try:
+        return str(len(_fx.source_bytes(ep, src, blob)))
+    except (_fx.FixtureError, OSError, KeyError, ValueError, IndexError):
+        return "unknown"
+
+
+def contents(ep: Any, eid: str, blob: Callable[[str], bytes], shared: dict[str, str] | None = None) -> str:
+    """read_episode's table of contents: each part, its size as shown, and its fixture sources with raw lengths."""
+    names = part_names(ep)
+    copies = _bm.observation_copies(ep)
+    lines = [
+        f"{eid}: {len(names)} part(s). Read them with parts=[...] ({READ_PARTS_PER_CALL} per call, one 8000-byte "
+        "page); fixture slices count the raw bytes of the source named here.",
+    ]
+    for name in names:
+        data = _part_bytes(ep, name, shared)
+        size = "unknown" if data is None else str(len(data))
+        srcs = _sources_of_part(ep, name)
+        src_text = ", ".join(f"{s} ({_raw_len(ep, s, blob)} bytes)" for s in srcs) or "-"
+        line = f"- {name}: {size} bytes; fixture source: {src_text}"
+        if name.startswith("observation:") and name[12:] in copies:
+            line += f"; same bytes as observation:{copies[name[12:]]}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _wanted_parts(args: dict) -> tuple[list | None, str | None]:
+    """The parts a read_episode call names (None: the table of contents), or (None, form) for a malformed list.
+    ``parts`` given as text (a JSON list, ``parts=[...]`` or names separated by commas) is read as that list."""
+    raw = args.get("parts", None)
+    if raw is None:
+        one = args.get("part")
+        if one is None:
+            return None, None
+        raw = one if isinstance(one, list) else str(one)
+        if isinstance(raw, str) and raw.strip() in ("", "parts", "contents", "toc"):
+            return None, None
+        if isinstance(raw, str) and not (raw.strip().startswith("[") or "," in raw):
+            return [{"part": raw.strip(), "offset": args.get("offset", 0) or 0}], None
+    if isinstance(raw, str):
+        text = raw.strip()
+        for prefix in ("parts=", "parts:"):
+            if text.startswith(prefix):
+                text = text[len(prefix):].strip()
+        try:
+            val = json.loads(text)
+        except ValueError:
+            val = None
+        if not isinstance(val, list):
+            val = [x.strip().strip("'\"") for x in text.strip("[]").split(",")]
+        raw = val
+    if not isinstance(raw, list):
+        return None, "bad_parts"
+    raw = [v for v in raw if not (isinstance(v, str) and not v.strip())]
+    if not raw or raw == ["parts"]:
+        return None, None
+    return raw, None
+
+
+def read_episode(
+    ep: Any,
+    eid: str,
+    args: dict,
+    *,
+    blob: Callable[[str], bytes],
+    log: ReadLog,
+    shown: dict[str, tuple[str, str]],
+    shared: dict[str, str] | None = None,
+) -> Reply:
+    """The read_episode tool on a resolved episode *ep*. *shown* is this agent's own record of parts it was shown in
+    full (sha256 -> (episode, part)), so a byte-identical part is answered with a pointer; *log* is the read log."""
+    where = (path_row(f"/episodes/{eid}", "read"),)
+    wanted, problem = _wanted_parts(args)
+    if problem is not None:
+        return refused("read_episode", problem, where)
+    if wanted is None:
+        return Reply(contents(ep, eid, blob, shared), paths=where)
+    if wanted == [{"part": "overview", "offset": args.get("offset", 0) or 0}]:
+        return overview_episode(ep, eid, args.get("offset", 0), log=log, shared=shared)
+    rest: list = []
+    if len(wanted) > READ_PARTS_PER_CALL:
+        wanted, rest = wanted[:READ_PARTS_PER_CALL], wanted[READ_PARTS_PER_CALL:]
+    items: list[tuple[str, int, bytes]] = []
+    unknown: list[str] = []
+    for item in wanted:
+        name, off = (item.get("part"), item.get("offset", 0)) if isinstance(item, dict) else (item, 0)
+        name = str(name).strip()
+        off = 0 if off is None else off
+        if isinstance(off, bool) or not isinstance(off, int) or off < 0:
+            return refused("read_episode", "bad_offset", where, part=name[:80])
+        data = _part_bytes(ep, name, shared)
+        if data is None:
+            unknown.append(name[:80])
+            continue
+        items.append((name, off, data))
+    if unknown and not items:
+        return refused(
+            "read_episode",
+            "unknown_part",
+            where,
+            names=", ".join(repr(u) for u in unknown),
+            episode=eid,
+            valid=valid_names(ep),
+        )
+    left, out = _views.VIEW_BYTES, []
+    if unknown:
+        out.append(
+            f"unknown part(s) in {eid}: {', '.join(repr(u) for u in unknown)}; valid: {valid_names(ep)}",
+        )
+    paths = [path_row(f"/episodes/{eid}/{name}", "read") for name, _, _ in items]
+    for name, off, data in items:
+        key = hashlib.sha256(data).hexdigest()
+        src = shown.get(key)
+        if off == 0 and data and src is not None and src != (eid, name):
+            out.append(
+                f"== {name} ==\nidentical to {src[0]} {src[1]} (sha256 {key[:12]}), shown to you in full earlier "
+                f"in this pass; read {src[0]} parts=[{json.dumps(src[1])}] to see it again",
+            )
+            continue
+        if left <= 0:
+            out.append(f"== {name} ==\nnot shown (page full): read again with parts={json.dumps([name])}")
+            continue
+        text, a, b = _views.view_range(data, off, left)
+        log.record(eid, name, b - a)
+        if a == 0 and b >= len(data) and data:
+            shown.setdefault(key, (eid, name))
+        left -= b - a
+        out.append(f"== {name} ==\n{text}")
+    text = "\n\n".join(out)
+    if rest:
+        text += (
+            f"\n\n[{len(rest)} more part(s) not read in this call ({READ_PARTS_PER_CALL} per call); "
+            f"next: parts={json.dumps(rest)}]"
+        )
+    return Reply(text, paths=tuple(paths) or where)
+
+
+def overview_episode(
+    ep: Any,
+    eid: str,
+    offset: object = 0,
+    *,
+    log: ReadLog,
+    shared: dict[str, str] | None = None,
+) -> Reply:
+    text, end_parts = _bm.solution_first(ep, shared)
+    data = text.encode()
+    off = offset if isinstance(offset, int) and not isinstance(offset, bool) and offset >= 0 else 0
+    page, a, b = _views.view_range(data, off)
+    if a == 0 and b >= len(data):
+        for part in end_parts:
+            got = _part_bytes(ep, part, shared)
+            log.record(eid, part, len(got or b""))
+    else:
+        log.record(eid, "overview", b - a)
+    return Reply(page, paths=(path_row(f"/episodes/{eid}", "read"),))
+
+
+def overview_batch(rows: list[dict], offset: object = 0) -> Reply:
+    """One line per batch episode from the batch map's rows."""
+    lines = []
+    for r in rows:
+        staging = r.get("staging") if isinstance(r.get("staging"), dict) else {}
+        lines.append(
+            f"{r.get('episode_id')}: {r.get('observations', 0)} observation(s), {r.get('cells', 0)} cell(s), "
+            f"{r.get('actions', 0)} action(s), {len(r.get('errors') or [])} error(s), "
+            f"{len(staging.get('candidates') or [])} staged candidate(s), "
+            f"{len(r.get('pool_entries') or [])} open pool entr{'y' if len(r.get('pool_entries') or []) == 1 else 'ies'}",
+        )
+    text = "\n".join(lines) or "(no batch episodes)"
+    off = offset if isinstance(offset, int) and not isinstance(offset, bool) and offset >= 0 else 0
+    return Reply(
+        _views.view(text.encode(), off),
+        paths=(path_row("/inputs/batch_map.json", "read"),),
+    )
+
+
+# --- fixtures ------------------------------------------------------------------------------------------------
+
+
+def fixture(
+    args: dict,
+    episode: Callable[[str], Any],
+    box: Path,
+    blob: Callable[[str], bytes],
+    batch: list[str] | tuple[str, ...] = (),
+) -> Reply:
+    """The fixture tool: recorded bytes into ``tests/data/``. *episode* resolves an id to a recorded episode (None:
+    unknown). A copy is listed in ``.pass/fixtures.json``; an appended line names its own source."""
+    eid = str(args.get("episode", ""))
+    dest = str(args.get("dest", ""))
+    where = (path_row(f"/memory/{dest}", "write"),)
+    ep = episode(eid)
+    if ep is None:
+        return refused("fixture", "unknown_episode", where, episode=eid[:80], batch=", ".join(batch) or "-")
+    source = args.get("source", args.get("action"))
+    if source is None:
+        return refused("fixture", "no_source", where)
+    append = args.get("append") is True
+    replace = args.get("replace") is True
+    box = Path(box)
+    cur = box
+    for part in Path(dest).parts[:-1]:
+        cur = cur / part
+        if cur.is_symlink():
+            return refused("fixture", "link", where, what="a directory on the way to dest")
+    target = box / dest
+    if target.is_symlink():
+        return refused("fixture", "link", where, what="dest")
+    existing = None
+    if append and not replace and target.exists():
+        data = _fx._read_plain(target)
+        existing = _fx.assembled_entry(data) if data else None
+        if data and existing is None:
+            return refused("fixture", "not_input_lines", where, dest=dest[:200])
+    notes: list[str] = []
+    try:
+        data, entry = _fx.make(
+            ep,
+            source,
+            dest,
+            blob=blob,
+            cut=args.get("slice"),
+            append=append,
+            existing=existing,
+            notes=notes,
+        )
+    except _fx.FixtureError as exc:
+        return refused("fixture", "bad_fixture", where, reason=str(exc)[:300])
+    target.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
+    flags |= os.O_APPEND if (append and not replace) else os.O_TRUNC
+    try:
+        with os.fdopen(os.open(target, flags, 0o644), "wb") as f:
+            f.write(data)
+        _fx.write_listing(box, dest, None if append else entry)
+    except (OSError, _fx.FixtureError) as exc:
+        return refused("fixture", "bad_fixture", where, reason=f"cannot write {dest[:200]}: {exc.__class__.__name__}")
+    verb = "started" if (append and replace) else ("appended a line to" if append else "wrote")
+    return Reply(
+        f"ok: {verb} {dest} ({len(data)} bytes, sha256 {hashlib.sha256(data).hexdigest()[:12]}; source "
+        f"{entry.get('source', (entry.get('lines') or [{}])[-1].get('source'))} of {eid})"
+        + "".join(f"; {n}" for n in notes),
+        paths=(path_row(f"/episodes/{eid}", "read"), *where),
+    )
+
+
+# --- the pool ------------------------------------------------------------------------------------------------
+
+_DECISIONS = ("merged", "superseded", "retired")
+
+
+def _entries(pool_dir: Path) -> list[dict]:
+    out = []
+    if not pool_dir.is_dir() or pool_dir.is_symlink():
+        return out
+    for d in sorted(pool_dir.iterdir()):
+        if d.is_symlink() or not d.is_dir():
+            continue
+        raw = _fx._read_plain(d / "entry.json", 4 * 1024 * 1024)
+        try:
+            meta = json.loads(raw.decode()) if raw else None
+        except (UnicodeDecodeError, ValueError):
+            meta = None
+        if isinstance(meta, dict) and meta.get("id") == d.name:
+            out.append(meta)
+    return out
+
+
+def _line(e: dict) -> str:
+    eps = (e.get("provenance") or {}).get("episodes") or []
+    return f"- `{e.get('id')}` {e.get('kind')}: {e.get('title')} ({len(eps)} episode(s))"
+
+
+def _read_manifest(box: Path) -> tuple[dict | None, str | None]:
+    if (box / ".pass").is_symlink():
+        return None, "/memory/.pass is a link"
+    path = box / MANIFEST
+    if not path.exists() and not path.is_symlink():
+        return {}, None
+    raw = _fx._read_plain(path, 1024 * 1024)
+    if raw is None:
+        return None, "/memory/.pass/manifest.json is not a regular file of at most 1 MiB"
+    try:
+        val = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None, "/memory/.pass/manifest.json is not valid JSON"
+    if not isinstance(val, dict):
+        return None, "/memory/.pass/manifest.json is not a JSON object"
+    return val, None
+
+
+def write_manifest(box: Path, manifest: object) -> None:
+    """Write *manifest* (an object, or JSON text) to ``/memory/.pass/manifest.json``, never through a link."""
+    pass_dir = Path(box) / ".pass"
+    if pass_dir.is_symlink():
+        raise OSError("/memory/.pass is a link")
+    pass_dir.mkdir(exist_ok=True)
+    text = manifest if isinstance(manifest, str) else json.dumps(manifest, indent=1, sort_keys=True) + "\n"
+    fd = os.open(
+        Path(box) / MANIFEST,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o644,
+    )
+    with os.fdopen(fd, "w") as fh:
+        fh.write(text)
+
+
+def defer_rows(manifest: object) -> list[dict]:
+    """The well-formed ``defer`` rows of *manifest*'s pool block: ``{"id": <entry id or "new">, "episodes", "reason"}``."""
+    block = manifest.get("pool") if isinstance(manifest, dict) else None
+    rows = block.get("defer") if isinstance(block, dict) else None
+    out = []
+    for r in rows if isinstance(rows, list) else []:
+        if (
+            isinstance(r, dict)
+            and isinstance(r.get("id"), str)
+            and isinstance(r.get("reason"), str)
+            and r["reason"].strip()
+            and isinstance(r.get("episodes", []), list)
+            and all(isinstance(e, str) for e in r.get("episodes", []))
+        ):
+            out.append({"id": r["id"], "episodes": list(r.get("episodes", [])), "reason": r["reason"].strip()})
+    return out
+
+
+def without_defer(manifest: object) -> object:
+    """*manifest* with its pool block's ``defer`` rows set aside (they are applied by the pass, not the block)."""
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("pool"), dict):
+        return manifest
+    block = {k: v for k, v in manifest["pool"].items() if k != "defer"}
+    return {**manifest, "pool": block} if block else {k: v for k, v in manifest.items() if k != "pool"}
+
+
+def pool(args: dict, pool_dir: Path, box: Path) -> Reply:
+    """The pool tool over the entry files in *pool_dir* (``/inputs/pool``); decide edits the manifest in *box*."""
+    op = str(args.get("op", ""))
+    entries = _entries(Path(pool_dir))
+    listed = (path_row("/inputs/pool", "list"),)
+    if op in ("list", "filter"):
+        kind = args.get("kind")
+        rows = [e for e in entries if e.get("status", "open") == "open" and (not kind or e.get("kind") == kind)]
+        if op == "filter":
+            text = str(args.get("text") or "").lower()
+            ep = args.get("episode")
+            if ep:
+                rows = [e for e in rows if ep in ((e.get("provenance") or {}).get("episodes") or [])]
+            if text:
+                keep = []
+                for e in rows:
+                    blob = str(e.get("title", "")).lower()
+                    for rel in e.get("files") or []:
+                        raw = _fx._read_plain(Path(pool_dir) / str(e.get("id")) / str(rel), 4 * 1024 * 1024)
+                        blob += "\n" + (raw or b"").decode("utf-8", "replace").lower()
+                    if text in blob:
+                        keep.append(e)
+                rows = keep
+        off = args.get("offset", 0)
+        off = off if isinstance(off, int) and not isinstance(off, bool) and off >= 0 else 0
+        page = rows[off : off + 100]
+        body = "\n".join(_line(e) for e in page) or "(no matching open entries)"
+        if off + 100 < len(rows):
+            body += f"\n[… entries {off}–{off + 100} of {len(rows)}; next: offset={off + 100}]"
+        return Reply(f"{len(rows)} open entr{'y' if len(rows) == 1 else 'ies'}\n" + body, paths=listed)
+    eid = str(args.get("id", ""))
+    known = {str(e.get("id")): e for e in entries}
+    if op == "show":
+        e = known.get(eid)
+        if e is None:
+            return refused("pool", "unknown_entry", listed, id=eid[:40])
+        files = [f"/inputs/pool/{eid}/{rel}" for rel in e.get("files") or []]
+        text = json.dumps(e, indent=1, sort_keys=True) + "\nFiles:\n" + ("\n".join(files) or "(none)")
+        return Reply(
+            _views.view(text.encode()),
+            paths=(path_row(f"/inputs/pool/{eid}/entry.json", "read"),),
+        )
+    if op != "decide":
+        return refused("pool", "bad_op", listed)
+    man_path = (path_row("/memory/.pass/manifest.json", "write"),)
+    decision = str(args.get("decision", ""))
+    reason = str(args.get("reason") or "").strip()
+    target = str(args.get("target") or "").strip()
+    episodes = args.get("episodes") or []
+    if decision not in (*_DECISIONS, "defer", "open"):
+        return refused("pool", "bad_decision", man_path, reason="decision must be merged, superseded, retired, defer or open")
+    if not (decision == "defer" and eid == "new"):
+        e = known.get(eid)
+        if e is None or e.get("status", "open") != "open":
+            return refused("pool", "unknown_entry", man_path, id=eid[:40])
+    if decision in ("merged", "superseded") and not target:
+        return refused("pool", "bad_decision", man_path, reason=f"{decision} needs target")
+    if decision in ("retired", "defer") and not reason:
+        return refused("pool", "bad_decision", man_path, reason=f"{decision} needs a reason")
+    if not isinstance(episodes, list) or not all(isinstance(x, str) for x in episodes):
+        return refused("pool", "bad_decision", man_path, reason="episodes must be a list of episode ids")
+    if decision == "defer" and eid == "new" and not episodes:
+        return refused("pool", "bad_decision", man_path, reason="id='new' needs the episodes it defers")
+    manifest, problem = _read_manifest(Path(box))
+    if manifest is None:
+        return refused("pool", "manifest_unreadable", man_path, reason=problem)
+    block = manifest.get("pool") if isinstance(manifest.get("pool"), dict) else {}
+    for key in _DECISIONS:  # one decision per entry: an earlier one on this id is replaced
+        if isinstance(block.get(key), dict):
+            block[key].pop(eid, None)
+            if not block[key]:
+                block.pop(key)
+    if isinstance(block.get("defer"), list) and eid != "new":
+        block["defer"] = [r for r in block["defer"] if not (isinstance(r, dict) and r.get("id") == eid)]
+        if not block["defer"]:
+            block.pop("defer")
+    note = ""
+    if decision in _DECISIONS:
+        block.setdefault(decision, {})[eid] = target if decision != "retired" else reason
+        items = {i.get("item") for i in manifest.get("items") or [] if isinstance(i, dict)}
+        if decision == "merged" and target not in items:
+            note = f"\nnote: the manifest lists no item {target!r} yet; finish needs it listed"
+    elif decision == "defer":
+        block.setdefault("defer", []).append({"id": eid, "episodes": list(episodes), "reason": reason})
+    if block:
+        manifest["pool"] = block
+    else:
+        manifest.pop("pool", None)
+    try:
+        write_manifest(Path(box), manifest)
+    except OSError as exc:
+        return refused("pool", "manifest_unreadable", man_path, reason=f"cannot write the manifest ({exc.__class__.__name__})")
+    return Reply(
+        "ok: the manifest's pool block is now\n" + json.dumps(manifest.get("pool", {}), indent=1, sort_keys=True) + note,
+        paths=man_path,
+    )
