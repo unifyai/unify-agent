@@ -151,7 +151,9 @@ def bind_for_act(*, request: str, user_reads: bool) -> Binding:
         )
     record = Record(
         RecordLog(records_dir() / _run_id() / "record.jsonl", create=True),
-        options=Options(),
+        # The operational limits of every agent's helpers in one request:
+        # 16 running at once and 64 in all, the memory passes' limits.
+        options=Options(max_live=16, max_total=64),
         root=ROOT,
         user_reads=user_reads,
     )
