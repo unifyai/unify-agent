@@ -70,7 +70,10 @@ class Helpers:
                     ),
                     "0.001",
                 )
-            return _msg(_tc("d", "done", {"summary": f"drafted {task}"})), "0.001"
+            return (
+                _msg(_tc("d", "done", {"summary": f"drafted {task}", "claims": []})),
+                "0.001",
+            )
 
         return turn
 
