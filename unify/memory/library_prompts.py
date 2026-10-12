@@ -228,20 +228,20 @@ _REPAIR = (
     "The items that pass land, and the rest is kept as a draft for a later pass, with its failure.\n"
 )
 
-#: The cross-episode rule exactly as the gate checks it (``example_evidence.evidence_check``, whose
+#: The example-evidence rule exactly as the gate checks it (``example_evidence.evidence_check``, whose
 #: ``MIN_EXAMPLE_EPISODES`` a test keeps equal to this): the brief states it in these words, and the example refusals end
-#: with the fix that satisfies them.
-EXAMPLE_EPISODES = 2
+#: with the fix that satisfies them. Values from more episodes are recorded and shown beside the function, never
+#: required.
+EXAMPLE_EPISODES = 1
 EPISODES_RULE = (
-    f"the calls of a function that return take fixture values from at least {EXAMPLE_EPISODES} recorded episodes "
-    "between them (an episode named by one of its verified typed covers counts too). Besides the test with an exact "
-    "expected value, one call that returns on a same-shaped value recorded in another episode, in this batch or "
-    "not, is enough for that, and that call needs no exact expected value: checking the result's type or shape "
-    "will do. A call that refuses or raises counts for nothing"
+    "the calls of a function that return take fixture values from a recorded episode: one episode is enough. Calls "
+    "that return on same-shaped values recorded in other episodes, in this batch or not, are recorded and shown "
+    "beside the function (they need no exact expected value), never required. A call that refuses or raises counts "
+    "for nothing"
 )
 EPISODES_FIX = (
-    f"to reach {EXAMPLE_EPISODES}, add a test call that returns on a same-shaped value from a fixture of another "
-    "recorded episode; it needs no exact expected value, and a refused or raised call counts for nothing"
+    "add a test call that returns on values loaded from a fixture of a recorded episode; a refused or raised call "
+    "counts for nothing"
 )
 GROUNDED_FIX = (
     "make one call that returns take each structured argument (a list, a mapping or a path; plain numbers and "
@@ -270,8 +270,8 @@ _CHECK_NAMES = (
     "never the generated files, the manifest is well formed, every link names an item that exists, and every "
     "fixture came through `fixture` unchanged); G2, evidence (each function's listed tests call it, and a call "
     "of it returns on values loaded from fixtures or computed from them; it raises nothing but `MemoryInputError` "
-    "on those calls; the calls that return take fixture values from at least "
-    f"{EXAMPLE_EPISODES} recorded episodes between them; with those values replaced by "
+    "on those calls; the calls that return take fixture values from a recorded episode (values from more "
+    "episodes are shown, not required); with those values replaced by "
     "unseen values of the same type, a call it accepted neither refuses nor raises; its docstring's `Example:` "
     "names one of its tests; typed covers are recorded evidence of their type; and the literal rule); G3, tests "
     "(plain pytest, an exact assertion against a trusted "
@@ -296,7 +296,7 @@ _GATE = (
     "# The gate\n"
     "After `finish` a deterministic gate checks the candidate: the layout and the links; that every fixture "
     "came through `fixture` unchanged; that the calls of each function that return take fixture values from "
-    f"at least {EXAMPLE_EPISODES} recorded episodes between them; its tests on the candidate, and on the parent where behaviour "
+    "a recorded episode; its tests on the candidate, and on the parent where behaviour "
     "changed; that a call it accepted neither refuses nor raises when the fixture values its tests load are "
     "replaced by unseen values of the same type; the appended recorded inputs; that its tests catch at least "
     "<<mutation_min_pct>>% of small mutations of each changed function; the literal rule; and that no test is "
@@ -878,8 +878,7 @@ def write_brief(
             '{"<id>": "<id or item>"}, "retired": {"<id>": "<reason>"}}`. An entry is merged into an item this '
             "manifest lists, superseded by another entry or an item, or retired with a reason. `retired` closes an "
             "entry for good: it is wrong or not reusable. To keep an entry open for a later pass, defer it "
-            "(`pool` with decision `defer`, which writes the block's `defer` rows): an entry that lacks only "
-            "another episode's evidence can wait there for later episodes to supply it. "
+            "(`pool` with decision `defer`, which writes the block's `defer` rows). "
             '`"reopened": {"<id>": "<reason>"}` opens a closed entry again.\n'
         )
     replay_rule = (

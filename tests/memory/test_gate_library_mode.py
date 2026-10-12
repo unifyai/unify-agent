@@ -175,25 +175,6 @@ def test_write_may_not_remove_an_item(library_example_world):
     )
 
 
-def test_examples_on_values_from_one_episode_are_refused(library_example_world):
-    """Replaces test_cross_episode_text_input_that_crashes_is_refused (with the special-casing test below). The
-    rule that replaces the cross-episode run: a function's examples run on recorded values from at least 2
-    episodes. Two fixtures copied from one episode count once.
-    """
-    mem, ev, blobs, gate = library_example_world
-    files, fixtures = w.files_and_fixtures(blobs.get, sources=(w.E1, w.E1))
-    man = w.manifest(fixtures, w.item(source_episodes=["e1"]))
-    res = gate().check(mem.head(), w.candidate(mem, files), man)
-    assert not res.passed
-    from unify.memory.library_prompts import EPISODES_FIX
-
-    assert (
-        f"G2: [examples:episodes] {w.ITEM_ID}'s calls that return use recorded values from 1 episode(s) (e1); "
-        + EPISODES_FIX
-    ) in res.reasons, res.reasons
-    assert res.verification[w.ITEM_ID]["examples"]["episodes"] == ["e1"]
-
-
 SPECIAL_CASED = w.MODULE_SOURCE.replace(
     '    return response["user_id"]\n',
     '    return {"u-1": "u-1", "u-2": "u-2"}[response["user_id"]]\n',
@@ -203,6 +184,34 @@ SPECIAL = re.compile(
     r"values: with (?P<field>\S+) replaced by an unseen value of its type, its call at "
     r"(?P<file>[^:]+):(?P<line>\d+) raises KeyError where it returned before\Z",
 )
+
+
+def test_a_function_grounded_on_one_episode_passes_and_a_memorising_one_still_fails(
+    library_example_world,
+):
+    """One recorded episode is enough evidence for a function: the same request shape gets a reusable function even
+    if no other request is served by it. The exact-value test, the refusal test and the check with unseen values stay
+    mandatory, so a function that only handles its recorded values is still refused on that same single episode.
+    """
+    mem, ev, blobs, gate = library_example_world
+    files, fixtures = w.files_and_fixtures(blobs.get, sources=(w.E1, w.E1))
+    man = w.manifest(fixtures, w.item(source_episodes=["e1"]))
+    res = gate().check(mem.head(), w.candidate(mem, files), man)
+    assert res.passed, res.reasons
+    assert not any("[examples:episodes]" in r for r in res.reasons)
+    assert res.verification[w.ITEM_ID]["examples"]["episodes"] == ["e1"]
+    files, fixtures = w.files_and_fixtures(
+        blobs.get,
+        sources=(w.E1, w.E1),
+        module=SPECIAL_CASED,
+    )
+    res = gate().check(
+        mem.head(),
+        w.candidate(mem, files),
+        w.manifest(fixtures, w.item(source_episodes=["e1"])),
+    )
+    assert not res.passed
+    assert any(SPECIAL.match(r) for r in res.reasons), res.reasons
 
 
 def test_a_function_that_handles_only_its_recorded_values_is_refused(

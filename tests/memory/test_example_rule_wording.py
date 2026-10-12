@@ -1,10 +1,10 @@
 """The example rules as the writer reads them are the rules the gate checks, and each example refusal ends with what
 satisfies it.
 
-The cross-episode rule is stated once (``library_prompts.EPISODES_RULE``): the returning calls of a function take
-fixture values from at least two recorded episodes between them, and the call on the second episode's value needs
-no exact expected value. A brief that said "examples must use recorded values from at least 2 episodes" was read by
-writers as the same technique evidenced twice, and they stored no function at all."""
+The episode rule is stated once (``library_prompts.EPISODES_RULE``): a function's returning calls take fixture values
+from a recorded episode, and one episode is enough; values from more episodes are recorded and shown beside the
+function, never required. An earlier rule asked for two episodes, and writers read it as the same technique evidenced
+twice and stored no function at all."""
 
 import ast
 import json
@@ -30,33 +30,52 @@ def _fix(cause: str) -> str:
     )
 
 
-def test_the_brief_states_the_cross_episode_rule_as_the_gate_checks_it():
-    assert lp.EXAMPLE_EPISODES == xe.MIN_EXAMPLE_EPISODES
+def test_the_brief_states_the_episode_rule_as_the_gate_checks_it():
+    assert lp.EXAMPLE_EPISODES == xe.MIN_EXAMPLE_EPISODES == 1
     for brief in (
         lp.write_brief_now(),
         lp.write_brief_now(staging=True, pool=True, helper=True, similar=True),
     ):
         assert lp.EPISODES_RULE in brief
         assert "Examples must use recorded values from at least" not in brief
-        assert "fixture values from at least 2 episodes" not in brief
-    # the rule's own words: a returning call on another episode's value is enough, with no exact expected value;
-    # refused and raised calls count for nothing; the episode may come from outside the batch
+        assert (
+            "at least 2" not in brief and "recorded episodes between them" not in brief
+        )
     for words in (
-        "that call needs no exact expected value",
-        "A call that refuses or raises counts for nothing",
+        "one episode is enough",
+        "never required",
         "in this batch or not",
-        f"from at least {xe.MIN_EXAMPLE_EPISODES} recorded episodes between them",
+        "A call that refuses or raises counts for nothing",
     ):
         assert words in lp.EPISODES_RULE, words
 
 
-def test_an_entry_short_only_of_another_episode_can_wait_in_the_pool():
+def test_the_pool_text_gives_no_second_episode_reason_to_defer():
     brief = lp.write_brief_now(pool=True)
-    assert (
-        "an entry that lacks only another episode's evidence can wait there for later episodes to supply it"
-        in brief
-    )
+    assert "lacks only another episode" not in brief
     assert "`retired` closes an entry for good: it is wrong or not reusable" in brief
+
+
+def test_a_function_with_examples_from_one_episode_says_so_in_the_index():
+    from unify.memory.item_records import episodes_of
+    from unify.memory.library_index import _breadth
+
+    records = {
+        "memory.a.b:one": {"verification": {"examples": {"episodes": ["e1"]}}},
+        "memory.a.b:two": {"verification": {"examples": {"episodes": ["e1", "e2"]}}},
+        "memory.a.b:old": {"verification": {}},
+    }
+    got = episodes_of(records)
+    assert [
+        got(i) for i in ("memory.a.b:one", "memory.a.b:two", "memory.a.b:old", "x")
+    ] == [1, 2, None, None]
+    assert _breadth(got, "memory.a.b:one") == ", examples from one episode"
+    assert (
+        _breadth(got, "memory.a.b:two")
+        == _breadth(got, "memory.a.b:old")
+        == _breadth(None, "x")
+        == ""
+    )
 
 
 def test_the_episodes_refusal_ends_with_the_call_that_satisfies_it():

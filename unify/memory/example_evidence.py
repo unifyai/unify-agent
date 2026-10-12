@@ -29,7 +29,7 @@ from .fixtures import View
 from .library_prompts import EPISODES_FIX
 
 #: Examples need recorded values from at least this many episodes.
-MIN_EXAMPLE_EPISODES = 2
+MIN_EXAMPLE_EPISODES = 1
 
 
 @dataclass(frozen=True)

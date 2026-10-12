@@ -36,7 +36,7 @@ from .layout import (
 )
 from .library_helper import FIND_FILE, ITEMS_FILE, MATCHER_FILE, SHAPES_FILE
 from .example_view import ReadFile, example_text, examples_of, tree_reader
-from .item_records import effect_of, use_totals, verification_summary
+from .item_records import effect_of, episodes_of, use_totals, verification_summary
 from .library_index import HIDDEN, build_links, render_index, render_links
 from .redact import redact_error
 
@@ -256,6 +256,7 @@ def generated_library_mode(
             status_of,
             effect_of(records) if records is not None else None,
             example_of if records is not None else None,
+            episodes_of(records) if records is not None else None,
         ).encode("utf-8"),
         LINKS_FILE: render_links(links).encode("utf-8"),
         ITEMS_FILE: _json_bytes(

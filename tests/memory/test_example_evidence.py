@@ -118,19 +118,19 @@ def test_a_value_from_an_assembled_file_is_grounded_in_its_own_line_s_episode():
     assert got["response"] == xe.Grounding("copied", (rel,), ("e6",))
 
 
-# --- the two-episode rule ---------------------------------------------------------------------------------------------
+# --- the episode rule: one episode is enough, more are recorded ---------------------------------------------------------------------------------------------
 
 
-def test_examples_from_one_episode_are_refused_and_from_two_pass():
+def test_examples_from_one_episode_pass_and_more_episodes_are_recorded():
     one = [call(0, arg("response", VALUES[A]))]
-    assert check(one) == (c1(1, "e1"), {"episodes": ["e1"], "fixtures": [A]})
+    assert check(one) == ([], {"episodes": ["e1"], "fixtures": [A]})
     two = one + [call(1, arg("response", VALUES[B]))]
     assert check(two) == ([], {"episodes": ["e1", "e2"], "fixtures": [A, B]})
 
 
 def test_two_fixtures_from_one_episode_count_once():
     calls = [call(0, arg("response", VALUES[A])), call(1, arg("response", VALUES[A2]))]
-    assert check(calls) == (c1(1, "e1"), {"episodes": ["e1"], "fixtures": [A, A2]})
+    assert check(calls) == ([], {"episodes": ["e1"], "fixtures": [A, A2]})
 
 
 def test_a_call_the_function_refused_or_raised_on_does_not_count():
@@ -139,7 +139,9 @@ def test_a_call_the_function_refused_or_raised_on_does_not_count():
         call(1, arg("response", VALUES[B]), outcome="refused"),
         call(2, arg("response", VALUES[B]), outcome="raised"),
     ]
-    assert check(calls)[0] == c1(1, "e1")
+    assert check(calls) == ([], {"episodes": ["e1"], "fixtures": [A]})
+    # with no call that returned, nothing counts and the function is refused
+    assert check(calls[1:])[0] == c1(0, "none")
 
 
 def test_derived_arguments_and_typed_episode_covers_count():
