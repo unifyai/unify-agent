@@ -10,7 +10,7 @@ check runs. The box also gets ``PYTHONHASHSEED`` and ``TZ`` from the gate (per v
   subclass whose ``now`` reads the pinned clock; ``datetime.date.today`` already reads ``time.time``);
 * ``random.seed`` with the variant's seed (:data:`SEEDS`).
 
-The variant is ``MEMV2_PIN`` in the environment (``0`` by default, or ``1``): 2001-09-09T01:46:40Z stepping 1 ms
+The variant is ``MEMORY_PIN`` in the environment (``0`` by default, or ``1``): 2001-09-09T01:46:40Z stepping 1 ms
 with seed 0, or 2033-05-18T03:33:20Z stepping 7 ms with seed 1. The gate runs a new test file's first run under
 variant 0 and its second under variant 1 (with ``PYTHONHASHSEED`` 0 and 1 and ``TZ`` UTC and UTC+05:45), so the
 pins make a run reproducible but never make a test pass: a test that asserts a pinned value (the year, the clock
@@ -42,12 +42,12 @@ STEPS_NS = (
 )  # per variant: one millisecond, seven milliseconds per read
 EPOCH_NS = EPOCHS_NS[0]
 STEP_NS = STEPS_NS[0]
-VARIANT_ENV = "MEMV2_PIN"
+VARIANT_ENV = "MEMORY_PIN"
 _state = {"reads": 0, "installed": False, "variant": 0}
 
 
 def variant() -> int:
-    """The pin variant this process runs under (``MEMV2_PIN``: 1, else 0)."""
+    """The pin variant this process runs under (``MEMORY_PIN``: 1, else 0)."""
     return 1 if os.environ.get(VARIANT_ENV, "0").strip() == "1" else 0
 
 

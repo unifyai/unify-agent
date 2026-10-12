@@ -155,7 +155,7 @@ PIN_MODULE = testkit.PIN_MODULE
 PINNED_ENV = {"PYTHONHASHSEED": "0", "TZ": "UTC"}
 # TZ per pin variant: UTC, and UTC+05:45 as a POSIX string (no tz database needed in the box)
 PIN_TZ = ("UTC", "<+0545>-05:45")
-PIN_VARIANT_ENV = "MEMV2_PIN"  # :data:`.pin.VARIANT_ENV`
+PIN_VARIANT_ENV = "MEMORY_PIN"  # :data:`.pin.VARIANT_ENV`
 # probe outcomes that say something about the function (equivalence is judged on these only)
 INFORMATIVE = frozenset({"handled", "refused", "error"})
 _NAMED = 5

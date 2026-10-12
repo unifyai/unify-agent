@@ -811,7 +811,7 @@ def test_a_test_with_two_outcomes_under_the_pins_is_refused_as_flaky(tmp_path):
     assert all("-p _memory_pin" in c[5]["PYTEST_ADDOPTS"] for c in pinned)
     # every run under pin variant 0 but the rerun, which uses variant 1 (other epoch, seeds)
     assert [
-        (c[5]["PYTHONHASHSEED"], c[5]["MEMV2_PIN"], c[5]["TZ"]) for c in pinned
+        (c[5]["PYTHONHASHSEED"], c[5]["MEMORY_PIN"], c[5]["TZ"]) for c in pinned
     ] == [
         ("0", "0", "UTC"),
     ] * (
@@ -1131,7 +1131,7 @@ def test_the_pin_installs_only_under_its_box_name(tmp_path):
             [sys.executable, "-I", "-c", code, str(box)],
             capture_output=True,
             text=True,
-            env={"TZ": "UTC", "PATH": "/usr/bin:/bin", "MEMV2_PIN": variant},
+            env={"TZ": "UTC", "PATH": "/usr/bin:/bin", "MEMORY_PIN": variant},
             timeout=60,
             check=True,
         ).stdout

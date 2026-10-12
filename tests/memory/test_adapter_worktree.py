@@ -469,7 +469,7 @@ def test_csv_without_header_is_positional_and_bounded():
 
 
 def test_default_redactor_knows_environment_secrets(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEMV2_TEST_API_TOKEN", "envsecret-value-42")
+    monkeypatch.setenv("MEMORY_TEST_API_TOKEN", "envsecret-value-42")
     wt, repo, rec = _setup(tmp_path)
     (wt / "leak.txt").write_text("t=envsecret-value-42\n")
     rec.begin()
@@ -483,7 +483,7 @@ def test_default_redactor_knows_environment_secrets(tmp_path, monkeypatch):
 def test_git_runs_with_a_minimal_isolated_environment(tmp_path, monkeypatch):
     from unify.memory.integration.adapters import worktree as mod
 
-    monkeypatch.setenv("MEMV2_UNRELATED_SECRET", "zzz")
+    monkeypatch.setenv("MEMORY_UNRELATED_SECRET", "zzz")
     wt, repo, rec = _setup(
         tmp_path,
     )  # repo creation goes through gitio, not this adapter
@@ -501,7 +501,7 @@ def test_git_runs_with_a_minimal_isolated_environment(tmp_path, monkeypatch):
         assert (
             env["GIT_CONFIG_GLOBAL"] == os.devnull and env["GIT_CONFIG_NOSYSTEM"] == "1"
         )
-        assert "MEMV2_UNRELATED_SECRET" not in env and env["HOME"] != os.environ.get(
+        assert "MEMORY_UNRELATED_SECRET" not in env and env["HOME"] != os.environ.get(
             "HOME",
         )
         assert "core.hooksPath=/dev/null" in argv and "--work-tree" in argv
@@ -1025,7 +1025,7 @@ def test_shape_child_gets_no_environment_no_path_and_its_limits(tmp_path, monkey
         "    'limits': lim, 'isolated': sys.flags.isolated, 'no_site': sys.flags.no_site,\n"
         "    'argv': sys.argv[1:], 'cwd': os.getcwd(), 'got': len(data)}))\n",
     )
-    monkeypatch.setenv("MEMV2_CHILD_MARKER", "visible-to-the-parent-only")
+    monkeypatch.setenv("MEMORY_CHILD_MARKER", "visible-to-the-parent-only")
     monkeypatch.setattr(mod, "_CHILD_SCRIPT", probe)
     raw, real = [], mod._run_child
 
@@ -1041,7 +1041,7 @@ def test_shape_child_gets_no_environment_no_path_and_its_limits(tmp_path, monkey
         "unparsed": "invalid",
     }
     seen = json.loads(raw[0])
-    assert "MEMV2_CHILD_MARKER" not in seen["env"]
+    assert "MEMORY_CHILD_MARKER" not in seen["env"]
     assert set(seen["env"]) <= {"LC_CTYPE"}  # at most Python's own C-locale coercion
     assert seen["limits"] == {
         "RLIMIT_AS": mod.CHILD_AS_BYTES,
@@ -1169,7 +1169,7 @@ _CONTAINER_MAGIC = (b"PK", b"\x1f\x8b", b"BZh", b"\xfd7zXZ\x00", b"MZ")
 
 
 def test_xlsx_header_secret_is_redacted_in_the_shape(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEMV2_TEST_EXPORT_API_KEY", HEADER_SECRET)
+    monkeypatch.setenv("MEMORY_TEST_EXPORT_API_KEY", HEADER_SECRET)
     data = _workbook("S", [HEADER_SECRET, "id"], [1, 2])
     # deflated: no byte scan of the file can see the secret
     assert HEADER_SECRET.encode() not in data
@@ -1179,16 +1179,16 @@ def test_xlsx_header_secret_is_redacted_in_the_shape(tmp_path, monkeypatch):
     (row,) = rec.record_cell(0, [{"event": "open", "path": "conf.xlsx", "mode": "rb"}])
     assert HEADER_SECRET not in json.dumps(row.response)
     assert row.response["shape"]["sheets"] == [
-        {"name": "S", "headers": ["<secret:MEMV2_TEST_EXPORT_API_KEY>", "id"]},
+        {"name": "S", "headers": ["<secret:MEMORY_TEST_EXPORT_API_KEY>", "id"]},
     ]
 
 
 def test_xlsx_secrets_never_reach_a_record_or_an_exported_blob(tmp_path, monkeypatch):
     import hashlib
 
-    monkeypatch.setenv("MEMV2_TEST_SHEET_TOKEN", SHEET_SECRET)
-    monkeypatch.setenv("MEMV2_TEST_HEADER_SECRET", HEADER_SECRET)
-    monkeypatch.setenv("MEMV2_TEST_CELL_PASSWORD", CELL_SECRET)
+    monkeypatch.setenv("MEMORY_TEST_SHEET_TOKEN", SHEET_SECRET)
+    monkeypatch.setenv("MEMORY_TEST_HEADER_SECRET", HEADER_SECRET)
+    monkeypatch.setenv("MEMORY_TEST_CELL_PASSWORD", CELL_SECRET)
     long_header = "x" * 100 + CELL_SECRET  # over MAX_NAME: never cut before redaction
     data = _workbook(
         SHEET_SECRET,
@@ -1205,9 +1205,9 @@ def test_xlsx_secrets_never_reach_a_record_or_an_exported_blob(tmp_path, monkeyp
     assert row.response["size"] == len(data)
     assert row.response["shape"]["sheets"] == [
         {
-            "name": "<secret:MEMV2_TEST_SHEET_TOKEN>",
+            "name": "<secret:MEMORY_TEST_SHEET_TOKEN>",
             "headers": [
-                "<secret:MEMV2_TEST_HEADER_SECRET>",
+                "<secret:MEMORY_TEST_HEADER_SECRET>",
                 "<redacted:key-shaped>",
                 {"chars": len(long_header)},
                 "id",
@@ -1512,7 +1512,7 @@ def test_worktree_diff_exports_text_hunks_and_binary_hashes_only(tmp_path, monke
 
     from unify.memory.integration.adapters import worktree as mod
 
-    monkeypatch.setenv("MEMV2_TEST_PEM_KEY", PEM_SECRET)
+    monkeypatch.setenv("MEMORY_TEST_PEM_KEY", PEM_SECRET)
     files = _binary_files(f"token={KEY}\n".encode())
     wt, repo, rec = _setup(tmp_path)
     for name, raw in files.items():
@@ -1542,7 +1542,7 @@ def test_worktree_diff_exports_text_hunks_and_binary_hashes_only(tmp_path, monke
     assert argv and all("diff" not in args for args in argv)
     for line in ("-two\n", "+changed\n", "+fresh\n", "-bye\n"):
         assert line in diff, line
-    assert "+<secret:MEMV2_TEST_PEM_KEY>\n" in diff and "FAKEPEM" not in diff
+    assert "+<secret:MEMORY_TEST_PEM_KEY>\n" in diff and "FAKEPEM" not in diff
     assert KEY not in diff and "\0" not in diff
     # hunks for text pairs only; every other changed path is one line of hashes and sizes
     hunks = {ln[6:] for ln in diff.splitlines() if ln.startswith("+++ b/")}
@@ -1584,7 +1584,7 @@ def test_long_names_are_redacted_whole_before_the_cut():
     pytest.importorskip("yaml")
     from unify.memory.integration.adapters import worktree_shapes as ws
 
-    redactor = Redactor({"MEMV2_TEST_NAME_TOKEN": NAME_SECRET})
+    redactor = Redactor({"MEMORY_TEST_NAME_TOKEN": NAME_SECRET})
     pad = "p" * 120  # the secret straddles MAX_NAME (128)
     for secret in (NAME_SECRET, KEY):
         name = pad + secret
@@ -1879,7 +1879,7 @@ def test_no_exported_hash_or_id_is_of_raw_text_that_was_redacted(tmp_path, monke
     from unify.memory.integration.adapters import worktree as mod
 
     pw = "hunter2pass"  # pragma: allowlist secret - short and guessable: an offline hash test finds it
-    monkeypatch.setenv("MEMV2_TEST_DB_PASSWORD", pw)
+    monkeypatch.setenv("MEMORY_TEST_DB_PASSWORD", pw)
     other = "sk-or-v1-" + "cd" * 32  # pragma: allowlist secret
     # over DIFF_LINES: a hash line
     long_head = "".join(f"{i}\n" for i in range(mod.DIFF_LINES))
@@ -1923,7 +1923,7 @@ def test_no_exported_hash_or_id_is_of_raw_text_that_was_redacted(tmp_path, monke
     assert keep["oid"] is None and keep["redacted"] is True and keep["blob"]
     assert (
         keep["blob"]
-        == hashlib.sha256(b"pw=<secret:MEMV2_TEST_DB_PASSWORD>\n").hexdigest()
+        == hashlib.sha256(b"pw=<secret:MEMORY_TEST_DB_PASSWORD>\n").hexdigest()
     )
     for row in writes:
         got = row.response
