@@ -19,6 +19,7 @@ import asyncio
 import os
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -34,16 +35,16 @@ from .tool_spec import form_of
 TOOL_FIELDS: dict[str, tuple[str, bool, float | None]] = {
     "read": ("reader", True, 30.0),
     "grep": ("reader", True, 30.0),
-    "overview": ("reader", True, 30.0),
-    "read_episode": ("reader", True, 30.0),
+    "overview": ("reader", False, 30.0),
+    "read_episode": ("reader", False, 30.0),
     "pool": ("reader", True, 30.0),
     "similar": ("reader", False, 30.0),
-    "fixture": ("action", True, 60.0),
+    "fixture": ("action", False, 60.0),
     "replay": ("action", False, None),
     "check": ("action", False, None),
     "finish": ("terminal", False, None),
-    "write": ("action", True, 60.0),
-    "edit": ("action", True, 60.0),
+    "write": ("action", False, 60.0),
+    "edit": ("action", False, 60.0),
     "delegate": ("record", False, 60.0),
     "send": ("record", False, 30.0),
     "messages": ("record", False, 30.0),
@@ -103,6 +104,8 @@ class WriterCalls:
     memory_lock: threading.Lock = field(default_factory=threading.Lock)
     #: kills the agent's box (verified) before finish judges /memory
     kill_box: Callable[[], Awaitable[None]] | None = None
+    #: the interpreter's /memory quota measure (a breach stops the box); None: measured here
+    measure_quota: Callable[[], Awaitable[str | None]] | None = None
     #: the pass's handler-thread tracker (C4)
     threads: Any = None
     check_copies: int = 0
@@ -290,12 +293,38 @@ async def similar(ctx: Any, args: dict) -> "_wt.Reply":
 # --- the writer's actions ------------------------------------------------------------------------------------------
 
 
-def fixture(ctx: Any, args: dict) -> "_wt.Reply":
-    """The ``fixture`` tool, under the pass's /memory lock."""
-    st: WriterCalls = ctx.state
+async def _after_write(st: WriterCalls, reply: "_wt.Reply") -> "_wt.Reply":
+    """After a call that wrote /memory: the quota measure (the interpreter's, which stops the box on a breach), and
+    today's note and stop on a breach."""
+    from .writer_pass import _measure
+
+    if reply.status != "ok":
+        return reply
+    if st.measure_quota is not None:
+        over_quota = await st.measure_quota()
+    else:
+        over_quota = await in_thread(_locked, st, _measure, st.box)
+    if over_quota is None:
+        return reply
+    st.stop = over_quota
+    return _wt.Reply(
+        f"{reply.text}\n({over_quota}; the pass is refused)",
+        reply.status,
+        reply.form,
+        reply.paths,
+    )
+
+
+def _fixture_work(st: WriterCalls, args: dict) -> "_wt.Reply":
     w = st.writer
     with st.memory_lock:
         return _wt.fixture(args, w._episode, st.box, w.gate._blob, w._batch)
+
+
+async def fixture(ctx: Any, args: dict) -> "_wt.Reply":
+    """The ``fixture`` tool, from the worker pool under the pass's /memory lock, then the quota measure."""
+    st: WriterCalls = ctx.state
+    return await _after_write(st, await in_thread(_fixture_work, st, args))
 
 
 async def replay(ctx: Any, args: dict) -> "_wt.Reply":
@@ -314,23 +343,10 @@ async def replay(ctx: Any, args: dict) -> "_wt.Reply":
 
 
 def _edit_call(name: str) -> Callable[[Any, dict], Any]:
-    def handler(ctx: Any, args: dict) -> "_wt.Reply":
-        from .writer_pass import _measure
-
+    async def handler(ctx: Any, args: dict) -> "_wt.Reply":
         st: WriterCalls = ctx.state
-        with st.memory_lock:
-            reply = _et.call(name, args, st.box)
-            if reply.status == "ok":
-                over_quota = _measure(st.box)
-                if over_quota is not None:
-                    st.stop = over_quota
-                    reply = _wt.Reply(
-                        f"{reply.text}\n({over_quota}; the pass is refused)",
-                        reply.status,
-                        reply.form,
-                        reply.paths,
-                    )
-        return reply
+        reply = await in_thread(_locked, st, _et.call, name, args, st.box)
+        return await _after_write(st, reply)
 
     handler.__name__ = handler.__qualname__ = name
     handler.__doc__ = f"The ``{name}`` tool on /memory (descriptor-relative), then the quota measure."
@@ -683,14 +699,22 @@ __all__ = [n for n in TOOL_FIELDS] + [
 
 # --- one agent's persistent interpreter and its channel ---------------------------------------------------------------
 
-#: What a cell's output says when the interpreter had to start again.
-RESTARTED = "(the interpreter was restarted: variables are gone, files remain)"
-
 
 def _default_start() -> Callable[..., Awaitable[Any]]:
     from unify.common.box_interpreter import BoxInterpreter  # type: ignore[import-not-found]
 
     return BoxInterpreter.start
+
+
+def memory_profile(**fields: Any) -> Any:
+    """The interpreter's ``MemoryProfile`` with *fields* (a plain namespace where the interpreter is not present)."""
+    try:
+        from unify.common.box_interpreter import MemoryProfile  # type: ignore[import-not-found]
+    except ImportError:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(**fields)
+    return MemoryProfile(**fields)
 
 
 def _open_roots(roots: dict[str, Path]) -> dict[str, int]:
@@ -704,12 +728,13 @@ def _open_roots(roots: dict[str, Path]) -> dict[str, int]:
 
 
 class InterpreterSession:
-    """One memory agent's persistent confined interpreter and its tool channel (tools in code).
+    """One memory agent's persistent confined interpreter (``BoxInterpreter``) and its tool channels.
 
-    The interpreter starts at the agent's first cell with a fresh channel bound to the agent (its name, role, pass,
-    roots and state; never anything from the box), and starts again, with a new channel, after the channel closed or
-    the interpreter was stopped. :meth:`cell` runs one cell, accepting tool frames only while it runs. :meth:`kill`
-    stops the box (``finish``/``done`` call it before judging). :meth:`close` ends both at the pass's end.
+    The interpreter starts at the agent's first cell. It takes a channel factory (every box it starts gets a new
+    channel bound to the agent: its name, role, pass, roots and state; never anything from the box), starts the
+    channel's ``serve`` and brackets each cell with ``cell_started``/``cell_ended``. :meth:`kill` stops the box from a
+    handler (``finish``/``done`` judge nothing while it lives); the next cell then starts a new interpreter.
+    :meth:`close` ends it at the pass's end.
     """
 
     def __init__(
@@ -728,9 +753,9 @@ class InterpreterSession:
         cell_limit_s: float,
         on_event: Callable[[dict], None],
         threads: Any,
+        profile: Any,
         start: Callable[..., Awaitable[Any]] | None = None,
         specs: dict | None = None,
-        profile: Any = None,
     ) -> None:
         from unify.common.tool_channel import CallContext
 
@@ -758,99 +783,103 @@ class InterpreterSession:
         )
         self.channel: Any = None
         self.interp: Any = None
-        self._serve: Any = None
+        self._row_cell: int | None = None
+        self._killed_by_call = False
         self._note = ""
         self.stuck = False
-        self.box_dead = False
 
-    async def _open(self) -> None:
+    def _new_channel(self) -> Any:
+        """The interpreter's channel factory: a fresh channel for every box it starts."""
         from unify.common.tool_channel import Channel
 
         if self._specs is None:
             self._specs = channel_specs()
-        start = self._start or _default_start()
+        if self.channel is not None and self.channel.stuck:
+            self.stuck = True
         self.channel = Channel.open(
             self.binding,
             self.allow,
             self.on_event,
             specs=self._specs,
             threads=self.threads,
+            row_cell=lambda: self._row_cell,
         )
-        self.interp = await start(
-            agent=self.binding.agent,
-            profile=self.profile,
-            binds=self.binds() if callable(self.binds) else self.binds,
-            env={**self.env, "TOOLS_CHANNEL": self.channel.env_value()},
-            channel=self.channel,
-            stub_source=stub_source(self.allow),
-            cell_limit_s=self.cell_limit_s,
-        )
-        self.channel.after_spawn()
-        self._serve = asyncio.ensure_future(self.channel.serve())
-        self.box_dead = False
-
-    async def _stop_box(self) -> None:
-        if self.channel is not None:
-            self.channel.box_gone()
-        if self.interp is not None and not self.box_dead:
-            self.box_dead = True
-            await self.interp.stop()
+        return self.channel
 
     async def kill(self) -> None:
-        """Stop the box now (verified kill); a reply still to be written is dropped."""
-        await self._stop_box()
-
-    async def cell(self, code: str, cell_no: int, timeout_s: float) -> tuple[str, Any]:
-        """Run one cell: (the text before the host's notes, the interpreter's cell result or None when it failed to
-        run). Starts the interpreter first when needed."""
-        if self.channel is not None and self.channel.stuck:
-            self.stuck = True
-        if self.interp is None or self.box_dead or self.channel is None or self.channel.closed is not None:
-            if self.interp is not None:
-                why = self.channel.closed if self.channel is not None else None
-                await self._stop_box()
-                await self._close_channel()
-                if why and why != "eof":
-                    self._note = f"(tool channel closed: {why}) {RESTARTED}\n"
-                elif not self._note:
-                    self._note = f"{RESTARTED}\n"
-            await self._open()
-        note, self._note = self._note, ""
-        self.channel.cell_started(cell_no)
-        try:
-            res = await asyncio.wait_for(self.interp.run_cell(code), timeout=max(1.0, timeout_s) + 30.0)
-        except asyncio.TimeoutError:
-            await self._stop_box()
-            return note, None
-        finally:
-            if self.channel is not None:
-                self.channel.cell_ended(cell_no)
-        if getattr(res, "timed_out", False) or getattr(res, "restarted", False):
-            self.box_dead = True  # the interpreter restarts before the next cell
-        if self.channel is not None and self.channel.stuck:
-            self.stuck = True
-        return note, res
-
-    def closed_reason(self) -> str | None:
-        return None if self.channel is None else self.channel.closed
-
-    async def _close_channel(self) -> None:
+        """Stop the box now (verified kill), from the handler of a call the box made; its reply is dropped. The next
+        cell starts a new interpreter."""
+        self._killed_by_call = True
         if self.channel is not None:
-            await self.channel.close("ended", record=False)
-        if self._serve is not None:
-            self._serve.cancel()
-            try:
-                await self._serve
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - the serve task ends with the channel
-                pass
-        self._serve = None
+            self.channel.box_gone()
+        interp, self.interp = self.interp, None
+        if interp is not None:
+            await interp.stop()
+            self._note = RESTARTED
+
+    async def measure_quota(self) -> str | None:
+        """The /memory quota now (after write, edit, fixture); a breach stops the box. None without a box."""
+        interp = self.interp
+        measure = getattr(interp, "measure_quota", None)
+        return await measure() if measure is not None else None
+
+    def box_alive(self) -> bool:
+        interp = self.interp
+        alive = getattr(interp, "box_alive", None)
+        return bool(alive()) if alive is not None else False
+
+    async def cell(self, code: str, cell_no: int) -> Any:
+        """Run one cell: the interpreter's cell result, or None when the pass's wall clock ended first. *cell_no*:
+        the cell's event row number (in-code calls' rows name it as their ``cell``)."""
+        if self.interp is None:
+            self.interp = await (self._start or _default_start())(
+                agent=self.binding.agent,
+                profile=self.profile,
+                binds=self.binds,
+                env=self.env,
+                channel=self._new_channel,
+                stub_source=stub_source(self.allow),
+                cell_limit_s=self.cell_limit_s,
+            )
+        self._row_cell = cell_no
+        self._killed_by_call = False
+        if self.channel is not None:
+            self.channel.gone_during = None
+        interp = self.interp
+        try:
+            res = await asyncio.wait_for(
+                interp.run_cell(code, call=cell_no),
+                timeout=max(1.0, self.binding.deadline - time.monotonic() + CELL_MARGIN_S),
+            )
+        except asyncio.TimeoutError:
+            res = None
+            await self.kill()
+            self._killed_by_call = False
+        if self._killed_by_call and self.channel is not None:
+            # the call that stopped the box (finish, done) finishes its handler before the cell has ended
+            await self.channel.settled(self.binding.deadline - time.monotonic())
+        if self.channel is not None and self.channel.stuck:
+            self.stuck = True
+        return res
+
+    def gone_during(self) -> tuple[str, bool] | None:
+        """(tool, completed) of a call the box went away during in the last cell, else None."""
+        return None if self.channel is None else self.channel.gone_during
+
+    def take_note(self) -> str:
+        note, self._note = self._note, ""
+        return note
 
     async def close(self) -> None:
-        """At the pass's end: stop the box, close the channel and the root descriptors."""
+        """At the pass's end: stop the interpreter (verified kill, which closes its channel) and the root
+        descriptors."""
         try:
-            await self._stop_box()
+            interp, self.interp = self.interp, None
+            if interp is not None:
+                await interp.stop()
+            if self.channel is not None and not self.channel.closed:
+                await self.channel.close("ended")
         finally:
-            await self._close_channel()
             for fd in self._root_fds.values():
                 try:
                     os.close(fd)
@@ -859,28 +888,38 @@ class InterpreterSession:
             self._root_fds.clear()
 
 
+#: How long past the pass's wall clock the host waits for a cell before it stops the box itself.
+CELL_MARGIN_S = 5.0
+#: What a cell's output says when the interpreter will start again (an end call stopped it).
+RESTARTED = "(the interpreter was stopped by the end of the last call; variables are gone, files remain)"
+
+
 def cell_parts(
-    note: str,
     res: Any,
-    timeout_s: float,
-    closed: str | None,
     finish_text: str | None,
+    gone: tuple[str, bool] | None = None,
+    note: str = "",
 ) -> tuple[str, str]:
-    """A cell's output in two parts: the body (a host note, then the interpreter's output and error), which the
-    agent's own output handling may cut and save; and the host's notes after it (a timeout, a closed channel, the
-    end call's result as the last line), which are never cut."""
-    tail = ""
+    """A cell's output in two parts: the body (the interpreter's notes about an earlier restart, what the cell
+    printed and its traceback), which the agent's own output handling may cut and save; and the notes after it (how
+    it ended, a call the box went away during, the end call's result as the last line), never cut."""
     if res is None:
-        body = note or "(no output)"
-        tail += f"\n(cell timed out after {timeout_s:.0f} s; {RESTARTED[1:-1]})"
+        body = "\n".join(x for x in (note, "(no output)") if x)
+        tail = "\n(the pass's wall clock ended during the cell)"
     else:
         out = str(getattr(res, "output", "") or "")
         err = str(getattr(res, "error", "") or "")
-        body = note + ((out + ("\n" + err if err else "")) or "(no output)")
-        if getattr(res, "timed_out", False):
-            tail += f"\n(cell timed out after {timeout_s:.0f} s; {RESTARTED[1:-1]})"
-    if closed is not None and closed not in ("eof", "ended", "cancelled"):
-        tail += f"\n(tool channel closed: {closed})"
+        printed = (f"{out}\n{err}" if out and err else out or err).rstrip("\n") or "(no output)"
+        before = [x for x in (note, *(getattr(res, "notes_before", None) or [])) if x]
+        body = "\n".join([*before, printed])
+        after = list(getattr(res, "notes_after", None) or [])
+        tail = "".join("\n" + x for x in after)
+    if gone is not None and finish_text is None:
+        tool, completed = gone
+        tail += (
+            f"\n(the cell ended during tools.{tool}; that call "
+            f"{'completed' if completed else 'did not run'})"
+        )
     if finish_text is not None:
         tail += "\n" + finish_text
     return body, tail

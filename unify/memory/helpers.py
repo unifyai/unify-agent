@@ -1619,9 +1619,17 @@ def _in_code_session(ctx: DelegateContext, call: str, st: dict, doc: dict) -> An
     binds = {
         "ro": {st["hin"]: "/inputs", st["task"]: "/task", st["lib"]: "/memory"},
         "rw": {st["work"]: "/work"},
-        "cwd": "/work",
-        "fsize": WORK_FILE_BYTES,
     }
+    profile = _th.memory_profile(
+        pass_id=ctx.pass_id,
+        cwd="/work",
+        sys_path=("/inputs", "/memory"),
+        fsize_bytes=WORK_FILE_BYTES,
+        # the helper loop stamps and records the open rows with each cell's event, as for a fresh cell
+        opens_path=None,
+        # /work's limits are checked after each cell by the helper loop (work_over), as today
+        measure=None,
+    )
     session = _th.InterpreterSession(
         agent="helper",
         name=call,
@@ -1630,7 +1638,8 @@ def _in_code_session(ctx: DelegateContext, call: str, st: dict, doc: dict) -> An
         state=hc,
         allow=allow,
         binds=binds,
-        env={"PYTHONPATH": "/inputs:/memory"},
+        env={},
+        profile=profile,
         roots={"/inputs": st["hin"], "/task": st["task"], "/memory": st["lib"], "/work": st["work"]},
         deadline=ctx.deadline,
         cell_limit_s=ctx.cell_timeout_s,
@@ -1652,11 +1661,11 @@ async def _in_code_cell(ctx: DelegateContext, st: dict, code: str, left: float) 
 
     hc, session = st["in_code"], st["session"]
     hc.finish_text = None
-    timeout = max(1.0, min(ctx.cell_timeout_s, left))
-    note, res = await session.cell(code, st["n"] - 1, timeout)
+    note = session.take_note()
+    res = await session.cell(code, st["n"] - 1)
     audit = getattr(res, "opens", None)
     st["box_audit"] = audit if isinstance(audit, dict) else {}
-    body, tail = _th.cell_parts(note, res, timeout, session.closed_reason(), hc.finish_text)
+    body, tail = _th.cell_parts(res, hc.finish_text, session.gone_during(), note)
     data = body.encode("utf-8", "replace")
     if len(data) > OUTPUT_BYTES:
         body = (

@@ -474,8 +474,10 @@ class Channel:
         *,
         specs: Mapping[str, Any] | None = None,
         threads: HandlerThreads | None = None,
+        row_cell: Callable[[], int | None] | None = None,
     ) -> None:
         self.binding = binding
+        self._row_cell = row_cell
         self.allow = tuple(allow)
         self._on_event = on_event
         self._specs = specs
@@ -493,7 +495,10 @@ class Channel:
         self._cell: int | None = None
         self._in_flight: str | None = None
         self._box_gone = False
-        self.closed: str | None = None
+        #: why the channel closed (one of :data:`CLOSE_REASONS`, or the owner's reason), None while it is open
+        self.close_reason: str | None = None
+        #: (tool, completed) of a call the box went away during, for the cell's output
+        self.gone_during: tuple[str, bool] | None = None
         self.stuck = False
         self.calls = 0
         #: seconds spent in host calls per cell (the cell clock pauses during them)
@@ -508,10 +513,12 @@ class Channel:
         *,
         specs: Mapping[str, Any] | None = None,
         threads: HandlerThreads | None = None,
+        row_cell: Callable[[], int | None] | None = None,
     ) -> "Channel":
         """A channel for one box. *specs*: the registry by name (default :func:`unify.common.tool_registry.registry`);
-        *threads*: the pass's tracker, so the pass sees every channel's handler threads."""
-        return cls(binding, allow, on_event, specs=specs, threads=threads)
+        *threads*: the pass's tracker, so the pass sees every channel's handler threads; *row_cell*: the owner's
+        number for the running cell (its event row's ``call``), else the number :meth:`cell_started` was given."""
+        return cls(binding, allow, on_event, specs=specs, threads=threads, row_cell=row_cell)
 
     # -- the box's side of the pipes --------------------------------------------------------------------------
 
@@ -541,6 +548,23 @@ class Channel:
         if self._cell == cell:
             self._cell = None
 
+    async def settled(self, timeout: float) -> bool:
+        """Wait up to *timeout* seconds until no call is being answered (a cell whose box was stopped by its own call,
+        such as ``finish``, ends only after that call's handler has); True when none is."""
+        end = time.monotonic() + max(0.0, timeout)
+        while self._in_flight is not None and time.monotonic() < end:
+            await asyncio.sleep(0.01)
+        return self._in_flight is None
+
+    @property
+    def closed(self) -> bool:
+        return self.close_reason is not None
+
+    @property
+    def in_flight(self) -> bool:
+        """A call is being answered (the interpreter pauses the cell clock meanwhile)."""
+        return self._in_flight is not None
+
     def call_in_flight(self) -> str | None:
         """The tool of the call being answered now, or None (the interpreter pauses the cell clock while one is)."""
         return self._in_flight
@@ -565,7 +589,7 @@ class Channel:
         """Read and answer frames until the channel closes or the box closes its end."""
         self._task = asyncio.current_task()
         try:
-            while self.closed is None:
+            while self.close_reason is None:
                 try:
                     payload = await self._read_frame()
                 except _EndOfInput:
@@ -589,7 +613,7 @@ class Channel:
             raise
 
     async def _answer(self, env: dict) -> None:
-        cell = self._cell
+        cell = self._row_cell() if self._row_cell is not None else self._cell
         started = time.monotonic()
         tool, args = env["tool"], env["args"]
         self._in_flight = tool
@@ -618,6 +642,8 @@ class Channel:
         data = frame(out)
         if len(data) - _HEADER > MAX_REPLY_BYTES:
             data = frame(_cut(out))
+        if self.close_reason is not None:
+            self._box_gone = True  # the box was stopped during the call (finish, a quota breach): no one reads
         if not self._box_gone:
             try:
                 await self._write_all(data)
@@ -628,7 +654,10 @@ class Channel:
                 await self.close(exc.reason)
                 return
         self._emit(tool, args, reply, cell, scope.extra)
-        if self.stuck and self.closed is None:
+        if self._box_gone:
+            # the box went away during this call: the cell's output says whether the call took effect
+            self.gone_during = (tool, frame_status(reply) == "ok")
+        if self.stuck and self.close_reason is None:
             await self.close("handler_stuck")
 
     def _emit(self, tool: str, args: dict, reply: Any, cell: int | None, extra: dict) -> None:
@@ -696,9 +725,10 @@ class Channel:
         timeout = max(0.0, deadline - time.monotonic())
         try:
             if inspect.iscoroutinefunction(fn):
-                task = asyncio.ensure_future(fn(ctx, args))
+                # in the serve task itself, so a handler that stops its own box (finish, a quota breach) is never
+                # cancelled by that stop
                 try:
-                    return as_reply(await asyncio.wait_for(task, timeout))
+                    return as_reply(await _within(fn(ctx, args), timeout))
                 except asyncio.TimeoutError:
                     return _general("stopped", reason="timed out")
             if not blocking:
@@ -734,11 +764,13 @@ class Channel:
         except asyncio.TimeoutError:
             raise Malformed("frame_timeout" if reading else "reply_timeout") from None
         finally:
-            if self.closed is None:  # a closed channel's descriptor number may already be reused
+            if self.close_reason is None:  # a closed channel's descriptor number may already be reused
                 (loop.remove_reader if reading else loop.remove_writer)(fd)
 
     async def _read_some(self, n: int, deadline: float | None) -> bytes:
         while True:
+            if self.close_reason is not None:
+                return b""
             try:
                 return os.read(self._req_r, n)
             except BlockingIOError:
@@ -770,6 +802,8 @@ class Channel:
         deadline = time.monotonic() + REPLY_WRITE_TIMEOUT_S
         view = memoryview(data)
         while view:
+            if self.close_reason is not None:
+                raise BrokenPipeError()
             try:
                 view = view[os.write(self._rep_w, view) :]
             except BlockingIOError:
@@ -777,12 +811,15 @@ class Channel:
 
     # -- closing -------------------------------------------------------------------------------------------------
 
-    async def close(self, reason: str, *, record: bool = True) -> None:
+    async def close(self, reason: str, *, record: bool | None = None) -> None:
         """Close the channel: a best-effort closing notice to the box (never waited for), both host ends shut, and
-        one ``channel_closed`` row when *record* (every malformed frame, stall and stuck handler)."""
-        if self.closed is not None:
+        one ``channel_closed`` row when *record* (by default for the reasons of :data:`CLOSE_REASONS`: a malformed
+        frame, a stall, a frame between cells, a stuck handler; not for the owner's own reasons such as a kill)."""
+        if self.close_reason is not None:
             return
-        self.closed = reason
+        if record is None:
+            record = reason in CLOSE_REASONS
+        self.close_reason = reason
         task = self._task
         if task is not None and task is not asyncio.current_task() and not task.done():
             task.cancel()
@@ -817,6 +854,18 @@ class Channel:
             if b.request_id is not None:
                 row["request_id"] = b.request_id
             self._on_event(row)
+
+
+async def _within(coro: Any, timeout: float) -> Any:
+    """Await *coro* in the current task with a time limit (``asyncio.TimeoutError`` past it)."""
+    limit = getattr(asyncio, "timeout", None)
+    if limit is None:  # before Python 3.11
+        return await asyncio.wait_for(coro, timeout)
+    try:
+        async with limit(timeout):
+            return await coro
+    except TimeoutError:
+        raise asyncio.TimeoutError() from None
 
 
 def _cut(out: dict) -> dict:

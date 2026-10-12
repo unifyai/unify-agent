@@ -3573,20 +3573,25 @@ class WriterPass:
             threads=HandlerThreads(),
         )
 
-        def binds() -> dict:
-            # the cell box's binds, as _cell gives them (the generated files read-only over the writable box)
-            return {
-                "ro": {inputs: "/inputs"},
-                "rw": {box: "/memory"},
-                "late_ro": (
-                    self._generated_binds(box)
-                    if _library_on(self) and getattr(self, "_library_generated", None)
-                    else {}
-                ),
-                "cwd": "/memory",
-                "fsize": CELL_FSIZE_BYTES,
-            }
-
+        # the cell box's binds, as _cell gives them (the generated files read-only over the writable box)
+        binds = {
+            "ro": {inputs: "/inputs"},
+            "rw": {box: "/memory"},
+            "late_ro": (
+                self._generated_binds(box)
+                if _library_on(self) and getattr(self, "_library_generated", None)
+                else {}
+            ),
+        }
+        profile = _th.memory_profile(
+            pass_id=pass_id,
+            cwd="/memory",
+            sys_path=("/inputs", "/memory"),
+            fsize_bytes=CELL_FSIZE_BYTES,
+            # the pass stamps and records the open rows with each cell's event (as for a fresh cell)
+            opens_path=None,
+            measure=lambda: _measure(box),
+        )
         session = _th.InterpreterSession(
             agent=agent,
             name=agent,
@@ -3595,15 +3600,17 @@ class WriterPass:
             state=ic,
             allow=allow,
             binds=binds,
-            env={"PYTHONPATH": "/inputs:/memory"},
+            env={},
             roots=roots,
             deadline=deadline,
             cell_limit_s=float(self.cfg.cell_timeout_s),
             on_event=lambda row: self._channel_event(pass_id, row),
             threads=ic.threads,
+            profile=profile,
             start=self.interpreter_start,
         )
         ic.kill_box = session.kill
+        ic.measure_quota = session.measure_quota
         self._in_code_threads = ic.threads  # helpers' handler threads join the pass's tracker (C4)
         scope.callback(
             _th.thread_reads(
@@ -3621,23 +3628,17 @@ class WriterPass:
         ic: Any,
         code: str,
         cells: Path,
-        timeout: float,
         cell_no: int,
     ) -> str:
         """One cell in the agent's interpreter, its in-code calls served by the channel; the output as _cell gives
         it in library mode (the first 8000 bytes, the full output in /outputs/cell-<n>.txt), then the host's notes."""
         from . import tool_handlers as _th
 
-        note, res = await session.cell(code, cell_no, timeout)
+        note = session.take_note()
+        res = await session.cell(code, cell_no)
         audit = getattr(res, "opens", None)
         self._box_audit = audit if isinstance(audit, dict) else None
-        body, tail = _th.cell_parts(
-            note,
-            res,
-            timeout,
-            session.closed_reason(),
-            ic.finish_text,
-        )
+        body, tail = _th.cell_parts(res, ic.finish_text, session.gone_during(), note)
         shown, full = _head_marked(body)
         out_dir = cells.parent / "outputs"
         out_dir.mkdir(exist_ok=True)
@@ -4843,7 +4844,6 @@ class WriterPass:
                                 ic,
                                 str(args.get("code", "")),
                                 cells,
-                                timeout,
                                 event_call,
                             )
                             calls, checks, reads, readers = (
@@ -4860,12 +4860,6 @@ class WriterPass:
                             )
                             if session.stuck and stop is None:
                                 stop = "a tool handler did not end within its deadline"
-                            event_extra = {
-                                "via": "model",
-                                "cell": None,
-                                "args_sha256": _args_sha256(args),
-                                "box_gone": False,
-                            }
                         over_quota = _measure(box)
                         if over_quota is not None:
                             stop = over_quota
@@ -4881,6 +4875,17 @@ class WriterPass:
                             "content": str(content),
                         },
                     )
+                    if in_code:
+                        # the additive fields of every row with tools in code (a model-made call: no cell)
+                        event_extra = {
+                            "via": "model",
+                            "cell": None,
+                            "args_sha256": _args_sha256(
+                                args if args is not None else fn.get("arguments"),
+                            ),
+                            "box_gone": False,
+                            **(event_extra or {}),
+                        }
                     self._event(
                         pass_id,
                         name,
@@ -4913,9 +4918,9 @@ class WriterPass:
             if ic is not None:
                 # no box can write /memory and no tool handler of the pass may run while the gate judges it
                 await session.close()
-                if not await ic.threads.wait_idle(_IN_CODE_IDLE_S):
+                if session.box_alive() or not await ic.threads.wait_idle(_IN_CODE_IDLE_S):
                     raise RuntimeError(
-                        "a tool handler of this pass is still running; the gate does not start",
+                        "a box or a tool handler of this pass is still running; the gate does not start",
                     )
             if (
                 not finished

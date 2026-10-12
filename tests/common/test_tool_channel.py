@@ -129,7 +129,7 @@ class Harness:
 
     async def ended(self, timeout=5.0):
         await asyncio.wait_for(self.task, timeout)
-        return self.channel.closed
+        return self.channel.close_reason
 
     async def close(self):
         await self.channel.close("ended", record=False)
@@ -206,7 +206,7 @@ def test_an_unknown_tool_and_an_unknown_argument_are_refusals_and_the_channel_st
     for exc in (extra, missing, wrong):
         assert isinstance(exc, h.box.Refused) and exc.form == "bad_arguments"
     assert "'role'" in str(extra)
-    assert ok == "echo still open" and h.channel.closed == "ended"
+    assert ok == "echo still open" and h.channel.close_reason == "ended"
 
 
 # --- malformed frames ----------------------------------------------------------------------------------------------

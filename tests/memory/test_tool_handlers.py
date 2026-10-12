@@ -55,27 +55,39 @@ def _client():
 
 
 class FakeBox:
-    """Stands in for the persistent interpreter: a cell is a JSON list of ``[tool, args]`` calls, made in a thread
-    through the box-side client; each call prints one line (its text, or the exception the cell would see)."""
+    """Stands in for ``BoxInterpreter``: it opens a channel from the factory it is given, serves it, brackets each
+    cell, and runs a cell (a JSON list of ``[tool, args]`` calls) in a thread through the box-side client; each call
+    prints one line (its text, or the exception the cell would see)."""
 
     started: list["FakeBox"] = []
 
     @classmethod
     async def start(cls, *, agent, profile, binds, env, channel, stub_source, cell_limit_s):
         box = cls()
-        box.agent, box.env = agent, dict(env)
-        box.binds = binds() if callable(binds) else binds
+        box.agent, box.env, box.binds, box.profile = agent, dict(env), binds, profile
+        box.channel = channel() if callable(channel) and not hasattr(channel, "box_fds") else channel
         box.client = _client()
-        req, rep = channel.box_fds()
+        req, rep = box.channel.box_fds()
         box.client._STATE["fds"] = (os.dup(req), os.dup(rep))  # as a spawn inherits them
+        box.channel.after_spawn()
+        box.serve = asyncio.ensure_future(box.channel.serve())
         box.stopped = asyncio.Event()
+        box.cells = 0
         cls.started.append(box)
         return box
 
     def host_paths(self):
         return [str(p) for group in ("ro", "rw") for p in (self.binds.get(group) or {})]
 
-    async def run_cell(self, code):
+    def box_alive(self):
+        return not self.stopped.is_set()
+
+    async def measure_quota(self):
+        return None
+
+    async def run_cell(self, code, *, call=None):
+        self.cells += 1
+        cell = self.cells
         lines: list[str] = []
         loop = asyncio.get_running_loop()
         done = loop.create_future()
@@ -89,20 +101,30 @@ class FakeBox:
                     lines.append(f"{tool} !! {type(exc).__name__}: {exc}")
             loop.call_soon_threadsafe(lambda: done.done() or done.set_result(None))
 
-        threading.Thread(target=go, daemon=True).start()
-        stop = asyncio.ensure_future(self.stopped.wait())
-        await asyncio.wait({done, stop}, return_when=asyncio.FIRST_COMPLETED)
-        stop.cancel()
+        self.channel.cell_started(cell)
+        try:
+            threading.Thread(target=go, daemon=True).start()
+            stop = asyncio.ensure_future(self.stopped.wait())
+            await asyncio.wait({done, stop}, return_when=asyncio.FIRST_COMPLETED)
+            stop.cancel()
+        finally:
+            self.channel.cell_ended(cell)
         return SimpleNamespace(
             output="\n".join(list(lines)),
-            error="",
+            error=None,
             timed_out=False,
             restarted=False,
             opens=None,
+            quota=None,
+            notes_before=[],
+            notes_after=(["(the interpreter exited during the cell)"] if self.stopped.is_set() else []),
         )
 
     async def stop(self):
         self.stopped.set()
+        await self.channel.close("stopped")
+        if self.serve is not asyncio.current_task() and not self.serve.done():
+            self.serve.cancel()
 
 
 class ToolsSeen(Turns):
@@ -113,6 +135,11 @@ class ToolsSeen(Turns):
     async def __call__(self, messages, tools):
         self.tool_lists.append([t["function"]["name"] for t in tools])
         return await super().__call__(messages, tools)
+
+
+def _around(blob, bad):
+    i = blob.find(bad)
+    return blob[max(0, i - 300) : i + 100]
 
 
 def _cell(cid, *calls):
@@ -374,13 +401,17 @@ def test_no_reply_or_row_carries_an_environment_value_a_host_path_or_a_route_tok
     )
     texts = [str(v) for v in model.outputs.values()]
     events_text = (tmp_path / "out" / "p1" / "tool-events.jsonl").read_text()
-    forbidden = {PLANTED_ENV, PLANTED_TOKEN, str(tmp_path), os.path.expanduser("~")}
+    call_rows = [json.dumps(r) for r in rows if r.get("event") in ("tool_call", "channel_closed")]
+    host = {str(tmp_path), os.path.expanduser("~")}
     for box in FakeBox.started:
-        forbidden.update(box.host_paths())
-    forbidden.discard("")
-    for blob in (*texts, events_text):
-        for bad in forbidden:
-            assert bad not in blob, bad
+        host.update(box.host_paths())
+    host.discard("")
+    for blob in (*texts, events_text):  # every reply and every record the pass wrote
+        for bad in (PLANTED_ENV, PLANTED_TOKEN):
+            assert bad not in blob, (bad, _around(blob, bad))
+    for blob in (*texts, *call_rows):  # every reply and every call's row
+        for bad in host:
+            assert bad not in blob, (bad, _around(blob, bad))
     # every call answered: one line per scripted call until finish ended the cell
     cell = model.outputs["c1"]
     assert cell.count("\n") >= len(writer_script) - 1
@@ -466,9 +497,14 @@ def test_pool_decide_writes_the_draft_manifest_without_following_a_link(tmp_path
 
 
 def test_every_memory_tool_has_a_handler_named_as_the_tool():
-    for name in tool_handlers.TOOL_FIELDS:
+    import inspect
+
+    for name, (kind, blocking, _) in tool_handlers.TOOL_FIELDS.items():
         fn = getattr(tool_handlers, name)
         assert callable(fn) and fn.__name__ == name
+        # synchronous work never runs on the event loop: a synchronous handler is dispatched to the worker pool,
+        # a coroutine handler sends its blocking parts there itself
+        assert inspect.iscoroutinefunction(fn) != blocking, name
     specs = tool_handlers.channel_specs()
     for name, spec in specs.items():
         if isinstance(spec, tool_handlers.SpecView):
