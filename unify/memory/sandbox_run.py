@@ -623,6 +623,9 @@ class BoxOpenLog:
         self.rows: list[dict] = []
         self.dropped = 0
         self.seen = 0  # hook lines read, kept or not
+        self.started = (
+            False  # the hook's start line arrived: it was installed and could write
+        )
         self.failed = False
         self.result: dict | None = None
         self._kept = 0
@@ -684,6 +687,9 @@ class BoxOpenLog:
             self._buf = b""
             self.dropped += 1
         for line in lines:
+            if line.strip() == b'{"event": "start"}':
+                self.started = True
+                continue
             row = _open_row(line)
             if row is None:
                 self.dropped += 1
@@ -696,9 +702,12 @@ class BoxOpenLog:
             self.rows.append(row)
 
     def finish(self) -> dict:
-        """Close the host's write end, drain what the box wrote and return ``{"rows", "dropped", "dead"}``.
-        ``dead`` is True when no usable hook line arrived (the hook died, was not installed, or the code opened
-        nothing under /inputs or /memory) or the reader failed. Idempotent."""
+        """Close the host's write end, drain what the box wrote and return ``{"rows", "dropped", "dead",
+        "reason"}``. ``dead`` is True only when the hook never reported its start (it was not installed, or the
+        process ended before Python's start-up ran it) or the reader failed; a cell that opens nothing under /inputs
+        or /memory is measured, with no rows. ``reason`` names what happened: ``ok``, ``no_start`` or
+        ``reader_failed``; lines past the byte cap are counted in ``dropped``. Idempotent.
+        """
         if self.result is not None:
             return self.result
         if self._w is not None:
@@ -717,7 +726,12 @@ class BoxOpenLog:
         self.result = {
             "rows": list(self.rows),
             "dropped": self.dropped,
-            "dead": self.failed or self.seen == 0,
+            "dead": self.failed or not self.started,
+            "reason": (
+                "reader_failed"
+                if self.failed
+                else ("ok" if self.started else "no_start")
+            ),
         }
         return self.result
 
@@ -726,11 +740,17 @@ def box_open_fields(result: dict | None) -> dict:
     """The tool-event fields of an ``execute_code`` call from its :meth:`BoxOpenLog.finish` result (None: no box
     ran, so no measurement)."""
     if result is None:
-        return {"box_opens": 0, "box_opens_dropped": 0, "box_hook_dead": None}
+        return {
+            "box_opens": 0,
+            "box_opens_dropped": 0,
+            "box_hook_dead": None,
+            "box_hook_reason": None,
+        }
     return {
         "box_opens": len(result.get("rows") or []),
         "box_opens_dropped": int(result.get("dropped") or 0),
         "box_hook_dead": bool(result.get("dead")),
+        "box_hook_reason": result.get("reason"),
     }
 
 

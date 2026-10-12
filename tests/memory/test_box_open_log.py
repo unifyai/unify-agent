@@ -68,6 +68,7 @@ def test_no_box_means_no_measurement():
         "box_opens": 0,
         "box_opens_dropped": 0,
         "box_hook_dead": None,
+        "box_hook_reason": None,
     }
 
 
@@ -97,7 +98,7 @@ def test_a_flood_beyond_the_cap_is_counted_as_dropped_without_stalling(tmp_path)
 
 
 @needs_bwrap
-def test_without_opens_in_the_areas_the_hook_reports_nothing_usable(tmp_path):
+def test_a_cell_that_opens_nothing_in_the_areas_is_measured_not_dead(tmp_path):
     inputs = _inputs(tmp_path)
     with sr.BoxOpenLog() as log:
         r = sr.run_confined(
@@ -108,7 +109,8 @@ def test_without_opens_in_the_areas_the_hook_reports_nothing_usable(tmp_path):
             timeout_s=60,
         )
     assert r.returncode == 0, r.stderr
-    assert log.result == {"rows": [], "dropped": 0, "dead": True}
+    # the hook reported its start, so no rows means no opens, not a blind cell
+    assert log.result == {"rows": [], "dropped": 0, "dead": False, "reason": "ok"}
 
 
 @needs_bwrap
@@ -232,3 +234,66 @@ def test_the_open_rows_file_is_never_written_through_a_link(tmp_path):
     os.link(target, hard)
     assert sr.append_open_rows(hard, [{"event": "open"}]) is False
     assert target.read_text() == ""
+
+
+@needs_bwrap
+def test_a_box_without_the_hook_is_dead_with_its_reason(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with sr.BoxOpenLog() as log:
+        r = sr.run_confined(
+            [str(sr.PYTHON), "-s", "-c", "print(1)"],
+            ro={empty: "/inputs"},
+            env={"PYTHONPATH": "/inputs", **log.env},
+            pass_fds=log.pass_fds,
+            timeout_s=60,
+        )
+    assert r.returncode == 0, r.stderr
+    assert log.result["dead"] is True and log.result["reason"] == "no_start"
+
+
+@needs_bwrap
+def test_a_timed_out_cell_keeps_the_opens_it_made_and_is_not_dead(tmp_path):
+    inputs = _inputs(tmp_path)
+    code = "open('/inputs/x.txt').close()\nimport time\ntime.sleep(30)\n"
+    with sr.BoxOpenLog() as log:
+        r = sr.run_confined(
+            [str(sr.PYTHON), "-s", "-c", code],
+            ro={inputs: "/inputs"},
+            env={"PYTHONPATH": "/inputs", **log.env},
+            pass_fds=log.pass_fds,
+            timeout_s=2,
+        )
+    assert r.timed_out
+    assert log.result["dead"] is False and log.result["reason"] == "ok"
+    assert log.result["rows"] == [
+        {"event": "open", "path": "/inputs/x.txt", "mode": "r"},
+    ]
+
+
+@needs_bwrap
+def test_concurrent_cells_each_have_their_own_complete_record(tmp_path):
+    import threading
+
+    inputs = _inputs(tmp_path)
+    results = {}
+
+    def cell(k):
+        with sr.BoxOpenLog() as log:
+            sr.run_confined(
+                [str(sr.PYTHON), "-s", "-c", "open('/inputs/x.txt').close()"],
+                ro={inputs: "/inputs"},
+                env={"PYTHONPATH": "/inputs", **log.env},
+                pass_fds=log.pass_fds,
+                timeout_s=60,
+            )
+        results[k] = log.result
+
+    threads = [threading.Thread(target=cell, args=(k,)) for k in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(results) == 4
+    for res in results.values():
+        assert res["dead"] is False and res["reason"] == "ok" and len(res["rows"]) == 1

@@ -10,7 +10,8 @@ Transport: ``MEMORY_BOX_OPEN_LOG=fd:<n>`` names the write end of a pipe the harn
 stamps each line with the pass and the call (values from inside the box are never trusted) and appends the lines to
 ``<pass out>/box-opens.jsonl``. Without the variable, or when ``<n>`` is not an open pipe, nothing is installed.
 
-Line written: {"event": "open", "path": "/inputs/...", "mode": "r|w|a|x"}
+Lines written: {"event": "start"} once, when the hook is installed (so the host can tell a working hook from a
+missing one, even in a cell that opens nothing), then {"event": "open", "path": "/inputs/...", "mode": "r|w|a|x"}
 
 Guarantees:
   * only paths under /inputs or /memory are written, after normalisation (``..`` and ``//`` resolved; a relative
@@ -174,6 +175,9 @@ def install(environ=None, state=None):
         write = pipe_writer(int(target[3:]))
         if write is None:
             return False
+        write(
+            b'{"event": "start"}\n',
+        )  # the hook is live: the host counts a cell without it as unmeasured
         sys.addaudithook(make_hook(write, state=state))
         return True
     except Exception:
