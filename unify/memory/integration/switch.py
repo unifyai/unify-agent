@@ -672,9 +672,9 @@ LIBRARY_POOL = "UNIFY_MEMORY_LIBRARY_POOL"
 #: ``on`` gives the library writer and the curator the ``write`` and ``edit`` file tools on /memory
 #: (edit_tools.py); ``off``: neither tool exists and every prompt is as before.
 LIBRARY_EDIT_TOOLS = "UNIFY_MEMORY_LIBRARY_EDIT_TOOLS"
-#: Off by default: ``on`` compacts the memory agents' conversations (writer, curator, helpers) as the agent loop
-#: compacts its own (writer_pass.compact_by_summary: its trigger, summary and restart, over each agent's own
-#: route); ``off``: the conversation is never changed.
+#: On by default (also when empty): the memory agents (writer, curator, helpers) compact their conversations as the
+#: agent loop compacts its own (writer_pass.compact_by_summary: the same trigger, summary and restart, over each
+#: agent's own route); ``off``: the conversation is never changed.
 LIBRARY_COMPACT = "UNIFY_MEMORY_LIBRARY_COMPACT"
 #: The former reading rule. Finish never waits on reading: empty and ``optional`` are accepted and change nothing;
 #: ``required`` (the removed rule) is refused, so a configuration that still asks for it fails loudly at start-up.
@@ -949,8 +949,9 @@ def library_actor_index(settings: Any) -> str:
 
 
 def parse_library_compact(v: Any) -> str:
-    """``UNIFY_MEMORY_LIBRARY_COMPACT``: ``off`` (also for empty) or ``on``."""
-    return _on_off(LIBRARY_COMPACT, v)
+    """``UNIFY_MEMORY_LIBRARY_COMPACT``: ``on`` (also for empty: every agent compacts under the one shared rule) or
+    ``off``."""
+    return _on_off(LIBRARY_COMPACT, _stripped(v) or "on")
 
 
 def library_compact(settings: Any) -> bool:
