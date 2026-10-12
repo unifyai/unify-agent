@@ -190,11 +190,11 @@ async def test_a_refused_call_raises_in_the_cell(in_code):
     model = ScriptedModel(actor=[reply(calls=[code(probe)]), reply("done")])
     assert await _act(model, "Read two files.") == "done"
     shown = _tool_results(model.calls[1])
-    assert "Traceback (most recent call last)" not in shown.split("REFUSED")[0], _why(model)
     assert "REFUSED outside_roots" in shown and "/etc/passwd is outside /workspace" in shown, shown[:2000]
     assert "REFUSED unreadable" in shown and "READ /workspace/.env" not in shown
-    # uncaught, the refusal is the cell's error, as its text
-    assert "Refused" in shown and ENV_SECRET not in shown
+    # uncaught, the refusal is the cell's error, with its text
+    assert "tools.Refused: refused: /etc/passwd is outside /workspace" in shown, _why(model)
+    assert ENV_SECRET not in shown
     _assert_ended(in_code["opened"])
 
 
@@ -299,3 +299,51 @@ def test_the_event_file_is_created_new_and_never_through_a_link(tmp_path):
     fresh.append({"event": "tool_call", "call": 1})
     lines = (tmp_path / "requests" / "r2" / "tool-events.jsonl").read_text().splitlines()
     assert [json.loads(x)["call"] for x in lines] == [0, 1]
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(300)
+async def test_fresh_cell_state_starts_every_cell_in_a_new_interpreter(in_code, monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "fresh")
+    model = ScriptedModel(
+        actor=[
+            reply(calls=[code("kept = 1\nprint('SET')")]),
+            reply(calls=[code("print('HAS', 'kept' in dir())")]),
+            reply("done"),
+        ],
+    )
+    assert await _act(model, "Twice.") == "done"
+    assert "HAS False" in _tool_results(model.calls[2]), _why(model)
+    _assert_ended(in_code["opened"])
+
+
+def _session(tmp_path, **kw):
+    from types import SimpleNamespace
+
+    return in_code_tools.InCodeTools(
+        agent="actor",
+        name="root",
+        record=SimpleNamespace(),
+        workspace_root=str(tmp_path),
+        shadow={},
+        cell_limit_s=None,
+        events_folder=tmp_path / "events",
+        **kw,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_end_awaits_work_a_call_started_or_cancels_it(tmp_path):
+    done = _session(tmp_path)
+    finished = asyncio.ensure_future(asyncio.sleep(0.05, result="stored"))
+    done.state.host_tasks.add(finished)
+    await done.close(completed=True)
+    assert finished.done() and finished.result() == "stored"
+
+    stopped = _session(tmp_path)
+    forever = asyncio.ensure_future(asyncio.sleep(3600))
+    stopped.state.host_tasks.add(forever)
+    await stopped.close(completed=False)
+    assert forever.cancelled()
+    assert stopped.closed and not stopped.threads_alive()
