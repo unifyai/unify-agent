@@ -344,8 +344,8 @@ class GateResult:
     # library layout: one ``{"item", "adopts"}`` row per landed item, the proposals (staged files, helper output,
     # pool entries) its manifest entry says it came from; empty when nothing landed
     provenance: list[dict] = field(default_factory=list)
-    # library mode: the fixture provenance entries G1 verified (path -> {"sha256", "entry"}), persisted on merge
-    fixtures_verified: dict[str, dict] = field(default_factory=dict)
+    # library mode: the fixture provenance entries G1 verified (path -> (sha256, entry)), persisted on merge
+    fixtures_verified: dict[str, tuple[str, dict]] = field(default_factory=dict)
 
 
 def _failed(reason: str, check: str | None = None) -> GateResult:
@@ -735,8 +735,11 @@ class _Run:
     seed: bytes | None = None
     # library mode: the import graph of both versions (G3's behaviour scope; None in v2)
     graph: dict[str, set[str]] | None = None
-    # library mode: the fixture provenance entries G1 verified in this pass (path -> entry), persisted on merge
-    fixtures_verified: dict[str, dict] = field(default_factory=dict)
+    # library mode: the fixture provenance entries G1 verified in this pass (path -> (sha256, entry)), persisted on
+    # merge
+    fixtures_verified: dict[str, tuple[str, dict]] = field(default_factory=dict)
+    # library mode: each function's input fixtures (example_perturb.InputFixture), for stage 5's drawn inputs
+    input_fixtures: dict[str, list] = field(default_factory=dict)
     # library mode: the call records of the parent's suites on the parent's library (baseline), on the
     # candidate's library (regression run), and of the candidate's suites (suite path -> record; example_calls)
     calls_base: dict[str, Any] = field(default_factory=dict)
@@ -1138,8 +1141,8 @@ class Gate:
                         )
             if self._library_checks():
                 # fixture provenance this pass verified, for later passes (fixtures.ledger_for)
-                for path, v in sorted(res.fixtures_verified.items()):
-                    self.ev.add_fixture_provenance(path, v["sha256"], v["entry"], landed)
+                for path, (sha, entry) in sorted(res.fixtures_verified.items()):
+                    self.ev.add_fixture_provenance(path, sha, entry, landed)
             if self.surfacing == "catalogue" or self._library_layout:
                 # library mode: shapes per library id, frozen per commit for the actor's find (library_export)
                 self.ev.write_commit_shapes(landed, shapes)

@@ -267,7 +267,7 @@ class ExampleChecks:
         fx, run = self.part("fixtures"), self.run
         files = self._data_files(item)
         verified = dict(getattr(run, "fixtures_verified", {}) or {})
-        in_pass = {p: v["entry"] for p, v in verified.items() if p in files}
+        in_pass = {p: v[1] for p, v in verified.items() if p in files}
         stored = getattr(self.gate.ev, "fixture_provenance", None)
         ledger, notes = fx.ledger_for(
             files,
@@ -277,18 +277,22 @@ class ExampleChecks:
             self.gate._blob,
             self._package_episodes(item),
         )
+        notes = list(notes)
+        views = {p: fx.value_views(p, files[p], ledger[p], notes) for p in files if p in ledger}
         for n in notes:
             run.note(n)
-        views = {p: fx.value_views(p, files[p], ledger.get(p)) for p in files if p in ledger}
         return ledger, views
 
     def _pool(self, fixtures: list[Any]) -> tuple[list, bool]:
         fx = self.part("fixtures")
         covers = []
         for f in fixtures:
-            found = fx.source_action(f.entry, self._episode)
-            if found is not None:
-                covers.append(found)
+            entry = f.entry if isinstance(f.entry, dict) else {}
+            rows = entry.get("lines") if isinstance(entry.get("lines"), list) else [entry]
+            for row in rows:
+                found = fx.source_action(row, self._episode)
+                if found is not None:
+                    covers.append(found)
         if not covers:
             return [], False
         return self.gate._pool(self.run, covers)
@@ -330,7 +334,12 @@ class ExampleChecks:
         rec = self._verification(item)
         by_key = {c.key: c for c in calls}
         ledger, views = self._ledger(item)
-        inputs = perturb.input_fixtures(item, calls, views, ledger, run.c_tree)
+        notes: list[str] = []
+        inputs = perturb.input_fixtures(item, calls, views, ledger, run.c_tree, load=self._episode, notes=notes)
+        for n in notes:
+            run.note(n)
+        # stage 5 draws recorded inputs of the input fixtures' families (qa)
+        run.input_fixtures[item] = list(inputs)
         pool, capped = self._pool(inputs)
         from .held_out import seen_actions
 
@@ -350,19 +359,23 @@ class ExampleChecks:
             deadline=deadline,
         )
         derived = dict(getattr(verdict, "derived", {}) or {})
-        ground = {c.key: evidence.grounding(c, views, derived.get(c.key, {})) for c in calls}
+        ground = evidence.groundings(calls, views, derived)
         accepted = [c for c in calls if c.outcome == "returned"]
+        # with fixture values: a returned call with a copied or derived argument (the quoted example, the docstring)
         grounded: set[CallKey] = set()
+        # and every structured argument grounded too (the examples rule; scalar literals are allowed)
+        examples_ok: set[CallKey] = set()
         literal: set[str] = set()
         for c in accepted:
             g = ground.get(c.key, {})
             kinds = {a.name: getattr(g.get(a.name), "kind", "literal") for a in c.args}
             if not any(k in GROUNDED_KINDS for k in kinds.values()):
                 continue
+            grounded.add(c.key)
             if all(kinds[a.name] in GROUNDED_KINDS or not self._structured(a) for a in c.args):
-                grounded.add(c.key)
+                examples_ok.add(c.key)
                 literal |= {a.name for a in c.args if kinds[a.name] not in GROUNDED_KINDS}
-        if not grounded:
+        if not examples_ok:
             run.fail(
                 "G2",
                 f"[examples:grounded] {item}: no call of it in its tests returns on fixture values ({len(calls)} "
@@ -392,8 +405,8 @@ class ExampleChecks:
         for r in reasons:
             run.fail("G2", r, item)
         if self._edited(item):
-            self._lint(item, evidence.lint_values(calls, ground))
-            self._rule(item, evidence.rule_episodes({k: ground[k] for k in grounded}))
+            self._lint(it, calls, ground)
+            self._rule(item, evidence.rule_episodes(ground, calls))
             self._docstring(it, calls, grounded)
         view = self.part("example_view")
         doc = docstring_of(run.c_tree, item)
@@ -412,7 +425,7 @@ class ExampleChecks:
                 "accepted": len(accepted),
                 "refused": sum(1 for c in calls if c.outcome == "refused"),
                 "raised": len(raised),
-                "grounded_calls": len(grounded),
+                "grounded_calls": len(examples_ok),
                 "episodes": list(fields.get("episodes", [])),
                 "fixtures": list(fields.get("fixtures", [])),
                 "literal_args": sorted(literal),
@@ -427,7 +440,15 @@ class ExampleChecks:
             c = by_key.get(key)
             return _where(c) if c is not None else key_text(key)
 
-        for key, fixture, fld in list(getattr(verdict, "refused", []))[:MAX_NAMED]:
+        # the perturbation module renders its own refusal texts; tuples are rendered here only without them
+        rendered = getattr(verdict, "reasons", None)
+        for reason in rendered or []:
+            run.fail("G2", reason, item)
+        own = rendered is None
+        refused = list(getattr(verdict, "refused", []))[:MAX_NAMED] if own else []
+        special = list(getattr(verdict, "special", []))[:MAX_NAMED] if own else []
+        unjudged = list(getattr(verdict, "unjudged", []))[:MAX_NAMED] if own else []
+        for key, fixture, fld in refused:
             run.fail(
                 "G2",
                 f"[examples:perturbed-refused] {item} refuses fixture values it accepted unchanged: with {fld} of "
@@ -435,7 +456,7 @@ class ExampleChecks:
                 "MemoryInputError; refuse inputs by their shape, not by values the recording happened to hold",
                 item,
             )
-        for key, fixture, fld, name in list(getattr(verdict, "special", []))[:MAX_NAMED]:
+        for key, fixture, fld, name in special:
             run.fail(
                 "G2",
                 f"[examples:special-cased] {item} handles {fixture} only for its recorded values: with {fld} "
@@ -443,7 +464,7 @@ class ExampleChecks:
                 "returned before",
                 item,
             )
-        for why in list(getattr(verdict, "unjudged", []))[:MAX_NAMED]:
+        for why in unjudged:
             run.fail(
                 "G2",
                 f"[examples:unjudged] {item}: the check with unseen fixture values did not complete ({why}); a "
@@ -469,49 +490,51 @@ class ExampleChecks:
         run = self.run
         return item in run.c_bodies and run.p_bodies.get(item, ("", ""))[:2] != run.c_bodies[item][:2]
 
-    def _lint(self, item: str, values: list[Any]) -> None:
-        from .code_lint import LINT_MIN, literal_problems, varying_values
+    def _lint(self, it: Any, calls: list[ExampleCall], ground: dict) -> None:
+        """The literal lint on an added or changed function, over its grounded arguments' values and its typed
+        ``episode`` covers' parameters."""
+        from .code_lint import LINT_MIN
         from .fixtures import module_path
 
-        run = self.run
-        if len(values) < 2:
-            run.note(f"G2 literal lint: {item} has fewer than 2 recorded inputs, so nothing varies yet")
-            return
+        run, item = self.run, it.item
         try:
             source = (run.c_tree / module_path(item)).read_bytes()
         except OSError:
             return  # an absent module is refused elsewhere
+        extra = [c.params for c in getattr(it, "typed_covers", []) if c.type == "episode" and c.params]
         cfg = getattr(self.gate, "library_mode", None)
-        lint_min = getattr(cfg, "lint_min", LINT_MIN)
-        found = literal_problems(source, item.split(":", 1)[1], varying_values(values), lint_min=lint_min)
-        for line, what in found[:MAX_NAMED]:
-            run.fail(
-                "G2",
-                f"{item} line {line}: a {what} literal equals a value that varies across its recorded inputs; "
-                "make it a parameter",
-                item,
-            )
+        reasons, notes = self.part("example_evidence").lint(
+            item,
+            source,
+            calls,
+            ground,
+            extra=extra,
+            lint_min=getattr(cfg, "lint_min", LINT_MIN),
+        )
+        for r in reasons:
+            run.fail("G2", r, item)
+        for n in notes:
+            run.note(n)
 
     def _rule(self, item: str, episodes: set[str]) -> None:
         """An added or changed function that replaces a computed value under a condition needs examples from
         ``RULE_EPISODES`` episodes."""
-        from .gate import RULE_EPISODES
-
         run = self.run
         found = [i for i in (run.c_report.items if run.c_report else []) if i.item_id == item]
         if not found:
             return  # an absent item (or an unreadable module) is refused elsewhere
         info = found[0]
-        if info.rule_unchecked:
-            run.note(f"G2 rule check: {item} is too large to analyse; not checked")
-        elif info.rule_line and len(episodes) < RULE_EPISODES:
-            run.fail(
-                "G2",
-                f"{item} replaces a value it computed from its input under a condition (line {info.rule_line} of "
-                f"{info.path}); a function that encodes such a rule needs examples from at least {RULE_EPISODES} "
-                "episodes",
-                item,
-            )
+        reasons, notes = self.part("example_evidence").rule_problems(
+            item,
+            path=info.path,
+            rule_line=info.rule_line,
+            unchecked=bool(info.rule_unchecked),
+            episodes=episodes,
+        )
+        for r in reasons:
+            run.fail("G2", r, item)
+        for n in notes:
+            run.note(n)
 
     def _docstring(self, it: Any, calls: list[ExampleCall], grounded: set[CallKey]) -> None:
         view = self.part("example_view")

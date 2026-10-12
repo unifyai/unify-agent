@@ -78,6 +78,8 @@ CROSS_CASES = (
 )
 # the procedure re-runs of the behaviour check, bounded like v2's (held_out.OUTPUTS_BUDGET_S)
 BEHAVIOUR_MAX_PROCEDURES = 16
+# a function's replay case file under tests/data/ (fixtures.REPLAY_SUFFIX), verified by replay, not by its bytes
+REPLAY_SUFFIX = ".replay.jsonl"
 OUTPUT_VIEW_BYTES = (
     4000  # the head of a test run's output kept in memory and quoted (explicit, marked)
 )
@@ -326,6 +328,7 @@ class LibraryChecks:
         raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
         entries = raw.get("fixtures") if isinstance(raw.get("fixtures"), dict) else {}
         index: HashIndex | None = None
+        replays: dict[str, bytes] = {}
         for p in run.changed:
             if (
                 p not in run.c_files
@@ -344,14 +347,14 @@ class LibraryChecks:
                 )
                 continue
             data = (run.c_tree / p).read_bytes()
+            if p.endswith(REPLAY_SUFFIX):
+                replays[p] = data  # verified by replaying its instances again, not by its bytes
+                continue
             problem = verify(p, data, entries.get(p), self.ep, self.gate._blob)
             if problem is None:
                 if isinstance(entries.get(p), dict):
                     # verified this pass: the examples checks' provenance, persisted on merge
-                    run.fixtures_verified[p] = {
-                        "sha256": hashlib.sha256(data).hexdigest(),
-                        "entry": entries[p],
-                    }
+                    run.fixtures_verified[p] = (hashlib.sha256(data).hexdigest(), entries[p])
                 continue
             if entries.get(p) is None:
                 if index is None:
@@ -366,6 +369,28 @@ class LibraryChecks:
                 if hits:
                     problem += f" (its bytes equal source {hits[0][1]} of {hits[0][0]}: make it with fixture())"
             run.fail("G1", f"fixture provenance: {problem}", owners)
+        if replays:
+            self._replays(raw, replays)
+
+    def _replays(self, raw: dict, replays: dict[str, bytes]) -> None:
+        """New or changed replay case files: their instances are replayed again (:func:`.replay_verify.reverify`);
+        a file whose every line verifies is verified provenance this pass, any other is refused."""
+        from . import replay_verify
+
+        run = self.run
+        replaces_of = {
+            r["item"]: r["replaces"]
+            for r in (raw.get("items") if isinstance(raw.get("items"), list) else [])
+            if isinstance(r, dict) and isinstance(r.get("item"), str) and isinstance(r.get("replaces"), list)
+        }
+        scratch = run.tmp / "replay-reverify"
+        scratch.mkdir(parents=True, exist_ok=True)
+        found, reasons = replay_verify.reverify(self.ep, replays, replaces_of, run.c_tree, scratch=scratch)
+        for p, entry in sorted(found.items()):
+            run.fixtures_verified[p] = (hashlib.sha256(replays[p]).hexdigest(), entry)
+        owners = sorted({o for p in replays for o in (self._owners(p) or [])})
+        for r in reasons:
+            run.fail("G1", r, owners or None)
 
     # -- G2 -------------------------------------------------------------------------------------------------
     def effects(self) -> None:

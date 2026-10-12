@@ -58,20 +58,21 @@ class _Fakes:
         self.episodes = ["e1", "e2"]
         self.problems: list[str] = []
         self.descriptors: list[dict] = []
+        self.inputs: list = []
 
     # fixtures
     def ledger_for(self, files, in_pass, stored, load, blob, episodes):
         return {p: {"kind": "copy"} for p in files}, []
 
-    def value_views(self, path, data, entry):
+    def value_views(self, path, data, entry, notes=None):
         return {}
 
     def source_action(self, entry, load):
         return None
 
     # perturbation
-    def input_fixtures(self, item, calls, views, ledger, tree):
-        return []
+    def input_fixtures(self, item, calls, views, ledger, tree, *, load=None, notes=None):
+        return list(self.inputs)
 
     def check(self, item, **kw):
         self.check_kw = kw
@@ -84,11 +85,17 @@ class _Fakes:
     def evidence_check(self, item, calls, ground, typed):
         return [], {"episodes": list(self.episodes), "fixtures": [GRID]}
 
-    def lint_values(self, calls, ground):
-        return []
+    def groundings(self, calls, views, derived):
+        return {c.key: self.grounding(c, views, derived.get(c.key, {})) for c in calls}
 
-    def rule_episodes(self, ground):
+    def lint(self, item, source, calls, ground, *, extra=(), lint_min=3):
+        return [], [f"G2 literal lint: {item} has fewer than 2 recorded inputs, so nothing varies yet"]
+
+    def rule_episodes(self, ground, calls=None):
         return set(self.episodes)
+
+    def rule_problems(self, item, *, path, rule_line, unchecked, episodes):
+        return [], []
 
     # view
     def pick_example(self, item, calls, grounded, named, tree):
@@ -464,3 +471,15 @@ def test_an_effect_comes_from_episode_covers_only():
     assert derive_effect([Cover("w", "episode", runner="worktree")], episodes.get) == "write"
     assert derive_effect([Cover("w", "cell", index=0)], episodes.get) is None
     assert derive_effect([], episodes.get) is None
+
+
+def test_rendered_perturbation_reasons_are_filed_as_they_are_and_input_fixtures_kept_for_stage_5(tmp_path):
+    fakes = _Fakes()
+    fakes.kinds = {"grid": "copied"}
+    fakes.inputs = [SimpleNamespace(path=GRID, data=b"[[0, 1]]", entry={"kind": "copy"})]
+    fakes.verdict.reasons = ["[examples:unjudged] rendered by the perturbation check"]
+    fakes.verdict.unjudged = ["budget"]
+    ex, run, _, _ = _checks(tmp_path, [_call(_arg("grid", [[0, 1]]))], fakes=fakes)
+    ex.judge()
+    assert _reasons(run) == ["[examples:unjudged] rendered by the perturbation check"]
+    assert run.input_fixtures == {ITEM: fakes.inputs}

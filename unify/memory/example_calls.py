@@ -269,7 +269,6 @@ MAX_OPENED = 2000
 MAX_STACK = 400
 _GENERATOR_FLAGS = inspect.CO_GENERATOR | inspect.CO_COROUTINE | inspect.CO_ASYNC_GENERATOR
 _MISSING = object()
-_NOT_PLAIN = (type, types.ModuleType, types.FunctionType, types.BuiltinFunctionType, types.MethodType)
 
 STATE = {
     "out": None,
@@ -304,48 +303,33 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
-def _key(k):
-    if isinstance(k, str):
-        return k
-    if k is None or isinstance(k, (bool, int, float)):
-        return json.dumps(k)  # the key JSON itself would write
-    raise Opaque()
-
-
-def _plain(v):
-    if isinstance(v, _NOT_PLAIN):
-        return False
-    try:
-        d = object.__getattribute__(v, "__dict__")
-    except Exception:
-        return False
-    return type(d) is dict
-
-
 def normalise(v, depth=0):
-    """The JSON value whose canonical text digests *v*; raises Opaque for a value without one."""
+    """The JSON value whose canonical text digests *v*: the host's ``fixtures.normalise``, copied (the plugin is
+    standalone). Raises Opaque for a value without one."""
+    if depth > MAX_OBJECT_DEPTH:
+        raise Opaque()
     if v is None or isinstance(v, (bool, int, float, str)):
         return v
     if isinstance(v, (list, tuple)):
         return [normalise(x, depth + 1) for x in v]
+    if isinstance(v, (set, frozenset)):
+        return sorted((normalise(x, depth + 1) for x in v), key=canonical)
     if isinstance(v, dict):
         out = {}
         for k, x in v.items():
-            kk = _key(k)
-            if kk in out:
+            if not isinstance(k, str):
                 raise Opaque()
-            out[kk] = normalise(x, depth + 1)
+            out[k] = normalise(x, depth + 1)
         return out
-    if isinstance(v, (set, frozenset)):
-        return sorted((normalise(x, depth + 1) for x in v), key=canonical)
     if isinstance(v, (bytes, bytearray)):
         return {"__bytes__": hashlib.sha256(bytes(v)).hexdigest()}
     if isinstance(v, decimal.Decimal):
         return str(v)
     if isinstance(v, (datetime.date, datetime.datetime)):
         return v.isoformat()
-    if depth <= MAX_OBJECT_DEPTH and _plain(v):
-        return {"__type__": type(v).__name__, "vars": normalise(dict(vars(v)), depth + 1)}
+    attrs = getattr(v, "__dict__", None)
+    if isinstance(attrs, dict):
+        return {"__type__": type(v).__name__, "vars": normalise(dict(attrs), depth + 1)}
     raise Opaque()
 
 

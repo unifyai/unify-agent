@@ -151,13 +151,15 @@ def test_argument_digests_are_the_canonical_digests_of_their_normal_form():
         (datetime.date(2026, 1, 2), "2026-01-02"),
         (datetime.datetime(2026, 1, 2, 3, 4), "2026-01-02T03:04:00"),
         (_Point(1, [2]), {"__type__": "_Point", "vars": {"x": 1, "y": [2]}}),
-        ({1: "x"}, {"1": "x"}),
     ]
     for value, normal in cases:
         rec = plug.describe("v", value)
         assert rec["sha"] == _digest(normal), value
         assert rec["json"] == normal and rec["cut"] is False
         assert rec["type"] == type(value).__name__
+    assert plug.describe("v", {1: "x"})["sha"] is None  # a key that is not text has no canonical form
+    deep = [[[[[[[[[[1]]]]]]]]]]
+    assert plug.describe("v", deep)["sha"] is None  # deeper than the bound, as the host's normal form
     opaque = plug.describe("v", object())
     assert opaque["sha"] is None and opaque["json"] is None and opaque["type"] == "object"
     cyclic = []
@@ -166,6 +168,34 @@ def test_argument_digests_are_the_canonical_digests_of_their_normal_form():
     big = list(range(20000))
     rec = plug.describe("v", big)
     assert rec["cut"] is True and rec["json"] is None and rec["sha"] == _digest(big)
+
+
+def test_plugin_digests_equal_the_hosts_value_digest_of_its_normal_form():
+    """The digest contract: an argument's sha is ``fixtures.value_digest(fixtures.normalise(v))``."""
+    import datetime
+    import decimal
+
+    from unify.memory import fixtures
+
+    if not hasattr(fixtures, "value_digest") or not hasattr(fixtures, "normalise"):
+        pytest.skip("the host's digest of a normal form is not on this branch")
+    plug = _plugin_module()
+    values = [
+        {"b": [1, 2], "a": {"c": None}},
+        [[0, 1], [1, 1]],
+        (1, (2, 3)),
+        {3, 1, 2},
+        b"ab",
+        decimal.Decimal("1.50"),
+        datetime.date(2026, 1, 2),
+        _Point(1, [2]),
+        {1: "x"},
+    ]
+    for v in values:
+        normal = fixtures.normalise(v)
+        unnormal = not isinstance(normal, (dict, list, str, int, float, bool, type(None)))
+        want = None if unnormal else fixtures.value_digest(normal)
+        assert plug.describe("v", v)["sha"] == want, v
 
 
 def test_outcomes_and_test_side_frames_are_classified_by_name_and_place():
