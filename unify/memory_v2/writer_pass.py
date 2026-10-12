@@ -1884,7 +1884,9 @@ class WriterPass:
         # (no helper lane: delegate is not offered; helper_refusal says why)
         self.helper_turn, self.helper_refusal = helper_turn, helper_refusal
         self._helper_rows: list[dict] = []
-        self._delegate_ctx: Any = None  # the current pass run's helpers.DelegateContext, made at its first delegate
+        self._delegate_ctx: Any = (
+            None  # the current pass run's helpers.DelegateContext, made at its first delegate
+        )
         self.load, self.turn, self.cfg = load, model_turn, config
         self.redactor = redactor  # for the transcript: the run's registered secrets
         # the last run's message list, kept for :meth:`transcript`
@@ -2252,7 +2254,8 @@ class WriterPass:
         spend: Any,
     ) -> dict[int, str]:
         """Every ``delegate`` call of this turn from index *first* up to the turn's ``finish`` (if any), run
-        together (:func:`.helpers.handle_turn`); call index -> reply. Unreadable arguments are left to the loop."""
+        together (:func:`.helpers.handle_turn`); call index -> reply. Unreadable arguments are left to the loop.
+        """
         from . import helpers as _helpers
 
         picked: list[tuple[int, dict]] = []
