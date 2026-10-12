@@ -92,6 +92,7 @@ HELPER_BRIEF = (
     "reads it.\n"
     "- `read` and `grep` read /inputs (the named episodes' records under /inputs/episodes/, shared request blocks "
     "under /inputs/shared/) and /memory (the library as the writer sees it). Both are read-only.\n"
+    "{similar}"
     "- `execute_code` runs Python in a fresh process in your own box: no network, /inputs and /memory read-only, "
     "and /work, private to you and writable, as the working directory. Only files persist between calls. "
     f"/work may hold at most {WORK_ENTRIES} files, each at most {WORK_FILE_BYTES // 1024**2} MiB, "
@@ -116,6 +117,17 @@ HELPER_BRIEF = (
     "an empty list of claims.\n"
     "- Your model calls and your box share the writer's wall clock; the first message says how much is left."
 )
+
+#: The brief's line for ``similar``, present only when the helper gets the tool (the pass has a similar-code index).
+SIMILAR_LINE = (
+    "- `similar(episode, cell)` or `similar(code)` finds the recorded episodes and cells that contain the same "
+    "code, compared with variable names and literal values normalised.\n"
+)
+
+
+def helper_brief(similar: bool) -> str:
+    """The helper's system message; it names exactly the tools :func:`helper_tools` gives for *similar*."""
+    return HELPER_BRIEF.replace("{similar}", SIMILAR_LINE if similar else "")
 
 
 # --- tool specs ----------------------------------------------------------------------------------------------
@@ -990,7 +1002,7 @@ async def _run_helper(
     tools = helper_tools(similar=ctx.similar is not None)
     left = ctx.deadline - time.monotonic()
     messages: list[dict] = [
-        {"role": "system", "content": HELPER_BRIEF},
+        {"role": "system", "content": helper_brief(ctx.similar is not None)},
         {
             "role": "user",
             "content": (

@@ -527,6 +527,28 @@ def test_the_done_spec_asks_for_sources_and_the_briefs_say_claims_are_untrusted(
     assert "cannot launch helpers" in helpers.SPEC.description
 
 
+def test_the_helper_brief_names_exactly_the_tools_the_helper_gets():
+    for similar in (True, False):
+        brief = helpers.helper_brief(similar)
+        names = {t["function"]["name"] for t in helpers.helper_tools(similar=similar)}
+        assert "{similar}" not in brief
+        for name in (
+            "overview",
+            "read_episode",
+            "read",
+            "grep",
+            "similar",
+            "execute_code",
+            "stage",
+            "done",
+            "delegate",
+        ):
+            assert (f"`{name}(" in brief or f"`{name}`" in brief) == (name in names), (
+                similar,
+                name,
+            )
+
+
 def test_staging_again_replaces_and_the_quota_is_stated(tmp_path, monkeypatch):
     st = helpers._Staging(tmp_path / "s" / "call-0")
     assert st.stage("notes.md", "one") == "staged notes.md (3 bytes)"

@@ -15,7 +15,16 @@ from unify.settings import SETTINGS
 from tests.memory_v2.test_writer_pass import Turns, _call, _writer
 from tests.memory_v2.test_writer_library_tools import EPS
 
-CURATE_TOOLS = {"read", "grep", "overview", "read_episode", "fixture", "execute_code", "check", "finish"}
+CURATE_TOOLS = {
+    "read",
+    "grep",
+    "overview",
+    "read_episode",
+    "fixture",
+    "execute_code",
+    "check",
+    "finish",
+}
 
 
 def test_the_tool_json_is_the_spec_render():
@@ -33,7 +42,10 @@ def test_the_tool_json_is_the_spec_render():
 
 def test_the_curator_gets_only_its_own_tools():
     for pool_on in (False, True):
-        got = {t["function"]["name"] for t in writer_tools(library_mode=True, pool=pool_on, role="curate")}
+        got = {
+            t["function"]["name"]
+            for t in writer_tools(library_mode=True, pool=pool_on, role="curate")
+        }
         assert got == CURATE_TOOLS
     row = agent_profiles.profile("curator")
     assert set(row["tools"]) == CURATE_TOOLS
@@ -44,7 +56,7 @@ def test_the_curator_gets_only_its_own_tools():
 def test_every_profile_tool_exists_in_the_spec_and_rows_have_the_interface_shape():
     known = {s.name for s in tool_spec.registry()}
     agents = [r["agent"] for r in agent_profiles.AGENT_PROFILES]
-    assert agents == ["actor", "fork", "writer", "curator", "helper", "gate"]
+    assert agents == ["actor", "fork", "writer", "curator", "helper", "gate", "harness"]
     modes = {r["agent"]: r["mode"] for r in agent_profiles.AGENT_PROFILES}
     assert modes == {
         "actor": "consumer",
@@ -53,19 +65,41 @@ def test_every_profile_tool_exists_in_the_spec_and_rows_have_the_interface_shape
         "curator": "curate",
         "helper": "helper",
         "gate": "repair",
+        "harness": "inputs",
     }
     keys = {
-        "agent", "mode", "instructions", "tools", "mounts", "denied", "consumes", "produces", "limits",
-        "inlined", "capabilities", "absent_paths", "expectations", "fields", "emits", "pointers",
+        "agent",
+        "mode",
+        "instructions",
+        "tools",
+        "mounts",
+        "denied",
+        "consumes",
+        "produces",
+        "limits",
+        "inlined",
+        "capabilities",
+        "absent_paths",
+        "expectations",
+        "fields",
+        "emits",
+        "pointers",
     }
     for row in agent_profiles.AGENT_PROFILES:
         assert keys <= set(row), row["agent"]
         assert all(m["mode"] in ("ro", "rw") for m in row["mounts"])
-        if row["agent"] == "fork":  # the actor's schemas, kept for the prompt cache and never executed
+        if (
+            row["agent"] == "fork"
+        ):  # the actor's schemas, kept for the prompt cache and never executed
             assert row["tools_executed"] is False
             continue
         for name in row["tools"]:
-            assert name in known or name in ("similar", "delegate", "stage", "done"), name
+            assert name in known or name in (
+                "similar",
+                "delegate",
+                "stage",
+                "done",
+            ), name
         assert not set(row["tools"]) & set(row["denied"])
         for exp in row["expectations"]:
             assert exp["tool"] in row["tools"] or exp["tool"].startswith("memory."), exp
@@ -76,7 +110,18 @@ def test_every_profile_tool_exists_in_the_spec_and_rows_have_the_interface_shape
     # the spec's roles and the profiles agree: a spec tool for a role is named in that role's profile
     for agent, role in agent_profiles.SPEC_ROLE.items():
         spec_names = {s.name for s in tool_spec.tools_for(role, frozenset({"pool"}))}
-        assert spec_names == set(agent_profiles.tool_names(agent, frozenset({"pool"}))), agent
+        assert spec_names == set(
+            agent_profiles.tool_names(agent, frozenset({"pool"})),
+        ), agent
+
+
+def test_every_hand_off_has_a_producer_and_a_consumer():
+    rows = agent_profiles.AGENT_PROFILES
+    agents = {r["agent"] for r in rows}
+    produced = {(p["artifact"], p["consumer"]) for r in rows for p in r["produces"]}
+    consumed = {(c["artifact"], r["agent"]) for r in rows for c in r["consumes"]}
+    assert consumed == produced
+    assert {c for _, c in produced} <= agents
 
 
 def test_every_refusal_form_renders_and_every_described_parameter_is_in_the_schema():
@@ -135,7 +180,11 @@ def test_pool_list_filter_show(tmp_path):
 def test_pool_decide_writes_the_manifest_block_and_open_undoes_it(tmp_path):
     a, b, pdir, box = _staged_pool(tmp_path)
     wt.write_manifest(box, {"items": [], "summary": "s"})
-    got = wt.pool({"op": "decide", "id": a, "decision": "retired", "reason": "never needed"}, pdir, box)
+    got = wt.pool(
+        {"op": "decide", "id": a, "decision": "retired", "reason": "never needed"},
+        pdir,
+        box,
+    )
     assert got.status == "ok", got.text
     man = json.loads((box / ".pass/manifest.json").read_text())
     assert man["pool"] == {"retired": {a: "never needed"}} and man["summary"] == "s"
@@ -144,7 +193,13 @@ def test_pool_decide_writes_the_manifest_block_and_open_undoes_it(tmp_path):
     man = json.loads((box / ".pass/manifest.json").read_text())
     assert man["pool"] == {"superseded": {a: b}}
     got = wt.pool(
-        {"op": "decide", "id": "new", "decision": "defer", "reason": "later", "episodes": ["e3"]},
+        {
+            "op": "decide",
+            "id": "new",
+            "decision": "defer",
+            "reason": "later",
+            "episodes": ["e3"],
+        },
         pdir,
         box,
     )
@@ -159,9 +214,17 @@ def test_pool_decide_writes_the_manifest_block_and_open_undoes_it(tmp_path):
     # refusals name the domain problem
     bad = wt.pool({"op": "decide", "id": a, "decision": "retired"}, pdir, box)
     assert bad.form == "bad_decision" and "needs a reason" in bad.text
-    bad = wt.pool({"op": "decide", "id": "new", "decision": "defer", "reason": "r"}, pdir, box)
+    bad = wt.pool(
+        {"op": "decide", "id": "new", "decision": "defer", "reason": "r"},
+        pdir,
+        box,
+    )
     assert bad.form == "bad_decision"
-    got = wt.pool({"op": "decide", "id": b, "decision": "merged", "target": "memory.x:f"}, pdir, box)
+    got = wt.pool(
+        {"op": "decide", "id": b, "decision": "merged", "target": "memory.x:f"},
+        pdir,
+        box,
+    )
     assert "lists no item 'memory.x:f' yet" in got.text
 
 
@@ -176,7 +239,9 @@ def test_every_call_is_one_tool_event_with_status_paths_and_usage(tmp_path):
             "tool_calls": [
                 _call("a", "read", {"path": "/inputs/batch_map.json"})["tool_calls"][0],
                 _call("b", "grep", {"pattern": "req"})["tool_calls"][0],
-                _call("c", "dismiss", {"episode": "e1", "reason": "x"})["tool_calls"][0],
+                _call("c", "dismiss", {"episode": "e1", "reason": "x"})["tool_calls"][
+                    0
+                ],
             ],
         },
         _call("d", "read_episode", {"episode": "e1", "parts": ["request"]}),
@@ -201,21 +266,35 @@ def test_every_call_is_one_tool_event_with_status_paths_and_usage(tmp_path):
         "ok",
         [{"path": "/inputs/batch_map.json", "mode": "read"}],
     )
-    assert a["usage"]["input"] == 100 and a["usage"]["output"] == 7 and a["usage"]["usd"] == "0.001"
+    assert (
+        a["usage"]["input"] == 100
+        and a["usage"]["output"] == 7
+        and a["usage"]["usd"] == "0.001"
+    )
     assert a["usage"]["cache_read"] is None  # unreported stays unknown
-    assert b["usage"] is None and c["usage"] is None  # usage is on the first call of a turn only
-    assert b["paths"] == [{"path": "/inputs", "mode": "search"}]  # grep's default scope, resolved
+    assert (
+        b["usage"] is None and c["usage"] is None
+    )  # usage is on the first call of a turn only
+    assert b["paths"] == [
+        {"path": "/inputs", "mode": "search"},
+    ]  # grep's default scope, resolved
     assert c["status"] == "refused" and c["refusal"]["form"] == "unknown_tool"
     assert c["refusal"]["text_bytes"] == len(model.outputs["c"].encode())
     assert "your tools: read, grep, overview, read_episode" in model.outputs["c"]
     assert d["paths"] == [{"path": "/episodes/e1/request", "mode": "read"}]
     assert e["status"] == "refused" and e["refusal"]["form"] == "unknown_episode"
     for r in rows:
-        assert r["event"] == "tool_call" and r["agent"] == "writer" and r["pass_id"] == "p1"
+        assert (
+            r["event"] == "tool_call"
+            and r["agent"] == "writer"
+            and r["pass_id"] == "p1"
+        )
         assert r["utc"].endswith("Z") and r["args_bytes"] > 0
     written = [
         json.loads(line)
-        for line in (tmp_path / "out" / "p1" / "tool-events.jsonl").read_text().splitlines()
+        for line in (tmp_path / "out" / "p1" / "tool-events.jsonl")
+        .read_text()
+        .splitlines()
     ]
     assert written == rows
 
@@ -228,7 +307,8 @@ def test_the_empty_turn_nudge_names_the_real_tools(tmp_path):
     nudges = [
         m["content"]
         for m in model.seen
-        if m.get("role") == "user" and str(m.get("content", "")).startswith("Use your tools: ")
+        if m.get("role") == "user"
+        and str(m.get("content", "")).startswith("Use your tools: ")
     ]
     assert nudges and "read_episode" in nudges[0] and "fixture" in nudges[0]
     assert "dismiss" not in nudges[0]

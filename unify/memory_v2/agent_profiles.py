@@ -59,6 +59,8 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "instructions": "unify.memory_v2.library_prompts:guide_library_mode",
         # memory.index / memory.show / memory.find are library functions called in cells, not tools
         "tools": [],
+        # what its guide names that it does in its own cells, not through memory tools
+        "in_code": ["memory.index", "memory.show", "memory.find", "grep", "file reads"],
         "mounts": [{"path": "<library scratch copy>", "mode": "rw"}],
         "denied": [
             "/inputs",
@@ -73,6 +75,21 @@ AGENT_PROFILES: tuple[dict, ...] = (
                 "artifact": "episode record",
                 "path": "<state>/episodes/<episode>",
                 "consumer": "writer",
+            },
+            {
+                "artifact": "episode record",
+                "path": "<state>/episodes/<episode>",
+                "consumer": "curator",
+            },
+            {
+                "artifact": "episode record",
+                "path": "<state>/episodes/<episode>",
+                "consumer": "helper",
+            },
+            {
+                "artifact": "episode record",
+                "path": "<state>/episodes/<episode>",
+                "consumer": "harness",
             },
             {
                 "artifact": "conversation",
@@ -132,7 +149,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
             {
                 "artifact": "staging",
                 "path": "<state>/memory-staging/<episode>/",
-                "consumer": "writer",
+                "consumer": "harness",
             },
         ],
         "limits": [
@@ -192,6 +209,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
             {"artifact": "episode record", "path": "read_episode"},
             {"artifact": "gate result", "path": "/inputs/gate"},
             {"artifact": "drafts", "path": "/inputs/drafts"},
+            {"artifact": "helper output", "path": "/inputs/helpers"},
         ],
         "produces": [
             {"artifact": "library item", "path": "/memory/memory/", "consumer": "gate"},
@@ -205,6 +223,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
                 "path": "/memory/.pass/fixtures.json",
                 "consumer": "gate",
             },
+            {"artifact": "task", "path": "delegate arguments", "consumer": "helper"},
         ],
         "limits": list(_PASS_LIMITS),
         "inlined": [
@@ -387,7 +406,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
     {
         "agent": "helper",
         "mode": "helper",
-        "instructions": "unify.memory_v2.analysts:run",
+        "instructions": "unify.memory_v2.helpers:helper_brief",
         # its own execute_code (in a box with /memory read-only and a private /work) and stage/done come with the
         # helper's own specs
         "tools": [
@@ -420,8 +439,8 @@ AGENT_PROFILES: tuple[dict, ...] = (
         ],
         "produces": [
             {
-                "artifact": "staging",
-                "path": "<state>/memory-helpers/<pass>/<call>/",
+                "artifact": "helper output",
+                "path": "<state>/memory-helpers/<pass>/<call>/ (the writer's /inputs/helpers/<call>/)",
                 "consumer": "writer",
             },
         ],
@@ -468,9 +487,11 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "mode": "repair",
         "instructions": "unify.memory_v2.repair:repair_message",
         "tools": [],
-        "mounts": [],
+        # it reads the candidate library copy, its manifest and fixture listing under /memory/.pass
+        "mounts": [{"path": "/memory", "mode": "ro"}],
         "denied": ["network"],
         "consumes": [
+            {"artifact": "library item", "path": "/memory/memory/"},
             {"artifact": "manifest", "path": "/memory/.pass/manifest.json"},
             {"artifact": "fixture listing", "path": "/memory/.pass/fixtures.json"},
         ],
@@ -480,7 +501,16 @@ AGENT_PROFILES: tuple[dict, ...] = (
                 "path": "/inputs/gate/result-<round>.md",
                 "consumer": "writer",
             },
-            {"artifact": "library item", "path": "library main", "consumer": "actor"},
+            {
+                "artifact": "gate result",
+                "path": "/inputs/gate/result-<round>.md",
+                "consumer": "curator",
+            },
+            {
+                "artifact": "library export",
+                "path": "library main, copied to <library scratch copy>",
+                "consumer": "actor",
+            },
         ],
         "limits": [{"limit": "time left for a check", "value": 60, "unit": "s"}],
         "inlined": [
@@ -492,6 +522,41 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "fields": ["manifest.fixtures", "manifest.adopts", "manifest.pool"],
         "emits": [],
         # it names its result file to the writer, who reads it with read
+        "pointers": [],
+    },
+    {
+        "agent": "harness",
+        "mode": "inputs",
+        "instructions": "unify.memory_v2.writer_pass:WriterPass._stage_inputs",
+        "tools": [],
+        "mounts": [{"path": "/inputs", "mode": "rw"}],
+        "denied": ["network"],
+        "consumes": [
+            {"artifact": "episode record", "path": "<state>/episodes/<episode>"},
+            {"artifact": "staging", "path": "<state>/memory-staging/<episode>/"},
+        ],
+        "produces": [
+            {
+                "artifact": "batch map",
+                "path": "/inputs/batch_map.json",
+                "consumer": "writer",
+            },
+            {"artifact": "staging", "path": "/inputs/staging", "consumer": "writer"},
+            {"artifact": "pool", "path": "/inputs/pool", "consumer": "writer"},
+            {"artifact": "drafts", "path": "/inputs/drafts", "consumer": "writer"},
+            {
+                "artifact": "curate inputs",
+                "path": "/inputs/curate",
+                "consumer": "curator",
+            },
+        ],
+        "limits": [],
+        "inlined": [],
+        "capabilities": ["stage each pass's inputs read-only for its agent"],
+        "absent_paths": [],
+        "expectations": [],
+        "fields": [],
+        "emits": [],
         "pointers": [],
     },
 )
