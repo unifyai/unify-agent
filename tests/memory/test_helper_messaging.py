@@ -368,7 +368,9 @@ def test_the_curators_delegate_wait_and_messages_work_the_same_way(tmp_path, fak
         got = await asyncio.wait_for(messaging.wait(pr, "curator"), 5)
         assert "call-0: @curator e1 overlaps e2" in got
         await helpers.result(ctx, "call-0")
-        assert "call-0 (done)" in messaging.messages(pr, "curator")
+        # the helper's end arrives on the record too, whether the wait above already took it or not
+        got += messaging.messages(pr, "curator")
+        assert "call-0 (done)" in got
         await messaging.close(pr, "the curator finished")
 
     asyncio.run(go())
@@ -635,3 +637,41 @@ def test_in_a_curate_pass_without_helpers_reply_and_stop_are_refused_with_stable
     info = {}
     asyncio.run(messaging.call(pr, "curator", "reply", {"agent": "call-0", "text": "hello"}, info))
     assert info == {"to": ["call-0"], "seq": 1}
+
+
+@needs_bwrap
+def test_a_helper_cell_imports_the_library_as_the_writer_sees_it(tmp_path):
+    code = "import memory, os\nprint(memory.__file__)\nprint(os.getcwd())\n"
+    model = Steps({"t": [_msg(_tc("x", "execute_code", {"code": code})), _done()]})
+    ctx = _ctx(tmp_path, model)
+    (ctx.library / "memory").mkdir()
+    (ctx.library / "memory" / "__init__.py").write_text("ITEMS = []\n")
+
+    async def go():
+        await helpers.handle({"task": "t", "episodes": ["e1"]}, ctx)
+        await helpers.result(ctx, "call-0")
+        await messaging.close(ctx.pass_record, "the writer finished")
+
+    asyncio.run(go())
+    out = model.outputs("t")["x"].splitlines()
+    assert out[:2] == ["/memory/memory/__init__.py", "/work"], out
+
+
+def test_a_helper_turn_records_its_message_keys_and_reasoning_summary():
+    from unify.memory.writer_pass import transcript_lines
+
+    turn = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [],
+        "provider_specific_fields": {"reasoning": "the area is w * h, so read cell 0"},
+    }
+    messages = [{"role": "system", "content": "brief"}, {"role": "user", "content": "task"}, turn]
+    label = {"agent": "helper", "helper": "call-0"}
+    lines = [json.loads(x) for x in transcript_lines(messages, "p1", label=label)]
+    (line,) = [x for x in lines if x.get("i") == 2]
+    assert line["helper"] == "call-0" and line["pass_id"] == "p1"
+    assert line["message_keys"] == ["content", "provider_specific_fields", "role", "tool_calls"]
+    assert line["reasoning_summary"] == "the area is w * h, so read cell 0"
+    plain = [json.loads(x) for x in transcript_lines(messages, "p1")]
+    assert all("message_keys" not in x and "reasoning_summary" not in x for x in plain)

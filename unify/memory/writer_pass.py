@@ -1173,6 +1173,30 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _reasoning_text(m: Mapping) -> str | None:
+    """The reasoning summary a provider returned on an assistant message, if any: ``reasoning_details`` summaries
+    and texts, ``reasoning_content``/``reasoning``, and the same under ``provider_specific_fields`` (with its
+    ``summary`` and ``thinking_blocks``). None when there is none."""
+    found: list[str] = []
+
+    def take(v: object) -> None:
+        if isinstance(v, str) and v.strip():
+            found.append(v)
+        elif isinstance(v, list):
+            for item in v:
+                if isinstance(item, dict):
+                    for key in ("summary", "text", "thinking"):
+                        take(item.get(key))
+                else:
+                    take(item)
+
+    psf = m.get("provider_specific_fields")
+    for src in (m, psf if isinstance(psf, Mapping) else {}):
+        for key in ("reasoning_details", "reasoning_content", "reasoning", "summary", "thinking_blocks"):
+            take(src.get(key))
+    return "\n".join(found) if found else None
+
+
 def transcript_lines(
     messages: list,
     pass_id: str,
@@ -1285,6 +1309,12 @@ def transcript_lines(
         elif i in originals and isinstance(m, dict):
             m = {**m, "content": originals[i]}
             extra["compacted"] = True
+        if label and isinstance(m, dict) and m.get("role") == "assistant":
+            # a helper's turn: the keys its message kept in the history, and the provider's reasoning summary
+            extra["message_keys"] = sorted(str(k) for k in m)
+            summary = _reasoning_text(m)
+            if summary is not None:
+                extra["reasoning_summary"] = _plain(_scrub(red.obj(summary)), string_chars)
         try:
             plain = _scrub(red.obj(json.loads(json.dumps(m, default=str))))
             # the first user message and the brief's name are kept whole; every other string is cut

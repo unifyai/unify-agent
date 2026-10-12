@@ -126,7 +126,7 @@ def _drafting(task_key="draft area"):
         task_key: [
             _msg(
                 _tc("o", "overview", {"episode": "e1"}),
-                _tc("r", "read", {"path": "/inputs/episodes/e1.json"}),
+                _tc("r", "read", {"path": "/task/episodes/e1.json"}),
             ),
             _msg(_tc("x", "execute_code", {"code": "print(6)"})),
             _msg(
@@ -309,7 +309,7 @@ def test_every_helper_tool_call_is_an_event(tmp_path, fake_box):
     assert rows[3]["paths"] == [
         {"path": "/inputs/helpers/call-0/candidates/area.py", "mode": "write"},
     ]
-    assert rows[1]["paths"] == [{"path": "/inputs/episodes/e1.json", "mode": "read"}]
+    assert rows[1]["paths"] == [{"path": "/task/episodes/e1.json", "mode": "read"}]
 
 
 def test_a_failing_helper_returns_a_clear_result_and_never_fails_the_pass(
