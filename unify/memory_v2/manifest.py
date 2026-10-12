@@ -1,4 +1,4 @@
-"""The pass manifest and the memory repo's layout policy, as the gate enforces them (spec §4, §7).
+"""The pass manifest and the memory repo's layout policy, as the gate enforces them.
 
 A consolidation pass writes ``.pass/manifest.json`` (never committed)::
 
@@ -97,9 +97,9 @@ import sys
 from dataclasses import dataclass, field
 from functools import lru_cache
 
-# Declared semantic types (spec F3a, D21): the only value constraints an environment function may hold, each a
+# Declared semantic types: the only value constraints an environment function may hold, each a
 # property of a type declared on a field in its manifest item (``field_types``), never inferred from observed
-# values. kind, low, high (None: unbounded). This list grows only by the lead's decision, never by a pass.
+# values. kind, low, high (None: unbounded). This list grows only by a reviewed code change, never by a pass.
 SEMANTIC_TYPES: dict[str, tuple[str, int | None, int | None]] = {
     "month": ("int", 1, 12),
     "day_of_month": ("int", 1, 31),
@@ -118,7 +118,7 @@ _FIELD_NAME_MAX = 200
 
 # Declared input forms: what an environment function's first parameter takes (``input`` in its manifest item,
 # and an ``Input: <form>`` line in its docstring). The gate's held-out check passes each covered input in this
-# form, and the index shows it. This list grows only by the lead's decision, never by a pass.
+# form, and the index shows it. This list grows only by a reviewed code change, never by a pass.
 INPUT_KINDS: dict[str, str] = {
     "path": "a path to a work-tree file",
     "text": "the text of a file or of an output",
@@ -126,7 +126,7 @@ INPUT_KINDS: dict[str, str] = {
     "observation": "a dialogue or tool observation value, as recorded",
     "env": "the environment object, such as `apis`",
 }
-# The consolidator rules name the forms from the one constant (they are embedded in Sol's brief verbatim).
+# The consolidator rules name the forms from the one constant (they are embedded in the writer's brief verbatim).
 if __doc__:
     __doc__ = __doc__.replace(
         "{input_forms}",
@@ -153,7 +153,7 @@ def describe_input_kinds() -> str:
     return ", ".join(f"{name} ({what})" for name, what in INPUT_KINDS.items())
 
 
-# Job functions (end-to-end code) are not expected in v0 (spec §4) and have no admitted location.
+# Job functions (end-to-end code) are not expected in v0 and have no admitted location.
 KINDS = ("env_function", "env_note", "workflow")
 TESTKIT = "unify_memory_testkit.py"
 
@@ -219,7 +219,7 @@ class ManifestItem:
         default_factory=dict,
     )  # field -> SEMANTIC_TYPES key
     input: str | None = None  # an INPUT_KINDS key; None: not declared
-    # memory v2.1: the typed covers (procedures.Cover: an actor cell, a work-tree diff or an episode procedure)
+    # library mode: the typed covers (procedures.Cover: an actor cell, a work-tree diff or an episode procedure)
     typed_covers: list = field(default_factory=list)
     # the proposals this item came from (:func:`adopt_ref`): staged files, helper output or pool entries
     adopts: list[str] = field(default_factory=list)
@@ -289,7 +289,7 @@ def forbidden(path: str) -> bool:
     return name in FORBIDDEN_NAMES or name.endswith(".pth")
 
 
-# Code the interpreter runs without a source the gate could read (review I4): bytecode and native extensions,
+# Code the interpreter runs without a source the gate could read: bytecode and native extensions,
 # under any ABI-tagged name (``x.cpython-312.pyc``, ``x.abi3.so``, ``x.pypy310-pp73-….so``).
 _COMPILED_SUFFIXES = tuple(
     sorted(
@@ -316,7 +316,7 @@ def root_shadowed() -> frozenset[str]:
 
 
 def unsafe_path(path: str) -> tuple[str, str] | None:
-    """``(check, reason)`` when *path* must never be extracted or run, else None (review I4).
+    """``(check, reason)`` when *path* must never be extracted or run, else None.
 
     Refused anywhere (G6): bytecode or native code, anything under ``__pycache__``, ``.pth`` files and the
     interpreter's start-up hooks (``sitecustomize``/``usercustomize`` under any suffix or as a package).
@@ -504,7 +504,7 @@ def _input(raw: object, item: str, kind: str) -> str | None:
 
 
 def _parse_library_mode(manifest: dict) -> Manifest:
-    """The memory v2.1 manifest (spec §4, §8.2): ``function`` items ``memory.<package>.<module>:<name>`` and
+    """The library-mode manifest: ``function`` items ``memory.<package>.<module>:<name>`` and
     ``note`` items ``notes/<topic>/<slug>.md``, tests under ``memory/<package>/tests/``, test helpers as
     ``support``, and covers that are action covers ``[episode, index]`` or typed covers (:mod:`.procedures`).
     The ``fixtures`` and ``tests_changed`` keys are read by the gate (:mod:`.library_checks`).
@@ -582,7 +582,7 @@ def _parse_library_mode(manifest: dict) -> Manifest:
         )
     out.support = [safe_rel(p) for p in _str_list(manifest.get("support"), "support")]
     for p in out.support:
-        # m4j: a shared module the package's items import (private helpers, the package's MemoryInputError) is
+        # a shared module the package's items import (private helpers, the package's MemoryInputError) is
         # declared here too; any public function in it is still an item, which the manifest must list
         if layout.classify(p) not in ("test_helper", "module"):
             raise ManifestError(
@@ -599,7 +599,7 @@ def _parse_library_mode(manifest: dict) -> Manifest:
     if set(out.deleted) & set(out.unlisted):
         raise ManifestError("an item cannot be both deleted and unlisted")
     out.deleted_tests = tests_of(manifest.get("deleted_tests"), "deleted_tests")
-    # the library modules whose module-level code (imports, bindings, docstring) the pass changes (P6)
+    # the library modules whose module-level code (imports, bindings, docstring) the pass changes
     out.skeleton = _str_list(manifest.get("skeleton"), "skeleton")
     for s in out.skeleton:
         if not re.fullmatch(r"memory\.[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?", s):
@@ -612,7 +612,7 @@ def _parse_library_mode(manifest: dict) -> Manifest:
 def parse_manifest(manifest: object, *, library_mode: bool = False) -> Manifest:
     """Validate the manifest's shape, its ids and its paths against the layout; raise ManifestError.
 
-    *library_mode*: the memory v2.1 layout (:func:`_parse_library_mode`); off, v2's, unchanged.
+    *library_mode*: the library layout (:func:`_parse_library_mode`); off, v2's, unchanged.
     """
     if not isinstance(manifest, dict):
         raise ManifestError("the manifest must be an object")

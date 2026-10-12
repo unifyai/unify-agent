@@ -1,7 +1,7 @@
-"""Implicit use signals over the evidence store's ``item_use`` rows (memory v2.1, stage 1).
+"""Implicit use signals over the evidence store's ``item_use`` rows (library mode, stage 1).
 
 The rows come from :func:`.analysis.use.request_use` at each request's finish: harness numbers from cell
-code and tracebacks, never a checker's verdict or text (ruling R10). Two readers:
+code and tracebacks, never a checker's verdict or text, so the signals never depend on outcomes. Two readers:
 
 * :func:`item_signals`: the flags the hygiene and promotion stages will read (this module only reports
   them; nothing here promotes, retires or hides an item);

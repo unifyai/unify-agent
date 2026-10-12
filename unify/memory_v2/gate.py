@@ -1,10 +1,10 @@
-"""The deterministic gate that decides every merge into memory ``main`` (spec §7, D9/D12).
+"""The deterministic gate that decides every merge into memory ``main``.
 
 Nothing a consolidation pass writes reaches the working model unless :meth:`Gate.merge` passes it. Both
 revisions are resolved to commit SHAs once, and the trees inspected are exactly the committed blobs
 (``ls-tree`` + ``cat-file``; no ``git archive``, so no ``.gitattributes`` can hide a file).
 
-Threat model (controller ruling R16)
+Threat model
 ------------------------------------
 The gate guards against a careless or mistaken consolidator, not a malicious one; malice is contained by
 the runtime confinement of every run (:mod:`.sandbox_run`). Its rules are structural: they pin what a pass
@@ -21,7 +21,7 @@ may touch and keep every old test passing against the new library. Documented li
   (:func:`.library_checks.derive_effect`), so nothing is asked of the writer.
 * **Covers** prove that a real recorded observation of the right kind on the item's channel exists (a
   successful tool call, a shell output tail, a file blob, a dialogue observation; :mod:`.admission`), not
-  that the item agrees with it: the item's own tests over recorded fixtures check that (spec F3).
+  that the item agrees with it: the item's own tests over recorded fixtures check that.
 * **pass_id** uniqueness is checked before the gate runs, not atomically with ``record_pass``; two
   concurrent merges with one id race (passes run one at a time).
 
@@ -40,7 +40,7 @@ The checks:
   function declares its ``input`` form, and every declared form equals the function's docstring
   ``Input:`` line. No commit writes a path the harness reserves for its generated catalogue
   (``README.md``, ``memory.py``, ``.memory/``; :func:`.catalogue.reserved`), in every mode. With
-  ``docstring_standard`` (v2.1; ``UNIFY_MEMORY_V2_DOCSTRINGS=on``), every new or changed environment
+  ``docstring_standard`` (library mode; ``UNIFY_MEMORY_V2_DOCSTRINGS=on``), every new or changed environment
   function's docstring meets the lean standard (:mod:`.docstrings`: summary, ``Args:`` naming each
   parameter and the first one's input form, ``Returns:``, ``Raises:`` naming ``MemoryInputError``, an
   ``Example:`` with a ``>>>`` example), and each ``raise MemoryInputError(...)`` in it carries a message of
@@ -49,7 +49,7 @@ The checks:
   observation of its kind (:func:`.admission.cover_problem`): a tool call with status ``ok`` and a
   response, a shell command with an output tail, a file read or write with a blob in the blob store, or a
   dialogue action with an observation; or a recorded environment rejection (status ``error`` with its
-  error), never alone. Scope is shape, not observed values (spec F3a): run confined on each covered
+  error), never alone. Scope is shape, not observed values: run confined on each covered
   input, passed in its declared ``input`` form (the docstring's ``Input:`` line for an unchanged function
   without one; else the kind's convention), with one value at a time replaced by an unseen value of its
   type (a field with one value across at least 3 recorded observations of its family and field-name set,
@@ -57,24 +57,24 @@ The checks:
   (:mod:`.held_out`); a declared form a covered input cannot be given in fails; the item
   must not raise its ``MemoryInputError`` before any environment call unless one of its covers is a
   recorded rejection of the same family that varied that field (each such allowance is noted); the reason
-  names the field only. A field declared with a semantic type (``field_types``, D21) is checked two-sided:
+  names the field only. A field declared with a semantic type (``field_types``) is checked two-sided:
   unseen in-domain values must be accepted and an out-of-domain value refused. Other exceptions, unused keywords, timeouts and refused baselines are notes.
   Shell covers are skipped with a note. A ``workflow`` is promotable under the job-level rule over its recorded and source episodes.
   An added or changed environment function that replaces a value it computed from its input under a condition
-  (:mod:`.analysis.overrides`; the F3 expense case paid an over-cap claim 0 instead of the cap) encodes a
+  (:mod:`.analysis.overrides`; an expense case paid an over-cap claim 0 instead of the cap) encodes a
   decision rule its recordings cannot mark wrong: its validated covers must come from at least
   :data:`RULE_EPISODES` episodes, else it is refused with its first such line (a function the analysis cannot
   bound is noted, not refused).
 * **G3 red→green and regression.** Every added or changed environment function has a new or changed
   test; each such test passes on the candidate and is red on the parent: it fails on the parent tree with
-  the changed tests and the ``support`` helpers copied in (ruling R2; a run there that times out counts as
+  the changed tests and the ``support`` helpers copied in (a run there that times out counts as
   red once the candidate's run is green), or, as a test-only repair, it repairs a test file the parent
   already had red (the parent's own version fails on the parent, and a test it failed now passes; a
   collection error counts for the whole file) while importing library functions of which the pass edits
   none. Every edited environment function has at least one test of the first kind, so its change is
   observed by a red run.
 
-  **Behaviour check (D28): any change in what a stored function returns on recorded inputs needs a
+  **Behaviour check: any change in what a stored function returns on recorded inputs needs a
   failing-then-passing test.** In every pass, for every channel it changes (any file under
   ``env/<channel>/`` added, edited or deleted: a public function, a private helper, a constant, a
   decorator, an alias or other module-level code), every public function of the parent's module (a
@@ -96,7 +96,7 @@ The checks:
   :data:`BEHAVIOUR_BUDGET_S` seconds and :data:`BEHAVIOUR_MAX_CASES` compared inputs; exhausting either
   refuses the pass ("behaviour check not completed"), never merges it unchecked.
 
-  A *clean-up pass* (D26: it adds no item and the library shrinks: the channel modules' function
+  A *clean-up pass* (it adds no item and the library shrinks: the channel modules' function
   definitions or the AST nodes of those definitions fall, and neither they nor the nodes of other module
   code grow; comments and docstrings never count) may exempt an edited function from the red run only
   when the change keeps its behaviour: a parent test file that passed on the parent, calls it (an import
@@ -104,7 +104,7 @@ The checks:
   doing the same on every recorded cover (none unread or ungiven, at most the cap; a recorded rejection
   that gives no input aside) and on the pass's recorded episode actions. Without it the function needs a
   red test as in any pass (a repair changes behaviour, so it always does); new tests of a clean-up pass
-  need only be green. Then, per channel, against the parent's suite (the baseline, ruling R19):
+  need only be green. Then, per channel, against the parent's suite (the baseline):
 
   - a readable baseline protects every test it passed (except in retired files). Each must still pass
     twice: in the candidate's own suite and in an isolated regression run of the parent's own tests and
@@ -138,7 +138,7 @@ The checks:
   the library shrinks by the clean-up measure above. Every recorded input a deleted item covered (except
   recorded rejections) is covered by a remaining item: one of this pass's validated covers, or a recorded
   cover of a kept item whose channel the pass leaves unchanged or that G3's behaviour check showed doing
-  the same. A function changed under a red test holds only the covers this manifest lists for it (I1).
+  the same. A function changed under a red test holds only the covers this manifest lists for it.
 * **G6 safety.** No links, executables, submodules, or git, pytest or interpreter configuration files; no
   bytecode or native code, ``__pycache__`` path, ``sitecustomize``/``usercustomize`` under any suffix or root
   directory named like a standard-library or pytest module; and no other root entry than ``env/``,
@@ -171,9 +171,9 @@ commit's input-shape snapshot (:mod:`.shape_rows`): per
 environment function, the parent's shapes for the same body plus the descriptors of the covers this merge
 validated (each covered file's blob, each covered observation), for the export's catalogue
 (:mod:`.catalogue`). Computing it never fails the gate. The examples run, like G3's runs, is a drift check
-under R16, not a security boundary: module code the runner imports can patch ``doctest`` (M13).
+under the threat model above, not a security boundary: module code the runner imports can patch ``doctest``.
 
-Stage-5 test checks (memory v2.1, :mod:`.qa`) extend G3 when a :class:`.qa.QAConfig` switch is on: seeded
+Stage-5 test checks (library mode, :mod:`.qa`) extend G3 when a :class:`.qa.QAConfig` switch is on: seeded
 random draws of recorded inputs, mutation testing, pinned determinism, replay fidelity and fixture size. Their
 reasons are G3 reasons tagged ``[qa:<check>]``; the static ones (fixture size, replay fidelity, cuts of
 truncated recordings) also run in :meth:`Gate.preview`. Every gate test run also mounts the library test kit
@@ -285,7 +285,7 @@ RULE_EPISODES = 2
 PREVIEW_MAX_COVERS = 500
 PREVIEW_MAX_EPISODES = 32
 
-# G3's behaviour check (D28), per pass: the seconds its confined runs may take and the recorded inputs it may
+# G3's behaviour check, per pass: the seconds its confined runs may take and the recorded inputs it may
 # compare (each run on both versions); either exhausted refuses the pass. Each changed channel's functions are
 # also run on at most this many recorded actions of the channel in the pass's own episodes (chosen by hash).
 BEHAVIOUR_BUDGET_S = 600.0
@@ -331,13 +331,13 @@ class GateResult:
     # an item refused only because the whole pass was).
     items_merged: list[str] = field(default_factory=list)
     items_refused: dict[str, list[str]] = field(default_factory=dict)
-    # memory v2.1 (library_checks): the item verification records (spec §4.4) and whether CURATE is due (G4)
+    # library mode (library_checks): the item verification records and whether CURATE is due (G4)
     verification: dict[str, dict] = field(default_factory=dict)
     curate_due: bool = False
-    # memory v2.1 CURATE (P6): the aliases, retirements and dropped aliases of the checked candidate; a landed
+    # library-mode CURATE: the aliases, retirements and dropped aliases of the checked candidate; a landed
     # merge records them (EvidenceStore.record_curations)
     curations: list[dict] = field(default_factory=list)
-    # Memory v2.1 (spec §9.2): each failing run's whole output (sandbox_run.PytestOutcome.full_output: bounded
+    # Library mode: each failing run's whole output (sandbox_run.PytestOutcome.full_output: bounded
     # only by the sandbox's marked capture), key-shaped strings redacted, by run label. Never stored in the pass
     # row, whose reasons keep v2's 300-character tail.
     outputs: dict[str, str] = field(default_factory=dict)
@@ -376,7 +376,7 @@ def _green(o: PytestOutcome) -> bool:
 
 
 def _shown(o: PytestOutcome) -> str:
-    """The output a reason quotes: v2's last 300 characters, or under v2.1 the head and the whole output's blob."""
+    """The output a reason quotes: v2's last 300 characters, or in library mode the head and the whole output's blob."""
     blob = getattr(o, "output_blob", None)
     if blob is None:
         return o.output[-300:]
@@ -448,13 +448,13 @@ def _covers_a_write(covers: list[tuple[str, int, Action]], form: str | None) -> 
     )
 
 
-def _test_file(test_id: str, tests_dir: str, layout21: bool = False) -> str:
+def _test_file(test_id: str, tests_dir: str, library_layout: bool = False) -> str:
     """The test file of a suite's test id, as a path from the tree's root (ids may be relative to *tests_dir*).
 
-    *layout21* (memory v2.1): a ``memory/`` id is already from the root; under v2 only ``env/`` is (review S4).
+    *library_layout* (library mode): a ``memory/`` id is already from the root; under v2 only ``env/`` is.
     """
     path = test_id.split("::", 1)[0]
-    roots = ("env/", "memory/") if layout21 else ("env/",)
+    roots = ("env/", "memory/") if library_layout else ("env/",)
     return path if path.startswith(roots) else f"{tests_dir}/{path}"
 
 
@@ -588,7 +588,7 @@ def _examples_source(items: list[str]) -> str:
 
 @dataclass
 class _Probe:
-    """One function's behaviour check (D28): the inputs to run on both versions and what they showed."""
+    """One function's behaviour check: the inputs to run on both versions and what they showed."""
 
     item: str
     strict: bool  # an edited function claiming the clean-up exemption: every recorded cover, none unread
@@ -629,7 +629,7 @@ class _Probe:
 
 
 class _Budget:
-    """G3's behaviour-check budget for one pass (D28): wall-clock seconds left."""
+    """G3's behaviour-check budget for one pass: wall-clock seconds left."""
 
     def __init__(self, seconds: float) -> None:
         self.end = time.monotonic() + seconds
@@ -713,7 +713,7 @@ class _Run:
     item_fail: dict[str, list[str]] = field(default_factory=dict)
     pass_wide: bool = False
     # functions of the changed channels that G3's behaviour check showed doing what their parent versions did
-    # on every compared input (D28). None: not judged (a preview runs no G3).
+    # on every compared input. None: not judged (a preview runs no G3).
     same: set[str] | None = None
     # the parent's declared input forms by function, read once (False: its library cannot be read)
     p_inputs: dict[str, str] | bool | None = None
@@ -721,17 +721,17 @@ class _Run:
     episode_inputs: dict[str, list[tuple[str, int, Action]]] = field(
         default_factory=dict,
     )
-    # memory v2.1: per item, what the checks measured (library_checks, qa); whether the index is over its view (G4)
+    # library mode: per item, what the checks measured (library_checks, qa); whether the index is over its view (G4)
     verification: dict[str, dict] = field(default_factory=dict)
     curate_due: bool = False
-    # memory v2.1 CURATE (P6): what LibraryChecks.curate found the candidate does to aliases and retirements
+    # library-mode CURATE: what LibraryChecks.curate found the candidate does to aliases and retirements
     curations: list[dict] = field(default_factory=list)
-    # run label -> the whole recorded output of a failing run (GateResult.outputs; memory v2.1)
+    # run label -> the whole recorded output of a failing run (GateResult.outputs; library mode)
     outputs: dict[str, str] = field(default_factory=dict)
-    # the stage-5 seed (memory v2.1: one per pass, so every round's check and the final merge draw the same
+    # the stage-5 seed (library mode: one per pass, so every round's check and the final merge draw the same
     # recorded inputs and mutants); None: :func:`.qa.seed_of` the candidate, as in v2
     seed: bytes | None = None
-    # v2.1: the import graph of both versions (G3's behaviour scope; None in v2)
+    # library mode: the import graph of both versions (G3's behaviour scope; None in v2)
     graph: dict[str, set[str]] | None = None
 
     def fail(
@@ -763,14 +763,14 @@ class _Run:
         self.notes.append(KEY_SHAPED.sub(_REDACTED, f"note: {reason}"))
 
     def output(self, label: str, o: PytestOutcome) -> None:
-        """Keep a failing run's whole recorded output under *label* for the full gate result (memory v2.1):
+        """Keep a failing run's whole recorded output under *label* for the full gate result (library mode):
         :attr:`.sandbox_run.PytestOutcome.full_output`, which only the sandbox's own marked capture bound cuts.
 
         Never part of a reason: the reasons, and so the pass row, keep v2's 300-character tail.
         """
         text = KEY_SHAPED.sub(_REDACTED, o.full_output or o.output)
         blob = getattr(o, "output_blob", None)
-        # memory v2.1 (spec P5): the whole output, past the capture bound, is a blob
+        # library mode: the whole output, past the capture bound, is a blob
         self.outputs[label] = (
             text if blob is None else f"{text}\n[whole output: blob {blob}]"
         )
@@ -803,16 +803,15 @@ class Gate:
         qa: QAConfig | None = None,
         library_mode: LibraryConfig | None = None,
     ) -> None:
-        """The v2.1 switches (:mod:`.integration.switch`; each default is the v2 behaviour):
+        """The library-mode switches (:mod:`.integration.switch`; each default is the v2 behaviour):
         *docstring_standard* turns on the lean docstring standard (G1) and its examples run (G3) for new or
         changed environment functions; *surfacing* ``"catalogue"`` records and freezes input shapes per
         commit for the export's catalogue; *soft_budget* makes *budget_tokens* G4's soft budget (a note,
         never a refusal) instead of the index's hard cap. *qa* is the stage-5 test checks' configuration
-        (:class:`.qa.QAConfig`; None runs none of them). Sol's brief follows the gate's switches.
+        (:class:`.qa.QAConfig`; None runs none of them). The writer's brief follows the gate's switches.
         *library_mode* (``UNIFY_MEMORY_LIBRARY``, :class:`.library_checks.LibraryConfig`; None is v2): with ``layout``, covers have
-        no channel rule (G2), and G3's behaviour check and per-item reduction are scoped by the import graph
-        (D42). With ``checks``, the v2.1 gate checks (:mod:`.library_checks`) and stage 5
-        in v2.1 mode.
+        no channel rule (G2), and G3's behaviour check and per-item reduction are scoped by the import graph.
+        With ``checks``, the library gate checks (:mod:`.library_checks`) and stage 5 run in library mode.
         """
         if surfacing not in ("index", "catalogue"):
             raise ValueError(
@@ -830,21 +829,21 @@ class Gate:
         # Fail closed: without an episodes reader no covered call can be confirmed.
         self.lookup = action_lookup or (lambda eid, i: None)
         self.pytest = pytest_runner
-        # stage-5 test checks (memory v2.1); the default runs none of them
+        # stage-5 test checks (library mode); the default runs none of them
         self.qa = qa if qa is not None else QAConfig()
         self.library_mode = library_mode
         if library_mode is not None and library_mode.checks:
             if not library_mode.layout:
                 raise ValueError(
-                    "the v2.1 gate checks need the v2.1 library layout (LibraryConfig.layout)",
+                    "the library gate checks need the library layout (LibraryConfig.layout)",
                 )
             from .qa import library_config
 
             self.qa = library_config(self.qa)
 
     @property
-    def _layout21(self) -> bool:
-        """Memory v2.1's library layout rules (D42) are on."""
+    def _library_layout(self) -> bool:
+        """The library layout rules are on."""
         library_mode = getattr(self, "library_mode", None)
         return library_mode is not None and bool(library_mode.layout)
 
@@ -860,7 +859,7 @@ class Gate:
         """The whole gate on *candidate*, without merging; no per-item reduction is tried.
 
         ``items_refused`` names the items its failures belong to, as :meth:`merge` would refuse them. *seed*
-        (memory v2.1): the pass's stage-5 seed, so a repair round's check and the final merge draw the same
+        (library mode): the pass's stage-5 seed, so a repair round's check and the final merge draw the same
         sample; None draws by the candidate, as in v2.
         """
         res, _, notes, _, _ = self._check(parent, candidate, manifest, seed=seed)
@@ -893,7 +892,7 @@ class Gate:
         kind, record and channel, and the structural check that the covers can give the declared ``input``
         form, without the held-out perturbation; at most :data:`PREVIEW_MAX_COVERS` covers over
         :data:`PREVIEW_MAX_EPISODES` episodes, each looked up once), G4, G5 and G6. Never G3 (no test runs),
-        G2's held-out runs or a workflow's signals (nothing about outcomes, ruling R10), and never writes:
+        G2's held-out runs or a workflow's signals (nothing about outcomes), and never writes:
         no commit, git object, evidence or pass row. A clean preview does not mean the gate will pass.
         """
         res = GateResult(True, {c: True for c in CHECKS})
@@ -918,7 +917,7 @@ class Gate:
                 Path(tree),
                 "sha256" if len(base.sha) == 64 else "sha1",
             )
-            early = self._early(run, refused, self._layout21)
+            early = self._early(run, refused, self._library_layout)
             if early:
                 for check, reason in early:
                     run.fail(check, reason)
@@ -991,7 +990,7 @@ class Gate:
     ) -> GateResult:
         """Check, then fast-forward ``main``; evidence is recorded only for a landed candidate.
 
-        *seed*: as for :meth:`check` (memory v2.1); the reduced candidate is checked with the same seed.
+        *seed*: as for :meth:`check` (library mode); the reduced candidate is checked with the same seed.
 
         Per-item admission (stage 7): when the candidate is refused and every failure belongs to manifest
         items (an item's G1 checks, its G2 evidence and held-out runs, its own tests' red→green, examples
@@ -1032,7 +1031,7 @@ class Gate:
 
             seed = seed_of(
                 c_sha,
-            )  # review R2: the reduced re-check draws the candidate's sample
+            )  # the reduced re-check draws the candidate's sample
         try:
             res, covers, notes, shapes, reduced = self._check(
                 p_sha,
@@ -1084,7 +1083,7 @@ class Gate:
         if res.passed:
             try:
                 if isinstance(self.library_mode, LibraryConfig):
-                    # memory v2.1 (P7 Amendment A): the one writer; re-targets over status commits only
+                    # library mode: the one writer; re-targets over status commits only
                     from .memory_writer import land
 
                     landed = land(self.mem, landed, p_sha)
@@ -1118,7 +1117,7 @@ class Gate:
             for item, eid, idx in sorted(covers):
                 self.ev.add_cover(item, eid, idx)
             if self._library_checks():
-                # Amendment C: typed covers persist beside covers, for the behaviour check and deletion (G5)
+                # typed covers persist beside covers, for the behaviour check and deletion (G5)
                 from .procedures import cover_raw
 
                 for it in landed_items:
@@ -1128,8 +1127,8 @@ class Gate:
                             c.episode,
                             json.dumps(cover_raw(c), sort_keys=True),
                         )
-            if self.surfacing == "catalogue" or self._layout21:
-                # memory v2.1: shapes per v2.1 id, frozen per commit for the actor's find (P3, library_export)
+            if self.surfacing == "catalogue" or self._library_layout:
+                # library mode: shapes per library id, frozen per commit for the actor's find (library_export)
                 self.ev.write_commit_shapes(landed, shapes)
         else:
             try:
@@ -1140,7 +1139,7 @@ class Gate:
             res.items_refused = {i: res.items_refused.get(i) or ["pass"] for i in ids}
         self._record(p_sha, c_sha, pass_id, kind, channel, usd, res)
         if self._library_checks() and res.verification:
-            # the item verification records (spec §4.4), for P5's item records; measured, never a refusal
+            # the item verification records, for the item records; measured, never a refusal
             self.ev.add_pass_notes(
                 pass_id,
                 [
@@ -1149,7 +1148,7 @@ class Gate:
                 ],
             )
         if self.library_mode is not None and res.passed and res.curations:
-            # CURATE's aliases, retirements and dropped aliases (spec §10.4), for the item records (alias_of,
+            # CURATE's aliases, retirements and dropped aliases, for the item records (alias_of,
             # deprecated), and any pass's renames, which carry an item's uid to its new id
             self.ev.record_curations(pass_id, res.merged, res.curations)
         return res
@@ -1159,14 +1158,14 @@ class Gate:
         return self.library_mode is not None and self.library_mode.checks
 
     def _parse_manifest(self, manifest: object) -> Manifest:
-        """The manifest under the gate's layout: v2.1's (:func:`.manifest.parse_manifest` ``library_mode``) or v2's."""
+        """The manifest under the gate's layout: the library mode's (:func:`.manifest.parse_manifest` ``library_mode``) or v2's."""
         return parse_manifest(
             manifest,
             library_mode=self.library_mode is not None and self.library_mode.layout,
         )
 
     def _library_mode(self, run: _Run):
-        """The memory v2.1 checks of *run* (:mod:`.library_checks`), or None with them off."""
+        """The library-mode checks of *run* (:mod:`.library_checks`), or None with them off."""
         if not self._library_checks():
             return None
         from .library_checks import LibraryChecks
@@ -1194,7 +1193,7 @@ class Gate:
         extra_env: dict[str, str] | None = None,
         qa_env: QAEnv | None = None,
     ) -> PytestOutcome:
-        # memory v2.1 (spec P5): the whole output is spooled and kept as a blob; v2 passes nothing new
+        # library mode: the whole output is spooled and kept as a blob; v2 passes nothing new
         spool = (
             Path(tempfile.mkdtemp(prefix="memlib-out-"))
             if self._library_checks()
@@ -1330,7 +1329,7 @@ class Gate:
                     reduced = self._reduce(run, reduce_as)
             snapshot = (
                 self._snapshot(run)
-                if res.passed and (self.surfacing == "catalogue" or self._layout21)
+                if res.passed and (self.surfacing == "catalogue" or self._library_layout)
                 else {}
             )
         finally:
@@ -1357,7 +1356,7 @@ class Gate:
                 run.man,
                 run.item_fail,
                 run.c_tree,
-                library_mode=self._layout21,
+                library_mode=self._library_layout,
             )
             manifest = reduction.build(
                 run.man,
@@ -1441,7 +1440,7 @@ class Gate:
             return False
         run.p_files, _ = listing(self.mem, p_sha)
         run.c_files, refused = listing(self.mem, c_sha)
-        early = self._early(run, refused, self._layout21)
+        early = self._early(run, refused, self._library_layout)
         if early:
             run.stop(early)
             return False
@@ -1454,11 +1453,11 @@ class Gate:
     def _early(
         run: _Run,
         refused: list[str],
-        layout21: bool = False,
+        library_layout: bool = False,
     ) -> list[tuple[str, str]]:
         """What must never be extracted or run (refused entries, forbidden files, layout); sets ``changed``.
 
-        *layout21* (memory v2.1): the layout is P3's (:func:`.layout.classify`): a path it has no place for, or a
+        *library_layout* (library mode): the layout is the library's (:func:`.layout.classify`): a path it has no place for, or a
         file the harness generates (never committed: the writer's box drops unchanged copies), is refused, and
         only the G6 classes of :func:`.manifest.unsafe_path` apply (its root rule is v2's).
         """
@@ -1466,13 +1465,13 @@ class Gate:
         early += [
             ("G6", f"forbidden file {p}") for p in sorted(run.c_files) if forbidden(p)
         ]
-        if layout21:
+        if library_layout:
             from .layout import classify
 
             early += [
                 (
                     "G1",
-                    f"file {p} is outside the v2.1 layout, or is generated by the harness",
+                    f"file {p} is outside the library layout, or is generated by the harness",
                 )
                 for p in sorted(run.c_files)
                 if classify(p) in (None, "generated")
@@ -1496,7 +1495,7 @@ class Gate:
             for p in sorted(run.c_files)
             if not layout_allowed(p)
         ]
-        # Compiled code, start-up hooks and root entries the layout above admits (review I4); one reason each.
+        # Compiled code, start-up hooks and root entries the layout above admits; one reason each.
         unsafe = [
             u
             for p in sorted(run.c_files)
@@ -1522,8 +1521,8 @@ class Gate:
         return early
 
     def _read_trees(self, run: _Run) -> None:
-        if self._layout21:
-            # memory v2.1: items are P3's function ids and note paths (:mod:`.layout`)
+        if self._library_layout:
+            # library mode: items are the layout's function ids and note paths (:mod:`.layout`)
             from .layout import classify, function_bodies
 
             def bodies(tree: Path, files: dict) -> dict[str, tuple[str, str, bool]]:
@@ -1579,8 +1578,8 @@ class Gate:
         for t in man.deleted_tests:
             self._retired_ok(run, t)
         self._pins(run)
-        if self._layout21:
-            # memory v2.1: a package's __init__.py (its one-paragraph docstring) goes with what the pass declares there
+        if self._library_layout:
+            # library mode: a package's __init__.py (its one-paragraph docstring) goes with what the pass declares there
             declared |= {
                 f"memory/{p.split('/')[1]}/__init__.py"
                 for p in list(declared)
@@ -1746,7 +1745,7 @@ class Gate:
         return False
 
     def _item_path(self, item: str) -> str:
-        if self._layout21:
+        if self._library_layout:
             from . import layout
 
             return layout.item_path(item)
@@ -1755,13 +1754,13 @@ class Gate:
     def _retired_ok(self, run: _Run, test: str) -> None:
         """A retired test file is removed and imports only items this manifest deletes.
 
-        Memory v2.1: removed only; whether it may go is the ``tests_changed`` reason rule (:mod:`.library_checks`,
+        Library mode: removed only; whether it may go is the ``tests_changed`` reason rule (:mod:`.library_checks`,
         and :meth:`_suites`).
         """
         if test not in run.p_files or test in run.c_files:
             run.fail("G1", f"deleted test {test} is not removed by the candidate")
             return
-        if self._layout21:
+        if self._library_layout:
             return
         named = _exercised((run.p_tree / test).read_bytes(), run.p_bodies)
         if named is None:
@@ -1855,7 +1854,7 @@ class Gate:
                         action,
                         it.channel,
                         self.blobs.has,
-                        channel_rule=not self._layout21,
+                        channel_rule=not self._library_layout,
                     )
                     if problem is not None:
                         run.fail(
@@ -1896,7 +1895,7 @@ class Gate:
                     if (
                         self.surfacing == "catalogue"
                         or self.docstring_standard
-                        or self._layout21
+                        or self._library_layout
                     ):
                         # the catalogue's shapes and the examples' fixture check
                         self._record_shapes(
@@ -1956,13 +1955,13 @@ class Gate:
                 run.p_tree,
                 lookup=self.lookup,
                 blobs=self.blobs,
-                library_mode=self._layout21,
+                library_mode=self._library_layout,
             )
             return snapshot_rows(
                 run.c_tree,
                 prev,
                 run.shapes,
-                library_mode=self._layout21,
+                library_mode=self._library_layout,
             )
         except (
             Exception
@@ -1971,7 +1970,7 @@ class Gate:
                 run.c_tree,
                 {},
                 run.shapes,
-                library_mode=self._layout21,
+                library_mode=self._library_layout,
             )
 
     @staticmethod
@@ -2033,13 +2032,13 @@ class Gate:
         input_kind: str | None = None,
         pool: tuple[list[tuple[str, Action]], bool] | None = None,
     ) -> None:
-        """Scope is shape (spec F3a): the item must not refuse unseen values of its covered inputs' types.
+        """Scope is shape: the item must not refuse unseen values of its covered inputs' types.
 
         Each covered input reaches the item in its declared *input_kind* (None: the kind's convention). A
         field's constancy (identity or format) is judged on *pool*, the recorded observations of the covered
         channels across the evidence store, with whether its read cap was hit.
 
-        A field declared with a semantic type (D21) is checked two-sided instead: unseen in-domain values
+        A field declared with a semantic type is checked two-sided instead: unseen in-domain values
         accepted, an out-of-domain value refused before any environment call.
         """
 
@@ -2065,7 +2064,7 @@ class Gate:
         man, changed = run.man, set(run.changed)
         new_tests = sorted({t for it in man.items for t in it.tests if t in changed})
         # an unchanged function listed under a skeleton change is held by the regression run and, if its
-        # results change, by the behaviour check (D28)
+        # results change, by the behaviour check
         edited = {
             it.item
             for it in man.items
@@ -2073,7 +2072,7 @@ class Gate:
             and run.p_bodies.get(it.item, ("", ""))[:2]
             != run.c_bodies.get(it.item, ("", ""))[:2]
         }
-        # a clean-up pass may edit a function without a red test when an old test holds it (D26)
+        # a clean-up pass may edit a function without a red test when an old test holds it
         cleanup = self._cleanup(run)
         unseen: set[str] = set()
         # already refused here: the behaviour check need not run them
@@ -2146,7 +2145,7 @@ class Gate:
         refused: set[str],
         protected: set[str],
     ) -> None:
-        """G3's behaviour check (D28): any change in what a stored function returns on recorded inputs needs
+        """G3's behaviour check: any change in what a stored function returns on recorded inputs needs
         a failing-then-passing test.
 
         For every channel the pass changes (any file under ``env/<channel>/``), every public function of the
@@ -2162,7 +2161,7 @@ class Gate:
         recorded: dict[str, set[tuple[str, int]]] = {}
         for it, e, i in self.ev.covers():
             recorded.setdefault(it, set()).add((e, i))
-        # memory v2.1 CURATE (MAIN, 10 Oct): a declared alias is compared on its own recorded inputs and its
+        # library-mode CURATE: a declared alias is compared on its own recorded inputs and its
         # target's, so an alias that answers differently is refused even when its old name has no test
         aliases = self._declared_aliases(run)
         for alias, target in aliases.items():
@@ -2180,7 +2179,7 @@ class Gate:
                     ),
                     item,
                 )
-        for item in self._behaviour_targets(run, recorded, self._layout21):
+        for item in self._behaviour_targets(run, recorded, self._library_layout):
             if item in probes or item in unseen or item in declared or item in refused:
                 continue
             probes[item] = self._probe(run, item, recorded, strict=False)
@@ -2243,7 +2242,7 @@ class Gate:
         run.same = same
 
     def _declared_aliases(self, run: _Run) -> dict[str, str]:
-        """A v2.1 CURATE gate's declared aliases (old id -> target) of the checked manifest; {} otherwise."""
+        """A library-mode CURATE gate's declared aliases (old id -> target) of the checked manifest; {} otherwise."""
         if not (
             self._library_checks()
             and getattr(self.library_mode, "role", "write") == "curate"
@@ -2279,12 +2278,12 @@ class Gate:
         recorded: dict[str, set[tuple[str, int]]],
         library_mode: bool = False,
     ) -> list[str]:
-        """The functions G3's behaviour check compares (D28), in order, before :meth:`_behaviour`'s skips.
+        """The functions G3's behaviour check compares, in order, before :meth:`_behaviour`'s skips.
 
         **v2:** for each changed channel, every public function of its parent module whose name the candidate's
         module still binds: a ``def``, or a name bound by assignment or import that has recorded covers.
 
-        **v2.1** (spec §4.1, D42): the same rule over each changed library module and every module that imports
+        **Library mode**: the same rule over each changed library module and every module that imports
         one, directly or through others. The scope uses :func:`..layout.dependants` over the import graphs of
         both versions. The graph is kept on the run for :meth:`_behaviour_owner`.
         """
@@ -2320,8 +2319,8 @@ class Gate:
 
     @staticmethod
     def _source_channels(acts: list[tuple[str, int, Action]]) -> list[str]:
-        """v2.1: the memory channels (``env/<name>``) of a function's recorded covers. They stand for the channel
-        its path named in v2 (spec §4.1: the source channel moves to the item's record, P5).
+        """Library mode: the memory channels (``env/<name>``) of a function's recorded covers. They stand for the channel
+        its path named in v2 (the source channel moves to the item's record).
         """
         out: set[str] = set()
         for _, _, a in acts:
@@ -2344,14 +2343,14 @@ class Gate:
         module is one environment function in ``items`` whose body it adds or edits: no ``skeleton`` change of
         the channel and no ``deleted`` or ``unlisted`` item there. Refusing that item restores the parent's
         function and refuses its callers (:mod:`.reduction`), and the reduced candidate runs the behaviour
-        check again. A parent library that cannot be read is no item's. Under v2.1 the edits that count are
+        check again. A parent library that cannot be read is no item's. In library mode the edits that count are
         those in the item's module or in a library module it imports, directly or through others.
         """
         if pr.why == "the parent's library cannot be read":
             return None
         if (
             run.graph is not None
-        ):  # v2.1 (D42): what the item's module imports, transitively
+        ):  # library mode: what the item's module imports, transitively
             related = layout.imported_closure(run.graph, item.split(":", 1)[0])
             touched = (*run.man.deleted, *run.man.unlisted)
             if any(s in related for s in run.man.skeleton) or any(
@@ -2528,7 +2527,7 @@ class Gate:
         return tree
 
     def _suites(self, run: _Run) -> set[str]:
-        """Per channel, compare against the parent's suite (the baseline; ruling R19).
+        """Per channel, compare against the parent's suite (the baseline).
 
         A readable baseline protects every test it passed outside retired files. Each must pass in two
         runs:
@@ -2546,11 +2545,11 @@ class Gate:
         Returns the parent test files with a protected test (a file whose protected tests are lost fails
         here, so on a passing gate each still passes in both runs).
 
-        Memory v2.1 (``checks``; spec §9.1 "no unexplained test loss"): each package's suite
+        Library mode (``checks``; "no unexplained test loss"): each package's suite
         ``memory/<package>/tests`` is compared the same way, its protected files are returned as paths from the
         tree's root, and a deleted test file is retired only with a reason in the manifest's ``tests_changed``
         (else its lost tests refuse here). A test of an alias is collected through the alias: listed under the
-        alias's target (P6), its failures belong to that item.
+        alias's target, its failures belong to that item.
         """
         protected: set[str] = set()
         if not run.changed:
@@ -2574,7 +2573,7 @@ class Gate:
 
         def file_of(t: str, rel: str) -> str:
             return (
-                _test_file(t, rel, self._layout21)
+                _test_file(t, rel, self._library_layout)
                 if library_mode
                 else t.split("::", 1)[0]
             )
@@ -2648,7 +2647,7 @@ class Gate:
                     # new failures only in test files the manifest's items list are those items' own
                     # (per-item admission); anything else refuses the whole pass
                     owners = [
-                        _owners(run.man, _test_file(t, rel, self._layout21))
+                        _owners(run.man, _test_file(t, rel, self._library_layout))
                         for t in new_red
                     ]
                     run.fail(
@@ -2701,10 +2700,10 @@ class Gate:
         return after[:2] != before[:2] and all(a <= b for a, b in zip(after, before))
 
     def _cleanup(self, run: _Run) -> bool:
-        """A clean-up pass (D26): it adds no item and the library shrinks.
+        """A clean-up pass: it adds no item and the library shrinks.
 
-        Memory v2.1 (D36): a CURATE pass is the clean-up pass, by its role, and a WRITE pass never is. D26's size
-        measure reads v2's channel modules only; under v2.1, D28's strict comparison on the import-graph scope is
+        Library mode: a CURATE pass is the clean-up pass, by its role, and a WRITE pass never is. The clean-up size
+        measure reads v2's channel modules only; in library mode, the behaviour check's strict comparison on the import-graph scope is
         what proves each exempted edit keeps behaviour, and CURATE's growth rule (:meth:`.library_checks.LibraryChecks.curate`)
         bounds the library.
         """
@@ -2718,11 +2717,11 @@ class Gate:
     def _held(run: _Run, item: str, protected: set[str]) -> bool:
         """A parent test file that passed on the parent, and still passes, calls *item*.
 
-        A call, not an import: :func:`.snapshot.calls_item`, or :func:`.aliases.calls_function` for a v2.1 id.
+        A call, not an import: :func:`.snapshot.calls_item`, or :func:`.aliases.calls_function` for a library id.
         """
         try:
             from . import layout
-        except ImportError:  # a build without P3's layout has no v2.1 ids
+        except ImportError:  # a build without the library layout has no library ids
             layout = None
         if layout is not None and layout.FUNCTION_ID.match(item):
             from .aliases import calls_function
@@ -2752,10 +2751,10 @@ class Gate:
         A candidate name bound by assignment or import has no docstring of its own and keeps the parent's
         form. None when the parent's library cannot be read.
 
-        Memory v2.1: each tree's function docstring ``Input:`` line (the manifest's declared input first, for the
-        candidate); v2's report reads only environment functions, which left every v2.1 form unknown.
+        Library mode: each tree's function docstring ``Input:`` line (the manifest's declared input first, for the
+        candidate); v2's report reads only environment functions, which left every library-mode form unknown.
         """
-        if self._layout21:
+        if self._library_layout:
             return self._forms_library_mode(run, item)
         if run.p_inputs is None:
             try:
@@ -2837,7 +2836,7 @@ class Gate:
         *,
         strict: bool,
     ) -> _Probe:
-        """The recorded inputs *item* is compared on, without running anything (D26, D28).
+        """The recorded inputs *item* is compared on, without running anything.
 
         Its recorded covers (the evidence store's, *recorded* by item, and this manifest's) and the recorded actions of its
         channel in the pass's own episodes (:meth:`_episode_inputs`, so that a repair of an input no cover
@@ -2881,8 +2880,8 @@ class Gate:
         pr.skipped += len(unread)
         given = {(e, i) for e, i, _ in acts}
         if (
-            self._layout21
-        ):  # the recorded actions of its covers' channels in this pass's episodes (D42)
+            self._library_layout
+        ):  # the recorded actions of its covers' channels in this pass's episodes
             pool = [
                 c
                 for ch in self._source_channels(acts)
@@ -2988,7 +2987,7 @@ class Gate:
                     "G5",
                     "the library grew without covering any new recorded call",
                 )
-        # a deleted function's recorded covers must stay covered by a remaining item (D26)
+        # a deleted function's recorded covers must stay covered by a remaining item
         deleted = set(run.man.deleted)
         recorded = self.ev.covers()
         held = {(e, i) for _, e, i in run.covers}
@@ -3000,7 +2999,7 @@ class Gate:
             and self.library_mode.layout
             and run.same is not None
         ):
-            # v2.1 (D42): the modules this pass changed, and every module that imports one of them
+            # library mode: the modules this pass changed, and every module that imports one of them
             from . import layout
 
             graph = getattr(run, "graph", None)
@@ -3015,7 +3014,7 @@ class Gate:
             )
 
         def keeps(it: str) -> bool:
-            """A kept item still does on its recorded covers what it did (I1, D28): its channel (v2.1: its module's
+            """A kept item still does on its recorded covers what it did: its channel (library mode: its module's
             import-graph scope) is unchanged and so is its body, or G3's behaviour check showed it doing the same. A
             function changed under a red test holds only the covers this manifest lists for it (already in
             ``held``)."""

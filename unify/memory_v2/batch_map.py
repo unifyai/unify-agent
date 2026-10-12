@@ -209,7 +209,7 @@ def part_text(ep: Episode, part: str, shared: dict[str, str] | None = None) -> s
             obj = mark(obj, shared)
     elif part.startswith("observation:"):
         obj = _observations(ep)[int(part[12:])]
-        if shared and isinstance(obj, str):  # M4: observations' shared lines too
+        if shared and isinstance(obj, str):  # observations' shared lines are marked too
             from .shared_text import mark
 
             obj = mark(obj, shared)
