@@ -65,7 +65,10 @@ def test_every_field_a_brief_shows_is_read_at_its_level():
     for name, brief in _briefs().items():
         item_keys, top_keys = _levels(_template(brief))
         assert item_keys and item_keys <= item_fields, (name, item_keys - item_fields)
-        assert item_keys <= set(LIBRARY_ITEM_FIELDS), (name, item_keys - set(LIBRARY_ITEM_FIELDS))
+        assert item_keys <= set(LIBRARY_ITEM_FIELDS), (
+            name,
+            item_keys - set(LIBRARY_ITEM_FIELDS),
+        )
         for key in top_keys - parsed_top:
             assert key in READ_ELSEWHERE, (name, key)
             assert f'"{key}"' in (root / READ_ELSEWHERE[key]).read_text(), (name, key)
@@ -103,7 +106,10 @@ def _round_trip(name: str) -> None:
         item["source_episodes"],
         item["tests"],
     )
-    assert got.typed_covers == [parse_cover(c) for c in item["covers"]] and got.covers == []
+    assert (
+        got.typed_covers == [parse_cover(c) for c in item["covers"]]
+        and got.covers == []
+    )
     assert got.field_types == item["field_types"] and got.input is None
     if "adopts" in item:
         assert got.adopts == ["staging:e2/candidates/fill.py"]
@@ -131,10 +137,18 @@ def test_no_brief_shows_an_input_form_or_an_action_cover():
     """The manifest templates and the brief sections on what to write, the rules and the gate name no input form
     and no action cover. (The fixture tool's own description shows an appended line's ``"input"`` key, which is
     a fixture's line format, not a manifest field.)"""
-    sections = (lp._WHAT_TO_WRITE, lp._WRITE_RULES, lp._GATE, lp._CURATE_GATE, lp._CURATE)
+    sections = (
+        lp._WHAT_TO_WRITE,
+        lp._WRITE_RULES,
+        lp._GATE,
+        lp._CURATE_GATE,
+        lp._CURATE,
+    )
     for name, brief in _briefs().items():
         assert '"input"' not in _template(brief), name
-        assert "<<input_forms>>" not in brief and "first parameter" not in _template(brief), name
+        assert "<<input_forms>>" not in brief and "first parameter" not in _template(
+            brief,
+        ), name
     for text in sections:
         assert '"input"' not in text and "`input`" not in text and "<form>" not in text
         assert "action index" not in text and "same-shaped input" not in text
@@ -158,18 +172,29 @@ def test_the_write_brief_names_the_semantic_types_field_types_takes():
 
 
 def test_the_fork_and_the_helpers_are_told_the_function_contract_the_gate_enforces():
-    from unify.memory import helpers
+    """A function takes any arguments and refuses other shapes with MemoryInputError; its cases are recorded values,
+    so the writer can copy them into fixtures. No text names a first-parameter input form any more.
+    """
+    from unify.memory import curate, helpers
     from unify.memory.integration import fork
     from unify.memory.manifest import INPUT_KINDS
 
-    for text in (
-        fork.fork_instruction(),
-        helpers.helper_brief(False),
-        helpers.helper_brief(True),
-    ):
-        assert (
-            "first parameter takes one recorded form" in text
-            and "MemoryInputError" in text
-        )
+    texts = {
+        "fork": fork.fork_instruction(),
+        "helper": helpers.helper_brief(False),
+        "helper with similar": helpers.helper_brief(True),
+        "curate": curate.curate_system(),
+    }
+    for name, text in texts.items():
+        assert "MemoryInputError" in text and "any arguments" in text, name
+        assert "first parameter" not in text and "recorded form" not in text, name
         for form in INPUT_KINDS:
-            assert f"`{form}`" in text, form
+            assert f"`{form}`" not in text, (name, form)
+    assert lp.CANDIDATE_CONTRACT in texts["fork"]
+    assert "Each value must appear in this conversation as it is" in texts["fork"]
+    for name in ("helper", "helper with similar"):
+        assert (
+            lp.CANDIDATE_CONTRACT.replace("recorded here", "recorded in the episodes")
+            in texts[name]
+        )
+        assert "each value as the records hold it" in texts[name]

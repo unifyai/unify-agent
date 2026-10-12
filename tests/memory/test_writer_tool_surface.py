@@ -124,6 +124,35 @@ def test_every_hand_off_has_a_producer_and_a_consumer():
     assert {c for _, c in produced} <= agents
 
 
+def test_the_call_record_is_a_gate_internal_hand_off():
+    """The gate's test runs write the call record in its box; the gate consumes it, the tests the writer and the
+    curator wrote produce it, and no model-facing agent is handed it."""
+    from unify.memory import example_calls
+
+    rows = {r["agent"]: r for r in agent_profiles.AGENT_PROFILES}
+    record = {"artifact": "call record", "path": example_calls.CALLS_OUT}
+    assert record in rows["gate"]["consumes"]
+    for agent in ("writer", "curator"):
+        assert {**record, "consumer": "gate"} in rows[agent]["produces"], agent
+    for agent, row in rows.items():
+        if agent != "gate":
+            assert all(c["artifact"] != "call record" for c in row["consumes"]), agent
+        assert all(
+            p.get("consumer") == "gate"
+            for p in row["produces"]
+            if p["artifact"] == "call record"
+        ), agent
+    mounts = {m["path"]: m["mode"] for m in rows["gate"]["mounts"]}
+    assert mounts[example_calls.CALLS_DIR] == "ro"
+    assert mounts[example_calls.CALLS_OUT.rsplit("/", 1)[0]] == "rw"
+    # the writer's and curator's own boxes are unchanged: they never see the record
+    for agent in ("writer", "curator"):
+        assert not any(
+            m["path"] in (example_calls.CALLS_DIR, "/calls")
+            for m in rows[agent]["mounts"]
+        ), agent
+
+
 def test_every_refusal_form_renders_and_every_described_parameter_is_in_the_schema():
     for spec in tool_spec.registry():
         props = spec.parameters.get("properties", {})
