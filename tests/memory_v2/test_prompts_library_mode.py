@@ -237,8 +237,8 @@ def test_rendered_from_the_constants_that_enforce_them():
     assert f"after {writer_pass.STEP_GUARD} model and check calls" in pv.curate_brief_now()
 
 
-def test_amendment_e_no_read_only_instruction():
-    """Read-only is enforced by the mount (P3 Amendment C); no text tells anyone not to write the library."""
+def test_no_read_only_instruction():
+    """Read-only is enforced by the mount; no text tells anyone not to write the library."""
     for name, text in _texts().items():
         assert "never write" not in text.lower(), name
         assert "The library is read-only" not in text, name
@@ -248,7 +248,7 @@ def test_amendment_e_no_read_only_instruction():
     )
 
 
-def test_amendment_b_guide_sentences_kept():
+def test_the_guide_sentences_are_kept():
     for name, t in _texts().items():
         assert "does not run the tests" not in t, name
     # the two GUIDE sentences that wait for the lead's decision are kept

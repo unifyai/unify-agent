@@ -140,7 +140,7 @@ def test_v2_settings_that_contradict_library_are_named_only_with_library_on():
 def test_the_write_brief_points_to_where_an_outcome_is_and_never_to_a_reading_list():
     """The batch map names no reading list; the brief points to the parts where each episode ended."""
     brief = " ".join(pv.write_brief_now().split())
-    assert "required_parts" not in brief and "covered" not in brief
+    assert "required_parts" not in brief and "neither covered" not in brief
     assert "starting from each one's `end_parts`" in brief
 
 
@@ -153,6 +153,7 @@ def test_the_curate_brief_asks_for_the_retirement_reason_the_gate_requires(tmp_p
     brief = " ".join(pv.curate_brief_now().split())
     assert '"retired": {"<retired id>": "<one-line reason>"}' in brief
     assert "together with its tests, with a one-line reason in `retired`." in brief
+    assert '"kept": {"<item id, or INDEX.md>": "<why it stays as it is>"}' in brief
     from tests.memory_v2.test_curate import _state
 
     written = curate.stage_inputs(tmp_path, _state())

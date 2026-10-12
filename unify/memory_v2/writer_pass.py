@@ -1659,7 +1659,9 @@ def transcript_lines(
             extra["compacted"] = True
         try:
             plain = _scrub(red.obj(json.loads(json.dumps(m, default=str))))
-            msg = plain if i == first_user else _plain(plain, string_chars)
+            # the first user message and the brief's name are kept whole; every other string is cut
+            whole = i == first_user or (i == 0 and isinstance(brief, str))
+            msg = plain if whole else _plain(plain, string_chars)
             line = json.dumps(
                 {"pass_id": pass_id, "i": i, "message": msg, **extra},
                 sort_keys=True,

@@ -81,8 +81,8 @@ GUIDE_POINTER = (
     "item that does it. Using the library is optional: use an item when it fits, and otherwise work as usual.\n"
     "\n"
     "Finding items:\n"
-    "- `print(memory.index())` prints the library index: every function (its id, signature, one-line summary "
-    "and status) and every note (its path, description and the functions it uses). "
+    "- `print(memory.index())` prints the library index: every function (its id, signature, one-line summary, "
+    "status and effect: whether it reads, writes or is unknown) and every note (its path, description and the functions it uses). "
     '`print(memory.index("<package>"))` prints one package\'s section.\n'
     "- `print(memory.show(\"<id>\"))` prints one item in full: a function's source and docstring, or a note's "
     "text, then its links, status, test and use records, and recent changes.\n"
@@ -356,10 +356,11 @@ _CURATE = (
     "notes that use the same functions. For: what to merge or generalise.\n"
     "- /inputs/curate/same_shape.json: groups of functions whose bodies have the same structure. For: more "
     "merge and generalisation candidates.\n"
-    "- <<suspects_path>>: the suspect items, each with why it is suspect (input refusals, errors or negative "
-    "signals after use, in at least two episodes, or a suspect dependency), the episodes involved, the first "
-    "version whose behaviour changed, and, when an earlier version has a clean use record, that version as the "
-    "proposed rollback. For: what to repair or roll back.\n"
+    "- <<suspects_path>>: the suspect items, each with why it is suspect (errors or negative outcomes after use, "
+    "in at least two episodes, or a suspect dependency), the episodes involved, the first version whose behaviour "
+    "changed, and, when an earlier version has a clean use record, that version as the proposed rollback. An "
+    "input refusal (a `MemoryInputError` raised on an input the item was not built for) is counted and reported, "
+    "never a failure. For: what to repair or roll back.\n"
     "- /inputs/curate/rollback/<n>/: the files (module and tests) of each proposed rollback version; "
     "/inputs/curate/rollback/index.json names each one's item, directory and commit. For: rolling back; these "
     "files stand in for git history, which the box does not have.\n"
@@ -387,14 +388,16 @@ _CURATE = (
     "reason in `retired`.\n"
     "- Fix broken links and add missing ones between notes and functions.\n"
     "- Regroup packages when that makes the index clearer, keeping each moved function's old id as an alias.\n"
-    "- Leave alone what is fine: changing nothing is a valid result when no candidate is really one job.\n"
+    "- Leave alone what is fine, and say why in `kept`: changing nothing is a valid result when no candidate is "
+    "really one job.\n"
     "- Write the manifest, /memory/.pass/manifest.json (never committed):\n"
     '  {"items": [{"item": "<id>", "kind": "function" or "note", "input": "<form>", '
     '"source_episodes": [...], "tests": [...], "covers": [...]}], "deleted": ["<retired id>"], '
     '"retired": {"<retired id>": "<one-line reason>"}, "deleted_tests": ["<test file removed with them>"], '
-    '"aliases": {"<old id>": "<new id>"}, '
+    '"aliases": {"<old id>": "<new id>"}, "kept": {"<item id, or INDEX.md>": "<why it stays as it is>"}, '
     '"tests_changed": {"<test>": "<reason>"}, "why": "<one line>", "summary": "<what changed>"}\n'
-    "  `items` lists every item you added or changed, with the covers of the items it replaces. "
+    "  `items` lists every item you added or changed, with the covers of the items it replaces. `kept` names each "
+    "item a reason in your inputs points at that you leave as it is, with why. "
     + _RUN_TESTS
     + "\n"
     "\n"
@@ -407,11 +410,13 @@ _CURATE = (
     "4. New tests check exact expected values, " + _TRUST + " " + _DETERMINISM + "\n"
     "5. Act on records that span at least two episodes: one episode never decides.\n"
     "6. Fixture files stay where they are: a test may read a fixture from any package's `tests/data/`.\n"
-    "7. Never store credentials or session tokens. " + _HONESTY + "\n"
+    "7. A reason in your inputs is dealt with when this pass changes an item it names, or keeps that item with a "
+    "reason in `kept`; otherwise it is raised again by a later curate pass.\n"
+    "8. Never store credentials or session tokens. " + _HONESTY + "\n"
     "\n" + _CURATE_GATE + "\n" + _REPAIR + "\n" + "<<limits>>" + "\n"
     "# Done\n"
     "You are done when each overlap candidate and suspect item in your inputs has been merged, generalised, "
-    "repaired, rolled back or retired, or left as it is with the reason in your summary, and your changes have "
+    "repaired, rolled back or retired, or kept as it is with the reason in `kept`, and your changes have "
     "passed the gate or are kept as a draft with their failure. Then call `finish(summary)`.\n"
 )
 

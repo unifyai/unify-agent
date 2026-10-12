@@ -103,7 +103,10 @@ def test_a_shared_block_is_listed_once_and_readable_as_its_own_part(
     bmap = bm.build_batch_map(eps.__getitem__, list(eps), sh)
     # listed once in shared_blocks, never as a part of any row
     assert [b["id"] for b in bmap["shared_blocks"]] == sorted(sh)
-    assert all(f"shared:{bid}" not in json.dumps(row) for row in bmap["episodes"])
+    assert all(
+        "required_parts" not in row and row["request"].startswith(f"[shared:{bid}]")
+        for row in bmap["episodes"]
+    )
     assert json.loads(bm.part_text(eps["e0"], f"shared:{bid}", sh)) == PRE
 
 

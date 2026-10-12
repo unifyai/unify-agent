@@ -1598,11 +1598,11 @@ def test_transcript_is_redacted_by_value_before_any_cut_and_bounded():
     assert rows[1]["message"] == {"role": "system", "content": f"(brief sha256 {sha})"}
     kept = rows[1:-1]
     assert rows[-1]["truncated"] == len(messages) - len(kept) > 0
-    # every string is cut, except in the first user message, which is kept whole (redacted)
+    # every string is cut, except the brief's name and the first user message, which are kept whole (redacted)
     assert all(
         len(v) <= 50
         for r in kept
-        if r["i"] != 1
+        if r["i"] not in (0, 1)
         for v in r["message"].values()
         if isinstance(v, str)
     )

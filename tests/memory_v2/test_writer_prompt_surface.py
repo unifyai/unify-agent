@@ -150,13 +150,21 @@ def test_optional_inputs_appear_only_when_present(registry):
         assert denied not in curate
     for tool in _WRITE_ONLY_TOOLS:
         assert f"`{tool}`" not in curate
+    assert '"kept": {' in curate and "never a failure" in curate
 
 
 def test_a_sentence_relying_on_a_tool_appears_only_when_it_is_registered(registry):
     names = {s.name for s in registry}
     text = lp.write_brief_now(staging=True, pool=True)
-    for tool in _WRITE_ONLY_TOOLS:
-        assert (f"`{tool}`" in text) == (tool in names), tool
+    # `pool` is also the manifest field's name; the tool is named by what it does
+    uses = {
+        "pool": "`pool` lists, filters and shows",
+        "similar": "`similar` finds",
+        "delegate": "with `delegate`",
+        "replay": "calling `replay`",
+    }
+    for tool, phrase in uses.items():
+        assert (phrase in text) == (tool in names), tool
     # the Tools section is rendered from the registry, one bullet per registered tool
     section = text.split("# Tools\n", 1)[1].split("\n# ", 1)[0]
     assert [ln for ln in section.splitlines() if ln.startswith("- `")] == [
