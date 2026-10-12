@@ -124,12 +124,30 @@ Neither marker implies the other. A test carrying neither is one you are
 asserting never reaches a model; if you find a model-reaching test with
 neither, that is a missing marker rather than a free test.
 
+### `live_provider`, and runs without a provider key
+
+A test that only checks what the harness does with a model's reply scripts
+the reply (`tests/scripted_model.py`; in `tests/async_tool_loop`, the
+`loop_model` fixture) and carries neither `llm_call` nor `eval`: it reaches
+no model. A test whose subject is the live model or provider is marked
+`live_provider` (together with `llm_call`). It needs a provider key: without
+one it is skipped ("needs a provider key; runs in the key-bound half"), with
+`UNIFY_TEST_REQUIRE_PROVIDER_KEY=1` it fails instead, and its calls never
+replay from the cache.
+
+The keyless guard (`tests/conftest.py`) makes any other test that reaches a
+provider fail with "reached the provider without a script; script it or mark
+it live_provider". `UNIFY_TEST_KEYLESS=1` turns it on, `UNIFY_TEST_KEYLESS=0`
+off; unset, it is on when no chat provider key is loaded.
+
 ### Running by Category
 
 ```bash
 parallel_run --eval-only tests           # Only eval tests
 parallel_run --symbolic-only tests       # Only symbolic tests
 parallel_run --deterministic-only tests  # Only tests carrying neither marker
+parallel_run --keyless tests             # No provider key: live_provider deselected
+parallel_run --live-only tests           # Only the tests that need a provider key
 ```
 
 ---
@@ -173,6 +191,8 @@ parallel_run tests/ -- -k 'pattern'             # Filter by test name
 | `--eval-only` | Only `@pytest.mark.eval` tests |
 | `--symbolic-only` | Only non-eval tests |
 | `--deterministic-only` | Only tests with no model in the loop |
+| `--keyless` | Deselect `live_provider` tests and refuse any other provider call (`UNIFY_TEST_KEYLESS=1`) |
+| `--live-only` | Only `live_provider` and `requires_provider_key` tests, fresh (`UNIFY_TEST_REQUIRE_PROVIDER_KEY=1`, `UNILLM_CACHE=false`) |
 | `--env K=V` | Set environment variable (repeatable) |
 | `--no-cache` | Shorthand for `--env UNILLM_CACHE=false` |
 | `--repeat N` | Run each test N times |

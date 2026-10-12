@@ -8,7 +8,7 @@
 #
 # After calling parse_test_args, these variables are populated:
 #   SERIAL, TIMEOUT, SESSION_TIMEOUT, NAME_PATTERN, EVAL_ONLY, SYMBOLIC_ONLY,
-#   DETERMINISTIC_ONLY, REPEAT_COUNT, MAX_JOBS,
+#   DETERMINISTIC_ONLY, KEYLESS, LIVE_ONLY, REPEAT_COUNT, MAX_JOBS,
 #   ENV_OVERRIDES[], PYTEST_EXTRA_ARGS[], PYTEST_COLLECTION_ARGS[],
 #   POSITIONAL_ARGS[]
 #
@@ -37,6 +37,8 @@ parse_test_args() {
   EVAL_ONLY=0
   SYMBOLIC_ONLY=0
   DETERMINISTIC_ONLY=0
+  KEYLESS=0
+  LIVE_ONLY=0
   REPEAT_COUNT=1
   MAX_JOBS=$_PARSE_ARGS_NUM_CORES
   ENV_OVERRIDES=()
@@ -103,6 +105,21 @@ parse_test_args() {
         ;;
       --symbolic-only)
         SYMBOLIC_ONLY=1
+        shift
+        ;;
+      --keyless)
+        # No provider key: the live_provider tests are deselected, and any
+        # other test that reaches a provider fails with the keyless guard's
+        # error (tests/conftest.py) instead of the provider's 401.
+        KEYLESS=1
+        ENV_OVERRIDES+=( "UNIFY_TEST_KEYLESS=1" )
+        shift
+        ;;
+      --live-only)
+        # The tests that need a provider key, run fresh: a key that failed
+        # to load fails them instead of skipping them.
+        LIVE_ONLY=1
+        ENV_OVERRIDES+=( "UNIFY_TEST_REQUIRE_PROVIDER_KEY=1" "UNILLM_CACHE=false" )
         shift
         ;;
       --repeat)
@@ -190,6 +207,10 @@ parse_test_args() {
     echo "Error: --eval-only, --symbolic-only and --deterministic-only are mutually exclusive." >&2
     return 2
   fi
+  if (( KEYLESS + LIVE_ONLY > 1 )); then
+    echo "Error: --keyless and --live-only are mutually exclusive." >&2
+    return 2
+  fi
 
   return 0
 }
@@ -221,6 +242,10 @@ Options:
   --eval-only          Run only @pytest.mark.eval tests
   --symbolic-only      Run only non-eval tests
   --deterministic-only Run only tests with no model in the loop
+  --keyless            No provider key: deselect live_provider tests and refuse
+                       any other provider call (UNIFY_TEST_KEYLESS=1)
+  --live-only          Run only the tests that need a provider key, fresh
+                       (live_provider or requires_provider_key)
   --repeat N           Run each test N times
   -h, --help           Show this help
   --                   Pass remaining args directly to pytest
@@ -234,6 +259,8 @@ Examples:
   $script_name -j 8 tests/              # Limit to 8 concurrent
   $script_name --eval-only tests/       # Only eval tests
   $script_name --no-cache tests/foo.py  # Fresh LLM inference
+  $script_name --keyless tests/async_tool_loop    # Without a provider key
+  $script_name --live-only tests/async_tool_loop  # The key-needing tests only
   $script_name -e UNIFY_STORE_PATH=/tmp/shared.sqlite tests/  # One shared store
   $script_name tests/ -- -v --tb=short  # Pass args to pytest
   $script_name tests/ -- -k 'gpt-5'     # Filter by test name pattern
