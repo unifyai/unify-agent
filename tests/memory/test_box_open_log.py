@@ -297,3 +297,56 @@ def test_concurrent_cells_each_have_their_own_complete_record(tmp_path):
     assert len(results) == 4
     for res in results.values():
         assert res["dead"] is False and res["reason"] == "ok" and len(res["rows"]) == 1
+
+
+@needs_bwrap
+def test_the_host_drops_its_write_end_at_spawn_so_the_pipe_ends_when_the_box_exits(
+    tmp_path,
+):
+    inputs = _inputs(tmp_path)
+    log = sr.BoxOpenLog()
+    held = {}
+
+    def spawned():
+        log.close_write()
+        held["host_write_end"] = log._w
+
+    sr.run_confined(
+        [str(sr.PYTHON), "-s", "-c", "open('/inputs/x.txt').close()"],
+        ro={inputs: "/inputs"},
+        env={"PYTHONPATH": "/inputs", **log.env},
+        pass_fds=log.pass_fds,
+        on_spawn=spawned,
+    )
+    # the call has returned and finish() has not run: the drain reached end of file when the box exited
+    log._thread.join(5)
+    assert held["host_write_end"] is None and not log._thread.is_alive()
+    res = log.finish()
+    assert res["reason"] == "ok" and res["rows"] == [
+        {"event": "open", "path": "/inputs/x.txt", "mode": "r"},
+    ]
+
+
+@needs_bwrap
+def test_lines_the_box_writes_after_the_host_dropped_its_end_are_kept(tmp_path):
+    inputs = _inputs(tmp_path)
+    code = "import time\ntime.sleep(0.5)\nopen('/inputs/x.txt').close()\n"
+    with sr.BoxOpenLog() as log:
+        sr.run_confined(
+            [str(sr.PYTHON), "-s", "-c", code],
+            ro={inputs: "/inputs"},
+            env={"PYTHONPATH": "/inputs", **log.env},
+            pass_fds=log.pass_fds,
+            on_spawn=log.close_write,
+        )
+    assert log.result["rows"] == [
+        {"event": "open", "path": "/inputs/x.txt", "mode": "r"},
+    ]
+    assert log.result["dropped"] == 0
+
+
+def test_closing_the_write_end_is_idempotent_and_finish_still_reports():
+    log = sr.BoxOpenLog()
+    log.close_write()
+    log.close_write()
+    assert log.pass_fds == () and log.finish()["reason"] == "no_start"

@@ -32,7 +32,7 @@ import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from .example_calls import CallRecord
@@ -431,11 +431,14 @@ def run_confined(
     spool: tuple[Path, Path] | None = None,
     late_ro: dict[Path, str] | None = None,
     pass_fds: tuple[int, ...] = (),
+    on_spawn: Callable[[], None] | None = None,
 ) -> SandboxResult:
     """Run *argv* in a bubblewrap box; ``ro``/``rw`` map host paths to their paths inside the box.
 
     *pass_fds* are host descriptors the box inherits under the same numbers (the write end of an open-log pipe,
-    :class:`BoxOpenLog`); never a descriptor of a host file.
+    :class:`BoxOpenLog`); never a descriptor of a host file. *on_spawn* runs once the box has started, before the
+    host waits on it (:meth:`BoxOpenLog.close_write`: the host drops its copy of the write end, so the pipe reaches
+    end of file when the box exits).
 
     *late_ro* paths are bound read-only after the ``rw`` binds, so a path inside a writable bind stays
     read-only (library mode's generated files in the writer's box). Each source must be an
@@ -540,6 +543,12 @@ def run_confined(
             env={"PATH": "/usr/bin:/bin"},
             pass_fds=(env_fd, bpf_fd, *pass_fds),
         )
+    if on_spawn is not None:
+        try:
+            on_spawn()
+        except BaseException:
+            _kill_box(proc)
+            raise
     tails: list[_Tail] = []
 
     def result(returncode: int, timed_out: bool) -> SandboxResult:
@@ -657,6 +666,14 @@ class BoxOpenLog:
     def pass_fds(self) -> tuple[int, ...]:
         return (self._w,) if self._w is not None else ()
 
+    def close_write(self) -> None:
+        """Close the host's copy of the write end (pass it as :func:`run_confined`'s *on_spawn*): from then on only
+        the box holds it, so the drain reads end of file when the box exits, and the host never holds a writable
+        end while the box runs. Idempotent."""
+        if self._w is not None:
+            os.close(self._w)
+            self._w = None
+
     def __enter__(self) -> "BoxOpenLog":
         return self
 
@@ -714,9 +731,7 @@ class BoxOpenLog:
         """
         if self.result is not None:
             return self.result
-        if self._w is not None:
-            os.close(self._w)
-            self._w = None
+        self.close_write()
         self._thread.join(_OPEN_DRAIN_WAIT_S)
         self._stop.set()
         self._thread.join(1.0)

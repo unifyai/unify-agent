@@ -769,6 +769,7 @@ def box_cell(
             timeout_s=timeout_s,
             env={"PYTHONPATH": "/inputs:/memory", **open_log.env},
             pass_fds=open_log.pass_fds,
+            on_spawn=open_log.close_write,
         )
     finally:
         result = open_log.finish()
