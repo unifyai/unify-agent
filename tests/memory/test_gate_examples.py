@@ -356,3 +356,111 @@ def test_a_deleted_functions_fixtures_must_stay_used(tmp_path):
     run.res.reasons.clear()
     ex.retained(parent)
     assert not _reasons(run, "G5")
+
+
+# --- the gate's library-mode flow ------------------------------------------------------------------------------
+
+OTHER = "memory.grid.fill:other"
+
+
+class _LibraryGate:
+    """A gate with only what the library-mode flow reads: checks on, no stored covers."""
+
+    def __new__(cls, covers=()):
+        from unify.memory.gate import Gate
+
+        g = Gate.__new__(Gate)
+        g.library_mode = SimpleNamespace(checks=True, layout=True, role="write", episodes=lambda eid: None)
+        g.ev = SimpleNamespace(covers=lambda: set(covers))
+        g.lookup = lambda eid, idx: None
+        return g
+
+
+def _flow_run(tmp_path, *, deleted=()):
+    run = _run(tmp_path, [_item()], changed=True, deleted=deleted)
+    run.p_tree = tmp_path / "p"
+    (run.p_tree / "memory/grid").mkdir(parents=True, exist_ok=True)
+    src = "def flood_fill(grid, start, colour):\n    return grid\n\n\ndef other(x):\n    return x\n"
+    (run.p_tree / "memory/grid/fill.py").write_text(src)
+    (run.c_tree / "memory/grid/fill.py").write_text(src.replace("return x", "return [x]"))
+    run.p_files = {"memory/grid/fill.py": ("100644", "a")}
+    run.c_files["memory/grid/fill.py"] = ("100644", "b")
+    run.changed = ["memory/grid/fill.py"]
+    run.p_bodies = {ITEM: ("function", "b1", True), OTHER: ("function", "o1", True)}
+    run.c_bodies = {ITEM: ("function", "b1", True), OTHER: ("function", "o2", True)}
+    run.man.skeleton, run.man.unlisted = [], []
+    return run
+
+
+def test_library_functions_need_no_action_cover_in_g2(tmp_path):
+    from unify.memory.gate import Gate
+
+    run = _flow_run(tmp_path)
+    Gate._g2(_LibraryGate(), run)
+    assert run.res.passed and not run.res.reasons
+
+
+def test_the_behaviour_check_compares_parent_calls_and_refuses_an_uncalled_function(tmp_path):
+    from unify.memory.gate import Gate
+
+    run = _flow_run(tmp_path)
+    calls = [_call(_arg("grid", [[0]]), result_sha="a")]
+    run.calls_base = {"memory/grid/tests": _record(calls)}
+    run.calls_reg = {"memory/grid/tests": _record(calls)}
+    Gate._behaviour(_LibraryGate(), run, set(), set(), set(), set())
+    assert run.same == {ITEM}
+    assert _reasons(run, "G3") == [
+        f"{OTHER} is in a changed module but no test of the parent calls it and it has no stored cover; its "
+        "behaviour cannot be compared, so change it only with a test listed under it that fails on the parent's "
+        "library",
+    ]
+    run = _flow_run(tmp_path / "2")
+    run.calls_base = {"memory/grid/tests": _record(calls)}
+    run.calls_reg = {"memory/grid/tests": _record([_call(_arg("grid", [[0]]), result_sha="b")])}
+    Gate._behaviour(_LibraryGate(), run, set(), {OTHER}, set(), set())
+    assert len(_reasons(run, "G3")) == 1 and "changes behaviour without a test" in _reasons(run, "G3")[0]
+
+
+def test_a_stored_function_with_covers_and_an_input_line_takes_the_transition_path(tmp_path):
+    from unify.memory.gate import Gate
+
+    run = _flow_run(tmp_path)
+    (run.p_tree / "memory/grid/fill.py").write_text(
+        'def flood_fill(grid, start, colour):\n    return grid\n\n\ndef other(x):\n    """Other.\n\n    Input: text\n'
+        '    """\n    return x\n',
+    )
+    run.calls_base = {"memory/grid/tests": _record([_call(_arg("grid", [[0]]), result_sha="a")])}
+    run.calls_reg = dict(run.calls_base)
+    g = _LibraryGate(covers={(OTHER, "e1", 0)})
+    probed = []
+    g._probe = lambda run, item, recorded, strict: probed.append(item) or SimpleNamespace(
+        why=None, verdict=lambda: None, item=item,
+    )
+    g._run_probe = lambda run, pr, work, budget: True
+    Gate._behaviour(g, run, set(), set(), set(), set())
+    assert probed == [OTHER] and run.same == {ITEM, OTHER} and run.res.passed
+    assert any("has no example call in the parent's tests; compared on its stored covers" in n for n in run.notes)
+
+
+def test_g5_in_library_mode_keeps_a_deleted_functions_fixtures_used(tmp_path):
+    from unify.memory.gate import Gate
+
+    run = _flow_run(tmp_path, deleted=[OTHER])
+    run.calls_base = {"memory/grid/tests": _record([_call(_arg("x", 1), item=OTHER, opened=(GRID,))])}
+    run.calls_cand = {"memory/grid/tests": _record([])}
+    Gate._g5(_LibraryGate(), run)
+    assert _reasons(run, "G5") == [
+        f"{OTHER} is deleted, but the fixtures its examples ran on ({GRID}) are used by no remaining function's "
+        "examples; a kept function's tests must take each over",
+    ]
+
+
+def test_an_effect_comes_from_episode_covers_only():
+    from unify.memory.library_checks import derive_effect
+    from unify.memory.procedures import Cover
+
+    episodes = {"w": SimpleNamespace(actions=[SimpleNamespace(kind="tool", effect="write")])}
+    assert derive_effect([Cover("w", "episode", runner="tool")], episodes.get) == "write"
+    assert derive_effect([Cover("w", "episode", runner="worktree")], episodes.get) == "write"
+    assert derive_effect([Cover("w", "cell", index=0)], episodes.get) is None
+    assert derive_effect([], episodes.get) is None

@@ -266,7 +266,8 @@ class ExampleChecks:
         """(path -> provenance entry, path -> views) of the fixtures of *item*'s package."""
         fx, run = self.part("fixtures"), self.run
         files = self._data_files(item)
-        in_pass = {p: e for p, e in dict(getattr(run, "fixtures_verified", {}) or {}).items() if p in files}
+        verified = dict(getattr(run, "fixtures_verified", {}) or {})
+        in_pass = {p: v["entry"] for p, v in verified.items() if p in files}
         stored = getattr(self.gate.ev, "fixture_provenance", None)
         ledger, notes = fx.ledger_for(
             files,
