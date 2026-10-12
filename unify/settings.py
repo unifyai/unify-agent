@@ -442,6 +442,9 @@ class ProductionSettings(BaseSettings):
     # needs every episode covered or dismissed); ``optional``: finish never needs it, and the episodes left are
     # recorded as unread.
     UNIFY_MEMORY_LIBRARY_COVERAGE: str = "required"
+    # How the actor's prompt reaches the library index: ``inline`` (default) ends it with the index view;
+    # ``pointer`` ends it with a constant guide pointing to memory.index(), memory.show() and memory.find().
+    UNIFY_MEMORY_LIBRARY_ACTOR_INDEX: str = "inline"
     # Memory v2.1: USD per recorded token of a pass's cap (v2's rate until the offline replay sizes it).
     UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN: str = "0.00000073"
     UNIFY_MEMORY_LIBRARY_PASS_WALL_S: int = 2700
@@ -681,6 +684,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_LIBRARY_ANALYSTS",
         "UNIFY_MEMORY_LIBRARY_POOL",
         "UNIFY_MEMORY_LIBRARY_COMPACT",
+        "UNIFY_MEMORY_LIBRARY_ACTOR_INDEX",
         "UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN",
         "UNIFY_MEMORY_LIBRARY_PASS_WALL_S",
         "UNIFY_MEMORY_V2_WRITER_JOURNAL",

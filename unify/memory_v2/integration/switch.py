@@ -671,6 +671,11 @@ LIBRARY_COMPACT = "UNIFY_MEMORY_LIBRARY_COMPACT"
 #: episode covered or dismissed, spec v2.1 §7.4); ``optional``: finish never needs it, and an episode left neither
 #: covered nor dismissed is recorded as unread (the pass's coverage and, with the pool, an ``unread`` entry).
 LIBRARY_COVERAGE = "UNIFY_MEMORY_LIBRARY_COVERAGE"
+#: How the actor's prompt reaches the library index: ``inline`` (default) ends the prompt with the index view, as
+#: built; ``pointer`` ends it with a constant guide that points to ``memory.index()``, ``memory.show()`` and
+#: ``memory.find()`` in a cell, so the prompt never changes as the library grows.
+LIBRARY_ACTOR_INDEX = "UNIFY_MEMORY_LIBRARY_ACTOR_INDEX"
+LIBRARY_ACTOR_INDEX_VALUES = ("inline", "pointer")
 LIBRARY_COVERAGE_VALUES = ("required", "optional")
 LIBRARY_MAX_READS_DEFAULT = 400
 #: The v2.1 writer's USD per recorded token (spec §15, F9): v2's rate until the offline replay sizes it for coverage.
@@ -859,6 +864,20 @@ def parse_library_pool(v: Any) -> str:
 
 def library_pool(settings: Any) -> bool:
     return parse_library_pool(getattr(settings, LIBRARY_POOL, "") or "") == "on"
+
+
+def parse_library_actor_index(v: Any) -> str:
+    """``UNIFY_MEMORY_LIBRARY_ACTOR_INDEX``: ``inline`` (also for empty) or ``pointer``."""
+    value = _stripped(v).lower() or "inline"
+    if value not in LIBRARY_ACTOR_INDEX_VALUES:
+        raise ValueError(
+            f"{LIBRARY_ACTOR_INDEX} must be empty, 'inline' or 'pointer', not {v!r}"[:200],
+        )
+    return value
+
+
+def library_actor_index(settings: Any) -> str:
+    return parse_library_actor_index(getattr(settings, LIBRARY_ACTOR_INDEX, "") or "")
 
 
 def parse_library_compact(v: Any) -> str:
@@ -1051,6 +1070,7 @@ PARSERS = {
     LIBRARY_ANALYSTS: parse_library_analysts,
     LIBRARY_POOL: parse_library_pool,
     LIBRARY_COMPACT: parse_library_compact,
+    LIBRARY_ACTOR_INDEX: parse_library_actor_index,
     LIBRARY_COVERAGE: parse_library_coverage,
     LIBRARY_WRITER_USD_PER_TOKEN: parse_library_writer_usd_per_token,
     LIBRARY_PASS_WALL_S: parse_library_pass_wall_s,
