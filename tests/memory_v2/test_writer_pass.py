@@ -697,7 +697,9 @@ def test_hostile_cells_and_arguments_never_raise_on_the_host(tmp_path):
     assert model.outputs["big"].strip() == "BIG 1"
     assert "null bytes" in model.outputs["nul"]
     assert model.outputs["utf8"].strip() == "A\ufffd\ufffdB"
-    assert model.outputs["deep"].startswith("unreadable arguments: RecursionError")
+    assert model.outputs["deep"].startswith(
+        "refused: unreadable arguments: RecursionError",
+    )
     assert not out.passed
     assert any(
         r.startswith("manifest: not valid JSON (RecursionError") for r in out.reasons

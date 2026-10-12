@@ -186,7 +186,7 @@ def verify(
     a caller never keeps it as the instance's result."""
     m = _ITEM.match(item)
     if not m:
-        return [{"verdict": "refused: not a function item id"}]
+        return [{"verdict": "not replayable: not a function item id"}]
     fn_import = f"from memory.{m['pkg']}.{m['mod']} import {m['fn']}"
     out = []
     for inst in replaces if isinstance(replaces, list) else []:
@@ -203,7 +203,7 @@ def verify(
             Exception
         ) as exc:  # noqa: BLE001 - a bad entry is a verdict, never a crash
             out.append(
-                {**at, "verdict": f"refused: {type(exc).__name__}: {str(exc)[:120]}"},
+                {**at, "verdict": f"not replayable: {type(exc).__name__}: {str(exc)[:120]}"},
             )
             continue
         job["rewritten_call"] = str(inst["call"]).strip()

@@ -66,6 +66,7 @@ SPEC = ToolSpec(
         "unknown_episode": "no recorded episode {episode}.",
         "unknown_cell": "episode {episode} has no cell {cell}; its cells are {cells}.",
         "no_parse": "the code does not parse as Python ({error}).",
+        "not_available": "similar is not available in this pass",
     },
     summary=(
         "other recorded episodes containing the same normalised code as a cell (`episode`, `cell`) or as "
@@ -75,8 +76,10 @@ SPEC = ToolSpec(
 
 
 def _refuse(form: str, **fields: object) -> str:
-    """The same text as :func:`.tool_spec.refusal` for this tool, without loading the whole registry."""
-    return "refused: " + SPEC.refusals[form].format(**fields)
+    """This tool's refusal *form* (:func:`.tool_spec.refusal`; the reply keeps its form code)."""
+    from .tool_spec import refusal
+
+    return refusal(SPEC.name, form, **fields)
 
 
 # --- the index -------------------------------------------------------------------------------------------------
@@ -401,7 +404,7 @@ def handle(args: dict, ctx: Context) -> str:
     try:
         own, rows, heading = _query(args, ctx)
     except _Refusal as r:
-        return str(r)
+        return r.args[0]
     index = load_index(ctx.index_dir)
     others = {e: d for e, d in index.items() if e != own}
     postings: dict[str, list[dict]] = {}

@@ -27,7 +27,7 @@ def test_resolve_refuses_escape(tmp_path: Path):
     (tmp_path / "secret").write_text("x")
     (root / "link").symlink_to(tmp_path / "secret")
     roots = {"/inputs": root}
-    with pytest.raises(PermissionError, match="refused: outside the readable roots"):
+    with pytest.raises(PermissionError, match="outside the readable roots"):
         v.resolve("/inputs/../secret", roots)
     with pytest.raises(PermissionError):
         v.resolve("/inputs/link", roots)
@@ -121,9 +121,8 @@ def test_the_reading_rule_is_gone():
 def test_grep_refuses_an_invalid_pattern(tmp_path: Path):
     root = tmp_path / "inputs"
     root.mkdir()
-    assert v.grep("(", "/inputs", {"/inputs": root}).startswith(
-        "refused: invalid pattern:",
-    )
+    with pytest.raises(v.PatternProblem, match="^invalid pattern:"):
+        v.grep("(", "/inputs", {"/inputs": root})
 
 
 def test_grep_bounded_runs_in_a_child_and_times_out(tmp_path: Path):

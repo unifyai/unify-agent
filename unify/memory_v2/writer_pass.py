@@ -1421,6 +1421,15 @@ def _layout_problems(
     return sorted(found)
 
 
+def _accepted_manifest(box: Path) -> dict | None:
+    """The raw manifest dict in *box* at an accepted finish, or None when there is none that parses to an object."""
+    try:
+        found, manifest, problem = _read_manifest(box)
+    except Exception:  # noqa: BLE001 - recording the manifest never fails the finish
+        return None
+    return manifest if found and problem is None and isinstance(manifest, dict) else None
+
+
 def _layout_refusal(found: list[str]) -> str:
     shown = "; ".join(f"/memory/{x}" for x in found[:10])
     more = f" (and {len(found) - 10} more)" if len(found) > 10 else ""
@@ -1877,6 +1886,9 @@ class WriterPass:
         # (None: not opened yet; False: not written this pass)
         self.tool_events: list[dict] = []
         self._events_file: Path | None | bool = None
+        # the raw manifest dict of the pass's last accepted finish (either role), else None; consolidation reads it
+        # for what the curator kept
+        self.final_manifest: dict | None = None
         # v2.1 r5 (r4 §1): request blocks shared by most episodes (id -> text), shown as markers; {} until staged
         self._shared: dict[str, str] = {}
         self._inputs_dir: Path | None = (
@@ -2177,7 +2189,7 @@ class WriterPass:
         item = str(args.get("item", ""))
         found, manifest, problem = _read_manifest(box)
         if not found or problem is not None or not isinstance(manifest, dict):
-            return f"not run: {problem or 'no manifest'}"
+            return _wt.refusal("replay", "not_run", reason=problem or "no manifest")
         entry = next(
             (
                 i
@@ -2187,7 +2199,11 @@ class WriterPass:
             None,
         )
         if entry is None or not entry.get("replaces"):
-            return f"not run: the manifest lists no item {item!r} with replaces"
+            return _wt.refusal(
+                "replay",
+                "not_run",
+                reason=f"the manifest lists no item {item!r} with replaces",
+            )
         replaces = entry["replaces"] if isinstance(entry["replaces"], list) else []
         try:
             # each named episode's recorded office workspace, exported once (none without a worktree repo)
@@ -2645,6 +2661,33 @@ class WriterPass:
         self.tool_events.append(row)
         self._write_event(pass_id, row)
 
+    def _write_refusal_codes(self, pass_id: str) -> None:
+        """Write ``<pass_record_root>/<pass id>/refusal-codes.json``: every refusal form code by tool
+        (:func:`.tool_spec.refusal_codes`), the codes this pass's ``refusal.form`` fields are drawn from. A regular
+        file created new (never through a link, never over an existing file); a failure skips it, never the pass.
+        """
+        root = getattr(self.cfg, "pass_record_root", None)
+        if not root:
+            return
+        from .tool_spec import refusal_codes
+
+        try:
+            folder = Path(root) / pass_id
+            for d in (Path(root), folder):
+                d.mkdir(parents=True, exist_ok=True)
+                if d.is_symlink() or not d.is_dir():
+                    return
+            fd = os.open(
+                folder / "refusal-codes.json",
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o644,
+            )
+            with os.fdopen(fd, "w") as fh:
+                json.dump(refusal_codes(), fh, sort_keys=True, indent=1)
+                fh.write("\n")
+        except OSError:
+            pass  # a measurement never stops a pass
+
     def _write_event(self, pass_id: str, row: dict) -> None:
         """Append *row* to ``<pass_record_root>/<pass id>/tool-events.jsonl``. The file is created new (never through
         a link, never over an existing file) at the pass's first event; a failure stops the file, never the pass.
@@ -2773,20 +2816,18 @@ class WriterPass:
                     )
                 return _wt.Reply(text, paths=({"path": virtual, "mode": mode},))
             where = ({"path": virtual, "mode": "search"},)
-            text = await asyncio.to_thread(
-                _views.grep_bounded,
-                str(args.get("pattern", "")),
-                vpath,
-                roots,
-                offset,
-            )
-            if text.startswith("refused: "):
-                return _wt.refused(
-                    "grep",
-                    "bad_pattern",
-                    where,
-                    reason=text[len("refused: ") :],
+            try:
+                text = await asyncio.to_thread(
+                    _views.grep_bounded,
+                    str(args.get("pattern", "")),
+                    vpath,
+                    roots,
+                    offset,
                 )
+            except _views.PatternProblem as exc:
+                return _wt.refused("grep", "bad_pattern", where, reason=str(exc))
+            except PermissionError:
+                return _wt.refused("grep", "outside_roots", where, path=vpath[:200])
             return _wt.Reply(text, paths=where)
         if name == "pool":
             return _wt.pool(args, roots["/inputs"] / "pool", roots["/memory"])
@@ -2927,7 +2968,11 @@ class WriterPass:
         from .library_prompts import curate_brief_now, write_brief_now
 
         if self._role == "curate" or getattr(self.cfg, "role", "write") == "curate":
-            return curate_brief_now(cell_s=float(self.cfg.cell_timeout_s))
+            return curate_brief_now(
+                cell_s=float(self.cfg.cell_timeout_s),
+                compact=bool(self.cfg.compact),
+                finish_capped=self.cfg.max_usd is not None,
+            )
         return write_brief_now(**self._write_inputs())
 
     def _write_inputs(self) -> dict:
@@ -2937,6 +2982,9 @@ class WriterPass:
             "staging": bool(getattr(self.cfg, "fork", False)),
             "pool": bool(self.cfg.pool),
             "cell_s": float(self.cfg.cell_timeout_s),
+            # the limits the brief states: compaction when it is on, finish's refusal cap when the pass is capped
+            "compact": bool(self.cfg.compact),
+            "finish_capped": self.cfg.max_usd is not None,
         }
 
     def _keep_cancelled_work(
@@ -2990,6 +3038,7 @@ class WriterPass:
         self._batch = list(req.episodes)
         self.tool_events = []
         self._events_file = None
+        self.final_manifest = None
         self._shared = {}
         self._helper_rows = []
         self._staging_counts = None
@@ -3026,6 +3075,7 @@ class WriterPass:
             )
         parent = self.mem.head()
         spend = _Spend()
+        self._write_refusal_codes(pass_id)
         try:
             out = await self._run(req, pass_id, parent, spend)
             if self.cfg.library_mode and self.cfg.pool:
@@ -3640,7 +3690,7 @@ class WriterPass:
                     args, content = _parse_args(fn.get("arguments"))
                     reply: _wt.Reply | None = None
                     if args is None:
-                        reply = _wt.Reply(str(content), "refused", "bad_arguments")
+                        reply = _wt.general("bad_arguments", reason=str(content))
                     elif finished:
                         reply = _wt.general("pass_finished")
                     elif name == "finish":
@@ -3657,7 +3707,7 @@ class WriterPass:
                             phase[
                                 "g1_refusals"
                             ] += 1  # bounded: past it the final check refuses by name
-                            content = f"not finished: {g1}"
+                            content = _wt.refusal("finish", "manifest_problem", reason=g1)
                             reply = _wt.Reply(
                                 content,
                                 "refused",
@@ -3667,6 +3717,7 @@ class WriterPass:
                         else:
                             summary, finished = str(args.get("summary", "")), True
                             phase.update(finish_accepted=True, nothing_to_store=empty)
+                            self.final_manifest = _accepted_manifest(box)
                             content = "ok"
                             reply = _wt.Reply(
                                 content,
@@ -3680,11 +3731,7 @@ class WriterPass:
                         elif calls >= max_calls:
                             reply = _wt.general("call_limit")
                         elif remaining() < CHECK_FLOOR_S:
-                            reply = _wt.Reply(
-                                "not run: too little time left before the pass deadline",
-                                "refused",
-                                "too_late",
-                            )
+                            reply = _wt.refused("check", "too_late")
                         else:
                             checks += 1
                             calls += 1  # a check is a call against max_calls
@@ -3769,12 +3816,11 @@ class WriterPass:
                                 agent="curator" if self._role == "curate" else "writer",
                             )
                     elif name != "execute_code":
-                        content = (
-                            f"unknown tool {name!r}; use execute_code, check or finish"[
-                                :300
-                            ]
+                        reply = _wt.general(
+                            "unknown_tool",
+                            name=str(name)[:80],
+                            tools="execute_code, check, finish",
                         )
-                        reply = _wt.Reply(content, "refused", "unknown_tool")
                     elif stop is not None:
                         reply = _wt.general("stopped", reason=stop)
                     elif ran >= _MAX_CELLS_PER_TURN:

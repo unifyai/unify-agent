@@ -53,7 +53,7 @@ from . import batch_map as _bm
 from . import views as _views
 from .integration.fork_worker import QUOTA_BYTES, QUOTA_FILES, allowed
 from .sandbox_run import PRLIMIT, PYTHON, run_confined
-from .tool_spec import ToolSpec
+from .tool_spec import GENERAL, ToolSpec, form_of, refusal
 
 #: The directory under the run's state dir that holds every helper's output (``<pass>/<call>/``).
 HELPERS_DIR = "memory-helpers"
@@ -137,6 +137,7 @@ SPEC = ToolSpec(
         "unknown_episode": "{episode!r} is not a recorded episode; no helper started",
         "no_lane": "no helper can start: {why}",
         "no_time": "no helper can start: the pass's wall clock is used up",
+        "index_unreadable": "the recorded-episode index could not be read ({error}); no helper started",
     },
     requires="helper",
     summary="Hand a reading or drafting task to a helper; its files arrive under /inputs/helpers/<call>/.",
@@ -187,7 +188,15 @@ EXECUTE_CODE_SPEC = ToolSpec(
         "required": ["code"],
     },
     roles=frozenset({"helper"}),
+    refusals={
+        "work_full": "not run: {why}; execute_code is closed for the rest of this task",
+        "no_time": "not run: the pass's wall clock is used up",
+    },
 )
+
+#: Specs answering as a registered tool name for the helper only (their refusal forms are listed by
+#: :func:`.tool_spec.refusal_codes` under that name).
+VARIANT_SPECS = (EXECUTE_CODE_SPEC,)
 
 #: The tools a helper is answered for. The readers' schemas come from the shared registry (role ``helper``).
 READERS = ("overview", "read_episode", "similar", "read", "grep")
@@ -212,7 +221,7 @@ def helper_tools() -> list[dict]:
 
 
 def _refusal(spec: ToolSpec, form: str, **fields: object) -> str:
-    return "refused: " + spec.refusals[form].format(**fields)
+    return refusal(spec.name, form, **fields)
 
 
 # --- context -------------------------------------------------------------------------------------------------
@@ -314,25 +323,9 @@ def _utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-#: Stable refusal codes for the events, by a phrase the refusal text holds (first match wins).
-_FORMS = (
-    ("staging quota", "quota"),
-    ("nothing was staged", "path"),
-    ("not a recorded episode", "unknown_episode"),
-    ("not an episode id", "unknown_episode"),
-    ("unknown part", "unknown_part"),
-    ("outside the readable roots", "outside_roots"),
-    ("execute_code is closed", "work_full"),
-    ("wall clock", "no_time"),
-    ("unknown tool", "unknown_tool"),
-    ("unreadable arguments", "arguments"),
-    ("task done", "after_done"),
-)
-
-
 def _refusal_form(content: str) -> dict:
-    form = next((code for phrase, code in _FORMS if phrase in content), "refused")
-    return {"form": form, "text_bytes": len(content.encode("utf-8", "replace"))}
+    """The refusal's own form code (the reply was made by :func:`.tool_spec.refusal`) and its size."""
+    return {"form": form_of(content), "text_bytes": len(content.encode("utf-8", "replace"))}
 
 
 def _emit(ctx: DelegateContext, row: dict) -> None:
@@ -574,7 +567,7 @@ async def plain_episode_reader(
     """``overview(episode)`` and ``read_episode(episode, parts?, offset?)`` on one resolved episode."""
     offset = args.get("offset", 0) or 0
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
-        return "refused: offset must be an integer >= 0; nothing was read"
+        return refusal(name, "bad_arguments", reason="offset must be an integer >= 0; nothing was read")
     if name == "overview":
         text, _ = _bm.solution_first(ep, shared)
         return _views.view(text.encode(), offset)
@@ -582,17 +575,19 @@ async def plain_episode_reader(
     if parts in (None, []):
         return _views.view(_contents(ep, eid, shared).encode(), offset)
     if not isinstance(parts, list):
-        return "refused: parts must be a list of part names; nothing was read"
+        return refusal("read_episode", "bad_parts")
     out, left = [], _views.VIEW_BYTES
     for part in parts:
         part = str(part)
         try:
             data = _bm.part_text(ep, part, shared).encode()
         except (KeyError, ValueError, IndexError, StopIteration):
-            return f"unknown part {part[:80]!r}; nothing was read. " + _contents(
-                ep,
-                eid,
-                shared,
+            return refusal(
+                "read_episode",
+                "unknown_part",
+                names=repr(part[:80]),
+                episode=eid,
+                valid=", ".join(_part_names(ep)),
             )
         if left <= 0:
             out.append(
@@ -652,14 +647,14 @@ def _resolver(ctx: DelegateContext) -> Callable[[str], tuple[Any, str] | str]:
     """Episode ids resolve only through the recorded-episode index, then the writer's loader; never a path."""
     index: set[str] | None = None
 
-    def resolve(eid: str) -> tuple[Any, str] | str:
+    def resolve(eid: str, tool: str = "read_episode") -> tuple[Any, str] | str:
         nonlocal index
         if not isinstance(eid, str) or not _EPISODE_ID.match(eid):
-            return f"refused: {str(eid)[:80]!r} is not an episode id; nothing was read"
+            return refusal(tool, "not_episode_id", episode=str(eid)[:80])
         if index is None:
             index = set(ctx.recorded())
         if eid not in index:
-            return f"refused: {eid!r} is not a recorded episode; nothing was read"
+            return refusal(tool, "not_recorded", episode=eid)
         return ctx.load(eid), eid
 
     return resolve
@@ -678,9 +673,7 @@ async def _tool(
         rel = str(args.get("path", ""))
         out = st["staging"].stage(rel, str(args.get("text", "")))
         vpath = f"/inputs/{EXPORT_DIR}/{st['call']}/{rel}"
-        return out, (
-            [{"path": vpath, "mode": "write"}] if out.startswith("staged") else []
-        )
+        return out, ([] if form_of(out) else [{"path": vpath, "mode": "write"}])
     if name in ("read", "grep"):
         vpath = str(args.get("path", "") or ("/inputs" if name == "grep" else ""))
         try:
@@ -697,13 +690,15 @@ async def _tool(
                 offset,
             )
             return out, [{"path": vpath, "mode": "search"}]
-        except PermissionError as exc:
-            return str(exc)[:300], []
+        except PermissionError:
+            return refusal(name, "outside_box", path=vpath[:200]), []
+        except _views.PatternProblem as exc:
+            return refusal("grep", "bad_pattern", reason=str(exc)[:300]), []
         except (OSError, ValueError, TypeError) as exc:
             # the type and the path asked for only: the error's text names host paths
-            return f"refused: {type(exc).__name__} for {vpath[:200]!r}", []
+            return refusal(name, "unreadable", error=type(exc).__name__, path=vpath[:200]), []
     if name in ("overview", "read_episode"):
-        got = resolve(args.get("episode"))
+        got = resolve(args.get("episode"), name)
         if isinstance(got, str):
             return got, []
         ep, eid = got
@@ -712,17 +707,14 @@ async def _tool(
         return await plain_episode_reader(name, args, ep, eid, ctx.shared), []
     if name == "similar":
         if ctx.similar is None:
-            return "refused: similar is not available in this pass", []
+            return refusal("similar", "not_available"), []
         return await ctx.similar(args), []
     if name == "execute_code":
         if st["work_over"] is not None:
-            return (
-                f"not run: {st['work_over']}; execute_code is closed for the rest of this task",
-                [],
-            )
+            return refusal("execute_code", "work_full", why=st["work_over"]), []
         left = ctx.deadline - time.monotonic()
         if left <= 1.0:
-            return "not run: the pass's wall clock is used up", []
+            return refusal("execute_code", "no_time"), []
         out = await _in_thread(
             box_cell,
             str(args.get("code", "")),
@@ -737,7 +729,8 @@ async def _tool(
             st["work_over"] = over
             out += f"\n({over}; execute_code is closed for the rest of this task)"
         return out, []
-    return f"refused: unknown tool {name!r}", []
+    tools = ", ".join(t["function"]["name"] for t in helper_tools())
+    return refusal(GENERAL, "unknown_tool", name=str(name)[:80], tools=tools), []
 
 
 def _prepare(ctx: DelegateContext, episodes: list[str], tmp: Path) -> dict:
@@ -859,20 +852,17 @@ async def _run_helper(
             args = _args(fn.get("arguments"))
             paths: list[dict] = []
             if args is None:
-                content, status = "refused: unreadable arguments", "refused"
+                content = refusal(GENERAL, "bad_arguments", reason="unreadable arguments")
+                status = "refused"
             elif finished:
-                content, status = "not run: task done", "refused"
+                content, status = refusal(GENERAL, "task_done"), "refused"
             elif name == "done":
                 doc["summary"] = str(args.get("summary", ""))[:4000]
                 finished, content, status = True, "ok", "ok"
             else:
                 try:
                     content, paths = await _tool(ctx, name, args, st, resolve)
-                    status = (
-                        "refused"
-                        if content.startswith(("refused:", "not run:", "unknown part"))
-                        else "ok"
-                    )
+                    status = "refused" if form_of(content) else "ok"
                 except (
                     Exception
                 ) as exc:  # noqa: BLE001 - a broken tool call is answered, never ends the helper
@@ -916,7 +906,7 @@ async def handle(args: dict, ctx: DelegateContext) -> str:
     try:
         index = set(ctx.recorded())
     except Exception as exc:  # noqa: BLE001 - an unreadable index starts no helper
-        return f"refused: the recorded-episode index could not be read ({type(exc).__name__}); no helper started"
+        return _refusal(SPEC, "index_unreadable", error=type(exc).__name__)
     for e in episodes:
         if not _EPISODE_ID.match(e) or e not in index:
             return _refusal(SPEC, "unknown_episode", episode=e[:80])
