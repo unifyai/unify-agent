@@ -660,6 +660,18 @@ def _build_core_prompt(
 ) -> str:
     """The system prompt of a core-surface session: the lean profile's
     sections, less what names JSON tools the session does not have."""
+    from unify.common import in_code_switch
+
+    if in_code_switch.tools_in_code():
+        return _build_core_prompt_in_code(
+            core,
+            environments=environments,
+            can_store=can_store,
+            guidelines=guidelines,
+            persist=persist,
+            library_read_only=library_read_only,
+            session_sections=session_sections,
+        )
     can_clarify = core.clarification
     parts: list[str] = [_lean_role()]
     tools = core.tools_section()
@@ -688,6 +700,212 @@ def _build_core_prompt(
     parts = _rewrite_sections(parts, _section_rewrites(environments, None))
     if session_sections:
         parts.extend(_session_sections())
+    rules_and_examples = _build_code_act_rules_and_examples(environments=environments)
+    if rules_and_examples:
+        parts.append(rules_and_examples)
+    if guidelines:
+        parts.append(
+            f"### Guidelines\n\n"
+            f"Follow these guidelines throughout this session:\n\n"
+            f"{guidelines}",
+        )
+    return "\n\n".join(p for p in parts if p and p.strip())
+
+
+# ---------------------------------------------------------------------------
+# UNIFY_TOOLS_IN_CODE=on: the core prompt when tools are called from code
+# ---------------------------------------------------------------------------
+# Every agent then has one model-API tool, ``execute_code``, and calls every
+# other harness tool in its cells as ``tools.<name>(...)``. The shared opening
+# every agent reads first (how cells work, ``tools.list()``,
+# ``tools.help(name)``, installing, messaging) says what the Tools and Sandbox
+# Objects sections said, so these sections keep only what is the actor's own:
+# its role, how it works, and the answer. Each tool's details are its help.
+
+# A cell can end the turn with the answer itself.
+_REPLY_FROM_CELL_IN_CODE = (
+    "You can also end your turn from a cell with `tools.finish(answer)`, for "
+    "example when the answer is in a variable."
+)
+
+_ANSWER_STRUCTURED_IN_CODE = (
+    "### Answer\n\n"
+    "When the request is addressed, answer by calling `tools.finish(answer)`\n"
+    "with the answer in the required format."
+)
+
+# The injected globals, named once; each one's contract is its ``help(...)``.
+_SANDBOX_IN_CODE = (
+    "Cells run with injected globals: `display(obj)` (rich output, such as an "
+    "image, that comes back to you as visual input), `query_llm(...)` and "
+    "`list_llms()` (semantic LLM calls from code) and `unillm` (direct LLM use "
+    "beyond `query_llm`); `help(name)` documents each."
+)
+_PRIMITIVES_IN_CODE = (
+    "`await primitives.actor.act(...)` spawns a sub-actor; "
+    "`help(primitives.actor.act)` reads its live docs."
+)
+_BIND_REQUEST_IN_CODE = "The current request is `request` in your cells."
+
+_PYTHON_FIRST_IN_CODE = textwrap.dedent("""
+    ### Python First
+
+    Prefer Python packages over shell CLI tools; installed packages stay for
+    every later task. When a task genuinely needs a CLI, run it with
+    `tools.sh(command)` or from Python with `subprocess`, and work with its
+    output as data.
+""").strip()
+
+_LEAN_EXECUTION_RULES_IN_CODE = textwrap.dedent("""
+    ### Execution
+
+    1. **Sessions**: cells share one persistent sandbox for the task, like
+       a notebook: bind results to variables and build on them, and print
+       only what the next decision needs. A `NameError` on a known name
+       usually means the sandbox restarted.
+    2. **Async**: the runtime owns the event loop, so code `await`s (and a
+       sync facade uses the injected `run_coro_sync(factory)`) rather than
+       calling `asyncio.run(...)`; `asyncio.gather` runs independent I/O
+       concurrently.
+    3. **Evidence**: a step that ran is not a step that worked. The result
+       of a mutation or an extraction (a return value, a re-read) shows
+       whether it worked; when it contradicts the expected result, fix and
+       re-run.
+    4. **Provenance**: when a source fails, the reply says so; what you
+       recall or make up is not presented as sourced data.
+""").strip()
+
+_LEAN_CLARIFICATION_RULE_IN_CODE = (
+    "5. **Clarification**: `request_clarification` asks the requester a\n"
+    "   question and waits for the answer."
+)
+
+_LEAN_INCREMENTAL_EXECUTION_IN_CODE = textwrap.dedent("""
+    ### Verify Before Scaling
+
+    Run a loop body once and check its result before iterating over many
+    items.
+""").strip()
+
+
+def _lean_role_in_code() -> str:
+    """The role when tools are called from code: a cell ends the turn with
+    ``tools.finish(answer)`` where today's switch offers ``reply(text)``."""
+    if not _reply_from_cell():
+        return _LEAN_ROLE
+    rule = " ".join(
+        [
+            "Your answer is your final reply: a message without a tool call.",
+            _REPLY_FROM_CELL_IN_CODE,
+            "When the requester defines a format for replies (a JSON object, "
+            "a keyword, a fixed template), each reply follows that format "
+            "exactly.",
+        ],
+    )
+    return _unified(_LEAN_ROLE, _LEAN_ROLE_REPLY_RULE, _refill(rule))
+
+
+def _sandbox_section_in_code(*, has_primitives: bool, functions: bool) -> str:
+    """The sandbox section: the injected globals, the stored-function search
+    when the session has stored functions, the request when it is bound, then
+    the query_llm doctrine."""
+    from unify.common._async_tool import bound_request
+
+    sentences = [_SANDBOX_IN_CODE]
+    if has_primitives:
+        sentences.append(_PRIMITIVES_IN_CODE)
+    if functions:
+        sentences.append(
+            " ".join(_CORE_SANDBOX_SEARCH_PYTHON.split()) + " — do not guess signatures.",
+        )
+    if bound_request.enabled():
+        sentences.append(_BIND_REQUEST_IN_CODE)
+    doctrine = _LEAN_QUERY_LLM_IN_CODE
+    if has_primitives:
+        doctrine = f"{doctrine} {_LEAN_SUB_ACTOR_DIAL}"
+    return "### Sandbox Environment\n\n" + _refill(" ".join(sentences)) + "\n\n" + doctrine
+
+
+# The query_llm doctrine: the method choice stays; how a call is made is its help.
+_LEAN_QUERY_LLM_IN_CODE = textwrap.dedent("""
+    Use plain Python for exact steps (lookups, filters, arithmetic,
+    reshaping) and `query_llm(...)` inside the code for steps that judge
+    meaning (classify, extract, summarise, draft).
+""").strip()
+
+
+def _sandbox_objects_in_code(core: "PromptSurface") -> str:
+    """The stored-function and stored-procedure objects, when the session has
+    them; every other harness tool is in ``tools``."""
+    if not (core.functions or core.guidance):
+        return ""
+    index = core.index()
+    keep = [
+        line
+        for line in index.split("\n- ")
+        if line.startswith("### Sandbox Objects")
+        or line.startswith("`functions`")
+        or line.startswith("`guidance`")
+    ]
+    return "\n- ".join(keep)
+
+
+def _clock_in_code() -> str:
+    from unify.common import prompt_helpers
+
+    return textwrap.dedent(f"""
+        ### Current Time
+
+        The current date and time is **{prompt_helpers.now()}**. Use this
+        clock for "today" and similar, not a clock read in a cell.
+    """).strip()
+
+
+def _session_sections_in_code() -> list[str]:
+    if _clock_in_first_message():
+        return [_build_filesystem_context()]
+    return [_clock_in_code(), _build_filesystem_context()]
+
+
+def _build_core_prompt_in_code(
+    core: "PromptSurface",
+    *,
+    environments: Mapping[str, "BaseEnvironment"],
+    can_store: bool,
+    guidelines: Optional[str],
+    persist: bool,
+    library_read_only: bool,
+    session_sections: bool,
+) -> str:
+    """The core-surface system prompt when tools are called from code
+    (``UNIFY_TOOLS_IN_CODE=on``): the same sections as
+    :func:`_build_core_prompt`, less what the shared opening and each tool's
+    ``tools.help`` text say."""
+    parts: list[str] = [_lean_role_in_code()]
+    if core.structured:
+        parts.append(_ANSWER_STRUCTURED_IN_CODE)
+    parts.append(
+        _sandbox_section_in_code(
+            has_primitives=_injects_actor_primitives(environments),
+            functions=core.functions,
+        ),
+    )
+    parts.append(_sandbox_objects_in_code(core))
+    parts.append(_PYTHON_FIRST_IN_CODE)
+    rules = _LEAN_EXECUTION_RULES_IN_CODE
+    if core.clarification:
+        rules = f"{rules}\n{_LEAN_CLARIFICATION_RULE_IN_CODE}"
+    parts.append(rules)
+    parts.append(_LEAN_INCREMENTAL_EXECUTION_IN_CODE)
+    if core.functions or core.guidance:
+        parts.append(core.library_section())
+        if library_read_only:
+            parts.append(core.read_only_notice())
+    if can_store:
+        parts.append(core.storage_notice(persist=persist))
+    parts = _rewrite_sections(parts, _section_rewrites(environments, None))
+    if session_sections:
+        parts.extend(_session_sections_in_code())
     rules_and_examples = _build_code_act_rules_and_examples(environments=environments)
     if rules_and_examples:
         parts.append(rules_and_examples)

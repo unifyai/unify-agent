@@ -948,6 +948,23 @@ Example: ``await install(["pandas>=2"])``
 """
 
 
+#: ``install``'s help when tools are called from code (``UNIFY_TOOLS_IN_CODE=on``): no function store to record a
+#: package's specifier in, and the call is the in-code one.
+INSTALL_DOC_IN_CODE = _INSTALL_DOC.replace(
+    " When a stored function needs a package, record the specifier as\none of its ``dependencies`` so the install "
+    "repeats wherever it runs.",
+    "",
+).replace("Example: ``await install([\"pandas>=2\"])``", "Example: ``tools.install([\"pandas>=2\"])``")
+
+
+def install_doc() -> str:
+    """``install``'s help text: :data:`_INSTALL_DOC`, or :data:`INSTALL_DOC_IN_CODE` when tools are called from
+    code."""
+    from unify.common import in_code_switch
+
+    return INSTALL_DOC_IN_CODE if in_code_switch.tools_in_code() else _INSTALL_DOC
+
+
 async def install(packages: Union[str, List[str]]) -> Dict[str, Any]:
     from unify import environment
 

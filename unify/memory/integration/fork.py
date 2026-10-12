@@ -60,7 +60,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from ..library_prompts import CANDIDATE_CONTRACT
+from ..library_prompts import CANDIDATE_CONTRACT, CANDIDATE_CONTRACT_IN_CODE
 from .fork_worker import (
     FORK_JSON,
     HTTP_TIMEOUT_S,
@@ -119,6 +119,32 @@ INSTRUCTION = (
     "a line of three backticks, open and close its block with four. Example:\n\n"
     + FORMAT_EXAMPLE
 )
+#: The fork's instruction when tools are called from code (``UNIFY_TOOLS_IN_CODE=on``): "no tools" is said once here
+#: and again by the reply a tool call gets (``fork_worker.TOOL_REPLY``), and the per-reply time is not stated, since
+#: nothing the fork writes can act on it.
+INSTRUCTION_IN_CODE = (
+    "Your work on this request is finished and your reply has been sent; nothing you write now changes it. "
+    "Now write down what would help with similar requests later, as files: write each file as a fenced block in "
+    "your reply, in the format below. Do not call tools.\n\n"
+    "What to write:\n"
+    "- `candidates/<name>.py`: for code you wrote here that ran and worked and could be reused, a function "
+    "with a docstring. <name> uses only letters, digits and underscores. Only code that actually ran here; never "
+    "say code worked if it did not. " + CANDIDATE_CONTRACT_IN_CODE + "\n"
+    "- `cases/<name>.json`, with the same <name>: the inputs that function had in this conversation and the "
+    'outputs it should give, as a JSON list of objects with "inputs" (the list of arguments) and "expected" '
+    "(the return value). Each value must appear in this conversation as it is (a tool's reply, a file's content "
+    "or a cell's printed output), so it can be copied from the record; leave out a case with a value that does "
+    "not.\n"
+    "- `notes.md`: each thing that failed and why, and any other lesson, in general terms so it applies beyond this "
+    "request, each quoting the short line or error message from this conversation it comes from. If nothing here "
+    "is worth keeping, write `notes.md` saying so.\n\n"
+    f"Limits: at most {QUOTA_FILES} files and {QUOTA_BYTES // 1024**2} MiB in all are kept. A reply that calls a "
+    f"tool gets another turn, up to {TURN_GUARD} turns in all.\n\n"
+    "Format: each file is one fenced block. Its opening line is three backticks followed by `path: ` and the "
+    "file's relative path; then the file's full content; then a line of three backticks. If a file itself contains "
+    "a line of three backticks, open and close its block with four. Example:\n\n"
+    + FORMAT_EXAMPLE
+)
 WORKER_FILE = Path(__file__).resolve().parent / "fork_worker.py"
 BOX_WORKER = "/s/fork_worker.py"
 #: The live audit's mark for the fork worker in a process's command line (runner token audits).
@@ -137,8 +163,11 @@ ROLLED_FILE = "pass-admission.json"
 
 def fork_instruction() -> str:
     """The fixed instruction appended to the actor's conversation for the fork: what to write, its limits, the one
-    block format with an example, and that tools are not available."""
-    return INSTRUCTION
+    block format with an example, and that tools are not available (:data:`INSTRUCTION_IN_CODE` when tools are
+    called from code)."""
+    from unify.common import in_code_switch
+
+    return INSTRUCTION_IN_CODE if in_code_switch.tools_in_code() else INSTRUCTION
 
 
 def staging_dir(paths: Any, eid: str) -> Path:

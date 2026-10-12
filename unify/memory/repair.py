@@ -161,11 +161,17 @@ def repair_message(
         )
         or "none named; the refusal is pass-wide"
     )
+    from unify.common import in_code_switch
+
+    # with tools called from code, the two calls are named as the writer makes them
+    read, finish = (
+        ("tools.read(path)", "tools.finish(summary)") if in_code_switch.tools_in_code() else ("read", "finish")
+    )
     return (
         f"The gate refused round {n - 1}'s candidate (checks: {', '.join(res.refused) or 'none'}; items: "
         f"{items}). Its full result, with every check line, every failing test's output and every note, is "
-        f"{path}; read it with read. Fix what it refused in /memory, keep /memory/.pass/manifest.json up to "
-        f"date, then call finish again. "
+        f"{path}; read it with {read}. Fix what it refused in /memory, keep /memory/.pass/manifest.json up to "
+        f"date, then call {finish} again. "
         + (
             f"This is repair round {n} of {limit}. After the last round the items that pass land and the rest are "
             "kept as a draft for the next pass."
