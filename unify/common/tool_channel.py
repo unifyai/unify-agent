@@ -41,7 +41,7 @@ Shared state (one owner or one lock each; handlers of up to 17 boxes of a pass m
   ``/inputs`` happens on the loop when the helper ends;
 - each channel's own fields: the channel's serve task.
 
-C4: :meth:`Channel.handler_threads_alive` and :meth:`HandlerThreads.alive` say whether a handler thread is still
+The gate: :meth:`Channel.handler_threads_alive` and :meth:`HandlerThreads.alive` say whether a handler thread is still
 running; the pass waits for none to be alive before its gate or landing starts (:meth:`HandlerThreads.wait_idle`).
 """
 
@@ -368,7 +368,7 @@ def tool_row(
     return row
 
 
-# --- handler threads (C4) ----------------------------------------------------------------------------------------
+# --- handler threads --------------------------------------------------------------------------------------------
 
 
 class HandlerThreads:
@@ -433,7 +433,7 @@ class _CallScope:
 
 async def in_thread(fn: Callable[..., Any], *args: Any) -> Any:
     """Run the blocking *fn(*args)* in the worker pool from a coroutine handler, tracked by the calling channel's
-    threads (C4). Outside a call it is :func:`asyncio.to_thread`. Cancelling the caller stops the wait, never the
+    threads (the gate waits for them). Outside a call it is :func:`asyncio.to_thread`. Cancelling the caller stops the wait, never the
     thread, which stays tracked until it returns."""
     scope = _CURRENT.get()
     if scope is None:

@@ -106,7 +106,7 @@ class WriterCalls:
     kill_box: Callable[[], Awaitable[None]] | None = None
     #: the interpreter's /memory quota measure (a breach stops the box); None: measured here
     measure_quota: Callable[[], Awaitable[str | None]] | None = None
-    #: the pass's handler-thread tracker (C4)
+    #: the pass's handler-thread tracker (the gate waits until none runs)
     threads: Any = None
     check_copies: int = 0
     kind: str = "writer"
@@ -427,7 +427,7 @@ async def check(ctx: Any, args: dict) -> "_wt.Reply":
 
 async def finish(ctx: Any, args: dict) -> "_wt.Reply":
     """The ``finish`` tool: the box is killed first (nothing writes /memory while it is judged), then today's finish
-    logic; an accepted finish ends every helper and waits for every handler thread of the pass (C4)."""
+    logic; an accepted finish ends every helper and waits for every handler thread of the pass."""
     from .writer_pass import FINISH_G1_REFUSALS, _accepted_manifest
 
     st: WriterCalls = ctx.state
@@ -449,7 +449,7 @@ async def finish(ctx: Any, args: dict) -> "_wt.Reply":
         st.writer.final_manifest = await in_thread(_locked, st, _accepted_manifest, st.box)
         # finishing ends every helper still running; what each staged is kept
         await st.writer._close_record()
-        # C4: the gate never starts while a handler thread of this pass runs
+        # the gate never starts while a handler thread of this pass runs
         if st.threads is not None and not await st.threads.wait_idle(HANDLER_GRACE_S):
             st.stop = "a tool handler of this pass did not end; the gate does not start"
         reply = _wt.Reply("ok", paths=manifest_path if library else ())

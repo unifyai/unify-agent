@@ -401,7 +401,7 @@ def test_a_handler_thread_past_its_deadline_closes_the_channel_and_is_tracked_un
         )
         out = await h.call("echo", {})
         closed = await h.ended()
-        # C4: the gate may not start while the thread lives
+        # the gate may not start while the thread lives
         alive = (h.channel.handler_threads_alive(), pass_threads.alive())
         idle_early = await pass_threads.wait_idle(0.05)
         release.set()
@@ -466,7 +466,7 @@ def test_box_gone_from_the_host_drops_the_reply():
     assert rows and rows[0]["box_gone"] is True
 
 
-# --- C1: the counters under a parallel flood ---------------------------------------------------------------------------
+# --- the counters under a parallel flood ---------------------------------------------------------------------------------
 
 
 class Counter:

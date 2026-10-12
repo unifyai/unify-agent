@@ -339,7 +339,7 @@ def test_a_helper_cannot_call_delegate_finish_or_check_and_a_curator_cannot_call
     assert [r["refusal"]["form"] for r in rows] == ["unknown_tool"] * 4
 
 
-# --- criterion 5: no secret, host path or route value in any reply or row ------------------------------------------------
+# --- no secret, host path or route value in any reply or row --------------------------------------------------------------
 
 
 def _summary(out, rows):
@@ -467,7 +467,7 @@ def test_a_helper_runs_in_its_own_box_and_is_refused_the_writers_tools(tmp_path,
     assert cell_rows and all(r["cell"] == cell_rows[0]["call"] for r in helper_rows)
 
 
-# --- liveness and C4 ---------------------------------------------------------------------------------------------------
+# --- liveness and the gate ---------------------------------------------------------------------------------------------------
 
 
 def test_a_helper_polling_during_a_slow_check_is_stopped_by_a_finish_requested_mid_check():
@@ -519,7 +519,7 @@ def test_a_helper_polling_during_a_slow_check_is_stopped_by_a_finish_requested_m
     polls, gate_mid, result, idle = asyncio.run(main())
     assert polls["stopped_at"] is not None and polls["stopped_at"] < 1.0
     assert polls["n"] >= 10  # the loop ran throughout
-    assert gate_mid is False and idle is True  # C4
+    assert gate_mid is False and idle is True  # no gate while a handler thread lives
     assert result == "ok"
 
 

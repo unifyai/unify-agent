@@ -3611,7 +3611,7 @@ class WriterPass:
         )
         ic.kill_box = session.kill
         ic.measure_quota = session.measure_quota
-        self._in_code_threads = ic.threads  # helpers' handler threads join the pass's tracker (C4)
+        self._in_code_threads = ic.threads  # helpers' handler threads join the pass's tracker (the gate waits for them)
         scope.callback(
             _th.thread_reads(
                 self.ev,
