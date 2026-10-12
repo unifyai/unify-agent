@@ -95,6 +95,7 @@ from ..qa import QAConfig
 from ..reconcile import unavailable as unavailable_reconcile
 from ..redact import Redactor, redact_error
 from ..signals import Signal, SignalMasked, post_signal
+from .. import similar as _similar
 from ..snapshot import listing, materialise
 from ..writer_pass import (
     CODE_ROUTE_NOT_IN_EFFECT,
@@ -1113,6 +1114,7 @@ async def run_due_passes(
                 "compact": library_compact(settings),
                 "coverage_rule": library_coverage(settings),
                 "trees_cache": str(Path(stores.paths.state_dir) / "memory-workspace-trees"),
+                "similar_index": str(_similar.index_dir(stores.paths.state_dir)),
                 "worktree_git": (
                     str(stores.paths.worktree_git)
                     if Path(stores.paths.worktree_git).is_dir()

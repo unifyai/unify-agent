@@ -1029,6 +1029,8 @@ class PassConfig:
     # replay (workspace_trees.py; None: replays run without a recorded workspace)
     worktree_git: str | None = None
     trees_cache: str | None = None
+    # the ``similar`` tool's index folder (similar.index_dir; None: the tool has no index to search)
+    similar_index: str | None = None
     # the lead, 11 Oct: the candidate pool (UNIFY_MEMORY_LIBRARY_POOL; pool.py): proposals persist across passes
     pool: bool = False
     # MAIN 11 Oct (prepared, off until the lead decides): UNIFY_MEMORY_LIBRARY_COMPACT moves old tool results out of
@@ -2285,6 +2287,18 @@ class WriterPass:
         )
         write_files(box, files)
         return files
+
+    def similar_context(self):
+        """The ``similar`` tool's context for this pass (:class:`.similar.Context`): the index folder, the episode
+        loader and every recorded episode id (so the reply can name episodes that are not indexed)."""
+        from . import similar as _similar
+
+        since = getattr(self.ev, "experience_since", None)
+        return _similar.Context(
+            index_dir=Path(self.cfg.similar_index) if self.cfg.similar_index else None,
+            load=self.load,
+            recorded=(lambda: [e for e, _ in since(0)]) if since is not None else None,
+        )
 
     def _replay_call(self, args: dict, box: Path, tmp: Path) -> str:
         """Verify one manifest item's ``replaces`` by replay (:mod:`.replay_verify`); write the verified instances
