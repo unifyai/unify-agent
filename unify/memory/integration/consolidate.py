@@ -1004,13 +1004,14 @@ def _curate_state(
 ) -> _curate.CurateState | None:
     """CURATE's trigger on memory ``main`` now, after WRITE's gate: the state, with the reasons no
     CURATE pass has been shown, or None when CURATE is not due. It reads library state only: the commit, its
-    records, its covers and shapes, and the fingerprints earlier CURATE passes were shown, never the stream.
+    records (with each function's input fixtures) and shapes, and the fingerprints earlier CURATE passes were
+    shown, never the stream.
     """
     from .. import layout
     from ..library_export import item_history
     from ..item_records import effect_of, records_at
     from ..library_index import build_links, render_index
-    from ..overlap import overlap_candidates
+    from ..overlap import fixture_signatures, overlap_candidates
     from ..shape_rows import shapes_at
 
     sha = stores.memory.head()
@@ -1029,13 +1030,13 @@ def _curate_state(
             library_mode=True,
         )
         lib = layout.discover(tree)
+        records = records_at(stores.memory, sha)[0]
         state = _curate.CurateState(
             commit=sha,
             overlap=overlap_candidates(
                 tree,
                 shapes=rows,
-                covers=stores.evidence.covers(),
-                typed=stores.evidence.typed_covers(),
+                fixtures=fixture_signatures(records),
             ),
             suspects=suspects,
             # the index as the actor's copy renders it, with each function's recorded effect
@@ -1044,7 +1045,7 @@ def _curate_state(
                     lib,
                     build_links(lib),
                     status_of,
-                    effect_of(records_at(stores.memory, sha)[0]),
+                    effect_of(records),
                 ),
             ),
             bodies=layout.function_bodies(tree),
