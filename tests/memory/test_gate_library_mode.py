@@ -218,6 +218,65 @@ def test_a_function_grounded_on_one_episode_passes_and_a_memorising_one_still_fa
     ), res.reasons
 
 
+#: user_id with a decision rule: a value computed from the input, replaced by a constant under a condition
+RULE_MODULE = w.MODULE_SOURCE.replace(
+    '    return response["user_id"]\n',
+    '    uid = response["user_id"]\n    if uid == "":\n        uid = "unknown"\n    return uid\n',
+)
+#: the same rule, memorising its recorded outputs instead of reading them
+RULE_MEMORISED = RULE_MODULE.replace(
+    '    uid = response["user_id"]\n',
+    '    uid = {"u-1": "u-1", "u-2": "u-2"}[response["user_id"]]\n',
+)
+
+
+def test_a_decision_rule_grounded_on_one_episode_passes_and_one_that_memorises_fails(
+    library_example_world,
+):
+    """A function that encodes a decision rule needs examples from one recorded episode, like every function; the
+    check with unseen values, mandatory for every function, refuses one that only reproduces its recorded outputs.
+    """
+    from unify.memory.analysis.overrides import find_overrides
+    import ast
+
+    (fn,) = [
+        n
+        for n in ast.walk(ast.parse(RULE_MODULE))
+        if isinstance(n, ast.FunctionDef) and n.name == "user_id"
+    ]
+    assert find_overrides(
+        fn,
+    ).line, "the module must encode a rule the gate's analysis flags"
+    mem, ev, blobs, gate = library_example_world
+    files, fixtures = w.files_and_fixtures(
+        blobs.get,
+        sources=(w.E1, w.E1),
+        module=RULE_MODULE,
+    )
+    res = gate().check(
+        mem.head(),
+        w.candidate(mem, files),
+        w.manifest(fixtures, w.item(source_episodes=["e1"])),
+    )
+    assert res.passed, res.reasons
+    assert not any("encodes such a rule" in r for r in res.reasons)
+    files, fixtures = w.files_and_fixtures(
+        blobs.get,
+        sources=(w.E1, w.E1),
+        module=RULE_MEMORISED,
+    )
+    res = gate().check(
+        mem.head(),
+        w.candidate(mem, files),
+        w.manifest(fixtures, w.item(source_episodes=["e1"])),
+    )
+    assert not res.passed
+    assert any(
+        r.startswith(f"G2: [examples:special-cased] {w.ITEM_ID} handles ")
+        for r in res.reasons
+    ), res.reasons
+
+
 def test_a_function_that_handles_only_its_recorded_values_is_refused(
     library_example_world,
 ):

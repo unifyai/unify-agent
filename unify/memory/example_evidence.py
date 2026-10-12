@@ -197,6 +197,13 @@ def rule_episodes(
     }
 
 
+#: In the library layout, a function that replaces a value it computed under a condition needs examples from this many
+#: episodes, like every other function: one recorded episode is enough, and the check with unseen values (mandatory
+#: for every function) is what catches a function that only reproduces its recorded outputs. The earlier layout keeps
+#: the gate's ``RULE_EPISODES`` for its covers.
+LIBRARY_RULE_EPISODES = 1
+
+
 def rule_problems(
     item: str,
     *,
@@ -208,16 +215,15 @@ def rule_problems(
 ) -> tuple[list[str], list[str]]:
     """The rule check on an added or changed function (reasons, notes): a function that replaces a value it
     computed from its input under a condition (*rule_line* of *path*) needs examples from *need* episodes
-    (default: the gate's ``RULE_EPISODES``)."""
+    (default: :data:`LIBRARY_RULE_EPISODES`)."""
     if need is None:
-        from .gate import RULE_EPISODES
-
-        need = RULE_EPISODES
+        need = LIBRARY_RULE_EPISODES
     if unchecked:
         return [], [f"G2 rule check: {item} is too large to analyse; not checked"]
     if rule_line and len(episodes) < need:
         return [
             f"{item} replaces a value it computed from its input under a condition (line {rule_line} of "
-            f"{path}); a function that encodes such a rule needs examples from at least {need} episodes",
+            f"{path}); a function that encodes such a rule needs examples from at least {need} "
+            + ("episode" if need == 1 else "episodes"),
         ], []
     return [], []

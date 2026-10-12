@@ -221,22 +221,30 @@ def test_the_literal_lint_reads_grounded_arguments_of_accepted_calls():
     )
 
 
-def test_the_rule_check_needs_examples_from_the_gate_s_rule_episodes():
+def test_the_rule_check_needs_examples_from_one_episode_in_the_library_layout():
     from unify.memory.gate import RULE_EPISODES
 
-    assert RULE_EPISODES == 2
+    # the earlier layout keeps its own count for covers; the library layout asks one episode, as of every function
+    assert RULE_EPISODES == 2 and xe.LIBRARY_RULE_EPISODES == 1
     path = "memory/acct/users.py"
     want = (
         f"{ITEM} replaces a value it computed from its input under a condition (line 3 of {path}); a function "
-        "that encodes such a rule needs examples from at least 2 episodes"
+        "that encodes such a rule needs examples from at least 1 episode"
     )
     assert xe.rule_problems(
         ITEM,
         path=path,
         rule_line=3,
         unchecked=False,
-        episodes={"e1"},
+        episodes=set(),
     ) == ([want], [])
+    assert xe.rule_problems(
+        ITEM,
+        path=path,
+        rule_line=3,
+        unchecked=False,
+        episodes={"e1"},
+    ) == ([], [])
     assert xe.rule_problems(
         ITEM,
         path=path,

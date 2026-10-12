@@ -595,7 +595,7 @@ class ExampleChecks:
 
     def _rule(self, item: str, episodes: set[str]) -> None:
         """An added or changed function that replaces a computed value under a condition needs examples from
-        ``RULE_EPISODES`` episodes."""
+        ``example_evidence.LIBRARY_RULE_EPISODES`` episodes (one, as every function)."""
         run = self.run
         found = [
             i for i in (run.c_report.items if run.c_report else []) if i.item_id == item
