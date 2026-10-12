@@ -68,8 +68,10 @@ async def test_the_session_continues_from_the_summary_with_the_same_prefix():
         f"{h.SUMMARY}\n\n"
         "Context was compressed. Continue from where you left off."
     )
-    directory = str(transcripts.transcripts_dir())
-    assert pointer.startswith(f"The full history of this session is at {directory}/")
+    # Named where the cells' sandbox shows the transcripts, never by the
+    # host path.
+    assert pointer.startswith("The full history of this session is at /transcripts/")
+    assert str(transcripts.transcripts_dir()) not in pointer
     assert pointer.endswith(".jsonl; search it with grep/rg if you need details.")
 
 
