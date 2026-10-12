@@ -46,7 +46,7 @@ def test_the_kit_is_the_versioned_module_set_the_pin_and_the_named_blobs(
     assert f'KIT_VERSION = "{testkit.KIT_VERSION}"' in (lab / "__init__.py").read_text()
     assert "git is not available" in (lab / "gitio.py").read_text()
     pin = Path(testkit.__file__).with_name("pin.py").read_text()
-    assert (root / "_memv2_pin.py").read_text() == pin
+    assert (root / "_memory_pin.py").read_text() == pin
     assert (root / "blobs" / a).read_bytes() == b"recorded a"
     assert (root / "blobs" / b).read_bytes() == b"already staged"
     assert not (root / "blobs" / ("0" * 64)).exists()
@@ -86,7 +86,7 @@ def test_a_staged_kit_imports_alone_and_reads_blobs_beside_itself(tmp_path):
 def test_which_tests_use_the_kit():
     store_has = {"ab" * 32}.__contains__
     assert testkit.uses_kit([USES_REPLAY], store_has, [])
-    assert testkit.uses_kit([b"import _memv2_pin\n"], store_has, [])
+    assert testkit.uses_kit([b"import _memory_pin\n"], store_has, [])
     assert testkit.uses_kit([PLAIN], store_has, ["ab" * 32])  # names a recorded blob
     assert not testkit.uses_kit([PLAIN], store_has, ["cd" * 32])  # a hex token, no blob
     assert not testkit.uses_kit([PLAIN, b"not python ("], store_has, [])
@@ -103,7 +103,7 @@ def test_dynamic_imports_of_the_kit_are_kit_imports():
         b'import pytest\nreplay = pytest.importorskip("memlab.replay")\n',
         b'from pytest import importorskip\nreplay = importorskip(modname="memlab.replay")\n',
         b'lab = __import__("memlab")\n',
-        b'import builtins\npin = builtins.__import__("_memv2_pin")\n',
+        b'import builtins\npin = builtins.__import__("_memory_pin")\n',
     ):
         assert testkit.imports_kit(src), src
         assert testkit.dynamic_unnamed(src) == []
@@ -133,7 +133,7 @@ from memlab.replay import RecordedEnv
 
 
 def f(apis):
-    import _memv2_pin
+    import _memory_pin
     importlib.import_module("memlab.inputs")
     return open("/inputs/blobs/x").read()
 
@@ -227,7 +227,7 @@ def test_the_writers_box_gets_the_kit_when_a_switch_is_on_or_the_library_uses_it
         WriterPass._stage_inputs(self, req, inputs, tree)
         lab = inputs / "memlab"
         assert (lab / "inputs.py").is_file() is kit, name
-        assert (inputs / "_memv2_pin.py").is_file() is kit, name
+        assert (inputs / "_memory_pin.py").is_file() is kit, name
         assert (inputs / "blobs" / sha).is_file() is (tree is uses), name
         assert (lab / "replay.py").is_file() and (
             lab / "analysis"

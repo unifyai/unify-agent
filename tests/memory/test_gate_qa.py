@@ -808,7 +808,7 @@ def test_a_test_with_two_outcomes_under_the_pins_is_refused_as_flaky(tmp_path):
         and "1 test(s) differ" in reason
     )
     pinned = [c for c in runner.calls if c[0] == HP_TEST]
-    assert all("-p _memv2_pin" in c[5]["PYTEST_ADDOPTS"] for c in pinned)
+    assert all("-p _memory_pin" in c[5]["PYTEST_ADDOPTS"] for c in pinned)
     # every run under pin variant 0 but the rerun, which uses variant 1 (other epoch, seeds)
     assert [
         (c[5]["PYTHONHASHSEED"], c[5]["MEMV2_PIN"], c[5]["TZ"]) for c in pinned
@@ -1087,12 +1087,12 @@ def test_stage_inputs_mounts_memlab_the_pin_and_only_referenced_recorded_blobs(
     assert (
         "git is not available" in (tmp_path / "in" / "memlab" / "gitio.py").read_text()
     )
-    assert (tmp_path / "in" / "_memv2_pin.py").read_text() == (
+    assert (tmp_path / "in" / "_memory_pin.py").read_text() == (
         Path(qa_mod.__file__).with_name("pin.py").read_text()
     )
     assert env.env == pytest_env(QAConfig(fixture_size=True)) and notes == []
     assert (
-        "-p _memv2_pin" not in env.env["PYTEST_ADDOPTS"]
+        "-p _memory_pin" not in env.env["PYTEST_ADDOPTS"]
         and "PYTHONHASHSEED" not in env.env
     )
     assert (
@@ -1121,9 +1121,9 @@ def test_the_pin_installs_only_under_its_box_name(tmp_path):
     assert time.time is before
     box = tmp_path / "box"
     box.mkdir()
-    shutil.copyfile(Path(qa_mod.__file__).with_name("pin.py"), box / "_memv2_pin.py")
+    shutil.copyfile(Path(qa_mod.__file__).with_name("pin.py"), box / "_memory_pin.py")
     code = (
-        "import sys; sys.path.insert(0, sys.argv[1]); import _memv2_pin, datetime, random, time; "
+        "import sys; sys.path.insert(0, sys.argv[1]); import _memory_pin, datetime, random, time; "
         "print(time.time_ns(), time.time_ns(), datetime.datetime.now().isoformat(), random.random())"
     )
     runs = [

@@ -1,6 +1,6 @@
 """Pinned clock and randomness for the gate's confined runs (the library mode's stage 5, determinism).
 
-Shipped into the gate's box as ``/inputs/_memv2_pin.py`` and loaded by pytest as a plugin (``-p _memv2_pin`` in
+Shipped into the gate's box as ``/inputs/_memory_pin.py`` and loaded by pytest as a plugin (``-p _memory_pin`` in
 ``PYTEST_ADDOPTS``) when ``UNIFY_MEMORY_QA_DETERMINISM`` is on, and by the gate's probe whenever a stage-5
 check runs. The box also gets ``PYTHONHASHSEED`` and ``TZ`` from the gate (per variant). Importing it installs:
 
@@ -17,7 +17,7 @@ pins make a run reproducible but never make a test pass: a test that asserts a p
 step, the local time, a random draw, a hash order) gives different outcomes on the two runs and is refused. The
 pins therefore never become something a stored library depends on.
 
-It installs only under its box name ``_memv2_pin`` (or through :func:`install`): imported on the host as
+It installs only under its box name ``_memory_pin`` (or through :func:`install`): imported on the host as
 ``unify.memory.pin`` it changes nothing.
 
 Before each test (``pytest_runtest_setup``) the clock and the seed are reset, so a test's outcome does not
@@ -94,7 +94,7 @@ def install() -> None:
     reset()
 
 
-BOX_NAME = "_memv2_pin"
+BOX_NAME = "_memory_pin"
 if __name__ == BOX_NAME:
     install()
 

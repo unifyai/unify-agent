@@ -42,7 +42,7 @@ pass. First the tests run on the module re-printed unchanged (the control): if t
 green, nothing is judged.
 
 **Determinism** (``UNIFY_MEMORY_QA_DETERMINISM``). Every gate pytest run gets ``PYTHONHASHSEED=0``,
-``TZ=UTC`` and the plugin :mod:`.pin` (``-p _memv2_pin``: a stepping clock from a fixed epoch, ``random`` seeded
+``TZ=UTC`` and the plugin :mod:`.pin` (``-p _memory_pin``: a stepping clock from a fixed epoch, ``random`` seeded
 before each test). Each new or changed test file green in G3 runs once more under the other pin variant
 (another epoch, clock step, random seed, hash seed and time zone); different outcomes refuse it, so a test can
 neither be flaky nor depend on a pinned value. A second run that times out is noted, not judged.
@@ -583,7 +583,7 @@ PROBE = r"""
 import hashlib, importlib, inspect, json, signal, sys
 sys.path[:0] = ["/memory", "/inputs"]
 sys.dont_write_bytecode = True
-import _memv2_pin as pin
+import _memory_pin as pin
 pin.install()
 from memlab.inputs import RecordedInput
 from memlab.replay import RecordedError, ReplayMiss

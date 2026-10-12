@@ -279,7 +279,7 @@ def test_the_export_ships_the_test_kit_when_the_librarys_tests_use_it(tmp_path):
     export_checkout(mem.git_dir, sha, dest, blobs)
     kit = dest / ".memlab"
     assert (kit / "memlab" / "inputs.py").is_file() and (
-        kit / "_memv2_pin.py"
+        kit / "_memory_pin.py"
     ).is_file()
     assert (kit / "blobs" / screen).read_bytes() == b"recorded screen"
     code = (

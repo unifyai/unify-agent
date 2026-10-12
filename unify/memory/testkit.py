@@ -17,7 +17,7 @@ plugin, the referenced blobs) under a root directory, and every place a library'
   library's tests use the kit (:func:`stage_for_tree`).
 
 Each root holds ``memlab/`` (the modules, a git stub and an ``__init__`` carrying :data:`KIT_VERSION`),
-``_memv2_pin.py`` (the determinism plugin, inert unless loaded with ``-p``) and ``blobs/<id>`` (the recorded
+``_memory_pin.py`` (the determinism plugin, inert unless loaded with ``-p``) and ``blobs/<id>`` (the recorded
 blobs the tests name, bounded). ``memlab.inputs.blob`` finds ``blobs/`` beside the kit, so a test reads a
 recorded blob the same way in every place; a test naming the ``/inputs`` path itself would not.
 
@@ -49,7 +49,7 @@ BASE_MODULES = (
     "redact.py",
 )
 MODULES = BASE_MODULES + ("inputs.py",)
-PIN_MODULE = "_memv2_pin"
+PIN_MODULE = "_memory_pin"
 PACKAGE = "memlab"
 EXPORT_DIR = ".memlab"  # the kit's root inside the actor's export
 MAX_REF_BLOBS = 1000
@@ -102,7 +102,7 @@ def stage(
     read_blob: Callable[[str], bytes],
     blob_size: Callable[[str], int],
 ) -> list[str]:
-    """The kit under *root*: ``memlab/``, ``_memv2_pin.py`` and the recorded blobs *refs* names in ``blobs/``
+    """The kit under *root*: ``memlab/``, ``_memory_pin.py`` and the recorded blobs *refs* names in ``blobs/``
     (a blob already there is kept); the notes for blobs left out by the bounds."""
     root.mkdir(parents=True, exist_ok=True)
     stage_package(root / PACKAGE)
