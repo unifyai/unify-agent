@@ -12,7 +12,7 @@ WRITER, READER = "memory.shop.cart:add_all", "memory.shop.cart:total"
 
 
 def _action(effect, kind="tool"):
-    return SimpleNamespace(kind=kind, effect=effect, status="ok")
+    return SimpleNamespace(kind=kind, effect=effect, status="ok", error=None, response={"ok": True})
 
 
 def _episodes(**by_id):
