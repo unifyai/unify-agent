@@ -161,7 +161,7 @@ def test_a_bad_entry_is_a_verdict_not_a_crash(tmp_path):
         Path(tmp_path),
         scratch=tmp_path,
     )
-    assert got[0]["verdict"].startswith("refused: ")
+    assert got[0]["verdict"].startswith("not replayable: ")
 
 
 def _one(tmp_path, cells, lines, call, source, trees=None, outputs=None):

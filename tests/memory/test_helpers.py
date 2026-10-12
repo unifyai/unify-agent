@@ -442,32 +442,32 @@ def test_no_claims_is_stated_in_the_reply(tmp_path, fake_box):
         (
             [{"claim": "x", "sources": ["e1/cell:7"]}],
             "source 'e1/cell:7' does not resolve (episode 'e1' has no part 'cell:7'; its parts: request, cell:0",
-            "unresolved_source",
+            "bad_source",
         ),
         (
             [{"claim": "x", "sources": ["e1/action:-1"]}],
             "has no part 'action:-1'",
-            "unresolved_source",
+            "bad_source",
         ),
         (
             [{"claim": "x", "sources": ["e9/request"]}],
             "'e9' is not a recorded episode",
-            "unresolved_source",
+            "bad_source",
         ),
         (
             [{"claim": "x", "sources": ["../e1/request"]}],
             "is not an episode id",
-            "unresolved_source",
+            "bad_source",
         ),
         (
             [{"claim": "x", "sources": ["cell:0"]}],
             "not written `<episode>/<part>`",
-            "unresolved_source",
+            "bad_source",
         ),
         (
             [{"claim": "x", "sources": ["e1/shared:nope"]}],
             "has no part 'shared:nope'",
-            "unresolved_source",
+            "bad_source",
         ),
         ("all good", "claims must be a list", "claims"),
         ([{"claim": "", "sources": ["e1/cell:0"]}], "claim 1 has no text", "claims"),

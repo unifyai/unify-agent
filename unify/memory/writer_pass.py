@@ -65,6 +65,7 @@ from . import qa as _qa
 from . import repair as _repair
 from . import views as _views
 from . import writer_tools as _wt
+from .tool_spec import form_of as _form_of
 from . import testkit as _testkit
 from .qa_static import cuts as _cuts
 from .redact import Redactor, redact_error
@@ -490,30 +491,11 @@ def _agent_tool_json(agent: str) -> list[dict]:
     return agent_profiles.tool_json(agent)
 
 
-def _refusal_form(spec: Any, text: str) -> str:
-    """The form code of *spec*'s refusal that *text* is: the form whose fixed opening or closing words match the
-    most of it."""
-    body = text[len("refused: ") :]
-    best, form_of = 0, "refused"
-    for form, template in spec.refusals.items():
-        head, tail = template.split("{", 1)[0], template.rsplit("}", 1)[-1]
-        fixed = max(
-            len(head) if head and body.startswith(head) else 0,
-            len(tail) if tail.strip() and body.endswith(tail) else 0,
-        )
-        if fixed > best:
-            best, form_of = fixed, form
-    return form_of
-
-
 def _delegate_reply(text: str) -> "_wt.Reply":
     """A ``delegate`` call's reply: the helper's report, or the refusal that started no helper. The helper's staged
     files are listed in the text under ``/inputs/helpers/<call>/``."""
-    from . import helpers as _helpers
-
-    if not text.startswith("refused: "):
-        return _wt.Reply(text)
-    return _wt.Reply(text, "refused", _refusal_form(_helpers.SPEC, text))
+    form = _form_of(text)
+    return _wt.Reply(text, "refused" if form else "ok", form)
 
 
 def _unread_entry(pool_mod: Any, eid: str) -> Any:
@@ -2223,7 +2205,8 @@ class WriterPass:
         from . import similar as _similar
 
         text = _similar.handle(args, self.similar_context())
-        if not text.startswith("refused: "):
+        form = _form_of(text)
+        if form is None:
             eid = args.get("episode")
             # the episode a cell lookup named; a lookup by code names none
             paths = (
@@ -2232,7 +2215,7 @@ class WriterPass:
                 else ()
             )
             return _wt.Reply(text, paths=paths)
-        return _wt.Reply(text, "refused", _refusal_form(_similar.SPEC, text))
+        return _wt.Reply(text, "refused", form)
 
     async def _similar_async(self, args: dict) -> str:
         """The ``similar`` tool for a helper (its handler is synchronous and bounded)."""
