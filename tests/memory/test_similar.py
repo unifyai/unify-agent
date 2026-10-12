@@ -215,6 +215,15 @@ def test_an_unknown_episode_or_cell_is_a_refusal(tmp_path):
     assert similar.handle({"code": "def (:"}, ctx).startswith(
         "refused: the code does not parse as Python (",
     )
+    # empty values are absent ones: the form models send when they fill every field of the schema
+    by_cell = similar.handle({"episode": "e1", "cell": 1}, ctx)
+    assert similar.handle({"episode": "e1", "cell": 1, "code": ""}, ctx) == by_cell
+    assert similar.handle({"episode": "e1", "cell": 1, "code": None}, ctx) == by_cell
+    by_code = similar.handle({"code": "x = 1"}, ctx)
+    assert similar.handle({"episode": "", "cell": 0, "code": "x = 1"}, ctx) == by_code
+    assert similar.handle({"episode": "", "cell": "", "code": ""}, ctx).startswith(
+        "refused: ",
+    )
 
 
 def test_the_reply_is_deterministic(tmp_path):

@@ -359,9 +359,15 @@ class _Refusal(Exception):
 
 def _query(args: dict, ctx: Context) -> tuple[str | None, list[dict], str]:
     """(the query's episode or None, its unit rows, a heading), or raises _Refusal."""
+    # an empty value is an absent one: models often fill every field of a schema, with "" or null where unused
+    args = {k: v for k, v in args.items() if v not in (None, "")}
     has_ep, has_cell = "episode" in args, "cell" in args
     code = args.get("code")
-    if code is not None and not (has_ep or has_cell):
+    if code is not None and has_ep:
+        raise _Refusal(
+            _refuse("args"),
+        )  # both forms at once: which one was meant is unknown
+    if code is not None:  # a lookup by code; a cell given beside it is not used
         if not isinstance(code, str):
             raise _Refusal(_refuse("args"))
         try:
@@ -371,7 +377,7 @@ def _query(args: dict, ctx: Context) -> tuple[str | None, list[dict], str]:
             raise _Refusal(_refuse("no_parse", error=error)) from None
         cell = mining.Cell(0, code)
         return None, _unit_rows(cell), "the given code"
-    if not (has_ep and has_cell) or code is not None:
+    if not (has_ep and has_cell):
         raise _Refusal(_refuse("args"))
     eid, raw = args.get("episode"), args.get("cell")
     if not isinstance(eid, str) or not eid:
