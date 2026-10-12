@@ -199,51 +199,6 @@ def test_the_writer_sees_the_pool_after_the_requests_first_line(tmp_path, monkey
 # --- 2. accumulation ------------------------------------------------------------------------------------------
 
 
-def _cluster(eid, lines):
-    return {
-        "key": "k" * 64,
-        "kind": "function",
-        "size": 9,
-        "template": "def f(x): ...",
-        "at": [{"episode": eid, "cell": 0, "lines": lines}],
-    }
-
-
-def test_an_s0_cluster_gains_a_later_passes_instance_and_keeps_one_id(tmp_path):
-    repo = Repo.init_bare(tmp_path / "mem.git")
-    p = pool.Pool(repo).load()
-    tier_b = {
-        "units": {
-            "u1": {"episode": "e1", "cell": 0, "lines": [1, 2], "src": "def a(): ..."},
-        },
-        "clusters": [{"akeys": ["x", "y"], "units": ["u1"]}],
-    }
-    for e in pool.from_clusters([_cluster("e1", [1, 4])], tier_b):
-        p.upsert(e, "p1")
-    p.save("p1")
-    p = pool.Pool(repo).load()
-    tier_b["units"]["u2"] = {
-        "episode": "e2",
-        "cell": 1,
-        "lines": [3, 4],
-        "src": "def b(): ...",
-    }
-    tier_b["clusters"][0]["units"].append("u2")
-    for e in pool.from_clusters([_cluster("e2", [5, 9])], tier_b):
-        p.upsert(e, "p2")
-    p.save("p2")
-    p = pool.Pool(repo).load()
-    a = p.entries[pool.entry_id("cluster", "a:" + "k" * 64)]
-    b = p.entries[pool.entry_id("cluster", "b:x,y")]
-    assert len(p.entries) == 2
-    assert [i["episode"] for i in a.data["instances"]] == [
-        "e1",
-        "e2",
-    ] and a.opened_in == "p1"
-    assert a.provenance["episodes"] == ["e1", "e2"] and a.last_changed_in == "p2"
-    assert [i["episode"] for i in b.data["instances"]] == ["e1", "e2"]
-
-
 # --- 3. status only from the writer ---------------------------------------------------------------------------
 
 

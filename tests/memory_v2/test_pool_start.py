@@ -19,7 +19,9 @@ from unify.memory_v2.staging import StagingView
 from tests.memory_v2.test_gate import ITEM, MAN
 from tests.memory_v2.test_pool import EMPTY, INDEX, _finish_with, _open, _Stores
 from tests.memory_v2.test_writer_pass import _call, needs_bwrap
-from tests.memory_v2.test_gate_library_mode import library_gate_world  # noqa: F401 (a fixture)
+from tests.memory_v2.test_gate_library_mode import (
+    library_gate_world,
+)  # noqa: F401 (a fixture)
 
 FILL = (
     "def fill(grid, colour=0):\n"
@@ -402,11 +404,22 @@ def test_a_closed_entry_with_new_evidence_is_surfaced_and_can_be_reopened(tmp_pa
 # --- 6. the retired miner's entries -----------------------------------------------------------------------------
 
 
+def _old_cluster_entry() -> pool.Entry:
+    """An entry the retired recurrence miner left in a pool (no code makes these now)."""
+    e = pool.Entry(
+        id=pool.entry_id("cluster", "a:" + "k" * 64),
+        kind="cluster",
+        title="code shape kkkkkkkk (function, 9 nodes)",
+        data={"key": "k" * 64, "template": "", "instances": []},
+    )
+    e.add_provenance([], [], ["s0"])
+    return e
+
+
 def test_cluster_entries_close_once_and_a_pool_without_them_is_unchanged(tmp_path):
     repo = Repo.init_bare(tmp_path / "mem.git")
     p = pool.Pool(repo).load()
-    cluster = {"key": "k" * 64, "kind": "function", "size": 9, "at": []}
-    (c,) = pool.from_clusters([cluster], {})
+    c = _old_cluster_entry()
     p.upsert(c, "p0")
     p.upsert(pool.deferred("e1", "later"), "p0")
     p.save("p0")
@@ -426,7 +439,7 @@ def test_a_pass_closes_the_old_cluster_entries_when_it_loads_the_pool(
 ):
     st = _Stores(tmp_path)
     p = st.pool()
-    (c,) = pool.from_clusters([{"key": "k" * 64, "at": []}], {})
+    c = _old_cluster_entry()
     p.upsert(c, "p0")
     p.save("p0")
     _finish_with(monkeypatch, EMPTY)

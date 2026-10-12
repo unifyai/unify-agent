@@ -45,7 +45,8 @@ def _clip(text: str, n: int = TITLE_CHARS) -> str:
 
 def candidate_title(name: str, source: str) -> str:
     """A candidate's title from its content: the signature and the docstring's first line of the function named
-    *name* (else the file's first top-level function); the file's first line when it does not parse."""
+    *name* (else the file's first top-level function); the file's first line when it does not parse.
+    """
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError):
@@ -197,7 +198,8 @@ class Pool:
     def load(self) -> "Pool":
         """Read ``refs/heads/pool``. Only well-formed entries are loaded (``pool/<kind>/<id>/``, a known kind, a
         sha16 id equal to its ``entry.json``'s, plain relative file names, regular blobs only); anything else is
-        skipped and listed in :attr:`skipped`, never staged. Titles are recomputed from content."""
+        skipped and listed in :attr:`skipped`, never staged. Titles are recomputed from content.
+        """
         try:
             self.head = (
                 self.repo.run(
@@ -353,7 +355,8 @@ class Pool:
     def enter_staging(self, views: dict, pass_id: str) -> dict:
         """A store pass's staging enters the pool at the pass's start: each batch episode's staging
         (:class:`.staging.StagingView` by episode) as entries (:func:`from_staging`), and :attr:`staged` maps each
-        staged file's ref to the entry holding it. Returns ``{"entries": n, "added": n}``."""
+        staged file's ref to the entry holding it. Returns ``{"entries": n, "added": n}``.
+        """
         added, held = 0, set()
         for eid, view in sorted(views.items()):
             for e in from_staging(eid, view):
@@ -367,7 +370,8 @@ class Pool:
 
     def close_cluster_entries(self, pass_id: str) -> list[str]:
         """Close every open ``cluster`` entry as superseded (the miner that fed them is retired); returns their ids.
-        A cleanup that runs when a pass loads the pool, so a pool with no cluster entries is unchanged."""
+        A cleanup that runs when a pass loads the pool, so a pool with no cluster entries is unchanged.
+        """
         out = []
         for e in self.open_entries():
             if e.kind == "cluster":
@@ -697,47 +701,6 @@ def from_staging(eid: str, view) -> list[Entry]:
             refs=[f"staging:{eid}/notes.md"],
         )
         e.add_provenance([eid], [], [view.source])
-        out.append(e)
-    return out
-
-
-def from_clusters(tier_a: list, tier_b: dict) -> list[Entry]:
-    """A recurrence miner's clusters (``clusters.json``, ``behaviour.json``) as entries: one id per cluster key,
-    instances added."""
-    out = []
-    for c in tier_a or []:
-        inst = [
-            {"episode": a["episode"], "cell": a["cell"], "lines": a["lines"]}
-            for a in c.get("at", [])
-        ]
-        e = Entry(
-            id=entry_id("cluster", f"a:{c['key']}"),
-            kind="cluster",
-            title=f"code shape {c['key'][:8]} ({c.get('kind')}, {c.get('size')} nodes)",
-            data={
-                "key": c["key"],
-                "template": c.get("template", ""),
-                "instances": inst,
-            },
-        )
-        e.add_provenance(sorted({i["episode"] for i in inst}), [], ["s0"])
-        out.append(e)
-    units = (tier_b or {}).get("units") or {}
-    for c in (tier_b or {}).get("clusters") or []:
-        members = sorted(c.get("units") or [])
-        us = [units[m] for m in members if m in units]
-        inst = [
-            {"episode": u["episode"], "cell": u["cell"], "lines": u["lines"]}
-            for u in us
-        ]
-        e = Entry(
-            id=entry_id("cluster", "b:" + ",".join(sorted(c.get("akeys") or []))),
-            kind="cluster",
-            title=f"behaviour group of {len(c.get('akeys') or [])} code shapes",
-            data={"akeys": sorted(c.get("akeys") or []), "instances": inst},
-            files={f"unit-{i}.py": u.get("src", "") for i, u in enumerate(us)},
-        )
-        e.add_provenance(sorted({i["episode"] for i in inst}), [], ["s0"])
         out.append(e)
     return out
 
