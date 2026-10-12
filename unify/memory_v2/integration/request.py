@@ -798,22 +798,27 @@ class RequestRun:
     ) -> None:
         """Record the request and run the due passes (blocking; under ``UNIFY_MEMORY_LIBRARY=on`` a due pass starts
         in a detached worker and the request returns at once); never raises. The transcript is the record;
-        *handle* is read only by the episode-end fork (``UNIFY_MEMORY_LIBRARY_FORK=on``, design r5), which starts
+        *handle* is read only by the episode-end fork (``UNIFY_MEMORY_LIBRARY_FORK=on``), which starts
         after the episode is recorded and changes nothing in it. With *consolidate* False (a driver's
         ``{"quit": true, "consolidate": false}``) the episode is recorded and no pass starts; due passes stay
         due, and one ``held`` event says so."""
         if self._closed:
             return
-        fork = None
+        fork = reservation = None
         try:
             self._close_scope()
+            # the fork's staging dir and lock exist before the episode is recorded, so admission never sees a
+            # recorded episode whose fork has not been reserved
+            reservation = self._reserve_fork(progress)
             try:
                 eid, sha = self._record_episode()
             except Exception as exc:  # noqa: BLE001
                 self._error("episode", exc, progress)
+                if reservation is not None:
+                    reservation.abandon("refused: the episode was not recorded")
                 return
             self._index_similar(progress)
-            fork = self._start_fork(handle, eid, progress)
+            fork = self._start_fork(handle, eid, progress, reservation)
             if consolidate:
                 await self._consolidate(eid, sha, progress, emit)
             else:
@@ -824,6 +829,8 @@ class RequestRun:
             if not isinstance(exc, Exception):
                 raise
         finally:
+            if reservation is not None:
+                reservation.close()  # a no-op once the fork has started or settled
             self._cleanup()
         if getattr(self, "_spawned", False):
             from unify.settings import SETTINGS
@@ -857,13 +864,8 @@ class RequestRun:
         except Exception as exc:  # noqa: BLE001 - the index never stops a request
             self._error("similar index", exc, progress)
 
-    def _start_fork(
-        self,
-        handle: Any,
-        eid: str,
-        progress: Callable[[str], None],
-    ) -> Any:
-        """Design r5: the episode-end fork, only under ``UNIFY_MEMORY_LIBRARY_FORK=on``; never raises."""
+    def _reserve_fork(self, progress: Callable[[str], None]) -> Any:
+        """The episode-end fork's staging dir and lock, only under ``UNIFY_MEMORY_LIBRARY_FORK=on``; never raises."""
         from unify.settings import SETTINGS
 
         from .switch import library_enabled, library_fork
@@ -873,9 +875,40 @@ class RequestRun:
         try:
             from . import fork as _fork
 
-            return _fork.start(self.paths, handle, eid, SETTINGS, progress=progress)
+            return _fork.reserve(self.paths, self.episode_id, SETTINGS, progress)
         except Exception as exc:  # noqa: BLE001
             self._error("fork", exc, progress)
+            return None
+
+    def _start_fork(
+        self,
+        handle: Any,
+        eid: str,
+        progress: Callable[[str], None],
+        reservation: Any = None,
+    ) -> Any:
+        """The episode-end fork, only under ``UNIFY_MEMORY_LIBRARY_FORK=on``; never raises."""
+        from unify.settings import SETTINGS
+
+        from .switch import library_enabled, library_fork
+
+        if not (library_enabled(SETTINGS) and library_fork(SETTINGS)):
+            return None
+        try:
+            from . import fork as _fork
+
+            return _fork.start(
+                self.paths,
+                handle,
+                eid,
+                SETTINGS,
+                progress=progress,
+                reservation=reservation,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._error("fork", exc, progress)
+            if reservation is not None:
+                reservation.abandon(f"error: {type(exc).__name__}")
             return None
 
     def _record_episode(self) -> tuple[str, str]:

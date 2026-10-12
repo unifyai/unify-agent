@@ -1,7 +1,6 @@
-"""Design r5 §2-§3: the episode-end fork. It runs only under UNIFY_MEMORY_LIBRARY_FORK=on, after the episode is recorded,
-through the actor's own proxy route, in a box whose only writable mount is the episode's staging dir. Nothing flows
-back (F3), off is off (F6), and the worker stages only the allowed files, from text and tool-call replies, executing
-nothing."""
+"""The episode-end fork. It runs only under UNIFY_MEMORY_LIBRARY_FORK=on, after the episode is recorded, through the
+key proxy's fork lane, in a box whose only writable mount is the episode's staging dir. Nothing flows back, off is
+off, and the worker stages only the allowed files, from text and tool-call replies, executing nothing."""
 
 from __future__ import annotations
 
@@ -266,7 +265,7 @@ def test_parse_reply_reads_text_and_tool_call_blocks_and_refuses_other_paths(tmp
             },
         ],
     }
-    files, refused = fw.parse_reply(msg)
+    files, refused = _files(fw.settle(fw.message_blocks(msg)))
     assert files == {"notes.md": "A lesson.\n", "candidates/double.py": CODE}
     assert {(r["path"], r["from"]) for r in refused} == {
         ("../escape.py", "text"),
@@ -275,8 +274,22 @@ def test_parse_reply_reads_text_and_tool_call_blocks_and_refuses_other_paths(tmp
     assert not marker.exists()
 
 
-# The shapes the fork's replies used (0f, replay B2 of 10 Oct: 26 of 31 put the path on the fence line, 4 before the
-# fence, 3 inside it); each one stages the same file.
+def _files(blocks):
+    """(parsed files by path, refused blocks as {path, why, from}) from parser blocks."""
+    files = {b["path"]: b["content"] for b in blocks if b["status"] == "parsed"}
+    refused = [
+        {"path": b["path"], "why": b["refusal"], "from": b["source"]}
+        for b in blocks
+        if b["status"] == "refused"
+    ]
+    return files, refused
+
+
+def _parse(text):
+    return _files(fw.parse_reply(text)[0])
+
+
+# The shapes recorded fork replies used; each one stages the same file.
 _SHAPES = {
     "inside": "```python\npath: candidates/double.py\n" + CODE + "```\n",
     "info": "```path: candidates/double.py\n" + CODE + "```\n",
@@ -291,31 +304,34 @@ _SHAPES = {
 
 @pytest.mark.parametrize("shape", sorted(_SHAPES))
 def test_every_path_shape_the_fork_wrote_is_staged(shape):
-    files, refused = fw.parse_reply({"content": _SHAPES[shape]})
+    files, refused = _parse(_SHAPES[shape])
     assert files == {"candidates/double.py": CODE} and refused == []
 
 
 def test_a_path_shape_outside_the_allow_list_is_still_refused():
-    msg = {"content": "```path: ../escape.py\nx\n```\npath: other.txt\n```\nx\n```\n"}
-    files, refused = fw.parse_reply(msg)
+    files, refused = _parse("```path: ../escape.py\nx\n```\npath: other.txt\n```\nx\n```\n")
     assert files == {}
     assert {r["path"] for r in refused} == {"../escape.py", "other.txt"}
 
 
 def test_a_path_line_is_only_taken_by_the_fence_right_after_it():
-    # a blank line between, or a path-only block followed by prose, names no block
-    msg = {
-        "content": "path: notes.md\n\n```\nlost\n```\n"
+    # a blank line between, or a path-only block followed by prose, names no block; each is recorded as dropped
+    blocks, record = fw.parse_reply(
+        "path: notes.md\n\n```\nlost\n```\n"
         + "```text\npath: cases/x.json\n```\nprose\n```json\n{}\n```\n",
-    }
-    files, refused = fw.parse_reply(msg)
-    assert files == {} and refused == []
+    )
+    assert _files(blocks) == ({}, [])
+    assert [(b["path"], b["reason"]) for b in blocks] == [
+        ("notes.md", "path_line_without_block"),
+        (None, "no_path"),
+        ("cases/x.json", "path_block_then_text_then_block"),
+        (None, "no_path"),
+    ]
+    assert record["counts"] == {"blocks": 4, "parsed": 0, "refused": 0, "dropped": 4}
 
 
 def test_a_fence_info_path_wins_and_a_repeated_inner_path_line_is_dropped():
-    files, _ = fw.parse_reply(
-        {"content": "```path: notes.md\npath: notes.md\nA lesson.\n```\n"},
-    )
+    files, _ = _parse("```path: notes.md\npath: notes.md\nA lesson.\n```\n")
     assert files == {"notes.md": "A lesson.\n"}
 
 
@@ -491,7 +507,7 @@ def test_f1_the_request_goes_through_a_pipe_with_a_bare_environment(
         and p.kw["close_fds"]
         and p.kw["start_new_session"]
     )
-    assert "pass_fds" not in p.kw
+    assert len(p.kw["pass_fds"]) == 1  # only the staging dir's lock, never a token descriptor
     blob = " ".join(p.argv)
     assert TOKEN not in blob and "18080" not in blob and "Double 21" not in blob
     url, headers, body = seen[0]
@@ -547,7 +563,10 @@ def test_f3_nothing_flows_back_to_the_record_the_transcript_or_the_client(
     staged = fork_mod.staging_dir(mv2.paths, eid)
     assert sorted(p.name for p in staged.rglob("*") if p.is_file()) == [
         "double.py",
+        "fork-blocks.json",
+        "fork-reply.json",
         "fork.json",
+        "fork.lock",
         "notes.md",
     ]
 
@@ -558,10 +577,12 @@ def test_finish_starts_the_fork_after_the_episode_is_recorded(
 ):  # noqa: F811
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_FORK", "on")
-    calls = []
+    calls, reserved = [], []
 
     def start(paths, handle, eid, settings, **kw):
         calls.append((eid, handle, (Path(paths.home) / "episodes.git").exists()))
+        res = kw.get("reservation")
+        reserved.append((res.eid, res.staging.is_dir()) if res is not None else None)
         return None
 
     monkeypatch.setattr(fork_mod, "start", start)
@@ -569,6 +590,8 @@ def test_finish_starts_the_fork_after_the_episode_is_recorded(
     _transcript(run)
     _finish(mv2, run)
     assert [(e, recorded) for e, _h, recorded in calls] == [(run.episode_id, True)]
+    # the staging dir and its lock were reserved before the episode was recorded
+    assert reserved == [(run.episode_id, True)]
 
 
 def test_f6_off_is_off_no_process_no_staging_dir(mv2, monkeypatch):  # noqa: F811

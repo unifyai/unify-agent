@@ -1,14 +1,17 @@
-"""Memory v2.1 r5 (§2-§4): staging, the findings an episode's reader leaves for the writer.
+"""Staging: the findings an episode's reader leaves for the writer.
 
-Three readers write the same files under ``<state>/memory-staging/<episode>/``: the actor's episode-end fork (arm
-B, :mod:`.integration.fork_worker`, which writes ``fork.json`` last), Sol analysts (arm C, :mod:`.analysts`, which
-write ``analyst.json`` last) and the offline replay of arm B. A directory without its status file is still being
-written and counts as no staging (a pass may batch an episode before its fork ends).
+Readers write the same files under ``<state>/memory-staging/<episode>/``: the actor's episode-end fork
+(:mod:`.integration.fork_worker`, which writes ``fork.json`` last) and the offline replay of the fork (which writes
+``replay_fork.json`` last). Writer-launched helpers write the same format to their own folder (:mod:`.helpers`). A directory without its status file is still being
+written and counts as no staging; with the fork on, admission (:func:`.integration.fork.settled`) keeps such an
+episode out of a pass batch until it settles.
 
 Staging is untrusted input. :func:`read` takes only regular files, never through a link, under the paths the fork
 worker allows (:func:`.integration.fork_worker.allowed`), within its operational quota; anything else is listed as
-refused with why. :func:`export` copies what was taken to the writer's ``/inputs/staging/<episode>/``. Nothing here
-imports or runs a staged file.
+refused with why. The fork's own record files (``fork-blocks.json``, the raw ``fork-reply.json``, ``fork.lock``) are
+never staged files; every block the fork's parser refused or dropped (``fork-blocks.json``) is listed beside the
+read-time refusals, so the writer sees what did not arrive and why. :func:`export` copies what was taken to the
+writer's ``/inputs/staging/<episode>/``. Nothing here imports or runs a staged file.
 """
 
 from __future__ import annotations
@@ -21,8 +24,10 @@ from pathlib import Path
 
 from .integration.fork_worker import (
     ALLOWED,
+    BLOCKS_JSON,
     QUOTA_BYTES,
     QUOTA_FILES,
+    RECORD_FILES,
     allowed,
     parse_reply,
     write_files,
@@ -30,6 +35,7 @@ from .integration.fork_worker import (
 
 __all__ = [
     "ALLOWED",
+    "RECORD_FILES",
     "QUOTA_BYTES",
     "QUOTA_FILES",
     "STAGING_DIR",
@@ -44,7 +50,6 @@ __all__ = [
 STAGING_DIR = "memory-staging"
 STATUS_FILES = {
     "fork.json": "fork",
-    "analyst.json": "writer_analyst",
     "replay_fork.json": "replay_fork",
 }
 
@@ -55,6 +60,8 @@ class StagingView:
     source: str
     files: dict[str, bytes] = field(default_factory=dict)
     refused: list[dict] = field(default_factory=list)
+    #: the fork's block counts from ``fork-blocks.json`` (blocks, parsed, refused, dropped), when it wrote one
+    blocks: dict | None = None
 
 
 def _status(d: Path) -> tuple[str, str] | None:
@@ -98,7 +105,7 @@ def read(root: Path | str | None, eid: str) -> StagingView | None:
         for name in sorted(dirs + names):
             p = Path(base) / name
             rel = p.relative_to(d).as_posix()
-            if name in STATUS_FILES and Path(base) == d:
+            if Path(base) == d and (name in STATUS_FILES or name in RECORD_FILES):
                 continue
             st = os.lstat(p)
             if stat.S_ISDIR(st.st_mode):
@@ -115,7 +122,7 @@ def read(root: Path | str | None, eid: str) -> StagingView | None:
             ):
                 why = "operational quota reached"
             if why:
-                view.refused.append({"path": rel[:200], "why": why})
+                view.refused.append({"path": rel[:200], "why": why, "stage": "read"})
                 continue
             fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW)
             with os.fdopen(fd, "rb") as fh:
@@ -123,7 +130,46 @@ def read(root: Path | str | None, eid: str) -> StagingView | None:
             total += len(data)
             view.files[rel] = data
         dirs[:] = [x for x in dirs if not os.path.islink(os.path.join(base, x))]
+    _parse_record(d, view)
     return view
+
+
+def _parse_record(d: Path, view: StagingView) -> None:
+    """Add the fork's parse-time refusals and drops (``fork-blocks.json``) to *view*'s refused list."""
+    p = d / BLOCKS_JSON
+    try:
+        st = os.lstat(p)
+    except OSError:
+        return
+    if not stat.S_ISREG(st.st_mode) or st.st_size > 8 * 1024 * 1024:
+        view.refused.append(
+            {"path": BLOCKS_JSON, "why": "unreadable block record", "stage": "parse"},
+        )
+        return
+    try:
+        doc = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+    except ValueError:
+        view.refused.append(
+            {"path": BLOCKS_JSON, "why": "unreadable block record", "stage": "parse"},
+        )
+        return
+    if not isinstance(doc, dict):
+        return
+    if isinstance(doc.get("counts"), dict):
+        view.blocks = {k: v for k, v in doc["counts"].items() if isinstance(v, int)}
+    for b in doc.get("blocks") or []:
+        if not isinstance(b, dict) or b.get("status") not in ("refused", "dropped"):
+            continue
+        view.refused.append(
+            {
+                "path": str(b.get("path"))[:200] if b.get("path") is not None else None,
+                "why": str(b.get("reason"))[:200],
+                "status": b.get("status"),
+                "form": b.get("form"),
+                "block": b.get("index"),
+                "stage": "parse",
+            },
+        )
 
 
 def export(view: StagingView | None, dest: Path) -> dict:
@@ -134,10 +180,13 @@ def export(view: StagingView | None, dest: Path) -> dict:
         out = dest / rel
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(data)
-    return {
+    entry = {
         "status": view.status,
         "source": view.source,
         "files": sorted(view.files),
         "refused": view.refused,
         "path": f"/inputs/staging/{dest.name}",
     }
+    if view.blocks is not None:
+        entry["blocks"] = view.blocks
+    return entry

@@ -423,6 +423,7 @@ def maybe_spawn(
     """
     from ..trigger import Trigger
     from .consolidate import _deliver, _error
+    from .fork import admission
     from .switch import library_experience_budget, library_pass_wall_s
 
     paths = stores.paths
@@ -438,10 +439,13 @@ def maybe_spawn(
             _deliver(stores, emit, event)
             return event
         budget = library_experience_budget(settings)
+        # with the fork on, only episodes whose fork has settled count toward a pass (the worker's pass admits
+        # the same way); the others roll to a later pass
         due = Trigger(
             stores.evidence,
             mode="batched",
             experience_budget=budget,
+            admission=admission(paths, settings),
         ).after_episode(eid)
         if not due:
             return {"phase": "not_due"}
@@ -470,6 +474,7 @@ def maybe_spawn(
                 "episode_id": eid,
                 "pass_id": rec.pass_id,
                 "trigger_tokens": due[0].experience_tokens,
+                "held_episodes": len(due[0].held),
                 "experience_budget": budget,
                 "wall_s": wall_s,
             }

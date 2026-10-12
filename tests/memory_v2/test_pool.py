@@ -121,7 +121,10 @@ def test_a_deferred_episode_is_listed_next_pass_merged_there_and_then_gone(
         load=lambda e: ep,
         max_calls=20,
     )
-    assert f"`{did}` deferred: a rule that may come back (1 episode; opened in p1)" in model2.outputs["r"]
+    assert (
+        f"`{did}` deferred: a rule that may come back (1 episode; opened in p1)"
+        in model2.outputs["r"]
+    )
     assert out2.passed and ITEM["item"] in out2.items_merged, out2.reasons
     e = st.pool().entries[did]
     assert e.status == "merged" and e.status_detail == {
@@ -341,7 +344,7 @@ def test_the_same_staged_candidate_from_two_episodes_is_one_entry(tmp_path):
         "cases/f.json": b"[[1, 1]]",
     }
     p = pool.Pool(repo).load()
-    for eid, src in (("e1", "fork"), ("e2", "writer_analyst")):
+    for eid, src in (("e1", "fork"), ("e2", "replay_fork")):
         for e in pool.from_staging(eid, StagingView("ok", src, dict(files))):
             p.upsert(e, "p1")
     p.save("p1")
@@ -353,7 +356,7 @@ def test_the_same_staged_candidate_from_two_episodes_is_one_entry(tmp_path):
     }
     assert e.provenance["episodes"] == ["e1", "e2"] and e.provenance["sources"] == [
         "fork",
-        "writer_analyst",
+        "replay_fork",
     ]
 
 
