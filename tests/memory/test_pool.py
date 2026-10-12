@@ -476,6 +476,7 @@ def test_a_crafted_pool_commit_never_writes_outside_inputs_pool(tmp_path):
     written = {str(f.relative_to(tmp_path)) for f in tmp_path.rglob("*") if f.is_file()}
     assert written == {
         "inputs/pool/INDEX.md",
+        f"inputs/pool/{pool.RELATED_FILE}",
         f"inputs/pool/{good}/entry.json",
         f"inputs/pool/{good}/ok/f.txt",
     }
