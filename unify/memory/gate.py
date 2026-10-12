@@ -197,7 +197,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from . import docstrings, layout
 from .admission import cover_problem, is_rejection
@@ -733,6 +733,13 @@ class _Run:
     seed: bytes | None = None
     # library mode: the import graph of both versions (G3's behaviour scope; None in v2)
     graph: dict[str, set[str]] | None = None
+    # library mode: the fixture provenance entries G1 verified in this pass (path -> entry), persisted on merge
+    fixtures_verified: dict[str, dict] = field(default_factory=dict)
+    # library mode: the call records of the parent's suites on the parent's library (baseline), on the
+    # candidate's library (regression run), and of the candidate's suites (suite path -> record; example_calls)
+    calls_base: dict[str, Any] = field(default_factory=dict)
+    calls_reg: dict[str, Any] = field(default_factory=dict)
+    calls_cand: dict[str, Any] = field(default_factory=dict)
 
     def fail(
         self,
@@ -1192,6 +1199,7 @@ class Gate:
         target: str,
         extra_env: dict[str, str] | None = None,
         qa_env: QAEnv | None = None,
+        calls: list[str] | None = None,
     ) -> PytestOutcome:
         # library mode: the whole output is spooled and kept as a blob; v2 passes nothing new
         spool = (
@@ -1199,7 +1207,10 @@ class Gate:
             if self._library_checks()
             else None
         )
-        more = {"spool_dir": spool} if spool is not None else {}
+        more: dict = {"spool_dir": spool} if spool is not None else {}
+        if calls is not None:
+            # library mode: record the calls test code makes of these functions (example_calls)
+            more["calls"] = list(calls)
         try:
             if qa_env is not None:
                 # a stage-5 switch is on or the library's tests use the test kit: memlab and the referenced
