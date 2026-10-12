@@ -65,6 +65,7 @@ from . import curate as _curate
 from . import messaging as _messaging
 from . import qa as _qa
 from . import repair as _repair
+from . import safe_paths as _safe
 from . import views as _views
 from . import writer_tools as _wt
 from . import edit_tools as _et
@@ -1598,18 +1599,11 @@ _MIRROR_FILE = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 
 
 def _write_in_box(box: Path, rel: str, data: bytes) -> None:
-    """Write *data* to ``box/rel`` from the host without following a link: missing directories are made, and the
-    file is opened with ``O_NOFOLLOW`` (its directories were checked for links by the caller, between the agent's
-    cells, while no cell of the box runs)."""
-    dest = box / rel
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(
-        dest,
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC,
-        0o644,
-    )
-    with os.fdopen(fd, "wb") as fh:
-        fh.write(data)
+    """Write *data* to ``box/rel`` from the host without following a link: every directory is opened from the box's
+    descriptor (missing ones are made), a link or non-regular file at the leaf is refused, and the bytes replace the
+    leaf by a rename (:func:`.safe_paths.write_in`). Box code may change the box meanwhile; nothing is followed.
+    Raises ``OSError`` (a :class:`.safe_paths.LinkFound` for a link)."""
+    _safe.write_in(box, rel, data)
 
 
 def _mirror(
@@ -1750,26 +1744,47 @@ def _channel_dirs(box: Path, channels: Iterable[str]) -> None:
 def _drop_unchanged(tree: Path, generated: Mapping[str, bytes]) -> None:
     """Remove each generated file of a library-mode box (never committed) that still holds the bytes the
     harness wrote, then ``.memory/`` if it is left empty. An edited one stays, so the gate sees and refuses it.
+
+    *tree* can hold links the box made (a copy keeps them as links): each file is read and removed from its own
+    directory's descriptor, never through a link (:mod:`.safe_paths`).
     """
     from .layout import DATA_DIR
 
-    for rel, data in generated.items():
-        p = Path(tree) / rel
-        try:
-            if p.is_file() and not p.is_symlink() and p.read_bytes() == data:
-                p.unlink()
-        except OSError:
-            continue
-    data_dir = Path(tree) / DATA_DIR
     try:
-        if (
-            data_dir.is_dir()
-            and not data_dir.is_symlink()
-            and not any(data_dir.iterdir())
-        ):
-            data_dir.rmdir()
+        root = os.open(tree, _safe.DIR_FLAGS)
     except OSError:
-        pass
+        return
+    try:
+        for rel, data in generated.items():
+            try:
+                parts = _safe.rel_parts(rel)
+                dfd = _safe.walk_dirs(root, parts[:-1])
+            except (OSError, ValueError):
+                continue
+            try:
+                if _safe.read_at(dfd, parts[-1], len(data)) == data:
+                    os.unlink(parts[-1], dir_fd=dfd)
+            except OSError:
+                pass
+            finally:
+                os.close(dfd)
+        try:
+            dfd = _safe.walk_dirs(root, [DATA_DIR])
+        except OSError:
+            return
+        try:
+            empty = not _safe.listing(dfd)
+        except OSError:
+            empty = False
+        finally:
+            os.close(dfd)
+        if empty:
+            try:
+                os.rmdir(DATA_DIR, dir_fd=root)
+            except OSError:
+                pass
+    finally:
+        os.close(root)
 
 
 def _check_manifest(raw: object) -> tuple[object, str | None]:
@@ -1817,34 +1832,48 @@ def _read_manifest(box: Path) -> tuple[bool, object, str | None]:
     """(found, parsed manifest or None, problem). The file is never followed through a link.
 
     ``.pass`` must be a real directory and ``manifest.json`` a regular file of at most 1 MiB holding JSON
-    that parses (a nesting too deep to parse is a problem, not a crash).
+    that parses (a nesting too deep to parse is a problem, not a crash). Both are opened from the box's descriptor
+    one component at a time (:mod:`.safe_paths`), so what is parsed, and then judged, is this read's own copy of
+    the bytes, whatever box code does to the file meanwhile.
     """
-    pass_dir = box / ".pass"
     try:
-        st = os.lstat(pass_dir)
-    except FileNotFoundError:
-        return False, None, None
+        root = os.open(box, _safe.DIR_FLAGS)
     except OSError as exc:  # /memory itself made unreadable
-        return True, None, f"manifest: /memory/.pass cannot be read ({exc.strerror})"
-    if not stat.S_ISDIR(st.st_mode):
-        return (
-            True,
-            None,
-            "manifest: /memory/.pass is not a directory, so no regular file was read",
-        )
+        return True, None, f"manifest: /memory cannot be read ({exc.strerror})"
     try:
-        fd = os.open(
-            pass_dir / "manifest.json",
-            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
-        )
-    except FileNotFoundError:
-        return False, None, None
-    except OSError as exc:
-        return (
-            True,
-            None,
-            f"manifest: /memory/.pass/manifest.json is not a regular file that can be read ({exc.strerror})",
-        )
+        try:
+            pfd = _safe.walk_dirs(root, [".pass"])
+        except _safe.Missing:
+            if _safe.lstat_at(root, ".pass") is None:
+                return False, None, None
+            return (
+                True,
+                None,
+                "manifest: /memory/.pass is not a directory, so no regular file was read",
+            )
+        except _safe.LinkFound:
+            return (
+                True,
+                None,
+                "manifest: /memory/.pass is not a directory, so no regular file was read",
+            )
+        except OSError as exc:
+            return True, None, f"manifest: /memory/.pass cannot be read ({exc.strerror})"
+        try:
+            try:
+                fd = _safe.openat("manifest.json", _safe.READ_FLAGS, pfd)
+            except FileNotFoundError:
+                return False, None, None
+            except OSError as exc:
+                return (
+                    True,
+                    None,
+                    f"manifest: /memory/.pass/manifest.json is not a regular file that can be read ({exc.strerror})",
+                )
+        finally:
+            os.close(pfd)
+    finally:
+        os.close(root)
     try:
         fst = os.fstat(fd)
         if not stat.S_ISREG(fst.st_mode):
@@ -1858,6 +1887,8 @@ def _read_manifest(box: Path) -> tuple[bool, object, str | None]:
         data = os.read(fd, _MANIFEST_MAX_BYTES + 1)
     finally:
         os.close(fd)
+    if len(data) > _MANIFEST_MAX_BYTES:
+        return True, None, f"manifest: larger than {_MANIFEST_MAX_BYTES} bytes"
     try:
         parsed = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:
@@ -2002,10 +2033,10 @@ def _library_item_ids(box: Path) -> set[str]:
 def _named_items(box: Path) -> list[str]:
     """The item ids the box's manifest names, if it can be read (a cancelled pass's draft names them)."""
     try:
-        raw = json.loads(
-            (Path(box) / ".pass" / "manifest.json").read_text(encoding="utf-8"),
-        )
+        found, raw, problem = _read_manifest(Path(box))
     except (OSError, ValueError):
+        return []
+    if not found or problem is not None:
         return []
     items = raw.get("items") if isinstance(raw, dict) else None
     return sorted(
@@ -2731,21 +2762,29 @@ class WriterPass:
             return "\n".join(lines + ["No instance verified: no test written."])
         rel, src = _rv.test_source(item, cases)
         data_rel, data = _rv.case_file(item, cases)
-        from . import fixtures as _fixtures
-
         # both files go into the writer's box, which its cells write: neither is written through a link
         for target in (rel, data_rel):
-            if (
-                not _fixtures._no_link_on_the_way(box, target)
-                or (box / target).is_symlink()
-            ):
+            if _safe.link_in(box, target):
                 return _wt.refusal(
                     "replay",
                     "not_run",
                     reason=f"a link is on the way to {target}",
                 )
         for target, content in ((rel, src.encode("utf-8")), (data_rel, data)):
-            _write_in_box(box, target, content)
+            try:
+                _write_in_box(box, target, content)
+            except _safe.LinkFound:  # planted after the check above: still never followed
+                return _wt.refusal(
+                    "replay",
+                    "not_run",
+                    reason=f"a link is on the way to {target}",
+                )
+            except OSError as exc:
+                return _wt.refusal(
+                    "replay",
+                    "not_run",
+                    reason=f"cannot write {target} ({_safe.errno_name(exc)})",
+                )
         return "\n".join(
             lines
             + [
@@ -3388,30 +3427,31 @@ class WriterPass:
         if name in ("read", "grep"):
             vpath = str(args.get("path") or ("/inputs" if name == "grep" else ""))
             try:
-                real = _views.resolve(vpath, roots)
-            except PermissionError:
+                prefix, parts = _safe.split(vpath, list(roots))
+            except _safe.Outside:
                 return _wt.refused(name, "outside_roots", path=vpath[:200])
-            virtual = _views._virtual(real, roots)
-            if virtual.endswith("/."):
-                virtual = virtual[:-2]
+            virtual = _safe.virtual(prefix, parts)
             if name == "read":
-                if not real.exists():
-                    return _wt.refused(
-                        "read",
-                        "not_found",
-                        ({"path": virtual, "mode": "read"},),
-                        path=vpath[:200],
-                    )
-                mode = "list" if real.is_dir() else "read"
+                where = ({"path": virtual, "mode": "read"},)
                 try:
-                    text = _views.read(vpath, roots, offset)
-                except OSError:
+                    text, mode = await asyncio.to_thread(
+                        _views.read_entry,
+                        vpath,
+                        roots,
+                        offset,
+                    )
+                except _safe.Outside:
+                    return _wt.refused("read", "outside_roots", path=vpath[:200])
+                except (_safe.LinkFound, _safe.NotRegular) as exc:
                     return _wt.refused(
                         "read",
-                        "not_found",
-                        ({"path": virtual, "mode": mode},),
+                        "unreadable",
+                        where,
+                        error=exc.reason,
                         path=vpath[:200],
                     )
+                except OSError:
+                    return _wt.refused("read", "not_found", where, path=vpath[:200])
                 return _wt.Reply(text, paths=({"path": virtual, "mode": mode},))
             where = ({"path": virtual, "mode": "search"},)
             try:
@@ -3424,8 +3464,26 @@ class WriterPass:
                 )
             except _views.PatternProblem as exc:
                 return _wt.refused("grep", "bad_pattern", where, reason=str(exc))
-            except PermissionError:
+            except _views.SearchFailed:
+                return _wt.refused("grep", "search_failed", where)
+            except _safe.Outside:
                 return _wt.refused("grep", "outside_roots", where, path=vpath[:200])
+            except _safe.LinkFound as exc:
+                return _wt.refused(
+                    "grep",
+                    "unreadable",
+                    where,
+                    error=exc.reason,
+                    path=vpath[:200],
+                )
+            except OSError as exc:
+                return _wt.refused(
+                    "grep",
+                    "unreadable",
+                    where,
+                    error=_safe.errno_name(exc),
+                    path=vpath[:200],
+                )
             return _wt.Reply(text, paths=where)
         if name == "pool":
             return _wt.pool(args, roots["/inputs"] / "pool", roots["/memory"])
