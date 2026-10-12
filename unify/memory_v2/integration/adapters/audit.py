@@ -60,6 +60,25 @@ Process events. Executables and argv are kept wherever the executable is.
   were more than MAX_ARGV items.
 * ``"os.system"``: ``exe`` None, ``argv`` ``[command]``.
 
+Memory calls. The generated library package (``library_helper``) raises
+``sys.audit("memory.call", item_id, args_digest, outcome)`` once per call of
+a library function, with ``outcome`` one of ``ok``, ``refused`` or
+``error``. They are kept apart from the path and process records, so a
+flood of either never hides the other, and ``drain()`` adds, only when a
+cell raised any::
+
+    "calls": {"counts": {item_id: {"ok": n, "refused": n, "error": n}},
+              "records": [{"item", "args_digest", "outcome", "tid",
+                           "cell_thread"}, ...],   # at most MAX_CALL_RECORDS
+              "dropped": int,          # calls of items over MAX_CALL_ITEMS
+              "records_dropped": int,  # calls counted but not listed
+              "malformed": int}        # events whose arguments were not
+                                       # an item id, a hex digest and an outcome
+
+``counts`` holds every well-formed call of up to MAX_CALL_ITEMS items, so it
+is exact unless ``dropped`` is non-zero. Like every record here, these are
+the cell's own unconfirmed reports (see Trust below).
+
 String handling: every recorded string has key-shaped substrings masked
 *before* it is clipped to MAX_STR characters; a clipped string loses its
 trailing token run (so no partial secret survives the cut) and ends with
@@ -97,6 +116,9 @@ authorisation, checker or outcome signals, or cost. Writes should be
 cross-checked against snapshot diffs, content comes only from work-tree
 snapshots, and harness-side code must never open a recorded path without
 refusing symlinks (no-follow) and re-checking that it is inside the root.
+Memory call counts feed the library's item statuses, which were already
+built from the cells' own code and tracebacks; a forged call is the same
+self-report as a call site the cell wrote, never more authority.
 """
 
 from __future__ import annotations
@@ -121,8 +143,10 @@ PATH_EVENTS = frozenset(
 )
 SPAWN_EVENTS = frozenset({"subprocess.Popen", "os.posix_spawn", "os.exec"})
 SYSTEM_EVENT = "os.system"
+CALL_EVENT = "memory.call"
+CALL_OUTCOMES = ("ok", "refused", "error")
 #: Audit events kept; everything else returns after one set lookup.
-AUDITED = PATH_EVENTS | SPAWN_EVENTS | {SYSTEM_EVENT}
+AUDITED = PATH_EVENTS | SPAWN_EVENTS | {SYSTEM_EVENT, CALL_EVENT}
 
 #: Caps per cell and per record.
 MAX_RECORDS = 2000
@@ -133,6 +157,10 @@ MAX_STR = 4096
 MAX_SCAN = MAX_STR * 16
 RECORD_OVERHEAD = 64
 RECURSION_MARGIN = 50
+#: Memory calls per cell: distinct items counted, and calls listed one by one.
+MAX_CALL_ITEMS = 512
+MAX_CALL_RECORDS = 1000
+MAX_ITEM_ID = 300
 CLIP_MARK = "<clipped>"
 
 #: The process-global sentinel: the one installed hook, whatever module
@@ -147,6 +175,8 @@ _KEY_SHAPED = re.compile(
     r"|AKIA[0-9A-Z]{16}",
 )
 _KEY_MASK = "<redacted:key-shaped>"
+_ITEM_ID = re.compile(r"memory(?:\.[A-Za-z_][A-Za-z0-9_]*)+:[A-Za-z_][A-Za-z0-9_]*")
+_HEX_DIGEST = re.compile(r"[0-9a-f]{1,64}")
 # The characters of a token that a clip may have cut through: a clipped text drops its trailing run of them.
 _TOKEN_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-+/=.:~")
 
@@ -219,6 +249,14 @@ class CellAudit:
         self.on = False
         self.cell_tid: Optional[int] = None
         self._local = threading.local()
+        self._reset_calls()
+
+    def _reset_calls(self) -> None:
+        self.call_counts: dict = {}
+        self.call_records: list = []
+        self.calls_dropped = 0
+        self.call_records_dropped = 0
+        self.calls_malformed = 0
 
     @staticmethod
     def prefixes(roots: Iterable[str]) -> tuple:
@@ -238,6 +276,9 @@ class CellAudit:
             return
         try:
             if self.on is not True:
+                return
+            if event == CALL_EVENT:
+                self._call(args)
                 return
             if len(self.records) >= MAX_RECORDS:
                 self.dropped += 1
@@ -274,6 +315,50 @@ class CellAudit:
                 self.failed += 1
             except Exception:  # noqa: BLE001
                 pass
+
+    def _call(self, args: tuple) -> None:
+        """Count one ``memory.call`` event. Only exact ``str`` arguments of the
+        expected shapes are read, so no code of a forged argument ever runs."""
+        if type(args) is not tuple or len(args) != 3:
+            self.calls_malformed += 1
+            return
+        item, digest, outcome = args
+        if (
+            type(item) is not str
+            or type(digest) is not str
+            or type(outcome) is not str
+            or outcome not in CALL_OUTCOMES
+            or len(item) > MAX_ITEM_ID
+            or _ITEM_ID.fullmatch(item) is None
+            or _HEX_DIGEST.fullmatch(digest) is None
+        ):
+            self.calls_malformed += 1
+            return
+        counts = self.call_counts.get(item)
+        if counts is None:
+            if len(self.call_counts) >= MAX_CALL_ITEMS:
+                self.calls_dropped += 1
+                return
+            counts = self.call_counts[item] = dict.fromkeys(CALL_OUTCOMES, 0)
+        counts[outcome] += 1
+        if len(self.call_records) >= MAX_CALL_RECORDS:
+            self.call_records_dropped += 1
+            return
+        tid = threading.get_ident()
+        self.call_records.append(
+            {
+                "item": item,
+                "args_digest": digest,
+                "outcome": outcome,
+                "tid": tid,
+                "cell_thread": tid == self.cell_tid,
+            },
+        )
+
+    def _calls_seen(self) -> bool:
+        return bool(
+            self.call_counts or self.calls_dropped or self.calls_malformed,
+        )
 
     def _inside(self, path: Optional[str]) -> bool:
         if path is None:
@@ -414,6 +499,7 @@ class CellAudit:
     # Controls, called from the worker's cell loop on the cell's thread.
     def begin(self) -> None:
         self.records, self.dropped, self.failed, self.bytes = [], 0, 0, 0
+        self._reset_calls()
         self.cell_tid = threading.get_ident()
         self.on = True
 
@@ -429,7 +515,16 @@ class CellAudit:
             "failed": self.failed,
             "bytes": self.bytes,
         }
+        if self._calls_seen():
+            out["calls"] = {
+                "counts": self.call_counts,
+                "records": self.call_records,
+                "dropped": self.calls_dropped,
+                "records_dropped": self.call_records_dropped,
+                "malformed": self.calls_malformed,
+            }
         self.records, self.dropped, self.failed, self.bytes = [], 0, 0, 0
+        self._reset_calls()
         return out
 
 

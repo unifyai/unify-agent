@@ -50,6 +50,9 @@ LOCK_TIMEOUT_S = 60.0
 _LIBRARY_BUSY_TIMEOUT_S = 60.0
 #: The most code-cell statuses a run keeps (use telemetry); every cell of a request fits many times over.
 MAX_STATUSES = 10_000
+#: The most distinct items a request's runtime call counts keep; calls of more are counted as dropped.
+MAX_RUNTIME_ITEMS = 2000
+RUNTIME_OUTCOMES = ("ok", "refused", "error")
 _ERROR_CHARS = 2000
 
 
@@ -238,6 +241,76 @@ def pinned_items(checkout: Path, library_mode: bool = False) -> list[str]:
     )
 
 
+def _count(value: Any) -> int:
+    return value if type(value) is int and value > 0 else 0
+
+
+def runtime_calls_empty() -> dict:
+    """A request's runtime call evidence before any cell: ``cells`` whose audit records arrived, per-item
+    ``counts`` ({ok, refused, error}) and what was lost (:func:`add_runtime_calls`)."""
+    return {"cells": 0, "counts": {}, "dropped": 0, "records_dropped": 0, "malformed": 0}
+
+
+def add_runtime_calls(acc: dict, drained: Any) -> None:
+    """Add one cell's drained audit records (the worker's ``done`` message ``audit``) to *acc*: the cell is
+    counted as observed, and its ``calls`` block (``adapters.audit``), when present, adds its per-item counts.
+    Malformed parts are skipped; calls of items beyond :data:`MAX_RUNTIME_ITEMS` count as dropped."""
+    if not isinstance(drained, dict):
+        return
+    acc["cells"] += 1
+    calls = drained.get("calls")
+    if not isinstance(calls, dict):
+        return
+    for key in ("dropped", "records_dropped", "malformed"):
+        acc[key] += _count(calls.get(key))
+    counts = calls.get("counts")
+    if not isinstance(counts, dict):
+        return
+    for item, row in counts.items():
+        if not isinstance(item, str) or not isinstance(row, dict):
+            acc["malformed"] += 1
+            continue
+        got = {k: _count(row.get(k)) for k in RUNTIME_OUTCOMES}
+        have = acc["counts"].get(item)
+        if have is None:
+            if len(acc["counts"]) >= MAX_RUNTIME_ITEMS:
+                acc["dropped"] += sum(got.values())
+                continue
+            have = acc["counts"][item] = dict.fromkeys(RUNTIME_OUTCOMES, 0)
+        for k in RUNTIME_OUTCOMES:
+            have[k] += got[k]
+
+
+def with_runtime_calls(record: dict, runtime: Any) -> dict:
+    """*record* (a use record) with the request's runtime call evidence: each called item's row gains
+    ``runtime`` = {ok, refused, error} (a row is added for an item the static reading did not see), and the
+    record gains ``runtime_calls`` = {cells, items, dropped, records_dropped, malformed}. With no observed
+    cell (the audit hook was not installed, or no cell ran) the record is returned unchanged, so readers fall
+    back to the static call sites. Every item of a record that has ``runtime_calls`` and no ``runtime`` row
+    was observed making no call, unless ``dropped`` is non-zero (some items' calls were not counted)."""
+    if not isinstance(runtime, dict) or _count(runtime.get("cells")) == 0:
+        return record
+    if not isinstance(record, dict) or "error" in record:
+        return record
+    rows = record.get("items")
+    if not isinstance(rows, dict):
+        rows = record["items"] = {}
+    counts = runtime.get("counts") if isinstance(runtime.get("counts"), dict) else {}
+    for item in sorted(counts):
+        row = rows.get(item)
+        if not isinstance(row, dict):
+            row = rows[item] = {}
+        row["runtime"] = dict(counts[item])
+    record["runtime_calls"] = {
+        "cells": _count(runtime.get("cells")),
+        "items": len(counts),
+        "dropped": _count(runtime.get("dropped")),
+        "records_dropped": _count(runtime.get("records_dropped")),
+        "malformed": _count(runtime.get("malformed")),
+    }
+    return record
+
+
 def memory_use(
     ep: Any,
     item_ids: list[str],
@@ -249,8 +322,10 @@ def memory_use(
     shown_text: str = "",
     cell_status: dict | None = None,
     library_mode: bool = False,
+    runtime_calls: dict | None = None,
 ) -> dict:
-    """The request's use record (:func:`..analysis.use.request_use`).
+    """The request's use record (:func:`..analysis.use.request_use`), with *runtime_calls*, the calls the
+    actor's cells actually made as the worker's audit hook observed them (:func:`with_runtime_calls`).
 
     It reads the transcript, actions and ``memory.diff`` as the episode writes them (through *redactor*,
     so the offline analyser recomputes the same record from the written episode), against the items at
@@ -268,7 +343,7 @@ def memory_use(
     try:
         if isinstance(shown, dict) and redactor is not None and shown_text:
             shown = {**shown, **use.section_digest(redactor.text(shown_text))}
-        return use.request_use(
+        record = use.request_use(
             clean(list(ep.transcript)),
             item_ids,
             [
@@ -293,6 +368,7 @@ def memory_use(
             cell_status=cell_status,
             library_mode=library_mode,
         )
+        return with_runtime_calls(record, runtime_calls)
     except Exception as exc:  # noqa: BLE001 - telemetry never stops recording
         return {
             "version": use.VERSION,
@@ -365,6 +441,8 @@ class RequestRun:
         self.export_roots: list[str] = []
         # Each code cell's status from the runtime's structured result, by tool call id (note_result).
         self.cell_status: dict[str, dict] = {}
+        # The library calls the cells made, from the worker's audit records (note_calls).
+        self.runtime_calls: dict = runtime_calls_empty()
         self.episode_id = ""
         self.started_at = ""
         self.pin = ""
@@ -645,6 +723,11 @@ class RequestRun:
                 library_mode=self.library_mode,
             )
         self.cell_status[str(call_id)] = status
+
+    def note_calls(self, drained: Any) -> None:
+        """Add one cell's drained audit records to the request's runtime call evidence
+        (:func:`add_runtime_calls`; ``hooks.worker_cell_done``)."""
+        add_runtime_calls(self.runtime_calls, drained)
 
     def note_failure(self, call_id: Any, exc: BaseException) -> None:
         """Keep that a code cell's tool call raised instead of returning (``hooks.tool_result``): its
@@ -959,6 +1042,7 @@ class RequestRun:
             shown_text=self.index,
             cell_status=dict(self.cell_status),
             library_mode=self.library_mode,
+            runtime_calls=self.runtime_calls,
         )
         sha = EpisodeWriter(
             stores.episodes,

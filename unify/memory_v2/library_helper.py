@@ -1,4 +1,4 @@
-"""The memory library's helpers: ``memory.index``, ``memory.show`` and ``memory.find`` (spec v2.1 §6).
+"""The memory library's helpers: ``memory.index``, ``memory.show`` and ``memory.find``.
 
 The harness generates this file as ``memory/__init__.py`` in every copy of the library; edits are discarded.
 It imports only the standard library and reads only files beside the package: ``INDEX.md``, ``links.json``
@@ -13,14 +13,25 @@ and the harness's data under ``.memory/``. In a cell::
 ``find`` matches structured data only: a dict, a list of records, JSON text, or a structured file such as a
 CSV with a header. It compares key paths and types with the shapes of the inputs each function was admitted
 on, never words, so it cannot match plain text.
+
+Imported as the package ``memory``, it also wraps each public function of every library module as that
+module is imported (:class:`_CallFinder`), so that each call raises the audit event ``memory.call`` with
+the item id, a short digest of the arguments (never their values) and the outcome: ``ok``, ``refused``
+(a ``MemoryInputError`` left it) or ``error`` (any other exception). The wrapper returns what the function
+returns and re-raises what it raises, unchanged; whatever audit hooks the process has decide what is kept.
 """
 
 from __future__ import annotations
 
 import ast
+import functools
+import hashlib
+import importlib.machinery
 import importlib.util
+import inspect
 import json
 import os
+import sys
 from typing import Any, NamedTuple
 
 INDEX_FILE = "INDEX.md"
@@ -30,6 +41,10 @@ FIND_FILE = ".memory/find.json"
 MATCHER_FILE = ".memory/matcher.py"
 SHAPES_FILE = ".memory/shapes.py"
 ITEM_LINE = "- `"
+CALL_EVENT = "memory.call"
+CALL_OUTCOMES = ("ok", "refused", "error")
+REFUSAL = "MemoryInputError"
+DIGEST_CHARS = 16
 
 
 def split_index(text: str) -> tuple[str, list[tuple[str, str]]]:
@@ -309,3 +324,179 @@ def find(value: Any) -> list[Found]:
         )
         ranked.append((-level, -share, -count, name, found))
     return [f for *_, f in sorted(ranked, key=lambda r: r[:4])][: m.MAX_RESULTS]
+
+
+# --- runtime call evidence ------------------------------------------------------------------------------
+#
+# Static call sites in cell code say what the actor wrote, not what ran. The wrapper below lets the process
+# that runs the cells observe each call that actually happened and how it ended. It changes no behaviour:
+# the wrapped function receives the same arguments, its return value and exceptions pass through unchanged,
+# and a failing audit hook is ignored.
+
+_DIGEST_DEPTH = 3
+_DIGEST_ITEMS = 16
+_DIGEST_TEXT = 64
+_DIGEST_SET = 256
+_ATOMS = (type(None), bool, int, float, complex)
+
+
+def _shape_text(value: Any, depth: int = 0) -> str:
+    """A bounded text of *value* built without running any of its own code (no ``__repr__``, ``__len__`` or
+    ``__iter__`` of user types): plain values by type and content prefix, containers by type, length and
+    their first items (a set's sorted, small sets only, since its order differs between processes),
+    anything else by its type name only."""
+    t = type(value)
+    if t in _ATOMS:
+        if t is int and value.bit_length() > 256:
+            return f"int:{value.bit_length()}bits"
+        return f"{t.__name__}:{value!r}"
+    if t is str or t is bytes:
+        return f"{t.__name__}[{len(value)}]:{value[:_DIGEST_TEXT]!r}"
+    if t not in (list, tuple, set, frozenset, dict):
+        return f"<{t.__module__}.{t.__qualname__}>"
+    head = f"{t.__name__}[{len(value)}]"
+    if depth >= _DIGEST_DEPTH:
+        return head
+    if t is dict:
+        parts = [
+            f"{_shape_text(k, depth + 1)}={_shape_text(v, depth + 1)}"
+            for k, v in list(dict.items(value))[:_DIGEST_ITEMS]
+        ]
+    elif t is list or t is tuple:
+        parts = [_shape_text(v, depth + 1) for v in value[:_DIGEST_ITEMS]]
+    elif len(value) <= _DIGEST_SET:
+        parts = sorted(_shape_text(v, depth + 1) for v in value)[:_DIGEST_ITEMS]
+    else:
+        return head
+    return f"{head}({','.join(parts)})"
+
+
+def args_digest(args: tuple, kwargs: dict) -> str:
+    """A short sha256 of the call's arguments as :func:`_shape_text` sees them: equal arguments give equal
+    digests, and no argument value appears in it."""
+    try:
+        text = _shape_text(tuple(args)) + "|" + _shape_text(dict(sorted(kwargs.items())))
+    except Exception:  # noqa: BLE001 - a digest never fails a call
+        text = "unreadable"
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:DIGEST_CHARS]
+
+
+def call_outcome(exc: BaseException) -> str:
+    """``refused`` when *exc* is a ``MemoryInputError`` (any class of that name in its type's bases: each
+    library module may define its own), else ``error``."""
+    return "refused" if any(c.__name__ == REFUSAL for c in type(exc).__mro__) else "error"
+
+
+def _emit(item: str, digest: str, outcome: str) -> None:
+    try:
+        sys.audit(CALL_EVENT, item, digest, outcome)
+    except Exception:  # noqa: BLE001 - an audit hook never changes the call
+        pass
+
+
+def wrap_call(fn: Any, item: str) -> Any:
+    """*fn* wrapped to raise one ``memory.call`` event per call (module docstring). A call interrupted by
+    something that is not an ``Exception`` (an interrupt, an exit, a cancellation) did not end on its own,
+    so it raises no event."""
+    if getattr(fn, "__memory_item__", None) is not None:
+        return fn
+    if inspect.iscoroutinefunction(fn):
+
+        @functools.wraps(fn)
+        async def call(*args: Any, **kwargs: Any) -> Any:
+            digest = args_digest(args, kwargs)
+            try:
+                result = await fn(*args, **kwargs)
+            except Exception as exc:
+                _emit(item, digest, call_outcome(exc))
+                raise
+            _emit(item, digest, "ok")
+            return result
+
+    else:
+
+        @functools.wraps(fn)
+        def call(*args: Any, **kwargs: Any) -> Any:
+            digest = args_digest(args, kwargs)
+            try:
+                result = fn(*args, **kwargs)
+            except Exception as exc:
+                _emit(item, digest, call_outcome(exc))
+                raise
+            _emit(item, digest, "ok")
+            return result
+
+    call.__memory_item__ = item  # type: ignore[attr-defined]
+    return call
+
+
+def wrap_module(module: Any) -> None:
+    """Wrap each public function *module* defines itself (not one it imports, which its own module wraps;
+    not a class or other callable). A library test module is left as it is."""
+    name = module.__name__
+    if "tests" in name.split(".")[1:]:
+        return
+    for attr, value in list(vars(module).items()):
+        if (
+            not attr.startswith("_")
+            and inspect.isfunction(value)
+            and getattr(value, "__module__", None) == name
+        ):
+            setattr(module, attr, wrap_call(value, f"{name}:{attr}"))
+
+
+class _CallLoader:
+    """A library module's own loader that wraps the module's functions once it has run."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def create_module(self, spec: Any) -> Any:
+        return self._inner.create_module(spec)
+
+    def exec_module(self, module: Any) -> None:
+        self._inner.exec_module(module)
+        try:
+            wrap_module(module)
+        except Exception:  # noqa: BLE001 - an unwrapped module still works
+            pass
+
+    def __getattr__(self, attr: str) -> Any:
+        return getattr(self._inner, attr)
+
+
+class _CallFinder:
+    """Finds the modules under this package the normal way and gives each a :class:`_CallLoader`."""
+
+    memory_call_finder = True
+
+    def __init__(self, package: str) -> None:
+        self.prefix = package + "."
+
+    def find_spec(self, fullname: str, path: Any = None, target: Any = None) -> Any:
+        # a library's own tests are left to the other finders (a test runner's import hooks among them)
+        if not fullname.startswith(self.prefix) or "tests" in fullname.split(".")[1:]:
+            return None
+        spec = importlib.machinery.PathFinder.find_spec(fullname, path)
+        # source modules only: a namespace package or a compiled extension keeps its own loader
+        if (
+            spec is not None
+            and isinstance(spec.origin, str)
+            and spec.origin.endswith(".py")
+            and hasattr(spec.loader, "exec_module")
+        ):
+            spec.loader = _CallLoader(spec.loader)
+        return spec
+
+
+def _install_call_finder(package: str) -> None:
+    if not any(
+        getattr(f, "memory_call_finder", False) and getattr(f, "prefix", None) == package + "."
+        for f in sys.meta_path
+    ):
+        sys.meta_path.insert(0, _CallFinder(package))
+
+
+# Only as the library package itself: the harness also imports this file as a module of its own.
+if __name__ == "memory":
+    _install_call_finder(__name__)
