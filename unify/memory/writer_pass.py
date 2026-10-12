@@ -4204,6 +4204,10 @@ class WriterCallError(RuntimeError):
 _CLASS_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
 
 
+#: Packages whose errors carry a provider's or a transport's text, which may echo the request.
+_CLIENT_LIBRARIES = ("unillm", "litellm", "openai", "httpx", "httpcore", "aiohttp")
+
+
 def _call_failure(exc: BaseException) -> tuple[str, str, str]:
     """``(class name, category, detail)`` of a failed call. The category comes from its type and status code only.
     *detail* is empty for an answer from the provider or the route (an HTTP status, a timeout, a connection or
@@ -4232,13 +4236,17 @@ def _call_failure(exc: BaseException) -> tuple[str, str, str]:
         category = "other"
     detail = ""
     if category == "other":
-        tb, where = exc.__traceback__, ""
+        tb, where, path = exc.__traceback__, "", ""
         while tb is not None:
             code = tb.tb_frame.f_code
-            where = f"{Path(code.co_filename).name}:{tb.tb_lineno} in {code.co_name}"
+            path = code.co_filename
+            where = f"{Path(path).name}:{tb.tb_lineno} in {code.co_name}"
             tb = tb.tb_next
-        message = redact_error(str(exc)).replace("\n", " ")[:200]
-        detail = (f" at {where}" if where else "") + (f": {message}" if message else "")
+        detail = f" at {where}" if where else ""
+        # the message only when the model client did not raise it: a client's error text may echo the request
+        if not any(f"/{lib}/" in path for lib in _CLIENT_LIBRARIES):
+            message = redact_error(str(exc)).replace("\n", " ")[:200]
+            detail += f": {message}" if message else ""
     return name, category, detail
 
 

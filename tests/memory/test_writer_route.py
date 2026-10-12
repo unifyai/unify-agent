@@ -1858,3 +1858,22 @@ def test_a_local_call_failure_names_where_it_was_raised_and_a_provider_answer_do
 
     name, category, detail = _call_failure(_Answer("echo of the request"))
     assert category == "http_401" and detail == ""
+
+
+def test_a_failure_raised_inside_the_model_client_keeps_its_text_out():
+    from unify.memory import writer_pass
+
+    code = compile(
+        "def call():\n    raise Exception('echo of the request')\n",
+        "/site/unillm/clients/x.py",
+        "exec",
+    )
+    ns: dict = {}
+    exec(code, ns)
+    try:
+        ns["call"]()
+    except Exception as exc:
+        name, category, detail = writer_pass._call_failure(exc)
+    assert (
+        category == "other" and detail == " at x.py:2 in call" and "echo" not in detail
+    )
