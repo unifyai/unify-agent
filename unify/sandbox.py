@@ -252,15 +252,17 @@ _STATE_VIEW_MOUNTS = {
 
 # Resource limits of every process in a sandbox, set inside it by prlimit
 # before the command starts (as the memory agents' boxes do,
-# unify/memory/sandbox_run.py): no core files, at most 1,024 open files, 256
-# processes and threads in the sandbox's own user namespace, 512 MiB per
-# written file. The address space is UNIFY_SANDBOX_ADDRESS_SPACE_BYTES
-# (16 GiB by default).
+# unify/memory/sandbox_run.py). The actor runs arbitrary work (large data
+# files, package installs, thread pools), so the bounds are set well above
+# what normal work needs and only stop runaway use: no core files, at most
+# 8,192 open files, 4,096 processes and threads in the sandbox's own user
+# namespace, 16 GiB per written file. The address space is
+# UNIFY_SANDBOX_ADDRESS_SPACE_BYTES (16 GiB by default).
 PRLIMIT = "/usr/bin/prlimit"
 RLIMIT_CORE_BYTES = 0
-RLIMIT_NOFILE_COUNT = 1024
-RLIMIT_NPROC_COUNT = 256
-RLIMIT_FSIZE_BYTES = 512 * 1024**2
+RLIMIT_NOFILE_COUNT = 8192
+RLIMIT_NPROC_COUNT = 4096
+RLIMIT_FSIZE_BYTES = 16 * 1024**3
 
 # The host paths every sandboxed command sees besides those derived at start
 # (_derived_roots: the interpreter, the Unify package, editable installs, the
@@ -2659,14 +2661,29 @@ def _rlimit_args() -> list[str]:
             f"{PRLIMIT} is missing, so the sandbox's resource limits cannot be set",
             suggestion="Install util-linux, which provides prlimit.",
         )
-    address_space = int(SETTINGS.UNIFY_SANDBOX_ADDRESS_SPACE_BYTES)
+    import resource
+
+    def within_hard(which: int, wanted: int) -> int:
+        # a process can lower its hard limit but never raise it: a host whose
+        # own hard limit is below the sandbox's keeps its own, so the
+        # sandbox still starts
+        hard = resource.getrlimit(which)[1]
+        return wanted if hard == resource.RLIM_INFINITY else min(wanted, hard)
+
+    address_space = within_hard(
+        resource.RLIMIT_AS,
+        int(SETTINGS.UNIFY_SANDBOX_ADDRESS_SPACE_BYTES),
+    )
+    fsize = within_hard(resource.RLIMIT_FSIZE, RLIMIT_FSIZE_BYTES)
+    nofile = within_hard(resource.RLIMIT_NOFILE, RLIMIT_NOFILE_COUNT)
+    nproc = within_hard(resource.RLIMIT_NPROC, RLIMIT_NPROC_COUNT)
     return [
         PRLIMIT,
         f"--as={address_space}:{address_space}",
         f"--core={RLIMIT_CORE_BYTES}:{RLIMIT_CORE_BYTES}",
-        f"--fsize={RLIMIT_FSIZE_BYTES}:{RLIMIT_FSIZE_BYTES}",
-        f"--nofile={RLIMIT_NOFILE_COUNT}:{RLIMIT_NOFILE_COUNT}",
-        f"--nproc={RLIMIT_NPROC_COUNT}:{RLIMIT_NPROC_COUNT}",
+        f"--fsize={fsize}:{fsize}",
+        f"--nofile={nofile}:{nofile}",
+        f"--nproc={nproc}:{nproc}",
         "--",
     ]
 

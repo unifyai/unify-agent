@@ -106,15 +106,35 @@ def test_the_sandbox_gets_an_explicit_environment_and_resource_limits(
         sandbox.PRLIMIT,
         f"--as={16 * GIB}:{16 * GIB}",
         "--core=0:0",
-        f"--fsize={512 * 1024**2}:{512 * 1024**2}",
-        "--nofile=1024:1024",
-        "--nproc=256:256",
+        f"--fsize={16 * 1024**3}:{16 * 1024**3}",
+        "--nofile=8192:8192",
+        "--nproc=4096:4096",
         "--",
         "true",
     ]
     monkeypatch.setattr(SETTINGS, "UNIFY_SANDBOX_ADDRESS_SPACE_BYTES", 8 * GIB)
     argv = sandbox.wrap_argv(["true"], policy, env=env, neutral=True)
     assert f"--as={8 * GIB}:{8 * GIB}" in argv
+
+
+def test_a_host_hard_limit_below_the_sandbox_limit_is_kept(monkeypatch):
+    """prlimit cannot raise a hard limit, so a host with a lower one keeps its own and the sandbox still starts."""
+    import resource
+
+    real = resource.getrlimit
+
+    def low(which):
+        if which == resource.RLIMIT_NOFILE:
+            return (512, 2048)
+        if which == resource.RLIMIT_NPROC:
+            return (100, 300)
+        return real(which)
+
+    monkeypatch.setattr(resource, "getrlimit", low)
+    monkeypatch.setattr(sandbox.os, "access", lambda *a, **k: True)
+    args = sandbox._rlimit_args()
+    assert "--nofile=2048:2048" in args
+    assert "--nproc=300:300" in args
 
 
 def test_the_address_space_limit_is_a_validated_setting():
