@@ -116,7 +116,7 @@ def test_a_memory_test_id_is_root_relative_only_under_the_library_layout():
     tid = "memory/a/tests/test_b.py::test_c"
     assert _test_file(tid, "env/x/tests") == "env/x/tests/memory/a/tests/test_b.py"
     assert (
-        _test_file(tid, "memory/a/tests", layout21=True) == "memory/a/tests/test_b.py"
+        _test_file(tid, "memory/a/tests", library_layout=True) == "memory/a/tests/test_b.py"
     )
     assert (
         _test_file("env/x/tests/test_a.py::t", "env/x/tests") == "env/x/tests/test_a.py"
