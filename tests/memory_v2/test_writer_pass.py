@@ -589,7 +589,7 @@ def test_unillm_turn_prices_its_own_events_without_a_model_call(
             # delivered to the context-local hook only (as unillm does), never to process-wide listeners
             hook = get_llm_event_hook()
             for c in costs:  # e.g. a postprocessing retry emits a second event
-                hook(LLMEvent(request={}, provider_cost=c, origin="memory_v2.writer"))
+                hook(LLMEvent(request={}, provider_cost=c, origin="memory_writer"))
             hook(LLMEvent(request={}, provider_cost=9.0, origin="elsewhere"))
             self.messages = [
                 *messages,
@@ -610,7 +610,7 @@ def test_unillm_turn_prices_its_own_events_without_a_model_call(
     )
     assert built == {
         "model": "openai/gpt-6-sol@openrouter",
-        "origin": "memory_v2.writer",
+        "origin": "memory_writer",
         "reasoning_effort": "low",
         "stateful": True,
     }
@@ -1607,7 +1607,9 @@ def test_transcript_is_redacted_by_value_before_any_cut_and_bounded():
         if isinstance(v, str)
     )
     whole = kept[1]["message"]["content"]
-    assert whole.startswith("Pass p9: <secret:FAKE_TOKEN> ") and "tok-PLANT" not in whole
+    assert (
+        whole.startswith("Pass p9: <secret:FAKE_TOKEN> ") and "tok-PLANT" not in whole
+    )
     # nothing to cut: every message kept
     short = transcript_lines(messages[:3], "p9", red)
     assert [json.loads(ln).get("i") for ln in short] == [None, 0, 1, 2]

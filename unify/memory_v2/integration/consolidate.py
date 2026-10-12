@@ -733,7 +733,7 @@ def reason_codes(outcome: PassOutcome | None, failure_code: str | None) -> list[
 
 
 #: The call kind (origin) of helper model calls, as the key proxy and the cost records see it.
-HELPER_ORIGIN = "memory_v2.helper"
+from .cost import HELPER_ORIGIN  # noqa: E402
 
 
 def _helper_turns(settings: Any, effort: str, library_mode: bool) -> dict:
@@ -755,8 +755,14 @@ def _helper_turns(settings: Any, effort: str, library_mode: bool) -> dict:
     route = WriterRoute(*pair)
     endpoint = model if "@" in model else f"{model}@openrouter"
 
-    def factory():
-        return unillm_turn(endpoint, effort, origin=HELPER_ORIGIN, route=route)
+    def factory(session: str | None = None):
+        return unillm_turn(
+            endpoint,
+            effort,
+            origin=HELPER_ORIGIN,
+            route=route,
+            session=session,
+        )
 
     return {"helper_turn": factory, "helper_refusal": None}
 
@@ -1272,7 +1278,13 @@ async def run_due_passes(
                 (
                     unillm_turn(cfg.model, effort)
                     if cfg.route is None
-                    else unillm_turn(cfg.model, effort, route=cfg.route)
+                    else unillm_turn(
+                        cfg.model,
+                        effort,
+                        route=cfg.route,
+                        # the pass this spend belongs to, as the fork's calls carry fork.<episode>
+                        session=f"{'curator' if curating else 'writer'}.{pass_id}",
+                    )
                 ),
                 rows,
                 cfg.model,

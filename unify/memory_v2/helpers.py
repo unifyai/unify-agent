@@ -198,7 +198,11 @@ def helper_tools() -> list[dict]:
     own ``execute_code`` in place of any other."""
     from .tool_spec import tools_for
 
-    specs = [s for s in tools_for("helper", frozenset({"helper"})) if s.name != "execute_code"]
+    specs = [
+        s
+        for s in tools_for("helper", frozenset({"helper"}))
+        if s.name != "execute_code"
+    ]
     names = {s.name for s in specs}
     for s in (STAGE_SPEC, DONE_SPEC):
         if s.name not in names:
@@ -395,7 +399,8 @@ def _usd(d: Decimal) -> str:
 
 class _Staging:
     """A fresh per-call directory written host-side only; every file opened ``O_EXCL | O_NOFOLLOW`` relative to
-    directory descriptors, so no link (or a path joined by the model) is ever followed."""
+    directory descriptors, so no link (or a path joined by the model) is ever followed.
+    """
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -422,7 +427,13 @@ class _Staging:
         data = text.encode("utf-8", "replace")
         others = {k: v for k, v in self.files.items() if k != rel}
         if len(others) >= QUOTA_FILES or sum(others.values()) + len(data) > QUOTA_BYTES:
-            return _refusal(STAGE_SPEC, "quota", path=rel, files=QUOTA_FILES, total=QUOTA_BYTES)
+            return _refusal(
+                STAGE_SPEC,
+                "quota",
+                path=rel,
+                files=QUOTA_FILES,
+                total=QUOTA_BYTES,
+            )
         *dirs, name = rel.split("/")
         dfd = self._dir(dirs)
         try:
@@ -485,9 +496,17 @@ def work_over(root: Path) -> str | None:
     return None
 
 
-def box_cell(code: str, hin: Path, lib: Path, work: Path, cells: Path, timeout_s: float) -> str:
+def box_cell(
+    code: str,
+    hin: Path,
+    lib: Path,
+    work: Path,
+    cells: Path,
+    timeout_s: float,
+) -> str:
     """*code* in the helper's box: the writer's box profile (:func:`.sandbox_run.run_confined`), with ``/inputs``
-    and ``/memory`` read-only and ``/work`` read-write; the code is a fresh read-only bind, never argv."""
+    and ``/memory`` read-only and ``/work`` read-write; the code is a fresh read-only bind, never argv.
+    """
     cdir = Path(tempfile.mkdtemp(prefix="cell-", dir=cells))
     try:
         (cdir / "code.py").write_bytes(code.encode("utf-8", errors="replace"))
@@ -510,7 +529,10 @@ def box_cell(code: str, hin: Path, lib: Path, work: Path, cells: Path, timeout_s
     content = (r.stdout + ("\n" + r.stderr if r.stderr else "")) or "(no output)"
     data = content.encode("utf-8", "replace")
     if len(data) > OUTPUT_BYTES:
-        content = data[:OUTPUT_BYTES].decode("utf-8", "replace") + f"\n[… {len(data)} bytes in all; head shown]"
+        content = (
+            data[:OUTPUT_BYTES].decode("utf-8", "replace")
+            + f"\n[… {len(data)} bytes in all; head shown]"
+        )
     if r.timed_out:
         content += f"\n(cell timed out after {timeout_s:.0f} s)"
     elif r.returncode != 0:
@@ -542,7 +564,13 @@ def _contents(ep: Any, eid: str, shared: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
-async def plain_episode_reader(name: str, args: dict, ep: Any, eid: str, shared: dict[str, str]) -> str:
+async def plain_episode_reader(
+    name: str,
+    args: dict,
+    ep: Any,
+    eid: str,
+    shared: dict[str, str],
+) -> str:
     """``overview(episode)`` and ``read_episode(episode, parts?, offset?)`` on one resolved episode."""
     offset = args.get("offset", 0) or 0
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
@@ -561,9 +589,15 @@ async def plain_episode_reader(name: str, args: dict, ep: Any, eid: str, shared:
         try:
             data = _bm.part_text(ep, part, shared).encode()
         except (KeyError, ValueError, IndexError, StopIteration):
-            return f"unknown part {part[:80]!r}; nothing was read. " + _contents(ep, eid, shared)
+            return f"unknown part {part[:80]!r}; nothing was read. " + _contents(
+                ep,
+                eid,
+                shared,
+            )
         if left <= 0:
-            out.append(f"== {part} ==\nnot shown (page full): read again with parts={json.dumps([part])}")
+            out.append(
+                f"== {part} ==\nnot shown (page full): read again with parts={json.dumps([part])}",
+            )
             continue
         text, a, b = _views.view_range(data, offset if len(parts) == 1 else 0, left)
         left -= b - a
@@ -644,15 +678,23 @@ async def _tool(
         rel = str(args.get("path", ""))
         out = st["staging"].stage(rel, str(args.get("text", "")))
         vpath = f"/inputs/{EXPORT_DIR}/{st['call']}/{rel}"
-        return out, [{"path": vpath, "mode": "write"}] if out.startswith("staged") else []
+        return out, (
+            [{"path": vpath, "mode": "write"}] if out.startswith("staged") else []
+        )
     if name in ("read", "grep"):
         vpath = str(args.get("path", "") or ("/inputs" if name == "grep" else ""))
         try:
             offset = int(args.get("offset", 0) or 0)
             if name == "read":
-                return _views.read(vpath, roots, offset), [{"path": vpath, "mode": "read"}]
+                return _views.read(vpath, roots, offset), [
+                    {"path": vpath, "mode": "read"},
+                ]
             out = await asyncio.to_thread(
-                _views.grep_bounded, str(args.get("pattern", "")), vpath, roots, offset
+                _views.grep_bounded,
+                str(args.get("pattern", "")),
+                vpath,
+                roots,
+                offset,
             )
             return out, [{"path": vpath, "mode": "search"}]
         except PermissionError as exc:
@@ -674,7 +716,10 @@ async def _tool(
         return await ctx.similar(args), []
     if name == "execute_code":
         if st["work_over"] is not None:
-            return f"not run: {st['work_over']}; execute_code is closed for the rest of this task", []
+            return (
+                f"not run: {st['work_over']}; execute_code is closed for the rest of this task",
+                [],
+            )
         left = ctx.deadline - time.monotonic()
         if left <= 1.0:
             return "not run: the pass's wall clock is used up", []
@@ -723,7 +768,11 @@ def _export(ctx: DelegateContext, call: str, staging: _Staging, doc: dict) -> No
 
 
 def _write_status(path: Path, doc: dict) -> None:
-    fd = os.open(path / STATUS_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    fd = os.open(
+        path / STATUS_FILE,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o644,
+    )
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(json.dumps(doc, indent=1, sort_keys=True) + "\n")
 
@@ -738,7 +787,7 @@ async def _run_helper(
     doc: dict,
 ) -> None:
     resolve = _resolver(ctx)
-    turn = ctx.new_turn()  # type: ignore[misc]
+    turn = ctx.new_turn(f"helper.{ctx.pass_id}.{call.rsplit('-', 1)[-1]}")  # type: ignore[misc]
     tools = helper_tools()
     left = ctx.deadline - time.monotonic()
     messages: list[dict] = [
@@ -758,16 +807,23 @@ async def _run_helper(
         if left <= 0:
             doc["status"] = "pass wall clock reached"
             return
-        async with ctx.model_lock:  # helper model calls are serialised across the pass's helpers
+        async with (
+            ctx.model_lock
+        ):  # helper model calls are serialised across the pass's helpers
             try:
-                msg, usd = await asyncio.wait_for(turn(messages, tools), timeout=max(0.1, ctx.deadline - time.monotonic()))
+                msg, usd = await asyncio.wait_for(
+                    turn(messages, tools),
+                    timeout=max(0.1, ctx.deadline - time.monotonic()),
+                )
             except asyncio.TimeoutError:
                 doc["unknown_cost_calls"] += 1
                 ctx.spend.unknown += 1
                 doc["status"] = "pass wall clock reached during a model call"
                 return
             except Exception:
-                doc["unknown_cost_calls"] += 1  # a failed call may still have cost money
+                doc[
+                    "unknown_cost_calls"
+                ] += 1  # a failed call may still have cost money
                 ctx.spend.unknown += 1
                 raise
         doc["turns"] += 1
@@ -785,13 +841,19 @@ async def _run_helper(
         calls = msg.get("tool_calls") or []
         calls = calls if isinstance(calls, list) else []
         if not calls:
-            messages.append({"role": "user", "content": "Use your tools, then call done(summary)."})
+            messages.append(
+                {"role": "user", "content": "Use your tools, then call done(summary)."},
+            )
             continue
         usage = _usage_of(msg, usd)
         finished = False
         for i, tc in enumerate(calls):
             tc = tc if isinstance(tc, dict) else {}
-            cid = tc.get("id") if isinstance(tc.get("id"), str) and tc.get("id") else f"call_{doc['turns']}_{i}"
+            cid = (
+                tc.get("id")
+                if isinstance(tc.get("id"), str) and tc.get("id")
+                else f"call_{doc['turns']}_{i}"
+            )
             fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
             name = str(fn.get("name", ""))
             args = _args(fn.get("arguments"))
@@ -811,9 +873,24 @@ async def _run_helper(
                         if content.startswith(("refused:", "not run:", "unknown part"))
                         else "ok"
                     )
-                except Exception as exc:  # noqa: BLE001 - a broken tool call is answered, never ends the helper
+                except (
+                    Exception
+                ) as exc:  # noqa: BLE001 - a broken tool call is answered, never ends the helper
                     content, status = f"error: {type(exc).__name__}", "error"
-            _emit(ctx, tool_event(ctx, call, n, name, status, content, args or {}, paths, usage if i == 0 else None))
+            _emit(
+                ctx,
+                tool_event(
+                    ctx,
+                    call,
+                    n,
+                    name,
+                    status,
+                    content,
+                    args or {},
+                    paths,
+                    usage if i == 0 else None,
+                ),
+            )
             n += 1
             messages.append({"role": "tool", "tool_call_id": cid, "content": content})
         if finished:
@@ -878,7 +955,13 @@ async def handle(args: dict, ctx: DelegateContext) -> str:
     return _reply(row)
 
 
-def _finish(ctx: DelegateContext, call: str, staging: _Staging | None, doc: dict, seconds: float) -> dict:
+def _finish(
+    ctx: DelegateContext,
+    call: str,
+    staging: _Staging | None,
+    doc: dict,
+    seconds: float,
+) -> dict:
     """Write ``helper.json`` last, export to ``/inputs/helpers/<call>/``, and record the call's row."""
     usd = doc.pop("_usd")
     files = []
@@ -888,7 +971,13 @@ def _finish(ctx: DelegateContext, call: str, staging: _Staging | None, doc: dict
                 data = staging.read(rel)
             except OSError:
                 continue
-            files.append({"path": rel, "bytes": size, "sha256": hashlib.sha256(data).hexdigest()})
+            files.append(
+                {
+                    "path": rel,
+                    "bytes": size,
+                    "sha256": hashlib.sha256(data).hexdigest(),
+                },
+            )
     doc.update(
         usd=_usd(usd) if not doc["unknown_cost_calls"] else _UNKNOWN,
         usd_known=_usd(usd),
@@ -903,7 +992,9 @@ def _finish(ctx: DelegateContext, call: str, staging: _Staging | None, doc: dict
             _export(ctx, call, staging, doc)
             row["exported"] = f"/inputs/{EXPORT_DIR}/{call}/"
         except OSError as exc:
-            row["status"] = f"{doc['status']}; output not exported ({type(exc).__name__})"
+            row["status"] = (
+                f"{doc['status']}; output not exported ({type(exc).__name__})"
+            )
     ctx.records.append(row)
     return row
 
@@ -912,11 +1003,17 @@ def _reply(row: dict) -> str:
     lines = [f"helper {row['call']}: {row['status']}"]
     if row.get("exported"):
         lines.append(f"files under {row['exported']}:")
-        lines += [f"- {f['path']} ({f['bytes']} bytes)" for f in row["files"]] or ["- (none staged)"]
+        lines += [f"- {f['path']} ({f['bytes']} bytes)" for f in row["files"]] or [
+            "- (none staged)",
+        ]
     lines.append(
         f"spend: {row['usd']} USD"
-        + (f" ({row['unknown_cost_calls']} unpriced calls; {row['usd_known']} USD known)" if row["unknown_cost_calls"] else "")
-        + f"; {row['turns']} model calls; {row['seconds']:.0f} s of the pass's wall clock"
+        + (
+            f" ({row['unknown_cost_calls']} unpriced calls; {row['usd_known']} USD known)"
+            if row["unknown_cost_calls"]
+            else ""
+        )
+        + f"; {row['turns']} model calls; {row['seconds']:.0f} s of the pass's wall clock",
     )
     lines.append("summary: " + (row.get("summary") or "(none)"))
     return "\n".join(lines)

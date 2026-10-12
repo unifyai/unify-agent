@@ -4154,7 +4154,7 @@ class WriterRoute:
 #: The route of the Sol call running in this context, read by unillm's per-call gateway lookup
 #: (:func:`_install_writer_gateway`). Context-local: a call in any other task or thread never sees it.
 _WRITER_GATEWAY: contextvars.ContextVar[WriterRoute | None] = contextvars.ContextVar(
-    "memory_v2_writer_gateway",
+    "memory_writer_gateway",
     default=None,
 )
 _GATEWAY_LOCK = threading.Lock()
@@ -4350,7 +4350,8 @@ def unillm_turn(
     model: str,
     effort: str,
     *,
-    origin: str = "memory_v2.writer",
+    origin: str = "memory_writer",
+    session: str | None = None,
     route: WriterRoute | None = None,
 ) -> ModelTurn:
     """The real model call: one ``generate`` per turn on a unillm client, priced from unillm's LLM events.
@@ -4395,7 +4396,7 @@ def unillm_turn(
     """
     import unillm
 
-    from unify.common.llm_client import CALL_KIND_HEADER, new_llm_client
+    from unify.common.llm_client import CALL_KIND_HEADER, SESSION_HEADER, new_llm_client
 
     endpoint = model if "@" in model else f"{model}@openrouter"
     if route is not None:
@@ -4410,12 +4411,22 @@ def unillm_turn(
         reasoning_effort=effort,
         stateful=True,
     )
+    meta = getattr(client, "_unify_request_metadata", None)
+    if session and meta is not None:
+        meta.session = session  # the request-metadata headers would otherwise send a random session id
     if route is not None and callable(getattr(client, "set_on_log_file", None)):
-        # Sol's client only; unify sets no callback of its own
+        # the writer's and helpers' clients only; unify sets no callback of its own
         client.set_on_log_file(_redact_log_file)
     # only on the declared route, so the shipped call is unchanged
     routed: dict[str, Any] = (
-        {} if route is None else {"extra_headers": {CALL_KIND_HEADER: origin}}
+        {}
+        if route is None
+        else {
+            "extra_headers": {
+                CALL_KIND_HEADER: origin,
+                **({SESSION_HEADER: session} if session else {}),
+            },
+        }
     )
 
     async def turn(messages: list[dict], tools: list[dict]) -> tuple[dict, str]:

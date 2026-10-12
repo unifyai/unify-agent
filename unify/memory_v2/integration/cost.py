@@ -27,10 +27,13 @@ from ..episodes import CostRow
 from ..writer_pass import ModelTurn
 
 UNKNOWN = "unknown"
-WRITER_ORIGIN = "memory_v2.writer"
+WRITER_ORIGIN = "memory_writer"  # the key proxy refuses a "." in a call kind
+#: writer-launched helpers: their spend is the pass's own (helpers.py), never the actor's
+HELPER_ORIGIN = "memory_helper"
 
 __all__ = [
     "WRITER_ORIGIN",
+    "HELPER_ORIGIN",
     "UNKNOWN",
     "CostListener",
     "install",
@@ -72,7 +75,9 @@ def _tokens(response: Any) -> tuple[int | None, int | None]:
 
 
 def _purpose(origin: str) -> str | None:
-    if origin == WRITER_ORIGIN or origin.startswith(WRITER_ORIGIN + "."):
+    if origin in (WRITER_ORIGIN, HELPER_ORIGIN) or origin.startswith(
+        (WRITER_ORIGIN + ".", HELPER_ORIGIN + "."),
+    ):
         return None
     return "embedding" if "embed" in origin else "actor"
 

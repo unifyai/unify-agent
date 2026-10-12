@@ -141,7 +141,7 @@ def test_unset_route_builds_the_shipped_call(monkeypatch, actor_gateway):
     # the client and the generate call exactly as at 9deefbfd1: no header, no route
     assert built["client"] == {
         "model": "openai/gpt-6-sol@openrouter",
-        "origin": "memory_v2.writer",
+        "origin": "memory_writer",
         "reasoning_effort": "low",
         "stateful": True,
     }
@@ -199,7 +199,7 @@ def test_route_sends_to_its_base_url_with_its_token_and_header(
         event = LLMEvent(
             request=dict(transport),
             provider_cost=cost,
-            origin="memory_v2.writer",
+            origin="memory_writer",
         )
         # unillm calls the scoped hook before any process-wide listener
         get_llm_event_hook()(event)
@@ -213,7 +213,7 @@ def test_route_sends_to_its_base_url_with_its_token_and_header(
     assert msg["content"] == "ok" and got == usd
     assert built["client"] == {
         "model": "openai/gpt-6-sol@openrouter",
-        "origin": "memory_v2.writer",
+        "origin": "memory_writer",
         "reasoning_effort": "low",
         "stateful": True,
     }
@@ -223,7 +223,7 @@ def test_route_sends_to_its_base_url_with_its_token_and_header(
     t = seen["transport"]
     assert t["api_base"] == WRITER_BASE
     assert t["api_key"] == _digest(WRITER_TOKEN)  # Sol's token, not the actor's key
-    assert t["extra_headers"] == {"X-Unify-Call-Kind": "memory_v2.writer"}
+    assert t["extra_headers"] == {"X-Unify-Call-Kind": "memory_writer"}
     # pricing as shipped: the request still asks the OpenRouter API for its charged cost
     assert t["extra_body"]["usage"]["include"] is True
     # the event bus never receives the token
@@ -242,7 +242,7 @@ def test_a_call_that_misses_the_route_fails_the_turn(monkeypatch, restore_unillm
             LLMEvent(
                 request={"api_base": ACTOR_BASE},
                 provider_cost=0.01,
-                origin="memory_v2.writer",
+                origin="memory_writer",
             ),
         )
 
@@ -262,7 +262,7 @@ def test_a_forged_header_does_not_select_the_route(actor_gateway, restore_unillm
     allow-list whatever headers arrive, so a cell that forges the header reaches nothing new either.
     """
     writer_pass._install_writer_gateway()
-    t = _redacted(_prepare(extra_headers={"X-Unify-Call-Kind": "memory_v2.writer"}))
+    t = _redacted(_prepare(extra_headers={"X-Unify-Call-Kind": "memory_writer"}))
     assert t["api_base"] == ACTOR_BASE
     assert t["api_key"] == _digest(ACTOR_KEY)
 
@@ -601,7 +601,7 @@ def test_concurrent_actor_tasks_served_calls_and_threads_keep_the_actors_route(
     asyncio.run(scenario())
 
     assert _is_writer(seen["writer"]) and _is_writer(seen["writer_after"])
-    assert seen["writer"]["extra_headers"] == {"X-Unify-Call-Kind": "memory_v2.writer"}
+    assert seen["writer"]["extra_headers"] == {"X-Unify-Call-Kind": "memory_writer"}
     others = {
         k: _is_actor(seen[k]) for k in ("actor", "served", "thread", "executor", "main")
     }
@@ -731,8 +731,8 @@ def test_unillms_real_path_sends_sols_call_on_its_route_and_the_actors_on_its_ow
     assert len(real_transport.sent) == 1
     writer = real_transport.sent[0]
     assert _is_writer(writer)
-    assert writer["extra_headers"].get("X-Unify-Call-Kind") == "memory_v2.writer"
-    writer_events = [e for e in listener if e["origin"] == "memory_v2.writer"]
+    assert writer["extra_headers"].get("X-Unify-Call-Kind") == "memory_writer"
+    writer_events = [e for e in listener if e["origin"] == "memory_writer"]
     assert writer_events and all(
         not e["has_key"] and e["api_base"] == WRITER_BASE for e in writer_events
     )
@@ -751,7 +751,7 @@ def test_unillms_real_path_sends_sols_call_on_its_route_and_the_actors_on_its_ow
     assert len(real_transport.sent) == 2
     after = real_transport.sent[1]
     assert _is_actor(after)
-    assert after["extra_headers"].get("X-Unify-Call-Kind") != "memory_v2.writer"
+    assert after["extra_headers"].get("X-Unify-Call-Kind") != "memory_writer"
 
 
 def test_a_cancelled_routed_call_strips_the_key_from_its_late_event(
@@ -803,7 +803,7 @@ def test_a_cancelled_routed_call_strips_the_key_from_its_late_event(
     out = asyncio.run(scenario())
     assert out["cancelled"] and out["late"] and out["route_after"] is None
     assert len(real_transport.sent) == 1 and _is_writer(real_transport.sent[0])
-    writer_events = [e for e in listener if e["origin"] == "memory_v2.writer"]
+    writer_events = [e for e in listener if e["origin"] == "memory_writer"]
     assert len(writer_events) >= 2
     assert all(not e["has_key"] for e in writer_events)
     assert all(e["api_base"] == WRITER_BASE for e in writer_events)
