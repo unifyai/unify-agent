@@ -192,7 +192,7 @@ def test_begin_refuses_when_a_cell_could_read_harness_state(mv2, monkeypatch):
             return None if Path(path) == mv2.paths.episodes else ("x", "hidden")
 
     monkeypatch.setattr(sandbox, "build_policy", lambda fresh=False: Leaky())
-    with pytest.raises(request_mod.MemoryV2Unavailable, match="episodes.git"):
+    with pytest.raises(request_mod.MemoryUnavailable, match="episodes.git"):
         _begin(mv2, "hi")
     _left_nothing(mv2.paths)
     assert mv2.fakes.cost_active == []

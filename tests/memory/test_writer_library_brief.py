@@ -13,7 +13,7 @@ from unify.memory import library_prompts as pv
 from unify.memory import qa as _qa
 from unify.memory.integration import prompt
 from unify.memory.integration.request import (
-    MemoryV2Unavailable,
+    MemoryUnavailable,
     check_library_switches,
 )
 from unify.memory.writer_pass import _library_trailers, writer_system
@@ -105,7 +105,7 @@ def test_a_request_with_contradicting_switches_is_refused_by_name():
     check_library_switches(  # library mode off: v2's settings are v2's business
         SimpleNamespace(UNIFY_MEMORY_LIBRARY="off", UNIFY_MEMORY_DOCSTRINGS="on"),
     )
-    with pytest.raises(MemoryV2Unavailable, match="UNIFY_MEMORY_DOCSTRINGS=on"):
+    with pytest.raises(MemoryUnavailable, match="UNIFY_MEMORY_DOCSTRINGS=on"):
         check_library_switches(
             SimpleNamespace(UNIFY_MEMORY_LIBRARY="on", UNIFY_MEMORY_DOCSTRINGS="on"),
         )

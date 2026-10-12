@@ -57,9 +57,23 @@ _R = r"(?![A-Za-z0-9])"
 
 RULES: tuple[tuple[str, re.Pattern[str], frozenset[str]], ...] = (
     ("version tag", re.compile(_L + r"[vV](?:2\.1|21)" + _R), EVERYWHERE),
+    # the former package name in any case and with any separator: memory_v2, memory-v2, MEMV2_PIN, mem_v2, memv2-
     (
         "former package name",
-        re.compile(r"(?:memory|MEMORY)[_-][vV]2(?![0-9.])"),
+        re.compile(r"(?i)(?<![a-z0-9])mem(?:ory)?[_.-]?v2(?![0-9])"),
+        EVERYWHERE,
+    ),
+    ("version tag", re.compile(r"(?i)(?<![a-z0-9])v2[_.-]1(?![0-9])"), EVERYWHERE),
+    # the same inside a CamelCase name (_RefuseMemoryV2, MemV2Error)
+    (
+        "former package name",
+        re.compile(r"(?<=[a-z0-9_])Mem(?:ory)?V2(?![0-9])"),
+        frozenset({NAME}),
+    ),
+    # model names as tokens in any case, also between separators inside names and paths (sol_route, /sol/v1)
+    (
+        "model name as a role",
+        re.compile(r"(?i)(?<![a-z0-9])(?:sol|luna)s?(?![a-z0-9])"),
         EVERYWHERE,
     ),
     ("milestone code", re.compile(_L + r"[mM][0-9][a-z]" + _R), EVERYWHERE),

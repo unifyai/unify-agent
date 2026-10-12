@@ -155,7 +155,7 @@ def _identity_hooks() -> types.ModuleType:
     return hooks
 
 
-class _RefuseMemoryV2(importlib.abc.MetaPathFinder):
+class _RefuseMemory(importlib.abc.MetaPathFinder):
     def __init__(self) -> None:
         self.attempts: list[str] = []
 
@@ -166,7 +166,7 @@ class _RefuseMemoryV2(importlib.abc.MetaPathFinder):
         return None
 
 
-def _make_absent(monkeypatch) -> _RefuseMemoryV2:
+def _make_absent(monkeypatch) -> _RefuseMemory:
     switch = sys.modules.get("unify.memory.integration.switch")
     for name in [
         m for m in sys.modules if m == "unify.memory" or m.startswith("unify.memory.")
@@ -189,7 +189,7 @@ def _make_absent(monkeypatch) -> _RefuseMemoryV2:
         stand_ins["unify.memory.integration.switch"] = switch
     for name, mod in stand_ins.items():
         monkeypatch.setitem(sys.modules, name, mod)
-    finder = _RefuseMemoryV2()
+    finder = _RefuseMemory()
     monkeypatch.setattr(sys, "meta_path", [finder, *sys.meta_path])
     return finder
 

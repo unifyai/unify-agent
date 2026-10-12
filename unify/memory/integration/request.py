@@ -56,7 +56,7 @@ RUNTIME_OUTCOMES = ("ok", "refused", "error")
 _ERROR_CHARS = 2000
 
 
-class MemoryV2Unavailable(RuntimeError):
+class MemoryUnavailable(RuntimeError):
     """``UNIFY_MEMORY=on`` cannot run here; the message names what to change."""
 
 
@@ -81,7 +81,7 @@ def check_library_switches(settings: Any) -> None:
 
     bad = library_conflicts(settings)
     if bad:
-        raise MemoryV2Unavailable(
+        raise MemoryUnavailable(
             "UNIFY_MEMORY_LIBRARY=on cannot run with "
             + ", ".join(bad)
             + ": each is a v2 setting that the library mode's prompts and gate contradict; turn it off",
@@ -221,7 +221,7 @@ def check_hidden(paths: Any, policy: Any) -> None:
         str(p) for p in paths.harness_only() if policy.readable_violation(p) is None
     ]
     if readable:
-        raise MemoryV2Unavailable(
+        raise MemoryUnavailable(
             "UNIFY_MEMORY needs its state hidden from cells, but the sandbox would let a cell "
             f"read {readable}; keep UNIFY_HOME outside the workspace and every mount",
         )
