@@ -331,6 +331,12 @@ class DelegateContext:
     #: (:func:`.writer_pass.compact_by_summary`); what each compaction took out, by helper, for its transcript
     compact: bool = False
     archived: dict[str, list] = field(default_factory=dict)
+    #: tools in code (the writer's ``PassConfig.tools_in_code``): a helper's requests carry only execute_code and its
+    #: other tools are calls from its cells; its interpreter starts with ``interpreter_start`` (None: the default)
+    #: and its handler threads join the pass's tracker ``threads``
+    tools_in_code: bool = False
+    interpreter_start: Any = None
+    threads: Any = None
 
     def __post_init__(self) -> None:
         if self.pass_record is None:
@@ -398,6 +404,12 @@ def context_for(
         compact=bool(
             getattr(cfg, "library_mode", False) and getattr(cfg, "compact", False),
         ),
+        tools_in_code=bool(
+            getattr(cfg, "library_mode", False)
+            and getattr(cfg, "tools_in_code", False),
+        ),
+        interpreter_start=getattr(writer, "interpreter_start", None),
+        threads=getattr(writer, "_in_code_threads", None),
     )
 
 
@@ -886,17 +898,15 @@ def _resolver(ctx: DelegateContext) -> Callable[[str], tuple[Any, str] | str]:
     return resolve
 
 
-async def _tool(
+def _tool_sync(
     ctx: DelegateContext,
     name: str,
     args: dict,
     st: dict,
     resolve: Callable[[str], Any],
 ) -> tuple[str, list[dict]]:
-    """One helper tool call: (reply, the paths it touched)."""
-    if name in RECORD_TOOLS:
-        info = st["messaging"] = {}
-        return await _messaging.call(ctx.pass_record, st["call"], name, args, info), []
+    """A helper's ``stage``, ``read`` or ``grep`` call, synchronously (:func:`_tool` runs grep on a worker thread; an
+    in-code call runs any of them from the worker pool): (reply, the paths it touched)."""
     roots = {
         "/inputs": st["hin"],
         "/task": st["task"],
@@ -916,15 +926,9 @@ async def _tool(
             prefix, parts = _safe.split(vpath, list(roots))
             virtual = _safe.virtual(prefix, parts)
             if name == "read":
-                text, mode = await asyncio.to_thread(
-                    _views.read_entry,
-                    vpath,
-                    roots,
-                    offset,
-                )
+                text, mode = _views.read_entry(vpath, roots, offset)
                 return text, [{"path": virtual, "mode": mode}]
-            out = await asyncio.to_thread(
-                _views.grep_bounded,
+            out = _views.grep_bounded(
                 str(args.get("pattern", "")),
                 vpath,
                 roots,
@@ -939,7 +943,7 @@ async def _tool(
             return _own_refusal("grep", "search_failed"), []
         except FileNotFoundError:
             missing = _own_refusal(name, "not_found", path=vpath[:200])
-            listing = await asyncio.to_thread(_parent_listing, vpath, roots)
+            listing = _parent_listing(vpath, roots)
             return (
                 Refusal(
                     str(missing) + listing,
@@ -964,6 +968,25 @@ async def _tool(
                 ),
                 [],
             )
+    raise ValueError(f"not a synchronous helper tool: {name}")
+
+
+async def _tool(
+    ctx: DelegateContext,
+    name: str,
+    args: dict,
+    st: dict,
+    resolve: Callable[[str], Any],
+) -> tuple[str, list[dict]]:
+    """One helper tool call: (reply, the paths it touched)."""
+    if name in RECORD_TOOLS:
+        info = st["messaging"] = {}
+        return await _messaging.call(ctx.pass_record, st["call"], name, args, info), []
+    if name == "stage":
+        return _tool_sync(ctx, name, args, st, resolve)
+    if name in ("read", "grep"):
+        # both open box paths and may wait on the file system: never on the event loop
+        return await asyncio.to_thread(_tool_sync, ctx, name, args, st, resolve)
     if name == "overview" and not args.get("episode"):
         return _batch_overview(ctx, args), [
             {"path": "/inputs/batch_map.json", "mode": "read"},
@@ -993,6 +1016,13 @@ async def _tool(
         left = ctx.deadline - time.monotonic()
         if left <= 1.0:
             return refusal("execute_code", "no_time"), []
+        if st.get("in_code") is not None:
+            out = await _in_code_cell(ctx, st, str(args.get("code", "")), left)
+            over = work_over(st["work"])
+            if over is not None:
+                st["work_over"] = over
+                out += f"\n({over}; execute_code is closed for the rest of this task)"
+            return out, []
         audit: dict = {}
         st["box_audit"] = audit
         out = await _in_thread(
@@ -1191,12 +1221,38 @@ async def _run_helper(
     st: dict,
     doc: dict,
 ) -> None:
+    """One helper's turns; with tools in code, inside its interpreter session, which ends with it."""
+    if not ctx.tools_in_code:
+        return await _run_helper_turns(ctx, call, task, episodes, staging, st, doc)
+    session = _in_code_session(ctx, call, st, doc)
+    try:
+        return await _run_helper_turns(ctx, call, task, episodes, staging, st, doc)
+    finally:
+        await session.close()
+
+
+async def _run_helper_turns(
+    ctx: DelegateContext,
+    call: str,
+    task: str,
+    episodes: list[str],
+    staging: _Staging,
+    st: dict,
+    doc: dict,
+) -> None:
     resolve = _resolver(ctx)
+    in_code = st.get("in_code") is not None
+    if in_code:
+        st["in_code"].resolve = resolve
     session = f"helper.{ctx.pass_id}.{call.rsplit('-', 1)[-1]}"
     # a factory takes the per-call session label (the live lane) or nothing (scripted turns)
     takes_session = bool(inspect.signature(ctx.new_turn).parameters)  # type: ignore[arg-type]
     turn = ctx.new_turn(session) if takes_session else ctx.new_turn()  # type: ignore[misc]
     tools = helper_tools(similar=ctx.similar is not None)
+    if in_code:
+        from .tool_handlers import in_code_json_tools
+
+        tools = in_code_json_tools("helper")
     pr = ctx.pass_record
     left = ctx.deadline - time.monotonic()
     messages: list[dict] = [
@@ -1309,6 +1365,14 @@ async def _run_helper(
                 status = "refused"
             elif finished:
                 content, status = refusal(GENERAL, "task_done"), "refused"
+            elif in_code and name != "execute_code":
+                content = refusal(
+                    GENERAL,
+                    "unknown_tool",
+                    name=str(name)[:80],
+                    tools="execute_code",
+                )
+                status = "refused"
             elif name == "done":
                 try:
                     got = check_claims(args, resolve, ctx.shared)
@@ -1324,6 +1388,8 @@ async def _run_helper(
                     doc["claims"] = got
                     finished, content, status = True, "ok", "ok"
             else:
+                if in_code:
+                    st["n"] = n + 1  # the cell's row keeps n; its in-code calls are numbered after it
                 try:
                     content, paths = await _tool(ctx, name, args, st, resolve)
                     status = "refused" if form_of(content) else "ok"
@@ -1346,8 +1412,19 @@ async def _run_helper(
                 record_box_opens(ctx, row, st.pop("box_audit", None) or None)
             if name in RECORD_TOOLS:
                 row["messaging"] = st.pop("messaging", None) or {}
+            if in_code:
+                row.update(
+                    via="model",
+                    cell=None,
+                    args_sha256=_args_digest(args or {}),
+                    box_gone=False,
+                )
             _emit(ctx, row)
             n += 1
+            if in_code:
+                n = max(n, st.get("n", 0))
+                if st["in_code"].finished and not finished and name == "execute_code":
+                    finished = True  # tools.done was accepted in this cell
             # plain text: a reply may be a str subclass carrying its refusal form
             messages.append(
                 {"role": "tool", "tool_call_id": cid, "content": str(content)},
@@ -1356,6 +1433,92 @@ async def _run_helper(
             doc["status"] = "ok"
             return
     doc["status"] = "operational step guard"
+
+
+def _args_digest(args: dict) -> str:
+    text = json.dumps(args, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+
+
+def _in_code_session(ctx: DelegateContext, call: str, st: dict, doc: dict) -> Any:
+    """Tools in code: the helper's handlers' state and its interpreter session (its box: the writer's /inputs,
+    /task and its /memory copy read-only, /work read-write), kept on *st*."""
+    from unify.common.tool_channel import HandlerThreads
+
+    from . import tool_handlers as _th
+
+    hc = _th.HelperCalls(ctx=ctx, call=call, st=st, resolve=None, doc=doc)
+    allow = tuple(
+        n
+        for n in (t["function"]["name"] for t in helper_tools(similar=ctx.similar is not None))
+        if n != "execute_code"
+    )
+
+    def on_event(row: dict) -> None:
+        # the helper's rows: the pass's events file, numbered in the helper's own sequence
+        if row.get("event") == "tool_call":
+            row["call"] = st.get("n", 0)
+            st["n"] = row["call"] + 1
+            row["helper_call"] = call
+        _emit(ctx, row)
+
+    binds = {
+        "ro": {st["hin"]: "/inputs", st["task"]: "/task", st["lib"]: "/memory"},
+        "rw": {st["work"]: "/work"},
+    }
+    profile = _th.memory_profile(
+        pass_id=ctx.pass_id,
+        cwd="/work",
+        sys_path=("/inputs", "/memory"),
+        fsize_bytes=WORK_FILE_BYTES,
+        # the helper loop stamps and records the open rows with each cell's event, as for a fresh cell
+        opens_path=None,
+        # /work's limits are checked after each cell by the helper loop (work_over), as today
+        measure=None,
+    )
+    session = _th.InterpreterSession(
+        agent="helper",
+        name=call,
+        role="helper",
+        pass_id=ctx.pass_id,
+        state=hc,
+        allow=allow,
+        binds=binds,
+        env={},
+        profile=profile,
+        roots={"/inputs": st["hin"], "/task": st["task"], "/memory": st["lib"], "/work": st["work"]},
+        deadline=ctx.deadline,
+        cell_limit_s=ctx.cell_timeout_s,
+        on_event=on_event,
+        threads=ctx.threads if ctx.threads is not None else HandlerThreads(),
+        start=ctx.interpreter_start,
+    )
+    hc.kill_box = session.kill
+    hc.threads = session.threads
+    st["in_code"] = hc
+    st["session"] = session
+    return session
+
+
+async def _in_code_cell(ctx: DelegateContext, st: dict, code: str, left: float) -> str:
+    """One helper cell in its interpreter, its in-code calls served by the channel; output as :func:`box_cell` gives
+    it (the head of the output), then the host's notes."""
+    from . import tool_handlers as _th
+
+    hc, session = st["in_code"], st["session"]
+    hc.finish_text = None
+    note = session.take_note()
+    res = await session.cell(code, st["n"] - 1)
+    audit = getattr(res, "opens", None)
+    st["box_audit"] = audit if isinstance(audit, dict) else {}
+    body, tail = _th.cell_parts(res, hc.finish_text, session.gone_during(), note)
+    data = body.encode("utf-8", "replace")
+    if len(data) > OUTPUT_BYTES:
+        body = (
+            data[:OUTPUT_BYTES].decode("utf-8", "replace")
+            + f"\n[… {len(data)} bytes in all; head shown]"
+        )
+    return body + tail
 
 
 async def handle(args: dict, ctx: DelegateContext, info: dict | None = None) -> str:
