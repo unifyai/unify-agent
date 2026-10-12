@@ -37,7 +37,7 @@ import urllib.request
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-TOOL_REPLY = "Tools are not available in this review; write your findings as files in the format above."
+TOOL_REPLY = "Tools are not available in this review; write your findings as fenced blocks in the format above."
 QUOTA_BYTES = 4 * 1024 * 1024
 QUOTA_FILES = 200
 TURN_GUARD = 16

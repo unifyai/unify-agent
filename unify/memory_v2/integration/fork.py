@@ -81,8 +81,9 @@ FORMAT_EXAMPLE = (
 
 INSTRUCTION = (
     "Your work on this request is finished and your reply has been sent; nothing you write now changes it. "
-    "Now write down what would help with similar requests later, as files written out in your reply. Tools are not "
-    "available here: do not call any tool, and any call gets no result.\n\n"
+    "Now write down what would help with similar requests later, as files: write each file as a fenced block in "
+    "your reply, in the format below. Do not call any tool: tools are not available here, and any call gets only a "
+    "reply saying so.\n\n"
     "What to write:\n"
     "- `candidates/<name>.py`: for code you wrote here that ran and worked and could be reused, a general function "
     "with a docstring. <name> uses only letters, digits and underscores. Only code that actually ran here; never "

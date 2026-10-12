@@ -243,7 +243,9 @@ def test_the_quota_refusal_reaches_the_ledger(tmp_path):
 
 def test_the_instruction_shows_one_format_whose_example_parses():
     text = fork_mod.fork_instruction()
-    assert text == fork_mod.INSTRUCTION and "do not call any tool" in text
+    assert text == fork_mod.INSTRUCTION
+    assert "Do not call any tool" in text and "fenced block" in text
+    assert "fenced blocks" in fw.TOOL_REPLY
     blocks, record = fw.parse_reply(fork_mod.FORMAT_EXAMPLE)
     assert [(b["path"], b["form"], b["status"]) for b in blocks] == [
         ("candidates/double.py", "fence", "parsed"),
@@ -439,3 +441,20 @@ def test_the_pass_request_never_admits_by_stream_position(tmp_path):
     [req] = tr.after_episode("later")
     assert (req.episodes, req.held) == (["later"], ["first"])
     first.close()
+
+
+@pytest.mark.parametrize("choice", ["required", {"type": "function", "function": {"name": "execute_code"}}])
+def test_the_fork_request_keeps_the_tools_but_never_a_forcing_choice(monkeypatch, choice):
+    import unify.actor.code_act_actor as caa
+
+    tools = [{"type": "function", "function": {"name": "execute_code", "parameters": {}}}]
+    source = {
+        "client": SimpleNamespace(endpoint="provider/model@route", reasoning_effort="low"),
+        "sent_messages": [{"role": "user", "content": "double 21"}],
+        "tools": tools,
+        "tool_choice": choice,
+    }
+    monkeypatch.setattr(caa, "_session_fork_source", lambda inner, actor: (source, None))
+    doc, why = fork_mod.request_doc(SimpleNamespace(), "e1", "http://127.0.0.1:9/v1", "t")
+    assert why is None and doc["body"]["tools"] == tools and doc["body"]["tool_choice"] == "auto"
+    assert doc["body"]["messages"][-1] == {"role": "user", "content": fork_mod.fork_instruction()}
