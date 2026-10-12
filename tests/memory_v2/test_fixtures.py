@@ -148,8 +148,10 @@ def test_make_refuses_bad_slices_and_appending_to_a_copy():
     assert (
         entry["slice"] == [0, len(data)] and notes and notes[0].startswith("truncated:")
     )
+    # an end left out or null runs to the record's end
+    assert fx.make(EP, 2, DEST, blob=_blob, cut=[3])[0] == fx.make(EP, 2, DEST, blob=_blob, cut=[3, None])[0]
     with pytest.raises(fx.FixtureError, match="start, end"):
-        fx.make(EP, 2, DEST, blob=_blob, cut=[3])
+        fx.make(EP, 2, DEST, blob=_blob, cut=[3, 4, 5])
     _, copy = fx.make(EP, 0, "memory/office/tests/data/x.jsonl", blob=_blob)
     with pytest.raises(fx.FixtureError, match="cannot be appended"):
         fx.make(
