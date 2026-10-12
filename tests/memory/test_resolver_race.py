@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -509,3 +510,110 @@ def test_the_helpers_read_episode_points_to_an_identical_part_and_lists_fixture_
     assert "fixture source: request:1 (" in toc and "per call" in toc
     bad, _ = _read_episode(tmp_path / "d", {"episode": "e1", "parts": 3}, st)
     assert tool_spec.form_of(bad) == "bad_parts"
+
+
+# --- the quota measures restore access without following a link -------------------------------------------------
+
+
+def _decoy_at_mode_zero(tmp_path: Path) -> Path:
+    decoy = tmp_path / "decoy-dir"
+    (decoy / "inner").mkdir(parents=True)
+    os.chmod(decoy / "inner", 0)
+    os.chmod(decoy, 0)
+    return decoy
+
+
+def _modes(decoy: Path) -> tuple[int, int]:
+    outer = os.lstat(decoy).st_mode
+    os.chmod(decoy, 0o700)
+    try:
+        return outer, os.lstat(decoy / "inner").st_mode
+    finally:
+        os.chmod(decoy, 0)
+
+
+@pytest.mark.parametrize("measure", ["writer", "helper"])
+def test_a_directory_swapped_for_a_link_while_measured_never_changes_a_mode_outside(
+    tmp_path,
+    monkeypatch,
+    measure,
+):
+    root = tmp_path / "root"
+    (root / "a" / "b").mkdir(parents=True)
+    (root / "a" / "b" / "f.py").write_text("x = 1\n")
+    os.chmod(root / "a" / "b", 0)  # the box removed its owner's access: the measure restores it
+    os.chmod(root / "a", 0)
+    decoy = _decoy_at_mode_zero(tmp_path)
+    before = _modes(decoy)
+    real = os.scandir
+    swapped = []
+
+    def swap_after_listing(target):
+        # the root is listed, then box code swaps a/ for a link to the decoy before a/ is opened
+        it = real(target)
+        if not swapped:
+            swapped.append(True)
+            os.rename(root / "a", root / ".a-away")  # within its directory: a has mode 0
+            os.symlink(decoy, root / "a")
+        return it
+
+    monkeypatch.setattr(safe_paths.os, "scandir", swap_after_listing)
+    run = writer_pass._measure if measure == "writer" else helpers.work_over
+    run(root)
+    monkeypatch.setattr(safe_paths.os, "scandir", real)
+    assert swapped and _modes(decoy) == before
+    # without the swap the same tree is unlocked and measured in full
+    os.unlink(root / "a")
+    os.rename(root / ".a-away", root / "a")
+    assert run(root) is None
+    assert stat.S_IMODE(os.lstat(root / "a" / "b").st_mode) & 0o700 == 0o700
+
+
+def test_a_tight_swap_loop_never_changes_a_mode_outside_the_measured_tree(tmp_path):
+    root = tmp_path / "root"
+    (root / "a" / "b").mkdir(parents=True)
+    (root / "a" / "b" / "f.py").write_text("x = 1\n")
+    decoy = _decoy_at_mode_zero(tmp_path)
+    before = _modes(decoy)
+    done = threading.Event()
+
+    def swap():
+        while not done.is_set():
+            try:
+                os.rename(root / "a", tmp_path / "a-away")
+                try:
+                    os.symlink(decoy, root / "a")
+                    os.unlink(root / "a")
+                finally:
+                    os.rename(tmp_path / "a-away", root / "a")
+            except OSError:
+                continue
+
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(1e-5)
+    t = threading.Thread(target=swap, daemon=True)
+    t.start()
+    try:
+        end = time.monotonic() + 3.0
+        n = 0
+        while time.monotonic() < end:
+            writer_pass._measure(root)
+            helpers.work_over(root)
+            n += 1
+    finally:
+        done.set()
+        t.join(10)
+        sys.setswitchinterval(old)
+    assert n > 20 and _modes(decoy) == before
+
+
+def test_the_measures_fail_closed_without_proc(tmp_path, monkeypatch):
+    (tmp_path / "d").mkdir()
+    real = os.path.isdir
+    monkeypatch.setattr(
+        safe_paths.os.path,
+        "isdir",
+        lambda p: False if str(p) == "/proc/self/fd" else real(p),
+    )
+    assert writer_pass._measure(tmp_path) == writer_pass.NO_PROC_BREACH
+    assert "cannot be measured safely" in helpers.work_over(tmp_path)

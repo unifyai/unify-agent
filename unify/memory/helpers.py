@@ -708,32 +708,28 @@ class _Staging:
 
 
 def work_over(root: Path) -> str | None:
-    """Which /work bound *root* breaks, or None (walked with ``lstat``; nothing followed or read)."""
+    """Which /work bound *root* breaks, or None. Walked from descriptors (:func:`.safe_paths.walk_unlocking`):
+    nothing followed or read, and the owner's access to each directory restored on the opened directory itself,
+    so a directory the box swaps for a link meanwhile never changes a mode outside /work."""
     entries = total = 0
-    stack = [Path(root)]
-    while stack:
-        d = stack.pop()
-        try:
-            it = os.scandir(d)
-        except OSError:
-            return "/work holds an unreadable directory"
-        with it:
-            for e in it:
-                try:
-                    st = os.lstat(e.path)
-                except OSError:
-                    return "/work holds an unreadable entry"
-                entries += 1
-                if entries > WORK_ENTRIES:
-                    return f"/work holds more than {WORK_ENTRIES} files and directories"
-                if stat.S_ISDIR(st.st_mode):
-                    if stat.S_IMODE(st.st_mode) & 0o700 != 0o700:
-                        os.chmod(e.path, stat.S_IMODE(st.st_mode) | 0o700)
-                    stack.append(Path(e.path))
-                elif stat.S_ISREG(st.st_mode):
-                    total += st.st_size
-                    if total > WORK_TOTAL_BYTES:
-                        return f"/work holds more than {WORK_TOTAL_BYTES} bytes"
+    walk = _safe.walk_unlocking(root, 0o700)
+    try:
+        for event, _, st in walk:
+            if event == "unlisted":
+                return "/work holds an unreadable directory"
+            if event != "entry" or st is None:
+                return "/work holds an unreadable entry"
+            entries += 1
+            if entries > WORK_ENTRIES:
+                return f"/work holds more than {WORK_ENTRIES} files and directories"
+            if stat.S_ISREG(st.st_mode):
+                total += st.st_size
+                if total > WORK_TOTAL_BYTES:
+                    return f"/work holds more than {WORK_TOTAL_BYTES} bytes"
+    except _safe.NoProc:
+        return "/work cannot be measured safely (/proc/self/fd is not available)"
+    finally:
+        walk.close()
     return None
 
 

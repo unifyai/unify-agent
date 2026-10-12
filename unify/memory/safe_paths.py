@@ -36,6 +36,8 @@ DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 #: a root's own host path is chosen by the host (its parents are never box-writable), so it may be reached by a link
 ROOT_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
 READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+#: a handle on the entry itself (a link is the link), for ``fstat`` and a mode change through /proc only
+PATH_FLAGS = os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC
 TEMP_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
 FILE_MODE = 0o644
 DIR_MODE = 0o755
@@ -537,3 +539,134 @@ def iter_files(
         for dfd, _, _ in stack:
             os.close(dfd)
 
+
+
+# --- restoring the host's access ------------------------------------------------------------------------------
+
+
+class NoProc(OSError):
+    """``/proc/self/fd`` is not available, so a mode cannot be changed on an opened entry; the caller fails closed."""
+
+
+def _proc(fd: int) -> str:
+    return f"/proc/self/fd/{fd}"
+
+
+def add_mode(fd: int, bits: int) -> os.stat_result:
+    """Add *bits* to the mode of the entry opened as *fd* (``O_PATH``), when it is a directory or a regular file
+    that lacks them; its ``fstat`` after. The change goes through ``/proc/self/fd/<fd>``, which names the opened
+    entry itself: never a path, so never through a link swapped in meanwhile (:class:`NoProc` without /proc)."""
+    st = os.fstat(fd)
+    if not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
+        return st
+    mode = stat.S_IMODE(st.st_mode)
+    if mode & bits == bits:
+        return st
+    try:
+        os.chmod(_proc(fd), mode | bits)
+    except FileNotFoundError:
+        raise NoProc("/proc/self/fd is not available") from None
+    return os.fstat(fd)
+
+
+def reopen_dir(fd: int) -> int:
+    """A readable descriptor of the directory opened as *fd* (``O_PATH``): the same directory, reopened through
+    ``/proc/self/fd/<fd>``, so a link swapped in at its name since is never followed."""
+    try:
+        return os.open(_proc(fd), os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    except FileNotFoundError:
+        if not os.path.isdir("/proc/self/fd"):
+            raise NoProc("/proc/self/fd is not available") from None
+        raise
+
+
+def walk_unlocking(
+    root: str | os.PathLike,
+    dir_bits: int,
+    file_bits: int = 0,
+) -> Iterator[tuple[str, str, os.stat_result | None]]:
+    """Walk the host directory *root*, giving the owner *dir_bits* on every directory (root included) and
+    *file_bits* on every regular file on the way, so a box that removed its owner's access cannot hide entries.
+
+    Yields ``(event, rel, stat)``: ``("entry", rel, st)`` for each entry below *root* (a link or another kind
+    too, never followed), ``("unreadable", rel, None)`` for an entry that cannot be opened or unlocked, and
+    ``("unlisted", rel, None)`` for a directory that cannot be listed (``"."`` is *root*). An entry removed while
+    it is walked is skipped. Every entry is opened from its directory's descriptor with ``O_PATH | O_NOFOLLOW``
+    and its mode changed through /proc (:func:`add_mode`); directories are listed with ``os.scandir`` on a
+    descriptor reopened from that handle (:func:`reopen_dir`). No path is ever followed, so a directory swapped
+    for a link while the walk runs never leads outside *root*. Raises :class:`NoProc` without /proc (fail closed).
+    One descriptor is held per directory level.
+    """
+    if not os.path.isdir("/proc/self/fd"):
+        raise NoProc("/proc/self/fd is not available")
+    try:
+        handle = os.open(root, os.O_PATH | os.O_CLOEXEC)
+    except OSError:
+        yield "unlisted", ".", None
+        return
+    try:
+        add_mode(handle, dir_bits)
+        top = reopen_dir(handle)
+    except NoProc:
+        raise
+    except OSError:
+        yield "unlisted", ".", None
+        return
+    finally:
+        os.close(handle)
+    stack: list[tuple[int, str, list[str]]] = []
+    try:
+        try:
+            with os.scandir(top) as it:
+                names = [e.name for e in it]
+        except OSError:
+            os.close(top)
+            yield "unlisted", ".", None
+            return
+        stack.append((top, "", names[::-1]))
+        while stack:
+            dfd, rel, todo = stack[-1]
+            if not todo:
+                os.close(dfd)
+                stack.pop()
+                continue
+            name = todo.pop()
+            r = rel + name
+            try:
+                h = os.open(name, PATH_FLAGS, dir_fd=dfd)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                yield "unreadable", r, None
+                continue
+            child = None
+            try:
+                st = os.fstat(h)
+                if stat.S_ISDIR(st.st_mode):
+                    st = add_mode(h, dir_bits)
+                    child = reopen_dir(h)
+                elif stat.S_ISREG(st.st_mode) and file_bits:
+                    st = add_mode(h, file_bits)
+            except NoProc:
+                raise
+            except OSError:
+                st = None
+            finally:
+                os.close(h)
+            if st is None:
+                yield "unreadable", r, None
+                continue
+            if child is not None:
+                try:
+                    with os.scandir(child) as it:
+                        sub = [e.name for e in it]
+                except OSError:
+                    os.close(child)
+                    yield "entry", r, st
+                    yield "unlisted", r, None
+                    continue
+                stack.append((child, r + "/", sub[::-1]))
+            yield "entry", r, st
+    finally:
+        for dfd, _, _ in stack:
+            os.close(dfd)

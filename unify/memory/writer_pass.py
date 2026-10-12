@@ -1464,67 +1464,44 @@ def _stage_memlab(lab: Path) -> None:
 # --- the box's tree ----------------------------------------------------------------------------------------
 
 
-def _unlock(path: Path, st: os.stat_result) -> os.stat_result:
-    """Give the owner read (and, on directories, write and search) permission; never through a link.
-
-    The box runs as this user, so it can ``chmod`` what it wrote; the host restores its own access before
-    measuring or copying. Called only on an entry that ``lstat`` showed to be a directory or regular file,
-    while no cell runs (the box is dead between cells), so it cannot have been swapped for a link.
-    """
-    want = 0o700 if stat.S_ISDIR(st.st_mode) else 0o600
-    if stat.S_IMODE(st.st_mode) & want != want:
-        os.chmod(path, stat.S_IMODE(st.st_mode) | want)
-        return os.lstat(path)
-    return st
+#: the quota measure's answer when the host cannot restore its access without a path (no /proc): fail closed
+NO_PROC_BREACH = "over quota: the tree cannot be measured safely (/proc/self/fd is not available)"
 
 
 def _measure(root: Path) -> str | None:
     """The quota the tree breaks, or None. Entries are made owner-accessible on the way.
 
-    Walks with ``lstat`` (no link is followed, no file is read) and stops at the first breach: more than
-    :data:`QUOTA_ENTRIES` files, links and directories, a regular file over :data:`QUOTA_FILE_BYTES`,
-    regular files over :data:`QUOTA_TOTAL_BYTES` in all, or an entry that stays unreadable after
-    :func:`_unlock` (a ``chmod 0`` directory could otherwise hide any amount).
+    Walks from descriptors (:func:`.safe_paths.walk_unlocking`: no link is followed, no file is read, a mode is
+    changed only on the opened directory or regular file itself, through /proc) and stops at the first breach:
+    more than :data:`QUOTA_ENTRIES` files, links and directories, a regular file over :data:`QUOTA_FILE_BYTES`,
+    regular files over :data:`QUOTA_TOTAL_BYTES` in all, or an entry that stays unreadable after its owner's
+    access is restored (a ``chmod 0`` directory could otherwise hide any amount). Box code may change the tree
+    while it is measured: a directory swapped for a link is never followed, so no mode outside the tree changes.
     """
     entries = total = 0
     unreadable: list[str] = []
-    root = Path(root)
+    walk = _safe.walk_unlocking(root, 0o700, 0o600)
     try:
-        _unlock(root, os.lstat(root))
-    except OSError:
-        return "over quota: unreadable entries ['.']"
-    stack = [(root, "")]
-    while stack:
-        d, rel = stack.pop()
-        try:
-            it = os.scandir(d)
-        except OSError:
-            unreadable.append(rel.rstrip("/") or ".")
-            continue
-        with it:
-            for e in it:
-                r = rel + e.name
-                try:
-                    st = os.lstat(e.path)
-                    if stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode):
-                        st = _unlock(Path(e.path), st)
-                except OSError:
-                    unreadable.append(r)
-                    continue
-                entries += 1
-                if entries > QUOTA_ENTRIES:
-                    return f"over quota: more than {QUOTA_ENTRIES} files and directories under /memory"
-                if stat.S_ISDIR(st.st_mode):
-                    stack.append((Path(e.path), r + "/"))
-                elif stat.S_ISREG(st.st_mode):
-                    if st.st_size > QUOTA_FILE_BYTES:
-                        return (
-                            f"over quota: /memory/{r[:200]} has {st.st_size} bytes "
-                            f"(at most {QUOTA_FILE_BYTES} per file)"
-                        )
-                    total += st.st_size
-                    if total > QUOTA_TOTAL_BYTES:
-                        return f"over quota: more than {QUOTA_TOTAL_BYTES} bytes under /memory"
+        for event, r, st in walk:
+            if event != "entry" or st is None:
+                unreadable.append(r)
+                continue
+            entries += 1
+            if entries > QUOTA_ENTRIES:
+                return f"over quota: more than {QUOTA_ENTRIES} files and directories under /memory"
+            if stat.S_ISREG(st.st_mode):
+                if st.st_size > QUOTA_FILE_BYTES:
+                    return (
+                        f"over quota: /memory/{r[:200]} has {st.st_size} bytes "
+                        f"(at most {QUOTA_FILE_BYTES} per file)"
+                    )
+                total += st.st_size
+                if total > QUOTA_TOTAL_BYTES:
+                    return f"over quota: more than {QUOTA_TOTAL_BYTES} bytes under /memory"
+    except _safe.NoProc:
+        return NO_PROC_BREACH
+    finally:
+        walk.close()
     if unreadable:
         return f"over quota: unreadable entries {sorted(unreadable)[:5]}"
     return None
