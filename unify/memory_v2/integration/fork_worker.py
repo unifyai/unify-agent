@@ -378,27 +378,34 @@ def write_record(
     episode_id: str | None,
     reply_text: str,
     hop_record: dict,
-    replies: list[dict] | None = None,
+    turns: list | None = None,
 ) -> dict:
     """Write the raw reply (``fork-reply.json``) and the block ledger (``fork-blocks.json``) inside the episode's
-    staging dir *staging*, which lives under the state dir, outside Git. ``reply_sha256`` is the sha256 of
-    *reply_text* (the reply's message contents joined by ``"\\n"``); ``reply_file_sha256`` is that of the
-    ``fork-reply.json`` bytes, which also keep the reply's messages (*replies*, tool calls included) when given.
-    Returns the ``fork-blocks.json`` document."""
+    staging dir *staging*, which lives under the state dir, outside Git.
+
+    ``fork-reply.json`` holds ``episode``, ``reply_text`` (every assistant turn's text joined by ``"\\n"``, in
+    order), ``turns`` (each turn's content; *turns* may be the turns' message dicts, whose tool calls are then kept
+    in ``tool_calls``, one list per turn) and ``reply_sha256`` (the sha256 of ``reply_text``). ``fork-blocks.json``
+    is *hop_record* with ``episode`` and ``reply_sha256``. Returns the ``fork-blocks.json`` document."""
     staging = Path(staging)
-    raw_doc: dict = {"episode": episode_id, "text": reply_text}
-    if replies is not None:
-        raw_doc["replies"] = replies
+    digest = _sha(reply_text)
+    raw_doc: dict = {
+        "episode": episode_id,
+        "reply_text": reply_text,
+        "turns": [reply_text] if turns is None else [
+            message_text(t) if isinstance(t, dict) else t for t in turns
+        ],
+        "reply_sha256": digest,
+    }
+    if turns is not None and any(isinstance(t, dict) and t.get("tool_calls") for t in turns):
+        raw_doc["tool_calls"] = [
+            (t.get("tool_calls") or []) if isinstance(t, dict) else [] for t in turns
+        ]
     raw = (json.dumps(raw_doc, indent=1, sort_keys=True, default=str) + "\n").encode("utf-8", "surrogatepass")
     fd = os.open(staging / REPLY_JSON, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
     with os.fdopen(fd, "wb") as fh:
         fh.write(raw)
-    doc = {
-        "episode": episode_id,
-        "reply_sha256": _sha(reply_text),
-        "reply_file_sha256": hashlib.sha256(raw).hexdigest(),
-        **hop_record,
-    }
+    doc = {"episode": episode_id, "reply_sha256": digest, **hop_record}
     atomic_json(staging / BLOCKS_JSON, doc)
     return doc
 
@@ -463,6 +470,27 @@ def message_blocks(message: dict, offset: int = 0) -> list[dict]:
         for s in _strings(fn.get("arguments")):
             out += _decide(_scan(s), f"tool_call:{name}", offset + len(out))
     return out
+
+
+def reply_text(turns: list[dict]) -> str:
+    """The fork's reply text: every assistant turn's text joined by ``"\\n"``, in order."""
+    return "\n".join(message_text(t) for t in turns)
+
+
+def parse_turns(turns: list[dict]) -> tuple[list[dict], dict, str]:
+    """``(blocks, hop record, reply text)`` for the fork's assistant *turns*, live and replayed alike: the joined
+    reply text parsed once (:func:`parse_reply`), then the blocks in every tool call's arguments (source
+    ``tool_call:<name>``; nothing is executed), with a later block for the same path replacing an earlier one."""
+    text = reply_text(turns)
+    blocks = _decide(_scan(text), "text") if text else []
+    for turn in turns:
+        for call in turn.get("tool_calls") or []:
+            fn = (call or {}).get("function") or {}
+            name = str(fn.get("name") or "?")[:64]
+            for arg in _strings(fn.get("arguments")):
+                blocks += _decide(_scan(arg), f"tool_call:{name}", len(blocks))
+    settle(blocks)
+    return blocks, ledger(blocks), text
 
 
 def settle(blocks: list[dict]) -> list[dict]:
@@ -631,7 +659,6 @@ def run(
     body = dict(req["body"])
     messages = list(body["messages"])
     replies: list[dict] = []
-    found: list[dict] = []
     usage: dict = {}
     started = clock()
     try:
@@ -650,7 +677,6 @@ def run(
             message = ((resp.get("choices") or [{}])[0].get("message")) or {}
             kept = {k: message[k] for k in ("role", "content", "tool_calls") if k in message}
             replies.append(kept)
-            found += message_blocks(message, len(found))
             calls = message.get("tool_calls") or []
             if not calls:
                 break
@@ -665,14 +691,13 @@ def run(
     except Exception as exc:  # noqa: BLE001 - recorded, never raised
         doc["status"] = f"error: {type(exc).__name__}"
     _stop_alarm()
-    blocks = settle(found)
+    blocks, _hop, text = parse_turns(replies)
     files, refused, over = write_blocks(staging, blocks)
     doc["files"], doc["refused_files"] = files, refused
     if over and doc["status"] == "ok":
         doc["status"] = "ok: operational quota reached"
     usd = usage.pop("_usd", None) if usage else None
     doc["usage"], doc["usd"] = usage, (str(usd) if usd is not None else None)
-    text = "\n".join(message_text(m) for m in replies)
     record = write_record(staging, req.get("episode"), text, ledger(blocks), replies)
     doc["reply_sha256"], doc["blocks"] = record["reply_sha256"], counts(blocks)
     atomic_json(staging / FORK_JSON, doc)

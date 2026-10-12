@@ -48,6 +48,7 @@ __all__ = [
 ]
 
 STAGING_DIR = "memory-staging"
+#: The file that marks a staging dir settled, and the source it names. Any of them settles an episode for admission.
 STATUS_FILES = {
     "fork.json": "fork",
     "replay_fork.json": "replay_fork",

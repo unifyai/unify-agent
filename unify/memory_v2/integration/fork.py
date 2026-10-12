@@ -170,23 +170,27 @@ def request_doc(
     source, why = _session_fork_source(inner, getattr(handle, "_actor", None))
     if source is None:
         return None, why
-    if not _model(source["client"]):
-        return None, "the session's client names no model"
-    return request_from_source(eid, source, url, key), None
+    return request_from_source(eid, source, url, key)
 
 
-def request_from_source(episode_id: str, source: dict, base_url: str, token: str) -> dict:
-    """The fork's request document from a conversation *source* (``client``, ``sent_messages``, ``tools`` and
-    optionally ``tool_choice``, as the actor's session reader gives them): the messages and tool schemas unchanged,
-    then :func:`fork_instruction`. *base_url* is the fork lane's URL (``/chat/completions`` is added when it is not
-    already there); *token* goes only into the headers, which reach the worker on its stdin."""
+def request_from_source(
+    episode_id: str,
+    source: dict,
+    base_url: str,
+    token: str,
+) -> tuple[dict | None, str | None]:
+    """``(request document, None)`` for the fork from a conversation *source* (``client``, ``sent_messages``,
+    ``tools`` and optionally ``tool_choice``, as the actor's session reader gives them), or ``(None, why)`` when it
+    cannot be forked: the messages and tool schemas unchanged, then :func:`fork_instruction`. *base_url* is the fork
+    lane's URL (``/chat/completions`` is added when it is not already there); *token* goes only into the headers,
+    which reach the worker on its stdin."""
     eid = episode_id
     url = base_url if base_url.rstrip("/").endswith("/chat/completions") else base_url.rstrip("/") + "/chat/completions"
     key = token
-    client = source["client"]
+    client = source.get("client")
     model = _model(client)
     if not model:
-        raise ValueError("the session's client names no model")
+        return None, "the session's client names no model"
     body: dict = {
         "model": model,
         "messages": [
@@ -209,7 +213,7 @@ def request_from_source(episode_id: str, source: dict, base_url: str, token: str
         "x-unify-session": f"fork.{eid}",
         "x-unify-parent": eid,
     }
-    return {"episode": eid, "url": url, "headers": headers, "body": body}
+    return {"episode": eid, "url": url, "headers": headers, "body": body}, None
 
 
 def _record(staging: Path, eid: str, status: str, detail: str | None = None) -> None:
