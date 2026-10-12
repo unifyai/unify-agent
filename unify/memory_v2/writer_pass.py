@@ -1026,7 +1026,7 @@ PREVIOUS_GATE_LINES = 10
 PREVIOUS_GATE_SCAN = 200
 # The harness-written lines of a refused pass's reasons: the gate's checks and the pass's own structural
 # refusals. Notes, model or pass errors and held-out notes are left out.
-_GATE_LINE = re.compile(r"^(?:G[1-6]: |no manifest\Z|over quota: |manifest: )")
+_GATE_LINE = re.compile(r"^(?:G[1-6]: |no manifest\Z|over quota: |manifest: |layout: )")
 _NAMES_A_CHANNEL = re.compile(r"\benv[/.][a-z]")
 # per-item admission's prefixes on a gate line: an item refused in a pass that landed, or a reduction refused
 _ITEM_PREFIX = re.compile(r"^(?:item refused: |reduced: )")
@@ -1665,6 +1665,55 @@ def _measure(root: Path) -> str | None:
     return None
 
 
+def _layout_problems(box: Path, skip_top: frozenset[str] = frozenset({".pass"})) -> list[str]:
+    """What the gate refuses to import from the writer's ``/memory``: the candidate is taken as regular files and
+    directories only. Refused: any path component starting with ``.git`` (git metadata, attributes or modules would
+    change how the harness's own checkout behaves), symbolic links, hard links (a regular file with more than one
+    link) and special files. The walk never follows a link; *skip_top* names at the top are not part of the
+    candidate."""
+    found: list[str] = []
+    stack = [(Path(box), "", True)]
+    while stack:
+        d, rel, top = stack.pop()
+        try:
+            with os.scandir(d) as it:
+                entries = sorted(it, key=lambda e: e.name)
+        except OSError:
+            continue  # unreadable: the quota measure refuses it
+        for e in entries:
+            if top and e.name in skip_top:
+                continue
+            r = rel + e.name
+            if e.name.startswith(".git"):
+                found.append(f"{r}: a path starting with .git")
+                continue
+            if e.name in _NEVER_COPIED:
+                continue
+            try:
+                st = os.lstat(e.path)
+            except OSError:
+                continue
+            if stat.S_ISLNK(st.st_mode):
+                found.append(f"{r}: a symbolic link")
+            elif stat.S_ISDIR(st.st_mode):
+                stack.append((Path(e.path), r + "/", False))
+            elif stat.S_ISREG(st.st_mode):
+                if st.st_nlink > 1:
+                    found.append(f"{r}: a hard link ({st.st_nlink} links)")
+            else:
+                found.append(f"{r}: not a regular file or directory")
+    return sorted(found)
+
+
+def _layout_refusal(found: list[str]) -> str:
+    shown = "; ".join(f"/memory/{x}" for x in found[:10])
+    more = f" (and {len(found) - 10} more)" if len(found) > 10 else ""
+    return (
+        "layout: the library is taken as regular files and directories only; remove or replace "
+        f"{shown}{more}"
+    )[:900]
+
+
 def _mirror(
     src: Path,
     dst: Path,
@@ -1687,8 +1736,12 @@ def _mirror(
             left_out.append(rel.rstrip("/") or ".")
             return
         for e in entries:
-            if e.name in _NEVER_COPIED or (top and e.name in skip_top):
-                continue
+            if (
+                e.name in _NEVER_COPIED
+                or e.name.startswith(".git")
+                or (top and e.name in skip_top)
+            ):
+                continue  # git metadata never enters a checkout the harness runs git in
             sp, dp, r = Path(e.path), d / e.name, rel + e.name
             try:
                 st = os.lstat(sp)
@@ -2738,6 +2791,9 @@ class WriterPass:
         manifest, problem = _check_manifest(raw)
         if problem is not None:
             return problem, None
+        found = _layout_problems(box)
+        if found:
+            return _layout_refusal(found), None
         if _library_on(self):
             manifest = _with_fixtures(manifest, self.fixtures_made)
         try:
@@ -2831,6 +2887,9 @@ class WriterPass:
         self._pool_manifest = (
             None  # only an accepted finish's manifest changes the pool
         )
+        layout = _layout_problems(box)
+        if layout:
+            return _layout_refusal(layout), False
         found, manifest, problem = _read_manifest(box)
         if not found:
             return (
