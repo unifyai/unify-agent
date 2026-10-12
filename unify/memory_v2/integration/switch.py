@@ -658,9 +658,13 @@ LIBRARY_WAIT_SLOT = "UNIFY_MEMORY_LIBRARY_WAIT_SLOT"
 #: Design r5 (lead, 10 Oct): at each episode's end the actor's own conversation is forked once, in a confined
 #: process that writes only to the episode's staging dir (integration/fork.py); off: nothing happens, as built.
 LIBRARY_FORK = "UNIFY_MEMORY_LIBRARY_FORK"
-#: Design r5 arm C: ``writer`` runs one Sol analyst per flagged batch episode before the writer, writing staging
-#: (analysts.py); ``off`` (default): none, as built.
+#: Retired: helpers are launched by the writer itself with the ``delegate`` tool (helpers.py), never by the harness.
+#: Empty or ``off`` is accepted as a no-op; any other value is refused, so a configuration that still asks for
+#: harness-launched helpers fails loudly instead of running without them.
 LIBRARY_ANALYSTS = "UNIFY_MEMORY_LIBRARY_ANALYSTS"
+#: The model of writer-launched helpers (helpers.py). Empty: the model the episode-end fork uses, which is the
+#: actor's own model (``UNIFY_MODEL``). Never a model name in code: this setting or that one.
+LIBRARY_HELPER_MODEL = "UNIFY_MEMORY_LIBRARY_HELPER_MODEL"
 #: The lead, 11 Oct: the candidate pool (pool.py): ``on`` keeps every proposal (staging, S0 clusters, drafts,
 #: deferrals) open across passes on the memory repo's refs/heads/pool until the writer closes it; ``off``: none.
 LIBRARY_POOL = "UNIFY_MEMORY_LIBRARY_POOL"
@@ -887,15 +891,114 @@ def library_coverage(settings: Any) -> str:
 
 
 def parse_library_analysts(v: Any) -> str:
-    """``UNIFY_MEMORY_LIBRARY_ANALYSTS``: ``off`` (also for empty) or ``writer``."""
+    """``UNIFY_MEMORY_LIBRARY_ANALYSTS`` (retired): empty or ``off`` only; anything else is refused."""
     s = str(v or "").strip().lower() or "off"
-    if s not in ("off", "writer"):
-        raise ValueError(f"{LIBRARY_ANALYSTS} must be off or writer, got {v!r}")
+    if s != "off":
+        raise ValueError(
+            f"{LIBRARY_ANALYSTS} is retired (helpers are launched by the writer with the delegate tool); "
+            f"it must be empty or off, got {v!r}"[:300],
+        )
     return s
 
 
-def library_analysts(settings: Any) -> str:
-    return parse_library_analysts(getattr(settings, LIBRARY_ANALYSTS, "") or "")
+def parse_library_helper_model(v: Any) -> str:
+    """``UNIFY_MEMORY_LIBRARY_HELPER_MODEL``: empty (the fork's model, the actor's ``UNIFY_MODEL``) or a model id
+    without spaces."""
+    s = _stripped(v)
+    if s and (any(ch.isspace() for ch in s) or len(s) > 200):
+        raise ValueError(f"{LIBRARY_HELPER_MODEL} must be empty or a model id without spaces")
+    return s
+
+
+def library_helper_model(settings: Any) -> str:
+    """The helpers' model: :data:`LIBRARY_HELPER_MODEL`, else the model the fork uses (the actor's ``UNIFY_MODEL``)."""
+    own = parse_library_helper_model(getattr(settings, LIBRARY_HELPER_MODEL, "") or "")
+    return own or _stripped(getattr(settings, "UNIFY_MODEL", "") or "")
+
+
+# --- the helper lane's route (same form and rules as the fork lane's) -------------------------------------------
+#: The key proxy's helper lane: its own base URL and token, so helper spend is selected by the token (never by a
+#: header or the model, which may equal the actor's) and booked on the lane's own ledger. The token comes from an
+#: inherited descriptor only, is read once (:func:`settle_helper_route_env`), and stays in this process: helper
+#: model calls are made host-side by the writer's process, never inside a helper's box.
+LIBRARY_HELPER_BASE_URL = "UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL"
+LIBRARY_HELPER_TOKEN_FD = "UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD"
+LIBRARY_HELPER_TOKEN = "UNIFY_MEMORY_LIBRARY_HELPER_TOKEN"  # the redaction name of the token's value (never a setting)
+_HELPER_BASE_FORM = re.compile(r"http://127\.0\.0\.1:([0-9]{1,5})/helper/v1")
+_HELPER_TOKEN: str | None = None
+_HELPER_BASE: str = ""
+_HELPER_TRIED = False
+_HELPER_REFUSAL: str | None = None
+
+
+def parse_library_helper_base_url(v: Any) -> str:
+    """``UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL``: empty, or ``http://127.0.0.1:<port>/helper/v1`` exactly."""
+    s = _stripped(v)
+    if not s:
+        return ""
+    m = _HELPER_BASE_FORM.fullmatch(s)
+    if m is None or not 1 <= int(m.group(1)) <= 65535:
+        raise ValueError(
+            f"{LIBRARY_HELPER_BASE_URL} must be http://127.0.0.1:<port>/helper/v1 or empty",
+        )
+    return s
+
+
+def parse_library_helper_token_fd(v: Any) -> str:
+    """``UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD``: empty, or a descriptor number above 2."""
+    s = _stripped(v)
+    if not s:
+        return ""
+    if not s.isdigit() or int(s) <= 2:
+        raise ValueError(
+            f"{LIBRARY_HELPER_TOKEN_FD} must be a descriptor number above 2 or empty",
+        )
+    return s
+
+
+def settle_helper_route_env(
+    environ: MutableMapping[str, str],
+    settings: Any,
+) -> str | None:
+    """As :func:`settle_fork_route_env`, for the helper lane: the token is read once from its inherited descriptor
+    (then closed, registered for redaction), both names leave *environ* so no child sees them, and the base URL and
+    descriptor are set together or not at all. Returns why the helper lane is refused (sticky), or None."""
+    global _HELPER_TOKEN, _HELPER_BASE, _HELPER_TRIED, _HELPER_REFUSAL
+    try:
+        base = parse_library_helper_base_url(getattr(settings, LIBRARY_HELPER_BASE_URL, ""))
+        fd = parse_library_helper_token_fd(getattr(settings, LIBRARY_HELPER_TOKEN_FD, ""))
+    except ValueError as exc:
+        base, fd = "", ""
+        _HELPER_REFUSAL = _HELPER_REFUSAL or str(exc)
+    if fd and not _HELPER_TRIED:
+        _HELPER_TRIED = True
+        try:
+            _HELPER_TOKEN = _read_token_fd(
+                int(fd),
+                fd_name=LIBRARY_HELPER_TOKEN_FD,
+                secret_name=LIBRARY_HELPER_TOKEN,
+            )
+        except WriterRouteRefused as exc:
+            _HELPER_REFUSAL = _HELPER_REFUSAL or str(exc)
+    if base:
+        _HELPER_BASE = base
+    if bool(base) != bool(fd) and _HELPER_REFUSAL is None:
+        _HELPER_REFUSAL = f"{LIBRARY_HELPER_BASE_URL} and {LIBRARY_HELPER_TOKEN_FD} are set together or not at all"
+    for name in list(environ):
+        if name.upper() in (LIBRARY_HELPER_BASE_URL, LIBRARY_HELPER_TOKEN_FD):
+            environ.pop(name, None)
+    return _HELPER_REFUSAL
+
+
+def helper_lane_route() -> tuple[tuple[str, SecretStr] | None, str | None]:
+    """``((base URL, token), None)`` on the key proxy's helper lane, or ``(None, why)``: a refusal from
+    :func:`settle_helper_route_env`, or ``no helper lane``. Never another lane's route (no fallback to the writer's
+    or the actor's)."""
+    if _HELPER_REFUSAL is not None:
+        return None, _HELPER_REFUSAL
+    if not _HELPER_BASE or not _HELPER_TOKEN:
+        return None, "no helper lane"
+    return (_HELPER_BASE, SecretStr(_HELPER_TOKEN)), None
 
 
 def library_max_reads(settings: Any) -> int:
@@ -1049,6 +1152,9 @@ PARSERS = {
     LIBRARY_FORK_BASE_URL: parse_library_fork_base_url,
     LIBRARY_FORK_TOKEN_FD: parse_library_fork_token_fd,
     LIBRARY_ANALYSTS: parse_library_analysts,
+    LIBRARY_HELPER_MODEL: parse_library_helper_model,
+    LIBRARY_HELPER_BASE_URL: parse_library_helper_base_url,
+    LIBRARY_HELPER_TOKEN_FD: parse_library_helper_token_fd,
     LIBRARY_POOL: parse_library_pool,
     LIBRARY_COMPACT: parse_library_compact,
     LIBRARY_COVERAGE: parse_library_coverage,
