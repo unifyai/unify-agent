@@ -50,12 +50,15 @@ def _world(tmp_path, pytest_fn, qa=None):
         '{"input": 4, "source": {"episode": "e1", "source": "0", "slice": null}}\n',
     )
     (tmp_path / "inputs").mkdir()
+    # a library-mode item: no declared input and no action cover; its recorded-inputs file line is the recorded
+    # response of action 0 of e1, so a drawn input of its family is an observation (the fixture's source kind)
     it = SimpleNamespace(
         item=ITEM,
         kind="function",
         tests=[TEST],
-        input="observation",
+        input=None,
         covers=[],
+        typed_covers=[],
     )
     run = _Run(
         candidate="c" * 40,
@@ -169,10 +172,26 @@ def test_mutation_below_06_refuses_the_item(tmp_path):
     ] and "threshold 0.6" in run.fails[0][1]
 
 
+#: The form a drawn input reaches a library function's tests in, by the source kind of the input fixture it is drawn
+#: for: what the tests load from such a fixture.
+FORM_OF_SOURCE = {
+    "tool response": "observation",
+    "work-tree blob": "path",
+    "dialogue": "observation",
+    "request": "text",
+    "cell": "text",
+}
+
+
 def test_drawn_value_forms(tmp_path):
+    """Each form a fixture's source kind gives (FORM_OF_SOURCE) becomes the value the test reads: an observation as
+    recorded, a text as it is, a work-tree file copied under tests/data/ and named by its path there. No source kind
+    gives the env form: a library function's tests load recorded values, never a tool environment.
+    """
     samples, data = tmp_path / "s", tmp_path / "d"
     (samples / "files/3").mkdir(parents=True)
     (samples / "files/3/pay.csv").write_bytes(b"a,1\n")
+    assert set(FORM_OF_SOURCE.values()) == {"observation", "path", "text"}
     assert drawn_value(
         {"id": 1, "form": "observation", "action": {"response": {"n": 1}}},
         samples,
@@ -186,15 +205,6 @@ def test_drawn_value_forms(tmp_path):
         )
         == "hi"
     )
-    ctx = [{"method": "get"}]
-    assert (
-        drawn_value(
-            {"id": 4, "form": "env", "context": ctx, "action": {}},
-            samples,
-            data,
-        )
-        == ctx
-    )
     got = drawn_value(
         {"id": 3, "form": "path", "file": "/qa/files/3/pay.csv", "action": {}},
         samples,
@@ -205,7 +215,8 @@ def test_drawn_value_forms(tmp_path):
 
 _MODULE: dict = {}
 exec(
-    MOD, _MODULE
+    MOD,
+    _MODULE,
 )  # the module under test, run by the fake pytest to make its call records
 
 
@@ -330,7 +341,7 @@ def test_drawn_inputs_are_judged_on_the_calls_their_appended_lines_make(tmp_path
     drawn = [
         {"id": i, "role": "sample", "form": "observation", "action": {"response": v}}
         for i, v in enumerate(
-            [5, "x", 5.0]
+            [5, "x", 5.0],
         )  # refused like its covers, raising, refused on another type
     ]
     checks._appended(it, drawn, tmp_path / "samples")
@@ -361,12 +372,12 @@ def test_drawn_inputs_without_a_call_record_are_not_judged_and_refuse_when_stric
         calls=None,
     ):
         return PytestOutcome(
-            passed={f"{TEST}::test_half[row{i}]" for i in range(_lines(ro))}
+            passed={f"{TEST}::test_half[row{i}]" for i in range(_lines(ro))},
         )
 
     checks, run, it = _world(tmp_path, unrecorded)
     drawn = [
-        {"id": 1, "role": "sample", "form": "observation", "action": {"response": 6}}
+        {"id": 1, "role": "sample", "form": "observation", "action": {"response": 6}},
     ]
     checks._appended(it, drawn, tmp_path / "samples")
     assert [r for _, r, _ in run.fails] == [
@@ -393,10 +404,22 @@ def _copy(source, slice_=None):
 def test_drawn_inputs_come_from_the_families_of_the_input_fixtures(tmp_path):
     checks, run, it = _world(tmp_path, None)
     cover = Action(
-        2, "crm", "get_user", [], {"id": "U1"}, {"name": "Ann", "age": 30}, "ok"
+        2,
+        "crm",
+        "get_user",
+        [],
+        {"id": "U1"},
+        {"name": "Ann", "age": 30},
+        "ok",
     )
     other = Action(
-        5, "crm", "get_user", [], {"id": "U2"}, {"name": "Bo", "age": 41}, "ok"
+        5,
+        "crm",
+        "get_user",
+        [],
+        {"id": "U2"},
+        {"name": "Bo", "age": 41},
+        "ok",
     )
     checks.gate.lookup = lambda eid, idx: cover if (eid, idx) == ("e1", 2) else None
     checks.gate._pool = lambda run, covers: ([("e1", cover), ("e2", other)], False)
@@ -427,7 +450,7 @@ def test_sliced_or_message_fixtures_give_a_note_and_draw_nothing(tmp_path):
         ITEM: [
             _fixture("part.json", _copy("2", [0, 4])),
             _fixture("ask.json", _copy("request:0")),
-        ]
+        ],
     }
     assert checks._draw_library(it) == []
     assert run.notes == [
@@ -458,7 +481,8 @@ def _mutant_run(digest):
             call = _half_call(0, 4)
             made = [ExampleCall(**{**call.__dict__, "result_sha": digest(text)})]
         return PytestOutcome(
-            passed={"t::a"}, calls=CallRecord(loaded=True, calls=made, ended=True)
+            passed={"t::a"},
+            calls=CallRecord(loaded=True, calls=made, ended=True),
         )
 
     return fake
@@ -484,5 +508,5 @@ def test_survivors_without_a_recorded_call_to_compare_are_not_judged(tmp_path):
     (fail,) = run.fails
     assert fail[1].startswith(f"[qa:mutation] {ITEM}: mutation not judged: ")
     assert fail[1].endswith(
-        "mutants survive and its tests made no recorded call of it to compare their outputs on"
+        "mutants survive and its tests made no recorded call of it to compare their outputs on",
     )

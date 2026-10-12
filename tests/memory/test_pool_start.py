@@ -19,8 +19,8 @@ from unify.memory.staging import StagingView
 from tests.memory.test_gate import ITEM, MAN
 from tests.memory.test_pool import EMPTY, INDEX, _finish_with, _open, _Stores
 from tests.memory.test_writer_pass import _call, needs_bwrap
-from tests.memory.test_gate_library_mode import (
-    library_gate_world,
+from tests.memory.library_example_world import (
+    library_example_world,
 )  # noqa: F401 (a fixture)
 
 FILL = (
@@ -533,20 +533,18 @@ def test_chain_counts_read_events_and_unknown_parse_records(tmp_path):
 
 
 @needs_bwrap
-def test_the_gate_records_each_landed_items_adopts(library_gate_world):  # noqa: F811
+@pytest.mark.xfail(reason="needs example_checks.ExampleChecks.judge", strict=False)
+def test_the_gate_records_each_landed_items_adopts(library_example_world):  # noqa: F811
+    from tests.memory import library_example_world as w
     from tests.memory.test_gate import _candidate
-    from tests.memory.test_gate_library_mode import (
-        ITEM_ID,
-        _files_and_fixtures,
-        _man,
-    )
 
-    mem, ev, blobs, gate = library_gate_world
-    files, fixtures = _files_and_fixtures(blobs)
+    ITEM_ID = w.ITEM_ID
+    mem, ev, blobs, gate = library_example_world
+    files, fixtures = w.files_and_fixtures(blobs.get)
     res = gate().merge(
         mem.head(),
         _candidate(mem, files),
-        _man(fixtures, adopts=[STAGED, "pool:" + CID]),
+        w.manifest(fixtures, w.item(adopts=[STAGED, "pool:" + CID])),
         "p1",
         "write",
         None,

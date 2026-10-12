@@ -216,31 +216,58 @@ def test_plain_pytest_refuses_the_gate_kit(tmp_path):
 # --- the library-mode manifest, persisted typed covers ----------------------------------------------------------
 
 
-def test_library_manifest_parses_function_ids_and_routes_covers():
+def _function(**over):
+    return {
+        "item": "memory.calc.sums:total",
+        "kind": "function",
+        "source_episodes": ["e1"],
+        "tests": ["memory/calc/tests/test_sums.py"],
+        **over,
+    }
+
+
+@pytest.mark.xfail(reason="needs manifest._parse_library_mode", strict=False)
+def test_library_manifest_parses_function_ids_and_routes_typed_covers():
     raw = {
-        "items": [
-            {
-                "item": "memory.calc.sums:total",
-                "kind": "function",
-                "source_episodes": ["e1"],
-                "tests": ["memory/calc/tests/test_sums.py"],
-                "input": "observation",
-                "covers": [["e1", 0], {"episode": "e1", "type": "cell", "cell": 0}],
-            },
-        ],
+        "items": [_function(covers=[{"episode": "e1", "type": "cell", "cell": 0}])],
         "support": ["memory/calc/tests/helpers.py"],
         "deleted": ["memory.calc.old:gone"],
     }
     man = parse_manifest(raw, library_mode=True)
     it = man.items[0]
-    assert (it.path, it.covers, it.typed_covers) == (
+    assert (it.path, it.covers, it.typed_covers, it.input) == (
         "memory/calc/sums.py",
-        [("e1", 0)],
+        [],
         [Cover("e1", "cell", index=0)],
+        None,
     )
     assert man.support == ["memory/calc/tests/helpers.py"] and man.deleted == [
         "memory.calc.old:gone",
     ]
+
+
+@pytest.mark.xfail(reason="needs manifest._parse_library_mode", strict=False)
+def test_library_manifest_refuses_an_action_cover():
+    """Replaces the action-cover routing of test_library_manifest_parses_function_ids_and_routes_covers. The rule
+    that replaces it: an action cover is refused in library mode; a function's examples are the calls its tests make
+    on fixtures.
+    """
+    raw = {
+        "items": [
+            _function(covers=[["e1", 0], {"episode": "e1", "type": "cell", "cell": 0}]),
+        ],
+    }
+    with pytest.raises(ManifestError) as exc:
+        parse_manifest(raw, library_mode=True)
+    texts = {
+        f"memory.calc.sums:total: the action cover {c!r} is no longer read: list the tests that call it on "
+        "fixtures made with fixture (covers takes only cell, diff and episode covers)"
+        for c in (["e1", 0], ("e1", 0))
+    }
+    assert str(exc.value) in texts, str(exc.value)
+
+
+def test_library_manifest_refuses_bad_ids_tests_and_covers():
     for bad in (
         {"items": [{"item": "env/x:f", "kind": "env_function"}]},
         {
@@ -266,7 +293,7 @@ def test_library_manifest_parses_function_ids_and_routes_covers():
         with pytest.raises(ManifestError):
             parse_manifest(bad, library_mode=True)
     with pytest.raises(ManifestError):
-        parse_manifest(raw)  # v2 is unchanged: no function kind
+        parse_manifest({"items": [_function()]})  # v2 is unchanged: no function kind
 
 
 def test_cover_raw_round_trips_and_the_typed_covers_table_is_lazy(tmp_path):
@@ -402,32 +429,52 @@ def test_an_init_rebinding_that_breaks_a_stored_procedure_is_refused(tmp_path):
     assert v.run.fails[0][1].startswith(f"{job} changes behaviour without a test")
 
 
-def test_cross_episode_runs_that_do_not_complete_refuse(tmp_path, monkeypatch):
-    """A cross-episode check the gate could not complete fails closed."""
-    a = SimpleNamespace(status="ok", kind="dialogue", channel="dialogue:user")
-    for name, fn in (
-        ("_doc", lambda *x: None),
-        ("family", lambda a: "f"),
-        ("is_rejection", lambda a: False),
-        ("_unfit_reason", lambda a, f: None),
-        ("truncated", lambda a: False),
-        ("output_cases", lambda picked, blob, form: (["c1", "c2"], [])),
-    ):
-        monkeypatch.setattr(library_checks, name, fn)
-    monkeypatch.setattr(
-        library_checks,
-        "run_outputs",
-        lambda item, cases, **kw: {("e2", 0): ("handled", "x", None), ("e3", 1): None},
+@pytest.mark.xfail(reason="needs example_perturb.check", strict=False)
+def test_a_check_with_unseen_fixture_values_that_cannot_complete_refuses(tmp_path):
+    """Replaces test_cross_episode_runs_that_do_not_complete_refuse. The rule that replaces it: the check with
+    unseen fixture values fails closed when it does not complete; a function is admitted only once it is judged.
+    Here the budget is spent before the control run.
+    """
+    from unify.memory import example_perturb
+    from unify.memory.blobs import BlobStore
+    from tests.memory import library_example_world as w
+
+    blobs = BlobStore(tmp_path / "b")
+    files, fixtures = w.files_and_fixtures(blobs.get)
+    tree = tmp_path / "cand"
+    for rel, text in files.items():
+        (tree / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tree / rel).write_text(text)
+    runs = []
+
+    def run_tests(root, tests):
+        runs.append(tests)
+        raise AssertionError("no test run once the budget is spent")
+
+    inputs = [
+        example_perturb.InputFixture(path, files[path].encode(), fixtures[path], None)
+        for path in w.FIXTURE_PATHS
+    ]
+    verdict = example_perturb.check(
+        w.ITEM_ID,
+        calls=w.recorded_calls(blobs.get),
+        fixtures=inputs,
+        tree=tree,
+        tests=[w.TEST_FILE],
+        run_tests=run_tests,
+        pool=[],
+        pool_capped=False,
+        seen=[],
+        blob=blobs.get,
+        field_types={},
+        work=tmp_path / "work",
+        deadline=0.0,  # already past on any clock
     )
-    it = _item(covers=[("e1", 0)], input="text")
-    v = _checks(tmp_path, [it])
-    v.gate.lookup = lambda e, i: a
-    v.gate._pool = lambda run, covers: ([("e2", a), ("e3", a)], False)
-    v._cross_episode(it)
-    assert v.run.verification[it.item]["cross_episode"] == {"ran": 1, "ok": 1}
-    assert [(c, i) for c, _, i in v.run.fails] == [
-        ("G2", it.item),
-    ] and "did not complete" in v.run.fails[0][1]
+    assert runs == [] and verdict.refused == [] and verdict.special == []
+    assert verdict.unjudged == [
+        f"[examples:unjudged] {w.ITEM_ID}: the check with unseen fixture values did not complete (budget); "
+        "a function is admitted only once it is judged",
+    ], verdict.unjudged
 
 
 def test_an_unreadable_stored_procedure_refuses_the_behaviour_check(tmp_path):
