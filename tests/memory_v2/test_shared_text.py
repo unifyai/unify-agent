@@ -80,9 +80,6 @@ def test_batch_map_lists_the_block_file_and_reads_show_the_marker(tmp_path):
     assert bmap is None or bmap["shared_blocks"][0]["file"].startswith(
         "/inputs/shared/",
     )
-    assert (
-        out.coverage["parts_read"] >= 1
-    )  # the marked request was read in full: covered
     assert bm.part_text(eps["e1"], "request") != bm.part_text(
         eps["e1"],
         "request",
@@ -90,11 +87,10 @@ def test_batch_map_lists_the_block_file_and_reads_show_the_marker(tmp_path):
     )
 
 
-def test_a_shared_block_is_a_required_part_shown_once_then_credited_as_identical(
+def test_a_shared_block_is_listed_once_and_readable_as_its_own_part(
     tmp_path,
 ):
-    """RUNTIME B2: the marker alone never covers the block; it is a required part, read once, then credited
-    elsewhere by the identical-part credit."""
+    """A shared block is listed once in shared_blocks and can be read as its own part; no row lists it."""
     eps = {
         f"e{i}": _episode(f"e{i}", request=(PRE + f"\n\nTask {i}",)) for i in range(3)
     }
@@ -105,7 +101,9 @@ def test_a_shared_block_is_a_required_part_shown_once_then_credited_as_identical
     bid = next(b for b, t in sh.items() if t == PRE)
     assert shared_text.marker(bid) == f"[shared:{bid}]"
     bmap = bm.build_batch_map(eps.__getitem__, list(eps), sh)
-    assert all(f"shared:{bid}" in row["required_parts"] for row in bmap["episodes"])
+    # listed once in shared_blocks, never as a part of any row
+    assert [b["id"] for b in bmap["shared_blocks"]] == sorted(sh)
+    assert all(f"shared:{bid}" not in json.dumps(row) for row in bmap["episodes"])
     assert json.loads(bm.part_text(eps["e0"], f"shared:{bid}", sh)) == PRE
 
 
@@ -132,4 +130,3 @@ def test_a_shared_line_inside_an_episode_specific_block_and_in_observations_is_m
     )
     ep = _episode("e1", request=(f"Task 1: rotate the grid 1 times\n{line}", obs))
     assert "[shared:" in json.loads(bm.part_text(ep, "observation:0", sh))
-    assert {f"shared:{b}" for b in sh} <= set(bm._shared_parts(ep, sh))
