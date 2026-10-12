@@ -62,6 +62,13 @@ def test_tools_present_only_with_library_mode():
         "read_episode",
         "fixture",
         "replay",
+        # the pass's record: every agent can message, read, wait and see who runs; the writer replies and stops
+        "send",
+        "messages",
+        "wait",
+        "who",
+        "reply",
+        "stop",
     }
     assert "pool" in names(writer_tools(library_mode=True, pool=True))
     desc = next(
