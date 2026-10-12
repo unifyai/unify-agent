@@ -2,13 +2,13 @@
 
 ## Why
 
-The compaction trigger fires when a call's prompt reaches 0.7 of the model's context window
-(`COMPACTION_THRESHOLD`). The window comes from `unillm.get_max_input_tokens(endpoint)`. Neither
-`openai/gpt-6-sol@openrouter` (the memory writer and curator) nor `openai/gpt-6-luna@openrouter`
-(the helpers and the agent loop) is known to the pinned LiteLLM release, so their window came only from
-OpenRouter's catalog; when the catalog could not be read, the lookup failed, the window was unknown, and
-no compaction ever fired. unillm now registers the window for both, so compaction can trigger for the
-agent loop and for every memory agent. The memory agents still compact only with
+The compaction trigger reads the model's context window: it fires when a call's prompt reaches a share of
+that window (0.7 when this was written; a rule with a fixed size as well is being introduced), and the
+writer's end event reports the window as `context_window`. The window comes from
+`unillm.get_max_input_tokens(endpoint)`, which returned None for `openai/gpt-6-sol@openrouter` (the memory
+writer and curator) and `openai/gpt-6-luna@openrouter` (the helpers and the agent loop) with the pinned
+unillm on the test worker (the control run below). With no window, no compaction ever fired. unillm now
+registers the window for both, so compaction can trigger for the agent loop and for every memory agent. The memory agents still compact only with
 `UNIFY_MEMORY_LIBRARY_COMPACT=on` (off by default).
 
 ## Values
@@ -37,7 +37,7 @@ Both sources agree. `top_provider.max_completion_tokens` in the public list is 1
 convention: every OpenRouter entry in `unillm/endpoints/openrouter_overrides.py` uses the catalog's
 context length as `max_input_tokens` (for example `openai/gpt-5.6-sol` at 1,050,000), and unillm's catalog
 registration (`catalog_pricing_as_litellm_info`) maps `context_length` to `max_input_tokens` directly. The
-compaction threshold (0.7) already leaves room for the reply.
+compaction trigger fires below the full window, which leaves room for the reply.
 
 ## How it is registered
 
@@ -65,6 +65,10 @@ and reasoning support, and it would require hand-written prices.
 
 `tests/memory/test_model_windows.py`: unillm returns the window for both models; the real turn built by
 `writer_pass.unillm_turn` holds it; through `run_due_passes` the writer's end event reports it as
-`context_window`; the helper turn `_helper_turns` builds holds it; a pass whose prompt crosses 0.7 of
-the window compacts exactly once (the summary call made through the writer's own turn and booked), and
-one that stays below never does.
+`context_window`; the helper turn `_helper_turns` builds holds it; a pass whose prompt reaches the
+trigger compacts exactly once (the summary call made through the writer's own turn and booked), and one
+that stays just below never does. The trigger point is found from `writer_pass.compaction_due` itself, so
+these tests do not depend on the rule's share or fixed size.
+
+With the pinned unillm instead of this commit, every test in the file fails: `get_max_input_tokens`
+returns None for both models.

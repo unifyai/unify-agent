@@ -1,7 +1,7 @@
 """The memory agents' models have a context window. unillm registers one for the writer's model and the helpers'
-model on OpenRouter (``WRITER_MODEL``, ``HELPER_MODEL``), so the compaction trigger (a call's prompt at
-COMPACTION_THRESHOLD of the window) can fire for the writer, the curator and each helper. The window
-reaches them on the model turn: :func:`.writer_pass.unillm_turn` sets ``turn.max_input_tokens`` from
+model on OpenRouter (``WRITER_MODEL``, ``HELPER_MODEL``), so the compaction trigger
+(:func:`.writer_pass.compaction_due`, which reads the window) sees it for the writer, the curator and each
+helper. The window reaches them on the model turn: :func:`.writer_pass.unillm_turn` sets ``turn.max_input_tokens`` from
 ``unillm.get_max_input_tokens``. The values and their source are recorded in docs/design/model-windows-20261012.md.
 No test makes a model call.
 """
@@ -9,14 +9,12 @@ No test makes a model call.
 from __future__ import annotations
 
 import asyncio
-import math
 from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
 import unillm
 
-from unify.common._async_tool import context_compression
 from unify.memory import writer_pass
 from unify.memory.integration import consolidate, switch
 from unify.memory.integration.consolidate import run_due_passes
@@ -139,12 +137,24 @@ class Stepped(Compacting):
         return {"prompt_tokens": prompt, "prompt_tokens_details": {"cached_tokens": 0}}
 
 
+LOW = 2_000  # a prompt well under any trigger
+
+
 def _threshold(window: int) -> int:
-    """The fewest prompt tokens that reach COMPACTION_THRESHOLD of *window*."""
-    n = math.ceil(window * context_compression.COMPACTION_THRESHOLD)
-    assert writer_pass.compaction_due(n, window)
-    assert not writer_pass.compaction_due(n - 1, window)
-    return n
+    """The fewest prompt tokens for which :func:`.writer_pass.compaction_due` fires on *window*, found by bisection
+    of the trigger itself, so the tests hold whatever share or fixed size the rule uses."""
+    lo, hi = 1, window
+    assert writer_pass.compaction_due(hi, window)
+    assert not writer_pass.compaction_due(LOW, window)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if writer_pass.compaction_due(mid, window):
+            hi = mid
+        else:
+            lo = mid + 1
+    assert writer_pass.compaction_due(lo, window)
+    assert not writer_pass.compaction_due(lo - 1, window)
+    return lo
 
 
 def test_a_prompt_crossing_the_threshold_compacts_once_and_the_summary_is_booked(
@@ -152,11 +162,11 @@ def test_a_prompt_crossing_the_threshold_compacts_once_and_the_summary_is_booked
 ):
     window = _window(WRITER_MODEL)
     crossing = _threshold(window)
-    model = Stepped(_reads(3), prompts=[2_000, crossing], after=2_000)
+    model = Stepped(_reads(3), prompts=[LOW, crossing], after=LOW)
     out, _ = _run(tmp_path, model, compact=True)
     assert out.context_window == window
     assert out.compactions == 1 and len(_summaries(model)) == 1
-    # the summary is the third request: right after the call that crossed the threshold
+    # the summary is the third request: right after the call that reached the trigger
     assert model.requests.index(_summaries(model)[0]) == 2
     rows = [r for r in _pass_events(tmp_path) if r.get("event") == "compaction"]
     assert len(rows) == 1 and rows[0]["usage"]["usd"] == "0.002"
