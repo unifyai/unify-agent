@@ -151,17 +151,17 @@ def test_finish_names_a_reason_the_curate_manifest_neither_changes_nor_keeps(
         **nothing,
         "kept": {ACCOUNT: "account_id and user_id read different tables"},
     }
-    shown = iter([nothing, keep])
-    monkeypatch.setattr(
-        writer_pass,
-        "_read_manifest",
-        lambda box: (True, next(shown), None),
-    )
     model = Turns(
         [
             _call("f1", "finish", {"summary": "notes only"}),
             _call("f2", "finish", {"summary": "kept with its reason"}),
         ],
+    )
+    # the curator's manifest: notes only until its first finish is answered, then with the keep
+    monkeypatch.setattr(
+        writer_pass,
+        "_read_manifest",
+        lambda box: (True, keep if "f1" in model.outputs else nothing, None),
     )
     writer = WriterPass(
         mem,
