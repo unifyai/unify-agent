@@ -1,4 +1,4 @@
-"""When consolidation runs (spec §F1, D6; the lead's batched cadence of 8 Oct).
+"""When consolidation runs, and which recorded episodes a pass covers.
 
 Two modes:
 
@@ -9,25 +9,31 @@ Two modes:
   stream, a session or its end. An optional idle trigger (off by default) fires on :meth:`Trigger.idle`
   when at least ``idle_min`` trajectories are new and ``idle_after_s`` seconds have passed since the
   timestamp the caller gave the last :meth:`Trigger.after_episode`. A queued drift channel rides with the
-  next batched pass (it does not fire one on its own). The Sol budget of one pass is E x ``usd_per_token``
+  next batched pass (it does not fire one on its own). The writer's budget of one pass is E x ``usd_per_token``
   (:meth:`Trigger.pass_budget_usd`); the caller passes it to ``PassConfig.max_usd``. Under
-  ``UNIFY_MEMORY_LIBRARY=on`` E is ``UNIFY_MEMORY_LIBRARY_E`` (default 100,000; D43).
-* ``"d6"`` (v0 D6 as frozen; kept for offline comparison): after each episode, an incremental pass per
+  ``UNIFY_MEMORY_LIBRARY=on`` E is ``UNIFY_MEMORY_LIBRARY_E`` (default 100,000).
+
+  **Admission** (optional, the episode-end fork on): an episode enters a batch only once its fork has settled
+  (``admission.settled(eid)``, :class:`.integration.fork.Admission`). The others are held: the pass request lists
+  them in ``held``, and :meth:`Trigger.mark_done` hands them to ``admission.set_rolled`` so the next pass sees them
+  again, whatever came after them. A pass is due when the experience of the episodes it admits reaches E. This keys
+  on each episode's own signal, never on the stream.
+* ``"d6"`` (the earlier per-channel cadence, kept for offline comparison): after each episode, an incremental pass per
   channel the episode touched (or a drift channel queued), plus a maintenance pass every
   ``maintenance_every`` requests.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import Protocol
 
 from .evidence import EvidenceStore
 
 MODES = ("batched", "d6")
 EXPERIENCE_BUDGET = 150_000
-# Memory v2.1 (D43, the lead, 9 Oct): E is 100k recorded tokens. D29's 150k stays v2's; the offline replay
-# re-measures false refusals at 100k under v2.1's cross-episode check and repair.
+# With the library mode on, E is 100k recorded tokens; the default above stays the earlier mode's.
 EXPERIENCE_BUDGET_LIBRARY = 100_000
 USD_PER_TOKEN = Decimal("0.00000073")
 # The cursor of the batched mode in the evidence store's cursor table (no channel key starts with "@").
@@ -43,6 +49,16 @@ class PassRequest:
     experience_tokens: int | None = (
         None  # batched passes: the experience the pass covers
     )
+    #: batched passes under admission: pending episodes whose fork has not settled; they roll to the next pass
+    held: list[str] = field(default_factory=list)
+
+
+class Admission(Protocol):
+    def settled(self, eid: str) -> bool: ...
+
+    def rolled(self) -> list[str]: ...
+
+    def set_rolled(self, eids: list[str]) -> None: ...
 
 
 class Trigger:
@@ -57,6 +73,7 @@ class Trigger:
         usd_per_token: Decimal | str = USD_PER_TOKEN,
         idle_after_s: float | None = None,
         idle_min: int = 3,
+        admission: Admission | None = None,
     ) -> None:
         if mode not in MODES:
             raise ValueError(f"trigger mode must be one of {MODES}, got {mode!r}")
@@ -69,21 +86,41 @@ class Trigger:
         self.idle_after_s, self.idle_min = idle_after_s, int(idle_min)
         self._drift: set[str] = set()
         self._last_at: float | None = None
+        self.admission = admission
 
     def queue_drift(self, channel: str) -> None:
         self._drift.add(channel)
 
     def pass_budget_usd(self) -> Decimal:
-        """The Sol budget of one batched pass: E x USD per token, a Decimal (pass as ``max_usd``)."""
+        """The writer's budget of one batched pass: E x USD per token, a Decimal (pass as ``max_usd``)."""
         return Decimal(self.budget) * self.usd_per_token
 
     # -- batched ----------------------------------------------------------------------------------------
     def pending(self) -> list[tuple[str, int]]:
-        """(episode id, experience tokens) recorded since the last batched pass."""
-        return self.ev.experience_since(self.ev.cursor(BATCHED_CURSOR))
+        """(episode id, experience tokens) recorded since the last batched pass, after the episodes earlier passes
+        rolled over (under admission)."""
+        rows = self.ev.experience_since(self.ev.cursor(BATCHED_CURSOR))
+        if self.admission is None:
+            return rows
+        seen = {e for e, _ in rows}
+        carried = []
+        for eid in self.admission.rolled():
+            if eid in seen:
+                continue
+            try:
+                tokens = self.ev.experience_of(eid)[0]
+            except KeyError:
+                tokens = 0
+            carried.append((eid, tokens))
+            seen.add(eid)
+        return carried + rows
 
     def _batched(self) -> PassRequest:
-        rows = self.pending()
+        rows, held = self.pending(), []
+        if self.admission is not None:
+            ready = [self.admission.settled(e) for e, _ in rows]
+            held = [e for (e, _), ok in zip(rows, ready) if not ok]
+            rows = [r for r, ok in zip(rows, ready) if ok]
         eids = [e for e, _ in rows]
         return PassRequest(
             "batched",
@@ -91,6 +128,7 @@ class Trigger:
             eids,
             len(eids) >= self.lift_min,
             sum(t for _, t in rows),
+            held,
         )
 
     def after_episode(
@@ -105,7 +143,7 @@ class Trigger:
             return self._d6(episode_id)
         self.ev.seq_of(episode_id)  # KeyError for an episode that was never indexed
         req = self._batched()
-        return [req] if req.experience_tokens >= self.budget else []
+        return [req] if req.episodes and req.experience_tokens >= self.budget else []
 
     def idle(self, now: float) -> list[PassRequest]:
         """The optional idle trigger (batched mode, ``idle_after_s`` set; else nothing)."""
@@ -138,11 +176,15 @@ class Trigger:
 
     def mark_done(self, req: PassRequest) -> None:
         if req.kind == "batched":
-            if req.episodes:
+            covered = [*req.episodes, *req.held]
+            if covered:
+                cursor = self.ev.cursor(BATCHED_CURSOR)
                 self.ev.set_cursor(
                     BATCHED_CURSOR,
-                    max(self.ev.seq_of(e) for e in req.episodes),
+                    max(cursor, *(self.ev.seq_of(e) for e in covered)),
                 )
+            if self.admission is not None:
+                self.admission.set_rolled(list(req.held))
             self._drift.clear()
             return
         if req.channel is not None:
