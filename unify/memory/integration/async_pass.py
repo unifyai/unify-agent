@@ -551,14 +551,23 @@ def apply_results(state: Any, paths: Any) -> list[dict]:
     return rows
 
 
-def landed_event(row: dict, episode_id: str, pin: str) -> dict:
-    """The ``landed`` event: the pass, how it ended, and the first request that ran after it."""
+def landed_event(
+    row: dict,
+    episode_id: str,
+    pin: str,
+    library_items: int | None = None,
+) -> dict:
+    """The ``landed`` event: the pass, how it ended, the first request that ran after it, and the size of the
+    library at the landed commit (*library_items*: functions and notes; None when it could not be counted).
+    """
     return {
         "type": "consolidation",
         "phase": "landed",
         "pass_id": row.get("pass_id"),
         "ended": row.get("ended"),
         "commit": row.get("commit"),
+        "library_commit": row.get("commit"),
+        "library_items": library_items,
         "first_request": episode_id,
         "pinned": pin,
     }

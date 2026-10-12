@@ -695,15 +695,42 @@ def _note_transcript(
         _error(stores, f"{pass_id}: transcript: {type(exc).__name__}")
 
 
+def _count_items(tree: Path) -> int:
+    """The items the library at *tree* holds: its functions and notes in the library layout, else the earlier
+    layout's listed items."""
+    from ..layout import discover
+
+    lib = discover(tree)
+    if lib.functions or lib.notes or (tree / "memory").is_dir():
+        return len(lib.functions) + len(lib.notes)
+    return sum(
+        1 for it in memory_items(tree).items if it.kind != "workflow" and it.listed
+    )
+
+
+def library_items_at(stores: Stores, commit: str | None) -> int | None:
+    """The number of items the library holds at memory commit *commit*; None when it cannot be read."""
+    if not commit:
+        return None
+    tmp = Path(tempfile.mkdtemp(prefix="memory-landed-"))
+    try:
+        files, _ = listing(stores.memory, commit)
+        return _count_items(materialise(stores.memory, files, tmp / "tree"))
+    except Exception:  # noqa: BLE001 - a measurement, never a failure
+        return None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _library_after(stores: Stores) -> tuple[int | None, int | None]:
-    """(listed items, index tokens) of memory ``main`` now; None for what could not be measured."""
+    """(items, index tokens) of memory ``main`` when the pass's end is recorded, which is before the gate's commit
+    lands; None for what could not be measured. The landed event counts the library at the landed commit.
+    """
     tmp = Path(tempfile.mkdtemp(prefix="memory-after-"))
     try:
         files, _ = listing(stores.memory, stores.memory.head())
         tree = materialise(stores.memory, files, tmp / "main")
-        listed = sum(
-            1 for it in memory_items(tree).items if it.kind != "workflow" and it.listed
-        )
+        listed = _count_items(tree)
         try:
             index_tokens: int | None = estimate_tokens(
                 build_index(tree, budget_tokens=_NO_INDEX_BUDGET),
@@ -837,7 +864,8 @@ def _end_event(
         "checks": int(outcome.checks) if outcome is not None else 0,
         "seconds": round(max(0.0, float(seconds)), 3),
         "gate_passed": bool(outcome is not None and outcome.passed),
-        "items": listed,
+        # main before this pass's commit lands; the landed event counts the library at the landed commit
+        "library_items_before_landing": listed,
         "index_tokens": index_tokens,
         "reason_codes": reason_codes(outcome, failure_code),
         "items_merged": list(outcome.items_merged) if outcome is not None else [],

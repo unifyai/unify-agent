@@ -1102,7 +1102,12 @@ class RequestRun:
                 consolidate._deliver(
                     self.stores,
                     self._emitter(emit),
-                    landed_event(row, self.episode_id, self.pin),
+                    landed_event(
+                        row,
+                        self.episode_id,
+                        self.pin,
+                        consolidate.library_items_at(self.stores, row.get("commit")),
+                    ),
                 )
         except Exception as exc:  # noqa: BLE001
             self._error("passes", exc, progress)

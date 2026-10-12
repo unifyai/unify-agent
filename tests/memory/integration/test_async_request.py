@@ -199,9 +199,12 @@ def test_results_apply_once_and_name_the_first_request(tmp_path):
         "pass_id": "e1.p0",
         "ended": "landed",
         "commit": "c" * 40,
+        "library_commit": "c" * 40,
+        "library_items": None,
         "first_request": "e7",
         "pinned": "c" * 40,
     }
+    assert ap.landed_event(rows[0], "e7", "c" * 40, 6)["library_items"] == 6
 
 
 def test_a_half_written_results_line_waits_for_its_end(tmp_path):

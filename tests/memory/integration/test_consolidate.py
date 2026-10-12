@@ -435,7 +435,7 @@ def test_events_start_and_end_with_decimal_money_and_the_inherited_effort(
         "checks",
         "seconds",
         "gate_passed",
-        "items",
+        "library_items_before_landing",
         "index_tokens",
         "reason_codes",
         "items_merged",
@@ -447,7 +447,10 @@ def test_events_start_and_end_with_decimal_money_and_the_inherited_effort(
     assert (end["calls"], end["unknown_cost_calls"], end["seconds"]) == (1, 0, 2.5)
     assert end["checks"] == 0
     assert end["gate_passed"] is False and end["reason_codes"] == ["no_manifest"]
-    assert end["items"] == 0 and isinstance(end["index_tokens"], int)
+    assert end["library_items_before_landing"] == 0 and isinstance(
+        end["index_tokens"],
+        int,
+    )
     assert end["items_merged"] == [] and end["items_refused"] == {}
     assert _events(stores) == got  # the same rows, always appended to the events file
     assert events_path(stores.paths) == stores.paths.state_dir / "events.jsonl"
@@ -1458,3 +1461,25 @@ def test_library_max_reads_reaches_the_pass_and_the_off_path_keeps_the_default(
     for bad in ("0", "-1", "x", True):
         with pytest.raises(ValueError):
             parse_library_max_reads(bad)
+
+
+def test_the_landed_event_counts_the_library_at_the_landed_commit(tmp_path):
+    """A pass that lands N items reports N at its landed commit, not the library before it landed."""
+    stores = _stores(tmp_path)
+    before = stores.memory.head()
+    files = {
+        "memory/acct/__init__.py": '"""Accounts."""\n',
+        "memory/acct/users.py": (
+            'def user_id(r):\n    """The id."""\n    return r\n\n\n'
+            'def user_name(r):\n    """The name."""\n    return r\n'
+        ),
+        "notes/acct/ids.md": "---\ntitle: Ids\ndescription: How ids look.\nuses: []\n---\nIds are strings.\n",
+    }
+    with stores.memory.temp_checkout("main") as wt:
+        for rel, text in files.items():
+            (wt / rel).parent.mkdir(parents=True, exist_ok=True)
+            (wt / rel).write_text(text)
+        landed = stores.memory.commit_all(wt, "pass", {"Pass": "p1"})
+    assert consolidate.library_items_at(stores, landed) == 3  # two functions and a note
+    assert consolidate.library_items_at(stores, before) == 0
+    assert consolidate.library_items_at(stores, None) is None
