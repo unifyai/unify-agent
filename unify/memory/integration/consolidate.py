@@ -917,6 +917,10 @@ def _end_event(
                 "messages_moved": int(getattr(outcome, "messages_moved", 0)),
                 "input_tokens": getattr(outcome, "input_tokens", None),
                 "cache_read_tokens": getattr(outcome, "cache_read_tokens", None),
+                # the largest prompt one call reported, and the model's window as the compaction trigger reads it
+                # (None: unknown, so no compaction)
+                "max_prompt_tokens": getattr(outcome, "max_prompt_tokens", None),
+                "context_window": getattr(outcome, "context_window", None),
             }
             if outcome is not None and outcome.coverage is not None
             else {}

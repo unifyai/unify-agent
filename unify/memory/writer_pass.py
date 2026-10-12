@@ -820,6 +820,10 @@ class PassOutcome:
     # calls that reported both (None: no call did); cache_read_tokens / input_tokens is the cache-hit rate
     input_tokens: int | None = None
     cache_read_tokens: int | None = None
+    # the largest prompt (tokens) one of the writer's model calls reported (None: none reported one), and the
+    # model's context window as the compaction trigger reads it (None: unknown, so it never compacts)
+    max_prompt_tokens: int | None = None
+    context_window: int | None = None
 
 
 # --- inputs ------------------------------------------------------------------------------------------------
@@ -2038,6 +2042,7 @@ class WriterPass:
         # what compactions took out of the writer's conversation, in order (compaction_archive), for the transcript
         self._archived: list[dict] = []
         self._compaction = {"compactions": 0, "chars_moved": 0, "messages_moved": 0}
+        self._max_prompt: int | None = None
         self._cache_tokens: list[int] = [
             0,
             0,
@@ -2125,7 +2130,10 @@ class WriterPass:
         return lines
 
     def _count_cache(self, usage: dict) -> None:
-        """Add a model call's prompt tokens and cache-read tokens to the pass's sums, when it reported both."""
+        """Add a model call's prompt tokens and cache-read tokens to the pass's sums, when it reported both; keep
+        the largest prompt any call reported."""
+        if isinstance(usage.get("input"), int):
+            self._max_prompt = max(self._max_prompt or 0, usage["input"])
         if isinstance(usage.get("input"), int) and isinstance(
             usage.get("cache_read"),
             int,
@@ -3578,6 +3586,7 @@ class WriterPass:
         self._tools_json, self._archived = [], []
         self._compaction = {"compactions": 0, "chars_moved": 0, "messages_moved": 0}
         self._cache_tokens = [0, 0, 0]
+        self._max_prompt = None
         self.fixtures_made = {}
         self._shown_full, self._read_logs = {}, {}
         self._recorded, self._episodes = None, {}
@@ -3786,6 +3795,13 @@ class WriterPass:
                 o.compactions = self._compaction["compactions"]
                 o.chars_moved = self._compaction["chars_moved"]
                 o.messages_moved = self._compaction["messages_moved"]
+                o.max_prompt_tokens = self._max_prompt
+                window = getattr(self.turn, "max_input_tokens", None)
+                o.context_window = (
+                    window
+                    if isinstance(window, int) and not isinstance(window, bool)
+                    else None
+                )
                 if self._cache_tokens[2]:
                     o.input_tokens, o.cache_read_tokens = (
                         self._cache_tokens[0],

@@ -139,6 +139,8 @@ def test_the_summary_call_goes_through_the_agents_own_turn_and_is_booked(tmp_pat
     )
     assert out.input_tokens == 900 * len(model.requests)
     assert out.cache_read_tokens == 600 * len(model.requests)
+    # the headroom: the largest prompt a call reported, beside the window the trigger read
+    assert out.max_prompt_tokens == 900 and out.context_window == 1_000
     # the transcript keeps what the compaction took out, and marks the summary call
     lines = [json.loads(x) for x in writer.transcript("p1")]
     msgs = [x["message"] for x in lines if "message" in x]
@@ -155,6 +157,8 @@ def test_no_compaction_with_the_switch_off_or_an_unknown_window(tmp_path):
         out, _ = _run(tmp_path / name, model, **cfg)
         assert not _summaries(model), name
         assert out.compactions == 0 and out.messages_moved == 0
+        # an unknown window is recorded as unknown, never as a number
+        assert out.context_window == (None if name == "unknown" else 1_000), name
 
 
 def test_under_the_threshold_nothing_is_compacted(tmp_path):

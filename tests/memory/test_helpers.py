@@ -115,7 +115,9 @@ def _run(args, ctx):
             return out
         name = out.split()[1]
         reply = await helpers.result(ctx, name)
-        assert await messaging.close(ctx.pass_record, "the writer finished") == {name: "ended"}
+        assert await messaging.close(ctx.pass_record, "the writer finished") == {
+            name: "ended",
+        }
         return reply
 
     return asyncio.run(go())
@@ -232,7 +234,12 @@ def test_the_helper_box_reads_the_writers_inputs_its_task_and_the_library_and_wr
     )
     # /inputs: what the writer has (here its pool) with the open-log hook and the helpers' output folder; /task:
     # the named episode's record
-    assert call["listing"]["/inputs"] == ["helpers", "pool", "pool/INDEX.md", "sitecustomize.py"]
+    assert call["listing"]["/inputs"] == [
+        "helpers",
+        "pool",
+        "pool/INDEX.md",
+        "sitecustomize.py",
+    ]
     assert call["listing"]["/task"] == ["episodes", "episodes/e1.json"]
     # /memory: the library as the writer sees it, without the writer's .pass
     assert call["listing"]["/memory"] == ["INDEX.md"]
@@ -391,7 +398,9 @@ def test_helpers_read_any_recorded_episode_but_only_through_the_index(
     assert "not an episode id" in script.outputs["pathy"]
     assert "e4" not in loads and all(".." not in e for e in loads)
     # the writer's /inputs, its pool included, is readable by a helper
-    assert "pool" in script.outputs["pool"] and not script.outputs["pool"].startswith("refused")
+    assert "pool" in script.outputs["pool"] and not script.outputs["pool"].startswith(
+        "refused",
+    )
 
 
 def _done_then(cid, claims, then=None):
@@ -722,3 +731,18 @@ def test_a_helpers_episode_reads_record_the_paths_the_writer_records():
     assert helpers.episode_paths("read_episode", {"part": "cell:2"}, "e1") == [
         {"path": "/episodes/e1/cell:2", "mode": "read"},
     ]
+
+
+def test_helper_json_records_the_largest_prompt_a_call_reported(tmp_path, fake_box):
+    first = {
+        **_msg(_tc("o", "overview", {"episode": "e1"})),
+        "usage": {"prompt_tokens": 300},
+    }
+    last = {
+        **_msg(_tc("d", "done", {"summary": "s", "claims": []})),
+        "usage": {"prompt_tokens": 120},
+    }
+    ctx = _ctx(tmp_path, Script({"t": [first, last]}))
+    _run({"task": "t", "episodes": ["e1"]}, ctx)
+    status = json.loads((ctx.out_root / "call-0" / "helper.json").read_text())
+    assert status["max_prompt_tokens"] == 300

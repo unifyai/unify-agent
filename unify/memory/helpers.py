@@ -1435,6 +1435,8 @@ async def _run_helper(
             if isinstance(msg.get("usage"), dict)
             else None
         )
+        if isinstance(last_prompt, int) and not isinstance(last_prompt, bool):
+            doc["max_prompt_tokens"] = max(doc["max_prompt_tokens"] or 0, last_prompt)
         finished = False
         for i, tc in enumerate(calls):
             tc = tc if isinstance(tc, dict) else {}
@@ -1580,6 +1582,8 @@ async def _body(ctx: DelegateContext, call: str) -> str:
         # done, stop, finish or wall_clock (error or step_guard when it ended so); model calls cut mid-flight
         "stopped_by": None,
         "calls_cut": 0,
+        # the largest prompt (tokens) one of its model calls reported (None: none reported one)
+        "max_prompt_tokens": None,
     }
     staging: _Staging | None = None
     tmp: Path | None = None
