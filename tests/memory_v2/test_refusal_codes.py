@@ -1,0 +1,202 @@
+"""Refusal form codes: every refusal text a memory tool returns is rendered from a spec's refusal forms, the codes
+are listed by tool and written at a pass's start, the briefs state the operational limits from their constants,
+the pass keeps the manifest of its last accepted finish, and an uncapped repair message states no round count."""
+
+import asyncio
+import json
+import re
+import string
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
+
+from unify.memory_v2 import helpers, library_prompts, tool_spec, views, writer_pass
+from unify.memory_v2 import writer_tools as wt
+from unify.memory_v2.gate import GateResult
+from unify.memory_v2.integration import fork_worker
+from unify.memory_v2.repair import REPAIR_ROUNDS, repair_message
+from unify.memory_v2.trigger import PassRequest
+from tests.memory_v2.test_writer_library_tools import EPS
+from tests.memory_v2.test_writer_pass import Turns, _call, _write, _writer, needs_bwrap
+
+PKG = Path(writer_pass.__file__).parent
+
+#: The modules whose replies reach an agent as tool results (handlers, readers and the pass loop).
+TOOL_MODULES = (
+    "writer_tools.py",
+    "writer_pass.py",
+    "helpers.py",
+    "similar.py",
+    "views.py",
+    "fixtures.py",
+    "replay_verify.py",
+    "pool.py",
+    "batch_map.py",
+    "staging.py",
+)
+
+#: A string literal (any prefix) that starts with "refused:".
+_REFUSED_LITERAL = re.compile(r"""(?<![\w])[rRbBuUfF]{0,2}(?:"|')refused:""")
+
+
+def _fields(template: str) -> dict:
+    return {name: "x" for _, name, _, _ in string.Formatter().parse(template) if name}
+
+
+def test_no_refusal_text_is_written_outside_the_tool_spec():
+    found = []
+    for name in TOOL_MODULES:
+        for i, line in enumerate((PKG / name).read_text().splitlines(), 1):
+            if _REFUSED_LITERAL.search(line):
+                found.append(f"{name}:{i}: {line.strip()}")
+    assert found == []
+    assert _REFUSED_LITERAL.search((PKG / "tool_spec.py").read_text())
+
+
+def test_refusal_codes_list_every_form_of_every_tool_and_each_renders():
+    codes = tool_spec.refusal_codes()
+    for spec in tool_spec.registry():
+        assert set(spec.refusals) <= set(codes[spec.name]), spec.name
+    for spec in helpers.VARIANT_SPECS:
+        assert set(spec.refusals) <= set(codes[spec.name]), spec.name
+    assert codes[tool_spec.GENERAL] == sorted(tool_spec.GENERAL_REFUSALS)
+    templates = {
+        (s.name, f): t
+        for s in (*tool_spec.registry(), *helpers.VARIANT_SPECS)
+        for f, t in s.refusals.items()
+    }
+    for tool, forms in codes.items():
+        for form in forms:
+            assert form.isidentifier(), (tool, form)
+            template = templates.get((tool, form), tool_spec.GENERAL_REFUSALS.get(form))
+            text = tool_spec.refusal(tool, form, **_fields(template))
+            assert isinstance(text, tool_spec.Refusal) and tool_spec.form_of(text) == form
+            assert text.startswith(("refused: ", *tool_spec.KEPT_STARTS)), (tool, form)
+    with pytest.raises(KeyError):
+        tool_spec.refusal("read", "no_such_form")
+
+
+def test_helper_refusals_carry_their_own_form_code(tmp_path):
+    out = helpers._Staging(tmp_path / "s" / "call-0").stage("../x.py", "x")
+    assert tool_spec.form_of(out) == "path"
+    assert helpers._refusal_form(out)["form"] == "path"
+    done = tool_spec.refusal(tool_spec.GENERAL, "task_done")
+    assert done == "not run: task done" and helpers._refusal_form(done)["form"] == "task_done"
+    assert tool_spec.form_of("staged notes.md (3 bytes)") is None
+
+
+def test_grep_problems_are_raised_and_answered_as_the_grep_form(tmp_path):
+    root = tmp_path / "inputs"
+    root.mkdir()
+    with pytest.raises(views.PatternProblem, match="invalid pattern"):
+        views.grep("(", "/inputs", {"/inputs": root})
+    with pytest.raises(views.PatternProblem, match="invalid pattern"):
+        views.grep_bounded("(", "/inputs", {"/inputs": root}, timeout_s=10)
+
+
+def test_the_pass_writes_its_refusal_codes_at_its_start(tmp_path):
+    model = Turns([_call("a", "read", {"path": "/inputs"})])
+    _, _, writer = _writer(
+        tmp_path,
+        model,
+        library_mode=True,
+        max_calls=3,
+        pass_record_root=str(tmp_path / "out"),
+    )
+    writer.load = EPS.__getitem__
+    asyncio.run(writer.run(PassRequest("incremental", "svc", ["e1"], False), "p1"))
+    path = tmp_path / "out" / "p1" / "refusal-codes.json"
+    assert path.is_file() and not path.is_symlink()
+    assert json.loads(path.read_text()) == tool_spec.refusal_codes()
+    # every refusal recorded in the tool events is one of the listed codes
+    codes = json.loads(path.read_text())
+    for row in writer.tool_events:
+        if row["refusal"] is not None:
+            assert row["refusal"]["form"] in codes.get(row["tool"], []) + codes["*"], row
+
+
+def test_an_existing_refusal_codes_file_is_never_written_over(tmp_path):
+    folder = tmp_path / "out" / "p1"
+    folder.mkdir(parents=True)
+    (folder / "refusal-codes.json").write_text("earlier\n")
+    model = Turns([_call("a", "read", {"path": "/inputs"})])
+    _, _, writer = _writer(
+        tmp_path,
+        model,
+        library_mode=True,
+        max_calls=3,
+        pass_record_root=str(tmp_path / "out"),
+    )
+    writer.load = EPS.__getitem__
+    asyncio.run(writer.run(PassRequest("incremental", "svc", ["e1"], False), "p1"))
+    assert (folder / "refusal-codes.json").read_text() == "earlier\n"
+
+
+def test_the_briefs_state_the_operational_limits_from_their_constants():
+    mib = fork_worker.QUOTA_BYTES / 1024**2
+    stage = f"at most {fork_worker.QUOTA_FILES} files and {library_prompts._num(mib)} MiB"
+    compaction = (
+        f"grows past {writer_pass.COMPACT_AT_CHARS} characters",
+        f"the last {writer_pass.COMPACT_KEEP_LAST} messages",
+        'read(path="/outputs/compacted/<file>")',
+    )
+    finish_cap = f"up to {writer_pass.FINISH_G1_REFUSALS} times in a pass"
+    full = library_prompts.write_brief_now(staging=True, compact=True, finish_capped=True)
+    for sentence in (stage, *compaction, finish_cap):
+        assert full.count(sentence) == 1, sentence
+    curate = library_prompts.curate_brief_now(compact=True, finish_capped=True)
+    for sentence in (*compaction, finish_cap):
+        assert curate.count(sentence) == 1, sentence
+    # off by configuration: not stated
+    plain = library_prompts.write_brief_now()
+    for sentence in (stage, *compaction, finish_cap):
+        assert sentence not in plain, sentence
+    for text in (full, curate):
+        assert "budget" not in text.lower() and "<<" not in text
+
+
+def test_the_pass_states_compaction_and_the_finish_cap_as_it_is_configured(tmp_path):
+    _, _, writer = _writer(tmp_path, Turns([]), library_mode=True, compact=True, max_usd=Decimal("1"))
+    assert writer._write_inputs()["compact"] is True
+    assert writer._write_inputs()["finish_capped"] is True
+    _, _, uncapped = _writer(tmp_path / "u", Turns([]), library_mode=True, max_usd=None)
+    assert uncapped._write_inputs()["finish_capped"] is False
+
+
+def test_accepted_manifest_is_the_raw_dict_or_none(tmp_path):
+    assert writer_pass._accepted_manifest(tmp_path) is None
+    (tmp_path / ".pass").mkdir()
+    (tmp_path / ".pass" / "manifest.json").write_text("[1]")
+    assert writer_pass._accepted_manifest(tmp_path) is None
+    (tmp_path / ".pass" / "manifest.json").write_text('{"items": [], "kept": {"a": "b"}}')
+    assert writer_pass._accepted_manifest(tmp_path) == {"items": [], "kept": {"a": "b"}}
+
+
+@needs_bwrap
+def test_final_manifest_is_set_by_an_accepted_finish_only(tmp_path):
+    manifest = {"items": [], "summary": "nothing to keep"}
+    model = Turns(
+        [
+            _call("f0", "finish", {"summary": "too early"}),
+            _call("w", "execute_code", {"code": _write("/memory/.pass/manifest.json", json.dumps(manifest))}),
+            _call("f1", "finish", {"summary": "nothing to keep"}),
+        ],
+    )
+    _, _, writer = _writer(tmp_path, model, library_mode=True, max_calls=6)
+    writer.load = EPS.__getitem__
+    assert writer.final_manifest is None
+    asyncio.run(writer.run(PassRequest("incremental", "svc", ["e1"], False), "p1"))
+    # the first finish (no manifest yet) is refused; the second is accepted (the pass ends there, so the model
+    # never sees its reply)
+    assert model.outputs["f0"].startswith("not finished: ")
+    assert writer.final_manifest == manifest
+
+
+def test_an_uncapped_repair_message_states_no_round_count():
+    res = GateResult(False, {}, ["G3: x"], ["G3"], items_refused={"memory.a.b:f": ["G3"]})
+    capped = repair_message(1, "/inputs/gate/result-0.md", res, REPAIR_ROUNDS)
+    assert f"repair round 1 of {REPAIR_ROUNDS}" in capped
+    uncapped = repair_message(1, "/inputs/gate/result-0.md", res, None)
+    assert "repair round 1." in uncapped
+    assert not re.search(r"round \d+ of \d+", uncapped)

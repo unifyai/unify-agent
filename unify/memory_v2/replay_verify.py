@@ -92,7 +92,9 @@ def _job(ep, inst: dict, fn_import: str, fn: str) -> dict:
     reads, targets = call_names(str(inst["call"]))
     return {
         "mode": "verify",
-        "cells": [{"index": c.index, "code": c.code, "output": c.output} for c in cells],
+        "cells": [
+            {"index": c.index, "code": c.code, "output": c.output} for c in cells
+        ],
         "cell": cell_idx,
         "line": a,
         "names": [n for n in reads if n != fn],
@@ -260,7 +262,8 @@ def verdict(job: dict, got: dict) -> dict:
 def summary(results: list[dict]) -> dict:
     """Counts of *results* (from :func:`verify`) by outcome: ``verified``, ``differs``, ``unknown`` (the oracle was
     unsuitable), ``not_replayable`` and ``refused``; ``tested`` is true when at least one instance was verified,
-    which needs an instance whose original reproduced its recording. Unknown instances never count as either."""
+    which needs an instance whose original reproduced its recording. Unknown instances never count as either.
+    """
     out = {"verified": 0, "differs": 0, "unknown": 0, "not_replayable": 0, "refused": 0}
     for r in results:
         v = str(r.get("verdict", ""))
@@ -300,7 +303,7 @@ def verify(
     instance's result. :func:`summary` counts the outcomes."""
     m = _ITEM.match(item)
     if not m:
-        return [{"verdict": "refused: not a function item id"}]
+        return [{"verdict": "not replayable: not a function item id"}]
     fn_import = f"from memory.{m['pkg']}.{m['mod']} import {m['fn']}"
     out = []
     for inst in replaces if isinstance(replaces, list) else []:
@@ -317,7 +320,10 @@ def verify(
             Exception
         ) as exc:  # noqa: BLE001 - a bad entry is a verdict, never a crash
             out.append(
-                {**at, "verdict": f"refused: {type(exc).__name__}: {str(exc)[:120]}"},
+                {
+                    **at,
+                    "verdict": f"not replayable: {type(exc).__name__}: {str(exc)[:120]}",
+                },
             )
             continue
         job["rewritten_call"] = str(inst["call"]).strip()
@@ -325,9 +331,7 @@ def verify(
         binds = [(str(tree), "/library", False)]
         # three runs (original, original again, rewritten), each in its own pristine copy of the working tree
         src = (trees or {}).get(str(inst["episode"]))
-        worlds = [
-            _world(src, scratch / f"w-{len(out)}-{k}") for k in (1, 2, 3)
-        ]
+        worlds = [_world(src, scratch / f"w-{len(out)}-{k}") for k in (1, 2, 3)]
         binds += [(str(w), f"/w{k}", True) for k, w in enumerate(worlds, 1)]
         job["cwds"] = ["/w1", "/w2", "/w3"]
         try:

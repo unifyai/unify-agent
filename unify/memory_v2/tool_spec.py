@@ -84,9 +84,81 @@ def tools_section(role: str, flags: frozenset[str] = frozenset()) -> str:
     return "\n".join(lines)
 
 
-def refusal(tool: str, form: str, **fields: object) -> str:
-    """The refusal text *form* of *tool*, filled; starts with "refused: " so every refusal reads the same."""
-    spec = next((s for s in registry() if s.name == tool), None)
-    if spec is None or form not in spec.refusals:
+#: Answers the pass loop gives on any tool (limits, unknown tools, malformed calls), by stable form code. A text
+#: starting with "not run: " is a call that was not run (it can be sent again); any other is a refusal.
+GENERAL_REFUSALS: dict[str, str] = {
+    "unknown_tool": "unknown tool {name!r}; your tools: {tools}",
+    "bad_arguments": "{reason}",
+    "readers_per_turn": "not run: at most {limit} reader calls run per model turn; send it again",
+    "cells_per_turn": "not run: at most {limit} cells run per model turn; send it again",
+    "reads_limit": "not run: the pass's reader-call limit ({limit}) is reached",
+    "stopped": "not run: {reason}",
+    "pass_finished": "not run: pass finished",
+    "task_done": "not run: task done",
+    "check_limit": "not run: at most {limit} check calls per pass",
+    "call_limit": "not run: the pass's call cap is reached",
+}
+
+#: Starts a template keeps as they are: a call that was not run (send it again) and a finish that did not end the
+#: pass. Every other refusal text starts with "refused: ".
+KEPT_STARTS = ("not run: ", "not finished: ")
+
+#: The key :func:`refusal_codes` lists the general forms under.
+GENERAL = "*"
+
+
+class Refusal(str):
+    """A refusal text that keeps the tool and the stable form code it was made from, so a tool event records the
+    code itself (never a code guessed back from the text). Slicing or joining gives a plain ``str``."""
+
+    tool: str
+    form: str
+
+    def __new__(cls, text: str, tool: str, form: str) -> "Refusal":
+        obj = super().__new__(cls, text)
+        obj.tool, obj.form = tool, form
+        return obj
+
+
+def _variants() -> list[ToolSpec]:
+    """Specs that are not in the shared registry but answer as a registered tool name for one agent (a module's
+    ``VARIANT_SPECS``, e.g. the helper's own execute_code)."""
+    out: list[ToolSpec] = []
+    for mod in SPEC_MODULES:
+        m = importlib.import_module(mod, __package__)
+        out.extend(getattr(m, "VARIANT_SPECS", ()))
+    return out
+
+
+def refusal_codes() -> dict[str, list[str]]:
+    """Every refusal form code by tool (registered specs and their variants), and the general forms under
+    :data:`GENERAL`. A tool event's ``refusal.form`` is always one of these."""
+    out: dict[str, list[str]] = {}
+    for s in (*registry(), *_variants()):
+        out.setdefault(s.name, [])
+        out[s.name].extend(f for f in s.refusals if f not in out[s.name])
+    out[GENERAL] = list(GENERAL_REFUSALS)
+    return {k: sorted(v) for k, v in out.items()}
+
+
+def refusal(tool: str, form: str, **fields: object) -> Refusal:
+    """The refusal text *form* of *tool* (its spec's ``refusals``, then the general forms), filled. It starts with
+    "refused: " so every refusal reads the same, except a template starting with one of :data:`KEPT_STARTS`."""
+    template = None
+    for s in (*registry(), *_variants()):
+        if s.name == tool and form in s.refusals:
+            template = s.refusals[form]
+            break
+    if template is None:
+        template = GENERAL_REFUSALS.get(form)
+    if template is None:
         raise KeyError(f"{tool}: no refusal form {form!r}")
-    return "refused: " + spec.refusals[form].format(**fields)
+    text = template.format(**fields)
+    if not text.startswith(KEPT_STARTS):
+        text = "refused: " + text
+    return Refusal(text, tool, form)
+
+
+def form_of(text: object) -> str | None:
+    """The form code a reply was made with (:class:`Refusal`), else None."""
+    return getattr(text, "form", None)

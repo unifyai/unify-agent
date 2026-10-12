@@ -1,5 +1,6 @@
 """In library mode the writer's system message is its role's brief alone; commits carry
-Why/Episodes/Items; a library-mode run with contradicting v2 switches is refused by name."""
+Why/Episodes/Items; a library-mode run with contradicting v2 switches is refused by name.
+"""
 
 from __future__ import annotations
 
@@ -60,7 +61,11 @@ def test_v2_system_message_is_unchanged(tmp_path):
 def test_library_system_message_is_the_write_brief(tmp_path):
     _briefs_integrated()
     writer = _finishing_pass(tmp_path, library_mode=True)
-    assert writer.messages[0] == {"role": "system", "content": pv.write_brief_now()}
+    # the default configuration caps the pass's spend, so finish's refusal cap is stated
+    assert writer.messages[0] == {
+        "role": "system",
+        "content": pv.write_brief_now(finish_capped=True),
+    }
     assert "Manifest rules for consolidators" not in writer.messages[0]["content"]
 
 
@@ -68,7 +73,7 @@ def test_a_curate_pass_gets_the_curate_brief(tmp_path):
     _briefs_integrated()
     _, _, writer = _writer(tmp_path, Turns([]), library_mode=True)
     writer.cfg.role = "curate"  # a PassConfig field
-    assert writer._brief_library_mode() == pv.curate_brief_now()
+    assert writer._brief_library_mode() == pv.curate_brief_now(finish_capped=True)
 
 
 def test_library_trailers_from_the_manifest():

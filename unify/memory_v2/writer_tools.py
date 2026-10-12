@@ -21,7 +21,8 @@ from typing import Any, Callable
 from . import batch_map as _bm
 from . import fixtures as _fx
 from . import views as _views
-from .tool_spec import ToolSpec, refusal
+from .tool_spec import GENERAL, ToolSpec, refusal
+from .tool_spec import GENERAL_REFUSALS as _GENERAL_REFUSALS
 
 #: parts per read_episode call (one shared page) and reader calls per model turn; both stated in the descriptions
 READ_PARTS_PER_CALL = 8
@@ -84,7 +85,7 @@ CHECK = ToolSpec(
     roles=_WRITE_CURATE,
     refusals={
         "manifest_problem": "{reason}",
-        "too_late": "too little time left before the pass deadline for a check",
+        "too_late": "not run: too little time left before the pass deadline",
         "stopped": "{reason}",
     },
     summary="run the gate's checks on /memory/.pass/manifest.json and your files; changes nothing.",
@@ -99,7 +100,7 @@ FINISH = ToolSpec(
     ),
     parameters=_obj({"summary": {"type": "string"}}, ["summary"]),
     roles=_WRITE_CURATE,
-    refusals={"manifest_problem": "{reason}"},
+    refusals={"manifest_problem": "not finished: {reason}"},
     summary="end the pass; the gate judges the manifest and files.",
 )
 
@@ -113,7 +114,12 @@ READ = ToolSpec(
     ),
     parameters=_obj({"path": {"type": "string"}, "offset": _OFFSET}, ["path"]),
     roles=_ALL,
-    refusals={"outside_roots": "{path} is outside /inputs, /memory and /outputs", "not_found": "{path} does not exist"},
+    refusals={
+        "outside_roots": "{path} is outside /inputs, /memory and /outputs",
+        "outside_box": "{path} is outside /inputs, /memory and /work",
+        "not_found": "{path} does not exist",
+        "unreadable": "{error} for {path!r}",
+    },
     summary="read a file or list a directory under /inputs, /memory or /outputs, 8000 bytes a page.",
 )
 
@@ -132,7 +138,12 @@ GREP = ToolSpec(
         ["pattern"],
     ),
     roles=_ALL,
-    refusals={"outside_roots": "{path} is outside /inputs, /memory and /outputs", "bad_pattern": "{reason}"},
+    refusals={
+        "outside_roots": "{path} is outside /inputs, /memory and /outputs",
+        "outside_box": "{path} is outside /inputs, /memory and /work",
+        "bad_pattern": "{reason}",
+        "unreadable": "{error} for {path!r}",
+    },
     summary="search files with a regular expression (default under /inputs).",
 )
 
@@ -146,7 +157,11 @@ OVERVIEW = ToolSpec(
     ),
     parameters=_obj({"episode": {"type": "string"}, "offset": _OFFSET}),
     roles=_ALL,
-    refusals={"unknown_episode": "{episode!r} is not a recorded episode; this batch: {batch}"},
+    refusals={
+        "unknown_episode": "{episode!r} is not a recorded episode; this batch: {batch}",
+        "not_episode_id": "{episode!r} is not an episode id; nothing was read",
+        "not_recorded": "{episode!r} is not a recorded episode; nothing was read",
+    },
     summary="the batch at a glance, or one episode's end and every step.",
 )
 
@@ -187,6 +202,8 @@ READ_EPISODE = ToolSpec(
         "bad_offset": "offset must be an integer >= 0 (part {part!r}); nothing was shown",
         "bad_parts": "parts must be a list of part names; nothing was shown",
         "unknown_part": "no part {names} in {episode}; nothing was shown. Valid: {valid}",
+        "not_episode_id": "{episode!r} is not an episode id; nothing was read",
+        "not_recorded": "{episode!r} is not a recorded episode; nothing was read",
     },
     summary="read any recorded episode: its table of contents, or named parts.",
 )
@@ -252,7 +269,7 @@ REPLAY = ToolSpec(
     ),
     parameters=_obj({"item": {"type": "string"}}, ["item"]),
     roles=frozenset({_W}),
-    refusals={"not_run": "{reason}"},
+    refusals={"not_run": "not run: {reason}"},
     summary="verify an item by replaying the recorded code it replaces; writes the verified cases as a test.",
 )
 
@@ -311,18 +328,10 @@ SPECS: tuple[ToolSpec, ...] = (
     FINISH,
 )
 
-#: Answers the pass loop gives on any tool (limits, unknown tools, malformed calls), by stable form code.
-GENERAL_REFUSALS: dict[str, str] = {
-    "unknown_tool": "unknown tool {name!r}; your tools: {tools}",
-    "bad_arguments": "{reason}",
-    "readers_per_turn": f"not run: at most {READERS_PER_TURN} reader calls run per model turn; send it again",
-    "cells_per_turn": f"not run: at most {CELLS_PER_TURN} cells run per model turn; send it again",
-    "reads_limit": "not run: the pass's reader-call limit ({limit}) is reached",
-    "stopped": "not run: {reason}",
-    "pass_finished": "not run: pass finished",
-    "check_limit": "not run: at most {limit} check calls per pass",
-    "call_limit": "not run: the pass's call cap is reached",
-}
+#: Answers the pass loop gives on any tool, by stable form code (defined with the specs in :mod:`.tool_spec`).
+GENERAL_REFUSALS = _GENERAL_REFUSALS
+#: The numbers the per-turn answers state, filled in when a caller does not give them.
+_GENERAL_FIELDS = {"readers_per_turn": {"limit": READERS_PER_TURN}, "cells_per_turn": {"limit": CELLS_PER_TURN}}
 
 
 @dataclass(frozen=True)
@@ -341,10 +350,8 @@ def refused(tool: str, form: str, paths: tuple = (), **fields: object) -> Reply:
 
 
 def general(form: str, **fields: object) -> Reply:
-    text = GENERAL_REFUSALS[form].format(**fields)
-    if not text.startswith("not run: "):
-        text = "refused: " + text
-    return Reply(text[:600], "refused", form)
+    fields = {**_GENERAL_FIELDS.get(form, {}), **fields}
+    return Reply(refusal(GENERAL, form, **fields)[:600], "refused", form)
 
 
 def path_row(path: str, mode: str) -> dict:

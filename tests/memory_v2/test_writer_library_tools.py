@@ -153,7 +153,8 @@ def test_library_tools_are_unknown_when_off(tmp_path):
     _, _, writer = _writer(tmp_path, model)
     out = asyncio.run(writer.run(PassRequest("incremental", "venmo", [], False), "p0"))
     assert (
-        model.outputs["r"] == "unknown tool 'read'; use execute_code, check or finish"
+        model.outputs["r"]
+        == "refused: unknown tool 'read'; your tools: execute_code, check, finish"
     )
     assert out.coverage is None
 

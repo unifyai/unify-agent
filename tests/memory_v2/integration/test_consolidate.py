@@ -747,7 +747,9 @@ def test_writer_transcript_is_kept_redacted_on_the_episode_commit(
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
     (out,) = _run(stores, "e1", sha)
-    assert secret in json.dumps(fake.seen)  # the writer itself saw it; the record must not
+    assert secret in json.dumps(
+        fake.seen,
+    )  # the writer itself saw it; the record must not
     head, *rows = [
         json.loads(n) for n in stores.episodes.notes(sha, ref=TRANSCRIPT_REF)
     ]
@@ -1306,8 +1308,10 @@ def test_curate_runs_after_write_when_the_library_state_warrants_it(
     assert f"overlap (antiunify): {TOKENS}, {SPLIT_ID}" in starts[1]["curate"]
     assert fake.seen[-1][0] == {
         "role": "system",
-        "content": curate_brief_now(),
-    }  # the curate brief
+        "content": curate_brief_now(
+            finish_capped=True,
+        ),  # the pass is capped, so finish's cap is stated
+    }
     # CURATE changed nothing and kept nothing with a reason: its reasons are not settled, so they fire again
     assert stores.evidence.curate_seen() == set()
     sha2, _ = _record(stores, "e2", minute=1)

@@ -28,7 +28,9 @@ from . import mining
 from .tool_spec import ToolSpec
 
 FORMAT = 1  # the index file's layout; a file of another format is rebuilt
-INDEX_TIME_LIMIT_S = 10.0  # one episode's indexing at recording time (operational: the request must end)
+INDEX_TIME_LIMIT_S = (
+    10.0  # one episode's indexing at recording time (operational: the request must end)
+)
 EXCERPT_LINES = 3
 EXCERPT_WIDTH = 120
 INDEX_FOLDER = "memory-similar"
@@ -68,6 +70,7 @@ SPEC = ToolSpec(
         "unknown_episode": "no recorded episode {episode}.",
         "unknown_cell": "episode {episode} has no cell {cell}; its cells are {cells}.",
         "no_parse": "the code does not parse as Python ({error}).",
+        "not_available": "similar is not available in this pass",
     },
     summary=(
         "other recorded episodes containing the same normalised code as a cell (`episode`, `cell`) or as "
@@ -77,8 +80,10 @@ SPEC = ToolSpec(
 
 
 def _refuse(form: str, **fields: object) -> str:
-    """The same text as :func:`.tool_spec.refusal` for this tool, without loading the whole registry."""
-    return "refused: " + SPEC.refusals[form].format(**fields)
+    """This tool's refusal *form* (:func:`.tool_spec.refusal`; the reply keeps its form code)."""
+    from .tool_spec import refusal
+
+    return refusal(SPEC.name, form, **fields)
 
 
 # --- the index -------------------------------------------------------------------------------------------------
@@ -90,9 +95,7 @@ def index_dir(state_dir: str | os.PathLike) -> Path:
 
 
 def _safe_name(eid: str) -> bool:
-    return (
-        bool(eid) and "/" not in eid and "\\" not in eid and not eid.startswith(".")
-    )
+    return bool(eid) and "/" not in eid and "\\" not in eid and not eid.startswith(".")
 
 
 def _entry_path(root: Path, eid: str) -> Path:
@@ -123,9 +126,7 @@ def _python(cells: Iterable[Any]) -> list[mining.Cell]:
 
 def content_key(cells: Iterable[Any]) -> str:
     """The hash of what the index of these cells depends on: each Python cell's index, code and whether it ran."""
-    rows = [
-        [c.index, c.code, mining.successful(c)] for c in _python(cells)
-    ]
+    rows = [[c.index, c.code, mining.successful(c)] for c in _python(cells)]
     return hashlib.sha256(
         json.dumps(rows, separators=(",", ":")).encode(),
     ).hexdigest()
@@ -220,8 +221,16 @@ def index_episode(
     cells = list(cells)
     path = _entry_path(root, episode)
     have = read_entry(root, episode)
-    if have is not None and have.get("complete") and have.get("content") == content_key(cells):
-        return {"episode": episode, "status": "kept", "units": len(have.get("units") or [])}
+    if (
+        have is not None
+        and have.get("complete")
+        and have.get("content") == content_key(cells)
+    ):
+        return {
+            "episode": episode,
+            "status": "kept",
+            "units": len(have.get("units") or []),
+        }
     entry = build_entry(episode, cells, time_limit_s=time_limit_s, clock=clock)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".part")
@@ -276,9 +285,17 @@ def index_missing(
             left += 1
             continue
         try:
-            index_episode(root, eid, load(eid).cells, time_limit_s=remaining, clock=clock)
+            index_episode(
+                root,
+                eid,
+                load(eid).cells,
+                time_limit_s=remaining,
+                clock=clock,
+            )
             done += 1
-        except Exception:  # noqa: BLE001 - an unreadable episode stays unindexed and is named by the tool
+        except (
+            Exception
+        ):  # noqa: BLE001 - an unreadable episode stays unindexed and is named by the tool
             failed += 1
     return {"indexed": done, "left": left, "failed": failed}
 
@@ -296,7 +313,11 @@ def load_index(root: Path | None) -> dict[str, dict]:
             data = json.loads(f.read_text())
         except (OSError, ValueError):
             continue
-        if isinstance(data, dict) and data.get("format") == FORMAT and data.get("episode"):
+        if (
+            isinstance(data, dict)
+            and data.get("format") == FORMAT
+            and data.get("episode")
+        ):
             out[str(data["episode"])] = data
     return out
 
@@ -309,7 +330,8 @@ class Context:
     """What the handler needs. ``index_dir``: the index folder (:func:`index_dir` of the run's state folder; None:
     nothing is indexed);
     ``load``: episode id -> the recorded episode (with ``cells``), raising for an unknown id; ``recorded``: every
-    recorded episode id (to name the ones not indexed). Without ``load``, a cell is looked up in the index only."""
+    recorded episode id (to name the ones not indexed). Without ``load``, a cell is looked up in the index only.
+    """
 
     index_dir: Path | None
     load: Callable[[str], Any] | None = None
@@ -363,7 +385,9 @@ def _query(args: dict, ctx: Context) -> tuple[str | None, list[dict], str]:
     if ctx.load is not None:
         try:
             cells = [_as_cell(c) for c in ctx.load(eid).cells]
-        except Exception:  # noqa: BLE001 - any lookup failure is an unknown episode to the caller
+        except (
+            Exception
+        ):  # noqa: BLE001 - any lookup failure is an unknown episode to the caller
             cells = None
     if cells is None:
         entry = read_entry(ctx.index_dir, eid)
@@ -371,17 +395,31 @@ def _query(args: dict, ctx: Context) -> tuple[str | None, list[dict], str]:
             raise _Refusal(_refuse("unknown_episode", episode=eid))
         if idx not in (entry.get("cells") or []):
             raise _Refusal(
-                _refuse("unknown_cell", episode=eid, cell=idx, cells=_spans(sorted(entry.get("cells") or []))),
+                _refuse(
+                    "unknown_cell",
+                    episode=eid,
+                    cell=idx,
+                    cells=_spans(sorted(entry.get("cells") or [])),
+                ),
             )
         rows = [u for u in entry.get("units") or [] if u.get("cell") == idx]
         return eid, rows, f"episode {eid} cell {idx}"
     found = next((c for c in cells if c.index == idx), None)
     if found is None:
         raise _Refusal(
-            _refuse("unknown_cell", episode=eid, cell=idx, cells=_spans(sorted(c.index for c in cells))),
+            _refuse(
+                "unknown_cell",
+                episode=eid,
+                cell=idx,
+                cells=_spans(sorted(c.index for c in cells)),
+            ),
         )
     if (found.language or "python") != "python":
-        return eid, [], f"episode {eid} cell {idx} (a {found.language} cell: only Python is indexed)"
+        return (
+            eid,
+            [],
+            f"episode {eid} cell {idx} (a {found.language} cell: only Python is indexed)",
+        )
     return eid, _unit_rows(found), f"episode {eid} cell {idx}"
 
 
@@ -393,7 +431,9 @@ def _describe(u: dict) -> str:
 
 def _place(p: dict) -> str:
     a, b = p["lines"]
-    return f"{p['episode']} cell {p['cell']} lines {a}-{b}" + ("" if p.get("ran", True) else " (cell errored)")
+    return f"{p['episode']} cell {p['cell']} lines {a}-{b}" + (
+        "" if p.get("ran", True) else " (cell errored)"
+    )
 
 
 def handle(args: dict, ctx: Context) -> str:
@@ -403,7 +443,7 @@ def handle(args: dict, ctx: Context) -> str:
     try:
         own, rows, heading = _query(args, ctx)
     except _Refusal as r:
-        return str(r)
+        return r.args[0]
     index = load_index(ctx.index_dir)
     others = {e: d for e, d in index.items() if e != own}
     postings: dict[str, list[dict]] = {}
@@ -414,7 +454,9 @@ def handle(args: dict, ctx: Context) -> str:
     if ctx.recorded is not None:
         try:
             recorded = [str(e) for e in ctx.recorded()]
-        except Exception:  # noqa: BLE001 - without the list, the reply cannot name unindexed episodes
+        except (
+            Exception
+        ):  # noqa: BLE001 - without the list, the reply cannot name unindexed episodes
             recorded = []
     unindexed = sorted(set(recorded) - set(index) - ({own} if own else set()))
     partial = sorted(e for e, d in others.items() if not d.get("complete"))
@@ -424,7 +466,9 @@ def handle(args: dict, ctx: Context) -> str:
         f"{mining.MIN_NODES} AST nodes). Searched {len(others)} other indexed episodes.",
     ]
     if unindexed:
-        out.append(f"Not indexed ({len(unindexed)} recorded episodes, not searched): {', '.join(unindexed)}.")
+        out.append(
+            f"Not indexed ({len(unindexed)} recorded episodes, not searched): {', '.join(unindexed)}.",
+        )
     if partial:
         out.append(
             f"Indexed in part (indexing stopped at its time limit; later cells not searched): {', '.join(partial)}.",
@@ -473,7 +517,9 @@ def handle(args: dict, ctx: Context) -> str:
             out += ["    | " + ln for ln in text.splitlines()]
     if implied:
         out.append("")
-        out.append(f"{implied} smaller unit(s) match only inside the places above (not listed again).")
+        out.append(
+            f"{implied} smaller unit(s) match only inside the places above (not listed again).",
+        )
     if unmatched:
         out.append("")
         out.append(f"No other episode holds: {', '.join(unmatched)}.")

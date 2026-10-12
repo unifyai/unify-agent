@@ -80,6 +80,14 @@ def view(data: bytes, offset: int = 0, length: int = VIEW_BYTES) -> str:
     return view_range(data, offset, length)[0]
 
 
+class PatternProblem(ValueError):
+    """A grep that cannot run as asked (its text says why); the tool layer answers it as a refusal."""
+
+
+#: grep_bounded's child exit codes for a pattern problem and a path outside the roots (the reason on stdout)
+_EXIT_PATTERN, _EXIT_OUTSIDE = 3, 4
+
+
 def resolve(vpath: str, roots: dict[str, Path]) -> Path:
     for prefix, root in roots.items():
         if vpath == prefix or vpath.startswith(prefix + "/"):
@@ -88,7 +96,7 @@ def resolve(vpath: str, roots: dict[str, Path]) -> Path:
             if real == real_root or real_root in real.parents:
                 return real
             break
-    raise PermissionError("refused: outside the readable roots")
+    raise PermissionError("outside the readable roots")
 
 
 def read(
@@ -136,11 +144,11 @@ def grep(
     max_hits: int = 50,
 ) -> str:
     if len(pattern) > _PATTERN_MAX:
-        return f"refused: pattern longer than {_PATTERN_MAX} characters"
+        raise PatternProblem(f"pattern longer than {_PATTERN_MAX} characters")
     try:
         rx = re.compile(pattern)
     except re.error as exc:
-        return f"refused: invalid pattern: {exc}"[:300]
+        raise PatternProblem(f"invalid pattern: {exc}"[:300]) from None
     base = resolve(vpath, roots)
     files = (
         [base] if base.is_file() else sorted(x for x in base.rglob("*") if x.is_file())
@@ -206,7 +214,11 @@ def grep_bounded(
         return f"[grep timed out after {limit:g} s: narrow the pattern or the path]"
     if r.returncode != 0:
         last = " ".join(r.stderr.decode(errors="replace").strip().splitlines()[-1:])
-        return f"refused: grep failed ({last})"[:300]
+        if r.returncode == _EXIT_OUTSIDE:
+            raise PermissionError(r.stdout.decode("utf-8", errors="replace")[:300])
+        if r.returncode == _EXIT_PATTERN:
+            raise PatternProblem(r.stdout.decode("utf-8", errors="replace")[:300])
+        raise PatternProblem(f"grep failed ({last})"[:300])
     return r.stdout.decode("utf-8", errors="replace")
 
 
@@ -220,5 +232,9 @@ if __name__ == "__main__":  # grep_bounded's child: one job on stdin, the page o
             int(_job["offset"]),
         )
     except PermissionError as _exc:
-        _out = str(_exc)
+        sys.stdout.write(str(_exc))
+        sys.exit(_EXIT_OUTSIDE)
+    except PatternProblem as _exc:
+        sys.stdout.write(str(_exc))
+        sys.exit(_EXIT_PATTERN)
     sys.stdout.write(_out)
