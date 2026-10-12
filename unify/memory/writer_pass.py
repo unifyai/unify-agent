@@ -3603,7 +3603,10 @@ class WriterPass:
                 in /inputs/gate/check-<k>.md and the reply names that file."""
                 where = [{"path": "/memory/.pass/manifest.json", "mode": "read"}]
                 given = args.get("manifest")
-                if given is not None:
+                if given not in (
+                    None,
+                    "",
+                ):  # an empty argument means: judge the file as it is
                     parsed, problem = _check_manifest(given)
                     if problem is not None:
                         return _wt.refused(

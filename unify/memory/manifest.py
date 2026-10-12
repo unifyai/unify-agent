@@ -518,6 +518,11 @@ def _parse_library_mode(manifest: dict) -> Manifest:
     from .procedures import parse_cover
 
     patterns = {"function": layout.FUNCTION_ID, "note": layout.NOTE_ID}
+    if "adopts" in manifest:
+        # a manifest-wide list would credit no item; each item names its own proposals
+        raise ManifestError(
+            "adopts belongs on each item that came from a proposal, not on the manifest",
+        )
 
     def item_id(entry: object) -> bool:
         return isinstance(entry, str) and any(p.match(entry) for p in patterns.values())

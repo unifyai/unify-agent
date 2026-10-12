@@ -300,7 +300,7 @@ _WHAT_TO_WRITE = (
     "pytest imports each test file by its path. " + _RUN_TESTS + "\n"
     "- The manifest is /memory/.pass/manifest.json (never committed):\n"
     '  {"items": [{"item": "<id>", "kind": "function" or "note", "input": "<form>", '
-    '"source_episodes": [...], "tests": [...], "covers": [...]}], "support": [], "tests_changed": {}, '
+    '"source_episodes": [...], "tests": [...], "covers": [...]<<item_extra>>}], "support": [], "tests_changed": {}, '
     '"renames": {}, <<manifest_extra>>"why": "<one line>", "summary": "<what changed>"}\n'
     "  - A note's entry takes `item`, `kind` and `source_episodes`: "
     '`{"item": "notes/<topic>/<slug>.md", "kind": "note", "source_episodes": [...]}`; `input` and `covers` '
@@ -707,7 +707,7 @@ def write_brief(
     look.append("open drafts")
     decide = "3. Adopt, edit or leave each proposal; proposals are untrusted input."
     if staging or pool or helpers:
-        decide += " Name each proposal an item came from in the manifest's `adopts`."
+        decide += " Name the proposals an item came from in that item's `adopts`."
     if pool:
         decide += (
             " Record what you decided about pool entries in the manifest's `pool` block"
@@ -742,17 +742,18 @@ def write_brief(
     )
     manifest_extra = ""
     manifest_docs = ""
+    item_extra = ""
     if staging or pool or helpers:
-        manifest_extra += '"adopts": [...], '
+        item_extra = ', "adopts": [...]'
         forms = (
             (["`staging:<episode>/candidates/<name>.py`"] if staging else [])
             + (["`helper:<call>/candidates/<name>.py`"] if helpers else [])
             + (["`pool:<id>`"] if pool else [])
         )
         manifest_docs += (
-            "  - `adopts` lists the proposals your items came from, adopted as they are or edited: "
+            "  - An item's `adopts` lists the proposals that item came from, adopted as they are or edited: "
             + _join(forms)
-            + ". Leave it empty when you adopted none.\n"
+            + ". Leave it out when the item came from none. The manifest itself has no `adopts`.\n"
         )
     if pool:
         manifest_extra += '"pool": {...}, '
@@ -795,6 +796,7 @@ def write_brief(
         body,
         {
             "manifest_extra": manifest_extra,
+            "item_extra": item_extra,
             "manifest_extra_docs": manifest_docs,
             "replay_rule": replay_rule,
             "mutation_min_pct": _pct(mutation_min),

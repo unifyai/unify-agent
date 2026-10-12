@@ -266,6 +266,26 @@ def test_adopt_refs_parse_to_one_form_and_bad_ones_name_the_forms():
     assert parse_manifest({"items": [item]}, library_mode=True).items[0].adopts == []
     with pytest.raises(ManifestError):
         parse_manifest({"items": [{**item, "adopts": STAGED}]}, library_mode=True)
+    # a manifest-wide list would credit no item: it is refused, naming where adopts goes
+    with pytest.raises(ManifestError, match="belongs on each item"):
+        parse_manifest({"items": [item], "adopts": [STAGED]}, library_mode=True)
+
+
+def test_the_brief_puts_adopts_on_each_item():
+    from unify.memory import library_prompts as lp
+
+    brief = lp.write_brief_now(staging=True, pool=True)
+    template = next(
+        line for line in brief.splitlines() if line.lstrip().startswith('{"items": [')
+    )
+    assert '"covers": [...], "adopts": [...]}]' in template
+    assert '"renames": {}, "adopts"' not in template
+    assert (
+        "that item's `adopts`" in brief
+        and "The manifest itself has no `adopts`" in brief
+    )
+    plain = lp.write_brief_now()
+    assert "adopts" not in plain
 
 
 def _pool_with_staging(tmp_path):
