@@ -116,8 +116,14 @@ async def test_a_memory_run_builds_no_store_and_names_neither_it_nor_the_run(
     assert constructed == []
     assert actor.function_manager is None and actor.guidance_manager is None
     # The cell's namespace: no store objects and no empty primitives object; it starts in /workspace.
-    after = json.dumps(requests[1]["messages"])
-    assert "NS []" in after and "CWD /workspace" in after, after[-2000:]
+    results = [
+        json.dumps(m.get("content"))
+        for m in requests[-1]["messages"]
+        if m.get("role") == "tool"
+    ]
+    assert results, [m.get("role") for m in requests[-1]["messages"]]
+    shown = results[0]
+    assert "NS []" in shown and "CWD /workspace" in shown, shown[:1500]
     root = str(labelled_home)
     for request in requests:
         sent = json.dumps(request)

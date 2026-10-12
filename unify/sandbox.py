@@ -2187,17 +2187,19 @@ def box_path(
 def host_path(path: str | os.PathLike, policy: SandboxPolicy) -> str:
     """The host path of *path* as a neutral sandbox names it: a path under a
     fixed mount (``/workspace/a.csv``) maps to the host directory it shows;
-    anything else is returned as given. The caller checks the result as it
+    any other absolute path is returned normalised, a relative one as given. The caller checks the result as it
     checks any host path (:func:`check_readable`), so the mapping adds no
     access."""
     text = os.fspath(path)
     if not text.startswith("/"):
         return text
+    # Resolved as the sandbox resolves it: each fixed mount sits directly
+    # under the sandbox's root, so ".." above one leaves it.
     norm = os.path.normpath(text)
     for host, at in neutral_mounts(policy):
         if norm == at or norm.startswith(at + "/"):
             return str(host) + norm[len(at) :]
-    return text
+    return norm
 
 
 def neutral_text(text: str, policy: SandboxPolicy) -> str:
