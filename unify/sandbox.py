@@ -2032,8 +2032,11 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
         scan = _scan_workspace(workspace, ws_skip)
         scan_note = None
         if scan.capped:
+            # The note reaches the run's record, which agents read: the
+            # workspace is named as cells see it, never by its host path.
             scan_note = (
-                f"workspace sandbox: the secret scan of {workspace} read its cap "
+                f"workspace sandbox: the secret scan of the workspace "
+                f"({WORKSPACE_MOUNT}) read its cap "
                 f"of {_WORKSPACE_SCAN_LIMIT} entries and stopped; secret-named "
                 "files in directories it did not read are not masked in cells "
                 "(the harness's file tools still refuse them by name)"

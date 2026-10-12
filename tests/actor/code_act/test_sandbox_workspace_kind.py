@@ -141,14 +141,16 @@ async def test_a_dot_env_inside_the_workspace_is_masked_in_a_cell(world):
         assert policy.readable_violation(path) is not None, path
     assert policy.readable_violation(ws / "a" / "plain.txt") is None
     ex = SessionExecutor()
+    # The cell sees the workspace at its fixed path.
+    inside = [f"/workspace/{p.relative_to(ws)}" for p in secrets]
     try:
         out, _ = await bash(
             ex,
-            "cat " + " ".join(map(str, secrets)) + f" 2>&1; cat {ws}/a/plain.txt",
+            "cat " + " ".join(inside) + " 2>&1; cat /workspace/a/plain.txt",
         )
         assert ENV_SECRET not in out, out
         assert "rule mask-env-file" in out and "plain" in out, out
-        out, _ = await bash(ex, f"grep -r {ENV_SECRET} {ws} 2>/dev/null | wc -l")
+        out, _ = await bash(ex, f"grep -r {ENV_SECRET} /workspace 2>/dev/null | wc -l")
         assert out.strip() == "0"
         # The workspace stays writable around the masks.
         out, _ = await bash(ex, "echo made > a/made.txt && cat a/made.txt")

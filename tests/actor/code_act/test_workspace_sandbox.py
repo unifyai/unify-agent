@@ -50,21 +50,22 @@ def test_settings_default_no_network_and_reject_unknown_values():
 async def test_bash_session_keeps_directory_variables_and_functions(world):
     ex = SessionExecutor()
     try:
+        # The sandbox shows the workspace at a fixed path and starts there.
         out, res = await bash(ex, "pwd")
-        assert out.strip() == str(world["workspace"]) and res["session_created"]
+        assert out.strip() == "/workspace" and res["session_created"]
         await bash(
             ex,
             "mkdir -p sub && cd sub && export COLOUR=teal && f() { echo f:$1; }",
         )
         out, res = await bash(ex, 'pwd; echo "$COLOUR"; f x')
-        assert out.split() == [str(world["workspace"] / "sub"), "teal", "f:x"]
+        assert out.split() == ["/workspace/sub", "teal", "f:x"]
         assert res["result"] == 0 and res["error"] is None
         assert not res["session_created"]
         # Another session, and a stateless cell, share none of it.
         out, _ = await bash(ex, 'echo "[$COLOUR]"', session_id=1)
         assert out.strip() == "[]"
         out, _ = await bash(ex, 'echo "[$COLOUR]"; pwd', mode="stateless")
-        assert out.split() == ["[]", str(world["workspace"])]
+        assert out.split() == ["[]", "/workspace"]
         # stdout and stderr interleave; a failing command reports its status;
         # a command reading stdin gets EOF instead of the protocol.
         out, res = await bash(ex, "echo out; echo err >&2; cat; false")
@@ -110,7 +111,9 @@ async def test_a_stopped_cell_kills_its_command(world):
     try:
         await bash(ex, "export KEEP=1")
         pid = ex._shell_sessions[0].pid
-        cell = asyncio.create_task(bash(ex, f"touch {marker}; sleep 30; echo late"))
+        cell = asyncio.create_task(
+            bash(ex, "touch /workspace/started; sleep 30; echo late"),
+        )
 
         async def started():
             return marker.exists()
@@ -317,7 +320,7 @@ shell = subprocess.run('echo "[$FAKE_SERVICE_TOKEN]"; cat {world['home']}/.ssh/i
 p = await asyncio.create_subprocess_exec('cat', {str(world['home'] / '.env')!r},
                                          stdout=asyncio.subprocess.PIPE)
 env_out = (await p.communicate())[0].decode()
-status = os.system('touch {world['workspace']}/inside-workspace.txt')
+status = os.system('touch /workspace/inside-workspace.txt')
 direct = os.environ.get('FAKE_SERVICE_TOKEN')
 (r.returncode, r.stderr, shell.stdout, env_out, status, direct)
 """
