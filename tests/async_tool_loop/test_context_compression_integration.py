@@ -1,4 +1,21 @@
-"""Integration tests for context compression wiring in the async tool loop."""
+"""Integration tests for context compression wiring in the async tool loop.
+
+The tests that run a whole compression script the model (``loop_model``,
+tests/async_tool_loop/conftest.py) and force the threshold with a trigger
+the first ``add`` call fires. A compression has two paths, and each test
+names the one it takes:
+
+* as shipped (``FORK_SUMMARY``): the summary comes from a fork of the last
+  request (a ``compression_fork`` request), and the compactor is never
+  called. The fork's scripted answer resets the trigger.
+* the fallback: the fork returns no text, so ``compress_and_rebuild`` runs
+  the (patched) compactor, which resets the trigger and archives the raw
+  transcript in ``raw_archives``.
+
+The turn that must compress is an ``actor`` request: the session's tool
+list stays the same, and the loop refuses any call but ``compress_context``
+on that turn.
+"""
 
 from __future__ import annotations
 
@@ -19,9 +36,7 @@ from unify.common.async_tool_loop import start_async_tool_loop
 from unify.common.llm_client import new_llm_client
 from unify.common.tool_spec import ToolSpec
 from tests.helpers import _handle_project
-from tests.async_helpers import _wait_for_condition
-
-pytestmark = pytest.mark.llm_call
+from tests.scripted_model import reply
 
 _SYS = (
     "You are in a test. Follow the steps exactly:\n"
@@ -29,6 +44,18 @@ _SYS = (
     "2. Call `add` with a=10, b=20.\n"
     "3. Report both results."
 )
+
+SUMMARY = "Summary: added 2 + 3 = 5 and 10 + 20 = 30; report both."
+FINAL = "5 and 30"
+STOPPED = "processed stopped early, no result"
+THRESHOLD_NOTICE = "Context window is nearly full."
+
+# The loop's turns up to the compression: add, add (its reply is the first
+# over the threshold, since the first add fired the trigger), then the turn
+# that must compress.
+ADD_FIRST = reply(calls=[("add", {"a": 2, "b": 3})])
+ADD_SECOND = reply(calls=[("add", {"a": 10, "b": 20})])
+COMPRESS = reply(calls=[("compress_context", {})])
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
@@ -67,12 +94,18 @@ async def _mock_compress(messages, endpoint, **kwargs):
     )
 
 
-def _make_add(trigger):
+async def _compactor_not_called(messages, endpoint, **kwargs):
+    raise AssertionError("the shipped path never calls the compactor")
+
+
+def _make_add(trigger, calls=None):
     _triggered = False
 
     def add(a: int, b: int) -> str:
         """Add two numbers."""
         nonlocal _triggered
+        if calls is not None:
+            calls.append((a, b))
         if not _triggered:
             _triggered = True
             trigger()
@@ -81,21 +114,35 @@ def _make_add(trigger):
     return add
 
 
-def _msg_contains(client, snippet):
-    async def _check():
-        for m in client.messages or []:
-            if snippet in str(m.get("content", "")):
-                return True
-        return False
+def _summary(then=None):
+    """The fork's answer on the shipped path: run *then* (sync or async),
+    then return the summary."""
 
-    return _check
+    async def answer(call):
+        if then is not None:
+            done = then()
+            if asyncio.iscoroutine(done):
+                await done
+        return reply(SUMMARY)
+
+    return answer
 
 
-async def _wait_compression(handle, timeout=60):
-    async def _done():
-        return handle._compression.count >= 1
+def _text(message: dict) -> str:
+    content = message.get("content")
+    if isinstance(content, list):
+        return "\n".join(
+            str(part.get("text", "")) if isinstance(part, dict) else str(part)
+            for part in content
+        )
+    return "" if content is None else str(content)
 
-    await _wait_for_condition(_done, poll=0.1, timeout=timeout)
+
+def _assert_forced_turn(call) -> None:
+    """*call* is the turn that must compress: the loop's notice is the last
+    message and a tool call is required."""
+    assert THRESHOLD_NOTICE in _text(call.messages[-1])
+    assert call.request["tool_choice"] == "required"
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
@@ -103,17 +150,25 @@ async def _wait_compression(handle, timeout=60):
 
 @pytest.mark.asyncio
 @_handle_project
-async def test_handle_state_preserved_after_compression(llm_config, monkeypatch):
-    """Events and queues on the handle must be the same objects after compression."""
+async def test_handle_state_preserved_after_compression(
+    llm_config,
+    monkeypatch,
+    loop_model,
+):
+    """Events and queues on the handle must be the same objects after compression.
+
+    Path: as shipped (the fork's summary)."""
     trigger, reset, check = _make_threshold_trigger()
     monkeypatch.setattr(_loop_mod, "context_over_threshold", check)
+    monkeypatch.setattr(_cc_mod, "compress_messages", _compactor_not_called)
 
-    async def _compress_and_reset(messages, endpoint, **kwargs):
-        reset()
-        return await _mock_compress(messages, endpoint)
-
-    monkeypatch.setattr(_cc_mod, "compress_messages", _compress_and_reset)
-
+    model = loop_model(
+        ADD_FIRST,
+        ADD_SECOND,
+        COMPRESS,
+        reply(FINAL),
+        compression_fork=[_summary(reset)],
+    )
     add = _make_add(trigger)
     client = new_llm_client(**llm_config)
     client.set_system_message(_SYS)
@@ -132,28 +187,49 @@ async def test_handle_state_preserved_after_compression(llm_config, monkeypatch)
 
     result = await handle.result()
 
-    assert handle._compression.count >= 1
+    assert handle._compression.count == 1
     assert handle._queue is orig_queue
     assert handle._cancel_event is orig_cancel
     assert handle._stop_event is orig_stop
-    assert result is not None
+    assert result == FINAL
+    _assert_forced_turn(model.calls[2])
+    # The restarted loop continues from the summary.
+    assert SUMMARY in "\n".join(_text(m) for m in model.calls[-1].messages)
+    assert model.kinds() == ["actor", "actor", "actor", "compression_fork", "actor"]
 
 
 @pytest.mark.asyncio
 @_handle_project
-async def test_nested_inner_compression_outer_unaffected(llm_config, monkeypatch):
-    """Inner loop compresses; outer handle finishes normally."""
+async def test_nested_inner_compression_outer_unaffected(
+    llm_config,
+    monkeypatch,
+    loop_model,
+):
+    """Inner loop compresses; outer handle finishes normally.
+
+    Path: as shipped (the fork's summary), in the inner loop."""
     trigger, reset, check = _make_threshold_trigger()
     monkeypatch.setattr(_loop_mod, "context_over_threshold", check)
-
-    async def _compress_and_reset(messages, endpoint, **kwargs):
-        reset()
-        return await _mock_compress(messages, endpoint)
-
-    monkeypatch.setattr(_cc_mod, "compress_messages", _compress_and_reset)
+    monkeypatch.setattr(_cc_mod, "compress_messages", _compactor_not_called)
 
     inner_refs: dict = {}
     add = _make_add(trigger)
+
+    # Each loop's turns, told apart by the tools the request offers.
+    outer_turns = [
+        reply(calls=[("spawn_inner", {})]),
+        reply(f"The inner loop returned: {FINAL}"),
+    ]
+    inner_turns = [ADD_FIRST, ADD_SECOND, COMPRESS, reply(FINAL)]
+
+    def route(call):
+        turns = outer_turns if "spawn_inner" in call.tool_names else inner_turns
+        return turns.pop(0)
+
+    model = loop_model(
+        *[route] * (len(outer_turns) + len(inner_turns)),
+        compression_fork=[_summary(reset)],
+    )
 
     async def spawn_inner():
         """Spawn an inner async tool loop and return its result."""
@@ -182,17 +258,38 @@ async def test_nested_inner_compression_outer_unaffected(llm_config, monkeypatch
     )
 
     result = await handle.result()
-    assert result is not None
+    assert result == f"The inner loop returned: {FINAL}"
 
     inner_h = inner_refs.get("handle")
     assert inner_h is not None
-    assert inner_h._compression.count >= 1
+    assert inner_h._compression.count == 1
+    assert handle._compression.count == 0
+    assert outer_turns == [] and inner_turns == []
+    # The outer loop's second turn reads the inner loop's result.
+    assert FINAL in "\n".join(_text(m) for m in model.calls[-1].messages)
+    assert model.kinds() == [
+        "actor",  # outer: spawn_inner
+        "actor",  # inner: add
+        "actor",  # inner: add
+        "actor",  # inner: compress_context
+        "compression_fork",
+        "actor",  # inner, restarted: its answer
+        "actor",  # outer: its answer
+    ]
 
 
 @pytest.mark.asyncio
 @_handle_project
-async def test_no_new_tools_when_threshold_triggered(llm_config, monkeypatch):
-    """When threshold fires with no pending tools, only compress_context is callable."""
+async def test_no_new_tools_when_threshold_triggered(
+    llm_config,
+    monkeypatch,
+    loop_model,
+):
+    """When the threshold fires with no pending tools, only compress_context
+    can be called: a call to another tool on that turn is refused, not run.
+
+    Path: the fallback (the fork returns no text), so the compactor runs and
+    the raw transcript is archived."""
     trigger, reset, check = _make_threshold_trigger()
     monkeypatch.setattr(_loop_mod, "context_over_threshold", check)
 
@@ -202,7 +299,16 @@ async def test_no_new_tools_when_threshold_triggered(llm_config, monkeypatch):
 
     monkeypatch.setattr(_cc_mod, "compress_messages", _compress_and_reset)
 
-    add = _make_add(trigger)
+    model = loop_model(
+        ADD_FIRST,
+        ADD_SECOND,
+        reply(calls=[("add", {"a": 1, "b": 1})]),  # refused: must compress
+        COMPRESS,
+        reply(FINAL),
+        compression_fork=[reply("")],
+    )
+    calls: list[tuple[int, int]] = []
+    add = _make_add(trigger, calls)
     client = new_llm_client(**llm_config)
     client.set_system_message(_SYS)
 
@@ -215,7 +321,11 @@ async def test_no_new_tools_when_threshold_triggered(llm_config, monkeypatch):
     )
 
     result = await handle.result()
-    assert handle._compression.count >= 1
+    assert result == FINAL
+    assert handle._compression.count == 1
+    assert calls == [(2, 3), (10, 20)]
+    _assert_forced_turn(model.calls[2])
+    _assert_forced_turn(model.calls[3])
 
     archived = handle._compression.raw_archives[0]
     threshold_idx = next(
@@ -229,35 +339,59 @@ async def test_no_new_tools_when_threshold_triggered(llm_config, monkeypatch):
     )
     assert threshold_idx is not None, "Expected 'must call compress_context' in archive"
 
-    for m in archived[threshold_idx:]:
-        if m.get("role") == "assistant" and m.get("tool_calls"):
-            for tc in m["tool_calls"]:
-                name = tc.get("function", {}).get("name", "")
-                assert (
-                    name == "compress_context"
-                ), f"Expected only compress_context after threshold, got {name}"
-
-    assert result is not None
+    # After the notice, the only call that ran is compress_context: the add
+    # call was answered with the refusal.
+    called = {
+        tc["id"]: tc["function"]["name"]
+        for m in archived[threshold_idx:]
+        if m.get("role") == "assistant"
+        for tc in m.get("tool_calls") or []
+    }
+    assert sorted(called.values()) == ["add", "compress_context"]
+    answers = {
+        m.get("tool_call_id"): str(m.get("content", ""))
+        for m in archived[threshold_idx:]
+        if m.get("role") == "tool"
+    }
+    (add_id,) = [i for i, name in called.items() if name == "add"]
+    assert "Available now: `compress_context`." in answers[add_id]
+    assert model.kinds() == [
+        "actor",
+        "actor",
+        "actor",
+        "actor",
+        "compression_fork",
+        "actor",
+    ]
 
 
 @pytest.mark.asyncio
 @_handle_project
-async def test_stop_carries_over_during_compression(llm_config, monkeypatch):
-    """Stop set during the compression window causes the new loop to exit."""
+async def test_stop_carries_over_during_compression(
+    llm_config,
+    monkeypatch,
+    loop_model,
+):
+    """A stop during the compression window ends the restarted loop before
+    it asks the model anything.
+
+    Path: as shipped; the stop comes while the fork writes its summary."""
     trigger, reset, check = _make_threshold_trigger()
     monkeypatch.setattr(_loop_mod, "context_over_threshold", check)
+    monkeypatch.setattr(_cc_mod, "compress_messages", _compactor_not_called)
 
     handle_ref: dict = {}
 
-    async def _compress_with_stop(messages, endpoint, **kwargs):
-        h = handle_ref.get("handle")
-        if h:
-            h._stop_event.set()
+    async def _stop_and_reset():
+        await handle_ref["handle"].stop()
         reset()
-        return await _mock_compress(messages, endpoint)
 
-    monkeypatch.setattr(_cc_mod, "compress_messages", _compress_with_stop)
-
+    model = loop_model(
+        ADD_FIRST,
+        ADD_SECOND,
+        COMPRESS,
+        compression_fork=[_summary(_stop_and_reset)],
+    )
     add = _make_add(trigger)
     client = new_llm_client(**llm_config)
     client.set_system_message(_SYS)
@@ -272,29 +406,42 @@ async def test_stop_carries_over_during_compression(llm_config, monkeypatch):
     handle_ref["handle"] = handle
 
     result = await handle.result()
-    assert result is not None
-    assert handle._compression.count >= 1
+    assert result == STOPPED
+    assert handle._compression.count == 1
+    assert handle._stop_event.is_set()
+    # No turn after the fork.
+    assert model.kinds() == ["actor", "actor", "actor", "compression_fork"]
 
 
 @pytest.mark.asyncio
 @_handle_project
-async def test_interjection_carries_over_during_compression(llm_config, monkeypatch):
-    """Interjection queued during compression is received by the new loop."""
+async def test_interjection_carries_over_during_compression(
+    llm_config,
+    monkeypatch,
+    loop_model,
+):
+    """Interjection queued during compression is received by the new loop.
+
+    Path: as shipped; the interjection comes while the fork writes its
+    summary."""
     trigger, reset, check = _make_threshold_trigger()
     monkeypatch.setattr(_loop_mod, "context_over_threshold", check)
+    monkeypatch.setattr(_cc_mod, "compress_messages", _compactor_not_called)
 
     handle_ref: dict = {}
     interjection_text = "URGENT: also compute 10 + 20"
 
-    async def _compress_with_interjection(messages, endpoint, **kwargs):
-        h = handle_ref.get("handle")
-        if h:
-            await h._queue.put(interjection_text)
+    async def _interject_and_reset():
+        await handle_ref["handle"]._queue.put(interjection_text)
         reset()
-        return await _mock_compress(messages, endpoint)
 
-    monkeypatch.setattr(_cc_mod, "compress_messages", _compress_with_interjection)
-
+    model = loop_model(
+        ADD_FIRST,
+        ADD_SECOND,
+        COMPRESS,
+        reply(FINAL),
+        compression_fork=[_summary(_interject_and_reset)],
+    )
     add = _make_add(trigger)
     client = new_llm_client(**llm_config)
     client.set_system_message(
@@ -314,23 +461,24 @@ async def test_interjection_carries_over_during_compression(llm_config, monkeypa
     )
     handle_ref["handle"] = handle
 
-    result_task = asyncio.create_task(handle.result())
-
-    await _wait_compression(handle)
-
-    await _wait_for_condition(
-        _msg_contains(client, interjection_text),
-        poll=0.1,
-        timeout=60,
+    result = await handle.result()
+    assert result == FINAL
+    assert handle._compression.count == 1
+    # The restarted loop's first request carries the summary and then the
+    # interjection.
+    restarted = "\n".join(_text(m) for m in model.calls[-1].messages)
+    assert SUMMARY in restarted
+    assert interjection_text in restarted
+    assert restarted.index(SUMMARY) < restarted.index(interjection_text)
+    assert all(
+        interjection_text not in _text(m) for c in model.calls[:-1] for m in c.messages
     )
-
-    result = await result_task
-    assert result is not None
+    assert model.kinds() == ["actor", "actor", "actor", "compression_fork", "actor"]
 
 
 @pytest.mark.asyncio
 @_handle_project
-async def test_enable_compression_false(llm_config, monkeypatch):
+async def test_enable_compression_false(llm_config, monkeypatch, loop_model):
     """enable_compression=False suppresses all compression machinery."""
     monkeypatch.setattr(_loop_mod, "context_over_threshold", lambda *a, **kw: True)
 
@@ -338,6 +486,7 @@ async def test_enable_compression_false(llm_config, monkeypatch):
         """Add two numbers."""
         return str(a + b)
 
+    model = loop_model(ADD_FIRST, ADD_SECOND, reply(FINAL))
     client = new_llm_client(**llm_config)
     client.set_system_message(_SYS)
 
@@ -351,8 +500,11 @@ async def test_enable_compression_false(llm_config, monkeypatch):
     )
 
     result = await handle.result()
-    assert result is not None
+    assert result == FINAL
     assert handle._compression.count == 0
+    assert all("compress_context" not in c.tool_names for c in model.calls)
+    assert all(THRESHOLD_NOTICE not in _text(c.messages[-1]) for c in model.calls)
+    assert model.kinds() == ["actor", "actor", "actor"]
 
 
 @pytest.mark.asyncio
