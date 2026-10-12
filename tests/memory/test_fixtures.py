@@ -4,7 +4,7 @@ import json
 import pytest
 
 from unify.memory import fixtures as fx
-from unify.memory.episodes import Action
+from unify.memory.episodes import Action, Cell
 from tests.memory.test_episodes import _ep
 
 BLOB = b"month,total\n09,120\n"
@@ -83,6 +83,7 @@ def test_source_bytes_per_kind():
         fx.source_bytes(EP, "-1", _blob)
     assert (
         fx.trust_of("args:3") == 2
+        and fx.trust_of("cell:0") == 2
         and fx.trust_of("0") == 1
         and fx.trust_of("request:1") == 1
     )
@@ -96,6 +97,7 @@ def test_source_bytes_per_kind():
         "2",
         "args:2",
         "args:3",
+        "cell:0",
     ]
 
 
@@ -213,3 +215,152 @@ def test_hash_index_finds_identical_recorded_bytes():
     idx.add(EP, _blob)
     assert ("e1", "2") in idx.find(BLOB)
     assert idx.find(b"never recorded") == []
+
+
+# --- the cell source ------------------------------------------------------------------------------------------------
+
+CELLS = _ep(
+    episode_id="e2",
+    cells=[
+        Cell(0, "print(total)", "120\n"),
+        Cell(1, "print(rows[9])", "", error="IndexError"),
+        Cell(2, "x = 1", ""),
+    ],
+)
+
+
+def test_a_cell_output_is_a_source_and_make_and_verify_round_trip():
+    assert "cell:0" in fx.sources_of(CELLS)
+    assert "cell:1" not in fx.sources_of(CELLS) and "cell:2" not in fx.sources_of(CELLS)
+    assert fx.source_bytes(CELLS, "cell:0", _blob) == b"120\n"
+    dest = "memory/office/tests/data/total.txt"
+    data, entry = fx.make(CELLS, "cell:0", dest, blob=_blob)
+    assert data == b"120\n" and entry["source"] == "cell:0" and entry["trust"] == 2
+    load = {"e2": CELLS}.get
+    assert fx.verify(dest, data, entry, load, _blob) is None
+    assert "differs" in fx.verify(dest, b"121\n", entry, load, _blob)
+    rel = fx.inputs_file("memory.office.totals:read_total")
+    line, lines = fx.make(CELLS, "cell:0", rel, blob=_blob, append=True)
+    assert json.loads(line)["input"] == 120 and lines["lines"][0]["trust"] == 2
+    assert fx.verify(rel, line, lines, load, _blob) is None
+
+
+def test_a_cell_that_raised_or_printed_nothing_is_refused():
+    with pytest.raises(fx.FixtureError) as raised:
+        fx.make(CELLS, "cell:1", "memory/office/tests/data/x.txt", blob=_blob)
+    assert str(raised.value) == "cell 1 of e2 raised; its output is not a recorded value"
+    with pytest.raises(fx.FixtureError) as empty:
+        fx.source_bytes(CELLS, "cell:2", _blob)
+    assert str(empty.value) == "cell 2 of e2 has no recorded output"
+    with pytest.raises(fx.FixtureError, match="out of range"):
+        fx.source_bytes(CELLS, "cell:3", _blob)
+
+
+def test_the_fixture_tool_copies_a_cell_and_refuses_one_that_raised(tmp_path):
+    from unify.memory import writer_tools as wt
+
+    eps = {"e2": CELLS}.get
+    dest = "memory/office/tests/data/total.txt"
+    ok = wt.fixture({"episode": "e2", "source": "cell:0", "dest": dest}, eps, tmp_path, _blob, ["e2"])
+    assert ok.status == "ok" and (tmp_path / dest).read_bytes() == b"120\n"
+    assert fx.derive_ledger(tmp_path)[dest]["source"] == "cell:0"
+    bad = wt.fixture({"episode": "e2", "source": "cell:1", "dest": dest}, eps, tmp_path, _blob, ["e2"])
+    assert bad.status != "ok" and "cell 1 of e2 raised; its output is not a recorded value" in bad.text
+    assert "'cell:<i>'" in wt.FIXTURE.description
+    assert wt.contents(CELLS, "e2", _blob).count("fixture source: cell:0 (4 bytes)") == 1
+
+
+# --- provenance across passes ---------------------------------------------------------------------------------------
+
+LINE_REL = "memory/acct/tests/data/users.me.inputs.jsonl"
+
+
+def _assembled():
+    line, entry = fx.make(EP, 0, LINE_REL, blob=_blob, append=True)
+    return line, entry
+
+
+def test_ledger_for_takes_the_first_provenance_that_applies_in_order():
+    in_pass_path = "memory/office/tests/data/a.json"
+    kept_path = "memory/office/tests/data/b.json"
+    backfill_path = "memory/office/tests/data/pay.csv"
+    none_path = "memory/office/tests/data/orphan.json"
+    a_data, a_entry = fx.make(EP, 0, in_pass_path, blob=_blob)
+    b_data, b_entry = fx.make(EP, "1", kept_path, blob=_blob)
+    line, line_entry = _assembled()
+    files = {
+        in_pass_path: a_data,
+        kept_path: b_data,
+        LINE_REL: line,
+        backfill_path: BLOB,
+        none_path: b'{"never": "recorded"}',
+    }
+    asked = []
+
+    def stored(path, sha):
+        asked.append(path)
+        return b_entry if (path, sha) == (kept_path, b_entry["sha256"]) else None
+
+    loads = []
+
+    def load(eid):
+        loads.append(eid)
+        return LOAD(eid)
+
+    ledger, notes = fx.ledger_for(files, {in_pass_path: a_entry}, stored, load, _blob, ["e1", "e1"])
+    assert ledger[in_pass_path] == a_entry and in_pass_path not in asked  # 1. in-pass first
+    assert ledger[kept_path] == b_entry  # 2. a kept row
+    assert ledger[LINE_REL] == line_entry  # 3. an assembled file re-verified now
+    back = ledger[backfill_path]  # 4. a whole recorded source
+    assert back == {
+        "kind": "copy",
+        "episode": "e1",
+        "source": "2",
+        "slice": None,
+        "trust": 1,
+        "sha256": SHA,
+        "backfilled": True,
+    }
+    assert none_path not in ledger  # 5. none
+    assert notes == [
+        f"G2 examples: fixture {backfill_path}'s provenance was re-derived from its bytes (e1 2)",
+        f"G2 examples: fixture {none_path} has no recorded provenance (made before provenance was kept, and its "
+        "bytes match no recorded source); it grounds no argument",
+    ]
+    assert sorted(asked) == sorted(files.keys() - {in_pass_path})  # each file looked up once
+    assert loads == ["e1", "e1"]  # one re-verify, one source index for every backfill
+
+
+def test_ledger_for_does_not_trust_an_assembled_file_that_no_longer_re_derives():
+    line, _ = _assembled()
+    forged = line.replace(b'"u-1"', b'"u-9"')
+    ledger, notes = fx.ledger_for({LINE_REL: forged}, {}, lambda p, s: None, LOAD, _blob, ["e1"])
+    assert ledger == {} and notes[0].startswith(f"G2 examples: fixture {LINE_REL} has no recorded provenance")
+
+
+def test_ledger_for_re_verifies_a_bounded_number_of_assembled_files_and_notes_the_rest():
+    line, _ = _assembled()
+    files = {
+        f"memory/acct/tests/data/f{i:02d}.jsonl": line for i in range(fx.MAX_REVERIFY + 1)
+    }
+    ledger, notes = fx.ledger_for(files, {}, lambda p, s: None, LOAD, _blob, [])
+    assert len(ledger) == fx.MAX_REVERIFY
+    last = sorted(files)[-1]
+    assert notes[0] == (
+        f"G2 examples: fixture {last} was not re-verified (more than {fx.MAX_REVERIFY} assembled files without "
+        "kept provenance in one gate run)"
+    )
+
+
+def test_source_action_names_the_recorded_action_behind_an_entry():
+    _, entry = fx.make(EP, 0, "memory/office/tests/data/me.json", blob=_blob)
+    eid, i, action = fx.source_action(entry, LOAD)
+    assert (eid, i, action.method) == ("e1", 0, "me")
+    _, args_entry = fx.make(EP, "args:3", "memory/office/tests/data/post.json", blob=_blob)
+    assert fx.source_action(args_entry, LOAD)[1] == 3
+    _, lines = _assembled()
+    assert fx.source_action(lines["lines"][0], LOAD)[2].method == "me"
+    for source in ("request:0", "observation:0", "cell:0"):
+        assert fx.source_action({"episode": "e1", "source": source}, LOAD) is None
+    assert fx.source_action({"episode": "e404", "source": "0"}, LOAD) is None
+    assert fx.source_action({"episode": "e1", "source": "9"}, LOAD) is None

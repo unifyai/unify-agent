@@ -57,6 +57,13 @@ _TYPED_COVERS_SCHEMA = (
     "PRIMARY KEY(item, episode_id, cover_json))"
 )
 
+# Library mode: the provenance of each fixture file G1 verified in a landed pass, by (path, sha256), so a fixture made
+# in an earlier pass keeps its provenance (fixtures.ledger_for); created lazily on the first such merge
+_FIXTURE_PROVENANCE_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS fixture_provenance(path TEXT, sha256 TEXT, entry TEXT, commit_sha TEXT, "
+    "PRIMARY KEY(path, sha256))"
+)
+
 # CURATE passes: the fingerprints each CURATE pass was shown, and the aliases,
 # retirements and dropped aliases each landed CURATE pass made (the item records read them for alias_of and
 # deprecated).
@@ -940,6 +947,49 @@ class EvidenceStore:
                 "SELECT item, episode_id, cover_json FROM typed_covers ORDER BY item, episode_id, cover_json",
             )
         ]
+
+    def add_fixture_provenance(
+        self,
+        path: str,
+        sha256: str,
+        entry: dict,
+        commit: str,
+    ) -> None:
+        """Keep the verified provenance *entry* of the fixture at *path* whose bytes hash to *sha256*, landed in
+        *commit* (canonical JSON). The first landed entry for the same bytes is kept."""
+        with self.db:
+            self.db.execute(_FIXTURE_PROVENANCE_SCHEMA)
+            self.db.execute(
+                "INSERT OR IGNORE INTO fixture_provenance VALUES(?,?,?,?)",
+                (
+                    path,
+                    sha256,
+                    json.dumps(
+                        entry,
+                        sort_keys=True,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                    commit,
+                ),
+            )
+
+    def fixture_provenance(self, path: str, sha256: str) -> dict | None:
+        """The kept provenance entry of the fixture at *path* with bytes hashing to *sha256*; None when none is
+        kept (or before any merge kept one)."""
+        if not self._has_table("fixture_provenance"):
+            return None
+        row = self.db.execute(
+            "SELECT entry FROM fixture_provenance WHERE path=? AND sha256=?",
+            (path, sha256),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            val = json.loads(row[0])
+        except (TypeError, ValueError):
+            return None
+        return val if isinstance(val, dict) else None
 
     def add_pass_notes(self, pass_id: str, notes: list[str]) -> None:
         """Append *notes* to a recorded pass's reasons (after the gate's); KeyError if it is not recorded."""
