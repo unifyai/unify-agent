@@ -263,7 +263,9 @@ _LIMITS = (
     "is no token, call or spending allowance to manage. A reply that reads a file or a record shows at most "
     "<<view_bytes>> bytes and ends with a marker naming the next offset; nothing is cut silently. A cell runs for "
     "at most <<cell_s>> s<<per_turn>>. Files under /memory are limited to <<file_mib>> MiB each, <<total_mib>> MiB "
-    "in all and <<entries>> files and directories; a breach refuses the pass. The pass ends at its wall clock (its "
+    "in all and <<entries>> files and directories; a breach refuses the pass. A module in /memory named like a "
+    "standard-library module shadows that module in your cells for the rest of the pass. The pass ends at its wall "
+    "clock (its "
     "length in seconds is in the first message<<helper_time>>) or after <<step_guard>> model and check calls, "
     "whichever comes first, and a `check` starts only while at least <<check_floor>> s of the wall clock remain.\n"
 )
