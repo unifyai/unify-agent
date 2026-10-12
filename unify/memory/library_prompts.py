@@ -778,7 +778,7 @@ def write_brief(
         item_extra = ', "adopts": [...]'
         forms = (
             (["`staging:<episode>/candidates/<name>.py`"] if staging else [])
-            + (["`helper:<call>/candidates/<name>.py`"] if helpers else [])
+            + (["`helper:<helper name>/candidates/<name>.py`"] if helpers else [])
             + (["`pool:<id>`"] if pool else [])
         )
         manifest_docs += (

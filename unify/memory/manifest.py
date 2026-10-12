@@ -391,7 +391,7 @@ def layout_allowed(path: str) -> bool:
     return True
 
 
-# an item's ``adopts`` refs: ``staging:<episode>/<file>``, ``helper:<call>/<file>`` or ``pool:<entry id>``, where
+# an item's ``adopts`` refs: ``staging:<episode>/<file>``, ``helper:<helper name>/<file>`` or ``pool:<entry id>``, where
 # <file> is a staged file (``candidates/<name>.py``, ``cases/<name>.json`` or ``notes.md``); the same files named by
 # their /inputs path are accepted and stored in the ref form
 #: How an item used a draft (a staged candidate, case or note, a helper's output, a pool entry): as it was, edited,
@@ -400,7 +400,7 @@ ADOPT_HOW = ("as_is", "edited", "merged", "generalised", "rewritten", "informed"
 
 ADOPT_FORMS = (
     "staging:<episode>/candidates/<name>.py, staging:<episode>/cases/<name>.json, staging:<episode>/notes.md, "
-    "helper:<call>/<same files>, or pool:<entry id>"
+    "helper:<helper name>/<same files>, or pool:<entry id>"
 )
 _ADOPT_FILE = r"(?:candidates/[^/\s\\]+\.py|cases/[^/\s\\]+\.json|notes\.md)"
 _ADOPT_DIR = r"(?!\.\.?/)[^/\s\\]+"
