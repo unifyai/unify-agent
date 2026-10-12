@@ -1,7 +1,7 @@
-"""One consolidation pass: Sol as a sandboxed coding agent, then the gate (spec §7, D9).
+"""One consolidation pass: the writer as a sandboxed coding agent, then the gate.
 
 The pass copies the memory library's ``main`` into a plain directory, creates an empty ``env/<channel>/``
-folder there for every memory channel of the pass's recorded actions, and gives Sol three tools:
+folder there for every memory channel of the pass's recorded actions, and gives the writer three tools:
 ``execute_code`` (the code as a read-only file run in :func:`.sandbox_run.run_confined`, with the copy
 read-write at ``/memory`` and the pass's inputs read-only at ``/inputs``), ``check`` (the gate's cheap,
 read-only checks of a manifest against the current copy, host-side; :meth:`.gate.Gate.preview`; at most
@@ -15,10 +15,10 @@ which records the pass. A missing manifest is recorded here as failed with the r
 The box never sees the git checkout itself: a ``.git`` file the model could rewrite would point the host's
 ``git add`` at a repository (and configuration) of its choosing.
 
-Sol sees only what :func:`export_for_writer` and :func:`export_blobs` write (ruling R10): request, cells,
+The writer sees only what :func:`export_for_writer` and :func:`export_blobs` write: request, cells,
 actions, and the file blobs worktree actions recorded; and, from the harness, :func:`previous_gate` (the last
 refused gate lines per channel) and :func:`library_summary` (the library's functions on the pass's channels,
-with their recorded covers as item and action ids, so it can tend the library: D26). Its first message adds
+with their recorded covers as item and action ids, so it can tend the library). Its first message adds
 the index (or the README under ``catalogue``), those functions' cover counts and, with
 ``PassConfig.show_usage`` (``UNIFY_MEMORY_V2_WRITER_USAGE=on``), a table of how requests used each function
 (:func:`.usage.usage_table`, harness counts). Nothing about outcomes, signals or checkers reaches it. The
@@ -77,7 +77,7 @@ from .trigger import PassRequest
 QUOTA_TOTAL_BYTES = 20 * 1024**2
 QUOTA_FILE_BYTES = 1024**2
 QUOTA_ENTRIES = 2000
-# RLIMIT_FSIZE inside a Sol cell, lowered from run_confined's by prlimit in the box (lowering needs no
+# RLIMIT_FSIZE inside a writer cell, lowered from run_confined's by prlimit in the box (lowering needs no
 # privilege); the quota walk is the precise check, this only bounds a single file between walks.
 CELL_FSIZE_BYTES = 2 * QUOTA_FILE_BYTES
 # Recorded file blobs exported to /inputs/blobs: one blob at most a library file's quota (so any exported
@@ -87,8 +87,8 @@ EXPORT_TOTAL_BYTES = 32 * 1024**2
 
 # check calls per pass (each also counts against PassConfig.max_calls); a reply lists at most this many reasons
 MAX_CHECKS = 5
-# memory v2.1 r5 (S6): a pass with no USD cap (PassConfig.max_usd None) has no count limits either; this many model
-# and check calls end a runaway pass, labelled operational (the lead's step cap, 8 Oct), never a design budget
+# library mode: a pass with no USD cap (PassConfig.max_usd None) has no count limits either; this many model
+# and check calls end a runaway pass, labelled operational (a safety stop), never a design budget
 STEP_GUARD = 500
 _CHECK_REASONS = 20
 _CHECK_REASON_CHARS = 200
@@ -233,10 +233,10 @@ def writer_system(
     catalogue: bool = False,
     soft_budget: bool = False,
 ) -> str:
-    """Sol's brief under the v2.1 switches (:mod:`.integration.switch`); all off, it is v2's byte for byte.
+    """The writer's brief under the library-mode switches (:mod:`.integration.switch`); all off, it is v2's byte for byte.
 
     *docstrings* states the lean docstring standard and adds the docstring and examples checks to the check
-    lists; *catalogue* says the harness generates README.md, memory.py and .memory/ and Sol must never
+    lists; *catalogue* says the harness generates README.md, memory.py and .memory/ and the writer must never
     write them; *soft_budget* replaces the index budget with the soft size note.
     """
     library_mode = ""
@@ -284,7 +284,7 @@ def writer_system(
     )
 
 
-#: The v2 brief (every v2.1 switch at its default).
+#: The v2 brief (every library-mode switch at its default).
 WRITER_SYSTEM = writer_system()
 
 # The toolkit copied into /inputs/memlab. Not gitio (git), the gate or the sandbox runner. When a stage-5 switch
@@ -348,12 +348,12 @@ _TOOL_TEMPLATES = [
 ]
 
 
-# design r2 §3: finish refuses an unparseable manifest at most this many times in a pass
+# finish refuses an unparseable manifest at most this many times in a pass
 FINISH_G1_REFUSALS = 2
 
 
 #: UNIFY_MEMORY_LIBRARY_COMPACT: the conversation size (prompt text, :func:`_prompt_chars`) that triggers a compaction,
-#: and the messages at its end that are never touched. A trigger on size, never on a stream or step count. m4k-c2: the
+#: and the messages at its end that are never touched. A trigger on size, never on a stream or step count. The
 #: replay of rehearsal 2's writer conversations measured 1.48 prompt characters per billed token (ARC grids are
 #: token-dense), so the intended ~60k tokens is ~90k characters; 240k let the context reach ~150k tokens.
 COMPACT_AT_CHARS = 90_000
@@ -367,18 +367,18 @@ def _compact(
     at: int = COMPACT_AT_CHARS,
     originals: dict[int, str] | None = None,
 ) -> int:
-    """Cache-preserving compaction (MAIN 11 Oct; the rehearsal's HIGH pass re-sent its whole history on each of 286
+    """Cache-preserving compaction (without it, a long pass re-sends its whole history on each of its hundreds of
     calls). When the conversation's prompt text (:func:`_prompt_chars`) passes *at*, and the old tool results it may
     move hold at least half of *at* (a real drop, so a compaction is rare), the oldest tool results (never the system message,
-    the request, Sol's own messages with their reasoning and calls, or the last :data:`COMPACT_KEEP_LAST` messages)
+    the request, the writer's own messages with their reasoning and calls, or the last :data:`COMPACT_KEEP_LAST` messages)
     are saved under *out_dir*/compacted/ and replaced by a pointer to re-open them with ``read``, until the size is at
     most half of *at*. The prefix changes only at a compaction, so the provider's cache holds between them. Returns
-    the number of results moved. RUNTIME's defence in depth (MAIN 11 Oct): nothing is compacted when *out_dir* or its
+    the number of results moved. As defence in depth, nothing is compacted when *out_dir* or its
     ``compacted/`` is a link or not a directory, and each file is created new, never through a link (a result whose
     file cannot be made that way stays in the conversation). *originals*, when given, receives each moved result's
     text by message index, so the transcript keeps what the writer saw before the compaction.
     """
-    # m4k-c2 (the rehearsal-2 diagnosis ab734c1e): the size is the prompt text, never the provider's opaque fields
+    # the size is the prompt text, never the provider's opaque fields
     # (provider_specific_fields, reasoning blobs), which made every call "over size" and compacted once per call
     sizes = [_prompt_chars(m) for m in messages]
     total = sum(sizes)
@@ -548,14 +548,14 @@ def _staged_candidates(entry: dict) -> list[dict]:
 
 
 def _with_fixtures(manifest: object, made: dict) -> object:
-    """The harness's fixture provenance replaces whatever the manifest says under ``fixtures`` (spec v2.1 §7.4)."""
+    """The harness's fixture provenance replaces whatever the manifest says under ``fixtures``."""
     if not isinstance(manifest, dict):
         return manifest
     return {**manifest, "fixtures": {k: made[k] for k in sorted(made)}}
 
 
 def _tests_changed(manifest: object) -> list[str]:
-    """``Tests-Changed:`` trailers from the manifest's stated reasons (spec v2.1 §9.1, no unexplained test loss)."""
+    """``Tests-Changed:`` trailers from the manifest's stated reasons (no unexplained test loss)."""
     stated = manifest.get("tests_changed") if isinstance(manifest, dict) else None
     if not isinstance(stated, dict):
         return []
@@ -573,8 +573,8 @@ def _trailers(
     library_mode: bool,
     curate: bool = False,
 ) -> dict:
-    """A candidate commit's trailers: v2's; under v2.1 also ``Why:``, ``Episodes:`` and ``Items:`` (spec §8.2 rule
-    6, :func:`_library_trailers`) and ``Tests-Changed:`` when the manifest states reasons (spec §9.1); a CURATE pass's
+    """A candidate commit's trailers: v2's; in library mode also ``Why:``, ``Episodes:`` and ``Items:``
+    (:func:`_library_trailers`) and ``Tests-Changed:`` when the manifest states reasons; a CURATE pass's
     ``Why:`` and ``Items:`` are :func:`.curate.trailers`' (every item it adds, changes, deletes, aliases or retires).
     """
     out: dict = {"Pass": pass_id, "Episode": sources, "Evidence": sources}
@@ -634,7 +634,7 @@ def writer_tools(
     return tools
 
 
-#: The v2 tools (every v2.1 switch at its default).
+#: The v2 tools (every library-mode switch at its default).
 _TOOLS = writer_tools()
 _OUTPUT_CAP = 8000
 #: parts per read_episode call (one shared page) and reader calls per model turn (stated in the tool descriptions)
@@ -648,7 +648,7 @@ def _library_on(writer: object) -> bool:
 
 
 def _head_marked(text: str) -> tuple[str, str]:
-    """A cell's output under v2.1 (P5): its head, marked when cut (never the tail alone), and the full text."""
+    """A cell's output in library mode: its head, marked when cut (never the tail alone), and the full text."""
     return _views.view(text.encode("utf-8", errors="replace"), 0, _OUTPUT_CAP), text
 
 
@@ -656,7 +656,7 @@ _MAX_CELLS_PER_TURN = _wt.CELLS_PER_TURN
 _MANIFEST_MAX_BYTES = 1024**2
 _MANIFEST_MAX_DEPTH = 16
 # Never mirrored out of the box: git metadata (anywhere), the pass directory (top level), caches. Test-run
-# caches (pytest's, hypothesis's) are Sol's run byproducts, never library content; the gate refuses them.
+# caches (pytest's, hypothesis's) are the writer's run byproducts, never library content; the gate refuses them.
 _NEVER_COPIED = frozenset({".git", "__pycache__", ".pytest_cache", ".hypothesis"})
 _EPISODE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _UNKNOWN = "unknown"
@@ -674,7 +674,7 @@ _ITEM_PREFIX = re.compile(r"^(?:item refused: |reduced: )")
 # /inputs/library.json: an orientation index of the pass's channels, at most this many tokens
 LIBRARY_BUDGET_TOKENS = 2000
 _SUMMARY_CHARS = 200
-# Sol's transcript: JSON lines on this notes ref of the request's episode commit, bounded
+# The writer's transcript: JSON lines on this notes ref of the request's episode commit, bounded
 TRANSCRIPT_REF = "sol-transcripts"
 TRANSCRIPT_MAX_BYTES = 256 * 1024
 TRANSCRIPT_STRING_CHARS = _OUTPUT_CAP
@@ -688,10 +688,10 @@ CODE_OVER_QUOTA = "over_quota"
 CODE_DEADLINE = "deadline"
 CODE_PASS_CAP = "pass_cap"
 CODE_STEP_GUARD = (
-    "operational_step_guard"  # r5 S6: an uncapped v2.1 pass reached STEP_GUARD
+    "operational_step_guard"  # an uncapped library-mode pass reached STEP_GUARD
 )
 CODE_WRITER_ERROR = "writer_error"
-# a Sol call found Sol's declared route not in effect
+# a writer call found the writer's declared route not in effect
 CODE_ROUTE_NOT_IN_EFFECT = "route_not_in_effect"
 
 
@@ -710,17 +710,17 @@ class PassConfig:
     model: str = "openai/gpt-6-sol"
     effort: str = "low"
     max_calls: int = 40
-    # None (memory v2.1 r5, S6): no USD cap and no count limits; STEP_GUARD and the deadline end a runaway
+    # None (library mode): no USD cap and no count limits; STEP_GUARD and the deadline end a runaway
     max_usd: Decimal | None = Decimal("1.00")
     cell_timeout_s: float = 60.0
     deadline_s: float = 900.0
     # UNIFY_MEMORY_V2_WRITER_USAGE: end the first message with the library-use table (off: as before)
     show_usage: bool = False
-    # UNIFY_MEMORY_LIBRARY (spec v2.1, P1): the writer's batch map, signals, views, coverage (off: as at 4675a3c45)
+    # UNIFY_MEMORY_LIBRARY: the writer's batch map, signals, views, coverage (off: as at 4675a3c45)
     library_mode: bool = False
     # reader calls (read, grep, overview, read_episode, pool) count here, never against max_calls
     max_reads: int = 400
-    # memory v2.1 ROUND_RESERVE (spec §15), once offline replay calibrates it; None: the pass's own median
+    # a fixed reserve per repair round, once offline replay calibrates it; None: the pass's own median
     # round cost (repair.round_reserve)
     round_reserve_usd: Decimal | None = None
     # where the fork leaves staging (<state>/memory-staging; None: a scratch dir in the pass); writer-launched
@@ -732,13 +732,13 @@ class PassConfig:
     trees_cache: str | None = None
     # the ``similar`` tool's index folder (similar.index_dir; None: the tool has no index to search)
     similar_index: str | None = None
-    # the lead, 11 Oct: the candidate pool (UNIFY_MEMORY_LIBRARY_POOL; pool.py): proposals persist across passes
+    # the candidate pool (UNIFY_MEMORY_LIBRARY_POOL; pool.py): proposals persist across passes
     pool: bool = False
     # UNIFY_MEMORY_LIBRARY_FORK: the episode-end fork stages candidates, so the writer's brief and batch-map rows
     # describe /inputs/staging; off: neither names staging
     fork: bool = False
-    # MAIN 11 Oct (prepared, off until the lead decides): UNIFY_MEMORY_LIBRARY_COMPACT moves old tool results out of
-    # Sol's conversation when it grows past COMPACT_AT_CHARS (:func:`_compact`)
+    # off by default: UNIFY_MEMORY_LIBRARY_COMPACT moves old tool results out of
+    # the writer's conversation when it grows past COMPACT_AT_CHARS (:func:`_compact`)
     compact: bool = False
     # UNIFY_MEMORY_LIBRARY_COVERAGE: only "optional" exists (finish never waits on reading); kept for older callers
     coverage_rule: str = "optional"
@@ -749,7 +749,7 @@ class PassConfig:
 
 @dataclass
 class PassOutcome:
-    """``usd`` is the known spend as a pure decimal string (ruling R22); unpriced calls are counted apart."""
+    """``usd`` is the known spend as a pure decimal string; unpriced calls are counted apart."""
 
     pass_id: str
     passed: bool
@@ -773,11 +773,11 @@ class PassOutcome:
     exported_bytes: int | None = (
         None  # blob bytes staged in /inputs (library_mode: uncapped)
     )
-    # memory v2.1 repair (spec §9.2): Sol's rounds (1 + the repair rounds started; 0 with library_mode off) and the full
-    # gate results written for Sol during the pass, in order (/inputs/gate/result-<n>.md)
+    # repair rounds: the writer's rounds (1 + the repair rounds started; 0 with library_mode off) and the full
+    # gate results written for the writer during the pass, in order (/inputs/gate/result-<n>.md)
     rounds: int = 0
     round_results: list[str] = field(default_factory=list)
-    # design r2 §5 (library_mode): Sol's last finish was accepted; and its manifest, parsed by the gate's parser at that
+    # library_mode: the writer's last finish was accepted; and its manifest, parsed by the gate's parser at that
     # finish, listed no item and no deletion: the writer's explicit decision that the batch holds nothing to store
     finished: bool = False
     nothing_to_store: bool = False
@@ -814,10 +814,10 @@ def export_for_writer(
     With *library_mode* the row also carries the declared regime, the memory pin, the work-tree diff, the
     structural events, and each cell's error and language. The episode's library-use record is harness telemetry,
     not part of the episode: with *usage_dest* it goes to ``<usage_dest>/<episode_id>.json``
-    (:func:`.usage.writer_usage_record`, host paths removed), and it is never in the episode file. Ruling R10's
-    allowlist applies only with *library_mode* off.
+    (:func:`.usage.writer_usage_record`, host paths removed), and it is never in the episode file. The
+    allowlist below applies only with *library_mode* off.
 
-    Ruling R10: no outcome, signal or checker data reaches Sol. The fields are an allowlist: cells carry
+    No outcome, signal or checker data reaches the writer. The fields are an allowlist: cells carry
     their index, code and printed output; actions their index (the ``action_index`` covers cite), cell,
     channel, method, args, kwargs, response, status, effect, error and kind; ``memory_channels`` lists, per
     action, the gate's :func:`.episodes.env_channel` of its kind and channel (kept beside the actions so the
@@ -860,7 +860,7 @@ def export_for_writer(
                 }
                 for i, a in enumerate(ep.actions)
             ],
-            # the gate's own mapping (G2), so Sol never derives a channel name
+            # the gate's own mapping (G2), so the writer never derives a channel name
             "memory_channels": [
                 env_channel(getattr(a, "kind", "tool"), a.channel) for a in ep.actions
             ],
@@ -924,7 +924,7 @@ def export_blobs(
     Only well-formed ids (:data:`.blobs.BLOB_ID`) of ``blob_before``/``blob_after`` on ``kind ==
     "worktree"`` actions are looked up, in episode and action order. A blob larger than *per_blob_bytes*,
     one past *total_bytes* in all, or one missing from the store is skipped; a cap of ``None`` is no cap
-    (spec v2.1 §7.2). ``<dest>/index.json`` lists
+    ``<dest>/index.json`` lists
     ``{"exported": [...], "skipped": {id: reason}}`` (memlab's ``analysis.recorded.load_blob`` reads it).
     """
     dest = Path(dest)
@@ -964,7 +964,7 @@ def export_blobs(
     out: dict = {"exported": exported, "skipped": skipped}
     if (
         record_bytes
-    ):  # v2.1: the bytes actually staged, so an uncapped export's size is on record
+    ):  # library mode: the bytes actually staged, so an uncapped export's size is on record
         out["exported_bytes"] = used
     (dest / "index.json").write_text(json.dumps(out, sort_keys=True) + "\n")
     return out
@@ -1028,7 +1028,7 @@ def last_passes(
     ``git blame`` of ``env/<channel>/__init__.py`` at *rev* (*tree* is that revision checked out) gives
     each line's commit; the function's newest one (in *rev*'s history order) names its pass by its ``Pass``
     trailer. A function last changed by a commit without one (a harness edit) is left out, as is a module
-    that git or the parser cannot read: this orients Sol, it checks nothing.
+    that git or the parser cannot read: this orients the writer, it checks nothing.
     """
     try:
         order = {
@@ -1089,7 +1089,7 @@ def library_summary(
     every function in full). Nothing here comes from outcomes or signals.
 
     With *cover_ids* (:func:`library_covers`: every environment function of the channels with its recorded
-    covers as ``[episode_id, action_index]`` lists, for tending the library, D26) every such function has a
+    covers as ``[episode_id, action_index]`` lists, for tending the library) every such function has a
     row with ``cover_ids`` too, and the budget bounds only the descriptive fields: past it, a row keeps
     ``item``, ``covers``, ``cover_ids`` and ``last_pass``, and ``truncated`` counts the rows without a
     signature and summary. A deleted function's covers must all pass to a kept one, so none is ever cut.
@@ -1164,7 +1164,7 @@ def _plain(o: object, chars: int) -> object:
 
 def _scrub(o: object) -> object:
     """JSON data with :func:`.redact.redact_error` applied to every string and key: every secret registered
-    with :mod:`unify.process_secrets` (Sol's route token among them) as it stands now, credential structures
+    with :mod:`unify.process_secrets` (the writer's route token among them) as it stands now, credential structures
     and key shapes."""
     if isinstance(o, str):
         return redact_error(o)
@@ -1512,7 +1512,7 @@ def _mirror(
 def _exported_channels(episodes: Path) -> list[str]:
     """The distinct memory channels (non-null ``memory_channels``) of the actions :func:`export_for_writer` wrote.
 
-    Read back from the host's own export before Sol's first cell, so it is exactly what Sol is shown.
+    Read back from the host's own export before the writer's first cell, so it is exactly what the writer is shown.
     """
     out: set[str] = set()
     for f in sorted(episodes.glob("*.json")) if episodes.is_dir() else []:
@@ -1526,7 +1526,7 @@ def library_covers(
     channels: Iterable[str],
     recorded: set[tuple[str, str, int]],
 ) -> dict[str, list[list]]:
-    """Each environment function of the library at *tree* on *channels*, with its recorded covers (D26).
+    """Each environment function of the library at *tree* on *channels*, with its recorded covers.
 
     ``{item: [[episode_id, action_index], ...]}``, sorted; a function nothing recorded covers maps to [].
     """
@@ -1564,7 +1564,7 @@ def _channel_dirs(box: Path, channels: Iterable[str]) -> None:
 
 
 def _drop_unchanged(tree: Path, generated: Mapping[str, bytes]) -> None:
-    """Remove each generated file of a v2.1 box (spec v2.1 §4.1: never committed) that still holds the bytes the
+    """Remove each generated file of a library-mode box (never committed) that still holds the bytes the
     harness wrote, then ``.memory/`` if it is left empty. An edited one stays, so the gate sees and refuses it.
     """
     from .layout import DATA_DIR
@@ -1736,7 +1736,7 @@ def _sources(manifest: object) -> list[str]:
 
 
 def _library_trailers(manifest: object, sources: list[str]) -> dict[str, list[str]]:
-    """The v2.1 commit trailers (spec §8.2 rule 6): ``Why`` (the manifest's one line, at most 200 characters),
+    """The library-mode commit trailers: ``Why`` (the manifest's one line, at most 200 characters),
     ``Episodes`` (the source episodes) and ``Items`` (the item ids the manifest names).
     """
     m = manifest if isinstance(manifest, dict) else {}
@@ -1790,7 +1790,7 @@ class _Spend:
     unknown: int = 0
 
 
-#: The full result a v2.1 pass cancelled before its gate leaves in its draft (spec §6, §8.4).
+#: The full result a library-mode pass cancelled before its gate leaves in its draft.
 CANCELLED_RESULT = (
     "# Gate result: pass {pass_id}, cancelled before the gate ran\n"
     "\n"
@@ -1823,7 +1823,7 @@ def _named_items(box: Path) -> list[str]:
 
 
 class _KeepOnCancel:
-    """Memory v2.1 (spec §6): a pass cancelled at its bound or at shutdown keeps Sol's work as a draft. It is the
+    """Library mode: a pass cancelled at its bound or at shutdown keeps the writer's work as a draft. It is the
     innermost context of :meth:`WriterPass._run`'s ``with``, so it exits first, while the box still exists.
     """
 
@@ -1855,14 +1855,14 @@ class WriterPass:
 
     Each model call's reported cost is added to the spend; an unknown (or unreadable) cost is counted and
     reserves ``max_usd / max_calls`` against the cap, so unpriced calls cannot run away. Money is a pure
-    decimal string (ruling R22, never exponent notation): the recorded and returned USD is the known spend
+    decimal string (never exponent notation): the recorded and returned USD is the known spend
     only, and the count of unpriced calls is recorded as the reason ``note: N unpriced calls`` and in
     :attr:`PassOutcome.unknown_cost_calls`. The pass's own notes follow the gate's reasons in the row.
 
-    Sol sees the episodes through :func:`export_for_writer` over *load* (ruling R10 is enforced here, not by
+    The writer sees the episodes through :func:`export_for_writer` over *load* (the allowlist is enforced here, not by
     the caller). A pass that ends with an exception, cancellation included, is recorded as failed.
 
-    Under v2.1 a request of kind ``curate`` runs the writer's second role (:mod:`.curate`) on *curate*, the library
+    In library mode a request of kind ``curate`` runs the writer's second role (:mod:`.curate`) on *curate*, the library
     state its trigger read.
     """
 
@@ -1911,7 +1911,7 @@ class WriterPass:
         # (None: not opened yet; False: not written this pass)
         self.tool_events: list[dict] = []
         self._events_file: Path | None | bool = None
-        # v2.1 r5 (r4 §1): request blocks shared by most episodes (id -> text), shown as markers; {} until staged
+        # request blocks shared by most episodes (id -> text), shown as markers; {} until staged
         self._shared: dict[str, str] = {}
         self._inputs_dir: Path | None = (
             None  # the pass's /inputs on the host, once staged
@@ -1932,15 +1932,15 @@ class WriterPass:
             []
         )  # the batch map's rows once staging is listed in it
         self._pool_manifest: object = None
-        # v2.1: the open drafts the last _stage_inputs staged (spec §8.4); always [] with library_mode off
+        # the open drafts the last _stage_inputs staged; always [] with library_mode off
         self._drafts: list[dict] = []
         self._library_generated: dict[str, bytes] = (
             {}
-        )  # v2.1: the generated files written into the box
-        # memory v2.1: the live box and checkout, and a cancelled pass's (patch blob, named items)
+        )  # library mode: the generated files written into the box
+        # library mode: the live box and checkout, and a cancelled pass's (patch blob, named items)
         self._live: tuple[Path, Path] | None = None
         self._cancel_patch: tuple[str | None, list[str]] = (None, [])
-        # memory v2.1 CURATE (P6): the library state a "curate" request curates, and the pass's role
+        # CURATE: the library state a "curate" request curates, and the pass's role
         self.curate_state = curate
         self._role = "write"
 
@@ -1965,15 +1965,15 @@ class WriterPass:
         rev: str,
         cover_ids: Mapping[str, list] | None = None,
     ) -> None:
-        """``previous_gate.json`` and ``library.json`` in *inputs*, for the channels Sol is shown.
+        """``previous_gate.json`` and ``library.json`` in *inputs*, for the channels the writer is shown.
 
         *tree* is the library at *rev* (the pass's parent) checked out; *cover_ids* (:func:`library_covers`)
-        adds each function's recorded cover ids to ``library.json`` (D26).
+        adds each function's recorded cover ids to ``library.json``.
         """
         channels = _exported_channels(inputs / "episodes")
         if not _library_on(
             self,
-        ):  # v2.1 gives drafts and full gate results instead (spec §9.3)
+        ):  # library mode gives drafts and full gate results instead
             (inputs / "previous_gate.json").write_text(
                 json.dumps(previous_gate(self.ev, channels), indent=1) + "\n",
             )
@@ -1987,7 +1987,7 @@ class WriterPass:
         (inputs / "library.json").write_text(json.dumps(summary) + "\n")
 
     def _switches(self) -> dict[str, bool]:
-        """The v2.1 switches Sol's brief states: the gate's own (the driver builds the gate from them)."""
+        """The library-mode switches the writer's brief states: the gate's own (the driver builds the gate from them)."""
         return {
             "docstrings": bool(getattr(self.gate, "docstring_standard", False)),
             "catalogue": getattr(self.gate, "surfacing", "index") == "catalogue",
@@ -1996,12 +1996,12 @@ class WriterPass:
 
     @staticmethod
     def _library_message(wt: Path, switches: dict[str, bool]) -> str:
-        """The library part of Sol's first message: v2's index, or the generated README (``catalogue``)."""
+        """The library part of the writer's first message: v2's index, or the generated README (``catalogue``)."""
         if switches["catalogue"]:
             try:
                 return readme_for_writer(
                     wt,
-                )  # the README, or a compact view past its budget (M9)
+                )  # the README, or a compact view past its budget
             except ValueError as exc:  # an unreadable notes file
                 return f"Current library: (catalogue not built: {exc})"
         try:
@@ -2016,7 +2016,7 @@ class WriterPass:
 
     def _usage(self, req: PassRequest, tree: Path) -> str:
         """The library-use table over the pass's requests (:func:`.usage.usage_table`) for the functions
-        of memory ``main`` at *tree*: harness counts only, nothing of a checker (ruling R10).
+        of memory ``main`` at *tree*: harness counts only, nothing of a checker.
         """
         from .memory_repo import items as memory_items
         from .usage import usage_table
@@ -2101,7 +2101,7 @@ class WriterPass:
             from . import shared_text as _shared_text
             from .batch_map import build_batch_map
 
-            # r5 (r4 §1): count this batch's request blocks once each, then show the shared ones as markers, each
+            # count this batch's request blocks once each, then show the shared ones as markers, each
             # block once under /inputs/shared/
             if hasattr(
                 self.ev,
@@ -2157,7 +2157,7 @@ class WriterPass:
             _stage_memlab(inputs / "memlab")
         self._drafts = []
         if _library_on(self) and req.kind == "curate":
-            # CURATE (spec §12.3): its own inputs; drafts are WRITE's (§8.4)
+            # CURATE: its own inputs; drafts are WRITE's
             (inputs / "gate").mkdir(exist_ok=True)
             _curate.stage_inputs(inputs, self.curate_state)
         elif _library_on(self):
@@ -2169,7 +2169,7 @@ class WriterPass:
                 (inputs / "gate").mkdir(exist_ok=True)
 
     def _stage_library_library_mode(self, box: Path, parent: str) -> dict[str, bytes]:
-        """v2.1 (spec §4, §7.2): write the generated helper, INDEX.md, links.json and ``.memory/`` into Sol's box
+        """Library mode: write the generated helper, INDEX.md, links.json and ``.memory/`` into the writer's box
         (its root goes on the cells' path, so ``import memory`` gives ``index``, ``show`` and ``find``).
         Returns them; :func:`_drop_unchanged` keeps unchanged copies out of the candidate.
         """
@@ -2181,7 +2181,7 @@ class WriterPass:
         records, _ = records_at(
             self.mem,
             parent,
-        )  # the writer reads the records through memory.show (spec §4.4)
+        )  # the writer reads the records through memory.show
         files = generated_library_mode(
             box,
             history=item_history(self.mem, parent),
@@ -2557,7 +2557,7 @@ class WriterPass:
 
     @staticmethod
     def _library_message_library_mode(box: Path) -> str:
-        """The library part of Sol's first message under v2.1: the index view (spec §4.5). ``/memory/INDEX.md``
+        """The library part of the writer's first message in library mode: the index view. ``/memory/INDEX.md``
         holds the whole index; ``memory.index("<package>")`` and ``memory.show(item)`` work in execute_code.
         """
         from .layout import INDEX_FILE
@@ -2574,7 +2574,7 @@ class WriterPass:
 
     @staticmethod
     def _generated_binds(box: Path) -> dict[Path, str]:
-        """v2.1 (P3 Amendment C): the generated paths of Sol's box (``memory/__init__.py``, ``INDEX.md``,
+        """Library mode: the generated paths of the writer's box (``memory/__init__.py``, ``INDEX.md``,
         ``links.json``, ``.memory/``), each bound read-only over the writable box in every cell. A write to one
         fails with the ordinary OS error. A generated path that became a link refuses the cell (fail closed).
         """
@@ -2624,7 +2624,7 @@ class WriterPass:
                 timeout_s=timeout_s,
                 env={"PYTHONPATH": "/inputs:/memory", **open_log.env},
                 pass_fds=open_log.pass_fds,
-                # v2.1 (P3 Amendment C): the generated files are read-only binds, so a write fails at once
+                # library mode: the generated files are read-only binds, so a write fails at once
                 **(
                     {"late_ro": self._generated_binds(box)}
                     if _library_on(self) and getattr(self, "_library_generated", None)
@@ -3019,10 +3019,10 @@ class WriterPass:
         summary: str,
         manifest: object,
     ) -> str:
-        """A v2.1 round's candidate (spec §9.2): the box as the commit would hold it (no ``.pass``), committed on a
+        """A library-mode round's candidate: the box as the commit would hold it (no ``.pass``), committed on a
         fresh checkout of *parent* with the message and trailers v2's final commit has, and no round number
         (Amendment A: the merge lands the last checked commit itself; the round lives in ``pass_rounds``). It is
-        one commit on the parent that no ref names (D13), so a refused round never enters ``main``'s history.
+        one commit on the parent that no ref names, so a refused round never enters ``main``'s history.
         Called after :func:`_measure` restored the host's access to the box."""
         sources = _sources(manifest)
         with self.mem.temp_checkout(parent) as rwt:
@@ -3032,7 +3032,7 @@ class WriterPass:
                 _drop_unchanged(
                     rwt,
                     self._library_generated,
-                )  # P3: the generated files are never committed
+                )  # the generated files are never committed
             return self.mem.commit_all(
                 rwt,
                 f"consolidation pass {pass_id}: {_redact(summary)[:200]}".replace(
@@ -3051,8 +3051,8 @@ class WriterPass:
         candidate: str | None,
         pass_notes: Iterable[str],
     ) -> None:
-        """v2.1: the pass's final full gate result into the blob store and its ``pass_rounds`` row (spec §8.4,
-        §9.3); nothing with library_mode off."""
+        """Library mode: the pass's final full gate result into the blob store and its ``pass_rounds`` row;
+        nothing with library_mode off."""
         if not self.cfg.library_mode:
             return
         text = _repair.render_result(
@@ -3102,7 +3102,7 @@ class WriterPass:
         parent: str,
         pass_id: str,
     ) -> tuple[str | None, list[str]]:
-        """Sol's box as a patch on *parent* (a commit no ref names, as D13 saves refused work) and the item ids its
+        """The writer's box as a patch on *parent* (a commit no ref names, as refused work is saved) and the item ids its
         manifest named. Never raises: a cancellation must not be masked."""
         named = _named_items(box)
         store = getattr(self.gate, "blobs", None)
@@ -3114,7 +3114,7 @@ class WriterPass:
                 _drop_unchanged(
                     wt,
                     self._library_generated,
-                )  # the generated files Sol left unchanged (P2, P3)
+                )  # the generated files the writer left unchanged
             commit = self.mem.commit_all(
                 wt,
                 f"cancelled pass {pass_id}",
@@ -3127,7 +3127,7 @@ class WriterPass:
             return None, named
 
     def _cancelled_result(self, pass_id: str, named: list[str]) -> str | None:
-        """The blob id of :data:`CANCELLED_RESULT` for a cancelled v2.1 pass (its draft's gate result)."""
+        """The blob id of :data:`CANCELLED_RESULT` for a cancelled library-mode pass (its draft's gate result)."""
         store = getattr(self.gate, "blobs", None)
         if not isinstance(store, BlobStore):
             return None
@@ -3161,7 +3161,7 @@ class WriterPass:
         if req.kind == "curate" and (
             not self.cfg.library_mode or self.curate_state is None
         ):
-            # spec v2.1 §10.3: CURATE runs only under v2.1, on the library state its trigger read; nothing is spent
+            # CURATE runs only in library mode, on the library state its trigger read; nothing is spent
             return PassOutcome(
                 pass_id,
                 False,
@@ -3218,7 +3218,7 @@ class WriterPass:
                                 "role": self._role,
                                 "rounds": None,
                                 "round_blobs": "[]",
-                                # a cancelled pass's draft points at its fixed gate result (P7)
+                                # a cancelled pass's draft points at its fixed gate result
                                 "gate_blob": (
                                     self._cancelled_result(pass_id, named)
                                     if cancelled
@@ -3239,7 +3239,7 @@ class WriterPass:
         parent: str,
         spend: _Spend,
     ) -> PassOutcome:
-        # r5 S6: v2.1 with max_usd None is uncapped: no USD stop, no unpriced reserve (the run-level guard books those
+        # library mode with max_usd None is uncapped: no USD stop, no unpriced reserve (the run-level guard books those
         # at worst case), no count limits; STEP_GUARD and the deadline end a runaway, labelled operational
         uncapped = bool(self.cfg.library_mode) and self.cfg.max_usd is None
         cap = None if uncapped else Decimal(self.cfg.max_usd)
@@ -3249,10 +3249,10 @@ class WriterPass:
         )
         deadline = time.monotonic() + float(self.cfg.deadline_s)
         calls, checks, summary = 0, 0, ""
-        # memory v2.1 repair rounds (spec §9.2; repair.py states the budget rule)
-        round_no = 0  # the round Sol is in: 0 until its first accepted finish
+        # repair rounds (repair.py states the budget rule)
+        round_no = 0  # the round the writer is in: 0 until its first accepted finish
         round_usd: list[Decimal] = []  # each completed round's charge
-        # v2.1 (design r2 §3): the charge when Sol first wrote (a cell, a check or a fixture), round 0's charge
+        # library mode: the charge when the writer first wrote (a cell, a check or a fixture), round 0's charge
         # from then on (what a repair round is priced on), finish's G1 refusals, and the last accepted finish
         phase: dict[str, Any] = {
             "write_mark": None,
@@ -3264,7 +3264,7 @@ class WriterPass:
         round_s: list[float] = (
             []
         )  # each completed round's seconds, its gate check included
-        round_paths: list[str] = []  # /inputs/gate/result-<n>.md written for Sol
+        round_paths: list[str] = []  # /inputs/gate/result-<n>.md written for the writer
         round_blobs: list[str] = []  # the same texts in the blob store
         mark = [
             Decimal("0"),
@@ -3275,7 +3275,7 @@ class WriterPass:
         pass_seed: list[bytes | None] = [None]
         check_files = [
             0,
-        ]  # Amendment B: /inputs/gate/check-<k>.md written for Sol's check calls
+        ]  # Amendment B: /inputs/gate/check-<k>.md written for the writer's check calls
         checked: dict[str, Any] = {
             "candidate": None,
             "manifest": None,
@@ -3403,8 +3403,8 @@ class WriterPass:
             # the writer's delegate calls of the current turn, run together at the first one (call index -> reply)
             delegated: dict[int, str] = {}
             if self.cfg.library_mode:
-                # spec v2.1 §4, §7.2: the writer-chosen tree with its generated helper and index; no channel
-                # folders and no library.json (P2's gate inputs replace previous_gate.json)
+                # the writer-chosen tree with its generated helper and index; no channel
+                # folders and no library.json (the gate inputs replace previous_gate.json)
                 self._library_generated = self._stage_library_library_mode(box, parent)
                 if self.cfg.pool:
                     # every open proposal of earlier passes; this pass's staging joins it below, before it is staged
@@ -3452,7 +3452,7 @@ class WriterPass:
                 first = self._first_message_library_mode(req, pass_id)
             else:
                 _channel_dirs(box, channels)
-                # D26: Sol tends the library on its channels, so library.json gives each function's recorded
+                # the writer tends the library on its channels, so library.json gives each function's recorded
                 # covers (ids only) beside the last gate's refusals and the summary of its functions
                 covers = library_covers(wt, channels, self.ev.covers())
                 self._stage_context(inputs, wt, parent, covers)
@@ -3477,12 +3477,12 @@ class WriterPass:
             elif self.cfg.show_usage:  # UNIFY_MEMORY_V2_WRITER_USAGE=on
                 first += f"\n\n{self._usage(req, wt)}"
             messages: list[dict] = [
-                # the v2.1 surfacing switches' brief, then the stage-5 rewrites and paragraph (each
+                # the library-mode surfacing switches' brief, then the stage-5 rewrites and paragraph (each
                 # unchanged while its switches are off)
                 {
                     "role": "system",
                     "content": (
-                        self._brief_library_mode()  # spec v2.1 §12: the role's brief alone
+                        self._brief_library_mode()  # the role's brief alone
                         if self.cfg.library_mode
                         else _qa.system(writer_system(**switches), self._qa)
                     ),
@@ -3497,12 +3497,12 @@ class WriterPass:
                 return spend.usd + spend.unknown * reserve
 
             def writing() -> None:
-                """The charge when Sol first wrote: round 0's reading ends there (design r2 §3)."""
+                """The charge when the writer first wrote: round 0's reading ends there."""
                 if phase["write_mark"] is None:
                     phase["write_mark"] = charged()
 
             def commit_and_check(manifest: object) -> tuple[str, GateResult]:
-                """v2.1: the box as one commit on the parent, and the whole gate on it without merging, with
+                """Library mode: the box as one commit on the parent, and the whole gate on it without merging, with
                 the pass's seed (set from the first candidate the pass commits; Amendment A).
                 """
                 candidate = self._commit_round(box, parent, pass_id, summary, manifest)
@@ -3516,7 +3516,7 @@ class WriterPass:
                 )
 
             def check_tests(raw: object) -> str:
-                """Amendment B: under v2.1 ``check`` also runs the items' own tests and the gate's drawn inputs
+                """Amendment B: in library mode ``check`` also runs the items' own tests and the gate's drawn inputs
                 (``gate.check``, no merge, nothing written to the evidence store). A refusal is answered with
                 the gate's full result as a head-first view of /inputs/gate/check-<k>.md, which read pages.
                 """
@@ -3542,7 +3542,7 @@ class WriterPass:
                     final=False,
                     candidate=candidate,
                 )
-                # a file under /inputs, so a long result can be paged with read at the marker's offset (P5)
+                # a file under /inputs, so a long result can be paged with read at the marker's offset
                 vpath = f"/inputs/gate/check-{check_files[0]}.md"
                 (inputs / "gate").mkdir(exist_ok=True)
                 (inputs / "gate" / f"check-{check_files[0]}.md").write_text(text)
@@ -3608,7 +3608,7 @@ class WriterPass:
                 )
 
             def repair() -> bool:
-                """v2.1, after an accepted finish (spec §9.2): True opens repair round ``round_no + 1``.
+                """Library mode, after an accepted finish: True opens repair round ``round_no + 1``.
 
                 False ends the pass: its final candidate then goes to the one merge (per-item admission).
                 """
@@ -3616,7 +3616,7 @@ class WriterPass:
                 round_usd.append(charged() - mark[0])
                 round_s.append(time.monotonic() - mark[1])
                 if round_no == 0 and self.cfg.library_mode:
-                    # design r2 §3: price a repair round on the write phase, not on round 0's reading
+                    # price a repair round on the write phase, not on round 0's reading
                     wm = phase["write_mark"]
                     phase["round0_write"] = (
                         charged() - wm if wm is not None else round_usd[0]
@@ -3698,7 +3698,7 @@ class WriterPass:
                     notes.append(why)
                     return False
                 round_no += 1
-                checked["current"] = False  # Sol may change the box again
+                checked["current"] = False  # the writer may change the box again
                 messages.append(
                     {
                         "role": "user",
@@ -4013,7 +4013,7 @@ class WriterPass:
                     or (cap is not None and spend.usd + spend.unknown * reserve >= cap)
                 )
             ):
-                # the call cap or the USD cap ended the pass; uncapped (r5 S6): the operational step guard
+                # the call cap or the USD cap ended the pass; uncapped: the operational step guard
                 cause(CODE_STEP_GUARD if uncapped else CODE_PASS_CAP)
             if stop is not None and over_quota is None:
                 notes.append(stop)
@@ -4118,7 +4118,7 @@ class WriterPass:
 
 @dataclass(frozen=True)
 class WriterRoute:
-    """Sol's own route (``UNIFY_MEMORY_V2_WRITER_BASE_URL`` / ``UNIFY_MEMORY_V2_WRITER_TOKEN``): an OpenAI-compatible
+    """The writer's own route (``UNIFY_MEMORY_V2_WRITER_BASE_URL`` / ``UNIFY_MEMORY_V2_WRITER_TOKEN``): an OpenAI-compatible
     base URL and its token. The token is a ``SecretStr``: its repr and str are masked.
     """
 
@@ -4126,7 +4126,7 @@ class WriterRoute:
     token: SecretStr
 
 
-#: The route of the Sol call running in this context, read by unillm's per-call gateway lookup
+#: The route of the writer call running in this context, read by unillm's per-call gateway lookup
 #: (:func:`_install_writer_gateway`). Context-local: a call in any other task or thread never sees it.
 _WRITER_GATEWAY: contextvars.ContextVar[WriterRoute | None] = contextvars.ContextVar(
     "memory_writer_gateway",
@@ -4136,11 +4136,11 @@ _GATEWAY_LOCK = threading.Lock()
 
 
 class WriterRouteError(RuntimeError):
-    """Sol's declared route was not in effect for a Sol call (before it was sent, or seen in its event)."""
+    """The writer's declared route was not in effect for a writer call (before it was sent, or seen in its event)."""
 
 
 class WriterCallError(RuntimeError):
-    """A Sol call on the declared route failed. Its text is the exception's class and a fixed category only:
+    """A writer call on the declared route failed. Its text is the exception's class and a fixed category only:
     the original text (an echoed request header, say) never reaches pass notes, error rows or logs.
     """
 
@@ -4194,7 +4194,7 @@ def _check_route_in_effect(route: WriterRoute) -> None:
         )
 
 
-#: Why Sol's route does not start while unillm records OTel spans: a span keeps a failed call's text as is.
+#: Why the writer's route does not start while unillm records OTel spans: a span keeps a failed call's text as is.
 OTEL_REFUSAL = (
     "UNILLM_OTEL is on (or its state cannot be read): unillm's spans record a failed call's error text, "
     "which Sol's route keeps out of every record, so Sol's route does not start and no consolidation pass "
@@ -4255,7 +4255,7 @@ def _install_log_redaction() -> None:
 
 
 def _redact_log_file(path: Any) -> None:
-    """unillm's per-call log file of a Sol call (written only when ``UNILLM_LOG_DIR`` is set), which holds a
+    """unillm's per-call log file of a writer call (written only when ``UNILLM_LOG_DIR`` is set), which holds a
     failed call's error text as is, rewritten with :func:`redact_error` applied (a temporary file beside it
     replaces it). If it cannot be rewritten it is removed. Never raises.
     """
@@ -4284,13 +4284,13 @@ def _redact_log_file(path: Any) -> None:
 
 
 def _install_writer_gateway() -> None:
-    """Make unillm's per-call gateway lookup return Sol's route inside a Sol call; idempotent.
+    """Make unillm's per-call gateway lookup return the writer's route inside a writer call; idempotent.
 
     unillm sends an OpenRouter call to ``_llm_gateway()`` (read on every call, before the provider credential
     is filled in, which never overwrites a chosen ``api_key``), but its clients take no per-call
     ``api_base``/``api_key``: ``generate`` drops extra keyword arguments. Wrapping that lookup with a
     context variable gives the per-call route without touching the process environment, which subprocesses
-    inherit. Outside a Sol call the wrapper returns what unillm's own lookup returns. Refuses (no call made)
+    inherit. Outside a writer call the wrapper returns what unillm's own lookup returns. Refuses (no call made)
     when the installed unillm has no such lookup, or records OTel spans (:data:`OTEL_REFUSAL`). Also puts a
     redacting filter on the ``unillm.retry`` logger (:class:`_RedactRecords`).
     """
@@ -4333,7 +4333,7 @@ def unillm_turn(
 
     * The model is passed explicitly, so ``UNIFY_REASONING_EFFORT`` and the assistant default do not
       override it; ``effort`` is fixed for the pass. unillm needs a ``model@provider`` endpoint: a bare id
-      (``openai/gpt-6-sol``) gets ``@openrouter``, as the repo's tests write ``openai/gpt-6-luna@openrouter``.
+      (``<vendor>/<model>``) gets ``@openrouter``, as in ``<vendor>/<model>@openrouter``.
     * ``generate(messages=..., stateful=True)`` replaces the client's history with the full message list
       (the system message included) and appends the assistant reply, which is read back from
       ``client.messages[-1]`` (an OpenAI-shaped dict with ``content`` and ``tool_calls``), as
@@ -4352,7 +4352,7 @@ def unillm_turn(
     ``memory_v2.writer``, and that the unillm log shows ``reasoning_effort`` as configured. No test makes this
     call.
 
-    Sol's route (*route*, from ``UNIFY_MEMORY_V2_WRITER_BASE_URL`` and ``UNIFY_MEMORY_V2_WRITER_TOKEN``): ``None``
+    The writer's route (*route*, from ``UNIFY_MEMORY_V2_WRITER_BASE_URL`` and ``UNIFY_MEMORY_V2_WRITER_TOKEN``): ``None``
     sends the call exactly as above. Set, each call goes to ``route.base_url`` with ``route.token`` (through
     :func:`_install_writer_gateway`, for this call's context only) and carries ``X-Unify-Call-Kind: <origin>``;
     the endpoint must be an ``@openrouter`` one (the route replaces OpenRouter's transport). The scoped
@@ -4363,7 +4363,7 @@ def unillm_turn(
     retry. A failed call on the route raises :class:`WriterCallError` naming only the exception's class and a
     fixed category (``http_<status>``, ``timeout``, ``connection``, ``rate_limit``, ``auth``, ``other``), so
     no error text (an echoed header, say) reaches pass notes, error rows or logs. unillm's own copies of that
-    text are redacted too: its ``unillm.retry`` warnings by a filter on that logger, and Sol's per-call log
+    text are redacted too: its ``unillm.retry`` warnings by a filter on that logger, and the writer's per-call log
     file (``UNILLM_LOG_DIR``) by a rewrite once unillm finalises it; the route refuses to start while unillm
     records OTel spans (``UNILLM_OTEL``), which would keep the text as is. The pricing is unchanged:
     the request still asks OpenRouter's API for its charged cost, and a call the route does not price is
