@@ -411,7 +411,7 @@ def adopt_ref(raw: object) -> str:
     """One ``adopts`` ref in its canonical form, or ManifestError naming the accepted forms. ``/inputs/staging/...``,
     ``/inputs/helpers/...`` and ``/inputs/pool/<id>[/...]`` paths are accepted for the same files."""
     if not isinstance(raw, str) or "\0" in raw:
-        raise ManifestError(f"adopts: {raw!r} is not a string ref"[:200])
+        raise ManifestError(f"adopts: {raw!r} is not a string ref ({ADOPT_FORMS})"[:400])
     ref = raw.strip()
     for prefix, form in _ADOPT_PATHS:
         if ref.startswith(prefix):

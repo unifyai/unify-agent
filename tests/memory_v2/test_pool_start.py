@@ -142,8 +142,7 @@ def test_an_adopted_staged_candidate_merges_in_the_same_pass(tmp_path, monkeypat
         "p1",
         staging_root=str(root),
     )
-    assert model.outputs["f"].startswith("ok") or out.finished, model.outputs["f"]
-    assert out.passed and out.items_merged == [ITEM["item"]], out.reasons
+    assert out.finished and out.passed and out.items_merged == [ITEM["item"]], out.reasons
     assert out.provenance == [
         {"item": ITEM["item"], "adopts": ["staging:e2/candidates/fill.py"]},
     ]
