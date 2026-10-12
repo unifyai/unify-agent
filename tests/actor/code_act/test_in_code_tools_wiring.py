@@ -94,8 +94,19 @@ def _channel_rows(rows: list[dict]) -> list[dict]:
     return sorted((r for r in rows if r.get("via") == "channel"), key=lambda r: r["call"])
 
 
+def _text(content) -> str:
+    if isinstance(content, list):
+        return "\n".join(str(p.get("text", "")) if isinstance(p, dict) else str(p) for p in content)
+    return "" if content is None else str(content)
+
+
 def _tool_results(call) -> str:
-    return "\n".join(json.dumps(m.get("content")) for m in call.messages if m.get("role") == "tool")
+    return "\n".join(_text(m.get("content")) for m in call.messages if m.get("role") == "tool")
+
+
+def _why(model: ScriptedModel) -> str:
+    """The last request's tool results, line by line (a failing assertion shows each line)."""
+    return "\n" + "\n".join(_tool_results(model.calls[-1]).splitlines()[-60:]) if model.calls else ""
 
 
 def _assert_one_tool(call) -> None:
@@ -124,12 +135,15 @@ def _assert_no_host_text(model: ScriptedModel, home: Path) -> None:
 @pytest.mark.asyncio
 @pytest.mark.timeout(300)
 async def test_the_actor_calls_its_tools_from_cells_and_finishes_with_an_answer(in_code):
-    model = ScriptedModel(actor=[reply(calls=[code(FIRST_CELL)]), reply(calls=[code(SECOND_CELL)])])
+    # the last entry ends the request if finish did not, so a failure shows the cells' output
+    model = ScriptedModel(
+        actor=[reply(calls=[code(FIRST_CELL)]), reply(calls=[code(SECOND_CELL)]), reply("not finished")],
+    )
     result = await _act(model, "Look at data.txt and answer.")
 
-    assert result == ANSWER
+    assert result == ANSWER, _why(model)
     # tools.finish ended the request: no model call after the second cell
-    assert model.kinds() == ["actor", "actor"]
+    assert model.unused() == {"actor": 1}
     for call in model.calls:
         _assert_one_tool(call)
     shown = _tool_results(model.calls[1])
@@ -176,6 +190,7 @@ async def test_a_refused_call_raises_in_the_cell(in_code):
     model = ScriptedModel(actor=[reply(calls=[code(probe)]), reply("done")])
     assert await _act(model, "Read two files.") == "done"
     shown = _tool_results(model.calls[1])
+    assert "Traceback (most recent call last)" not in shown.split("REFUSED")[0], _why(model)
     assert "REFUSED outside_roots" in shown and "/etc/passwd is outside /workspace" in shown, shown[:2000]
     assert "REFUSED unreadable" in shown and "READ /workspace/.env" not in shown
     # uncaught, the refusal is the cell's error, as its text
@@ -206,13 +221,14 @@ ACTOR_WAIT = (
 @pytest.mark.timeout(300)
 async def test_a_teammate_gets_the_same_wiring_with_its_own_allow_list(in_code):
     model = ScriptedModel(
-        actor=[reply(calls=[code(ACTOR_START)]), reply(calls=[code(ACTOR_WAIT)])],
-        helper=[reply(calls=[code(TEAMMATE_CELL)])],
+        actor=[reply(calls=[code(ACTOR_START)]), reply(calls=[code(ACTOR_WAIT)]), reply("not finished")],
+        helper=[reply(calls=[code(TEAMMATE_CELL)]), reply("not finished")],
     )
     result = await _act(model, "Ask a teammate for the third line of data.txt.")
 
-    assert result == "the third line is line 3", [_tool_results(c)[:1500] for c in model.calls]
+    assert result == "the third line is line 3", _why(model)
     assert sorted(model.kinds()) == ["actor", "actor", "helper"]
+    assert model.unused() == {"actor": 1, "helper": 1}
     for call in model.calls:
         _assert_one_tool(call)
     _assert_no_host_text(model, in_code["world"]["state"])
