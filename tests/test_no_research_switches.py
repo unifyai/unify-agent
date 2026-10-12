@@ -38,6 +38,8 @@ CONFIGURATION = frozenset(
         "UNIFY_REASONING_EFFORT",
         # Observability for a proxy: HTTP headers only, the request body as shipped.
         "UNIFY_REQUEST_METADATA_HEADERS",
+        # Resource limit: the address space of each process in the workspace sandbox.
+        "UNIFY_SANDBOX_ADDRESS_SPACE_BYTES",
         "UNIFY_STORE_ADMISSION",
         "UNIFY_STORE_VERIFY",
         "UNIFY_TERMINAL_LOG",

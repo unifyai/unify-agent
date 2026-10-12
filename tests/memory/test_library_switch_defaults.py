@@ -330,7 +330,8 @@ def test_the_prompt_section_and_export_at_the_defaults_are_v2s(mv2):  # noqa: F8
             budget_tokens=GOLDEN["index_budget_tokens"],
             suspect=set(run.state.suspect),
         )
-        want = index + "\n" + GOLDEN["export_line"].replace("{checkout}", str(checkout))
+        # The recorded line, naming the copy where the cells' sandbox binds it.
+        want = index + "\n" + GOLDEN["export_line"].replace("{checkout}", "/memory-library")
         assert run.index == want
         assert hooks.system_prompt("S").endswith("\n\n" + want)
         committed = sorted(

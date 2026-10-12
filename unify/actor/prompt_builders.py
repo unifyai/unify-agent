@@ -256,12 +256,13 @@ def _session_sections() -> list[str]:
 
 
 def _build_filesystem_context() -> str:
-    from unify.workspace import get_local_root
+    # The path cells see: the sandbox binds the workspace there, so the host
+    # path (which can name the run) never reaches the model.
+    from unify.sandbox import WORKSPACE_MOUNT
 
-    resolved = get_local_root()
     return (
         "### Workspace\n\n"
-        f"Your working directory is `{resolved}`; it persists across "
+        f"Your working directory is `{WORKSPACE_MOUNT}`; it persists across "
         "tasks. Write files there, with absolute paths."
     )
 
@@ -309,6 +310,23 @@ _LEAN_ROLE = textwrap.dedent("""
     the requester defines a format for replies (a JSON object, a keyword, a
     fixed template), each reply follows that format exactly.
 """).strip()
+
+# The role's and the sandbox section's first lines name the function store;
+# a memory run has none, so it reads these instead (memory/integration/hooks.py).
+_LEAN_ROLE_LIBRARY = (
+    "You solve the request in this conversation by writing and running\n"
+    "Python, with a library of stored functions and procedures to draw on."
+)
+_LEAN_ROLE_LIBRARY_MEMORY = (
+    "You solve the request in this conversation by writing and running\n"
+    "Python cells with `execute_code`. A library of functions and notes from\n"
+    "earlier work, when one exists, is importable in your cells as `memory`."
+)
+_SANDBOX_GLOBALS_INTRO = (
+    "Python in `execute_code` and stored functions runs with the\n"
+    "injected globals below."
+)
+_SANDBOX_GLOBALS_INTRO_MEMORY = "Cells run with the injected globals below."
 
 _LEAN_QUERY_LLM = textwrap.dedent("""
     Use plain Python for exact steps (lookups, filters, arithmetic,

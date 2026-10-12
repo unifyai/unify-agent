@@ -211,6 +211,12 @@ def _places(world) -> dict[str, str]:  # noqa: F811
     return {k: str(v) for k, v in places.items()}
 
 
+def _in_box(path) -> str:
+    """*path* as the cell's sandbox shows it: a mount bound at a fixed path
+    (the workspace, the transcripts) is named there; anything else as is."""
+    return sandbox.box_path(path, sandbox.build_policy())
+
+
 def _has_needle(directory: str) -> bool:
     for dirpath, _dirs, files in os.walk(directory):
         for name in files:
@@ -246,8 +252,19 @@ async def test_a_later_cell_finds_no_outcome_anywhere_it_can_read(
     report = await _cell(
         PROBE.format(
             needles=json.dumps(NEEDLES),
-            roots=json.dumps(places),
-            pointer=pointer,
+            # Each mount where the cell sees it, and the host paths of those
+            # shown at a fixed path, which the cell must not see at all.
+            roots=json.dumps(
+                {
+                    **{k: _in_box(v) for k, v in places.items()},
+                    **{
+                        f"host {k}": v
+                        for k, v in places.items()
+                        if _in_box(v) != v
+                    },
+                },
+            ),
+            pointer=_in_box(pointer),
         ),
     )
     print(json.dumps(report, indent=1))
@@ -255,6 +272,7 @@ async def test_a_later_cell_finds_no_outcome_anywhere_it_can_read(
     found = {k: v["found"] for k, v in report["roots"].items() if v["found"]}
     assert found == {}, found
     assert report["roots"]["mounted transcripts"]["files"] > 0
+    assert report["roots"]["host mounted transcripts"]["files"] == 0
     # The store is on the host (task 1 wrote it) and absent in the cell.
     assert Path(places["store.sqlite"]).is_file()
     assert not any(
@@ -373,8 +391,8 @@ async def test_a_cell_reads_other_sessions_transcripts_and_no_outcome_in_them(
     forms = _outcome_forms(note)
     report = await _cell(
         ACROSS.format(
-            other=str(other.path),
-            transcripts=str(readable),
+            other=_in_box(other.path),
+            transcripts=_in_box(readable),
             internal=str(internal),
             review=review,
             forms=json.dumps(forms),

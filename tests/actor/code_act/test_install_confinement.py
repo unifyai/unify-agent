@@ -105,7 +105,10 @@ def test_the_installer_gets_no_credentials_and_runs_in_the_sandbox(
     policy = sandbox.build_policy()
     # /bin/sh opens the seccomp program for bwrap, then execs it.
     assert argv[0] == "/bin/sh" and Path(argv[4]).name == "bwrap", argv[:5]
-    command = argv[argv.index("--") + 1 :]
+    inside = argv[argv.index("--") + 1 :]
+    # Inside, every process runs under the sandbox's resource limits.
+    assert inside[0] == sandbox.PRLIMIT, inside[:2]
+    command = inside[inside.index("--") + 1 :]
     # The forwarder to the installer's proxy runs uv as its child.
     assert command[:4] == [sys.executable, "-I", "-S", "-c"], command[:4]
     assert command[7:] == [
@@ -141,6 +144,14 @@ def test_the_installer_gets_no_credentials_and_runs_in_the_sandbox(
     assert env["HTTPS_PROXY"] == f"http://127.0.0.1:{sandbox.INSTALLER_PROXY_PORT}"
     assert "NO_PROXY" not in env and "no_proxy" not in env
     assert env["TMPDIR"] == "/tmp"
+    # The sandbox clears the inherited environment and sets exactly this one.
+    assert "--clearenv" in options
+    setenv = {
+        options[i + 1]: options[i + 2]
+        for i, a in enumerate(options)
+        if a == "--setenv" and options[i + 1] != "PWD"
+    }
+    assert setenv == env
 
 
 def test_an_install_takes_packages_never_installer_options(

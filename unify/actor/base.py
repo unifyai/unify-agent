@@ -97,6 +97,15 @@ class BaseActor(ABC):
             environments=environments if environments is not None else [],
         )
 
+        from unify.memory.integration import hooks as _memory
+
+        if _memory.enabled():
+            # A memory run has no function or guidance store: the library is
+            # the memory package, so none is built and none is used.
+            self.function_manager = None
+            self.guidance_manager = None
+            return
+
         from unify.manager_registry import ManagerRegistry
 
         self.function_manager = (

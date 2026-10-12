@@ -227,6 +227,16 @@ def check_hidden(paths: Any, policy: Any) -> None:
         )
 
 
+def _export_roots(checkout: Path) -> list[str]:
+    """The paths cells may see the export at: its host paths (an in-process cell's) and the fixed path the
+    worker's sandbox binds it at (``unify.sandbox.LIBRARY_MOUNT``)."""
+    from unify.sandbox import LIBRARY_MOUNT
+
+    from ..analysis import use
+
+    return use.roots_of(checkout) + [LIBRARY_MOUNT]
+
+
 def pinned_items(checkout: Path, library_mode: bool = False) -> list[str]:
     """The ids of the memory functions in the export at *checkout* (listed or not), in id order; with *library_mode* the
     library-mode function items."""
@@ -546,7 +556,7 @@ class RequestRun:
             # before the actor can edit the scratch copy
             self.item_ids = pinned_items(paths.checkout)
             self.surface = use.library_surface(paths.checkout)
-            self.export_roots = use.roots_of(paths.checkout)
+            self.export_roots = _export_roots(paths.checkout)
             self.surfacing = surfacing_options(SETTINGS)
             if self.surfacing.catalogue:
                 self._surface_catalogue(consolidate)
@@ -651,7 +661,7 @@ class RequestRun:
             records=records,
         )
         self.item_ids = pinned_items(paths.checkout, library_mode=True)
-        self.export_roots = use.roots_of(paths.checkout)
+        self.export_roots = _export_roots(paths.checkout)
         self.surface = use.library_surface(
             paths.checkout,
             library_mode=True,

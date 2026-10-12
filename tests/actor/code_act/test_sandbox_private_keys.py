@@ -229,6 +229,8 @@ async def test_workspace_private_keys_are_masked_in_a_cell(world):
     assert masked.get(armoured) == "mask-credentials"
     assert public not in masked and public_pem not in masked
     ex = SessionExecutor()
+    # The cell sees the workspace at its fixed path.
+    ws = "/workspace"
     try:
         out, _ = await bash(ex, f"cat {ws}/id_rsa {ws}/keys/notes.txt 2>&1")
         assert FAKE_BODY not in out, out

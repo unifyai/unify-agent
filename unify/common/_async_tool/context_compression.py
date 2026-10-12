@@ -741,18 +741,16 @@ async def compress_and_rebuild(
         )
     combined = _COMPRESSED_HEADER + body
 
-    _instructions = (
-        "When you need details from a compressed message, call "
-        "`unpack_messages(index)` with its `[N]` index to "
-        "retrieve the full original content. Pass `n` to "
-        "retrieve a range of consecutive messages."
-    )
+    # The session's tool list is fixed when it starts, so the archive lookup
+    # added below is never offered to the model; the text names no tool,
+    # only the transcript when there is one.
+    text = combined
     if session is not None:
-        _instructions += "\n\n" + session.pointer_line()
+        text += "\n\n" + session.pointer_line()
 
     if state.live_image_ids:
         content_blocks: list[dict] = [
-            {"type": "text", "text": f"{combined}\n\n{_instructions}"},
+            {"type": "text", "text": text},
         ]
         for img_id in sorted(state.live_image_ids):
             if img_id in state.image_registry:
@@ -762,7 +760,7 @@ async def compress_and_rebuild(
                 content_blocks.append(state.image_registry[img_id])
         compressed_content: str | list[dict] = content_blocks
     else:
-        compressed_content = f"{combined}\n\n{_instructions}"
+        compressed_content = text
 
     system_msgs.append(
         {

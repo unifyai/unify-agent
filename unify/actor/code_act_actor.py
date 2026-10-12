@@ -4222,10 +4222,15 @@ class CodeActActor(BaseCodeActActor):
 
         # UNIFY_LIBRARY_SNAPSHOT: the first user message says how large the
         # libraries are at task start.
-        snapshot = _library_snapshot_line(
-            _library_counts(self.function_manager, self.guidance_manager),
-            has_fm_tools=core_session.prompt.functions,
-            has_gm_tools=core_session.prompt.guidance,
+        # A memory run has no function or guidance store, so nothing to count.
+        snapshot = (
+            None
+            if _mv2.enabled()
+            else _library_snapshot_line(
+                _library_counts(self.function_manager, self.guidance_manager),
+                has_fm_tools=core_session.prompt.functions,
+                has_gm_tools=core_session.prompt.guidance,
+            )
         )
         if snapshot:
             first_message_parts.append(snapshot)

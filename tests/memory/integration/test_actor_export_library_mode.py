@@ -167,7 +167,8 @@ async def test_a_cell_imports_the_library_and_cannot_write_it(
         "_CURRENT",
         SimpleNamespace(index="", paths=paths, library_mode=True),
     )
-    target = str(paths.checkout / "memory/text/dates.py")
+    # The cell sees the copy where the worker's sandbox binds it.
+    target = sandbox.LIBRARY_MOUNT + "/memory/text/dates.py"
     ex = SessionExecutor(environments={})
     try:
         out = await _cell(
@@ -178,7 +179,7 @@ async def test_a_cell_imports_the_library_and_cannot_write_it(
             "    tried = 'changed'\n"
             "except OSError as exc:\n"
             "    tried = errno.errorcode.get(exc.errno, str(exc.errno))\n"
-            f"root = {str(paths.checkout)!r}\n"
+            f"root = {sandbox.LIBRARY_MOUNT!r}\n"
             "seen = sorted(os.path.relpath(os.path.join(r, f), root) for r, _, fs in os.walk(root) for f in fs)\n"
             "[d.parse_date('2026-10-09'), tried, memory.index('web').splitlines()[0], seen]",
         )
