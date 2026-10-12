@@ -59,7 +59,10 @@ def test_cells_add_their_counts_and_a_cell_without_calls_is_still_observed():
     acc = runtime_calls_empty()
     add_runtime_calls(acc, _drained({PD: {"ok": 2, "refused": 1, "error": 0}}))
     add_runtime_calls(acc, {"records": [], "dropped": 0, "failed": 0, "bytes": 0})
-    add_runtime_calls(acc, _drained({PD: {"ok": 1, "error": 1}, WEEK: {"refused": 3}}, malformed=2))
+    add_runtime_calls(
+        acc,
+        _drained({PD: {"ok": 1, "error": 1}, WEEK: {"refused": 3}}, malformed=2),
+    )
     add_runtime_calls(acc, None)  # a cell whose records were lost is not observed
     assert acc["cells"] == 3
     assert acc["counts"] == {
@@ -71,8 +74,14 @@ def test_cells_add_their_counts_and_a_cell_without_calls_is_still_observed():
 
 def test_malformed_counts_are_skipped_and_items_over_the_bound_are_dropped():
     acc = runtime_calls_empty()
-    add_runtime_calls(acc, _drained({PD: {"ok": True, "error": -4, "refused": "9"}, 5: {"ok": 1}}))
-    assert acc["counts"] == {PD: {"ok": 0, "refused": 0, "error": 0}} and acc["malformed"] == 1
+    add_runtime_calls(
+        acc,
+        _drained({PD: {"ok": True, "error": -4, "refused": "9"}, 5: {"ok": 1}}),
+    )
+    assert (
+        acc["counts"] == {PD: {"ok": 0, "refused": 0, "error": 0}}
+        and acc["malformed"] == 1
+    )
     acc = runtime_calls_empty()
     many = {f"memory.p.m:f{i}": {"ok": 1} for i in range(MAX_RUNTIME_ITEMS + 3)}
     add_runtime_calls(acc, _drained(many))
@@ -95,8 +104,13 @@ def test_the_use_record_carries_per_item_runtime_counts():
     acc = runtime_calls_empty()
     add_runtime_calls(acc, _drained({PD: {"ok": 1}, TOK: {"error": 2}}))
     rec = with_runtime_calls(_use_rec({PD: {"called": 1}, WEEK: {"called": 1}}), acc)
-    assert rec["items"][PD] == {"called": 1, "runtime": {"ok": 1, "refused": 0, "error": 0}}
-    assert rec["items"][TOK] == {"runtime": {"ok": 0, "refused": 0, "error": 2}}  # called only at runtime
+    assert rec["items"][PD] == {
+        "called": 1,
+        "runtime": {"ok": 1, "refused": 0, "error": 0},
+    }
+    assert rec["items"][TOK] == {
+        "runtime": {"ok": 0, "refused": 0, "error": 2},
+    }  # called only at runtime
     assert "runtime" not in rec["items"][WEEK]
     assert rec["runtime_calls"] == {
         "cells": 1,
@@ -106,7 +120,11 @@ def test_the_use_record_carries_per_item_runtime_counts():
         "malformed": 0,
     }
     assert runtime_counts(rec, PD) == (1, 0, 0)
-    assert runtime_counts(rec, WEEK) == (0, 0, 0)  # observed: a call site that never ran
+    assert runtime_counts(rec, WEEK) == (
+        0,
+        0,
+        0,
+    )  # observed: a call site that never ran
 
 
 def test_without_an_observed_cell_the_record_is_unchanged():
@@ -148,15 +166,36 @@ def test_lifecycle_prefers_runtime_counts_and_marks_the_basis():
     rec = _runtime_rec(
         {
             PD: {"imported": 1, "called": 1},  # static: used; runtime: never ran
-            WEEK: {"called": 1, "refused": 1},  # static: not used; runtime: returned once, refused twice
+            WEEK: {
+                "called": 1,
+                "refused": 1,
+            },  # static: not used; runtime: returned once, refused twice
         },
         {WEEK: {"ok": 1, "refused": 2}, TOK: {"error": 1}},
     )
     f = lc.facts_from_use("e1", A, "implicit", rec, [], checker_visible=False)
     assert f.items == {
-        PD: lc.ItemUse(False, 1, False, False, False, seen=True, basis="runtime", calls=(0, 0, 0)),
+        PD: lc.ItemUse(
+            False,
+            1,
+            False,
+            False,
+            False,
+            seen=True,
+            basis="runtime",
+            calls=(0, 0, 0),
+        ),
         WEEK: lc.ItemUse(True, 1, True, False, False, basis="runtime", calls=(1, 2, 0)),
-        TOK: lc.ItemUse(False, 0, False, True, False, seen=True, basis="runtime", calls=(0, 0, 1)),
+        TOK: lc.ItemUse(
+            False,
+            0,
+            False,
+            True,
+            False,
+            seen=True,
+            basis="runtime",
+            calls=(0, 0, 1),
+        ),
     }
     use = lc.aggregate_use([f])
     assert use[WEEK][A]["episodes"] == 1 and use[WEEK][A]["refused"] == 1
@@ -165,7 +204,14 @@ def test_lifecycle_prefers_runtime_counts_and_marks_the_basis():
 
 
 def test_lifecycle_falls_back_to_static_counts_for_records_without_runtime_evidence():
-    f = lc.facts_from_use("e1", A, "implicit", _use_rec({PD: {"called": 2}}), [], checker_visible=False)
+    f = lc.facts_from_use(
+        "e1",
+        A,
+        "implicit",
+        _use_rec({PD: {"called": 2}}),
+        [],
+        checker_visible=False,
+    )
     assert f.items == {PD: lc.ItemUse(True, 2, False, False, False)}
     assert f.items[PD].basis == "static" and f.items[PD].calls is None
     assert "runtime_basis" not in lc.aggregate_use([f])[PD][A]
@@ -174,7 +220,12 @@ def test_lifecycle_falls_back_to_static_counts_for_records_without_runtime_evide
 def test_refusals_alone_never_demote_and_runtime_errors_do():
     refused = [
         lc.facts_from_use(
-            f"e{i}", A, "implicit", _runtime_rec({}, {PD: {"refused": 3}}), [], checker_visible=False
+            f"e{i}",
+            A,
+            "implicit",
+            _runtime_rec({}, {PD: {"refused": 3}}),
+            [],
+            checker_visible=False,
         )
         for i in range(3)
     ]
@@ -182,7 +233,11 @@ def test_refusals_alone_never_demote_and_runtime_errors_do():
     assert (status, rule) == ("experimental", None) and "refused" in reason
     erred = [
         lc.facts_from_use(
-            f"e{i}", A, "implicit", _runtime_rec({PD: {"called": 5}}, {PD: {"ok": 4, "error": 1}}), [],
+            f"e{i}",
+            A,
+            "implicit",
+            _runtime_rec({PD: {"called": 5}}, {PD: {"ok": 4, "error": 1}}),
+            [],
             checker_visible=False,
         )
         for i in range(2)
@@ -190,7 +245,12 @@ def test_refusals_alone_never_demote_and_runtime_errors_do():
     assert lc.decide_status(PD, "experimental", erred)[:2] == ("suspect", "errors")
     clean = [
         lc.facts_from_use(
-            f"e{i}", A, "implicit", _runtime_rec({}, {PD: {"ok": 1}}), [], checker_visible=False
+            f"e{i}",
+            A,
+            "implicit",
+            _runtime_rec({}, {PD: {"ok": 1}}),
+            [],
+            checker_visible=False,
         )
         for i in range(3)
     ]
@@ -203,12 +263,37 @@ def test_the_evidence_index_and_the_record_agree_on_runtime_facts(tmp_path):
         {PD: {"imported": 1, "called": 1}, WEEK: {"called": 1}},
         {WEEK: {"ok": 1, "refused": 1}, TOK: {"error": 1}},
     )
-    ev.index_episode(_ep(episode_id="e1", regime="implicit", memory_main=A, memory_use=rec), "1" * 40)
+    ev.index_episode(
+        _ep(episode_id="e1", regime="implicit", memory_main=A, memory_use=rec),
+        "1" * 40,
+    )
     old = _use_rec({PD: {"called": 2}})
-    ev.index_episode(_ep(episode_id="e2", regime="implicit", memory_main=A, memory_use=old), "2" * 40)
-    indexed = {f.episode_id: f for f in lc.facts_from_evidence(ev, checker_visible=False)}
+    ev.index_episode(
+        _ep(episode_id="e2", regime="implicit", memory_main=A, memory_use=old),
+        "2" * 40,
+    )
+    indexed = {
+        f.episode_id: f for f in lc.facts_from_evidence(ev, checker_visible=False)
+    }
     direct = lc.facts_from_use("e1", A, "implicit", rec, [], checker_visible=False)
     assert indexed["e1"].items == direct.items
     assert indexed["e2"].items == {PD: lc.ItemUse(True, 2, False, False, False)}
     row = ev.item_use(["e1"])[WEEK]
-    assert (row["runtime_basis"], row["runtime_ok"], row["runtime_refused"]) == (1, 1, 1)
+    assert (row["runtime_basis"], row["runtime_ok"], row["runtime_refused"]) == (
+        1,
+        1,
+        1,
+    )
+
+
+def test_library_mode_installs_the_call_hook_without_a_work_tree_capture(monkeypatch):
+    """The runtime calls "used" rests on are recorded even when no work tree is captured (no file roots then)."""
+    from unify.memory_v2.integration import hooks, request, worktree_capture
+
+    monkeypatch.setattr(hooks, "_run", lambda: object())
+    monkeypatch.setattr(worktree_capture, "active", lambda: None)
+    monkeypatch.setattr(request, "memory_library_on", lambda: True)
+    got = hooks.worker_audit()
+    assert got is not None and got["roots"] == [] and got["path"].endswith("audit.py")
+    monkeypatch.setattr(request, "memory_library_on", lambda: False)
+    assert hooks.worker_audit() is None

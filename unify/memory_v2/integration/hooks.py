@@ -126,20 +126,25 @@ def worker_audit() -> dict | None:
     """The ``audit`` entry of the worker's init message, or None (then the key is left out and the child
     installs no hook).
 
-    Only while a memory-v2 request captures the work tree: the workspace root (the sandbox binds it at its
+    While a request captures the work tree: the workspace root, for file events; in library mode without a
+    capture, no roots, so only the library's runtime calls are recorded. With a capture: the workspace root (the sandbox binds it at its
     own path, so the child sees the same path) and the file of the audit hook, which the child loads by path
     (stdlib only; no ``unify`` import there).
     """
     if _run() is None:
         return None
     try:
+        from .adapters import audit
+        from .request import memory_library_on
         from .worktree_capture import active
 
         capture = active()
         if capture is None:
-            return None
-        from .adapters import audit
-
+            # library mode still needs the library's runtime calls (the evidence "used" rests on): the hook goes
+            # in with no file roots, so it records calls and no file events
+            if not memory_library_on():
+                return None
+            return {"roots": [], "path": str(Path(audit.__file__))}
         return {"roots": [str(capture.workspace)], "path": str(Path(audit.__file__))}
     except (
         Exception
