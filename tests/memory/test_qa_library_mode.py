@@ -45,12 +45,15 @@ def _world(tmp_path, pytest_fn, qa=None):
         '{"input": 4, "source": {"episode": "e1", "source": "0", "slice": null}}\n',
     )
     (tmp_path / "inputs").mkdir()
+    # a library-mode item: no declared input and no action cover; its recorded-inputs file line is the recorded
+    # response of action 0 of e1, so a drawn input of its family is an observation (the fixture's source kind)
     it = SimpleNamespace(
         item=ITEM,
         kind="function",
         tests=[TEST],
-        input="observation",
+        input=None,
         covers=[],
+        typed_covers=[],
     )
     run = _Run(
         candidate="c" * 40,
@@ -142,10 +145,26 @@ def test_mutation_below_06_refuses_the_item(tmp_path):
     ] and "threshold 0.6" in run.fails[0][1]
 
 
+#: The form a drawn input reaches a library function's tests in, by the source kind of the input fixture it is drawn
+#: for: what the tests load from such a fixture.
+FORM_OF_SOURCE = {
+    "tool response": "observation",
+    "work-tree blob": "path",
+    "dialogue": "observation",
+    "request": "text",
+    "cell": "text",
+}
+
+
 def test_drawn_value_forms(tmp_path):
+    """Each form a fixture's source kind gives (FORM_OF_SOURCE) becomes the value the test reads: an observation as
+    recorded, a text as it is, a work-tree file copied under tests/data/ and named by its path there. No source kind
+    gives the env form: a library function's tests load recorded values, never a tool environment.
+    """
     samples, data = tmp_path / "s", tmp_path / "d"
     (samples / "files/3").mkdir(parents=True)
     (samples / "files/3/pay.csv").write_bytes(b"a,1\n")
+    assert set(FORM_OF_SOURCE.values()) == {"observation", "path", "text"}
     assert drawn_value(
         {"id": 1, "form": "observation", "action": {"response": {"n": 1}}},
         samples,
@@ -158,15 +177,6 @@ def test_drawn_value_forms(tmp_path):
             data,
         )
         == "hi"
-    )
-    ctx = [{"method": "get"}]
-    assert (
-        drawn_value(
-            {"id": 4, "form": "env", "context": ctx, "action": {}},
-            samples,
-            data,
-        )
-        == ctx
     )
     got = drawn_value(
         {"id": 3, "form": "path", "file": "/qa/files/3/pay.csv", "action": {}},

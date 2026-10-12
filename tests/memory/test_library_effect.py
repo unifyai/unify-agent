@@ -3,7 +3,10 @@ declares nothing, and the environment-function ``Effect:`` checks are unchanged.
 
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
+
+import pytest
 
 from unify.memory.library_checks import LibraryChecks, derive_effect
 from unify.memory.procedures import Cover
@@ -40,73 +43,75 @@ def _tool(eid):
     return Cover(eid, "episode", runner="tool")
 
 
+#: derive_effect takes the typed covers and the episode reader only
+NEW_SIGNATURE = pytest.mark.xfail(reason="needs library_checks.derive_effect", strict=False)
+
+
+@NEW_SIGNATURE
 def test_a_tool_procedure_over_recorded_writes_is_a_write():
-    assert derive_effect([_tool("wrote")], [], None, EPISODES) == "write"
+    assert derive_effect([_tool("wrote")], EPISODES) == "write"
     # one write cover among others is enough
-    assert derive_effect([_tool("read"), _tool("wrote")], [], None, EPISODES) == "write"
+    assert derive_effect([_tool("read"), _tool("wrote")], EPISODES) == "write"
 
 
+@NEW_SIGNATURE
 def test_a_tool_procedure_whose_calls_declare_no_effect_is_unknown():
-    assert derive_effect([_tool("undeclared")], [], None, EPISODES) == "unknown"
-    assert derive_effect([_tool("missing")], [], None, EPISODES) == "unknown"
+    assert derive_effect([_tool("undeclared")], EPISODES) == "unknown"
+    assert derive_effect([_tool("missing")], EPISODES) == "unknown"
 
 
+@NEW_SIGNATURE
 def test_a_worktree_procedure_changes_files():
     cover = Cover("wrote", "episode", runner="worktree")
-    assert derive_effect([cover], [], None, EPISODES) == "write"
+    assert derive_effect([cover], EPISODES) == "write"
 
 
-def test_read_only_covers_give_read():
-    cell = Cover("read", "cell", index=0)
+@NEW_SIGNATURE
+def test_a_dialogue_procedure_gives_read():
     dialogue = Cover("read", "episode", runner="dialogue", action=0)
-    assert derive_effect([cell], [], None, EPISODES) == "read"
-    assert derive_effect([dialogue], [], None, EPISODES) == "read"
-    assert derive_effect([], [("read", 0, _action("read"))], None, EPISODES) == "read"
-    assert (
-        derive_effect([], [("f", 0, _action("unknown", kind="file"))], None, EPISODES)
-        == "read"
-    )
-    assert derive_effect([], [], None, EPISODES) is None  # nothing to derive from
+    assert derive_effect([dialogue], EPISODES) == "read"
 
 
-def test_action_covers_carry_their_recorded_effect_unless_the_input_is_a_recorded_value():
-    write = [("wrote", 1, _action("write"))]
-    assert derive_effect([], write, None, EPISODES) == "write"
-    assert derive_effect([], write, "env", EPISODES) == "write"
-    # a parser of a recorded response makes no call itself
-    assert derive_effect([], write, "text", EPISODES) == "read"
-    assert (
-        derive_effect([], [("u", 0, _action("unknown"))], None, EPISODES) == "unknown"
-    )
+@NEW_SIGNATURE
+def test_only_episode_covers_give_an_effect():
+    """Replaces test_action_covers_carry_their_recorded_effect_unless_the_input_is_a_recorded_value (and the action
+    cover and cell cases of test_read_only_covers_give_read). The rule that replaces it: action covers are refused in
+    library mode, so a function's effect is derived from its ``episode`` covers only, and is None (never guessed)
+    without one.
+    """
+    assert derive_effect([Cover("read", "cell", index=0)], EPISODES) is None
+    assert derive_effect([Cover("wrote", "diff")], EPISODES) is None
+    assert derive_effect([], EPISODES) is None  # nothing to derive from
+    params = list(inspect.signature(derive_effect).parameters)
+    assert params == ["typed_covers", "episode"]
 
 
-def _checks(items, lookup, verification):
+def _checks(items, verification):
     cfg = SimpleNamespace(episodes=EPISODES)
-    gate = SimpleNamespace(library_mode=cfg, lookup=lookup)
+    gate = SimpleNamespace(library_mode=cfg, lookup=lambda eid, idx: None)
     run = SimpleNamespace(man=SimpleNamespace(items=items), verification=verification)
     return LibraryChecks(gate, run)
 
 
-def _item(item, *, typed=(), covers=(), form=None):
+def _item(item, *, typed=()):
     return SimpleNamespace(
         item=item,
         kind="function",
         typed_covers=list(typed),
-        covers=list(covers),
-        input=form,
+        covers=[],
+        input=None,
     )
 
 
 def test_the_gate_records_the_effect_in_each_functions_verification_record():
-    recorded = {("read", 0): _action("read")}
     verification: dict = {}
     checks = _checks(
         [
             _item(WRITER, typed=[_tool("wrote")]),
-            _item(READER, covers=[("read", 0)]),
+            _item(READER, typed=[Cover("read", "episode", runner="dialogue", action=0)]),
+            _item("memory.shop.cart:count"),  # no episode cover: no effect recorded
             SimpleNamespace(item="notes/shop/cart.md", kind="note"),
         ],
-        lambda eid, idx: recorded.get((eid, idx)),
         verification,
     )
     checks.effects()

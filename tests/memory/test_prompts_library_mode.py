@@ -207,10 +207,42 @@ def test_no_role_carries_another_roles_instructions():
         ), marker
 
 
-def test_input_forms_match_the_manifest():
-    from unify.memory.manifest import INPUT_KINDS
+#: How the library briefs described a first parameter's recorded input forms, before a function took any arguments.
+FORMER_INPUT_FORMS = (
+    "a path to a work-tree file",
+    "the text of a file or of an output",
+    "the raw bytes of a file",
+    "an observation value, as recorded",
+    "the object through which the request's tools are called",
+)
 
-    assert list(pv.INPUT_FORMS_LIBRARY) == list(INPUT_KINDS)
+
+@pytest.mark.xfail(reason="needs library_prompts.write_brief", strict=False)
+def test_no_input_form_is_named_in_library_briefs():
+    """Replaces test_input_forms_match_the_manifest. The rule that replaces it: a library function takes any
+    arguments and its examples are the calls its tests make on fixtures, so no library text names an input form, the
+    manifest's ``input`` key or a first-parameter rule (``INPUT_KINDS`` stays for v2 only).
+    """
+    from unify.memory import helpers
+    from unify.memory.integration import fork
+
+    texts = {
+        "write": pv.write_brief_now(staging=True, pool=True, helper=True, similar=True),
+        "write plain": pv.write_brief_now(),
+        "curate": pv.curate_brief_now(),
+        "guide": pv.GUIDE_LIBRARY,
+        "pointer": pv.GUIDE_POINTER,
+        "contract": pv.CANDIDATE_CONTRACT,
+        "fork": fork.fork_instruction(),
+        "helper": helpers.helper_brief(False),
+        "helper similar": helpers.helper_brief(True),
+    }
+    assert not hasattr(pv, "INPUT_FORMS_LIBRARY")
+    for name, text in texts.items():
+        assert '"input"' not in text and "<<input_forms>>" not in text, name
+        assert "first parameter takes one recorded form" not in text, name
+        for form in FORMER_INPUT_FORMS:
+            assert form not in text, (name, form)
 
 
 def test_rendered_from_the_constants_that_enforce_them():

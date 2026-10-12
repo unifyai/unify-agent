@@ -1,6 +1,12 @@
-"""The whole gate with the library mode's checks, in the jail (bubblewrap)."""
+"""The whole gate with the library mode's checks, in the jail (bubblewrap).
+
+The tests run on the shared world of :mod:`tests.memory.library_example_world`: a function that takes a response,
+whose examples are the calls its tests make on fixtures copied from two episodes, and whose manifest item has no
+``input`` and no action cover.
+"""
 
 import json
+import re
 import shutil
 
 import pytest
@@ -12,13 +18,24 @@ from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
 from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
+from tests.memory import library_example_world as w
+from tests.memory.library_example_world import library_example_world  # noqa: F401 (fixture)
 from tests.memory.test_episodes import _ep
-from tests.memory.test_gate import _candidate
 
 pytestmark = pytest.mark.skipif(
     shutil.which("bwrap") is None,
     reason="bubblewrap required",
 )
+
+#: the gate takes a function item without ``input`` and runs its examples through its tests
+JUDGED = "needs example_checks.ExampleChecks.judge"
+#: the manifest takes a function item without ``input``, and the gate reads no Input: line
+PARSED = "needs manifest._parse_library_mode"
+
+# --- the former world -----------------------------------------------------------------------------------------
+# Kept only for the test files that still import it (test_test_output, test_memory_writer, test_pool_start,
+# test_writer_library_curate, test_writer_finish_and_batch_map). Its item declares ``input`` and an action cover,
+# which the library-mode manifest refuses; those files move to library_example_world as they are migrated.
 
 ITEM_ID = "memory.acct.users:user_id"
 E1 = _ep(
@@ -198,208 +215,188 @@ def _man(fixtures, **item):
     }
 
 
-def test_library_gate_passes_and_records_verification(library_gate_world):
-    mem, ev, blobs, gate = library_gate_world
-    files, fixtures = _files_and_fixtures(blobs)
-    res = gate().merge(
-        mem.head(),
-        _candidate(mem, files),
-        _man(fixtures),
-        "p1",
-        "write",
-        None,
-        "0.01",
-    )
+# --- the gate on the shared world ------------------------------------------------------------------------------
+
+
+def _merge(world, files, man, pass_id="p1"):
+    mem, _, _, gate = world
+    return gate().merge(mem.head(), w.candidate(mem, files), man, pass_id, "write", None, "0.01")
+
+
+@pytest.mark.xfail(reason=JUDGED, strict=False)
+def test_library_gate_passes_and_records_verification(library_example_world):
+    mem, ev, blobs, gate = library_example_world
+    files, fixtures = w.files_and_fixtures(blobs.get)
+    res = _merge(library_example_world, files, w.manifest(fixtures))
     assert res.passed, res.reasons
-    rec = res.verification[ITEM_ID]
+    rec = res.verification[w.ITEM_ID]
     assert (
         rec["mutation"]["total"] > 0
         and rec["mutation"]["killed"] == rec["mutation"]["total"]
     )
     assert rec["guard"] == {"killed": 1, "total": 1}
-    assert (
-        rec["drawn_inputs"] == 1 and rec["drawn_inputs_read"] == 1
-    )  # e2's acct.me response was drawn
-    assert rec["exact_assertions"] == 2 and rec["tests"] == [T]
+    assert rec["exact_assertions"] >= 2 and rec["tests"] == [w.TEST_FILE]
+    # e3's acct.me response is of the fixtures' family and copied by none: stage 5 draws it
+    assert rec["drawn_inputs"] >= 1 and rec["drawn_inputs_read"] == rec["drawn_inputs"]
+    examples = rec["examples"]
+    assert (examples["calls"], examples["accepted"], examples["refused"], examples["raised"]) == (5, 4, 1, 0)
+    assert examples["grounded_calls"] == 4 and examples["episodes"] == ["e1", "e2"]
+    assert examples["fixtures"] == sorted([*w.FIXTURE_PATHS, w.INPUTS_PATH])
+    assert examples["perturbation"]["judged"] > 0 and examples["perturbation"]["unstable"] == 0
+    first = w.recorded_calls(blobs.get)[0]
+    assert examples["example"] == {
+        "test": w.EXAMPLE_TEST,
+        "line": first.line,
+        "call": 'user_id(load("me_1.json"))',
+    }
+    assert "cross_episode" not in rec and "input" not in rec
     reasons = json.loads(
         ev.db.execute("SELECT reasons FROM passes WHERE pass_id='p1'").fetchone()[0],
     )
     assert any(r.startswith("library_mode-verification ") for r in reasons)
-    # the deferred item: the landed commit's shapes are frozen under the item's id, for the actor's find
-    assert ITEM_ID in (ev.commit_shapes(res.merged) or {})
+    # the landed commit's shapes are frozen under the item's id, for the actor's find
+    assert w.ITEM_ID in (ev.commit_shapes(res.merged) or {})
 
 
-def test_a_fixture_not_made_by_fixture_tool_is_refused(library_gate_world):
-    mem, ev, blobs, gate = library_gate_world
-    files, fixtures = _files_and_fixtures(blobs)
-    fixtures.pop("memory/acct/tests/data/me.json")
-    res = gate().check(mem.head(), _candidate(mem, files), _man(fixtures))
+@pytest.mark.xfail(reason=PARSED, strict=False)
+def test_a_fixture_not_made_by_fixture_tool_is_refused(library_example_world):
+    mem, ev, blobs, gate = library_example_world
+    files, fixtures = w.files_and_fixtures(blobs.get)
+    fixtures.pop(w.FIXTURE_PATHS[0])
+    res = gate().check(mem.head(), w.candidate(mem, files), w.manifest(fixtures))
     assert not res.passed
-    assert any("me.json did not come through fixture()" in r for r in res.reasons)
+    assert any("me_1.json did not come through fixture()" in r for r in res.reasons)
 
 
-def test_no_trusted_exact_assertion_is_refused(library_gate_world):
-    mem, ev, blobs, gate = library_gate_world
-    files, fixtures = _files_and_fixtures(blobs, test=WEAK_TEST)
-    res = gate().check(mem.head(), _candidate(mem, files), _man(fixtures))
+WEAK_EXAMPLE_TEST = w.TEST_SOURCE.replace(
+    'assert user_id(load("me_1.json")) == "u-1"',
+    'assert isinstance(user_id(load("me_1.json")), str)',
+).replace(
+    'assert user_id(load("me_2.json")) == "u-2"',
+    'assert isinstance(user_id(load("me_2.json")), str)',
+)
+
+
+@pytest.mark.xfail(reason=PARSED, strict=False)
+def test_no_trusted_exact_assertion_is_refused(library_example_world):
+    mem, ev, blobs, gate = library_example_world
+    assert WEAK_EXAMPLE_TEST != w.TEST_SOURCE
+    files, fixtures = w.files_and_fixtures(blobs.get, test=WEAK_EXAMPLE_TEST)
+    res = gate().check(mem.head(), w.candidate(mem, files), w.manifest(fixtures))
     assert not res.passed and any("[library_mode:exact]" in r for r in res.reasons)
 
 
-def test_curate_due_is_a_note_not_a_refusal(library_gate_world):
-    mem, ev, blobs, gate = library_gate_world
-    files, fixtures = _files_and_fixtures(blobs)
-    res = gate(index_tokens=1).check(mem.head(), _candidate(mem, files), _man(fixtures))
+@pytest.mark.xfail(reason=JUDGED, strict=False)
+def test_curate_due_is_a_note_not_a_refusal(library_example_world):
+    mem, ev, blobs, gate = library_example_world
+    files, fixtures = w.files_and_fixtures(blobs.get)
+    res = gate(index_tokens=1).check(mem.head(), w.candidate(mem, files), w.manifest(fixtures))
     assert res.passed, res.reasons
     assert res.curate_due and any("G4 CURATE due" in r for r in res.reasons)
 
 
-def test_write_may_not_remove_an_item(library_gate_world):
-    mem, ev, blobs, gate = library_gate_world
-    files, fixtures = _files_and_fixtures(blobs)
-    assert (
-        gate()
-        .merge(
-            mem.head(),
-            _candidate(mem, files),
-            _man(fixtures),
-            "p1",
-            "write",
-            None,
-            "0",
-        )
-        .passed
-    )
-    gone = {"memory/acct/users.py": None, T: None}
+@pytest.mark.xfail(reason=JUDGED, strict=False)
+def test_write_may_not_remove_an_item(library_example_world):
+    mem, ev, blobs, gate = library_example_world
+    files, fixtures = w.files_and_fixtures(blobs.get)
+    assert _merge(library_example_world, files, w.manifest(fixtures)).passed
+    gone = {w.MODULE: None, w.TEST_FILE: None}
     man = {
         "items": [],
-        "deleted": [ITEM_ID],
-        "deleted_tests": [T],
+        "deleted": [w.ITEM_ID],
+        "deleted_tests": [w.TEST_FILE],
         "unlisted": [],
         "support": [],
-        "tests_changed": {T: "the function is retired"},
+        "tests_changed": {w.TEST_FILE: "the function is retired"},
     }
-    res = gate().check(mem.head(), _candidate(mem, gone), man)
+    res = gate().check(mem.head(), w.candidate(mem, gone), man)
     assert not res.passed and any(
         "removals and merges belong to CURATE" in r for r in res.reasons
     )
 
 
-FIRST_WORD = '''"""Words."""
-
-
-def first_word(text):
-    """The first word of a recorded line.
-
-    Effect: read
-    Input: text
+@pytest.mark.xfail(reason="needs example_evidence.evidence_check", strict=False)
+def test_examples_on_values_from_one_episode_are_refused(library_example_world):
+    """Replaces test_cross_episode_text_input_that_crashes_is_refused (with the special-casing test below). The
+    rule that replaces the cross-episode run: a function's examples run on recorded values from at least 2
+    episodes. Two fixtures copied from one episode count once.
     """
-    return text.split()[0]
-'''
-WORD_TEST = """import json
-from pathlib import Path
-
-from memory.talk.words import first_word
-
-DATA = Path(__file__).parent / "data"
-INPUTS = [json.loads(x) for x in (DATA / "words.first_word.inputs.jsonl").read_text().splitlines() if x]
-
-
-def test_first_word_of_the_recorded_line():
-    assert first_word(INPUTS[0]["input"]) == "hello"
-"""
-
-
-def test_cross_episode_text_input_that_crashes_is_refused(library_gate_world):
-    mem, ev, blobs, gate = library_gate_world
-    rel = fx.inputs_file("memory.talk.words:first_word")
-    line, entry = fx.make(E3, 0, rel, blob=blobs.get, append=True)
-    files = {
-        "memory/talk/__init__.py": '"""Talk."""\n',
-        "memory/talk/words.py": FIRST_WORD,
-        "memory/talk/tests/test_words.py": WORD_TEST,
-        rel: line.decode(),
-    }
-    man = {
-        "items": [
-            {
-                "item": "memory.talk.words:first_word",
-                "kind": "function",
-                "source_episodes": ["e3"],
-                "tests": ["memory/talk/tests/test_words.py"],
-                "covers": [["e3", 0]],
-                "input": "text",
-            },
-        ],
-        "deleted": [],
-        "unlisted": [],
-        "support": [],
-        "fixtures": {rel: entry},
-    }
-    res = gate().check(mem.head(), _candidate(mem, files), man)
+    mem, ev, blobs, gate = library_example_world
+    files, fixtures = w.files_and_fixtures(blobs.get, sources=(w.E1, w.E1))
+    man = w.manifest(fixtures, w.item(source_episodes=["e1"]))
+    res = gate().check(mem.head(), w.candidate(mem, files), man)
     assert not res.passed
-    assert any(
-        "from episodes outside its provenance" in r and "IndexError" in r
-        for r in res.reasons
-    ), (res.reasons, res.verification)
-    assert res.verification["memory.talk.words:first_word"]["cross_episode"] == {
-        "ran": 1,
-        "ok": 0,
-    }
-
-
-def test_a_deleted_package_test_is_refused_unless_a_reason_is_stated(
-    library_gate_world,
-):
-    mem, ev, blobs, gate = library_gate_world
-    files, fixtures = _files_and_fixtures(blobs)
     assert (
-        gate()
-        .merge(
-            mem.head(),
-            _candidate(mem, files),
-            _man(fixtures),
-            "p1",
-            "write",
-            None,
-            "0",
-        )
-        .passed
-    )
+        f"G2: [examples:episodes] {w.ITEM_ID}'s examples run on recorded values from 1 episode(s) (e1); "
+        "cross-episode evidence needs examples on values from at least 2 episodes"
+    ) in res.reasons, res.reasons
+    assert res.verification[w.ITEM_ID]["examples"]["episodes"] == ["e1"]
+
+
+SPECIAL_CASED = w.MODULE_SOURCE.replace(
+    '    return response["user_id"]\n',
+    '    return {"u-1": "u-1", "u-2": "u-2"}[response["user_id"]]\n',
+)
+SPECIAL = re.compile(
+    rf"G2: \[examples:special-cased\] {re.escape(w.ITEM_ID)} handles (?P<fixture>\S+) only for its recorded "
+    r"values: with (?P<field>\S+) replaced by an unseen value of its type, its call at "
+    r"(?P<file>[^:]+):(?P<line>\d+) raises KeyError where it returned before\Z",
+)
+
+
+@pytest.mark.xfail(reason="needs example_perturb.check", strict=False)
+def test_a_function_that_handles_only_its_recorded_values_is_refused(library_example_world):
+    """Replaces test_cross_episode_text_input_that_crashes_is_refused (with the one-episode test above). The rule
+    that replaces running a function on another episode's input: the gate replaces the fixture values its tests
+    load with unseen values of the same type, and a call that returned before must not raise now (special-cased).
+    """
+    mem, ev, blobs, gate = library_example_world
+    assert SPECIAL_CASED != w.MODULE_SOURCE
+    files, fixtures = w.files_and_fixtures(blobs.get, module=SPECIAL_CASED)
+    res = gate().check(mem.head(), w.candidate(mem, files), w.manifest(fixtures))
+    assert not res.passed
+    found = [m for m in map(SPECIAL.match, res.reasons) if m]
+    assert found, res.reasons
+    lines = {c.line for c in w.recorded_calls(blobs.get) if c.outcome == "returned"}
+    for m in found:
+        assert m["fixture"] in {*w.FIXTURE_PATHS, w.INPUTS_PATH}
+        assert m["field"].endswith("user_id")
+        assert m["file"] == w.TEST_FILE and int(m["line"]) in lines
+
+
+@pytest.mark.xfail(reason=JUDGED, strict=False)
+def test_a_deleted_package_test_is_refused_unless_a_reason_is_stated(
+    library_example_world,
+):
+    mem, ev, blobs, gate = library_example_world
+    files, fixtures = w.files_and_fixtures(blobs.get)
+    assert _merge(library_example_world, files, w.manifest(fixtures)).passed
     man = {
         "items": [],
         "deleted": [],
-        "deleted_tests": [T],
+        "deleted_tests": [w.TEST_FILE],
         "unlisted": [],
         "support": [],
     }
     lost = "no longer passes the parent's tests"
-    res = gate(role="curate").check(mem.head(), _candidate(mem, {T: None}), man)
+    res = gate(role="curate").check(mem.head(), w.candidate(mem, {w.TEST_FILE: None}), man)
     assert not res.passed and any(
         f"suite memory/acct/tests {lost}" in r for r in res.reasons
     )
     stated = {
         **man,
-        "tests_changed": {T: "the function is covered by test_accounts.py"},
+        "tests_changed": {w.TEST_FILE: "the function is covered by test_accounts.py"},
     }
-    res = gate(role="curate").check(mem.head(), _candidate(mem, {T: None}), stated)
+    res = gate(role="curate").check(mem.head(), w.candidate(mem, {w.TEST_FILE: None}), stated)
     assert not any(lost in r for r in res.reasons), res.reasons
 
 
-def test_a_tests_init_file_is_refused_with_the_rule_it_breaks(library_gate_world):
-    from tests.memory.test_gate import _candidate
-
-    mem, ev, blobs, gate = library_gate_world
-    files, fixtures = _files_and_fixtures(blobs)
+@pytest.mark.xfail(reason=PARSED, strict=False)
+def test_a_tests_init_file_is_refused_with_the_rule_it_breaks(library_example_world):
+    mem, ev, blobs, gate = library_example_world
+    files, fixtures = w.files_and_fixtures(blobs.get)
     files["memory/acct/tests/__init__.py"] = ""
-    res = gate().merge(
-        mem.head(),
-        _candidate(mem, files),
-        _man(fixtures),
-        "p1",
-        "write",
-        None,
-        "0.01",
-    )
+    res = _merge(library_example_world, files, w.manifest(fixtures))
     assert not res.passed
     assert (
         "G1: file memory/acct/tests/__init__.py: tests/ takes no __init__.py: the gate's pytest imports each test "
