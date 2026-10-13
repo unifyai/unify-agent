@@ -78,7 +78,10 @@ def _globals_spec(base_globals: dict) -> tuple[list[str], dict[str, list]]:
 
 
 def _error(name: str, message: str) -> Exception:
-    """The child's exception, as *name*: *message* (a builtin type when it is one)."""
+    """The child's exception, as *name*: *message* (a builtin type when it is one). The name comes from the box, so
+    anything but a plain identifier of at most 100 characters is shown as ``Exception``."""
+    if not isinstance(name, str) or len(name) > 100 or not name.isidentifier():
+        name = "Exception"
     base = getattr(builtins, name, None)
     if not (isinstance(base, type) and issubclass(base, Exception)):
         base = Exception
