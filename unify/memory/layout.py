@@ -36,7 +36,9 @@ LINKS_FILE = "links.json"
 DATA_DIR = ".memory"
 GENERATED_ROOT_FILES = (RESERVED_INIT, INDEX_FILE, LINKS_FILE)
 # Package names a subpackage import would bind over the helpers on ``memory`` (and the optional ones).
-RESERVED_PACKAGES = frozenset({"index", "show", "find", "search", "suggest", "tests"})
+RESERVED_PACKAGES = frozenset(
+    {"index", "show", "find", "match", "run", "search", "suggest", "tests"},
+)
 
 _NAME = r"[a-z][a-z0-9_]*"
 _SLUG = r"[a-z0-9][a-z0-9_-]*"

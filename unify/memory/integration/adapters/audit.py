@@ -78,8 +78,32 @@ cell raised any::
                                        # only when a helper call was seen
 
 The package's own helpers raise ``memory.helper_call`` with the same
-arguments, under the ids ``memory:index``, ``memory:show`` and
-``memory:find``; they are counted under ``helpers`` only, never as items.
+arguments, under the ids ``memory:index``, ``memory:show``, ``memory:find``,
+``memory:match`` and ``memory:run``; they are counted under ``helpers``
+only, never as items.
+
+``memory.match`` also raises ``memory.match_result`` with two tuples of
+``(id, level, status, matched)`` rows (the procedures it listed, the failed
+attempts it listed apart), and ``memory.run`` raises ``memory.run_result``
+with its target id, its outcome (``returned``, ``refused`` or ``error``),
+whether two runs agreed (``yes``, ``no`` or ``unchecked``), its level, its
+conditions (``none``, ``held``, ``not-held`` or ``error``) and a tuple of
+the ids of the matching procedures that gave the same result. Ids are
+library item ids or ``capture:<16 hex digits>`` (a captured procedure's run
+also raises ``memory.call`` under its capture id). ``calls`` then also
+holds, in order::
+
+    "matches": [{"listed": [{"id", "level", "status", "matched"}, ...],
+                 "failed": [...], "calls_before": n, "runs_before": n}, ...]
+    "runs": [{"target", "outcome", "repeatable", "level", "conditions",
+              "agrees_with": [id, ...], "calls_before": n}, ...]
+
+where ``calls_before`` and ``runs_before`` count the cell's ``records`` and
+``runs`` kept before it, so a consumer can tell which calls came after.
+
+An ``open`` record made by the import system, by traceback formatting or by
+the library package itself carries ``via`` (``import``, ``traceback`` or
+``library``), so a reader can tell the cell's own file reads from them.
 
 A call that raised (an item's or a helper's) also raises
 ``sys.audit("memory.call_failed", id, exception_type, message_line,
@@ -167,13 +191,31 @@ CALL_EVENT = "memory.call"
 CALL_OUTCOMES = ("ok", "refused", "error")
 #: The library package's own helpers raise this event, with the same arguments, under these ids.
 HELPER_EVENT = "memory.helper_call"
-HELPER_ITEMS = frozenset({"memory:index", "memory:show", "memory:find"})
+HELPER_ITEMS = frozenset(
+    {"memory:index", "memory:show", "memory:find", "memory:match", "memory:run"},
+)
 #: A failed call of an item or a helper: (id, exception type, first message line, arguments' shape).
 FAILED_EVENT = "memory.call_failed"
-#: The helper ids a failure may name (``memory:match`` too, so its failures are kept once it exists).
-FAILURE_HELPERS = HELPER_ITEMS | {"memory:match"}
+#: The helper ids a failure may name.
+FAILURE_HELPERS = HELPER_ITEMS
+#: What ``memory.match`` listed and how a ``memory.run`` went (ids and outcomes only).
+MATCH_EVENT = "memory.match_result"
+RUN_EVENT = "memory.run_result"
+RUN_OUTCOMES = ("returned", "refused", "error")
+RUN_REPEATABLE = ("yes", "no", "unchecked")
+RUN_CONDITIONS = ("none", "held", "not-held", "error")
 #: Audit events kept; everything else returns after one set lookup.
-AUDITED = PATH_EVENTS | SPAWN_EVENTS | {SYSTEM_EVENT, CALL_EVENT, HELPER_EVENT, FAILED_EVENT}
+AUDITED = PATH_EVENTS | SPAWN_EVENTS | {
+    SYSTEM_EVENT,
+    CALL_EVENT,
+    HELPER_EVENT,
+    FAILED_EVENT,
+    MATCH_EVENT,
+    RUN_EVENT,
+}
+#: The callers whose opens are marked ``via``: the import system, traceback formatting, the library package.
+_VIA_IMPORT = ("importlib", "_frozen_importlib", "zipimport")
+_VIA_TRACEBACK = frozenset({"linecache", "tokenize", "traceback"})
 
 #: Caps per cell and per record.
 MAX_RECORDS = 2000
@@ -191,6 +233,10 @@ MAX_ITEM_ID = 300
 #: Failed calls listed per cell, and the characters kept of a failure's message line and arguments' shape.
 MAX_CALL_FAILURES = 50
 MAX_FAILURE_TEXT = 300
+#: match results and runs listed per cell, and ids per match result.
+MAX_MATCH_RECORDS = 200
+MAX_RUN_RECORDS = 1000
+MAX_MATCH_IDS = 500
 CLIP_MARK = "<clipped>"
 
 #: The process-global sentinel: the one installed hook, whatever module
@@ -208,6 +254,9 @@ _KEY_MASK = "<redacted:key-shaped>"
 _ITEM_ID = re.compile(r"memory(?:\.[A-Za-z_][A-Za-z0-9_]*)+:[A-Za-z_][A-Za-z0-9_]*")
 _EXCEPTION_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,99}")
 _HEX_DIGEST = re.compile(r"[0-9a-f]{1,64}")
+_CAPTURE_ID = re.compile(r"capture:[0-9a-f]{16}")
+#: A level, a status or how a match was made: a short lower-case label.
+_LABEL = re.compile(r"[a-z][a-z0-9-]{0,39}")
 # The characters of a token that a clip may have cut through: a clipped text drops its trailing run of them.
 _TOKEN_CHARS = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-+/=.:~",
@@ -276,6 +325,18 @@ def _fd_path(fd: Any) -> Optional[str]:
     return target if target.startswith("/") else None
 
 
+def _via(caller: str) -> Optional[str]:
+    """``import``, ``traceback`` or ``library`` for an open made by the import system, by traceback formatting or
+    by the library package (its helper, its matcher or one of its modules); None for anything else."""
+    if caller.startswith(_VIA_IMPORT):
+        return "import"
+    if caller in _VIA_TRACEBACK:
+        return "traceback"
+    if caller == "memory" or caller.startswith(("memory.", "_memory_")):
+        return "library"
+    return None
+
+
 class CellAudit:
     """The per-process hook and its bounded per-cell buffer.
 
@@ -304,6 +365,8 @@ class CellAudit:
         self.helper_counts: dict = {}
         self.call_failures: list = []
         self.call_failures_dropped = 0
+        self.match_records: list = []
+        self.run_records: list = []
 
     @staticmethod
     def prefixes(roots: Iterable[str]) -> tuple:
@@ -333,6 +396,12 @@ class CellAudit:
             if event == FAILED_EVENT:
                 self._failure(args)
                 return
+            if event == MATCH_EVENT:
+                self._match_result(args)
+                return
+            if event == RUN_EVENT:
+                self._run_result(args)
+                return
             if len(self.records) >= MAX_RECORDS:
                 self.dropped += 1
                 return
@@ -347,20 +416,21 @@ class CellAudit:
                     pass  # the stack is not that deep: carry on
                 else:
                     return  # too near the limit to do anything safely
-            if event == "open" and not isinstance(
-                args[1] if len(args) > 1 else "",
-                str,
-            ):
-                # A low-level os.open made by the standard library itself
-                # (shutil.rmtree, os.fwalk, tempfile): directory handles and
-                # dir_fd-relative names the event cannot resolve. Their
-                # effects arrive as their own events (rmtree, remove, scandir).
+            via = None
+            if event == "open":
                 caller = sys._getframe(1).f_globals.get("__name__") or ""
-                if caller.partition(".")[0] in _STDLIB:
-                    return
+                caller = caller if type(caller) is str else ""
+                if not isinstance(args[1] if len(args) > 1 else "", str):
+                    # A low-level os.open made by the standard library itself
+                    # (shutil.rmtree, os.fwalk, tempfile): directory handles and
+                    # dir_fd-relative names the event cannot resolve. Their
+                    # effects arrive as their own events (rmtree, remove, scandir).
+                    if caller.partition(".")[0] in _STDLIB:
+                        return
+                via = _via(caller)
             local.busy = True
             try:
-                self._record(event, args)
+                self._record(event, args, via)
             finally:
                 local.busy = False
         except Exception:  # noqa: BLE001 - an audit never changes the cell
@@ -382,7 +452,7 @@ class CellAudit:
             or type(outcome) is not str
             or outcome not in CALL_OUTCOMES
             or len(item) > MAX_ITEM_ID
-            or _ITEM_ID.fullmatch(item) is None
+            or (_ITEM_ID.fullmatch(item) is None and _CAPTURE_ID.fullmatch(item) is None)
             or _HEX_DIGEST.fullmatch(digest) is None
         ):
             self.calls_malformed += 1
@@ -438,7 +508,11 @@ class CellAudit:
         item, exception, message, shape = args
         if (
             len(item) > MAX_ITEM_ID
-            or (item not in FAILURE_HELPERS and _ITEM_ID.fullmatch(item) is None)
+            or (
+                item not in FAILURE_HELPERS
+                and _ITEM_ID.fullmatch(item) is None
+                and _CAPTURE_ID.fullmatch(item) is None
+            )
             or _EXCEPTION_NAME.fullmatch(exception) is None
         ):
             self.calls_malformed += 1
@@ -458,6 +532,100 @@ class CellAudit:
             },
         )
 
+    @staticmethod
+    def _id(item: Any) -> Optional[str]:
+        """*item* if it is a library item id or a capture id, else None."""
+        if (
+            type(item) is not str
+            or len(item) > MAX_ITEM_ID
+            or (_ITEM_ID.fullmatch(item) is None and _CAPTURE_ID.fullmatch(item) is None)
+        ):
+            return None
+        return item
+
+    @classmethod
+    def _ids(cls, value: Any) -> Optional[list]:
+        """A tuple of ids (:meth:`_id`) as a list, or None if it is not one."""
+        if type(value) is not tuple or len(value) > MAX_MATCH_IDS:
+            return None
+        out = [cls._id(v) for v in value]
+        return None if any(v is None for v in out) else out
+
+    @classmethod
+    def _rows(cls, value: Any) -> Optional[list]:
+        """A tuple of ``(id, level, status, matched)`` rows as dicts, or None if it is not one."""
+        if type(value) is not tuple or len(value) > MAX_MATCH_IDS:
+            return None
+        out = []
+        for row in value:
+            if type(row) is not tuple or len(row) != 4:
+                return None
+            item = cls._id(row[0])
+            labels = row[1:]
+            if item is None or any(type(x) is not str or _LABEL.fullmatch(x) is None for x in labels):
+                return None
+            out.append({"id": item, "level": labels[0], "status": labels[1], "matched": labels[2]})
+        return out
+
+    def _match_result(self, args: tuple) -> None:
+        """Keep one ``memory.match_result`` event: the rows listed and listed as failed, and how many of the cell's
+        call records and runs came before it."""
+        if type(args) is not tuple or len(args) != 2:
+            self.calls_malformed += 1
+            return
+        listed, failed = self._rows(args[0]), self._rows(args[1])
+        if listed is None or failed is None:
+            self.calls_malformed += 1
+            return
+        if len(self.match_records) >= MAX_MATCH_RECORDS:
+            self.call_records_dropped += 1
+            return
+        self.match_records.append(
+            {
+                "listed": listed,
+                "failed": failed,
+                "calls_before": len(self.call_records),
+                "runs_before": len(self.run_records),
+            },
+        )
+
+    def _run_result(self, args: tuple) -> None:
+        """Keep one ``memory.run_result`` event: its target, outcome, repeatability, level, conditions and the ids
+        of the matching procedures that agreed."""
+        if type(args) is not tuple or len(args) != 6:
+            self.calls_malformed += 1
+            return
+        target, outcome, repeatable, level, conditions, agrees = args
+        agrees = self._ids(agrees)
+        if (
+            self._id(target) is None
+            or agrees is None
+            or type(outcome) is not str
+            or outcome not in RUN_OUTCOMES
+            or type(repeatable) is not str
+            or repeatable not in RUN_REPEATABLE
+            or type(level) is not str
+            or _LABEL.fullmatch(level) is None
+            or type(conditions) is not str
+            or conditions not in RUN_CONDITIONS
+        ):
+            self.calls_malformed += 1
+            return
+        if len(self.run_records) >= MAX_RUN_RECORDS:
+            self.call_records_dropped += 1
+            return
+        self.run_records.append(
+            {
+                "target": target,
+                "outcome": outcome,
+                "repeatable": repeatable,
+                "level": level,
+                "conditions": conditions,
+                "agrees_with": agrees,
+                "calls_before": len(self.call_records),
+            },
+        )
+
     def _calls_seen(self) -> bool:
         return bool(
             self.call_counts
@@ -465,7 +633,9 @@ class CellAudit:
             or self.calls_malformed
             or self.helper_counts
             or self.call_failures
-            or self.call_failures_dropped,
+            or self.call_failures_dropped
+            or self.match_records
+            or self.run_records,
         )
 
     def _inside(self, path: Optional[str]) -> bool:
@@ -505,7 +675,7 @@ class CellAudit:
             record["clipped"] = True
         return cleaned
 
-    def _record(self, event: str, args: tuple) -> None:
+    def _record(self, event: str, args: tuple, via: Optional[str] = None) -> None:
         if event in SPAWN_EVENTS:
             self._spawn(event, args)
         elif event == SYSTEM_EVENT:
@@ -515,7 +685,7 @@ class CellAudit:
                 record["argv"] = [self._string(command, record)]
                 self._append(record, RECORD_OVERHEAD + len(record["argv"][0]))
         else:
-            self._path(event, args)
+            self._path(event, args, via)
 
     def _spawn(self, event: str, args: tuple) -> None:
         # (executable, argv, ...): the env argument is never touched.
@@ -552,7 +722,7 @@ class CellAudit:
         size += len(record["exe"] or "")
         self._append(record, size)
 
-    def _path(self, event: str, args: tuple) -> None:
+    def _path(self, event: str, args: tuple, via: Optional[str] = None) -> None:
         if event == "os.rename":
             # (src, dst, src_dir_fd, dst_dir_fd)
             src = self._resolve(args[0], args[2] if len(args) > 2 else None)
@@ -602,6 +772,8 @@ class CellAudit:
         record = {"event": event}
         record["path"] = self._string(path, record)
         record.update(extra)
+        if via is not None and event == "open":
+            record["via"] = via
         self._append(record, RECORD_OVERHEAD + len(record["path"]))
 
     # Controls, called from the worker's cell loop on the cell's thread.
@@ -636,6 +808,10 @@ class CellAudit:
             if self.call_failures or self.call_failures_dropped:
                 out["calls"]["failures"] = self.call_failures
                 out["calls"]["failures_dropped"] = self.call_failures_dropped
+            if self.match_records:
+                out["calls"]["matches"] = self.match_records
+            if self.run_records:
+                out["calls"]["runs"] = self.run_records
         self.records, self.dropped, self.failed, self.bytes = [], 0, 0, 0
         self._reset_calls()
         return out

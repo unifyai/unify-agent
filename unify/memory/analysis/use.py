@@ -212,7 +212,7 @@ HELPER_FUNCTIONS = ("catalog", "find", "describe")
 #: library-mode pin carries ``"layout": LAYOUT_LIBRARY``; a v2 record has no such key, so v2's records are unchanged.
 LAYOUT_LIBRARY = "library_mode"
 PACKAGE_LIBRARY = "memory"
-HELPER_FUNCTIONS_LIBRARY = ("show", "index", "find")
+HELPER_FUNCTIONS_LIBRARY = ("show", "index", "find", "match", "run")
 
 _IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
 _IDENT_RE = re.compile(_IDENT)
@@ -648,6 +648,90 @@ def transcript_cells(lines: Iterable[Any]) -> list[dict]:
                 },
             )
     return cells
+
+
+def cells_before_more_input(lines: Iterable[Any]) -> int | None:
+    """How many code cells had their results before the first message from the counterpart after the request (a
+    ``user`` message after the first one: the environment's or the user's next observation); None when none came,
+    so every cell came before it. Read from the order of the transcript only."""
+    users = 0
+    cells = 0
+    pending: set = set()
+    for row in _fold(lines):
+        msg = row.get("message")
+        role = msg.get("role")
+        if role == "user":
+            users += 1
+            if users > 1:
+                return cells
+        for tc in msg.get("tool_calls") or []:
+            if isinstance(tc, dict):
+                fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+                if fn.get("name") == "execute_code":
+                    pending.add(tc.get("id"))
+        if role == "tool" and msg.get("tool_call_id") in pending:
+            pending.discard(msg.get("tool_call_id"))
+            cells += 1
+    return None
+
+
+def match_run_fields(runtime: Any, lines: Iterable[Any] = ()) -> dict:
+    """The use record's fields for ``memory.match`` and ``memory.run`` (design I.4.4 and I.5.5), from the request's
+    runtime call evidence (``integration.request.add_runtime_calls``) and the transcript's order:
+
+    * ``match_calls``: the ``match`` results the audit hook saw; ``match_rows``: per result, its ``cell`` and the
+      rows it listed (``listed``) and listed apart as failed (``failed``), each ``{id, level, status, matched}``, and
+      ``called_after``, the listed ids that a later library call or ``run`` in the request called;
+    * ``run_calls``: the runs seen; ``run_rows``: per run, its ``cell``, ``target``, ``level``, ``outcome``,
+      ``conditions``, ``repeatable``, ``agrees_with`` (how many other matching procedures gave the same result) and
+      ``listed_by_match`` (an earlier ``match`` of the request listed its target);
+    * ``ran_before_more_input``: whether a run came in a cell before the first message from the counterpart after
+      the request (:func:`cells_before_more_input`; None without a run), and ``run_first_share``, the share of the
+      runs that did (None without a run);
+    * ``match_run_dropped``: results and runs past the request's bounds, not listed.
+
+    Ids and labels only, never a value or a result. Cells are counted in the order their audit records arrived."""
+    rt = runtime if isinstance(runtime, dict) else {}
+    matches = [m for m in rt.get("matches") or [] if isinstance(m, dict)]
+    runs = [r for r in rt.get("runs") or [] if isinstance(r, dict)]
+    cutoff = cells_before_more_input(lines)
+    before = [
+        r for r in runs if isinstance(r.get("cell"), int) and (cutoff is None or r["cell"] < cutoff)
+    ]
+    return {
+        "match_calls": len(matches),
+        "match_rows": [
+            {
+                "cell": m.get("cell"),
+                "listed": list(m.get("listed") or []),
+                "failed": list(m.get("failed") or []),
+                "called_after": list(m.get("called_after") or []),
+            }
+            for m in matches
+        ],
+        "run_calls": len(runs),
+        "run_rows": [
+            {
+                k: r.get(k)
+                for k in (
+                    "cell",
+                    "target",
+                    "level",
+                    "outcome",
+                    "conditions",
+                    "repeatable",
+                    "agrees_with",
+                    "listed_by_match",
+                )
+            }
+            for r in runs
+        ],
+        "ran_before_more_input": bool(before) if runs else None,
+        "run_first_share": (len(before) / len(runs)) if runs else None,
+        "match_run_dropped": rt.get("match_run_dropped", 0)
+        if isinstance(rt.get("match_run_dropped"), int)
+        else 0,
+    }
 
 
 def _session_of(value: Any) -> int | str | None:

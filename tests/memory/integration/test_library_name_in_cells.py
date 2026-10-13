@@ -334,6 +334,8 @@ def test_the_library_mode_use_record_carries_the_counts_and_only_there():
         "index": {"ok": 0, "refused": 0, "error": 0},
         "show": {"ok": 0, "refused": 0, "error": 0},
         "find": {"ok": 0, "refused": 0, "error": 1},
+        "match": {"ok": 0, "refused": 0, "error": 0},
+        "run": {"ok": 0, "refused": 0, "error": 0},
     }
     off = memory_use(_ep(transcript=[], actions=[]), [PARSE_DATE], runtime_calls=acc)
     assert not {"library_calls_failed", "library_name_errors", "library_helper_calls"} & set(off)

@@ -167,7 +167,7 @@ def test_helper_lookups_are_lookups_not_uses(library_root):
     assert rec["cell_exposure"] == {
         "items": [PD, WEEK, TOK],
         "channels": ["text", "text.dates"],
-        "calls": {"show": 2, "index": 1, "find": 1, "help": 0},
+        "calls": {"show": 2, "index": 1, "find": 1, "match": 0, "run": 0, "help": 0},
     }
 
 

@@ -287,14 +287,18 @@ def test_the_evidence_index_and_the_record_agree_on_runtime_facts(tmp_path):
 
 
 def test_library_mode_installs_the_call_hook_without_a_work_tree_capture(monkeypatch):
-    """The runtime calls "used" rests on are recorded even when no work tree is captured (no file roots then)."""
+    """The runtime calls "used" rests on are recorded even when no work tree is captured (the library copy is the
+    only file root then)."""
     from unify.memory.integration import hooks, request, worktree_capture
 
     monkeypatch.setattr(hooks, "_run", lambda: object())
     monkeypatch.setattr(worktree_capture, "active", lambda: None)
     monkeypatch.setattr(request, "memory_library_on", lambda: True)
     got = hooks.worker_audit()
-    assert got is not None and got["roots"] == [] and got["path"].endswith("audit.py")
+    from unify.sandbox import LIBRARY_MOUNT
+
+    # no file roots but the library copy's: its reads count as lookups, and no work-tree event is recorded
+    assert got is not None and got["roots"] == [LIBRARY_MOUNT] and got["path"].endswith("audit.py")
     monkeypatch.setattr(request, "memory_library_on", lambda: False)
     assert hooks.worker_audit() is None
 
@@ -307,7 +311,8 @@ def test_the_package_helpers_calls_are_counted_by_helper_and_outcome():
 
     acc = runtime_calls_empty()
     assert library_helper_calls(acc) == {
-        name: {"ok": 0, "refused": 0, "error": 0} for name in ("index", "show", "find")
+        name: {"ok": 0, "refused": 0, "error": 0}
+        for name in ("index", "show", "find", "match", "run")
     }
     first = _drained({})
     first["calls"]["helpers"] = {"memory:index": {"ok": 2}, "memory:show": {"ok": 1, "error": 1}}
@@ -319,6 +324,8 @@ def test_the_package_helpers_calls_are_counted_by_helper_and_outcome():
         "index": {"ok": 3, "refused": 0, "error": 0},
         "show": {"ok": 1, "refused": 0, "error": 1},
         "find": {"ok": 0, "refused": 1, "error": 0},
+        "match": {"ok": 0, "refused": 0, "error": 0},
+        "run": {"ok": 0, "refused": 0, "error": 0},
     }
     assert acc["malformed"] == 1  # an id that is not one of the package's helpers
     # the failures still count the helpers' refused and error calls once

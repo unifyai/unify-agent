@@ -1,4 +1,5 @@
-"""The memory library's helpers: ``memory.index``, ``memory.show`` and ``memory.find``.
+"""The memory library's helpers: ``memory.index``, ``memory.show``, ``memory.find``, ``memory.match`` and
+``memory.run``.
 
 The harness generates this file as ``memory/__init__.py`` in every copy of the library; edits are discarded.
 It imports only the standard library and reads only files beside the package: ``INDEX.md``, ``links.json``
@@ -9,6 +10,8 @@ and the harness's data under ``.memory/``. In a cell::
     print(memory.index("<package>"))               # one package's or notes topic's section
     print(memory.show("memory.<package>.<module>:<name>"))   # source, links, status, records, history
     memory.find(value)                             # functions whose tests call them on arguments shaped like value
+    memory.match(request, inputs)                  # stored procedures whose recorded input fits what you pass
+    memory.run("<id>", *args)                      # try one stored procedure and report how it went
 
 ``find`` matches structured data only: a dict, a list of records, JSON text, or a structured file such as a
 CSV with a header. It compares key paths and types with the shapes of the arguments each function's tests
@@ -20,10 +23,16 @@ module is imported (:class:`_CallFinder`), so that each call raises the audit ev
 the item id, a short digest of the arguments (never their values) and the outcome: ``ok``, ``refused``
 (a ``MemoryInputError`` left it) or ``error`` (any other exception). The wrapper returns what the function
 returns and re-raises what it raises, unchanged; whatever audit hooks the process has decide what is kept.
-Its own ``index``, ``show`` and ``find`` raise ``memory.helper_call`` the same way, with the ids
-``memory:index``, ``memory:show`` and ``memory:find``. A call that raised also raises ``memory.call_failed``
-with the id, the exception's type, the first line of its message and, for the helpers, the arguments' shape
-(types and sizes, never values).
+Its own ``index``, ``show``, ``find``, ``match`` and ``run`` raise ``memory.helper_call`` the same way, with the ids
+``memory:index``, ``memory:show``, ``memory:find``, ``memory:match`` and ``memory:run``.
+
+``match`` reads what each stored procedure was saved against (the landed procedures in ``.memory/find.json``'s
+``procedures``, the harness's captured attempts under ``.memory/captures/``) and hands it, identifiers masked, to
+:data:`MATCHER`, a replaceable module-level hook; the default compares structure only and runs nothing. Each call
+also raises ``memory.match_result`` with the ids it listed. ``run`` is the caller's own call of one procedure; it
+also raises ``memory.run_result`` with its target and outcome. Neither event carries a value or a result.
+A call that raised also raises ``memory.call_failed`` with the id, the exception's type, the first line of
+its message and, for the helpers, the arguments' shape (types and sizes, never values).
 """
 
 from __future__ import annotations
@@ -36,7 +45,9 @@ import importlib.util
 import inspect
 import json
 import os
+import re
 import sys
+import threading
 from typing import Any, NamedTuple
 
 INDEX_FILE = "INDEX.md"
@@ -118,7 +129,21 @@ def item_count(body: str) -> int:
     return sum(1 for line in body.splitlines() if line.startswith(ITEM_LINE))
 
 
-__all__ = ["Found", "find", "index", "show"]
+__all__ = [
+    "MATCHER",
+    "Candidate",
+    "Found",
+    "MatchRow",
+    "Matches",
+    "Query",
+    "RunReport",
+    "find",
+    "index",
+    "match",
+    "run",
+    "show",
+    "structural_match",
+]
 
 _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(
@@ -383,6 +408,749 @@ def find(value: Any) -> list[Found]:
     return [f for *_, f in sorted(ranked, key=lambda r: r[:4])][: m.MAX_RESULTS]
 
 
+# --- recognition by content (``match``) and trying a stored procedure (``run``) ---------------------------------
+#
+# ``match`` informs and runs nothing: it reads what each stored procedure was saved against and asks the matcher
+# (:data:`MATCHER`, a module-level hook) which of them fit what the caller passed. ``run`` is the agent's own call of
+# one procedure, in its own cell; nothing here runs on its own. Everything read here was built by the harness with
+# identifiers already removed (signatures, docstrings, summary sections, what broke); this file strips nothing.
+
+#: Captured attempts the harness exported beside the package, one directory per capture id (written by the capture
+#: store, never by this file): ``signature.json``, ``record.json``, ``procedure.py`` and ``saved.json`` (what the
+#: attempt was saved against besides its signature: ``docstring``, ``asked``, ``approach`` and ``broke``).
+CAPTURES_DIR = ".memory/captures"
+CAPTURE_PREFIX = "capture:"
+#: The audit events of a ``match`` result (each listed row's id, level, status and how it matched; the failed
+#: attempts apart) and of a ``run`` (its target, outcome, repeatability, level, conditions and the ids that agreed).
+#: Ids and short labels only: never a value, a result or a request's text.
+MATCH_EVENT = "memory.match_result"
+RUN_EVENT = "memory.run_result"
+RUN_OUTCOMES = ("returned", "refused", "error")
+REPEATABLE = ("yes", "no", "unchecked")
+CONDITIONS = ("none", "held", "not-held", "error")
+#: How long one run of a captured procedure may take, in seconds, before its process group is stopped.
+RUN_TIMEOUT_S = 120.0
+_CAPTURE_ID = re.compile(r"[0-9a-f]{16}")
+_LABEL = re.compile(r"[a-z][a-z0-9-]{0,39}")
+_RESULT_CHARS = 2000
+_DETAIL_CHARS = 500
+_RUN_MARK = "\x1ememory-run-report\x1e"
+
+
+class Candidate(NamedTuple):
+    """One stored procedure as the matcher sees it: what it was saved against, identifiers already removed."""
+
+    id: str  # an item id (memory.<package>.<module>:<name>) or capture:<16 hex digits>
+    source: str  # library | capture
+    signature: dict  # its applicability signature: input, output, relations, constraints (never request text)
+    docstring: str
+    asked: str  # the "Asked" section of its source episode's summary.md
+    approach: str  # the "Approach" section of the same summary
+    level: str  # its evidence level, as recorded ("unknown" when none is)
+    status: str  # its status, as recorded
+    failed: bool  # a captured attempt that failed: listed apart, never offered to run
+    broke: tuple  # for a failed capture, what broke, one line each
+
+
+class Query(NamedTuple):
+    """What a ``match`` call was given: the request text, the caller's inputs (unchanged), and the shapes the
+    structural reading gives them (none for plain text)."""
+
+    request: Any
+    inputs: Any
+    shapes: tuple
+
+
+class MatchRow(NamedTuple):
+    """One procedure ``match`` lists."""
+
+    id: str
+    source: str
+    level: str
+    status: str
+    matched: str  # how the matcher says it matched (the structural default: exact | structure)
+    relations: tuple
+    conditions: str
+    goal: str
+    broke: tuple
+
+
+def _row_text(row: MatchRow) -> str:
+    parts = [f"level {row.level}", f"status {row.status}", f"matched: {row.matched}"]
+    if row.relations:
+        parts.append("relations: " + ", ".join(row.relations))
+    parts.append("conditions: " + row.conditions)
+    lines = [f"- {row.id}  [" + "; ".join(parts) + "]"]
+    if row.goal:
+        lines.append("  goal: " + " ".join(row.goal.split())[:300])
+    for line in row.broke:
+        lines.append("  broke: " + line)
+    return "\n".join(lines)
+
+
+class Matches(list):
+    """The runnable procedures ``match`` lists (a list of :class:`MatchRow`), with ``failed``, the captured attempts
+    that were tried on input like this and failed, kept apart. It prints as a few lines."""
+
+    def __init__(self, rows: list, failed: list, note: str = "") -> None:
+        super().__init__(rows)
+        self.failed = list(failed)
+        self.note = note
+
+    def __repr__(self) -> str:
+        out: list[str] = []
+        if self:
+            out.append(
+                f"{len(self)} stored procedure(s) match what you passed. The match compares structure only, so "
+                "it can be wrong; memory.run(<id>, ...) tries one and reports how it went:",
+            )
+            out += [_row_text(r) for r in self]
+        else:
+            out.append("No stored procedure matches what you passed.")
+        if self.failed:
+            out.append("Tried on input like this and failed:")
+            out += [_row_text(r) for r in self.failed]
+        if self.note:
+            out.append(self.note)
+        return "\n".join(out) + "\n"
+
+    __str__ = __repr__
+
+
+def _read_text(path: str) -> str | None:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _read_json(path: str) -> Any:
+    text = _read_text(path)
+    if text is None:
+        return None
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
+
+
+def _str(value: Any, default: str = "") -> str:
+    return value if isinstance(value, str) and value else default
+
+
+def _label(value: Any, default: str = "other") -> str:
+    """A short lower-case label (a level, a status, how a row matched) as the audit event may carry it."""
+    return value if isinstance(value, str) and _LABEL.fullmatch(value) else default
+
+
+def _library_candidates() -> list[Candidate]:
+    """The landed procedures the export lists in ``find.json`` (``procedures``), each with what it was saved
+    against."""
+    try:
+        rows = _json(FIND_FILE).get("procedures", [])
+    except (RuntimeError, ValueError, AttributeError):
+        return []
+    out: list[Candidate] = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str):
+            continue
+        sig = row.get("signature")
+        out.append(
+            Candidate(
+                id=row["id"],
+                source="library",
+                signature=sig if isinstance(sig, dict) else {},
+                docstring=_str(row.get("docstring")),
+                asked=_str(row.get("asked")),
+                approach=_str(row.get("approach")),
+                level=_str(row.get("level"), "unknown"),
+                status=_str(row.get("status"), "unknown"),
+                failed=False,
+                broke=(),
+            ),
+        )
+    return out
+
+
+def _capture_dir(capture_id: str) -> str:
+    return os.path.join(_ROOT, CAPTURES_DIR, capture_id)
+
+
+def _capture_candidates() -> tuple[list[Candidate], int]:
+    """The exported captures, in id order, and how many could not be read (no ``signature.json`` object)."""
+    base = os.path.join(_ROOT, CAPTURES_DIR)
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return [], 0
+    out: list[Candidate] = []
+    unreadable = 0
+    for name in names:
+        if _CAPTURE_ID.fullmatch(name) is None:
+            continue
+        d = os.path.join(base, name)
+        sig = _read_json(os.path.join(d, "signature.json"))
+        if not isinstance(sig, dict):
+            unreadable += 1
+            continue
+        rec = _read_json(os.path.join(d, "record.json"))
+        rec = rec if isinstance(rec, dict) else {}
+        saved = _read_json(os.path.join(d, "saved.json"))
+        saved = saved if isinstance(saved, dict) else {}
+        failed = rec.get("outcome") == "failed"
+        broke = saved.get("broke") if isinstance(saved.get("broke"), list) else []
+        out.append(
+            Candidate(
+                id=CAPTURE_PREFIX + name,
+                source="capture",
+                signature={k: v for k, v in sig.items() if k != "goal"},
+                docstring=_str(saved.get("docstring")),
+                asked=_str(saved.get("asked")) or _str(sig.get("goal")),
+                approach=_str(saved.get("approach")),
+                level=_str(rec.get("level"), "unchecked"),
+                status=_str(rec.get("status"), "on-trial"),
+                failed=failed,
+                broke=tuple(str(b) for b in broke if isinstance(b, str)) if failed else (),
+            ),
+        )
+    return out, unreadable
+
+
+def _candidates_all() -> tuple[list[Candidate], int]:
+    captures, unreadable = _capture_candidates()
+    return _library_candidates() + captures, unreadable
+
+
+def _query(m: Any, request: Any, inputs: Any, candidates: list[Candidate]) -> Query:
+    """The query for *request* (read as JSON text only: sniffing prose as a table would make its first line's words
+    column names) and *inputs* (read as ``find`` reads a value: a parsed value, JSON text, a structured file or its
+    path)."""
+    exts = sorted(
+        {
+            str(c.signature["input"].get("ext", ""))
+            for c in candidates
+            if isinstance(c.signature.get("input"), dict)
+            and c.signature["input"].get("kind") == "file"
+        }
+        | {".json", ".jsonl", ".csv", ".tsv"},
+    )
+    shapes: list[dict] = []
+    if isinstance(request, (str, bytes, bytearray)) and request:
+        desc = m.value_shape(request)
+        if desc is not None:
+            shapes.append(desc)
+    if inputs is not None:
+        shapes += _candidates(m, inputs, exts)
+    return Query(request, inputs, tuple(shapes))
+
+
+def structural_match(query: Query, candidates: list[Candidate]) -> list[tuple[str, str]]:
+    """The default matcher: structure only, never words. A candidate matches when one of the query's shapes has the
+    same shape as its signature's ``input`` (``exact``) or matches it as ``find`` matches an argument, with at least
+    a structure-level match (``structure``). The docstring and the summary sections are not compared, and nothing
+    is run: a stated ``applies`` is shown, not called. Candidates keep their given order (no ranking)."""
+    if not query.shapes:
+        return []
+    m = _matcher()
+    out: list[tuple[str, str]] = []
+    for c in candidates:
+        recorded = c.signature.get("input") if isinstance(c.signature, dict) else None
+        if not isinstance(recorded, dict):
+            continue
+        best = ""
+        for mine in query.shapes:
+            try:
+                if m.same_shape(mine, recorded):
+                    best = "exact"
+                    break
+                found = m.match(mine, recorded)
+            except Exception:  # noqa: BLE001 - a malformed signature matches nothing
+                continue
+            if found is not None and found[0] >= 1 and best != "exact":
+                best = "exact" if found[0] == 2 else "structure"
+        if best:
+            out.append((c.id, best))
+    return out
+
+
+#: The matching strategy: called as ``MATCHER(query, candidates)`` with a :class:`Query` and the
+#: :class:`Candidate` list (each with its signature, docstring and source episode's Asked and Approach sections), it
+#: returns ``(candidate id, how it matched)`` pairs in the order to show them. Replace it (``memory.MATCHER = fn``, or
+#: in the harness's copy of this file) to change how ``match`` matches; the call, its audit event and its printed
+#: form stay the same.
+MATCHER: Any = structural_match
+
+
+def _conditions(signature: dict) -> str:
+    cons = signature.get("constraints") if isinstance(signature, dict) else None
+    cons = cons if isinstance(cons, dict) else {}
+    parts = []
+    for name in ("applies", "holds"):
+        c = cons.get(name)
+        if isinstance(c, dict) and c.get("exists"):
+            held = c.get("held")
+            state = "held" if held is True else "did not hold" if held is False else "not shown"
+            parts.append(f"{name} {state} on its recorded case")
+    return "; ".join(parts) if parts else "none stated"
+
+
+def _match_row(c: Candidate, matched: str) -> MatchRow:
+    rel = c.signature.get("relations") if isinstance(c.signature, dict) else None
+    return MatchRow(
+        id=c.id,
+        source=c.source,
+        level=c.level,
+        status=c.status,
+        matched=matched,
+        relations=tuple(str(r) for r in rel) if isinstance(rel, list) else (),
+        conditions=_conditions(c.signature),
+        goal=c.asked,
+        broke=c.broke,
+    )
+
+
+def _emit_event(event: str, *args: Any) -> None:
+    try:
+        sys.audit(event, *args)
+    except Exception:  # noqa: BLE001 - an audit hook never changes the call
+        pass
+
+
+def _matched(request: Any, inputs: Any) -> tuple[list[MatchRow], list[MatchRow], Query, int]:
+    """The rows :data:`MATCHER` gives for *request* and *inputs*: runnable, failed, the query, unreadable captures."""
+    m = _matcher()
+    candidates, unreadable = _candidates_all()
+    query = _query(m, request, inputs, candidates)
+    by_id = {c.id: c for c in candidates}
+    rows: list[MatchRow] = []
+    failed: list[MatchRow] = []
+    seen: set[str] = set()
+    for pair in MATCHER(query, list(candidates)) or ():
+        try:
+            cid, how = pair
+        except (TypeError, ValueError):
+            continue
+        c = by_id.get(cid) if isinstance(cid, str) else None
+        if c is None or cid in seen:
+            continue
+        seen.add(cid)
+        (failed if c.failed else rows).append(_match_row(c, str(how)[:40]))
+    return rows, failed, query, unreadable
+
+
+def _event_rows(rows: list[MatchRow]) -> tuple:
+    return tuple((r.id, _label(r.level, "unknown"), _label(r.status, "unknown"), _label(r.matched)) for r in rows)
+
+
+def match(request: Any = None, inputs: Any = None) -> Matches:
+    """The stored procedures whose recorded input fits what you pass: *request*, the request's text, and *inputs*,
+    data you were given (a dict, a list, JSON text, or a structured file or its path). Each row gives the
+    procedure's id, evidence level, status, how it matched, the relations and conditions it was saved with, and
+    the goal it was built for; captured attempts that were tried on input like this and failed are listed apart,
+    under ``.failed``, and are never offered to run. How it matches is :data:`MATCHER`'s choice (structure only by
+    default, so plain text with no structure matches nothing); a match can be wrong. It runs nothing."""
+    rows, failed, query, unreadable = _matched(request, inputs)
+    note = ""
+    if not query.shapes:
+        note = (
+            "What you passed has no structure the matcher reads (plain text has none); pass data you were "
+            "given as inputs=..., or look in the index."
+        )
+    if unreadable:
+        note = (note + " " if note else "") + f"{unreadable} captured attempt(s) could not be read."
+    _emit_event(MATCH_EVENT, _event_rows(rows), _event_rows(failed))
+    return Matches(rows, failed, note)
+
+
+class RunReport:
+    """How one ``run`` went. ``outcome``: returned, refused (``MemoryInputError``) or error; ``result``: what it
+    returned (None otherwise); ``repeatable``: whether a second run gave an equal result (None: not checked, with
+    the reason in ``repeat_note``); ``conditions``: whether its stated conditions held; ``agrees_with``: the other
+    procedures ``match`` lists for the same argument that gave an equal result."""
+
+    def __init__(self, target: str, **kw: Any) -> None:
+        self.target = target
+        self.outcome: str = kw.get("outcome", "error")
+        self.result: Any = kw.get("result")
+        self.error: str = kw.get("error", "")
+        self.detail: str = kw.get("detail", "")
+        self.repeatable: bool | None = kw.get("repeatable")
+        self.repeat_note: str = kw.get("repeat_note", "")
+        self.conditions: str = kw.get("conditions", "none stated")
+        self.conditions_code: str = kw.get("conditions_code", "none")
+        self.level: str = kw.get("level", "unknown")
+        self.status: str = kw.get("status", "unknown")
+        self.record: str = kw.get("record", "")
+        self.agrees_with: list[str] = list(kw.get("agrees_with") or [])
+        self.agreement_note: str = kw.get("agreement_note", "")
+
+    def __repr__(self) -> str:
+        out = [f"run of {self.target}: {self.outcome}"]
+        if self.outcome == "returned":
+            out.append("result: " + _bounded_repr(self.result))
+        else:
+            out.append(f"error: {self.error}" + (f": {self.detail}" if self.detail else ""))
+        if self.repeatable is None:
+            out.append("repeatable: not checked" + (f" ({self.repeat_note})" if self.repeat_note else ""))
+        else:
+            out.append(
+                "repeatable: " + ("yes, two runs gave equal results" if self.repeatable else "no, two runs differed"),
+            )
+        out.append("conditions: " + self.conditions)
+        if self.agrees_with:
+            out.append("agrees with: " + ", ".join(self.agrees_with))
+        if self.agreement_note:
+            out.append(self.agreement_note)
+        out.append(f"level {self.level}, status {self.status}")
+        out.append(self.record or "it has not been used since it was stored")
+        out.append("Its result is unchecked: nothing here compares it with what your request needs.")
+        return "\n".join(out) + "\n"
+
+    __str__ = __repr__
+
+
+def _bounded_repr(value: Any) -> str:
+    try:
+        text = repr(value)
+    except Exception as exc:  # noqa: BLE001 - a result that cannot be shown is named by its type
+        return f"<{type(value).__name__}: repr failed ({type(exc).__name__})>"
+    return text if len(text) <= _RESULT_CHARS else text[:_RESULT_CHARS] + " …"
+
+
+def _same(a: Any, b: Any) -> bool:
+    try:
+        return json.dumps(a, sort_keys=True, default=repr) == json.dumps(b, sort_keys=True, default=repr)
+    except Exception:  # noqa: BLE001 - values JSON cannot order are compared by their text
+        try:
+            return repr(a) == repr(b)
+        except Exception:  # noqa: BLE001
+            return False
+
+
+def _record_line(use: Any) -> str:
+    if not isinstance(use, dict) or not use.get("uses"):
+        return ""
+    return "its record: " + _summary(use)
+
+
+def _item_row(target: str) -> dict | None:
+    try:
+        row = _json(ITEMS_FILE).get("items", {}).get(target)
+    except (RuntimeError, ValueError, AttributeError):
+        return None
+    return row if isinstance(row, dict) and row.get("kind") == "function" and ":" in target else None
+
+
+def _procedure_level(target: str) -> str:
+    """A landed procedure's evidence level as ``find.json``'s ``procedures`` gives it; ``unknown`` otherwise."""
+    for c in _library_candidates():
+        if c.id == target:
+            return c.level
+    return "unknown"
+
+
+def _item_function(target: str) -> Any:
+    import importlib
+
+    module, _, name = target.partition(":")
+    return getattr(importlib.import_module(module), name)
+
+
+def _run_item(target: str, args: tuple, kwargs: dict) -> RunReport:
+    """Call a library function by id in this process (an ordinary use: the wrapper raises ``memory.call``). A
+    second call checks that it repeats, only when the harness derived its effect as ``read`` (a call that may change
+    state is never repeated) and its arguments can be copied first."""
+    import copy
+
+    row = _item_row(target)
+    if row is None:
+        return RunReport(
+            target,
+            outcome="error",
+            error="LookupError",
+            detail="no stored procedure has this id; memory.index() lists the items and memory.match(...) the "
+            "procedures that fit",
+        )
+    base = {
+        "level": _str(row.get("level")) or _procedure_level(target),
+        "status": _str(row.get("status"), "unknown"),
+        "record": _record_line(row.get("use")),
+    }
+    try:
+        fn = _item_function(target)
+    except Exception as exc:  # noqa: BLE001 - reported, never raised past the cell
+        return RunReport(target, outcome="error", error=type(exc).__name__, detail=str(exc)[:_DETAIL_CHARS], **base)
+    copied: Any = None
+    note = ""
+    if row.get("effect") != "read":
+        note = "a second call is made only for a procedure whose effect is read"
+    else:
+        try:
+            copied = copy.deepcopy((args, kwargs))
+        except Exception:  # noqa: BLE001 - arguments that cannot be copied are passed once
+            note = "its arguments could not be copied for a second call"
+    try:
+        result = fn(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 - reported, never raised past the cell
+        return RunReport(target, outcome=call_outcome(exc), error=type(exc).__name__,
+                         detail=str(exc)[:_DETAIL_CHARS], repeat_note="it did not return", **base)
+    repeatable: bool | None = None
+    if copied is not None:
+        try:
+            repeatable = _same(result, fn(*copied[0], **copied[1]))
+        except Exception as exc:  # noqa: BLE001
+            repeatable, note = False, f"the second call raised {type(exc).__name__}"
+    return RunReport(target, outcome="returned", result=result, repeatable=repeatable, repeat_note=note, **base)
+
+
+#: The child process that runs a captured procedure (stdlib only): it loads ``procedure.py``, reads the request text
+#: through ``read_input`` when the procedure has one and it was given one text, checks ``applies``, runs ``run``
+#: twice (once with ``"once": true``), checks ``holds``, and prints one JSON report after a marker line.
+_CAPTURE_RUNNER = r'''
+import json, sys
+MARK = sys.argv[2]
+out = {}
+def same(a, b):
+    try:
+        return json.dumps(a, sort_keys=True, default=repr) == json.dumps(b, sort_keys=True, default=repr)
+    except Exception:
+        return repr(a) == repr(b)
+def refused(exc):
+    return any(c.__name__ == "MemoryInputError" for c in type(exc).__mro__)
+try:
+    payload = json.loads(sys.stdin.read())
+    args, kwargs, once = payload["args"], payload["kwargs"], payload.get("once", False)
+    path = sys.argv[1]
+    ns = {"__name__": "captured_procedure", "__file__": path}
+    with open(path, encoding="utf-8") as fh:
+        exec(compile(fh.read(), path, "exec"), ns)
+    run = ns.get("run")
+    if not callable(run):
+        raise LookupError("the captured procedure defines no run(value)")
+    read = ns.get("read_input")
+    if callable(read) and len(args) == 1 and not kwargs and isinstance(args[0], str):
+        value = read(args[0])
+        call = lambda: run(value)
+    else:
+        value = args[0] if len(args) == 1 and not kwargs else None
+        call = lambda: run(*args, **kwargs)
+    applies = ns.get("applies")
+    if callable(applies) and value is not None and not once:
+        try:
+            out["applies"] = bool(applies(value))
+        except Exception as exc:
+            out["applies_error"] = type(exc).__name__
+    first = call()
+    out["outcome"] = "returned"
+    if not once:
+        try:
+            out["repeatable"] = same(first, call())
+        except Exception as exc:
+            out["repeatable"] = False
+            out["repeat_note"] = "the second run raised " + type(exc).__name__
+        holds = ns.get("holds")
+        if callable(holds) and value is not None:
+            try:
+                out["holds"] = bool(holds(value, first))
+            except Exception as exc:
+                out["holds_error"] = type(exc).__name__
+    try:
+        json.dumps(first)
+        out["result"] = first
+    except Exception:
+        out["result"] = repr(first)[:20000]
+        out["result_is_text"] = True
+except Exception as exc:
+    out["outcome"] = "refused" if refused(exc) else "error"
+    out["error"] = type(exc).__name__
+    out["detail"] = str(exc)[:500]
+sys.stdout.write("\n" + MARK + json.dumps(out, default=repr))
+'''
+
+
+def _capture_conditions(rep: dict) -> tuple[str, str]:
+    parts = []
+    code = "none"
+    for name in ("applies", "holds"):
+        if name in rep:
+            parts.append(f"{name} {'held' if rep[name] else 'did not hold'}")
+            if not rep[name]:
+                code = "not-held"
+            elif code == "none":
+                code = "held"
+        elif f"{name}_error" in rep:
+            parts.append(f"{name} raised {rep[name + '_error']}")
+            code = "error" if code != "not-held" else code
+    return ("; ".join(parts) if parts else "none stated"), code
+
+
+def _confined(capture_id: str, args: tuple, kwargs: dict, once: bool = False) -> dict:
+    """Run a captured procedure in a child process confined as the capture step runs it: an isolated interpreter
+    (``-I``), an empty environment, its own process group, the capture's directory as its working directory and a
+    bounded time (:data:`RUN_TIMEOUT_S`); the child's process group is stopped when the time runs out or the run
+    ends. Inputs and the result cross as JSON. The child's report, or ``{"outcome": "error", ...}``."""
+    import signal
+    import subprocess
+
+    d = _capture_dir(capture_id)
+    proc_path = os.path.join(d, "procedure.py")
+    if _CAPTURE_ID.fullmatch(capture_id) is None or not os.path.isfile(proc_path):
+        return {"outcome": "error", "error": "LookupError",
+                "detail": "no captured procedure has this id; memory.match(...) lists them"}
+    try:
+        payload = json.dumps({"args": list(args), "kwargs": kwargs, "once": once})
+    except (TypeError, ValueError) as exc:
+        return {"outcome": "error", "error": type(exc).__name__,
+                "detail": "a captured procedure takes text or JSON values"}
+    try:
+        child = subprocess.Popen(
+            [sys.executable, "-I", "-c", _CAPTURE_RUNNER, proc_path, _RUN_MARK],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env={},
+            cwd=d,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        return {"outcome": "error", "error": type(exc).__name__, "detail": "the run could not start"}
+    timed_out = False
+    try:
+        raw, _ = child.communicate(payload.encode("utf-8"), timeout=RUN_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        raw = b""
+    finally:
+        try:
+            os.killpg(child.pid, signal.SIGKILL)  # the run's whole group, whatever it left running
+        except OSError:
+            pass
+        if child.poll() is None:
+            child.kill()
+        child.wait()
+    if timed_out:
+        return {"outcome": "error", "error": "TimeoutExpired",
+                "detail": f"it ran past {RUN_TIMEOUT_S:g} s and was stopped"}
+    stdout = (raw or b"").decode("utf-8", "replace")
+    rep: Any = None
+    if _RUN_MARK in stdout:
+        try:
+            rep = json.loads(stdout.rsplit(_RUN_MARK, 1)[1])
+        except ValueError:
+            rep = None
+    if not isinstance(rep, dict) or rep.get("outcome") not in RUN_OUTCOMES:
+        return {"outcome": "error", "error": "NoReport",
+                "detail": f"the run ended (exit {child.returncode}) without a report"}
+    return rep
+
+
+def _run_capture(capture_id: str, args: tuple, kwargs: dict) -> RunReport:
+    """Run a captured procedure confined (:func:`_confined`) and report it. Its call raises ``memory.call`` with the
+    id ``capture:<id>``, as a library function's call does."""
+    target = CAPTURE_PREFIX + capture_id
+    if _CAPTURE_ID.fullmatch(capture_id) is None:
+        return RunReport(target, outcome="error", error="LookupError",
+                         detail="a captured procedure's id is capture: and 16 hex digits; memory.match(...) lists them")
+    rec = _read_json(os.path.join(_capture_dir(capture_id), "record.json"))
+    rec = rec if isinstance(rec, dict) else {}
+    base = {"level": _str(rec.get("level"), "unchecked"), "status": _str(rec.get("status"), "on-trial")}
+    if rec.get("outcome") == "failed":
+        return RunReport(target, outcome="error", error="LookupError",
+                         detail="this captured attempt failed; it is listed to show what broke, not to run", **base)
+    rep = _confined(capture_id, args, kwargs)
+    if rep.get("error") != "LookupError" or rep["outcome"] != "error":
+        _emit(target, args_digest(args, kwargs), "ok" if rep["outcome"] == "returned" else
+              ("refused" if rep["outcome"] == "refused" else "error"))
+    conditions, code = _capture_conditions(rep)
+    return RunReport(
+        target,
+        outcome=rep["outcome"],
+        result=rep.get("result"),
+        error=_str(rep.get("error")),
+        detail=_str(rep.get("detail")),
+        repeatable=rep.get("repeatable") if isinstance(rep.get("repeatable"), bool) else None,
+        repeat_note=_str(rep.get("repeat_note"), "" if rep["outcome"] == "returned" else "it did not return"),
+        conditions=conditions,
+        conditions_code=code,
+        record=_record_line(rec.get("track") if isinstance(rec.get("track"), dict) else None),
+        **base,
+    )
+
+
+def _agreement(target: str, args: tuple, kwargs: dict, result: Any) -> tuple[list[str], str]:
+    """The other runnable procedures :data:`MATCHER` lists for the same single argument whose result equals
+    *result*, and a line saying how many were tried. A library function is tried only when its effect is ``read``
+    (called unwrapped, and the library calls it makes raise no event, so the check is not a use); a captured one
+    runs confined. Agreement between stored
+    procedures only: nothing is compared with anything the request states."""
+    if len(args) != 1 or kwargs:
+        return [], "agreement with other procedures is checked for a single argument only"
+    arg = args[0]
+    try:
+        rows, _, _, _ = _matched(arg, None) if isinstance(arg, str) else _matched(None, arg)
+    except Exception as exc:  # noqa: BLE001 - the report still stands without agreement
+        return [], f"agreement was not checked ({type(exc).__name__})"
+    others = [r for r in rows if r.id != target]
+    agree: list[str] = []
+    tried = 0
+    for r in others:
+        try:
+            if r.id.startswith(CAPTURE_PREFIX):
+                rep = _confined(r.id[len(CAPTURE_PREFIX) :], args, kwargs, once=True)
+                if rep.get("outcome") != "returned":
+                    tried += 1
+                    continue
+                other = rep.get("result")
+            else:
+                row = _item_row(r.id)
+                if row is None or row.get("effect") != "read":
+                    continue
+                fn = inspect.unwrap(_item_function(r.id))
+                _QUIET.depth = getattr(_QUIET, "depth", 0) + 1
+                try:
+                    other = fn(*args)  # nor any library call it makes in turn
+                finally:
+                    _QUIET.depth -= 1
+        except Exception:  # noqa: BLE001 - a procedure that fails here does not agree
+            tried += 1
+            continue
+        tried += 1
+        if _same(result, other):
+            agree.append(r.id)
+    if not others:
+        return agree, "no other stored procedure matches this argument"
+    return agree, f"checked against {tried} of {len(others)} other matching procedure(s)"
+
+
+def run(item: Any, /, *args: Any, **kwargs: Any) -> RunReport:
+    """Try one stored procedure on the arguments you pass, in this cell, and report how it went: whether it
+    returned, its result, whether a second run agreed, whether its stated conditions held, which other matching
+    procedures gave the same result, and its evidence level and status. *item* is an item id
+    (``memory.<package>.<module>:<name>``), a ``capture:<id>`` from ``memory.match``, or a row ``match`` returned. A
+    library function is called here, as an import would call it; a captured procedure runs in a separate confined
+    process and takes text or JSON values (given one text, it reads its input from that text). A failure is
+    reported, never raised. Nothing runs unless you call this."""
+    target = item.id if isinstance(item, MatchRow) else _item_id(item)
+    if target.startswith(CAPTURE_PREFIX):
+        report = _run_capture(target[len(CAPTURE_PREFIX) :], args, kwargs)
+    else:
+        report = _run_item(target, args, kwargs)
+    if report.outcome == "returned":
+        report.agrees_with, report.agreement_note = _agreement(report.target, args, kwargs, report.result)
+    repeat = "unchecked" if report.repeatable is None else ("yes" if report.repeatable else "no")
+    _emit_event(
+        RUN_EVENT,
+        report.target,
+        report.outcome,
+        repeat,
+        _label(report.level, "unknown"),
+        report.conditions_code if report.conditions_code in CONDITIONS else "none",
+        tuple(report.agrees_with),
+    )
+    return report
+
+
 # --- runtime call evidence ------------------------------------------------------------------------------
 #
 # Static call sites in cell code say what the actor wrote, not what ran. The wrapper below lets the process
@@ -491,7 +1259,14 @@ def call_outcome(exc: BaseException) -> str:
     )
 
 
+#: While an agreement check runs another procedure (:func:`_agreement`), its library calls raise no event: the
+#: check is not a use.
+_QUIET = threading.local()
+
+
 def _emit(item: str, digest: str, outcome: str, event: str = CALL_EVENT) -> None:
+    if getattr(_QUIET, "depth", 0):
+        return
     try:
         sys.audit(event, item, digest, outcome)
     except Exception:  # noqa: BLE001 - an audit hook never changes the call
@@ -618,3 +1393,5 @@ if __name__ == "memory":
     index = wrap_call(index, "memory:index", HELPER_EVENT)
     show = wrap_call(show, "memory:show", HELPER_EVENT)
     find = wrap_call(find, "memory:find", HELPER_EVENT)
+    match = wrap_call(match, "memory:match", HELPER_EVENT)
+    run = wrap_call(run, "memory:run", HELPER_EVENT)
