@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.scripted_model import ScriptedModel, reply, scripted
 from unify.actor.code_act_actor import SESSION_ENDED
 from unify.cli import Act, _parse_args
 
@@ -176,10 +177,10 @@ async def test_reading_a_terminal_leaves_it_blocking(monkeypatch):
     os.close(controller)
 
 
-@pytest.mark.llm_call
 @pytest.mark.asyncio
 async def test_act_runs_one_request_and_prints_the_result(capsys, monkeypatch):
-    """The direct mode answers a request without any conversation loop."""
+    """The direct mode answers a request without any conversation loop: one
+    actor turn (the scripted model's), its reply printed, exit code 0."""
     # Whether stdin is a terminal decides whether the actor may ask
     # questions, and so the tools the model is offered: pin it rather than
     # inherit the runner's.
@@ -187,10 +188,20 @@ async def test_act_runs_one_request_and_prints_the_result(capsys, monkeypatch):
     args = _parse_args(
         ["act", "--no-store", "--quiet", "Reply with exactly the single word: pong"],
     )
-    session = Act(args)
-    try:
-        code = await asyncio.wait_for(session.run(args.request), timeout=120)
-    finally:
-        await session.close()
+    model = ScriptedModel(actor=[reply("pong")])
+    with scripted(model):
+        session = Act(args)
+        try:
+            code = await asyncio.wait_for(session.run(args.request), timeout=120)
+        finally:
+            await session.close()
     assert code == 0
-    assert capsys.readouterr().out.strip().lower().rstrip(".") == "pong"
+    assert capsys.readouterr().out.strip() == "pong"
+    # --no-store: no storage review follows the one turn.
+    assert model.kinds() == ["actor"]
+    (turn,) = model.of("actor")
+    assert any(
+        m.get("role") == "user" and "the single word: pong" in str(m.get("content"))
+        for m in turn.messages
+    )
+    model.assert_used_up()
