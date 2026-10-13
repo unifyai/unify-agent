@@ -794,6 +794,7 @@ class InterpreterSession:
             self.channel.box_gone()
         interp, self.interp = self.interp, None
         if interp is not None:
+            self._keep_stopped(interp)
             await interp.stop()
             self._note = RESTARTED
 
@@ -808,11 +809,18 @@ class InterpreterSession:
         return await asyncio.to_thread(alone) if alone is not None else None
 
     def box_alive(self) -> bool:
-        """Whether the interpreter's box is alive: the running one's, or, after :meth:`close`, the one it stopped (so
-        a box that survived its stop is seen by the check that keeps the gate from judging /memory)."""
-        interp = self.interp if self.interp is not None else getattr(self, "_stopped", None)
-        alive = getattr(interp, "box_alive", None)
-        return bool(alive()) if alive is not None else False
+        """Whether a box of this session is alive: the running interpreter's, or any interpreter it stopped (by an
+        end call's :meth:`kill` or by :meth:`close`), so a box that survived its stop is seen by the check that keeps
+        the gate from judging /memory."""
+        for interp in (self.interp, *getattr(self, "_stopped_boxes", ())):
+            alive = getattr(interp, "box_alive", None)
+            if alive is not None and alive():
+                return True
+        return False
+
+    def _keep_stopped(self, interp: Any) -> None:
+        """Remember an interpreter this session stops, so :meth:`box_alive` still reads its box's liveness."""
+        self.__dict__.setdefault("_stopped_boxes", []).append(interp)
 
     async def cell(self, code: str, cell_no: int) -> Any:
         """Run one cell: the interpreter's cell result, or None when the pass's wall clock ended first. *cell_no*:
@@ -855,6 +863,7 @@ class InterpreterSession:
                 self._note = ""
                 interp, self.interp = self.interp, None
                 if interp is not None:
+                    self._keep_stopped(interp)
                     await interp.stop()
         return res
 
@@ -873,7 +882,7 @@ class InterpreterSession:
             interp, self.interp = self.interp, None
             if interp is not None:
                 # kept so box_alive() reads the stopped box's own liveness after the stop
-                self._stopped = interp
+                self._keep_stopped(interp)
                 await interp.stop()
             if self.channel is not None and not self.channel.closed:
                 await self.channel.close("ended")
