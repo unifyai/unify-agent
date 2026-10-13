@@ -104,6 +104,8 @@ NOT_RUN: dict[str, str] = {
 }
 #: Exceptions a shown call must never raise.
 FAILING = {"NameError", "ImportError", "ModuleNotFoundError", "TypeError"}
+#: The library's calls an in-code prompt may name (each without its arguments).
+MEMORY_CALLS = frozenset({"ask", "items", "get"})
 #: Calls that end the agent's work: run last.
 TERMINAL = {"answer", "finish", "done"}
 
@@ -130,13 +132,20 @@ def _root(node: ast.AST) -> Optional[str]:
 def is_shown_call(code: str, bound: frozenset[str] = frozenset({"tools", "memory"})) -> bool:
     """*code* parses and calls something, or reads an attribute of a name in *bound* (an attribute of any other
     name is a file name or a dotted id in prose, such as ``notes.md`` or ``channel.method``). An annotation alone
-    (``memory.text.dates:parse_date``, an item id) is not a call."""
+    (``memory.text.dates:parse_date``, an item id) is not a call, and neither is a dotted name alone
+    (``memory.ask``, ``tools.read``): a prompt names a call that way, with its arguments in the call's help."""
     try:
         tree = ast.parse(code)
     except SyntaxError:
         return False
     if all(isinstance(n, ast.AnnAssign) and n.value is None for n in tree.body):
         return False
+    if len(tree.body) == 1 and isinstance(tree.body[0], ast.Expr) and isinstance(tree.body[0].value, ast.Attribute):
+        node = tree.body[0].value
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        if isinstance(node, ast.Name):
+            return False
     return any(
         isinstance(n, ast.Call) or (isinstance(n, ast.Attribute) and _root(n) in bound) for n in ast.walk(tree)
     )
@@ -314,7 +323,9 @@ def test_the_rules_fill_every_placeholder_and_keep_what_is_bound():
         "x = tools.read(path)\n",
         'memory.show("<id>")',
     ]
-    assert is_shown_call("memory.index()") and is_shown_call("tools.Refused")
+    assert is_shown_call("memory.index()") and is_shown_call("help(memory)")
+    # a call named without its arguments is not run: its help holds them
+    assert not is_shown_call("memory.ask") and not is_shown_call("tools.Refused") and not is_shown_call("memory.get")
     assert not is_shown_call("memory.text.dates:parse_date") and not is_shown_call("MemoryInputError")
     assert not is_shown_call("notes.md") and not is_shown_call("channel.method")
     assert fill("tools.fixture(..., append=True)", {"tools"}, "/p") == (
@@ -541,7 +552,13 @@ def test_every_call_the_writers_and_a_helpers_prompts_show_runs_as_written(tmp_p
     asyncio.run(writer.run(PassRequest("incremental", "text", ["e1"], False), "p1"))
     bad = writer_model.report()
     assert writer_model.cells, writer_model.texts[:1]
-    assert any("memory." in span for span, _ in writer_model.cells), writer_model.cells
+    if in_code:
+        # the in-code texts name the library's calls without arguments: none is a shown call, each is a known call
+        assert not any(span.startswith("memory.") for span, _ in writer_model.cells), writer_model.cells
+        named = {n for t in writer_model.texts for n in re.findall(r"`memory\.([a-z_]+)`", t)}
+        assert named and named <= MEMORY_CALLS, named
+    else:
+        assert any("memory." in span for span, _ in writer_model.cells), writer_model.cells
     assert helpers_made, "no helper was started"
     helper = helpers_made[0]
     # with tools in code off the helper's brief shows no Python call (its tools are model-API tools): only its
@@ -770,8 +787,11 @@ async def test_every_call_the_actors_prompt_shows_runs_as_written(core_world, mo
     finally:
         await actor.close()
     assert state["cells"], state["texts"][:1]
-    # the library guide's calls are among those run, with no import line before them
-    assert any("memory." in span for span, _ in state["cells"]), state["cells"]
+    # the library guide names the library's calls without arguments (their help holds those): none is a shown call,
+    # and each is one of the library's calls
+    assert not any(span.startswith("memory.") for span, _ in state["cells"]), state["cells"]
+    named = {n for t in state["texts"] for n in re.findall(r"`memory\.([a-z_]+)`", t)}
+    assert named and named <= MEMORY_CALLS, named
     got = verdicts("\n".join(seen))
     bad = [
         f"{agent}: `{span}` ran as {code!r}: {why}"

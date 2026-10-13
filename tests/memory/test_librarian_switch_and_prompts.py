@@ -43,12 +43,11 @@ ASK_ID = "memory:ask"
 ASK_HELPER = "ask"
 #: The use record's new fields (design J(b).4).
 ASK_CALLS, ASK_ROWS = "ask_calls", "ask_rows"
-#: The pointer, word for word as the design gives it (J(b).5); compared with whitespace folded.
+#: The pointer, word for word; compared with whitespace folded. It says who answers ``memory.ask`` and names the call
+#: without its arguments or its answer's form (the call's help has those).
 POINTER = (
-    "Your library of procedures and notes from earlier work is the `memory` package in your cells. "
-    "`memory.ask(text)` asks the librarian, who has read every item, what each was built for and how each has "
-    "been used, which items fit; it answers with each item that fits and a ready call, or says nothing fits and "
-    "what differs."
+    "Your library of procedures and notes from earlier work is the `memory` package in your cells. A librarian, "
+    "who has read every item, what each was built for and how each has been used, answers `memory.ask`."
 )
 
 
@@ -139,9 +138,10 @@ def test_the_pointer_has_the_same_bytes_across_commits_and_carries_no_index(tmp_
         assert name not in one, name
     assert index_view(index) not in one
     assert shown.get("items", []) == [] and shown.get("channels", []) == []
-    # the rest of the guide stays
-    for call in ("memory.show(", "memory.run("):
+    # the rest of the guide stays: the calls that browse, open and call an item, named without arguments
+    for call in ("`memory.items`", "`memory.get`"):
         assert call in one, call
+    assert not re.search(r"memory\.[a-z_]+\(", one)
 
 
 def test_off_the_actor_section_is_the_inline_index_as_before(tmp_path, monkeypatch):
@@ -149,7 +149,9 @@ def test_off_the_actor_section_is_the_inline_index_as_before(tmp_path, monkeypat
     _set(monkeypatch, SWITCH, "off")
     _, co = _export(tmp_path, "lib", FILES)
     text = prompt.render_memory_library_mode(co, actor_index="inline")[0]
-    assert "memory.ask" not in text
+    # the guide names the same calls (asking what applies is how an item is found), but no librarian answers
+    assert library_prompts.LIBRARIAN_POINTER not in text and "librarian" not in text
+    assert text.startswith(library_prompts.GUIDE_LIBRARY_IN_CODE)
     assert "total_amount" in text  # the index view is still there
 
 

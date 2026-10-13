@@ -5,6 +5,7 @@ match, run and file-lookup evidence."""
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -447,9 +448,7 @@ def test_the_index_line_shows_the_signature_compactly_without_identifiers(tmp_pa
 def test_the_guides_nudge_to_match_and_try_first_and_never_mention_examples():
     texts = {
         "guide": lp.GUIDE_LIBRARY,
-        "guide in code": lp.GUIDE_LIBRARY_IN_CODE,
         "pointer": lp.GUIDE_POINTER,
-        "pointer in code": lp.GUIDE_POINTER_IN_CODE,
     }
     for name, text in texts.items():
         assert "At the start of a request, `memory.match(request)`" in text, name
@@ -461,9 +460,27 @@ def test_the_guides_nudge_to_match_and_try_first_and_never_mention_examples():
         assert "example" not in text.lower().replace("e.g.", ""), name
         assert lp.example_checks(text) == [] and lp.benchmark_words(text) == [], name
         assert "stored function" not in text.lower(), name
-    for name in ("pointer", "pointer in code"):
-        assert lp.POINTER_BOUND in texts[name]
-        assert "already available in your cells as `memory`, no import needed" in texts[name]
+    assert lp.POINTER_BOUND in lp.GUIDE_POINTER and lp.POINTER_BOUND in lp.GUIDE_POINTER_IN_CODE
+    assert "already available in your cells as `memory`, no import needed" in lp.GUIDE_POINTER_IN_CODE
+
+
+def test_the_in_code_guides_say_when_to_ask_open_and_call_and_name_no_arguments():
+    """With tools in code the guides orchestrate: ask what applies before working a step out, open what you will use,
+    call it. They name the library's calls with no arguments, id form or result shape (each call's help has those)."""
+    texts = {
+        "guide in code": lp.GUIDE_LIBRARY_IN_CODE,
+        "pointer in code": lp.GUIDE_POINTER_IN_CODE,
+        "librarian": lp.GUIDE_LIBRARIAN,
+    }
+    for name, text in texts.items():
+        assert lp.ASK_LINE_IN_CODE in text and lp.USE_LINE_IN_CODE in text, name
+        assert "Trying a fitting item costs one call, and working it out again usually costs many." in text, name
+        assert "`memory.items`" in text and lp.MEMORY_HELP_LINE in text, name
+        assert not re.search(r"\b(?:memory|env)\.[a-z_]+\(", text), name
+        assert not re.search(r"memory\.[a-z_]+\.[a-z_]+:[a-z_]+|<package>|<topic>|<slug>|inputs=", text), name
+        assert "example" not in text.lower(), name
+        assert lp.example_checks(text) == [] and lp.benchmark_words(text) == [], name
+        assert "stored function" not in text.lower(), name
 
 
 def test_the_pointer_section_is_the_same_bytes_as_the_library_grows(tmp_path, monkeypatch):

@@ -172,7 +172,7 @@ def render_memory_library_mode(
     * ``pointer``: the pointer guide (:data:`GUIDE_POINTER`, or its in-code form with tools called from code) and
       the copy's location, whenever the library is
       mounted, empty or not. It names no item, package or count, so the section's bytes are the same for the
-      whole run and the actor reaches the index with ``memory.index()`` in a cell.
+      whole run and the actor reaches the index in a cell (``memory.items``; with tools in code off, ``memory.index``).
 
     With *librarian* (``UNIFY_MEMORY_LIBRARIAN`` when None) on, either form is replaced by the librarian's section
     (:data:`..library_prompts.GUIDE_LIBRARIAN`: the guide with the constant pointer to ``memory.ask`` in place of the

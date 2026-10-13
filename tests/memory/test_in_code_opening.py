@@ -5,6 +5,7 @@ then the role's own brief. The opening holds box paths only. With the setting of
 from __future__ import annotations
 
 import os
+import re
 import warnings
 
 import pytest
@@ -81,6 +82,20 @@ def test_every_memory_agent_starts_with_the_shared_opening(monkeypatch, planted)
         assert "cell time: 60 s" in opening and "stated in the first message" in opening, name
         report.append(f"{name}: {text[:300]!r}")
     warnings.warn("FIRST 300 ON\n" + "\n".join(report), stacklevel=1)
+
+
+def test_the_openings_library_line_names_no_call_and_points_to_the_help(monkeypatch):
+    """The opening says where the library is and that it is bound; the library's calls, with their arguments and
+    results, are in ``help(memory)``, which the line points to (a helper's line names no call at all)."""
+    from unify.memory import agent_profiles
+    from unify.memory import library_prompts as lp
+
+    monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: True)
+    for name, (agent, text, _) in _briefs().items():
+        opening = text.partition(_role_start(agent))[0]
+        assert agent_profiles._LIBRARY_LINE[agent] in opening, name
+        assert not re.search(r"\bmemory\.[a-z_]+", opening), name
+        assert (lp.MEMORY_HELP_LINE in opening) is (agent != "helper"), name
 
 
 def test_the_flags_decide_which_tools_the_opening_names(monkeypatch):

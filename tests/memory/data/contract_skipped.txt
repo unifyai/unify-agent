@@ -13,17 +13,13 @@ actor	evidence: reproduces-its-case
 actor	evidence: unchecked
 actor	examples from one episode
 actor	input:
-actor	memory.<package>.<module>:<name>(<parameters>)
-actor	memory.text.dates:parse_date
 actor	memory.text.dates:parse_date(s: str) -> str
 actor	memory.text.dates:week(s)
 actor	memory.text.parse:tokens(s)
 actor	memory.text.parse:words(s)
 actor	memory.text.report:summary(s)
 actor	memory.web.fetch:get(u)
-actor	notes/<topic>/<slug>.md
 actor	notes/text/dates.md
-actor	inputs=
 teammate	/memory-library
 teammate	/workspace
 teammate	await
@@ -37,17 +33,13 @@ teammate	evidence: reproduces-its-case
 teammate	evidence: unchecked
 teammate	examples from one episode
 teammate	input:
-teammate	memory.<package>.<module>:<name>(<parameters>)
-teammate	memory.text.dates:parse_date
 teammate	memory.text.dates:parse_date(s: str) -> str
 teammate	memory.text.dates:week(s)
 teammate	memory.text.parse:tokens(s)
 teammate	memory.text.parse:words(s)
 teammate	memory.text.report:summary(s)
 teammate	memory.web.fetch:get(u)
-teammate	notes/<topic>/<slug>.md
 teammate	notes/text/dates.md
-teammate	inputs=
 writer	<episode>/<part>
 writer	Args:
 writer	Example:
