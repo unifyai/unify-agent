@@ -724,8 +724,19 @@ async def test_every_call_the_actors_prompt_shows_runs_as_written(core_world, mo
         _actor_stubs(monkeypatch, ("install", "wait", "ask", "delegate", "stop", "store_skills"))
         model = ScriptedModel(actor=[Always(turn)], query_llm=Always(reply("ok")))
     else:
-        # the actor's own delegate call starts the teammate for real; the actor answers once the teammate is done
+        # the actor's own delegate call starts the teammate for real; the teammate's own shown delegate calls answer
+        # fixed text (a second teammate would share the scripted turns); the actor answers once the teammate is done
         _actor_stubs(monkeypatch, ("install", "wait", "ask", "stop", "store_skills"))
+        from unify.actor import tool_handlers as H
+
+        real_delegate = H.delegate
+
+        async def delegate(ctx, args):
+            if getattr(ctx, "agent", None) == "teammate":
+                return H._reply("started (stand-in)")
+            return await real_delegate(ctx, args)
+
+        monkeypatch.setattr(H, "delegate", delegate)
 
         async def answer_after_the_teammate(call):
             await asyncio.wait_for(state["done"].wait(), 600)
