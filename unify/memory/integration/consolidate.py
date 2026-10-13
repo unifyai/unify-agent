@@ -910,6 +910,14 @@ def _end_event(
                 "usd_by_category": _by_category(usd, outcome.helpers),
                 "helpers": list(outcome.helpers),
                 "staging": outcome.staging,
+                # with staging on, per batch episode: its staging's source, status, files, candidates and the files
+                # withheld from an unfinished reader, its summary.md's size, how many of the summary's pointers do
+                # not resolve in the recorded episode, and whether the writer read the summary (a measure only)
+                **(
+                    {"staging_episodes": outcome.staging_episodes}
+                    if getattr(outcome, "staging_episodes", None) is not None
+                    else {}
+                ),
                 **({"pool": outcome.pool} if outcome.pool is not None else {}),
                 # UNIFY_MEMORY_LIBRARY_COMPACT: the writer's compactions, the messages they took out and those
                 # messages' prompt characters (all 0 with it off); its calls' prompt and cache-read tokens
@@ -918,6 +926,12 @@ def _end_event(
                 "messages_moved": int(getattr(outcome, "messages_moved", 0)),
                 "input_tokens": getattr(outcome, "input_tokens", None),
                 "cache_read_tokens": getattr(outcome, "cache_read_tokens", None),
+                # how many of the writer's calls reported each sum, out of all its calls, and the first call's
+                # prompt (the brief and the first message, before any reading)
+                "input_tokens_calls": int(getattr(outcome, "input_tokens_calls", 0)),
+                "cache_read_calls": int(getattr(outcome, "cache_read_calls", 0)),
+                "writer_calls": int(getattr(outcome, "writer_calls", 0)),
+                "writer_first_prompt_tokens": getattr(outcome, "writer_first_prompt_tokens", None),
                 # the largest prompt one call reported, and the model's window as the compaction trigger reads it
                 # (None: unknown, so no compaction)
                 "max_prompt_tokens": getattr(outcome, "max_prompt_tokens", None),

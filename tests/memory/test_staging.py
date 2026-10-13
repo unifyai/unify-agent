@@ -74,4 +74,6 @@ def test_the_pass_lists_each_episodes_staging_in_the_batch_map(tmp_path):
     )
     writer.load = {"e2": _episode("e2")}.__getitem__
     asyncio.run(writer.run(PassRequest("incremental", "svc", ["e2"], False), "p1"))
-    assert '"source": "fork"' in model.outputs["m"] and "def f(x)" in model.outputs["f"]
+    # the row lists the staged files but never names the reader that staged them
+    assert '"files": [' in model.outputs["m"] and '"source": "fork"' not in model.outputs["m"]
+    assert "def f(x)" in model.outputs["f"]
