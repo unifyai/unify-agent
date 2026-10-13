@@ -3,29 +3,42 @@
 # This section is generated after the rest of the package only with ``UNIFY_MEMORY_LIBRARIAN=on``
 # (``library_export.package_source``); it uses the names defined above it and is never imported on its own.
 #
-# ``ask(text)`` informs and runs nothing on the caller's behalf. First the recognisers: each distinct reader that the
-# harness's ``.memory/dispatch.json`` names runs once on *text*, and then each ``applies`` whose reader parsed it, in
-# a child process confined as ``run`` confines a captured procedure (an isolated interpreter, an empty environment,
+# ``ask(request)`` informs and runs nothing on the caller's behalf. First the recognisers: each distinct reader that
+# the harness's ``.memory/dispatch.json`` names runs once on *request*, and then each ``applies`` whose reader parsed
+# it, in a child process confined as a captured procedure's call is (an isolated interpreter, an empty environment,
 # its own process group, a bounded time). The values the readers give stay in that child: only the outcomes come
 # back (a reader parsed the text or did not; an ``applies`` held, did not hold or raised). Then the question and those
-# outcomes go to the librarian through ``tools.ask_library``; its answer comes back as a plain object. The call
-# raises ``memory.helper_call`` with the id ``memory:ask`` (asking is never a use) and ``memory.ask_result`` with the
-# ids the answer lists, whether it said nothing fits, and the outcomes (ids and labels only, never text or values).
+# outcomes go to the librarian through ``tools.ask_library``; its answer comes back as JSON text, which this section
+# reads into a list of :class:`Item`, each with the librarian's reason. The call raises ``memory.helper_call`` with
+# the id ``memory:ask`` (asking is never a use) and ``memory.ask_result`` with the ids the answer lists, whether it
+# said nothing fits, and the outcomes (ids and labels only, never text or values).
 
 if "wrap_call" not in globals():  # imported as a harness module of its own, not as part of the package
     from .library_helper import (  # noqa: F401
         _CAPTURE_ID,
+        _GET_EXAMPLE,
         _ROOT,
+        _UNREADABLE,
         _bounded_exchange,
         _stop_child,
         CAPTURE_PREFIX,
         HELPER_EVENT,
         RUN_TIMEOUT_S,
+        Annotated,
         Any,
+        ContractError,
+        Item,
+        MinLen,
+        NotFound,
         __all__,
+        _Catalog,
         _capture_dir,
         _emit_event,
+        _first_line,
+        _guard,
         _json,
+        call_text,
+        checked,
         json,
         os,
         sys,
@@ -40,7 +53,7 @@ APPLIES_OUTCOMES = ("held", "did-not-hold", "raised", "not-run", "none")
 #: The tool the question goes through (the host's librarian session for this request).
 ASK_TOOL = "ask_library"
 
-__all__ = [*__all__, "Answer", "ask"]
+__all__ = [*__all__, "ask"]
 
 #: The child that runs one reader on the text and then the ``applies`` of each procedure that reads with it (stdlib
 #: only). It prints the outcomes after a marker line, never a value.
@@ -191,38 +204,97 @@ def _facts(text: str) -> list:
     return [out[r["id"]] for r in rows if r["id"] in out]
 
 
-class Answer(dict):
-    """The librarian's answer as a plain object: ``fits``, every item it judged applicable, each ``{id, call,
-    why}``; when nothing fits, ``fits`` is empty and ``nearest`` lists ``{id, differs}``. It prints as a few lines."""
+class Answer(list):
+    """What ``memory.ask`` returns: a list of :class:`Item`, every item the librarian judged applicable, each with
+    its ``reason``. When nothing applies the list is empty and ``nearest`` holds the items the librarian named as
+    nearest, each with what differs as its ``reason``. It prints as a few lines."""
+
+    def __init__(self, fits: list, nearest: list = ()) -> None:
+        super().__init__(fits)
+        self.nearest = list(nearest)
 
     def __repr__(self) -> str:
-        fits = self.get("fits") or []
         out: list = []
-        if fits:
-            out.append(f"{len(fits)} item(s) fit:")
-            for f in fits:
-                out.append(f"- {f.get('id')}: {f.get('why')}\n  call: {f.get('call')}")
+        if self:
+            out.append(f"{len(self)} item(s) apply:")
+            out += [f"- {i.id} ({i.kind}): {i.reason}" for i in self]
+            out.append("Each is an Item: print(item) shows its card; item(...) calls a function item.")
         else:
-            out.append("Nothing in the library fits.")
-            for n in self.get("nearest") or []:
-                out.append(f"- nearest {n.get('id')}: {n.get('differs')}")
+            out.append("Nothing in the library applies.")
+            out += [f"- nearest {i.id} ({i.kind}): {i.reason}" for i in self.nearest]
         return "\n".join(out) + "\n"
 
     __str__ = __repr__
+
+
+def _answer_items(pairs: list, call: str) -> list:
+    """The :class:`Item` of each ``(id, reason)`` the librarian named; an id this copy cannot build (it checks
+    every id against the catalogue of the same copy, so none is expected) is kept as a bare Item with its reason."""
+    try:
+        cat = _Catalog(call)
+    except _UNREADABLE:
+        cat = None
+    out = []
+    for iid, reason in pairs:
+        known = cat is not None and (iid in cat.rows or iid in cat.captures)
+        if known:
+            out.append(cat.item(iid, reason))
+            continue
+        out.append(
+            Item(
+                id=iid,
+                kind="note" if iid.startswith("notes/") else "function",
+                summary="",
+                applies="",
+                evidence="unchecked",
+                status="on-trial",
+                example="",
+                text="",
+                links=(),
+                history=(),
+                reason=reason,
+            ),
+        )
+    return out
+
+
+def _named(rows: Any, key: str) -> list:
+    """The ``(id, text)`` pairs of an answer's ``fits`` (*key* ``why``) or ``nearest`` (*key* ``differs``)."""
+    return [
+        (r["id"], r[key] if isinstance(r.get(key), str) else "")
+        for r in (rows if isinstance(rows, list) else [])
+        if isinstance(r, dict) and isinstance(r.get("id"), str)
+    ]
 
 
 def _fact_rows(facts: list) -> tuple:
     return tuple((f["id"], f["read"], f["applies"]) for f in facts if isinstance(f.get("id"), str))
 
 
-def ask(text: Any) -> Answer:
-    """Ask the librarian which stored items fit *text* (your request's text, or a question of your own). The
-    librarian has read every item, what each was built for and how each has been used; it answers with every item
-    that fits, each with a ready call and the reason, or says nothing fits and what differs from the nearest
-    items. Before the question goes, each stored reader runs once on *text* in a separate confined process, and
-    the librarian is told only whether each parsed it and whether each stated condition held, never what they
-    read. You may ask again, about the same request or another question. Nothing is run on your behalf."""
-    question = text if isinstance(text, str) else json.dumps(text, default=str)
+@checked(name="memory.ask")
+def ask(request: Annotated[str, MinLen(1)]) -> list[Item]:
+    """Ask the librarian which stored items apply to *request* (your request's text, or a question of your own).
+    The librarian has read every item, what each was built for and how each has been used. Before the question
+    goes, each stored reader runs once on *request* in a separate confined process, and the librarian is told only
+    whether each parsed it and whether each stated condition held, never what they read. You may ask again, about
+    the same request or another question. Nothing is run on your behalf, and nothing is ranked.
+
+    Args:
+        request: the request's text, or a question of your own (non-empty).
+
+    Returns:
+        Every item the librarian judged applicable, each an Item with ``.reason``; [] when nothing applies (the
+        list's ``.nearest`` then holds the nearest items, each with what differs as its ``.reason``).
+
+    Raises:
+        ArgumentError: request is not a non-empty str.
+        NotFound: the librarian cannot be reached from these cells, gave no answer, or its answer cannot be
+            read.
+
+    Example:
+        memory.ask('Total the amounts in the attached table by month.')
+    """
+    call = call_text("memory.ask", (request,))
     tools = sys.modules.get("tools")
     if tools is None:  # the box imports it before any cell; elsewhere it may be importable but not yet imported
         try:
@@ -231,22 +303,41 @@ def ask(text: Any) -> Answer:
             tools = importlib.import_module("tools")
         except ImportError:
             tools = None
-    call = getattr(tools, ASK_TOOL, None)
-    if call is None:
-        raise LookupError("memory.ask: the librarian cannot be reached from this agent's cells")
-    facts = _facts(question)
-    reply = call(question, facts)
+    send = getattr(tools, ASK_TOOL, None)
+    if send is None:
+        raise NotFound(
+            call,
+            "the librarian cannot be reached from this agent's cells.",
+            hint="Browse with memory.items() and open an item with memory.get(id).",
+        )
+    facts = _guard(call, _facts, request)
+    refused = getattr(tools, "Refused", None)
+    try:
+        reply = send(request, facts)
+    except Exception as exc:
+        if not (isinstance(refused, type) and isinstance(exc, refused)):
+            raise
+        raise NotFound(
+            call,
+            f"the librarian gave no answer ({_first_line(exc)}).",
+            hint="Ask again later, or browse with memory.items() and open an item with memory.get(id).",
+        ) from None
     if isinstance(reply, dict):
         data = reply
     else:
         try:
             data = json.loads(str(reply))
-        except ValueError as exc:
-            raise RuntimeError("memory.ask: the librarian's answer could not be read") from exc
-    answer = Answer(data if isinstance(data, dict) else {"fits": []})
-    listed = tuple(f.get("id") for f in answer.get("fits") or [] if isinstance(f, dict) and isinstance(f.get("id"), str))
+        except ValueError:
+            raise NotFound(
+                call,
+                "the librarian's answer could not be read.",
+                hint="Ask again, or browse with memory.items().",
+            ) from None
+    data = data if isinstance(data, dict) else {}
+    fits, nearest = _named(data.get("fits"), "why"), _named(data.get("nearest"), "differs")
+    listed = tuple(iid for iid, _ in fits)
     _emit_event(ASK_EVENT, listed, not listed, _fact_rows(facts))
-    return answer
+    return _guard(call, lambda: Answer(_answer_items(fits, call), _answer_items(nearest, call) if not fits else []))
 
 
 if __name__ == "memory":
