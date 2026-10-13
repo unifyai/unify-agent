@@ -474,7 +474,7 @@ class ExampleChecks:
         if self._edited(item):
             self._lint(it, calls, ground)
             self._rule(item, evidence.rule_episodes(ground, calls))
-            self._docstring(it, calls, grounded)
+            self._docstring(it, calls, grounded, ledger)
         view = self.part("example_view")
         doc = docstring_of(run.c_tree, item)
         example = view.pick_example(
@@ -650,9 +650,26 @@ class ExampleChecks:
         it: Any,
         calls: list[ExampleCall],
         grounded: set[CallKey],
+        ledger: dict | None = None,
     ) -> None:
         view = self.part("example_view")
         doc = docstring_of(self.run.c_tree, it.item)
+        named = view.docstring_example(doc)
+        shown = [
+            c
+            for c in calls
+            if c.item == it.item and c.key.test == named and c.outcome == "returned"
+        ]
+        if shown and not any(c.key in grounded for c in shown) and self._opened_recorded(shown, ledger or {}):
+            # the shown example computes its arguments in the test from a recorded fixture it opened (text parsed
+            # inline, say): that is grounding evidence, so it sets the level, as G2 does for the item's calls
+            cap(
+                self.run,
+                "G2",
+                f"[examples:grounded] {it.item}: its docstring's Example: {named} computes the arguments of its "
+                "calls from the fixtures it opens, so none of them is shown on recorded values; " + GROUNDED_FIX,
+                it.item,
+            )
         for problem in view.docstring_problems(
             it.item,
             doc,
