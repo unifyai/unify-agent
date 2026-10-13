@@ -1225,8 +1225,9 @@ _IN_CODE: dict[str, dict] = {
         blocking=False,
     ),
     "delegate": dict(
-        roles=(_A, _W),
-        role_args={_A: _TASK_ONLY},
+        # any agent on the agent record may start agents, under the record's limits
+        roles=(_A, _T, _W),
+        role_args={_A: _TASK_ONLY, _T: _TASK_ONLY},
         add_refusals=_SPAWN_FORMS,
         returns="the name of the agent started; it works while you go on.",
         examples=('name = tools.delegate("Read e3 and e4 and draft the shared parser.", ["e3", "e4"])',),

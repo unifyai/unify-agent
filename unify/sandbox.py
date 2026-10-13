@@ -121,9 +121,10 @@ __all__ = [
 # Rule name -> what it does, as a refused action reports it.
 RULES: dict[str, str] = {
     "resource-limits": (
-        "every process runs under fixed resource limits: no core files, 1,024 "
-        "open files, 256 processes and threads, 512 MiB per written file and "
-        "the configured address space (UNIFY_SANDBOX_ADDRESS_SPACE_BYTES)"
+        "every process runs under fixed resource limits: no core files, 8,192 "
+        "open files, 4,096 processes and threads, 16 GiB per written file and "
+        "the configured address space (UNIFY_SANDBOX_ADDRESS_SPACE_BYTES), each "
+        "at most the host's own hard limit"
     ),
     "sandbox-required": (
         "shell commands and Python cells run only inside bubblewrap, never "

@@ -237,7 +237,7 @@ async def test_a_teammate_gets_the_same_wiring_with_its_own_allow_list(in_code):
     assert set(by_agent) == {"actor", "teammate"}
     mate = by_agent["teammate"]
     assert mate.allow == R.allow_list("teammate", frozenset({"helper"}))
-    assert "delegate" not in mate.allow and "ask" in mate.allow
+    assert "delegate" in mate.allow and "ask" in mate.allow  # any agent may start agents
     assert mate.state.spawner == by_agent["actor"].binding.name
     rows = _rows(mate)
     assert {r["agent"] for r in rows} == {"teammate"}

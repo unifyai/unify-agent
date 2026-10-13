@@ -86,6 +86,7 @@ _TEAMMATE_IN_CODE = [
     "reply",
     "stop",
     "ask",
+    "delegate",
     "finish",
     "sh",
 ]
@@ -203,7 +204,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "in_code": list(_TEAMMATE_IN_CODE),
         "in_cells": ["memory.index", "memory.show", "memory.find"],
         "mounts": [{"path": "<library scratch copy>", "mode": "rw"}],
-        "denied": ["store_skills", "delegate", "/inputs", "library repository"],
+        "denied": ["store_skills", "/inputs", "library repository"],
         "consumes": [{"artifact": "agent record", "path": _AGENT_RECORD}],
         "produces": [{"artifact": "agent record", "path": _AGENT_RECORD, "consumer": "actor"}],
         "limits": [],

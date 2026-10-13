@@ -132,7 +132,7 @@ def test_the_allow_lists_follow_the_profiles_and_the_design():
         "read", "grep", "install", "send", "messages", "wait", "who", "reply", "stop", "delegate", "finish",
         "store_skills", "sh",
     }  # fmt: skip
-    assert teammate == actor - {"delegate", "store_skills"} | {"ask"}
+    assert teammate == actor - {"store_skills"} | {"ask"}  # any agent may start agents
     assert "store_skills" not in R.allow_list("actor", FULL - {"store"})
     assert "delegate" not in R.allow_list("helper", FULL)
     for agent in R.AGENTS:
