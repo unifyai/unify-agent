@@ -261,7 +261,7 @@ def plan(texts: list[str], namespace: set[str], path: str, skip_tools: frozenset
 #: The actor's cell that starts the teammate under test.
 START_TEAMMATE = "print(tools.delegate('Run every call your instructions show.'))"
 #: The cell that lists the namespace before any shown call runs.
-LIST_NAMES = "print('NAMES', sorted(k for k in globals() if not k.startswith('_')))"
+LIST_NAMES = "_names = dir()\nprint('NAMES', sorted(k for k in _names if not k.startswith('_')))"
 
 
 def wrapped(i: int, code: str) -> str:
@@ -680,6 +680,13 @@ def _actor_turns(seen: list):
         return content if isinstance(content, str) else json.dumps(content)
 
     def turn(call):
+        try:
+            return step(call)
+        except BaseException:
+            state["done"].set()  # whoever waits for this agent stops waiting; the failure is the test's
+            raise
+
+    def step(call):
         seen.append("\n".join(text_of(m.get("content")) for m in call.messages if m.get("role") == "tool"))
         if state["queue"] is None:
             state["texts"] = [
