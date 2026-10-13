@@ -63,3 +63,63 @@ async def test_a_cells_request_errors_are_counted_on_its_row(in_code):
     # a count only: the provider's text is not in the evidence
     assert PROVIDER_MESSAGE not in json.dumps(_rows(session))
     _assert_ended(in_code["opened"])
+
+
+FAILED_CELL = (
+    "for attempt in range(2):\n"
+    "    try:\n"
+    "        run_coro_sync(query_llm('Tag this.'))\n"
+    "    except ModelCallFailed as exc:\n"
+    "        print('FAILED', isinstance(exc, RuntimeError), exc)\n"
+    "print('AFTER')\n"
+)
+UNCAUGHT_CELL = "run_coro_sync(query_llm('Tag this.'))\n"
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(300)
+async def test_an_unclassified_provider_error_reaches_the_cell_as_a_fixed_text_only(in_code, monkeypatch):
+    import litellm
+
+    from tests.common.test_cell_model_request_errors import PLANTED, assert_nothing_planted, planted
+    from unify.actor.execution.worker import PythonWorker
+
+    # every frame the harness sends the worker
+    sent: list[str] = []
+    send = PythonWorker._send
+
+    async def recording_send(self, msg):
+        sent.append(json.dumps(msg))
+        return await send(self, msg)
+
+    monkeypatch.setattr(PythonWorker, "_send", recording_send)
+    finish = "tools.finish('failed')\n"
+    model = ScriptedModel(
+        actor=[
+            reply(calls=[code(FAILED_CELL)]),
+            reply(calls=[code(UNCAUGHT_CELL)]),
+            reply(calls=[code(finish)]),
+            reply("not finished"),
+        ],
+        query_llm=[planted(), planted(litellm.RateLimitError), planted(litellm.InternalServerError)],
+    )
+    assert await _act(model, "Tag it.") == "failed", _why(model)
+    assert model.kinds() == ["actor", "query_llm", "query_llm", "actor", "query_llm", "actor"]
+    shown = _tool_results(model.calls[3])
+    assert "FAILED True the model call failed (status 400, BadRequestError)" in shown, shown[-2000:]
+    assert "FAILED True the model call failed (status 429, RateLimitError)" in shown, shown[-2000:]
+    assert "AFTER" in shown, shown[-2000:]
+    uncaught = _tool_results(model.calls[5])
+    assert "ModelCallFailed" in uncaught and "status 500, InternalServerError" in uncaught, uncaught[-2000:]
+
+    # the worker got the fixed text, and nothing of the provider's reply reached a frame, the transcript or the rows
+    assert any("ModelCallFailed" in frame for frame in sent)
+    for frame in sent:
+        assert_nothing_planted(frame)
+    for call in model.calls:
+        assert_nothing_planted(json.dumps(call.request, default=str))
+    (session,) = in_code["opened"]
+    assert_nothing_planted(json.dumps(_rows(session)))
+    assert PLANTED["fingerprint"] not in json.dumps([c.messages for c in model.calls], default=str)
+    _assert_ended(in_code["opened"])

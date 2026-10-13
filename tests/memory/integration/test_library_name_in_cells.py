@@ -114,6 +114,14 @@ async def test_cells_use_memory_with_no_import_line_and_failed_calls_are_counted
         "library_name_errors": 0,
         "library_import_errors": 0,
     }
+    # and each failure is listed by the cell it happened in: the item's, then the helper's with its argument shape
+    shown_id = "memory.nothing.here:f"
+    assert [(e["kind"], e["target"], e["exception"], e["call"]) for e in run.failures["entries"]] == [
+        ("item", PARSE_DATE, "AttributeError", "c2"),
+        ("show", f"(str[{len(shown_id)}])", "LookupError", "c3"),
+    ]
+    assert run.failures["pending"] == [] and run.failures["dropped"] == 0
+    assert run.failures["entries"][1]["message"].startswith("memory: no item")
 
 
 @needs_bwrap
@@ -174,6 +182,8 @@ async def test_a_library_that_fails_to_import_never_breaks_the_session(
         await ex.close()
     assert run.cell_errors == {"name": 0, "import": 2}
     assert library_failures(run.runtime_calls, run.cell_errors)["library_import_errors"] == 2
+    assert [(e["kind"], e["target"]) for e in run.failures["entries"]] == [("import", None), ("import", None)]
+    assert {e["exception"] for e in run.failures["entries"]} <= {"ImportError", "ModuleNotFoundError"}
 
 
 @needs_bwrap

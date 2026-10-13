@@ -766,6 +766,9 @@ CODE_STEP_GUARD = (
 CODE_WRITER_ERROR = "writer_error"
 # a writer call found the writer's declared route not in effect
 CODE_ROUTE_NOT_IN_EFFECT = "route_not_in_effect"
+# library mode: the shared no-progress rule ended the agent's round (loop_stop.AgentNoProgress); the pass then went
+# to its final merge, so a refused pass lists the gate checks beside it
+CODE_NO_PROGRESS = "no_progress"
 
 
 class ModelTurn(Protocol):
@@ -866,6 +869,10 @@ class PassOutcome:
     helpers: list[dict] = field(default_factory=list)
     # the batch's staging by source (fork, replay_fork, none); None with library_mode off
     staging: dict | None = None
+    # with staging on, one row per batch episode (:func:`.summaries.episode_row`): its staging's source, status,
+    # files, candidates and the files withheld from an unfinished reader; its summary.md's size and how many of the
+    # summary's pointers resolve in the recorded episode; and whether the writer read the summary. None otherwise
+    staging_episodes: list[dict] | None = None
     # the candidate pool after this pass: open entries, added, status changes, its commit (or its error); None off
     pool: dict | None = None
     # no longer computed (the read log in ``coverage`` replaces it); kept so older readers find the field
@@ -879,10 +886,17 @@ class PassOutcome:
     compactions: int = 0
     chars_moved: int = 0
     messages_moved: int = 0
-    # the writer's model calls' prompt tokens and the part of them read from the provider's cache, summed over the
-    # calls that reported both (None: no call did); cache_read_tokens / input_tokens is the cache-hit rate
+    # the writer's model calls' prompt tokens and the part of them read from the provider's cache, each summed over
+    # the calls that reported it (None: no call did); input_tokens_calls and cache_read_calls say how many calls
+    # reported each, out of writer_calls, so a partial sum is never read as a whole one. cache_read_tokens /
+    # input_tokens is the cache-hit rate when both counts come from the same calls
     input_tokens: int | None = None
     cache_read_tokens: int | None = None
+    input_tokens_calls: int = 0
+    cache_read_calls: int = 0
+    writer_calls: int = 0
+    # the first writer call's prompt tokens (the brief and the first message, before any reading); None: unreported
+    writer_first_prompt_tokens: int | None = None
     # the largest prompt (tokens) one of the writer's model calls reported (None: none reported one), and the
     # model's context window as the compaction trigger reads it (None: unknown, so it never compacts)
     max_prompt_tokens: int | None = None
@@ -2181,11 +2195,12 @@ class WriterPass:
         self._archived: list[dict] = []
         self._compaction = {"compactions": 0, "chars_moved": 0, "messages_moved": 0}
         self._max_prompt: int | None = None
-        self._cache_tokens: list[int] = [
-            0,
-            0,
-            0,
-        ]  # input, cache read, calls that reported both
+        # input, cache read, calls that reported input, calls that reported cache read, calls counted
+        self._cache_tokens: list[int] = [0, 0, 0, 0, 0]
+        # the first counted call's prompt tokens: (counted, value)
+        self._first_prompt: tuple[bool, int | None] = (False, None)
+        # with staging on, one end-event row per batch episode (summaries.episode_row), filled when staging is listed
+        self._staging_episodes: list[dict] | None = None
         # the fixture provenance last derived from the box's files (fixtures.derive_ledger); the manifest's own is ignored
         self.fixtures_made: dict[str, dict] = {}
         # per agent: sha256 of a part shown to that agent in full -> (episode, part), so a byte-identical part is
@@ -2210,6 +2225,8 @@ class WriterPass:
             None  # the pass's /inputs on the host, once staged
         )
         self._staging_counts: dict | None = None
+        # per batch episode, its capture's batch-map row (captures.batch_row); empty without the capture store
+        self._capture_rows: dict = {}
         # the candidate pool (pool.py): loaded and fed with this pass's staging at the pass's start, saved again at
         # its end with the writer's decisions
         self._pool = None
@@ -2268,17 +2285,21 @@ class WriterPass:
         return lines
 
     def _count_cache(self, usage: dict) -> None:
-        """Add a model call's prompt tokens and cache-read tokens to the pass's sums, when it reported both; keep
-        the largest prompt any call reported."""
-        if isinstance(usage.get("input"), int):
-            self._max_prompt = max(self._max_prompt or 0, usage["input"])
-        if isinstance(usage.get("input"), int) and isinstance(
-            usage.get("cache_read"),
-            int,
-        ):
-            self._cache_tokens[0] += usage["input"]
-            self._cache_tokens[1] += usage["cache_read"]
+        """Count a model call: add its prompt tokens and its cache-read tokens to the pass's sums, each when it
+        reported it; keep the largest prompt any call reported and the first call's prompt."""
+        inp, cached = usage.get("input"), usage.get("cache_read")
+        inp = inp if isinstance(inp, int) and not isinstance(inp, bool) else None
+        cached = cached if isinstance(cached, int) and not isinstance(cached, bool) else None
+        self._cache_tokens[4] += 1
+        if not self._first_prompt[0]:
+            self._first_prompt = (True, inp)
+        if inp is not None:
+            self._max_prompt = max(self._max_prompt or 0, inp)
+            self._cache_tokens[0] += inp
             self._cache_tokens[2] += 1
+        if cached is not None:
+            self._cache_tokens[1] += cached
+            self._cache_tokens[3] += 1
 
     def _compaction_event(
         self,
@@ -2743,6 +2764,13 @@ class WriterPass:
                     if getattr(self, "_temp_kept", None)
                     else {}
                 ),
+                # tools in code: the handler threads alive when the gate would start; 0 whenever the gate ran,
+                # more than 0 beside temp_kept when a handler kept it from starting (None: the pass ended before)
+                **(
+                    {"handlers_alive_at_gate": getattr(self, "_handlers_at_gate", None)}
+                    if getattr(self, "_in_code_pass", False)
+                    else {}
+                ),
             },
         )
 
@@ -2921,6 +2949,17 @@ class WriterPass:
             }
             # the backlog of episodes no writer opened (a measure, no gate)
             res["unread_open"] = sum(1 for e in p.open_entries() if e.kind == "unread")
+            # per batch episode, the attempt captured from it and the item it landed as (its pool entry merged)
+            caps = {}
+            for eid, cap in sorted((self._capture_rows or {}).items()):
+                ent = p.entries.get(_pool_mod.entry_id("capture", cap["id"]))
+                merged = ent is not None and ent.status == "merged"
+                caps[eid] = {
+                    "capture_id": cap["id"],
+                    "landed": ent.status_detail.get("item") if merged else None,
+                }
+            if caps:
+                res["captures"] = caps
             return res
         except Exception as exc:  # noqa: BLE001 - the pool never fails a pass
             return {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
@@ -2968,8 +3007,11 @@ class WriterPass:
         untrusted: :mod:`.staging` takes only allowed regular files and nothing staged is run. Helpers are launched
         by the writer itself (the ``delegate`` tool, :mod:`.helpers`), never here.
         """
+        from . import captures as _captures
         from . import staging as _staging
 
+        capture_ids: list[str] = []
+        captures_error: str | None = None
         root = (
             Path(self.cfg.staging_root)
             if self.cfg.staging_root
@@ -2987,10 +3029,18 @@ class WriterPass:
                 if view is not None:
                     views[row["episode_id"]] = view
         self._staged_views, self._staging_read_root = views, root
-        if self._pool is not None and views:
-            # this pass's staging enters the pool now, so the writer can merge it in this same pass
+        # the capture store beside staging (captures.py): written by the harness when each fork settles, read here
+        captures_root = self._captures_root()
+        if self._pool is not None and (views or captures_root is not None):
+            # this pass's staging and the capture store enter the pool now, so the writer can merge or promote them
+            # in this same pass
             try:
                 self._pool_at_start = self._pool.enter_staging(views, pass_id)
+                if captures_root is not None:
+                    self._pool_at_start["captures"] = self._pool.enter_captures(
+                        captures_root,
+                        pass_id,
+                    )
                 self._pool_at_start["commit"] = self._pool.save(pass_id)
             except Exception as exc:  # noqa: BLE001 - the pool never stops a pass
                 self._pool_at_start = {
@@ -3011,13 +3061,29 @@ class WriterPass:
                     Path(inputs) / "staging" / eid,
                 )
                 row["staging"]["candidates"] = _staged_candidates(row["staging"])
-                src = row["staging"].get("source", "none")
+                # the reader is counted host-side (an unfinished one as withheld); the writer's row never names it
+                view = views.get(eid)
+                src = "none" if view is None else (view.source if view.finished else "withheld")
+            if captures_root is not None:
+                # the attempt captured from this episode, if any: what reproducing it gave, its outcome, level and
+                # status, and the stored captures that gave the same result on this request
+                row["capture"] = _captures.batch_row(captures_root, eid)
+                if row["capture"] is not None:
+                    capture_ids.append(row["capture"]["id"])
             row["pool_entries"] = [
                 {"id": e.id, "kind": e.kind, "title": e.title}
                 for e in open_pool
                 if eid in (e.provenance.get("episodes") or [])
             ]
             counts[src] = counts.get(src, 0) + 1
+        if self.cfg.fork:
+            # the brief names /inputs/captures whenever the fork is on: it exists even when nothing was captured
+            (Path(inputs) / "captures").mkdir(parents=True, exist_ok=True)
+        if captures_root is not None:
+            try:
+                _captures.export_for_writer(captures_root, capture_ids, Path(inputs) / "captures")
+            except OSError as exc:  # the capture store never stops a pass; the rows still name what it held
+                captures_error = type(exc).__name__
         if self._pool is not None:
             # each row names the closed pool entries resembling its episode or a draft staged from it
             from .batch_map import add_related_closed
@@ -3048,7 +3114,51 @@ class WriterPass:
                     }
         path.write_text(json.dumps(bmap, sort_keys=True, default=str, indent=1) + "\n")
         self._staging_counts = {"episodes": len(bmap.get("episodes", [])), **counts}
+        if captures_error is not None:
+            self._staging_counts["captures_error"] = captures_error
+        self._capture_rows = {
+            row["episode_id"]: row["capture"]
+            for row in bmap.get("episodes", [])
+            if row.get("capture")
+        }
         self._chain_rows = list(bmap.get("episodes", []))
+        if staging_on:
+            # evidence only: each episode's staging as the writer got it, and its summary's pointers checked
+            from .summaries import episode_row
+
+            self._staging_episodes = [
+                episode_row(row["episode_id"], row.get("staging"), views.get(row["episode_id"]), self.load)
+                for row in bmap.get("episodes", [])
+            ]
+
+    def _staging_episodes_out(self) -> list[dict] | None:
+        """The end event's ``staging_episodes``: the rows made when staging was listed, each with whether the writer
+        read the episode's summary (a ``read`` call, a tool event or a box open of its /inputs path). Never raises.
+        """
+        rows = self._staging_episodes
+        if rows is None:
+            return None
+        try:
+            from . import chain as _chain
+
+            read = _chain.read_paths(self.messages, list(getattr(self, "tool_events", None) or []))
+        except Exception:  # noqa: BLE001 - a measure never stops a pass
+            read = None
+        out = []
+        for r in rows:
+            path = f"/inputs/staging/{r['episode']}/summary.md"
+            seen = None if read is None else (path in read if r.get("summary_bytes") is not None else False)
+            out.append({**r, "summary_read": seen})
+        return out
+
+    def _captures_root(self) -> Path | None:
+        """The capture store (:mod:`.captures`, ``<state>/memory-captures``), beside the fork's staging; None when
+        the fork is off or there is no staging root."""
+        from .captures import STORE_DIR
+
+        if not (self.cfg.staging_root and self.cfg.fork):
+            return None
+        return Path(self.cfg.staging_root).parent / STORE_DIR
 
     def _staging_on(self) -> bool:
         """Whether any reader leaves staging for this pass: a staging root (the episode-end fork or its offline
@@ -3363,6 +3473,49 @@ class WriterPass:
         self._write_event(pass_id, row)
         if opens:
             self._record_box_opens(pass_id, opens)
+
+    def _crashed_cell_event(
+        self,
+        pass_id: str,
+        raw_args: object,
+        args: object,
+        usage: dict | None,
+        call: int,
+        exc: BaseException,
+    ) -> None:
+        """The ``execute_code`` row of a cell that raised out of :meth:`_in_code_cell`, at the *call* number
+        reserved for it: status ``error`` and the exception's type only. Never raises: the cell's own exception
+        is the one the pass sees."""
+        try:
+            self.__dict__.pop("_box_audit", None)  # a crashed cell returned no audit of its own
+            self._event(
+                pass_id,
+                "execute_code",
+                raw_args,
+                _wt.Reply(f"error: the cell did not end normally ({type(exc).__name__})", "error"),
+                usage,
+                {
+                    "via": "model",
+                    "cell": None,
+                    "args_sha256": _args_sha256(args if args is not None else raw_args),
+                    "box_gone": False,
+                    "exception": type(exc).__name__,
+                },
+                call,
+            )
+        except Exception:  # noqa: BLE001 - the row is evidence; it never masks the cell's exception
+            logging.getLogger(__name__).warning(
+                "the row of a cell that raised was not written (%s)",
+                type(exc).__name__,
+            )
+            if 0 <= call < len(self.tool_events) and self.tool_events[call].get("event") == "reserved":
+                self.tool_events[call] = {
+                    "event": "tool_call",
+                    "call": call,
+                    "tool": "execute_code",
+                    "status": "error",
+                    "exception": type(exc).__name__,
+                }
 
     def _reserve_event(self) -> int:
         """Reserve the next ``call`` number for a row written later (a cell's, after its in-code calls)."""
@@ -3931,7 +4084,9 @@ class WriterPass:
         self.messages = []
         self._tools_json, self._archived = [], []
         self._compaction = {"compactions": 0, "chars_moved": 0, "messages_moved": 0}
-        self._cache_tokens = [0, 0, 0]
+        self._cache_tokens = [0, 0, 0, 0, 0]
+        self._first_prompt = (False, None)
+        self._staging_episodes = None
         self._max_prompt = None
         self.fixtures_made = {}
         self._shown_full, self._read_logs = {}, {}
@@ -3944,6 +4099,7 @@ class WriterPass:
         self._helper_rows = []
         self._pass_record = None
         self._staging_counts = None
+        self._capture_rows = {}
         self._inputs_dir = None
         self._pool, self._pool_open, self._pool_error = None, None, None
         self._pool_at_start = None
@@ -4103,6 +4259,10 @@ class WriterPass:
         self._temp_kept = None
         # tools in code (UNIFY_TOOLS_IN_CODE=on, library mode): one JSON tool, the rest called from cells
         in_code = library and bool(getattr(self.cfg, "tools_in_code", False))
+        # tools in code: the handler threads still running when the gate would start (None: that point was not
+        # reached); written on the pass end event
+        self._in_code_pass = in_code
+        self._handlers_at_gate = None
         # library mode: the shared no-progress rule (loop_stop.AgentNoProgress), always on; a capped pass without the
         # library is bounded by its call and USD caps as before
         no_progress = None
@@ -4166,10 +4326,12 @@ class WriterPass:
                     else None
                 )
                 if self._cache_tokens[2]:
-                    o.input_tokens, o.cache_read_tokens = (
-                        self._cache_tokens[0],
-                        self._cache_tokens[1],
-                    )
+                    o.input_tokens = self._cache_tokens[0]
+                if self._cache_tokens[3]:
+                    o.cache_read_tokens = self._cache_tokens[1]
+                o.input_tokens_calls, o.cache_read_calls = self._cache_tokens[2], self._cache_tokens[3]
+                o.writer_calls = self._cache_tokens[4]
+                o.writer_first_prompt_tokens = self._first_prompt[1]
                 o.finished = bool(phase["finish_accepted"])
                 o.provenance = list(self._provenance)
                 if self._role != "curate":
@@ -4178,6 +4340,7 @@ class WriterPass:
                     except Exception as exc:  # noqa: BLE001
                         o.chain = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
                 o.staging = self._staging_counts
+                o.staging_episodes = self._staging_episodes_out()
                 o.helpers = [
                     {
                         k: r.get(k)
@@ -4992,13 +5155,26 @@ class WriterPass:
                                 base,
                             )
                             ic.finish_text = None
-                            content = await self._in_code_cell(
-                                session,
-                                ic,
-                                str(args.get("code", "")),
-                                cells,
-                                event_call,
-                            )
+                            try:
+                                content = await self._in_code_cell(
+                                    session,
+                                    ic,
+                                    str(args.get("code", "")),
+                                    cells,
+                                    event_call,
+                                )
+                            except BaseException as exc:
+                                # the cell's row still lands at its reserved number, with an error status, so no
+                                # placeholder outlives the pass; the exception goes on as before
+                                self._crashed_cell_event(
+                                    pass_id,
+                                    fn.get("arguments"),
+                                    args,
+                                    turn_usage,
+                                    event_call,
+                                    exc,
+                                )
+                                raise
                             calls, checks, reads, readers = (
                                 ic.calls,
                                 ic.checks,
@@ -5074,6 +5250,7 @@ class WriterPass:
                     if acted is not None:
                         notes.append(no_progress.note(acted))
                     if acted == "end":
+                        cause(CODE_NO_PROGRESS)
                         break
                 if finished and self.cfg.library_mode and stop is None and repair():
                     finished = (
@@ -5085,7 +5262,9 @@ class WriterPass:
                 # no box can write /memory and no tool handler of the pass may run while the gate judges it
                 await session.close()
                 alive = session.box_alive()
-                if alive or not await ic.threads.wait_idle(self.in_code_idle_s):
+                idle = not alive and await ic.threads.wait_idle(self.in_code_idle_s)
+                self._handlers_at_gate = ic.threads.running()
+                if not idle:
                     why = (
                         "a box of this pass is still running"
                         if alive

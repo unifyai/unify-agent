@@ -26,11 +26,13 @@ A provider's refusal of a cell's call for the request's own content (an
 invalid ``response_format`` schema the cell wrote, a parameter the endpoint
 does not take) comes back to the cell as :class:`ModelRequestError`, with the
 provider's message and nothing else, so the cell goes on and can fix the call
-(:func:`model_request_error` says which errors are these). The harness's own
-calls and every other error (authentication, credentials, limits, the
-provider's own faults) are raised as before. Each such error is counted for
-the request's evidence (:func:`counting_model_request_errors`), and every
-cell call carries ``X-Unify-Call-Kind: cell`` while
+(:func:`model_request_error` says which errors are these). Any other provider
+failure of a cell's call (authentication, credentials, limits, the provider's
+own faults) comes back as :class:`ModelCallFailed`, a fixed text naming its
+status and error type, never the provider's reply
+(:func:`model_call_failed`). The harness's own calls raise as before. Each
+request error is counted for the request's evidence
+(:func:`counting_model_request_errors`), and every cell call carries ``X-Unify-Call-Kind: cell`` while
 ``UNIFY_REQUEST_METADATA_HEADERS=on`` (``llm_client.CELL_CALL_KIND``).
 
 Endpoints are compared as unillm resolves them: ``<id>@openrouter`` by its
@@ -56,8 +58,10 @@ from unify.common.tool_errors import ToolInputError
 __all__ = [
     "CellModelRefused",
     "CellAttributeRefused",
+    "ModelCallFailed",
     "ModelRequestError",
     "counting_model_request_errors",
+    "model_call_failed",
     "model_request_error",
     "allowed_models",
     "check_model",
@@ -95,6 +99,24 @@ class ModelRequestError(ValueError):
     """
 
 
+class ModelCallFailed(RuntimeError):
+    """A model call this code made failed for a reason other than the
+    request's own content: access, a rate limit, the provider's own fault.
+
+    The text is fixed: the status and the error's type, never the provider's
+    reply. Nothing was generated.
+    """
+
+    def __init__(self, status: Optional[int] = None, kind: str = "Exception") -> None:
+        self.status = status
+        self.kind = kind
+        shown = status if status is not None else "unknown"
+        super().__init__(
+            f"the model call failed (status {shown}, {kind}); the provider's "
+            "reply is not shown",
+        )
+
+
 # -- the cell's own request errors ----------------------------------------------
 
 #: The status a provider answers a request it cannot accept as written with.
@@ -106,9 +128,19 @@ _REQUEST_ERROR_TYPES = frozenset({"invalid_request_error"})
 #: (``invalid_json_schema``, ``unsupported_parameter``, ``missing_required_parameter``).
 _REQUEST_ERROR_CODE_PREFIXES = ("invalid_", "unsupported_", "missing_")
 #: A 400 whose type or code (first) or message (second) names any of these is
-#: about access, not the request's content (some providers answer a bad key
-#: with 400). It is raised as before.
-_ACCESS_CODE_MARKERS = ("auth", "key", "credential", "permission", "forbidden", "denied")
+#: about access or the account's billing, not the request's content (some
+#: providers answer a bad key or an empty balance with 400). It is not a
+#: request error of the cell's own.
+_BILLING_MARKERS = ("credit", "quota", "billing", "payment", "balance")
+_ACCESS_CODE_MARKERS = (
+    "auth",
+    "key",
+    "credential",
+    "permission",
+    "forbidden",
+    "denied",
+    *_BILLING_MARKERS,
+)
 _ACCESS_TEXT_MARKERS = (
     "api key",
     "api_key",
@@ -120,6 +152,7 @@ _ACCESS_TEXT_MARKERS = (
     "forbidden",
     "permission denied",
     "access denied",
+    *_BILLING_MARKERS,
 )
 #: How many ``{`` of an error's text are tried as the start of its JSON body.
 _JSON_STARTS = 16
@@ -208,7 +241,8 @@ def model_request_error(exc: BaseException) -> Optional[ModelRequestError]:
     One is a provider's 400 whose error object says the request was invalid as
     written (type ``invalid_request_error``, a code starting ``invalid_``,
     ``unsupported_`` or ``missing_``, or a named ``param``), and says nothing
-    of access (a key, authentication, permission). Its message is the
+    of access (a key, authentication, permission) or billing (credit, quota,
+    payment, balance). Its message is the
     provider's ``message`` alone, redacted. Called only for the calls a cell's
     code makes; what the harness sends itself never comes here.
     """
@@ -236,6 +270,44 @@ def model_request_error(exc: BaseException) -> Optional[ModelRequestError]:
     ):
         return None
     return ModelRequestError(_redacted(message))
+
+
+#: Packages whose exceptions are a provider's or a transport's failure, and
+#: whose text may carry the provider's reply.
+_CLIENT_PACKAGES = frozenset(
+    {"unillm", "litellm", "openai", "anthropic", "httpx", "httpcore", "aiohttp"},
+)
+#: An exception type's name as the fixed text shows it.
+_TYPE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
+
+
+def _status(exc: BaseException) -> Optional[int]:
+    """The HTTP status *exc* carries (its own ``status_code``, else its
+    response's), or None."""
+    for holder in (exc, getattr(exc, "response", None)):
+        try:
+            status = getattr(holder, "status_code", None)
+        except Exception:  # noqa: BLE001 - a property that raises has none
+            status = None
+        if isinstance(status, int) and not isinstance(status, bool):
+            return status
+    return None
+
+
+def model_call_failed(exc: BaseException) -> Optional[ModelCallFailed]:
+    """*exc* as the :class:`ModelCallFailed` a cell gets, or None when it is
+    not a provider's failure.
+
+    One is an exception that carries an HTTP status, or whose type comes from
+    a model client or transport package (:data:`_CLIENT_PACKAGES`). Called only
+    for a cell's call that :func:`model_request_error` did not classify; its
+    text is the status and the type's name alone."""
+    status = _status(exc)
+    package = (type(exc).__module__ or "").partition(".")[0]
+    if status is None and package not in _CLIENT_PACKAGES:
+        return None
+    name = type(exc).__name__
+    return ModelCallFailed(status, name if _TYPE_NAME.match(name) else "Exception")
 
 
 @dataclasses.dataclass
@@ -270,9 +342,21 @@ def _counted(refused: ModelRequestError) -> ModelRequestError:
     return refused
 
 
+def _replacement(exc: BaseException) -> Optional[Exception]:
+    """What a cell's call raises in place of *exc*: a counted
+    :class:`ModelRequestError` for a request error of the cell's own, a
+    :class:`ModelCallFailed` for any other provider failure, None (*exc* as it
+    is) for anything else."""
+    refused = model_request_error(exc)
+    if refused is not None:
+        return _counted(refused)
+    return model_call_failed(exc)
+
+
 async def _cell_call(call: Callable[[], Any]) -> Any:
-    """Await *call()* as a cell's model call: under the cell call kind, and with
-    a request error of the cell's own raised as :class:`ModelRequestError`.
+    """Await *call()* as a cell's model call: under the cell call kind, with a
+    request error of the cell's own raised as :class:`ModelRequestError` and
+    any other provider failure as :class:`ModelCallFailed`.
 
     The new error is raised outside the handler, so it carries neither the
     provider's exception nor its traceback."""
@@ -284,11 +368,11 @@ async def _cell_call(call: Callable[[], Any]) -> Any:
             if inspect.isawaitable(result):
                 result = await result
             return result
-    except Exception as exc:  # noqa: BLE001 - only a request error is replaced
-        refused = model_request_error(exc)
+    except Exception as exc:  # noqa: BLE001 - only a provider's error is replaced
+        refused = _replacement(exc)
         if refused is None:
             raise
-    raise _counted(refused)
+    raise refused
 
 
 def _sync_cell_call(call: Callable[[], Any]) -> Any:
@@ -299,11 +383,11 @@ def _sync_cell_call(call: Callable[[], Any]) -> Any:
     try:
         with call_kind(CELL_CALL_KIND):
             return call()
-    except Exception as exc:  # noqa: BLE001 - only a request error is replaced
-        refused = model_request_error(exc)
+    except Exception as exc:  # noqa: BLE001 - only a provider's error is replaced
+        refused = _replacement(exc)
         if refused is None:
             raise
-    raise _counted(refused)
+    raise refused
 
 
 #: What ``help(query_llm)`` in a cell adds to the harness function's contract.
@@ -314,7 +398,9 @@ _CELL_ERRORS_DOC = """
     A request the provider refuses for its own content (a ``response_format``
     schema it does not accept, a parameter the endpoint does not take) raises
     ``ModelRequestError`` (a ``ValueError``) with the provider's message; fix
-    the request and call again. Any other failure is raised as it is.
+    the request and call again. Any other failure of the model call (access,
+    a rate limit, the provider's own fault) raises ``ModelCallFailed`` (a
+    ``RuntimeError``) with its status and error type only.
     """
 
 

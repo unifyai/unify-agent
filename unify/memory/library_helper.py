@@ -31,6 +31,8 @@ Its own ``index``, ``show``, ``find``, ``match`` and ``run`` raise ``memory.help
 :data:`MATCHER`, a replaceable module-level hook; the default compares structure only and runs nothing. Each call
 also raises ``memory.match_result`` with the ids it listed. ``run`` is the caller's own call of one procedure; it
 also raises ``memory.run_result`` with its target and outcome. Neither event carries a value or a result.
+A call that raised also raises ``memory.call_failed`` with the id, the exception's type, the first line of
+its message and, for the helpers, the arguments' shape (types and sizes, never values).
 """
 
 from __future__ import annotations
@@ -60,6 +62,11 @@ CALL_EVENT = "memory.call"
 #: as ``memory.call``, kept apart because the helpers are not library items.
 HELPER_EVENT = "memory.helper_call"
 CALL_OUTCOMES = ("ok", "refused", "error")
+#: The audit event of a call that raised: the id, the exception's type, its message's first line and, for the
+#: helpers, the arguments' shape (:func:`args_shape`).
+FAILED_EVENT = "memory.call_failed"
+#: The most characters of a failed call's message line and of its arguments' shape the event carries.
+FAILURE_TEXT = 200
 REFUSAL = "MemoryInputError"
 DIGEST_CHARS = 16
 
@@ -423,6 +430,9 @@ REPEATABLE = ("yes", "no", "unchecked")
 CONDITIONS = ("none", "held", "not-held", "error")
 #: How long one run of a captured procedure may take, in seconds, before its process group is stopped.
 RUN_TIMEOUT_S = 120.0
+#: The most a captured procedure's run may print; past it the run is stopped, so a chatty run never fills the box's
+#: memory (its report is the last line, well within it).
+RUN_OUTPUT_MAX_BYTES = 4 * 1024 * 1024
 _CAPTURE_ID = re.compile(r"[0-9a-f]{16}")
 _LABEL = re.compile(r"[a-z][a-z0-9-]{0,39}")
 _RESULT_CHARS = 2000
@@ -1008,12 +1018,45 @@ def _confined(capture_id: str, args: tuple, kwargs: dict, once: bool = False) ->
         )
     except OSError as exc:
         return {"outcome": "error", "error": type(exc).__name__, "detail": "the run could not start"}
-    timed_out = False
+    import select
+    import time
+
+    timed_out = over = False
+    raw = b""
+    data = payload.encode("utf-8")
+
+    def feed() -> None:
+        # the input goes in from its own thread, so a child that prints before reading never blocks the bounded read
+        try:
+            child.stdin.write(data)
+            child.stdin.close()
+        except OSError:
+            pass
+
+    feeder = threading.Thread(target=feed, daemon=True, name="memory-run-input")
     try:
-        raw, _ = child.communicate(payload.encode("utf-8"), timeout=RUN_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        raw = b""
+        feeder.start()
+        deadline = time.monotonic() + RUN_TIMEOUT_S
+        fd = child.stdout.fileno()
+        chunks: list = []
+        size = 0
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                timed_out = True
+                break
+            ready, _, _ = select.select([fd], [], [], left)
+            if not ready:
+                continue
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > RUN_OUTPUT_MAX_BYTES:
+                over = True
+                break
+            chunks.append(chunk)
+        raw = b"".join(chunks)
     finally:
         try:
             os.killpg(child.pid, signal.SIGKILL)  # the run's whole group, whatever it left running
@@ -1022,9 +1065,14 @@ def _confined(capture_id: str, args: tuple, kwargs: dict, once: bool = False) ->
         if child.poll() is None:
             child.kill()
         child.wait()
+        # the input thread ends once the child is gone (its pipe closes), so no thread outlives the call
+        feeder.join(5)
     if timed_out:
         return {"outcome": "error", "error": "TimeoutExpired",
                 "detail": f"it ran past {RUN_TIMEOUT_S:g} s and was stopped"}
+    if over:
+        return {"outcome": "error", "error": "OutputLimit",
+                "detail": f"it printed more than {RUN_OUTPUT_MAX_BYTES // 1024**2} MiB and was stopped"}
     stdout = (raw or b"").decode("utf-8", "replace")
     rep: Any = None
     if _RUN_MARK in stdout:
@@ -1203,6 +1251,47 @@ def args_digest(args: tuple, kwargs: dict) -> str:
     ]
 
 
+#: Exact builtin types whose size :func:`args_shape` shows (their own ``len``, never a user type's ``__len__``).
+_SIZED = (str, bytes, bytearray, list, tuple, dict, set, frozenset)
+_SHAPE_ARGS = 8
+
+
+def _type_size(value: Any) -> str:
+    t = type(value)
+    if t in _SIZED:
+        return f"{t.__name__}[{len(value)}]"
+    return t.__name__
+
+
+def args_shape(args: tuple, kwargs: dict) -> str:
+    """The call's arguments as types and sizes only, never values: ``(dict[3], str[12]; limit=int)``."""
+    try:
+        parts = [_type_size(v) for v in tuple(args)[:_SHAPE_ARGS]]
+        if len(args) > _SHAPE_ARGS:
+            parts.append(f"+{len(args) - _SHAPE_ARGS}")
+        named = [
+            f"{k}={_type_size(v)}"
+            for k, v in list(kwargs.items())[:_SHAPE_ARGS]
+            if type(k) is str and k.isidentifier()
+        ]
+        text = "(" + ", ".join(parts) + ("; " + ", ".join(named) if named else "") + ")"
+    except Exception:  # noqa: BLE001 - a shape never fails a call
+        text = "(unreadable)"
+    return text[:FAILURE_TEXT]
+
+
+def _first_line(exc: BaseException) -> str:
+    """The first non-blank line of *exc*'s message, at most :data:`FAILURE_TEXT` characters."""
+    try:
+        text = str(exc)
+    except Exception:  # noqa: BLE001 - an unprintable message is empty
+        return ""
+    for line in text.splitlines():
+        if line.strip():
+            return line.strip()[:FAILURE_TEXT]
+    return ""
+
+
 def call_outcome(exc: BaseException) -> str:
     """``refused`` when *exc* is a ``MemoryInputError`` (any class of that name in its type's bases: each
     library module may define its own), else ``error``."""
@@ -1225,6 +1314,14 @@ def _emit(item: str, digest: str, outcome: str, event: str = CALL_EVENT) -> None
         pass
 
 
+def _emit_failed(item: str, exc: BaseException, args: tuple, kwargs: dict, event: str) -> None:
+    try:
+        shape = args_shape(args, kwargs) if event == HELPER_EVENT else ""
+        sys.audit(FAILED_EVENT, item, type(exc).__name__, _first_line(exc), shape)
+    except Exception:  # noqa: BLE001 - an audit hook never changes the call
+        pass
+
+
 def wrap_call(fn: Any, item: str, event: str = CALL_EVENT) -> Any:
     """*fn* wrapped to raise one *event* (``memory.call``) per call (module docstring). A call interrupted by
     something that is not an ``Exception`` (an interrupt, an exit, a cancellation) did not end on its own,
@@ -1240,6 +1337,7 @@ def wrap_call(fn: Any, item: str, event: str = CALL_EVENT) -> Any:
                 result = await fn(*args, **kwargs)
             except Exception as exc:
                 _emit(item, digest, call_outcome(exc), event)
+                _emit_failed(item, exc, args, kwargs, event)
                 raise
             _emit(item, digest, "ok", event)
             return result
@@ -1253,6 +1351,7 @@ def wrap_call(fn: Any, item: str, event: str = CALL_EVENT) -> Any:
                 result = fn(*args, **kwargs)
             except Exception as exc:
                 _emit(item, digest, call_outcome(exc), event)
+                _emit_failed(item, exc, args, kwargs, event)
                 raise
             _emit(item, digest, "ok", event)
             return result

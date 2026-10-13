@@ -237,6 +237,24 @@ CANDIDATE_CONTRACT = (
     "alone commits to the shared library, builds from these drafts and may generalise them with other episodes."
 )
 
+#: The format of ``summary.md``, the episode-end fork's account of its episode, as the fork's instruction states it.
+#: The writer reads each summary first and opens the episode's record only where it needs more; each line's pointer
+#: (a part name and a quote copied from that part) is checked host-side, as a measure only (:mod:`.summaries`).
+SUMMARY_FORMAT = (
+    "`summary.md` has five headed sections, in this order:\n"
+    "`## Asked`: what the request asked, in general terms: the kind of task, what it was given and what it had to "
+    "produce. Name a specific value only where the task depends on it.\n"
+    "`## Approach`: the steps taken, in order, one line each.\n"
+    "`## Worked`: what worked, one line each.\n"
+    "`## Failed`: what failed and why, one line each; write `none` if nothing failed.\n"
+    "`## Outcome`: how the episode ended: what was handed back, and what the environment said about it. If nothing "
+    "in the record shows whether it was right, write `not shown`; never guess.\n\n"
+    "Every line under Approach, Worked, Failed and Outcome ends with a pointer into the record: a part name in "
+    'backticks and a short quote copied exactly from that part, for example (`cell:3` "ValueError: invalid literal '
+    'for int()"). Part names are `request`, `observation:<n>`, `cell:<n>`, `action:<n>` and `diff`. Keep it short: '
+    "the writer reads it first and opens the record only where it needs more."
+)
+
 #: The keys of a batch-map row as :func:`.batch_map.build_batch_map` writes them, each with its type and meaning.
 #: The WRITE brief renders this table, and a test checks it against a built row key for key.
 BATCH_ROW_KEYS: tuple[tuple[str, str], ...] = (
@@ -285,11 +303,34 @@ BATCH_ROW_KEYS: tuple[tuple[str, str], ...] = (
     ),
 )
 
+#: What the writer is told about an episode whose drafting did not finish: its ``staging.status`` is then
+#: ``no reader output: <why>`` (:data:`.staging.NO_OUTPUT`), never ``ok``, and nothing of it is handed on.
+STAGING_UNFINISHED = (
+    "A row whose `staging.status` is not `ok` has no reader output and says why; read that episode yourself."
+)
+#: The writer's caution about summaries (the WRITE brief's step 3, with staging on).
+SUMMARY_NOT_EVIDENCE = (
+    "A summary is a reader's account, not evidence: before a test or an item rests on what a summary says, read "
+    "the part it points to."
+)
+
 #: Row keys the pass adds when an optional input exists (described only then).
+#: The keys of a batch-map row's ``staging`` entry (:func:`.staging.export`, plus ``candidates``), in the order the
+#: row key's text names them. Which reader staged the files is not among them: that stays in the host-side records.
+STAGING_ROW_FIELDS = ("status", "files", "refused", "path", "summary", "blocks", "candidates")
 STAGING_ROW_KEY = (
     "staging",
-    "dict: `status`, `source`, `files`, `refused`, `path` and `candidates` (list of `{name, file, cases}`): what "
-    "was staged for the episode under /inputs/staging/<episode>/",
+    "dict: `status`, `files`, `refused`, `path`, `summary` (the path of the episode's `summary.md`, or null when "
+    "there is none), `blocks` (the drafting reply's block counts, when it left them) and `candidates` (list of "
+    "`{name, file, cases}`): what was staged for the episode under /inputs/staging/<episode>/; a `status` other "
+    "than `ok` (`no reader output: <why>`) means nothing was handed on, and says why",
+)
+CAPTURE_ROW_KEY = (
+    "capture",
+    "dict or null: `id`, `reproduces` (`reproduces`, `differs` or `unknown`: whether the captured procedure gave "
+    "the result the episode handed back), `outcome` (the signal the episode carried, or `failed`), `level`, "
+    "`status`, `same_as` (stored captures that gave the same result on this request) and `path`: the attempt the "
+    "harness captured from the episode, under /inputs/captures/<id>/",
 )
 POOL_ROW_KEY = (
     "pool_entries",
@@ -304,6 +345,17 @@ RELATED_ROW_KEY = (
     "`error` instead of a count when the links could not be computed",
 )
 
+#: The captured attempts in a store pass's inputs (:mod:`.captures`), named whenever staging is, in its bullet.
+CAPTURES_INPUT = (
+    "Beside it, /inputs/captures/<id>/ holds attempts the harness captured when their episode ended: `procedure.py` (the "
+    "procedure that produced the result the episode handed back), `broke.md` (what broke), `signature.json` (the "
+    "structure of its input and result) and `record.json` (its uses and outcomes). The harness has already run each "
+    "procedure on its recorded request, confined; the episode's batch-map row `capture` says whether it gave the same "
+    "result, what signal the episode carried, and which stored captures give the same result there. A capture is not "
+    "in the library: it becomes library items only as you write them. A failed capture is knowledge too: a note of "
+    "what broke, or a test that records the failure.\n"
+)
+
 #: What each pool entry kind holds (only the kinds :data:`.pool.KINDS` defines are named).
 POOL_KIND_TEXT: dict[str, str] = {
     "candidate": "a function with its cases",
@@ -312,6 +364,8 @@ POOL_KIND_TEXT: dict[str, str] = {
     "draft": "work the gate refused, with its result",
     "deferred": "episodes a pass kept open to revisit",
     "unread": "episodes no pass has read",
+    "capture": "a procedure the harness captured from a completed attempt, with its record",
+    "failure": "an attempt that failed, with what broke",
 }
 
 _RUN_TESTS = (
@@ -795,7 +849,7 @@ def row_keys(staging: bool = False, pool: bool = False) -> tuple[tuple[str, str]
     """The batch-map row keys a pass with these inputs writes, in the order the brief lists them."""
     return (
         BATCH_ROW_KEYS
-        + ((STAGING_ROW_KEY,) if staging else ())
+        + ((STAGING_ROW_KEY, CAPTURE_ROW_KEY) if staging else ())
         + ((POOL_ROW_KEY, _related_row_key()) if pool else ())
     )
 
@@ -883,13 +937,16 @@ def write_brief(
     inputs: list[str] = []
     if staging:
         inputs.append(
-            "- /inputs/staging/<episode>/: what was drafted from that episode when it ended: "
-            "`candidates/<name>.py` (a function), `cases/<name>.json` (its example inputs and outputs) and "
-            "`notes.md` (lessons). The episode's batch-map row lists them under `staging`. For: drafts to build from. "
+            "- /inputs/staging/<episode>/: what was drafted from that episode when it ended: `summary.md` (what was "
+            "asked, the approach, what worked and what failed, and the outcome, each line with a part name and a "
+            "quote that point into the episode), `candidates/<name>.py` (a function), `cases/<name>.json` (its "
+            "example inputs and outputs) and `notes.md` (lessons). The episode's batch-map row lists them under "
+            "`staging`. " + STAGING_UNFINISHED + " For: a first account of each episode, and drafts to build from. "
             "The agent that drafted them saw only that episode, so they are likely specific to it. The harness has "
             "run none of it, so treat it as untrusted input."
             + _stage_quota_text(limits)
-            + "\n",
+            + " "
+            + CAPTURES_INPUT,
         )
     if helpers:
         inputs.append(
@@ -976,24 +1033,50 @@ def write_brief(
             + (" (`pool` with a decision writes it for you)" if has("pool") else "")
             + "."
         )
+    if staging:
+        decide += " " + SUMMARY_NOT_EVIDENCE
+    similar_line = (
+        " Where code looks reusable, `similar` finds other recorded episodes with matching code."
+        if has("similar")
+        else ""
+    )
+    similar_tail = ", and `similar` finds others with matching code" if has("similar") else ""
+    if staging:
+        # the summaries first: each episode's account, then its record only where the writer needs more
+        steps = (
+            "1. Look over the batch with `overview()`. Then read each episode's `summary.md` "
+            "(/inputs/staging/<episode>/summary.md): what the episode asked, how it went and how it ended, with "
+            "pointers into the record. Then look over the proposals: "
+            + _join(look)
+            + "."
+            + similar_line
+            + "\n"
+            "2. Open a full episode only where you need more than its summary: to check a pointer before anything you "
+            "write rests on it, to copy the values a test needs, or where a summary is missing or leaves a question. "
+            "`read_episode(episode, parts)` reads the parts a pointer names; a row's `end_parts` show where the "
+            "episode ended. At any point in the pass, you can open any recorded episode, in this batch or not and "
+            "from earlier passes too: `overview` and `read_episode` take any recorded id"
+            + similar_tail
+            + ".\n"
+        )
+    else:
+        steps = (
+            "1. Look over the batch with `overview()`, then over the proposals: "
+            + _join(look)
+            + "."
+            + similar_line
+            + "\n"
+            "2. Read the episodes behind what may be worth keeping, starting from each one's `end_parts`, which show "
+            "where it ended and so where an outcome, if any, was shown. At any point in the pass, you can open any "
+            "recorded episode, in this batch or not and from earlier passes too, whenever you need to investigate or "
+            "dig deeper: `overview` and `read_episode` take any recorded id"
+            + similar_tail
+            + ".\n"
+        )
     procedure = (
         "# How to work\n"
         "This is a procedure, not a quota: read as much or as little as the material needs.\n"
-        "1. Look over the batch with `overview()`, then over the proposals: "
-        + _join(look)
-        + "."
-        + (
-            " Where code looks reusable, `similar` finds other recorded episodes with matching code."
-            if has("similar")
-            else ""
-        )
-        + "\n"
-        "2. Read the episodes behind what may be worth keeping, starting from each one's `end_parts`, which show "
-        "where it ended and so where an outcome, if any, was shown. At any point in the pass, you can open any "
-        "recorded episode, in this batch or not and from earlier passes too, whenever you need to investigate or "
-        "dig deeper: `overview` and `read_episode` take any recorded id"
-        + (", and `similar` finds others with matching code" if has("similar") else "")
-        + ".\n"
+        + steps
         + decide
         + "\n"
         "4. Write tests first, against trusted values (rule 5), with fixtures made by `fixture`; see each new test "
@@ -1515,10 +1598,11 @@ def _write_brief_in_code(
     inputs: list[str] = []
     if staging:
         inputs.append(
-            "- /inputs/staging/<episode>/: what was drafted from that episode when it ended: "
-            "`candidates/<name>.py` (a function), `cases/<name>.json` (its example inputs and outputs) and "
-            "`notes.md` (lessons). The episode's batch-map row lists them under `staging`. None of it has been run: "
-            "untrusted input.\n",
+            "- /inputs/staging/<episode>/: what was drafted from that episode when it ended: `summary.md` (what was "
+            "asked, the approach, what worked and what failed, and the outcome, each line with a part name and a "
+            "quote that point into the episode), `candidates/<name>.py` (a function), `cases/<name>.json` (its "
+            "example inputs and outputs) and `notes.md` (lessons). The episode's batch-map row lists them under "
+            "`staging`. " + STAGING_UNFINISHED + " None of it has been run: untrusted input. " + CAPTURES_INPUT,
         )
     if helpers:
         inputs.append(
@@ -1577,23 +1661,49 @@ def _write_brief_in_code(
             + (" (`tools.pool` with a decision writes it for you)" if has("pool") else "")
             + "."
         )
+    if staging:
+        decide += " " + SUMMARY_NOT_EVIDENCE
+    similar_line = (
+        " Where code looks reusable, `tools.similar` finds other recorded episodes with matching code."
+        if has("similar")
+        else ""
+    )
+    similar_tail = ", and `tools.similar` finds others with matching code" if has("similar") else ""
+    if staging:
+        # the summaries first: each episode's account, then its record only where the writer needs more
+        steps = (
+            "1. Look over the batch with `tools.overview()`. Then read each episode's `summary.md` "
+            "(/inputs/staging/<episode>/summary.md): what the episode asked, how it went and how it ended, with "
+            "pointers into the record. Then look over the proposals: "
+            + _join(look)
+            + "."
+            + similar_line
+            + "\n"
+            "2. Open a full episode only where you need more than its summary: to check a pointer before anything you "
+            "write rests on it, to copy the values a test needs, or where a summary is missing or leaves a question. "
+            "`tools.read_episode(episode, parts)` reads the parts a pointer names; a row's `end_parts` show where the "
+            "episode ended. At any point you can open any recorded episode, in this batch or not: `tools.overview` "
+            "and `tools.read_episode` take any recorded id"
+            + similar_tail
+            + ".\n"
+        )
+    else:
+        steps = (
+            "1. Look over the batch with `tools.overview()`, then over the proposals: "
+            + _join(look)
+            + "."
+            + similar_line
+            + "\n"
+            "2. Read the episodes behind what may be worth keeping, starting from each one's `end_parts`, which show "
+            "where it ended and so where an outcome, if any, was shown. At any point you can open any recorded "
+            "episode, in this batch or not: `tools.overview` and `tools.read_episode` take any recorded id"
+            + similar_tail
+            + ".\n"
+        )
     procedure = (
         "# How to work\n"
         "This is a procedure, not a quota: read as much or as little as the material needs.\n"
-        "1. Look over the batch with `tools.overview()`, then over the proposals: "
-        + _join(look)
-        + "."
-        + (
-            " Where code looks reusable, `tools.similar` finds other recorded episodes with matching code."
-            if has("similar")
-            else ""
-        )
-        + "\n"
-        "2. Read the episodes behind what may be worth keeping, starting from each one's `end_parts`, which show "
-        "where it ended and so where an outcome, if any, was shown. At any point you can open any recorded episode, "
-        "in this batch or not: `tools.overview` and `tools.read_episode` take any recorded id"
-        + (", and `tools.similar` finds others with matching code" if has("similar") else "")
-        + ".\n"
+        + steps
         + decide
         + "\n"
         "4. Write tests first, against trusted values (rule 5), with fixtures made by `tools.fixture`; see each new "

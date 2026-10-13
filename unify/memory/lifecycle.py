@@ -67,6 +67,9 @@ class ItemUse:
     calls: tuple[int, int, int] | None = (
         None  # observed calls (ok, refused, error) on the runtime basis
     )
+    # per-call outcome rows (:class:`.trust.Use`: answered, verdict, end outcome, conditions, correction) when the
+    # use record attributes its calls (``items[<id>].outcomes``); empty: the facts above, attributed as always
+    outcomes: tuple = ()
 
 
 def returned(called: int, refused: int, errored: int) -> bool:
@@ -190,6 +193,9 @@ def facts_from_use(
             item in unknown,
             runtime_counts(use, item),
         )
+        attributed = _outcome_rows(eid, regime, r.get("outcomes"))
+        if u is not None and attributed:
+            u = replace(u, outcomes=attributed)
         if u is not None:
             items[item] = u
     positive, negative = counted_signals(
@@ -205,6 +211,23 @@ def facts_from_use(
         negative,
         dict(sorted(items.items())),
     )
+
+
+def _outcome_rows(eid: str, regime: str, rows: Any) -> tuple:
+    """A use record row's per-call ``outcomes`` (:func:`.analysis.use.attribute_outcomes`) as :class:`.trust.Use`
+    values of episode *eid* in *regime*; () when it has none."""
+    from . import trust
+
+    if not isinstance(rows, list):
+        return ()
+    reg = regime if regime in trust.REGIMES else NO_SIGNAL_REGIME
+    out = []
+    for row in rows:
+        if isinstance(row, dict):
+            u = trust.use_from_row({**row, "episode": eid, "regime": reg})
+            if u is not None:
+                out.append(u)
+    return tuple(out)
 
 
 def facts_from_evidence(
@@ -311,55 +334,90 @@ def _negative(f: EpisodeUse) -> bool:
     return f.negative and f.regime != NO_SIGNAL_REGIME
 
 
+#: The trust statuses (:mod:`.trust`) under the lifecycle's names, until the rename lands.
+_TO_LIFECYCLE = {"on-trial": "experimental", "adopted": "stable", "retired": "suspect"}
+
+
+def trust_uses(f: EpisodeUse, u: ItemUse) -> list:
+    """*u*'s uses in episode *f* as :class:`.trust.Use` values: its attributed per-call outcomes when the use record
+    has them, else one use per kind of call it saw (returned, error, refused), not attributed: a contrary signal in
+    its episode counts against a returned call, as the lifecycle always counted it."""
+    from . import trust
+
+    if u.outcomes:
+        return list(u.outcomes)
+    regime = f.regime if f.regime in trust.REGIMES else NO_SIGNAL_REGIME
+    out = []
+    if u.used:
+        out.append(
+            trust.Use(
+                f.episode_id,
+                regime,
+                "returned",
+                answered=None,
+                episode_negative=_negative(f),
+                unknown=u.unknown,
+            ),
+        )
+    if u.errored:
+        out.append(trust.Use(f.episode_id, regime, "error", answered=None))
+    if u.refused:
+        out.append(trust.Use(f.episode_id, regime, "refused", answered=None))
+    return out
+
+
+def item_outcome(
+    item: str,
+    prior: str | None,
+    facts: Iterable[EpisodeUse],
+    level: str | None = None,
+) -> tuple[Any, dict]:
+    """``(trust outcome, track record)`` of *item* from the episodes that ran its current version: the one decider
+    (:func:`.trust.apply_outcome`) and the record per kind of signal (:func:`.trust.track`). *prior* is in the
+    lifecycle's names; *level* is the evidence level the gate set (None: none)."""
+    from . import trust
+
+    uses = [x for f in facts if item in f.items for x in trust_uses(f, f.items[item])]
+    prior_trust = trust.FROM_LIFECYCLE.get(prior) if prior else None
+    return trust.apply_outcome(level, prior_trust, uses), trust.track(uses)
+
+
 def decide_status(
     item: str,
     prior: str | None,
     facts: Iterable[EpisodeUse],
 ) -> tuple[str, str | None, str | None, list[str]]:
-    """``(status, rule, reason, evidence episodes)`` of *item* from the episodes that ran its current version.
+    """``(status, rule, reason, evidence episodes)`` of *item* from the episodes that ran its current version, in the
+    lifecycle's names. It delegates to the one decider, :func:`.trust.apply_outcome` (statuses ``on-trial``,
+    ``adopted``, ``retired`` are ``experimental``, ``stable``, ``suspect`` here):
 
     - ``deprecated`` is CURATE's and is kept as it is.
     - ``suspect`` (rule ``errors``): an exception other than a refusal left it in at least
       :data:`MIN_EPISODES` episodes, in any regime.
     - ``suspect`` (rule ``negative_signals``): a negative signal followed its use in at least
-      :data:`MIN_EPISODES` episodes, in regimes that have signals.
+      :data:`MIN_EPISODES` episodes, in regimes that have signals (a use the record does not attribute).
+    - ``suspect`` by an attributed failing signal (``rejected``, ``contrary_end``, ``corrected``, ``holds_false``,
+      ``disagreed``) in :data:`MIN_EPISODES` episodes, or by failed uses of any kind together (``failed_uses``).
     - ``stable``: used (a call returned) in at least :data:`K_STABLE` episodes, each with a known outcome, no
-      error and no negative signal, and no episode with an error or a negative signal. A ``stable`` item stays
-      ``stable`` until a ``suspect`` rule fires: one episode never decides a status.
+      failed use, and no episode with a failed use; where attributed uses are in ``dense`` or ``sparse`` episodes, at
+      least one carries an accepted verdict or a positive end. A ``stable`` item stays ``stable`` until a
+      ``suspect`` rule fires: one episode never decides a status.
     - otherwise ``experimental``. An import alone never promotes an item, and a refusal never demotes one: an
       item that has only ever refused its inputs stays ``experimental``, and its reason says how often it
       refused.
     """
     if prior == "deprecated":
         return "deprecated", None, None, []
-    rows = [(f, f.items[item]) for f in facts if item in f.items]
-    failed = sorted({f.episode_id for f, u in rows if u.errored})
-    if len(failed) >= MIN_EPISODES:
-        return (
-            "suspect",
-            "errors",
-            f"it raised in {len(failed)} episodes",
-            failed,
-        )
-    negative = sorted({f.episode_id for f, u in rows if u.used and _negative(f)})
-    if len(negative) >= MIN_EPISODES:
-        return (
-            "suspect",
-            "negative_signals",
-            f"negative signals followed its use in {len(negative)} episodes",
-            negative,
-        )
-    clean = sorted(
-        {
-            f.episode_id
-            for f, u in rows
-            if u.used and not u.unknown and not u.errored and not _negative(f)
-        },
-    )
-    if prior == "stable" or (not failed and not negative and len(clean) >= K_STABLE):
-        return "stable", None, None, clean
-    refused = sorted({f.episode_id for f, u in rows if u.refused})
-    if refused and not any(u.used for _, u in rows):
+    facts = list(facts)
+    out, _track = item_outcome(item, prior, facts)
+    status = _TO_LIFECYCLE[out.status]
+    if status == "suspect":
+        return "suspect", out.rule, out.reason, list(out.episodes)
+    if status == "stable":
+        return "stable", None, None, list(out.episodes)
+    rows = [f.items[item] for f in facts if item in f.items]
+    refused = sorted({f.episode_id for f in facts if item in f.items and f.items[item].refused})
+    if refused and not any(u.used for u in rows):
         return (
             "experimental",
             None,
@@ -367,7 +425,7 @@ def decide_status(
             "returned yet; a refusal is not a failure",
             [],
         )
-    return "experimental", None, None, []
+    return "experimental", None, out.reason, []
 
 
 def taint(
@@ -696,6 +754,12 @@ def next_records(
             if f.memory_main in since.get(item, set())
         ]
         status, rule, reason, evidence = decide_status(item, prior, mine)
+        # the record per kind of signal and what an adoption rests on (trust.py); the level moves only when the
+        # gate set one (outcomes raise it to confirmed-by-outcomes or lower it from there)
+        outcome, rec["track"] = item_outcome(item, prior, mine, rec.get("level"))
+        rec["status_basis"] = outcome.basis if status == "stable" else None
+        if rec.get("level") is not None:
+            rec["level"] = outcome.level
         if item in unknown and status == "stable" and prior != "stable":
             # its current version is not known: the use counted may be an older version's
             status, rule, evidence = "experimental", None, []

@@ -37,7 +37,8 @@ Each pass sends two events through ``emit`` and appends them to the harness-only
 ``reason_codes`` are codes only, never free text (deduplicated, at most 10): ``G1``..``G6`` for the gate
 checks that refused, ``no_manifest``, ``manifest_invalid``, ``over_quota``, ``deadline``, ``pass_cap``,
 ``run_guard``, ``writer_error``, ``route_not_in_effect`` (a writer call found the writer's declared route not in effect),
-and ``ok`` for a passed pass. They are structural: :attr:`PassOutcome.codes`
+``no_progress`` (the no-progress rule ended the writer's or curator's round; a gate check that then refused the
+final merge is listed beside it, and only those checks are in ``refused_by``), and ``ok`` for a passed pass. They are structural: :attr:`PassOutcome.codes`
 (set where each cause arises in the pass and the gate), the type of an exception that ended a pass, or the
 run guard; reason text is never read. A failed pass with no listed cause (memory ``main`` moved during the
 merge) is ``writer_error``. A pass the run guard holds back sends one end event (``calls`` 0, ``usd`` "0",
@@ -99,6 +100,7 @@ from ..signals import Signal, SignalMasked, post_signal
 from .. import similar as _similar
 from ..snapshot import listing, materialise
 from ..writer_pass import (
+    CODE_NO_PROGRESS,
     CODE_ROUTE_NOT_IN_EFFECT,
     CODE_STEP_GUARD,
     STEP_GUARD,
@@ -173,6 +175,7 @@ REASON_CODES = frozenset(
         "run_guard",
         "writer_error",
         CODE_ROUTE_NOT_IN_EFFECT,
+        CODE_NO_PROGRESS,
         "ok",
     },
 )
@@ -817,6 +820,26 @@ def _by_category(usd: str, helpers: list[dict]) -> dict:
     }
 
 
+def _reader_category(rows: list[dict] | None) -> dict:
+    """``{"reader": USD}``: the batch episodes' readers' own spend (each fork's ``fork.json`` ``usd``, which the proxy
+    journals under ``fork.<episode>``, outside the pass's own spend), summed; unknown when any reader recorded none.
+    Empty without staging."""
+    if rows is None:
+        return {}
+    total = Decimal(0)
+    for r in rows:
+        usd = r.get("reader_usd")
+        if usd is None:
+            continue
+        if usd == UNKNOWN:
+            return {"reader": UNKNOWN}
+        try:
+            total += Decimal(str(usd))
+        except (InvalidOperation, ValueError):
+            return {"reader": UNKNOWN}
+    return {"reader": _usd(total)}
+
+
 def _spend(outcome: PassOutcome | None, rows: list[CostRow]) -> tuple[str, int, int]:
     """(known USD, unpriced calls, calls): the pass's own figures, else the cost rows'."""
     if outcome is not None and money(outcome.usd) != UNKNOWN:
@@ -907,9 +930,20 @@ def _end_event(
                 "nothing_to_store": bool(outcome.nothing_to_store),
                 # spend by lane (the fork's is in the proxy journal, session fork.<episode>), one row per delegate
                 # call, the batch's staging by source
-                "usd_by_category": _by_category(usd, outcome.helpers),
+                "usd_by_category": {
+                    **_by_category(usd, outcome.helpers),
+                    **_reader_category(getattr(outcome, "staging_episodes", None)),
+                },
                 "helpers": list(outcome.helpers),
                 "staging": outcome.staging,
+                # with staging on, per batch episode: its staging's source, status, files, candidates and the files
+                # withheld from an unfinished reader, its summary.md's size, how many of the summary's pointers do
+                # not resolve in the recorded episode, and whether the writer read the summary (a measure only)
+                **(
+                    {"staging_episodes": outcome.staging_episodes}
+                    if getattr(outcome, "staging_episodes", None) is not None
+                    else {}
+                ),
                 **({"pool": outcome.pool} if outcome.pool is not None else {}),
                 # UNIFY_MEMORY_LIBRARY_COMPACT: the writer's compactions, the messages they took out and those
                 # messages' prompt characters (all 0 with it off); its calls' prompt and cache-read tokens
@@ -918,6 +952,12 @@ def _end_event(
                 "messages_moved": int(getattr(outcome, "messages_moved", 0)),
                 "input_tokens": getattr(outcome, "input_tokens", None),
                 "cache_read_tokens": getattr(outcome, "cache_read_tokens", None),
+                # how many of the writer's calls reported each sum, out of all its calls, and the first call's
+                # prompt (the brief and the first message, before any reading)
+                "input_tokens_calls": int(getattr(outcome, "input_tokens_calls", 0)),
+                "cache_read_calls": int(getattr(outcome, "cache_read_calls", 0)),
+                "writer_calls": int(getattr(outcome, "writer_calls", 0)),
+                "writer_first_prompt_tokens": getattr(outcome, "writer_first_prompt_tokens", None),
                 # the largest prompt one call reported, and the model's window as the compaction trigger reads it
                 # (None: unknown, so no compaction)
                 "max_prompt_tokens": getattr(outcome, "max_prompt_tokens", None),
@@ -1138,6 +1178,28 @@ def _curate_settled(
     return _curate.settled(state, changed, _curate.kept(manifest))
 
 
+def capture_settled_forks(stores: Stores, settings: Any) -> list[dict]:
+    """Capture each settled fork's attempt that has no capture yet (:func:`..captures.capture_settled`): the
+    harness writes the capture store, confined runs only; never raises, so it never stops a pass."""
+    from .. import captures
+
+    try:
+        state = Path(stores.paths.state_dir)
+        root = state / "memory-staging"
+        eids = sorted(os.listdir(root)) if root.is_dir() else []
+        lookup = EpisodeLookup(stores)
+        return captures.capture_settled(
+            state,
+            eids,
+            episode=lookup.episode,
+            signals=stores.evidence.signals_for,
+            checker_visible=checker_visible(settings),
+        )
+    except Exception as exc:  # noqa: BLE001 - capture never stops a pass; the error is recorded
+        _error(stores, f"capture step: {type(exc).__name__}")
+        return []
+
+
 async def run_due_passes(
     stores: Stores,
     eid: str,
@@ -1193,6 +1255,10 @@ async def run_due_passes(
         return []  # nothing recorded; the request stays due
     scale, max_calls = cfg.effort_scale[level], cfg.max_calls[level]
     from . import fork as _fork
+
+    if library_enabled(settings) and library_fork(settings):
+        # every settled fork's attempt is captured at once, before any pass and whether or not one is due
+        capture_settled_forks(stores, settings)
 
     trig = Trigger(
         stores.evidence,

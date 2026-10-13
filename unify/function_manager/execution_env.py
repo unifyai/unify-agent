@@ -270,6 +270,7 @@ def create_execution_globals() -> Dict[str, Any]:
     from unify.common.async_tool_loop import SteerableToolHandle
     from unify.common.asyncio_compat import run_coro_sync
     from unify.common.cell_models import (
+        ModelCallFailed,
         ModelRequestError,
         cell_list_llms,
         cell_query_llm,
@@ -287,6 +288,9 @@ def create_execution_globals() -> Dict[str, Any]:
     # What a cell's model call raises when the provider refuses the request's
     # own content, so the cell can catch it by name.
     globals_dict["ModelRequestError"] = ModelRequestError
+    # What it raises for any other failure of the call: a fixed text with the
+    # status and the error's type, never the provider's reply.
+    globals_dict["ModelCallFailed"] = ModelCallFailed
 
     # Globals a registered environment binds beside its namespaces; never in
     # place of one of the above. While a feature that observes environment

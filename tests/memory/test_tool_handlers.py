@@ -276,6 +276,9 @@ def test_the_event_file_has_the_base_fields_plus_the_additive_ones(tmp_path):
             assert r["refusal"]["form"] in codes.get(r["tool"], []) + codes["*"], r
     # the rows kept on the pass are the file's rows
     assert sorted(r["call"] for r in writer.tool_events) == sorted(r["call"] for r in calls)
+    # every handler thread had returned when the gate would start
+    (end,) = [r for r in rows if r["event"] == "pass_end"]
+    assert end["handlers_alive_at_gate"] == 0 and "temp_kept" not in end
 
 
 def test_off_the_requests_and_rows_are_as_before(tmp_path):
@@ -292,6 +295,9 @@ def test_off_the_requests_and_rows_are_as_before(tmp_path):
     names = [t["function"]["name"] for t in writer_tools(library_mode=True)]
     assert model.tool_lists[0] == names
     assert all(not (ADDED_FIELDS & set(r)) for r in writer.tool_events)
+    events = [json.loads(line) for line in (tmp_path / "out" / "p1" / "tool-events.jsonl").read_text().splitlines()]
+    (end,) = [r for r in events if r["event"] == "pass_end"]
+    assert "handlers_alive_at_gate" not in end
 
 
 # --- the allow-lists ---------------------------------------------------------------------------------------------------
@@ -666,8 +672,57 @@ def test_a_pass_that_ends_with_a_handler_thread_alive_keeps_its_folder_and_says_
         (end,) = [r for r in rows if r["event"] == "pass_end"]
         assert end["temp_kept"]["reason"] == "a tool handler of this pass is still running"
         assert Path(end["temp_kept"]["path"]) == box.parent
+        # the stuck handler's thread was alive when the gate would start
+        assert end["handlers_alive_at_gate"] == 1
         closed = [r for r in rows if r["event"] == "channel_closed"]
         assert [r["reason"] for r in closed] == ["handler_stuck"]
     finally:
         release.set()
     shutil.rmtree(Path(seen["box"]).parent, ignore_errors=True)
+
+
+class CrashBox(FakeBox):
+    """A box whose second cell raises out of the interpreter instead of returning a result."""
+
+    async def run_cell(self, code, *, call=None):
+        if self.cells >= 1:
+            self.cells += 1
+            raise RuntimeError("the interpreter broke during the cell")
+        return await super().run_cell(code, call=call)
+
+
+def test_a_cell_that_raises_still_writes_its_row_at_its_reserved_number(tmp_path):
+    turns = [
+        _cell("c1", ("who", {})),
+        _cell("c2", ("who", {})),
+    ]
+    model = ToolsSeen(turns)
+    _, _, writer = _writer(
+        tmp_path,
+        model,
+        library_mode=True,
+        tools_in_code=True,
+        max_calls=4,
+        pass_record_root=str(tmp_path / "out"),
+    )
+    writer.load = EPS.__getitem__
+    writer.interpreter_start = CrashBox.start
+    with pytest.raises(RuntimeError, match="the interpreter broke"):
+        asyncio.run(writer.run(PassRequest("incremental", "svc", ["e1"], False), "p1"))
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "out" / "p1" / "tool-events.jsonl").read_text().splitlines()
+    ]
+    calls = [r for r in rows if r["event"] == "tool_call"]
+    cells = sorted((r for r in calls if r["tool"] == "execute_code"), key=lambda r: r["call"])
+    assert [r["status"] for r in cells] == ["ok", "error"], cells
+    crashed = cells[1]
+    assert crashed["exception"] == "RuntimeError" and crashed["via"] == "model" and crashed["cell"] is None
+    assert BASE_FIELDS | ADDED_FIELDS <= set(crashed)
+    # its number is the one reserved before the cell ran: after the first cell's calls, before any of its own
+    assert crashed["call"] == max(r["call"] for r in calls)
+    assert sorted(r["call"] for r in calls) == list(range(len(calls)))
+    # the message text is not in the row, and no placeholder is left on the pass
+    assert "the interpreter broke" not in json.dumps(rows)
+    assert not any(r.get("event") == "reserved" for r in writer.tool_events)
+    assert sorted(r["call"] for r in writer.tool_events) == list(range(len(writer.tool_events)))

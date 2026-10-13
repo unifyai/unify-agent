@@ -105,6 +105,20 @@ An ``open`` record made by the import system, by traceback formatting or by
 the library package itself carries ``via`` (``import``, ``traceback`` or
 ``library``), so a reader can tell the cell's own file reads from them.
 
+A call that raised (an item's or a helper's) also raises
+``sys.audit("memory.call_failed", id, exception_type, message_line,
+args_shape)``: the exception's type name, the first line of its message and,
+for a helper, the arguments' types and sizes (never values). The block then
+also has::
+
+              "failures": [{"item", "exception", "message", "shape", "tid",
+                            "cell_thread"}, ...],  # at most MAX_CALL_FAILURES
+              "failures_dropped": int}             # failures not listed
+
+``message`` and ``shape`` are key-masked and clipped to MAX_FAILURE_TEXT
+characters, like every string here; a failure whose id is neither an item
+id nor one of FAILURE_HELPERS counts as malformed.
+
 ``counts`` holds every well-formed call of up to MAX_CALL_ITEMS items, so it
 is exact unless ``dropped`` is non-zero. Like every record here, these are
 the cell's own unconfirmed reports (see Trust below).
@@ -180,6 +194,10 @@ HELPER_EVENT = "memory.helper_call"
 HELPER_ITEMS = frozenset(
     {"memory:index", "memory:show", "memory:find", "memory:match", "memory:run"},
 )
+#: A failed call of an item or a helper: (id, exception type, first message line, arguments' shape).
+FAILED_EVENT = "memory.call_failed"
+#: The helper ids a failure may name.
+FAILURE_HELPERS = HELPER_ITEMS
 #: What ``memory.match`` listed and how a ``memory.run`` went (ids and outcomes only).
 MATCH_EVENT = "memory.match_result"
 RUN_EVENT = "memory.run_result"
@@ -191,6 +209,7 @@ AUDITED = PATH_EVENTS | SPAWN_EVENTS | {
     SYSTEM_EVENT,
     CALL_EVENT,
     HELPER_EVENT,
+    FAILED_EVENT,
     MATCH_EVENT,
     RUN_EVENT,
 }
@@ -211,6 +230,9 @@ RECURSION_MARGIN = 50
 MAX_CALL_ITEMS = 512
 MAX_CALL_RECORDS = 1000
 MAX_ITEM_ID = 300
+#: Failed calls listed per cell, and the characters kept of a failure's message line and arguments' shape.
+MAX_CALL_FAILURES = 50
+MAX_FAILURE_TEXT = 300
 #: match results and runs listed per cell, and ids per match result.
 MAX_MATCH_RECORDS = 200
 MAX_RUN_RECORDS = 1000
@@ -230,6 +252,7 @@ _KEY_SHAPED = re.compile(
 )
 _KEY_MASK = "<redacted:key-shaped>"
 _ITEM_ID = re.compile(r"memory(?:\.[A-Za-z_][A-Za-z0-9_]*)+:[A-Za-z_][A-Za-z0-9_]*")
+_EXCEPTION_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,99}")
 _HEX_DIGEST = re.compile(r"[0-9a-f]{1,64}")
 _CAPTURE_ID = re.compile(r"capture:[0-9a-f]{16}")
 #: A level, a status or how a match was made: a short lower-case label.
@@ -281,6 +304,16 @@ def _clean(text: str) -> tuple[str, bool]:
     return cut + CLIP_MARK, True
 
 
+def _line(text: str) -> str:
+    """The first line of *text*, key-masked, then clipped to MAX_FAILURE_TEXT."""
+    masked = _KEY_SHAPED.sub(_KEY_MASK, text[:MAX_SCAN])
+    lines = masked.splitlines()
+    line = lines[0] if lines else ""
+    if len(line) <= MAX_FAILURE_TEXT:
+        return line
+    return _drop_trailing_token(line[:MAX_FAILURE_TEXT]) + CLIP_MARK
+
+
 def _fd_path(fd: Any) -> Optional[str]:
     """The path a directory fd refers to, best effort (Linux /proc)."""
     if not _is_fd(fd):
@@ -330,6 +363,8 @@ class CellAudit:
         self.call_records_dropped = 0
         self.calls_malformed = 0
         self.helper_counts: dict = {}
+        self.call_failures: list = []
+        self.call_failures_dropped = 0
         self.match_records: list = []
         self.run_records: list = []
 
@@ -357,6 +392,9 @@ class CellAudit:
                 return
             if event == HELPER_EVENT:
                 self._helper_call(args)
+                return
+            if event == FAILED_EVENT:
+                self._failure(args)
                 return
             if event == MATCH_EVENT:
                 self._match_result(args)
@@ -461,6 +499,39 @@ class CellAudit:
             counts = self.helper_counts[item] = dict.fromkeys(CALL_OUTCOMES, 0)
         counts[outcome] += 1
 
+    def _failure(self, args: tuple) -> None:
+        """Keep one ``memory.call_failed`` event: the id, the exception's type, the message's first line and the
+        arguments' shape. Only exact ``str`` arguments are read, as for ``memory.call``."""
+        if type(args) is not tuple or len(args) != 4 or any(type(a) is not str for a in args):
+            self.calls_malformed += 1
+            return
+        item, exception, message, shape = args
+        if (
+            len(item) > MAX_ITEM_ID
+            or (
+                item not in FAILURE_HELPERS
+                and _ITEM_ID.fullmatch(item) is None
+                and _CAPTURE_ID.fullmatch(item) is None
+            )
+            or _EXCEPTION_NAME.fullmatch(exception) is None
+        ):
+            self.calls_malformed += 1
+            return
+        if len(self.call_failures) >= MAX_CALL_FAILURES:
+            self.call_failures_dropped += 1
+            return
+        tid = threading.get_ident()
+        self.call_failures.append(
+            {
+                "item": item,
+                "exception": exception,
+                "message": _line(message),
+                "shape": _line(shape),
+                "tid": tid,
+                "cell_thread": tid == self.cell_tid,
+            },
+        )
+
     @staticmethod
     def _id(item: Any) -> Optional[str]:
         """*item* if it is a library item id or a capture id, else None."""
@@ -561,6 +632,8 @@ class CellAudit:
             or self.calls_dropped
             or self.calls_malformed
             or self.helper_counts
+            or self.call_failures
+            or self.call_failures_dropped
             or self.match_records
             or self.run_records,
         )
@@ -732,6 +805,9 @@ class CellAudit:
             }
             if self.helper_counts:
                 out["calls"]["helpers"] = self.helper_counts
+            if self.call_failures or self.call_failures_dropped:
+                out["calls"]["failures"] = self.call_failures
+                out["calls"]["failures_dropped"] = self.call_failures_dropped
             if self.match_records:
                 out["calls"]["matches"] = self.match_records
             if self.run_records:

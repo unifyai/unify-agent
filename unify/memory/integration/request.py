@@ -66,6 +66,16 @@ _IMPORT_ERROR = re.compile(
     r"(?:ImportError|ModuleNotFoundError): .*'memory(?:\.[A-Za-z0-9_.]*)?'",
 )
 _ERROR_CHARS = 2000
+#: Library mode: the most library failures a request's use record lists (``library_failures``); later ones are
+#: counted in ``library_failures_dropped``.
+MAX_LIBRARY_FAILURES = 100
+#: What a library failure is: a library item's call, one of the package's helpers, or a cell whose error was a
+#: failed import of the package or a missing ``memory`` name.
+LIBRARY_FAILURE_KINDS = ("item", "index", "show", "find", "match", "import", "name")
+_FAILURE_HELPERS = ("index", "show", "find", "match")
+#: The most characters kept of a failure's message line and of a helper call's arguments' shape.
+LIBRARY_FAILURE_TEXT = 200
+_EXCEPTION_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,99}")
 
 
 class MemoryUnavailable(RuntimeError):
@@ -348,6 +358,119 @@ def library_failures(runtime: Any, cell_errors: Any) -> dict:
     }
 
 
+def library_failures_empty() -> dict:
+    """A request's library failures before any cell: ``entries`` stamped with their cell's tool call id,
+    ``pending`` ones whose cell has not reported its result yet, and how many were ``dropped`` over
+    :data:`MAX_LIBRARY_FAILURES` (or by the audit hook's own cap)."""
+    return {"entries": [], "pending": [], "dropped": 0}
+
+
+def _failure_room(acc: dict) -> bool:
+    if len(acc["entries"]) + len(acc["pending"]) < MAX_LIBRARY_FAILURES:
+        return True
+    acc["dropped"] += 1
+    return False
+
+
+def _clip(value: Any) -> str:
+    return value[:LIBRARY_FAILURE_TEXT] if isinstance(value, str) else ""
+
+
+def add_library_failures(acc: dict, drained: Any) -> None:
+    """Add one cell's failed library calls (the drained audit records' ``calls.failures``, ``adapters.audit``) to
+    *acc* as pending entries: ``kind`` ``item`` with the item id as ``target``, or the helper's name with the
+    arguments' shape (types and sizes) as ``target``; the exception's type and the message's first line. The
+    hook's own dropped count is added. Malformed parts are skipped."""
+    calls = drained.get("calls") if isinstance(drained, dict) else None
+    if not isinstance(calls, dict):
+        return
+    acc["dropped"] += _count(calls.get("failures_dropped"))
+    failures = calls.get("failures")
+    for row in failures if isinstance(failures, list) else []:
+        if not isinstance(row, dict):
+            continue
+        item, exception = row.get("item"), row.get("exception")
+        if not isinstance(item, str) or not isinstance(exception, str):
+            continue
+        if not _EXCEPTION_NAME.fullmatch(exception):
+            continue
+        helper = item.split(":", 1)[1] if item.startswith("memory:") else None
+        if helper is not None and helper not in _FAILURE_HELPERS:
+            continue
+        if not _failure_room(acc):
+            continue
+        acc["pending"].append(
+            {
+                "kind": helper or "item",
+                "target": _clip(row.get("shape")) if helper else item,
+                "exception": exception,
+                "message": _clip(row.get("message")),
+            },
+        )
+
+
+def _error_line(error: str) -> tuple[str, str]:
+    """A cell error's exception type (its last dotted part) and message, from its last non-blank line."""
+    lines = [line for line in error.splitlines() if line.strip()]
+    head, sep, message = (lines[-1] if lines else "").partition(": ")
+    name = head.strip().rsplit(".", 1)[-1]
+    if not sep or not _EXCEPTION_NAME.fullmatch(name):
+        return "", ""
+    return name, message.strip()
+
+
+def settle_library_failures(acc: dict, call_id: Any, error: Any = None) -> None:
+    """A cell's result is in: its error, when it named the package (:func:`library_cell_error`), becomes a
+    ``name`` or ``import`` entry, and every pending entry is stamped with the cell's tool call id."""
+    kind = library_cell_error(error)
+    if kind is not None and _failure_room(acc):
+        exception, message = _error_line(error)
+        acc["pending"].append(
+            {
+                "kind": kind,
+                "target": None,
+                "exception": exception,
+                "message": _clip(message),
+            },
+        )
+    call = None if call_id is None else str(call_id)
+    for entry in acc["pending"]:
+        acc["entries"].append({**entry, "call": call})
+    acc["pending"] = []
+
+
+def library_failure_list(acc: Any, cells: list[dict], redactor: Any = None) -> tuple[list[dict], int]:
+    """The use record's ``library_failures`` and its dropped count: each entry's ``kind``, ``target``,
+    ``exception``, ``message`` (the first line, through the run's *redactor* and the harness's error
+    redaction) and ``cell``, the cell's index in the episode's transcript (:func:`..analysis.use.transcript_cells`;
+    None when its cell is not known), where its full traceback is."""
+    from ..redact import redact_error
+
+    if not isinstance(acc, dict):
+        return [], 0
+    index = {c.get("call"): c.get("index") for c in cells if isinstance(c, dict)}
+
+    def redact(text: Any) -> Any:
+        if not isinstance(text, str):
+            return text
+        if redactor is not None:
+            text = redactor.text(text)
+        return redact_error(text)[:LIBRARY_FAILURE_TEXT]
+
+    out = []
+    for entry in [*acc.get("entries", []), *({**e, "call": None} for e in acc.get("pending", []))]:
+        out.append(
+            {
+                "kind": entry.get("kind"),
+                "target": redact(entry.get("target")),
+                "exception": entry.get("exception"),
+                "message": redact(entry.get("message")),
+                "cell": index.get(entry.get("call")),
+            },
+        )
+    return out, _count(acc.get("dropped"))
+
+
 def _under(path: Any, roots: tuple[str, ...]) -> bool:
     return isinstance(path, str) and any(path == r or path.startswith(r + "/") for r in roots)
 
@@ -387,7 +510,8 @@ def library_file_lookups(records: Any, roots: Any) -> dict:
     package's helpers: ``reads``, the files under the copy the cell's own code opened for reading (an open made by
     the import system, by traceback formatting or by the library package is marked ``via`` by the audit hook and
     not counted), and ``searches``, the process starts that ran a search program over a path in the copy. Counts
-    only: no path or content is kept."""
+    only: no path or content is kept. ``via`` is the cell's own report (model code can make an open look like the
+    import system's), so it filters this metric only and must never feed a security audit or a stop rule."""
     roots_t = tuple(r.rstrip("/") for r in (roots or ()) if isinstance(r, str) and r.strip("/"))
     out = {"reads": 0, "searches": 0}
     if not roots_t:
@@ -586,6 +710,7 @@ def memory_use(
     runtime_calls: dict | None = None,
     cell_errors: dict | None = None,
     memory_bound: bool | None = None,
+    failures: dict | None = None,
 ) -> dict:
     """The request's use record (:func:`..analysis.use.request_use`), with *runtime_calls*, the calls the
     actor's cells actually made as the worker's audit hook observed them (:func:`with_runtime_calls`).
@@ -597,9 +722,12 @@ def memory_use(
     as rendered, through *redactor*, as the transcript's copy of the prompt is), and *cell_status*, each
     cell's status from the runtime's structured result by tool call id (``RequestRun.note_result``). In
     library mode the record also counts failures (:func:`library_failures`, from *runtime_calls* and
-    *cell_errors*, the cells whose error named the library's package). A failure is recorded as its
-    exception type, with the items at the pin; it never stops the episode. *memory_bound* says whether the
-    worker bound ``memory`` in the cells' globals (None: as *library_mode*; see ``use.request_use``).
+    *cell_errors*, the cells whose error named the library's package) and lists them
+    (``library_failures``, at most :data:`MAX_LIBRARY_FAILURES`, the rest counted in
+    ``library_failures_dropped``; :func:`library_failure_list`, from *failures*). A failure of this function
+    is recorded as its exception type, with the items at the pin; it never stops the episode. *memory_bound*
+    says whether the worker bound ``memory`` in the cells' globals (None: as *library_mode*; see
+    ``use.request_use``).
     """
     from ..analysis import use
 
@@ -609,8 +737,9 @@ def memory_use(
     try:
         if isinstance(shown, dict) and redactor is not None and shown_text:
             shown = {**shown, **use.section_digest(redactor.text(shown_text))}
+        lines = clean(list(ep.transcript))
         record = use.request_use(
-            clean(list(ep.transcript)),
+            lines,
             item_ids,
             [
                 clean(
@@ -639,6 +768,13 @@ def memory_use(
         if library_mode and isinstance(record, dict) and "error" not in record:
             record.update(library_failures(runtime_calls, cell_errors))
             record["library_helper_calls"] = library_helper_calls(runtime_calls)
+            listed, dropped = library_failure_list(
+                failures,
+                use.transcript_cells(lines) if failures else [],
+                redactor,
+            )
+            record["library_failures"] = listed
+            record["library_failures_dropped"] = dropped
             record["library_file_lookups"] = library_file_lookups_total(runtime_calls)
             record.update(use.match_run_fields(runtime_calls, clean(list(ep.transcript))))
         return record
@@ -720,6 +856,8 @@ class RequestRun:
         self.runtime_calls: dict = runtime_calls_empty()
         # Cells whose error named the library's package: ``name`` and ``import`` (library_cell_error).
         self.cell_errors: dict[str, int] = {"name": 0, "import": 0}
+        # Library mode: the failed library calls and library cell errors, listed (library_failure_list).
+        self.failures: dict = library_failures_empty()
         self.episode_id = ""
         self.started_at = ""
         self.pin = ""
@@ -911,6 +1049,18 @@ class RequestRun:
 
         # the item records at the pin: statuses for the index and find, and what memory.show prints
         records, _ = records_at(Repo(paths.memory), self.pin)
+        # the capture store as this request starts (captures.py; empty unless the episode-end fork captured
+        # attempts): read only through memory helpers, never in the index or the prompt
+        from ..captures import export_files, store_dir
+
+        try:
+            captured = export_files(store_dir(paths.state_dir))
+        except OSError as exc:
+            logger.warning(
+                "memory library mode: captures not exported (%s)",
+                type(exc).__name__,
+            )
+            captured = {}
         self.generated = export_actor_library_mode(
             paths.memory,
             self.pin,
@@ -918,6 +1068,7 @@ class RequestRun:
             shapes=shapes,
             status_of=status_of(records),
             records=records,
+            captures=captured,
         )
         self.item_ids = pinned_items(paths.checkout, library_mode=True)
         # the worker binds ``memory`` in every cell when the copy holds the package (hooks.worker_globals)
@@ -978,20 +1129,24 @@ class RequestRun:
     def note_result(self, call_id: Any, result: Any) -> None:
         """Keep a code cell's status from its ``ExecutionResult`` (``hooks.tool_result``), reduced at once
         to names (``analysis.use.runtime_status``): the use record's only source of refusals, errors and
-        sessions. A cell whose error named the library's package is counted (:func:`library_cell_error`).
+        sessions. A cell whose error named the library's package is counted (:func:`library_cell_error`);
+        in library mode it and the cell's failed library calls are listed (:func:`settle_library_failures`).
         A plain mapping (the code tool's own result for an empty cell, or when its session executor
         raised) is read by ``analysis.use.dict_status``. At most ``MAX_STATUSES`` calls are
         kept; later ones are then unknown.
         """
         from ..analysis import use
 
-        kind = library_cell_error(
+        error = (
             result.get("error")
             if isinstance(result, Mapping)
-            else getattr(result, "error", None),
+            else getattr(result, "error", None)
         )
+        kind = library_cell_error(error)
         if kind is not None:
             self.cell_errors[kind] = self.cell_errors.get(kind, 0) + 1
+        if self.library_mode:
+            settle_library_failures(self.failures, call_id, error)
         if call_id is None or len(self.cell_status) >= MAX_STATUSES:
             return
         if isinstance(result, Mapping):
@@ -1014,12 +1169,15 @@ class RequestRun:
 
     def note_calls(self, drained: Any) -> None:
         """Add one cell's drained audit records to the request's runtime call evidence
-        (:func:`add_runtime_calls`; ``hooks.worker_cell_done``)."""
+        (:func:`add_runtime_calls`; ``hooks.worker_cell_done``), and in library mode its failed library calls
+        to the pending failures the cell's result then settles (:func:`add_library_failures`)."""
         add_runtime_calls(
             self.runtime_calls,
             drained,
             self.export_roots if self.library_mode else (),
         )
+        if self.library_mode:
+            add_library_failures(self.failures, drained)
 
     def note_failure(self, call_id: Any, exc: BaseException) -> None:
         """Keep that a code cell's tool call raised instead of returning (``hooks.tool_result``): its
@@ -1027,6 +1185,8 @@ class RequestRun:
         """
         from ..analysis import use
 
+        if self.library_mode:
+            settle_library_failures(self.failures, call_id)
         if call_id is None or len(self.cell_status) >= MAX_STATUSES:
             return
         self.cell_status[str(call_id)] = use.failed_status(type(exc).__name__)
@@ -1192,8 +1352,10 @@ class RequestRun:
                 if reservation is not None:
                     reservation.abandon("refused: the episode was not recorded")
                 return
+            # the recorded episode's part list, read before the similar index takes the recorded episode
+            parts = self._fork_parts(reservation, progress)
             self._index_similar(progress)
-            fork = self._start_fork(handle, eid, progress, reservation)
+            fork = self._start_fork(handle, eid, progress, reservation, parts)
             if consolidate:
                 await self._consolidate(eid, sha, progress, emit)
             else:
@@ -1255,12 +1417,28 @@ class RequestRun:
             self._error("fork", exc, progress)
             return None
 
+    def _fork_parts(self, reservation: Any, progress: Callable[[str], None]) -> str | None:
+        """The episode just recorded as the fork's part list (:func:`.fork.part_list`), only when its fork is
+        reserved; None otherwise or when it cannot be read (the fork then names parts by its numbering rule alone).
+        Never raises."""
+        recorded = getattr(self, "_recorded", None)
+        if reservation is None or recorded is None:
+            return None
+        try:
+            from . import fork as _fork
+
+            return _fork.part_list(recorded[0])
+        except Exception as exc:  # noqa: BLE001 - the part list never stops a request
+            self._error("fork part list", exc, progress)
+            return None
+
     def _start_fork(
         self,
         handle: Any,
         eid: str,
         progress: Callable[[str], None],
         reservation: Any = None,
+        parts: str | None = None,
     ) -> Any:
         """The episode-end fork, only under ``UNIFY_MEMORY_LIBRARY_FORK=on``; never raises."""
         from unify.settings import SETTINGS
@@ -1279,6 +1457,7 @@ class RequestRun:
                 SETTINGS,
                 progress=progress,
                 reservation=reservation,
+                parts=parts,
             )
         except Exception as exc:  # noqa: BLE001
             self._error("fork", exc, progress)
@@ -1337,6 +1516,7 @@ class RequestRun:
             runtime_calls=self.runtime_calls,
             cell_errors=dict(self.cell_errors),
             memory_bound=self.library_mode and self.memory_bound,
+            failures=self.failures,
         )
         sha = EpisodeWriter(
             stores.episodes,

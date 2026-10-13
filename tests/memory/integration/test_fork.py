@@ -599,6 +599,28 @@ def test_finish_starts_the_fork_after_the_episode_is_recorded(
     assert reserved == [(run.episode_id, True)]
 
 
+def test_finish_gives_the_fork_the_recorded_episodes_part_list(
+    mv2,
+    monkeypatch,
+):  # noqa: F811
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_FORK", "on")
+    given = []
+    monkeypatch.setattr(
+        fork_mod,
+        "start",
+        lambda paths, handle, eid, settings, **kw: given.append(kw.get("parts")),
+    )
+    run = _begin(mv2, "Double 21.")
+    _transcript(run)
+    _finish(mv2, run)
+    (parts,) = given
+    lines = parts.splitlines()
+    # the list the fork reads names the recorded parts, the request first with its first line
+    assert lines[0] == fork_mod.PARTS_HEAD
+    assert lines[1].startswith("- `request`: ") and "Double 21." in lines[1]
+
+
 def test_f6_off_is_off_no_process_no_staging_dir(mv2, monkeypatch):  # noqa: F811
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_FORK", "off")

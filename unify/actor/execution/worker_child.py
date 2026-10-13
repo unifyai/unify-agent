@@ -704,6 +704,21 @@ class ModelRequestError(RemoteError, ValueError):
 ModelRequestError.__module__ = MODEL_REQUEST_ERROR_MODULE
 
 
+class ModelCallFailed(RemoteError, RuntimeError):
+    """A model call this code made failed for a reason other than the
+    request's own content: access, a rate limit, the provider's own fault.
+
+    The text is fixed: the status and the error's type, never the provider's
+    reply. Nothing was generated. The harness's error of that name arrives as
+    this class, which is the cell's ``ModelCallFailed`` global.
+    """
+
+    harness_type = f"{MODEL_REQUEST_ERROR_MODULE}.ModelCallFailed"
+
+
+ModelCallFailed.__module__ = MODEL_REQUEST_ERROR_MODULE
+
+
 class SteerableToolHandle:
     """Stand-in for the harness's handle base class.
 
@@ -1007,6 +1022,7 @@ class Worker:
         self._describe_cache: dict[str, Any] = {}
         self._exc_classes: dict[tuple[str, str], type] = {
             (MODEL_REQUEST_ERROR_MODULE, "ModelRequestError"): ModelRequestError,
+            (MODEL_REQUEST_ERROR_MODULE, "ModelCallFailed"): ModelCallFailed,
         }
         self._out_fd = out_fd
         self.loop: Optional[asyncio.AbstractEventLoop] = None
@@ -1392,6 +1408,8 @@ class Worker:
             return SteerableToolHandle
         if which == "model_request_error":
             return ModelRequestError
+        if which == "model_call_failed":
+            return ModelCallFailed
         if which == "reply":
             return self.reply
         raise BoundaryRefusal(f"unknown worker-local name {which!r}")
