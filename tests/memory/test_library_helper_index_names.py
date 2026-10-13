@@ -1,6 +1,7 @@
-"""``memory.index(name)``: a bare name is a package's section, else the notes topic of that name; an item's id, as
-the index lists it, shows the item; a name that is none of these raises a LookupError listing the sections. Run as a
-cell runs it, from the copied helper file."""
+"""``memory.index(name)``, the alias kept for one build: a bare name is a package's section, else the notes topic of
+that name; an item's id, as the index lists it, shows the item; a name that is none of these raises NotFound (a
+LookupError) naming the nearest of the index's sections and the call that replaces it. Run as a cell runs it, from
+the copied helper file."""
 
 from __future__ import annotations
 
@@ -78,18 +79,19 @@ def test_a_notes_only_library_answers_a_bare_topic_name(tmp_path):
     assert grid == ["ok", "## notes/grid\n\n- `notes/grid/shapes.md` — Grid shapes. [on-trial]\n"]
 
 
-def test_a_name_that_is_neither_lists_the_sections(tmp_path):
+def test_a_name_that_is_neither_names_the_nearest_sections_and_the_new_call(tmp_path):
     (nope, prefixed) = _cell(_copy(tmp_path, INDEX), ["nope", "memory.nope"])
     assert nope == [
         "missing",
-        "memory: no index section 'memory.nope' or 'notes/nope'; the sections are: "
-        'memory.grid, memory.text, notes/grid, notes/maps; memory.show("<id>") shows one item',
+        "memory.index('nope'): no section or item named 'nope'.\n"
+        "Expected a package or a notes topic, e.g. memory.items('memory.grid').\n"
+        "Browse every topic with memory.items(); memory.get(ref) opens one item.",
     ]
-    # a prefixed name means only that section
     assert prefixed == [
         "missing",
-        "memory: no index section 'memory.nope'; the sections are: "
-        'memory.grid, memory.text, notes/grid, notes/maps; memory.show("<id>") shows one item',
+        "memory.index('memory.nope'): no section or item named 'memory.nope'.\n"
+        "Expected a package or a notes topic, e.g. memory.items('memory.text').\n"
+        "Nearest: memory.text, memory.grid. Browse every topic with memory.items(); memory.get(ref) opens one item.",
     ]
     with pytest.raises(LookupError, match="no index section 'notes/nope';"):
         find_section(INDEX, "notes/nope")
@@ -100,8 +102,9 @@ def test_an_empty_library_has_no_sections(tmp_path):
     assert whole == ["ok", HEAD]
     assert grid == [
         "missing",
-        "memory: no index section 'memory.grid' or 'notes/grid'; the sections are: (none); "
-        'memory.show("<id>") shows one item',
+        "memory.index('grid'): no section or item named 'grid'.\n"
+        "Expected a package or a notes topic, e.g. memory.items('notes/grid').\n"
+        "Browse every topic with memory.items(); memory.get(ref) opens one item.",
     ]
 
 
@@ -138,7 +141,10 @@ def test_an_item_id_given_as_a_name_shows_the_item(tmp_path):
     note, fn, missing, events, shown_note, shown_fn = json.loads(_py(root, code))
     assert note == shown_note and note.startswith("notes/text/dates.md  [on-trial]")
     assert fn == shown_fn and fn.startswith("memory.text.dates:parse_date(")
-    assert missing.startswith("memory: no index section 'notes/text/nope.md'; the sections are: ")
+    assert missing.startswith(
+        "memory.index('notes/text/nope.md'): no section or item named 'notes/text/nope.md'.\n"
+        "Expected a package or a notes topic, e.g. memory.items('notes/text').\nNearest: notes/text.",
+    )
     assert events == [
         ["memory.helper_call", "memory:index", "ok"],
         ["memory.helper_call", "memory:index", "ok"],

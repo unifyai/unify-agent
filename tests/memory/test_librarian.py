@@ -26,7 +26,7 @@ from unify.memory.analysis import use
 from unify.memory.catalogue import write_files
 from unify.memory.integration.adapters.audit import CellAudit
 from unify.memory.integration.request import add_runtime_calls, library_helper_calls, runtime_calls_empty
-from unify.memory.layout import RESERVED_INIT
+from unify.memory.layout import RESERVED_INIT, RESERVED_STUB
 from unify.settings import SETTINGS, ProductionSettings
 
 needs_box = pytest.mark.skipif(
@@ -236,9 +236,12 @@ def test_off_the_export_is_byte_for_byte_as_before(tmp_path):
     assert off[RESERVED_INIT] == (Path(lx.__file__).parent / "library_helper.py").read_bytes()
     on = lx.generated_library_mode(root, records=_records(), librarian=True)
     assert on[RESERVED_INIT].startswith(off[RESERVED_INIT]) and b"def ask(" in on[RESERVED_INIT]
-    assert {k: v for k, v in on.items() if k not in (RESERVED_INIT, lx.CATALOGUE_FILE, lx.DISPATCH_FILE)} == {
-        k: v for k, v in off.items() if k != RESERVED_INIT
-    }
+    # the stub gains memory.ask with the package, and nothing else
+    assert b"def ask(" in on[RESERVED_STUB] and b"def ask(" not in off[RESERVED_STUB]
+    assert on[RESERVED_STUB] == lx.stub_source(librarian=True)
+    assert {
+        k: v for k, v in on.items() if k not in (RESERVED_INIT, RESERVED_STUB, lx.CATALOGUE_FILE, lx.DISPATCH_FILE)
+    } == {k: v for k, v in off.items() if k not in (RESERVED_INIT, RESERVED_STUB)}
 
 
 # --- memory.ask in the package, run as a cell runs it ------------------------------------------------------------
@@ -264,10 +267,12 @@ def test_ask_computes_the_facts_in_its_own_process_and_sends_outcomes_only(tmp_p
         "seen = []\n"
         "sys.addaudithook(lambda ev, a: seen.append([ev, list(a)]) if ev.startswith('memory.') else None)\n"
         f"answer = memory.ask({REQUEST!r})\n"
-        "print(json.dumps({'answer': answer, 'sent': sent, 'seen': seen, 'type': type(answer).__name__}, default=list))\n"
+        "fits = [[i.id, i.kind, i.reason, type(i).__name__] for i in answer]\n"
+        "print(json.dumps({'answer': fits, 'list': isinstance(answer, list), 'sent': sent, 'seen': seen}, default=list))\n"
     )
     out = json.loads(_py(root, code))
-    assert out["type"] == "Answer" and [f["id"] for f in out["answer"]["fits"]] == [TOTAL]
+    # a list of items, each with the librarian's reason (the stand-in host's answer)
+    assert out["list"] is True and out["answer"] == [[TOTAL, "function", "its reader parsed it", "Item"]]
     (question, facts), = out["sent"]
     assert question == REQUEST
     assert facts == [
@@ -515,9 +520,12 @@ LIBRARIAN_THIRD = (
 ACTOR_FIRST = (
     "import json, memory\n"
     f"first = memory.ask({REQUEST!r})\n"
-    "print('FIRST', json.dumps(first))\n"
+    "print('FIRST', json.dumps([[i.id, i.reason] for i in first]))\n"
 )
-ACTOR_SECOND = "second = memory.ask('and a,b,c?')\nprint('SECOND', json.dumps(second))\n"
+ACTOR_SECOND = (
+    "second = memory.ask('and a,b,c?')\n"
+    "print('SECOND', json.dumps([[i.id for i in second], [[i.id, i.reason] for i in second.nearest]]))\n"
+)
 
 
 @needs_box
@@ -582,9 +590,9 @@ async def test_ask_end_to_end_facts_in_the_box_one_session_per_request_and_the_c
     shown = first.output + (first.error or "")
     assert "FIRST" in shown, shown
     got = json.loads(shown.split("FIRST ", 1)[1].splitlines()[0])
-    assert [f["id"] for f in got["fits"]] == [TOTAL] and "nearest" not in got
+    assert got == [[TOTAL, "reader read_rows parsed the text"]]  # an Item, with the librarian's reason
     later = json.loads((second.output or "").split("SECOND ", 1)[1].splitlines()[0])
-    assert later == {"fits": [], "nearest": [{"id": "capture:" + FAILED, "differs": "it reverses words, not tables"}]}
+    assert later == [[], [["capture:" + FAILED, "it reverses words, not tables"]]]
 
     # one session for the request: opened at the first question, kept for the follow-up, ended with the request
     (session,) = opened

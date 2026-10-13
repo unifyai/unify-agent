@@ -102,7 +102,7 @@ async def test_cells_use_memory_with_no_import_line_and_failed_calls_are_counted
         res = await _run(ex, run, "parse_date(None)")
         assert "AttributeError" in res["error"]
         res = await _run(ex, run, "memory.show('memory.nothing.here:f')")
-        assert "LookupError" in res["error"]
+        assert "NotFound" in res["error"] and "no item named 'memory.nothing.here:f'" in res["error"]
     finally:
         await ex.close()
     assert run.runtime_calls["counts"][PARSE_DATE]["ok"] >= 1
@@ -118,10 +118,12 @@ async def test_cells_use_memory_with_no_import_line_and_failed_calls_are_counted
     shown_id = "memory.nothing.here:f"
     assert [(e["kind"], e["target"], e["exception"], e["call"]) for e in run.failures["entries"]] == [
         ("item", PARSE_DATE, "AttributeError", "c2"),
-        ("show", f"(str[{len(shown_id)}])", "LookupError", "c3"),
+        ("show", f"(str[{len(shown_id)}])", "NotFound", "c3"),
     ]
     assert run.failures["pending"] == [] and run.failures["dropped"] == 0
-    assert run.failures["entries"][1]["message"].startswith("memory: no item")
+    assert run.failures["entries"][1]["message"].startswith(
+        "memory.show('memory.nothing.here:f'): no item named 'memory.nothing.here:f'.",
+    )
 
 
 @needs_bwrap
@@ -331,6 +333,8 @@ def test_the_library_mode_use_record_carries_the_counts_and_only_there():
         rec["library_import_errors"],
     ) == (4, 3, 1)
     assert rec["library_helper_calls"] == {
+        "get": {"ok": 0, "refused": 0, "error": 0},
+        "items": {"ok": 0, "refused": 0, "error": 0},
         "index": {"ok": 0, "refused": 0, "error": 0},
         "show": {"ok": 0, "refused": 0, "error": 0},
         "find": {"ok": 0, "refused": 0, "error": 1},

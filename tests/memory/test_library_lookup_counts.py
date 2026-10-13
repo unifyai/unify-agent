@@ -89,6 +89,33 @@ def test_the_library_mode_use_record_carries_match_and_run_counts():
     assert rec["library_helper_calls"]["run"] == {"ok": 0, "refused": 0, "error": 1}
 
 
+def test_get_and_items_count_as_lookups_and_their_failures_are_listed():
+    """``memory.get`` and ``memory.items`` raise ``memory.helper_call`` as ``memory:get`` and ``memory:items``: the
+    audit hook keeps them, the use record counts them among the lookups, and a failed one is listed by its kind."""
+    from unify.memory.integration.adapters.audit import CellAudit
+    from unify.memory.integration.request import add_library_failures, library_failures_empty
+
+    audit = CellAudit([])
+    audit.begin()
+    audit("memory.helper_call", ("memory:get", "ab12", "ok"))
+    audit("memory.helper_call", ("memory:items", "ab12", "ok"))
+    audit("memory.helper_call", ("memory:get", "ab12", "error"))
+    audit("memory.call_failed", ("memory:get", "NotFound", "memory.get('x'): no item named 'x'.", "(str[1])"))
+    drained = audit.drain()
+    assert drained["calls"]["malformed"] == 0
+    acc = runtime_calls_empty()
+    add_runtime_calls(acc, drained)
+    assert acc["malformed"] == 0
+    got = library_helper_calls(acc)
+    assert got["get"] == {"ok": 1, "refused": 0, "error": 1} and got["items"] == {"ok": 1, "refused": 0, "error": 0}
+    assert library_failures(acc, {})["library_calls_failed"] == 1
+    failures = library_failures_empty()
+    add_library_failures(failures, drained)
+    assert [(e["kind"], e["target"], e["exception"]) for e in failures["pending"]] == [
+        ("get", "(str[1])", "NotFound"),
+    ]
+
+
 # --- file reads and greps of the library copy ----------------------------------------------------------------
 
 READ_INDEX = f"print(open({LIBRARY + '/INDEX.md'!r}).read()[:200])\n"

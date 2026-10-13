@@ -92,8 +92,20 @@ def scripted(answer) -> ScriptedModel:
 
 
 def plain(expr: str) -> str:
-    """Code turning what ``memory.ask`` returned into plain JSON data in a cell."""
-    return f"(lambda r: r if isinstance(r, dict) else dict(r))({expr})"
+    """Code turning what ``memory.ask`` returned (a list of ``Item``, each with its reason; when it is empty,
+    ``.nearest``, each with what differs) into plain JSON data in a cell, in the answer's order."""
+    return (
+        f"(lambda r: {{'fits': [{{'id': i.id, 'why': i.reason}} for i in r]}} if r or not r.nearest else "
+        f"{{'fits': [], 'nearest': [{{'id': i.id, 'differs': i.reason}} for i in r.nearest]}})({expr})"
+    )
+
+
+def seen(answer: dict) -> dict:
+    """What a cell reads of the librarian's *answer* through :func:`plain`: each fit's id and reason (the item
+    itself is the call), or the nearest with what differs."""
+    if answer.get("fits"):
+        return {"fits": [{"id": f["id"], "why": f["why"]} for f in answer["fits"]]}
+    return answer
 
 
 # ==============================================================================================================
@@ -285,7 +297,7 @@ async def test_ask_returns_the_librarians_answers_reuses_the_session_and_is_acco
     result, model, sent = await _ask_act(env, script)
 
     got = _json(result, model)
-    assert got == {"a": ANSWER_ONE, "b": ANSWER_TWO}, result[:2000]
+    assert got == {"a": seen(ANSWER_ONE), "b": seen(ANSWER_TWO)}, result[:2000]
     lib = script.librarian_calls
     assert len(lib) == 2, [c.kind for c in model.calls]
 
@@ -368,7 +380,7 @@ async def test_a_malformed_answer_or_an_unknown_id_goes_back_to_the_librarian_as
     )
     result, model, _ = await _ask_act(env, script)
 
-    assert _json(result, model) == ANSWER_ONE, result[:2000]
+    assert _json(result, model) == seen(ANSWER_ONE), result[:2000]
     lib = script.librarian_calls
     assert len(lib) == 3, [c.kind for c in model.calls]
     # each refusal reached the librarian in the next request of its session, outside its own turns
@@ -390,7 +402,7 @@ async def test_the_session_ends_with_the_request_and_the_next_request_opens_a_ne
     first_cell = f"import json\n_a = memory.ask({Q1!r})\ntools.answer(json.dumps({plain('_a')}))\n"
     first = Script([first_cell], [librarian_answer(ANSWER_ONE)])
     result, model_one, sent_one = await _ask_act(env, first)
-    assert _json(result, model_one) == ANSWER_ONE
+    assert _json(result, model_one) == seen(ANSWER_ONE)
     _assert_ended(env["opened"])
     assert _boxes() <= before  # no librarian box is left
 
@@ -398,7 +410,7 @@ async def test_the_session_ends_with_the_request_and_the_next_request_opens_a_ne
     second_cell = f"import json\n_a = memory.ask({Q2!r})\ntools.answer(json.dumps({plain('_a')}))\n"
     second = Script([second_cell], [librarian_answer(ANSWER_TWO)])
     result, model_two, sent_two = await _ask_act(env, second)
-    assert _json(result, model_two) == ANSWER_TWO
+    assert _json(result, model_two) == seen(ANSWER_TWO)
     (lib_one,), (lib_two,) = first.librarian_calls, second.librarian_calls
     # the second request's librarian starts afresh: nothing of the first request's question
     assert "Which stored items fit this text?" not in _not_assistant(lib_two)
@@ -444,7 +456,7 @@ async def test_the_librarians_box_is_read_only_on_the_library_offline_and_has_no
     script = Script([actor_cell], [PROBE, librarian_answer(ANSWER_ONE)])
     result, model, _ = await _ask_act(env, script)
 
-    assert _json(result, model) == ANSWER_ONE, result[:2000]
+    assert _json(result, model) == seen(ANSWER_ONE), result[:2000]
     lib = script.librarian_calls
     assert len(lib) >= 2
     shown = _not_assistant(lib[1])

@@ -6,8 +6,8 @@ the cell runs, and only their outcomes go to the host.
    nothing is retried, and its ``applies`` is never called.
 2. The question and the outcomes go to the host through the in-code tool ``ask_library``. A value a reader parsed
    never leaves the cell's side.
-3. What the cell gets back is the librarian's answer as a plain object: no ranking, score or top-k of the harness's
-   own, and nothing word-matched added.
+3. What the cell gets back is the librarian's answer as a list of items, each with the librarian's reason: no
+   ranking, score or top-k of the harness's own, and nothing word-matched added.
 
 The generated package runs here as a cell imports it, in a fresh isolated interpreter with the library copy first on
 its path. The host is a stand-in ``tools`` module that records what it is sent and returns a fixed answer. No model is
@@ -39,8 +39,12 @@ HELD_WORDS = ("held",)
 
 
 def as_plain(reply_expr: str) -> str:
-    """Code turning the value ``memory.ask`` returned into plain JSON data in the cell."""
-    return f"(lambda r: r if isinstance(r, dict) else dict(r))({reply_expr})"
+    """Code turning the value ``memory.ask`` returned (a list of ``Item``, each with its reason; when it is empty,
+    ``.nearest``, each with what differs) into plain JSON data in the cell, in the answer's order."""
+    return (
+        f"(lambda r: {{'fits': [{{'id': i.id, 'why': i.reason}} for i in r]}} if r or not r.nearest else "
+        f"{{'fits': [], 'nearest': [{{'id': i.id, 'differs': i.reason}} for i in r.nearest]}})({reply_expr})"
+    )
 
 
 # ==============================================================================================================
@@ -175,9 +179,15 @@ def test_the_answer_comes_back_as_the_librarian_gave_it_with_nothing_added_or_re
         for n, item in enumerate(w.FUNCTIONS)
     ]
     root, _, _, _ = _world(tmp_path, {FITS: every})
-    got = _py(root, tmp_path / "host", f"r = memory.ask({TEXT!r})\nprint(json.dumps({as_plain('r')}))")
-    # every fit, in the order given, with exactly its fields: no top-k, no score, no order of the harness's own
-    assert got == {FITS: every}
+    got = _py(
+        root,
+        tmp_path / "host",
+        f"r = memory.ask({TEXT!r})\n"
+        f"print(json.dumps([{as_plain('r')}, isinstance(r, list), sorted({{type(i).__name__ for i in r}})]))",
+    )
+    # every fit, in the order given, each an Item with the librarian's reason: no top-k, no score, no order of the
+    # harness's own
+    assert got == [{FITS: [{"id": f["id"], "why": f["why"]} for f in every]}, True, ["Item"]]
 
 
 def test_nothing_fits_comes_back_with_the_nearest_and_what_differs(tmp_path):

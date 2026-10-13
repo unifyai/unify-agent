@@ -241,7 +241,7 @@ def test_the_dispatch_file_lists_each_procedure_with_a_reader_or_applies(tmp_pat
 
 
 def test_off_generates_neither_file_and_the_other_files_keep_their_bytes(tmp_path, monkeypatch):
-    from unify.memory.layout import INDEX_FILE, LINKS_FILE, RESERVED_CONTRACT, RESERVED_INIT
+    from unify.memory.layout import INDEX_FILE, LINKS_FILE, RESERVED_CONTRACT, RESERVED_INIT, RESERVED_STUB
     from unify.memory.library_helper import FIND_FILE, ITEMS_FILE, MATCHER_FILE, SHAPES_FILE
 
     set_switch(monkeypatch, "off")
@@ -250,6 +250,7 @@ def test_off_generates_neither_file_and_the_other_files_keep_their_bytes(tmp_pat
     assert set(off) == {
         RESERVED_INIT,
         RESERVED_CONTRACT,
+        RESERVED_STUB,
         INDEX_FILE,
         LINKS_FILE,
         ITEMS_FILE,
@@ -259,6 +260,7 @@ def test_off_generates_neither_file_and_the_other_files_keep_their_bytes(tmp_pat
     }
     set_switch(monkeypatch, "on")
     on = w.generate(tree, records=w.records(), summaries=w.SUMMARIES)
-    # the files both modes generate are the same bytes, except the package and the index the actor no longer reads
-    for path in set(off) & set(on) - {"memory/__init__.py", "INDEX.md"}:
+    # the files both modes generate are the same bytes, except the package with its stub (which gain memory.ask) and
+    # the index the actor no longer reads
+    for path in set(off) & set(on) - {"memory/__init__.py", RESERVED_STUB, "INDEX.md"}:
         assert on[path] == off[path], path
