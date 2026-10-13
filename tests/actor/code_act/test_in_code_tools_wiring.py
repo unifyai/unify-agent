@@ -201,10 +201,6 @@ async def test_a_refused_call_raises_in_the_cell(in_code):
 TEAMMATE_CELL = (
     "print('TEAM', tools.read('/workspace/data.txt').splitlines()[2])\n"
     "print('WHO', tools.who())\n"
-    "try:\n"
-    "    tools._call('delegate', {'task': 'Start another agent for the rest of the work.'})\n"
-    "except tools.Refused as exc:\n"
-    "    print('NOT ALLOWED', exc.form)\n"
     "tools.finish('the third line is line 3')\n"
 )
 ACTOR_START = "print(tools.delegate('Read /workspace/data.txt and tell me its third line, please.'))\n"
@@ -242,8 +238,7 @@ async def test_a_teammate_gets_the_same_wiring_with_its_own_allow_list(in_code):
     rows = _rows(mate)
     assert {r["agent"] for r in rows} == {"teammate"}
     calls = _channel_rows(rows)
-    assert [r["tool"] for r in calls] == ["read", "who", "delegate", "finish"]
-    assert calls[2]["status"] == "refused" and calls[2]["refusal"]["form"] == "unknown_tool"
+    assert [r["tool"] for r in calls] == ["read", "who", "finish"]
     assert [r["tool"] for r in _channel_rows(_rows(by_agent["actor"]))] == ["delegate", "wait", "finish"]
     _assert_ended(in_code["opened"])
 

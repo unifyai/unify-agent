@@ -561,8 +561,10 @@ class AsyncToolLoopHandle(ToolLoopHandle):
         # UNIFY_TOOLS_IN_CODE=on: the loop compacted before its next model
         # call, so what followed the last request (its reply and the cells'
         # results) is sent after it, unchanged.
-        tail = list(self._runtime_state.in_code_tail or [])
-        self._runtime_state.in_code_tail = None
+        state = getattr(self, "_runtime_state", None)
+        tail = list(getattr(state, "in_code_tail", None) or [])
+        if state is not None:
+            state.in_code_tail = None
         if last is None or not last.get("messages"):
             LOGGER.info(
                 f"[{label}] compression fork skipped: no request was recorded; "
