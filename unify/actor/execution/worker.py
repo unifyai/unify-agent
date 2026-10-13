@@ -219,42 +219,42 @@ def _subscriptable(obj: Any) -> bool:
 def _credential_inside(value: Any) -> Optional[str]:
     """What in a value about to cross by value looks like a credential, or None.
 
-    Walks nested lists, tuples, sets and dicts (each container once). A dict
-    entry whose value is non-empty text is a credential when its key is
-    credential-named by the environment scrub's own test
-    (:func:`unify.sandbox._is_secret_env`, which also catches a URL with a
-    password as its value); a string anywhere, key or value, is a credential
-    when it is key-shaped or such a URL (:func:`unify.sandbox._looks_like_key`).
-    Objects of other types are not looked into: they cross by reference.
+    Walks nested lists, tuples, sets and dicts (each container once in each
+    context). A text leaf (``str``, or ``bytes`` read as latin-1) anywhere,
+    key or value, is a credential when it is key-shaped or a URL with a
+    password (:func:`unify.sandbox._looks_like_key`). Everything under a
+    credential-named dict key (:func:`unify.sandbox._is_secret_env`, the
+    environment scrub's own test) is in a secret context: any non-empty text
+    leaf there, however deep, is a credential, while numbers, flags, None and
+    empty text cross (``max_tokens: 5``, ``password: ""``). Objects of other
+    types are not looked into: they cross by reference.
     """
-    stack = [value]
+    stack: list = [(value, None)]
     seen: set = set()
     while stack:
-        item = stack.pop()
-        if isinstance(item, str):
-            if sandbox._looks_like_key(item):
+        item, secret = stack.pop()
+        if isinstance(item, (str, bytes)):
+            text = item.decode("latin-1") if isinstance(item, bytes) else item
+            if secret is not None and len(text) > 0:
+                return f"the key {secret!r}"
+            if sandbox._looks_like_key(text):
                 return "a key-shaped string"
             continue
         if not isinstance(item, (list, tuple, set, frozenset, dict)):
             continue
-        if id(item) in seen:
+        if (id(item), secret) in seen:
             continue
-        seen.add(id(item))
+        seen.add((id(item), secret))
         if isinstance(item, dict):
             for key, inner in item.items():
-                # a credential is text: a credential-named key holding a number, a flag, a list or an empty string
-                # (``max_tokens: 5``, ``keys: [...]``) crosses, and its contents are still walked
-                if (
+                named = (
                     isinstance(key, str)
-                    and isinstance(inner, (str, bytes))
-                    and len(inner) > 0
                     and sandbox._is_secret_env(key, inner if isinstance(inner, str) else "")
-                ):
-                    return f"the key {key!r}"
-                stack.append(key)
-                stack.append(inner)
+                )
+                stack.append((key, secret))
+                stack.append((inner, key if named else secret))
         else:
-            stack.extend(item)
+            stack.extend((inner, secret) for inner in item)
     return None
 
 
