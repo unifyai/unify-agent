@@ -101,13 +101,13 @@ def test_the_fork_is_given_the_episodes_part_list():
     lines = parts.splitlines()
     assert lines[0] == fork_mod.PARTS_HEAD
     # every part the writer can read, in the writer's order, each with its first line or what it was
-    assert [ln[2:].split(": ", 1)[0] for ln in lines[1:]] == part_names(ep)
+    assert [ln.split("`")[1] for ln in lines[1:]] == part_names(ep)
     assert lines[1:] == [
-        "- request: Count the rows in data.txt.",
-        "- observation:0: The file has 13 lines.",
-        "- cell:0: n = int(lines[0])  (raised an error)",
-        "- cell:1: rows = [x for x in lines if x.strip()]",
-        "- action:0: tool files.submit: ok",
+        "- `request`: Count the rows in data.txt.",
+        "- `observation:0`: The file has 13 lines.",
+        "- `cell:0`: n = int(lines[0])  (raised an error)",
+        "- `cell:1`: rows = [x for x in lines if x.strip()]",
+        "- `action:0`: tool files.submit: ok",
     ]
     doc, why = fork_mod.request_from_source("e1", _source(), "http://127.0.0.1:9/fork/v1", "tok", parts=parts)
     assert why is None
@@ -285,7 +285,8 @@ def test_a_finished_fork_with_the_quota_note_still_hands_its_files_on(tmp_path):
     _stage(root, "e3", "ok: operational quota reached", {"notes.md": "- a lesson\n"})
     view = staging.read(root, "e3")
     assert view.finished and set(view.files) == {"notes.md"} and view.withheld == []
-    assert staging.export(view, tmp_path / "out" / "e3")["status"] == "ok: operational quota reached"
+    # the row says ok: the writer is told that only a row whose status is not ok has no reader output
+    assert staging.export(view, tmp_path / "out" / "e3")["status"] == "ok"
 
 
 def test_the_evidence_fields_are_written(tmp_path, monkeypatch):
@@ -314,8 +315,12 @@ def test_the_evidence_fields_are_written(tmp_path, monkeypatch):
     (row,) = out.staging_episodes
     assert row == {
         "episode": "e2",
-        "source": "fork",
+        "reader": "fork",
         "status": "ok",
+        "reader_status": "ok",
+        "reader_usd": "unknown",
+        "reader_seconds": None,
+        "reader_tokens": {"prompt": None, "cached": None, "completion": None, "reasoning": None},
         "files": 2,
         "candidates": 1,
         "withheld": 0,
@@ -340,3 +345,5 @@ def test_the_evidence_fields_are_written(tmp_path, monkeypatch):
         1,
     )
     assert end["writer_calls"] == out.writer_calls and end["writer_first_prompt_tokens"] == 100
+    # the fork's own spend is its own category; this fork recorded none, so it stays unknown
+    assert end["usd_by_category"]["reader"] == "unknown"
