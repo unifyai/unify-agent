@@ -18,6 +18,7 @@ control arm's requests do not change. Nothing here imports another harness modul
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import json
 import keyword
@@ -1952,6 +1953,95 @@ def signature_text(name: str, agent: Optional[str] = None) -> str:
     first, rest = _signature(params)
     parts = list(first) + [f"{p}=None" for p in rest]
     return f"{name}({', '.join(parts)})"
+
+
+def _tool_calls(source: str, name: str) -> list[tuple[str, ast.Call]]:
+    """Each ``tools.<name>(...)`` call in the example *source*, with its text as written."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    out = []
+    for node in ast.walk(tree):
+        f = getattr(node, "func", None)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(f, ast.Attribute)
+            and f.attr == name
+            and isinstance(f.value, ast.Name)
+            and f.value.id == "tools"
+        ):
+            out.append((ast.get_source_segment(source, node) or "", node))
+    return sorted(out, key=lambda t: (t[1].lineno, t[1].col_offset))
+
+
+#: A value given by a variable in an example: valid whatever the schema asks.
+_VARIABLE = object()
+
+
+def _bound(call: ast.Call, order: list[str]) -> Optional[dict[str, Any]]:
+    """The call's arguments by name (a positional one by *order*), a literal as its value and anything else as
+    :data:`_VARIABLE`; None when it has more positional arguments than *order* or a ``*``/``**`` argument."""
+    if len(call.args) > len(order) or any(isinstance(a, ast.Starred) for a in call.args):
+        return None
+    out: dict[str, Any] = {}
+    named = list(zip(order, call.args)) + [(k.arg, k.value) for k in call.keywords]
+    for key, node in named:
+        if key is None:
+            return None
+        try:
+            out[key] = ast.literal_eval(node)
+        except (ValueError, SyntaxError, TypeError):
+            out[key] = _VARIABLE
+    return out
+
+
+def _sample(schema: dict) -> Any:
+    """A value *schema* accepts, for an example built from a signature alone."""
+    if "enum" in schema:
+        return schema["enum"][0]
+    t = schema.get("type")
+    t = t[0] if isinstance(t, list) and t else t
+    return {"integer": 1, "number": 1, "boolean": True, "array": [], "object": {}, "null": None}.get(t, "...")
+
+
+def example_call(name: str, schema: dict, examples: Iterable[str] = (), base: Optional[dict] = None) -> str:
+    """One call of ``tools.<name>`` that *schema* (the caller's own parameters) accepts, as a cell writes it.
+
+    The first call in *examples* whose literal arguments validate against *schema* (an argument given by a variable
+    is taken as valid); else a call built in *schema*'s order from the examples' values for the arguments *schema*
+    has (an example's positional arguments read by *base*, the schema the examples were written for), each missing
+    required one filled with a value of its type.
+    """
+    from unify.common.tool_channel import validate
+
+    first, rest = _signature(schema)
+    order = first + rest
+    props = schema.get("properties") or {}
+    seen: dict[str, str] = {}
+    base_order = sum(_signature(base), []) if base else order
+    for source in examples:
+        for text, call in _tool_calls(source, name):
+            args = _bound(call, order)
+            if args is not None and set(first) <= set(args):
+                literal = {k: v for k, v in args.items() if v is not _VARIABLE}
+                if set(args) <= set(props) and validate(schema, literal) is None:
+                    return text
+            for key, node in list(zip(base_order, call.args)) + [(k.arg, k.value) for k in call.keywords]:
+                if key in props and key not in seen:
+                    seen[key] = ast.get_source_segment(source, node) or ""
+    parts = []
+    for p in first:
+        value = seen.get(p) or repr(_sample(props.get(p) or {}))
+        parts.append(f"{p}={value}")
+    return f"tools.{name}({', '.join(parts)})"
+
+
+def role_example(name: str, agent: Optional[str] = None) -> str:
+    """:func:`example_call` of *name* for *agent* (its own parameters, from the registry's examples)."""
+    spec = registry()[name]
+    schema = strict_parameters(agent, name) if agent else spec.parameters
+    return example_call(name, schema, spec.examples, base=spec.parameters)
 
 
 def list_text(names: Iterable[str], agent: Optional[str] = None) -> str:
