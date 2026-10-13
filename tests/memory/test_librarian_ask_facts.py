@@ -11,7 +11,9 @@ where the cell runs, on the current request the host gives, and only their outco
 
 The generated package runs here as a cell imports it, in a fresh isolated interpreter with the library copy first on
 its path. The host is a stand-in ``tools`` module that records what it is sent, gives the current request through
-the channel client's ``_call`` and returns a fixed answer. No model is called.
+the channel client's ``_call`` and returns a fixed answer. No model is called. The library's item records are what
+production writes (``librarian_world``), so its dispatch file holds the readers they name; building them runs code
+confined, so those tests need bubblewrap.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import sys
 from pathlib import Path
 
 from tests.memory import librarian_world as w
+from tests.memory.librarian_world import needs_box
 from unify.memory.catalogue import write_files
 
 # ==== ASSUMED NAMES (the integrator adapts these to the code, here only) ======================================
@@ -153,6 +156,7 @@ def _sent(sent: Path) -> list[dict]:
     return [json.loads(line) for line in sent.read_text().splitlines()] if sent.exists() else []
 
 
+@needs_box
 def test_facts_are_computed_on_the_cells_side_and_only_outcomes_are_sent(tmp_path):
     root, mark, sent, ids = _world(tmp_path)
     got = _py(root, tmp_path / "host", f"r = memory.ask({TEXT!r})\nprint(json.dumps({{'r': {as_plain('r')}, 'events': events}}))")
@@ -174,6 +178,7 @@ def test_facts_are_computed_on_the_cells_side_and_only_outcomes_are_sent(tmp_pat
     assert got["r"] == {FITS: []}
 
 
+@needs_box
 def test_ask_is_audited_as_a_helper_and_is_never_a_use(tmp_path):
     root, _, _, _ = _world(tmp_path)
     got = _py(root, tmp_path / "host", f"memory.ask({TEXT!r})\nprint(json.dumps(events))")
@@ -183,6 +188,7 @@ def test_ask_is_audited_as_a_helper_and_is_never_a_use(tmp_path):
     assert [e for e in got if e[0] == CALL_EVENT] == []  # running the readers is not a use of any item
 
 
+@needs_box
 def test_the_answer_comes_back_as_the_librarian_gave_it_with_nothing_added_or_reordered(tmp_path):
     every = [
         {"id": item, "call": f"{item.split(':')[1]}(...)", "why": f"saved against a line that fits ({n})"}
@@ -200,6 +206,7 @@ def test_the_answer_comes_back_as_the_librarian_gave_it_with_nothing_added_or_re
     assert got == [{FITS: [{"id": f["id"], "why": f["why"]} for f in every]}, True, ["Item"]]
 
 
+@needs_box
 def test_nothing_fits_comes_back_with_the_nearest_and_what_differs(tmp_path):
     answer = {FITS: [], NEAREST: [{"id": w.TOTAL, "differs": "it sums a table; this text has none"}]}
     root, _, _, _ = _world(tmp_path, answer)
@@ -207,6 +214,7 @@ def test_nothing_fits_comes_back_with_the_nearest_and_what_differs(tmp_path):
     assert got == answer
 
 
+@needs_box
 def test_text_sharing_only_words_with_a_procedure_adds_nothing_to_the_answer(tmp_path):
     """The words of a card's docstring and goal, copied into the question, never make a fit on the cell's side:
     the answer is the librarian's, and no reader parses plain words."""

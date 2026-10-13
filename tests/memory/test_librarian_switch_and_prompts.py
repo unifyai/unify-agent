@@ -18,7 +18,8 @@ import re
 import pytest
 
 from tests.actor.code_act.test_prompt_generality import BENCHMARK_WORDS
-from tests.memory.librarian_world import FILES, big_files
+from tests.memory.librarian_world import WRITTEN_FILES as FILES
+from tests.memory.librarian_world import big_files
 from tests.memory.test_episodes import _ep
 from tests.memory.test_library_helper import _commit
 from unify.memory import library_prompts
@@ -151,7 +152,7 @@ def test_off_the_actor_section_is_the_inline_index_as_before(tmp_path, monkeypat
     text = prompt.render_memory_library_mode(co, actor_index="inline")[0]
     assert "memory.ask" not in text
     assert text.startswith(library_prompts.GUIDE_LIBRARY_IN_CODE)
-    assert "total_amount" in text  # the index view is still there
+    assert "count_rows" in text  # the index view is still there
 
 
 # --- the in-code tool -------------------------------------------------------------------------------------------
