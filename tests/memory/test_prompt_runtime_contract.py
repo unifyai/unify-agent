@@ -258,6 +258,8 @@ def plan(texts: list[str], namespace: set[str], path: str, skip_tools: frozenset
     return body, last[:1]
 
 
+#: The actor's cell that starts the teammate under test.
+START_TEAMMATE = "print(tools.delegate('Run every call your instructions show.'))"
 #: The cell that lists the namespace before any shown call runs.
 LIST_NAMES = "print('NAMES', sorted(k for k in globals() if not k.startswith('_')))"
 
@@ -526,7 +528,8 @@ def test_every_call_the_writers_and_a_helpers_prompts_show_runs_as_written(tmp_p
         async def first_delegate(messages, tools, _sent=[]):  # noqa: B006
             if not _sent:
                 _sent.append(True)
-                return _call("writer-delegate", "delegate", {"task": "Check the library index against e1.", "episodes": ["e1"]}), "0"
+                args = {"task": "Check the library index against e1.", "episodes": ["e1"]}
+                return _call("writer-delegate", "delegate", args), "0"
             return await original(messages, tools)
 
         model = first_delegate
@@ -539,7 +542,9 @@ def test_every_call_the_writers_and_a_helpers_prompts_show_runs_as_written(tmp_p
     assert writer_model.cells, writer_model.texts[:1]
     assert helpers_made, "no helper was started"
     helper = helpers_made[0]
-    assert helper.done.is_set() and helper.cells, helper.outputs
+    # with tools in code off the helper's brief shows no Python call (its tools are model-API tools): only its
+    # namespace is checked then
+    assert helper.done.is_set() and (helper.cells or not in_code), helper.outputs
     bad += helper.report()
     assert not bad, "\n".join(bad)
     for agent, contract in (("writer", writer_model), ("helper", helper)):
@@ -664,7 +669,10 @@ def _actor_stubs(monkeypatch, names: tuple[str, ...]) -> None:
 def _actor_turns(seen: list):
     """The scripted turns of the agent under test: the namespace, then each shown call of the prompt it was sent,
     then the reply (which sets ``state["done"]``)."""
-    from tests.scripted_model import cell, reply
+    from tests.scripted_model import reply
+
+    def cell(code: str) -> tuple[str, dict]:
+        return ("execute_code", {"code": code})
 
     state: dict = {"queue": None, "cells": [], "texts": [], "namespace": set(), "done": asyncio.Event()}
 
@@ -702,7 +710,7 @@ async def test_every_call_the_actors_prompt_shows_runs_as_written(core_world, mo
     system message (the shared opening, the core prompt and the library guide with the index), its first message
     and its one tool's text. The calls that end the turn are the scripted reply."""
     from tests.actor.code_act.test_in_code_tools_wiring import _Collect
-    from tests.scripted_model import Always, ScriptedModel, cell, reply, scripted
+    from tests.scripted_model import Always, ScriptedModel, reply, scripted
     from unify.actor import in_code_tools
     from unify.actor.code_act_actor import CodeActActor
 
@@ -725,7 +733,7 @@ async def test_every_call_the_actors_prompt_shows_runs_as_written(core_world, mo
 
         model = ScriptedModel(
             actor=[
-                reply(calls=[cell("print(tools.delegate('Run every call your instructions show.'))")]),
+                reply(calls=[("execute_code", {"code": START_TEAMMATE})]),
                 Always(answer_after_the_teammate),
             ],
             helper=[Always(turn)],
