@@ -540,6 +540,7 @@ def test_every_call_the_writers_and_a_helpers_prompts_show_runs_as_written(tmp_p
     asyncio.run(writer.run(PassRequest("incremental", "text", ["e1"], False), "p1"))
     bad = writer_model.report()
     assert writer_model.cells, writer_model.texts[:1]
+    assert any("memory." in span for span, _ in writer_model.cells), writer_model.cells
     assert helpers_made, "no helper was started"
     helper = helpers_made[0]
     # with tools in code off the helper's brief shows no Python call (its tools are model-API tools): only its
@@ -768,6 +769,8 @@ async def test_every_call_the_actors_prompt_shows_runs_as_written(core_world, mo
     finally:
         await actor.close()
     assert state["cells"], state["texts"][:1]
+    # the library guide's calls are among those run, with no import line before them
+    assert any("memory." in span for span, _ in state["cells"]), state["cells"]
     got = verdicts("\n".join(seen))
     bad = [
         f"{agent}: `{span}` ran as {code!r}: {why}"
