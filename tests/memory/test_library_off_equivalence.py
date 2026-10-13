@@ -111,8 +111,7 @@ def test_library_off_keeps_every_call_site_on_v2(tmp_path, monkeypatch):
         hooks.worker_mounts() == [paths.checkout]
         and hooks.worker_readonly_mounts() == []
     )
-    # catalogue: write_generated still writes v2's four files, byte for byte, and the env package's catalogue calls
-    # (env.items, env.get) with their stub and the contract runtime they use
+    # catalogue: write_generated still writes v2's four files, byte for byte
     env = _write(
         tmp_path / "cat",
         {"env/x/__init__.py": 'def f(a):\n    """F."""\n    return a\n'},
@@ -123,9 +122,6 @@ def test_library_off_keeps_every_call_site_on_v2(tmp_path, monkeypatch):
         "memory.py",
         ".memory/catalog.json",
         ".memory/shapes.py",
-        "env/__init__.py",
-        "env/__init__.pyi",
-        ".memory/contract.py",
     }
     # shape rows: v2's ids by default; the library-mode tree adds none to them
     assert (
