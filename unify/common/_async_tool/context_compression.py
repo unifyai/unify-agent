@@ -387,8 +387,8 @@ _SANDBOX_GLOBALS = None
 
 
 def _get_sandbox_globals() -> dict:
-    """Sandbox globals for transformation exec: ``create_base_globals()``
-    plus ``re`` and ``json``, built once."""
+    """The transformation's globals: ``create_base_globals()`` plus ``re``
+    and ``json``, built once. The box rebuilds them by import."""
     global _SANDBOX_GLOBALS
     if _SANDBOX_GLOBALS is None:
         g = create_base_globals()
@@ -399,30 +399,17 @@ def _get_sandbox_globals() -> dict:
 
 
 def _eval_transformation(transformation_str: str, content: str) -> str:
-    """Execute transformation code that receives the content as ``x`` and
-    leaves the result in ``x``. Raises on syntax or runtime errors; the
-    caller reports them to the LLM.
+    """Run transformation code that receives the content as ``x`` and
+    leaves the result in ``x``, in a fresh confined process
+    (transformation_sandbox.py), never in the harness: the code is the
+    compression model's, written over transcript text that holds untrusted
+    content. A bare expression is assigned to ``x``. Raises on syntax or
+    runtime errors (same type name and message), on a timeout and without
+    bubblewrap; the caller reports them to the LLM.
     """
-    sandbox = dict(_get_sandbox_globals())
-    sandbox["x"] = content
+    from .transformation_sandbox import run_transformation
 
-    code = transformation_str.strip()
-
-    # A bare expression such as ``x.replace("old", "new")`` is wrapped as
-    # ``x = <expr>``; multi-line code or code containing ``=`` runs as-is
-    # and must assign ``x`` itself.
-    if "\n" not in code and "=" not in code:
-        try:
-            compile(code, "<transformation>", "eval")
-            code = f"x = {code}"
-        except SyntaxError:
-            pass
-
-    exec(code, sandbox)  # noqa: S102
-    result = sandbox["x"]
-    if not isinstance(result, str):
-        result = str(result)
-    return result
+    return run_transformation(transformation_str, content, _get_sandbox_globals())
 
 
 def _compute_token_usage(entries: dict[int, str], endpoint: str) -> str:
