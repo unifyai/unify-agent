@@ -743,8 +743,9 @@ def ask_fields(runtime: Any) -> dict:
 
     * ``ask_calls``: the answers the audit hook saw;
     * ``ask_rows``: per ask, its ``cell``, the ids it listed as fitting (``listed``), whether it said nothing fits
-      (``nothing_fits``), the recognisers' outcomes (``facts``: ``{id, read, applies}`` labels) and ``called_after``,
-      the listed ids a later library call or ``run`` called;
+      (``nothing_fits``), the recognisers' outcomes (``facts``: ``{id, read, applies}`` labels, and the fixed short
+      ``reason`` of a reader that gave no outcome) and ``called_after``, the listed ids a later library call or
+      ``run`` called;
     * ``listed_by_ask``: every item or capture id that was called after an ask listed it;
     * ``asks_dropped``: answers past the request's bound, not listed.
 

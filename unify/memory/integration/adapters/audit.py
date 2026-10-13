@@ -98,12 +98,17 @@ also raises ``memory.call`` under its capture id). ``calls`` then also
 holds, in order::
 
     "matches": [{"listed": [{"id", "level", "status", "matched"}, ...],
-                 "failed": [...], "calls_before": n, "runs_before": n}, ...]
+                 "failed": [...], "calls_before": n, "runs_before": n,
+                 "no_outcome": [{"id", "read", "applies", "reason"}, ...]}, ...]
     "runs": [{"target", "outcome", "repeatable", "level", "conditions",
               "agrees_with": [id, ...], "calls_before": n}, ...]
 
 where ``calls_before`` and ``runs_before`` count the cell's ``records`` and
 ``runs`` kept before it, so a consumer can tell which calls came after.
+``no_outcome`` is there only when ``memory.match`` ran the stored readers
+(the librarian's dispatch file) and some gave no outcome: each such reader's
+procedures with the label ``not-started`` or ``failed`` and a fixed short
+reason (:data:`_ASK_REASON`), the event's optional third element.
 
 An ``open`` record made by the import system, by traceback formatting or by
 the library package itself carries ``via`` (``import``, ``traceback`` or
@@ -216,9 +221,11 @@ FAILURE_HELPERS = HELPER_ITEMS
 MATCH_EVENT = "memory.match_result"
 RUN_EVENT = "memory.run_result"
 #: What ``memory.ask`` got back (UNIFY_MEMORY_LIBRARIAN=on): the ids the answer listed as fitting, whether it said
-#: nothing fits, and the recognisers' outcomes as ``(id, read, applies)`` labels; never text or values.
+#: nothing fits, and the recognisers' outcomes as ``(id, read, applies)`` labels, with a fixed short reason after
+#: them when the reader gave no outcome (``not-started``, ``failed``); never text or values.
 ASK_EVENT = "memory.ask_result"
-ASK_READ = ("parsed", "did-not-parse")
+ASK_READ = ("parsed", "did-not-parse", "not-started", "failed")
+ASK_NO_OUTCOME = ("not-started", "failed")
 ASK_APPLIES = ("held", "did-not-hold", "raised", "not-run", "none")
 RUN_OUTCOMES = ("returned", "refused", "error")
 RUN_REPEATABLE = ("yes", "no", "unchecked")
@@ -277,6 +284,12 @@ _HEX_DIGEST = re.compile(r"[0-9a-f]{1,64}")
 _CAPTURE_ID = re.compile(r"capture:[0-9a-f]{16}")
 #: A level, a status or how a match was made: a short lower-case label.
 _LABEL = re.compile(r"[a-z][a-z0-9-]{0,39}")
+#: Why a stored reader gave no outcome: one of the package's fixed forms (``library_helper._REASON``), at most 80
+#: characters, never a value.
+_ASK_REASON = re.compile(
+    r"timeout after \d{1,4}(?:\.\d{1,3})? s(?: for all readers)?|output overrun|no marker|no report|malformed report"
+    r"|(?:start|runner): [A-Za-z_][A-Za-z0-9_]{0,60}",
+)
 # The characters of a token that a clip may have cut through: a clipped text drops its trailing run of them.
 _TOKEN_CHARS = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-+/=.:~",
@@ -592,26 +605,34 @@ class CellAudit:
         return out
 
     def _match_result(self, args: tuple) -> None:
-        """Keep one ``memory.match_result`` event: the rows listed and listed as failed, and how many of the cell's
-        call records and runs came before it."""
-        if type(args) is not tuple or len(args) != 2:
+        """Keep one ``memory.match_result`` event: the rows listed and listed as failed, how many of the cell's
+        call records and runs came before it, and the procedures whose reader gave no outcome (an optional third
+        element: :meth:`_facts` rows)."""
+        if type(args) is not tuple or len(args) not in (2, 3):
             self.calls_malformed += 1
             return
         listed, failed = self._rows(args[0]), self._rows(args[1])
-        if listed is None or failed is None:
+        missing = self._facts(args[2]) if len(args) == 3 else []
+        if (
+            listed is None
+            or failed is None
+            or missing is None
+            or any(f["read"] not in ASK_NO_OUTCOME for f in missing)
+        ):
             self.calls_malformed += 1
             return
         if len(self.match_records) >= MAX_MATCH_RECORDS:
             self.call_records_dropped += 1
             return
-        self.match_records.append(
-            {
-                "listed": listed,
-                "failed": failed,
-                "calls_before": len(self.call_records),
-                "runs_before": len(self.run_records),
-            },
-        )
+        record = {
+            "listed": listed,
+            "failed": failed,
+            "calls_before": len(self.call_records),
+            "runs_before": len(self.run_records),
+        }
+        if missing:
+            record["no_outcome"] = missing
+        self.match_records.append(record)
 
     def _run_result(self, args: tuple) -> None:
         """Keep one ``memory.run_result`` event: its target, outcome, repeatability, level, conditions and the ids
@@ -650,6 +671,33 @@ class CellAudit:
             },
         )
 
+    @classmethod
+    def _facts(cls, value: Any) -> Optional[list]:
+        """A tuple of recogniser facts as dicts, or None if it is not one: ``(id, read, applies)``, or ``(id, read,
+        applies, reason)`` for a reader that gave no outcome, the reason one of :data:`_ASK_REASON`'s forms."""
+        if type(value) is not tuple or len(value) > MAX_MATCH_IDS:
+            return None
+        out = []
+        for row in value:
+            if (
+                type(row) is not tuple
+                or len(row) not in (3, 4)
+                or cls._id(row[0]) is None
+                or row[1] not in ASK_READ
+                or row[2] not in ASK_APPLIES
+                or (len(row) == 4) != (row[1] in ASK_NO_OUTCOME)
+                or (
+                    len(row) == 4
+                    and (type(row[3]) is not str or _ASK_REASON.fullmatch(row[3]) is None or _KEY_SHAPED.search(row[3]))
+                )
+            ):
+                return None
+            fact = {"id": row[0], "read": row[1], "applies": row[2]}
+            if len(row) == 4:
+                fact["reason"] = row[3]
+            out.append(fact)
+        return out
+
     def _ask_result(self, args: tuple) -> None:
         """Keep one ``memory.ask_result`` event: the ids listed as fitting, whether nothing fits, the facts'
         outcome labels, and how many of the cell's call records and runs came before it."""
@@ -658,20 +706,8 @@ class CellAudit:
             return
         listed, nothing, facts = args
         listed = self._ids(listed)
-        rows = []
-        ok = listed is not None and type(nothing) is bool and type(facts) is tuple and len(facts) <= MAX_MATCH_IDS
-        for row in facts if ok else ():
-            if (
-                type(row) is not tuple
-                or len(row) != 3
-                or self._id(row[0]) is None
-                or row[1] not in ASK_READ
-                or row[2] not in ASK_APPLIES
-            ):
-                ok = False
-                break
-            rows.append({"id": row[0], "read": row[1], "applies": row[2]})
-        if not ok:
+        rows = self._facts(facts)
+        if listed is None or type(nothing) is not bool or rows is None:
             self.calls_malformed += 1
             return
         if len(self.ask_records) >= MAX_MATCH_RECORDS:
