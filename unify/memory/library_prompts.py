@@ -237,6 +237,29 @@ def guide_pointer() -> str:
     return GUIDE_POINTER_IN_CODE if _in_code() else GUIDE_POINTER
 
 
+#: The constant pointer to the librarian (``UNIFY_MEMORY_LIBRARIAN=on``, design J(b).5): the same bytes for every
+#: library, in place of the index.
+LIBRARIAN_POINTER = (
+    "Your library of procedures and notes from earlier work is the `memory` package in your cells. "
+    "`memory.ask(text)` asks the librarian, who has read every item, what each was built for and how each has been "
+    "used, which items fit; it answers with each item that fits and a ready call, or says nothing fits and what "
+    "differs."
+)
+#: The index bullet of the in-code guide that the pointer replaces, and the opening's "look in the index".
+_INDEX_BULLET = "- The index at the end of this prompt lists every function and note.\n"
+_LOOK_IN_INDEX = "look in the index for an item that does it"
+
+#: The actor's memory section with the librarian on: :data:`GUIDE_LIBRARY_IN_CODE` (the librarian requires the
+#: tools in code) with its index bullet replaced by :data:`LIBRARIAN_POINTER`, and nothing after it: no index view,
+#: whatever the size of the library, so the library never changes the actor's cached prefix. The rest of the guide
+#: (``memory.show``, ``memory.run``, the files) stays as written.
+GUIDE_LIBRARIAN = GUIDE_LIBRARY_IN_CODE.replace(_INDEX_BULLET, "- " + LIBRARIAN_POINTER + "\n", 1).replace(
+    _LOOK_IN_INDEX,
+    "look in the library for an item that does it",
+    1,
+)
+
+
 # --- the writer's briefs: store pass (WRITE) and curate pass (CURATE) ---------------------------------------------
 #
 # Each brief is built from stable text plus the configuration of the run (which optional inputs exist, which tools

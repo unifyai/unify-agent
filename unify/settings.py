@@ -13,7 +13,7 @@ import re
 from typing import Any, Optional
 
 import unillm
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from unify.actor.settings import ActorSettings
@@ -469,6 +469,11 @@ class ProductionSettings(BaseSettings):
     # How the actor's prompt reaches the library index: ``inline`` (default) ends it with the index view;
     # ``pointer`` ends it with a constant guide pointing to memory.index(), memory.show() and memory.find().
     UNIFY_MEMORY_LIBRARY_ACTOR_INDEX: str = "inline"
+    # ``on``: the actor asks a librarian agent which stored items fit (``memory.ask(text)`` in a cell, through the
+    # in-code tool ``ask_library``); the export also writes the librarian's catalogue and the procedures' dispatch
+    # file, and the actor's prompt shows a constant pointer in place of the index. Requires UNIFY_TOOLS_IN_CODE=on.
+    # ``off`` (the default): nothing of it exists or runs.
+    UNIFY_MEMORY_LIBRARIAN: str = "off"
     # The library mode: USD per recorded token of a pass's cap (the earlier mode's rate until an offline replay
     # sizes it).
     UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN: str = "0.00000073"
@@ -846,6 +851,27 @@ class ProductionSettings(BaseSettings):
                 f"UNIFY_TOOLS_IN_CODE must be 'on' or 'off', not {v!r}",
             )
         return value
+
+    @field_validator("UNIFY_MEMORY_LIBRARIAN", mode="before")
+    @classmethod
+    def parse_memory_librarian(cls, v: Any) -> str:
+        value = str(v or "off").strip().lower()
+        if value not in ("on", "off"):
+            raise ValueError(
+                f"UNIFY_MEMORY_LIBRARIAN must be 'on' or 'off', not {v!r}",
+            )
+        return value
+
+    @model_validator(mode="after")
+    def librarian_needs_tools_in_code(self) -> "ProductionSettings":
+        """The librarian is reached from a cell through the box-to-host tool channel, which exists only with the
+        tools called from code: ``UNIFY_MEMORY_LIBRARIAN=on`` with ``UNIFY_TOOLS_IN_CODE=off`` is refused."""
+        if getattr(self, "UNIFY_MEMORY_LIBRARIAN", "off") == "on" and getattr(self, "UNIFY_TOOLS_IN_CODE", "off") != "on":
+            raise ValueError(
+                "UNIFY_MEMORY_LIBRARIAN=on requires UNIFY_TOOLS_IN_CODE=on: the librarian is asked from a cell "
+                "through the tool channel, which exists only with the tools called from code",
+            )
+        return self
 
     @field_validator("UNIFY_CELL_STATE", mode="before")
     @classmethod

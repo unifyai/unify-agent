@@ -135,6 +135,15 @@ def location_line(checkout: Path) -> str:
     return f"Library files: `{LIBRARY_MOUNT}`, holding INDEX.md, links.json, memory/ and notes/.\n"
 
 
+def _librarian_setting() -> bool:
+    """``UNIFY_MEMORY_LIBRARIAN`` as set (off when it cannot be read)."""
+    try:
+        from unify.settings import SETTINGS
+    except Exception:  # noqa: BLE001 - no settings: off
+        return False
+    return getattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "off") == "on"
+
+
 def _actor_index_setting() -> str:
     """``UNIFY_MEMORY_LIBRARY_ACTOR_INDEX`` as set (``inline`` when it cannot be read)."""
     from .switch import library_actor_index
@@ -150,6 +159,7 @@ def render_memory_library_mode(
     checkout: Path,
     budget_tokens: int | None = None,
     actor_index: str | None = None,
+    librarian: bool | None = None,
 ) -> tuple[str, dict]:
     """``UNIFY_MEMORY_LIBRARY=on``: the actor's memory section.
 
@@ -164,6 +174,10 @@ def render_memory_library_mode(
       mounted, empty or not. It names no item, package or count, so the section's bytes are the same for the
       whole run and the actor reaches the index with ``memory.index()`` in a cell.
 
+    With *librarian* (``UNIFY_MEMORY_LIBRARIAN`` when None) on, either form is replaced by the librarian's section
+    (:data:`..library_prompts.GUIDE_LIBRARIAN`: the guide with the constant pointer to ``memory.ask`` in place of the
+    index, and the copy's location), whatever the library holds: the same bytes for every library.
+
     The hooks append it last in the system prompt, after the clock line (:func:`.hooks.system_prompt`).
     """
     from ..analysis.use import record_shown
@@ -171,6 +185,9 @@ def render_memory_library_mode(
     from ..library_index import INDEX_VIEW_TOKENS, index_view, listed, packages_of, prompt_view_head
 
     checkout = Path(checkout)
+    if _librarian_setting() if librarian is None else librarian:
+        text = _prompts_library_mode.GUIDE_LIBRARIAN + location_line(checkout)
+        return text, record_shown(text, channels=(), items=(), renderer="librarian_pointer")
     mode = _actor_index_setting() if actor_index is None else actor_index
     if mode == "pointer":
         # with tools called from code, the in-code form (it follows the shared opening)

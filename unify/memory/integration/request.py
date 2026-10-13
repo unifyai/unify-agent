@@ -194,6 +194,13 @@ def memory_library_on() -> bool:
     return parse_memory_library_mode(getattr(SETTINGS, LIBRARY_MODE, "") or "") == "on"
 
 
+def librarian_on() -> bool:
+    """Whether ``UNIFY_MEMORY_LIBRARIAN=on`` (the actor asks a librarian which stored items fit)."""
+    from unify.settings import SETTINGS
+
+    return getattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "off") == "on"
+
+
 def checker_visible_on() -> bool:
     """Whether the CLI takes ``{"checker": ...}`` lines: ``UNIFY_MEMORY_LIBRARY`` and
     ``UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE`` both on."""
@@ -297,9 +304,13 @@ def runtime_calls_empty() -> dict:
 
 #: The library package's own helpers whose calls the use record counts (``memory.helper_call`` audit events).
 LIBRARY_HELPERS = ("index", "show", "find", "match", "run")
+#: ``memory.ask`` (UNIFY_MEMORY_LIBRARIAN=on): counted with the helpers, and listed only when the librarian is on.
+ASK_HELPER = "ask"
+#: ``memory.ask`` results a request's evidence lists; past this they are counted only.
+MAX_ASK_ROWS = 200
 
 
-def library_helper_calls(runtime: Any) -> dict:
+def library_helper_calls(runtime: Any, librarian: bool = False) -> dict:
     """The library-mode use record's ``library_helper_calls``: for each of the package's helpers
     (``memory.index``, ``memory.show``, ``memory.find``, ``memory.match``, ``memory.run``), the calls the audit hook
     saw, by outcome
@@ -307,7 +318,7 @@ def library_helper_calls(runtime: Any) -> dict:
     seen = runtime.get("helpers") if isinstance(runtime, dict) else None
     seen = seen if isinstance(seen, dict) else {}
     out = {}
-    for name in LIBRARY_HELPERS:
+    for name in (*LIBRARY_HELPERS, ASK_HELPER) if librarian or ASK_HELPER in seen else LIBRARY_HELPERS:
         row = seen.get(name)
         row = row if isinstance(row, dict) else {}
         out[name] = {k: _count(row.get(k)) for k in RUNTIME_OUTCOMES}
@@ -571,9 +582,15 @@ def _add_matches_and_runs(acc: dict, calls: dict, cell: int) -> None:
                 "runs_before": position(m.get("runs_before")),
             },
         )
+    # the ids memory.ask listed: in earlier cells (acc["asks"], added before this), or earlier in this cell
+    asked_before = {i for a in acc.get("asks") or [] if a.get("cell") != cell for i in a.get("listed") or []}
+    asks_here = [a for a in calls.get("asks") or [] if isinstance(a, dict)]
     for i, r in enumerate(runs):
         listed_here = any(
             m["runs_before"] <= i and r["target"] in {row["id"] for row in m["listed"]} for m in new
+        )
+        by_ask = r["target"] in asked_before or any(
+            position(a.get("runs_before")) <= i and r["target"] in (a.get("listed") or []) for a in asks_here
         )
         if len(acc["runs"]) >= MAX_RUN_ROWS:
             acc["match_run_dropped"] += 1
@@ -589,6 +606,7 @@ def _add_matches_and_runs(acc: dict, calls: dict, cell: int) -> None:
                 "repeatable": r.get("repeatable") if isinstance(r.get("repeatable"), str) else None,
                 "agrees_with": len(agrees) if isinstance(agrees, list) else 0,
                 "listed_by_match": r["target"] in earlier or listed_here,
+                "listed_by_ask": by_ask,
             },
         )
     for m in new:
@@ -597,6 +615,51 @@ def _add_matches_and_runs(acc: dict, calls: dict, cell: int) -> None:
             acc["match_run_dropped"] += 1
             continue
         acc["matches"].append(m)
+
+
+def _add_asks(acc: dict, calls: dict, cell: int) -> None:
+    """Add one cell's ``memory.ask`` results (UNIFY_MEMORY_LIBRARIAN=on) to *acc*: each with the ids it listed as
+    fitting, whether it said nothing fits and the facts' outcome labels; and mark which listed ids were called
+    afterwards (a library call or a run in a later cell, or later in the same cell). Ids and labels only. Added
+    under ``asks`` and ``listed_by_ask`` only once an ask was seen, so a request without one is unchanged."""
+    asks = [a for a in calls.get("asks") or [] if isinstance(a, dict)]
+    records = calls.get("records") if isinstance(calls.get("records"), list) else []
+    called = [r.get("item") for r in records if isinstance(r, dict) and isinstance(r.get("item"), str)]
+    counts = calls.get("counts") if isinstance(calls.get("counts"), dict) else {}
+    runs = [r for r in calls.get("runs") or [] if isinstance(r, dict) and isinstance(r.get("target"), str)]
+    here = {k for k in counts if isinstance(k, str)} | {r["target"] for r in runs}
+    if "asks" in acc:
+        for a in acc["asks"]:  # earlier cells' answers: anything this cell called came after them
+            a["called_after"] = sorted(set(a["called_after"]) | (set(a["listed"]) & here))
+    if not asks:
+        return
+    acc.setdefault("asks", [])
+    acc.setdefault("asks_dropped", 0)
+
+    def position(value: Any) -> int:
+        return value if type(value) is int and value >= 0 else 0
+
+    for a in asks:
+        listed = [i for i in a.get("listed") or [] if isinstance(i, str)]
+        after = set(called[position(a.get("calls_before")) :]) | {
+            r["target"] for r in runs[position(a.get("runs_before")) :]
+        }
+        if len(acc["asks"]) >= MAX_ASK_ROWS:
+            acc["asks_dropped"] += 1
+            continue
+        acc["asks"].append(
+            {
+                "cell": cell,
+                "listed": listed,
+                "nothing_fits": bool(a.get("nothing_fits")),
+                "facts": [
+                    {k: f.get(k) for k in ("id", "read", "applies")}
+                    for f in a.get("facts") or []
+                    if isinstance(f, dict)
+                ],
+                "called_after": sorted(set(listed) & after),
+            },
+        )
 
 
 def add_runtime_calls(acc: dict, drained: Any, library_roots: Any = ()) -> None:
@@ -625,6 +688,7 @@ def add_runtime_calls(acc: dict, drained: Any, library_roots: Any = ()) -> None:
     acc.setdefault("matches", [])
     acc.setdefault("runs", [])
     acc.setdefault("match_run_dropped", 0)
+    _add_asks(acc, calls, acc["cells"] - 1)
     _add_matches_and_runs(acc, calls, acc["cells"] - 1)
     for key in ("dropped", "records_dropped", "malformed"):
         acc[key] += _count(calls.get(key))
@@ -642,7 +706,7 @@ def add_runtime_calls(acc: dict, drained: Any, library_roots: Any = ()) -> None:
                 if isinstance(helper_id, str) and helper_id.startswith("memory:")
                 else None
             )
-            if name in LIBRARY_HELPERS:
+            if name in LIBRARY_HELPERS or name == ASK_HELPER:
                 have = acc.setdefault("helpers", {}).setdefault(
                     name,
                     {k: 0 for k in RUNTIME_OUTCOMES},
@@ -715,9 +779,15 @@ def memory_use(
     cell_errors: dict | None = None,
     memory_bound: bool | None = None,
     failures: dict | None = None,
+    librarian: list | None = None,
 ) -> dict:
     """The request's use record (:func:`..analysis.use.request_use`), with *runtime_calls*, the calls the
     actor's cells actually made as the worker's audit hook observed them (:func:`with_runtime_calls`).
+
+    With *librarian* (the request's librarian sessions; None while ``UNIFY_MEMORY_LIBRARIAN`` is off) the record
+    also has ``memory.ask``'s fields (:func:`..analysis.use.ask_fields`: ``ask_calls``, ``ask_rows``,
+    ``listed_by_ask``), ``ask`` among ``library_helper_calls``, and ``librarian``: its model calls' tokens, cache
+    reads and USD (:func:`..librarian.usage_fields`).
 
     It reads the transcript, actions and ``memory.diff`` as the episode writes them (through *redactor*,
     so the offline analyser recomputes the same record from the written episode), against the items at
@@ -771,7 +841,7 @@ def memory_use(
         record = with_runtime_calls(record, runtime_calls)
         if library_mode and isinstance(record, dict) and "error" not in record:
             record.update(library_failures(runtime_calls, cell_errors))
-            record["library_helper_calls"] = library_helper_calls(runtime_calls)
+            record["library_helper_calls"] = library_helper_calls(runtime_calls, librarian is not None)
             listed, dropped = library_failure_list(
                 failures,
                 use.transcript_cells(lines) if failures else [],
@@ -781,6 +851,12 @@ def memory_use(
             record["library_failures_dropped"] = dropped
             record["library_file_lookups"] = library_file_lookups_total(runtime_calls)
             record.update(use.match_run_fields(runtime_calls, clean(list(ep.transcript))))
+        if library_mode and isinstance(record, dict) and "error" not in record:
+            record.update(use.ask_fields(runtime_calls))
+        if librarian is not None and isinstance(record, dict) and "error" not in record:
+            from ..librarian import usage_fields
+
+            record["librarian"] = usage_fields(librarian)
         return record
     except Exception as exc:  # noqa: BLE001 - telemetry never stops recording
         return {
@@ -862,6 +938,9 @@ class RequestRun:
         self.cell_errors: dict[str, int] = {"name": 0, "import": 0}
         # Library mode: the failed library calls and library cell errors, listed (library_failure_list).
         self.failures: dict = library_failures_empty()
+        # UNIFY_MEMORY_LIBRARIAN=on: the request's librarian sessions (librarian.opener registers each), whose
+        # totals the use record reads
+        self.librarian_sessions: list = []
         self.episode_id = ""
         self.started_at = ""
         self.pin = ""
@@ -1065,6 +1144,12 @@ class RequestRun:
                 type(exc).__name__,
             )
             captured = {}
+        librarian = librarian_on()
+        summary_of = None
+        if librarian:
+            from ..library_export import staging_summaries
+
+            summary_of = staging_summaries(Path(paths.state_dir) / "memory-staging")
         self.generated = export_actor_library_mode(
             paths.memory,
             self.pin,
@@ -1073,6 +1158,8 @@ class RequestRun:
             status_of=status_of(records),
             records=records,
             captures=captured,
+            librarian=librarian,
+            summary_of=summary_of,
         )
         self.item_ids = pinned_items(paths.checkout, library_mode=True)
         # the worker binds ``memory`` in every cell when the copy holds the package (hooks.worker_globals)
@@ -1521,6 +1608,7 @@ class RequestRun:
             cell_errors=dict(self.cell_errors),
             memory_bound=self.library_mode and self.memory_bound,
             failures=self.failures,
+            librarian=self.librarian_sessions if librarian_on() else None,
         )
         sha = EpisodeWriter(
             stores.episodes,

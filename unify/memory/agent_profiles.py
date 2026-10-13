@@ -76,6 +76,8 @@ _ACTOR_IN_CODE = [
     "delegate",
     "finish",
     "store_skills",
+    # only with UNIFY_MEMORY_LIBRARIAN=on (registry flag "librarian")
+    "ask_library",
     "sh",
 ]
 _TEAMMATE_IN_CODE = [
@@ -140,9 +142,12 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "consumes": [
             {"artifact": "library export", "path": "<library scratch copy>"},
             {"artifact": "agent record", "path": _AGENT_RECORD},
+            # UNIFY_MEMORY_LIBRARIAN=on: what memory.ask returns
+            {"artifact": "librarian answer", "path": "memory.ask"},
         ],
         "produces": [
             {"artifact": "agent record", "path": _AGENT_RECORD, "consumer": "teammate"},
+            {"artifact": "question", "path": "memory.ask (tools.ask_library)", "consumer": "librarian"},
             {
                 "artifact": "episode record",
                 "path": "<state>/episodes/<episode>",
@@ -666,6 +671,35 @@ AGENT_PROFILES: tuple[dict, ...] = (
         ],
     },
     {
+        # UNIFY_MEMORY_LIBRARIAN=on: one session per actor request, on the actor's model and effort, answering which
+        # stored items fit the actor's questions (memory.ask); its system prompt holds the whole catalogue
+        "agent": "librarian",
+        "mode": "librarian",
+        "instructions": "unify.memory.librarian:system_prompt",
+        "tools": [],
+        "json_tools": list(_JSON_TOOLS),
+        "in_code": ["finish"],
+        "in_cells": ["memory.show"],
+        # the actor's library copy, read-only; no write root, no network
+        "mounts": [{"path": "/memory", "mode": "ro"}],
+        "denied": ["network", "credentials", "writes", "library repository", "episodes", "state dir"],
+        "consumes": [
+            {"artifact": "library export", "path": "/memory"},
+            {"artifact": "question", "path": "the request's next user message"},
+        ],
+        "produces": [{"artifact": "librarian answer", "path": "tools.finish(answer)", "consumer": "actor"}],
+        "limits": [{"limit": "cell time", "value": 60, "unit": "s"}],
+        "inlined": [{"what": "the brief and the library's catalogue (constant per library commit)", "bound": {}}],
+        "capabilities": ["read the library copy read-only", "run Python in its own box"],
+        "absent_paths": ["/inputs", "/workspace", "<state>"],
+        "expectations": [
+            {"expectation": "open an item's source before answering", "tool": "memory.show", "permission": "/memory ro"},
+        ],
+        "fields": ["ask_calls", "ask_rows", "listed_by_ask"],
+        "emits": [],
+        "pointers": [{"pointer": "an item's source", "tool": "memory.show"}],
+    },
+    {
         "agent": "gate",
         "mode": "repair",
         "instructions": "unify.memory.repair:repair_message",
@@ -694,6 +728,11 @@ AGENT_PROFILES: tuple[dict, ...] = (
                 "artifact": "library export",
                 "path": "library main, copied to <library scratch copy>",
                 "consumer": "actor",
+            },
+            {
+                "artifact": "library export",
+                "path": "library main, copied to <library scratch copy>",
+                "consumer": "librarian",
             },
         ],
         "limits": [
@@ -817,6 +856,10 @@ _LIBRARY_LINE = {
         '`memory.index()`, `memory.show("<id>")` and `memory.find(value)`.'
     ),
     "helper": "/memory holds the library as the writer sees it, read-only; it is the package `memory` in your cells.",
+    "librarian": (
+        "The library is the Python package `memory` under /memory, read-only, already bound as `memory` in every "
+        'cell: `memory.show("<id>")` prints an item\'s source, docstring and records.'
+    ),
 }
 
 

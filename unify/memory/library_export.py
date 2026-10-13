@@ -12,7 +12,9 @@
   (:func:`find_data`);
 * ``.memory/matcher.py``: v2's matcher (:mod:`.memory_helper` up to its catalogue section, so none of v2's
   catalogue or its footer ships);
-* ``.memory/shapes.py``: :mod:`.analysis.shapes`, byte for byte.
+* ``.memory/shapes.py``: :mod:`.analysis.shapes`, byte for byte;
+* with ``UNIFY_MEMORY_LIBRARIAN=on`` only: ``.memory/catalogue.md`` and ``.memory/dispatch.json``, the librarian's
+  catalogue and the procedures' recognisers (:func:`librarian_files`), and ``memory.ask`` in the package.
 
 None of these is ever committed (the gate's G1 check refuses them). Each is a pure function of the tree, the item
 statuses, the recorded shapes and the history, so the same commit gives the same bytes (cache rule).
@@ -456,6 +458,332 @@ def _json_bytes(data: dict) -> bytes:
     ).encode("utf-8")
 
 
+# --- the librarian's catalogue and the dispatch file (UNIFY_MEMORY_LIBRARIAN=on) --------------------------------
+#
+# Both are harness-generated at each export, with no model call: ``.memory/catalogue.md``, one card per stored
+# function in module-path order (never a score), then the notes, then the captured procedures; and
+# ``.memory/dispatch.json``, each procedure that has a reader or an ``applies``. Neither carries an answer, a raw
+# request text or a printed identifier: every free text (docstrings, summary sections, what broke) goes through the
+# one identifier rule (``signatures.strip_identifiers``).
+
+CATALOGUE_FILE = ".memory/catalogue.md"
+DISPATCH_FILE = ".memory/dispatch.json"
+#: The captures' prefix in the catalogue and in ``dispatch.json`` (``memory.match`` and ``memory.run`` use it too).
+CAPTURE_PREFIX = "capture:"
+_CAPTURE_ID = "[0-9a-f]{16}"
+_UNCHECKED = "unchecked"
+
+
+def _first_paragraph(doc: str) -> str:
+    """The first paragraph of a docstring, on one line."""
+    return " ".join((doc or "").strip().split("\n\n", 1)[0].split())
+
+
+def _one_line(text: str) -> str:
+    return " ".join(str(text or "").split())
+
+
+def _provenance_episodes(rec: Mapping | None) -> list[str]:
+    prov = rec.get("provenance") if isinstance(rec, Mapping) else None
+    eps = prov.get("episodes") if isinstance(prov, dict) else None
+    return [e for e in eps if isinstance(e, str)] if isinstance(eps, list) else []
+
+
+def _saved_lines(rec: Mapping | None, summary_of: SummaryOf | None, strip: Strip) -> list[tuple[str, str]]:
+    """``(asked, approach)`` of each provenance episode of *rec* that has a ``summary.md``, identifiers removed,
+    without repeats, in the record's episode order; else the signature's own goal (already stripped) as Asked."""
+    out: list[tuple[str, str]] = []
+    for episode in _provenance_episodes(rec) if summary_of is not None else []:
+        text = summary_of(episode)
+        if not text:
+            continue
+        s = summary_sections(text, strip)
+        pair = (_one_line(s["asked"]), _one_line(s["approach"]))
+        if any(pair) and pair not in out:
+            out.append(pair)
+    sig = rec.get("signature") if isinstance(rec, Mapping) else None
+    if not out and isinstance(sig, dict) and isinstance(sig.get("goal"), str) and sig["goal"].strip():
+        out.append((_one_line(sig["goal"]), ""))
+    return out
+
+
+def _applies_stated(sig: object) -> bool:
+    """Whether an applicability signature records an ``applies`` (the capture store writes ``stated``)."""
+    cons = sig.get("constraints") if isinstance(sig, dict) else None
+    a = cons.get("applies") if isinstance(cons, dict) else None
+    return isinstance(a, dict) and bool(a.get("stated") or a.get("exists"))
+
+
+def _track_line(rec: Mapping | None) -> str:
+    """The one-line track record of an item record: its use totals, or that it has none yet."""
+    if not isinstance(rec, Mapping) or not isinstance(rec.get("use"), dict) or not rec.get("use"):
+        return "no uses recorded yet"
+    totals = use_totals(rec)
+    return ", ".join(f"{k} {totals[k]}" for k in sorted(totals))
+
+
+def _capture_docs(captures: Mapping[str, bytes] | None) -> dict[str, dict]:
+    """The exported captures (``.memory/captures/<id>/<file>`` -> bytes, :func:`.captures.export_files`) by id:
+    their ``signature``, ``record``, ``procedure`` source and ``broke`` text, each None when absent or unreadable."""
+    import re
+
+    out: dict[str, dict] = {}
+    rx = re.compile(r"\.memory/captures/(" + _CAPTURE_ID + r")/([A-Za-z.]+)")
+    for path, data in sorted((captures or {}).items()):
+        m = rx.fullmatch(path)
+        if m is None:
+            continue
+        doc = out.setdefault(m.group(1), {"signature": None, "record": None, "procedure": None, "broke": None})
+        try:
+            text = bytes(data).decode("utf-8")
+        except (UnicodeDecodeError, TypeError, ValueError):
+            continue
+        name = m.group(2)
+        if name in ("signature.json", "record.json"):
+            try:
+                value = json.loads(text)
+            except ValueError:
+                continue
+            doc[name.split(".")[0]] = value if isinstance(value, dict) else None
+        elif name == "procedure.py":
+            doc["procedure"] = text
+        elif name == "broke.md":
+            doc["broke"] = text
+    return out
+
+
+def _function_docs(tree: Path, lib: Library) -> dict[str, str]:
+    return _docstrings(tree, lib, {f.item_id for f in lib.functions})
+
+
+def catalogue_text(
+    tree: Path,
+    lib: Library | None = None,
+    *,
+    status_of: Callable[[str], str] | None = None,
+    records: Mapping[str, dict] | None = None,
+    summary_of: SummaryOf | None = None,
+    captures: Mapping[str, bytes] | None = None,
+    strip: Strip | None = None,
+) -> str:
+    """``.memory/catalogue.md``: the library's whole catalogue as the librarian reads it (design J(b).3).
+
+    One card per listed function in module-path order (its id, signature and the first paragraph of its docstring;
+    what it was saved against, the identifier-stripped ``## Asked`` and ``## Approach`` lines of each provenance
+    episode's ``summary.md`` from *summary_of*; its evidence level and status, its reader, whether it has
+    ``applies``, its input line and a one-line track record; the notes it links to). Then the notes, then the
+    captured procedures from *captures* (the actor's snapshot, ``.memory/captures/...``), each at level
+    ``unchecked``; a captured attempt that failed is listed with what broke and is never offered to run. Card fields
+    are fixed; the only free text is the docstrings and the summaries, identifiers removed with *strip*. Pure: the
+    same inputs give the same bytes."""
+    from .library_index import signature_text
+
+    tree = Path(tree)
+    lib = lib if lib is not None else discover(tree)
+    strip = strip or default_strip()
+    links = build_links(lib)
+    docs = _function_docs(tree, lib)
+    status = {
+        **{f.item_id: _status(status_of, f.item_id) for f in lib.functions},
+        **{n.item_id: _status(status_of, n.item_id) for n in lib.notes},
+    }
+    shown = {i for i, s in status.items() if s not in HIDDEN}
+    out: list[str] = [
+        "# The library's catalogue\n",
+        "\nOne card per stored function in module-path order, then the notes, then the captured procedures. "
+        "Saved against: what the work each item was built from asked and how it went about it. Evidence: what has "
+        "been checked about the item and how it has been used.\n",
+        "\n## Functions\n",
+    ]
+    functions = [f for f in sorted(lib.functions, key=lambda f: (f.module, f.name)) if f.item_id in shown]
+    if not functions:
+        out.append("\n(none)\n")
+    for f in functions:
+        rec = records.get(f.item_id) if records else None
+        rec = rec if isinstance(rec, dict) else None
+        sig = rec.get("signature") if rec else None
+        reader = rec.get("reader") if rec and isinstance(rec.get("reader"), str) else None
+        level = rec.get("level") if rec and isinstance(rec.get("level"), str) else "not recorded"
+        lines = [f"\n### {f.item_id}\n", f"`{f.module}:{f.signature}`\n"]
+        doc = _one_line(strip(_first_paragraph(docs.get(f.item_id, ""))))
+        if doc:
+            lines.append(f"{doc}\n")
+        saved = _saved_lines(rec, summary_of, strip)
+        lines.append("Saved against:" + ("" if saved else " no summary recorded") + "\n")
+        for asked, approach in saved:
+            lines.append(f"- Asked: {asked or 'not recorded'}\n")
+            if approach:
+                lines.append(f"  Approach: {approach}\n")
+        input_line = signature_text(sig) if isinstance(sig, dict) else ""
+        lines.append(
+            f"Evidence: level {level}; status {status[f.item_id]}; reader {reader or 'none'}; "
+            f"applies: {'yes' if _applies_stated(sig) else 'no'}\n",
+        )
+        if input_line:
+            lines.append(f"Input: {input_line}\n")
+        lines.append(f"Record: {_track_line(rec)}\n")
+        notes = sorted(
+            i
+            for i in set(links["items"][f.item_id]["links_to"]) | set(links["items"][f.item_id]["linked_from"])
+            if i in shown and links["items"].get(i, {}).get("kind") == "note"
+        )
+        if notes:
+            lines.append("Notes: " + ", ".join(notes) + "\n")
+        out.append("".join(lines))
+    out.append("\n## Notes\n")
+    notes = [n for n in sorted(lib.notes, key=lambda n: n.item_id) if n.item_id in shown]
+    if not notes:
+        out.append("\n(none)\n")
+    for n in notes:
+        about = n.description if not n.error else "(front matter unreadable)"
+        fns = sorted(
+            i
+            for i in set(links["items"][n.item_id]["links_to"]) | set(links["items"][n.item_id]["linked_from"])
+            if i in shown and links["items"].get(i, {}).get("kind") == "function"
+        )
+        out.append(
+            f"\n### {n.item_id}\n"
+            + (f"{_one_line(strip(n.title))}\n" if n.title else "")
+            + (f"{_one_line(strip(about))}\n" if about else "")
+            + f"Status: {status[n.item_id]}\n"
+            + ("Functions: " + ", ".join(fns) + "\n" if fns else ""),
+        )
+    out.append("\n## Captured procedures\n")
+    caps = _capture_docs(captures)
+    if not caps:
+        out.append("\n(none)\n")
+    for cid, doc in caps.items():
+        sig = doc["signature"] if isinstance(doc["signature"], dict) else {}
+        rec = doc["record"] if isinstance(doc["record"], dict) else {}
+        failed = rec.get("outcome") == "failed"
+        lines = [f"\n### {CAPTURE_PREFIX}{cid}\n"]
+        run_doc = _one_line(strip(_first_paragraph(_docstring_of(doc["procedure"]))))
+        if run_doc:
+            lines.append(f"{run_doc}\n")
+        goal = _one_line(sig.get("goal")) if isinstance(sig.get("goal"), str) else ""
+        lines.append(f"Saved against:\n- Asked: {goal or 'not recorded'}\n")
+        input_line = signature_text(sig)
+        level = _UNCHECKED  # captured procedures are listed at level unchecked (design J(b).3)
+        state = rec.get("status") if isinstance(rec.get("status"), str) else "on-trial"
+        lines.append(
+            f"Evidence: level {level}; status {state}; reader read_input; "
+            f"applies: {'yes' if _applies_stated(sig) else 'no'}"
+            + ("; tried and failed: never offered to run" if failed else "")
+            + "\n",
+        )
+        if input_line:
+            lines.append(f"Input: {input_line}\n")
+        if failed:
+            for line in (doc["broke"] or "").splitlines():
+                line = _one_line(strip(line.strip().lstrip("-* ")))
+                if line and line.lower() != "none":
+                    lines.append(f"Broke: {line}\n")
+        out.append("".join(lines))
+    return "".join(out)
+
+
+def dispatch_data(
+    lib: Library,
+    *,
+    status_of: Callable[[str], str] | None = None,
+    records: Mapping[str, dict] | None = None,
+    captures: Mapping[str, bytes] | None = None,
+) -> dict:
+    """``.memory/dispatch.json``: each listed procedure with a reader or an ``applies`` (design J(b).3), as
+    ``{id, reader, applies, input}``: ``reader`` is the reader's id (an item id from the item record's ``reader``;
+    ``capture:<id>`` for a captured procedure, whose ``read_input`` is its reader), ``applies`` whether it has one
+    (its applicability signature states one, or its item record names the function), and ``input`` its input line.
+    Module-path order, then the captures in id order; a captured attempt that failed is left out (never offered to
+    run). Beside the rows, ``applies_of`` names, for a landed procedure, the library function that is its
+    ``applies`` (the item record's ``applies``); a captured procedure's ``applies`` is the one in its own
+    ``procedure.py``."""
+    from .library_index import signature_text
+
+    rows: list[dict] = []
+    applies_of: dict[str, str] = {}
+    for f in sorted(lib.functions, key=lambda f: (f.module, f.name)):
+        if _status(status_of, f.item_id) in HIDDEN:
+            continue
+        rec = records.get(f.item_id) if records else None
+        if not isinstance(rec, dict):
+            continue
+        reader = rec.get("reader") if isinstance(rec.get("reader"), str) and rec.get("reader") else None
+        named = rec.get("applies") if isinstance(rec.get("applies"), str) and rec.get("applies") else None
+        sig = rec.get("signature")
+        applies = named is not None or _applies_stated(sig)
+        if reader is None and not applies:
+            continue
+        if named is not None:
+            applies_of[f.item_id] = named
+        rows.append(
+            {
+                "id": f.item_id,
+                "reader": reader,
+                "applies": applies,
+                "input": signature_text(sig) if isinstance(sig, dict) else "",
+            },
+        )
+    for cid, doc in _capture_docs(captures).items():
+        rec = doc["record"] if isinstance(doc["record"], dict) else {}
+        if rec.get("outcome") == "failed" or not isinstance(doc["procedure"], str):
+            continue
+        sig = doc["signature"] if isinstance(doc["signature"], dict) else {}
+        target = CAPTURE_PREFIX + cid
+        rows.append(
+            {
+                "id": target,
+                "reader": target,
+                "applies": _applies_stated(sig),
+                "input": signature_text(sig),
+            },
+        )
+    return {"version": 1, "procedures": rows, "applies_of": applies_of}
+
+
+def librarian_files(
+    tree: Path,
+    *,
+    status_of: Callable[[str], str] | None = None,
+    records: Mapping[str, dict] | None = None,
+    summary_of: SummaryOf | None = None,
+    captures: Mapping[str, bytes] | None = None,
+    strip: Strip | None = None,
+) -> dict[str, bytes]:
+    """The librarian's generated files of the copy at *tree* (``UNIFY_MEMORY_LIBRARIAN=on``): ``catalogue.md``,
+    ``dispatch.json`` and the package with ``memory.ask`` (:data:`ASK_SOURCE` after :mod:`.library_helper`)."""
+    tree = Path(tree)
+    lib = discover(tree)
+    return {
+        RESERVED_INIT: package_source(librarian=True),
+        CATALOGUE_FILE: catalogue_text(
+            tree,
+            lib,
+            status_of=status_of,
+            records=records,
+            summary_of=summary_of,
+            captures=captures,
+            strip=strip,
+        ).encode("utf-8"),
+        DISPATCH_FILE: _json_bytes(
+            dispatch_data(lib, status_of=status_of, records=records, captures=captures),
+        ),
+    }
+
+
+#: The section the generated package gains with the librarian on (``memory.ask``), appended to
+#: :mod:`.library_helper`'s bytes; off, the package is that file byte for byte.
+ASK_SOURCE = _HERE / "library_ask.py"
+
+
+def package_source(librarian: bool = False) -> bytes:
+    """The generated ``memory/__init__.py``: :mod:`.library_helper` byte for byte, followed, with *librarian*, by
+    the ``memory.ask`` section (:data:`ASK_SOURCE`)."""
+    base = (_HERE / "library_helper.py").read_bytes()
+    if not librarian:
+        return base
+    return base + b"\n\n" + ASK_SOURCE.read_bytes()
+
+
 def generated_library_mode(
     tree: Path,
     *,
@@ -466,8 +794,15 @@ def generated_library_mode(
     tests: ReadFile | None = None,
     saved_against: SavedAgainst | None = None,
     strip: Strip | None = None,
+    librarian: bool = False,
+    summary_of: SummaryOf | None = None,
+    captures: Mapping[str, bytes] | None = None,
 ) -> dict[str, bytes]:
     """Every generated file of the copy of the library at *tree*, by relative path (module docstring).
+
+    *librarian* (``UNIFY_MEMORY_LIBRARIAN=on``) adds the librarian's files (:func:`librarian_files`: the catalogue
+    with *summary_of*'s summaries and the *captures* snapshot, the dispatch file, and the package with
+    ``memory.ask``); off, every byte is as without it.
 
     *records* are the item records at the copy's commit (:func:`.item_records.records_at`); None gives the files
     without item records, byte for byte. *tests* reads a test file of the commit by its tree-relative path, to
@@ -492,7 +827,7 @@ def generated_library_mode(
         got = saved_against(item) if saved_against is not None else None
         return got.get("signature") if isinstance(got, dict) else None
 
-    return {
+    out = {
         RESERVED_INIT: (_HERE / "library_helper.py").read_bytes(),
         INDEX_FILE: render_index(
             lib,
@@ -514,3 +849,15 @@ def generated_library_mode(
         MATCHER_FILE: matcher_source(),
         SHAPES_FILE: (_HERE / "analysis" / "shapes.py").read_bytes(),
     }
+    if librarian:
+        out.update(
+            librarian_files(
+                tree,
+                status_of=status_of,
+                records=records,
+                summary_of=summary_of,
+                captures=captures,
+                strip=strip,
+            ),
+        )
+    return out

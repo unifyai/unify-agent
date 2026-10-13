@@ -722,6 +722,7 @@ def match_run_fields(runtime: Any, lines: Iterable[Any] = ()) -> dict:
                     "repeatable",
                     "agrees_with",
                     "listed_by_match",
+                    "listed_by_ask",
                 )
             }
             for r in runs
@@ -731,6 +732,39 @@ def match_run_fields(runtime: Any, lines: Iterable[Any] = ()) -> dict:
         "match_run_dropped": rt.get("match_run_dropped", 0)
         if isinstance(rt.get("match_run_dropped"), int)
         else 0,
+    }
+
+
+def ask_fields(runtime: Any) -> dict:
+    """The use record's fields for ``memory.ask`` (UNIFY_MEMORY_LIBRARIAN=on, design J(b).4), from the request's
+    runtime call evidence (``integration.request.add_runtime_calls``):
+
+    * ``ask_calls``: the answers the audit hook saw;
+    * ``ask_rows``: per ask, its ``cell``, the ids it listed as fitting (``listed``), whether it said nothing fits
+      (``nothing_fits``), the recognisers' outcomes (``facts``: ``{id, read, applies}`` labels) and ``called_after``,
+      the listed ids a later library call or ``run`` called;
+    * ``listed_by_ask``: every item or capture id that was called after an ask listed it;
+    * ``asks_dropped``: answers past the request's bound, not listed.
+
+    Ids and labels only, never text, a value or a result. Asking is a helper call and never a use."""
+    rt = runtime if isinstance(runtime, dict) else {}
+    asks = [a for a in rt.get("asks") or [] if isinstance(a, dict)]
+    rows = [
+        {
+            "cell": a.get("cell"),
+            "listed": list(a.get("listed") or []),
+            "nothing_fits": bool(a.get("nothing_fits")),
+            "facts": list(a.get("facts") or []),
+            "called_after": list(a.get("called_after") or []),
+        }
+        for a in asks
+    ]
+    dropped = rt.get("asks_dropped", 0)
+    return {
+        "ask_calls": len(asks) + (dropped if isinstance(dropped, int) else 0),
+        "ask_rows": rows,
+        "listed_by_ask": sorted({i for r in rows for i in r["called_after"]}),
+        "asks_dropped": dropped if isinstance(dropped, int) else 0,
     }
 
 

@@ -192,7 +192,7 @@ CALL_OUTCOMES = ("ok", "refused", "error")
 #: The library package's own helpers raise this event, with the same arguments, under these ids.
 HELPER_EVENT = "memory.helper_call"
 HELPER_ITEMS = frozenset(
-    {"memory:index", "memory:show", "memory:find", "memory:match", "memory:run"},
+    {"memory:index", "memory:show", "memory:find", "memory:match", "memory:run", "memory:ask"},
 )
 #: A failed call of an item or a helper: (id, exception type, first message line, arguments' shape).
 FAILED_EVENT = "memory.call_failed"
@@ -201,6 +201,11 @@ FAILURE_HELPERS = HELPER_ITEMS
 #: What ``memory.match`` listed and how a ``memory.run`` went (ids and outcomes only).
 MATCH_EVENT = "memory.match_result"
 RUN_EVENT = "memory.run_result"
+#: What ``memory.ask`` got back (UNIFY_MEMORY_LIBRARIAN=on): the ids the answer listed as fitting, whether it said
+#: nothing fits, and the recognisers' outcomes as ``(id, read, applies)`` labels; never text or values.
+ASK_EVENT = "memory.ask_result"
+ASK_READ = ("parsed", "did-not-parse")
+ASK_APPLIES = ("held", "did-not-hold", "raised", "not-run", "none")
 RUN_OUTCOMES = ("returned", "refused", "error")
 RUN_REPEATABLE = ("yes", "no", "unchecked")
 RUN_CONDITIONS = ("none", "held", "not-held", "error")
@@ -212,6 +217,7 @@ AUDITED = PATH_EVENTS | SPAWN_EVENTS | {
     FAILED_EVENT,
     MATCH_EVENT,
     RUN_EVENT,
+    ASK_EVENT,
 }
 #: The callers whose opens are marked ``via``: the import system, traceback formatting, the library package.
 _VIA_IMPORT = ("importlib", "_frozen_importlib", "zipimport")
@@ -367,6 +373,7 @@ class CellAudit:
         self.call_failures_dropped = 0
         self.match_records: list = []
         self.run_records: list = []
+        self.ask_records: list = []
 
     @staticmethod
     def prefixes(roots: Iterable[str]) -> tuple:
@@ -401,6 +408,9 @@ class CellAudit:
                 return
             if event == RUN_EVENT:
                 self._run_result(args)
+                return
+            if event == ASK_EVENT:
+                self._ask_result(args)
                 return
             if len(self.records) >= MAX_RECORDS:
                 self.dropped += 1
@@ -626,6 +636,43 @@ class CellAudit:
             },
         )
 
+    def _ask_result(self, args: tuple) -> None:
+        """Keep one ``memory.ask_result`` event: the ids listed as fitting, whether nothing fits, the facts'
+        outcome labels, and how many of the cell's call records and runs came before it."""
+        if type(args) is not tuple or len(args) != 3:
+            self.calls_malformed += 1
+            return
+        listed, nothing, facts = args
+        listed = self._ids(listed)
+        rows = []
+        ok = listed is not None and type(nothing) is bool and type(facts) is tuple and len(facts) <= MAX_MATCH_IDS
+        for row in facts if ok else ():
+            if (
+                type(row) is not tuple
+                or len(row) != 3
+                or self._id(row[0]) is None
+                or row[1] not in ASK_READ
+                or row[2] not in ASK_APPLIES
+            ):
+                ok = False
+                break
+            rows.append({"id": row[0], "read": row[1], "applies": row[2]})
+        if not ok:
+            self.calls_malformed += 1
+            return
+        if len(self.ask_records) >= MAX_MATCH_RECORDS:
+            self.call_records_dropped += 1
+            return
+        self.ask_records.append(
+            {
+                "listed": listed,
+                "nothing_fits": nothing,
+                "facts": rows,
+                "calls_before": len(self.call_records),
+                "runs_before": len(self.run_records),
+            },
+        )
+
     def _calls_seen(self) -> bool:
         return bool(
             self.call_counts
@@ -635,7 +682,8 @@ class CellAudit:
             or self.call_failures
             or self.call_failures_dropped
             or self.match_records
-            or self.run_records,
+            or self.run_records
+            or self.ask_records,
         )
 
     def _inside(self, path: Optional[str]) -> bool:
@@ -812,6 +860,8 @@ class CellAudit:
                 out["calls"]["matches"] = self.match_records
             if self.run_records:
                 out["calls"]["runs"] = self.run_records
+            if self.ask_records:
+                out["calls"]["asks"] = self.ask_records
         self.records, self.dropped, self.failed, self.bytes = [], 0, 0, 0
         self._reset_calls()
         return out
