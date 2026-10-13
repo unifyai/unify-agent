@@ -1156,8 +1156,8 @@ _TIMEOUT = {
 _LIBRARIAN_ANSWER = {
     "type": "object",
     "properties": {
+        # no type here: the channel's strict check would refuse the answer's own keys; the handler checks it
         "answer": {
-            "type": "object",
             "description": (
                 'Your answer: {"fits": [{"id": ..., "call": ..., "why": ...}, ...]} listing every item that fits, '
                 'or {"fits": [], "nearest": [{"id": ..., "differs": ...}, ...]} when nothing fits.'

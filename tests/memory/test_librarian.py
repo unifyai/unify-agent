@@ -241,16 +241,17 @@ def test_off_the_export_is_byte_for_byte_as_before(tmp_path):
 
 # --- memory.ask in the package, run as a cell runs it ------------------------------------------------------------
 
+FAKE_ANSWER = json.dumps({"fits": [{"id": TOTAL, "call": f"memory.run({TOTAL!r}, text)", "why": "its reader parsed it"}]})
 FAKE_TOOLS = (
     "import json, sys, types\n"
     "tools = types.ModuleType('tools')\n"
     "sent = []\n"
     "def ask_library(question, facts=None):\n"
     "    sent.append([question, facts])\n"
-    "    return json.dumps({'fits': [{'id': %r, 'call': 'memory.run(%r, text)', 'why': 'its reader parsed it'}]})\n"
+    f"    return {FAKE_ANSWER!r}\n"
     "tools.ask_library = ask_library\n"
     "sys.modules['tools'] = tools\n"
-) % (TOTAL, TOTAL)
+)
 
 
 def test_ask_computes_the_facts_in_its_own_process_and_sends_outcomes_only(tmp_path):
@@ -546,7 +547,8 @@ async def test_ask_end_to_end_facts_in_the_box_one_session_per_request_and_the_c
 
     state = H.ActorRequestState(open_librarian=open_librarian)
     actor_events: list[dict] = []
-    # the actor's cells: the copy read-only at /lib, its memory package importable, ask_library on its allow-list
+    # the actor's cells: the copy read-only at /library, its memory package importable, ask_library on its
+    # allow-list
     actor = th.InterpreterSession(
         agent="actor",
         name="root",
@@ -554,14 +556,16 @@ async def test_ask_end_to_end_facts_in_the_box_one_session_per_request_and_the_c
         pass_id="r1",
         state=state,
         allow=("ask_library",),
-        binds={"ro": {copy: "/lib"}, "rw": {}},
+        binds={"ro": {copy: "/library"}, "rw": {}},
         env={},
-        roots={"/lib": copy},
+        roots={"/library": copy},
         deadline=time.monotonic() + 3600,
         cell_limit_s=200.0,
         on_event=actor_events.append,
         threads=HandlerThreads(),
-        profile=th.memory_profile(cwd="/lib", sys_path=("/lib",), audit_roots=("/lib",), open_areas=("/lib",)),
+        profile=th.memory_profile(
+            cwd="/library", sys_path=("/library",), audit_roots=("/library",), open_areas=("/library",),
+        ),
     )
     model = HeaderModel(actor=[reply(calls=[code(LIBRARIAN_FIRST)]), reply(calls=[code(LIBRARIAN_SECOND)]),
                                reply(calls=[code(LIBRARIAN_THIRD)])])
