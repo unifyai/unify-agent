@@ -37,9 +37,12 @@ from typing import Iterable
 POOL_REF = "pool"
 # ``cluster`` entries came from a recurrence miner that no longer feeds the pool; old ones still load, and
 # :meth:`Pool.close_cluster_entries` closes them
-KINDS = ("candidate", "lesson", "cluster", "draft", "deferred", "unread")
-# the order the writer sees: proposals first (candidates, lessons, deferrals), then everything else
-ORDER = ("candidate", "lesson", "deferred", "draft", "unread", "cluster")
+# ``capture`` and ``failure`` entries come from the capture store (:mod:`.captures`): a captured attempt's procedure,
+# and a captured attempt that failed (negative knowledge), with what broke
+KINDS = ("candidate", "lesson", "cluster", "draft", "deferred", "unread", "capture", "failure")
+# the order the writer sees: proposals first (candidates, captures, lessons, failures, deferrals), then everything
+# else; a capture whose record is adopted comes before all of them (information only: the writer decides)
+ORDER = ("candidate", "capture", "lesson", "failure", "deferred", "draft", "unread", "cluster")
 STATUSES = ("open", "merged", "superseded", "retired")
 BLOCK_KEYS = ("merged", "superseded", "retired", "reopened")
 TITLE_CHARS = 160
@@ -99,6 +102,12 @@ def title_of(entry: "Entry") -> str:
         return lesson_title(entry.files["notes.md"])
     if entry.kind == "deferred" and entry.data.get("reason"):
         return _clip(str(entry.data["reason"]))
+    if entry.kind in ("capture", "failure") and "procedure.py" in entry.files:
+        goal = str(entry.data.get("goal") or "").strip()
+        head = candidate_title("run", entry.files["procedure.py"])
+        return _clip(f"{goal} ({head})" if goal else head)
+    if entry.kind == "failure" and "broke.md" in entry.files:
+        return lesson_title(entry.files["broke.md"])
     return _clip(entry.title)
 
 
@@ -258,6 +267,8 @@ def _canon(obj) -> str:
 
 
 def _order(e: Entry) -> tuple:
+    if e.kind == "capture" and e.data.get("status") == "adopted":
+        return (-1, e.opened_in, e.id)
     return (ORDER.index(e.kind) if e.kind in ORDER else 99, e.opened_in, e.id)
 
 
@@ -469,7 +480,13 @@ class Pool:
                 i for i in inst if _canon(i) not in seen
             )
         for rel, text in entry.files.items():
-            have.files.setdefault(rel, text)
+            if rel in _REFRESHED.get(have.kind, ()):
+                have.files[rel] = text  # the harness's record of a capture, which outcomes keep changing
+            else:
+                have.files.setdefault(rel, text)
+        for key in _REFRESHED_DATA.get(have.kind, ()):
+            if key in entry.data:
+                have.data[key] = entry.data[key]
         for ref in entry.refs:
             if ref not in have.refs:
                 have.refs.append(ref)
@@ -515,6 +532,24 @@ class Pool:
                 held.add(kept.id)
                 for ref in e.refs:
                     self.staged[ref] = kept.id
+        return {"entries": len(held), "added": added}
+
+    def enter_captures(self, store, pass_id: str) -> dict:
+        """The capture store (:mod:`.captures`) enters the pool at a store pass's start: each capture as a
+        ``capture`` or ``failure`` entry (:func:`from_capture`), its record refreshed. The store is only read;
+        promoting a capture into the library is the writer's (an item's ``adopts`` names the entry). Returns
+        ``{"entries": n, "added": n}``."""
+        from .captures import load
+
+        added, held = 0, set()
+        for cid, doc in sorted(load(store).items()):
+            e = from_capture(cid, doc)
+            e.add_provenance([], [pass_id], [])
+            have = self.entries.get(e.id)
+            if have is not None and have.kind != e.kind and have.status == "open":
+                have.kind = e.kind  # a capture whose attempt was later found to fail becomes a failure entry
+            added += e.id not in self.entries
+            held.add(self.upsert(e, pass_id).id)
         return {"entries": len(held), "added": added}
 
     def close_cluster_entries(self, pass_id: str) -> list[str]:
@@ -927,7 +962,87 @@ def from_staging(eid: str, view) -> list[Entry]:
         )
         e.add_provenance([eid], [], [view.source])
         out.append(e)
+    failure = failure_from_staging(eid, view)
+    if failure is not None:
+        out.append(failure)
     return out
+
+
+#: Payload files and data keys an entry of a kind takes from its newest version (the capture store's record).
+_REFRESHED = {"capture": ("record.json", "broke.md"), "failure": ("record.json", "broke.md")}
+_REFRESHED_DATA = {
+    "capture": ("status", "level", "outcome", "reproduces", "same_as"),
+    "failure": ("status", "level", "outcome", "reproduces", "same_as"),
+}
+
+
+def broke_lines(text: str) -> list[str]:
+    """The lines of a ``broke.md`` that say something broke (``none`` and empty lines are left out)."""
+    return [
+        ln.strip()
+        for ln in str(text).splitlines()
+        if ln.strip() and ln.strip().strip("-* ").lower() not in ("none", "none.")
+    ]
+
+
+def from_capture(cid: str, doc: dict) -> Entry:
+    """A capture of the store (:func:`.captures.load`) as an entry: ``failure`` for a captured attempt that failed,
+    else ``capture``; keyed by its capture id (a digest of its code), its payload its files."""
+    from .captures import BROKE_FILE, FAILED, PROCEDURE_FILE, RECORD_FILE, SIGNATURE_FILE
+
+    record = doc.get("record") or {}
+    kind = "failure" if record.get("outcome") == FAILED else "capture"
+    files = {RECORD_FILE: _canon_json(record)}
+    if isinstance(doc.get("signature"), dict):
+        files[SIGNATURE_FILE] = _canon_json(doc["signature"])
+    if isinstance(doc.get("procedure"), str):
+        files[PROCEDURE_FILE] = doc["procedure"]
+    if isinstance(doc.get("broke"), str) and broke_lines(doc["broke"]):
+        files[BROKE_FILE] = doc["broke"]
+    sig = doc.get("signature") if isinstance(doc.get("signature"), dict) else {}
+    e = Entry(
+        id=entry_id("capture", cid),
+        kind=kind,
+        title=f"capture {cid}",
+        data={
+            "capture_id": cid,
+            "goal": sig.get("goal") or "",
+            "status": record.get("status"),
+            "level": record.get("level"),
+            "outcome": record.get("outcome"),
+            "reproduces": record.get("reproduces"),
+            "same_as": list(record.get("same_as") or []),
+        },
+        files=files,
+    )
+    e.add_provenance(
+        [x for x in record.get("episodes") or [] if isinstance(x, str)],
+        [],
+        ["capture"],
+    )
+    return e
+
+
+def failure_from_staging(eid: str, view) -> Entry | None:
+    """A staged ``broke.md`` without a staged procedure, as a ``failure`` entry (what broke, as negative knowledge);
+    None when it says nothing broke or a procedure was staged (its capture holds it then)."""
+    files = {k: v.decode("utf-8", "replace") for k, v in view.files.items()}
+    broke = files.get("broke.md")
+    if broke is None or "procedure.py" in files or not broke_lines(broke):
+        return None
+    e = Entry(
+        id=entry_id("failure", broke),
+        kind="failure",
+        title=lesson_title(broke),
+        files={"broke.md": broke},
+        refs=[f"staging:{eid}/broke.md"],
+    )
+    e.add_provenance([eid], [], [view.source])
+    return e
+
+
+def _canon_json(obj) -> str:
+    return json.dumps(obj, sort_keys=True, indent=1, ensure_ascii=False, default=str) + "\n"
 
 
 def deferred(eid: str, reason: str) -> Entry:

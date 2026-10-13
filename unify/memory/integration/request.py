@@ -750,6 +750,18 @@ class RequestRun:
 
         # the item records at the pin: statuses for the index and find, and what memory.show prints
         records, _ = records_at(Repo(paths.memory), self.pin)
+        # the capture store as this request starts (captures.py; empty unless the episode-end fork captured
+        # attempts): read only through memory helpers, never in the index or the prompt
+        from ..captures import export_files, store_dir
+
+        try:
+            captured = export_files(store_dir(paths.state_dir))
+        except OSError as exc:
+            logger.warning(
+                "memory library mode: captures not exported (%s)",
+                type(exc).__name__,
+            )
+            captured = {}
         self.generated = export_actor_library_mode(
             paths.memory,
             self.pin,
@@ -757,6 +769,7 @@ class RequestRun:
             shapes=shapes,
             status_of=status_of(records),
             records=records,
+            captures=captured,
         )
         self.item_ids = pinned_items(paths.checkout, library_mode=True)
         # the worker binds ``memory`` in every cell when the copy holds the package (hooks.worker_globals)

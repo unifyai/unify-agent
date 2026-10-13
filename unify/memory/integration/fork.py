@@ -94,6 +94,20 @@ FORMAT_EXAMPLE = (
     "```"
 )
 
+#: What the fork writes for the harness to capture the attempt at once (:mod:`..captures`): the procedure that produced
+#: the result handed back, and what broke. One text for both instruction forms.
+CAPTURE_BULLETS = (
+    "- `procedure.py`, when your reply handed back a result: the procedure that produced it, from code that ran here, "
+    "as functions with docstrings. `read_input(text)` takes the whole request text and returns the value your "
+    "procedure worked on; where your code used a value you typed into a cell, read it from the text instead. "
+    "`run(value)` returns the result you handed back. If the request states conditions on its input or on its "
+    "result, write them as `applies(value)` and `holds(value, result)`, each returning True or False. Write it "
+    "whether or not the result was accepted; say which in its docstring, quoting the line of the record that shows "
+    'it, or write "not shown".\n'
+    "- `broke.md`: each thing that broke in this attempt and why, one line each, with the part name and a short quote "
+    'from the record. Write "none" if nothing broke.\n'
+)
+
 INSTRUCTION = (
     "Your work on this request is finished and your reply has been sent; nothing you write now changes it. "
     "Now write down what would help with similar requests later, as files: write each file as a fenced block in "
@@ -110,7 +124,9 @@ INSTRUCTION = (
     "not.\n"
     "- `notes.md`: each thing that failed and why, and any other lesson, in general terms so it applies beyond this "
     "request, each quoting the short line or error message from this conversation it comes from. If nothing here "
-    "is worth keeping, write `notes.md` saying so.\n\n"
+    "is worth keeping, write `notes.md` saying so.\n"
+    + CAPTURE_BULLETS
+    + "\n"
     f"Limits: at most {QUOTA_FILES} files and {QUOTA_BYTES // 1024**2} MiB in all are kept. Each reply has "
     f"{HTTP_TIMEOUT_S:.0f} s. A reply that calls a tool gets the reply saying tools are not available and another "
     f"turn, up to {TURN_GUARD} turns in all; then the conversation stops.\n\n"
@@ -137,7 +153,9 @@ INSTRUCTION_IN_CODE = (
     "not.\n"
     "- `notes.md`: each thing that failed and why, and any other lesson, in general terms so it applies beyond this "
     "request, each quoting the short line or error message from this conversation it comes from. If nothing here "
-    "is worth keeping, write `notes.md` saying so.\n\n"
+    "is worth keeping, write `notes.md` saying so.\n"
+    + CAPTURE_BULLETS
+    + "\n"
     f"Limits: at most {QUOTA_FILES} files and {QUOTA_BYTES // 1024**2} MiB in all are kept. A reply that calls a "
     f"tool gets another turn, up to {TURN_GUARD} turns in all.\n\n"
     "Format: each file is one fenced block. Its opening line is three backticks followed by `path: ` and the "

@@ -221,6 +221,13 @@ STAGING_ROW_KEY = (
     "dict: `status`, `source`, `files`, `refused`, `path` and `candidates` (list of `{name, file, cases}`): what "
     "was staged for the episode under /inputs/staging/<episode>/",
 )
+CAPTURE_ROW_KEY = (
+    "capture",
+    "dict or null: `id`, `reproduces` (`reproduces`, `differs` or `unknown`: whether the captured procedure gave "
+    "the result the episode handed back), `outcome` (the signal the episode carried, or `failed`), `level`, "
+    "`status`, `same_as` (stored captures that gave the same result on this request) and `path`: the attempt the "
+    "harness captured from the episode, under /inputs/captures/<id>/",
+)
 POOL_ROW_KEY = (
     "pool_entries",
     "list of `{id, kind, title}`: the open pool entries that cite the episode",
@@ -234,6 +241,17 @@ RELATED_ROW_KEY = (
     "`error` instead of a count when the links could not be computed",
 )
 
+#: The captured attempts in a store pass's inputs (:mod:`.captures`), named whenever staging is.
+CAPTURES_INPUT = (
+    "- /inputs/captures/<id>/: attempts the harness captured when their episode ended: `procedure.py` (the "
+    "procedure that produced the result the episode handed back), `broke.md` (what broke), `signature.json` (the "
+    "structure of its input and result) and `record.json` (its uses and outcomes). The harness has already run each "
+    "procedure on its recorded request, confined; the episode's batch-map row `capture` says whether it gave the same "
+    "result, what signal the episode carried, and which stored captures give the same result there. A capture is not "
+    "in the library: it becomes library items only as you write them. A failed capture is knowledge too: a note of "
+    "what broke, or a test that records the failure.\n"
+)
+
 #: What each pool entry kind holds (only the kinds :data:`.pool.KINDS` defines are named).
 POOL_KIND_TEXT: dict[str, str] = {
     "candidate": "a function with its cases",
@@ -242,6 +260,8 @@ POOL_KIND_TEXT: dict[str, str] = {
     "draft": "work the gate refused, with its result",
     "deferred": "episodes a pass kept open to revisit",
     "unread": "episodes no pass has read",
+    "capture": "a procedure the harness captured from a completed attempt, with its record",
+    "failure": "an attempt that failed, with what broke",
 }
 
 _RUN_TESTS = (
@@ -725,7 +745,7 @@ def row_keys(staging: bool = False, pool: bool = False) -> tuple[tuple[str, str]
     """The batch-map row keys a pass with these inputs writes, in the order the brief lists them."""
     return (
         BATCH_ROW_KEYS
-        + ((STAGING_ROW_KEY,) if staging else ())
+        + ((STAGING_ROW_KEY, CAPTURE_ROW_KEY) if staging else ())
         + ((POOL_ROW_KEY, _related_row_key()) if pool else ())
     )
 
@@ -819,7 +839,8 @@ def write_brief(
             "The agent that drafted them saw only that episode, so they are likely specific to it. The harness has "
             "run none of it, so treat it as untrusted input."
             + _stage_quota_text(limits)
-            + "\n",
+            + "\n"
+            + CAPTURES_INPUT,
         )
     if helpers:
         inputs.append(
@@ -1448,7 +1469,7 @@ def _write_brief_in_code(
             "- /inputs/staging/<episode>/: what was drafted from that episode when it ended: "
             "`candidates/<name>.py` (a function), `cases/<name>.json` (its example inputs and outputs) and "
             "`notes.md` (lessons). The episode's batch-map row lists them under `staging`. None of it has been run: "
-            "untrusted input.\n",
+            "untrusted input.\n" + CAPTURES_INPUT,
         )
     if helpers:
         inputs.append(

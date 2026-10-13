@@ -12,7 +12,8 @@ reader of staged replies applies the same rules, and the offline replay imports 
 * **Turns:** one POST per turn. A reply with tool calls is never executed: each call is answered with
   :data:`TOOL_REPLY` and the conversation continues. The fork ends at the first reply without tool calls.
 * **Output:** the files the reply's blocks name (:func:`parse_reply`), from the reply text and from every tool
-  call's arguments. Only ``candidates/<name>.py``, ``cases/<name>.json`` and ``notes.md`` are written; every block
+  call's arguments. Only ``candidates/<name>.py``, ``cases/<name>.json``, ``notes.md``, ``procedure.py`` and ``broke.md``
+  are written; every block
   found is recorded as parsed, refused or dropped with a reason. Written in this order: the staged files, the raw
   reply (``fork-reply.json``), the block ledger (``fork-blocks.json``, with the raw reply's sha256), then
   ``fork.json``. ``fork.json`` is written last, and its existence means the fork has settled.
@@ -48,6 +49,8 @@ ALLOWED = (
     re.compile(r"candidates/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\.py"),
     re.compile(r"cases/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\.json"),
     re.compile(r"notes\.md"),
+    re.compile(r"procedure\.py"),
+    re.compile(r"broke\.md"),
 )
 FORK_JSON = "fork.json"
 BLOCKS_JSON = "fork-blocks.json"
@@ -83,6 +86,8 @@ _KINDS = (
     (re.compile(r"candidates/[^/]+\.py"), "candidate"),
     (re.compile(r"cases/[^/]+\.json"), "case"),
     (re.compile(r"notes\.md"), "notes"),
+    (re.compile(r"procedure\.py"), "procedure"),
+    (re.compile(r"broke\.md"), "broke"),
 )
 
 
@@ -169,7 +174,7 @@ def allowed(rel: str) -> str | None:
     if not _plain(rel):
         return "not a plain relative path"
     if not any(rx.fullmatch(rel) for rx in ALLOWED):
-        return "outside candidates/*.py, cases/*.json and notes.md"
+        return "outside candidates/*.py, cases/*.json, notes.md, procedure.py and broke.md"
     return None
 
 
@@ -791,6 +796,10 @@ def run(
     blocks, _hop, text = parse_turns(replies)
     files, refused, over = write_blocks(staging, blocks)
     doc["files"], doc["refused_files"] = files, refused
+    # the captured attempt's files (the harness captures procedure.py at once once the fork settles)
+    written = {f.get("path") for f in files if isinstance(f, dict)}
+    doc["procedure"] = "procedure.py" in written
+    doc["broke"] = "broke.md" in written
     if over and doc["status"] == "ok":
         doc["status"] = "ok: operational quota reached"
     usd = usage.pop("_usd", None) if usage else None

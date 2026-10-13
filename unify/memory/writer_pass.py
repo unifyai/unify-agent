@@ -2210,6 +2210,8 @@ class WriterPass:
             None  # the pass's /inputs on the host, once staged
         )
         self._staging_counts: dict | None = None
+        # per batch episode, its capture's batch-map row (captures.batch_row); empty without the capture store
+        self._capture_rows: dict = {}
         # the candidate pool (pool.py): loaded and fed with this pass's staging at the pass's start, saved again at
         # its end with the writer's decisions
         self._pool = None
@@ -2921,6 +2923,17 @@ class WriterPass:
             }
             # the backlog of episodes no writer opened (a measure, no gate)
             res["unread_open"] = sum(1 for e in p.open_entries() if e.kind == "unread")
+            # per batch episode, the attempt captured from it and the item it landed as (its pool entry merged)
+            caps = {}
+            for eid, cap in sorted((self._capture_rows or {}).items()):
+                ent = p.entries.get(_pool_mod.entry_id("capture", cap["id"]))
+                merged = ent is not None and ent.status == "merged"
+                caps[eid] = {
+                    "capture_id": cap["id"],
+                    "landed": ent.status_detail.get("item") if merged else None,
+                }
+            if caps:
+                res["captures"] = caps
             return res
         except Exception as exc:  # noqa: BLE001 - the pool never fails a pass
             return {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
@@ -2968,8 +2981,11 @@ class WriterPass:
         untrusted: :mod:`.staging` takes only allowed regular files and nothing staged is run. Helpers are launched
         by the writer itself (the ``delegate`` tool, :mod:`.helpers`), never here.
         """
+        from . import captures as _captures
         from . import staging as _staging
 
+        capture_ids: list[str] = []
+        captures_error: str | None = None
         root = (
             Path(self.cfg.staging_root)
             if self.cfg.staging_root
@@ -2987,10 +3003,18 @@ class WriterPass:
                 if view is not None:
                     views[row["episode_id"]] = view
         self._staged_views, self._staging_read_root = views, root
-        if self._pool is not None and views:
-            # this pass's staging enters the pool now, so the writer can merge it in this same pass
+        # the capture store beside staging (captures.py): written by the harness when each fork settles, read here
+        captures_root = self._captures_root()
+        if self._pool is not None and (views or captures_root is not None):
+            # this pass's staging and the capture store enter the pool now, so the writer can merge or promote them
+            # in this same pass
             try:
                 self._pool_at_start = self._pool.enter_staging(views, pass_id)
+                if captures_root is not None:
+                    self._pool_at_start["captures"] = self._pool.enter_captures(
+                        captures_root,
+                        pass_id,
+                    )
                 self._pool_at_start["commit"] = self._pool.save(pass_id)
             except Exception as exc:  # noqa: BLE001 - the pool never stops a pass
                 self._pool_at_start = {
@@ -3012,12 +3036,24 @@ class WriterPass:
                 )
                 row["staging"]["candidates"] = _staged_candidates(row["staging"])
                 src = row["staging"].get("source", "none")
+            if captures_root is not None:
+                # the attempt captured from this episode, if any: what reproducing it gave, its outcome, level and
+                # status, and the stored captures that gave the same result on this request
+                row["capture"] = _captures.batch_row(captures_root, eid)
+                if row["capture"] is not None:
+                    capture_ids.append(row["capture"]["id"])
             row["pool_entries"] = [
                 {"id": e.id, "kind": e.kind, "title": e.title}
                 for e in open_pool
                 if eid in (e.provenance.get("episodes") or [])
             ]
             counts[src] = counts.get(src, 0) + 1
+        if captures_root is not None:
+            (Path(inputs) / "captures").mkdir(parents=True, exist_ok=True)
+            try:
+                _captures.export_for_writer(captures_root, capture_ids, Path(inputs) / "captures")
+            except OSError as exc:  # the capture store never stops a pass; the rows still name what it held
+                captures_error = type(exc).__name__
         if self._pool is not None:
             # each row names the closed pool entries resembling its episode or a draft staged from it
             from .batch_map import add_related_closed
@@ -3048,7 +3084,23 @@ class WriterPass:
                     }
         path.write_text(json.dumps(bmap, sort_keys=True, default=str, indent=1) + "\n")
         self._staging_counts = {"episodes": len(bmap.get("episodes", [])), **counts}
+        if captures_error is not None:
+            self._staging_counts["captures_error"] = captures_error
+        self._capture_rows = {
+            row["episode_id"]: row["capture"]
+            for row in bmap.get("episodes", [])
+            if row.get("capture")
+        }
         self._chain_rows = list(bmap.get("episodes", []))
+
+    def _captures_root(self) -> Path | None:
+        """The capture store (:mod:`.captures`, ``<state>/memory-captures``), beside the fork's staging; None when
+        the fork is off or there is no staging root."""
+        from .captures import STORE_DIR
+
+        if not (self.cfg.staging_root and self.cfg.fork):
+            return None
+        return Path(self.cfg.staging_root).parent / STORE_DIR
 
     def _staging_on(self) -> bool:
         """Whether any reader leaves staging for this pass: a staging root (the episode-end fork or its offline
@@ -3944,6 +3996,7 @@ class WriterPass:
         self._helper_rows = []
         self._pass_record = None
         self._staging_counts = None
+        self._capture_rows = {}
         self._inputs_dir = None
         self._pool, self._pool_open, self._pool_error = None, None, None
         self._pool_at_start = None
