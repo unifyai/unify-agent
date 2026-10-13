@@ -16,7 +16,8 @@ channel closes and one ``channel_closed`` event row names the reason. Then the c
 allow-list (else the general ``unknown_tool`` refusal, with the nearest tool names) and the arguments must validate
 against the tool's registry schema, with unknown arguments refused on every object (``bad_arguments``). A refused
 call's text teaches: the call as written, what was given, what was expected and one call that works for the caller's
-role (:func:`argument_error`).
+role (:func:`argument_error`). A handler that fails is answered as the harness's fault, never with the exception's
+message (:func:`harness_fault`).
 
 Authority. Who is calling (agent, name, role, pass, roots, limits) comes only from the binding the channel was opened
 with, never from a frame; a frame has no field for it and any extra key closes the channel.
@@ -424,6 +425,16 @@ def _unknown_tool(tool: str, allow: tuple[str, ...]) -> Any:
     text = f"unknown tool {tool[:80]!r}; " + (f"nearest: {', '.join(near)}; " if near else "")
     text += f"your tools: {', '.join(allow)}"
     return _reply_class()((REFUSED + text)[:600], "refused", "unknown_tool")
+
+
+def harness_fault(tool: str, exc: BaseException) -> Any:
+    """The error reply for a handler that failed inside the harness: the call's arguments were valid, and what to do
+    next. Never the exception's message, which can carry a path on the host."""
+    return _reply_class()(
+        f"error: tools.{tool} failed inside the harness ({type(exc).__name__}). Your call's arguments were valid: "
+        "the fault is the harness's, not your call's. Try the call once more; if it fails again, continue without it.",
+        "error",
+    )
 
 
 def _example_for(tool: str, spec: Any, schema: Mapping) -> str:
@@ -858,7 +869,7 @@ class Channel:
         try:
             fn = handler if callable(handler) else resolve_handler(handler)
         except Exception as exc:  # noqa: BLE001 - a missing handler is an error reply, never a crash
-            return _reply_class()(f"error: {type(exc).__name__} in tools.{tool}", "error")
+            return harness_fault(tool, exc)
         return await self._run_handler(tool, fn, ctx, args, blocking, deadline)
 
     async def _run_handler(
@@ -893,7 +904,7 @@ class Channel:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - a broken handler is answered, never ends the channel
-            return _reply_class()(f"error: {type(exc).__name__} in tools.{tool}", "error")
+            return harness_fault(tool, exc)
 
     # -- pipe I/O ------------------------------------------------------------------------------------------------
 
