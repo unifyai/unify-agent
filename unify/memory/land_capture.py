@@ -10,9 +10,13 @@ a path the box names), checks it, and writes into the writer's ``/memory``:
 - the procedure, ``memory/<package>/procedures.py``: the capture's ``run`` as ``<name>``, with its ``applies`` and
   ``holds`` (when present) and every other top-level name of the capture kept private under ``_<name>_``;
 - two fixtures of the request text: the text itself and the reader's value on it (a parsed fixture,
-  ``fixture(..., parser=...)``), both made by the fixture tool, so the gate re-derives them from the recording;
-- a test, ``memory/<package>/tests/test_<name>.py``: the recorded result on the parsed fixture, the reader on the
-  recorded text, and one refusal of text the reader was not built for;
+  ``fixture(..., parser=...)``), and a fixture of the handed-back value, a slice of the recorded arguments of the
+  dialogue action that handed it back (``args:<i>``), all made by the fixture tool, so the gate re-derives them from
+  the recording;
+- a test, ``memory/<package>/tests/test_<name>.py``: the procedure on the reader's value of the recorded text against
+  the handed-back value's fixture, the reader on the recorded text, and one refusal of text the reader was not built
+  for. When the value was handed back in the final reply, which no fixture source holds, the expected value is
+  written in the test instead, and the gate keeps the procedure ``unchecked``;
 - the manifest entries, the procedure with ``role: "procedure"`` and ``reader``, a new reader with ``role:
   "reader"``.
 
@@ -49,6 +53,7 @@ from typing import Any
 
 from . import captures as _captures
 from . import edit_tools as _et
+from . import fixtures as _fx
 from . import safe_paths as _safe
 from . import writer_tools as _wt
 from .redact import KEY_SHAPED
@@ -265,20 +270,72 @@ def _test_head(package: str) -> str:
     )
 
 
-def case_tests(name: str, reader_mod: str, reader_fn: str, package: str, k: int, result: Any) -> str:
-    """*reader_mod* is the reader's module, dotted (``memory.<package>.<module>``)."""
-    """The test functions of case *k*: the reader on the recorded text, and the recorded result on its value."""
-    expect = json.dumps(result, sort_keys=True, ensure_ascii=False)
+def result_fixture(name: str, k: int) -> str:
+    """The file name, under ``tests/data/``, of case *k*'s handed-back value."""
+    return f"{name}.case{k}.result.json"
+
+
+def result_slice(ep: Any, i: int, value: Any, blob: Callable[[str], bytes]) -> list[int] | None:
+    """The byte slice ``[start, end]`` of action *i*'s recorded arguments (the fixture source ``args:<i>``, the
+    canonical JSON ``{"args": [...], "kwargs": {...}}``) that holds *value*, the value :func:`.captures.handed_back`
+    reads from that action: its keyword arguments when it has any, else its one argument, else its argument list.
+    None when no such slice decodes to *value*."""
+    a = ep.actions[i]
+    args, kwargs = list(a.args), dict(a.kwargs or {})
+
+    def enc(v: Any) -> bytes:
+        return json.dumps(v, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+
+    if kwargs:
+        head, part = b'{"args": ' + enc(args) + b', "kwargs": ', kwargs
+    elif len(args) == 1:
+        head, part = b'{"args": [', args[0]
+    else:
+        head, part = b'{"args": ', args
+    try:
+        data = _fx.source_bytes(ep, f"args:{i}", blob)
+        body = enc(part)
+        start, end = len(head), len(head) + len(body)
+        if data[:start] != head or data[start:end] != body:
+            return None
+        if json.loads(data[start:end]) != json.loads(json.dumps(value, sort_keys=True)):
+            return None
+    except (_fx.FixtureError, OSError, KeyError, IndexError, TypeError, ValueError, RecursionError):
+        return None
+    return [start, end]
+
+
+def case_tests(
+    name: str,
+    reader_mod: str,
+    reader_fn: str,
+    package: str,
+    k: int,
+    result: Any,
+    from_fixture: bool = True,
+) -> str:
+    """The test functions of case *k*: the reader on the recorded text, and the procedure on the reader's value of
+    it against the handed-back value. *reader_mod* is the reader's module, dotted (``memory.<package>.<module>``).
+    With *from_fixture*, the expected value is loaded from :func:`result_fixture`, a fixture of the recording; else
+    *result* is written in the test (a value the fixture tool has no source for)."""
+    reader = reader_fn if reader_fn != name else f"read_{name}"
+    imported = reader_fn if reader == reader_fn else f"{reader_fn} as {reader}"
+    if from_fixture:
+        expected = f'json.loads((DATA / "{result_fixture(name, k)}").read_text(encoding="utf-8"))'
+    else:
+        expected = f"json.loads({json.dumps(result, sort_keys=True, ensure_ascii=False)!r})"
     return (
         f"\n\ndef test_{name}_case{k}_reader_reads_the_recorded_request():\n"
-        f"    from {reader_mod} import {reader_fn}\n\n"
+        f"    from {reader_mod} import {imported}\n\n"
         f'    text = (DATA / "{name}.case{k}.txt").read_text(encoding="utf-8")\n'
         f'    value = json.loads((DATA / "{name}.case{k}.json").read_text(encoding="utf-8"))\n'
-        f"    assert json.loads(json.dumps({reader_fn}(text))) == value\n"
+        f"    assert json.loads(json.dumps({reader}(text))) == value\n"
         f"\n\ndef test_{name}_case{k}_gives_the_recorded_result():\n"
+        f"    from {reader_mod} import {imported}\n"
         f"    from memory.{package}.procedures import {name}\n\n"
-        f'    value = json.loads((DATA / "{name}.case{k}.json").read_text(encoding="utf-8"))\n'
-        f"    assert json.loads(json.dumps({name}(value))) == json.loads({expect!r})\n"
+        f'    text = (DATA / "{name}.case{k}.txt").read_text(encoding="utf-8")\n'
+        f"    expected = {expected}\n"
+        f"    assert json.loads(json.dumps({name}({reader}(text)))) == expected\n"
     )
 
 
@@ -376,7 +433,8 @@ def _readers(box: Path) -> list[str]:
 def _free_case(box: Path, package: str, name: str) -> int:
     k = 1
     while any(
-        os.path.lexists(Path(box) / f"memory/{package}/tests/data/{name}.case{k}.{ext}") for ext in ("json", "txt")
+        os.path.lexists(Path(box) / f"memory/{package}/tests/data/{name}.case{k}.{ext}")
+        for ext in ("json", "txt", "result.json")
     ):
         k += 1
     return k
@@ -457,6 +515,10 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work) -
     run = _captures.run_box(source, request_text, work=work / "capture", runner=runner, python=python)
     if run.get("outcome") != "returned" or _captures.compare(run, True, handed) != _captures.REPRODUCES:
         raise _NotLanded("not_landed", reason=f"capture {cid} does not give its recorded result on its request now")
+    # where the recording holds the handed-back value: a slice of the answering action's arguments (a value the
+    # episode used); a value handed back in the final reply has no fixture source, so its test states it instead
+    answer = _captures.answered_action(ep)
+    result_cut = None if answer is None else result_slice(ep, answer, handed, blob)
     written: list[str] = []
     same = _landed(box, [c for c in record.get("same_as") or [] if isinstance(c, str)])
     if same is not None:
@@ -477,19 +539,25 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work) -
         _write_procedure(box, source, cid, package, name, reader_id, new_reader, written)
     reader_mod, reader_fn = reader_id.split(":")
     k = _free_case(box, package, name)
-    for ext, parser in (("txt", None), ("json", reader_id)):
-        dest = f"memory/{package}/tests/data/{name}.case{k}.{ext}"
-        fx_args = {"episode": eid, "source": "request:0", "dest": dest}
-        if parser is not None:
-            fx_args["parser"] = parser
-        reply = _wt.fixture(fx_args, episode, box, blob, batch, python=python, parse=parse)
+    data_dir = f"memory/{package}/tests/data"
+    plan: list[dict] = [
+        {"source": "request:0", "dest": f"{data_dir}/{name}.case{k}.txt"},
+        {"source": "request:0", "dest": f"{data_dir}/{name}.case{k}.json", "parser": reader_id},
+    ]
+    if result_cut is not None:
+        plan.append(
+            {"source": f"args:{answer}", "slice": result_cut, "dest": f"{data_dir}/{result_fixture(name, k)}"},
+        )
+    for fx_args in plan:
+        dest = fx_args["dest"]
+        reply = _wt.fixture({"episode": eid, **fx_args}, episode, box, blob, batch, python=python, parse=parse)
         if reply.status != "ok":
             raise _NotLanded("not_landed", reason=f"{dest}: {reply.text[:300]}")
         written.append(dest)
     test_rel = f"memory/{package}/tests/test_{name}.py"
     old = _box_text(box, test_rel)
     text = (old.rstrip("\n") + "\n" if old else _test_head(package)) + case_tests(
-        name, reader_mod, reader_fn, package, k, handed,
+        name, reader_mod, reader_fn, package, k, handed, from_fixture=result_cut is not None,
     )
     refuses = None
     if not old:
@@ -537,6 +605,12 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work) -
         lines.append(
             f"- {reader_id} raises another exception than MemoryInputError on empty text, so no refusal test was "
             "written: make it raise MemoryInputError on text it was not built for, and add the test",
+        )
+    if result_cut is None:
+        lines.append(
+            "- no fixture source of the recording holds the handed-back value (a value handed back in the final "
+            "reply has none), so the recorded-result test states it, and the gate keeps the procedure unchecked "
+            "until a test asserts its result against a fixture of the recording",
         )
     lines.append("Change any of them before you finish; check judges them as any other change.")
     return _wt.Reply("\n".join(lines), paths=tuple(_wt.path_row(f"/memory/{p}", "write") for p in written))

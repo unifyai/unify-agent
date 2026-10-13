@@ -112,10 +112,19 @@ def test_landing_writes_the_reader_procedure_fixtures_test_and_manifest_entries(
     listing = json.loads((tmp_path / "box" / ".pass" / "fixtures.json").read_text())
     parsed = json.dumps(listing)
     assert "memory.readings.readers:read_row_sums" in parsed and "parsed" in parsed
-    # the test: the recorded result, the reader on the recorded text, and one refusal
+    # the handed-back value as a fixture of the recording: a slice of the answering dialogue action's arguments
+    result = data / "row_sums.case1.result.json"
+    assert json.loads(result.read_text()) == {"sums": [sum(r) for r in ROWS]}
+    made = listing["memory/readings/tests/data/row_sums.case1.result.json"]
+    assert (made["kind"], made["episode"], made["source"], made["trust"]) == ("copy", "e7", "args:0", 2), made
+    assert made["sha256"] == hashlib.sha256(result.read_bytes()).hexdigest()
+    # the test: the procedure on the reader's value of the recorded text against that fixture, the reader on the
+    # recorded text, and one refusal; the expected value is loaded from the fixture, never written in the test
     test = (mem / "tests" / "test_row_sums.py").read_text()
     assert "def test_row_sums_case1_gives_the_recorded_result():" in test
-    assert json.dumps({"sums": [sum(r) for r in ROWS]}, sort_keys=True) in test
+    assert 'expected = json.loads((DATA / "row_sums.case1.result.json").read_text(encoding="utf-8"))' in test
+    assert "assert json.loads(json.dumps(row_sums(read_row_sums(text)))) == expected" in test
+    assert '"sums"' not in test
     assert "def test_row_sums_case1_reader_reads_the_recorded_request():" in test
     assert "def test_row_sums_reader_refuses_text_it_was_not_built_for():" in test
     # the reader returns [] on empty text, so its refusal test records a known failure
@@ -134,6 +143,7 @@ def test_landing_writes_the_reader_procedure_fixtures_test_and_manifest_entries(
         "readings/readers.py",
         "readings/tests/data/row_sums.case1.txt",
         "readings/tests/data/row_sums.case1.json",
+        "readings/tests/data/row_sums.case1.result.json",
         "readings/tests/test_row_sums.py",
     ):
         assert f"- wrote /memory/memory/{rel}" in reply.text, reply.text
@@ -190,6 +200,8 @@ def test_same_as_naming_a_landed_capture_adds_a_new_case_of_that_procedure(tmp_p
     test = (mem / "tests" / "test_row_sums.py").read_text()
     assert "def test_row_sums_case1_gives_the_recorded_result():" in test
     assert "def test_row_sums_case2_gives_the_recorded_result():" in test
+    assert json.loads((data / "row_sums.case2.result.json").read_text()) == {"sums": [10, 4, 5]}
+    assert 'json.loads((DATA / "row_sums.case2.result.json").read_text(encoding="utf-8"))' in test
     assert test.count("def test_row_sums_reader_refuses_text_it_was_not_built_for():") == 1
     proc = {i["item"]: i for i in _manifest(tmp_path)["items"]}["memory.readings.procedures:row_sums"]
     assert proc["source_episodes"] == ["e7", "e8"]

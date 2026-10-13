@@ -416,6 +416,17 @@ def digest(value: Any) -> str:
     return hashlib.sha256(canonical(value).encode("utf-8", "surrogatepass")).hexdigest()[:16]
 
 
+def answered_action(ep: Any) -> int | None:
+    """The index in ``ep.actions`` of the action whose value :func:`handed_back` gives (the last answered dialogue
+    action, whose arguments are the fixture source ``args:<i>``); None when the value comes from the final reply or
+    the episode handed back none."""
+    actions = getattr(ep, "actions", []) or []
+    for i in range(len(actions) - 1, -1, -1):
+        if getattr(actions[i], "kind", "tool") == "dialogue" and getattr(actions[i], "status", None) == "ok":
+            return i
+    return None
+
+
 def handed_back(ep: Any) -> tuple[bool, Any]:
     """``(True, value)`` for the value the episode handed back: the last answered dialogue action's value, else
     the final reply's trailing value (its trailing JSON object, else its last non-empty line, read as a dialogue
@@ -423,13 +434,9 @@ def handed_back(ep: Any) -> tuple[bool, Any]:
     from .integration.adapters.dialogue import action_payload, split_action
     from .procedures import action_value
 
-    answered = [
-        a
-        for a in getattr(ep, "actions", []) or []
-        if getattr(a, "kind", "tool") == "dialogue" and getattr(a, "status", None) == "ok"
-    ]
-    if answered:
-        return True, action_value(answered[-1])
+    i = answered_action(ep)
+    if i is not None:
+        return True, action_value((getattr(ep, "actions", []) or [])[i])
     replies = [r for r in getattr(ep, "replies", []) or [] if isinstance(r, str) and r.strip()]
     if replies:
         _method, args, kwargs = split_action(action_payload(replies[-1], None))
