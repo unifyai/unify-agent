@@ -273,6 +273,17 @@ def test_a_key_shaped_string_in_the_procedure_is_refused(tmp_path):
     assert not (tmp_path / "box" / "memory").exists()
 
 
+def test_the_final_landed_text_is_scanned_for_a_key_shape_too(tmp_path):
+    # defence in depth: whatever the rename or the generated lines produce, no file with a key shape is written
+    box = tmp_path / "box"
+    box.mkdir()
+    with pytest.raises(lc._NotLanded) as err:
+        lc._write(box, "memory/readings/procedures.py", 'X = "sk-' + "a1b2c3d4" * 6 + '"\n', [])
+    assert err.value.form == "not_landed"
+    assert "key-shaped" in err.value.fields["reason"] and "a1b2c3d4" not in err.value.fields["reason"]
+    assert not (box / "memory").exists()
+
+
 def test_no_store_is_an_unknown_capture(tmp_path):
     (tmp_path / "box").mkdir()
     reply = lc.land(

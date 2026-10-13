@@ -313,7 +313,11 @@ def _box_text(box: Path, rel: str) -> str | None:
 
 
 def _write(box: Path, rel: str, text: str, written: list[str]) -> None:
-    """Through the writer's ``write`` tool: its path checks, never through a link."""
+    """Through the writer's ``write`` tool: its path checks, never through a link. The final text is scanned for a
+    key shape too (the store's source was scanned before the rename; a renamed name or the generated docstring line
+    must never carry one into the library the actor sees)."""
+    if _looks_like_key(text):
+        raise _NotLanded("not_landed", reason=f"/memory/{rel} would hold a key-shaped string")
     reply = _et.call("write", {"path": rel, "content": text}, box)
     if reply.status != "ok":
         raise _NotLanded("not_landed", reason=reply.text[:300])
