@@ -357,8 +357,13 @@ def test_writer_and_the_gate_run_pytest_without_bytecode():
     from unify.memory import sandbox_run, writer_pass
 
     src = Path(sandbox_run.__file__).read_text()
-    confined = src[src.index("def run_confined(") : src.index("def run_pytest(")]
-    assert re.search(r'"--setenv",\s*"PYTHONDONTWRITEBYTECODE",\s*"1"', confined)
+    # every box's arguments come from one builder, used by run_confined and by the persistent interpreter's box
+    builder = src[src.index("def _box_args(") : src.index("def _spawn_box(")]
+    assert re.search(r'"--setenv",\s*"PYTHONDONTWRITEBYTECODE",\s*"1"', builder)
+    spawn = src[src.index("def _spawn_box(") : src.index("def run_confined(")]
+    confined = src[src.index("def run_confined(") : src.index("def start_confined(")]
+    started = src[src.index("def start_confined(") : src.index("def run_pytest(")]
+    assert "_box_args(" in spawn and "_spawn_box(" in confined and "_spawn_box(" in started
     assert re.search(r'"-p",\s*"no:cacheprovider"', src[src.index("def run_pytest(") :])
     assert (
         "no:cacheprovider" in writer_pass.WRITER_SYSTEM
