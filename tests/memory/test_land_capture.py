@@ -340,3 +340,26 @@ def test_the_manifest_takes_a_procedure_role_and_its_reader():
     for bad in ({"role": "oracle"}, {"role": "reader", "reader": item["reader"]}, {"reader": "../x"}):
         with pytest.raises(ManifestError):
             parse_manifest({"items": [{**item, **bad}]}, library_mode=True)
+
+
+def test_an_actor_curator_or_helper_call_is_refused_by_the_allow_list():
+    from tests.memory.test_tool_handlers import _channel_for, _thread_call
+
+    flags = frozenset(s.requires for s in tr.registry().values() if s.requires is not None)
+    args = {"capture_id": "0123456789abcdef", "package": "readings", "name": "row_sums"}
+
+    async def main():
+        out, rows = {}, []
+        for agent in ("actor", "curator", "helper"):
+            ch, box, got = _channel_for(agent, tr.allow_list(agent, flags), SimpleNamespace())
+            task = asyncio.ensure_future(ch.serve())
+            out[agent] = await _thread_call(box, "land_capture", args)
+            await ch.close("ended", record=False)
+            await asyncio.gather(task, return_exceptions=True)
+            rows += got
+        return out, rows
+
+    out, rows = asyncio.run(main())
+    for agent, exc in out.items():
+        assert getattr(exc, "form", None) == "unknown_tool", (agent, exc)
+    assert [r["refusal"]["form"] for r in rows if r.get("refusal")] == ["unknown_tool"] * 3
