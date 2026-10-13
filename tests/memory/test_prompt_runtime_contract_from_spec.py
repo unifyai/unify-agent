@@ -67,9 +67,11 @@ from unify.settings import SETTINGS
 PERSISTENT_SENTENCE = "Your Python sandbox is persistent and stateful"
 #: Design D.1, the names sentence: "{names} are already available as variables in every cell; no import needed."
 NAMES_SENTENCE_END = "already available as variables in every cell; no import needed."
-#: The shared opening's first line and the start of its last part (``tool_registry.preamble``).
+#: The shared opening's first line and the start of its last part (``tool_registry.preamble``): how a memory agent
+#: ends its work, or, for the actor and a teammate (whose role says how they answer), the line about the record.
 OPENING_HEADING = "## How you work here"
 OPENING_LAST = "You end your work with"
+OPENING_LAST_ACTOR = "Other agents may share a record with you;"
 #: Design B.1: ``tool_registry.prebound_names(agent, facts)``; *facts* as this run's configuration gives them. The
 #: keys it reads: ``tools`` (tools in code), ``memory`` (the library package is in the box) and, for the actor,
 #: ``clarification`` (its session can ask its requester; left off here, so ``request_clarification`` is not required).
@@ -601,13 +603,16 @@ def test_each_role_first_request_carries_the_shared_opening_with_persistence_and
     # the persistence sentence, once, inside the opening (before its closing part)
     assert PERSISTENT_SENTENCE in system, f"{role}: no persistence sentence in {system[:1500]!r}"
     assert whole.count(PERSISTENT_SENTENCE) == 1, f"{role}: the persistence sentence is sent more than once"
-    assert OPENING_LAST in system and system.index(PERSISTENT_SENTENCE) < system.index(OPENING_LAST), role
+    last = OPENING_LAST_ACTOR if role in ("actor", "teammate") else OPENING_LAST
+    assert last in system and system.index(PERSISTENT_SENTENCE) < system.index(last), role
+    if role in ("actor", "teammate"):
+        assert OPENING_LAST not in system, role
     assert "fresh interpreter" not in system and "Only files persist between calls" not in system, role
     # the namespace sentence names tools and memory, once, inside the opening
     names = pc.opening_names(system, NAMES_SENTENCE_END)
     assert {"tools", "memory"} <= set(names), f"{role}: names sentence lists {names}"
     assert whole.count(NAMES_SENTENCE_END) == 1, f"{role}: the names sentence is sent more than once"
-    assert system.index(NAMES_SENTENCE_END) < system.index(OPENING_LAST), role
+    assert system.index(NAMES_SENTENCE_END) < system.index(last), role
     # nothing tells the agent to import what is already bound
     assert "`import memory`" not in whole, f"{role}: still tells the agent to import memory"
     # box paths only: no host path, no planted secret, in anything the role is sent

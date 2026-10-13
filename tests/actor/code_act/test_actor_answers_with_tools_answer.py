@@ -10,6 +10,8 @@ process on the real ``CodeActActor`` and the real sandboxed interpreter, with th
   its answer; the second answer is a benchmark's own ``{"action": "finish"}``, which reaches the host unchanged.
 * The actor's system prompt and its ``tools.list()`` name no ``finish``; the writer's and the librarian's tool lists
   still do.
+* The actor's system prompt states the answer rule once, in its role, and says one line about the record, pointing
+  to ``tools.help("record")``, which shows how the record works.
 * ``tools.finish(...)`` in an actor cell fails as a tool the actor does not have (the box module has no such
   function, and the host refuses the name as an unknown tool), and the request goes on to be answered by
   ``tools.answer``.
@@ -57,6 +59,11 @@ FINISH_CELL = (
     "    print('HOST', exc.form)\n"
     f"tools.finish(answer={SUBMIT!r})\n"
 )
+#: The role's one answer rule (whitespace collapsed: the role is wrapped), and the opening's one line about the record.
+ROLE_ANSWER = (
+    "Your answer is your final reply: a message without a tool call. `tools.answer(answer)` gives it from a cell."
+)
+RECORD_POINTER = 'Other agents may share a record with you; `tools.help("record")` says how it works.'
 
 
 def _last_tool_result(call) -> str:
@@ -75,8 +82,9 @@ async def test_each_request_is_answered_by_tools_answer_and_finish_is_unknown(se
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     model = ScriptedModel(
         actor=[
-            # the first request: the tool list, the end call the actor does not have, then its answer
-            reply(calls=[code("tools.list()\n")]),
+            # the first request: the tool list and the record's help, the end call the actor does not have, then its
+            # answer
+            reply(calls=[code('tools.list()\nprint(tools.help("record"))\n')]),
             reply(calls=[code(FINISH_CELL)]),
             reply(calls=[code(f"tools.answer({SUBMIT!r})\n")]),
             # the second request: its answer
@@ -104,11 +112,18 @@ async def test_each_request_is_answered_by_tools_answer_and_finish_is_unknown(se
     system = "\n".join(_system_texts(model.calls[0]))
     assert "tools.answer(answer)" in system, system[:2000]
     assert not _names_finish(system), system
+    # one answer rule, in the role; the opening's one line about the record points to its help topic
+    assert ROLE_ANSWER in " ".join(system.split()), system[:2000]
+    assert "You end your work with" not in system and "Messages: other agents" not in system, system[:3000]
+    assert system.count(RECORD_POINTER) == 1, system[:3000]
     listing = _tool_results(model.calls[1])
     for line in R.list_text(session.allow, "actor").splitlines():
         assert line in listing, (line, listing)
     assert "answer(answer) - " in listing and "read(" in listing, listing
     assert "finish" not in listing, listing
+    # print(tools.help("record")) showed how the record works, as the opening's paragraph said it before
+    for part in (R.RECORD_MESSAGES, R.AGENT_RECORD_RULES):
+        assert part in listing, (part, listing)
     assert "answer" in session.allow and "finish" not in session.allow
     assert "answer" in session.specs and "finish" not in session.specs
 

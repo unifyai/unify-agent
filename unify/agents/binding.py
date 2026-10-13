@@ -107,7 +107,7 @@ class Binding:
 
     def prompt_section(self) -> str:
         """The Team record section of the first user message; none when tools are called from code
-        (``UNIFY_TOOLS_IN_CODE=on``), where the shared opening's messaging paragraph says how the record works."""
+        (``UNIFY_TOOLS_IN_CODE=on``), where ``tools.help("record")`` says how the record works."""
         from unify.common import in_code_switch
 
         return "" if in_code_switch.tools_in_code() else PROMPT_SECTION

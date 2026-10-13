@@ -84,9 +84,13 @@ def names_in_sentence(text: str) -> set[str]:
     return set(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", found[0]))
 
 
-def opening_of(text: str) -> str:
-    """The shared opening at the start of *text*: up to the line that says how the agent ends its work."""
+def opening_of(text: str, role: str) -> str:
+    """The shared opening at the start of *text*: up to the line that says how the agent ends its work. The actor's
+    and a teammate's text here is their opening alone (their role section says how they answer)."""
     assert text.startswith("## How you work here\n"), text[:200]
+    if role in ("actor", "teammate"):
+        assert "You end your work with" not in text, text[:2000]
+        return text
     end = text.find("You end your work with tools.")
     assert end > 0, text[:2000]
     stop = text.find("\n", end)
@@ -165,7 +169,7 @@ async def test_every_role_says_once_that_its_sandbox_is_persistent_and_names_the
         assert body.count(RESTART_SENTENCE) == 1, (role, body[:1500])
         assert FRESH_SENTENCE not in body, role
         # the shared opening carries it, before the role's own instructions
-        assert PERSISTENT_SENTENCE in flat(opening_of(text)), role
+        assert PERSISTENT_SENTENCE in flat(opening_of(text, role)), role
 
 
 @pytest.mark.asyncio
@@ -229,7 +233,7 @@ async def test_the_new_sentences_hold_no_host_path_secret_or_forcing(in_code, tm
     _library_run(in_code, tmp_path / "home")
     texts = await _openings(tmp_path)
     for role, text in texts.items():
-        opening = opening_of(text)
+        opening = opening_of(text, role)
         for value in (str(tmp_path), planted):
             assert value not in opening, role
         assert lp.example_checks(opening) == [], role

@@ -737,15 +737,14 @@ def _build_core_prompt(
 # other harness tool in its cells as ``tools.<name>(...)``. The shared opening
 # every agent reads first (how cells work, that the sandbox keeps its state
 # and when it restarts, the names bound in it, ``tools.list()``,
-# ``tools.help(name)``, installing, messaging) says what the Tools and Sandbox
-# Objects sections said, so these sections keep only what is the actor's own:
-# its role, how it works, and the answer. Each tool's details are its help.
+# ``tools.help(name)``, installing, where the record's rules are) says what the
+# Tools and Sandbox Objects sections said, so these sections keep only what is
+# the actor's own: its role, how it works, and the answer. Each tool's details
+# are its help.
 
-# A cell can end the turn with the answer itself.
-_REPLY_FROM_CELL_IN_CODE = (
-    "You can also end your turn from a cell with `tools.answer(answer)`, for "
-    "example when the answer is in a variable."
-)
+# The role's one answer rule: a final text reply is the answer, and a cell
+# gives it with tools.answer.
+_REPLY_FROM_CELL_IN_CODE = "`tools.answer(answer)` gives it from a cell."
 
 _ANSWER_STRUCTURED_IN_CODE = (
     "### Answer\n\n"
@@ -808,10 +807,10 @@ _LEAN_INCREMENTAL_EXECUTION_IN_CODE = textwrap.dedent("""
 
 
 def _lean_role_in_code() -> str:
-    """The role when tools are called from code: a cell ends the turn with
-    ``tools.answer(answer)`` where today's switch offers ``reply(text)``."""
-    if not _reply_from_cell():
-        return _LEAN_ROLE
+    """The role when tools are called from code, with the one answer rule:
+    the final text reply is the answer, and ``tools.answer(answer)`` gives it
+    from a cell (where today's switch offers ``reply(text)``). The shared
+    opening says nothing more about it."""
     rule = " ".join(
         [
             "Your answer is your final reply: a message without a tool call.",
