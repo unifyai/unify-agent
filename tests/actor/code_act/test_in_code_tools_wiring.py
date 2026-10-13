@@ -235,8 +235,8 @@ async def test_a_refused_call_raises_in_the_cell(in_code):
     # uncaught, the refusal is the cell's error, with its text
     assert "tools.Refused: refused: /etc/passwd is outside /workspace" in shown, _why(model)
     # the model reads the cell's own frame and the call it made, not the tools stub's or its channel client's
-    assert 'File "<cell ' in shown and "tools.read('/etc/passwd')" in shown, shown[-1500:]
-    assert 'File "<tools>"' not in shown and "<tools: channel client>" not in shown, shown[-1500:]
+    assert "<cell 1>" in shown and "tools.read('/etc/passwd')" in shown, shown[-1500:]
+    assert "<tools>" not in shown and "<tools: channel client>" not in shown, shown[-1500:]
     assert ENV_SECRET not in shown
     _assert_ended(in_code["opened"])
 

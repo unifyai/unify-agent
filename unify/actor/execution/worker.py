@@ -1035,8 +1035,15 @@ class PythonWorker:
                 and done.get("error_type") == "ControlledInterruption"
             ):
                 raise ControlledInterruption(str(done.get("message") or "steered"))
+            # The model reads the traceback without the harness's own frames (the tools stub, its channel
+            # client, the library package's module and contract); the full one is logged.
+            error = str(done["error"])
+            shown = done.get("shown_error")
+            if isinstance(shown, str) and shown:
+                logger.info("cell error, full traceback:\n%s", error)
+                error = shown
             # UNIFY_MEMORY_SURFACING=catalogue: a suspect channel's refusal says so.
-            raise WorkerCellError(_mv2.cell_error(str(done["error"])))
+            raise WorkerCellError(_mv2.cell_error(error))
         return self.decode(done.get("result"), shadow)
 
     @staticmethod
