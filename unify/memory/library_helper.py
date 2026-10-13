@@ -1135,7 +1135,8 @@ def _run_capture(capture_id: str, args: tuple, kwargs: dict) -> RunReport:
     target = CAPTURE_PREFIX + capture_id
     if _CAPTURE_ID.fullmatch(capture_id) is None:
         return RunReport(target, outcome="error", error="LookupError",
-                         detail="a captured procedure's id is capture: and 16 hex digits; memory.items('captures') lists them")
+                         detail="a captured procedure's id is capture: and 16 hex digits; "
+                         "memory.items('captures') lists them")
     rec = _read_json(os.path.join(_capture_dir(capture_id), "record.json"))
     rec = rec if isinstance(rec, dict) else {}
     base = {"level": _str(rec.get("level"), "unchecked"), "status": _str(rec.get("status"), "on-trial")}
@@ -1289,28 +1290,26 @@ _UNREADABLE = (
 )
 
 
-def _unreadable(call: str, exc: BaseException) -> NotFound:
-    """The error of a call that met a malformed or missing generated file: the copy cannot be read, and what to do."""
+def _unreadable(exc: BaseException) -> str:
+    """What could not be read, for the error of a call that met a malformed or missing generated file."""
     if isinstance(exc, _FileUnreadable):
-        what = f"its {exc.rel} cannot be read ({exc.error})"
-    else:
-        what = f"one of its files cannot be read ({type(exc).__name__})"
-    return NotFound(
-        call,
-        f"the library copy is unreadable: {what}, so nothing could be looked up.",
-        hint="Library modules may still import directly; otherwise do the step yourself.",
-    )
+        return f"its {exc.rel} cannot be read ({exc.error})"
+    return f"one of its files cannot be read ({type(exc).__name__})"
 
 
 def _guard(call: str, fn: Callable[..., Any], *args: Any) -> Any:
-    """*fn*(*args*), with any raw error from the copy's files turned into one that teaches (:func:`_unreadable`);
-    the calls' own errors pass unchanged."""
+    """*fn*(*args*), with any raw error from the copy's files turned into one that says the copy cannot be read and
+    what to do; the calls' own errors pass unchanged."""
     try:
         return fn(*args)
     except ContractError:
         raise
     except _UNREADABLE as exc:
-        raise _unreadable(call, exc) from None
+        raise NotFound(
+            call,
+            f"the library copy is unreadable: {_unreadable(exc)}, so nothing could be looked up.",
+            hint="Library modules may still import directly; otherwise do the step yourself.",
+        ) from None
 
 
 def _status_of(row: dict) -> str:
@@ -1499,7 +1498,15 @@ class Item:
         report = _RUN_TARGET(self.id, *args, **kwargs)
         if report.outcome == "returned":
             return report.result
-        raise _call_failed(self, report, args, kwargs) from report._raised
+        what = "refused this input" if report.outcome == "refused" else "did not return"
+        detail = f"{report.error}: {report.detail}" if report.detail else report.error
+        raise ArgumentError(
+            call_text(f"memory.get({self.id!r})", args, kwargs),
+            f"it {what} ({detail.rstrip('.')}).",
+            expected="an input it was built for",
+            example=self.example or None,
+            hint=f"Its card shows what it takes: print(memory.get({self.id!r})).",
+        ) from report._raised
 
 
 def _plain_card(item: Item) -> str:
@@ -1512,19 +1519,6 @@ def _plain_card(item: Item) -> str:
     if item.history:
         out += ["History (newest first):"] + [f"  {h}" for h in item.history]
     return "\n".join(out) + "\n"
-
-
-def _call_failed(item: Item, report: RunReport, args: tuple, kwargs: dict) -> ArgumentError:
-    """The error of a function item's call that did not return: what it said, and where to see what it takes."""
-    what = "refused this input" if report.outcome == "refused" else "did not return"
-    detail = f"{report.error}: {report.detail}" if report.detail else report.error
-    return ArgumentError(
-        call_text(f"memory.get({item.id!r})", args, kwargs),
-        f"it {what} ({detail.rstrip('.')}).",
-        expected="an input it was built for",
-        example=item.example or None,
-        hint=f"Its card shows what it takes: print(memory.get({item.id!r})).",
-    )
 
 
 @dataclasses.dataclass(frozen=True, repr=False)
@@ -1821,24 +1815,24 @@ class _Catalog:
             hint=f"Browse with {browse}.",
         )
 
-    def not_a_topic(self, topic: str) -> ContractError:
-        """The error of a topic that names none: the item it names instead, or the nearest topics."""
+    def not_a_topic(self, topic: str) -> None:
+        """Raise the error of a topic that names none: the item it names instead, or the nearest topics."""
         named = self.matches(topic)
         if len(named) == 1:
-            return WrongCall(
+            raise WrongCall(
                 self.call,
                 "that is an item, not a topic.",
                 hint=f"Open it with memory.get({named[0]!r}).",
             )
         if named:
-            return WrongCall(
+            raise WrongCall(
                 self.call,
                 f"that names {len(named)} items, not a topic.",
                 hint="Open one with " + " or ".join(f"memory.get({i!r})" for i in named) + ".",
             )
         topics = self.topics()
         near = nearest(topic, topics)
-        return NotFound(
+        raise NotFound(
             self.call,
             f"no topic named {topic!r}.",
             expected=_TOPIC_EXPECTED,
@@ -2076,8 +2070,8 @@ def _items(topic: str | None, kind: str | None, call: str) -> Items:
     else:
         found = cat.topic_ids(topic)
         if found is None:
-            raise cat.not_a_topic(topic)
-        ids = found
+            cat.not_a_topic(topic)
+        ids = found or []
     if kind is not None:
         ids = [i for i in ids if (i.startswith("notes/") == (kind == "note"))]
     return Items(tuple(cat.item(i) for i in ids), topic, kind)
@@ -2110,7 +2104,10 @@ def _fit_check(target: str, inputs: Any, call: str) -> Fit:
     query = _query(m, None, inputs, mine)
     if not query.shapes:
         _emit_event(MATCH_EVENT, (), ())
-        return Fit(False, "what you passed has no structure to compare (plain text has none); pass the data you were given")
+        return Fit(
+            False,
+            "what you passed has no structure to compare (plain text has none); pass the data you were given",
+        )
     try:
         pairs = list(MATCHER(query, list(mine)) or ())
     except Exception as exc:  # noqa: BLE001 - the matcher's failure is reported, not raised
@@ -2209,6 +2206,8 @@ def index(package: str | None = None) -> str:
 
 
 def _index_text(package: str | None, call: str) -> str:
+    """``index``'s text: the index, a section (:func:`find_section`), or the card of the item a name names; else the
+    error naming the nearest of the index's sections."""
     text = _read(INDEX_FILE)
     if package is None:
         return _Text(text)
@@ -2216,10 +2215,22 @@ def _index_text(package: str | None, call: str) -> str:
         return _Text(find_section(text, package))
     except LookupError:
         pass
-    cat = _Catalog(call)
-    if cat.matches(package):
+    try:
+        cat: _Catalog | None = _Catalog(call)
+    except _FileUnreadable:
+        cat = None  # a copy without its items: the index's own sections still name the topics
+    if cat is not None and cat.matches(package):
         return _Text(str(cat.resolve(package)))
-    raise cat.not_a_topic(package)
+    topics = [section_key(h) for h, _ in split_index(text)[1]]
+    near = nearest(package, topics)
+    raise NotFound(
+        call,
+        f"no section or item named {package!r}.",
+        expected=_TOPIC_EXPECTED,
+        example=f"memory.items({(near or topics or ['notes/grid'])[0]!r})",
+        nearest=near,
+        hint="Browse every topic with memory.items(); memory.get(ref) opens one item.",
+    )
 
 
 @checked(name="memory.show")
