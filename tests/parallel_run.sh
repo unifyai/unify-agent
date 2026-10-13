@@ -246,11 +246,6 @@ elif (( DETERMINISTIC_ONLY )); then
   # tests whose outcome depends on this repository alone.
   MARKER_EXPRS+=( "not eval and not llm_call" )
 fi
-if (( KEYLESS )); then
-  MARKER_EXPRS+=( "not live_provider" )
-elif (( LIVE_ONLY )); then
-  MARKER_EXPRS+=( "live_provider or requires_provider_key" )
-fi
 MARKER_FILTER=""
 if (( ${#MARKER_EXPRS[@]} == 1 )); then
   MARKER_FILTER="-m '${MARKER_EXPRS[0]}'"

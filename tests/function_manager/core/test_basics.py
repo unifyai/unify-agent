@@ -518,10 +518,13 @@ def test_search_functions_include_implementations(monkeypatch):
     assert "name" in user_funcs[0]  # Other fields still present
 
 
-@pytest.mark.requires_provider_key
 @_handle_project
-def test_search_functions_matches_meaning_not_words():
-    """A query that shares no words with a function's name or docstring finds it."""
+def test_search_functions_matches_meaning_not_words(monkeypatch):
+    """A query that shares no words with a function's name or docstring finds it (through the local embedder,
+    whose weights the test host has cached: no provider is reached)."""
+    from unify.settings import SETTINGS
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_EMBEDDINGS", True)
     fm = _FM()
     fm.add_functions(
         implementations=[
