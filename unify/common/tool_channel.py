@@ -13,9 +13,10 @@ within :data:`FRAME_READ_TIMEOUT_S` of its first byte), UTF-8, the nesting depth
 most :data:`MAX_DEPTH`), ``json.loads``, the envelope's keys exactly ``{v, id, tool, args}``, ``v == 1``, ``id`` an
 integer greater than the previous id, ``tool`` a string and ``args`` an object. Any failure is a malformed frame: the
 channel closes and one ``channel_closed`` event row names the reason. Then the call: the tool must be on this box's
-allow-list (else the general ``unknown_tool`` refusal) and the arguments must validate against the tool's registry
-schema, with unknown arguments refused on every object (``bad_arguments``). A refused call's text teaches: the call
-as written, what was given, what was expected and one call that works for the caller's role (:func:`argument_error`).
+allow-list (else the general ``unknown_tool`` refusal, with the nearest tool names) and the arguments must validate
+against the tool's registry schema, with unknown arguments refused on every object (``bad_arguments``). A refused
+call's text teaches: the call as written, what was given, what was expected and one call that works for the caller's
+role (:func:`argument_error`).
 
 Authority. Who is calling (agent, name, role, pass, roots, limits) comes only from the binding the channel was opened
 with, never from a frame; a frame has no field for it and any extra key closes the channel.
@@ -411,6 +412,18 @@ def _general(form: str, **fields: object) -> Any:
     from unify.memory.writer_tools import general
 
     return general(form, **fields)
+
+
+def _unknown_tool(tool: str, allow: tuple[str, ...]) -> Any:
+    """The general ``unknown_tool`` refusal with the nearest tool names before the whole list (the model-API tools
+    keep the general text as it is)."""
+    from unify.common.contract_runtime import nearest
+    from unify.common.tool_registry import REFUSED
+
+    near = nearest(tool[:80], allow)
+    text = f"unknown tool {tool[:80]!r}; " + (f"nearest: {', '.join(near)}; " if near else "")
+    text += f"your tools: {', '.join(allow)}"
+    return _reply_class()((REFUSED + text)[:600], "refused", "unknown_tool")
 
 
 def _example_for(tool: str, spec: Any, schema: Mapping) -> str:
@@ -823,11 +836,7 @@ class Channel:
         loop, before anything runs), then the handler under its deadline."""
         fields = self._call_fields(tool) if tool in self.allow else None
         if fields is None:
-            return _general(
-                "unknown_tool",
-                name=tool[:80],
-                tools=", ".join(self.allow),
-            )
+            return _unknown_tool(tool, tuple(self.allow))
         spec, schema, handler, blocking = fields
         problem = first_problem(schema, args)
         if problem is not None:
