@@ -131,8 +131,12 @@ def test_a_completed_attempt_is_captured_with_its_signature_and_holds_no_identif
     assert call["env"] == {} and sorted(call["ro"].values()) == ["/case"] and sorted(call["rw"].values()) == ["/out"]
     # the store sits beside staging, under the harness's state dir, never inside the fork's writable staging dir
     d = store / cid
-    assert sorted(os.listdir(d)) == ["procedure.py", "record.json", "signature.json"]
+    assert sorted(os.listdir(d)) == ["procedure.py", "record.json", "saved.json", "signature.json"]
     assert staging not in d.parents and store.parent == tmp_path
+    saved_text = (d / cp.SAVED_FILE).read_text()  # what the capture was saved against, stripped like the signature
+    for ident in IDS:
+        assert ident not in saved_text, ident
+    assert REQUEST not in saved_text
     sig_text = (d / "signature.json").read_text()
     for ident in IDS:
         assert ident not in sig_text, ident
