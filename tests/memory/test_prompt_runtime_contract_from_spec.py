@@ -532,7 +532,9 @@ def test_every_prebound_name_is_named_and_every_promised_name_is_bound(role, tmp
     prompt = state["prompt"]
     names = prebound_names(role)
     assert {"tools", "memory"} <= set(names), names
-    missing = [n for n in names if f"`{n}`" not in prompt and f"`{n}(" not in prompt]
+    # an exception class the harness raises into cells (``ModelRequestError``) is bound for ``except`` clauses, not
+    # offered as something to call, so only the names a cell uses need the prompt to name them; all must be bound
+    missing = [n for n in names if not n[:1].isupper() and f"`{n}`" not in prompt and f"`{n}(" not in prompt]
     assert not missing, f"{role}: pre-bound but never named in its prompt: {missing}"
     promised = pc.opening_names(prompt, NAMES_SENTENCE_END)
     assert promised, f"{role}: its prompt has no names sentence"
