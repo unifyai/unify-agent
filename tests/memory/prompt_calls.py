@@ -210,8 +210,8 @@ def prepare(
 
     * ``<placeholder>``: filled from *angle_rules*; one with no rule in a call is a contract failure.
     * A free name that is not bound in the sandbox, not a harness name and not bound by an earlier span is a
-      placeholder: *bare_rules* gives the Python expression it stands for (an assignment before the span); one
-      with no rule is a contract failure.
+      placeholder: *bare_rules* gives the Python expression it stands for (an assignment before the span), a key
+      ``tools.<tool>:<name>`` first for a call of that tool; one with no rule is a contract failure.
     * ``tools.<name>(...)`` (``...`` alone or beside other arguments): replaced by *example(name)*, the tool's
       first registry example (None: a failure). ``f(...)`` on any other name only resolves ``f`` (the shape of its
       arguments is not shown).
@@ -267,11 +267,16 @@ def prepare(
             continue
         read, bound = _names(final)
         placeholders = sorted((read - bound) - bound_before - HARNESS_NAMES)
-        lacking = [p for p in placeholders if p not in bare_rules]
+        # a rule for one tool's argument (``tools.help:name``) wins over the general one (``name``)
+        tool = None
+        if len(final.body) == 1 and isinstance(final.body[0], ast.Expr) and isinstance(final.body[0].value, ast.Call):
+            tool = _tool_of(final.body[0].value)
+        rules = {p: bare_rules.get(f"tools.{tool}:{p}", bare_rules.get(p)) for p in placeholders}
+        lacking = [p for p, rule in rules.items() if rule is None]
         if lacking:
             plan.no_rule.append(f"{sp.text!r}: {', '.join(lacking)}")
             continue
-        prefix = "".join(f"{p} = {bare_rules[p]}\n" for p in placeholders)
+        prefix = "".join(f"{p} = {rules[p]}\n" for p in placeholders)
         plan.calls.append(Prepared(len(plan.calls), sp.text, prefix + code, end))
         bound_before |= bound
     return plan
@@ -324,7 +329,8 @@ def failures(calls: list[Prepared], got: dict[int, dict], *, ended: bool = False
     for p in calls:
         row = got.get(p.k)
         if row is None:
-            if not (p.end and ended):
+            # an end call ends the cell (its box is stopped), so it leaves no line of its own
+            if not p.end:
                 bad.append(f"{p.span!r}: no result (the cell did not reach it)")
             continue
         if row["s"] == "ok":

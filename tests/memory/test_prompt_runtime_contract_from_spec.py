@@ -121,8 +121,11 @@ BARE_RULES = {
     "parts": "['request']",
     "part": "'request'",
     "path": repr(NOTE_PATH),
-    "name": "'read'",
+    # help(name) documents a Python object; tools.help(name) one of the role's tools
+    "name": "'print'",
+    "tools.help:name": "'read'",
     "obj": "tools",
+    "command": "'ls'",
     "item": repr(FUNCTION_ID),
     "target": repr(FUNCTION_ID),
     "package": repr(PACKAGE),
