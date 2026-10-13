@@ -349,6 +349,23 @@ def test_the_teaching_code_reads_the_same_renderer_as_the_memory_namespace():
     assert "import " not in source.replace("import difflib", "")
 
 
+def test_the_embedded_renderer_runs_alone_as_the_box_compiles_it():
+    """The stub compiles the copied functions with nothing else of contract_runtime: one error renders the same."""
+    import __future__
+
+    from unify.common import contract_runtime as cr
+
+    alone: dict = {}
+    exec(compile(R.errors_source(), "<tools: errors>", "exec", __future__.annotations.compiler_flag, True), alone)
+    args, kwargs = ("x" * 80,), {"offset": "x"}
+    assert alone["call_text"]("tools.read", args, kwargs) == cr.call_text("tools.read", args, kwargs)
+    near = alone["nearest"]("reed", ["read", "grep", "write"])
+    assert near == cr.nearest("reed", ["read", "grep", "write"])
+    parts = ("tools.read()", "path is missing")
+    extra = {"expected": "path: str", "example": 'tools.read("a")', "nearest": near, "hint": "tools.list() lists yours."}
+    assert alone["render"](*parts, **extra) == cr.render(*parts, **extra)
+
+
 # --- help ---------------------------------------------------------------------------------------------------------
 
 
