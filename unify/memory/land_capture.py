@@ -1,0 +1,541 @@
+"""The writer's ``land_capture`` tool: turn one captured attempt into library items the writer can change.
+
+A capture (:mod:`.captures`) is a completed attempt's working procedure, stored by the harness outside every box. The
+writer reads it under ``/inputs/captures/<id>/``; this tool reads it again from the harness's own store (never from
+a path the box names), checks it, and writes into the writer's ``/memory``:
+
+- the reader, ``memory/<package>/readers.py``: the capture's ``read_input`` as ``read_<name>``, unless a reader the
+  library already holds gives the same value on this request (each candidate is run confined, as the gate runs a
+  reader: :func:`.procedures.run_reader`), which is then reused;
+- the procedure, ``memory/<package>/procedures.py``: the capture's ``run`` as ``<name>``, with its ``applies`` and
+  ``holds`` (when present) and every other top-level name of the capture kept private under ``_<name>_``;
+- two fixtures of the request text: the text itself and the reader's value on it (a parsed fixture,
+  ``fixture(..., parser=...)``), both made by the fixture tool, so the gate re-derives them from the recording;
+- a test, ``memory/<package>/tests/test_<name>.py``: the recorded result on the parsed fixture, the reader on the
+  recorded text, and one refusal of text the reader was not built for;
+- the manifest entries, the procedure with ``role: "procedure"`` and ``reader``, a new reader with ``role:
+  "reader"``.
+
+When the capture's ``same_as`` names a capture already landed (its marker line is in a ``procedures.py`` of the
+library), this request becomes a new case of that procedure instead: two fixtures and one test function more.
+
+Checks, each a fixed refusal: the id is 16 hex digits (optionally ``capture:``-prefixed) and in the store; the store's
+files are read without following a link, only as regular files, size-bounded; ``procedure.py``'s sha256 starts with
+the id; the capture is not failed and not retired; the gate's safety checks hold (:func:`.captures.safety`); nothing
+landed holds a key-shaped string or a URL with a password; *package* and *name* are plain module identifiers. Every
+file is written through the writer's ``write`` tool (:func:`.edit_tools.call`: the same path checks, never through a
+link) and the fixture tool; the caller then measures the quota as after any write. Model-written code runs only in
+:func:`.sandbox_run.run_confined`; on the host it is only parsed as data.
+
+Not in this build: the ``episode`` cover of the ``request`` runner (design I.3.5) on the procedure's entry.
+"""
+
+from __future__ import annotations
+
+import ast
+import hashlib
+import io
+import json
+import keyword
+import os
+import re
+import shutil
+import stat
+import tempfile
+import tokenize
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+from . import captures as _captures
+from . import edit_tools as _et
+from . import safe_paths as _safe
+from . import writer_tools as _wt
+from .redact import KEY_SHAPED
+from .sandbox_run import PYTHON, SandboxResult, run_confined
+
+TOOL = "land_capture"
+#: A capture id as the tool takes it: the store's 16 hex digits, optionally prefixed ``capture:``.
+_ARG_ID = re.compile(r"(?:capture:)?([0-9a-f]{16})\Z")
+#: A package or procedure name: a plain module identifier.
+_IDENT = re.compile(r"[a-z][a-z0-9_]{0,47}\Z")
+#: The marker line a landed procedure carries in its module, naming the capture and the reader it was landed with.
+_MARK = re.compile(
+    r"^# Landed from capture ([0-9a-f]{16}): procedure (memory\.[a-z][a-z0-9_]*\.procedures:[a-z][a-z0-9_]*), "
+    r"reader (memory\.[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*:[A-Za-z][A-Za-z0-9_]*)$",
+    re.M,
+)
+_MAX_RECORD_BYTES = 4 * 1024 * 1024
+_MAX_MODULE_BYTES = 1024 * 1024
+
+
+class _NotLanded(Exception):
+    def __init__(self, form: str, **fields: object) -> None:
+        super().__init__(form)
+        self.form, self.fields = form, fields
+
+
+# --- reading the store ------------------------------------------------------------------------------------------
+
+
+def _store_file(store: Path, cid: str, name: str, limit: int) -> bytes | None:
+    """A capture file's bytes: a regular file reached without a link (the capture dir and the file), at most *limit*
+    bytes; None otherwise."""
+    try:
+        dfd = os.open(store / cid, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        try:
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
+        except OSError:
+            return None
+        with os.fdopen(fd, "rb") as fh:
+            if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                return None
+            data = fh.read(limit + 1)
+    finally:
+        os.close(dfd)
+    return data if len(data) <= limit else None
+
+
+def _looks_like_key(text: str) -> bool:
+    from unify.sandbox import _looks_like_key as sandbox_key
+
+    return bool(KEY_SHAPED.search(text)) or sandbox_key(text)
+
+
+def read_capture(store: Path, raw_id: object) -> tuple[str, str, dict]:
+    """``(capture id, procedure source, record)`` from the harness's store, checked; raises :class:`_NotLanded`."""
+    m = _ARG_ID.match(raw_id) if isinstance(raw_id, str) else None
+    if m is None:
+        raise _NotLanded("unknown_capture", capture_id=str(raw_id)[:40])
+    cid = m.group(1)
+    src = _store_file(store, cid, _captures.PROCEDURE_FILE, _captures.MAX_SOURCE_BYTES)
+    rec_raw = _store_file(store, cid, _captures.RECORD_FILE, _MAX_RECORD_BYTES)
+    if src is None or rec_raw is None:
+        raise _NotLanded("unknown_capture", capture_id=cid)
+    if hashlib.sha256(src).hexdigest()[:16] != cid:
+        raise _NotLanded("not_landed", reason=f"capture {cid}'s procedure does not match its id")
+    try:
+        source = src.decode("utf-8")
+        record = json.loads(rec_raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        raise _NotLanded("not_landed", reason=f"capture {cid} cannot be read") from None
+    if not isinstance(record, dict):
+        raise _NotLanded("not_landed", reason=f"capture {cid} cannot be read")
+    if record.get("outcome") == _captures.FAILED or record.get("status") == "retired":
+        raise _NotLanded("failed_capture", capture_id=cid)
+    why = _captures.safety(source)
+    if why is not None or _looks_like_key(source):
+        raise _NotLanded("not_landed", reason=f"capture {cid} fails the safety checks ({why or 'key-shaped string'})")
+    return cid, source, record
+
+
+# --- the landed source ------------------------------------------------------------------------------------------
+
+
+def top_names(source: str) -> list[str]:
+    """The names *source* binds at module level by ``def``, ``class`` or assignment, in order (parsed, never run)."""
+    out: list[str] = []
+    for node in ast.parse(source).body:
+        found: list[str] = []
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            found = [node.name]
+        elif isinstance(node, ast.Assign):
+            found = [n.id for t in node.targets for n in ast.walk(t) if isinstance(n, ast.Name)]
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)) and isinstance(node.target, ast.Name):
+            found = [node.target.id]
+        out += [n for n in found if n not in out]
+    return out
+
+
+def renamed(source: str, names: dict[str, str]) -> str:
+    """*source* with each name token of *names* replaced, everything else byte for byte: an attribute (``x.run``)
+    and a keyword argument (``f(run=1)``) are left alone; ``from __future__`` imports are dropped (a landed block
+    may follow other code)."""
+    toks = list(tokenize.generate_tokens(io.StringIO(source).readline))
+    lines = source.splitlines(keepends=True)
+    edits: list[tuple[int, int, int, str]] = []
+    depth = 0
+    prev = None
+    for i, t in enumerate(toks):
+        if t.type == tokenize.OP and t.string in "([{":
+            depth += 1
+        elif t.type == tokenize.OP and t.string in ")]}":
+            depth -= 1
+        if t.type == tokenize.NAME and t.string in names:
+            after = next(
+                (n for n in toks[i + 1 :] if n.type not in (tokenize.NL, tokenize.COMMENT)),
+                None,
+            )
+            attribute = prev is not None and prev.type == tokenize.OP and prev.string == "."
+            kwarg = depth > 0 and after is not None and after.type == tokenize.OP and after.string == "="
+            if not attribute and not kwarg:
+                edits.append((t.start[0], t.start[1], t.end[1], names[t.string]))
+        if t.type not in (tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT):
+            prev = t
+    for row, a, b, new in sorted(edits, reverse=True):
+        line = lines[row - 1]
+        lines[row - 1] = line[:a] + new + line[b:]
+    out = "".join(lines)
+    future = [
+        n for n in ast.parse(out).body if isinstance(n, ast.ImportFrom) and n.module == "__future__"
+    ]
+    if future:
+        kept = out.splitlines(keepends=True)
+        for n in sorted(future, key=lambda n: n.lineno, reverse=True):
+            del kept[n.lineno - 1 : (n.end_lineno or n.lineno)]
+        out = "".join(kept)
+    return out
+
+
+def with_example(source: str, fn: str, test: str) -> str:
+    """*source* with an ``Example:`` line naming *test* in top-level function *fn*'s docstring (a new docstring when
+    it has none; left as it is when its docstring is not a triple-quoted literal). Parsed as data, never run."""
+    node = next(
+        (n for n in ast.parse(source).body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == fn),
+        None,
+    )
+    if node is None or not node.body:
+        return source
+    lines = source.splitlines(keepends=True)
+    first = node.body[0]
+    indent = " " * first.col_offset
+    example = f"Example: {test}"
+    if (
+        isinstance(first, ast.Expr)
+        and isinstance(first.value, ast.Constant)
+        and isinstance(first.value.value, str)
+        and first.end_lineno is not None
+        and first.end_col_offset is not None
+    ):
+        row, col = first.end_lineno - 1, first.end_col_offset
+        line = lines[row]
+        quote = line[col - 3 : col]
+        if quote not in ('"""', "'''") or first.end_lineno == first.lineno and line[first.col_offset :].count(quote) < 2:
+            return source
+        if example in first.value.value:
+            return source
+        lines[row] = line[: col - 3] + f"\n\n{indent}{example}\n{indent}" + line[col - 3 :]
+        return "".join(lines)
+    if first.lineno - 1 >= len(lines) or first.lineno == node.lineno:
+        return source  # a one-line body on the def line: left as it is
+    lines.insert(first.lineno - 1, f'{indent}"""{fn.replace("_", " ").capitalize()}.\n\n{indent}{example}\n{indent}"""\n')
+    return "".join(lines)
+
+
+def _private(name: str, orig: str) -> str:
+    return f"_{name}_{orig.lstrip('_')}"
+
+
+def procedure_block(source: str, cid: str, name: str, package: str, reader: str) -> tuple[str, list[str]]:
+    """(the procedures.py block, the names it binds): ``run`` as *name*, everything else private."""
+    mapping = {n: (name if n == "run" else _private(name, n)) for n in top_names(source)}
+    head = f"# Landed from capture {cid}: procedure memory.{package}.procedures:{name}, reader {reader}\n"
+    test = f"memory/{package}/tests/test_{name}.py::test_{name}_case1_gives_the_recorded_result"
+    return head + with_example(renamed(source, mapping), name, test), list(mapping.values())
+
+
+def reader_block(source: str, name: str, package: str) -> tuple[str, list[str]]:
+    """(the readers.py block, the names it binds): ``read_input`` as ``read_<name>``, everything else private."""
+    mapping = {n: (f"read_{name}" if n == "read_input" else _private(f"read_{name}", n)) for n in top_names(source)}
+    head = f"# The reader of the procedure {name}, landed from its capture.\n"
+    test = f"memory/{package}/tests/test_{name}.py::test_{name}_case1_reader_reads_the_recorded_request"
+    return head + with_example(renamed(source, mapping), f"read_{name}", test), list(mapping.values())
+
+
+def _join(old: str | None, block: str) -> str:
+    return block if not old else old.rstrip("\n") + "\n\n\n" + block
+
+
+def _test_head(package: str) -> str:
+    return (
+        f'"""Landed from captured attempts: each procedure of memory.{package}.procedures on its recorded '
+        'request."""\n\nimport json\nfrom pathlib import Path\n\nimport pytest\n\n'
+        'DATA = Path(__file__).parent / "data"\n'
+    )
+
+
+def case_tests(name: str, reader_mod: str, reader_fn: str, package: str, k: int, result: Any) -> str:
+    """*reader_mod* is the reader's module, dotted (``memory.<package>.<module>``)."""
+    """The test functions of case *k*: the reader on the recorded text, and the recorded result on its value."""
+    expect = json.dumps(result, sort_keys=True, ensure_ascii=False)
+    return (
+        f"\n\ndef test_{name}_case{k}_reader_reads_the_recorded_request():\n"
+        f"    from {reader_mod} import {reader_fn}\n\n"
+        f'    text = (DATA / "{name}.case{k}.txt").read_text(encoding="utf-8")\n'
+        f'    value = json.loads((DATA / "{name}.case{k}.json").read_text(encoding="utf-8"))\n'
+        f"    assert json.loads(json.dumps({reader_fn}(text))) == value\n"
+        f"\n\ndef test_{name}_case{k}_gives_the_recorded_result():\n"
+        f"    from memory.{package}.procedures import {name}\n\n"
+        f'    value = json.loads((DATA / "{name}.case{k}.json").read_text(encoding="utf-8"))\n'
+        f"    assert json.loads(json.dumps({name}(value))) == json.loads({expect!r})\n"
+    )
+
+
+def refusal_test(name: str, reader_mod: str, reader_fn: str, package: str, refuses: bool) -> str:
+    """The refusal test: the reader raises ``MemoryInputError`` on empty text. When it does not yet (*refuses* is
+    False, from a confined run), the test records that as a known failure (a strict expected failure), which turns
+    red once the reader refuses such text."""
+    mark = (
+        ""
+        if refuses
+        else '@pytest.mark.xfail(strict=True, reason="the reader does not refuse text it was not built for yet")\n'
+    )
+    return (
+        f"\n\n{mark}def test_{name}_reader_refuses_text_it_was_not_built_for():\n"
+        f"    from {reader_mod} import {reader_fn}\n\n"
+        "    with pytest.raises(Exception) as caught:\n"
+        f'        {reader_fn}("")\n'
+        '    assert any(c.__name__ == "MemoryInputError" for c in type(caught.value).__mro__)\n'
+    )
+
+
+# --- the box ------------------------------------------------------------------------------------------------------
+
+
+def _box_text(box: Path, rel: str) -> str | None:
+    try:
+        return _safe.read_in(box, rel, _MAX_MODULE_BYTES).decode("utf-8")
+    except _safe.Missing:
+        return None
+    except (OSError, UnicodeDecodeError):
+        raise _NotLanded("not_landed", reason=f"/memory/{rel} cannot be read as text") from None
+
+
+def _write(box: Path, rel: str, text: str, written: list[str]) -> None:
+    """Through the writer's ``write`` tool: its path checks, never through a link."""
+    reply = _et.call("write", {"path": rel, "content": text}, box)
+    if reply.status != "ok":
+        raise _NotLanded("not_landed", reason=reply.text[:300])
+    written.append(rel)
+
+
+def _packages(box: Path) -> list[str]:
+    try:
+        names = sorted(os.listdir(Path(box) / "memory"))
+    except OSError:
+        return []
+    return [n for n in names if _IDENT.match(n)]
+
+
+def _landed(box: Path, cids: list[str]) -> tuple[str, str] | None:
+    """(procedure id, reader id) of the first of *cids* already landed in the library at *box*, by its marker."""
+    want = set(cids)
+    for pkg in _packages(box):
+        text = _box_text(box, f"memory/{pkg}/procedures.py")
+        for m in _MARK.finditer(text or ""):
+            if m.group(1) in want:
+                return m.group(2), m.group(3)
+    return None
+
+
+def _readers(box: Path) -> list[str]:
+    """The public functions of every ``readers.py`` in the library at *box* (parsed as data, never run here)."""
+    out = []
+    for pkg in _packages(box):
+        text = _box_text(box, f"memory/{pkg}/readers.py")
+        if not text:
+            continue
+        try:
+            body = ast.parse(text).body
+        except (SyntaxError, ValueError):
+            continue
+        out += [
+            f"memory.{pkg}.readers:{n.name}"
+            for n in body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and not n.name.startswith("_")
+        ]
+    return out
+
+
+def _free_case(box: Path, package: str, name: str) -> int:
+    k = 1
+    while (Path(box) / f"memory/{package}/tests/data/{name}.case{k}.json").exists() or (
+        Path(box) / f"memory/{package}/tests/data/{name}.case{k}.txt"
+    ).exists():
+        k += 1
+    return k
+
+
+def _manifest_add(box: Path, entries: list[dict]) -> None:
+    manifest, problem = _wt._read_manifest(box)
+    if problem is not None or not isinstance(manifest, dict):
+        raise _NotLanded("not_landed", reason=problem or "the draft manifest cannot be read")
+    items = manifest.get("items")
+    items = items if isinstance(items, list) else []
+    for entry in entries:
+        old = next((i for i in items if isinstance(i, dict) and i.get("item") == entry["item"]), None)
+        if old is None:
+            items.append(entry)
+            continue
+        for key in ("source_episodes", "tests"):
+            have = old.get(key) if isinstance(old.get(key), list) else []
+            old[key] = have + [v for v in entry.get(key, []) if v not in have]
+        for key in ("role", "reader", "kind"):
+            old.setdefault(key, entry.get(key))
+    manifest["items"] = items
+    try:
+        _wt.write_manifest(box, manifest)
+    except OSError as exc:
+        raise _NotLanded("not_landed", reason=f"cannot write the manifest ({_safe.errno_name(exc)})") from None
+
+
+# --- the tool -----------------------------------------------------------------------------------------------------
+
+
+def land(
+    args: dict,
+    *,
+    store: Path | None,
+    box: Path,
+    episode: Callable[[str], Any],
+    blob: Callable[[str], bytes],
+    batch: list[str] | tuple[str, ...] = (),
+    python: Path | None = None,
+    runner: Callable[..., SandboxResult] = run_confined,
+    parse: Callable[[str, str], tuple[str, str]] | None = None,
+) -> _wt.Reply:
+    """The ``land_capture`` tool (module docstring). Never raises: a refusal is the reply."""
+    where = (_wt.path_row("/memory/memory", "write"),)
+    work = Path(tempfile.mkdtemp(prefix="land-capture-"))
+    try:
+        return _land(args, store, Path(box), episode, blob, batch, python or PYTHON, runner, parse, work)
+    except _NotLanded as n:
+        return _wt.refused(TOOL, n.form, where, **n.fields)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _land(args, store, box, episode, blob, batch, python, runner, parse, work) -> _wt.Reply:
+    package, name = args.get("package"), args.get("name")
+    for what, v in (("package", package), ("name", name)):
+        if not isinstance(v, str) or not _IDENT.match(v) or keyword.iskeyword(v):
+            raise _NotLanded("bad_name", what=what, value=str(v)[:60])
+    from .layout import RESERVED_PACKAGES
+
+    if package in RESERVED_PACKAGES or package == "tests":
+        raise _NotLanded("bad_name", what="package", value=package)
+    if store is None:
+        raise _NotLanded("unknown_capture", capture_id=str(args.get("capture_id"))[:40])
+    cid, source, record = read_capture(Path(store), args.get("capture_id"))
+    # the request the capture was recorded on, and the value its episode handed back
+    eid, ep = next(
+        ((e, episode(e)) for e in record.get("episodes") or [] if isinstance(e, str) and episode(e) is not None),
+        (None, None),
+    )
+    if ep is None or not getattr(ep, "request", None):
+        raise _NotLanded("not_landed", reason=f"no recorded episode of capture {cid} is readable in this pass")
+    request_text = str(ep.request[0])
+    found, handed = _captures.handed_back(ep)
+    if not found:
+        raise _NotLanded("not_landed", reason=f"capture {cid}'s episode handed back no value to test against")
+    run = _captures.run_box(source, request_text, work=work / "capture", runner=runner, python=python)
+    if run.get("outcome") != "returned" or _captures.compare(run, True, handed) != _captures.REPRODUCES:
+        raise _NotLanded("not_landed", reason=f"capture {cid} does not give its recorded result on its request now")
+    written: list[str] = []
+    same = _landed(box, [c for c in record.get("same_as") or [] if isinstance(c, str)])
+    if same is not None:
+        proc_id, reader_id = same
+        package = proc_id.split(".")[1]
+        name = proc_id.rsplit(":", 1)[1]
+        reused, new_reader = True, False
+    else:
+        proc_id = f"memory.{package}.procedures:{name}"
+        reader_id = ""
+        for n, cand in enumerate(_readers(box)):
+            values, problem = _run_reader(cand, request_text, box, python, runner, work / f"reader-{n}")
+            if problem is None and values and values[0] is not None and json.loads(values[0]) == run.get("value"):
+                reader_id = cand
+                break
+        reused, new_reader = bool(reader_id), not reader_id
+        reader_id = reader_id or f"memory.{package}.readers:read_{name}"
+        _write_procedure(box, source, cid, package, name, reader_id, new_reader, written)
+    reader_mod, reader_fn = reader_id.split(":")
+    k = _free_case(box, package, name)
+    for ext, parser in (("txt", None), ("json", reader_id)):
+        dest = f"memory/{package}/tests/data/{name}.case{k}.{ext}"
+        fx_args = {"episode": eid, "source": "request:0", "dest": dest}
+        if parser is not None:
+            fx_args["parser"] = parser
+        reply = _wt.fixture(fx_args, episode, box, blob, batch, python=python, parse=parse)
+        if reply.status != "ok":
+            raise _NotLanded("not_landed", reason=f"{dest}: {reply.text[:300]}")
+        written.append(dest)
+    test_rel = f"memory/{package}/tests/test_{name}.py"
+    old = _box_text(box, test_rel)
+    text = (old.rstrip("\n") + "\n" if old else _test_head(package)) + case_tests(
+        name, reader_mod, reader_fn, package, k, handed,
+    )
+    refuses = None
+    if not old:
+        _, why = _run_reader(reader_id, "", box, python, runner, work / "refusal")
+        refuses = bool(why) and " raises MemoryInputError " in why
+        text += refusal_test(name, reader_mod, reader_fn, package, refuses)
+    if _looks_like_key(text):
+        raise _NotLanded("not_landed", reason="the recorded result holds a key-shaped string")
+    _write(box, test_rel, text, written)
+    entries = [
+        {
+            "item": proc_id,
+            "kind": "function",
+            "source_episodes": [eid],
+            "tests": [test_rel],
+            "role": "procedure",
+            "reader": reader_id,
+        },
+    ]
+    if new_reader:
+        entries.append(
+            {"item": reader_id, "kind": "function", "source_episodes": [eid], "tests": [test_rel], "role": "reader"},
+        )
+    _manifest_add(box, entries)
+    lines = [f"Landed capture {cid} from episode {eid}:"]
+    if same is not None:
+        lines.append(f"- a new case of {proc_id}, which an earlier capture of the same work landed")
+    else:
+        lines.append(f"- procedure {proc_id}")
+        lines.append(f"- reader {reader_id}" + (" (reused: it gives the same value on this request)" if reused else ""))
+    lines += [f"- wrote /memory/{p}" for p in written]
+    lines.append("- the manifest entries of " + ", ".join(e["item"] for e in entries) + " in /memory/.pass/manifest.json")
+    if refuses is False:
+        lines.append(
+            f"- {reader_id} does not raise MemoryInputError on empty text: its refusal test is marked as a known "
+            "failure until it does",
+        )
+    lines.append("Change any of them before you finish; check judges them as any other change.")
+    return _wt.Reply("\n".join(lines), paths=tuple(_wt.path_row(f"/memory/{p}", "write") for p in written))
+
+
+def _run_reader(item, text, box, python, runner, work):
+    from .procedures import run_reader
+
+    work.mkdir(parents=True, exist_ok=True)
+    return run_reader(item, [text], tree=box, python=python, work=work, runner=runner)
+
+
+def _write_procedure(box, source, cid, package, name, reader_id, new_reader, written) -> None:
+    init = f"memory/{package}/__init__.py"
+    if _box_text(box, init) is None:
+        _write(box, init, '"""Procedures landed from captured attempts, with the readers of their requests."""\n', written)
+    plan = [("procedures.py", procedure_block(source, cid, name, package, reader_id))]
+    if new_reader:
+        plan.append(("readers.py", reader_block(source, name, package)))
+    for mod, (block, binds) in plan:
+        rel = f"memory/{package}/{mod}"
+        old = _box_text(box, rel)
+        if old:
+            try:
+                taken = set(top_names(old)) & set(binds)
+            except (SyntaxError, ValueError):
+                raise _NotLanded("not_landed", reason=f"/memory/{rel} does not parse") from None
+            if taken:
+                raise _NotLanded(
+                    "not_landed",
+                    reason=f"/memory/{rel} already defines {', '.join(sorted(taken))}; choose another name",
+                )
+        text = _join(old, block)
+        if _looks_like_key(text):
+            raise _NotLanded("not_landed", reason=f"/memory/{rel} would hold a key-shaped string")
+        _write(box, rel, text, written)

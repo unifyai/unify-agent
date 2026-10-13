@@ -538,7 +538,11 @@ LIBRARY_ITEM_FIELDS: tuple[str, ...] = (
     "field_types",
     "adopts",
     "replaces",
+    "role",
+    "reader",
 )
+#: A library function's ``role``, when it has one: a whole-request procedure, or a reader of request text.
+ITEM_ROLES: tuple[str, ...] = ("procedure", "reader")
 #: The top-level keys a library-mode manifest takes; any other key is refused, never dropped. ``fixtures`` is
 #: always rewritten by the harness; the other keys this parser does not read are read by the gate's library checks,
 #: the pool, the curate pass and the pass itself.
@@ -670,6 +674,11 @@ def _parse_library_mode(manifest: dict) -> Manifest:
             raise ManifestError(f"{item}: unknown or unsupported kind {kind!r}"[:200])
         if not patterns[kind].match(item):
             raise ManifestError(f"{item!r}: not a {kind} id"[:200])
+        role, reader = raw.get("role"), raw.get("reader")
+        if role is not None and (kind != "function" or role not in ITEM_ROLES):
+            raise ManifestError(f"{item}: role is one of {', '.join(ITEM_ROLES)}, on a function"[:300])
+        if reader is not None and (role != "procedure" or not isinstance(reader, str) or not layout.FUNCTION_ID.match(reader)):
+            raise ManifestError(f"{item}: reader names a function id, on a function whose role is procedure"[:300])
         tests = tests_of(raw.get("tests"), f"{item}: tests")
         if kind == "function" and not tests:
             raise ManifestError(

@@ -5177,6 +5177,32 @@ class WriterPass:
                                     reply.form,
                                     reply.paths,
                                 )
+                    elif library and name == "land_capture":
+                        from .land_capture import land as _land
+
+                        calls += 1  # a writer action, against the step guard
+                        writing()
+                        reply = await asyncio.to_thread(
+                            _land,
+                            args,
+                            store=self._captures_root(),
+                            box=box,
+                            episode=self._episode,
+                            blob=self.gate._blob,
+                            batch=self._batch,
+                            python=getattr(self.gate, "python", None),
+                        )
+                        if cell_session is not None and reply.status == "ok":
+                            # the quota after the call, as after fixture: a breach stops the interpreter
+                            over_quota = await cell_session.measure_quota()
+                            if over_quota is not None:
+                                stop = over_quota
+                                reply = _wt.Reply(
+                                    f"{reply.text}\n({over_quota}; the pass is refused)",
+                                    reply.status,
+                                    reply.form,
+                                    reply.paths,
+                                )
                     elif library and name in _et.NAMES:
                         # host-side, never through a link (edit_tools.py); the quotas are measured as after a cell
                         if stop is not None:
