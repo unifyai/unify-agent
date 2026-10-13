@@ -505,19 +505,23 @@ REQUEST_REPLY_BYTES = 1_000_000
 
 
 def request_of(request: Any) -> tuple[Optional[str], Any]:
-    """An ``act()`` request as ``current_request`` gives it: ``(text, data)``. The text is the requester's text
-    (``bound_request.text_of``); a structured request (an object or a list that is not a message) is its JSON text,
-    with the request itself, as JSON data, for *data*. ``(None, None)`` when it has neither."""
+    """An ``act()`` request as ``current_request`` gives it: ``(text, data)``, exactly what the actor's first user
+    message shows and nothing more. The text is the requester's text as the loop gives it (``bound_request.text_of``:
+    a string, a user message's content, the latest user message of a list); a field of the request the message does
+    not show (an id, a label) never reaches the box. *data* is that text's JSON value when the whole text is JSON (an
+    object or a list), else None. ``(None, None)`` when the request shows no text."""
     from unify.common._async_tool.bound_request import text_of
 
     text = text_of(request)
-    if text is not None or not isinstance(request, (dict, list)):
-        return (text or None), None
-    try:
-        data = json.loads(json.dumps(request))
-    except (TypeError, ValueError):
+    if not isinstance(text, str) or not text.strip():
         return None, None
-    return json.dumps(data), data
+    data = None
+    if text.strip()[:1] in ("{", "["):
+        try:
+            data = json.loads(text)
+        except ValueError:
+            data = None
+    return text, data
 
 
 def _memory_run_request() -> Optional[str]:
@@ -533,13 +537,16 @@ def _memory_run_request() -> Optional[str]:
 
 def current_request(ctx: Any, args: dict) -> Any:
     """The request the calling agent works on, as JSON text ``{"text": ..., "data": ...}``: the ``act()`` request the
-    request's state holds, else the memory run's (``integration.request``), whose data is None. The memory package
-    calls it through the channel client; it is never in a cell's ``tools``. Refused when no request is known, or
-    when its JSON is larger than a reply carries."""
+    request's state holds (:func:`request_of`), else, for the actor only, the memory run's (``integration.request``),
+    whose data is None; a teammate gets only the task it was given. The memory package calls it through the channel
+    client; it is never in a cell's ``tools``. Refused when no request is known, or when its JSON is larger than a
+    reply carries."""
     state = ctx.state
     text, data = getattr(state, "request_text", None), getattr(state, "request_data", None)
-    if not isinstance(text, str) or not text:
+    if (not isinstance(text, str) or not text) and getattr(ctx, "agent", None) == "actor":
         text, data = _memory_run_request(), None
+    if not isinstance(text, str) or not text:
+        text = None
     if text is None:
         return _refused(refusal("current_request", "unavailable", why="no current request is known"))
     reply = json.dumps({"text": text, "data": data})

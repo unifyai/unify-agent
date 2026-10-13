@@ -409,23 +409,43 @@ async def test_the_host_gives_the_acts_request_and_refuses_when_none_is_known(tm
             request=request,
         )
 
-    def ask(tools: in_code_tools.InCodeTools) -> object:
-        return H.current_request(SimpleNamespace(state=tools.state), {})
+    def ask(tools: in_code_tools.InCodeTools, agent: str = "actor") -> object:
+        return H.current_request(SimpleNamespace(state=tools.state, agent=agent), {})
 
     text = session("Total the table, please.", "a")
     assert "current_request" in text.channel_allow and "current_request" in text.specs
     assert "current_request" not in text.allow and "current_request" not in text.stub
     assert json.loads(ask(text).text) == {"text": "Total the table, please.", "data": None}
-    structured = session({"task": "total", "rows": [[1, 2]]}, "b")
-    got = json.loads(ask(structured).text)
-    assert got["data"] == {"task": "total", "rows": [[1, 2]]} and json.loads(got["text"]) == got["data"]
+    # exactly what the first user message shows: never a field of the request it does not show
+    structured = session({"task": "total", "rows": [[1, 2]], "task_id": "arc-0451"}, "b")
+    assert ask(structured).status == "refused"  # an object with no message text shows the model no text
+    shown_request = {"role": "user", "content": "Total the table.", "task_id": "arc-0451", "label": "x"}
+    shown = session(shown_request, "e")
+    assert json.loads(ask(shown).text) == {"text": "Total the table.", "data": None}
+    assert "arc-0451" not in ask(shown).text and "label" not in ask(shown).text
+    grid = '{"train": [{"input": [[1, 2]], "output": [[2, 1]]}], "test": [{"input": [[3, 4]]}]}'
+    arc = session(grid, "f")  # a request that is all JSON: its value is the data, read from the text shown
+    assert json.loads(ask(arc).text) == {"text": grid, "data": json.loads(grid)}
+    # each text is the one the loop's first user message carries (loop.py's single-message path wraps a request that
+    # is not a message as the user's content)
+    from unify.common._async_tool.bound_request import text_of
+
+    for tools, req in ((text, "Total the table, please."), (shown, shown_request), (arc, grid)):
+        first = req if isinstance(req, dict) else {"role": "user", "content": req}
+        assert json.loads(ask(tools).text)["text"] == text_of(first)
     message = session([{"role": "user", "content": "first"}, {"role": "user", "content": "the latest"}], "c")
     assert json.loads(ask(message).text) == {"text": "the latest", "data": None}
     nothing = session(None, "d")
     refused = ask(nothing)
     assert refused.status == "refused" and refused.form == "unavailable"
-    # the memory run's request is the fallback
+    # the memory run's request is the actor's fallback only: a teammate gets only the task it was given
     monkeypatch.setattr(request_mod, "_CURRENT", SimpleNamespace(request="the memory run's request"))
     assert json.loads(ask(nothing).text) == {"text": "the memory run's request", "data": None}
-    for tools in (text, structured, message, nothing):
+    # the channel's real context (the request's binding, as the channel copies it per call) names its agent
+    assert nothing.binding.agent == "actor"
+    assert json.loads(H.current_request(nothing.binding, {}).text) == {"text": "the memory run's request", "data": None}
+    teammate = ask(nothing, agent="teammate")
+    assert teammate.status == "refused" and teammate.form == "unavailable"
+    assert "the memory run's request" not in teammate.text
+    for tools in (text, structured, message, nothing, shown, arc):
         await tools.close()
