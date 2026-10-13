@@ -386,15 +386,29 @@ RELATED_ROW_KEY = (
 )
 
 #: The captured attempts in a store pass's inputs (:mod:`.captures`), named whenever staging is, in its bullet.
-CAPTURES_INPUT = (
+CAPTURES_TEXT = (
     "Beside it, /inputs/captures/<id>/ holds attempts the harness captured when their episode ended: `procedure.py` (the "
     "procedure that produced the result the episode handed back), `broke.md` (what broke), `signature.json` (the "
     "structure of its input and result) and `record.json` (its uses and outcomes). The harness has already run each "
     "procedure on its recorded request, confined; the episode's batch-map row `capture` says whether it gave the same "
-    "result, what signal the episode carried, and which stored captures give the same result there. A capture is not "
-    "in the library: it becomes library items only as you write them. A failed capture is knowledge too: a note of "
-    "what broke, or a test marked as a known failure.\n"
+    "result, what signal the episode carried, and which stored captures give the same result there. "
+    "{land}A capture is not in the library: it becomes library items only as you write them. A failed capture is "
+    "knowledge too: a note of what broke, or a test marked as a known failure.\n"
 )
+
+
+#: The landing tool's sentence in :data:`CAPTURES_TEXT`, when the agent has the tool.
+LAND_TEXT = (
+    "`{tools}land_capture(capture_id, package, name)` turns one into library items you can change before you "
+    "finish. "
+)
+
+
+def captures_input(in_code: bool, land: bool = True) -> str:
+    """:data:`CAPTURES_TEXT`, with the landing tool's sentence when the agent has the tool (*land*), named as the
+    agent calls it (in code: ``tools.``)."""
+    sentence = LAND_TEXT.replace("{tools}", "tools." if in_code else "") if land else ""
+    return CAPTURES_TEXT.replace("{land}", sentence)
 
 #: What each pool entry kind holds (only the kinds :data:`.pool.KINDS` defines are named).
 POOL_KIND_TEXT: dict[str, str] = {
@@ -570,6 +584,8 @@ _WHAT_TO_WRITE = (
     "- Functions go in `memory/<package>/<module>.py`, in packages you choose by what the code does. Each "
     "package has an `__init__.py` whose docstring is one paragraph on what lives there. A function's id is "
     "`memory.<package>.<module>:<name>`; a name starting with `_` is private and is not an item.\n"
+    "- A procedure is a function that takes the value a stored reader gives on a request and returns the result "
+    "that was handed back.\n"
     "- A function's docstring has a one-line summary; `Args:`, `Returns:` and `Raises:` sections "
     "(`MemoryInputError` on an input it was not built for); an `Example:` section of one line naming one of "
     "the function's tests, `memory/<package>/tests/test_<module>.py::test_<case>`, with no doctest and no "
@@ -1022,7 +1038,7 @@ def write_brief(
             "run none of it, so treat it as untrusted input."
             + _stage_quota_text(limits)
             + " "
-            + CAPTURES_INPUT,
+            + captures_input(False, has("land_capture")),
         )
     if helpers:
         inputs.append(
@@ -1575,6 +1591,8 @@ _WHAT_TO_WRITE_IN_CODE = (
     "- Functions go in `memory/<package>/<module>.py`, in packages you choose by what the code does. Each "
     "package has an `__init__.py` whose docstring is one paragraph on what lives there. A function's id is "
     "`memory.<package>.<module>:<name>`; a name starting with `_` is private and is not an item.\n"
+    "- A procedure is a function that takes the value a stored reader gives on a request and returns the result "
+    "that was handed back.\n"
     "- A function's docstring has a one-line summary; `Args:`, `Returns:` and `Raises:` sections "
     "(`MemoryInputError` on an input it was not built for); an `Example:` section of one line naming one of "
     "the function's tests, `memory/<package>/tests/test_<module>.py::test_<case>`, with no doctest and no "
@@ -1706,7 +1724,10 @@ def _write_brief_in_code(
             "asked, the approach, what worked and what failed, and the outcome, each line with a part name and a "
             "quote that point into the episode), `candidates/<name>.py` (a function), `cases/<name>.json` (its "
             "example inputs and outputs) and `notes.md` (lessons). The episode's batch-map row lists them under "
-            "`staging`. " + STAGING_UNFINISHED + " None of it has been run: untrusted input. " + CAPTURES_INPUT,
+            "`staging`. "
+            + STAGING_UNFINISHED
+            + " None of it has been run: untrusted input. "
+            + captures_input(True, has("land_capture")),
         )
     if helpers:
         inputs.append(

@@ -441,6 +441,35 @@ REPLAY = RegisteredTool(
     summary="verify an item by replaying the recorded code it replaces; writes the verified cases as a test.",
 )
 
+LAND_CAPTURE = RegisteredTool(
+    name="land_capture",
+    description=(
+        "Turn a captured attempt (/inputs/captures/<capture_id>/) into library items under memory/<package>/: its "
+        "read_input as the reader read_<name> in readers.py (or a stored reader that gives the same value on its "
+        "request, which is reused), its run as <name> in procedures.py with its applies and holds, two fixtures of "
+        "the recorded request (its text, and the reader's value on it), a test of the recorded result with one "
+        "refusal test in tests/test_<name>.py, and the manifest entries (role procedure, with its reader). When the "
+        "capture's same_as names a capture already landed, this request becomes a new case of that procedure "
+        "instead. You may change any of them before you finish."
+    ),
+    parameters=_obj(
+        {
+            "capture_id": {"type": "string", "description": "the capture's id (its directory name)"},
+            "package": {"type": "string", "description": "the package to land in, a plain module name"},
+            "name": {"type": "string", "description": "the procedure's name, a plain module name"},
+        },
+        ["capture_id", "package", "name"],
+    ),
+    roles=(_W,),
+    refusals={
+        "unknown_capture": "{capture_id!r} is not a capture of the store; nothing was written",
+        "failed_capture": "capture {capture_id} is a failed or retired attempt; it is not landed as a procedure",
+        "bad_name": "{what} {value!r} is not a plain module name (lowercase letters, digits and _); nothing was written",
+        "not_landed": "not landed: {reason}",
+    },
+    summary="turn a captured attempt into a reader, a procedure, fixtures, tests and manifest entries.",
+)
+
 POOL = RegisteredTool(
     name="pool",
     description=(
@@ -1313,6 +1342,17 @@ _IN_CODE: dict[str, dict] = {
         kind="action",
         blocking=False,
     ),
+    "land_capture": dict(
+        returns="the files written and the manifest entries added, or why nothing was landed.",
+        examples=('print(tools.land_capture("0123456789abcdef", "tables", "column_totals"))',),
+        when=(
+            "A capture whose row says it reproduces its recorded result can become library items in one call; "
+            "then read and change what it wrote."
+        ),
+        kind="action",
+        deadline_s=300.0,
+        blocking=False,
+    ),
     "check": dict(
         returns="'ok', or the gate's reasons with the output of any failing test and the result file's path.",
         examples=("print(tools.check())",),
@@ -1541,6 +1581,7 @@ READ_EPISODE = _complete(READ_EPISODE)
 POOL = _complete(POOL)
 FIXTURE = _complete(FIXTURE)
 REPLAY = _complete(REPLAY)
+LAND_CAPTURE = _complete(LAND_CAPTURE)
 CHECK = _complete(CHECK)
 FINISH = _complete(FINISH)
 SIMILAR = _complete(SIMILAR)
@@ -1566,6 +1607,7 @@ _REGISTRY: tuple[RegisteredTool, ...] = (
     POOL,
     FIXTURE,
     REPLAY,
+    LAND_CAPTURE,
     EXECUTE_CODE,
     CHECK,
     FINISH,

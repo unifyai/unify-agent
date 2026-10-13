@@ -106,7 +106,7 @@ class WriterCalls:
             self.calls += 1  # a check is a call against max_calls
             self.writing()
             return None
-        if tool in ("replay", "fixture"):
+        if tool in ("replay", "fixture", "land_capture"):
             self.calls += 1  # a writer action, against the step guard
             self.writing()
             return None
@@ -305,6 +305,29 @@ async def fixture(ctx: Any, args: dict) -> "_wt.Reply":
     """The ``fixture`` tool, from the worker pool under the pass's /memory lock, then the quota measure."""
     st: WriterCalls = ctx.state
     return await _after_write(st, await in_thread(_fixture_work, st, args))
+
+
+def _land_work(st: WriterCalls, args: dict) -> "_wt.Reply":
+    from .land_capture import land
+
+    w = st.writer
+    with st.memory_lock:
+        return land(
+            args,
+            store=w._captures_root(),
+            box=st.box,
+            episode=w._episode,
+            blob=w.gate._blob,
+            batch=w._batch,
+            python=getattr(w.gate, "python", None),
+        )
+
+
+async def land_capture(ctx: Any, args: dict) -> "_wt.Reply":
+    """The ``land_capture`` tool (:mod:`.land_capture`): the capture read from the harness's store, the files written
+    through the ``write`` and ``fixture`` paths under the pass's /memory lock, then the quota measure."""
+    st: WriterCalls = ctx.state
+    return await _after_write(st, await in_thread(_land_work, st, args))
 
 
 async def replay(ctx: Any, args: dict) -> "_wt.Reply":
@@ -632,6 +655,7 @@ HANDLED = (
     "similar",
     "fixture",
     "replay",
+    "land_capture",
     "check",
     "finish",
     "write",

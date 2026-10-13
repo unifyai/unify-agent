@@ -73,6 +73,15 @@ COVERAGE: dict[tuple[str, str], str] = {
     ("fixture", "link"): R,
     ("fixture", "not_input_lines"): R,
     ("replay", "not_run"): R,
+    ("land_capture", "unknown_capture"): R,
+    ("land_capture", "bad_name"): R,
+    ("land_capture", "failed_capture"): (
+        "needs a capture store holding a failed attempt, which this pass (fork off) has none of; reached in "
+        "test_land_capture.py"
+    ),
+    ("land_capture", "not_landed"): (
+        "needs a capture store, which this pass (fork off) has none of; reached in test_land_capture.py"
+    ),
     ("pool", "bad_op"): "the schema's enum refuses any other op as bad_arguments before the handler runs",
     ("pool", "bad_status"): "the schema's enum refuses any other status as bad_arguments before the handler runs",
     ("pool", "unknown_entry"): R,
@@ -254,6 +263,8 @@ WRITER_CELL = [
         {"episode": "e1", "dest": "memory/pkg/tests/data/in.jsonl", "source": "request:0", "append": True},
     ),
     ("replay", {"item": "nothing"}),
+    ("land_capture", {"capture_id": "nope", "package": "pkg", "name": "proc"}),
+    ("land_capture", {"capture_id": "0123456789abcdef", "package": "Bad-Pkg", "name": "proc"}),
     ("__setup__", {"input": ["pool/openone/entry.json", json.dumps({"id": "openone", "status": "open"})]}),
     ("__setup__", {"input": ["pool/closedone/entry.json", json.dumps({"id": "closedone", "status": "retired"})]}),
     ("pool", {"op": "show", "id": "nope"}),

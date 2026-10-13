@@ -20,7 +20,7 @@ from unify.memory.trigger import PassRequest
 from unify.memory.usage import LIBRARY_COPY, writer_usage_record
 
 _SCHEMA = {"type": "object", "properties": {}}
-_WRITE_ONLY_TOOLS = ("pool", "similar", "delegate", "replay")
+_WRITE_ONLY_TOOLS = ("pool", "similar", "delegate", "replay", "land_capture")
 
 
 def _spec(name, roles, requires=None):
@@ -44,6 +44,7 @@ _FULL = (
     _spec("pool", {"write"}, requires="pool"),
     _spec("fixture", {"write", "curate"}),
     _spec("replay", {"write"}),
+    _spec("land_capture", {"write"}),
     _spec("delegate", {"write"}),
     _spec("execute_code", {"write", "curate", "helper"}),
     _spec("check", {"write", "curate"}),
@@ -179,6 +180,7 @@ def test_a_sentence_relying_on_a_tool_appears_only_when_it_is_registered(registr
         "similar": "`similar` finds",
         "delegate": "with `delegate`",
         "replay": "calling `replay`",
+        "land_capture": "land_capture(capture_id, package, name)",
     }
     for tool, phrase in uses.items():
         assert (phrase in text) == (tool in names), tool
