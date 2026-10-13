@@ -317,9 +317,18 @@ def test_a_name_the_stub_lacks_names_the_nearest_and_where_to_look(stub):
     with pytest.raises(AttributeError) as err:
         tools.reed("/inputs/a.md")
     text = str(err.value)
-    assert text.startswith("tools.reed: tools has no 'reed'") and "Nearest: read" in text, text
+    assert text.startswith("tools.reed: tools has no attribute 'reed'") and "Nearest: read" in text, text
+    assert "Refused" not in text, text
     assert teaches(text, "tools.reed", right_call="tools.list() lists yours.") == []
     assert not hasattr(tools, "finish_now") and not hasattr(tools, "_private") and not hasattr(tools, "__wrapped__")
+
+
+def test_a_tool_of_another_role_says_it_is_not_one_of_yours(stub):
+    with pytest.raises(AttributeError) as err:
+        stub("actor").finish("done")
+    text = str(err.value)
+    assert text.startswith("tools.finish: tools has no attribute 'finish': it is not one of your tools"), text
+    assert teaches(text, "tools.finish", right_call="tools.list() lists yours.") == []
 
 
 def test_the_stub_keeps_its_signatures_help_and_errors_raised_inside_a_call(stub):

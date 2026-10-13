@@ -455,7 +455,9 @@ def test_no_writer_reply_or_row_carries_an_environment_value_a_host_path_or_a_ro
     printed = sum(1 for x in lines if " -> " in x or " !! " in x)
     assert len(WRITER_REFUSALS) - 1 <= printed <= len(WRITER_REFUSALS), cell
     assert "bogus_tool !! Refused: refused: unknown tool 'bogus_tool'" in cell
-    assert "read_episode !! Refused: refused: unknown argument 'nope'" in cell
+    assert (
+        "read_episode !! Refused: refused: tools.read_episode(episode='e1', nope=1): there is no argument 'nope'"
+    ) in cell
     assert lines[-1].startswith("not finished: "), cell
     in_code = [r for r in rows if r.get("via") == "channel"]
     assert [r["tool"] for r in in_code] == [t for t, _ in WRITER_REFUSALS], _summary(out, rows)
