@@ -77,14 +77,18 @@ cell raised any::
               "helpers": {helper_id: {"ok": n, "refused": n, "error": n}}}
                                        # only when a helper call was seen
 
-The package's own helpers raise ``memory.helper_call`` with the same
-arguments, under the ids ``memory:index``, ``memory:show``, ``memory:find``,
-``memory:match`` and ``memory:run``; they are counted under ``helpers``
-only, never as items.
+The package's own calls raise ``memory.helper_call`` with the same
+arguments, under the ids ``memory:get`` and ``memory:items`` (lookups),
+``memory:ask`` (a question to the librarian), and, for the calls they replace
+and their aliases, ``memory:index``, ``memory:show``, ``memory:find``,
+``memory:match`` (also an item's applicability check, ``Item.fits``) and
+``memory:run`` (also a function item's tracked call); they are counted under
+``helpers`` only, never as items.
 
-``memory.match`` also raises ``memory.match_result`` with two tuples of
-``(id, level, status, matched)`` rows (the procedures it listed, the failed
-attempts it listed apart), and ``memory.run`` raises ``memory.run_result``
+``memory.match`` and ``Item.fits`` also raise ``memory.match_result`` with
+two tuples of ``(id, level, status, matched)`` rows (the procedures listed,
+the failed attempts listed apart), and ``memory.run`` and a function item's
+call raise ``memory.run_result``
 with its target id, its outcome (``returned``, ``refused`` or ``error``),
 whether two runs agreed (``yes``, ``no`` or ``unchecked``), its level, its
 conditions (``none``, ``held``, ``not-held`` or ``error``) and a tuple of
@@ -192,13 +196,23 @@ CALL_OUTCOMES = ("ok", "refused", "error")
 #: The library package's own helpers raise this event, with the same arguments, under these ids.
 HELPER_EVENT = "memory.helper_call"
 HELPER_ITEMS = frozenset(
-    {"memory:index", "memory:show", "memory:find", "memory:match", "memory:run", "memory:ask"},
+    {
+        "memory:get",
+        "memory:items",
+        "memory:ask",
+        "memory:index",
+        "memory:show",
+        "memory:find",
+        "memory:match",
+        "memory:run",
+    },
 )
 #: A failed call of an item or a helper: (id, exception type, first message line, arguments' shape).
 FAILED_EVENT = "memory.call_failed"
 #: The helper ids a failure may name.
 FAILURE_HELPERS = HELPER_ITEMS
-#: What ``memory.match`` listed and how a ``memory.run`` went (ids and outcomes only).
+#: What ``memory.match`` or ``Item.fits`` listed and how a tracked call (``memory.run``, or calling a function item)
+#: went (ids and outcomes only).
 MATCH_EVENT = "memory.match_result"
 RUN_EVENT = "memory.run_result"
 #: What ``memory.ask`` got back (UNIFY_MEMORY_LIBRARIAN=on): the ids the answer listed as fitting, whether it said

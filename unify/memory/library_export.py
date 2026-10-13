@@ -1,8 +1,10 @@
 """The generated files of every library-mode copy of the library: the actor's export and the writer's box.
 
-* ``memory/__init__.py``: :mod:`.library_helper`, byte for byte (``index``, ``show``, ``find``);
+* ``memory/__init__.py``: :mod:`.library_helper`, byte for byte (``memory.get``, ``memory.items``, the ``Item``
+  type and, for one build, the earlier calls as aliases), with ``memory/_contract.py``, the contract runtime it
+  checks its calls with, and ``memory/__init__.pyi``, its typed stub (:func:`stub_source`);
 * ``INDEX.md`` and ``links.json``: :mod:`.library_index`;
-* ``.memory/items.json``: what ``show`` reads per item, namely its kind, path, signature or title, status, a
+* ``.memory/items.json``: what ``memory.get`` reads per item, namely its kind, path, signature or title, status, a
   function's evidence level with the findings that set it, the verification and use records (None without item
   records), a function's example call (its record's, shown only while its test file still quotes it:
   :mod:`.example_view`) and the subjects of the commits that changed it;
@@ -14,7 +16,8 @@
   catalogue or its footer ships);
 * ``.memory/shapes.py``: :mod:`.analysis.shapes`, byte for byte;
 * with ``UNIFY_MEMORY_LIBRARIAN=on`` only: ``.memory/catalogue.md`` and ``.memory/dispatch.json``, the librarian's
-  catalogue and the procedures' recognisers (:func:`librarian_files`), and ``memory.ask`` in the package.
+  catalogue and the procedures' recognisers (:func:`librarian_files`), and ``memory.ask`` in the package and its
+  stub.
 
 None of these is ever committed (the gate's G1 check refuses them). Each is a pure function of the tree, the item
 statuses, the recorded shapes and the history, so the same commit gives the same bytes (cache rule).
@@ -35,6 +38,7 @@ from .layout import (
     LINKS_FILE,
     RESERVED_CONTRACT,
     RESERVED_INIT,
+    RESERVED_STUB,
     Library,
     classify,
     discover,
@@ -262,7 +266,7 @@ def items_data(
     records: Mapping[str, dict] | None = None,
     examples: Callable[[str], dict | None] | None = None,
 ) -> dict:
-    """``.memory/items.json``: everything :func:`.library_helper.show` needs that the files do not hold.
+    """``.memory/items.json``: everything ``memory.get`` and ``memory.items`` need that the files do not hold.
 
     *examples* gives a function's shown example call (:func:`.example_view.examples_of`); None shows none.
     """
@@ -751,11 +755,13 @@ def librarian_files(
     strip: Strip | None = None,
 ) -> dict[str, bytes]:
     """The librarian's generated files of the copy at *tree* (``UNIFY_MEMORY_LIBRARIAN=on``): ``catalogue.md``,
-    ``dispatch.json`` and the package with ``memory.ask`` (:data:`ASK_SOURCE` after :mod:`.library_helper`)."""
+    ``dispatch.json``, and the package with ``memory.ask`` (:data:`ASK_SOURCE` after :mod:`.library_helper`) and
+    its stub."""
     tree = Path(tree)
     lib = discover(tree)
     return {
         RESERVED_INIT: package_source(librarian=True),
+        RESERVED_STUB: stub_source(librarian=True),
         CATALOGUE_FILE: catalogue_text(
             tree,
             lib,
@@ -786,6 +792,31 @@ def package_source(librarian: bool = False) -> bytes:
     if not librarian:
         return base
     return base + b"\n\n" + ASK_SOURCE.read_bytes()
+
+
+#: The stub's opening comment.
+STUB_HEADER = (
+    "memory: the library's typed contract, generated with every copy of the library from the package's own\n"
+    "definitions; edits are discarded. help(memory) shows the same calls and types."
+)
+
+
+def stub_source(librarian: bool = False) -> bytes:
+    """The generated ``memory/__init__.pyi``: the package's public contract as typed Python
+    (:func:`unify.common.contract_runtime.render_pyi` over the package's own definitions): the types :class:`Fit`,
+    :class:`Item` and :class:`Items`, then ``memory.ask`` (with *librarian*), ``memory.items`` and ``memory.get``,
+    each with its docstring. The same code gives the same bytes."""
+    from unify.common.contract_runtime import render_pyi
+
+    from . import library_helper as lh
+
+    namespace: dict[str, Any] = {"Fit": lh.Fit, "Item": lh.Item, "Items": lh.Items}
+    if librarian:
+        from . import library_ask
+
+        namespace["ask"] = library_ask.ask
+    namespace.update({"items": lh.items, "get": lh.get})
+    return render_pyi(namespace, header=STUB_HEADER).encode("utf-8")
 
 
 def generated_library_mode(
@@ -834,6 +865,7 @@ def generated_library_mode(
     out = {
         RESERVED_INIT: (_HERE / "library_helper.py").read_bytes(),
         RESERVED_CONTRACT: CONTRACT_SOURCE.read_bytes(),
+        RESERVED_STUB: stub_source(),
         INDEX_FILE: render_index(
             lib,
             links,

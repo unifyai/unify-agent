@@ -93,6 +93,8 @@ def _tree(root: Path, files: dict | None = None) -> Path:
         ("memory/text/tests/data/deep/x.csv", "fixture"),
         ("notes/text/dates.md", "note"),
         ("memory/__init__.py", "generated"),
+        ("memory/_contract.py", "generated"),
+        ("memory/__init__.pyi", "generated"),
         ("INDEX.md", "generated"),
         ("links.json", "generated"),
         (".memory/items.json", "generated"),
@@ -103,6 +105,8 @@ def _tree(root: Path, files: dict | None = None) -> Path:
             "memory/find/x.py",
             None,
         ),  # would replace memory.find in the package's namespace
+        ("memory/get/x.py", None),  # would replace memory.get
+        ("memory/items/x.py", None),  # would replace memory.items
         ("memory/text/tests.py", None),
         ("memory/tests/x.py", None),
         ("memory/text/tests/__init__.py", None),

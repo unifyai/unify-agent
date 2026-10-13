@@ -71,8 +71,11 @@ _ERROR_CHARS = 2000
 MAX_LIBRARY_FAILURES = 100
 #: What a library failure is: a library item's call, one of the package's helpers, or a cell whose error was a
 #: failed import of the package or a missing ``memory`` name.
-LIBRARY_FAILURE_KINDS = ("item", "index", "show", "find", "match", "import", "name")
-_FAILURE_HELPERS = ("index", "show", "find", "match")
+LIBRARY_FAILURE_KINDS = ("item", "get", "items", "index", "show", "find", "match", "run", "import", "name")
+#: The package's calls whose raised errors are listed: the lookups, the aliases, ``Item.fits`` (``match``), and a
+#: function item's call refused before it ran (``run``: a note called); a tracked call reports its item's own
+#: failure through the item's ``memory.call`` event instead.
+_FAILURE_HELPERS = ("get", "items", "index", "show", "find", "match", "run")
 #: The most characters kept of a failure's message line and of a helper call's arguments' shape.
 LIBRARY_FAILURE_TEXT = 200
 _EXCEPTION_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,99}")
@@ -302,8 +305,10 @@ def runtime_calls_empty() -> dict:
     }
 
 
-#: The library package's own helpers whose calls the use record counts (``memory.helper_call`` audit events).
-LIBRARY_HELPERS = ("index", "show", "find", "match", "run")
+#: The library package's own calls the use record counts (``memory.helper_call`` audit events): the lookups
+#: (``get``, ``items``; and ``index``, ``show``, ``find``, the aliases kept for one build), the applicability checks
+#: (``match``: the alias and ``Item.fits``) and the tracked calls (``run``: the alias and a function item's call).
+LIBRARY_HELPERS = ("get", "items", "index", "show", "find", "match", "run")
 #: ``memory.ask`` (UNIFY_MEMORY_LIBRARIAN=on): counted with the helpers, and listed only when the librarian is on.
 ASK_HELPER = "ask"
 #: ``memory.ask`` results a request's evidence lists; past this they are counted only.
@@ -311,10 +316,10 @@ MAX_ASK_ROWS = 200
 
 
 def library_helper_calls(runtime: Any, librarian: bool = False) -> dict:
-    """The library-mode use record's ``library_helper_calls``: for each of the package's helpers
-    (``memory.index``, ``memory.show``, ``memory.find``, ``memory.match``, ``memory.run``), the calls the audit hook
-    saw, by outcome
-    ({ok, refused, error}). Counts only; zeros when none was seen."""
+    """The library-mode use record's ``library_helper_calls``: for each of the package's calls
+    (:data:`LIBRARY_HELPERS`: ``memory.get``, ``memory.items``, the aliases ``memory.index``, ``memory.show``,
+    ``memory.find``, ``memory.match`` with ``Item.fits``, and ``memory.run`` with a function item's call), the calls
+    the audit hook saw, by outcome ({ok, refused, error}). Counts only; zeros when none was seen."""
     seen = runtime.get("helpers") if isinstance(runtime, dict) else None
     seen = seen if isinstance(seen, dict) else {}
     out = {}

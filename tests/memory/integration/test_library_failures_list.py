@@ -140,9 +140,9 @@ async def test_failures_are_listed_by_kind_target_exception_message_and_cell(wor
         res = await _run(ex, run, f"explode({{'name': {PLANTED_ARG!r}, 'rows': [1, 2]}})")
         assert "ValueError" in res["error"]
         res = await _run(ex, run, "memory.show('memory.nothing.here:f')")
-        assert "LookupError" in res["error"]
+        assert "NotFound" in res["error"]
         res = await _run(ex, run, f"memory.index({PLANTED_KEY!r})")
-        assert "LookupError" in res["error"]
+        assert "NotFound" in res["error"]
         res = await _run(ex, run, "import memory.data.nope")
         assert "ModuleNotFoundError" in res["error"]
     finally:
@@ -160,9 +160,9 @@ async def test_failures_are_listed_by_kind_target_exception_message_and_cell(wor
     # the two failures of one cell share its index; the later cell's is greater
     assert items[0]["cell"] == items[1]["cell"] < items[2]["cell"]
     (show,) = [e for e in entries if e["kind"] == "show"]
-    assert show["exception"] == "LookupError"
+    assert show["exception"] == "NotFound"
     (index,) = [e for e in entries if e["kind"] == "index"]
-    assert index["exception"] == "LookupError" and items[2]["cell"] < show["cell"] < index["cell"]
+    assert index["exception"] == "NotFound" and items[2]["cell"] < show["cell"] < index["cell"]
     (imported,) = [e for e in entries if e["kind"] == "import"]
     assert imported["exception"] == "ModuleNotFoundError"
     # targets are item ids or argument shapes, never values

@@ -1,5 +1,6 @@
 """The use record of a library-mode export: every import form reaches the defining item, errors
-leave a function by its frame, and the helper's lookups (show, index, find) are lookups, not uses.
+leave a function by its frame, and the package's lookups (get and items, and the aliases show, index and find) are
+lookups, not uses.
 """
 
 from __future__ import annotations
@@ -23,6 +24,14 @@ def index(package=None):
 
 
 def find(value):
+    return []
+
+
+def get(ref):
+    return lambda *args, **kwargs: None
+
+
+def items(topic=None, kind=None):
     return []
 """
 PARSE = '''class MemoryInputError(ValueError):
@@ -167,7 +176,26 @@ def test_helper_lookups_are_lookups_not_uses(library_root):
     assert rec["cell_exposure"] == {
         "items": [PD, WEEK, TOK],
         "channels": ["text", "text.dates"],
-        "calls": {"show": 2, "index": 1, "find": 1, "match": 0, "run": 0, "help": 0},
+        "calls": {"show": 2, "index": 1, "find": 1, "match": 0, "run": 0, "get": 0, "items": 0, "help": 0},
+    }
+
+
+def test_get_and_items_are_lookups_as_show_and_index_were(library_root):
+    """``memory.get`` shows one item as ``show`` did and ``memory.items`` a topic as ``index`` did; calling the item
+    ``get`` returned is a tracked call the audit hook counts, not a use the code shows."""
+    rec = _use_library(
+        library_root,
+        [
+            "import memory\nmemory.get('memory.text.dates:parse_date')\nmemory.items('text')\n",
+            "import memory.text.dates\nfrom memory import get\nget(memory.text.dates.week)\n"
+            "memory.get('memory.text.dates:week')('2026-10-09')\nmemory.items(topic='text')\n",
+        ],
+    )
+    assert rec["items"] == {}
+    assert rec["cell_exposure"] == {
+        "items": [PD, WEEK, TOK],
+        "channels": ["text", "text.dates"],
+        "calls": {"show": 0, "index": 0, "find": 0, "match": 0, "run": 0, "get": 3, "items": 2, "help": 0},
     }
 
 

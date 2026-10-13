@@ -313,7 +313,7 @@ def test_the_package_helpers_calls_are_counted_by_helper_and_outcome():
     acc = runtime_calls_empty()
     assert library_helper_calls(acc) == {
         name: {"ok": 0, "refused": 0, "error": 0}
-        for name in ("index", "show", "find", "match", "run")
+        for name in ("get", "items", "index", "show", "find", "match", "run")
     }
     first = _drained({})
     first["calls"]["helpers"] = {"memory:index": {"ok": 2}, "memory:show": {"ok": 1, "error": 1}}
@@ -322,6 +322,8 @@ def test_the_package_helpers_calls_are_counted_by_helper_and_outcome():
     add_runtime_calls(acc, first)
     add_runtime_calls(acc, second)
     assert library_helper_calls(acc) == {
+        "get": {"ok": 0, "refused": 0, "error": 0},
+        "items": {"ok": 0, "refused": 0, "error": 0},
         "index": {"ok": 3, "refused": 0, "error": 0},
         "show": {"ok": 1, "refused": 0, "error": 1},
         "find": {"ok": 0, "refused": 1, "error": 0},

@@ -1,4 +1,6 @@
-"""The generated ``memory/__init__.py``: index, show and find, run as a cell runs them."""
+"""The generated ``memory/__init__.py``: the earlier calls (index, show, find) as a cell runs them, the generated
+files, and the library calls' audit events. The contract itself (``memory.get``, ``memory.items``, ``Item``) is
+tested in ``test_library_items_api``."""
 
 from __future__ import annotations
 
@@ -12,7 +14,7 @@ from unify.memory import library_export as lx
 from unify.memory import memory_helper
 from unify.memory.catalogue import write_files
 from unify.memory.gitio import Repo
-from unify.memory.layout import INDEX_FILE, LINKS_FILE, RESERVED_CONTRACT, RESERVED_INIT
+from unify.memory.layout import INDEX_FILE, LINKS_FILE, RESERVED_CONTRACT, RESERVED_INIT, RESERVED_STUB
 from unify.memory.library_helper import (
     FIND_FILE,
     ITEMS_FILE,
@@ -57,12 +59,13 @@ def _commit(mem: Repo, files: dict, message: str) -> str:
     return sha
 
 
-def test_generated_files_are_the_eight_and_deterministic(tmp_path):
+def test_generated_files_are_the_nine_and_deterministic(tmp_path):
     root = _tree(tmp_path / "lib")
     files = lx.generated_library_mode(root)
     assert set(files) == {
         RESERVED_INIT,
         RESERVED_CONTRACT,
+        RESERVED_STUB,
         INDEX_FILE,
         LINKS_FILE,
         ITEMS_FILE,
@@ -72,6 +75,7 @@ def test_generated_files_are_the_eight_and_deterministic(tmp_path):
     }
     assert lx.generated_library_mode(root) == files
     assert files[RESERVED_CONTRACT] == lx.CONTRACT_SOURCE.read_bytes()
+    assert files[RESERVED_STUB] == lx.stub_source()
     assert (
         files[RESERVED_INIT]
         == (Path(lx.__file__).parent / "library_helper.py").read_bytes()
@@ -111,7 +115,10 @@ def test_index_and_show_from_the_generated_helper(tmp_path):
         and "Dates are YYYY-MM-DD." in note
     )
     assert by_object == fn
-    assert missing.startswith("memory: no item 'memory.text.dates:nope'")
+    assert missing.startswith(
+        "memory.show('memory.text.dates:nope'): no item named 'memory.text.dates:nope'.\n"
+        "Expected an item id, a function name, or a note slug, e.g. memory.get(",
+    )
     assert where == str(root / "memory" / "__init__.py")
 
 
@@ -472,8 +479,8 @@ print(json.dumps(failed))
     # a helper's failure carries the arguments' types and sizes, never their values (its message is the
     # exception's own first line, which the harness redacts when it lists it)
     (show,) = failed[2:]
-    assert show[:2] == ["memory:show", "LookupError"] and show[3] == "(dict[1])", show
-    assert show[2].startswith("memory: no item") and "\n" not in show[2]
+    assert show[:2] == ["memory:show", "ArgumentError"] and show[3] == "(dict[1])", show
+    assert show[2].startswith("memory.show({") and show[2].endswith("(dict).") and "\n" not in show[2]
     assert "private" not in json.dumps([e[3] for e in failed])
 
 
