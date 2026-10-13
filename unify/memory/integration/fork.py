@@ -125,7 +125,7 @@ NUMBERING = (
 #: The heading of the part list that follows the instruction when the recorded episode could be read.
 PARTS_HEAD = (
     "The record of this episode has these parts, in this order, each with its first line or what it was, so you "
-    "can match it to this conversation. Use exactly these names in the summary's pointers:"
+    "can match it to this conversation. Use exactly these names, in backticks, in the summary's pointers:"
 )
 #: The characters of a part's first line the part list shows.
 PART_GIST_CHARS = 80
@@ -245,7 +245,7 @@ def part_list(ep: Any) -> str:
             gist = f"{a.kind} {a.channel}.{a.method}: {a.status}"
         else:
             gist = "the work-tree diff"
-        lines.append(f"- {name}: {gist}" if gist else f"- {name}")
+        lines.append(f"- `{name}`: {gist}" if gist else f"- `{name}`")
     return "\n".join(lines)
 
 
