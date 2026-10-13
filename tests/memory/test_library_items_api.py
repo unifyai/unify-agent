@@ -646,3 +646,29 @@ def test_every_public_call_is_checked_and_documented():
     assert not {"index", "show", "find", "match", "run"} & set(library_helper.__all__)
     assert {"ask", "get", "items"} <= layout.RESERVED_PACKAGES
     assert layout.classify("memory/get/x.py") is None and layout.classify("memory/items/x.py") is None
+
+
+def test_a_functions_error_carries_one_note_on_what_to_do_next(tmp_path):
+    """The function's own exception reaches the caller with one note: for its ``MemoryInputError`` (whose message is
+    its writer's), that the item was not built for this input and what to do; for any other error, where the card
+    is. A second call adds no second note."""
+    root = _library(tmp_path, {"memory/grid/lookup.py": LOOKUP})
+    code = (
+        "import json, memory\n"
+        "out = []\n"
+        f"for call in [\"memory.get({PAINT!r})('not a grid')\", \"memory.get({CELL!r})({{}}, 'row-9')\"]:\n"
+        "    try:\n"
+        "        eval(call)\n"
+        "    except Exception as exc:\n"
+        "        out.append(list(getattr(exc, '__notes__', [])))\n"
+        "print(json.dumps(out))\n"
+    )
+    refusal, crash = _json(root, code)
+    assert refusal == [
+        f"{PAINT} was not built for this input; its card shows what it was built for: "
+        f"print(memory.get({PAINT!r})). Do this step yourself, or look for another item with memory.items()."
+    ]
+    assert crash == [
+        f"raised inside the stored function {CELL}; its card shows its source and records: "
+        f"print(memory.get({CELL!r}))."
+    ]

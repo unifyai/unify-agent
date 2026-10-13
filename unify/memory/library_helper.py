@@ -1490,7 +1490,8 @@ class Item:
             What the function returned.
 
         Raises:
-            Exception: whatever a library function raised, the same exception with its traceback.
+            Exception: whatever a library function raised, the same exception with its traceback and one
+                note on what to do next (for its MemoryInputError: do the step yourself or find another item).
             ArgumentError: a captured procedure refused the input or did not return; the error says why.
             NotFound: the function could not be loaded from this copy of the library.
             WrongCall: the item is a note, which is read, not called.
@@ -1502,7 +1503,23 @@ class Item:
         if report.outcome == "returned":
             return report.result
         if report._raised is not None:
-            raise report._raised  # the function's own exception, as a direct call raises it
+            raised = report._raised
+            # the function's own exception, as a direct call raises it, with one note on what to do next: the
+            # function's message is its writer's, and may not say what it expected
+            if type(raised).__name__ == "MemoryInputError":
+                note = (
+                    f"{self.id} was not built for this input; its card shows what it was built for: "
+                    f"print(memory.get({self.id!r})). Do this step yourself, or look for another item with "
+                    "memory.items()."
+                )
+            else:
+                note = (
+                    f"raised inside the stored function {self.id}; its card shows its source and records: "
+                    f"print(memory.get({self.id!r}))."
+                )
+            if hasattr(raised, "add_note") and note not in getattr(raised, "__notes__", ()):
+                raised.add_note(note)
+            raise raised
         call = call_text(f"memory.get({self.id!r})", args, kwargs)
         detail = (f"{report.error}: {report.detail}" if report.detail else report.error).rstrip(".")
         if self.id.startswith(CAPTURE_PREFIX):
