@@ -6,12 +6,14 @@ records exactly what is shared, what is not, and why, with file:line evidence at
 
 ## Shared (same functions, same constants, same settings)
 
-- Trigger: `context_compression.context_over_threshold` at `COMPACTION_THRESHOLD` (0.7; named here, the agent loop
-  reads the same constant: `unify/common/_async_tool/context_compression.py:19`, `unify/common/_async_tool/loop.py:2661`)
-  against the window `unillm.get_max_input_tokens(endpoint)` gives for the agent's endpoint (the agent loop's
-  source: `loop.py:1080`; the memory agents' turn: `unify/memory/writer_pass.py:4904`). A model with no known
-  window is never compacted, in both. The memory side calls it through `writer_pass.compaction_due`
-  (`writer_pass.py:373`), from the writer's loop (`writer_pass.py:4076`) and each helper's (`helpers.py:1324`).
+- Trigger: `context_compression.context_over_threshold` with `COMPACTION_THRESHOLD` (0.85) and
+  `COMPACTION_AT_TOKENS` (150,000, `UNIFY_COMPACTION_AT_TOKENS`), against the window `unillm.get_max_input_tokens`
+  gives for the agent's endpoint; with no known window the fixed point applies alone (item 5 below). The memory side
+  calls it through `writer_pass.compaction_due`, from the writer's and curator's loop and each helper's. The prompt
+  size it reads is the call's own usage report: unillm hands it on the call's event (`LLMEvent.response["usage"]`),
+  the memory agents' turn (`writer_pass.unillm_turn`) attaches it to the message it returns, and
+  `writer_pass.split_usage` takes it off again before the message joins the conversation, so no request sends it
+  back. A call that reports no usage never triggers compaction.
 - Summary request: the agent's last request, unchanged, plus `cache_discipline.COMPRESSION_FORK_INSTRUCTION`, the
   agent loop's `FORK_SUMMARY` path (`unify/common/async_tool_loop.py:534`); the reply's text read with
   `cache_discipline.completion_text`.
@@ -55,6 +57,6 @@ records exactly what is shared, what is not, and why, with file:line evidence at
    and by the memory agents through `writer_pass.compaction_due`). The fixed point is where a conversation is
    summarised and restarted, not a limit on what an agent reads or writes.
 
-Parity. The agent loop and the memory agents decide with the same function and constants. Each pass records the
+Parity. The agent loop and the memory agents decide with the same function and constants. With `UNIFY_TOOLS_IN_CODE=on` the agent loop also compacts the way the memory agents do: before the next model call, with no forced `compress_context` turn and no notice, by the same fork summary and restart. Each pass records the
 largest prompt each memory agent sent (`max_prompt_tokens` in the end event and in each `helper.json`) beside the
 window the trigger read (`context_window`, null when unknown).
