@@ -14,8 +14,10 @@ nothing a cell prints or a subprocess writes can reach the channel.
 Harness -> worker::
 
     {"op": "init", "sys_path": [...], "builtins": [...], "globals": {...},
+                                              (a global is ["module", m], ["attr", m, a] or
+                                              ["lazy_module", m], imported on first use)
      "help": bool, "audit": {"roots": [...], "path": str}, "no_bytecode": true}
-                                              (audit, no_bytecode: only under UNIFY_MEMORY_V2)
+                                              (audit, no_bytecode: only under UNIFY_MEMORY)
     {"op": "exec", "id": n, "source": str, "sync": {...}, "scratch": bool,
      "inventory": true}                       (only when asked)
     {"op": "reply", "id": k, "value": ..., "coroutine": bool}
@@ -682,6 +684,26 @@ class RemoteError(Exception):
     harness_type = ""
 
 
+#: Where the harness defines the request error a cell's model call raises.
+MODEL_REQUEST_ERROR_MODULE = "unify.common.cell_models"
+
+
+class ModelRequestError(RemoteError, ValueError):
+    """The provider refused a model call this code made because of the
+    request's own content: a ``response_format`` schema it does not accept, a
+    parameter the endpoint does not take, a prompt over the model's limit.
+
+    The message is the provider's. Nothing was generated; fix the request and
+    call again. The harness's error of that name arrives as this class, which
+    is the cell's ``ModelRequestError`` global.
+    """
+
+    harness_type = f"{MODEL_REQUEST_ERROR_MODULE}.ModelRequestError"
+
+
+ModelRequestError.__module__ = MODEL_REQUEST_ERROR_MODULE
+
+
 class SteerableToolHandle:
     """Stand-in for the harness's handle base class.
 
@@ -794,6 +816,53 @@ class _Refused:
 
     def __repr__(self) -> str:
         return f"<unavailable in the worker: {self._name}>"
+
+
+class _LazyModule:
+    """A module name bound in the cells' globals that imports the module on its first attribute access.
+
+    Nothing of the module runs when the worker starts: its code runs inside the cell that first uses it, under
+    that cell's timeout, as an ``import`` line in the cell would. Then the name in the namespace is rebound to
+    the real module, when it still holds this object. A failed import raises :class:`ImportError` naming the
+    module, chained to the cause, as the cell's error (an interrupt or an exit passes unchanged); the next
+    access tries again. ``import <name>`` in a cell goes through the normal import system as before.
+    """
+
+    __slots__ = ("_name", "_ns")
+
+    def __init__(self, name: str, ns: dict) -> None:
+        object.__setattr__(self, "_name", name)
+        object.__setattr__(self, "_ns", ns)
+
+    def _load(self) -> Any:
+        name = self._name
+        try:
+            module = importlib.import_module(name)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException as exc:  # noqa: BLE001 - any failure is the cell's error
+            raise ImportError(
+                f"importing the module {name!r} failed ({type(exc).__name__})",
+                name=name,
+            ) from exc
+        if self._ns.get(name) is self:
+            self._ns[name] = module
+        return module
+
+    def __getattr__(self, attr: str) -> Any:
+        # Dunder probes (copying, introspection) do not import the module.
+        if attr.startswith("__") and attr.endswith("__"):
+            raise AttributeError(attr)
+        return getattr(self._load(), attr)
+
+    def __setattr__(self, attr: str, value: Any) -> None:
+        setattr(self._load(), attr, value)
+
+    def __dir__(self) -> list:
+        return dir(self._load())
+
+    def __repr__(self) -> str:
+        return f"<module {self._name!r}, imported on first use>"
 
 
 class _StoredFunction:
@@ -936,7 +1005,9 @@ class Worker:
         self._ids = itertools.count(1)
         self._pending: dict[int, tuple] = {}
         self._describe_cache: dict[str, Any] = {}
-        self._exc_classes: dict[tuple[str, str], type] = {}
+        self._exc_classes: dict[tuple[str, str], type] = {
+            (MODEL_REQUEST_ERROR_MODULE, "ModelRequestError"): ModelRequestError,
+        }
         self._out_fd = out_fd
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         # The session's globals are a registered module's dict, as in-process
@@ -959,7 +1030,7 @@ class Worker:
         self.reply = Reply()
         # UNIFY_VARIABLE_INVENTORY=on: what this namespace's cells bound.
         self.inventory = Inventory()
-        # UNIFY_MEMORY_V2 (spec §3a): the work-tree audit hook, only when the
+        # UNIFY_MEMORY (spec §3a): the work-tree audit hook, only when the
         # harness asks for it in init; ``audit_state`` is "on" or why not.
         self.audit: Any = None
         self.audit_state: Optional[str] = None
@@ -1224,7 +1295,7 @@ class Worker:
     # -- namespace -------------------------------------------------------------
     def init(self, msg: dict) -> dict:
         if msg.get("no_bytecode") is True:
-            # UNIFY_MEMORY_V2: importing the memory export writes no __pycache__ into it
+            # UNIFY_MEMORY: importing the memory export writes no __pycache__ into it
             sys.dont_write_bytecode = True
         sys.path[:] = [p for p in msg.get("sys_path", []) if isinstance(p, str) and p]
         names = msg.get("builtins") or []
@@ -1235,6 +1306,15 @@ class Worker:
         self.ns["__name__"] = SESSION_MODULE
         missing: dict[str, str] = {}
         for name, spec in (msg.get("globals") or {}).items():
+            if (
+                isinstance(spec, list)
+                and len(spec) == 2
+                and spec[0] == "lazy_module"
+                and isinstance(spec[1], str)
+            ):
+                # imported by the first cell that uses it (:class:`_LazyModule`)
+                self.ns[name] = _LazyModule(spec[1], self.ns)
+                continue
             value = self._import(spec)
             if isinstance(value, _Refused):
                 missing[name] = value._reason
@@ -1250,7 +1330,7 @@ class Worker:
         return missing
 
     def _install_audit(self, spec: dict) -> str:
-        """Install the memory-v2 audit hook (``unify/memory_v2/integration/
+        """Install the memory audit hook (``unify/memory/integration/
         adapters/audit.py``), loaded by its file path so no ``unify`` package
         code runs here; "on", or why it is not installed."""
         try:
@@ -1258,7 +1338,7 @@ class Worker:
 
             roots = [r for r in spec.get("roots") or [] if isinstance(r, str)]
             found = importlib.util.spec_from_file_location(
-                "_unify_memory_v2_audit",
+                "_unify_memory_audit",
                 str(spec.get("path")),
             )
             module = importlib.util.module_from_spec(found)
@@ -1310,6 +1390,8 @@ class Worker:
             return _run_coro_sync
         if which == "handle_class":
             return SteerableToolHandle
+        if which == "model_request_error":
+            return ModelRequestError
         if which == "reply":
             return self.reply
         raise BoundaryRefusal(f"unknown worker-local name {which!r}")
@@ -1426,7 +1508,12 @@ class Worker:
         for name, value in self.ns.items():
             if not isinstance(name, str) or name.startswith("_"):
                 continue
-            if name in self.installed or callable(value) or inspect.ismodule(value):
+            if (
+                name in self.installed
+                or callable(value)
+                or inspect.ismodule(value)
+                or isinstance(value, _LazyModule)
+            ):
                 continue
             out[name] = short_repr(value)
         return out
@@ -1609,6 +1696,8 @@ class Worker:
         else:
             import pydoc
 
+            if isinstance(obj, _LazyModule):
+                obj = obj._load()
             target = obj.__wrapped__ if isinstance(obj, _StoredFunction) else obj
             text = pydoc.render_doc(target, title="%s", renderer=pydoc.plaintext)
         self._write(self._stdout, str(text).rstrip("\n") + "\n")

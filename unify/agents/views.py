@@ -78,7 +78,11 @@ class RecordView:
         return [e.to_dict() for e in entries]
 
     def __repr__(self) -> str:
-        where = f"; file {self._record.path}" if self._record.path else ""
+        from unify.sandbox import RECORD_MOUNT
+
+        # As the cells' sandbox shows it, never the host path.
+        path = self._record.path
+        where = f"; file {RECORD_MOUNT}/{str(path).rsplit('/', 1)[-1]}" if path else ""
         return (
             f"<record: {len(self._record.entries)} entries; you are "
             f"{self._name!r}{where}>"
@@ -92,7 +96,9 @@ class AgentsView:
     agents.stop(name, reason="")          stop a helper you started
     agents.list()                         your helpers: name, state, request_seq, last_seq
 
-    A helper's answer arrives as a `reply` entry that mentions you.
+    A helper's answer arrives as a `reply` entry that mentions you. Any
+    agent may start helpers; in one request at most 16 run at once and 64
+    start in all, whoever starts them.
     """
 
     def __init__(self, pool: Pool, name: str) -> None:

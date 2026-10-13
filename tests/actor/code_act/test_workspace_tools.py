@@ -184,9 +184,10 @@ async def test_grep_without_ripgrep_matches_in_the_sandbox_not_the_harness(
     seen = _spy_on_regex_compiles(monkeypatch)
     out = await file_tools.grep(pattern, str(project), policy=policy)
     assert out["engine"] == "python-sandboxed"
+    # Files are named as the sandbox shows them: the workspace at /workspace.
     assert out["hits"] == [
-        f"{project / 'a.txt'}:2:needle-7f3e here",
-        f"{project / 'b.txt'}:1:needle-7f3e again",
+        "/workspace/project/a.txt:2:needle-7f3e here",
+        "/workspace/project/b.txt:1:needle-7f3e again",
     ]
     assert out["truncated"] is False
     assert pattern not in seen
@@ -208,7 +209,7 @@ async def test_grep_without_ripgrep_matches_in_the_sandbox_not_the_harness(
         ),
     )
     out = await file_tools.grep("needle-7f3e", str(project), policy=policy)
-    assert [h.split(":", 1)[0] for h in out["hits"]] == [str(project / "a.txt")]
+    assert [h.split(":", 1)[0] for h in out["hits"]] == ["/workspace/project/a.txt"]
 
 
 @needs_bwrap

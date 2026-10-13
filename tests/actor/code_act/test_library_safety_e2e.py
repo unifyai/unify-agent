@@ -242,8 +242,9 @@ async def test_installing_adds_no_mount_or_network_to_the_sandbox(
             "reached",
         )
         assert out.result is False, out.error
+        # The environment, where the cell's sandbox shows it, is read-only.
         out = await cells(
-            f"open({str(Path(venv) / 'pwned')!r}, 'w')",
+            f"open({sandbox.ENVIRONMENT_MOUNT + '/pwned'!r}, 'w')",
         )
         assert "Read-only file system" in out.error, out.error
     finally:

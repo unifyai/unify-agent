@@ -345,8 +345,10 @@ async def test_compaction_is_recorded_and_the_new_context_points_at_the_file(
     session = client._unify_transcript
     pointer = session.pointer_line()
 
-    # What the model saw after the restart points at the transcript...
-    assert str(session.path) in pointer
+    # What the model saw after the restart points at the transcript, as the
+    # cells' sandbox shows it (never its host path)...
+    assert f"/transcripts/{session.path.name}" in pointer
+    assert str(session.path.parent) not in pointer
     assert not any(pointer in json.dumps(r) for r in p.requests[:-1])
     assert pointer in json.dumps(p.requests[-1])
 

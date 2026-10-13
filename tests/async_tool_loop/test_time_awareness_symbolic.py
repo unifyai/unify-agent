@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import pytest
 
 from tests.helpers import _handle_project
+from tests.scripted_model import ScriptedModel, reply, scripted
 from unify.common.llm_client import new_llm_client
 from unify.common.async_tool_loop import start_async_tool_loop
 from unify.common._async_tool.time_context import (
@@ -15,8 +16,6 @@ from unify.common._async_tool.time_context import (
     format_duration,
     TimeContext,
 )
-
-pytestmark = pytest.mark.llm_call
 
 # --------------------------------------------------------------------------- #
 #  SIMULATED TIME FIXTURE                                                     #
@@ -203,9 +202,31 @@ def _find_user_messages(messages: list) -> list[dict]:
 
 _ELAPSED_RE = re.compile(r"^\[elapsed: \+\d+[hms\d]*\] ")
 
+_SIMPLE_MESSAGE = "Call simple_tool and reply with 'ok'."
+
+
+async def _run_loop(llm_config, message: str, tools: dict, calls: list):
+    """Run a time-aware loop whose scripted model makes *calls* (one per
+    turn, ``(name, args)``), then replies 'ok'. Returns the client and the
+    model."""
+    model = ScriptedModel(
+        actor=[*(reply(calls=[c]) for c in calls), reply("ok")],
+    )
+    with scripted(model):
+        client = new_llm_client(**llm_config)
+        handle = start_async_tool_loop(
+            client,
+            message=message,
+            tools=tools,
+            time_awareness=True,
+        )
+        assert await asyncio.wait_for(handle.result(), 60) == "ok"
+    assert model.kinds() == ["actor"] * (len(calls) + 1)
+    return client, model
+
 
 # --------------------------------------------------------------------------- #
-#  INTEGRATION TESTS (against real LLM with cache)                            #
+#  INTEGRATION TESTS (scripted model; the annotations are the loop's own)     #
 # --------------------------------------------------------------------------- #
 
 
@@ -213,56 +234,64 @@ _ELAPSED_RE = re.compile(r"^\[elapsed: \+\d+[hms\d]*\] ")
 @_handle_project
 async def test_explanation_prompt_injected(llm_config):
     """Static explanation system message is present when time_awareness=True."""
-    client = new_llm_client(**llm_config)
-
-    await start_async_tool_loop(
-        client,
-        message="Call simple_tool and reply with 'ok'.",
-        tools={"simple_tool": simple_tool},
-        time_awareness=True,
-    ).result()
+    client, model = await _run_loop(
+        llm_config,
+        _SIMPLE_MESSAGE,
+        {"simple_tool": simple_tool},
+        [("simple_tool", {})],
+    )
 
     explanation = _find_explanation_msg(client.messages)
     assert explanation is not None, "Time explanation system message not found"
     assert "## Time Annotations" in explanation["content"]
+    # The model receives it.
+    assert any(
+        "## Time Annotations" in str(m.get("content")) for m in model.calls[0].messages
+    )
+    assert model.kinds() == ["actor", "actor"]
 
 
 @pytest.mark.asyncio
 @_handle_project
 async def test_tool_result_wrapped_with_metadata(llm_config):
     """Completed base-tool results contain tool_result + metadata envelope."""
-    client = new_llm_client(**llm_config)
-
-    await start_async_tool_loop(
-        client,
-        message="Call simple_tool and reply with 'ok'.",
-        tools={"simple_tool": simple_tool},
-        time_awareness=True,
-    ).result()
+    client, model = await _run_loop(
+        llm_config,
+        _SIMPLE_MESSAGE,
+        {"simple_tool": simple_tool},
+        [("simple_tool", {})],
+    )
 
     wrapped = _find_tool_results(client.messages)
-    assert len(wrapped) >= 1, "No wrapped tool results found"
+    assert len(wrapped) == 1, f"Expected 1 wrapped tool result, got {wrapped}"
 
     for item in wrapped:
         assert "tool_result" in item
+        assert "done" in item["tool_result"]
         meta = item["metadata"]
         assert "called_at" in meta
         assert "duration" in meta
         assert meta["called_at"].startswith("+")
+    # The model receives the wrapped result.
+    assert any(
+        m["role"] == "tool"
+        and "tool_result" in str(m.get("content"))
+        and "called_at" in str(m.get("content"))
+        for m in model.calls[1].messages
+    )
+    assert model.kinds() == ["actor", "actor"]
 
 
 @pytest.mark.asyncio
 @_handle_project
 async def test_user_message_prefixed_with_elapsed(llm_config):
     """Initial user message should have [elapsed: +XmYs] prefix."""
-    client = new_llm_client(**llm_config)
-
-    await start_async_tool_loop(
-        client,
-        message="Call simple_tool and reply with 'ok'.",
-        tools={"simple_tool": simple_tool},
-        time_awareness=True,
-    ).result()
+    client, model = await _run_loop(
+        llm_config,
+        _SIMPLE_MESSAGE,
+        {"simple_tool": simple_tool},
+        [("simple_tool", {})],
+    )
 
     user_msgs = _find_user_messages(client.messages)
     assert len(user_msgs) >= 1, "No user messages found"
@@ -271,48 +300,53 @@ async def test_user_message_prefixed_with_elapsed(llm_config):
     assert _ELAPSED_RE.match(
         first_user["content"],
     ), f"User message not prefixed with elapsed: {first_user['content']!r}"
+    assert first_user["content"].endswith(_SIMPLE_MESSAGE)
+    assert model.kinds() == ["actor", "actor"]
 
 
 @pytest.mark.asyncio
 @_handle_project
 async def test_simulated_time_deterministic_offsets(llm_config, simulated_time):
     """With simulated perf_counter, offsets are deterministic."""
-    client = new_llm_client(**llm_config)
-
-    await start_async_tool_loop(
-        client,
-        message="Call simple_tool and reply with 'ok'.",
-        tools={"simple_tool": simple_tool},
-        time_awareness=True,
-    ).result()
+    client, model = await _run_loop(
+        llm_config,
+        _SIMPLE_MESSAGE,
+        {"simple_tool": simple_tool},
+        [("simple_tool", {})],
+    )
 
     assert simulated_time["perf_call_count"] > 0, "perf_counter() was not invoked"
 
     wrapped = _find_tool_results(client.messages)
-    assert len(wrapped) >= 1
+    assert len(wrapped) == 1
 
     for item in wrapped:
-        assert item["metadata"]["called_at"].startswith("+")
+        assert re.fullmatch(r"\+\d+[hms\d]*", item["metadata"]["called_at"])
         assert any(
             c in item["metadata"]["duration"] for c in ("s", "ms")
         ), f"Duration missing time unit: {item['metadata']['duration']}"
+    assert model.kinds() == ["actor", "actor"]
 
 
 @pytest.mark.asyncio
 @_handle_project
 async def test_multiple_tools_each_wrapped(llm_config):
     """Each tool invocation gets its own metadata envelope."""
-    client = new_llm_client(**llm_config)
-
-    await start_async_tool_loop(
-        client,
-        message=(
+    client, model = await _run_loop(
+        llm_config,
+        (
             "Call simple_tool first, then call timed_tool with duration=0.05. "
-            "Reply with 'done' after both complete."
+            "Reply with 'ok' after both complete."
         ),
-        tools={"simple_tool": simple_tool, "timed_tool": timed_tool},
-        time_awareness=True,
-    ).result()
+        {"simple_tool": simple_tool, "timed_tool": timed_tool},
+        [("simple_tool", {}), ("timed_tool", {"duration": 0.05})],
+    )
 
     wrapped = _find_tool_results(client.messages)
-    assert len(wrapped) >= 2, f"Expected at least 2 wrapped results, got {len(wrapped)}"
+    assert len(wrapped) == 2, f"Expected 2 wrapped results, got {len(wrapped)}"
+    assert "done" in wrapped[0]["tool_result"]
+    assert "completed after 0.05s" in wrapped[1]["tool_result"]
+    for item in wrapped:
+        assert item["metadata"]["called_at"].startswith("+")
+        assert item["metadata"]["duration"]
+    assert model.kinds() == ["actor", "actor", "actor"]

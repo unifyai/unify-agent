@@ -340,7 +340,7 @@ async def test_a_shell_cell_and_its_children_are_filtered_too(world):
         # The harness's interpreter (os.unshare needs 3.12), run from a shell.
         out, _ = await bash(
             ex,
-            f"{sys.executable} {path} 2>&1 && (unshare -U true; echo $?)",
+            f"{sys.executable} /workspace/{path.name} 2>&1 && (unshare -U true; echo $?)",
         )
         lines = out.strip().splitlines()
         assert json.loads(lines[0]) == EXPECTED

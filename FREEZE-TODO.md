@@ -185,7 +185,7 @@ The last 17 research switches went (`tests/test_no_research_switches.py` passes)
 - **The workspace, state views, transcripts (PR F), internal-transcript and log masks, and the proxy mount are unchanged**, mounted on top as before.
 - **The credential-directory masks stay.** A masked `.env` file outside everything mounted is no longer bound at all: it does not exist, and a notice there would only reveal its directory's name.
 - **The fake clock's variables** (`LD_PRELOAD`, `FAKETIME`, `FAKETIME_SHARED`, `TZ`) reach a sandboxed command only as the harness has them. A cell's own subprocess `env=` cannot set or extend them.
-- **Socket-family filter** (`seccomp_program`, classic BPF for x86_64 and aarch64, passed as `bwrap --seccomp 9`; pattern from the memory-v2 runner at 6ec1e9821). It applies to every sandboxed process: cells, the worker, the installer and grep.
+- **Socket-family filter** (`seccomp_program`, classic BPF for x86_64 and aarch64, passed as `bwrap --seccomp 9`; pattern from the memory runner at 6ec1e9821). It applies to every sandboxed process: cells, the worker, the installer and grep.
   - `socket`/`socketpair` get EAFNOSUPPORT unless the family is AF_UNIX, AF_INET or AF_INET6.
   - `clone`/`unshare` with CLONE_NEWUSER get EPERM. `clone3` gets ENOSYS, and glibc falls back to `clone`.
   - io_uring gets ENOSYS.

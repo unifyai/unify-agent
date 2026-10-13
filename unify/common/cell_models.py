@@ -22,6 +22,17 @@ and ``list_llms``, ``new_llm_client`` and ``unillm`` itself are unchanged, so
 harness-side calls (the actor's loop, reviews, compression, memory passes that
 name a different model by design) are never restricted by it.
 
+A provider's refusal of a cell's call for the request's own content (an
+invalid ``response_format`` schema the cell wrote, a parameter the endpoint
+does not take) comes back to the cell as :class:`ModelRequestError`, with the
+provider's message and nothing else, so the cell goes on and can fix the call
+(:func:`model_request_error` says which errors are these). The harness's own
+calls and every other error (authentication, credentials, limits, the
+provider's own faults) are raised as before. Each such error is counted for
+the request's evidence (:func:`counting_model_request_errors`), and every
+cell call carries ``X-Unify-Call-Kind: cell`` while
+``UNIFY_REQUEST_METADATA_HEADERS=on`` (``llm_client.CELL_CALL_KIND``).
+
 Endpoints are compared as unillm resolves them: ``<id>@openrouter`` by its
 OpenRouter id (``openai/gpt-6-luna@openrouter`` and
 ``openrouter/openai/gpt-6-luna@openrouter`` are one model), and any other
@@ -31,8 +42,13 @@ here makes a network call.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
+import dataclasses
 import functools
 import inspect
+import json
+import re
 from typing import Any, Callable, FrozenSet, Iterable, List, Optional
 
 from unify.common.tool_errors import ToolInputError
@@ -40,6 +56,9 @@ from unify.common.tool_errors import ToolInputError
 __all__ = [
     "CellModelRefused",
     "CellAttributeRefused",
+    "ModelRequestError",
+    "counting_model_request_errors",
+    "model_request_error",
     "allowed_models",
     "check_model",
     "configured_models",
@@ -63,6 +82,239 @@ class CellAttributeRefused(ToolInputError, AttributeError):
 
     Also an ``AttributeError``, so a probe with a default
     (``getattr(unillm, name, None)``) reads it as missing.
+    """
+
+
+class ModelRequestError(ValueError):
+    """The provider refused a model call this code made because of the
+    request's own content: a ``response_format`` schema it does not accept, a
+    parameter the endpoint does not take, a prompt over the model's limit.
+
+    The message is the provider's. Nothing was generated; fix the request and
+    call again.
+    """
+
+
+# -- the cell's own request errors ----------------------------------------------
+
+#: The status a provider answers a request it cannot accept as written with.
+_REQUEST_ERROR_STATUS = 400
+#: The provider error type of a request-validation error (OpenAI, Anthropic and
+#: OpenRouter's upstream errors all name it so).
+_REQUEST_ERROR_TYPES = frozenset({"invalid_request_error"})
+#: Provider error codes of a request-validation error start so
+#: (``invalid_json_schema``, ``unsupported_parameter``, ``missing_required_parameter``).
+_REQUEST_ERROR_CODE_PREFIXES = ("invalid_", "unsupported_", "missing_")
+#: A 400 whose type or code (first) or message (second) names any of these is
+#: about access, not the request's content (some providers answer a bad key
+#: with 400). It is raised as before.
+_ACCESS_CODE_MARKERS = ("auth", "key", "credential", "permission", "forbidden", "denied")
+_ACCESS_TEXT_MARKERS = (
+    "api key",
+    "api_key",
+    "api-key",
+    "apikey",
+    "authenticat",
+    "unauthori",
+    "credential",
+    "forbidden",
+    "permission denied",
+    "access denied",
+)
+#: How many ``{`` of an error's text are tried as the start of its JSON body.
+_JSON_STARTS = 16
+#: How deep a provider error nested in another's metadata is followed.
+_NESTING = 4
+# A URL in a provider message. The scheme is bounded, so a long word is not
+# scanned to its end from each of its letters.
+_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]{0,15}://\S+")
+
+
+def _json_object(text: Any) -> Optional[dict]:
+    """The first JSON object in *text* (a provider body after a prefix such as
+    ``litellm.BadRequestError: OpenrouterException - ``), or None."""
+    if not isinstance(text, str):
+        return None
+    decoder = json.JSONDecoder()
+    start = text.find("{")
+    for _ in range(_JSON_STARTS):
+        if start < 0:
+            return None
+        try:
+            value, _end = decoder.raw_decode(text, start)
+        except ValueError:
+            value = None
+        if isinstance(value, dict):
+            return value
+        start = text.find("{", start + 1)
+    return None
+
+
+def _provider_error_object(body: Any, depth: int = 0) -> Optional[dict]:
+    """The innermost provider error in *body*: ``{"error": {...}}`` or the
+    error object itself, following an upstream error a router keeps as text in
+    ``metadata.raw`` (OpenRouter). It has a text ``message`` and at least one
+    of ``type``, ``code`` and ``param``."""
+    if depth > _NESTING or not isinstance(body, dict):
+        return None
+    error = body.get("error") if isinstance(body.get("error"), dict) else body
+    metadata = error.get("metadata")
+    raw = metadata.get("raw") if isinstance(metadata, dict) else None
+    inner = _provider_error_object(
+        _json_object(raw) if isinstance(raw, str) else raw,
+        depth + 1,
+    )
+    if inner is not None:
+        return inner
+    if isinstance(error.get("message"), str) and any(
+        key in error for key in ("type", "code", "param")
+    ):
+        return error
+    return None
+
+
+def _provider_error(exc: BaseException) -> Optional[dict]:
+    """The provider's error object behind *exc*: the SDK's parsed ``body``, else
+    the JSON body in its text (LiteLLM puts the provider's body in the message)."""
+    for body in (
+        getattr(exc, "body", None),
+        _json_object(getattr(exc, "message", None)),
+        _json_object(str(exc)),
+    ):
+        found = _provider_error_object(body)
+        if found is not None:
+            return found
+    return None
+
+
+def _text(value: Any) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _redacted(message: str) -> str:
+    """*message* with the harness's credential redactions applied and every URL
+    removed: only the provider's words reach the cell."""
+    from unify.common.redact_request import redact_value
+    from unify.memory.redact import redact_error
+
+    text = redact_error(str(redact_value(message)))
+    return _URL.sub("<url>", text)
+
+
+def model_request_error(exc: BaseException) -> Optional[ModelRequestError]:
+    """*exc* as the :class:`ModelRequestError` a cell gets, or None when it is
+    not one.
+
+    One is a provider's 400 whose error object says the request was invalid as
+    written (type ``invalid_request_error``, a code starting ``invalid_``,
+    ``unsupported_`` or ``missing_``, or a named ``param``), and says nothing
+    of access (a key, authentication, permission). Its message is the
+    provider's ``message`` alone, redacted. Called only for the calls a cell's
+    code makes; what the harness sends itself never comes here.
+    """
+    if getattr(exc, "status_code", None) != _REQUEST_ERROR_STATUS:
+        return None
+    error = _provider_error(exc)
+    if error is None:
+        return None
+    message = _text(error.get("message")).strip()
+    kind = _text(error.get("type"))
+    code = _text(error.get("code"))
+    param = error.get("param")
+    if not message:
+        return None
+    named = f"{kind} {code}".lower()
+    said = message.lower()
+    if any(m in named for m in _ACCESS_CODE_MARKERS) or any(
+        m in said for m in _ACCESS_TEXT_MARKERS
+    ):
+        return None
+    if not (
+        kind in _REQUEST_ERROR_TYPES
+        or code.startswith(_REQUEST_ERROR_CODE_PREFIXES)
+        or (isinstance(param, str) and param)
+    ):
+        return None
+    return ModelRequestError(_redacted(message))
+
+
+@dataclasses.dataclass
+class ModelRequestErrorCount:
+    """How many :class:`ModelRequestError` the calls in a block raised."""
+
+    n: int = 0
+
+
+_COUNT: contextvars.ContextVar[Optional[ModelRequestErrorCount]] = (
+    contextvars.ContextVar("unify_model_request_errors", default=None)
+)
+
+
+@contextlib.contextmanager
+def counting_model_request_errors():
+    """Count the :class:`ModelRequestError` raised to cells inside the block
+    (in this context and the tasks it starts, which is where a sandboxed
+    worker's calls are served); yields the count."""
+    count = ModelRequestErrorCount()
+    token = _COUNT.set(count)
+    try:
+        yield count
+    finally:
+        _COUNT.reset(token)
+
+
+def _counted(refused: ModelRequestError) -> ModelRequestError:
+    count = _COUNT.get()
+    if count is not None:
+        count.n += 1
+    return refused
+
+
+async def _cell_call(call: Callable[[], Any]) -> Any:
+    """Await *call()* as a cell's model call: under the cell call kind, and with
+    a request error of the cell's own raised as :class:`ModelRequestError`.
+
+    The new error is raised outside the handler, so it carries neither the
+    provider's exception nor its traceback."""
+    from unify.common.llm_client import CELL_CALL_KIND, call_kind
+
+    try:
+        with call_kind(CELL_CALL_KIND):
+            result = call()
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+    except Exception as exc:  # noqa: BLE001 - only a request error is replaced
+        refused = model_request_error(exc)
+        if refused is None:
+            raise
+    raise _counted(refused)
+
+
+def _sync_cell_call(call: Callable[[], Any]) -> Any:
+    """:func:`_cell_call` for a call that returns at once (a sync client's
+    ``generate``, or one that returns an awaitable, awaited by the caller)."""
+    from unify.common.llm_client import CELL_CALL_KIND, call_kind
+
+    try:
+        with call_kind(CELL_CALL_KIND):
+            return call()
+    except Exception as exc:  # noqa: BLE001 - only a request error is replaced
+        refused = model_request_error(exc)
+        if refused is None:
+            raise
+    raise _counted(refused)
+
+
+#: What ``help(query_llm)`` in a cell adds to the harness function's contract.
+_CELL_ERRORS_DOC = """
+
+    Errors
+    ------
+    A request the provider refuses for its own content (a ``response_format``
+    schema it does not accept, a parameter the endpoint does not take) raises
+    ``ModelRequestError`` (a ``ValueError``) with the provider's message; fix
+    the request and call again. Any other failure is raised as it is.
     """
 
 
@@ -210,8 +462,11 @@ def _cell_query_llm() -> Callable[..., Any]:
         _check_kwargs(bound.arguments.get("client_kwargs"), "query_llm")
         _check_kwargs(bound.arguments.get("generate_kwargs"), "query_llm")
         # Looked up per call, as the cell's global was bound per sandbox.
-        return await reasoning.query_llm(*args, **kwargs)
+        return await _cell_call(lambda: reasoning.query_llm(*args, **kwargs))
 
+    query_llm_for_cells.__doc__ = (
+        reasoning.query_llm.__doc__ or ""
+    ).rstrip() + _CELL_ERRORS_DOC
     return query_llm_for_cells
 
 
@@ -315,7 +570,7 @@ class CellLLMClient:
         @functools.wraps(value)
         def call(*args: Any, **kwargs: Any) -> Any:
             _check_kwargs(kwargs, f"unillm client .{name}()")
-            out = value(*args, **kwargs)
+            out = _sync_cell_call(lambda: value(*args, **kwargs))
             if inspect.isawaitable(out):
                 return _held_awaitable(out)
             return self._rehold(out)
@@ -324,7 +579,7 @@ class CellLLMClient:
 
 
 async def _held_awaitable(awaitable: Any) -> Any:
-    return _hold(await awaitable)
+    return _hold(await _cell_call(lambda: awaitable))
 
 
 def _is_client(value: Any) -> bool:
@@ -338,8 +593,21 @@ def _is_client(value: Any) -> bool:
 def _hold(value: Any) -> Any:
     if _is_client(value):
         check_model(getattr(value, "endpoint", None), where="unillm client")
+        _with_request_metadata(value)
         return CellLLMClient(value)
     return value
+
+
+def _with_request_metadata(client: Any) -> Any:
+    """*client* with the request-metadata headers on its calls (a no-op while
+    ``UNIFY_REQUEST_METADATA_HEADERS`` is off, or when it has them already: a
+    client built by ``new_llm_client``). A copy a cell's client returns is a
+    new client without them."""
+    from unify.common.llm_client import _install_request_metadata
+
+    if getattr(client, "_unify_request_metadata", None) is None:
+        _install_request_metadata(client)
+    return client
 
 
 class CellUnillm:
@@ -349,6 +617,8 @@ class CellUnillm:
     build the module's own clients, refused for an endpoint
     ``UNIFY_CELL_LLM_MODELS`` does not allow; nothing else of the module is
     exposed (its settings, keys, caches and event hooks stay the harness's).
+    A client's call the provider refuses for the request's own content raises
+    ``ModelRequestError``, as ``query_llm`` does.
     """
 
     __slots__ = ()
@@ -377,7 +647,10 @@ class CellUnillm:
             where=f"unillm.{kind}()",
             hint="pass that endpoint, or use query_llm(...) without model=",
         )
-        return CellLLMClient(getattr(unillm, kind)(endpoint, **kwargs))
+        client = getattr(unillm, kind)(endpoint, **kwargs)
+        if _is_client(client):
+            _with_request_metadata(client)
+        return CellLLMClient(client)
 
     def AsyncUnify(  # noqa: N802
         self,

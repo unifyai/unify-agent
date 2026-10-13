@@ -1,0 +1,112 @@
+"""``memory.index(name)``: a bare name is a package's section, else the notes topic of that name; a name that is
+neither raises a LookupError listing the sections. Run as a cell runs it, from the copied helper file."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from tests.memory.test_library_helper import _py
+from unify.memory import library_helper
+from unify.memory.layout import INDEX_FILE, RESERVED_INIT
+from unify.memory.library_helper import find_section
+
+HEAD = "# Memory index\n\nOne line per item.\n"
+INDEX = (
+    HEAD
+    + "\n## memory.grid — Grid helpers.\n\n- `memory.grid.cells:rows(g)` — Rows of a grid. [experimental]\n"
+    + "\n## memory.text — Text helpers.\n\n- `memory.text.parse:tokens(s)` — Split text. [experimental]\n"
+    + "\n## notes/grid\n\n- `notes/grid/shapes.md` — Grid shapes. [experimental]\n"
+    + "\n## notes/maps\n\n- `notes/maps/legend.md` — Map legends. [experimental]\n"
+)
+
+
+def _copy(tmp_path: Path, index: str) -> Path:
+    """A library copy holding only the helper (byte for byte as generated) and *index*."""
+    root = tmp_path / "copy"
+    init = root / RESERVED_INIT
+    init.parent.mkdir(parents=True)
+    init.write_bytes(Path(library_helper.__file__).read_bytes())
+    (root / INDEX_FILE).write_text(index)
+    return root
+
+
+def _cell(root: Path, names: list) -> list:
+    """``memory.index(name)`` for each of *names* in a fresh interpreter: the text, or the LookupError's message."""
+    code = (
+        "import json, memory\n"
+        "out = []\n"
+        f"for name in {names!r}:\n"
+        "    try:\n"
+        "        out.append(['ok', memory.index(*([] if name is None else [name]))])\n"
+        "    except LookupError as exc:\n"
+        "        out.append(['missing', str(exc)])\n"
+        "print(json.dumps(out))\n"
+    )
+    return json.loads(_py(root, code))
+
+
+def test_a_bare_name_is_a_package_else_a_notes_topic(tmp_path):
+    root = _copy(tmp_path, INDEX)
+    (text, maps, notes_grid, grid, dotted, slashed) = _cell(
+        root,
+        ["text", "maps", "notes/grid", "grid", "memory.grid", "memory/grid"],
+    )
+    assert text == ["ok", find_section(INDEX, "memory.text")]
+    assert text[1].startswith("## memory.text — Text helpers.\n")
+    # no package is named maps: the notes topic
+    assert maps == ["ok", "## notes/maps\n\n- `notes/maps/legend.md` — Map legends. [experimental]\n"]
+    assert notes_grid[1].startswith("## notes/grid\n")
+    # both a package and a notes topic: the package, as before
+    assert grid[1].startswith("## memory.grid — Grid helpers.\n")
+    assert grid == dotted == slashed
+
+
+def test_a_notes_only_library_answers_a_bare_topic_name(tmp_path):
+    index = HEAD + "\n## notes/grid\n\n- `notes/grid/shapes.md` — Grid shapes. [experimental]\n"
+    (grid,) = _cell(_copy(tmp_path, index), ["grid"])
+    assert grid == ["ok", "## notes/grid\n\n- `notes/grid/shapes.md` — Grid shapes. [experimental]\n"]
+
+
+def test_a_name_that_is_neither_lists_the_sections(tmp_path):
+    (nope, prefixed) = _cell(_copy(tmp_path, INDEX), ["nope", "memory.nope"])
+    assert nope == [
+        "missing",
+        "memory: no index section 'memory.nope' or 'notes/nope'; the sections are: "
+        "memory.grid, memory.text, notes/grid, notes/maps",
+    ]
+    # a prefixed name means only that section
+    assert prefixed == [
+        "missing",
+        "memory: no index section 'memory.nope'; the sections are: "
+        "memory.grid, memory.text, notes/grid, notes/maps",
+    ]
+    with pytest.raises(LookupError, match="no index section 'notes/nope';"):
+        find_section(INDEX, "notes/nope")
+
+
+def test_an_empty_library_has_no_sections(tmp_path):
+    (whole, grid) = _cell(_copy(tmp_path, HEAD), [None, "grid"])
+    assert whole == ["ok", HEAD]
+    assert grid == [
+        "missing",
+        "memory: no index section 'memory.grid' or 'notes/grid'; the sections are: (none)",
+    ]
+
+
+def test_the_lookup_still_raises_its_helper_audit_event(tmp_path):
+    root = _copy(tmp_path, INDEX)
+    code = (
+        "import json, sys, memory\n"
+        "seen = []\n"
+        "sys.addaudithook(lambda ev, args: seen.append([ev, args[0], args[2]]) if ev == 'memory.helper_call' else None)\n"
+        "memory.index('maps')\n"
+        "try:\n    memory.index('nope')\nexcept LookupError:\n    pass\n"
+        "print(json.dumps(seen))\n"
+    )
+    assert json.loads(_py(root, code)) == [
+        ["memory.helper_call", "memory:index", "ok"],
+        ["memory.helper_call", "memory:index", "error"],
+    ]

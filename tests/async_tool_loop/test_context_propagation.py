@@ -4,14 +4,19 @@ Chat context propagation tests for async tool loop.
 Verifies that `parent_chat_context` is threaded into tools that accept it and
 that the loop inserts the synthetic system context header.
 
-Also tests incremental context propagation:
-- First tool call receives the filtered initial snapshot (genuine user turns
-  and substantive assistant text only)
-- Subsequent calls receive only incremental updates via _parent_chat_context_cont,
-  passed through the same snapshot filter
+Also tests context tracking:
+- ``LoopContextState`` gives a tracked call the filtered initial snapshot
+  (genuine user turns and substantive assistant text only), then only
+  incremental updates via _parent_chat_context_cont, passed through the same
+  snapshot filter
+- The loop tracks each tool call by its call id, so every call receives the
+  filtered snapshot
 
 Injection is opt-in under LLM_DECIDES: an omitted include_parent_chat_context
 means no parent context is passed.
+
+The loop-level tests script the model's replies (``tests/scripted_model.py``):
+they test what the loop does with a call, so nothing leaves the process.
 """
 
 from __future__ import annotations
@@ -25,19 +30,24 @@ from unify.common.async_tool_loop import ChatContextPropagation, start_async_too
 from unify.common._async_tool.context_tracker import LoopContextState
 from unify.common._async_tool.messages import loop_user_notice
 from tests.helpers import _handle_project
+from tests.scripted_model import ScriptedModel, reply, scripted
 from unify.common.llm_client import new_llm_client
 from tests.baked_defaults import as_shipped  # noqa: F401
 
 
-# as_shipped: deleted in step 5 (parent chat context and interjections)
-@pytest.mark.usefixtures("as_shipped")
-@pytest.mark.asyncio
-@pytest.mark.llm_call
-@_handle_project
-async def test_chat_context_propagation(llm_config) -> None:
-    client = new_llm_client(**llm_config)
+RECORD_MESSAGE = "Please call the function `record_context()` once, then reply 'done'."
 
-    root_ctx = [{"role": "user", "content": "root-level message"}]
+
+async def _run_record_context(
+    llm_config: dict,
+    *,
+    root_ctx: list[dict],
+    propagation: ChatContextPropagation,
+    call_args: dict,
+) -> tuple[object, list, ScriptedModel]:
+    """One loop whose scripted model calls ``record_context`` with *call_args*,
+    then answers 'done'. Returns the client, what the tool received, and the
+    model."""
     captured_ctx: List[list[dict]] = []
 
     async def record_context(*, _parent_chat_context: list[dict] | None = None) -> str:
@@ -47,16 +57,34 @@ async def test_chat_context_propagation(llm_config) -> None:
     record_context.__name__ = "record_context"
     record_context.__qualname__ = "record_context"
 
-    handle = start_async_tool_loop(
-        client=client,
-        message="Please call the function `record_context()` once, then reply 'done'.",
-        tools={"record_context": record_context},
-        parent_chat_context=root_ctx,
-        propagate_chat_context=ChatContextPropagation.ALWAYS,
+    model = ScriptedModel(
+        actor=[reply(calls=[("record_context", call_args)]), reply("done")],
     )
+    with scripted(model):
+        client = new_llm_client(**llm_config)
+        handle = start_async_tool_loop(
+            client=client,
+            message=RECORD_MESSAGE,
+            tools={"record_context": record_context},
+            parent_chat_context=root_ctx,
+            propagate_chat_context=propagation,
+        )
+        assert await asyncio.wait_for(handle.result(), 60) == "done"
+    return client, captured_ctx, model
 
-    final_ans = await handle.result()
-    assert final_ans is not None, "Loop should complete with a response"
+
+# as_shipped: deleted in step 5 (parent chat context and interjections)
+@pytest.mark.usefixtures("as_shipped")
+@pytest.mark.asyncio
+@_handle_project
+async def test_chat_context_propagation(llm_config) -> None:
+    root_ctx = [{"role": "user", "content": "root-level message"}]
+    client, captured_ctx, model = await _run_record_context(
+        llm_config,
+        root_ctx=root_ctx,
+        propagation=ChatContextPropagation.ALWAYS,
+        call_args={},
+    )
 
     # Find the runtime context header message (may not be at position 0 due to
     # other system messages like User Visibility Context being prepended)
@@ -82,127 +110,85 @@ async def test_chat_context_propagation(llm_config) -> None:
     assert user_msg is not None and user_msg["content"].startswith(
         "Please call the function",
     )
+    assert model.kinds() == ["actor", "actor"]
 
 
 # as_shipped: deleted in step 5 (parent chat context and interjections)
 @pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_chat_context_propagation_never(llm_config) -> None:
     """Verify that NEVER mode does NOT pass context to tools, even when they accept it."""
-    client = new_llm_client(**llm_config)
-
-    root_ctx = [{"role": "user", "content": "secret-context-message"}]
-    captured_ctx: List[list[dict]] = []
-
-    async def record_context(*, _parent_chat_context: list[dict] | None = None) -> str:
-        captured_ctx.append(_parent_chat_context or [])
-        return "context-recorded"
-
-    record_context.__name__ = "record_context"
-    record_context.__qualname__ = "record_context"
-
-    handle = start_async_tool_loop(
-        client=client,
-        message="Please call the function `record_context()` once, then reply 'done'.",
-        tools={"record_context": record_context},
-        parent_chat_context=root_ctx,
-        propagate_chat_context=ChatContextPropagation.NEVER,
+    _, captured_ctx, model = await _run_record_context(
+        llm_config,
+        root_ctx=[{"role": "user", "content": "secret-context-message"}],
+        propagation=ChatContextPropagation.NEVER,
+        call_args={},
     )
-
-    final_ans = await handle.result()
-    assert final_ans is not None, "Loop should complete with a response"
 
     # Tool should have been called
     assert len(captured_ctx) == 1, "Tool should have been called exactly once"
 
     # But context should be empty (NEVER mode)
     assert captured_ctx[0] == [], "Context should be empty in NEVER mode"
+    # NEVER offers the model no control over the context.
+    schema = json.dumps(model.calls[0].request["tools"])
+    assert "include_parent_chat_context" not in schema
+    assert model.kinds() == ["actor", "actor"]
 
 
 # as_shipped: deleted in step 5 (parent chat context and interjections)
 @pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_chat_context_propagation_llm_decides_include(llm_config) -> None:
-    """Verify that LLM_DECIDES mode passes context when the LLM explicitly opts in."""
-    client = new_llm_client(**llm_config)
+    """Verify that LLM_DECIDES mode passes context when the model opts in.
 
-    root_ctx = [{"role": "user", "content": "root-level-context-marker"}]
-    captured_ctx: List[list[dict]] = []
-
-    async def record_context(*, _parent_chat_context: list[dict] | None = None) -> str:
-        captured_ctx.append(_parent_chat_context or [])
-        return "context-recorded"
-
-    record_context.__name__ = "record_context"
-    record_context.__qualname__ = "record_context"
-
-    # Prompt the LLM to explicitly include context
-    handle = start_async_tool_loop(
-        client=client,
-        message=(
-            "Please call the function `record_context()` once with "
-            "`include_parent_chat_context` set to `true`, then reply 'done'."
-        ),
-        tools={"record_context": record_context},
-        parent_chat_context=root_ctx,
-        propagate_chat_context=ChatContextPropagation.LLM_DECIDES,
+    The model's choice is the scripted call's argument: the test is about the
+    loop honouring it."""
+    _, captured_ctx, model = await _run_record_context(
+        llm_config,
+        root_ctx=[{"role": "user", "content": "root-level-context-marker"}],
+        propagation=ChatContextPropagation.LLM_DECIDES,
+        call_args={"include_parent_chat_context": True},
     )
 
-    final_ans = await handle.result()
-    assert final_ans is not None, "Loop should complete with a response"
+    # The control is offered to the model under LLM_DECIDES.
+    schema = json.dumps(model.calls[0].request["tools"])
+    assert "include_parent_chat_context" in schema
 
     # Tool should have been called
     assert len(captured_ctx) == 1, "Tool should have been called exactly once"
 
-    # Context should be passed (LLM chose to include it)
+    # Context should be passed (the model chose to include it)
     combined = captured_ctx[0]
-    assert len(combined) > 0, "Context should be non-empty when LLM includes it"
+    assert len(combined) > 0, "Context should be non-empty when the model includes it"
     assert combined[0]["content"] == "root-level-context-marker"
+    assert model.kinds() == ["actor", "actor"]
 
 
 # as_shipped: deleted in step 5 (parent chat context and interjections)
 @pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_chat_context_propagation_llm_decides_exclude(llm_config) -> None:
-    """Verify that LLM_DECIDES mode omits context when LLM explicitly excludes it."""
-    client = new_llm_client(**llm_config)
+    """Verify that LLM_DECIDES mode omits context when the model excludes it.
 
-    root_ctx = [{"role": "user", "content": "secret-context-should-not-appear"}]
-    captured_ctx: List[list[dict]] = []
-
-    async def record_context(*, _parent_chat_context: list[dict] | None = None) -> str:
-        captured_ctx.append(_parent_chat_context or [])
-        return "context-recorded"
-
-    record_context.__name__ = "record_context"
-    record_context.__qualname__ = "record_context"
-
-    # Prompt the LLM to explicitly exclude context
-    handle = start_async_tool_loop(
-        client=client,
-        message=(
-            "Please call the function `record_context()` once with "
-            "`include_parent_chat_context` set to `false`, then reply 'done'."
-        ),
-        tools={"record_context": record_context},
-        parent_chat_context=root_ctx,
-        propagate_chat_context=ChatContextPropagation.LLM_DECIDES,
+    The model's choice is the scripted call's argument: the test is about the
+    loop honouring it."""
+    _, captured_ctx, model = await _run_record_context(
+        llm_config,
+        root_ctx=[{"role": "user", "content": "secret-context-should-not-appear"}],
+        propagation=ChatContextPropagation.LLM_DECIDES,
+        call_args={"include_parent_chat_context": False},
     )
-
-    final_ans = await handle.result()
-    assert final_ans is not None, "Loop should complete with a response"
 
     # Tool should have been called
     assert len(captured_ctx) == 1, "Tool should have been called exactly once"
 
-    # Context should be empty (LLM chose to exclude it)
-    assert captured_ctx[0] == [], "Context should be empty when LLM excludes it"
+    # Context should be empty (the model chose to exclude it)
+    assert captured_ctx[0] == [], "Context should be empty when the model excludes it"
+    assert model.kinds() == ["actor", "actor"]
 
 
 # =============================================================================
@@ -369,17 +355,21 @@ class TestLoopContextState:
 # as_shipped: deleted in step 5 (parent chat context and interjections)
 @pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_incremental_context_multiple_tool_calls(llm_config) -> None:
-    """Verify that multiple calls to the same tool receive incremental context.
+    """Two calls to the same tool, in two turns, each get the context once.
 
-    First call should receive full parent_chat_context.
-    Second call should receive only _parent_chat_context_cont with new messages.
+    Forwarding is tracked per tool call (by its call id): each call of the
+    tool is a new inner tool, so each receives the filtered initial snapshot,
+    and no call receives a continuation. The second call's snapshot carries
+    the parent context and the genuine user turn only: the first call, its
+    result and the tool-call turns are dropped by the snapshot keep-rule.
     """
-    client = new_llm_client(**llm_config)
-
     root_ctx = [{"role": "user", "content": "initial-parent-context"}]
+    message = (
+        "Please call `track_context()` TWICE, one after another. "
+        "After both calls complete, reply 'done'."
+    )
 
     # Track what each call received
     call_records: List[dict] = []
@@ -400,41 +390,38 @@ async def test_incremental_context_multiple_tool_calls(llm_config) -> None:
     track_context.__name__ = "track_context"
     track_context.__qualname__ = "track_context"
 
-    handle = start_async_tool_loop(
-        client=client,
-        message=(
-            "Please call `track_context()` TWICE, one after another. "
-            "After both calls complete, reply 'done'."
-        ),
-        tools={"track_context": track_context},
-        parent_chat_context=root_ctx,
-        propagate_chat_context=ChatContextPropagation.ALWAYS,
+    model = ScriptedModel(
+        actor=[
+            reply(calls=[("track_context", {})]),
+            reply(calls=[("track_context", {})]),
+            reply("done"),
+        ],
     )
+    with scripted(model):
+        client = new_llm_client(**llm_config)
+        handle = start_async_tool_loop(
+            client=client,
+            message=message,
+            tools={"track_context": track_context},
+            parent_chat_context=root_ctx,
+            propagate_chat_context=ChatContextPropagation.ALWAYS,
+        )
+        assert await asyncio.wait_for(handle.result(), 60) == "done"
 
-    await handle.result()
+    assert len(call_records) == 2, f"Expected 2 calls, got {len(call_records)}"
 
-    # Should have at least 2 calls
-    assert len(call_records) >= 2, f"Expected at least 2 calls, got {len(call_records)}"
+    for record in call_records:
+        parent_ctx = record["parent_ctx"]
+        assert parent_ctx is not None, "Each call should receive the snapshot"
+        assert [m["content"] for m in parent_ctx] == ["initial-parent-context"]
+        children = parent_ctx[0]["children"]
+        assert [m["role"] for m in children] == ["user"], children
+        assert children[0]["content"].startswith("Please call `track_context()`")
+        assert record["parent_ctx_cont"] is None
 
-    # First call should have parent_chat_context
-    first_call = call_records[0]
-    assert (
-        first_call["parent_ctx"] is not None
-    ), "First call should receive parent_chat_context"
-    # Verify the initial parent context is present
-    assert any(
-        "initial-parent-context" in str(m.get("content", ""))
-        for m in first_call["parent_ctx"]
-    ), "First call should contain the initial parent context"
-
-    # Second call should NOT have full parent_chat_context again (only incremental)
-    second_call = call_records[1]
-    # Second call should either have no parent_ctx or only have cont
-    # The exact behavior depends on whether there were new messages between calls
-    if second_call["parent_ctx"] is not None:
-        # If parent_ctx is present, it should NOT duplicate the initial context
-        # (This would indicate the incremental tracking is working)
-        pass  # Acceptable if the model called them in a single message batch
+    # The second call's snapshot carries nothing of the first call.
+    assert "call 1 recorded" not in json.dumps(call_records[1])
+    assert model.kinds() == ["actor", "actor", "actor"]
 
 
 @pytest.mark.asyncio

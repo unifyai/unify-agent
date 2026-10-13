@@ -24,8 +24,8 @@ in the worker as one of:
   model-written body runs confined and only its primitive calls come back;
 * a **value** (plain data), sent once;
 * a **worker-local** stand-in (``display``, ``run_coro_sync``,
-  ``_around_cp``, ``SteerableToolHandle``, ``reply``), or the current
-  ``request``, built in the worker from its text;
+  ``_around_cp``, ``SteerableToolHandle``, ``ModelRequestError``, ``reply``),
+  or the current ``request``, built in the worker from its text;
 * or **refused**, naming why, when none of these applies.
 
 Values cross as tagged JSON (worker_child.py explains why not pickle). A result
@@ -217,8 +217,18 @@ class PythonWorker:
         self._base: Dict[str, Any] = {}
         self._restart_note: Optional[str] = None
         self.pid: Optional[int] = None
+        # The policy and binds the running sandbox was started with: the
+        # paths sent to the child are those it shows (sandbox.box_path).
+        self._policy: Optional[sandbox.SandboxPolicy] = None
+        self._binds: list = []
         # UNIFY_VARIABLE_INVENTORY=on: the line the last cell's run returned.
         self.inventory: Optional[str] = None
+        # The persistent interpreter (unify/common/box_interpreter.py) sets these before each start: the tool
+        # channel's two box ends (pipes, inherited under the same numbers), the box environment entry naming them,
+        # and a callback run once the sandbox has started (the channel closes the host's copies of the box ends).
+        self.box_fds: tuple = ()
+        self.box_env: Dict[str, str] = {}
+        self.on_spawn: Optional[Callable[[], None]] = None
 
     # -- lifecycle -------------------------------------------------------------
     @property
@@ -239,15 +249,24 @@ class PythonWorker:
             if spec is not None:
                 specs[name] = spec
                 self._base[name] = value
-        from unify.memory_v2.integration import hooks as _mv2
+        from unify.memory.integration import hooks as _mv2
 
-        # UNIFY_MEMORY_V2=on: the request's memory export is imported first.
+        # UNIFY_MEMORY=on: the request's memory export is imported first.
         memory_paths = _mv2.worker_paths()
+        if memory_paths:
+            # UNIFY_MEMORY_LIBRARY=on: the library as ``memory`` in every cell, imported on first use
+            specs.update(_mv2.worker_globals())
         paths = [*memory_paths, *(p for p in sys.path if p)]
         # Packages the harness installs later land here; visible once it exists.
         packages = str(environment.site_packages())
         if packages not in paths:
             paths.append(packages)
+        # Each as the sandbox shows it: the workspace, the environment and
+        # the memory library copy are at fixed paths there (sandbox.wrap_argv).
+        policy = self._policy
+        if policy is not None:
+            mounts = sandbox.neutral_mounts(policy, self._binds)
+            paths = [sandbox.box_path(p, policy, mounts=mounts) for p in paths]
         msg = {
             "op": "init",
             "sys_path": paths,
@@ -256,10 +275,10 @@ class PythonWorker:
         }
         msg["help"] = True
         if memory_paths:
-            # UNIFY_MEMORY_V2=on: the child writes no bytecode (the child runs under -I, so
+            # UNIFY_MEMORY=on: the child writes no bytecode (the child runs under -I, so
             # PYTHONDONTWRITEBYTECODE would be ignored); otherwise no key at all.
             msg["no_bytecode"] = True
-        # UNIFY_MEMORY_V2=on, while the request's work tree is captured: the
+        # UNIFY_MEMORY=on, while the request's work tree is captured: the
         # child installs the audit hook (spec §3a); otherwise no key at all.
         audit = _mv2.worker_audit()
         if audit is not None:
@@ -279,21 +298,28 @@ class PythonWorker:
         # The policy as it is now: a restarted worker sees the current one.
         policy = sandbox.build_policy(fresh=created)
         argv = [sys.executable, "-I", "-S", "-c", _BOOTSTRAP, str(Path(child.__file__))]
+        # The sandbox's whole environment (wrap_argv clears the inherited one):
+        # anything the child needs must be in it before wrap_argv is called.
         env = sandbox.sandbox_env(policy)
         workspace = str(policy.workspace)
-        from unify.memory_v2.integration import hooks as _mv2
+        from unify.memory.integration import hooks as _mv2
 
-        # UNIFY_MEMORY_V2=on: the request's memory export, read-write (v2) ...
+        # UNIFY_MEMORY=on: the request's memory export, read-write (v2) ...
         mounts = _mv2.worker_mounts()
-        # ... or read-only (UNIFY_MEMORY_V21=on, spec v2.1 §6)
+        # ... or read-only (UNIFY_MEMORY_LIBRARY=on, spec v2.1 §6)
         late_ro = _mv2.worker_readonly_mounts()
+        env = {**env, **self.box_env}
         wrapped = sandbox.wrap_argv(
             argv,
             policy,
             cwd=workspace,
             writable=mounts,
             late_readonly=late_ro,
+            env=env,
+            neutral=True,
         )
+        self._policy = policy
+        self._binds = [*mounts, *late_ro]
         with sandbox.unconfined():  # already wrapped; never wrap twice
             self._proc = await asyncio.create_subprocess_exec(
                 *wrapped,
@@ -304,7 +330,15 @@ class PythonWorker:
                 cwd=workspace,
                 start_new_session=True,
                 limit=MAX_MESSAGE_BYTES,
+                # close_fds stays on: the box inherits only the standard streams and these pipes
+                pass_fds=tuple(self.box_fds),
             )
+        if self.on_spawn is not None:
+            try:
+                self.on_spawn()
+            except BaseException:
+                await self.close()
+                raise
         self._stderr_tail.clear()
         self._stderr_task = asyncio.create_task(self._drain_stderr(self._proc))
         self._synced = {}
@@ -343,7 +377,7 @@ class PythonWorker:
 
     async def close(self) -> None:
         """Kill the worker and its sandbox and wait until it is gone."""
-        from .shell import _kill_group
+        from .shell import kill_sandbox
 
         proc, self._proc = self._proc, None
         self._refs.clear()
@@ -352,7 +386,7 @@ class PythonWorker:
         if proc is None:
             return
         if proc.returncode is None:
-            _kill_group(proc)
+            kill_sandbox(proc)
         try:
             await asyncio.wait_for(proc.wait(), timeout=10)
         except asyncio.TimeoutError:
@@ -467,6 +501,7 @@ class PythonWorker:
     def _describe_global(self, name: str, value: Any, record: bool = False) -> dict:
         from unify.common.async_tool_loop import SteerableToolHandle
         from unify.common.asyncio_compat import run_coro_sync
+        from unify.common.cell_models import ModelRequestError
         from unify.function_manager.steering import AROUND_CP_FN
 
         if name == "display" and callable(value):
@@ -477,6 +512,9 @@ class PythonWorker:
             return {"kind": "local", "local": "run_coro_sync"}
         if value is SteerableToolHandle:
             return {"kind": "local", "local": "handle_class"}
+        if value is ModelRequestError:
+            # The worker's own class, which the harness's error arrives as.
+            return {"kind": "local", "local": "model_request_error"}
         if isinstance(value, child.Reply):
             # UNIFY_REPLY_CHANNEL=code+text: the worker's own reply().
             return {"kind": "local", "local": "reply"}
@@ -871,9 +909,9 @@ class PythonWorker:
                 "variables, imports and definitions are reset.",
             ) from None
 
-        from unify.memory_v2.integration import hooks as _mv2
+        from unify.memory.integration import hooks as _mv2
 
-        # UNIFY_MEMORY_V2=on: the cell's audit records, stamped on this clock.
+        # UNIFY_MEMORY=on: the cell's audit records, stamped on this clock.
         _mv2.worker_cell_done(done.get("audit"))
         listed = done.get("inventory")
         self.inventory = listed if isinstance(listed, str) else None
@@ -893,7 +931,7 @@ class PythonWorker:
                 and done.get("error_type") == "ControlledInterruption"
             ):
                 raise ControlledInterruption(str(done.get("message") or "steered"))
-            # UNIFY_MEMORY_V2_SURFACING=catalogue: a suspect channel's refusal says so.
+            # UNIFY_MEMORY_SURFACING=catalogue: a suspect channel's refusal says so.
             raise WorkerCellError(_mv2.cell_error(str(done["error"])))
         return self.decode(done.get("result"), shadow)
 

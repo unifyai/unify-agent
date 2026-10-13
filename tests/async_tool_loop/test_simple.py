@@ -1,25 +1,16 @@
 """
-pytest tests for the async-tool loop helpers **using a real `unillm.AsyncUnify`
-client for every test** – no stubs, no scripted completions.
+pytest tests for the async-tool loop helpers.
 
-Running these tests will make real requests to the model configured as
-``UNIFY_MODEL`` (via ``llm_config`` / ``new_llm_client``). Make sure you have:
-
-* valid provider credentials in your environment (for example ``OPENROUTER_API_KEY``
-  when the default model routes through OpenRouter), and
-* internet connectivity while the suite runs.
-
-The tests still exercise exactly the same behaviours as before:
+The model is scripted (``tests/scripted_model.py``): each test writes the
+model's replies, every request is still built as in production for the
+``llm_config`` model, and nothing leaves the process. The behaviours covered:
 
 * single-tool “happy path”
-* waiting for multiple concurrent tools to finish before the 2nd LLM call
+* a turn's calls run in order, each to completion, before the next model call
 * recovery after a tool error and counter reset
 * aborting when too many consecutive tool failures occur
 * a realistic mix of async + sync tools
-* verifying that the first assistant turn contains _parallel_ tool calls
-
-If any test starts to fail intermittently, tweak the user-message so that
-the model’s behaviour stays deterministic enough for the assertions below.
+* duplicate tool calls kept or pruned, no-tool flows and the concurrency limit
 """
 
 from __future__ import annotations
@@ -33,10 +24,9 @@ from tests.async_helpers import (
     _is_synthetic_check_status_stub,
     _is_synthetic_check_status_tool_msg,
 )
+from tests.scripted_model import ScriptedModel, reply, scripted
 
 import pytest
-
-pytestmark = pytest.mark.llm_call
 
 # --------------------------------------------------------------------------- #
 #  MODULE UNDER TEST                                                          #
@@ -80,17 +70,23 @@ def count_tool_messages(client) -> int:
 @pytest.mark.asyncio
 @_handle_project
 async def test_happy_path_single_sync_tool(llm_config):
-    client = new_llm_client(**llm_config)
+    model = ScriptedModel(
+        actor=[reply(calls=[("add", {"x": 2, "y": 3})]), reply("5")],
+    )
+    with scripted(model):
+        client = new_llm_client(**llm_config)
 
-    answer = await start_async_tool_loop(
-        client,
-        message="Add 2 and 3 using the `add` tool and answer with the result only.",
-        tools={"add": add},
-        max_consecutive_failures=2,
-    ).result()
+        answer = await start_async_tool_loop(
+            client,
+            message="Add 2 and 3 using the `add` tool and answer with the result only.",
+            tools={"add": add},
+            max_consecutive_failures=2,
+        ).result()
 
     assert answer.strip().startswith("5")
-    assert count_tool_messages(client) >= 1
+    assert count_tool_messages(client) == 1
+    assert [m["content"] for m in client.messages if m["role"] == "tool"] == ["5"]
+    assert model.kinds() == ["actor", "actor"]
 
 
 # --------------------------------------------------------------------------- #
@@ -157,25 +153,33 @@ async def test_a_turns_calls_run_in_order_before_the_next_model_call():
 @pytest.mark.asyncio
 @_handle_project
 async def test_recovers_after_failure(llm_config):
-    client = new_llm_client(**llm_config)
+    model = ScriptedModel(
+        actor=[
+            reply(calls=[("divide", {"a": 4, "b": 0})]),
+            reply(calls=[("divide", {"a": 4, "b": 2})]),
+            reply("2"),
+        ],
+    )
+    with scripted(model):
+        client = new_llm_client(**llm_config)
 
-    answer = await start_async_tool_loop(
-        client,
-        message=(
-            "Perform EXACTLY two tool calls and no more, in this order:\n"
-            "1) Call `divide` with a=4 and b=0. This will fail with ZeroDivisionError. Do NOT retry or fix it.\n"
-            "2) Then call `divide` with a=4 and b=2.\n"
-            "After the second call returns, reply with the result only (plain text `2`). Do not schedule any additional tool calls,"
-            " and do not attempt to re-run the failing divide(4,0)."
-        ),
-        tools={"divide": divide},
-        max_consecutive_failures=3,
-    ).result()
+        answer = await start_async_tool_loop(
+            client,
+            message=(
+                "Call `divide` with a=4 and b=0, then with a=4 and b=2, and "
+                "reply with the result only."
+            ),
+            tools={"divide": divide},
+            max_consecutive_failures=3,
+        ).result()
 
     assert "2" in answer.strip()
 
     tool_msgs = [m["content"] for m in client.messages if m["role"] == "tool"]
-    assert any("ZeroDivisionError" in (tb or "") for tb in tool_msgs)
+    assert len(tool_msgs) == 2
+    assert "ZeroDivisionError" in (tool_msgs[0] or "")
+    assert "2" in tool_msgs[1]
+    assert model.kinds() == ["actor", "actor", "actor"]
 
 
 # --------------------------------------------------------------------------- #
@@ -184,16 +188,21 @@ async def test_recovers_after_failure(llm_config):
 @pytest.mark.asyncio
 @_handle_project
 async def test_aborts_after_too_many_failures(llm_config):
-    client = new_llm_client(**llm_config)
+    model = ScriptedModel(actor=[reply(calls=[("launch", {})])])
+    with scripted(model):
+        client = new_llm_client(**llm_config)
 
-    with pytest.raises(RuntimeError):
-        await start_async_tool_loop(
-            client,
-            message=("Please run the launch tool."),
-            tools={"launch": launch},
-            max_consecutive_failures=1,  # abort after the very first failure
-            raise_on_limit=True,
-        ).result()
+        with pytest.raises(RuntimeError):
+            await start_async_tool_loop(
+                client,
+                message=("Please run the launch tool."),
+                tools={"launch": launch},
+                max_consecutive_failures=1,  # abort after the very first failure
+                raise_on_limit=True,
+            ).result()
+
+    # The failure ends the loop: the model is not asked again.
+    assert model.kinds() == ["actor"]
 
 
 # --------------------------------------------------------------------------- #
@@ -202,20 +211,31 @@ async def test_aborts_after_too_many_failures(llm_config):
 @pytest.mark.asyncio
 @_handle_project
 async def test_mixed_sync_async_tools(llm_config):
-    client = new_llm_client(**llm_config)
+    model = ScriptedModel(
+        actor=[
+            reply(calls=[("fast_tool", {})]),
+            reply(calls=[("add", {"x": 6, "y": 7})]),
+            reply("13"),
+        ],
+    )
+    with scripted(model):
+        client = new_llm_client(**llm_config)
 
-    answer = await start_async_tool_loop(
-        client,
-        message=(
-            "Call the async tool `fast_tool` (which just returns a token),   "
-            "then call the sync `add` tool with 6 and 7, and finally reply "
-            "with the result only."
-        ),
-        tools={"fast_tool": fast_tool, "add": add},
-        max_consecutive_failures=2,
-    ).result()
+        answer = await start_async_tool_loop(
+            client,
+            message=(
+                "Call the async tool `fast_tool` (which just returns a token),   "
+                "then call the sync `add` tool with 6 and 7, and finally reply "
+                "with the result only."
+            ),
+            tools={"fast_tool": fast_tool, "add": add},
+            max_consecutive_failures=2,
+        ).result()
 
     assert "13" in answer.strip()
+    tool_msgs = [m["content"] for m in client.messages if m["role"] == "tool"]
+    assert tool_msgs == ["fast", "13"]
+    assert model.kinds() == ["actor", "actor", "actor"]
 
 
 # --------------------------------------------------------------------------- #
@@ -229,19 +249,22 @@ def emit_json() -> str:
 @pytest.mark.asyncio
 @_handle_project
 async def test_pretty_prints_json_string_tool_result(llm_config):
-    client = new_llm_client(**llm_config)
+    model = ScriptedModel(actor=[reply(calls=[("emit_json", {})]), reply("ok")])
+    with scripted(model):
+        client = new_llm_client(**llm_config)
 
-    # Ask the model to call the tool once, then reply. Result should be pretty‑printed in the transcript.
-    _ = await start_async_tool_loop(
-        client,
-        message=(
-            "In your FIRST assistant message, request EXACTLY ONE tool call to `emit_json` "
-            "with empty arguments {}; after receiving the tool reply, answer with the single word 'ok'."
-        ),
-        tools={"emit_json": emit_json},
-        max_consecutive_failures=2,
-        time_awareness=False,
-    ).result()
+        # The model calls the tool once, then replies. The result should be
+        # pretty‑printed in the transcript.
+        _ = await start_async_tool_loop(
+            client,
+            message=(
+                "Call `emit_json` once with empty arguments {}; after receiving "
+                "the tool reply, answer with the single word 'ok'."
+            ),
+            tools={"emit_json": emit_json},
+            max_consecutive_failures=2,
+            time_awareness=False,
+        ).result()
 
     # Find the tool message for emit_json
     tool_msgs = [
@@ -264,6 +287,7 @@ async def test_pretty_prints_json_string_tool_result(llm_config):
     assert (
         '"foo": 1' in content
     ), "Pretty‑printed JSON should include spaces after colons"
+    assert model.kinds() == ["actor", "actor"]
 
 
 @pytest.mark.asyncio
@@ -312,13 +336,15 @@ async def test_duplicate_tool_calls_are_optionally_pruned(
     # 1️⃣  duplicates SHOULD be executed when pruning is disabled
     # ------------------------------------------------------------------ #
     log.clear()
-    client = new_llm_client(**llm_config)
-    await start_async_tool_loop(
-        client=client,
-        message=seeded,
-        tools={"echo": echo},
-        prune_tool_duplicates=False,
-    ).result()
+    kept = ScriptedModel(actor=[reply("done")])
+    with scripted(kept):
+        client = new_llm_client(**llm_config)
+        await start_async_tool_loop(
+            client=client,
+            message=seeded,
+            tools={"echo": echo},
+            prune_tool_duplicates=False,
+        ).result()
     # Both duplicate calls should execute
     assert log == [
         "hello",
@@ -331,22 +357,23 @@ async def test_duplicate_tool_calls_are_optionally_pruned(
         if m.get("role") == "tool" and m.get("name") == "echo"
     ]
     assert len(tool_results) == 2, "Expected 2 tool results when pruning is disabled"
+    assert kept.kinds() == ["actor"]
 
     # ------------------------------------------------------------------ #
     # 2️⃣  duplicates SHOULD be pruned when pruning is enabled
     # ------------------------------------------------------------------ #
     log.clear()
-    client = new_llm_client(**llm_config)
-    await start_async_tool_loop(
-        client=client,
-        message=seeded,
-        tools={"echo": echo},
-        prune_tool_duplicates=True,
-    ).result()
-    # Only one call should execute from the seeded turn (duplicate pruned)
-    assert log[0] == "hello", "First tool call should execute"
-    # The seeded turn should only produce 1 tool result due to pruning
-    # (model may make additional calls in subsequent turns to compensate)
+    pruned = ScriptedModel(actor=[reply("done")])
+    with scripted(pruned):
+        client = new_llm_client(**llm_config)
+        await start_async_tool_loop(
+            client=client,
+            message=seeded,
+            tools={"echo": echo},
+            prune_tool_duplicates=True,
+        ).result()
+    # Only one call executes from the seeded turn (the duplicate is pruned)
+    assert log == ["hello"], "Only the first of the duplicate calls should run"
 
     # Find the first REAL assistant turn with tool calls (exclude synthetic check_status stubs)
     first_assistant_idx = None
@@ -371,6 +398,7 @@ async def test_duplicate_tool_calls_are_optionally_pruned(
     assert (
         len(tool_results_after_first) == 1
     ), "With prune_tool_duplicates=True, only 1 tool result should follow the seeded assistant turn"
+    assert pruned.kinds() == ["actor"]
 
 
 # --------------------------------------------------------------------------- #
@@ -387,19 +415,28 @@ async def test_no_tools_with_system_message(llm_config) -> None:
 
     The assistant must answer directly without any tool calls.
     """
-    client = new_llm_client(**llm_config).set_system_message(
-        "You are a helpful assistant.",
-    )
+    model = ScriptedModel(actor=[reply("Hello there!")])
+    with scripted(model):
+        client = new_llm_client(**llm_config).set_system_message(
+            "You are a helpful assistant.",
+        )
 
-    answer = await start_async_tool_loop(
-        client,
-        message="Just reply with a friendly greeting – no tools are available.",
-        tools={},  # ← empty tool-kit
-    ).result()
+        answer = await start_async_tool_loop(
+            client,
+            message="Just reply with a friendly greeting – no tools are available.",
+            tools={},  # ← empty tool-kit
+        ).result()
 
     # The assistant must answer directly and never insert any tool messages.
-    assert answer.strip(), "Assistant reply should not be empty."
+    assert answer.strip() == "Hello there!"
     assert count_tool_messages(client) == 0
+    assert any(
+        m["role"] == "system" and "You are a helpful assistant." in str(m["content"])
+        for m in model.calls[0].messages
+    )
+    # With no tools of its own the loop still offers compress_context, so the
+    # request is an actor turn.
+    assert model.kinds() == ["actor"]
 
 
 @pytest.mark.asyncio
@@ -410,16 +447,19 @@ async def test_no_tools_without_explicit_system_message(llm_config) -> None:
 
     The assistant must answer directly without any tool calls.
     """
-    client = new_llm_client(**llm_config)
+    model = ScriptedModel(actor=[reply("Hello back!")])
+    with scripted(model):
+        client = new_llm_client(**llm_config)
 
-    answer = await start_async_tool_loop(
-        client,
-        message="Say hello back to me – there are no tools at all.",
-        tools={},  # ← still an empty tool-kit
-    ).result()
+        answer = await start_async_tool_loop(
+            client,
+            message="Say hello back to me – there are no tools at all.",
+            tools={},  # ← still an empty tool-kit
+        ).result()
 
-    assert answer.strip(), "Assistant reply should not be empty."
+    assert answer.strip() == "Hello back!"
     assert count_tool_messages(client) == 0
+    assert model.kinds() == ["actor"]
 
 
 # --------------------------------------------------------------------------- #
@@ -432,10 +472,9 @@ async def test_no_tools_without_explicit_system_message(llm_config) -> None:
 async def test_max_concurrent_limit_is_obeyed(llm_config) -> None:  # noqa: D401
     """Ensure the per‑tool *runtime* concurrency cap is respected.
 
-    We ask the model to run the same tool twice *in parallel*.  The limit
+    The model asks for the same tool twice in one turn.  The limit
     (`max_concurrent=1`) should force the second call to wait until the
-    first ends.  We tolerate the model making more than two invocations –
-    what matters is that **no overlap > 1** happens.
+    first ends: **no overlap > 1** happens.
     """
 
     events: list[tuple[str, float]] = []
@@ -451,30 +490,36 @@ async def test_max_concurrent_limit_is_obeyed(llm_config) -> None:  # noqa: D401
 
     tools = {"limited": ToolSpec(fn=limited, max_concurrent=1)}
 
-    client = new_llm_client(**llm_config)
-
-    # Kick off the interactive loop *without* awaiting the final result yet so
-    # that we can synchronise on the **first** tool request and ensure all
-    # timing events are captured in the correct order.
-
-    handle = start_async_tool_loop(
-        client=client,
-        message=(
-            "Invoke `limited` twice *concurrently* – once with 'one', once "
-            "with 'two' – then reply 'done'."
-        ),
-        tools=tools,
-        prune_tool_duplicates=False,
+    model = ScriptedModel(
+        actor=[
+            reply(
+                calls=[
+                    ("limited", {"label": "one"}),
+                    ("limited", {"label": "two"}),
+                ],
+            ),
+            reply("done"),
+        ],
     )
+    with scripted(model):
+        client = new_llm_client(**llm_config)
 
-    # Block until the assistant has actually *requested* at least one call to
-    # the `limited` tool.  This makes the test independent from model latency
-    # and guarantees that the event-log below reflects the real execution
-    # window of the tool.
-    await _wait_for_tool_request(client, "limited")
+        # Kick off the interactive loop *without* awaiting the final result
+        # yet so that we can synchronise on the **first** tool request.
+        handle = start_async_tool_loop(
+            client=client,
+            message=(
+                "Invoke `limited` twice *concurrently* – once with 'one', once "
+                "with 'two' – then reply 'done'."
+            ),
+            tools=tools,
+            prune_tool_duplicates=False,
+        )
 
-    # Now wait for the whole loop to finish.
-    await handle.result()
+        await _wait_for_tool_request(client, "limited", timeout=30)
+
+        # Now wait for the whole loop to finish.
+        await handle.result()
 
     starts = [t for e, t in events if e == "start"]
     ends = [t for e, t in events if e == "end"]
@@ -484,12 +529,7 @@ async def test_max_concurrent_limit_is_obeyed(llm_config) -> None:  # noqa: D401
         ends,
     ), "Mismatched start/end counts – tool never returned?"
 
-    # The model may decide to retry the second invocation *after* the first one
-    # completed.  What matters is that **no two calls** to the tool ever ran in
-    # parallel.  Therefore, we only check that at least one invocation
-    # happened and that the *peak* concurrency never exceeded 1.
-
-    assert len(starts) >= 1, "The tool was never invoked at all – test setup failed."
+    assert len(starts) == 2, "Both calls of the turn should run."
 
     # Verify the core requirement: that the peak concurrency never exceeded 1.
     timeline = sorted(events, key=lambda p: p[1])
@@ -501,3 +541,4 @@ async def test_max_concurrent_limit_is_obeyed(llm_config) -> None:  # noqa: D401
     assert (
         peak == 1
     ), "More than one instance ran concurrently despite max_concurrent=1."
+    assert model.kinds() == ["actor", "actor"]

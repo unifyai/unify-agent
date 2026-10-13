@@ -229,9 +229,10 @@ def create_execution_globals() -> Dict[str, Any]:
     Creates the globals of an actor's execution sandbox.
 
     Extends create_base_globals() with:
-    - A `primitives` object exposing no namespace. The sandbox holds exactly
-      the primitives its environments inject, which replace this object; a
-      sandbox with none refuses `primitives.<namespace>` and says why.
+    - A `primitives` object exposing no namespace (not in a memory run). The
+      sandbox holds exactly the primitives its environments inject, which
+      replace this object; a sandbox with none refuses
+      `primitives.<namespace>` and says why.
     - Steerable handle infrastructure for functions that return handles
       (SteerableToolHandle)
     - `unillm` for advanced direct LLM usage (client constructors for the
@@ -254,14 +255,26 @@ def create_execution_globals() -> Dict[str, Any]:
 
     # Import Primitives here to avoid circular imports at module load time
     from unify.function_manager.primitives import Primitives, PrimitiveScope
+    from unify.memory.integration import hooks as _memory
 
-    globals_dict["primitives"] = Primitives(primitive_scope=PrimitiveScope.none())
+    # An environment that injects primitives replaces this object; with none
+    # injected, a memory run has no `primitives` global at all (its scope is
+    # empty, so it only names what the cell cannot use).
+    if not _memory.enabled():
+        globals_dict["primitives"] = Primitives(
+            primitive_scope=PrimitiveScope.none(),
+        )
 
     # Steerable handle type - allows compositional functions to return handles
     # that the execution layer can detect and wire up for steering operations.
     from unify.common.async_tool_loop import SteerableToolHandle
     from unify.common.asyncio_compat import run_coro_sync
-    from unify.common.cell_models import cell_list_llms, cell_query_llm, cell_unillm
+    from unify.common.cell_models import (
+        ModelRequestError,
+        cell_list_llms,
+        cell_query_llm,
+        cell_unillm,
+    )
 
     globals_dict["SteerableToolHandle"] = SteerableToolHandle
     # Cell-scoped: each refuses an endpoint UNIFY_CELL_LLM_MODELS does not
@@ -271,6 +284,9 @@ def create_execution_globals() -> Dict[str, Any]:
     globals_dict["list_llms"] = cell_list_llms
     globals_dict["run_coro_sync"] = run_coro_sync
     globals_dict["unillm"] = cell_unillm
+    # What a cell's model call raises when the provider refuses the request's
+    # own content, so the cell can catch it by name.
+    globals_dict["ModelRequestError"] = ModelRequestError
 
     # Globals a registered environment binds beside its namespaces; never in
     # place of one of the above. While a feature that observes environment

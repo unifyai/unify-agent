@@ -137,7 +137,7 @@ async def test_fan_out_wait_and_reply(monkeypatch, tmp_path):
     assert "primitives.actor" not in json.dumps(provider.by_agent["h1"][0], default=str)
 
 
-async def test_a_helper_cannot_spawn_or_post_as_someone_else(monkeypatch, tmp_path):
+async def test_a_helper_spawns_but_cannot_post_as_someone_else(monkeypatch, tmp_path):
     root = [
         _code(
             "await agents.spawn('Try to spawn and to post as another agent, please.')\n"
@@ -147,10 +147,7 @@ async def test_a_helper_cannot_spawn_or_post_as_someone_else(monkeypatch, tmp_pa
     ]
     helper = [
         _code(
-            "try:\n"
-            "    await agents.spawn('another helper for this request now')\n"
-            "except Exception as e:\n"
-            "    print(type(e).__name__, e)\n"
+            "print('started', await agents.spawn('another helper for this request now'))\n"
             "try:\n"
             "    record._name = 'root'\n"
             "except Exception as e:\n"
@@ -160,12 +157,17 @@ async def test_a_helper_cannot_spawn_or_post_as_someone_else(monkeypatch, tmp_pa
         _text("tried"),
     ]
     provider, result, pool = await _run(
-        {"root": root, "h1": helper},
+        {"root": root, "h1": helper, "h2": [_text("nested done")]},
         monkeypatch,
         tmp_path,
     )
     helper_seen = json.dumps(provider.by_agent["h1"][-1]["messages"], default=str)
-    assert "only the main agent can start helpers" in helper_seen
+    # Any agent may start helpers: the record shows h1 started h2.
+    assert "started h2" in helper_seen
+    assert pool.record.participants["h2"].spawner == "h1"
+    assert any(
+        e.author == "h1" and e.mentions == ("h2",) for e in pool.record.entries
+    )
     hello = [e for e in pool.record.entries if e.text == "@root hello"]
     assert hello and hello[0].author == "h1"
 

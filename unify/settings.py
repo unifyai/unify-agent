@@ -207,6 +207,10 @@ class ProductionSettings(BaseSettings):
     # request is never compacted around the same prefix twice in a row.
     # Empty (also ``off``): as shipped.
     UNIFY_COMPACTION_KEEP_PREFIX: str = ""
+    # The fixed prompt size, in tokens, at which every agent (the agent loop and the memory agents) compacts its
+    # context, unless 85% of the model's context window comes first; with no known window it applies alone. A
+    # context-management point, not a limit on what an agent reads or writes. A positive whole number.
+    UNIFY_COMPACTION_AT_TOKENS: int = 150_000
     # Where the actor's session states the host clock. Empty (also
     # ``system``): as shipped, a "Current Time" section near the end of the
     # system prompt, which tells the model to resolve "today" against it and
@@ -295,6 +299,18 @@ class ProductionSettings(BaseSettings):
     # ``replies_from_value``) (unify/common/_async_tool/cell_reply.py).
     # Empty: replies are text only, as shipped.
     UNIFY_REPLY_CHANNEL: str = ""
+    # ``on``: every agent keeps one model-API tool, ``execute_code``; every
+    # other tool is a Python call ``tools.<name>(...)`` in a cell, defined
+    # once in the shared registry (unify/common/tool_registry.py) and run on
+    # the host. For the actor and its teammates the loop also compacts by
+    # itself at the compaction point (no forced ``compress_context`` turn)
+    # and ``tools.finish(answer)`` replaces the response tool. ``off`` (the
+    # default): every agent's requests are as before.
+    UNIFY_TOOLS_IN_CODE: str = "off"
+    # ``persistent`` (the default): each agent's cells run in one
+    # interpreter that keeps its variables between cells until it restarts.
+    # ``fresh``: every cell starts in a new interpreter.
+    UNIFY_CELL_STATE: str = "persistent"
     # ``on``: model code in a cell reads the current request as ``request``
     # (in the sandboxed worker): ``request.text``
     # is the requester's latest message, the request or a later message of a
@@ -345,39 +361,39 @@ class ProductionSettings(BaseSettings):
     # process, so with Python in the sandboxed worker it is refused and
     # start-up stops. Empty stores without the check.
     UNIFY_STORE_VERIFY: str = ""
-    # Memory v2's dialogue capture (applies only with UNIFY_MEMORY_V2 on;
-    # parsed by unify/memory_v2/integration/switch.py): ``env`` also records
+    # Memory v2's dialogue capture (applies only with UNIFY_MEMORY on;
+    # parsed by unify/memory/integration/switch.py): ``env`` also records
     # each request's dialogue actions (every turn-ending reply's action with
     # the counterpart's next message) on the channel ``env``, so a benchmark
     # whose actions are text in the replies (Continual-ARC) leaves coverable
     # actions. Empty (also ``off``): episodes as shipped.
-    UNIFY_MEMORY_V2_DIALOGUE: str = ""
+    UNIFY_MEMORY_DIALOGUE: str = ""
     # Memory v2 (continual-harness-research docs/design/memory-redesign-spec.md):
     # ``on`` replaces the storage review, the ``functions``/``guidance``
     # objects and the library shortlist with a per-request export of the
     # memory repo (``<UNIFY_HOME>/memory``) on the worker's import path and
-    # its index at the end of the system prompt (unify/memory_v2/integration).
+    # its index at the end of the system prompt (unify/memory/integration).
     # Needs the sandboxed worker and the core tool surface. Empty or ``off``:
-    # as shipped. The companions (parsed by unify/memory_v2/integration/
+    # as shipped. The companions (parsed by unify/memory/integration/
     # switch.py) apply only when it is on: ``_E`` is the experience budget in
-    # tokens at which a batched consolidation pass becomes due; ``_SOL_MODEL``
+    # tokens at which a batched consolidation pass becomes due; ``_WRITER_MODEL``
     # runs the passes, at the actor's reasoning effort for the run;
-    # ``_SOL_ALLOWANCE_USD_PER_TOKENS`` (a decimal string) times E caps one
-    # pass's USD; ``_SOL_RUN_GUARD_USD`` (a decimal string, empty for none)
-    # stops further passes once the run's Sol USD plus the next cap would
-    # exceed it. ``_SOL_BASE_URL`` and ``_SOL_TOKEN`` (both or neither) send
-    # Sol's calls to a route of their own (a proxy listener with its own
+    # ``_WRITER_ALLOWANCE_USD_PER_TOKENS`` (a decimal string) times E caps one
+    # pass's USD; ``_WRITER_RUN_GUARD_USD`` (a decimal string, empty for none)
+    # stops further passes once the run's writer USD plus the next cap would
+    # exceed it. ``_WRITER_BASE_URL`` and ``_WRITER_TOKEN`` (both or neither) send
+    # the writer's calls to a route of their own (a proxy listener with its own
     # token); empty, they go as shipped. They are checked when a pass starts
     # (a settings error would print the value), the token is a SecretStr and
-    # leaves this process's environment once read (below). ``_SOL_TOKEN_FD``
-    # (instead of ``_SOL_TOKEN``, never both) names an inherited descriptor
+    # leaves this process's environment once read (below). ``_WRITER_TOKEN_FD``
+    # (instead of ``_WRITER_TOKEN``, never both) names an inherited descriptor
     # holding the token: read once when settings are settled (below), then
-    # closed; the token never enters the environment. ``_SOL_EFFORT`` is
-    # ``actor`` (Sol's effort is the actor's for the run) or a fixed
+    # closed; the token never enters the environment. ``_WRITER_EFFORT`` is
+    # ``actor`` (the writer's effort is the actor's for the run) or a fixed
     # ``low``/``medium``/``high`` for a declared mismatch ablation.
-    # ``_SOL_EFFORT_SCALE`` (``low:1,medium:2,high:5``) multiplies a pass's
-    # USD cap and ``_SOL_MAX_CALLS`` (``low:40,medium:80,high:80``) bounds its
-    # calls, each by the pass's Sol effort. The v2.1
+    # ``_WRITER_EFFORT_SCALE`` (``low:1,medium:2,high:5``) multiplies a pass's
+    # USD cap and ``_WRITER_MAX_CALLS`` (``low:40,medium:80,high:80``) bounds its
+    # calls, each by the pass's writer effort. The library
     # surfacing switches (same parser; each default is
     # the v2 screen build's behaviour): ``_SURFACING`` is ``index`` (the v2
     # per-function index in the prompt, nothing generated in the export) or
@@ -386,73 +402,96 @@ class ProductionSettings(BaseSettings):
     # recorded per commit); ``_DOCSTRINGS`` ``off``/``on`` is the gate's lean
     # docstring standard and examples run; ``_SOFT_BUDGET`` ``off``/``on``
     # turns G4's 4,000-token index refusal into a hygiene note.
-    # ``_SOL_USAGE`` (empty/off or on) ends each pass's first message with
+    # ``_WRITER_USAGE`` (empty/off or on) ends each pass's first message with
     # the table of how requests used each library function.
-    UNIFY_MEMORY_V2: str = ""
-    UNIFY_MEMORY_V2_E: int = 150000
-    UNIFY_MEMORY_V2_SOL_MODEL: str = "openai/gpt-6-sol"
-    UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS: str = "0.00000073"
-    UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD: str = ""
-    # Memory v2.1 r5 (RUNTIME B1): a v2.1 pass with a Sol route runs with no pass cap, bounded in flight only by the
-    # route's ceilings; point this only at a proxy with a spend ceiling (the runner's Sol lane, the replay proxy),
-    # never at an uncapped relay.
-    UNIFY_MEMORY_V2_SOL_BASE_URL: str = ""
-    UNIFY_MEMORY_V2_SOL_TOKEN: SecretStr = SecretStr("")
-    UNIFY_MEMORY_V2_SOL_TOKEN_FD: str = ""
-    UNIFY_MEMORY_V2_SOL_EFFORT: str = "actor"
-    UNIFY_MEMORY_V2_SOL_EFFORT_SCALE: str = "low:1,medium:2,high:5"
-    UNIFY_MEMORY_V2_SOL_MAX_CALLS: str = "low:40,medium:80,high:80"
-    UNIFY_MEMORY_V2_SURFACING: str = "index"
-    UNIFY_MEMORY_V2_DOCSTRINGS: str = "off"
-    UNIFY_MEMORY_V2_SOFT_BUDGET: str = "off"
-    UNIFY_MEMORY_V2_SOL_USAGE: str = ""
-    # Memory v2.1 (unify/memory_v2; spec docs memory-v2.1-spec.md): ``off``
-    # (default; empty means it) or ``on``. On: the writer reads a batch
-    # map and bounded views, and finish waits for coverage. Off: v2 as built.
-    UNIFY_MEMORY_V21: str = "off"
-    # Memory v2.1 P9: ``off`` (default) or ``on``. On (with UNIFY_MEMORY_V21), a
+    UNIFY_MEMORY: str = ""
+    UNIFY_MEMORY_E: int = 150000
+    UNIFY_MEMORY_WRITER_MODEL: str = "openai/gpt-6-sol"
+    UNIFY_MEMORY_WRITER_ALLOWANCE_USD_PER_TOKENS: str = "0.00000073"
+    UNIFY_MEMORY_WRITER_RUN_GUARD_USD: str = ""
+    # In the library mode a pass with a writer route runs with no pass cap, bounded in flight only by the route's
+    # ceilings; point this only at a proxy with a spend ceiling (the runner's writer lane, the replay proxy), never
+    # at an uncapped relay.
+    UNIFY_MEMORY_WRITER_BASE_URL: str = ""
+    UNIFY_MEMORY_WRITER_TOKEN: SecretStr = SecretStr("")
+    UNIFY_MEMORY_WRITER_TOKEN_FD: str = ""
+    UNIFY_MEMORY_WRITER_EFFORT: str = "actor"
+    UNIFY_MEMORY_WRITER_EFFORT_SCALE: str = "low:1,medium:2,high:5"
+    UNIFY_MEMORY_WRITER_MAX_CALLS: str = "low:40,medium:80,high:80"
+    UNIFY_MEMORY_SURFACING: str = "index"
+    UNIFY_MEMORY_DOCSTRINGS: str = "off"
+    UNIFY_MEMORY_SOFT_BUDGET: str = "off"
+    UNIFY_MEMORY_WRITER_USAGE: str = ""
+    # The library mode (unify/memory): ``off`` (default; empty means it) or
+    # ``on``. On: the writer reads a batch map and bounded views and keeps a
+    # function library. Off: the earlier memory mode as built.
+    UNIFY_MEMORY_LIBRARY: str = "off"
+    # Checker visibility: ``off`` (default) or ``on``. On (with UNIFY_MEMORY_LIBRARY), a
     # ``{"checker": {"label": ...}}`` stdin line records the verdict the bed
     # showed the actor as an agent-visible checker signal. Off: refused.
-    UNIFY_MEMORY_V21_CHECKER_VISIBLE: str = "off"
-    # Memory v2.1 P7: E (D43: 100k recorded tokens), one pass's wall-clock bound (s), and the Sol route
-    # proxy's journal (absolute path; empty: none) used only to reconcile cancelled calls.
-    UNIFY_MEMORY_V21_E: int = 100000
-    # Memory v2.1: the writer's reader calls per pass (PassConfig.max_reads).
-    UNIFY_MEMORY_V21_MAX_READS: int = 400
-    # Memory v2.1: ``on`` makes the CLI wait for the pass slot it spawned before exiting (sandboxes whose PID
+    UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE: str = "off"
+    # The library mode's E (recorded tokens at which a pass becomes due), one pass's wall-clock bound (s), and the
+    # writer route proxy's journal (absolute path; empty: none) used only to reconcile cancelled calls.
+    UNIFY_MEMORY_LIBRARY_E: int = 100000
+    # The library mode: the writer's reader calls per pass (PassConfig.max_reads).
+    UNIFY_MEMORY_LIBRARY_MAX_READS: int = 400
+    # The library mode: ``on`` makes the CLI wait for the pass slot it spawned before exiting (sandboxes whose PID
     # namespace ends with the controller); ``off`` (default): the request returns at once.
-    UNIFY_MEMORY_V21_WAIT_SLOT: str = "off"
-    # Memory v2.1 design r5: ``on`` forks the actor's conversation once at each episode's end, in a confined process
+    UNIFY_MEMORY_LIBRARY_WAIT_SLOT: str = "off"
+    # The library mode: ``on`` forks the actor's conversation once at each episode's end, in a confined process
     # writing only to the episode's staging dir (integration/fork.py); ``off`` (default): nothing happens.
-    UNIFY_MEMORY_V21_FORK: str = "off"
-    # The fork lane's route (fork-lane design, RUNTIME C3): the key proxy's /fork/v1 base URL and the inherited
+    UNIFY_MEMORY_LIBRARY_FORK: str = "off"
+    # The fork lane's route: the key proxy's /fork/v1 base URL and the inherited
     # descriptor carrying its token, read once at start-up and then removed from the environment (empty: no fork lane).
-    UNIFY_MEMORY_V21_FORK_BASE_URL: str = ""
-    UNIFY_MEMORY_V21_FORK_TOKEN_FD: str = ""
-    # Memory v2.1 design r5 arm C: ``sol`` runs one Sol analyst per flagged batch episode before the writer (staging);
-    # ``off`` (default): none.
-    UNIFY_MEMORY_V21_ANALYSTS: str = "off"
-    # The lead, 11 Oct: ``on`` keeps every proposal open across passes in the candidate pool (memory repo
+    UNIFY_MEMORY_LIBRARY_FORK_BASE_URL: str = ""
+    UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD: str = ""
+    # Retired: helpers are launched by the writer with its delegate tool; empty or ``off`` only (anything else is
+    # refused, so a configuration that still asks for harness-launched helpers fails loudly).
+    UNIFY_MEMORY_LIBRARY_ANALYSTS: str = "off"
+    # The model of writer-launched helpers; empty: the model the episode-end fork uses (the actor's UNIFY_MODEL).
+    UNIFY_MEMORY_LIBRARY_HELPER_MODEL: str = ""
+    # The helper lane's route: the key proxy's /helper/v1 base URL and the inherited descriptor carrying its token,
+    # read once at start-up and then removed from the environment (empty: no helper lane).
+    UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL: str = ""
+    UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD: str = ""
+    # ``on`` keeps every proposal open across passes in the candidate pool (memory repo
     # refs/heads/pool) until the writer closes it; ``off`` (default): none.
-    UNIFY_MEMORY_V21_POOL: str = "off"
-    # Memory v2.1: USD per recorded token of a pass's cap (v2's rate until the offline replay sizes it).
-    UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN: str = "0.00000073"
-    UNIFY_MEMORY_V21_PASS_WALL_S: int = 2700
-    UNIFY_MEMORY_V2_SOL_JOURNAL: str = ""
-    # Stage-5 test checks in the memory v2 gate (unify/memory_v2/qa.py), each
-    # off by default and read only while UNIFY_MEMORY_V2 is on: ``_QA_FIXTURES``
+    UNIFY_MEMORY_LIBRARY_POOL: str = "off"
+    # ``on`` gives the library writer and the curator the ``write`` and ``edit`` file tools on /memory; ``off``
+    # (default): neither tool exists.
+    UNIFY_MEMORY_LIBRARY_EDIT_TOOLS: str = "off"
+    # On by default (also when empty): the memory agents compact their conversations as the agent loop compacts its
+    # own (same trigger, summary and restart; UNIFY_COMPACTION_KEEP_PREFIX applies); ``off``: never.
+    UNIFY_MEMORY_LIBRARY_COMPACT: str = "on"
+    # The former reading rule: empty or ``optional`` (a no-op; finish never waits on reading). ``required`` is
+    # refused at start-up.
+    UNIFY_MEMORY_LIBRARY_COVERAGE: str = ""
+    # How the actor's prompt reaches the library index: ``inline`` (default) ends it with the index view;
+    # ``pointer`` ends it with a constant guide pointing to memory.index(), memory.show() and memory.find().
+    UNIFY_MEMORY_LIBRARY_ACTOR_INDEX: str = "inline"
+    # The library mode: USD per recorded token of a pass's cap (the earlier mode's rate until an offline replay
+    # sizes it).
+    UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN: str = "0.00000073"
+    UNIFY_MEMORY_LIBRARY_PASS_WALL_S: int = 2700
+    UNIFY_MEMORY_WRITER_JOURNAL: str = ""
+    # The writer model's prices in USD per million tokens, as the run pins them (JSON: input, output, optionally
+    # cache_write). A writer call the journal shows with tokens but no charge is priced from them; empty: it stays
+    # unpriced and the run guard books it at the worst case.
+    UNIFY_MEMORY_WRITER_PRICES_USD_PER_MILLION: str = ""
+    # Stage-5 test checks in the memory v2 gate (unify/memory/qa.py), each
+    # off by default and read only while UNIFY_MEMORY is on: ``_QA_FIXTURES``
     # (``on``/``strict``) draws seeded random recorded inputs per new function;
     # ``_QA_MUTATION`` mutation-tests it, refusing below
     # ``_QA_MUTATION_MIN_KILL`` (a decimal string share, 0.5); ``_QA_DETERMINISM``
     # pins clock and randomness and runs new tests twice; ``_QA_REPLAY`` refuses
     # stand-in environments; ``_QA_FIXTURE_SIZE`` bounds test files and
     # references recorded payloads by blob id.
-    UNIFY_MEMORY_V2_QA_FIXTURES: str = ""
-    UNIFY_MEMORY_V2_QA_MUTATION: str = ""
-    UNIFY_MEMORY_V2_QA_MUTATION_MIN_KILL: str = "0.5"
-    UNIFY_MEMORY_V2_QA_DETERMINISM: str = ""
-    UNIFY_MEMORY_V2_QA_REPLAY: str = ""
-    UNIFY_MEMORY_V2_QA_FIXTURE_SIZE: str = ""
+    UNIFY_MEMORY_QA_FIXTURES: str = ""
+    UNIFY_MEMORY_QA_MUTATION: str = ""
+    UNIFY_MEMORY_QA_MUTATION_MIN_KILL: str = "0.5"
+    UNIFY_MEMORY_QA_DETERMINISM: str = ""
+    UNIFY_MEMORY_QA_REPLAY: str = ""
+    UNIFY_MEMORY_QA_FIXTURE_SIZE: str = ""
     # When a provider refuses a forced tool choice ("required", "any" or one
     # named tool) with HTTP 400 because the model does not support it, retry
     # that call once with tool_choice "auto" and an instruction to make the
@@ -515,6 +554,11 @@ class ProductionSettings(BaseSettings):
     # comma list of names and ``PREFIX_*`` patterns, for a runner's own cell
     # variables. A credential's name or a key-shaped value is never passed.
     UNIFY_CELL_ENV_ALLOW: str = ""
+    # The address-space limit (RLIMIT_AS, bytes) of every process in the
+    # workspace sandbox, set inside it with prlimit beside its other limits
+    # (unify/sandbox.py). A positive whole number; 16 GiB by default, which
+    # leaves normal work unconstrained.
+    UNIFY_SANDBOX_ADDRESS_SPACE_BYTES: int = 16 * 1024**3
     # What the model is asked to fill in to run a cell. Empty (or "legacy"):
     # ``execute_code`` as shipped, with ``thought``, ``state_mode``,
     # ``session_id``, ``session_name`` (and ``language`` in a sandboxed
@@ -659,47 +703,64 @@ class ProductionSettings(BaseSettings):
         return value
 
     @field_validator(
-        "UNIFY_MEMORY_V2",
-        "UNIFY_MEMORY_V2_E",
-        "UNIFY_MEMORY_V2_SOL_MODEL",
-        "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS",
-        "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD",
-        "UNIFY_MEMORY_V2_SOL_BASE_URL",
-        "UNIFY_MEMORY_V2_SOL_TOKEN",
-        "UNIFY_MEMORY_V2_SOL_TOKEN_FD",
-        "UNIFY_MEMORY_V2_SOL_EFFORT",
-        "UNIFY_MEMORY_V2_SOL_EFFORT_SCALE",
-        "UNIFY_MEMORY_V2_SOL_MAX_CALLS",
-        "UNIFY_MEMORY_V2_SURFACING",
-        "UNIFY_MEMORY_V2_DOCSTRINGS",
-        "UNIFY_MEMORY_V2_SOFT_BUDGET",
-        "UNIFY_MEMORY_V2_SOL_USAGE",
-        "UNIFY_MEMORY_V21",
-        "UNIFY_MEMORY_V21_CHECKER_VISIBLE",
-        "UNIFY_MEMORY_V21_E",
-        "UNIFY_MEMORY_V21_MAX_READS",
-        "UNIFY_MEMORY_V21_WAIT_SLOT",
-        "UNIFY_MEMORY_V21_FORK",
-        "UNIFY_MEMORY_V21_FORK_BASE_URL",
-        "UNIFY_MEMORY_V21_FORK_TOKEN_FD",
-        "UNIFY_MEMORY_V21_ANALYSTS",
-        "UNIFY_MEMORY_V21_POOL",
-        "UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN",
-        "UNIFY_MEMORY_V21_PASS_WALL_S",
-        "UNIFY_MEMORY_V2_SOL_JOURNAL",
-        "UNIFY_MEMORY_V2_QA_FIXTURES",
-        "UNIFY_MEMORY_V2_QA_MUTATION",
-        "UNIFY_MEMORY_V2_QA_MUTATION_MIN_KILL",
-        "UNIFY_MEMORY_V2_QA_DETERMINISM",
-        "UNIFY_MEMORY_V2_QA_REPLAY",
-        "UNIFY_MEMORY_V2_QA_FIXTURE_SIZE",
+        "UNIFY_MEMORY",
+        "UNIFY_MEMORY_E",
+        "UNIFY_MEMORY_WRITER_MODEL",
+        "UNIFY_MEMORY_WRITER_ALLOWANCE_USD_PER_TOKENS",
+        "UNIFY_MEMORY_WRITER_RUN_GUARD_USD",
+        "UNIFY_MEMORY_WRITER_BASE_URL",
+        "UNIFY_MEMORY_WRITER_TOKEN",
+        "UNIFY_MEMORY_WRITER_TOKEN_FD",
+        "UNIFY_MEMORY_WRITER_EFFORT",
+        "UNIFY_MEMORY_WRITER_EFFORT_SCALE",
+        "UNIFY_MEMORY_WRITER_MAX_CALLS",
+        "UNIFY_MEMORY_SURFACING",
+        "UNIFY_MEMORY_DOCSTRINGS",
+        "UNIFY_MEMORY_SOFT_BUDGET",
+        "UNIFY_MEMORY_WRITER_USAGE",
+        "UNIFY_MEMORY_LIBRARY",
+        "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE",
+        "UNIFY_MEMORY_LIBRARY_E",
+        "UNIFY_MEMORY_LIBRARY_MAX_READS",
+        "UNIFY_MEMORY_LIBRARY_WAIT_SLOT",
+        "UNIFY_MEMORY_LIBRARY_FORK",
+        "UNIFY_MEMORY_LIBRARY_FORK_BASE_URL",
+        "UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD",
+        "UNIFY_MEMORY_LIBRARY_ANALYSTS",
+        "UNIFY_MEMORY_LIBRARY_HELPER_MODEL",
+        "UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL",
+        "UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD",
+        "UNIFY_MEMORY_LIBRARY_POOL",
+        "UNIFY_MEMORY_LIBRARY_EDIT_TOOLS",
+        "UNIFY_MEMORY_LIBRARY_COMPACT",
+        "UNIFY_MEMORY_LIBRARY_ACTOR_INDEX",
+        "UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN",
+        "UNIFY_MEMORY_LIBRARY_PASS_WALL_S",
+        "UNIFY_MEMORY_WRITER_JOURNAL",
+        "UNIFY_MEMORY_WRITER_PRICES_USD_PER_MILLION",
+        "UNIFY_MEMORY_QA_FIXTURES",
+        "UNIFY_MEMORY_QA_MUTATION",
+        "UNIFY_MEMORY_QA_MUTATION_MIN_KILL",
+        "UNIFY_MEMORY_QA_DETERMINISM",
+        "UNIFY_MEMORY_QA_REPLAY",
+        "UNIFY_MEMORY_QA_FIXTURE_SIZE",
         mode="before",
     )
     @classmethod
-    def parse_memory_v2(cls, v: Any, info: Any) -> Any:
-        from unify.memory_v2.integration import switch
+    def parse_memory(cls, v: Any, info: Any) -> Any:
+        from unify.memory.integration import switch
 
         return switch.PARSERS[info.field_name](v)
+
+    @field_validator("UNIFY_COMPACTION_AT_TOKENS", mode="before")
+    @classmethod
+    def parse_compaction_at_tokens(cls, v: Any) -> int:
+        text = str(v).strip() if v is not None else ""
+        if isinstance(v, bool) or not text.isdigit() or int(text) <= 0:
+            raise ValueError(
+                f"UNIFY_COMPACTION_AT_TOKENS must be a positive whole number of tokens, not {v!r}",
+            )
+        return int(text)
 
     @field_validator("UNIFY_COMPACTION_KEEP_PREFIX", mode="before")
     @classmethod
@@ -713,10 +774,10 @@ class ProductionSettings(BaseSettings):
             )
         return value
 
-    @field_validator("UNIFY_MEMORY_V2_DIALOGUE", mode="before")
+    @field_validator("UNIFY_MEMORY_DIALOGUE", mode="before")
     @classmethod
-    def parse_memory_v2_dialogue(cls, v: Any) -> str:
-        from unify.memory_v2.integration import switch
+    def parse_memory_dialogue(cls, v: Any) -> str:
+        from unify.memory.integration import switch
 
         return switch.parse_dialogue(v)
 
@@ -776,6 +837,26 @@ class ProductionSettings(BaseSettings):
             )
         return value
 
+    @field_validator("UNIFY_TOOLS_IN_CODE", mode="before")
+    @classmethod
+    def parse_tools_in_code(cls, v: Any) -> str:
+        value = str(v or "off").strip().lower()
+        if value not in ("on", "off"):
+            raise ValueError(
+                f"UNIFY_TOOLS_IN_CODE must be 'on' or 'off', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_CELL_STATE", mode="before")
+    @classmethod
+    def parse_cell_state(cls, v: Any) -> str:
+        value = str(v or "persistent").strip().lower()
+        if value not in ("persistent", "fresh"):
+            raise ValueError(
+                f"UNIFY_CELL_STATE must be 'persistent' or 'fresh', not {v!r}",
+            )
+        return value
+
     @field_validator("UNIFY_CELL_LLM_MODELS", mode="before")
     @classmethod
     def parse_cell_llm_models(cls, v: Any) -> str:
@@ -803,6 +884,17 @@ class ProductionSettings(BaseSettings):
                     f"and PREFIX_* patterns, not {v!r}",
                 )
         return ",".join(entries)
+
+    @field_validator("UNIFY_SANDBOX_ADDRESS_SPACE_BYTES", mode="before")
+    @classmethod
+    def parse_sandbox_address_space(cls, v: Any) -> int:
+        text = str(v).strip() if v is not None else ""
+        if isinstance(v, bool) or not re.fullmatch(r"[0-9]+", text) or int(text) <= 0:
+            raise ValueError(
+                "UNIFY_SANDBOX_ADDRESS_SPACE_BYTES must be a positive whole number "
+                f"of bytes, not {v!r}",
+            )
+        return int(text)
 
     @field_validator("UNIFY_WORKSPACE_NETWORK", mode="before")
     @classmethod
@@ -861,19 +953,26 @@ class ProductionSettings(BaseSettings):
             )
 
 
-# Singleton instance for production code
+# Singleton instance for production code (former setting names are read as their current ones first)
+from unify.setting_aliases import apply_former_names  # noqa: E402
+
+apply_former_names(os.environ)
 SETTINGS = ProductionSettings()
-# UNIFY_MEMORY_V2_SOL_TOKEN lives in SETTINGS (this, the controller process)
+# UNIFY_MEMORY_WRITER_TOKEN lives in SETTINGS (this, the controller process)
 # only: every case variant is removed from the environment once read, so no
 # subprocess inherits it, and its value stays registered with the value-based
-# redactors. With UNIFY_MEMORY_V2_SOL_TOKEN_FD set, this first settle reads the
+# redactors. With UNIFY_MEMORY_WRITER_TOKEN_FD set, this first settle reads the
 # token from that inherited descriptor and closes it, before the CLI or any
 # controller code can spawn a child. The CLI checks again after loading .env.
 # Unset, nothing changes.
-from unify.memory_v2.integration.switch import settle_sol_route_env  # noqa: E402
+from unify.memory.integration.switch import settle_writer_route_env  # noqa: E402
 
-settle_sol_route_env(os.environ, SETTINGS)
-# The fork lane's token likewise (RUNTIME C3): read once from its descriptor, both route names out of the environment.
-from unify.memory_v2.integration.switch import settle_fork_route_env  # noqa: E402
+settle_writer_route_env(os.environ, SETTINGS)
+# The fork lane's token likewise: read once from its descriptor, both route names out of the environment.
+from unify.memory.integration.switch import settle_fork_route_env  # noqa: E402
 
 settle_fork_route_env(os.environ, SETTINGS)
+# The helper lane's token likewise: read once from its descriptor, both route names out of the environment.
+from unify.memory.integration.switch import settle_helper_route_env  # noqa: E402
+
+settle_helper_route_env(os.environ, SETTINGS)

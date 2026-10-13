@@ -28,6 +28,12 @@ again.
 The tracker reads the transcript, from the request's own message on, before
 each model call, so it sees each call's result as the next call's request
 carries it.
+
+The memory agents (the writer, the curator and their helpers) run their own
+loops, and :class:`AgentNoProgress` applies the same definition to their
+conversations, always on: ``MEMORY_K`` no-progress calls in a row get one
+notice, twice as many end the agent's round. ``UNIFY_LOOP_STOP`` governs the
+actor's loop only.
 """
 
 from __future__ import annotations
@@ -384,13 +390,109 @@ class Stop:
         )
 
 
+# ── agents that run their own loop ───────────────────────────────────────
+
+#: K for the memory agents (the writer, the curator and their helpers), which run their own loops rather than the
+#: actor's: K no-progress model calls in a row get one notice, 2K end the agent's round. Five is past the one or two
+#: retries a refused call reasonably gets, and short enough that a loop is noticed within a few minutes and a few
+#: calls' cost; a model that changes approach after the notice starts the count again. A recorded writer pass ran
+#: one cell that rewrote a file unchanged 98 times in a row, until its wall clock.
+MEMORY_K = 5
+
+
+def terminal_tool(agent: str) -> str:
+    """The registry's terminal tool for *agent*: ``finish`` for the writer and the curator, ``done`` for a helper."""
+    from unify.common import tool_registry
+
+    for name, spec in tool_registry.registry().items():
+        if spec.kind == "terminal" and agent in spec.roles:
+            return name
+    raise KeyError(f"no terminal tool for {agent}")
+
+
+class AgentNoProgress:
+    """The no-progress rule for an agent that runs its own loop over an OpenAI-format conversation.
+
+    The agent calls :meth:`after_call` once after each of its model calls, when that call's tool results are in
+    its conversation. The calls are counted by :class:`Tracker`, the actor's definition, from the agent's own
+    messages. With tools called from code, a tool call is an ``execute_code`` cell whose in-code calls appear in
+    its output, so the same rule applies to it. At ``k`` no-progress calls in a row one notice is appended to the
+    conversation; at ``2 * k`` the agent's round ends. The notices are left out of what the tracker reads, so a
+    notice is not taken for a new request; any other user message (a repair round's, a nudge after a text reply)
+    starts the count again, as a requester message does in the actor's loop.
+    """
+
+    def __init__(self, terminal: str, *, in_code: bool = False, k: Optional[int] = None) -> None:
+        self.k = MEMORY_K if k is None else int(k)
+        self.terminal = f"tools.{terminal}" if in_code else terminal
+        self.tracker = Tracker(2 * self.k)
+        self.calls = 0  # the agent's model calls read so far
+        self.notices = 0
+        self.ended = False
+        self.at_call: Optional[int] = None  # the model call of the last notice, or of the end
+        self._notes: list[dict] = []
+
+    @property
+    def notice(self) -> str:
+        return (
+            f"You have repeated this call {self.k} times with the same result (or ran a cell that does nothing). "
+            f"Change approach, or call {self.terminal} and keep the item as a draft."
+        )
+
+    def after_call(self, messages: list, *, in_flight: bool = False, act: bool = True) -> Optional[str]:
+        """Read the model call just answered in *messages*. ``"notice"``: the notice was appended to *messages*;
+        ``"end"``: the agent's round ends now; None otherwise.
+
+        *in_flight*: other work of the agent (a helper it started) is still running, so the call is not counted.
+        *act* False: the agent's round is ending anyway (it finished or was stopped): the call is read, nothing is
+        appended and nothing ends.
+        """
+        self.calls += 1
+        view = [m for m in messages if not any(m is note for note in self._notes)]
+        self.tracker.observe(view, in_flight=in_flight)
+        if not act:
+            return None
+        if self.tracker.count >= 2 * self.k:
+            self.ended, self.at_call = True, self.calls
+            return "end"
+        if self.tracker.count == self.k:
+            note = {"role": "user", "content": self.notice}
+            messages.append(note)
+            self._notes.append(note)
+            self.notices += 1
+            self.at_call = self.calls
+            return "notice"
+        return None
+
+    def note(self, what: str) -> str:
+        """The note line for *what* (``"notice"`` or ``"end"``)."""
+        if what == "end":
+            return (
+                f"no progress: {2 * self.k} model calls in a row made no progress (each ran a cell that does nothing, "
+                "or repeated one of the two calls before it and got the same result), so the round ended at model "
+                f"call {self.at_call}"
+            )
+        return (
+            f"no progress: {self.k} model calls in a row made no progress; a notice was given at model call "
+            f"{self.at_call}"
+        )
+
+    def report(self) -> Optional[dict]:
+        """The evidence row: None when no notice was given."""
+        if not self.notices and not self.ended:
+            return None
+        return {"k": self.k, "notices": self.notices, "ended": self.ended, "at_call": self.at_call}
+
+
 def run_stats(runtime_state: Any) -> dict:
     """The counter the CLI reports beside the run's tokens."""
     return {"loop_stops": int(getattr(runtime_state, "loop_stops", 0) or 0)}
 
 
 __all__ = [
+    "AgentNoProgress",
     "CallRecord",
+    "MEMORY_K",
     "Stop",
     "Tracker",
     "WINDOW",
@@ -399,5 +501,6 @@ __all__ = [
     "is_noop_cell",
     "normalise_result",
     "run_stats",
+    "terminal_tool",
     "threshold",
 ]

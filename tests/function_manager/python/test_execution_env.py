@@ -443,7 +443,10 @@ def test_execution_globals_expose_llm_helpers_and_unillm():
     assert inspect.signature(globals_dict["query_llm"]) == inspect.signature(
         query_llm,
     )
-    assert globals_dict["query_llm"].__doc__ == query_llm.__doc__
+    # The harness function's contract, and what a refused request raises.
+    assert globals_dict["query_llm"].__doc__.startswith(query_llm.__doc__.rstrip())
+    assert "ModelRequestError" in globals_dict["query_llm"].__doc__
+    assert globals_dict["ModelRequestError"] is cell_models.ModelRequestError
     assert globals_dict["list_llms"] is cell_models.cell_list_llms
     assert globals_dict["list_llms"].__wrapped__ is list_llms
     assert "reason" not in globals_dict

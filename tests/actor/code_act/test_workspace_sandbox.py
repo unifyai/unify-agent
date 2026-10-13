@@ -50,21 +50,22 @@ def test_settings_default_no_network_and_reject_unknown_values():
 async def test_bash_session_keeps_directory_variables_and_functions(world):
     ex = SessionExecutor()
     try:
+        # The sandbox shows the workspace at a fixed path and starts there.
         out, res = await bash(ex, "pwd")
-        assert out.strip() == str(world["workspace"]) and res["session_created"]
+        assert out.strip() == "/workspace" and res["session_created"]
         await bash(
             ex,
             "mkdir -p sub && cd sub && export COLOUR=teal && f() { echo f:$1; }",
         )
         out, res = await bash(ex, 'pwd; echo "$COLOUR"; f x')
-        assert out.split() == [str(world["workspace"] / "sub"), "teal", "f:x"]
+        assert out.split() == ["/workspace/sub", "teal", "f:x"]
         assert res["result"] == 0 and res["error"] is None
         assert not res["session_created"]
         # Another session, and a stateless cell, share none of it.
         out, _ = await bash(ex, 'echo "[$COLOUR]"', session_id=1)
         assert out.strip() == "[]"
         out, _ = await bash(ex, 'echo "[$COLOUR]"; pwd', mode="stateless")
-        assert out.split() == ["[]", str(world["workspace"])]
+        assert out.split() == ["[]", "/workspace"]
         # stdout and stderr interleave; a failing command reports its status;
         # a command reading stdin gets EOF instead of the protocol.
         out, res = await bash(ex, "echo out; echo err >&2; cat; false")
@@ -110,7 +111,9 @@ async def test_a_stopped_cell_kills_its_command(world):
     try:
         await bash(ex, "export KEEP=1")
         pid = ex._shell_sessions[0].pid
-        cell = asyncio.create_task(bash(ex, f"touch {marker}; sleep 30; echo late"))
+        cell = asyncio.create_task(
+            bash(ex, "touch /workspace/started; sleep 30; echo late"),
+        )
 
         async def started():
             return marker.exists()
@@ -175,13 +178,13 @@ async def test_writes_land_only_in_the_workspace_and_private_tmp(world):
             "c.execute('create table evil (x)'); c.commit()\"",
         )
         assert store.read_bytes() == before
-        # The transcripts are readable, never writable.
-        out, res = await bash(ex, f"echo x >> {world['state']}/transcripts/s.jsonl")
+        # The transcripts are readable, never writable (at their fixed path).
+        out, res = await bash(ex, "echo x >> /transcripts/s.jsonl")
         assert "Read-only file system" in out
         assert (world["state"] / "transcripts" / "s.jsonl").read_text() == (
             '{"seq": 0}\n'
         )
-        out, _ = await bash(ex, f"cat {world['state']}/transcripts/s.jsonl")
+        out, _ = await bash(ex, "cat /transcripts/s.jsonl")
         assert out.strip() == '{"seq": 0}'
         # /tmp is writable and private.
         out, _ = await bash(ex, "echo t > /tmp/private.txt && cat /tmp/private.txt")
@@ -205,7 +208,7 @@ async def test_transcripts_written_after_the_session_started_are_searchable(
         await bash(ex, "true")
         later = world["state"] / "transcripts" / "later.jsonl"
         later.write_text('{"type": "message", "content": "the fact is 7"}\n')
-        out, _ = await bash(ex, f"grep -h 'fact is' {later.parent}/*.jsonl")
+        out, _ = await bash(ex, "grep -h 'fact is' /transcripts/*.jsonl")
         assert "the fact is 7" in out
     finally:
         await ex.close()
@@ -234,12 +237,10 @@ async def test_masked_paths_read_as_a_notice_naming_the_rule(world):
         assert "needle one" not in out and out.count("No such file") == 2
         out, _ = await bash(ex, f"cat {state}/logs/unify.log 2>&1")
         assert STATE_SECRET not in out
+        # What may be seen of the state directory is shown at fixed paths,
+        # never at its host path.
         out, _ = await bash(ex, f"ls -A {state}")
-        assert set(out.split()) == {
-            sandbox.MASK_NOTICE_NAME,
-            "transcripts",
-            "workspace",
-        }
+        assert set(out.split()) == {sandbox.MASK_NOTICE_NAME}
         out, _ = await bash(ex, f"cat {state}/{sandbox.MASK_NOTICE_NAME}")
         assert "rule mask-unify-state" in out
         out, _ = await bash(ex, f"grep -r {STATE_SECRET} {state} 2>/dev/null | wc -l")
@@ -317,7 +318,7 @@ shell = subprocess.run('echo "[$FAKE_SERVICE_TOKEN]"; cat {world['home']}/.ssh/i
 p = await asyncio.create_subprocess_exec('cat', {str(world['home'] / '.env')!r},
                                          stdout=asyncio.subprocess.PIPE)
 env_out = (await p.communicate())[0].decode()
-status = os.system('touch {world['workspace']}/inside-workspace.txt')
+status = os.system('touch /workspace/inside-workspace.txt')
 direct = os.environ.get('FAKE_SERVICE_TOKEN')
 (r.returncode, r.stderr, shell.stdout, env_out, status, direct)
 """

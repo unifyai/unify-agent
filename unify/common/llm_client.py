@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import copy
 import re
 import secrets
@@ -135,6 +137,28 @@ MSG_COUNT_HEADER = "X-Unify-Msg-Count"
 HEADER_VALUE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 _OUTSIDE_HEADER_CHARSET = re.compile(r"[^A-Za-z0-9_.:-]")
 
+#: ``X-Unify-Call-Kind`` of every model call a cell's code makes (its
+#: ``query_llm`` and the ``unillm`` clients it builds,
+#: unify/common/cell_models.py), whatever ``origin`` the call names: a proxy
+#: tells these calls from the harness's own by this value, which cell code
+#: cannot set.
+CELL_CALL_KIND = "cell"
+_CALL_KIND: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "unify_call_kind",
+    default=None,
+)
+
+
+@contextlib.contextmanager
+def call_kind(kind: str):
+    """Model calls made inside the block (in this context) carry *kind* as
+    ``X-Unify-Call-Kind`` in place of their client's origin."""
+    token = _CALL_KIND.set(_header_value(kind))
+    try:
+        yield
+    finally:
+        _CALL_KIND.reset(token)
+
 
 def request_metadata_headers_enabled() -> bool:
     """Whether ``UNIFY_REQUEST_METADATA_HEADERS=on``."""
@@ -196,7 +220,9 @@ def _request_metadata_headers(
     headers = {
         SESSION_HEADER: state.session,
         REQUEST_HEADER: str(state.requests),
-        CALL_KIND_HEADER: _header_value(getattr(client, "origin", None)),
+        CALL_KIND_HEADER: (
+            _CALL_KIND.get() or _header_value(getattr(client, "origin", None))
+        ),
         MSG_COUNT_HEADER: str(len(messages or ())),
     }
     if state.parent is not None:
