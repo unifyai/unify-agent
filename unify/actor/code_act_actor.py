@@ -4323,6 +4323,7 @@ class CodeActActor(BaseCodeActActor):
                 ),
                 response_format=response_format,
                 cell_limit_s=self._session_executor._timeout,
+                request=request,
             )
             if in_code is not None:
                 # the in-code prompt names request_clarification where this session can ask: bound once for the

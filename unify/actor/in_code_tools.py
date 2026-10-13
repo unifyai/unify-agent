@@ -13,11 +13,12 @@ One :class:`InCodeTools` serves one request of one agent:
   as an open directory descriptor under the box root ``/workspace``, the record
   (:class:`unify.common.record_adapters.AgentRecordAdapter`) and the request's state
   (:class:`unify.actor.tool_handlers.ActorRequestState`: the loop's reply slot that ``tools.answer`` fills, the
-  response format's check, the storage review's starter);
+  response format's check, the storage review's starter, the act's request);
 * the channel table: each allowed tool's registry spec with the actor's handler (``tool_registry.handler_for``) and
   the agent's own parameter schema (``tool_registry.strict_parameters``);
 * the box module ``tools``: ``tool_registry.render_stub`` for the allow-list, built in the box when the interpreter
-  starts;
+  starts; the tools only the memory package calls (``tool_registry.CHANNEL_ONLY``: ``current_request``) are on the
+  channel's table but never in the module;
 * the evidence: ``tool-events.jsonl`` in the request's own folder (:func:`request_folder`, under the harness's state
   directory, which no box sees), one ``tool_call`` row per cell and one per in-code call, written by the host as the
   memory pass writes its rows (a file created new, never through a link, then appended). A cell's row counts its
@@ -175,6 +176,7 @@ class InCodeTools:
         events_folder: Optional[Path] = None,
         start: Optional[Callable[..., Awaitable[Any]]] = None,
         librarian_opener: Optional[Callable[[], Awaitable[Any]]] = None,
+        request: Any = None,
     ) -> None:
         from unify.actor import tool_handlers as H
         from unify.common import tool_registry as R
@@ -194,6 +196,8 @@ class InCodeTools:
             policy=policy,
             spawner=spawner,
         )
+        # the request the memory package reads through current_request (its text, and its data when structured)
+        self.state.request_text, self.state.request_data = H.request_of(request)
         stores = can_store and store_skills is not None
         # UNIFY_MEMORY_LIBRARIAN=on: the actor asks the request's librarian (tools.ask_library, from memory.ask)
         asks = agent == "actor" and _librarian_on()
@@ -220,8 +224,10 @@ class InCodeTools:
             can_store=stores,
             librarian=asks,
         )
-        self.specs = channel_specs(agent, self.allow)
-        self.channel_allow = tuple(n for n in self.allow if n in self.specs)
+        # the channel also serves the tools only the memory package calls (current_request); the stub never has them
+        hidden = R.channel_only(agent)
+        self.specs = channel_specs(agent, self.allow + hidden)
+        self.channel_allow = tuple(n for n in self.allow + hidden if n in self.specs)
         self.stub = R.render_stub(self.allow, agent)
         self.threads = HandlerThreads()
         self.channel: Any = None
@@ -545,13 +551,14 @@ def open_for_act(
     store_skills: Optional[Callable[[str], Awaitable[Any]]],
     response_format: Any,
     cell_limit_s: Optional[float],
+    request: Any = None,
 ) -> Optional[InCodeTools]:
     """The in-code tools of one ``act()`` (the actor's request, or a teammate's when *agents* is a teammate's
     binding), or None while ``UNIFY_TOOLS_IN_CODE`` is off. *agents*: the act's
     :class:`unify.agents.binding.Binding`; *sandbox*: its ``PythonExecutionSession`` (the namespace the worker's
     proxy serves, without the objects :data:`REPLACED_OBJECTS` names); *store_skills*: the storage review's
     starter, None where the request may not store; *response_format*: the request's, whose check ``tools.answer``
-    applies."""
+    applies; *request*: the act's request, which the memory package reads through ``current_request``."""
     if not enabled():
         return None
     from unify import sandbox as _sandbox
@@ -586,6 +593,7 @@ def open_for_act(
         validate=validate,
         spawner=getattr(participant, "spawner", None),
         policy=policy,
+        request=request,
     )
 
 
