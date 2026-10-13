@@ -272,11 +272,14 @@ async def test_a_teammate_gets_the_same_wiring_with_its_own_allow_list(in_code):
     by_agent = {s.agent: s for s in in_code["opened"]}
     assert set(by_agent) == {"actor", "teammate"}
     mate = by_agent["teammate"]
-    # the teammate's first request opens with its own opening (its allow-list, its end), the actor's with the actor's
+    # the teammate's first request opens with its own opening, the actor's with the actor's; each points to the
+    # record's help topic, and their role section, not the opening, says how they answer
     mate_system = _assert_opening_first(model.of("helper")[0], mate, in_code["world"])
     actor_system = _assert_opening_first(model.of("actor")[0], by_agent["actor"], in_code["world"])
-    assert mate.opening() != by_agent["actor"].opening()
-    assert "answers whoever started you" in mate_system and "answers whoever started you" not in actor_system
+    for system in (mate_system, actor_system):
+        assert R.RECORD_POINTER in system and "Messages: other agents" not in system
+        assert "You end your work with" not in system
+        assert "`tools.answer(answer)` gives it from a cell." in " ".join(system.split())
     assert mate.allow == R.allow_list("teammate", frozenset({"helper"}))
     assert "delegate" in mate.allow and "ask" in mate.allow  # any agent may start agents
     assert mate.state.spawner == by_agent["actor"].binding.name

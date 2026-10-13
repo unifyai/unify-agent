@@ -353,8 +353,11 @@ def test_no_text_says_stored_function_or_names_a_tool_no_longer_offered(on):
     for name in ("actor", "actor_structured"):
         from unify.actor import prompt_builders as pb
 
-        # the role (its first paragraph) is the actor's own text, rewritten in its own change
-        body = texts[name].split(pb._LEAN_ROLE, 1)[-1]
+        # the role (its first paragraph) is the actor's own text, rewritten in its own change; with the tools in
+        # code it is the role that states the one answer rule
+        role = pb._lean_role_in_code()
+        assert role in texts[name], name
+        body = texts[name].split(role, 1)[-1]
         assert "stored function" not in body.lower(), name
         assert not _bare_tool_names(texts[name], ACTOR_JSON_TOOLS), name
         assert "### Tools" not in texts[name] and "### Sandbox Objects" not in texts[name]
