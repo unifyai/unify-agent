@@ -3096,6 +3096,9 @@ class WriterPass:
                 row["capture"] = _captures.batch_row(captures_root, eid)
                 if row["capture"] is not None:
                     capture_ids.append(row["capture"]["id"])
+            elif staging_on:
+                # the brief lists the capture key whenever staging is on; with no capture store it is null
+                row["capture"] = None
             row["pool_entries"] = [
                 {"id": e.id, "kind": e.kind, "title": e.title}
                 for e in open_pool
