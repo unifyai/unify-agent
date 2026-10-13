@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -24,7 +25,7 @@ from unify.agents.entry import Entry, mention_tokens
 from unify.agents.log import RecordLog
 from unify.agents.options import Options
 from unify.agents.pool import Pool
-from unify.agents.record import PostRefused, Record
+from unify.agents.record import PostRefused, Record, _wake
 from unify.transcripts import scrub
 
 from unify.common import tool_registry as _registry
@@ -45,6 +46,8 @@ ROOTS = ("writer", "curator")
 
 NOTHING = "no helper is running and no message is waiting"
 NO_NEW = "no new messages"
+#: ``wait``'s end when every other running agent is itself waiting with nothing unread, so no message can arrive.
+ALL_WAITING = "every other running agent is waiting too, so no message can arrive"
 
 #: What the pass's own agent offers the others, as ``who`` shows it.
 ROOT_HELP = {
@@ -122,6 +125,10 @@ class PassRecord:
     ended: dict[str, asyncio.Event] = field(default_factory=dict)
     #: the termination check of the last :func:`close` (name -> "ended" or "still running")
     closed: dict[str, str] = field(default_factory=dict)
+    #: the agents blocked in ``wait`` (or ``ask``) now: the future that releases each wait -> the agent's name
+    waiting: dict[asyncio.Future, str] = field(default_factory=dict)
+    #: guards :attr:`waiting` and the check that releases its waits
+    lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __post_init__(self) -> None:
         if self.root not in ROOTS:
@@ -222,17 +229,22 @@ def _render(pr: PassRecord, entries: list[Entry]) -> str:
     return "\n".join(lines)
 
 
-def take(pr: PassRecord, name: str) -> list[Entry]:
-    """Every entry for *name* it has not been shown, marked seen (its cursor is kept with the record)."""
+def unseen(pr: PassRecord, name: str) -> list[Entry]:
+    """Every entry for *name* it has not been shown, without marking them seen."""
     rec = pr.record
     p = rec.participants[name]
-    new = [
+    return [
         e
         for e in rec.read(since=p.cursor, mentions=name, limit=max(1, len(rec.entries)))
         if e.author != name
     ]
+
+
+def take(pr: PassRecord, name: str) -> list[Entry]:
+    """Every entry for *name* it has not been shown, marked seen (its cursor is kept with the record)."""
+    new = unseen(pr, name)
     if new:
-        rec.set_cursor(name, new[-1].seq)
+        pr.record.set_cursor(name, new[-1].seq)
     return new
 
 
@@ -244,32 +256,69 @@ def messages(pr: PassRecord, name: str, info: Optional[dict] = None) -> str:
     return _render(pr, new) if new else f"{NO_NEW} (running now: {', '.join(pr.running())})"
 
 
+def release_if_nothing_can_arrive(pr: PassRecord) -> bool:
+    """When every running agent is blocked in ``wait`` or ``ask`` with nothing unread for it, no message can arrive
+    from an agent: wake every waiting agent, and say so (True). Called with :attr:`PassRecord.lock` held, each time
+    an agent starts or resumes waiting, so the last agent to wait releases every waiter."""
+    blocked = set(pr.waiting.values())
+    running = pr.running()
+    if not running or any(n not in blocked or unseen(pr, n) for n in running):
+        return False
+    for future in pr.waiting:
+        _wake(future)
+    return True
+
+
+async def _woken(pr: PassRecord, name: str, released: asyncio.Future, timeout: float) -> None:
+    """Until an entry for *name* arrives, *released* is set or *timeout* seconds pass."""
+    arrived = asyncio.ensure_future(pr.record.wait_for(name, timeout=timeout))
+    try:
+        await asyncio.wait((arrived, released), return_when=asyncio.FIRST_COMPLETED)
+        if arrived.done():
+            arrived.result()
+    finally:
+        if not arrived.done():
+            arrived.cancel()
+
+
 async def wait(pr: PassRecord, name: str, info: Optional[dict] = None) -> str:
     """The ``wait`` tool: the unseen entries for *name*; blocks until one arrives, unless none can (no other agent
-    is running) or *name* is asked to stop, and at the latest until the pass's wall clock. *info* receives the
-    ``outcome`` (message, nothing_can_arrive, wall_clock or asked_to_stop) and the ``seconds`` it took."""
+    is running, or every other running agent is itself waiting with nothing unread) or *name* is asked to stop, and
+    at the latest until the pass's wall clock. *info* receives the ``outcome`` (message, nothing_can_arrive,
+    wall_clock or asked_to_stop) and the ``seconds`` it took."""
     started = time.monotonic()
+    released = asyncio.get_running_loop().create_future()
 
     def end(outcome: str, text: str) -> str:
         if info is not None:
             info.update(outcome=outcome, seconds=round(time.monotonic() - started, 3))
         return text
 
-    while True:
-        new = take(pr, name)
-        if new:
-            return end("asked_to_stop" if name in pr.stopping else "message", _render(pr, new))
-        if not [n for n in pr.running() if n != name]:
-            return end(
-                "nothing_can_arrive",
-                NOTHING if name == pr.root else f"{NO_NEW}; no other agent is running",
-            )
-        if name in pr.stopping:
-            return end("asked_to_stop", f"{NO_NEW}; you are asked to stop: {pr.stopping[name]}")
-        left = pr.left()
-        if left <= 0:
-            return end("wall_clock", f"{NO_NEW}; the pass's wall clock is reached")
-        await pr.record.wait_for(name, timeout=left)
+    with pr.lock:
+        pr.waiting[released] = name
+    try:
+        while True:
+            with pr.lock:
+                new = take(pr, name)
+                stuck = not new and release_if_nothing_can_arrive(pr)
+            if new:
+                return end("asked_to_stop" if name in pr.stopping else "message", _render(pr, new))
+            if not [n for n in pr.running() if n != name]:
+                return end(
+                    "nothing_can_arrive",
+                    NOTHING if name == pr.root else f"{NO_NEW}; no other agent is running",
+                )
+            if stuck or released.done():
+                return end("nothing_can_arrive", f"{NO_NEW}; {ALL_WAITING}")
+            if name in pr.stopping:
+                return end("asked_to_stop", f"{NO_NEW}; you are asked to stop: {pr.stopping[name]}")
+            left = pr.left()
+            if left <= 0:
+                return end("wall_clock", f"{NO_NEW}; the pass's wall clock is reached")
+            await _woken(pr, name, released, left)
+    finally:
+        with pr.lock:
+            pr.waiting.pop(released, None)
 
 
 def roster(pr: PassRecord) -> list[dict]:

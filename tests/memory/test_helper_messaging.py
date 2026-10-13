@@ -421,7 +421,8 @@ def test_the_briefs_state_the_record_as_facts():
         "The library under /memory may be empty at the start of a run.",
         "A part you already read in this task is the same text if you read it again: re-reading is allowed and "
         "costs time.",
-        "What other agents found arrives as messages (`messages` / `wait`).",
+        "What other agents found, and their answers, arrive as messages: `messages` reads what was sent to you and "
+        "`wait` waits for the next message.",
     ):
         assert fact in brief, fact
     with_helpers = lp.write_brief_now(helper=True)
