@@ -207,10 +207,6 @@ MAX_NAME_CHARS = 200
 #: functions of it whose calls show the library (``cell_exposure``).
 HELPER_MODULE = "memory"
 HELPER_FUNCTIONS = ("catalog", "find", "describe")
-#: The environment catalogue's calls on the ``env`` package (the export's generated ``env/__init__.py``,
-#: :mod:`..env_helper`), each counted as the helper function it took over: ``env.items`` shows what
-#: ``memory.catalog`` did, ``env.get`` what ``memory.describe`` did. A channel of the same name wins.
-ENV_CALLS = {"items": "catalog", "get": "describe"}
 #: In library mode the library is the package ``memory``, whose generated ``__init__.py`` is the
 #: helper (these functions), and a function item is ``memory.<package>.<module>:<name>``. A record computed for a
 #: library-mode pin carries ``"layout": LAYOUT_LIBRARY``; a v2 record has no such key, so v2's records are unchanged.
@@ -1377,8 +1373,6 @@ class _Cell(ast.NodeVisitor):
                     ("helper_fn", node.attr) if node.attr in HELPER_FUNCTIONS else None
                 )
             if base[0] == "package":
-                if node.attr in ENV_CALLS and node.attr not in self.items.channels:
-                    return ("helper_fn", ENV_CALLS[node.attr])
                 return ("module", node.attr)
             if base[0] == "module":
                 iid = self.items.item(base[1], node.attr)
@@ -1459,9 +1453,6 @@ class _Cell(ast.NodeVisitor):
         if len(parts) == 1:  # from env import <channel>
             for alias in node.names:
                 if alias.name == "*":
-                    continue
-                if alias.name in ENV_CALLS and alias.name not in self.items.channels:
-                    self._bind(alias.asname or alias.name, ("helper_fn", ENV_CALLS[alias.name]))
                     continue
                 self.t.add(self.t.module_imports, self._key(alias.name))
                 self._bind(alias.asname or alias.name, ("module", alias.name))
@@ -1679,8 +1670,6 @@ class _Cell(ast.NodeVisitor):
         arg = node.args[0] if node.args else None
         if arg is None and name == "catalog":
             arg = next((k.value for k in node.keywords if k.arg == "channel"), None)
-        if arg is None and name == "describe":  # env.get(ref=...)
-            arg = next((k.value for k in node.keywords if k.arg in ("ref", "fn_or_name")), None)
         const = (
             arg.value
             if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
