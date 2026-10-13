@@ -205,9 +205,27 @@ def _json(rel: str) -> dict:
 def index(package: str | None = None) -> str:
     """The whole index (``INDEX.md``), or the full section of one package (``"<package>"``,
     ``"memory.<package>"``) or notes topic (``"notes/<topic>"``, or ``"<topic>"`` when no package has
-    that name)."""
+    that name). A name that is no section but an item's id, as the index lists it (a note's
+    ``notes/<topic>/<slug>.md``, a function's ``memory.<package>.<module>:<name>``), shows that item as
+    :func:`show` does."""
     text = _read(INDEX_FILE)
-    return _Text(text if package is None else find_section(text, package))
+    if package is None:
+        return _Text(text)
+    try:
+        return _Text(find_section(text, package))
+    except LookupError:
+        if _is_item(package):
+            return _show_item(package)
+        raise
+
+
+def _is_item(name: Any) -> bool:
+    """Whether *name* is the id of an item of the library."""
+    try:
+        items = _json(ITEMS_FILE).get("items", {})
+    except (RuntimeError, ValueError):
+        return False
+    return _item_id(name) in items
 
 
 def _item_id(item: Any) -> str:
@@ -309,6 +327,11 @@ def show(item: Any) -> str:
             f"(history covers the newest {data.get('history_scanned')} library commits only)",
         )
     return _Text("\n".join(out) + "\n")
+
+
+# ``show`` itself, for :func:`index`: the library package wraps ``show`` to record each call, and a name given to
+# ``index`` is one lookup.
+_show_item = show
 
 
 def _matcher() -> Any:
