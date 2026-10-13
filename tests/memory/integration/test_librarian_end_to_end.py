@@ -563,14 +563,14 @@ async def test_the_first_user_message_says_how_large_the_library_is_and_the_syst
     env = librarian
     _open_request(env["paths"], env["sha"], env["monkeypatch"])
     functions, notes = hooks.library_counts(env["paths"].checkout)
-    assert functions > 1 and notes > 1  # the library world's functions and notes, as memory.items() lists them
+    assert (functions, notes) == (6, 1)  # the library world's functions and notes, as memory.items() lists them
     script = Script(["tools.answer('done')\n"], [])
     result, _, _ = await _ask_act(env, script)
     assert result == "done"
     first = script.actor_calls[0]
     line = (
-        f"Your memory library holds {functions} functions and {notes} notes; memory.ask() shows the ones that apply, "
-        "memory.items() lists them all."
+        "Your memory library holds 6 functions and 1 note; memory.ask() shows the ones that apply, memory.items() "
+        "lists them all."
     )
     assert line in _first_user(first) and "Your memory library holds" not in _system(first)
     _assert_ended(env["opened"])
