@@ -297,3 +297,29 @@ def test_library_mode_installs_the_call_hook_without_a_work_tree_capture(monkeyp
     assert got is not None and got["roots"] == [] and got["path"].endswith("audit.py")
     monkeypatch.setattr(request, "memory_library_on", lambda: False)
     assert hooks.worker_audit() is None
+
+
+# --- the library package's own helpers ---------------------------------------------------------------------
+
+
+def test_the_package_helpers_calls_are_counted_by_helper_and_outcome():
+    from unify.memory.integration.request import library_failures, library_helper_calls
+
+    acc = runtime_calls_empty()
+    assert library_helper_calls(acc) == {
+        name: {"ok": 0, "refused": 0, "error": 0} for name in ("index", "show", "find")
+    }
+    first = _drained({})
+    first["calls"]["helpers"] = {"memory:index": {"ok": 2}, "memory:show": {"ok": 1, "error": 1}}
+    second = _drained({PD: {"ok": 1}})
+    second["calls"]["helpers"] = {"memory:index": {"ok": 1}, "memory:find": {"refused": 1}, "other": {"ok": 5}}
+    add_runtime_calls(acc, first)
+    add_runtime_calls(acc, second)
+    assert library_helper_calls(acc) == {
+        "index": {"ok": 3, "refused": 0, "error": 0},
+        "show": {"ok": 1, "refused": 0, "error": 1},
+        "find": {"ok": 0, "refused": 1, "error": 0},
+    }
+    assert acc["malformed"] == 1  # an id that is not one of the package's helpers
+    # the failures still count the helpers' refused and error calls once
+    assert library_failures(acc, {})["library_calls_failed"] == 2

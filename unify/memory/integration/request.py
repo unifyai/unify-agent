@@ -271,7 +271,26 @@ def runtime_calls_empty() -> dict:
         "records_dropped": 0,
         "malformed": 0,
         "helpers_failed": 0,
+        "helpers": {},
     }
+
+
+#: The library package's own helpers whose calls the use record counts (``memory.helper_call`` audit events).
+LIBRARY_HELPERS = ("index", "show", "find")
+
+
+def library_helper_calls(runtime: Any) -> dict:
+    """The library-mode use record's ``library_helper_calls``: for each of the package's helpers
+    (``memory.index``, ``memory.show``, ``memory.find``), the calls the audit hook saw, by outcome
+    ({ok, refused, error}). Counts only; zeros when none was seen."""
+    seen = runtime.get("helpers") if isinstance(runtime, dict) else None
+    seen = seen if isinstance(seen, dict) else {}
+    out = {}
+    for name in LIBRARY_HELPERS:
+        row = seen.get(name)
+        row = row if isinstance(row, dict) else {}
+        out[name] = {k: _count(row.get(k)) for k in RUNTIME_OUTCOMES}
+    return out
 
 
 def library_cell_error(error: Any) -> str | None:
@@ -323,13 +342,28 @@ def add_runtime_calls(acc: dict, drained: Any) -> None:
     for key in ("dropped", "records_dropped", "malformed"):
         acc[key] += _count(calls.get(key))
     helpers = calls.get("helpers")
-    for row in (helpers if isinstance(helpers, dict) else {}).values():
+    for helper_id, row in (helpers if isinstance(helpers, dict) else {}).items():
         if isinstance(row, dict):
             acc["helpers_failed"] = (
                 _count(acc.get("helpers_failed"))
                 + _count(row.get("refused"))
                 + _count(row.get("error"))
             )
+            # per helper, by outcome: "memory:index" counts as "index"; any other id is not a helper
+            name = (
+                helper_id.split(":", 1)[1]
+                if isinstance(helper_id, str) and helper_id.startswith("memory:")
+                else None
+            )
+            if name in LIBRARY_HELPERS:
+                have = acc.setdefault("helpers", {}).setdefault(
+                    name,
+                    {k: 0 for k in RUNTIME_OUTCOMES},
+                )
+                for k in RUNTIME_OUTCOMES:
+                    have[k] += _count(row.get(k))
+            else:
+                acc["malformed"] += 1
     counts = calls.get("counts")
     if not isinstance(counts, dict):
         return
@@ -442,6 +476,7 @@ def memory_use(
         record = with_runtime_calls(record, runtime_calls)
         if library_mode and isinstance(record, dict) and "error" not in record:
             record.update(library_failures(runtime_calls, cell_errors))
+            record["library_helper_calls"] = library_helper_calls(runtime_calls)
         return record
     except Exception as exc:  # noqa: BLE001 - telemetry never stops recording
         return {
