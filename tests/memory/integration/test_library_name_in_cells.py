@@ -108,6 +108,7 @@ async def test_cells_use_memory_with_no_import_line_and_failed_calls_are_counted
     assert run.runtime_calls["counts"][PARSE_DATE]["ok"] >= 1
     assert run.runtime_calls["counts"][PARSE_DATE]["error"] == 1
     assert run.runtime_calls["helpers_failed"] == 1
+    assert run.runtime_calls["helpers"]["index"]["ok"] >= 2  # memory.index() with no import line, twice
     assert library_failures(run.runtime_calls, run.cell_errors) == {
         "library_calls_failed": 2,
         "library_name_errors": 0,
@@ -319,5 +320,10 @@ def test_the_library_mode_use_record_carries_the_counts_and_only_there():
         rec["library_name_errors"],
         rec["library_import_errors"],
     ) == (4, 3, 1)
+    assert rec["library_helper_calls"] == {
+        "index": {"ok": 0, "refused": 0, "error": 0},
+        "show": {"ok": 0, "refused": 0, "error": 0},
+        "find": {"ok": 0, "refused": 0, "error": 1},
+    }
     off = memory_use(_ep(transcript=[], actions=[]), [PARSE_DATE], runtime_calls=acc)
-    assert not {"library_calls_failed", "library_name_errors"} & set(off)
+    assert not {"library_calls_failed", "library_name_errors", "library_helper_calls"} & set(off)
