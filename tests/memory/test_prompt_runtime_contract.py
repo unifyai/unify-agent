@@ -14,9 +14,10 @@ A shown call fails the contract when it raises ``NameError``, ``ImportError`` (o
 ``TypeError`` (a signature the prompt shows that the runtime does not take), an ``AttributeError`` on ``memory`` or
 ``tools``, or is refused as an unknown or unavailable tool. A free name with no binding and no rule is a
 placeholder with no rule, and fails as a ``NameError``. ``tools.Refused`` and ``tools.NotRun`` pass: the call
-reached the host with a valid shape. Calls that end the agent's work (``finish``, ``done``) run last. The few
-spans a prompt shows as something not to do, or as a pattern rather than a call, are listed in :data:`NOT_RUN`
-with the reason, and each must still be in some prompt, so the list is reviewed whenever a prompt changes.
+reached the host with a valid shape. Calls that end the agent's work (``answer``, ``finish``, ``done``) run last.
+The few spans a prompt shows as something not to do, or as a pattern rather than a call, are listed in
+:data:`NOT_RUN` with the reason, and each must still be in some prompt, so the list is reviewed whenever a prompt
+changes.
 
 The episode-end fork has no sandbox: its instruction is checked to name no pre-bound name.
 
@@ -104,7 +105,7 @@ NOT_RUN: dict[str, str] = {
 #: Exceptions a shown call must never raise.
 FAILING = {"NameError", "ImportError", "ModuleNotFoundError", "TypeError"}
 #: Calls that end the agent's work: run last.
-TERMINAL = {"finish", "done"}
+TERMINAL = {"answer", "finish", "done"}
 
 
 # --- extraction and filling (no box) --------------------------------------------------------------------------

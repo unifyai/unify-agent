@@ -783,7 +783,7 @@ async def async_tool_loop_inner(
         itself when the prompt reaches the compaction point, before the next
         model call, with the same fork summary and restart message and no
         forced ``compress_context`` turn; and the answer to a request with a
-        response format comes from a cell's ``tools.finish(answer)`` instead
+        response format comes from a cell's ``tools.answer(answer)`` instead
         of a response tool (a plain final reply still ends a request).
         Ignored while the switch is off.
 
@@ -865,13 +865,13 @@ async def async_tool_loop_inner(
             _response_format_hint = (
                 "## Response Format\n"
                 "NOTE: After completing all tool calls, submit your final answer "
-                "with `tools.finish(answer)` in a cell, as JSON that conforms to "
+                "with `tools.answer(answer)` in a cell, as JSON that conforms to "
                 "the following schema. Do NOT include any extra keys or "
                 "commentary.\n" + json.dumps(_rf_norm.answer_json_schema, indent=2)
             )
     # UNIFY_REPLY_CHANNEL=code+text: this loop's slot for a cell's reply,
     # ``None`` for a loop that takes none; nothing is set while it is off.
-    # With the tools in code the slot always exists: ``tools.finish`` fills it.
+    # With the tools in code the slot always exists: ``tools.answer`` fills it.
     _reply_token = (
         _cell_reply.bind_always()
         if _in_code

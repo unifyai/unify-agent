@@ -304,7 +304,7 @@ class ProductionSettings(BaseSettings):
     # once in the shared registry (unify/common/tool_registry.py) and run on
     # the host. For the actor and its teammates the loop also compacts by
     # itself at the compaction point (no forced ``compress_context`` turn)
-    # and ``tools.finish(answer)`` replaces the response tool. ``off`` (the
+    # and ``tools.answer(answer)`` replaces the response tool. ``off`` (the
     # default): every agent's requests are as before.
     UNIFY_TOOLS_IN_CODE: str = "off"
     # ``persistent`` (the default): each agent's cells run in one

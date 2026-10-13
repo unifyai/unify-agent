@@ -12,7 +12,7 @@ its worker pool); one that waits on the record or the request is a coroutine fun
 * ``install`` runs the workspace installer on the host, as the actor's ``install`` does today, and its reply names
   paths as the box shows them.
 * The record tools go through ``ctx.record`` (:class:`unify.common.tool_registry.Record`: the agent record).
-* ``finish(answer)`` records the request's answer, validated against the request's response format as the loop
+* ``answer(answer)`` records the request's answer, validated against the request's response format as the loop
   validates a response tool's payload; the loop ends the request when the cell returns.
 * ``store_skills(request)`` starts the storage review as host work that outlives the call.
 """
@@ -59,7 +59,7 @@ def _from_record(tool: str, exc: RecordRefused) -> Any:
 class ActorRequestState:
     """What the actor's handlers use of the request they serve (``CallContext.state``)."""
 
-    #: the loop's slot for the turn's reply (``unify.common._async_tool.cell_reply.ReplySlot``); finish fills it
+    #: the loop's slot for the turn's reply (``unify.common._async_tool.cell_reply.ReplySlot``); answer fills it
     reply_slot: Any = None
     #: the response format's check: the answer -> its JSON text (raises with the reason); None: any answer
     validate: Optional[Callable[[Any], str]] = None
@@ -413,31 +413,31 @@ async def delegate(ctx: Any, args: dict) -> Any:
 # --- ending the request, and storing skills ---
 
 
-async def finish(ctx: Any, args: dict) -> Any:
+async def answer(ctx: Any, args: dict) -> Any:
     """Record the request's answer. With a response format, the answer must validate against it (the reason is
     returned when it does not, and the request goes on); the loop then ends the request with it when the cell
     returns, without another model call."""
     state = ctx.state
     slot = getattr(state, "reply_slot", None)
     # the slot holds this request's answer until the loop takes it, and is empty again when the session's next
-    # request starts, so each request of a persistent session can finish once
+    # request starts, so each request of a persistent session can answer once
     if slot is not None and getattr(slot, "replied", False):
-        return _refused(refusal("finish", "answered"))
+        return _refused(refusal("answer", "answered"))
     if "answer" not in args:
-        return _refused(refusal("finish", "bad_answer", reason="Missing 'answer' in tool arguments."))
-    answer = args.get("answer")
+        return _refused(refusal("answer", "bad_answer", reason="Missing 'answer' in tool arguments."))
+    given = args.get("answer")
     validate = getattr(state, "validate", None)
     if validate is not None:
         try:
-            text = validate(answer)
+            text = validate(given)
         except Exception as exc:  # the validation's reason goes back to the cell
-            return _refused(refusal("finish", "bad_answer", reason=str(exc)[:2000]))
+            return _refused(refusal("answer", "bad_answer", reason=str(exc)[:2000]))
     else:
-        text = answer if isinstance(answer, str) else json.dumps(answer, default=str)
+        text = given if isinstance(given, str) else json.dumps(given, default=str)
     if slot is None:
-        return _refused(refusal("finish", "bad_answer", reason="this request takes no answer from a cell"))
+        return _refused(refusal("answer", "bad_answer", reason="this request takes no answer from a cell"))
     slot.text, slot.from_value = text, True
-    return _reply("finished: the answer is recorded; the request ends when this cell returns")
+    return _reply("answered: the answer is recorded; the request ends when this cell returns")
 
 
 async def store_skills(ctx: Any, args: dict) -> Any:
@@ -496,10 +496,10 @@ __all__ = [
     "ActorRequestState",
     "actor_binding",
     "actor_flags",
+    "answer",
     "ask",
     "ask_library",
     "delegate",
-    "finish",
     "grep",
     "install",
     "messages",

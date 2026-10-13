@@ -743,13 +743,13 @@ def _build_core_prompt(
 
 # A cell can end the turn with the answer itself.
 _REPLY_FROM_CELL_IN_CODE = (
-    "You can also end your turn from a cell with `tools.finish(answer)`, for "
+    "You can also end your turn from a cell with `tools.answer(answer)`, for "
     "example when the answer is in a variable."
 )
 
 _ANSWER_STRUCTURED_IN_CODE = (
     "### Answer\n\n"
-    "When the request is addressed, answer by calling `tools.finish(answer)`\n"
+    "When the request is addressed, answer by calling `tools.answer(answer)`\n"
     "with the answer in the required format."
 )
 
@@ -809,7 +809,7 @@ _LEAN_INCREMENTAL_EXECUTION_IN_CODE = textwrap.dedent("""
 
 def _lean_role_in_code() -> str:
     """The role when tools are called from code: a cell ends the turn with
-    ``tools.finish(answer)`` where today's switch offers ``reply(text)``."""
+    ``tools.answer(answer)`` where today's switch offers ``reply(text)``."""
     if not _reply_from_cell():
         return _LEAN_ROLE
     rule = " ".join(

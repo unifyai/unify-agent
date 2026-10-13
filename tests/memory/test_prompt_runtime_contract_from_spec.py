@@ -11,7 +11,7 @@ mode, over a small fixture library (one package with a function, its test and a 
 3. each placeholder is filled by one fixed rule (:data:`ANGLE_RULES`, :data:`BARE_RULES`); a call shown with
    ``...`` is the tool's first registry example; a placeholder with no rule fails the test;
 4. the first cell reads back the names bound before any cell; the next runs every call, each in its own ``try``;
-   the end call (``tools.finish``, ``tools.done``) runs last;
+   the end call (``tools.answer``, ``tools.finish``, ``tools.done``) runs last;
 5. a ``NameError``, ``ImportError``, an ``AttributeError`` on ``memory`` or ``tools``, a signature ``TypeError``,
    or an ``unknown_tool`` / "not available" refusal fails the test. ``tools.Refused`` otherwise passes: the call
    reached the host with a valid shape.
@@ -376,13 +376,13 @@ def actor_world(core_world, monkeypatch):  # noqa: F811
 
 
 def _fixed_handlers(monkeypatch, keep_for_actor: frozenset = frozenset()) -> None:
-    """Every actor and teammate tool handler but ``finish`` answers with fixed text; those in *keep_for_actor* stay
+    """Every actor and teammate tool handler but ``answer`` answers with fixed text; those in *keep_for_actor* stay
     real for the actor itself (the teammate test needs the actor's ``delegate`` and ``wait``)."""
     from unify.actor import tool_handlers as H
 
     for name in R.registry():
         where, blocking = R.handler_for("actor", name)
-        if not where.startswith("unify.actor.tool_handlers:") or name == "finish":
+        if not where.startswith("unify.actor.tool_handlers:") or name == "answer":
             continue
         attr = where.split(":", 1)[1]
         real = getattr(H, attr, None)
@@ -490,7 +490,7 @@ def _run_role(role: str, tmp_path, request, monkeypatch, *, contract: bool) -> d
         if contract:
             state, model = _run_actor(actor_world, monkeypatch, role, _scripted_contract)
         else:
-            end_reply = reply("done") if role == "actor" else reply(calls=[code("tools.finish('ok')\n")])
+            end_reply = reply("done") if role == "actor" else reply(calls=[code("tools.answer('ok')\n")])
             state, model = _run_actor(
                 actor_world,
                 monkeypatch,

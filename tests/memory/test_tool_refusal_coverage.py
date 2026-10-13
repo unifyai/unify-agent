@@ -100,6 +100,12 @@ COVERAGE: dict[tuple[str, str], str] = {
     ("check", "too_late"): R,
     ("check", "stopped"): R,
     ("finish", "manifest_problem"): R,
+    ("finish", "bad_answer"): (
+        "given only by the librarian's finish, for an answer that does not match its form; no pass agent gets it"
+    ),
+    ("finish", "answered"): (
+        "given only by the librarian's finish, for a second answer to one question; no pass agent gets it"
+    ),
     ("write", "bad_path"): R,
     ("write", "reserved"): R,
     ("write", "link"): R,
@@ -162,9 +168,9 @@ COVERAGE: dict[tuple[str, str], str] = {
 #: The model's own JSON tool keeps today's refusals; it is not a channel tool.
 NOT_CHANNEL_TOOLS = {"execute_code"}
 
-#: Forms the shared specs list for the actor's and a teammate's handlers (their agent record, their request's
-#: answer), which the memory agents' handlers never give: the pass's record answers a refused post as not_posted.
-ACTOR_ONLY = "given only by the actor's and a teammate's handlers (the agent record, the request's answer)"
+#: Forms the shared specs list for the actor's and a teammate's handlers (their agent record), which the memory
+#: agents' handlers never give: the pass's record answers a refused post as not_posted.
+ACTOR_ONLY = "given only by the actor's and a teammate's handlers (the agent record)"
 
 
 def _actor_only() -> dict[tuple[str, str], str]:
@@ -175,8 +181,6 @@ def _actor_only() -> dict[tuple[str, str], str]:
         out.update({(tool, f): ACTOR_ONLY for f in reg._RECORD_POST_FORMS})
     out.update(
         {
-            ("finish", "bad_answer"): ACTOR_ONLY,
-            ("finish", "answered"): ACTOR_ONLY,
             ("wait", "bad_timeout"): ACTOR_ONLY,
             ("stop", "not_allowed"): ACTOR_ONLY,
         },

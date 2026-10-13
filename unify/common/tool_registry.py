@@ -1361,8 +1361,9 @@ _IN_CODE: dict[str, dict] = {
         blocking=False,
     ),
     "finish": dict(
-        roles=(_A, _T, _W, _C, _L),
-        role_args={_A: _ANSWER, _T: _ANSWER, _L: _LIBRARIAN_ANSWER},
+        roles=(_W, _C, _L),
+        role_args={_L: _LIBRARIAN_ANSWER},
+        # the librarian's answer is refused with these
         add_refusals={
             "bad_answer": "not finished: the answer does not match the required response format: {reason}",
             "answered": "not finished: this request already has its answer",
@@ -1598,7 +1599,31 @@ ASK = _complete(ASK)
 WRITE = _complete(WRITE)
 EDIT = _complete(EDIT)
 
-#: Every registered tool, in the order every list renders them (the memory tools first, in their earlier order).
+#: How the actor and a teammate end their work: the request's answer (the memory agents end with finish or done).
+ANSWER = RegisteredTool(
+    name="answer",
+    summary="answer the request, as a final text reply does.",
+    description=(
+        "Answer the request, as a final text reply does: the answer is recorded and the request ends when this "
+        "cell returns. Where the request requires a response format, the answer must match it; a refused answer "
+        "raises with the reason, and the request goes on."
+    ),
+    parameters=_ANSWER,
+    refusals={
+        "bad_answer": "not answered: the answer does not match the required response format: {reason}",
+        "answered": "not answered: this request already has its answer",
+    },
+    roles=(_A, _T),
+    returns="a line saying the answer is recorded (a refused answer raises with the reason; the request goes on).",
+    examples=('tools.answer("The total is 42.")',),
+    when="Call it once, when your answer is ready.",
+    kind="terminal",
+    handler="unify.actor.tool_handlers:answer",
+    blocking=False,
+)
+
+#: Every registered tool, in the order every list renders them (the memory tools first, in their earlier order; the
+#: actor's answer where its end call was listed before).
 _REGISTRY: tuple[RegisteredTool, ...] = (
     READ,
     GREP,
@@ -1611,6 +1636,7 @@ _REGISTRY: tuple[RegisteredTool, ...] = (
     EXECUTE_CODE,
     CHECK,
     FINISH,
+    ANSWER,
     SIMILAR,
     DELEGATE,
     STAGE,
@@ -1679,7 +1705,7 @@ def _earlier(key: tuple[str, str]) -> Optional[_EarlierJson]:
 
 
 #: Registered tools that never were a memory agent's model-API tool.
-_IN_CODE_ONLY = frozenset({"sh", "install", "store_skills", "ask_library"})
+_IN_CODE_ONLY = frozenset({"sh", "install", "store_skills", "ask_library", "answer"})
 
 
 def earlier_tool(agent: str, name: str) -> Any:
@@ -1751,9 +1777,9 @@ GENERAL_REFUSALS: dict[str, str] = {
     "call_limit": "not run: the pass's call cap is reached",
 }
 
-#: Starts a template keeps as they are: a call that was not run (send it again) and a finish that did not end the
-#: pass. Every other refusal text starts with "refused: ".
-KEPT_STARTS = ("not run: ", "not finished: ")
+#: Starts a template keeps as they are: a call that was not run (send it again), a finish that did not end the
+#: pass and an answer that did not end the request. Every other refusal text starts with "refused: ".
+KEPT_STARTS = ("not run: ", "not finished: ", "not answered: ")
 
 #: The key :func:`refusal_codes` lists the general forms under.
 GENERAL = "*"
@@ -1837,7 +1863,7 @@ def allow_list(agent: str, flags: frozenset = frozenset()) -> tuple[str, ...]:
 
 
 #: The actor's and a teammate's handlers, where they differ from the memory agents' (the record is the agent
-#: record, the roots the request's workspace, and finish answers the request): name -> blocking.
+#: record, the roots the request's workspace, and answer ends the request): name -> blocking.
 _ACTOR_HANDLED = {
     "read": True,
     "grep": False,
@@ -1850,7 +1876,7 @@ _ACTOR_HANDLED = {
     "stop": False,
     "ask": False,
     "delegate": False,
-    "finish": False,
+    "answer": False,
     "store_skills": False,
 }
 
@@ -2078,8 +2104,8 @@ def render_stub(names: tuple[str, ...], agent: Optional[str] = None) -> str:
 
 #: The tool each agent ends its work with.
 _END = {
-    _A: ("finish", "tools.finish(answer) answers the request, as a final text reply does."),
-    _T: ("finish", "tools.finish(answer) answers whoever started you, as a final text reply does."),
+    _A: ("answer", "tools.answer(answer) answers the request, as a final text reply does."),
+    _T: ("answer", "tools.answer(answer) answers whoever started you, as a final text reply does."),
     _W: ("finish", "tools.finish(summary) ends the pass; the gate then judges your manifest and files."),
     _C: ("finish", "tools.finish(summary) ends the pass; the gate then judges your manifest and files."),
     _H: ("done", "tools.done(summary, claims) hands your summary and claims back and ends your task."),

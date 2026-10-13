@@ -74,7 +74,7 @@ _ACTOR_IN_CODE = [
     "reply",
     "stop",
     "delegate",
-    "finish",
+    "answer",
     "store_skills",
     # only with UNIFY_MEMORY_LIBRARIAN=on (registry flag "librarian")
     "ask_library",
@@ -89,7 +89,7 @@ _TEAMMATE_IN_CODE = [
     "stop",
     "ask",
     "delegate",
-    "finish",
+    "answer",
     "sh",
 ]
 _BOX_MOUNTS = [

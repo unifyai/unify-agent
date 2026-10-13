@@ -148,7 +148,7 @@ The three long-horizon switches share the step-limit reply path.
 
 - **Values:** `on` or `off`.
 - **Default:** `off`.
-- **What it does:** When on, every agent (the actor, its teammates, and the memory writer, curator and helpers) keeps exactly one model-API tool, `execute_code`. Every other tool is a Python call in a cell, `tools.<name>(...)`, defined once in the shared registry (`unify/common/tool_registry.py`) and run on the host with the same handler, limits and refusal texts. For the actor and its teammates the loop also compacts by itself when the prompt reaches the compaction point (no forced `compress_context` turn), and `tools.finish(answer)` replaces the response tool. When off, every agent's requests are byte for byte as before.
+- **What it does:** When on, every agent (the actor, its teammates, and the memory writer, curator and helpers) keeps exactly one model-API tool, `execute_code`. Every other tool is a Python call in a cell, `tools.<name>(...)`, defined once in the shared registry (`unify/common/tool_registry.py`) and run on the host with the same handler, limits and refusal texts. For the actor and its teammates the loop also compacts by itself when the prompt reaches the compaction point (no forced `compress_context` turn), and `tools.answer(answer)` replaces the response tool. When off, every agent's requests are byte for byte as before.
 - **Evidence:** It is the treatment arm of a paired replay against the build without it (same requests and passes, LOW and HIGH), reported with task outcome, cost, prompt tokens, cache-read share, turns and compactions per request.
 
 ## UNIFY_CELL_STATE

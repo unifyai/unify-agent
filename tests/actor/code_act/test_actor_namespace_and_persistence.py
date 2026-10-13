@@ -124,7 +124,7 @@ TEAMMATE_START = "print(tools.delegate('Run two cells in your box and tell me wh
 ACTOR_WAIT = (
     "got = tools.wait(timeout=200)\n"
     "print('GOT', got)\n"
-    "tools.finish('teammate done')\n"
+    "tools.answer('teammate done')\n"
 )
 
 
@@ -154,7 +154,7 @@ async def test_a_teammate_has_its_names_bound_and_keeps_variables(in_code):
         helper=[
             reply(calls=[code(PROBE)]),
             reply(calls=[code(NEXT)]),
-            reply(calls=[code("tools.finish('probe finished')")]),
+            reply(calls=[code("tools.answer('probe finished')")]),
             reply("not finished"),
         ],
     )
@@ -183,7 +183,7 @@ async def test_under_fresh_cell_state_the_actor_and_a_teammate_lose_variables_an
         helper=[
             reply(calls=[code("x = 41\nprint('SET')")]),
             reply(calls=[code("print('NEXT', x + 1)")]),
-            reply(calls=[code("tools.finish('probe finished')")]),
+            reply(calls=[code("tools.answer('probe finished')")]),
             reply("not finished"),
         ],
     )

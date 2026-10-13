@@ -53,7 +53,7 @@ HARNESS_NAMES = frozenset(
     },
 )
 #: The calls that end the agent's work: run last, in a cell of their own.
-END_TOOLS = frozenset({"finish", "done"})
+END_TOOLS = frozenset({"answer", "finish", "done"})
 _SIGNATURE = re.compile(
     r"unexpected keyword argument|missing \d+ required|takes \d+ positional|takes from \d+ to \d+ positional"
     r"|positional arguments? but|required (keyword|positional)",
@@ -217,7 +217,7 @@ def prepare(
     * ``tools.<name>(...)`` (``...`` alone or beside other arguments): replaced by *example(name)*, the tool's
       first registry example (None: a failure). ``f(...)`` on any other name only resolves ``f`` (the shape of its
       arguments is not shown).
-    * A call of an end tool (``tools.finish``, ``tools.done``) runs last.
+    * A call of an end tool (``tools.answer``, ``tools.finish``, ``tools.done``) runs last.
     * A span in *skip* (the reviewed spans a prompt shows as something not to run) is neither run nor listed.
     """
     plan = Plan()

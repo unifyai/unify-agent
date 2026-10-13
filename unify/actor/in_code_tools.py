@@ -12,7 +12,7 @@ One :class:`InCodeTools` serves one request of one agent:
 * the binding: the agent (``actor`` or ``teammate``), its name on the agent record, the request's id, the workspace
   as an open directory descriptor under the box root ``/workspace``, the record
   (:class:`unify.common.record_adapters.AgentRecordAdapter`) and the request's state
-  (:class:`unify.actor.tool_handlers.ActorRequestState`: the loop's reply slot that ``tools.finish`` fills, the
+  (:class:`unify.actor.tool_handlers.ActorRequestState`: the loop's reply slot that ``tools.answer`` fills, the
   response format's check, the storage review's starter);
 * the channel table: each allowed tool's registry spec with the actor's handler (``tool_registry.handler_for``) and
   the agent's own parameter schema (``tool_registry.strict_parameters``);
@@ -342,7 +342,7 @@ class InCodeTools:
         if self.closed:
             raise RuntimeError("this request's tools have ended")
         async with self._lock:
-            # the loop's slot for the turn's reply, which tools.finish fills (the loop that runs this call set it)
+            # the loop's slot for the turn's reply, which tools.answer fills (the loop that runs this call set it)
             self.state.reply_slot = cell_reply.current()
             call = self._next_call()
             self._cell_call = call
@@ -550,7 +550,7 @@ def open_for_act(
     binding), or None while ``UNIFY_TOOLS_IN_CODE`` is off. *agents*: the act's
     :class:`unify.agents.binding.Binding`; *sandbox*: its ``PythonExecutionSession`` (the namespace the worker's
     proxy serves, without the objects :data:`REPLACED_OBJECTS` names); *store_skills*: the storage review's
-    starter, None where the request may not store; *response_format*: the request's, whose check ``tools.finish``
+    starter, None where the request may not store; *response_format*: the request's, whose check ``tools.answer``
     applies."""
     if not enabled():
         return None
