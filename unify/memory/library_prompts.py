@@ -30,8 +30,8 @@ FILES_LINE_IN_CODE = (
 #: The look-first bullet, first under "Finding items" in every guide: at the start of a request, list the stored
 #: procedures whose recorded input fits what the agent holds. It informs; nothing runs.
 MATCH_LINE = (
-    "- At the start of a request, `memory.match(request, inputs)` lists the stored procedures whose recorded input "
-    "fits what you pass: the request's text, and any data you were given as `inputs`. It compares structure only, "
+    "- At the start of a request, `memory.match(request)` lists the stored procedures whose recorded input fits the "
+    "request's text; pass any data you were given as `inputs=` too. It compares structure only, "
     "so a match can be wrong, and it runs nothing. Each row gives a procedure's id, evidence level, status and the "
     "goal it was saved for; attempts that were tried on input like yours and failed are listed apart.\n"
 )
