@@ -147,8 +147,9 @@ def _open_request(paths: Paths, sha: str, monkeypatch) -> request_mod.RequestRun
 
 @pytest.fixture
 def librarian(core_world, monkeypatch):  # noqa: F811
-    """Tools in code, a persistent interpreter, library mode, the librarian, request headers; a library with item
-    records, its episodes' summaries staged and two captured procedures in the store; every in-code session kept."""
+    """Tools in code, a persistent interpreter, library mode, the librarian, request headers; a library with the item
+    records production writes for it (``librarian_world``), its episodes' summaries staged and two captured procedures
+    in the store; every in-code session kept."""
     for name, value in (
         ("UNIFY_TOOLS_IN_CODE", "on"),
         ("UNIFY_CELL_STATE", "persistent"),
@@ -162,7 +163,7 @@ def librarian(core_world, monkeypatch):  # noqa: F811
     monkeypatch.setattr(in_code_tools, "SESSIONS", collect)
     paths = Paths.under(core_world["state"])
     mem = Repo.init_bare(paths.memory)
-    sha = _commit(mem, w.FILES, "seed")
+    sha = _commit(mem, w.files(), "seed")
     item_records.write_records(mem, sha, w.records())
     for episode, text in w.SUMMARIES.items():
         d = Path(paths.state_dir) / "memory-staging" / episode
