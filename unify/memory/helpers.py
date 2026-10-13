@@ -693,6 +693,9 @@ def box_cell(
             data[:OUTPUT_BYTES].decode("utf-8", "replace")
             + f"\n[… {len(data)} bytes in all; head shown]"
         )
+        from unify.common.box_interpreter import keep_traceback_end
+
+        content = keep_traceback_end(content, r.stderr)
     if r.timed_out:
         content += f"\n(cell timed out after {timeout_s:.0f} s)"
     elif r.returncode != 0:

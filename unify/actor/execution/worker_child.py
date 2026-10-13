@@ -1848,6 +1848,7 @@ class Worker:
         start = self._fd_offset()
         result: Any = None
         error: Optional[str] = None
+        shown_error: Optional[str] = None
         error_type: Optional[str] = None
         remote = False
         message = ""
@@ -1889,6 +1890,9 @@ class Worker:
             reply = {"text": replied.text, "from_value": replied.from_value}
         except BaseException as exc:  # noqa: BLE001 - every failure is the cell's
             error = _format_cell_error(exc)
+            # what the model reads: the same traceback without the harness's own
+            # frames; the full one still goes to the harness for its logs
+            shown_error = _format_cell_error(exc, _harness_files())
             error_type = type(exc).__name__
             remote = isinstance(exc, RemoteError)
             message = str(exc)
@@ -1905,6 +1909,7 @@ class Worker:
                 "id": cid,
                 "result": encoded,
                 "error": error,
+                "shown_error": shown_error if shown_error != error else None,
                 "error_type": error_type,
                 "remote": remote,
                 "message": message,
@@ -1917,15 +1922,29 @@ class Worker:
         )
 
 
-def _format_cell_error(exc: BaseException) -> str:
-    """The traceback without this file's frames: the cell's and the stored
-    functions' frames are what the model can act on."""
+def _harness_files() -> frozenset[str]:
+    """The files of the harness's own namespaces in this box, whose frames a
+    cell's reader cannot act on: the tools stub and its channel client, and
+    the library package's own module and contract runtime. The files of the
+    library's stored functions are not among them."""
+    files = {"<tools>", "<tools: channel client>"}
+    for name in ("tools", "memory", "memory._contract"):
+        path = getattr(sys.modules.get(name), "__file__", None)
+        if isinstance(path, str):
+            files.add(path)
+    return frozenset(files)
+
+
+def _format_cell_error(exc: BaseException, hide: frozenset[str] = frozenset()) -> str:
+    """The traceback without this file's frames (and without the frames of
+    *hide*'s files): the cell's and the stored functions' frames are what
+    the model can act on."""
     te = traceback.TracebackException.from_exception(exc)
     pending = [te]
     while pending:
         current = pending.pop()
         current.stack = traceback.StackSummary.from_list(
-            [f for f in current.stack if f.filename != __file__],
+            [f for f in current.stack if f.filename != __file__ and f.filename not in hide],
         )
         pending += [e for e in (current.__cause__, current.__context__) if e]
     return "".join(te.format())

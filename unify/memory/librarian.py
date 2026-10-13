@@ -548,6 +548,9 @@ class LibrarianSession:
         data = body.encode("utf-8", "replace")
         if len(data) > OUTPUT_BYTES:
             body = data[:OUTPUT_BYTES].decode("utf-8", "replace") + f"\n[… {len(data)} bytes in all; head shown]"
+            from unify.common.box_interpreter import keep_traceback_end
+
+            body = keep_traceback_end(body, getattr(res, "error", None))
         return body + tail
 
     def box_alive(self) -> bool:

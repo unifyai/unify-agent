@@ -322,6 +322,8 @@ class CellResult:
 
     output: str
     error: Optional[str] = None
+    #: the full traceback when *error* (what the model reads) leaves out the harness's own frames; logged
+    error_full: Optional[str] = None
     timed_out: bool = False
     restarted: bool = False
     opens: Optional[dict] = None
@@ -344,6 +346,17 @@ class CellResult:
             body = f"{body}\n{self.error}" if body else self.error
         lines = [*self.notes_before, body.rstrip("\n") or "(no output)", *self.notes_after]
         return "\n".join(lines)
+
+
+def keep_traceback_end(shown: str, error: Optional[str], lines: int = 3) -> str:
+    """*shown*, a head cut of a cell's output and traceback, with the traceback's last *lines* appended when the
+    cut dropped them, so the exception line is always read."""
+    if not error:
+        return shown
+    end = "\n".join(error.rstrip("\n").splitlines()[-lines:])
+    if not end or end in shown:
+        return shown
+    return f"{shown}\n[the traceback ends:]\n{end}"
 
 
 # --- process checks and the verified kill ---------------------------------------------------------------------
@@ -1054,6 +1067,13 @@ class BoxInterpreter:
         error = done.get("error")
         if isinstance(error, str) and error:
             res.error = _WRAPPER_FRAME.sub("", error).rstrip("\n")
+        # The model reads the traceback without the harness's own frames (the tools stub, its channel client,
+        # the library package's module and contract); the full one is kept and logged.
+        shown = done.get("shown_error")
+        if res.error and isinstance(shown, str) and shown:
+            res.error_full = res.error
+            res.error = _WRAPPER_FRAME.sub("", shown).rstrip("\n")
+            logger.info("cell %s error, full traceback:\n%s", res.cell, res.error_full)
         if self.memory:
             out = _parts_text(done.get("stdout"))
             err = _parts_text(done.get("stderr"))

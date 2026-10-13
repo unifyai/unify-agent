@@ -3320,6 +3320,9 @@ class WriterPass:
         content = (r.stdout + ("\n" + r.stderr if r.stderr else "")) or "(no output)"
         if _library_on(self):
             shown, full = _head_marked(content)
+            from unify.common.box_interpreter import keep_traceback_end
+
+            shown = keep_traceback_end(shown, r.stderr)
             out_dir = cells.parent / "outputs"
             out_dir.mkdir(exist_ok=True)
             n = len(list(out_dir.iterdir()))
@@ -3965,6 +3968,9 @@ class WriterPass:
         finish_text = ic.finish_text if ic is not None else None
         body, tail = _th.cell_parts(res, finish_text, session.gone_during(), note)
         shown, full = _head_marked(body)
+        from unify.common.box_interpreter import keep_traceback_end
+
+        shown = keep_traceback_end(shown, getattr(res, "error", None))
         out_dir = cells.parent / "outputs"
         out_dir.mkdir(exist_ok=True)
         n = len(list(out_dir.iterdir()))
