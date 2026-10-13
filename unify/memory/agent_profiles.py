@@ -803,14 +803,14 @@ _MODE_TEXT = {"ro": "read-only", "rw": "writable"}
 #: Where each memory agent reads the library: one line, box paths only.
 _LIBRARY_LINE = {
     "writer": (
-        "The library is the Python package `memory` under /memory: `import memory` in a cell gives "
+        "The library is the Python package `memory` under /memory, bound as `memory` in your cells: "
         '`memory.index()`, `memory.show("<id>")` and `memory.find(value)`.'
     ),
     "curator": (
-        "The library is the Python package `memory` under /memory: `import memory` in a cell gives "
+        "The library is the Python package `memory` under /memory, bound as `memory` in your cells: "
         '`memory.index()`, `memory.show("<id>")` and `memory.find(value)`.'
     ),
-    "helper": "/memory holds the library as the writer sees it, read-only.",
+    "helper": "/memory holds the library as the writer sees it, read-only; it is the package `memory` in your cells.",
 }
 
 
@@ -856,9 +856,12 @@ def environment_text(agent: str, cell_s: float | None = None) -> str:
 
 def in_code_opening(agent: str, flags: frozenset[str] = frozenset(), cell_s: float | None = None) -> str:
     """The shared opening (:func:`unify.common.tool_registry.preamble`) of the writer, curator or a helper when tools
-    are called from code: its box and limits, its library line, the tools its allow-list has with *flags* on, and
-    variables kept between cells. Constant for a run, so the system message stays a stable prefix."""
+    are called from code: its box and limits, its library line, the tools its allow-list has with *flags* on, whether
+    variables are kept between cells (``UNIFY_CELL_STATE``) and the names bound in its cells (``tools`` and
+    ``memory``: the box holds the library package in library mode, the only mode with tools in code). Constant for a
+    run, so the system message stays a stable prefix."""
     from unify.common import tool_registry
+    from unify.common.box_interpreter import persistent
 
     return tool_registry.preamble(
         agent,
@@ -866,6 +869,7 @@ def in_code_opening(agent: str, flags: frozenset[str] = frozenset(), cell_s: flo
             "environment": environment_text(agent, cell_s),
             "memory": _LIBRARY_LINE[agent],
             "flags": frozenset(flags),
-            "persistent": True,
+            "persistent": persistent(),
+            "names": tool_registry.prebound_names(agent, {"tools": True, "memory": True}),
         },
     )

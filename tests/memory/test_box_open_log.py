@@ -114,7 +114,12 @@ def test_a_cell_that_opens_nothing_in_the_areas_is_measured_not_dead(tmp_path):
 
 
 @needs_bwrap
-def test_a_writer_cell_open_is_recorded_and_stamped_by_the_host(tmp_path):
+def test_a_writer_cell_open_is_recorded_and_stamped_by_the_host(tmp_path, monkeypatch):
+    from unify.settings import SETTINGS
+
+    # the fresh box per cell (the opt-out), whose open log is the pipe this cell writes to; the persistent
+    # interpreter's open log is the worker's audit (tests/memory/test_box_interpreter.py)
+    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "fresh")
     code = (
         "import os, sys\n"
         "open('/inputs/request.json').read()\n"

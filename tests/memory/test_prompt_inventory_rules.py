@@ -382,7 +382,14 @@ def test_with_the_setting_off_every_text_is_todays(off):
     assert messaging.record_text() == messaging.RECORD_TEXT
     assert lp.EPISODES_RULE in lp.write_brief_now()
     assert "# Tools\n" in lp.write_brief_now() and "# Tools\n" in lp.curate_brief_now()
-    assert helpers.helper_brief(True) == helpers.HELPER_BRIEF.replace("{similar}", helpers.SIMILAR_LINE)
+    # in the persistent interpreter (the default) the brief starts with the shared sandbox paragraph
+    assert helpers.helper_brief(True).endswith(
+        "\n\n"
+        + helpers.HELPER_BRIEF.replace("{similar}", helpers.SIMILAR_LINE).replace(
+            "<<execute_code>>",
+            helpers.EXECUTE_CODE_LINE,
+        ),
+    )
     assert fork.fork_instruction() == fork.INSTRUCTION
     assert cache_discipline.compression_fork_instruction() == cache_discipline.COMPRESSION_FORK_INSTRUCTION
     assert context_compression.compress_context_tool() is context_compression.compress_context

@@ -22,13 +22,17 @@ from typing import Mapping
 
 #: The bullet optional pull helpers are inserted before. Constant bytes.
 FILES_LINE = "- The library is also plain files at the location below, so `grep` and file reads work on it.\n"
+#: :data:`FILES_LINE` when tools are called from code (the bare ``grep`` is ``tools.grep`` there).
+FILES_LINE_IN_CODE = (
+    "- The library is also plain files at the location below, so `tools.grep` and `tools.read` work on it.\n"
+)
 
 GUIDE_LIBRARY = (
     "### Memory Library\n"
     "\n"
-    "A Python library of tested functions and linked notes, built from earlier work, is importable "
-    "in your cells as `memory`. Before you write code for a step, look in the index for an item that does it. "
-    "Using the library is optional: use an item when it fits, and otherwise work as usual.\n"
+    "A Python library of tested functions and linked notes, built from earlier work, is already available "
+    "in your cells as `memory`, no import needed. Before you write code for a step, look in the index for an item "
+    "that does it. Using the library is optional: use an item when it fits, and otherwise work as usual.\n"
     "\n"
     "Finding items:\n"
     "- The index at the end of this prompt lists every function (its id, signature, one-line summary and "
@@ -57,7 +61,7 @@ GUIDE_LIBRARY = (
 
 #: Where the guide states each part of a role prompt (the guide is prose, so the parts are phrases, not headings).
 GUIDE_PARTS: tuple[tuple[str, str], ...] = (
-    ("role", "is importable in your cells as `memory`"),
+    ("role", "is already available in your cells as `memory`"),
     ("inputs", "The index at the end of this prompt lists"),
     ("outputs", "Write your own code and files in your session as usual"),
     ("rules", "Then do that step with your own code"),
@@ -71,7 +75,8 @@ def guide_library_mode(extra_lines: tuple[str, ...] = ()) -> str:
     guide = guide_library()
     if not extra_lines:
         return guide
-    return guide.replace(FILES_LINE, "".join(extra_lines) + FILES_LINE, 1)
+    line = FILES_LINE_IN_CODE if FILES_LINE_IN_CODE in guide else FILES_LINE
+    return guide.replace(line, "".join(extra_lines) + line, 1)
 
 
 def guide_library() -> str:
@@ -91,9 +96,9 @@ def _in_code() -> bool:
 GUIDE_LIBRARY_IN_CODE = (
     "### Memory Library\n"
     "\n"
-    "A Python library of tested functions and linked notes, built from earlier work, is importable "
-    "in your cells as `memory`. Before you write code for a step, look in the index for an item that does it. "
-    "Using the library is optional: use an item when it fits, and otherwise work as usual.\n"
+    "A Python library of tested functions and linked notes, built from earlier work, is already available "
+    "in your cells as `memory`, no import needed. Before you write code for a step, look in the index for an item "
+    "that does it. Using the library is optional: use an item when it fits, and otherwise work as usual.\n"
     "\n"
     "Finding items:\n"
     "- The index at the end of this prompt lists every function and note.\n"
@@ -103,7 +108,7 @@ GUIDE_LIBRARY_IN_CODE = (
     "- `memory.find(value)` lists the functions whose tests call them on arguments shaped like a structured "
     "value you hold (a dict, a list of records, JSON text, or a CSV file with a header), and which parameter "
     "matched. It cannot match plain text: for text, use the index or grep.\n"
-    + FILES_LINE
+    + FILES_LINE_IN_CODE
     + "\n"
     "Using items:\n"
     "- Import a function by its id: `memory.text.dates:parse_date` is "
@@ -121,9 +126,10 @@ GUIDE_LIBRARY_IN_CODE = (
 GUIDE_POINTER = (
     "### Memory Library\n"
     "\n"
-    "A Python library of tested functions and linked notes, built from earlier work, is importable "
-    "in your cells as `memory`. It may be empty. Before you write code for a step, look in the library for an "
-    "item that does it. Using the library is optional: use an item when it fits, and otherwise work as usual.\n"
+    "A Python library of tested functions and linked notes, built from earlier work, is already available "
+    "in your cells as `memory`, no import needed. It may be empty. Before you write code for a step, look in the "
+    "library for an item that does it. Using the library is optional: use an item when it fits, and otherwise work "
+    "as usual.\n"
     "\n"
     "Finding items:\n"
     "- `print(memory.index())` prints the library index: every function (its id, signature, one-line summary, "
@@ -378,12 +384,23 @@ _LIMITS = (
     "<<repair_cap>><<finish_cap>><<compaction>>\n"
 )
 
-_LIBRARY_BULLET = (
+#: The writer's library bullet with tools in code off under ``UNIFY_CELL_STATE=fresh``: each cell is a fresh script,
+#: which imports ``memory`` itself.
+_LIBRARY_BULLET_FRESH = (
     "- /memory: a writable copy of the library. There is no git history in the box; an item's recent changes "
     'are in `memory.show("<id>")`. /memory/INDEX.md is the library index, generated by the harness like '
     "/memory/links.json and /memory/memory/__init__.py. In a cell, `import memory` gives `memory.index()`, "
     '`memory.index("<package>")`, `memory.show("<id>")` and `memory.find(value)`, as the working model has them. '
     "For: knowing what exists before you add anything.\n"
+)
+
+_LIBRARY_BULLET = (
+    "- /memory: a writable copy of the library. There is no git history in the box; an item's recent changes "
+    'are in `memory.show("<id>")`. /memory/INDEX.md is the library index, generated by the harness like '
+    "/memory/links.json and /memory/memory/__init__.py. In every cell `memory` is already bound (no import "
+    'needed): `memory.index()`, `memory.index("<package>")`, `memory.show("<id>")` and `memory.find(value)`, as '
+    "the working model has them. Names you bound earlier keep the code they were bound to; after you edit a "
+    "library file, import it again. For: knowing what exists before you add anything.\n"
 )
 
 _WHAT_TO_WRITE = (
@@ -485,6 +502,22 @@ _WRITE_RULES = (
     + "\n"
 )
 
+#: The curator's library bullet with tools in code off: its interpreter binds ``memory``.
+_CURATE_LIBRARY_BULLET = (
+    "- /memory: a writable copy of the library. There is no git history in the box. In every cell `memory` is "
+    'already bound (no import needed): `memory.index()`, `memory.find(value)`, and `memory.show("<id>")`, which '
+    "gives an item's status, its test record, its use record per library commit and its recent changes. Names you "
+    "bound earlier keep the code they were bound to; after you edit a library file, import it again. "
+    "/memory/INDEX.md is the library index, generated by the harness.\n"
+)
+#: The same under ``UNIFY_CELL_STATE=fresh``: each cell is a fresh script, which imports ``memory`` itself.
+_CURATE_LIBRARY_BULLET_FRESH = (
+    "- /memory: a writable copy of the library. There is no git history in the box. `import memory` works in your "
+    'cells: `memory.index()`, `memory.find(value)`, and `memory.show("<id>")`, which gives an item\'s status, its '
+    "test record, its use record per library commit and its recent changes. /memory/INDEX.md is the library index, "
+    "generated by the harness.\n"
+)
+
 _CURATE = (
     "# Role\n"
     "You are the library curator. The library, `memory`, is a Python package of tested functions and linked "
@@ -514,10 +547,7 @@ _CURATE = (
     "pass may remove it. For: judging what is used, what changed and what may go.\n"
     "- /inputs/episodes/<episode>.json: the recorded episodes the suspect items were used in. For: the evidence "
     "behind a suspect; `read_episode` and `overview` show them part by part.\n"
-    "- /memory: a writable copy of the library. There is no git history in the box. `import memory` works in your "
-    'cells: `memory.index()`, `memory.find(value)`, and `memory.show("<id>")`, which gives an item\'s status, its '
-    "test record, its use record per library commit and its recent changes. /memory/INDEX.md is the library index, "
-    "generated by the harness.\n"
+    "<<library_bullet>>"
     "- /inputs/gate/: the full result of each `check` and each repair round of this pass, as it happens.\n"
     "\n"
     "# Tools\n"
@@ -881,7 +911,7 @@ def write_brief(
         "were shown, imported and called, as the harness recorded it) and `table.md` (per item: requests, calls, "
         "refusals and errors). For: seeing which items help and which fail.\n",
     )
-    inputs.append(_LIBRARY_BULLET)
+    inputs.append(_LIBRARY_BULLET if _persistent() else _LIBRARY_BULLET_FRESH)
     inputs.append("- /inputs/gate/previous.md: the last pass's full gate result.\n")
 
     look = ["staged candidates and their cases"] if staging else []
@@ -1001,7 +1031,7 @@ def write_brief(
         "you wrote has passed the gate or is kept as a draft with its failure. Then call `finish(summary)`. "
         "Writing nothing is a valid decision when your summary says why.\n"
     )
-    return _fill(
+    return _sandbox_first("writer") + _fill(
         body,
         {
             "manifest_extra": manifest_extra,
@@ -1051,10 +1081,11 @@ def curate_brief(
                 trigger_path=trigger_path,
             ),
         )
-    return _fill(
+    return _sandbox_first("curator") + _fill(
         _CURATE,
         {
             "tools": (tools + "\n" if tools else "") + "\n" + _record_text(),
+            "library_bullet": _CURATE_LIBRARY_BULLET if _persistent() else _CURATE_LIBRARY_BULLET_FRESH,
             "limits": _limits_text(limits, helper_time=False),
             "pytest_env": _env(pytest_env),
             "overlaps_path": overlaps_path,
@@ -1062,6 +1093,25 @@ def curate_brief(
             "trigger_path": trigger_path,
         },
     )
+
+
+def _persistent() -> bool:
+    from unify.common.box_interpreter import persistent
+
+    return persistent()
+
+
+def _sandbox_first(agent: str) -> str:
+    """With tools in code off, a memory agent gets no shared opening: its brief starts with the shared sandbox
+    paragraph instead (:func:`unify.common.tool_registry.sandbox_paragraph`: its interpreter keeps its state, when it
+    restarts, and that ``memory`` is bound), then a blank line. Under the ``UNIFY_CELL_STATE=fresh`` opt-out each
+    cell is a fresh script, whose brief and tool text already say so: nothing is added, so the opt-out's prompt is the
+    earlier one byte for byte."""
+    from unify.common import tool_registry
+
+    if not _persistent():
+        return ""
+    return tool_registry.sandbox_paragraph(agent, ("memory",), True) + "\n\n"
 
 
 def _opened(agent: str, flags: frozenset[str], limits: Limits, brief: str) -> str:
@@ -1312,8 +1362,10 @@ def _limits_text_in_code(limits: Limits, helper_time: bool) -> str:
 _LIBRARY_BULLET_IN_CODE = (
     "- /memory: a writable copy of the library. There is no git history in the box; an item's recent changes "
     'are in `memory.show("<id>")`. /memory/INDEX.md is the library index, generated by the harness like '
-    "/memory/links.json and /memory/memory/__init__.py. In a cell, `import memory` gives `memory.index()`, "
-    '`memory.show("<id>")` and `memory.find(value)`. For: knowing what exists before you add anything.\n'
+    "/memory/links.json and /memory/memory/__init__.py. In every cell `memory` is already bound (no import "
+    'needed): `memory.index()`, `memory.show("<id>")` and `memory.find(value)`. Names you bound earlier keep the '
+    "code they were bound to; after you edit a library file, import it again. For: knowing what exists before you "
+    "add anything.\n"
 )
 
 _WHAT_TO_WRITE_IN_CODE = (
@@ -1633,9 +1685,10 @@ _CURATE_IN_CODE = (
     "changed and what may go.\n"
     "- /inputs/episodes/<episode>.json: the recorded episodes the suspect items were used in. For: the evidence "
     "behind a suspect; `tools.read_episode` and `tools.overview` show them part by part.\n"
-    "- /memory: a writable copy of the library. `import memory` works in your cells (`memory.index()`, "
-    '`memory.find(value)`, `memory.show("<id>")`); there is no git history in the box. /memory/INDEX.md and '
-    "/memory/memory/__init__.py are generated by the harness and need no reading.\n"
+    "- /memory: a writable copy of the library. In every cell `memory` is already bound (no import needed): "
+    '`memory.index()`, `memory.find(value)`, `memory.show("<id>")`. Names you bound earlier keep the code they were '
+    "bound to; after you edit a library file, import it again. There is no git history in the box. "
+    "/memory/INDEX.md and /memory/memory/__init__.py are generated by the harness and need no reading.\n"
     "- /inputs/gate/: the full result of each `tools.check` and each repair round of this pass, as it happens.\n"
     "\n"
     "<<record>>"

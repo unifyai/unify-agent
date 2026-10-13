@@ -14,7 +14,9 @@ from unify.common import tool_registry as R
 
 HEADING = "## How you work here"
 LIST_SENTENCE = "`tools.list()` prints one line per tool you have"
-KEPT_SENTENCE = "keeps its variables between cells"
+KEPT_SENTENCE = "Your Python sandbox is persistent and stateful"
+FRESH_SENTENCE = "Each cell runs in a fresh Python sandbox"
+NAMES_SENTENCE = "`tools` and `memory` are already available as variables in every cell; no import needed."
 PLANTED_VALUE = "planted-value-for-the-opening-test"
 
 
@@ -62,6 +64,9 @@ def test_every_memory_agent_starts_with_the_shared_opening(monkeypatch, planted)
         assert sep, f"{name}: the role's own text does not follow the opening"
         assert text.startswith(HEADING + "\n"), name
         assert LIST_SENTENCE in opening and KEPT_SENTENCE in opening, name
+        # the shared sandbox paragraph is said once, in the opening, never again in the role's text
+        assert NAMES_SENTENCE in opening and text.count(KEPT_SENTENCE) == 1, name
+        assert "import memory" not in text, name
         assert text.count(HEADING) == 1, name
         # the opening names only tools the agent's allow-list has, with the flags its pass builds the list with
         allow = set(R.allow_list(agent, flags))
@@ -95,10 +100,32 @@ def test_the_flags_decide_which_tools_the_opening_names(monkeypatch):
 
 
 def test_with_the_setting_off_no_brief_has_the_opening(monkeypatch):
+    """With tools in code off there is no opening: each brief starts with the shared sandbox paragraph instead, which
+    names `memory` alone (its tools stay JSON tools)."""
     monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: False)
     for name, (_, text, _) in _briefs().items():
         assert HEADING not in text, name
         assert LIST_SENTENCE not in text, name
+        assert text.startswith(KEPT_SENTENCE), name
+        assert "`memory` is already available as a variable in every cell; no import needed." in text, name
+        assert text.count(KEPT_SENTENCE) == 1 and "`tools`" not in text.split("\n\n", 1)[0], name
+        assert "import memory" not in text, name
+
+
+def test_under_the_fresh_opt_out_the_opening_says_cells_start_fresh(monkeypatch):
+    from unify.settings import SETTINGS
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "fresh")
+    monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: True)
+    for name, (agent, text, _) in _briefs().items():
+        opening = text.partition(_role_start(agent))[0]
+        assert FRESH_SENTENCE in opening and KEPT_SENTENCE not in text, name
+    # with tools in code off, the opt-out's briefs are the earlier ones: each cell is a fresh script that imports
+    # the library itself, and the briefs say so
+    monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: False)
+    for name, (_, text, _) in _briefs().items():
+        assert KEPT_SENTENCE not in text and FRESH_SENTENCE not in text, name
+        assert "import memory" in text or name.startswith("helper"), name
 
 
 def test_brief_sizes_without_and_with_the_opening(monkeypatch):
