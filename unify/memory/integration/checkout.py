@@ -97,13 +97,16 @@ def export_actor_library_mode(
     status_of=None,
     shapes=None,
     records=None,
+    captures=None,
 ) -> dict[str, bytes]:
     """``UNIFY_MEMORY_LIBRARY=on``: replace *dest* with the actor's read-only copy of memory commit *sha*. It
     holds:
 
     - the commit's library modules, package docstrings and notes only (:func:`..layout.exported`): never a
       tests directory, a fixture, compiled code or a path outside the layout;
-    - the generated files (:func:`..library_export.generated_library_mode`), which replace any committed copy.
+    - the generated files (:func:`..library_export.generated_library_mode`), which replace any committed copy;
+    - with *captures* (:func:`..captures.export_files`: paths under ``.memory/captures/``), a snapshot of the capture
+      store as this request starts. Captures never enter ``INDEX.md`` or the prompt.
 
     Every write bit is then dropped, and the sandbox binds the copy read-only (:func:`.hooks.worker_readonly_mounts`).
     Returns the generated files.
@@ -140,6 +143,13 @@ def export_actor_library_mode(
         records=records,
         tests=committed_test,
     )
+    if captures:
+        from ..captures import EXPORT_DIR
+
+        generated = {
+            **generated,
+            **{p: v for p, v in captures.items() if p.startswith(EXPORT_DIR + "/")},
+        }
     write_files(dest, generated)
     make_read_only(dest)
     return generated

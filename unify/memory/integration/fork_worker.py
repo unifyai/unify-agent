@@ -12,10 +12,11 @@ reader of staged replies applies the same rules, and the offline replay imports 
 * **Turns:** one POST per turn. A reply with tool calls is never executed: each call is answered with
   :data:`TOOL_REPLY` and the conversation continues. The fork ends at the first reply without tool calls.
 * **Output:** the files the reply's blocks name (:func:`parse_reply`), from the reply text and from every tool
-  call's arguments. Only ``summary.md``, ``candidates/<name>.py``, ``cases/<name>.json`` and ``notes.md`` are
-  written; every block found is recorded as parsed, refused or dropped with a reason. Written in this order: the
-  staged files, the raw reply (``fork-reply.json``), the block ledger (``fork-blocks.json``, with the raw reply's
-  sha256), then ``fork.json``. ``fork.json`` is written last, and its existence means the fork has settled.
+  call's arguments. Only ``summary.md``, ``candidates/<name>.py``, ``cases/<name>.json``, ``notes.md``,
+  ``procedure.py`` and ``broke.md`` are written; every block found is recorded as parsed, refused or dropped
+  with a reason. Written in this order: the staged files, the raw reply (``fork-reply.json``), the block ledger
+  (``fork-blocks.json``, with the raw reply's sha256), then ``fork.json``. ``fork.json`` is written last, and
+  its existence means the fork has settled.
 
 Operational guards, which are run safety and not design: :data:`QUOTA_BYTES` and :data:`QUOTA_FILES` per episode,
 :data:`TURN_GUARD` turns, :data:`HTTP_TIMEOUT_S` per call and :data:`WALL_GUARD_S` for the whole fork (on reaching
@@ -49,6 +50,8 @@ ALLOWED = (
     re.compile(r"candidates/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\.py"),
     re.compile(r"cases/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\.json"),
     re.compile(r"notes\.md"),
+    re.compile(r"procedure\.py"),
+    re.compile(r"broke\.md"),
 )
 FORK_JSON = "fork.json"
 #: The fork's account of its episode (what was asked, the approach, what worked or failed, the outcome, with pointers
@@ -88,6 +91,8 @@ _KINDS = (
     (re.compile(r"candidates/[^/]+\.py"), "candidate"),
     (re.compile(r"cases/[^/]+\.json"), "case"),
     (re.compile(r"notes\.md"), "notes"),
+    (re.compile(r"procedure\.py"), "procedure"),
+    (re.compile(r"broke\.md"), "broke"),
 )
 
 
@@ -174,7 +179,7 @@ def allowed(rel: str) -> str | None:
     if not _plain(rel):
         return "not a plain relative path"
     if not any(rx.fullmatch(rel) for rx in ALLOWED):
-        return "outside summary.md, candidates/*.py, cases/*.json and notes.md"
+        return "outside summary.md, candidates/*.py, cases/*.json, notes.md, procedure.py and broke.md"
     return None
 
 
@@ -798,6 +803,10 @@ def run(
     blocks, _hop, text = parse_turns(replies)
     files, refused, over = write_blocks(staging, blocks)
     doc["files"], doc["refused_files"] = files, refused
+    # the captured attempt's files (the harness captures procedure.py at once once the fork settles)
+    written = {f.get("path") for f in files if isinstance(f, dict)}
+    doc["procedure"] = "procedure.py" in written
+    doc["broke"] = "broke.md" in written
     if over and doc["status"] == "ok":
         doc["status"] = "ok: operational quota reached"
     usd = usage.pop("_usd", None) if usage else None

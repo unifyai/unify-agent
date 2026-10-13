@@ -2368,3 +2368,82 @@ def use_from_episode_dir(
             else None
         ),
     )
+
+
+# --- outcomes per call (outcome-driven trust) ----------------------------------------------------------------
+
+
+def result_digest(value: Any) -> str:
+    """The first 16 hex digits of the sha256 of *value*'s canonical JSON (sorted keys, no spaces, ``default=str``),
+    as the library wrapper digests a call's result; no value is kept."""
+    text = json.dumps(
+        value,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+
+
+_CALL_OUTCOMES = {"ok": "returned", "refused": "refused", "error": "error"}
+
+
+def attribute_outcomes(
+    record: dict,
+    results: Any,
+    handed_back: Iterable[Any],
+    *,
+    verdict: str | None = None,
+    end_outcome: str | None = None,
+    corrected: bool = False,
+) -> dict:
+    """*record* (a use record) with each item's calls attributed: ``items[<id>].outcomes``, one row per call, with
+    ``outcome`` (``returned``, ``refused``, ``error``), ``result_digest``, ``answered`` (its result digest equals the
+    digest of a value the episode handed back, *handed_back*: a dialogue action's value or the final reply's
+    trailing value), ``verdict`` and ``end_outcome`` (only on an answered call: an outcome counts for a procedure only
+    when its result was what was handed back), ``holds`` and ``conditions`` (``held``, ``failed`` or ``none``) and
+    ``corrected`` (on an answered call).
+
+    *results* maps an item id to its calls in order, each ``{"outcome": "ok" | "refused" | "error", "result":
+    <digest or None>, "holds": <bool or None>}``, as the runtime's call records carry them. *verdict*,
+    *end_outcome* and *corrected* are the episode's, already reduced to what the actor could see (a hidden grader
+    never reaches here). An item without results is left as it is.
+    """
+    if not isinstance(record, dict) or not isinstance(results, dict):
+        return record
+    back = {result_digest(v) for v in handed_back}
+    rows = record.get("items")
+    if not isinstance(rows, dict):
+        rows = record["items"] = {}
+    for item in sorted(k for k in results if isinstance(k, str)):
+        calls = results[item]
+        if not isinstance(calls, list):
+            continue
+        out = []
+        for call in calls:
+            if not isinstance(call, dict) or call.get("outcome") not in _CALL_OUTCOMES:
+                continue
+            digest = call.get("result") if isinstance(call.get("result"), str) else None
+            outcome = _CALL_OUTCOMES[call["outcome"]]
+            answered = outcome == "returned" and digest is not None and digest in back
+            holds = call.get("holds") if isinstance(call.get("holds"), bool) else None
+            out.append(
+                {
+                    "outcome": outcome,
+                    "result_digest": digest,
+                    "answered": answered,
+                    "verdict": verdict if answered else None,
+                    "end_outcome": end_outcome if answered else None,
+                    "holds": holds,
+                    "conditions": (
+                        "none" if holds is None else "held" if holds else "failed"
+                    ),
+                    "corrected": bool(corrected and answered),
+                },
+            )
+        row = rows.get(item)
+        if not isinstance(row, dict):
+            row = rows[item] = {}
+        row["outcomes"] = out
+    return record

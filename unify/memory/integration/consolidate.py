@@ -1155,6 +1155,28 @@ def _curate_settled(
     return _curate.settled(state, changed, _curate.kept(manifest))
 
 
+def capture_settled_forks(stores: Stores, settings: Any) -> list[dict]:
+    """Capture each settled fork's attempt that has no capture yet (:func:`..captures.capture_settled`): the
+    harness writes the capture store, confined runs only; never raises, so it never stops a pass."""
+    from .. import captures
+
+    try:
+        state = Path(stores.paths.state_dir)
+        root = state / "memory-staging"
+        eids = sorted(os.listdir(root)) if root.is_dir() else []
+        lookup = EpisodeLookup(stores)
+        return captures.capture_settled(
+            state,
+            eids,
+            episode=lookup.episode,
+            signals=stores.evidence.signals_for,
+            checker_visible=checker_visible(settings),
+        )
+    except Exception as exc:  # noqa: BLE001 - capture never stops a pass; the error is recorded
+        _error(stores, f"capture step: {type(exc).__name__}")
+        return []
+
+
 async def run_due_passes(
     stores: Stores,
     eid: str,
@@ -1210,6 +1232,10 @@ async def run_due_passes(
         return []  # nothing recorded; the request stays due
     scale, max_calls = cfg.effort_scale[level], cfg.max_calls[level]
     from . import fork as _fork
+
+    if library_enabled(settings) and library_fork(settings):
+        # every settled fork's attempt is captured at once, before any pass and whether or not one is due
+        capture_settled_forks(stores, settings)
 
     trig = Trigger(
         stores.evidence,
