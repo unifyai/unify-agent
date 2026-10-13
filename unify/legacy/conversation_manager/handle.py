@@ -160,7 +160,6 @@ class ConversationManagerHandle(BaseConversationManagerHandle):
             message=f"Answer the question: '{question}'",
             tools=tools,
             response_format=response_format,
-            interrupt_llm_with_interjections=True,
             loop_id="ConversationManager.ask",
             parent_lineage=parent_lineage,
         )
@@ -206,13 +205,9 @@ class ConversationManagerHandle(BaseConversationManagerHandle):
                     # duplicate user message in the conversation.
                     user_reply_future.set_result(message)
                 else:
-                    # No ask_question pending — forward as a regular
-                    # interjection into the tool loop.
-                    await inner_handle.interject(
-                        message,
-                        trigger_immediate_llm_turn=False,
-                        **kwargs,
-                    )
+                    # No ask_question pending — the loop takes it as a user
+                    # message at its next turn boundary.
+                    await inner_handle.submit(message)
 
             async def result(self):
                 try:

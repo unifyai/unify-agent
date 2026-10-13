@@ -8,10 +8,13 @@ resolves after the task phase (Phase 1), while storage runs in the
 background (Phase 2).
 
 With early-resolving ``result()``, the CM receives a single
-``ActorResult`` event when the task completes.  The brain should
-relay the result to the user.  Storage runs concurrently in the
+``ActorResult`` event when the task completes.  The brain is shown the
+result and relays it to the user.  Storage runs concurrently in the
 background — the handle remains live (``done()`` returns ``False``)
 but no second wake-up occurs.
+
+The brain's model is scripted (``scripted_brain``): how a live model words
+the relay is a question about the model.
 """
 
 import asyncio
@@ -24,12 +27,15 @@ from tests.legacy.conversation_manager.cm_helpers import filter_events_by_type
 from tests.legacy.conversation_manager.actions.integration.helpers import (
     run_cm_until_wait,
 )
+from tests.legacy.conversation_manager.actions.scripted_brain import (
+    say,
+    turn,
+    wait,
+)
 from unify.legacy.conversation_manager.events import (
     UnifyMessageReceived,
     UnifyMessageSent,
 )
-
-pytestmark = pytest.mark.eval
 
 
 def _make_early_resolving_handle(
@@ -78,12 +84,12 @@ def _make_early_resolving_handle(
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 @_handle_project
-async def test_storage_check_result_relay(initialized_cm):
+async def test_storage_check_result_relay(initialized_cm, scripted_brain):
     """The CM brain relays the task result when ``result()`` resolves.
 
     With early-resolving ``result()``, the CM receives a single
-    ActorResult event.  It should relay the result to the user
-    without mentioning any internal skill-storage details.
+    ActorResult event.  The brain is shown the action's result, and its
+    relay reaches the user.
 
     After the result is relayed, storage continues in the background
     (``done()`` returns ``False``).  When storage finishes
@@ -91,6 +97,7 @@ async def test_storage_check_result_relay(initialized_cm):
     ``completed_actions`` — no duplicate message should be sent.
     """
     cm = initialized_cm
+    brain = scripted_brain()
 
     simulated_result = "The notes file lists three action items for Friday."
     mock_handle, done_gate = _make_early_resolving_handle(simulated_result)
@@ -131,32 +138,26 @@ async def test_storage_check_result_relay(initialized_cm):
         "initial_snapshot_state": None,
     }
 
+    relay = f"Here's what's in your notes file: {simulated_result}"
+    brain.next(turn(say(relay), wait()))
     events = await run_cm_until_wait(cm)
 
+    # The brain was shown the completed action with its result.
+    completed = brain.last_state().partition("<completed_actions>")[2]
+    assert f"<action id='{handle_id}'" in completed
+    assert "status='completed'" in completed
+    assert f"<result>{simulated_result}</result>" in completed
+
     sent_events = filter_events_by_type(events, UnifyMessageSent)
-    assert sent_events, (
+    assert [e.content for e in sent_events] == [relay], (
         "Brain should relay the task result when the action completes. "
         "The act_completed event includes the result."
     )
-    relay_text = " ".join(e.content for e in sent_events)
-
-    # Must not leak internal skill-storage details.
-    skill_terms = [
-        "skill",
-        "function library",
-        "reusable",
-        "storing",
-        "consolidat",
-        "trajectory",
-        "handle",
-    ]
-    for term in skill_terms:
-        assert (
-            term.lower() not in relay_text.lower()
-        ), f"Leaked internal detail '{term}': {relay_text}"
+    assert cm.cm.chat_history.recent()[-1].content == relay
 
     # ── Storage finishes: done() becomes True ──────────────────────────
     # The action is already in completed_actions. Transitioning done()
     # should not produce any additional messages.
     done_gate.set()
     assert mock_handle.done() is True
+    assert handle_id in cm.cm.completed_actions

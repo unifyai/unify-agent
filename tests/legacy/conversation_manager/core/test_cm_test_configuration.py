@@ -1,9 +1,11 @@
 """Symbolic: the legacy conversation manager under the test configuration
-(moved from tests/test_test_configuration.py): its steering pause tests always
-call the model, and its prompts show the frozen clock.
+(moved from tests/test_test_configuration.py): its steering pause tests script
+the model, and its prompts show the frozen clock.
 """
 
 from __future__ import annotations
+
+import inspect
 
 import pytest
 
@@ -23,13 +25,17 @@ FROZEN_PROMPT_TIME = "Friday, June 13, 2025 at 12:00 PM UTC"
         "test_two_concurrent_handles_pause_one_other_completes",
     ],
 )
-def test_the_steering_pause_tests_always_call_the_model(name):
+def test_the_steering_pause_tests_script_the_model(name):
+    """A recorded reply replays before the test's pause can land, so these
+    tests script the model instead (the scripted model holds a reply until the
+    pause has landed, and turns the UniLLM cache off while it is installed:
+    tests/test_scripted_model.py)."""
     from tests.legacy.conversation_manager.actions.integration import (
         test_steerability,
     )
 
-    marks = {m.name for m in getattr(test_steerability, name).pytestmark}
-    assert "fresh_llm_calls" in marks
+    test = getattr(test_steerability, name)
+    assert "scripted_brain" in inspect.signature(test).parameters
 
 
 def test_the_brain_prompt_clock_is_frozen():

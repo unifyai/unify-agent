@@ -6,13 +6,22 @@ Tests for the brain's own LLM message list in ConversationManager.
 
 This covers:
 1. The _preprocess_messages() state snapshot deduplication logic
-2. Brain message growth across LLM runs
+2. Brain message growth across LLM runs (the brain's model is scripted:
+   ``tests/scripted_model.py``)
 """
 
 from __future__ import annotations
 
 import pytest
 
+from tests.legacy.conversation_manager.scripted_brain import (
+    WAIT,
+    brain_requests,
+    brain_turn,
+    rendered_state,
+    say,
+)
+from tests.scripted_model import ScriptedModel, reply, scripted
 from unify.legacy.conversation_manager.events import UnifyMessageReceived
 
 # =============================================================================
@@ -130,28 +139,38 @@ class TestBrainMessagesGrowth:
     """Tests for brain message growth during LLM runs."""
 
     @pytest.mark.asyncio
-    @pytest.mark.llm_call
     async def test_brain_messages_grow_by_two_per_llm_run(self, initialized_cm):
         """Each LLM run adds 2 messages: input + assistant response."""
         initial_len = len(initialized_cm.cm.brain_messages)
 
+        model = ScriptedModel(actor=[brain_turn(say("Got your test message."), WAIT)])
         event = UnifyMessageReceived(
             content="Test message",
         )
-        await initialized_cm.step_until_wait(event, max_steps=1)
+        with scripted(model):
+            await initialized_cm.step_until_wait(event, max_steps=1)
 
         # Brain messages should have grown by 2 (input_message + assistant_content)
         new_len = len(initialized_cm.cm.brain_messages)
         assert new_len == initial_len + 2
+        assert len(brain_requests(model)) == 1
+        model.assert_used_up()
 
     @pytest.mark.asyncio
-    @pytest.mark.llm_call
     async def test_brain_messages_format(self, initialized_cm):
-        """Brain messages have correct format."""
+        """Brain messages have correct format: the state the model was sent,
+        then the text of its reply."""
+        thought = "The user sent a test message; acknowledge it."
+        model = ScriptedModel(
+            actor=[
+                reply(thought, calls=[say("Hi!"), WAIT]),
+            ],
+        )
         event = UnifyMessageReceived(
             content="Test message",
         )
-        await initialized_cm.step_until_wait(event, max_steps=1)
+        with scripted(model):
+            await initialized_cm.step_until_wait(event, max_steps=1)
 
         # Should have at least 2 messages
         assert len(initialized_cm.cm.brain_messages) >= 2
@@ -162,3 +181,11 @@ class TestBrainMessagesGrowth:
             assert "role" in msg
             assert "content" in msg
             assert msg["role"] in ["user", "assistant", "system"]
+
+        state, answer = initialized_cm.cm.brain_messages[-2:]
+        (request,) = brain_requests(model)
+        assert state["role"] == "user"
+        assert state["content"] == rendered_state(request)
+        assert "Test message" in state["content"]
+        assert answer == {"role": "assistant", "content": thought}
+        model.assert_used_up()

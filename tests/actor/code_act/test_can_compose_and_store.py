@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -9,74 +10,6 @@ from unify.function_manager.function_manager import FunctionManager
 # ---------------------------------------------------------------------------
 # can_store=True — deferred storage via post-completion review loop
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.eval
-@pytest.mark.asyncio
-@pytest.mark.llm_call
-@pytest.mark.timeout(300)
-async def test_can_store_true_defers_storage_to_review_loop():
-    """
-    When can_store=True, the CodeActActor should compose and execute code,
-    then run a post-completion storage-review loop that examines the
-    trajectory and stores reusable functions via FunctionManager_add_functions.
-
-    result() resolves after the task phase; storage runs in the background.
-    The test waits for done() to confirm the storage loop has completed
-    before asserting storage side effects.
-
-    The function must be complex enough that the librarian LLM consistently
-    judges it as worth storing (non-trivial logic, validation, edge cases).
-    """
-    fm = FunctionManager(include_primitives=False)
-
-    actor = CodeActActor(
-        function_manager=fm,
-        timeout=60,
-    )
-    try:
-        handle = await actor.act(
-            "Write a reusable Python function called `parse_and_validate_records` that:\n"
-            "1. Takes a list of dicts, each with optional keys: name, email, phone, company\n"
-            "2. Validates each entry: name must be non-empty string, email must contain '@',\n"
-            "   phone (if present) must be digits/dashes/spaces only and at least 7 chars\n"
-            "3. Returns a dict with keys:\n"
-            "   - 'valid': list of cleaned entries (strip whitespace, normalize phone to digits-only)\n"
-            "   - 'invalid': list of (index, entry, errors) tuples describing validation failures\n"
-            "   - 'stats': dict with counts of total, valid, invalid, and entries_with_company\n"
-            "4. Handle edge cases: None inputs, empty lists, entries that are not dicts\n\n"
-            "Test it with a mixed list of 5 entries including at least 2 invalid ones "
-            "and verify the stats are correct.",
-            can_store=True,
-            persist=False,
-            clarification_enabled=False,
-        )
-        result = await asyncio.wait_for(handle.result(), timeout=120)
-        assert result is not None
-
-        # result() resolves after the task phase.  Wait for the storage
-        # review loop to finish before asserting storage side effects.
-        deadline = asyncio.get_event_loop().time() + 120
-        while not handle.done():
-            if asyncio.get_event_loop().time() > deadline:
-                raise TimeoutError("Storage loop did not complete in time")
-            await asyncio.sleep(0.5)
-
-        stored = fm.filter_functions()
-        assert stored, (
-            "Expected FunctionManager to contain at least one stored function "
-            "after the storage review loop."
-        )
-        stored_names = {f.get("name", "") for f in stored if isinstance(f, dict)}
-        assert "parse_and_validate_records" in stored_names, (
-            f"Expected 'parse_and_validate_records' in stored functions, "
-            f"got: {stored_names}"
-        )
-    finally:
-        try:
-            await actor.close()
-        except Exception:
-            pass
 
 
 _PARSE_AND_VALIDATE = (
@@ -97,13 +30,12 @@ _PARSE_AND_VALIDATE = (
 @pytest.mark.timeout(300)
 async def test_can_store_true_result_resolves_before_the_review_stores():
     """
-    The mechanics half of the test above, with a scripted model: with
-    can_store=True, result() resolves after the task phase while the storage
-    review is still to come, and what the review stores lands in the store.
+    With can_store=True, result() resolves after the task phase while the
+    storage review is still to come, and what the review stores lands in the
+    store. The model is scripted (tests/scripted_model.py).
 
     The review's first turn waits until the test has the result, so a
-    result() that waited for the review would time out here. Whether a live
-    librarian judges the function worth storing is the behaviour half.
+    result() that waited for the review would time out here.
     """
     review_may_start = asyncio.Event()
 
@@ -178,25 +110,40 @@ async def test_can_store_true_result_resolves_before_the_review_stores():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.eval
+_GREET = (
+    "def greet(name, style='formal'):\n"
+    '    """Greet *name* formally or casually."""\n'
+    "    if style == 'casual':\n"
+    "        return f'Hey {name}!'\n"
+    "    return f'Good day, {name}.'\n"
+)
+
+# The review's merge: store the general function, then delete the narrow
+# ones it subsumes, through the review's ``functions`` library.
+_MERGE_CELL = (
+    f"print(await functions.add(implementations=[{_GREET!r}]))\n"
+    "for old in ('greet_formal', 'greet_casual'):\n"
+    "    fid = (await functions.get(old))['function_id']\n"
+    "    print(await functions.delete(fid))\n"
+)
+
+
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @pytest.mark.timeout(300)
 async def test_can_store_true_merges_redundant_functions(monkeypatch):
     """
-    The storage review loop should recognise overlapping functions in the
-    store and merge them: add a unified version and delete the old ones.
+    The storage review can merge overlapping functions in the store: add a
+    unified version and delete the old ones.
 
     Setup: the FunctionManager already contains two narrow greeting
-    functions (greet_formal, greet_casual). The actor composes and
-    executes a general-purpose `greet` function that subsumes both.
-    The storage review should detect the overlap, store the merged
-    version, and delete the now-redundant entries.
+    functions (greet_formal, greet_casual). The actor composes and executes
+    a general-purpose `greet` function that subsumes both, and the scripted
+    review stores it and deletes the now-redundant entries. Whether a live
+    librarian sees the overlap is the model's judgement; this test is of
+    what the review's merge does to the store.
 
     The review gate is answered "review" here, so the review it opens runs
-    as shipped. The gate itself would skip it when the session already
-    stored ``greet`` (a known limitation of the frozen review; FREEZE-TODO),
-    and this test is of the review's merge, not of the gate.
+    as shipped; this test is of the review's merge, not of the gate.
 
     result() resolves after the task phase; storage runs in the background.
     The test waits for done() to confirm the storage loop has completed.
@@ -228,53 +175,63 @@ async def test_can_store_true_merges_redundant_functions(monkeypatch):
     seeded_ids = {f["function_id"] for f in seeded if isinstance(f, dict)}
     assert len(seeded_ids) == 2, f"Expected 2 seeded functions, got {len(seeded_ids)}"
 
+    model = ScriptedModel(
+        actor=[
+            reply(calls=[cell(_GREET + "print(greet('Alice', 'formal'))")]),
+            reply("Good day, Alice."),
+        ],
+        review=[
+            reply(calls=[cell(_MERGE_CELL)]),
+            reply("Merged greet_formal and greet_casual into greet."),
+        ],
+    )
     actor = CodeActActor(
         function_manager=fm,
         timeout=60,
     )
     try:
-        handle = await actor.act(
-            "Write a general-purpose Python function called `greet` that takes "
-            "`name` and `style` ('formal' or 'casual') parameters. "
-            "For formal: return f'Good day, {name}.'; "
-            "for casual: return f'Hey {name}!'. "
-            "Execute it with name='Alice' and style='formal' to verify.",
-            can_store=True,
-            persist=False,
-            clarification_enabled=False,
-        )
-        result = await asyncio.wait_for(handle.result(), timeout=120)
-        assert result is not None
+        with scripted(model):
+            handle = await actor.act(
+                "Write a general-purpose Python function called `greet` that takes "
+                "`name` and `style` ('formal' or 'casual') parameters. "
+                "For formal: return f'Good day, {name}.'; "
+                "for casual: return f'Hey {name}!'. "
+                "Execute it with name='Alice' and style='formal' to verify.",
+                can_store=True,
+                persist=False,
+                clarification_enabled=False,
+            )
+            result = await asyncio.wait_for(handle.result(), timeout=120)
+            assert result == "Good day, Alice."
 
-        # Wait for storage to complete before asserting side effects.
-        deadline = asyncio.get_event_loop().time() + 120
-        while not handle.done():
-            if asyncio.get_event_loop().time() > deadline:
-                raise TimeoutError("Storage loop did not complete in time")
-            await asyncio.sleep(0.5)
-
-        # The library held entries, so the gate was asked (and said review).
-        assert gate_asked == [True]
-
-        # The merged function should have been stored.
-        final = fm.filter_functions()
-        final_names = {f.get("name", "") for f in final if isinstance(f, dict)}
-        assert (
-            "greet" in final_names
-        ), f"Expected a unified 'greet' function in the store, got: {final_names}"
-
-        # At least one of the old redundant functions should have been deleted.
-        final_ids = {f["function_id"] for f in final if isinstance(f, dict)}
-        deleted = seeded_ids - final_ids
-        assert deleted, (
-            f"Expected at least one of the seeded functions ({seeded_ids}) to be "
-            f"deleted after merge, but all remain: {final_ids}"
-        )
+            # Wait for storage to complete before asserting side effects.
+            deadline = asyncio.get_event_loop().time() + 120
+            while not handle.done():
+                if asyncio.get_event_loop().time() > deadline:
+                    raise TimeoutError("Storage loop did not complete in time")
+                await asyncio.sleep(0.5)
     finally:
         try:
             await actor.close()
         except Exception:
             pass
+
+    # The library held entries, so the gate was asked (and said review).
+    assert gate_asked == [True]
+
+    # The merged function was stored and the redundant ones deleted.
+    final = fm.filter_functions()
+    final_names = {f.get("name", "") for f in final if isinstance(f, dict)}
+    assert final_names == {"greet"}, final_names
+    final_ids = {f["function_id"] for f in final if isinstance(f, dict)}
+    assert not seeded_ids & final_ids
+
+    assert model.kinds() == ["actor", "actor", "review", "review"]
+    # The review saw what its merge cell printed.
+    (_first, last) = model.of("review")
+    outputs = json.dumps([m for m in last.messages if m.get("role") == "tool"])
+    assert "greet_formal" in outputs and "greet_casual" in outputs
+    model.assert_used_up()
 
 
 # ---------------------------------------------------------------------------

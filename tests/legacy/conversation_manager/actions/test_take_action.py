@@ -2,14 +2,23 @@
 tests/conversation_manager/test_take_action.py
 ===================================================
 
-Tests that verify ConversationManager correctly delegates to ``act`` for
-requests that require the general-purpose Actor (knowledge, web search,
-guidance, files, combined/research).
+Tests that verify ConversationManager delegates to ``act``: when the slow
+brain calls ``act``, the request becomes an in-flight action on the actor,
+and a file the user attached reaches the actor by its workspace path.
+
+The brain's model is scripted (``scripted_brain``): which requests a live
+model sends to ``act`` is a question about the model, not the harness.
 """
 
 import pytest
 
 from tests.helpers import _handle_project
+from tests.legacy.conversation_manager.actions.scripted_brain import (
+    act,
+    say,
+    turn,
+    wait,
+)
 from tests.legacy.conversation_manager.cm_helpers import (
     assert_act_triggered,
     assert_efficient,
@@ -18,24 +27,23 @@ from tests.legacy.conversation_manager.cm_helpers import (
 from unify.legacy.conversation_manager.events import (
     ActorHandleStarted,
     UnifyMessageReceived,
+    UnifyMessageSent,
 )
-
-pytestmark = pytest.mark.eval
-
-# ---------------------------------------------------------------------------
-#  Knowledge-related requests -> should trigger act
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 @_handle_project
-async def test_knowledge_query_triggers_act(initialized_cm):
+async def test_knowledge_query_triggers_act(initialized_cm, scripted_brain):
     """
-    The user asks about company policy -> should call act to search knowledge.
+    The brain's ``act`` call starts an action that runs the brain's query.
 
-    Natural scenario: the user needs to know a policy detail.
+    Natural scenario: the user needs a policy detail the assistant has to
+    look up.
     """
     cm = initialized_cm
+    query = "Find our office hours in the workspace notes and stored guidance."
+    brain = scripted_brain()
+    brain.next(turn(act(query), say("Let me check our office hours."), wait()))
 
     result = await cm.step_until_wait(
         UnifyMessageReceived(
@@ -49,237 +57,28 @@ async def test_knowledge_query_triggers_act(initialized_cm):
         "Knowledge query should trigger act",
         cm=cm,
     )
-
-    # Efficiency assertions at end
-    assert_efficient(result, 3)
-
-
-@pytest.mark.asyncio
-@_handle_project
-async def test_knowledge_about_product_triggers_act(initialized_cm):
-    """
-    The user asks about product information -> should call act.
-
-    Natural scenario: the user needs warranty/product details for a customer.
-    """
-    cm = initialized_cm
-
-    result = await cm.step_until_wait(
-        UnifyMessageReceived(
-            content="A customer is asking about Tesla warranty. What do we have on file?",
-        ),
+    (started,) = filter_events_by_type(result.output_events, ActorHandleStarted)
+    assert (started.handle_id, started.action_name, started.query) == (
+        0,
+        "act",
+        query,
     )
 
-    assert_act_triggered(
-        result,
-        ActorHandleStarted,
-        "Product knowledge query should trigger act",
-        cm=cm,
-    )
+    # The brain was shown the user's message as new.
+    state = brain.last_state()
+    assert "**NEW** [" in state and "What are our office hours again?" in state
 
-    # Efficiency assertions at end
-    assert_efficient(result, 3)
+    # The action is in flight on the actor, running the brain's query.
+    action = cm.cm.in_flight_actions[0]
+    assert action["query"] == query
+    assert action["handle"]._request == query
+    assert not action["handle"].done()
+    assert [a["action_name"] for a in action["handle_actions"]] == ["act_started"]
 
-
-@pytest.mark.asyncio
-@_handle_project
-async def test_store_knowledge_triggers_act(initialized_cm):
-    """
-    The user asks to remember some information -> should call act.
-
-    Natural scenario: the user wants to store a piece of information.
-    """
-    cm = initialized_cm
-
-    result = await cm.step_until_wait(
-        UnifyMessageReceived(
-            content="Make a note that our refund window is 30 days for unopened items.",
-        ),
-    )
-
-    assert_act_triggered(
-        result,
-        ActorHandleStarted,
-        "Storing knowledge should trigger act",
-        cm=cm,
-    )
-
-    # Efficiency assertions at end
-    assert_efficient(result, 3)
-
-
-# ---------------------------------------------------------------------------
-#  Web search requests -> should trigger act
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@_handle_project
-async def test_weather_query_triggers_act(initialized_cm):
-    """
-    The user asks about current weather -> should call act for web search.
-
-    Natural scenario: the user planning travel or outdoor activity.
-    """
-    cm = initialized_cm
-
-    result = await cm.step_until_wait(
-        UnifyMessageReceived(
-            content="What's the weather like in Berlin today?",
-        ),
-    )
-
-    assert_act_triggered(
-        result,
-        ActorHandleStarted,
-        "Weather query should trigger act",
-        cm=cm,
-    )
-
-    # Efficiency assertions at end
-    assert_efficient(result, 3)
-
-
-@pytest.mark.asyncio
-@_handle_project
-async def test_news_query_triggers_act(initialized_cm):
-    """
-    The user asks about current news -> should call act for web search.
-
-    Natural scenario: the user wants to stay informed.
-    """
-    cm = initialized_cm
-
-    result = await cm.step_until_wait(
-        UnifyMessageReceived(
-            content="What's happening in the news today? Any major headlines?",
-        ),
-    )
-
-    assert_act_triggered(
-        result,
-        ActorHandleStarted,
-        "News query should trigger act",
-        cm=cm,
-    )
-
-    # Efficiency assertions at end
-    assert_efficient(result, 3)
-
-
-@pytest.mark.asyncio
-@_handle_project
-async def test_current_events_query_triggers_act(initialized_cm):
-    """
-    The user asks about a recent event -> should call act for web search.
-
-    Natural scenario: the user following industry developments.
-    """
-    cm = initialized_cm
-
-    result = await cm.step_until_wait(
-        UnifyMessageReceived(
-            content="Any notable AI announcements this week I should know about?",
-        ),
-    )
-
-    assert_act_triggered(
-        result,
-        ActorHandleStarted,
-        "Current events query should trigger act",
-        cm=cm,
-    )
-
-    # Efficiency assertions at end
-    assert_efficient(result, 3)
-
-
-# ---------------------------------------------------------------------------
-#  Guidance-related requests -> should trigger act
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@_handle_project
-async def test_guidance_query_triggers_act(initialized_cm):
-    """
-    The user asks for guidance on a process -> should call act.
-
-    Natural scenario: the user needs to follow a procedure.
-    """
-    cm = initialized_cm
-
-    result = await cm.step_until_wait(
-        UnifyMessageReceived(
-            content="We might have a security incident. What's the protocol?",
-        ),
-    )
-
-    assert_act_triggered(
-        result,
-        ActorHandleStarted,
-        "Guidance query should trigger act",
-        cm=cm,
-    )
-
-    # Efficiency assertions at end
-    assert_efficient(result, 3)
-
-
-# ---------------------------------------------------------------------------
-#  Combined/complex requests -> should trigger act
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@_handle_project
-async def test_find_and_action_triggers_act(initialized_cm):
-    """
-    The user asks to find something and do something with it -> should call act.
-
-    Natural scenario: the user wants information found and acted upon.
-    """
-    cm = initialized_cm
-
-    result = await cm.step_until_wait(
-        UnifyMessageReceived(
-            content="Find Bob's latest invoice and let me know if it's been paid.",
-        ),
-    )
-
-    assert_act_triggered(
-        result,
-        ActorHandleStarted,
-        "Find-and-action request should trigger act",
-        cm=cm,
-    )
-
-    # Efficiency assertions at end
-    assert_efficient(result, 3)
-
-
-@pytest.mark.asyncio
-@_handle_project
-async def test_research_request_triggers_act(initialized_cm):
-    """
-    The user asks for research on a topic -> should call act.
-
-    Natural scenario: the user needs background information compiled.
-    """
-    cm = initialized_cm
-
-    result = await cm.step_until_wait(
-        UnifyMessageReceived(
-            content="I'm meeting with Contoso tomorrow. Can you pull together some background on them?",
-        ),
-    )
-
-    assert_act_triggered(
-        result,
-        ActorHandleStarted,
-        "Research request should trigger act",
-        cm=cm,
-    )
+    # The acknowledgement reaches the chat.
+    sent = filter_events_by_type(result.output_events, UnifyMessageSent)
+    assert [e.content for e in sent] == ["Let me check our office hours."]
+    assert cm.cm.chat_history.recent()[-1].content == "Let me check our office hours."
 
     # Efficiency assertions at end
     assert_efficient(result, 3)
@@ -294,24 +93,34 @@ async def test_research_request_triggers_act(initialized_cm):
 @_handle_project
 async def test_unify_message_summarize_attachment_triggers_act_with_filepath(
     initialized_cm,
+    scripted_brain,
 ):
     """
-    Unify message with attachment + request to summarize -> act should include filepath.
+    Unify message with attachment + request to summarize -> act includes filepath.
 
     Natural scenario: the user sends a document through the chat and asks the
-    assistant to summarize it. The assistant should call `act` with the
-    attachment's filepath so the Actor can access and process the file.
-
-    The rendered message shows: "[Attachments: Attachments/att-1_quarterly_report.pdf]"
-    so the LLM should know the file location and include it in the act query.
+    assistant to summarize it. The rendered message shows
+    "[Attachments: Attachments/att-1_quarterly_report.pdf]", so the brain
+    can quote the attachment's path in the act query and the Actor can open
+    the file.
     """
     cm = initialized_cm
+    path = "Attachments/att-1_quarterly_report.pdf"
+    query = f"Summarize the PDF at {path} for the user."
+    brain = scripted_brain()
+    brain.next(turn(act(query), say("Reading the report now."), wait()))
 
     result = await cm.step_until_wait(
         UnifyMessageReceived(
             content="Please summarize this PDF for me.",
-            attachments=["Attachments/att-1_quarterly_report.pdf"],
+            attachments=[path],
         ),
+    )
+
+    # The brain was shown the attachment's workspace path on the message.
+    assert (
+        f"Please summarize this PDF for me. [Attachments: {path}]"
+        in brain.last_state()
     )
 
     # First verify that act was triggered
@@ -326,12 +135,14 @@ async def test_unify_message_summarize_attachment_triggers_act_with_filepath(
     actor_events = filter_events_by_type(result.output_events, ActorHandleStarted)
     assert len(actor_events) >= 1, "Expected at least one ActorHandleStarted event"
 
-    # The query sent to act should include the attachment path
+    # The query sent to act includes the attachment path, and reaches the actor.
     act_query = actor_events[0].query.lower()
     assert "attachments" in act_query and "quarterly_report.pdf" in act_query, (
         f"Expected act query to include filepath 'Attachments/att-1_quarterly_report.pdf', "
         f"got query: {actor_events[0].query}"
     )
+    handle = cm.cm.in_flight_actions[actor_events[0].handle_id]["handle"]
+    assert path in handle._request
 
     # Efficiency assertions at end
     assert_efficient(result, 3)

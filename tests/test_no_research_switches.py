@@ -49,6 +49,37 @@ CONFIGURATION = frozenset(
         "UNIFY_VALIDATE_LLM_PROVIDERS",
         "UNIFY_WORKSPACE_NETWORK",
         "UNIFY_WORKSPACE_PROXY_PORT",
+        # The compaction point: a context size, not a behaviour under test.
+        "UNIFY_COMPACTION_AT_TOKENS",
+        # The memory writer's model, route, credential channel, effort (the actor's for the run), spending caps,
+        # call bounds, journal and prices.
+        "UNIFY_MEMORY_WRITER_MODEL",
+        "UNIFY_MEMORY_WRITER_ALLOWANCE_USD_PER_TOKENS",
+        "UNIFY_MEMORY_WRITER_RUN_GUARD_USD",
+        "UNIFY_MEMORY_WRITER_BASE_URL",
+        "UNIFY_MEMORY_WRITER_TOKEN",
+        "UNIFY_MEMORY_WRITER_TOKEN_FD",
+        "UNIFY_MEMORY_WRITER_EFFORT",
+        "UNIFY_MEMORY_WRITER_EFFORT_SCALE",
+        "UNIFY_MEMORY_WRITER_MAX_CALLS",
+        "UNIFY_MEMORY_WRITER_JOURNAL",
+        "UNIFY_MEMORY_WRITER_PRICES_USD_PER_MILLION",
+        # The library mode's limits, price, and the routes and model of its fork and helper lanes.
+        "UNIFY_MEMORY_LIBRARY_MAX_READS",
+        "UNIFY_MEMORY_LIBRARY_PASS_WALL_S",
+        "UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN",
+        "UNIFY_MEMORY_LIBRARY_FORK_BASE_URL",
+        "UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD",
+        "UNIFY_MEMORY_LIBRARY_HELPER_MODEL",
+        "UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL",
+        "UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD",
+        # Deployment policy: the CLI waits for its pass slot where a sandbox ends with its controller.
+        "UNIFY_MEMORY_LIBRARY_WAIT_SLOT",
+        # Benchmark policy: whether the checker's verdict a bed showed the actor is recorded for the library.
+        "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE",
+        # Retired: only their off values are accepted, so an old configuration fails loudly.
+        "UNIFY_MEMORY_LIBRARY_ANALYSTS",
+        "UNIFY_MEMORY_LIBRARY_COVERAGE",
     },
 )
 

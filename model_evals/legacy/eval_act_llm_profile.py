@@ -1,3 +1,6 @@
+"""An eval of a live model, moved from the test suite: it needs a real provider key and is run by hand
+(model_evals/README.md)."""
+
 from __future__ import annotations
 
 import asyncio

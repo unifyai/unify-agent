@@ -9,8 +9,7 @@ model (``tests/scripted_model.py``): the provider transport is replaced
 below unillm's request building, the replies are written in the test, and
 nothing leaves the process. Such a test still takes ``llm_config``, so each
 request is built for the production default model (``UNIFY_MODEL``); it
-builds its client after installing the script. A test whose subject is the
-live model or provider is marked ``live_provider`` instead.
+builds its client after installing the script. No test reaches a real provider.
 """
 
 from __future__ import annotations

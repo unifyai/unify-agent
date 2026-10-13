@@ -619,24 +619,22 @@ class TestBuildActionSteeringTools:
         assert "not paused" in resume_result["message"]
 
     @pytest.mark.asyncio
-    async def test_storage_check_handle_forwards_pause_state(
+    async def test_storage_check_handle_has_no_pause(
         self,
         brain_action_tools,
         mock_cm,
     ):
-        """_StorageCheckHandle forwards inner handle's pause state.
+        """The actor's _StorageCheckHandle cannot be paused.
 
-        Regression: _StorageCheckHandle didn't expose _pause_event, so
-        get_handle_paused_state returned None (unknown) and a paused inner
-        loop looked running. pause_action would then delegate a redundant
-        pause instead of reporting the action already paused, producing
-        serial "Pause" events visible on the frontend.
+        The actor's loop has no pause gate: its handle exposes neither
+        _pause_event nor pause(). pause_action therefore reads the state as
+        unknown, delegates, and reports the failed pause in ``result``; it
+        never reaches the inner loop's pause and never claims the action is
+        already paused.
         """
         from unify.actor.code_act_actor import _StorageCheckHandle
 
         inner_handle = MagicMock()
-        inner_handle._pause_event = asyncio.Event()
-        inner_handle._pause_event.set()  # Start running
         inner_handle.pause = AsyncMock()
 
         # Block result() so the lifecycle stays in phase 1 ("task")
@@ -660,8 +658,8 @@ class TestBuildActionSteeringTools:
         wrapped = _StorageCheckHandle(inner=inner_handle, actor=mock_actor)
 
         try:
-            # Pause the inner handle
-            inner_handle._pause_event.clear()
+            assert not hasattr(wrapped, "_pause_event")
+            assert not hasattr(wrapped, "pause")
 
             mock_cm.in_flight_actions = {
                 0: {
@@ -676,7 +674,10 @@ class TestBuildActionSteeringTools:
 
             inner_handle.pause.assert_not_called()
             assert result["status"] == "ok"
-            assert "already paused" in result["message"]
+            assert result["operation"] == "pause"
+            assert "message" not in result
+            assert result["result"].startswith("Error:")
+            assert "pause" in result["result"]
         finally:
             _block.set()
             wrapped._lifecycle_task.cancel()

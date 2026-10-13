@@ -16,6 +16,10 @@ the component level: the gate closed exactly as ``init_conv_manager``
 closes it, the inbound stepped in, and hydration run through the real
 ``run_boot_hydration`` wrapper — asserting the ordering contract without
 spinning full manager init a second time.
+
+The slow brain's model is scripted (``tests/scripted_model.py``): one turn
+that replies and waits. Besides the renders, the tests check the one request
+the model is sent, which is what the model sees of the conversation.
 """
 
 import asyncio
@@ -25,6 +29,14 @@ from unittest.mock import MagicMock
 import pytest
 
 from tests.helpers import _handle_project
+from tests.legacy.conversation_manager.scripted_brain import (
+    WAIT,
+    brain_requests,
+    brain_turn,
+    rendered_state,
+    say,
+)
+from tests.scripted_model import ScriptedModel, scripted
 from unify import db
 from unify.legacy.conversation_manager.domains.managers_utils import run_boot_hydration
 from unify.legacy.conversation_manager.events import UnifyMessageReceived
@@ -34,6 +46,8 @@ PRIOR_ASSISTANT_REPLY = (
     "On it — I'll file the Week 2 expenses and confirm once it's done."
 )
 INBOUND_AFTER_WAKE = "Did you file the Week 2 expenses yet?"
+# The brain's scripted answer to the inbound.
+REPLY_AFTER_WAKE = "Not yet: I'll confirm as soon as the Week 2 expenses are filed."
 
 
 def _store_prior_session() -> None:
@@ -119,7 +133,6 @@ class _ObservedGate(asyncio.Event):
 
 @pytest.mark.asyncio
 @_handle_project
-@pytest.mark.llm_call
 async def test_first_turn_after_wake_renders_hydrated_history(initialized_cm):
     """An inbound that lands mid-boot renders only after hydration.
 
@@ -148,23 +161,27 @@ async def test_first_turn_after_wake_renders_hydrated_history(initialized_cm):
     cm.cm._hydration_gate = gate
     cm.cm.initialized = False
     cm.cm.prompt_renderer.render_state = recording_render
+    model = ScriptedModel(actor=[brain_turn(say(REPLY_AFTER_WAKE), WAIT)])
     try:
-        step_task = asyncio.create_task(
-            cm.step(UnifyMessageReceived(content=INBOUND_AFTER_WAKE)),
-        )
+        with scripted(model):
+            step_task = asyncio.create_task(
+                cm.step(UnifyMessageReceived(content=INBOUND_AFTER_WAKE)),
+            )
 
-        # The turn must reach the hold without having rendered anything.
-        await asyncio.wait_for(gate.turn_arrived.wait(), timeout=60)
-        assert not step_task.done()
-        assert renders == []
+            # The turn must reach the hold without having rendered anything
+            # or asked the model anything.
+            await asyncio.wait_for(gate.turn_arrived.wait(), timeout=60)
+            assert not step_task.done()
+            assert renders == []
+            assert model.calls == []
 
-        # Hydration lands: the prior session prepends into the conversation
-        # and the boot wrapper reopens the gate.
-        _store_prior_session()
-        restored = await run_boot_hydration(cm.cm)
-        assert restored == 2
+            # Hydration lands: the prior session prepends into the conversation
+            # and the boot wrapper reopens the gate.
+            _store_prior_session()
+            restored = await run_boot_hydration(cm.cm)
+            assert restored == 2
 
-        result = await asyncio.wait_for(step_task, timeout=300)
+            result = await asyncio.wait_for(step_task, timeout=60)
         assert result.llm_ran
 
         first_render = renders[0].full_render
@@ -174,6 +191,17 @@ async def test_first_turn_after_wake_renders_hydrated_history(initialized_cm):
         assert first_render.index(PRIOR_USER_ASK) < first_render.index(
             INBOUND_AFTER_WAKE,
         )
+
+        # The model's only look at the conversation is the hydrated one, and
+        # its reply reaches the chat.
+        (request,) = brain_requests(model)
+        state = rendered_state(request)
+        assert PRIOR_USER_ASK in state
+        assert PRIOR_ASSISTANT_REPLY in state
+        assert state.index(PRIOR_USER_ASK) < state.index(INBOUND_AFTER_WAKE)
+        last = cm.cm.chat_history.recent()[-1]
+        assert (last.role, last.content) == ("assistant", REPLY_AFTER_WAKE)
+        model.assert_used_up()
     finally:
         cm.cm.prompt_renderer.render_state = real_render
         cm.cm._hydration_gate = gate
@@ -183,7 +211,6 @@ async def test_first_turn_after_wake_renders_hydrated_history(initialized_cm):
 
 @pytest.mark.asyncio
 @_handle_project
-@pytest.mark.llm_call
 async def test_held_turn_renders_eagerly_when_hydration_is_stuck(
     initialized_cm,
     monkeypatch,
@@ -211,15 +238,25 @@ async def test_held_turn_renders_eagerly_when_hydration_is_stuck(
     cm.cm._hydration_gate = stuck_gate
     cm.cm.initialized = False
     cm.cm.prompt_renderer.render_state = recording_render
+    model = ScriptedModel(actor=[brain_turn(say(REPLY_AFTER_WAKE), WAIT)])
     try:
-        result = await asyncio.wait_for(
-            cm.step(UnifyMessageReceived(content=INBOUND_AFTER_WAKE)),
-            timeout=300,
-        )
+        with scripted(model):
+            result = await asyncio.wait_for(
+                cm.step(UnifyMessageReceived(content=INBOUND_AFTER_WAKE)),
+                timeout=60,
+            )
 
         assert result.llm_ran
         assert len(renders) >= 1
         assert INBOUND_AFTER_WAKE in renders[0].full_render
+        # The gate never reopened, yet the turn reached the model and its
+        # reply reached the chat.
+        assert not stuck_gate.is_set()
+        (request,) = brain_requests(model)
+        assert INBOUND_AFTER_WAKE in rendered_state(request)
+        last = cm.cm.chat_history.recent()[-1]
+        assert (last.role, last.content) == ("assistant", REPLY_AFTER_WAKE)
+        model.assert_used_up()
     finally:
         cm.cm.prompt_renderer.render_state = real_render
         stuck_gate.set()

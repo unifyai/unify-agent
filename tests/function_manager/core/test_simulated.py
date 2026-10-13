@@ -25,9 +25,19 @@ _CATALOGUE = {
 }
 
 
+def _text(content) -> str:
+    """A message's text, whether sent as a string or as content blocks."""
+    if isinstance(content, list):
+        return "\n".join(
+            str(part.get("text", "")) if isinstance(part, dict) else str(part)
+            for part in content
+        )
+    return str(content)
+
+
 def _prompt(call) -> str:
     """The request's last message: the prompt this call sent."""
-    return str(call.messages[-1]["content"])
+    return _text(call.messages[-1]["content"])
 
 
 # --------------------------------------------------------------------------- #
@@ -281,28 +291,46 @@ def test_clear_sync():
 # --------------------------------------------------------------------------- #
 
 
-pytestmark_eval = pytest.mark.eval
-
-
-@pytestmark_eval
 @_handle_project
-@pytest.mark.llm_call
 def test_filter_scope_respected_in_list_functions():
     """
-    A SimulatedFunctionManager with filter_scope="docstring LIKE '%data%'" should
-    only return functions whose docstring mentions data from list_functions.
+    A SimulatedFunctionManager with filter_scope="docstring LIKE '%data%'"
+    puts the scope before the model twice: in the simulation's system message
+    and as a constraint in the list_functions request. The catalogue it
+    returns is the model's, parsed as it came.
+
+    The simulation does not filter the reply itself (keeping to the scope is
+    the model's job), so the scripted catalogue keeps to it.
     """
+    scope = "docstring LIKE '%data%'"
+    in_scope = {
+        "load_data": {
+            "function_id": 1,
+            "argspec": "(path: str) -> list",
+            "docstring": "Load data rows from a CSV file.",
+        },
+        "clean_data": {
+            "function_id": 2,
+            "argspec": "(rows: list) -> list",
+            "docstring": "Drop empty data rows.",
+        },
+    }
+    model = ScriptedModel(query_llm=[reply(json.dumps(in_scope))])
     fm = SimulatedFunctionManager(
         description="A mixed catalogue of data-processing and networking utility functions",
-        filter_scope="docstring LIKE '%data%'",
+        filter_scope=scope,
     )
-    listing = fm.list_functions()
-    assert isinstance(listing, dict) and listing
-    for name, meta in listing.items():
-        docstring = meta.get("docstring", "")
-        assert (
-            "data" in docstring
-        ), f"filter_scope=\"docstring LIKE '%data%'\" but {name!r} has docstring={docstring!r}"
+    with scripted(model):
+        listing = fm.list_functions()
+    assert listing == in_scope
+
+    (call,) = model.of("query_llm")
+    system = "\n".join(
+        _text(m["content"]) for m in call.messages if m["role"] == "system"
+    )
+    assert f"filter_scope applied: {scope!r}" in system
+    assert f"Scope constraint (MUST be satisfied by every returned function): {scope!r}" in _prompt(call)
+    model.assert_used_up()
 
 
 # --------------------------------------------------------------------------- #
