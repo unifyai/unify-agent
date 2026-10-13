@@ -327,7 +327,6 @@ def _line(text: str, mark: str) -> str:
 
 @needs_box
 @pytest.mark.timeout(1200)
-@pytest.mark.xfail(strict=True, reason="landing a capture into the library is not in this build")
 def test_a_writer_pass_lands_the_capture_as_a_library_item(tmp_path, monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     state = tmp_path / "memory-state"
