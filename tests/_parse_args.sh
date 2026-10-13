@@ -108,19 +108,13 @@ parse_test_args() {
         shift
         ;;
       --keyless)
-        # No provider key: the live_provider tests are deselected, and any
-        # other test that reaches a provider fails with the keyless guard's
-        # error (tests/conftest.py) instead of the provider's 401.
-        KEYLESS=1
-        ENV_OVERRIDES+=( "UNIFY_TEST_KEYLESS=1" )
+        # Every run is keyless: no test reaches a model provider or the
+        # network (tests/conftest.py). Kept so that older commands parse.
         shift
         ;;
       --live-only)
-        # The tests that need a provider key, run fresh: a key that failed
-        # to load fails them instead of skipping them.
-        LIVE_ONLY=1
-        ENV_OVERRIDES+=( "UNIFY_TEST_REQUIRE_PROVIDER_KEY=1" "UNILLM_CACHE=false" )
-        shift
+        echo "Error: --live-only is gone: no test reaches a model provider; tests script the model (tests/scripted_model.py)." >&2
+        exit 2
         ;;
       --repeat)
         if [[ -n "${2-}" && "$2" =~ ^[0-9]+$ && "$2" -ge 1 ]]; then
@@ -242,10 +236,8 @@ Options:
   --eval-only          Run only @pytest.mark.eval tests
   --symbolic-only      Run only non-eval tests
   --deterministic-only Run only tests with no model in the loop
-  --keyless            No provider key: deselect live_provider tests and refuse
-                       any other provider call (UNIFY_TEST_KEYLESS=1)
-  --live-only          Run only the tests that need a provider key, fresh
-                       (live_provider or requires_provider_key)
+  --keyless            Accepted and ignored: every run refuses model-provider and
+                       network calls (tests/conftest.py)
   --repeat N           Run each test N times
   -h, --help           Show this help
   --                   Pass remaining args directly to pytest
