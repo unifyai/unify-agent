@@ -32,9 +32,9 @@ OLD_STATUS_LOADS_AS = {"experimental": ON_TRIAL, "stable": ADOPTED}
 LEVEL_FIELD, LEVEL_REASONS_FIELD = "level", "level_reasons"
 #: how a level is shown in the index brackets and in memory.show's first line
 SHOWN_LEVEL = "evidence: {level}"
-#: the level an item stored before evidence levels existed keeps (everything admitted then met every evidence
-#: check, so it keeps the level that needs all of them)
-KEPT_LEVEL = "reproduces-its-case"
+#: the level a record stored before evidence levels existed reads as, when nothing in it shows its examples ran on
+#: recorded values: the lowest (a missing level fails closed; decided for this revision)
+KEPT_LEVEL = "unchecked"
 # -----------------------------------------------------------------------------------------------------------------
 
 DATE = "memory.text.dates:parse_date"
@@ -205,9 +205,9 @@ def test_show_gives_the_status_the_level_and_the_flag_that_set_it(tmp_path):
     assert "experimental" not in out
 
 
-def test_a_record_from_before_levels_keeps_the_level_everything_then_admitted_had(tmp_path):
-    """Everything admitted before evidence levels met every evidence check, so a record with no level shows the
-    level that needs all of them, and its old status under its new name."""
+def test_a_record_from_before_levels_reads_as_the_lowest_level(tmp_path):
+    """A record with no level, and no verification showing its examples ran on recorded values, fails closed: it
+    shows the lowest level, and its old status under its new name."""
     old = {"item": WEEK, "kind": "function", "status": "stable"}
     root = _library(tmp_path, {WEEK: old})
     week = _brackets(_index_line(root, WEEK))

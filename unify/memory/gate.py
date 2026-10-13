@@ -252,6 +252,7 @@ from .index import IndexOverBudget, build_index, estimate_tokens
 from .memory_helper import compare, file_shape, same_shape, value_shape
 from .shape_rows import descriptors, shapes_at, snapshot_rows
 from .memory_repo import ItemsReport, items
+from .item_states import UNCHECKED as _LOWEST_LEVEL
 from .qa import QAChecks, QAConfig, QAEnv
 from .redact import KEY_SHAPED
 from .sandbox_run import PYTHON, PytestOutcome, run_pytest
@@ -836,6 +837,8 @@ class _Run:
             found = self.level_reasons.setdefault(owner, [])
             if line not in found:
                 found.append(line)
+                # the writer sees it in the gate's reply as a note, never as a refusal
+                self.note(f"evidence level: {owner} is {_LOWEST_LEVEL}: {line}")
 
     def fail(
         self,

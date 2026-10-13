@@ -66,6 +66,10 @@ OLD_STATUSES = {
 }
 
 
+#: the same map under the name the outcome-trust module uses for it (:mod:`.trust` imports its names from here)
+FROM_LIFECYCLE = OLD_STATUSES
+
+
 def status_from_stored(value: Any, default: str = ON_TRIAL) -> str:
     """A stored status in today's names: a current name as it is, an old name mapped, anything else *default*."""
     if value in STATUSES:

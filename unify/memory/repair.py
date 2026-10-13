@@ -152,11 +152,14 @@ def render_result(
             f"## Evidence level ({len(levels)})",
             "",
             "Each function's evidence level. These are not refusals: an item lands at its level, and a later pass "
-            "can raise it by adding the evidence. A finding below an item set its level to `unchecked`.",
+            "can raise it by adding the evidence. The findings that set a level to `unchecked` are the notes that "
+            "start `evidence level:`.",
+            "",
         ]
-        for item, level in sorted(levels.items()):
-            lines += ["", f"- {item}: {level}"]
-            lines += [f"  - {redact_error(r)}" for r in found.get(item, [])]
+        lines += [
+            f"- {item}: {level} ({len(found.get(item, []))} findings)"
+            for item, level in sorted(levels.items())
+        ]
     outputs = sorted(getattr(res, "outputs", {}).items())
     lines += [
         "",

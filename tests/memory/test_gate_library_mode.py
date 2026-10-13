@@ -102,7 +102,8 @@ def test_no_trusted_exact_assertion_sets_the_lowest_level(library_example_world)
     files, fixtures = w.files_and_fixtures(blobs.get, test=w.WEAK_TEST_SOURCE)
     res = gate().check(mem.head(), w.candidate(mem, files), w.manifest(fixtures))
     assert res.passed, res.reasons
-    assert not any("[library_mode:exact]" in r for r in res.reasons)
+    assert not any("[library_mode:exact]" in r for r in res.reasons if not r.startswith("note:"))
+    assert any(r.startswith(f"note: evidence level: {w.ITEM_ID} is unchecked: ") for r in res.reasons)
     assert res.levels[w.ITEM_ID] == "unchecked"
     assert any("[library_mode:exact]" in r for r in res.level_reasons[w.ITEM_ID])
     assert res.verification[w.ITEM_ID]["level"] == "unchecked"

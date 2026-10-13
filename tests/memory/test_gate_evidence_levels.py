@@ -66,7 +66,8 @@ def make_parsed(ep, dest: str, blob, *, append: bool = False, existing: dict | N
         append=append,
         existing=existing,
         parser=READER_ID,
-        parse=read_pairs,
+        # fixtures.make's parse returns (the result as canonical JSON text, the reader's digest)
+        parse=lambda item, text: (fx.canonical(read_pairs(item, text)), "0" * 64),
     )
 
 
