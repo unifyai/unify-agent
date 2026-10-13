@@ -14,10 +14,11 @@ read-time refusals, so the writer sees what did not arrive and why. :func:`expor
 writer's ``/inputs/staging/<episode>/``. Nothing here imports or runs a staged file.
 
 **A reader that did not finish hands the writer nothing.** Only a status of ``ok`` (or ``ok: <note>``, such as the
-operational quota) means the reader finished. For any other status (a fork that timed out, was lost, errored or was
-refused) the view holds no files: each file it left is listed as refused with :data:`WITHHELD_WHY` and kept on the
-host for the record, and the batch-map row's status reads ``no reader output: <status>`` (:data:`NO_OUTPUT`), which
-the writer brief explains.
+operational quota, whose refusals are listed) means the reader finished, and the batch-map row's status is then
+``ok``. For any other status (a fork that timed out, was lost, errored or was refused) the view holds no files: each
+file it left is listed as refused with :data:`WITHHELD_WHY` and kept on the host for the record, and the row's status
+reads ``no reader output: <status>`` (:data:`NO_OUTPUT`). The writer brief says that a row whose status is not ``ok``
+has no reader output.
 """
 
 from __future__ import annotations
@@ -80,6 +81,8 @@ class StagingView:
     finished: bool = True
     #: the files an unfinished reader left, kept on the host and not handed on
     withheld: list[str] = field(default_factory=list)
+    #: the reader's status file as it recorded it (``fork.json``: usage, usd, seconds), for the host-side evidence
+    record: dict = field(default_factory=dict)
 
 
 def finished(status: str) -> bool:
@@ -87,7 +90,7 @@ def finished(status: str) -> bool:
     return status == "ok" or status.startswith("ok:")
 
 
-def _status(d: Path) -> tuple[str, str] | None:
+def _status(d: Path) -> tuple[str, str, dict] | None:
     for name, source in STATUS_FILES.items():
         p = d / name
         try:
@@ -95,16 +98,14 @@ def _status(d: Path) -> tuple[str, str] | None:
         except OSError:
             continue
         if not stat.S_ISREG(st.st_mode) or st.st_size > 1024 * 1024:
-            return f"error: unreadable {name}", source
+            return f"error: unreadable {name}", source, {}
         try:
             doc = json.loads(p.read_text(encoding="utf-8", errors="replace"))
         except ValueError:
-            return f"error: unreadable {name}", source
-        return (
-            str(doc.get("status", "unknown"))[:200]
-            if isinstance(doc, dict)
-            else "unknown"
-        ), source
+            return f"error: unreadable {name}", source, {}
+        if not isinstance(doc, dict):
+            return "unknown", source, {}
+        return str(doc.get("status", "unknown"))[:200], source, doc
     return None
 
 
@@ -122,7 +123,7 @@ def read(root: Path | str | None, eid: str) -> StagingView | None:
     head = _status(d)
     if head is None:
         return None
-    view = StagingView(status=head[0], source=head[1], finished=finished(head[0]))
+    view = StagingView(status=head[0], source=head[1], finished=finished(head[0]), record=head[2])
     total = 0
     for base, dirs, names in os.walk(d, followlinks=False):
         for name in sorted(dirs + names):
@@ -200,8 +201,8 @@ def _parse_record(d: Path, view: StagingView) -> None:
 
 def export(view: StagingView | None, dest: Path) -> dict:
     """Copy *view*'s files under *dest* (the writer's ``/inputs/staging/<episode>``); the batch-map entry. Its
-    ``summary`` is the path of the episode's ``summary.md`` (None without one); the status of a reader that did not
-    finish reads ``no reader output: <status>``. The entry never names the reader (the view's ``source``): that stays
+    ``summary`` is the path of the episode's ``summary.md`` (None without one); its status is ``ok`` for a reader that
+    finished and ``no reader output: <status>`` for one that did not. The entry never names the reader (the view's ``source``): that stays
     in the host-side records (the pool entry's provenance and the pass's end event)."""
     if view is None:
         return {"status": "none"}
@@ -211,7 +212,7 @@ def export(view: StagingView | None, dest: Path) -> dict:
         out.write_bytes(data)
     path = f"/inputs/staging/{dest.name}"
     entry = {
-        "status": view.status if view.finished else f"{NO_OUTPUT}: {view.status}",
+        "status": "ok" if view.finished else f"{NO_OUTPUT}: {view.status}",
         "files": sorted(view.files),
         "refused": view.refused,
         "path": path,

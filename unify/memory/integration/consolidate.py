@@ -820,6 +820,26 @@ def _by_category(usd: str, helpers: list[dict]) -> dict:
     }
 
 
+def _reader_category(rows: list[dict] | None) -> dict:
+    """``{"reader": USD}``: the batch episodes' readers' own spend (each fork's ``fork.json`` ``usd``, which the proxy
+    journals under ``fork.<episode>``, outside the pass's own spend), summed; unknown when any reader recorded none.
+    Empty without staging."""
+    if rows is None:
+        return {}
+    total = Decimal(0)
+    for r in rows:
+        usd = r.get("reader_usd")
+        if usd is None:
+            continue
+        if usd == UNKNOWN:
+            return {"reader": UNKNOWN}
+        try:
+            total += Decimal(str(usd))
+        except (InvalidOperation, ValueError):
+            return {"reader": UNKNOWN}
+    return {"reader": _usd(total)}
+
+
 def _spend(outcome: PassOutcome | None, rows: list[CostRow]) -> tuple[str, int, int]:
     """(known USD, unpriced calls, calls): the pass's own figures, else the cost rows'."""
     if outcome is not None and money(outcome.usd) != UNKNOWN:
@@ -910,7 +930,10 @@ def _end_event(
                 "nothing_to_store": bool(outcome.nothing_to_store),
                 # spend by lane (the fork's is in the proxy journal, session fork.<episode>), one row per delegate
                 # call, the batch's staging by source
-                "usd_by_category": _by_category(usd, outcome.helpers),
+                "usd_by_category": {
+                    **_by_category(usd, outcome.helpers),
+                    **_reader_category(getattr(outcome, "staging_episodes", None)),
+                },
                 "helpers": list(outcome.helpers),
                 "staging": outcome.staging,
                 # with staging on, per batch episode: its staging's source, status, files, candidates and the files

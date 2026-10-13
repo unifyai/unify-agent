@@ -618,7 +618,7 @@ def test_finish_gives_the_fork_the_recorded_episodes_part_list(
     lines = parts.splitlines()
     # the list the fork reads names the recorded parts, the request first with its first line
     assert lines[0] == fork_mod.PARTS_HEAD
-    assert lines[1].startswith("- request: ") and "Double 21." in lines[1]
+    assert lines[1].startswith("- `request`: ") and "Double 21." in lines[1]
 
 
 def test_f6_off_is_off_no_process_no_staging_dir(mv2, monkeypatch):  # noqa: F811
