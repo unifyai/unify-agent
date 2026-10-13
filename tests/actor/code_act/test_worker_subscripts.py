@@ -113,6 +113,8 @@ class _Apps:
     """A mapping and a sequence at once; each key is also an attribute, so a
     subscript and an attribute that reach the same object can be compared."""
 
+    boundary_subscript = True
+
     def __init__(self) -> None:
         self.apps = {
             "music": _App(),
@@ -234,3 +236,63 @@ async def test_a_credential_named_key_stays_in_the_harness_as_the_attribute_does
         "kind": "value",
         "value": 3,
     }
+
+
+# ── only a declared-safe object is subscripted ─────────────────────────────
+
+
+class _Recorder:
+    """An object whose ``__getitem__`` records each call; its class does not
+    set ``boundary_subscript``."""
+
+    def __init__(self) -> None:
+        self.calls: list = []
+
+    def __getitem__(self, key):
+        self.calls.append(key)
+        return _App()
+
+
+class _Unmarked(_Recorder):
+    boundary_subscript = "yes"  # only ``True`` itself opts in
+
+
+@pytest.mark.parametrize("cls", [_Recorder, _Unmarked])
+@pytest.mark.parametrize("key", ["music", 0])
+def test_an_object_that_does_not_opt_in_is_refused_before_its_getitem_runs(
+    cls,
+    key,
+):
+    worker, shadow = _harness()
+    recorder = cls()
+    shadow["apis"] = recorder
+    with pytest.raises(BoundaryRefusal, match="boundary_subscript = True"):
+        worker._resolve(shadow, {"root": "apis", "path": [{"item": key}]})
+    assert recorder.calls == []
+    # Reached through an attribute of an object that does opt in, likewise.
+    apps = _Apps()
+    apps.recorder = recorder
+    shadow["apis"] = apps
+    with pytest.raises(BoundaryRefusal, match="boundary_subscript = True"):
+        worker._resolve(
+            shadow,
+            {"root": "apis", "path": ["recorder", {"item": key}]},
+        )
+    assert recorder.calls == []
+
+
+def test_a_plain_list_tuple_or_dict_is_subscripted():
+    worker, shadow = _harness()
+    apps = _Apps()
+    apps.listed = [_App()]
+    apps.paired = (1, _App())
+    apps.mapped = {"music": _App()}
+    shadow["apis"] = apps
+    for path in (
+        ["listed", {"item": 0}, "show"],
+        ["paired", {"item": 1}, "show"],
+        ["mapped", {"item": "music"}, "show"],
+    ):
+        assert worker._resolve(shadow, {"root": "apis", "path": path})("x") == (
+            "shown x"
+        )

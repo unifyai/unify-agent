@@ -27,6 +27,9 @@ class _App:
 
 
 class RelayClient:
+    #: Its ``__getitem__`` only looks up an app, so a cell may subscript it.
+    boundary_subscript = True
+
     def __init__(self, path: str) -> None:
         self.path = path
         self.music = _App(self, "music")

@@ -194,6 +194,19 @@ def _refuse_unreachable(obj: Any, label: str) -> None:
         )
 
 
+def _subscriptable(obj: Any) -> bool:
+    """Whether a cell's ``proxy[key]`` may run ``obj[key]`` in the harness.
+
+    Only a plain list, tuple or dict (whose ``__getitem__`` runs no harness
+    code), or an object whose class declares that its ``__getitem__`` is as
+    safe to reach from a cell as its public attributes, with the class
+    attribute ``boundary_subscript = True``. Checked before ``obj[key]`` runs.
+    """
+    if type(obj) in (list, tuple, dict):
+        return True
+    return getattr(type(obj), "boundary_subscript", False) is True
+
+
 def _model_written(value: Any) -> bool:
     """Whether *value* was defined by cell code run in a session's namespace."""
     module = getattr(value, "__module__", None)
@@ -659,6 +672,13 @@ class PythonWorker:
                         f"{label}[{key!r}]: only str and int subscripts not "
                         "starting with '_' of harness objects cross the worker "
                         "boundary",
+                    )
+                if not _subscriptable(obj):
+                    raise BoundaryRefusal(
+                        f"{label}[{key!r}]: a {child.type_name(obj)} cannot be "
+                        "subscripted across the worker boundary; only a list, "
+                        "tuple or dict, or an object whose class sets "
+                        "`boundary_subscript = True`, can",
                     )
                 obj = obj[key]
                 label = f"{label}[{key!r}]"
