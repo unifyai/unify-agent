@@ -512,6 +512,34 @@ def _saved_lines(rec: Mapping | None, summary_of: SummaryOf | None, strip: Strip
     return out
 
 
+def _readers(rec: Mapping | None) -> list[str]:
+    """The readers a function's item record names: the one its landing named (``landed_from``), else the gate's
+    (``reader``: a list of ids, sorted; a record holding one id names it)."""
+    if not isinstance(rec, Mapping):
+        return []
+    landed = rec.get("landed_from")
+    if isinstance(landed, Mapping) and isinstance(landed.get("reader"), str) and landed["reader"]:
+        return [landed["reader"]]
+    reader = rec.get("reader")
+    named = reader if isinstance(reader, list) else [reader]
+    return [r for r in named if isinstance(r, str) and r]
+
+
+def _no_reader(rec: Mapping | None) -> str:
+    """The catalogue's word for a function with no single reader."""
+    readers = _readers(rec)
+    if not readers:
+        return "none"
+    return f"none of its {len(readers)} ({', '.join(readers)}): more than one reads its tests' fixtures"
+
+
+def _reader_of(rec: Mapping | None) -> str | None:
+    """The one reader a procedure is read by (:func:`_readers`); None when it names none or several (never one
+    chosen of several)."""
+    readers = _readers(rec)
+    return readers[0] if len(readers) == 1 else None
+
+
 def _applies_stated(sig: object) -> bool:
     """Whether an applicability signature records an ``applies`` (the capture store writes ``stated``)."""
     cons = sig.get("constraints") if isinstance(sig, dict) else None
@@ -607,7 +635,7 @@ def catalogue_text(
         rec = records.get(f.item_id) if records else None
         rec = rec if isinstance(rec, dict) else None
         sig = rec.get("signature") if rec else None
-        reader = rec.get("reader") if rec and isinstance(rec.get("reader"), str) else None
+        reader = _reader_of(rec)
         level = rec.get("level") if rec and isinstance(rec.get("level"), str) else "not recorded"
         lines = [f"\n### {f.item_id}\n", f"`{f.module}:{f.signature}`\n"]
         doc = _one_line(strip(_first_paragraph(docs.get(f.item_id, ""))))
@@ -621,7 +649,7 @@ def catalogue_text(
                 lines.append(f"  Approach: {approach}\n")
         input_line = signature_text(sig) if isinstance(sig, dict) else ""
         lines.append(
-            f"Evidence: level {level}; status {status[f.item_id]}; reader {reader or 'none'}; "
+            f"Evidence: level {level}; status {status[f.item_id]}; reader {reader or _no_reader(rec)}; "
             f"applies: {'yes' if _applies_stated(sig) else 'no'}\n",
         )
         if input_line:
@@ -712,7 +740,7 @@ def dispatch_data(
         rec = records.get(f.item_id) if records else None
         if not isinstance(rec, dict):
             continue
-        reader = rec.get("reader") if isinstance(rec.get("reader"), str) and rec.get("reader") else None
+        reader = _reader_of(rec)
         named = rec.get("applies") if isinstance(rec.get("applies"), str) and rec.get("applies") else None
         sig = rec.get("signature")
         applies = named is not None or _applies_stated(sig)
