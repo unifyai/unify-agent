@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import warnings
 from pathlib import Path
 
 import pytest
@@ -132,6 +133,11 @@ def _assert_opening_first(call, session, world: dict) -> str:
     assert opening.startswith(OPENING_HEADING + "\n")
     assert "`tools.list()` prints one line per tool you have" in opening
     assert "\n".join(systems).count(OPENING_HEADING) == 1
+    warnings.warn(
+        f"{session.agent} system message: {len(system)} characters, {len(system) - len(opening) - 2} without the "
+        f"opening; first 300: {system[:300]!r}",
+        stacklevel=1,
+    )
     names = R.tool_names_in(opening) - {"list", "help", "Refused", "NotRun"}
     assert names <= set(session.allow), sorted(names - set(session.allow))
     for value in (ENV_SECRET, TOKEN_VALUE, os.path.expanduser("~")):

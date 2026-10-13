@@ -452,9 +452,37 @@ def test_prompt_sizes_off_and_on(monkeypatch):
     before = sizes()
     monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: True)
     after = sizes()
-    lines = [f"{k}: off {before[k]}, on {after[k]} ({after[k] - before[k]:+d})" for k in before]
+    # the memory briefs now start with the shared opening every agent reads first; the role's own text is what the
+    # in-code rewrite trimmed, so that is what is compared, and the opening's share is reported beside it
+    opening = _opening_sizes()
+    lines = [
+        f"{k}: off {before[k]}, on {after[k]} ({after[k] - before[k]:+d})"
+        + (f", of which the opening {opening[k]}" if k in opening else "")
+        for k in before
+    ]
     report = "PROMPT SIZES (characters)\n" + "\n".join(lines)
     print(report)
     warnings.warn(report, stacklevel=1)
     for k in before:
-        assert after[k] <= before[k], k
+        assert after[k] - opening.get(k, 0) <= before[k], k
+
+
+def _opening_sizes() -> dict[str, int]:
+    """With the setting on, the characters the shared opening and its blank line add to each memory brief."""
+    from unify.memory import helpers
+    from unify.memory import library_prompts as lp
+
+    texts = {
+        "writer base brief": _writer_briefs()["writer base"][0],
+        "writer full brief": _writer_briefs()["writer full"][0],
+        "curator brief": lp.curate_brief_now(compact=True, finish_capped=True, edit_tools=True),
+        "helper brief (no similar)": helpers.helper_brief(False),
+        "helper brief (similar)": helpers.helper_brief(True),
+    }
+    out = {}
+    for name, text in texts.items():
+        start = "\n\nYou are a helper" if name.startswith("helper") else "\n\n# Role\n"
+        head, sep, _ = text.partition(start)
+        assert sep and head.startswith("## How you work here"), name
+        out[name] = len(head) + 2
+    return out

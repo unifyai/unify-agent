@@ -74,8 +74,8 @@ def test_every_memory_agent_starts_with_the_shared_opening(monkeypatch, planted)
         for mount in agent_profiles.profile(agent)["mounts"]:
             assert mount["path"] in opening, f"{name}: {mount['path']}"
         assert "cell time: 60 s" in opening and "stated in the first message" in opening, name
-        report.append(f"{name}: first 300 characters on:\n{text[:300]}")
-    warnings.warn("OPENINGS\n" + "\n\n".join(report), stacklevel=1)
+        report.append(f"{name}: {text[:300]!r}")
+    warnings.warn("FIRST 300 ON\n" + "\n".join(report), stacklevel=1)
 
 
 def test_the_flags_decide_which_tools_the_opening_names(monkeypatch):
