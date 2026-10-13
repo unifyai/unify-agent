@@ -7,7 +7,9 @@ guidance entries against the request by embedding similarity (no model call)
 and lists the closest five, one line each, in the first user message; the
 model decides whether to read, call or search. Nothing is forced, nothing is
 repeated later, and the ranking counts no search hit. Requests are captured
-at unillm's transport, so nothing leaves the process.
+at unillm's transport, so nothing leaves the process; the tests that rank a
+seeded library embed with the word-hash fake (``library_world``), so no key
+is needed: what they check is where the list goes, not how well it ranks.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import json
 import pytest
 
 from tests import cache_discipline_helpers as h
+from tests.actor.code_act.library_world import install_fake_embed
 from unify.actor import code_act_actor as caa
 from unify.actor import library_shortlist as ls
 from unify.agents.binding import PROMPT_SECTION
@@ -84,10 +87,12 @@ def _shortlist(text: str) -> str | None:
 # ── on ───────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.requires_provider_key
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
-async def test_on_the_first_message_lists_the_closest_function_and_guidance():
+async def test_on_the_first_message_lists_the_closest_function_and_guidance(
+    monkeypatch,
+):
+    install_fake_embed(monkeypatch.setattr)
     on, actor = await _act(seed=_seed)
     first = _first_user(on[0])
     block = _shortlist(first)
@@ -106,10 +111,10 @@ async def test_on_the_first_message_lists_the_closest_function_and_guidance():
     assert on[0]["tool_choice"] == "auto"
 
 
-@pytest.mark.requires_provider_key
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
-async def test_on_the_list_is_written_once_and_never_repeated():
+async def test_on_the_list_is_written_once_and_never_repeated(monkeypatch):
+    install_fake_embed(monkeypatch.setattr)
     on, _ = await _act(
         [
             lambda: h.completion(calls=[("execute_code", {"code": "print(1)"})]),

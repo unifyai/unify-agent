@@ -27,6 +27,9 @@ class _App:
 
 
 class RelayClient:
+    #: Its ``__getitem__`` only looks up an app, so a cell may subscript it.
+    boundary_subscript = True
+
     def __init__(self, path: str) -> None:
         self.path = path
         self.music = _App(self, "music")
@@ -35,6 +38,13 @@ class RelayClient:
         with open(self.path) as fh:  # the "socket": only the harness's /tmp has it
             token = fh.read().strip()
         return {"word": word, "token": token, "ran_in": process_id()}
+
+    def __getitem__(self, app: object) -> _App:
+        """``relay["music"]`` or ``relay[0]``, as AppWorld's ``apis[app]``."""
+        apps = {"music": self.music}
+        if isinstance(app, int):
+            return list(apps.values())[app]
+        return apps[app]
 
     def __repr__(self) -> str:
         return "<relay client>"

@@ -11,6 +11,7 @@ import pytest
 from unify.function_manager.function_manager import FunctionManager
 from unify.function_manager.primitives import PrimitiveScope, get_registry
 from unify.actor.environments import ActorEnvironment
+from tests.actor.code_act.library_world import install_fake_embed
 from tests.helpers import _handle_project
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -103,10 +104,10 @@ def test_list_functions_excludes_tagged_primitive_ids(fm_factory):
 # ────────────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.requires_provider_key
 @_handle_project
-def test_search_functions_excludes_tagged_primitive_ids(fm_factory):
+def test_search_functions_excludes_tagged_primitive_ids(fm_factory, monkeypatch):
     """search_functions() should not return primitives whose IDs are excluded."""
+    install_fake_embed(monkeypatch.setattr)
     actor_act_id = _get_actor_act_id()
     query = "spawn a sub-actor for a focused sub-task"
 

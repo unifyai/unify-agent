@@ -10,6 +10,7 @@ import asyncio
 
 import pytest
 
+from tests.scripted_model import ScriptedModel, scripted
 from unify.actor.code_act_actor import CodeActActor
 from unify.actor.prompt_builders import build_code_act_prompt
 
@@ -60,7 +61,6 @@ def test_build_code_act_prompt_guidelines_placed_before_rules():
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @pytest.mark.timeout(30)
 async def test_code_act_actor_accepts_guidelines_parameter():
     """
@@ -70,24 +70,26 @@ async def test_code_act_actor_accepts_guidelines_parameter():
     actor = CodeActActor(
         timeout=30,
     )
-    try:
-        handle = await actor.act(
-            "What is 2 + 2?",
-            guidelines="Keep your response concise.",
-            persist=False,
-            clarification_enabled=False,
-        )
-        assert handle is not None
-        await handle.stop()
-    finally:
+    # The handle is stopped at once; a request that starts before the stop
+    # is answered in process.
+    with scripted(ScriptedModel(allow={"actor", "review", "gate"})):
         try:
-            await actor.close()
-        except Exception:
-            pass
+            handle = await actor.act(
+                "What is 2 + 2?",
+                guidelines="Keep your response concise.",
+                persist=False,
+                clarification_enabled=False,
+            )
+            assert handle is not None
+            await handle.stop()
+        finally:
+            try:
+                await actor.close()
+            except Exception:
+                pass
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @pytest.mark.timeout(30)
 async def test_code_act_actor_guidelines_none_by_default():
     """
@@ -97,19 +99,22 @@ async def test_code_act_actor_guidelines_none_by_default():
     actor = CodeActActor(
         timeout=30,
     )
-    try:
-        handle = await actor.act(
-            "What is 2 + 2?",
-            persist=False,
-            clarification_enabled=False,
-        )
-        assert handle is not None
-        await handle.stop()
-    finally:
+    # The handle is stopped at once; a request that starts before the stop
+    # is answered in process.
+    with scripted(ScriptedModel(allow={"actor", "review", "gate"})):
         try:
-            await actor.close()
-        except Exception:
-            pass
+            handle = await actor.act(
+                "What is 2 + 2?",
+                persist=False,
+                clarification_enabled=False,
+            )
+            assert handle is not None
+            await handle.stop()
+        finally:
+            try:
+                await actor.close()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------

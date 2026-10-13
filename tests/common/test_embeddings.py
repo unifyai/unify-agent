@@ -73,8 +73,30 @@ def test_repeated_texts_come_from_the_cache(embedders, monkeypatch):
     assert (embed(texts) == first).all()
 
 
-@pytest.mark.requires_provider_key
-def test_embedders_never_share_vectors(monkeypatch):
+def _unit_vectors(dim: int):
+    """A stand-in ``compute`` returning unit vectors of *dim* (the shape of
+    the embedder it replaces), so the cache test needs no key or weights."""
+
+    def compute(texts: list[str]) -> np.ndarray:
+        vectors = np.zeros((len(texts), dim), dtype=np.float32)
+        vectors[:, 0] = 1.0
+        return vectors
+
+    return compute
+
+
+def test_embedders_never_share_vectors(monkeypatch, tmp_path):
+    """The cache keys a vector by its embedder: after switching embedders the
+    same text is embedded afresh, never served the other one's vector. Each
+    embedder's model label is kept and only its computation is faked, in a
+    cache file of the test's own."""
+    monkeypatch.setenv("UNIFY_EMBED_CACHE", str(tmp_path / "embeddings.sqlite"))
+    monkeypatch.setattr(
+        embeddings,
+        "OPENROUTER",
+        replace(OPENROUTER, compute=_unit_vectors(1536)),
+    )
+    monkeypatch.setattr(embeddings, "LOCAL", replace(LOCAL, compute=_unit_vectors(384)))
     text = ["Archive the quarterly board minutes."]
     monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_EMBEDDINGS", False)
     remote = embed(text)

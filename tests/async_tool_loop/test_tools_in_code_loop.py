@@ -174,6 +174,22 @@ async def test_a_second_finish_in_the_same_turn_is_refused(switch_on):
 
 
 @pytest.mark.asyncio
+async def test_one_state_finishes_each_request_of_a_session_once():
+    # a persistent session keeps one request state; the loop takes each request's answer from the slot, so the
+    # next request starts with it empty and may finish again, while a second finish before the take is refused
+    slot = cell_reply.ReplySlot()
+    state = tool_handlers.ActorRequestState(reply_slot=slot)
+    ctx = SimpleNamespace(agent="actor", name="root", state=state)
+    first = await tool_handlers.finish(ctx, {"answer": "one"})
+    again = await tool_handlers.finish(ctx, {"answer": "two"})
+    assert first.status == "ok" and again.status != "ok"
+    assert slot.take()["content"] == "one"
+    second = await tool_handlers.finish(ctx, {"answer": {"action": "submit"}})
+    assert second.status == "ok"
+    assert slot.take()["content"] == json.dumps({"action": "submit"})
+
+
+@pytest.mark.asyncio
 async def test_with_the_switch_off_the_argument_changes_nothing(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "off")
 

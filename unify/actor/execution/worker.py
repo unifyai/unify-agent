@@ -181,8 +181,12 @@ def _refuse_unreachable(obj: Any, label: str) -> None:
     """Modules and the environment never cross, whatever holds them.
 
     Without this, any exposed object with a module among its public attributes
-    (``unillm.os``) would hand the worker ``os.environ.get``.
+    (``unillm.os``) would hand the worker ``os.environ.get``. An object
+    wrapped for an environment's observers is judged by what it wraps.
     """
+    from unify.function_manager.primitives.observers import proxy_target
+
+    obj = proxy_target(obj)
     if isinstance(obj, types.ModuleType):
         raise BoundaryRefusal(
             f"{label} is a harness module ({obj.__name__}); harness modules do not "
@@ -193,6 +197,66 @@ def _refuse_unreachable(obj: Any, label: str) -> None:
             f"{label} is the harness's environment (rule `env-scrub`: "
             f"{sandbox.RULES['env-scrub']}); the cell has its own os.environ",
         )
+
+
+def _subscriptable(obj: Any) -> bool:
+    """Whether a cell's ``proxy[key]`` may run ``obj[key]`` in the harness.
+
+    Only a plain list, tuple or dict (whose ``__getitem__`` runs no harness
+    code), or an object whose class declares that its ``__getitem__`` is as
+    safe to reach from a cell as its public attributes, with the class
+    attribute ``boundary_subscript = True``. Checked before ``obj[key]`` runs.
+    """
+    from unify.function_manager.primitives.observers import proxy_target
+
+    # An environment global wrapped for its observers forwards obj[key] to
+    # the object it wraps, so that object's class is the one that decides.
+    target = proxy_target(obj)
+    if type(target) in (list, tuple, dict):
+        return True
+    return getattr(type(target), "boundary_subscript", False) is True
+
+
+def _credential_inside(value: Any) -> Optional[str]:
+    """What in a value about to cross by value looks like a credential, or None.
+
+    Walks nested lists, tuples, sets and dicts (each container once in each
+    context). A text leaf (``str``, or ``bytes``/``bytearray`` read as latin-1) anywhere,
+    key or value, is a credential when it is key-shaped or a URL with a
+    password (:func:`unify.sandbox._looks_like_key`). Everything under a
+    credential-named dict key (:func:`unify.sandbox._is_secret_env`, the
+    environment scrub's own test) is in a secret context: any non-empty text
+    leaf there, however deep, is a credential, while numbers, flags, None and
+    empty text cross (``max_tokens: 5``, ``password: ""``). Objects of other
+    types are not looked into: they cross by reference.
+    """
+    stack: list = [(value, None)]
+    seen: set = set()
+    while stack:
+        item, secret = stack.pop()
+        if isinstance(item, (str, bytes, bytearray)):
+            text = item if isinstance(item, str) else bytes(item).decode("latin-1")
+            if secret is not None and len(text) > 0:
+                return f"the key {secret!r}"
+            if sandbox._looks_like_key(text):
+                return "a key-shaped string"
+            continue
+        if not isinstance(item, (list, tuple, set, frozenset, dict)):
+            continue
+        if (id(item), secret) in seen:
+            continue
+        seen.add((id(item), secret))
+        if isinstance(item, dict):
+            for key, inner in item.items():
+                named = (
+                    isinstance(key, str)
+                    and sandbox._is_secret_env(key, inner if isinstance(inner, str) else "")
+                )
+                stack.append((key, secret))
+                stack.append((inner, key if named else secret))
+        else:
+            stack.extend((inner, secret) for inner in item)
+    return None
 
 
 def _model_written(value: Any) -> bool:
@@ -649,6 +713,31 @@ class PythonWorker:
             obj = self._refs[rid]
             label = f"<{child.type_name(obj)}>"
         for attr in target.get("path") or []:
+            if isinstance(attr, dict):
+                # A subscript (``proxy[key]``): a str or int key, never one
+                # starting with "_", applied with the same checks as getattr.
+                key = attr.get("item")
+                if (
+                    set(attr) != {"item"}
+                    or type(key) not in (str, int)
+                    or (isinstance(key, str) and key.startswith("_"))
+                ):
+                    raise BoundaryRefusal(
+                        f"{label}[{key!r}]: only str and int subscripts not "
+                        "starting with '_' of harness objects cross the worker "
+                        "boundary",
+                    )
+                if not _subscriptable(obj):
+                    raise BoundaryRefusal(
+                        f"{label}[{key!r}]: a {child.type_name(obj)} cannot be "
+                        "subscripted across the worker boundary; only a list, "
+                        "tuple or dict, or an object whose class sets "
+                        "`boundary_subscript = True`, can",
+                    )
+                obj = obj[key]
+                label = f"{label}[{key!r}]"
+                _refuse_unreachable(obj, label)
+                continue
             if not isinstance(attr, str) or attr.startswith("_"):
                 raise BoundaryRefusal(
                     f"{label}.{attr}: attributes starting with '_' of harness "
@@ -669,6 +758,13 @@ class PythonWorker:
                 raise BoundaryRefusal(
                     f"{name!r} looks like a credential (rule `env-scrub`: "
                     f"{sandbox.RULES['env-scrub']}); its value stays in the harness",
+                )
+            found = _credential_inside(obj)
+            if found is not None:
+                raise BoundaryRefusal(
+                    f"{name!r} holds {found}, which looks like a credential (rule "
+                    f"`env-scrub`: {sandbox.RULES['env-scrub']}); its value stays "
+                    "in the harness",
                 )
             return {"kind": "value", "value": self.encode(obj)}
         return {"kind": "namespace", "repr": short_repr(obj, 200)}
@@ -780,7 +876,12 @@ class PythonWorker:
         obj = self._resolve(shadow, target)
         if op == "describe":
             path = target.get("path") or [target.get("root", "")]
-            reply["value"] = self._describe(obj, str(path[-1]))
+            last = path[-1]
+            if isinstance(last, dict):
+                # A subscript's key names the value as an attribute does, so a
+                # credential-named key's value stays in the harness.
+                last = last.get("item", "")
+            reply["value"] = self._describe(obj, str(last))
         elif op == "dir":
             reply["value"] = sorted(n for n in dir(obj) if not n.startswith("_"))
         elif op == "call":

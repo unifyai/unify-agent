@@ -754,6 +754,14 @@ class _Remote:
     def __getattr__(self, name: str) -> Any:
         return self._w.attribute(self, name)
 
+    def __getitem__(self, key: Any) -> Any:
+        return self._w.item(self, key)
+
+    # Without this, ``for x in proxy`` and ``x in proxy`` would fall back to
+    # ``proxy[0]``, ``proxy[1]``, ... across the boundary; they stay a
+    # TypeError, as before subscripts crossed.
+    __iter__ = None
+
     def __setattr__(self, name: str, value: Any) -> None:
         raise BoundaryRefusal(
             f"cannot set {name!r} on {self._label}: harness objects cannot be "
@@ -1220,7 +1228,29 @@ class Worker:
                 "cross the worker boundary",
             )
         base = object.__getattribute__(proxy, "_target")
-        target = {**base, "path": [*base["path"], name]}
+        return self._remote_at({**base, "path": [*base["path"], name]}, label)
+
+    def item(self, proxy: _Remote, key: Any) -> Any:
+        """``proxy[key]``, resolved in the harness, for a ``str`` or ``int`` key.
+
+        The key is one more element of the target's path, ``{"item": key}``;
+        the harness checks it as it checks an attribute name.
+        """
+        label = f"{proxy._label}[{key!r}]"
+        if type(key) not in (str, int):
+            raise BoundaryRefusal(
+                f"{proxy._label}[...]: only str and int subscripts of harness "
+                f"objects cross the worker boundary, not {type(key).__name__}",
+            )
+        if isinstance(key, str) and key.startswith("_"):
+            raise KeyError(
+                f"{label}: keys starting with '_' of harness objects do not "
+                "cross the worker boundary",
+            )
+        base = object.__getattribute__(proxy, "_target")
+        return self._remote_at({**base, "path": [*base["path"], {"item": key}]}, label)
+
+    def _remote_at(self, target: dict, label: str) -> Any:
         key = json.dumps(target, sort_keys=True)
         desc = self._describe_cache.get(key)
         if desc is None:

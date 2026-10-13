@@ -14,7 +14,11 @@ from tests.helpers import (
 from tests.baked_defaults import as_shipped  # noqa: F401
 
 # as_shipped: deleted in step 5 (steerable handles)
-pytestmark = [pytest.mark.llm_call, pytest.mark.usefixtures("as_shipped")]
+pytestmark = pytest.mark.usefixtures("as_shipped")
+# llm_call stays on the structured-output test and the steering tests (ask,
+# interject, pause, clarification), which go with that code in step 5. The
+# unmarked tests drive the handle's own threads and queues and never send a
+# request: no response_format, so result() makes no model call.
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -41,6 +45,7 @@ class ActionResult(BaseModel):
     outcome: str = Field(..., description="Description of the outcome")
 
 
+@pytest.mark.llm_call
 @pytest.mark.asyncio
 @_handle_project
 async def test_simulated_act_response_format():
@@ -63,6 +68,7 @@ async def test_simulated_act_response_format():
 # ────────────────────────────────────────────────────────────────────────────
 # 2.  Stateful memory – serial asks (via handle.ask)                          #
 # ────────────────────────────────────────────────────────────────────────────
+@pytest.mark.llm_call
 @pytest.mark.asyncio
 @_handle_project
 async def test_stateful_memory_serial_asks():
@@ -109,6 +115,7 @@ async def test_stateful_memory_serial_asks():
 # ────────────────────────────────────────────────────────────────────────────
 # 3.  Interject                                                               #
 # ────────────────────────────────────────────────────────────────────────────
+@pytest.mark.llm_call
 @pytest.mark.asyncio
 @_handle_project
 async def test_handle_interject(monkeypatch):
@@ -149,6 +156,7 @@ async def test_handle_stop(monkeypatch):
 # ────────────────────────────────────────────────────────────────────────────
 # 5.  Clarification handshake                                                 #
 # ────────────────────────────────────────────────────────────────────────────
+@pytest.mark.llm_call
 @pytest.mark.asyncio
 @_handle_project
 async def test_handle_requests_clarification():
@@ -173,6 +181,7 @@ async def test_handle_requests_clarification():
     assert "q1 report" in result.lower()
 
 
+@pytest.mark.llm_call
 @pytest.mark.asyncio
 @_handle_project
 async def test_next_clarification_blocks_without_queue():
@@ -207,6 +216,7 @@ async def test_next_clarification_blocks_without_queue():
 # ────────────────────────────────────────────────────────────────────────────
 # 6.  Pause → Resume round-trip                                              #
 # ────────────────────────────────────────────────────────────────────────────
+@pytest.mark.llm_call
 @pytest.mark.asyncio
 @_handle_project
 async def test_handle_pause_and_resume(monkeypatch):
@@ -262,6 +272,7 @@ async def test_handle_pause_and_resume(monkeypatch):
 # ────────────────────────────────────────────────────────────────────────────
 # 7.  Ask on handle                                                           #
 # ────────────────────────────────────────────────────────────────────────────
+@pytest.mark.llm_call
 @pytest.mark.asyncio
 @_handle_project
 async def test_handle_ask():
@@ -283,6 +294,7 @@ async def test_handle_ask():
 # ────────────────────────────────────────────────────────────────────────────
 # 8.  Pause should freeze duration timer                                       #
 # ────────────────────────────────────────────────────────────────────────────
+@pytest.mark.llm_call
 @pytest.mark.asyncio
 @_handle_project
 async def test_pause_freezes_duration():
@@ -348,6 +360,7 @@ async def test_next_notification_emits_progress():
 # ────────────────────────────────────────────────────────────────────────────
 # 10.  Stop while paused should finish immediately                           #
 # ────────────────────────────────────────────────────────────────────────────
+@pytest.mark.llm_call
 @pytest.mark.asyncio
 @_handle_project
 async def test_stop_while_paused_finishes_immediately():
@@ -381,6 +394,7 @@ async def test_stop_while_paused_finishes_immediately():
 # ────────────────────────────────────────────────────────────────────────────
 # 11.  Stop while waiting for clarification should finish immediately         #
 # ────────────────────────────────────────────────────────────────────────────
+@pytest.mark.llm_call
 @pytest.mark.asyncio
 @_handle_project
 async def test_stop_while_waiting_for_clarification_finishes_immediately():

@@ -10,6 +10,7 @@ import pytest
 
 from unify.actor.environments.function_store import FunctionStoreEnvironment
 from unify.function_manager.function_manager import FunctionManager
+from tests.actor.code_act.library_world import install_fake_embed
 from tests.helpers import _handle_project
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -304,10 +305,10 @@ def test_exclusion_integration_list_functions(fm_factory):
     assert "gamma" in listing, "gamma should still be visible"
 
 
-@pytest.mark.requires_provider_key
 @_handle_project
-def test_exclusion_integration_search_functions(fm_factory):
+def test_exclusion_integration_search_functions(fm_factory, monkeypatch):
     """Functions promoted to the environment should be excludable from search_functions."""
+    install_fake_embed(monkeypatch.setattr)
     fm = fm_factory()
     fm.add_functions(implementations=[_PY_ALPHA, _PY_BETA, _PY_GAMMA])
 
@@ -323,6 +324,8 @@ def test_exclusion_integration_search_functions(fm_factory):
     names = {h["name"] for h in hits}
 
     assert "alpha" not in names, "alpha should be excluded from search"
+    # n spans every row: the rest of the library still comes back.
+    assert names == {"beta", "gamma"}
 
 
 @_handle_project

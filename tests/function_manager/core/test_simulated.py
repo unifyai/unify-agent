@@ -1,9 +1,34 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from tests.helpers import _handle_project
+from tests.scripted_model import Always, ScriptedModel, reply, scripted
 from unify.function_manager.simulated import SimulatedFunctionManager
+
+# The simulated catalogue's model calls are tool-less ``query_llm`` requests;
+# the tests below script the catalogue they return and check what the
+# manager makes of it (and what it asked for).
+_CATALOGUE = {
+    "parse_csv": {
+        "function_id": 1,
+        "argspec": "(text: str) -> list",
+        "docstring": "Parse CSV text into rows.",
+    },
+    "sum_column": {
+        "function_id": 2,
+        "argspec": "(rows: list, column: str) -> float",
+        "docstring": "Sum one column of parsed rows.",
+    },
+}
+
+
+def _prompt(call) -> str:
+    """The request's last message: the prompt this call sent."""
+    return str(call.messages[-1]["content"])
+
 
 # --------------------------------------------------------------------------- #
 #  Doc-string inheritance                                                     #
@@ -60,11 +85,20 @@ def test_add_functions_accepts_single_and_multiple():
 
 
 @_handle_project
-@pytest.mark.llm_call
 def test_list_functions_with_and_without_implementations():
+    with_impl = {
+        name: {**meta, "implementation": f"def {name}(*a):\n    return None\n"}
+        for name, meta in _CATALOGUE.items()
+    }
+    model = ScriptedModel(
+        query_llm=[reply(json.dumps(_CATALOGUE)), reply(json.dumps(with_impl))],
+    )
     fm = SimulatedFunctionManager()
 
-    listing = fm.list_functions()
+    with scripted(model):
+        listing = fm.list_functions()
+        listing_with_impl = fm.list_functions(include_implementations=True)
+
     assert isinstance(listing, dict) and listing
     # pick a representative entry and verify shape without relying on specific names
     first_name, first_entry = next(iter(listing.items()))
@@ -73,11 +107,22 @@ def test_list_functions_with_and_without_implementations():
         assert key in first_entry
     assert "implementation" not in first_entry
 
-    listing_with_impl = fm.list_functions(include_implementations=True)
     assert isinstance(listing_with_impl, dict) and listing_with_impl
     # Ensure the same entry now includes an implementation when requested
     assert first_name in listing_with_impl
     assert "implementation" in listing_with_impl[first_name]
+
+    # Implementations are asked for only when requested, and the simulation
+    # is stateful: the second request carries the first exchange.
+    first, second = model.of("query_llm")
+    assert model.kinds() == ["query_llm", "query_llm"]
+    assert "implementation" not in _prompt(first)
+    assert "implementation" in _prompt(second)
+    assert any(
+        m["role"] == "assistant" and m.get("content") == json.dumps(_CATALOGUE)
+        for m in second.messages
+    )
+    model.assert_used_up()
 
 
 # --------------------------------------------------------------------------- #
@@ -112,15 +157,28 @@ def test_delete_function_acknowledges():
 
 
 @_handle_project
-@pytest.mark.llm_call
 def test_search_functions_returns_list_of_dicts():
+    record = {
+        "name": "price_with_tax",
+        "function_id": 1,
+        "argspec": "(price: float) -> float",
+        "docstring": "Add sales tax to a price.",
+    }
+    model = ScriptedModel(query_llm=[reply(json.dumps([record]))])
     fm = SimulatedFunctionManager()
-    hits = fm.filter_functions(filter="docstring LIKE '%price%'")
+    with scripted(model):
+        hits = fm.filter_functions(filter="docstring LIKE '%price%'")
     assert isinstance(hits, list) and hits
     first = hits[0]
     assert isinstance(first, dict)
     for key in ("name", "function_id", "argspec", "docstring"):
         assert key in first
+
+    # The filter reaches the model; an unscoped manager adds no scope clause.
+    (call,) = model.of("query_llm")
+    assert "docstring LIKE '%price%'" in _prompt(call)
+    assert "Scope constraint" not in _prompt(call)
+    model.assert_used_up()
 
 
 # --------------------------------------------------------------------------- #
@@ -129,16 +187,30 @@ def test_search_functions_returns_list_of_dicts():
 
 
 @_handle_project
-@pytest.mark.llm_call
 def test_search_functions_bounds_and_shape():
-    fm = SimulatedFunctionManager()
+    # Keeping to n is the model's job (the simulation does not truncate), so
+    # the scripted reply keeps to it; the test checks that n and the query
+    # reach the model and that a fenced JSON reply is parsed into records.
     n = 2
-    sims = fm.search_functions(query="add numbers", n=n)
+    records = [
+        {"name": "add", "function_id": 1, "argspec": "(a, b)", "score": 0.9},
+        {"name": "add_all", "function_id": 2, "argspec": "(xs)", "score": 0.7},
+    ]
+    model = ScriptedModel(
+        query_llm=[reply(f"Here you go:\n```json\n{json.dumps(records)}\n```")],
+    )
+    fm = SimulatedFunctionManager()
+    with scripted(model):
+        sims = fm.search_functions(query="add numbers", n=n)
     assert isinstance(sims, list) and 1 <= len(sims) <= n
     first = sims[0]
     assert isinstance(first, dict)
     for key in ("name", "function_id", "argspec", "score"):
         assert key in first
+
+    (call,) = model.of("query_llm")
+    assert f"query='add numbers', n={n}" in _prompt(call)
+    model.assert_used_up()
 
 
 # --------------------------------------------------------------------------- #
@@ -180,20 +252,28 @@ async def test_execute_function_returns_simulated_response():
 
 
 @_handle_project
-@pytest.mark.llm_call
 def test_clear_sync():
     """
     SimulatedFunctionManager.clear should reset the manager (hard-coded completion)
     and remain usable afterwards.
     """
+    model = ScriptedModel(query_llm=Always(reply(json.dumps(_CATALOGUE))))
     fm = SimulatedFunctionManager()
-    # Do a synchronous operation to create some prior state
-    fm.add_functions(implementations="def _tmp():\n    return 1\n")
-    # Clear should not raise and should be quick (no LLM roundtrip requirement)
-    fm.clear()
-    # Post-clear, read-only operations should still work
-    post = fm.list_functions()
+    with scripted(model):
+        # Do a synchronous operation to create some prior state
+        fm.add_functions(implementations="def _tmp():\n    return 1\n")
+        fm.list_functions()
+        # Clear should not raise and should be quick (no LLM roundtrip requirement)
+        fm.clear()
+        assert len(model.calls) == 1
+        # Post-clear, read-only operations should still work
+        post = fm.list_functions()
     assert isinstance(post, dict) and post is not None
+
+    # The reset dropped the simulation's history: the request after clear()
+    # carries no more than the first one did.
+    before, after = model.of("query_llm")
+    assert len(after.messages) == len(before.messages)
 
 
 # --------------------------------------------------------------------------- #
