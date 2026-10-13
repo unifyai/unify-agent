@@ -224,7 +224,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
         # keep the cached prefix; no call is executed, and the instruction says to write blocks instead
         "tools": ["<the actor's tool schemas, not executed>"],
         "tools_executed": False,
-        "exceptions": ["told_about_not_usable: actor tools"],
+        "exceptions": ["told_about_not_usable: actor tools", "inlined_list: the episode's part list"],
         "fixed_reply": _fork_tool_reply(),
         "mounts": [
             {"path": "/usr", "mode": "ro"},
@@ -252,17 +252,23 @@ AGENT_PROFILES: tuple[dict, ...] = (
             {"limit": "staged bytes per episode", "value": 4194304, "unit": "bytes"},
             {"limit": "staged files per episode", "value": 200, "unit": "files"},
         ],
-        "inlined": [{"what": "fork instruction (constant)", "bound": _INLINE_BOUND}],
+        "inlined": [
+            {"what": "fork instruction (constant)", "bound": _INLINE_BOUND},
+            # the one list that grows with its input: the fork reads no files, so its episode's part names (each
+            # with that part's first line, at most 80 characters) follow the instruction, after the cached prefix
+            {"what": "the recorded episode's part list", "bound": {"items": "one per recorded part"}},
+        ],
         "capabilities": ["write fenced file blocks in its reply"],
         "absent_paths": ["/inputs", "/memory", "<state>"],
         "expectations": [
             {
-                "expectation": "write candidates, cases and notes as file blocks",
+                "expectation": "write a summary, candidates, cases and notes as file blocks",
                 "tool": "reply text",
                 "permission": "/staging rw (worker)",
             },
         ],
         "fields": [
+            "summary.md",
             "candidates/<name>.py",
             "cases/<name>.json",
             "notes.md",

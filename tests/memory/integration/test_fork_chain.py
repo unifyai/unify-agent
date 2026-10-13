@@ -313,15 +313,23 @@ def test_the_instruction_shows_one_format_whose_example_parses():
     assert "Do not call any tool" in text and "fenced block" in text
     assert "fenced blocks" in fw.TOOL_REPLY
     blocks, record = fw.parse_reply(fork_mod.FORMAT_EXAMPLE)
-    assert [(b["path"], b["form"], b["status"]) for b in blocks] == [
-        ("candidates/double.py", "fence", "parsed"),
-        ("cases/double.json", "fence", "parsed"),
-        ("notes.md", "fence", "parsed"),
+    assert [(b["path"], b["kind"], b["form"], b["status"]) for b in blocks] == [
+        ("summary.md", "summary", "fence", "parsed"),
+        ("candidates/double.py", "candidate", "fence", "parsed"),
+        ("cases/double.json", "case", "fence", "parsed"),
+        ("notes.md", "notes", "fence", "parsed"),
     ]
-    cases = json.loads(blocks[1]["content"])
+    # the example summary has the five headed sections, in order, and a pointer on every line under the last four
+    summary = blocks[0]["content"]
+    heads = [ln for ln in summary.splitlines() if ln.startswith("## ")]
+    assert heads == ["## Asked", "## Approach", "## Worked", "## Failed", "## Outcome"]
+    from unify.memory.summaries import pointers
+
+    assert len(pointers(summary)) == 5
+    cases = json.loads(blocks[2]["content"])
     ns: dict = {}
     exec(
-        compile(blocks[0]["content"], "double.py", "exec"),
+        compile(blocks[1]["content"], "double.py", "exec"),
         ns,
     )  # the example's own function, from the constant
     assert all(ns["double"](*c["inputs"]) == c["expected"] for c in cases)
