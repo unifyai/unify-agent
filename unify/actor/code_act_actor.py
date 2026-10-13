@@ -4326,6 +4326,11 @@ class CodeActActor(BaseCodeActActor):
             )
             if in_code is not None:
                 tools = {"execute_code": in_code.tool()}
+                # the shared opening comes first, then the actor's own prompt (both constant for the run)
+                opening = in_code.opening()
+                client.set_system_message(
+                    f"{opening}\n\n{system_prompt}" if system_prompt else opening,
+                )
             handle = start_async_tool_loop(
                 client,
                 request or initial_prompt,

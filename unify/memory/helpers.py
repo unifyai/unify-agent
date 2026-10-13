@@ -222,10 +222,20 @@ SIMILAR_LINE_IN_CODE = (
 
 def helper_brief(similar: bool, in_code: bool | None = None) -> str:
     """The helper's system message; it names exactly the tools :func:`helper_tools` gives for *similar*. *in_code*
-    (None: ``UNIFY_TOOLS_IN_CODE``) gives the brief for tools called from code."""
+    (None: ``UNIFY_TOOLS_IN_CODE``) gives the brief for tools called from code, after the shared opening for the
+    flags the helper's allow-list is built with (:func:`helper_flags`)."""
     if in_code if in_code is not None else _in_code():
-        return HELPER_BRIEF_IN_CODE.replace("{similar}", SIMILAR_LINE_IN_CODE if similar else "")
+        from .agent_profiles import in_code_opening
+
+        opening = in_code_opening("helper", helper_flags(similar), cell_s=CELL_TIMEOUT_S)
+        return opening + "\n\n" + HELPER_BRIEF_IN_CODE.replace("{similar}", SIMILAR_LINE_IN_CODE if similar else "")
     return HELPER_BRIEF.replace("{similar}", SIMILAR_LINE if similar else "")
+
+
+def helper_flags(similar: bool) -> frozenset[str]:
+    """The configuration flags a helper's in-code allow-list is built with (``similar``: the pass has a similar-code
+    index)."""
+    return frozenset({"helper", "similar"} if similar else {"helper"})
 
 
 def _in_code() -> bool:
@@ -1484,10 +1494,7 @@ def _in_code_session(ctx: DelegateContext, call: str, st: dict, doc: dict) -> An
     from . import tool_handlers as _th
 
     hc = _th.HelperCalls(ctx=ctx, call=call, st=st, resolve=None, doc=doc)
-    allow = _registry.allow_list(
-        "helper",
-        frozenset({"helper", "similar"} if ctx.similar is not None else {"helper"}),
-    )
+    allow = _registry.allow_list("helper", helper_flags(ctx.similar is not None))
 
     def on_event(row: dict) -> None:
         # the helper's rows: the pass's events file, numbered in the helper's own sequence

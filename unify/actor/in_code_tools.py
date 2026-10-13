@@ -193,6 +193,9 @@ class InCodeTools:
             policy=policy,
             spawner=spawner,
         )
+        stores = can_store and store_skills is not None
+        # the flags the allow-list is built with, which the opening names its tools by
+        self.flags = H.actor_flags(agent, stores)
         self.binding, self.allow = H.actor_binding(
             agent=agent,
             name=name,
@@ -201,7 +204,7 @@ class InCodeTools:
             record=record,
             deadline=time.monotonic() + NO_WALL_CLOCK_S,
             state=self.state,
-            can_store=can_store and store_skills is not None,
+            can_store=stores,
         )
         self.specs = channel_specs(agent, self.allow)
         self.channel_allow = tuple(n for n in self.allow if n in self.specs)
@@ -214,6 +217,28 @@ class InCodeTools:
         self._lock = asyncio.Lock()
         self.closed = False
         SESSIONS.add(self)
+
+    # -- the opening of the system message ---------------------------------------------------------------------
+
+    def opening(self) -> str:
+        """The shared opening this agent reads first (:func:`unify.common.tool_registry.preamble`): its box (the
+        workspace and a private /tmp, writable; the network), its cell time, the library line where the run has a
+        library, the tools its allow-list has, and whether variables carry over (``UNIFY_CELL_STATE``). Box paths
+        and settings only, so it is constant for the run and the system message stays a stable prefix."""
+        from unify.actor import tool_handlers as H
+        from unify.actor.workspace_tools import _network_text
+        from unify.common import tool_registry as R
+        from unify.common.box_interpreter import persistent
+        from unify.memory.integration import hooks
+
+        environment = f"Your box: {H.WORKSPACE} and a private /tmp are writable; {_network_text()}."
+        if math.isfinite(self.cell_limit_s):
+            environment += f" A cell runs for at most {self.cell_limit_s:g} s."
+        memory = "The library is importable in your cells as `memory`." if hooks.enabled() else ""
+        return R.preamble(
+            self.agent,
+            {"environment": environment, "memory": memory, "flags": self.flags, "persistent": persistent()},
+        )
 
     # -- the model-API tool ------------------------------------------------------------------------------------
 

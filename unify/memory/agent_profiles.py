@@ -794,3 +794,78 @@ def in_code_names(agent: str, flags: frozenset[str] = frozenset()) -> tuple[str,
     from unify.common import tool_registry
 
     return tool_registry.allow_list(agent, flags)
+
+
+# --- the opening a memory agent reads first when tools are called from code ---
+
+_MODE_TEXT = {"ro": "read-only", "rw": "writable"}
+
+#: Where each memory agent reads the library: one line, box paths only.
+_LIBRARY_LINE = {
+    "writer": (
+        "The library is the Python package `memory` under /memory: `import memory` in a cell gives "
+        '`memory.index()`, `memory.show("<id>")` and `memory.find(value)`.'
+    ),
+    "curator": (
+        "The library is the Python package `memory` under /memory: `import memory` in a cell gives "
+        '`memory.index()`, `memory.show("<id>")` and `memory.find(value)`.'
+    ),
+    "helper": "/memory holds the library as the writer sees it, read-only.",
+}
+
+
+def _number(value: float) -> str:
+    return f"{value:g}" if isinstance(value, float) else str(value)
+
+
+def _root_text(mount: dict) -> str:
+    mode = _MODE_TEXT.get(mount["mode"], mount["mode"])
+    if mount.get("via"):
+        return f"{mount['path']} ({mode}, through tools.{mount['via']} only; cells cannot open it)"
+    return f"{mount['path']} ({mode})"
+
+
+def _limit_text(row: dict, cell_s: float | None) -> str:
+    value = cell_s if row["limit"] == "cell time" and cell_s is not None else row["value"]
+    if isinstance(value, str):
+        # a setting's name: its value for this pass is in the first message
+        return f"{row['limit']}: stated in the first message"
+    return f"{row['limit']}: {_number(value)} {row['unit']}"
+
+
+def _output_bytes(agent: str) -> int:
+    """The head of a cell's output the agent is shown (the constant that cuts it)."""
+    if agent == "helper":
+        from .helpers import OUTPUT_BYTES
+
+        return OUTPUT_BYTES
+    from .writer_pass import _OUTPUT_CAP
+
+    return _OUTPUT_CAP
+
+
+def environment_text(agent: str, cell_s: float | None = None) -> str:
+    """The memory agent's box roots with their modes and its limits, from its profile row (box paths only);
+    *cell_s* is the pass's own cell time where it is set."""
+    row = profile(agent)
+    roots = "; ".join(_root_text(m) for m in row["mounts"])
+    limits = [_limit_text(r, cell_s) for r in row["limits"]]
+    limits.append(f"cell output shown: the first {_output_bytes(agent)} bytes")
+    return f"Your box: {roots}.\nLimits: " + "; ".join(limits) + "."
+
+
+def in_code_opening(agent: str, flags: frozenset[str] = frozenset(), cell_s: float | None = None) -> str:
+    """The shared opening (:func:`unify.common.tool_registry.preamble`) of the writer, curator or a helper when tools
+    are called from code: its box and limits, its library line, the tools its allow-list has with *flags* on, and
+    variables kept between cells. Constant for a run, so the system message stays a stable prefix."""
+    from unify.common import tool_registry
+
+    return tool_registry.preamble(
+        agent,
+        {
+            "environment": environment_text(agent, cell_s),
+            "memory": _LIBRARY_LINE[agent],
+            "flags": frozenset(flags),
+            "persistent": True,
+        },
+    )

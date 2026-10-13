@@ -93,6 +93,12 @@ def response_validator(rf_norm: Any) -> Callable[[Any], str]:
     return validate
 
 
+def actor_flags(agent: str, can_store: bool) -> frozenset:
+    """The configuration flags the actor's or a teammate's allow-list is built with: teammates are offered
+    (``helper``), and storing only where the actor may store (*can_store*)."""
+    return frozenset({"helper"} | ({_registry.STORE_FLAG} if can_store and agent == "actor" else set()))
+
+
 def actor_binding(
     *,
     agent: str,
@@ -114,8 +120,7 @@ def actor_binding(
     ``store_skills`` only where the actor may store (*can_store*)."""
     if agent not in ("actor", "teammate"):
         raise ValueError(f"not the actor or a teammate: {agent!r}")
-    flags = frozenset({"helper"} | ({_registry.STORE_FLAG} if can_store and agent == "actor" else set()))
-    allow = _registry.allow_list(agent, flags)
+    allow = _registry.allow_list(agent, actor_flags(agent, can_store))
     if context_cls is None:
         from unify.common.tool_channel import CallContext as context_cls
     ctx = context_cls(
@@ -443,6 +448,7 @@ async def store_skills(ctx: Any, args: dict) -> Any:
 __all__ = [
     "ActorRequestState",
     "actor_binding",
+    "actor_flags",
     "ask",
     "delegate",
     "finish",

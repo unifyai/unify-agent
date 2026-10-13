@@ -749,23 +749,30 @@ def write_brief(
     tool_names: frozenset[str] = frozenset(),
     pool_kinds: str = "",
     in_code: bool | None = None,
+    flags: frozenset[str] = frozenset(),
 ) -> str:
     """The WRITE brief. *staging* (the episode-end fork is on) and *pool* (the candidate pool is on) add their input
     bullets, row keys and manifest fields; *tools* is the rendered Tools section and *tool_names* the tools the role
     gets, so a sentence that relies on an optional tool (``pool``, ``similar``, ``delegate``, ``replay``) appears
     only when that tool exists. Every input is constant for a run, so the brief is byte-stable for the run.
-    *in_code* (None: ``UNIFY_TOOLS_IN_CODE``) gives the brief for tools called from code.
+    *in_code* (None: ``UNIFY_TOOLS_IN_CODE``) gives the brief for tools called from code, after the shared opening
+    for the configuration *flags* (the flags the writer's allow-list is built with).
     """
     if in_code if in_code is not None else _in_code():
-        return _write_brief_in_code(
-            limits=limits,
-            mutation_min=mutation_min,
-            sample_k=sample_k,
-            lint_min=lint_min,
-            pytest_env=pytest_env,
-            staging=staging,
-            pool=pool,
-            tool_names=tool_names,
+        return _opened(
+            "writer",
+            flags,
+            limits,
+            _write_brief_in_code(
+                limits=limits,
+                mutation_min=mutation_min,
+                sample_k=sample_k,
+                lint_min=lint_min,
+                pytest_env=pytest_env,
+                staging=staging,
+                pool=pool,
+                tool_names=tool_names,
+            ),
         )
     from .manifest import describe_semantic_types
 
@@ -1026,16 +1033,23 @@ def curate_brief(
     trigger_path: str,
     tools: str = "",
     in_code: bool | None = None,
+    flags: frozenset[str] = frozenset(),
 ) -> str:
     """The CURATE brief with its numbers, input paths and Tools section filled in; *in_code* (None:
-    ``UNIFY_TOOLS_IN_CODE``) gives the brief for tools called from code."""
+    ``UNIFY_TOOLS_IN_CODE``) gives the brief for tools called from code, after the shared opening for the
+    configuration *flags*."""
     if in_code if in_code is not None else _in_code():
-        return _curate_brief_in_code(
-            limits=limits,
-            pytest_env=pytest_env,
-            overlaps_path=overlaps_path,
-            suspects_path=suspects_path,
-            trigger_path=trigger_path,
+        return _opened(
+            "curator",
+            flags,
+            limits,
+            _curate_brief_in_code(
+                limits=limits,
+                pytest_env=pytest_env,
+                overlaps_path=overlaps_path,
+                suspects_path=suspects_path,
+                trigger_path=trigger_path,
+            ),
         )
     return _fill(
         _CURATE,
@@ -1048,6 +1062,15 @@ def curate_brief(
             "trigger_path": trigger_path,
         },
     )
+
+
+def _opened(agent: str, flags: frozenset[str], limits: Limits, brief: str) -> str:
+    """*brief* after the shared opening every agent reads first when tools are called from code
+    (:func:`.agent_profiles.in_code_opening`); both are constant for a run, so the system message is a stable
+    prefix."""
+    from .agent_profiles import in_code_opening
+
+    return in_code_opening(agent, frozenset(flags), cell_s=limits.cell_s) + "\n\n" + brief
 
 
 def limits_now(
@@ -1135,6 +1158,7 @@ def write_brief_now(
         tools=tools_section("write", flags),
         tool_names=_tool_names("write", flags),
         pool_kinds=_pool_kinds() if pool else "",
+        flags=flags,
     )
 
 
@@ -1150,13 +1174,15 @@ def curate_brief_now(
     from .gate import _PYTEST_ENV
     from .tool_spec import tools_section
 
+    flags = tool_flags(edit=edit_tools)
     return curate_brief(
         limits=limits_now(cell_s, compact=compact, finish_capped=finish_capped),
         pytest_env=_PYTEST_ENV,
         overlaps_path=curate.OVERLAPS_INPUT,
         suspects_path=curate.SUSPECTS_INPUT,
         trigger_path=curate.TRIGGER_INPUT,
-        tools=tools_section("curate", tool_flags(edit=edit_tools)),
+        tools=tools_section("curate", flags),
+        flags=flags,
     )
 
 
