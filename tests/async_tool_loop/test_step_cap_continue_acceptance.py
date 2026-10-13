@@ -603,9 +603,13 @@ async def test_a_failed_compaction_ends_the_request_with_a_reply(
 # from a run on the parent of the mode's merge (unify-agent 682cfc992, which
 # has no ``continue``): the assertion message prints the digest. The same
 # digests at a later commit mean off and ``on`` send what they sent before.
+# ``on`` was recorded again once the compaction's transcript pointer named the
+# in-box path (``/transcripts/<file>``) instead of the host's temporary home,
+# whose random name had made that digest differ on every run; the requests are
+# otherwise byte for byte the same.
 PINNED = {
     "off": "2e3a3c1dd8d224a14f5e32a1563f925b3cc562e87c6895204a225b1dbf2a8adf",  # pragma: allowlist secret
-    "on": "f2baa9edfb6aa34dfa71e27a387c2a7cb4eb5f338c1521c233638ea162ff665c",  # pragma: allowlist secret
+    "on": "27860c6d2d0884bb54badf068b7cdff6e431a73fa1067bd3b311c29d02c55b6e",  # pragma: allowlist secret
     "off+draft": "881c091fc18d8ae47c2eca5aad10f15b4dd9789f0a7d9ceb8680d765476af90d",  # pragma: allowlist secret
 }
 PINNED_STEPS = 9
