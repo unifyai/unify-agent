@@ -187,6 +187,8 @@ def test_under_tools_in_code_the_pointer_section_follows_the_shared_opening_and_
         if len(sentence) >= 30:
             assert sentence not in section, sentence
     assert OPENING_MEMORY_LINE not in section
+    # the opening already says the library is importable as `memory`; the section says it is bound, not again
+    assert "importable in your cells as `memory`" not in section
     assert "## How you work here" not in section
     # the section comes last, after the opening and the role's text
     monkeypatch.setattr(hooks, "enabled", lambda: True)
