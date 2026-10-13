@@ -269,7 +269,12 @@ def create_execution_globals() -> Dict[str, Any]:
     # that the execution layer can detect and wire up for steering operations.
     from unify.common.async_tool_loop import SteerableToolHandle
     from unify.common.asyncio_compat import run_coro_sync
-    from unify.common.cell_models import cell_list_llms, cell_query_llm, cell_unillm
+    from unify.common.cell_models import (
+        ModelRequestError,
+        cell_list_llms,
+        cell_query_llm,
+        cell_unillm,
+    )
 
     globals_dict["SteerableToolHandle"] = SteerableToolHandle
     # Cell-scoped: each refuses an endpoint UNIFY_CELL_LLM_MODELS does not
@@ -279,6 +284,9 @@ def create_execution_globals() -> Dict[str, Any]:
     globals_dict["list_llms"] = cell_list_llms
     globals_dict["run_coro_sync"] = run_coro_sync
     globals_dict["unillm"] = cell_unillm
+    # What a cell's model call raises when the provider refuses the request's
+    # own content, so the cell can catch it by name.
+    globals_dict["ModelRequestError"] = ModelRequestError
 
     # Globals a registered environment binds beside its namespaces; never in
     # place of one of the above. While a feature that observes environment

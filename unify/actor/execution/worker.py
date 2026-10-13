@@ -24,8 +24,8 @@ in the worker as one of:
   model-written body runs confined and only its primitive calls come back;
 * a **value** (plain data), sent once;
 * a **worker-local** stand-in (``display``, ``run_coro_sync``,
-  ``_around_cp``, ``SteerableToolHandle``, ``reply``), or the current
-  ``request``, built in the worker from its text;
+  ``_around_cp``, ``SteerableToolHandle``, ``ModelRequestError``, ``reply``),
+  or the current ``request``, built in the worker from its text;
 * or **refused**, naming why, when none of these applies.
 
 Values cross as tagged JSON (worker_child.py explains why not pickle). A result
@@ -501,6 +501,7 @@ class PythonWorker:
     def _describe_global(self, name: str, value: Any, record: bool = False) -> dict:
         from unify.common.async_tool_loop import SteerableToolHandle
         from unify.common.asyncio_compat import run_coro_sync
+        from unify.common.cell_models import ModelRequestError
         from unify.function_manager.steering import AROUND_CP_FN
 
         if name == "display" and callable(value):
@@ -511,6 +512,9 @@ class PythonWorker:
             return {"kind": "local", "local": "run_coro_sync"}
         if value is SteerableToolHandle:
             return {"kind": "local", "local": "handle_class"}
+        if value is ModelRequestError:
+            # The worker's own class, which the harness's error arrives as.
+            return {"kind": "local", "local": "model_request_error"}
         if isinstance(value, child.Reply):
             # UNIFY_REPLY_CHANNEL=code+text: the worker's own reply().
             return {"kind": "local", "local": "reply"}

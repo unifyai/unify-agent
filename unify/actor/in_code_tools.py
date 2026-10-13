@@ -20,7 +20,9 @@ One :class:`InCodeTools` serves one request of one agent:
   starts;
 * the evidence: ``tool-events.jsonl`` in the request's own folder (:func:`request_folder`, under the harness's state
   directory, which no box sees), one ``tool_call`` row per cell and one per in-code call, written by the host as the
-  memory pass writes its rows (a file created new, never through a link, then appended);
+  memory pass writes its rows (a file created new, never through a link, then appended). A cell's row counts its
+  model calls the provider refused for the request's own content (``model_request_errors``,
+  :class:`unify.common.cell_models.ModelRequestError`); the request's count is the sum over its cells;
 * the end (:meth:`InCodeTools.close`): the interpreter is stopped with the verified kill, the handler threads are
   waited for, and host work a call started (a storage review) is awaited, or cancelled when the request did not end
   normally; each is checked to have ended.
@@ -283,6 +285,7 @@ class InCodeTools:
         ends, with the number reserved when it started (the in-code calls it made are numbered after it)."""
         from unify.common._async_tool import bound_request, cell_reply
         from unify.common.box_interpreter import persistent
+        from unify.common.cell_models import counting_model_request_errors
 
         if self.closed:
             raise RuntimeError("this request's tools have ended")
@@ -295,12 +298,15 @@ class InCodeTools:
             res: Any = None
             raised: Optional[BaseException] = None
             failed: Optional[str] = None
+            request_errors = None
             try:
                 interp = await self._interpreter()
                 if self.channel is not None:
                     self.channel.gone_during = None
                 bound_request.install(self.shadow)
-                res = await interp.run_cell(code, call=call)
+                # the cell's model calls are served in tasks this one starts, so they count here
+                with counting_model_request_errors() as request_errors:
+                    res = await interp.run_cell(code, call=call)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - the interpreter failed: told as the cell's error, never a host trace
@@ -318,7 +324,7 @@ class InCodeTools:
                     interp, self.interp = self.interp, None
                     await interp.stop()
             out = self._result(res, raised, started, failed)
-            self._cell_row(call, code, out)
+            self._cell_row(call, code, out, request_errors.n if request_errors is not None else 0)
             if raised is not None and not _is_reply(raised):
                 raise raised
             return out
@@ -377,7 +383,7 @@ class InCodeTools:
             duration_ms=int((time.monotonic() - started) * 1000),
         )
 
-    def _cell_row(self, call: int, code: str, out: Any) -> None:
+    def _cell_row(self, call: int, code: str, out: Any, model_request_errors: int = 0) -> None:
         from unify.actor.execution.types import parts_to_text
         from unify.common.tool_channel import canonical_args
 
@@ -401,6 +407,8 @@ class InCodeTools:
             "usage": None,
             "via": "model",
             "error": out.error is not None,
+            # the cell's model calls the provider refused for the request's own content (a count, never the text)
+            "model_request_errors": model_request_errors,
         }
         self.events.append(row)
 

@@ -326,7 +326,8 @@ async def test_a_cells_query_llm_call_is_its_own_session(headers_on):
     (query,) = (_headers(kw) for kw in _of(model, sent, "query_llm"))
     assert query["X-Unify-Session"] != actor_session
     assert query["X-Unify-Request"] == "0"
-    assert query["X-Unify-Call-Kind"] == "CodeActActor.query_llm"
+    # A cell's call carries the cell call kind, whatever origin it names.
+    assert query["X-Unify-Call-Kind"] == "cell"
 
 
 @pytest.mark.asyncio
