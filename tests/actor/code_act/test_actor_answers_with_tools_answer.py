@@ -130,7 +130,7 @@ async def test_each_request_is_answered_by_tools_answer_and_finish_is_unknown(se
     # tools.finish failed in the cell, by name on the host and as a function of the box module; the request went on
     tried = _last_tool_result(model.calls[2])
     assert "HOST unknown_tool" in tried, tried
-    assert "AttributeError" in tried and "has no attribute 'finish'" in tried, tried
+    assert "AttributeError" in tried and "tools.finish isn't available in your role" in tried, tried
     calls = _channel_rows(_rows(session))
     assert [(r["tool"], r["status"]) for r in calls] == [("finish", "refused"), ("answer", "ok"), ("answer", "ok")]
     assert calls[0]["refusal"]["form"] == "unknown_tool"

@@ -373,7 +373,8 @@ def test_a_helper_cannot_call_delegate_finish_or_check_and_a_curator_cannot_call
     out, rows = asyncio.run(main())
     for tool, exc in out.items():
         assert getattr(exc, "form", None) == "unknown_tool", (tool, exc)
-        assert f"unknown tool {tool!r}" in str(exc)
+        # another role's tool reads as unavailable in this role, never as unknown (and no other role's tool is named)
+        assert f"tools.{tool} isn't available in your role" in str(exc)
     assert [r["refusal"]["form"] for r in rows] == ["unknown_tool"] * 4
 
 
@@ -455,7 +456,9 @@ def test_no_writer_reply_or_row_carries_an_environment_value_a_host_path_or_a_ro
     printed = sum(1 for x in lines if " -> " in x or " !! " in x)
     assert len(WRITER_REFUSALS) - 1 <= printed <= len(WRITER_REFUSALS), cell
     assert "bogus_tool !! Refused: refused: unknown tool 'bogus_tool'" in cell
-    assert "read_episode !! Refused: refused: unknown argument 'nope'" in cell
+    assert (
+        "read_episode !! Refused: refused: tools.read_episode(episode='e1', nope=1): there is no argument 'nope'"
+    ) in cell
     assert lines[-1].startswith("not finished: "), cell
     in_code = [r for r in rows if r.get("via") == "channel"]
     assert [r["tool"] for r in in_code] == [t for t, _ in WRITER_REFUSALS], _summary(out, rows)

@@ -13,8 +13,11 @@ within :data:`FRAME_READ_TIMEOUT_S` of its first byte), UTF-8, the nesting depth
 most :data:`MAX_DEPTH`), ``json.loads``, the envelope's keys exactly ``{v, id, tool, args}``, ``v == 1``, ``id`` an
 integer greater than the previous id, ``tool`` a string and ``args`` an object. Any failure is a malformed frame: the
 channel closes and one ``channel_closed`` event row names the reason. Then the call: the tool must be on this box's
-allow-list (else the general ``unknown_tool`` refusal) and the arguments must validate against the tool's registry
-schema, with unknown arguments refused on every object (``bad_arguments``).
+allow-list (else the general ``unknown_tool`` refusal, with the nearest tool names) and the arguments must validate
+against the tool's registry schema, with unknown arguments refused on every object (``bad_arguments``). A refused
+call's text teaches: the call as written, what was given, what was expected and one call that works for the caller's
+role (:func:`argument_error`). A handler that fails is answered as the harness's fault, never with the exception's
+message (:func:`harness_fault`).
 
 Authority. Who is calling (agent, name, role, pass, roots, limits) comes only from the binding the channel was opened
 with, never from a frame; a frame has no field for it and any extra key closes the channel.
@@ -238,51 +241,163 @@ _JSON_TYPES: dict[str, Callable[[object], bool]] = {
 }
 
 
-def validate(schema: Mapping, value: object, where: str = "arguments") -> str | None:
-    """The first way *value* breaks *schema* (a problem text naming only argument names), or None.
+@dataclasses.dataclass(frozen=True)
+class ArgumentProblem:
+    """The first way a call's arguments break their schema (:func:`first_problem`)."""
+
+    #: the problem as :func:`validate` states it (argument names only)
+    text: str
+    #: ``type``, ``enum``, ``const``, ``unknown``, ``missing``, ``any_of``, ``min_items`` or ``max_items``
+    kind: str
+    #: the argument as a cell writes it (``offset``, ``claims[0]``, ``parts.text``); "" for the arguments as a whole
+    at: str
+    #: what was given there (for ``unknown`` and ``missing``: the object that has, or lacks, the name)
+    value: object
+    #: the schema at :attr:`at`
+    schema: Mapping
+    #: ``unknown`` and ``missing``: the argument's name
+    name: str = ""
+
+
+def first_problem(schema: Mapping, value: object, where: str = "arguments") -> ArgumentProblem | None:
+    """The first way *value* breaks *schema*, or None.
 
     The registry's subset of JSON schema: ``type`` (a name or a list), ``enum``, ``const``, ``properties`` with
     ``required`` (every object refuses names it does not declare, whatever ``additionalProperties`` says),
     ``items``, ``minItems``, ``maxItems`` and ``anyOf``. Iterative, so a value's depth cannot exhaust the stack.
     """
-    stack: list[tuple[Mapping, object, str]] = [(schema, value, where)]
+    stack: list[tuple[Mapping, object, str, str]] = [(schema, value, where, "")]
     while stack:
-        sch, val, at = stack.pop()
+        sch, val, at, name = stack.pop()
         if not isinstance(sch, Mapping):
             continue
+
+        def problem(text: str, kind: str, arg: str = "") -> ArgumentProblem:
+            return ArgumentProblem(text, kind, name, val, sch, arg)  # noqa: B023 - built and returned at once
+
         if "anyOf" in sch:
             options = [s for s in sch["anyOf"] if isinstance(s, Mapping)]
             if not any(validate(s, val, at) is None for s in options):
-                return f"{at} does not match any allowed form"
+                return problem(f"{at} does not match any allowed form", "any_of")
         types = sch.get("type")
         if types is not None:
             names = types if isinstance(types, list) else [types]
             if not any(_JSON_TYPES.get(t, lambda v: False)(val) for t in names):
-                return f"{at} must be {' or '.join(map(str, names))}"
+                return problem(f"{at} must be {' or '.join(map(str, names))}", "type")
         if "enum" in sch and val not in sch["enum"]:
-            return f"{at} must be one of {', '.join(map(str, sch['enum']))}"
+            return problem(f"{at} must be one of {', '.join(map(str, sch['enum']))}", "enum")
         if "const" in sch and val != sch["const"]:
-            return f"{at} must be {sch['const']!r}"
+            return problem(f"{at} must be {sch['const']!r}", "const")
         if isinstance(val, dict) and ("properties" in sch or sch.get("type") == "object"):
             props = sch.get("properties") or {}
             unknown = sorted(k for k in val if k not in props)
             if unknown:
                 shown = ", ".join(repr(str(k)[:40]) for k in unknown[:5])
-                return f"unknown argument{'s' if len(unknown) > 1 else ''} {shown} in {at}"
+                return problem(
+                    f"unknown argument{'s' if len(unknown) > 1 else ''} {shown} in {at}",
+                    "unknown",
+                    str(unknown[0])[:40],
+                )
             for req in sch.get("required") or ():
                 if req not in val:
-                    return f"{at} needs {req!r}"
+                    return problem(f"{at} needs {req!r}", "missing", str(req))
             for k, v in val.items():
-                stack.append((props[k], v, f"{k!r}" if at == where else f"{at}.{k}"))
+                stack.append(
+                    (props[k], v, f"{k!r}" if at == where else f"{at}.{k}", f"{name}.{k}" if name else str(k)),
+                )
         if isinstance(val, list):
             if "minItems" in sch and len(val) < sch["minItems"]:
-                return f"{at} needs at least {sch['minItems']} items"
+                return problem(f"{at} needs at least {sch['minItems']} items", "min_items")
             if "maxItems" in sch and len(val) > sch["maxItems"]:
-                return f"{at} takes at most {sch['maxItems']} items"
+                return problem(f"{at} takes at most {sch['maxItems']} items", "max_items")
             items = sch.get("items")
             if isinstance(items, Mapping):
-                stack.extend((items, v, f"{at}[{i}]") for i, v in enumerate(val))
+                stack.extend((items, v, f"{at}[{i}]", f"{name}[{i}]") for i, v in enumerate(val))
     return None
+
+
+def validate(schema: Mapping, value: object, where: str = "arguments") -> str | None:
+    """The first way *value* breaks *schema* (a problem text naming only argument names), or None
+    (:func:`first_problem`)."""
+    found = first_problem(schema, value, where)
+    return None if found is None else found.text
+
+
+#: Python's names for the schema's types, as a cell writes the values.
+_PY_TYPES = {
+    "string": "str",
+    "integer": "int",
+    "number": "int or float",
+    "boolean": "bool",
+    "array": "list",
+    "object": "dict",
+    "null": "None",
+}
+
+
+def expected_text(schema: Mapping) -> str:
+    """What *schema* accepts, in Python's terms: ``int``, ``list of str``, ``one of 'a', 'b'``."""
+    if not isinstance(schema, Mapping):
+        return "any value"
+    if "enum" in schema:
+        return "one of " + ", ".join(repr(v) for v in schema["enum"])
+    if "const" in schema:
+        return repr(schema["const"])
+    if "anyOf" in schema:
+        return " or ".join(expected_text(s) for s in schema["anyOf"] if isinstance(s, Mapping))
+    types = schema.get("type")
+    if types is None:
+        return "any value"
+    names = types if isinstance(types, list) else [types]
+    out = []
+    for t in names:
+        text = _PY_TYPES.get(t, str(t))
+        items = schema.get("items")
+        if t == "array" and isinstance(items, Mapping) and (items.get("type") or "enum" in items):
+            text = f"list of {expected_text(items)}"
+        out.append(text)
+    return " or ".join(out)
+
+
+def _given(value: object) -> str:
+    from unify.common.contract_runtime import shown
+
+    return f"{shown(value)} ({'None' if value is None else type(value).__name__})"
+
+
+#: The longest the call as written is shown before it is left as ``tools.<name>(…)``.
+_CALL_CHARS = 200
+
+
+def argument_error(tool: str, args: Mapping, problem: ArgumentProblem, example: str | None) -> str:
+    """The text of a ``bad_arguments`` refusal that teaches: the call as written, what was given and where, what was
+    expected there, and one call that works (*example*), with the nearest valid names when one was misspelled."""
+    from unify.common.contract_runtime import call_text, nearest, render
+
+    call = call_text(f"tools.{tool}", (), dict(args))
+    if len(call) > _CALL_CHARS:
+        call = f"tools.{tool}(…)"
+    p, near = problem, []
+    props = list((p.schema.get("properties") or {})) if p.kind in ("unknown", "missing") else []
+    if p.kind == "missing":
+        at = f"{p.at}.{p.name}" if p.at else p.name
+        given = f"{at} is missing"
+        expected = f"{at}: {expected_text((p.schema.get('properties') or {}).get(p.name, {}))}"
+    elif p.kind == "unknown":
+        given = f"there is no argument {p.name!r}" + (f" in {p.at}" if p.at else "")
+        expected = f"{p.at + ' takes' if p.at else 'arguments'}: {', '.join(props) or 'none'}"
+        near = nearest(p.name, props)
+    elif p.kind in ("min_items", "max_items"):
+        n = len(p.value) if isinstance(p.value, list) else 0
+        given = f"{p.at} has {n} item{'' if n == 1 else 's'}"
+        bound = f"at least {p.schema['minItems']}" if p.kind == "min_items" else f"at most {p.schema['maxItems']}"
+        expected = f"{p.at}: {expected_text(p.schema)} of {bound} items"
+    else:
+        given = f"{p.at or 'the arguments'} is {_given(p.value)}"
+        expected = f"{p.at or 'the arguments'}: {expected_text(p.schema)}"
+        if p.kind == "enum" and isinstance(p.value, str):
+            near = [repr(v) for v in nearest(p.value, [v for v in p.schema["enum"] if isinstance(v, str)])]
+    return render(call, given, expected=expected, example=example, nearest=near)
 
 
 # --- replies ---------------------------------------------------------------------------------------------------
@@ -298,6 +413,43 @@ def _general(form: str, **fields: object) -> Any:
     from unify.memory.writer_tools import general
 
     return general(form, **fields)
+
+
+def _unknown_tool(tool: str, allow: tuple[str, ...]) -> Any:
+    """The general ``unknown_tool`` refusal with the nearest of the caller's own tools before the whole list; a tool
+    of another role is said to be unavailable in the caller's role, and no other role's tool is named (the model-API
+    tools keep the general text as it is)."""
+    from unify.common.contract_runtime import nearest
+    from unify.common.tool_registry import REFUSED, registry
+
+    near = nearest(tool[:80], allow)
+    if tool not in allow and tool != "execute_code" and tool in registry():
+        # a tool of another role: say so, and suggest only the caller's own tools (MAIN, 13 Oct)
+        text = f"tools.{tool} isn't available in your role; "
+    else:
+        text = f"unknown tool {tool[:80]!r}; "
+    text += (f"nearest: {', '.join(near)}; " if near else "") + f"your tools: {', '.join(allow)}"
+    return _reply_class()((REFUSED + text)[:600], "refused", "unknown_tool")
+
+
+def harness_fault(tool: str, exc: BaseException) -> Any:
+    """The error reply for a handler that failed inside the harness: the call's arguments were valid, and what to do
+    next. Never the exception's message, which can carry a path on the host."""
+    return _reply_class()(
+        f"error: tools.{tool} failed inside the harness ({type(exc).__name__}). Your call's arguments were valid: "
+        "the fault is the harness's, not your call's. Try the call once more; if it fails again, continue without it.",
+        "error",
+    )
+
+
+def _example_for(tool: str, spec: Any, schema: Mapping) -> str:
+    """One call of *tool* that *schema* (the caller's own) accepts (:func:`tool_registry.example_call`)."""
+    from unify.common import tool_registry
+
+    reg = tool_registry.registry().get(tool)
+    examples = reg.examples if reg is not None else tuple(getattr(spec, "examples", ()) or ())
+    base = reg.parameters if reg is not None else schema
+    return tool_registry.example_call(tool, schema, examples, base=base)
 
 
 def as_reply(value: object) -> Any:
@@ -702,15 +854,13 @@ class Channel:
         if fields is None:
             from unify.common.tool_registry import CHANNEL_ONLY
 
-            return _general(
-                "unknown_tool",
-                name=tool[:80],
-                tools=", ".join(n for n in self.allow if n not in CHANNEL_ONLY),  # as the agent's tools list them
-            )
+            # the tools only the memory package calls are never named: not as nearest, not among your tools
+            return _unknown_tool(tool, tuple(n for n in self.allow if n not in CHANNEL_ONLY))
         spec, schema, handler, blocking = fields
-        problem = validate(schema, args)
+        problem = first_problem(schema, args)
         if problem is not None:
-            return _general("bad_arguments", reason=problem[:300])
+            example = _example_for(tool, spec, schema)
+            return _general("bad_arguments", reason=argument_error(tool, args, problem, example))
         now = time.monotonic()
         if self.binding.deadline - now <= 0:
             return _general("stopped", reason="the wall clock has ended")
@@ -727,7 +877,7 @@ class Channel:
         try:
             fn = handler if callable(handler) else resolve_handler(handler)
         except Exception as exc:  # noqa: BLE001 - a missing handler is an error reply, never a crash
-            return _reply_class()(f"error: {type(exc).__name__} in tools.{tool}", "error")
+            return harness_fault(tool, exc)
         return await self._run_handler(tool, fn, ctx, args, blocking, deadline)
 
     async def _run_handler(
@@ -762,7 +912,7 @@ class Channel:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - a broken handler is answered, never ends the channel
-            return _reply_class()(f"error: {type(exc).__name__} in tools.{tool}", "error")
+            return harness_fault(tool, exc)
 
     # -- pipe I/O ------------------------------------------------------------------------------------------------
 

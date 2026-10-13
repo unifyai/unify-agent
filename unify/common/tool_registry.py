@@ -18,7 +18,10 @@ control arm's requests do not change. Nothing here imports another harness modul
 
 from __future__ import annotations
 
+import ast
 import dataclasses
+import hashlib
+import inspect
 import json
 import keyword
 import re
@@ -1988,6 +1991,96 @@ def signature_text(name: str, agent: Optional[str] = None) -> str:
     return f"{name}({', '.join(parts)})"
 
 
+def _tool_calls(source: str, name: str) -> list[tuple[str, ast.Call]]:
+    """Each ``tools.<name>(...)`` call in the example *source*, with its text as written."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    out = []
+    for node in ast.walk(tree):
+        f = getattr(node, "func", None)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(f, ast.Attribute)
+            and f.attr == name
+            and isinstance(f.value, ast.Name)
+            and f.value.id == "tools"
+        ):
+            out.append((ast.get_source_segment(source, node) or "", node))
+    return sorted(out, key=lambda t: (t[1].lineno, t[1].col_offset))
+
+
+#: A value given by a variable in an example: valid whatever the schema asks.
+_VARIABLE = object()
+
+
+def _bound(call: ast.Call, order: list[str]) -> Optional[dict[str, Any]]:
+    """The call's arguments by name (a positional one by *order*), a literal as its value and anything else as
+    :data:`_VARIABLE`; None when it has more positional arguments than *order* or a ``*``/``**`` argument."""
+    if len(call.args) > len(order) or any(isinstance(a, ast.Starred) for a in call.args):
+        return None
+    out: dict[str, Any] = {}
+    named = list(zip(order, call.args)) + [(k.arg, k.value) for k in call.keywords]
+    for key, node in named:
+        if key is None:
+            return None
+        try:
+            out[key] = ast.literal_eval(node)
+        except (ValueError, SyntaxError, TypeError):
+            out[key] = _VARIABLE
+    return out
+
+
+def _sample(schema: dict) -> Any:
+    """A value *schema* accepts, for an example built from a signature alone."""
+    if "enum" in schema:
+        return schema["enum"][0]
+    t = schema.get("type")
+    t = t[0] if isinstance(t, list) and t else t
+    return {"integer": 1, "number": 1, "boolean": True, "array": [], "object": {}, "null": None}.get(t, "...")
+
+
+def example_call(name: str, schema: dict, examples: Iterable[str] = (), base: Optional[dict] = None) -> str:
+    """One call of ``tools.<name>`` that *schema* (the caller's own parameters) accepts, as a cell writes it.
+
+    The first call in *examples* whose literal arguments validate against *schema* (an argument given by a variable
+    is taken as valid); else a call built in *schema*'s order from the examples' values for the arguments *schema*
+    has (an example's positional arguments read by *base*, the schema the examples were written for), each missing
+    required one filled with a value of its type.
+    """
+    from unify.common.tool_channel import validate
+
+    first, rest = _signature(schema)
+    order = first + rest
+    props = schema.get("properties") or {}
+    seen: dict[str, str] = {}
+    base_order = sum(_signature(base), []) if base else order
+    for source in examples:
+        for text, call in _tool_calls(source, name):
+            args = _bound(call, order)
+            if args is not None and set(first) <= set(args) and set(args) <= set(props):
+                # a variable stands for a valid value: check a value of its type in its place
+                values = {k: _sample(props[k] or {}) if v is _VARIABLE else v for k, v in args.items()}
+                if validate(schema, values) is None:
+                    return text
+            for key, node in list(zip(base_order, call.args)) + [(k.arg, k.value) for k in call.keywords]:
+                if key in props and key not in seen:
+                    seen[key] = ast.get_source_segment(source, node) or ""
+    parts = []
+    for p in first:
+        value = seen.get(p) or repr(_sample(props.get(p) or {}))
+        parts.append(f"{p}={value}")
+    return f"tools.{name}({', '.join(parts)})"
+
+
+def role_example(name: str, agent: Optional[str] = None) -> str:
+    """:func:`example_call` of *name* for *agent* (its own parameters, from the registry's examples)."""
+    spec = registry()[name]
+    schema = strict_parameters(agent, name) if agent else spec.parameters
+    return example_call(name, schema, spec.examples, base=spec.parameters)
+
+
 def list_text(names: Iterable[str], agent: Optional[str] = None) -> str:
     """``tools.list()``: one line per tool, ``name(signature) - summary``, in registry order (with *agent*, its
     own arguments where they differ)."""
@@ -2014,6 +2107,16 @@ def _argument_lines(params: dict) -> list[str]:
     return out
 
 
+#: A template field, ``{path}`` or ``{path!r}``.
+_FIELD = re.compile(r"\{([a-z_]+)(?:![rsa])?\}")
+
+
+def _slots(template: str) -> str:
+    """A refusal template as help prints it: each field a named slot (``{path}`` reads ``<path>``), since the value
+    is filled at the call."""
+    return _FIELD.sub(r"<\1>", template).replace("{{", "{").replace("}}", "}")
+
+
 def help_text(name: str, agent: Optional[str] = None) -> str:
     """``tools.help(name)``: the description, the arguments, what it returns, its refusal forms, examples and when
     to use it. With *agent*, an agent whose arguments differ reads them after :data:`ROLE_MARKER`; the text above
@@ -2027,7 +2130,7 @@ def help_text(name: str, agent: Optional[str] = None) -> str:
         parts += ["", f"Returns: {s.returns}"]
     if s.refusals:
         parts += ["", "Refusals (raised as tools.Refused, with the form code):"]
-        parts += [f"  {form}: {text}" for form, text in s.refusals.items()]
+        parts += [f"  {form}: {_slots(text)}" for form, text in s.refusals.items()]
     if s.examples:
         parts += ["", "Examples:", *[f"  {line}" for ex in s.examples for line in ex.splitlines()]]
     if s.when:
@@ -2051,6 +2154,102 @@ def shell_source() -> str:
 
 #: The names the embedded client defines that the stub exports.
 CLIENT_NAMES = ("Result", "Refused", "NotRun", "ToolError", "ChannelClosed", "_call")
+
+
+def errors_source() -> str:
+    """The error renderer every stub carries: :mod:`unify.common.contract_runtime`'s ``render``, ``shown``,
+    ``call_text`` and ``nearest``, byte for byte (standard library only; compiled in the box on its first error)."""
+    from unify.common import contract_runtime as cr
+
+    parts = ["import difflib", f"SHOWN_CHARS = {cr.SHOWN_CHARS!r}"]
+    parts += [inspect.getsource(f) for f in (cr.render, cr.shown, cr.call_text, cr.nearest)]
+    return "\n\n".join(parts) + "\n"
+
+
+#: What a stub's digests of other roles' tools are salted with (:func:`role_digest`).
+ROLE_DIGEST_SALT = "tools-of-another-role:"
+
+
+def role_digest(name: str) -> str:
+    """The digest a stub keeps of a tool another role has. It tells "a tool of another role" from "no such tool"
+    while no other role's tool name appears in the stub, its ``dir`` or its help (MAIN, 13 Oct)."""
+    return hashlib.sha256((ROLE_DIGEST_SALT + name).encode()).hexdigest()[:16]
+
+
+#: The stub's code that makes its Python-level errors teach (a wrong keyword or number of arguments, a name the
+#: stub does not have). It reads ``_SIGNATURES``, ``_EXAMPLES``, ``_OTHER_ROLES`` (:func:`role_digest` of each
+#: registered tool this agent does not have) and ``_ERRORS_SOURCE``, which the stub sets first. Errors suggest only
+#: the caller's own names.
+_TEACHING_SOURCE = '''
+_errors = {}
+
+
+def _contract():
+    """The error renderer, compiled on the first error only."""
+    if not _errors:
+        import __future__
+
+        flags = __future__.annotations.compiler_flag
+        exec(compile(_ERRORS_SOURCE, "<tools: errors>", "exec", flags, True), _errors)
+    return _errors
+
+
+def _signature_error(fn, args, kwargs, exc):
+    c = _contract()
+    name = fn.__name__
+    problem = str(exc)
+    if problem.startswith(name + "() "):
+        problem = problem[len(name) + 3:]
+    near = []
+    if "unexpected keyword argument " in problem:
+        key = problem.rsplit("unexpected keyword argument ", 1)[1].split()[0].strip("'")
+        code = fn.__code__
+        near = c["nearest"](key, code.co_varnames[: code.co_argcount])
+    return c["render"](
+        c["call_text"]("tools." + name, args, kwargs),
+        problem,
+        expected="tools." + _SIGNATURES[name],
+        example=_EXAMPLES.get(name),
+        nearest=near,
+    )
+
+
+def _taught(fn):
+    """*fn* with a wrong keyword or number of arguments raising a TypeError that shows the call as written, your
+    signature and a call that works."""
+
+    @_functools.wraps(fn)
+    def call(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except TypeError as exc:
+            if exc.__traceback__ is None or exc.__traceback__.tb_next is not None:
+                raise  # raised inside the call, not by its signature
+            text = _signature_error(fn, args, kwargs, exc)
+        raise TypeError(text) from None
+
+    return call
+
+
+def _other_role(name):
+    """Whether *name* is a tool another role has: the stub keeps only salted digests of those names."""
+    import hashlib
+
+    return hashlib.sha256(("tools-of-another-role:" + name).encode()).hexdigest()[:16] in _OTHER_ROLES
+
+
+def __getattr__(name):
+    if name.startswith("_"):
+        raise AttributeError("module 'tools' has no attribute %r" % (name,))
+    c = _contract()
+    # only the caller's own names: functions for a function name, classes (Refused, ...) for a class name
+    near = c["nearest"](name, [n for n in __all__ if n[:1].isupper() == name[:1].isupper()])
+    if _other_role(name):
+        tail = ("Nearest: " + ", ".join(near) + ". " if near else "") + "tools.list() lists yours."
+        raise AttributeError("tools.%s isn't available in your role.\\n%s" % (name, tail))
+    problem = "tools has no attribute %r" % (name,)
+    raise AttributeError(c["render"]("tools." + name, problem, nearest=near, hint="tools.list() lists yours."))
+'''
 #: The names the embedded shell source defines that the stub exports.
 SHELL_NAMES = ("sh", "ShellResult")
 
@@ -2071,6 +2270,16 @@ def _function_source(name: str, agent: Optional[str]) -> str:
         f"    {json.dumps(doc)}\n"
         f"    return _call({name!r}, _args({args}))\n"
     )
+
+
+#: The model-API tool, never a ``tools.<name>`` function of any role.
+EXECUTE = "execute_code"
+
+
+def _other_roles_tools(allowed: Iterable[str]) -> set[str]:
+    """The registered ``tools.<name>`` functions an agent allowed *allowed* does not have: never the model-API tool,
+    and never a tool only the memory package calls (:data:`CHANNEL_ONLY`), which is no role's function."""
+    return set(registry()) - set(allowed) - {EXECUTE} - CHANNEL_ONLY
 
 
 def render_stub(names: tuple[str, ...], agent: Optional[str] = None) -> str:
@@ -2109,10 +2318,18 @@ def render_stub(names: tuple[str, ...], agent: Optional[str] = None) -> str:
         "def _args(**given):",
         "    return {k: v for k, v in given.items() if v is not None}",
         "",
+        "",
+        "import functools as _functools",
+        "",
+        f"_SIGNATURES = {json.dumps({n: signature_text(n, agent) for n in allowed if n != 'sh'}, indent=0)}",
+        f"_EXAMPLES = {json.dumps({n: role_example(n, agent) for n in allowed if n != 'sh'}, indent=0)}",
+        f"_OTHER_ROLES = {json.dumps(sorted(role_digest(n) for n in _other_roles_tools(allowed)))}",
+        "_ERRORS_SOURCE = " + repr(errors_source()),
+        _TEACHING_SOURCE,
     ]
     for n in allowed:
         if n != "sh":
-            out += ["", _function_source(n, agent)]
+            out += ["", _function_source(n, agent), f"{n} = _taught({n})", ""]
     helps = {n: help_text(n, agent) for n in allowed}
     # the help topics the agent has besides its tools (topics are never listed or callable)
     helps.update({t: text for t, (agents, text) in HELP_TOPICS.items() if agent in agents and t not in helps})
