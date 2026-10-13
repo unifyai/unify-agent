@@ -3048,8 +3048,10 @@ class WriterPass:
                 if eid in (e.provenance.get("episodes") or [])
             ]
             counts[src] = counts.get(src, 0) + 1
-        if captures_root is not None:
+        if self.cfg.fork:
+            # the brief names /inputs/captures whenever the fork is on: it exists even when nothing was captured
             (Path(inputs) / "captures").mkdir(parents=True, exist_ok=True)
+        if captures_root is not None:
             try:
                 _captures.export_for_writer(captures_root, capture_ids, Path(inputs) / "captures")
             except OSError as exc:  # the capture store never stops a pass; the rows still name what it held

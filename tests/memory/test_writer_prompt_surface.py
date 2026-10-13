@@ -195,7 +195,7 @@ def test_a_sentence_relying_on_a_tool_appears_only_when_it_is_registered(registr
 
 def test_every_named_path_is_a_staged_input_or_the_library(registry):
     allowed = re.compile(
-        r"^/(inputs/(staging|helpers|pool|drafts|batch_map\.json|episodes|shared|usage|gate|curate)|memory|outputs)\b",
+        r"^/(inputs/(staging|captures|helpers|pool|drafts|batch_map\.json|episodes|shared|usage|gate|curate)|memory|outputs)\b",
     )
     for name, text in _briefs().items():
         for path in re.findall(r"(?<![\w.])/(?:inputs|memory|outputs)[\w./<>-]*", text):
