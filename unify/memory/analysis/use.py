@@ -210,9 +210,11 @@ HELPER_FUNCTIONS = ("catalog", "find", "describe")
 #: In library mode the library is the package ``memory``, whose generated ``__init__.py`` is the
 #: helper (these functions), and a function item is ``memory.<package>.<module>:<name>``. A record computed for a
 #: library-mode pin carries ``"layout": LAYOUT_LIBRARY``; a v2 record has no such key, so v2's records are unchanged.
+#: ``get`` and ``items`` are the lookups (``get`` shows one item as ``show`` did, ``items`` a topic as ``index``
+#: did); the others are the calls they replace, kept as aliases for one build.
 LAYOUT_LIBRARY = "library_mode"
 PACKAGE_LIBRARY = "memory"
-HELPER_FUNCTIONS_LIBRARY = ("show", "index", "find", "match", "run")
+HELPER_FUNCTIONS_LIBRARY = ("show", "index", "find", "match", "run", "get", "items")
 
 _IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
 _IDENT_RE = re.compile(_IDENT)
@@ -1883,12 +1885,13 @@ class _LibraryCell(_Cell):
         return None
 
     def _exposure(self, name: str, node: ast.Call) -> None:
-        """A lookup: ``show`` (an item, or each item of a module), ``index`` (every package, or one package with
-        its items) and ``find`` (counted only: what it shows depends on the value), or ``help`` on a memory
-        object."""
+        """A lookup: ``show`` or ``get`` (an item, or each item of a module), ``index`` or ``items`` (every
+        package, or one package with its items) and ``find`` (counted only: what it shows depends on the value),
+        or ``help`` on a memory object."""
         arg = node.args[0] if node.args else None
-        if arg is None and name == "index":
-            arg = next((k.value for k in node.keywords if k.arg == "package"), None)
+        if arg is None and name in ("index", "items"):
+            keyword = "package" if name == "index" else "topic"
+            arg = next((k.value for k in node.keywords if k.arg == keyword), None)
         const = (
             arg.value
             if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
@@ -1898,7 +1901,7 @@ class _LibraryCell(_Cell):
         if name == "help" and (target is None or target[0] not in ("item", "module")):
             return  # not a memory object: not counted
         self.t.helper_calls[name] += 1
-        if name == "index":
+        if name in ("index", "items"):
             if arg is None:
                 for package in sorted(self.items.packages):
                     self._show_channel(package, items=False)
@@ -1907,13 +1910,13 @@ class _LibraryCell(_Cell):
                     const.strip().removeprefix(PACKAGE_LIBRARY + "."),
                     items=True,
                 )
-        elif name in ("show", "help"):
+        elif name in ("show", "get", "help"):
             iid = None
             if target is not None and target[0] == "item":
                 iid = target[1]
             elif target is not None and target[0] == "module":
                 self._show_channel(target[1], items=True)
-            elif const is not None and name == "show":
+            elif const is not None and name in ("show", "get"):
                 iid = self._named_item(const)
             if iid is not None and iid in self.items.known:
                 self.t.exposed_items.add(iid)
@@ -2203,7 +2206,8 @@ def request_use(
     ``other``), and so are the outcomes of the items that cell's code could reach, in this request only.
 
     With *library_mode* *items* are ``memory.<package>.<module>:<name>`` ids, the helper is ``memory``
-    itself (``show``, ``index``, ``find``: lookups, never uses), and the record carries ``"layout": "library_mode"``. Its
+    itself (``get``, ``items``, and the aliases ``show``, ``index`` and ``find``: lookups, never uses), and the
+    record carries ``"layout": "library_mode"``. Its
     ``refused_then_accepted`` stays 0: a module has no environment channel to compare.
 
     *memory_bound* says whether the worker bound ``memory`` in every cell's globals before any cell ran
