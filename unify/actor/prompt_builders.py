@@ -753,13 +753,13 @@ _ANSWER_STRUCTURED_IN_CODE = (
     "with the answer in the required format."
 )
 
-# The bound globals besides the namespaces the shared opening names, named
-# once; each one's contract is its ``help(...)``.
+# The bound globals, named once; each one's contract is its ``help(...)``.
 _SANDBOX_IN_CODE = (
-    "Cells also run with these globals already bound, no import needed: "
-    "`display(obj)` (rich output, such as an image, that comes back to you as "
-    "visual input), `query_llm(...)` and `list_llms()` (semantic LLM calls "
-    "from code), `unillm` (direct LLM use beyond `query_llm`) and "
+    "Cells run with these globals already bound, no import needed: `tools` "
+    "(your harness tools; `tools.list()` lists them), `display(obj)` (rich "
+    "output, such as an image, that comes back to you as visual input), "
+    "`query_llm(...)` and `list_llms()` (semantic LLM calls from code), "
+    "`unillm` (direct LLM use beyond `query_llm`) and "
     "`run_coro_sync(factory)`; `help(name)` documents each."
 )
 _PRIMITIVES_IN_CODE = (

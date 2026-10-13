@@ -31,8 +31,8 @@ SANDBOX_PARAGRAPH = "sandbox_paragraph"
 #: tool_registry.prebound_names(agent, facts) -> iterable of names (design B.1)
 PREBOUND_NAMES = "prebound_names"
 #: the facts keys prebound_names reads: tools called from code, a library copy with its package, clarification on
-FACT_IN_CODE = "tools_in_code"
-FACT_LIBRARY = "library"
+FACT_IN_CODE = "tools"
+FACT_LIBRARY = "memory"
 FACT_CLARIFICATION = "clarification"
 #: design D.1, persistent form (the default), in two sentences
 PERSISTENT_SENTENCE = (

@@ -553,7 +553,7 @@ def test_every_call_the_writers_and_a_helpers_prompts_show_runs_as_written(tmp_p
         assert ("tools" in contract.namespace) is in_code, (agent, contract.namespace)
         # the reverse: every pre-bound name is named in the prompt
         joined = "\n".join(contract.texts)
-        for name in R.prebound_names(agent, {"tools": in_code, "memory": True}):
+        for name in R.namespace_names(agent, {"tools": in_code, "memory": True}):
             assert f"`{name}`" in joined, (agent, name)
 
 
@@ -784,5 +784,5 @@ async def test_every_call_the_actors_prompt_shows_runs_as_written(core_world, mo
     for name in ("tools", "memory", "display", "help", "query_llm", "list_llms", "unillm", "run_coro_sync"):
         assert name in state["namespace"], (agent, name, sorted(state["namespace"]))
     joined = "\n".join(state["texts"])
-    for name in R.prebound_names(agent, {"tools": True, "memory": True}):
+    for name in R.namespace_names(agent, {"tools": True, "memory": True}):
         assert f"`{name}`" in joined, (agent, name)

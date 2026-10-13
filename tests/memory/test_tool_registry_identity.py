@@ -191,9 +191,13 @@ def test_one_rule_binds_the_namespaces_and_never_widens_the_allow_list():
         assert R.prebound(agent, {"tools": True}) == {"tools": ["module", "tools"]}
         both = R.prebound(agent, {"tools": True, "memory": True})
         assert both == {"tools": ["module", "tools"], "memory": ["lazy_module", "memory"]}
-        assert R.prebound_names(agent, {"memory": True}) == ("memory",)
+        assert R.namespace_names(agent, {"memory": True}) == ("memory",)
+        assert R.prebound_names(agent, {"memory": True})[:2] == ("memory", "help")
         # the allow-list is the registry's whatever is bound
         assert R.allow_list(agent, FULL) == R.allow_list(agent, FULL)
+    assert "request_clarification" in R.prebound_names("actor", {"clarification": True})
+    assert "request_clarification" not in R.prebound_names("teammate", {"clarification": True})
+    assert "display" not in R.prebound_names("writer", {"tools": True, "memory": True})
     with pytest.raises(ValueError):
         R.prebound("fork", {})
 

@@ -1966,9 +1966,28 @@ def prebound(agent: str, facts: dict) -> dict[str, list]:
     return out
 
 
-def prebound_names(agent: str, facts: dict) -> tuple[str, ...]:
-    """The names :func:`prebound` binds for *agent* with *facts*, in the order the prompt names them."""
+def namespace_names(agent: str, facts: dict) -> tuple[str, ...]:
+    """The namespaces :func:`prebound` binds for *agent* with *facts*, in the order the shared opening's names
+    sentence names them (``tools``, ``memory``)."""
     return tuple(prebound(agent, facts))
+
+
+#: The actor's and teammates' other globals, bound as the worker's own or synced from the host's namespace (the
+#: in-code prompt's sandbox section names them; ``ModelRequestError`` is what a failed model call raises).
+_ACTOR_GLOBALS = ("display", "query_llm", "list_llms", "unillm", "run_coro_sync", "ModelRequestError")
+
+
+def prebound_names(agent: str, facts: dict) -> tuple[str, ...]:
+    """Every name bound in *agent*'s cells before any cell runs, with *facts* (``tools``, ``memory`` as for
+    :func:`prebound`; ``clarification``: the actor's session can ask its requester): the namespaces, ``help``
+    (the worker's own), and for the actor and teammates their other globals and, for the actor where it can ask,
+    ``request_clarification``. A declared set: binding a name never widens what the agent may do."""
+    names = [*namespace_names(agent, facts), "help"]
+    if agent in (_A, _T):
+        names += _ACTOR_GLOBALS
+        if agent == _A and facts.get("clarification"):
+            names.append("request_clarification")
+    return tuple(names)
 
 
 def names_sentence(names: Iterable[str]) -> str:
@@ -1998,7 +2017,7 @@ SANDBOX_FRESH = (
 
 def sandbox_paragraph(agent: str, names: Iterable[str], persistent: bool) -> str:
     """The shared paragraph about *agent*'s sandbox: whether it keeps its state between cells (*persistent*), when
-    it restarts, and the pre-bound *names* (:func:`prebound_names`). The same bytes for every role apart from the
+    it restarts, and the pre-bound namespaces *names* (:func:`namespace_names`). The same bytes for every role apart from the
     names, so it sits in the cached prefix. It opens :func:`preamble`; an agent sent no preamble (tools in code off)
     gets it at the top of its own instructions."""
     if agent not in AGENTS:
@@ -2014,7 +2033,7 @@ def preamble(agent: str, facts: dict) -> str:
     never a host path): ``environment`` (the roots and their modes, cell time, output limit, quotas, wall clock),
     ``memory`` (the one line about the library, if the agent reads it), ``flags`` (a frozenset for
     :func:`allow_list`), ``persistent`` (whether variables carry over between cells) and ``names`` (the pre-bound
-    names, :func:`prebound_names`; default ``tools`` alone)."""
+    namespaces, :func:`namespace_names`; default ``tools`` alone)."""
     if agent not in AGENTS:
         raise ValueError(f"unknown agent {agent!r}")
     allowed = allow_list(agent, frozenset(facts.get("flags") or ()))

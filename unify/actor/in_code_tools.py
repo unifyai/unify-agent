@@ -223,7 +223,7 @@ class InCodeTools:
     def opening(self) -> str:
         """The shared opening this agent reads first (:func:`unify.common.tool_registry.preamble`): its box (the
         workspace and a private /tmp, writable; the network), its cell time, the tools its allow-list has, whether
-        variables carry over (``UNIFY_CELL_STATE``) and the names bound in its cells (:meth:`prebound_names`). Box
+        variables carry over (``UNIFY_CELL_STATE``) and the names bound in its cells (:meth:`namespace_names`). Box
         paths and settings only, so it is constant for the run and the system message stays a stable prefix."""
         from unify.actor import tool_handlers as H
         from unify.actor.workspace_tools import _network_text
@@ -239,11 +239,11 @@ class InCodeTools:
                 "environment": environment,
                 "flags": self.flags,
                 "persistent": persistent(),
-                "names": self.prebound_names(),
+                "names": self.namespace_names(),
             },
         )
 
-    def prebound_names(self) -> tuple[str, ...]:
+    def namespace_names(self) -> tuple[str, ...]:
         """The namespaces bound in this agent's cells before any runs (:func:`unify.common.tool_registry.prebound`):
         ``tools``, and ``memory`` where the run's library copy holds the package (the worker binds it lazily,
         :func:`unify.memory.integration.hooks.worker_globals`)."""
@@ -251,7 +251,7 @@ class InCodeTools:
         from unify.memory.integration import hooks
 
         has_memory = "memory" in hooks.worker_globals()
-        return R.prebound_names(self.agent, {"tools": True, "memory": has_memory})
+        return R.namespace_names(self.agent, {"tools": True, "memory": has_memory})
 
     # -- the model-API tool ------------------------------------------------------------------------------------
 

@@ -870,6 +870,6 @@ def in_code_opening(agent: str, flags: frozenset[str] = frozenset(), cell_s: flo
             "memory": _LIBRARY_LINE[agent],
             "flags": frozenset(flags),
             "persistent": persistent(),
-            "names": tool_registry.prebound_names(agent, {"tools": True, "memory": True}),
+            "names": tool_registry.namespace_names(agent, {"tools": True, "memory": True}),
         },
     )
