@@ -196,9 +196,13 @@ def _json(result: str, model: ScriptedModel):
     try:
         return json.loads(result)
     except ValueError:
-        tail = "\n".join(
+        tools = "\n".join(
             _text(m.get("content")) for m in model.calls[-1].messages if m.get("role") == "tool"
-        )[-3000:] if model.calls else ""
+        ) if model.calls else ""
+        try:  # a cell's result is JSON with its traceback under "error": show its last lines
+            tail = "\n".join(json.loads(tools).get("error", "").splitlines()[-4:]) or tools[-3000:]
+        except (ValueError, AttributeError):
+            tail = tools[-3000:]
         raise AssertionError(f"the actor answered {result[:300]!r}; its last tool results:\n{tail}") from None
 
 
@@ -304,6 +308,13 @@ async def test_ask_returns_the_librarians_answers_reuses_the_session_and_is_acco
     assert "Which stored items fit this text?" in _not_assistant(lib[1]) and Q2 in _not_assistant(lib[1])
     one, two = (_headers(sent, model, c) for c in lib)
     assert one.get("X-Unify-Session") and one.get("X-Unify-Session") == two.get("X-Unify-Session")
+
+    # the librarian runs on the actor's own model and effort
+    first_actor = sent[model.calls.index(script.actor_calls[0])]
+    for call in lib:
+        mine = sent[model.calls.index(call)]
+        assert mine.get("model") == first_actor.get("model")
+        assert mine.get("reasoning_effort") == first_actor.get("reasoning_effort")
 
     # every librarian call carries its own call kind; the actor's never do
     for call in lib:
