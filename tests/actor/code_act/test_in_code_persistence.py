@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+from types import SimpleNamespace
 from typing import Optional
 
 import pytest
 
 from tests.actor.code_act.core_world import core_world  # noqa: F401 (fixture)
 from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401 (fixture)
-from tests.actor.code_act.test_in_code_tools_wiring import _Collect, _act, _session, _tool_results, _why, code
+from tests.actor.code_act.test_in_code_tools_wiring import _Collect, _act, _tool_results, _why, code
 from tests.scripted_model import ScriptedModel, cell, reply
 from unify.actor import in_code_tools
 from unify.actor.execution.types import parts_to_text
@@ -71,7 +72,15 @@ async def test_each_restart_is_told_and_the_variables_are_gone(core_world, monke
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "persistent")
     monkeypatch.setattr(box_interpreter, "ActorProfile", _quick_idle_profile(2.0))
-    session = _session(tmp_path, cell_limit_s=3.0)
+    session = in_code_tools.InCodeTools(
+        agent="actor",
+        name="root",
+        record=SimpleNamespace(),
+        workspace_root=str(tmp_path),
+        shadow={},
+        cell_limit_s=3.0,
+        events_folder=tmp_path / "events",
+    )
     lost = "variables are gone, files remain"
     try:
         assert "41" in _text(await session.run_cell("x = 41\nprint(x)"))

@@ -39,6 +39,7 @@ from typing import Any, Optional
 
 import pytest
 
+from tests.actor.code_act.core_world import core_world, world  # noqa: F401 (fixtures)
 from tests.memory.test_layout import LIB
 from tests.memory.test_library_helper import _commit
 from tests.memory.test_tool_channel_box import needs_box
@@ -93,6 +94,12 @@ SPANS = {
 #: Shown spans that are not calls to run, with the reason; each must still occur in some rendered prompt.
 NOT_RUN: dict[str, str] = {
     "asyncio.run(...)": "shown as what not to call: the runtime owns the event loop",
+    'MemoryInputError("<what was expected>")': "the form a library function raises, written in library code",
+    (
+        'subprocess.run([sys.executable, "-m", "pytest", "memory", "-q", "-p", "no:cacheprovider", "--rootdir", '
+        '"/memory"], cwd="/memory", env={"PYTHONPATH": "/memory", "PYTEST_ADDOPTS": "-c /dev/null '
+        '--import-mode=importlib", "PYTHONDONTWRITEBYTECODE": "1"})'
+    ): "the gate's own test command, quoted for reference (a cell that runs it imports subprocess and sys)",
 }
 #: Exceptions a shown call must never raise.
 FAILING = {"NameError", "ImportError", "ModuleNotFoundError", "TypeError"}
@@ -119,14 +126,18 @@ def _root(node: ast.AST) -> Optional[str]:
     return node.id if isinstance(node, ast.Name) else None
 
 
-def is_shown_call(code: str) -> bool:
-    """*code* parses and calls something or reads an attribute of a name."""
+def is_shown_call(code: str, bound: frozenset[str] = frozenset({"tools", "memory"})) -> bool:
+    """*code* parses and calls something, or reads an attribute of a name in *bound* (an attribute of any other
+    name is a file name or a dotted id in prose, such as ``notes.md`` or ``channel.method``). An annotation alone
+    (``memory.text.dates:parse_date``, an item id) is not a call."""
     try:
         tree = ast.parse(code)
     except SyntaxError:
         return False
+    if all(isinstance(n, ast.AnnAssign) and n.value is None for n in tree.body):
+        return False
     return any(
-        isinstance(n, ast.Call) or (isinstance(n, ast.Attribute) and _root(n) is not None) for n in ast.walk(tree)
+        isinstance(n, ast.Call) or (isinstance(n, ast.Attribute) and _root(n) in bound) for n in ast.walk(tree)
     )
 
 
@@ -164,13 +175,13 @@ class _Fill(ast.NodeTransformer):
 
 
 def _ellipsis_call(code: str) -> Optional[str]:
-    """For a span that is one call written ``f(...)``: what it stands for (the tool's first registry example, or
-    :data:`ELLIPSIS`), else None."""
+    """For a span that is one call written ``f(...)`` (or ``f(..., key=value)``): what it stands for (the tool's
+    first registry example, with the span's keywords added, or :data:`ELLIPSIS`), else None."""
     tree = ast.parse(code)
     if len(tree.body) != 1 or not isinstance(tree.body[0], ast.Expr):
         return None
     call = tree.body[0].value
-    if not (isinstance(call, ast.Call) and len(call.args) == 1 and not call.keywords):
+    if not (isinstance(call, ast.Call) and len(call.args) == 1):
         return None
     arg = call.args[0]
     if not (isinstance(arg, ast.Constant) and arg.value is Ellipsis):
@@ -178,9 +189,15 @@ def _ellipsis_call(code: str) -> Optional[str]:
     f = call.func
     if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id == "tools":
         spec = R.registry().get(f.attr)
-        if spec is not None and spec.examples:
-            return spec.examples[0]
-    if isinstance(f, ast.Name) and f.id in ELLIPSIS:
+        if spec is None or not spec.examples:
+            return None
+        example = ast.parse(spec.examples[0])
+        for node in ast.walk(example):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == f.attr:
+                node.keywords = [*node.keywords, *call.keywords]
+                return ast.unparse(example)
+        return None
+    if isinstance(f, ast.Name) and f.id in ELLIPSIS and not call.keywords:
         return ELLIPSIS[f.id]
     return None
 
@@ -227,7 +244,7 @@ def plan(texts: list[str], namespace: set[str], path: str, skip_tools: frozenset
     for text in texts:
         for span in shown_code(text):
             span = span.strip()
-            if span in seen or not is_shown_call(span):
+            if span in seen or not is_shown_call(span, frozenset(bound)):
                 continue
             seen.add(span)
             if span in NOT_RUN:
@@ -296,6 +313,10 @@ def test_the_rules_fill_every_placeholder_and_keep_what_is_bound():
     ]
     assert is_shown_call("memory.index()") and is_shown_call("tools.Refused")
     assert not is_shown_call("memory.text.dates:parse_date") and not is_shown_call("MemoryInputError")
+    assert not is_shown_call("notes.md") and not is_shown_call("channel.method")
+    assert fill("tools.fixture(..., append=True)", {"tools"}, "/p") == (
+        "tools.fixture('e1', 'memory/pkg/tests/data/page.html', source='3', append=True)"
+    )
     assert fill('memory.show("<id>")', {"memory"}, "/p") == f"memory.show({PD!r})"
     assert fill("tools.read(path)", {"tools"}, "/memory/notes/text/dates.md") == (
         "tools.read('/memory/notes/text/dates.md')"
@@ -540,7 +561,7 @@ def test_every_call_the_curators_prompt_shows_runs_as_written(tmp_path, monkeypa
     from unify.memory.trigger import PassRequest
 
     _switch(monkeypatch, in_code)
-    brief = lp.curate_brief_now(edit_tools=True, in_code=in_code)
+    brief = lp.curate_brief_now(edit_tools=True)
     texts = [brief, *((R.EXECUTE_CODE.description,) if in_code else ())]
     named = R.tool_names_in(brief) - {"list", "help", "Refused", "NotRun"}
     assert named <= set(R.allow_list("curator", lp.tool_flags(edit=True))), named
@@ -563,21 +584,31 @@ def test_the_fork_names_no_pre_bound_name():
     from unify.memory.integration import fork
 
     text = fork.fork_instruction()
-    assert "Do not call tools." in text
-    assert not said_bound(text)
+    assert "Do not call" in text
+    assert not said_bound(text) and "already bound" not in text
 
 
 def test_every_listed_span_that_is_not_run_is_still_in_a_prompt(monkeypatch):
     from unify.actor import prompt_builders as pb
     from unify.actor.core_surface import PromptSurface
+    from unify.memory import helpers
+    from unify.memory import library_prompts as lp
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
-    prompt = pb.build_code_act_prompt(
-        environments={},
-        core=PromptSurface(functions=False, guidance=False),
-        session_sections=False,
-    )
-    shown = set(shown_code(prompt))
+    shown: set[str] = set()
+    for switch in ("on", "off"):
+        monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", switch)
+        full = {"staging": True, "pool": True, "helper": True, "similar": True, "edit_tools": True}
+        for text in (
+            pb.build_code_act_prompt(
+                environments={},
+                core=PromptSurface(functions=False, guidance=False),
+                session_sections=False,
+            ),
+            lp.write_brief_now(**full),
+            lp.curate_brief_now(edit_tools=True),
+            helpers.helper_brief(True),
+        ):
+            shown |= {s.strip() for s in shown_code(text)}
     for span in NOT_RUN:
         assert span in shown, span
 

@@ -20,7 +20,7 @@ from tests.actor.code_act.core_world import core_world, world  # noqa: F401 (fix
 from tests.actor.code_act.sandbox_world import needs_bwrap
 from tests.memory.integration import fake_tracks
 from tests.memory.integration.test_actor_export_library_mode import _library_repo
-from tests.scripted_model import ScriptedModel, cell, reply, scripted
+from tests.scripted_model import ScriptedModel, reply, scripted
 from unify import sandbox
 from unify.memory.integration import request as request_mod
 from unify.memory.integration.paths import Paths
@@ -52,8 +52,8 @@ def test_a_request_that_uses_the_library_as_the_guide_says_records_it(core_world
     fake_tracks.install(monkeypatch)
     model = ScriptedModel(
         actor=[
-            reply(calls=[cell(LOOK)]),
-            reply(calls=[cell(USE)]),
+            reply(calls=[("execute_code", {"code": LOOK})]),
+            reply(calls=[("execute_code", {"code": USE})]),
             reply("2026-10-09"),
         ],
     )
