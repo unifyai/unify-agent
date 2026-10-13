@@ -348,15 +348,35 @@ class CellResult:
         return "\n".join(lines)
 
 
+#: The most of a traceback's end :func:`keep_traceback_end` appends past a cut, in characters: one long line (a
+#: model can raise or print one) must not carry the cut's bytes into the next prompt.
+TRACEBACK_END_CHARS = 2000
+#: The head and tail of box-supplied text a host log line keeps (:func:`bounded_for_log`), in characters.
+LOG_HEAD_CHARS = 20_000
+LOG_TAIL_CHARS = 4_000
+
+
 def keep_traceback_end(shown: str, error: Optional[str], lines: int = 3) -> str:
     """*shown*, a head cut of a cell's output and traceback, with the traceback's last *lines* appended when the
-    cut dropped them, so the exception line is always read."""
+    cut dropped them, so the exception line is always read; at most :data:`TRACEBACK_END_CHARS` of them, the end
+    kept, with a marker of what was cut."""
     if not error:
         return shown
     end = "\n".join(error.rstrip("\n").splitlines()[-lines:])
     if not end or end in shown:
         return shown
+    if len(end) > TRACEBACK_END_CHARS:
+        end = f"[… {len(end) - TRACEBACK_END_CHARS} chars cut]" + end[-TRACEBACK_END_CHARS:]
     return f"{shown}\n[the traceback ends:]\n{end}"
+
+
+def bounded_for_log(text: str) -> str:
+    """Box-supplied *text* for a host log line: its first :data:`LOG_HEAD_CHARS` and last :data:`LOG_TAIL_CHARS`
+    characters, with a marker of what was cut between them."""
+    if len(text) <= LOG_HEAD_CHARS + LOG_TAIL_CHARS:
+        return text
+    cut = len(text) - LOG_HEAD_CHARS - LOG_TAIL_CHARS
+    return f"{text[:LOG_HEAD_CHARS]}\n[… {cut} chars cut]\n{text[-LOG_TAIL_CHARS:]}"
 
 
 # --- process checks and the verified kill ---------------------------------------------------------------------
@@ -1073,7 +1093,7 @@ class BoxInterpreter:
         if res.error and isinstance(shown, str) and shown:
             res.error_full = res.error
             res.error = _WRAPPER_FRAME.sub("", shown).rstrip("\n")
-            logger.info("cell %s error, full traceback:\n%s", res.cell, res.error_full)
+            logger.info("cell %s error, full traceback:\n%s", res.cell, bounded_for_log(res.error_full))
         if self.memory:
             out = _parts_text(done.get("stdout"))
             err = _parts_text(done.get("stderr"))

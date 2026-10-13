@@ -12,7 +12,13 @@ import sys
 import types
 
 from unify.actor.execution import worker_child as wc
-from unify.common.box_interpreter import keep_traceback_end
+from unify.common.box_interpreter import (
+    LOG_HEAD_CHARS,
+    LOG_TAIL_CHARS,
+    TRACEBACK_END_CHARS,
+    bounded_for_log,
+    keep_traceback_end,
+)
 
 
 def _raise_through(files: list[str]) -> BaseException:
@@ -63,3 +69,21 @@ def test_a_cut_keeps_the_end_of_the_traceback():
     # nothing is added when the end is already there, or when the cell did not fail
     assert keep_traceback_end(error, error) == error
     assert keep_traceback_end(head, None) == head
+
+
+def test_one_long_line_cannot_carry_the_cut_into_the_next_prompt():
+    """A traceback whose last line is 1 MB (a model can raise or print one) adds at most TRACEBACK_END_CHARS, the
+    end kept, past an 8,000-byte head cut."""
+    error = "Traceback (most recent call last):\nValueError: " + "x" * 1_000_000
+    head = "y" * 8000 + "\n[… 1000050 bytes in all; head shown]"
+    shown = keep_traceback_end(head, error)
+    assert len(shown) <= len(head) + TRACEBACK_END_CHARS + 100
+    assert shown.endswith("x" * 100) and "chars cut]" in shown
+
+
+def test_a_host_log_line_keeps_the_head_and_tail_of_box_text():
+    text = "h" * 50_000 + "t" * 50_000
+    logged = bounded_for_log(text)
+    assert len(logged) <= LOG_HEAD_CHARS + LOG_TAIL_CHARS + 40
+    assert logged.startswith("h" * LOG_HEAD_CHARS) and logged.endswith("t" * LOG_TAIL_CHARS)
+    assert bounded_for_log("short") == "short"

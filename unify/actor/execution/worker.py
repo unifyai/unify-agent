@@ -1040,7 +1040,9 @@ class PythonWorker:
             error = str(done["error"])
             shown = done.get("shown_error")
             if isinstance(shown, str) and shown:
-                logger.info("cell error, full traceback:\n%s", error)
+                from unify.common.box_interpreter import bounded_for_log
+
+                logger.info("cell error, full traceback:\n%s", bounded_for_log(error))
                 error = shown
             # UNIFY_MEMORY_SURFACING=catalogue: a suspect channel's refusal says so.
             raise WorkerCellError(_mv2.cell_error(error))
