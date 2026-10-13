@@ -178,7 +178,7 @@ _IDS_OR_ANSWERS = re.compile(
 def test_the_brief_says_role_inputs_and_answer_form():
     brief = librarian_brief()
     assert isinstance(brief, str) and brief.strip()
-    for needed in ("memory.show", "tools.finish", "fits", "nearest", "differs", "why", "call"):
+    for needed in ("memory.get", "tools.finish", "fits", "nearest", "differs", "why", "call"):
         assert needed in brief, needed
     assert re.search(r"\bevery (card|item)\b", brief, re.IGNORECASE)  # read every card, name every item
 
