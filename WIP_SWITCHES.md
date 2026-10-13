@@ -73,9 +73,9 @@ At the code freeze of 7 October 2026 every other research switch was either made
 ## UNIFY_STEP_CAP_REPLY
 
 - **Values:** empty, `draft` or `last_word`. The boolean spellings are also accepted, with true meaning `draft`.
-- **Default:** empty.
-- **What it does:** With `draft`, reaching the step limit in a persistent session ends only the current request. The reply quotes the latest reply text the model drafted, and the next message starts a new request with its own step budget. With `last_word`, the model first gets one call with no tools to give its best answer.
-- **Evidence:** long-horizon WIP, unscreened; to be tested on the long-horizon beds.
+- **Default:** `draft` (since 13 October 2026; empty before).
+- **What it does:** With `draft`, reaching the step limit in a persistent session ends only the current request. The reply quotes the latest reply text the model drafted, and the next message starts a new request with its own step budget. With `last_word`, the model first gets one call with no tools to give its best answer. Empty: the limit counts every message of a persistent session and ends the session.
+- **Evidence:** a benchmark adapter that sends each step as another request of one session reaches a session-wide count however short each request is. In the Continual-ARC runs of 12-13 October, it ended a session in each of the two medium-effort runs. `last_word` is still unscreened.
 
 The three long-horizon switches share the step-limit reply path.
 

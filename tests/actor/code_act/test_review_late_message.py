@@ -28,6 +28,14 @@ import pytest
 
 from tests import cache_discipline_helpers as h
 from unify.actor import code_act_actor as caa
+from unify.settings import SETTINGS
+
+
+@pytest.fixture(autouse=True)
+def _the_limit_ends_the_session(monkeypatch):
+    """The sessions here end at their step limit, as with ``UNIFY_STEP_CAP_REPLY`` empty (the default before 13
+    October 2026); with ``draft``, the default since, the limit ends only the request."""
+    monkeypatch.setattr(SETTINGS, "UNIFY_STEP_CAP_REPLY", "")
 
 # A ScienceWorld-style text route: the actor's reply protocol, and the host's
 # message after the stop notice (as recorded on 30 September, the step count

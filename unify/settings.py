@@ -134,24 +134,24 @@ class ProductionSettings(BaseSettings):
     # that genuinely needs more can pass ``max_steps`` explicitly. Set to 0 to
     # restore unbounded iteration.
     UNIFY_MAX_TOOL_LOOP_STEPS: int = 300
-    # Reaching ``max_steps`` ends the loop with a stop notice, so a persistent
-    # session (``unify act --persist``) that reaches it takes no further
-    # messages. Set true and, in a persistent session, the limit ends only
-    # the current request: the reply says the session stopped at its step
-    # limit and quotes the latest reply text it drafted for the request, the
-    # pending tool calls are cancelled and answered as such, and the next
-    # message starts a request with its own ``max_steps`` (the limit then
-    # counts the messages of one request instead of the whole session). A
-    # loop that is not persistent still ends at the limit, its stop notice
-    # followed by that draft. Off: as shipped.
-    # ``draft`` (also ``true``/``1``/``yes``/``on``, as when this was a bool)
-    # is the behaviour above. ``last_word``: the same, except that before the
-    # reply the model is given one model call with no tools offered, after a
-    # notice that the request's step limit is reached and it should reply now
-    # with its best answer; the stop reply carries that answer in place of
-    # the draft, and the draft when the call fails or returns no text.
-    # Empty (also ``false``/``0``/``no``/``off``): as shipped.
-    UNIFY_STEP_CAP_REPLY: str = ""
+    # ``draft`` (the default; also ``true``/``1``/``yes``/``on``, as when
+    # this was a bool): in a persistent session (``unify act --persist``) the
+    # limit ends only the current request: the reply says the session stopped
+    # at its step limit and quotes the latest reply text it drafted for the
+    # request, the pending tool calls are cancelled and answered as such, and
+    # the next message starts a request with its own ``max_steps`` (the limit
+    # counts the messages of one request). A loop that is not persistent
+    # still ends at the limit, its stop notice followed by that draft.
+    # ``last_word``: the same, except that before the reply the model is
+    # given one model call with no tools offered, after a notice that the
+    # request's step limit is reached and it should reply now with its best
+    # answer; the stop reply carries that answer in place of the draft, and
+    # the draft when the call fails or returns no text. Empty (also
+    # ``false``/``0``/``no``/``off``): reaching ``max_steps`` ends the loop
+    # with a stop notice, and in a persistent session the limit counts every
+    # message of the session, so a long session ends at it and takes no
+    # further messages.
+    UNIFY_STEP_CAP_REPLY: str = "draft"
     # ``on``: a loop that can compress its context (the actor's task loop)
     # compacts it when it reaches ``max_steps`` instead of stopping, with the
     # same compression a full context gets, and the same request goes on in
