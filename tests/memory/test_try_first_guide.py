@@ -36,10 +36,18 @@ INDEX_HEAD_INPUT = "`input:`"
 
 def _export_with_signature(root: Path, shapes: dict) -> str:
     """``INDEX.md`` of the copy at *root*, where each function in *shapes* has that recorded input (its
-    applicability signature): here, the recorded input shapes of its example calls, as ``find`` uses them."""
+    applicability signature): here, the recorded input shapes of its example calls, given to the export as the
+    item's signature (``saved_against``, with the one identifier rule applied as the export applies it)."""
+    from unify.memory.library_export import strip_signature
+
     files = lx.generated_library_mode(
         root,
         shapes=lambda item, digest: (shapes[item], False) if item in shapes else None,
+        saved_against=lambda item: (
+            {"signature": strip_signature({"input": {k: v for k, v in shapes[item][0].items() if k != "param"}})}
+            if item in shapes
+            else None
+        ),
     )
     write_files(root, files)
     return files["INDEX.md"].decode("utf-8")

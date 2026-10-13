@@ -47,8 +47,9 @@ NEW_STATUS = "on-trial"
 #: The report's outcomes (design I.5.1).
 RETURNED, REFUSED, ERROR = "returned", "refused", "error"
 #: Code run first in every cell of these tests: how a test reads a report's field (an attribute, else a key),
-#: how it installs a matching hook (a module attribute of the package named ``match_hook``, called as
-#: ``hook(request, inputs, candidates)`` with one mapping per candidate and returning the candidates that fit),
+#: how it installs a matching hook (the package's ``MATCHER``, called as ``MATCHER(query, candidates)`` with a
+#: ``Query`` and ``Candidate`` tuples and returning ``(id, how matched)`` pairs; ``set_hook`` adapts a test's
+#: ``hook(request, inputs, candidates)``, given one mapping per candidate, that returns the candidates that fit),
 #: and the audit hook that keeps the package's events.
 PRELUDE = """
 import json, threading
@@ -73,7 +74,11 @@ def text(value):
 
 
 def set_hook(fn):
-    memory.match_hook = fn
+    def matcher(query, candidates):
+        chosen = fn(query.request, query.inputs, [c._asdict() for c in candidates])
+        return [(c["id"], "hook") for c in (chosen or [])]
+
+    memory.MATCHER = matcher
 
 
 def plain(value):
@@ -83,6 +88,29 @@ def plain(value):
     except TypeError:
         return repr(value)
 """
+#: What a capture was saved against besides its signature, in the actor's copy (``captures.SAVED_FILE``).
+CAPTURE_SAVED = "saved.json"
+
+
+def export_capture_files(d: Path, signature, summary: str) -> None:
+    """Write a capture's signature and what it was saved against as the harness exports them into the actor's copy
+    (``captures.export_files``): the store builds a signature with identifiers stripped (the one rule,
+    ``signatures``), and ``saved.json`` holds the procedure's docstring and the summary's Asked and Approach,
+    stripped (``library_export.capture_saved``). The summary itself stays beside them, as written."""
+    from unify.memory.library_export import capture_saved_bytes, strip_signature
+    from unify.memory.signatures import strip_identifiers
+
+    if isinstance(signature, str):  # a malformed file, as written
+        (d / CAPTURE_SIGNATURE).write_text(signature)
+    else:
+        sig = strip_signature(signature)
+        if isinstance(sig.get("goal"), str):
+            sig["goal"] = strip_identifiers(sig["goal"])
+        (d / CAPTURE_SIGNATURE).write_text(json.dumps(sig))
+    (d / CAPTURE_SUMMARY).write_text(summary)
+    (d / CAPTURE_SAVED).write_bytes(capture_saved_bytes(d, summary))
+
+
 # ==============================================================================================================
 
 #: A request in plain prose with a table of records in it, and a printed identifier the harness must never use
@@ -194,9 +222,8 @@ def _add_capture(
     d = root / CAPTURES_DIR / cid
     d.mkdir(parents=True, exist_ok=True)
     (d / CAPTURE_PROCEDURE).write_text(source)
-    (d / CAPTURE_SIGNATURE).write_text(signature if isinstance(signature, str) else json.dumps(signature))
     (d / CAPTURE_RECORD).write_text(json.dumps(record if record is not None else _record()))
-    (d / CAPTURE_SUMMARY).write_text(summary)
+    export_capture_files(d, signature, summary)
     return cid
 
 
