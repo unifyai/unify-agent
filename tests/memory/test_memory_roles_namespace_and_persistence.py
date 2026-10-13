@@ -72,13 +72,23 @@ LOST = "the interpreter was restarted: variables are gone, files remain"
 
 CHECK = (*PREBOUND, *MUST_NOT)
 
+
+def probe(names) -> str:
+    """A first cell, before any import line: ``x = 41``, then which of *names* are bound (a bare name read in a
+    ``try``, so it works with any builtins the box keeps; a lazy ``memory`` is not imported by it)."""
+    lines = ["x = 41", "_bound = []"]
+    for n in names:
+        lines += ["try:", f"    {n}", f"    _bound.append({n!r})", "except NameError:", "    pass"]
+    lines.append("print('BOUND', sorted(_bound))")
+    return "\n".join(lines) + "\n"
+
 #: the first cell of every role: before any import line, which names are bound, whether `memory` is still lazy
-PROBE = (
-    "x = 41\n"
-    "_g = globals()\n"
-    "_b = __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)\n"
-    f"print('BOUND', sorted(n for n in {CHECK!r} if n in _g or n in _b))\n"
-    "print('LAZY', 'imported on first use' in repr(_g.get('memory')))\n"
+PROBE = probe(CHECK) + (
+    "try:\n"
+    "    _lazy = 'imported on first use' in repr(memory)\n"
+    "except NameError:\n"
+    "    _lazy = False\n"
+    "print('LAZY', _lazy)\n"
     "import sys\n"
     "print('LOADED', 'memory' in sys.modules)\n"
 )
@@ -267,16 +277,18 @@ def test_writer_and_helper_have_their_names_bound_and_keep_variables(tmp_path, m
         [PROBE, NEXT, DELEGATE_AND_WAIT],
         helper=_helper([PROBE, NEXT], helper_seen),
     )
-    _assert_first_request(model.requests[0], "writer")
+    assert helper_seen, ("the helper never ran", out.get("c3"))
+    helper_out = _helper_outputs(helper_seen)
+    # what holds already: variables kept between cells, for both roles
+    assert "NEXT 42" in out["c2"], out["c2"]
+    assert "NEXT 42" in helper_out["h2"], helper_out["h2"]
+    assert "WAITED True" in out["c3"], out["c3"]
     _assert_probe(out["c1"], "writer")
     _assert_next(out["c2"], "writer")
-    assert "WAITED True" in out["c3"], out["c3"]
-
-    assert helper_seen, "the helper never ran"
-    _assert_first_request(helper_seen[0], "helper")
-    helper_out = _helper_outputs(helper_seen)
     _assert_probe(helper_out["h1"], "helper")
     _assert_next(helper_out["h2"], "helper")
+    _assert_first_request(model.requests[0], "writer")
+    _assert_first_request(helper_seen[0], "helper")
 
 
 @needs_box
@@ -286,9 +298,10 @@ def test_the_curator_has_its_names_bound_and_keeps_variables(tmp_path, monkeypat
     monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "persistent")
     writer, model, out = _pass(tmp_path, [PROBE, NEXT, "print('LAST')"], role="curate")
     assert writer._role == "curate"
-    _assert_first_request(model.requests[0], "curator")
+    assert "NEXT 42" in out["c2"], out["c2"]
     _assert_probe(out["c1"], "curator")
     _assert_next(out["c2"], "curator")
+    _assert_first_request(model.requests[0], "curator")
 
 
 @needs_box
@@ -302,17 +315,15 @@ def test_under_fresh_cell_state_every_memory_role_loses_its_variables(tmp_path, 
         ["x = 41\nprint('SET')", ONLY_NEXT, DELEGATE_AND_WAIT],
         helper=_helper(["x = 41\nprint('SET')", ONLY_NEXT], helper_seen),
     )
-    _assert_first_request(model.requests[0], "writer", persistent=False)
-    assert "NameError" in out["c2"] and "NEXT 42" not in out["c2"], out["c2"]
-    assert helper_seen, "the helper never ran"
-    _assert_first_request(helper_seen[0], "helper", persistent=False)
-    helper_out = _helper_outputs(helper_seen)
-    assert "NameError" in helper_out["h2"] and "NEXT 42" not in helper_out["h2"], helper_out["h2"]
-
     (tmp_path / "curate").mkdir()
-    _, model, out = _pass(tmp_path / "curate", ["x = 41\nprint('SET')", ONLY_NEXT, "print('LAST')"], role="curate")
-    _assert_first_request(model.requests[0], "curator", persistent=False)
-    assert "NameError" in out["c2"] and "NEXT 42" not in out["c2"], out["c2"]
+    _, curator, cout = _pass(tmp_path / "curate", ["x = 41\nprint('SET')", ONLY_NEXT, "print('LAST')"], role="curate")
+    assert helper_seen, ("the helper never ran", out.get("c3"))
+    helper_out = _helper_outputs(helper_seen)
+    for role, shown in (("writer", out["c2"]), ("helper", helper_out["h2"]), ("curator", cout["c2"])):
+        assert "NameError" in shown and "NEXT 42" not in shown, (role, shown)
+    _assert_first_request(model.requests[0], "writer", persistent=False)
+    _assert_first_request(helper_seen[0], "helper", persistent=False)
+    _assert_first_request(curator.requests[0], "curator", persistent=False)
 
 
 # --- what the model is told when the interpreter restarts -----------------------------------------------------------
@@ -326,15 +337,15 @@ def test_the_writer_is_told_each_restart_and_then_has_lost_its_variables(tmp_pat
     cells = [
         "x = 41\nprint('SET')",
         "import time\ntime.sleep(60)",
-        "print('AFTER TIMEOUT', globals().get('x'))\nx = 41",
+        "print('AFTER TIMEOUT', 'x' in dir())\nx = 41",
         "import threading, time\nthreading.Thread(target=time.sleep, args=(60,), daemon=True).start()",
-        "print('AFTER THREAD', globals().get('x'))",
+        "print('AFTER THREAD', 'x' in dir())",
     ]
     _, model, out = _pass(tmp_path, cells, cell_timeout_s=3.0)
     assert f"(the cell timed out after 3 s; {LOST})" in out["c2"], out["c2"]
-    assert "AFTER TIMEOUT None" in out["c3"], out["c3"]
+    assert "AFTER TIMEOUT False" in out["c3"], out["c3"]
     assert f"(a thread this cell started was still running after it ended; {LOST})" in out["c4"], out["c4"]
-    assert "AFTER THREAD None" in out["c5"], out["c5"]
+    assert "AFTER THREAD False" in out["c5"], out["c5"]
     # the opening named these causes before they happened
     system = flat(_system(model.requests[0]))
     for cause in ("ran out of time", "left something running", "sat idle too long"):
@@ -354,12 +365,12 @@ def test_an_idle_writer_interpreter_is_restarted_and_says_so(tmp_path, monkeypat
     # the model takes 3 s before the second cell: longer than the interpreter may sit idle
     _, _, out = _pass(
         tmp_path,
-        ["x = 41\nprint('SET')", "print('AFTER IDLE', globals().get('x'))"],
+        ["x = 41\nprint('SET')", "print('AFTER IDLE', 'x' in dir())"],
         start=start,
         delays={2: 3.0},
     )
     assert "(the interpreter was idle for more than 0.5 s and was restarted: " in out["c2"], out["c2"]
-    assert "AFTER IDLE None" in out["c2"], out["c2"]
+    assert "AFTER IDLE False" in out["c2"], out["c2"]
 
 
 # --- `memory` in a persistent box: lazy, and never stale --------------------------------------------------------

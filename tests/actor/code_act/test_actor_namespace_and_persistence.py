@@ -61,12 +61,17 @@ LOST = "the interpreter was restarted: variables are gone, files remain"
 
 CHECK = (*PREBOUND, "memory", *MUST_NOT)
 
-PROBE = (
-    "x = 41\n"
-    "_g = globals()\n"
-    "_b = __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)\n"
-    f"print('BOUND', sorted(n for n in {CHECK!r} if n in _g or n in _b))\n"
-)
+
+def probe(names) -> str:
+    """A first cell, before any import line: ``x = 41``, then which of *names* are bound (a bare name read in a
+    ``try``, so it works with any builtins the box keeps; a lazy ``memory`` is not imported by it)."""
+    lines = ["x = 41", "_bound = []"]
+    for n in names:
+        lines += ["try:", f"    {n}", f"    _bound.append({n!r})", "except NameError:", "    pass"]
+    lines.append("print('BOUND', sorted(_bound))")
+    return "\n".join(lines) + "\n"
+
+PROBE = probe(CHECK)
 NEXT = "print('NEXT', x + 1)\nhelp(len)\nprint('HELPED')\n"
 
 
@@ -134,9 +139,9 @@ async def test_the_actor_has_its_names_bound_and_keeps_variables(in_code):
         actor=[reply(calls=[code(PROBE)]), reply(calls=[code(NEXT)]), reply("done")],
     )
     assert await _act(model, "Probe the sandbox.") == "done", _why(model)
-    _assert_first_request(model.calls[0], "actor")
-    _assert_probe(_tool_results(model.calls[1]), "actor")
     _assert_next(_tool_results(model.calls[2]), "actor")
+    _assert_probe(_tool_results(model.calls[1]), "actor")
+    _assert_first_request(model.calls[0], "actor")
     _assert_ended(in_code["opened"])
 
 
@@ -156,9 +161,9 @@ async def test_a_teammate_has_its_names_bound_and_keeps_variables(in_code):
     assert await _act(model, "Ask a teammate to probe its sandbox.") == "teammate done", _why(model)
     mates = model.of("helper")
     assert len(mates) >= 3, len(mates)
-    _assert_first_request(mates[0], "teammate")
-    _assert_probe(_tool_results(mates[1]), "teammate")
     _assert_next(_tool_results(mates[2]), "teammate")
+    _assert_probe(_tool_results(mates[1]), "teammate")
+    _assert_first_request(mates[0], "teammate")
     _assert_ended(in_code["opened"])
 
 
@@ -183,14 +188,12 @@ async def test_under_fresh_cell_state_the_actor_and_a_teammate_lose_variables_an
         ],
     )
     assert await _act(model, "Twice, then a teammate twice.") == "teammate done", _why(model)
-    actor = model.of("actor")
+    actor, mates = model.of("actor"), model.of("helper")
+    for who, call in (("actor", actor[2]), ("teammate", mates[2])):
+        shown = _tool_results(call)
+        assert "NameError" in shown and "NEXT 42" not in shown, (who, shown)
     _assert_first_request(actor[0], "actor", persistent=False)
-    shown = _tool_results(actor[2])
-    assert "NameError" in shown and "NEXT 42" not in shown, shown
-    mates = model.of("helper")
     _assert_first_request(mates[0], "teammate", persistent=False)
-    shown = _tool_results(mates[2])
-    assert "NameError" in shown and "NEXT 42" not in shown, shown
     _assert_ended(in_code["opened"])
 
 
@@ -245,8 +248,6 @@ async def test_in_library_mode_memory_is_bound_with_no_import_even_when_empty(wo
     assert (paths.checkout / "memory" / "__init__.py").is_file()
     session = _session(world["state"], agent)
     try:
-        names = _names(session.opening())
-        assert {"tools", "memory"} <= names, names
         first = _out(
             await session.run_cell(
                 "y = 41\n"
@@ -257,6 +258,8 @@ async def test_in_library_mode_memory_is_bound_with_no_import_even_when_empty(wo
         assert "LAZY True" in first and "EMPTY True" in first, first
         second = _out(await session.run_cell("print('NEXT', y + 1, type(memory).__name__)"))
         assert "NEXT 42 module" in second, second
+        names = _names(session.opening())
+        assert {"tools", "memory"} <= names, names
     finally:
         await session.close(completed=True)
     assert not session.box_alive()
@@ -274,22 +277,23 @@ async def test_the_actor_is_told_each_restart_and_then_has_lost_its_variables(wo
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")
     session = _session(world["state"], "actor", limit=3.0)
     try:
-        opening = flat(session.opening())
-        for cause in ("ran out of time", "left something running", "sat idle too long"):
-            assert cause in opening, cause
         await session.run_cell("x = 41")
         timed = _out(await session.run_cell("import time\ntime.sleep(60)"))
         assert f"(the cell timed out after 3 s; {LOST})" in timed, timed
-        lost = _out(await session.run_cell("print('AFTER TIMEOUT', globals().get('x'))\nx = 41"))
-        assert "AFTER TIMEOUT None" in lost, lost
+        lost = _out(await session.run_cell("print('AFTER TIMEOUT', 'x' in dir())\nx = 41"))
+        assert "AFTER TIMEOUT False" in lost, lost
         left = _out(
             await session.run_cell(
                 "import threading, time\nthreading.Thread(target=time.sleep, args=(60,), daemon=True).start()",
             ),
         )
         assert f"(a thread this cell started was still running after it ended; {LOST})" in left, left
-        lost = _out(await session.run_cell("print('AFTER THREAD', globals().get('x'))"))
-        assert "AFTER THREAD None" in lost, lost
+        lost = _out(await session.run_cell("print('AFTER THREAD', 'x' in dir())"))
+        assert "AFTER THREAD False" in lost, lost
+        # the opening named these causes before they happened
+        opening = flat(session.opening())
+        for cause in ("ran out of time", "left something running", "sat idle too long"):
+            assert cause in opening, cause
     finally:
         await session.close(completed=True)
 
@@ -314,9 +318,9 @@ async def test_an_idle_actor_interpreter_is_restarted_and_says_so(world, monkeyp
     try:
         await session.run_cell("x = 41")
         await asyncio.sleep(3.0)
-        out = _out(await session.run_cell("print('AFTER IDLE', globals().get('x'))"))
+        out = _out(await session.run_cell("print('AFTER IDLE', 'x' in dir())"))
         assert "(the interpreter was idle for more than 0.5 s and was restarted: " in out, out
-        assert "AFTER IDLE None" in out, out
+        assert "AFTER IDLE False" in out, out
     finally:
         await session.close(completed=True)
 

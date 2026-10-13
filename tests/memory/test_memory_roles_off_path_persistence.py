@@ -48,12 +48,17 @@ STOPPED = "(the interpreter was stopped by the end of the last call; variables a
 # =====================================================================================================================
 
 CHECK = (*PREBOUND, *MUST_NOT)
-PROBE = (
-    "x = 41\n"
-    "_g = globals()\n"
-    "_b = __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)\n"
-    f"print('BOUND', sorted(n for n in {CHECK!r} if n in _g or n in _b))\n"
-)
+
+
+def probe(names) -> str:
+    """A first cell, before any import line: ``x = 41``, then which of *names* are bound (a bare name read in a
+    ``try``, so it works with any builtins the box keeps; a lazy ``memory`` is not imported by it)."""
+    lines = ["x = 41", "_bound = []"]
+    for n in names:
+        lines += ["try:", f"    {n}", f"    _bound.append({n!r})", "except NameError:", "    pass"]
+    lines.append("print('BOUND', sorted(_bound))")
+    return "\n".join(lines) + "\n"
+PROBE = probe(CHECK)
 NEXT = "print('NEXT', x + 1)\nprint('INDEX', type(memory.index()).__name__)\nhelp(len)\nprint('HELPED')\n"
 ONLY_NEXT = "print('NEXT', x + 1)\n"
 
@@ -184,22 +189,21 @@ def test_writer_and_helper_keep_variables_and_have_memory_bound(tmp_path, monkey
         _call("w2", "wait", {}),
     ]
     writer, model, out = _pass(tmp_path, calls, helper=_helper([PROBE, NEXT], seen))
-    _assert_probe(out["c1"], "writer")
+    assert seen, ("the helper never ran", out)
+    hout = _helper_outputs(seen)
     _assert_next(out["c2"], "writer")
+    _assert_next(hout["h2"], "helper")
+    _assert_probe(out["c1"], "writer")
+    _assert_probe(hout["h1"], "helper")
     messages, tools = model.requests[0]
     text = _tool_text(tools)
     assert WRITER_TOOL_TEXT in text, text
     assert not any(t in text for t in FRESH_TEXTS), text
     system = "\n".join(_text(m.get("content")) for m in messages if m.get("role") == "system")
     assert not re.search(r"\bimport memory\b", system)
-
-    assert seen, "the helper never ran"
     _, helper_tools = seen[0]
     text = _tool_text(helper_tools)
     assert HELPER_TOOL_TEXT in text and not any(t in text for t in FRESH_TEXTS), text
-    hout = _helper_outputs(seen)
-    _assert_probe(hout["h1"], "helper")
-    _assert_next(hout["h2"], "helper")
 
 
 @needs_box
@@ -208,8 +212,8 @@ def test_the_curator_keeps_variables_and_has_memory_bound(tmp_path, monkeypatch)
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "off")
     monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "persistent")
     _, model, out = _pass(tmp_path, [_cell("c1", PROBE), _cell("c2", NEXT), _cell("c3", "print('LAST')")], role="curate")
-    _assert_probe(out["c1"], "curator")
     _assert_next(out["c2"], "curator")
+    _assert_probe(out["c1"], "curator")
     _, tools = model.requests[0]
     text = _tool_text(tools)
     assert WRITER_TOOL_TEXT in text and not any(t in text for t in FRESH_TEXTS), text
@@ -234,12 +238,12 @@ def test_a_refused_finish_stops_the_interpreter_and_the_next_call_says_so(tmp_pa
     calls = [
         _cell("c1", "x = 41\nprint('SET')"),
         _call("f", "finish", {"summary": "nothing stored yet"}),
-        _cell("c2", "print('AFTER FINISH', globals().get('x'))"),
+        _cell("c2", "print('AFTER FINISH', 'x' in dir())"),
         _cell("c3", "print('LAST')"),
     ]
     writer, _, out = _pass(tmp_path, calls)
     assert out["f"].startswith("not finished: G1: no manifest"), out["f"]
-    assert STOPPED in out["c2"] and "AFTER FINISH None" in out["c2"], out["c2"]
+    assert STOPPED in out["c2"] and "AFTER FINISH False" in out["c2"], out["c2"]
 
 
 # --- the briefs, without a box ----------------------------------------------------------------------------------
