@@ -2,7 +2,8 @@
 Tests for CodeActActor delegation via ``ActorEnvironment``.
 
 Symbolic tests verify environment installation, prompt inclusion, and gating.
-Eval tests verify end-to-end actor execution with a real LLM.
+The end-to-end test drives a parent and its sub-actor from a scripted model
+(``tests/scripted_model.py``).
 """
 
 from __future__ import annotations
@@ -14,7 +15,9 @@ import inspect
 
 import pytest
 
+from tests.actor.code_act.library_world import install_fake_embed
 from tests.helpers import _handle_project
+from tests.scripted_model import Always, ScriptedModel, cell, reply, scripted
 from unify.actor.code_act_actor import CodeActActor
 from unify.actor.environments.actor import ActorEnvironment, _ActorRunner
 from unify.actor.execution import PythonExecutionSession, _CURRENT_SANDBOX
@@ -490,14 +493,20 @@ def _record_spawns(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return spawned
 
 
-@pytest.mark.requires_provider_key
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
 @_handle_project
-async def test_child_without_sub_agents_cannot_discover_the_actor_primitive():
+async def test_child_without_sub_agents_cannot_discover_the_actor_primitive(
+    monkeypatch,
+):
     """With can_spawn_sub_agents=False the child cannot store a call to
     primitives.actor.act, its search, filter and list never return it, and its
-    prompt never offers it."""
+    prompt never offers it.
+
+    The search ranks with the word-hash fake embedder: its subject is what
+    the search may return, not the ranking. n spans every stored row, so the
+    actor primitive would come back if it were searchable."""
+    install_fake_embed(monkeypatch.setattr)
     child = _build_child(can_spawn_sub_agents=False)
     # The store check finds no primitives.actor where the function would run.
     with pytest.raises(ValueError, match=r"`primitives\.actor` does not exist"):
@@ -609,39 +618,92 @@ async def test_with_python_in_the_worker_a_prompt_function_never_runs_in_the_har
 
 
 # ---------------------------------------------------------------------------
-# Eval test — end-to-end actor execution
+# End-to-end delegation, scripted
 # ---------------------------------------------------------------------------
+
+_SUB_REQUEST = (
+    "Calculate the sum of all integers from 1 to 100 using Python and return the result."
+)
+
+
+def _system_text(call) -> str:
+    out = []
+    for m in call.messages:
+        if m.get("role") != "system":
+            continue
+        content = m.get("content")
+        if isinstance(content, list):
+            out += [str(p.get("text", "")) for p in content if isinstance(p, dict)]
+        else:
+            out.append(str(content))
+    return "\n".join(out)
+
+
+def _delegation_turn(call):
+    """The parent's and the sub-actor's turns, told apart by the parent's
+    Actor Delegation prompt (the sub-actor may not spawn, so it has none)."""
+    answered = sum(1 for m in call.messages if m.get("role") == "assistant")
+    if "primitives.actor.act" in _system_text(call):
+        if answered == 0:
+            return reply(
+                calls=[
+                    cell(
+                        "handle = await primitives.actor.act("
+                        f"request={_SUB_REQUEST!r})\n"
+                        "print(await handle.result())",
+                    ),
+                ],
+            )
+        return reply("The actor's answer: 5050.")
+    if answered == 0:
+        return reply(calls=[cell("print(sum(range(1, 101)))")])
+    return reply("5050")
 
 
 # as_shipped: deleted in step 5 (primitives.actor delegation)
 @pytest.mark.usefixtures("as_shipped")
-@pytest.mark.eval
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @pytest.mark.timeout(300)
 async def test_actor_completes_simple_task():
     """
-    The outer agent should be able to delegate a simple, self-contained task
-    to an actor via actor.act() and receive the result.
+    The outer agent can delegate a simple, self-contained task to an actor
+    via primitives.actor.act() and receive the result: the sub-actor gets
+    the delegated request, its answer comes back into the parent's cell, and
+    the parent reports it.
     """
+    model = ScriptedModel(actor=Always(_delegation_turn))
     actor = CodeActActor(
         environments=[ActorEnvironment()],
         timeout=300,
     )
     try:
-        handle = await actor.act(
-            "Use primitives.actor.act() to delegate the following request: "
-            "'Calculate the sum of all integers from 1 to 100 using Python and return the result.' "
-            "Report the actor's answer.",
-            persist=False,
-        )
-        result = await asyncio.wait_for(handle.result(), timeout=300)
-
-        # The correct answer is 5050. The LLM may format it as "5050" or "5,050".
-        result_str = str(result).replace(",", "")
-        assert "5050" in result_str
+        with scripted(model):
+            handle = await actor.act(
+                "Use primitives.actor.act() to delegate the following request: "
+                f"'{_SUB_REQUEST}' "
+                "Report the actor's answer.",
+                persist=False,
+                can_store=False,
+            )
+            result = await asyncio.wait_for(handle.result(), timeout=300)
     finally:
         try:
             await actor.close()
         except Exception:
             pass
+
+    assert str(result) == "The actor's answer: 5050."
+
+    parent = [c for c in model.calls if "primitives.actor.act" in _system_text(c)]
+    child = [c for c in model.calls if c not in parent]
+    assert len(parent) == 2 and len(child) == 2, model.kinds()
+    # The sub-actor was asked the delegated request ...
+    assert any(
+        m.get("role") == "user" and _SUB_REQUEST in str(m.get("content"))
+        for m in child[0].messages
+    ), child[0].messages
+    # ... and its answer came back into the parent's cell output.
+    assert any(
+        m.get("role") == "tool" and "5050" in str(m.get("content"))
+        for m in parent[-1].messages
+    ), parent[-1].messages
