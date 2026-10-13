@@ -37,9 +37,9 @@ INDEX_FILE = "INDEX.md"
 LINKS_FILE = "links.json"
 DATA_DIR = ".memory"
 GENERATED_ROOT_FILES = (RESERVED_INIT, RESERVED_CONTRACT, INDEX_FILE, LINKS_FILE)
-# Package names a subpackage import would bind over the helpers on ``memory`` (and the optional ones).
+# Package names a subpackage import would bind over the calls on ``memory`` (and the optional ones).
 RESERVED_PACKAGES = frozenset(
-    {"index", "show", "find", "match", "run", "search", "suggest", "tests"},
+    {"ask", "get", "items", "index", "show", "find", "match", "run", "search", "suggest", "tests"},
 )
 
 _NAME = r"[a-z][a-z0-9_]*"
