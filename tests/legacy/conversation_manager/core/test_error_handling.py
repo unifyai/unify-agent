@@ -11,7 +11,8 @@ This test file covers:
 4. Graceful degradation when data is missing or invalid
 
 Most tests are marked as `symbolic` since they test deterministic error
-handling behavior rather than LLM output.
+handling behavior rather than LLM output. Where a step runs the slow brain,
+its model is scripted (``tests/scripted_model.py``).
 """
 
 import json
@@ -19,6 +20,14 @@ import pytest
 from datetime import datetime
 from dataclasses import dataclass
 
+from tests.legacy.conversation_manager.scripted_brain import (
+    WAIT,
+    brain_requests,
+    brain_turn,
+    rendered_state,
+    say,
+)
+from tests.scripted_model import ScriptedModel, scripted
 from unify.legacy.conversation_manager.events import (
     ActorHandleStarted,
     Event,
@@ -160,40 +169,56 @@ class TestStateRecovery:
     """Tests for state recovery from abnormal event sequences."""
 
     @pytest.mark.asyncio
-    @pytest.mark.llm_call
     async def test_duplicate_message_received(self, initialized_cm):
         """Duplicate message events should be handled (added to thread twice)."""
         cm = initialized_cm
+        model = ScriptedModel(
+            actor=[
+                brain_turn(say("Got it."), WAIT),
+                brain_turn(say("I see that one came through twice."), WAIT),
+            ],
+        )
 
         event = UnifyMessageReceived(content="Duplicate message")
 
         # Process the same event twice
-        await cm.step(event)
-        await cm.step(event)
+        with scripted(model):
+            first = await cm.step(event)
+            second = await cm.step(event)
 
         # Both messages should be in the conversation (no deduplication at this level)
         matching = [
             m for m in cm.cm.chat_history.recent() if m.content == "Duplicate message"
         ]
         assert len(matching) == 2
+        # Each copy wakes the brain, and the second turn shows both copies.
+        assert first.llm_ran and second.llm_ran
+        _, later = brain_requests(model)
+        assert rendered_state(later).count("Duplicate message") == 2
+        model.assert_used_up()
 
     @pytest.mark.asyncio
-    @pytest.mark.llm_call
     async def test_actor_result_for_nonexistent_action(self, initialized_cm):
         """ActorResult for an action not in in_flight_actions should not crash."""
         cm = initialized_cm
+        model = ScriptedModel(actor=[brain_turn(WAIT)])
 
         # Send result for an action that doesn't exist
-        result = await cm.step(
-            ActorResult(
-                handle_id=99999,  # Non-existent
-                success=True,
-                result="Some result",
-            ),
-        )
+        with scripted(model):
+            result = await cm.step(
+                ActorResult(
+                    handle_id=99999,  # Non-existent
+                    success=True,
+                    result="Some result",
+                ),
+            )
 
         # Should not crash - handler uses .pop() with default
         assert result.llm_requested is True
+        assert result.llm_ran
+        assert 99999 not in cm.cm.completed_actions
+        assert len(brain_requests(model)) == 1
+        model.assert_used_up()
 
 
 # =============================================================================
