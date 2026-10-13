@@ -502,7 +502,8 @@ def test_the_first_user_message_line_counts_the_copy_and_is_absent_for_an_empty_
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "on")
     tail = "; memory.ask() shows the ones that apply, memory.items() lists them all."
-    assert line_for(_copy(tmp_path)) == "Your memory library holds 4 functions and 1 note" + tail
+    # the world's catalogue: COUNT, TOTAL and READ_ROWS, and NOTE
+    assert line_for(_copy(tmp_path)) == "Your memory library holds 3 functions and 1 note" + tail
     one = copy_with("one", {
         "memory.a.b:c": {"kind": "function"},
         "memory.a.b:d": {"kind": "function", "status": "retired"},
