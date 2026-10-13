@@ -101,6 +101,10 @@ NOT_RUN: dict[str, str] = {
         '"/memory"], cwd="/memory", env={"PYTHONPATH": "/memory", "PYTEST_ADDOPTS": "-c /dev/null '
         '--import-mode=importlib", "PYTHONDONTWRITEBYTECODE": "1"})'
     ): "the gate's own test command, quoted for reference (a cell that runs it imports subprocess and sys)",
+    "help(memory)": (
+        "prints the whole library package's documentation straight to the cell's output, which would fill the "
+        "output cap before the other calls report; `memory` (bound) and `help(...)` are each run by other spans"
+    ),
 }
 #: Exceptions a shown call must never raise.
 FAILING = {"NameError", "ImportError", "ModuleNotFoundError", "TypeError"}
@@ -323,7 +327,7 @@ def test_the_rules_fill_every_placeholder_and_keep_what_is_bound():
         "x = tools.read(path)\n",
         'memory.show("<id>")',
     ]
-    assert is_shown_call("memory.index()") and is_shown_call("help(memory)")
+    assert is_shown_call("memory.index()") and is_shown_call("help(len)")
     # a call named without its arguments is not run: its help holds them
     assert not is_shown_call("memory.ask") and not is_shown_call("tools.Refused") and not is_shown_call("memory.get")
     assert not is_shown_call("memory.text.dates:parse_date") and not is_shown_call("MemoryInputError")
