@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import inspect
 import json
 import keyword
 import re
@@ -2107,6 +2108,84 @@ def shell_source() -> str:
 
 #: The names the embedded client defines that the stub exports.
 CLIENT_NAMES = ("Result", "Refused", "NotRun", "ToolError", "ChannelClosed", "_call")
+
+
+def errors_source() -> str:
+    """The error renderer every stub carries: :mod:`unify.common.contract_runtime`'s ``render``, ``shown``,
+    ``call_text`` and ``nearest``, byte for byte (standard library only; compiled in the box on its first error)."""
+    from unify.common import contract_runtime as cr
+
+    parts = ["import difflib", f"SHOWN_CHARS = {cr.SHOWN_CHARS!r}"]
+    parts += [inspect.getsource(f) for f in (cr.render, cr.shown, cr.call_text, cr.nearest)]
+    return "\n\n".join(parts) + "\n"
+
+
+#: The stub's code that makes its Python-level errors teach (a wrong keyword or number of arguments, a name the
+#: stub does not have). It reads ``_SIGNATURES``, ``_EXAMPLES`` and ``_ERRORS_SOURCE``, which the stub sets first.
+_TEACHING_SOURCE = '''
+_errors = {}
+
+
+def _contract():
+    """The error renderer, compiled on the first error only."""
+    if not _errors:
+        import __future__
+
+        flags = __future__.annotations.compiler_flag
+        exec(compile(_ERRORS_SOURCE, "<tools: errors>", "exec", flags, True), _errors)
+    return _errors
+
+
+def _signature_error(fn, args, kwargs, exc):
+    c = _contract()
+    name = fn.__name__
+    problem = str(exc)
+    if problem.startswith(name + "() "):
+        problem = problem[len(name) + 3:]
+    near = []
+    if "unexpected keyword argument " in problem:
+        key = problem.rsplit("unexpected keyword argument ", 1)[1].split()[0].strip("'")
+        code = fn.__code__
+        near = c["nearest"](key, code.co_varnames[: code.co_argcount])
+    return c["render"](
+        c["call_text"]("tools." + name, args, kwargs),
+        problem,
+        expected="tools." + _SIGNATURES[name],
+        example=_EXAMPLES.get(name),
+        nearest=near,
+    )
+
+
+def _taught(fn):
+    """*fn* with a wrong keyword or number of arguments raising a TypeError that shows the call as written, your
+    signature and a call that works."""
+
+    @_functools.wraps(fn)
+    def call(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except TypeError as exc:
+            if exc.__traceback__ is None or exc.__traceback__.tb_next is not None:
+                raise  # raised inside the call, not by its signature
+            text = _signature_error(fn, args, kwargs, exc)
+        raise TypeError(text) from None
+
+    return call
+
+
+def __getattr__(name):
+    if name.startswith("_"):
+        raise AttributeError("module 'tools' has no attribute %r" % (name,))
+    c = _contract()
+    raise AttributeError(
+        c["render"](
+            "tools." + name,
+            "tools has no %r" % (name,),
+            nearest=c["nearest"](name, __all__),
+            hint="tools.list() lists yours.",
+        )
+    )
+'''
 #: The names the embedded shell source defines that the stub exports.
 SHELL_NAMES = ("sh", "ShellResult")
 
@@ -2163,10 +2242,17 @@ def render_stub(names: tuple[str, ...], agent: Optional[str] = None) -> str:
         "def _args(**given):",
         "    return {k: v for k, v in given.items() if v is not None}",
         "",
+        "",
+        "import functools as _functools",
+        "",
+        f"_SIGNATURES = {json.dumps({n: signature_text(n, agent) for n in allowed if n != 'sh'}, indent=0)}",
+        f"_EXAMPLES = {json.dumps({n: role_example(n, agent) for n in allowed if n != 'sh'}, indent=0)}",
+        "_ERRORS_SOURCE = " + repr(errors_source()),
+        _TEACHING_SOURCE,
     ]
     for n in allowed:
         if n != "sh":
-            out += ["", _function_source(n, agent)]
+            out += ["", _function_source(n, agent), f"{n} = _taught({n})", ""]
     helps = {n: help_text(n, agent) for n in allowed}
     # the help topics the agent has besides its tools (topics are never listed or callable)
     helps.update({t: text for t, (agents, text) in HELP_TOPICS.items() if agent in agents and t not in helps})
