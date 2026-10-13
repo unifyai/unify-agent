@@ -1258,6 +1258,9 @@ async def run_due_passes(
                 # each pass's tool events, box opens and refusal codes, kept after the pass (one folder per pass)
                 "pass_record_root": str(Path(stores.paths.state_dir) / "passes"),
                 "pool": library_pool(settings),
+                # UNIFY_TOOLS_IN_CODE=on: the writer, the curator and their helpers carry one JSON tool, execute_code,
+                # and call every other tool from their cells
+                "tools_in_code": getattr(settings, "UNIFY_TOOLS_IN_CODE", "off") == "on",
                 "edit_tools": library_edit_tools(settings),
                 # the writer's brief and rows name staging only when the episode-end fork writes it
                 "fork": library_fork(settings),

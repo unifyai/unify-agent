@@ -5,8 +5,12 @@ Every handler has the registry's one signature, ``handler(ctx, args) -> Reply``:
 call's validated arguments. A handler that does file or subprocess work is a plain function (the channel runs it in
 its worker pool); one that waits on the record or the request is a coroutine function (the channel awaits it).
 
-* ``read`` and ``grep`` are the memory agents' handlers over the request's roots (``/workspace``).
-* ``install`` runs the workspace installer on the host, as the actor's ``install`` does today.
+* ``read`` and ``grep`` read the request's workspace, named as the box shows it (``/workspace/...``; a relative path
+  is under it). Both keep the workspace sandbox's rules: a path the sandbox hides is refused with the rule.
+  ``read`` opens the path from the workspace's root descriptor one component at a time, never through a link;
+  ``grep`` runs the actor's sandboxed search. Replies name paths as the box shows them, never a host path.
+* ``install`` runs the workspace installer on the host, as the actor's ``install`` does today, and its reply names
+  paths as the box shows them.
 * The record tools go through ``ctx.record`` (:class:`unify.common.tool_registry.Record`: the agent record).
 * ``finish(answer)`` records the request's answer, validated against the request's response format as the loop
   validates a response tool's payload; the loop ends the request when the cell returns.
@@ -65,6 +69,9 @@ class ActorRequestState:
     store_refusal: str = "this session does not store skills"
     #: the host directory ``/workspace`` is bound to (a wheel path under /workspace is installed from there)
     workspace_root: Optional[str] = None
+    #: the workspace sandbox's policy the request's cells run under (``unify.sandbox.build_policy()``); None: built
+    #: at the call
+    policy: Any = None
     #: who started this agent (a teammate's question that names no one goes to it); None for the actor
     spawner: Optional[str] = None
     #: host work started by a call that outlives it (a storage review)
@@ -130,17 +137,118 @@ def actor_binding(
 
 # --- the workspace ---
 
+#: Hits shown per ``grep`` page (and the most the search collects past the page's offset).
+GREP_PAGE = 100
+GREP_MAX_HITS = 1000
+
+
+def _policy(ctx: Any) -> Any:
+    policy = getattr(ctx.state, "policy", None)
+    if policy is None:
+        from unify import sandbox
+
+        policy = sandbox.build_policy()
+    return policy
+
+
+def _box_path(path: Any) -> str:
+    """*path* as a box path: a relative path is under ``/workspace`` (the box's working directory)."""
+    text = "" if path is None else str(path)
+    if not text.startswith("/"):
+        text = WORKSPACE + ("/" + text if text else "")
+    return text
+
+
+def _outside(tool: str, path: str) -> Any:
+    return _refused(Refusal(f"{REFUSED}{path[:200]} is outside {WORKSPACE}", tool, "outside_roots"))
+
+
+def _hidden(virtual: str, policy: Any) -> Optional[str]:
+    """The workspace sandbox's rule that hides *virtual* from a cell, as text naming box paths only; None when a
+    cell may read it."""
+    from pathlib import Path
+
+    from unify import sandbox
+
+    found = policy.readable_violation(Path(sandbox.host_path(virtual, policy)))
+    if found is None:
+        return None
+    rule, detail = found
+    return sandbox.neutral_text(f"hidden by the workspace sandbox rule `{rule}` ({detail})", policy)
+
 
 def read(ctx: Any, args: dict) -> Any:
-    from unify.memory import tool_handlers as _memory
+    """A page of a file under ``/workspace`` (8000 bytes from ``offset``), or a directory's listing."""
+    from unify.memory import safe_paths as _safe
+    from unify.memory import views as _views
 
-    return _memory.read(ctx, args)
+    vpath = _box_path(args.get("path"))
+    offset = args.get("offset", 0)
+    offset = offset if isinstance(offset, int) and not isinstance(offset, bool) and offset >= 0 else 0
+    root = (ctx.roots or {}).get(WORKSPACE)
+    try:
+        prefix, parts = _safe.split(vpath, [WORKSPACE])
+    except _safe.Outside:
+        return _outside("read", vpath)
+    virtual = _safe.virtual(prefix, parts)
+    where = ({"path": virtual, "mode": "read"},)
+    if root is None:
+        return _refused(refusal("read", "not_found", path=virtual))
+    policy = _policy(ctx)
+    hidden = _hidden(virtual, policy)
+    if hidden is not None:
+        return _reply(refusal("read", "unreadable", error=hidden, path=virtual), "refused", "unreadable", where)
+    try:
+        text, mode = _views.read_entry(virtual, {WORKSPACE: root}, offset)
+    except _safe.Outside:
+        return _outside("read", vpath)
+    except (_safe.LinkFound, _safe.NotRegular) as exc:
+        return _reply(refusal("read", "unreadable", error=exc.reason, path=virtual), "refused", "unreadable", where)
+    except OSError:
+        return _reply(refusal("read", "not_found", path=virtual), "refused", "not_found", where)
+    return _reply(text, paths=({"path": virtual, "mode": mode},))
 
 
-def grep(ctx: Any, args: dict) -> Any:
-    from unify.memory import tool_handlers as _memory
+async def grep(ctx: Any, args: dict) -> Any:
+    """Hits of a regular expression under a ``/workspace`` path (default the whole workspace), one page from hit
+    ``offset``; the search runs in the workspace sandbox, as the actor's ``grep`` does."""
+    from unify import sandbox
+    from unify.actor.execution import file_tools
+    from unify.common.tool_errors import ToolInputError
+    from unify.memory import safe_paths as _safe
 
-    return _memory.grep(ctx, args)
+    pattern = args.get("pattern")
+    if not isinstance(pattern, str) or not pattern:
+        return _refused(refusal("grep", "bad_pattern", reason="pattern must be a non-empty string"))
+    vpath = _box_path(args.get("path") or WORKSPACE)
+    offset = args.get("offset", 0)
+    offset = offset if isinstance(offset, int) and not isinstance(offset, bool) and offset >= 0 else 0
+    try:
+        prefix, parts = _safe.split(vpath, [WORKSPACE])
+    except _safe.Outside:
+        return _outside("grep", vpath)
+    virtual = _safe.virtual(prefix, parts)
+    where = ({"path": virtual, "mode": "search"},)
+    policy = _policy(ctx)
+    try:
+        found = await file_tools.grep(pattern, virtual, min(GREP_MAX_HITS, offset + GREP_PAGE), policy=policy)
+    except sandbox.SandboxRefusal as exc:
+        error = sandbox.neutral_text(str(exc), policy)
+        return _reply(refusal("grep", "unreadable", error=error, path=virtual), "refused", "unreadable", where)
+    except ToolInputError as exc:
+        text = str(exc)
+        if text.startswith("No such file or directory"):
+            return _reply(refusal("grep", "not_found", path=virtual), "refused", "not_found", where)
+        return _reply(refusal("grep", "bad_pattern", reason=text[:300]), "refused", "bad_pattern", where)
+    hits = list(found.get("hits") or [])
+    page = hits[offset : offset + GREP_PAGE]
+    text = "\n".join(page) or "(no hits)"
+    end = offset + len(page)
+    if len(hits) > end or (found.get("truncated") and end < GREP_MAX_HITS):
+        text += f"\n[… hits {offset}–{end}; next: offset={end}]"
+    elif found.get("truncated"):
+        text += f"\n[… the search stopped at {GREP_MAX_HITS} hits; narrow the pattern or the path]"
+    return _reply(text, paths=where)
 
 
 def _host_spec(spec: str, workspace_root: Optional[str]) -> str:
@@ -155,11 +263,12 @@ def install(ctx: Any, args: dict) -> Any:
     specs = [packages] if isinstance(packages, str) else packages
     if not isinstance(specs, list) or not specs or not all(isinstance(p, str) and p.strip() for p in specs):
         return _refused(refusal("install", "bad_packages"))
-    from unify import environment
+    from unify import environment, sandbox
 
     root = getattr(ctx.state, "workspace_root", None)
     result = environment.install([_host_spec(p.strip(), root) for p in specs])
-    return _reply(json.dumps(result, default=str))
+    # the installer's report names the environment's host path; the box sees it elsewhere
+    return _reply(sandbox.neutral_text(json.dumps(result, default=str), _policy(ctx)))
 
 
 # --- the record ---

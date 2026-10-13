@@ -187,12 +187,20 @@ def wrap_cell(code: str, filename: str, *, last_value: bool = False) -> str:
 
 def tools_bootstrap(stub_source: str) -> str:
     """The ``exec`` message that makes *stub_source* the module ``tools`` (in ``sys.modules`` and in the
-    namespace), for a box with no read-only directory of its own to stage it in (the actor's)."""
+    namespace), for a box with no read-only directory of its own to stage it in (the actor's). The module runs with
+    the standard builtins (the stub itself uses ``exec`` and ``compile``, which the actor's namespace leaves out),
+    except ``print``, which is the namespace's own, so what ``tools.list()`` and ``tools.help()`` print is the cell's
+    output. A narrower builtins mapping is a convenience for cells, not a boundary: the box is."""
     return (
         "async def __exec_wrapper():\n"
         "    __b = __import__('builtins')\n"
         "    __m = __import__('types').ModuleType('tools')\n"
         "    __m.__file__ = '<tools>'\n"
+        "    __own = __b.globals().get('__builtins__')\n"
+        "    __nb = __b.dict(__b.vars(__b))\n"
+        "    if __b.isinstance(__own, __b.dict) and __own.get('print') is not None:\n"
+        "        __nb['print'] = __own['print']\n"
+        "    __m.__dict__['__builtins__'] = __nb\n"
         f"    __b.exec(__b.compile({stub_source!r}, '<tools>', 'exec', dont_inherit=True), __m.__dict__)\n"
         "    __import__('sys').modules['tools'] = __m\n"
         "    __b.globals()['tools'] = __m\n"
