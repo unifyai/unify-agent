@@ -171,3 +171,10 @@ The three long-horizon switches share the step-limit reply path.
 - **Defaults:** `off`, `100000`, `off`, `off`, `off`, `on`, `inline` and empty (off).
 - **What they do:** `UNIFY_MEMORY_LIBRARY=on` is the library mode: the writer reads a batch map and bounded views and keeps a function library (off: the earlier memory mode as built). In it, `_E` is the recorded experience at which a pass becomes due; `_FORK=on` forks the actor's conversation once at each episode's end into a confined process that writes only to the episode's staging directory; `_POOL=on` keeps every proposal open across passes in the candidate pool until the writer closes it; `_EDIT_TOOLS=on` gives the writer and the curator the `write` and `edit` file tools; `_COMPACT` (on by default) lets the memory agents compact their conversations as the agent loop does; `_ACTOR_INDEX` chooses whether the actor's prompt ends with the index view (`inline`) or a constant guide (`pointer`); `UNIFY_MEMORY_WRITER_USAGE=on` ends each pass's first message with the table of how requests used each library function. Each switch's comment in `unify/settings.py` gives the full behaviour.
 - **Evidence:** the memory design under evaluation (continual-harness-research: the memory preregistrations and the build ledgers); a run's configuration sets them, and each default is the build's behaviour without the switch.
+
+## UNIFY_MEMORY_LIBRARIAN
+
+- **Values:** `on` or `off` (empty is `off`).
+- **Default:** `off`.
+- **What it does:** When on, the actor asks a librarian agent which stored items fit its request (`memory.ask()` in a cell, through the in-code tool `ask_library`); the library export also writes the librarian's catalogue and the procedures' dispatch file, and the actor's prompt shows a constant pointer in place of the index. It requires `UNIFY_TOOLS_IN_CODE=on` (refused at start-up otherwise). Off, nothing of it exists or runs.
+- **Evidence:** the memory design under evaluation, as for the library switches above; keyless tests only so far (the librarian, catalogue, dispatch and ask tests under `tests/memory/`, on records the gate writes).
