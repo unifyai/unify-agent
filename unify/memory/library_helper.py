@@ -45,6 +45,7 @@ import json
 import os
 import re
 import sys
+import threading
 from typing import Any, NamedTuple
 
 INDEX_FILE = "INDEX.md"
@@ -1041,6 +1042,9 @@ def _run_capture(capture_id: str, args: tuple, kwargs: dict) -> RunReport:
     """Run a captured procedure confined (:func:`_confined`) and report it. Its call raises ``memory.call`` with the
     id ``capture:<id>``, as a library function's call does."""
     target = CAPTURE_PREFIX + capture_id
+    if _CAPTURE_ID.fullmatch(capture_id) is None:
+        return RunReport(target, outcome="error", error="LookupError",
+                         detail="a captured procedure's id is capture: and 16 hex digits; memory.match(...) lists them")
     rec = _read_json(os.path.join(_capture_dir(capture_id), "record.json"))
     rec = rec if isinstance(rec, dict) else {}
     base = {"level": _str(rec.get("level"), "unchecked"), "status": _str(rec.get("status"), "on-trial")}
@@ -1070,7 +1074,8 @@ def _run_capture(capture_id: str, args: tuple, kwargs: dict) -> RunReport:
 def _agreement(target: str, args: tuple, kwargs: dict, result: Any) -> tuple[list[str], str]:
     """The other runnable procedures :data:`MATCHER` lists for the same single argument whose result equals
     *result*, and a line saying how many were tried. A library function is tried only when its effect is ``read``
-    (called unwrapped, so the check is not a use); a captured one runs confined. Agreement between stored
+    (called unwrapped, and the library calls it makes raise no event, so the check is not a use); a captured one
+    runs confined. Agreement between stored
     procedures only: nothing is compared with anything the request states."""
     if len(args) != 1 or kwargs:
         return [], "agreement with other procedures is checked for a single argument only"
@@ -1095,7 +1100,11 @@ def _agreement(target: str, args: tuple, kwargs: dict, result: Any) -> tuple[lis
                 if row is None or row.get("effect") != "read":
                     continue
                 fn = inspect.unwrap(_item_function(r.id))
-                other = fn(*args)
+                _QUIET.depth = getattr(_QUIET, "depth", 0) + 1
+                try:
+                    other = fn(*args)  # nor any library call it makes in turn
+                finally:
+                    _QUIET.depth -= 1
         except Exception:  # noqa: BLE001 - a procedure that fails here does not agree
             tried += 1
             continue
@@ -1202,7 +1211,14 @@ def call_outcome(exc: BaseException) -> str:
     )
 
 
+#: While an agreement check runs another procedure (:func:`_agreement`), its library calls raise no event: the
+#: check is not a use.
+_QUIET = threading.local()
+
+
 def _emit(item: str, digest: str, outcome: str, event: str = CALL_EVENT) -> None:
+    if getattr(_QUIET, "depth", 0):
+        return
     try:
         sys.audit(event, item, digest, outcome)
     except Exception:  # noqa: BLE001 - an audit hook never changes the call
