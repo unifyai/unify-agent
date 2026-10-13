@@ -47,23 +47,20 @@ from typing import Any
 
 # --- names ----------------------------------------------------------------------------------------------------
 
-#: Statuses: where an item is in its life.
-ON_TRIAL = "on-trial"
-ADOPTED = "adopted"
-RETIRED = "retired"
-STATUSES = (ON_TRIAL, ADOPTED, RETIRED)
-#: Evidence levels: how much the evidence shows.
-UNCHECKED = "unchecked"
-REPRODUCES_ITS_CASE = "reproduces-its-case"
-CONFIRMED_BY_OUTCOMES = "confirmed-by-outcomes"
-LEVELS = (UNCHECKED, REPRODUCES_ITS_CASE, CONFIRMED_BY_OUTCOMES)
-#: The lifecycle's statuses under these names (``deprecated`` is the curator's retirement).
-FROM_LIFECYCLE = {
-    "experimental": ON_TRIAL,
-    "stable": ADOPTED,
-    "suspect": RETIRED,
-    "deprecated": RETIRED,
-}
+#: Statuses and evidence levels: the one vocabulary (:mod:`.item_states`); ``FROM_LIFECYCLE`` maps the lifecycle's old
+#: status names (``deprecated`` is the curator's retirement).
+from .item_states import (  # noqa: E402
+    ADOPTED,
+    CONFIRMED_BY_OUTCOMES,
+    FROM_LIFECYCLE,
+    LEVELS,
+    ON_TRIAL,
+    REPRODUCES_ITS_CASE,
+    RETIRED,
+    STATUSES,
+    UNCHECKED,
+)
+
 #: What an adoption rests on.
 BASIS_VERDICTS = "verdicts"
 BASIS_IMPLICIT = "implicit"

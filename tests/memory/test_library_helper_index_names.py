@@ -16,10 +16,10 @@ from unify.memory.library_helper import find_section
 HEAD = "# Memory index\n\nOne line per item.\n"
 INDEX = (
     HEAD
-    + "\n## memory.grid — Grid helpers.\n\n- `memory.grid.cells:rows(g)` — Rows of a grid. [experimental]\n"
-    + "\n## memory.text — Text helpers.\n\n- `memory.text.parse:tokens(s)` — Split text. [experimental]\n"
-    + "\n## notes/grid\n\n- `notes/grid/shapes.md` — Grid shapes. [experimental]\n"
-    + "\n## notes/maps\n\n- `notes/maps/legend.md` — Map legends. [experimental]\n"
+    + "\n## memory.grid — Grid helpers.\n\n- `memory.grid.cells:rows(g)` — Rows of a grid. [on-trial]\n"
+    + "\n## memory.text — Text helpers.\n\n- `memory.text.parse:tokens(s)` — Split text. [on-trial]\n"
+    + "\n## notes/grid\n\n- `notes/grid/shapes.md` — Grid shapes. [on-trial]\n"
+    + "\n## notes/maps\n\n- `notes/maps/legend.md` — Map legends. [on-trial]\n"
 )
 
 
@@ -57,7 +57,7 @@ def test_a_bare_name_is_a_package_else_a_notes_topic(tmp_path):
     assert text == ["ok", find_section(INDEX, "memory.text")]
     assert text[1].startswith("## memory.text — Text helpers.\n")
     # no package is named maps: the notes topic
-    assert maps == ["ok", "## notes/maps\n\n- `notes/maps/legend.md` — Map legends. [experimental]\n"]
+    assert maps == ["ok", "## notes/maps\n\n- `notes/maps/legend.md` — Map legends. [on-trial]\n"]
     assert notes_grid[1].startswith("## notes/grid\n")
     # both a package and a notes topic: the package, as before
     assert grid[1].startswith("## memory.grid — Grid helpers.\n")
@@ -65,9 +65,9 @@ def test_a_bare_name_is_a_package_else_a_notes_topic(tmp_path):
 
 
 def test_a_notes_only_library_answers_a_bare_topic_name(tmp_path):
-    index = HEAD + "\n## notes/grid\n\n- `notes/grid/shapes.md` — Grid shapes. [experimental]\n"
+    index = HEAD + "\n## notes/grid\n\n- `notes/grid/shapes.md` — Grid shapes. [on-trial]\n"
     (grid,) = _cell(_copy(tmp_path, index), ["grid"])
-    assert grid == ["ok", "## notes/grid\n\n- `notes/grid/shapes.md` — Grid shapes. [experimental]\n"]
+    assert grid == ["ok", "## notes/grid\n\n- `notes/grid/shapes.md` — Grid shapes. [on-trial]\n"]
 
 
 def test_a_name_that_is_neither_lists_the_sections(tmp_path):

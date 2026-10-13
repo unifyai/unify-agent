@@ -385,9 +385,18 @@ def fixture(
     box: Path,
     blob: Callable[[str], bytes],
     batch: list[str] | tuple[str, ...] = (),
+    *,
+    python: Path | None = None,
+    parse: Callable[[str, str], tuple[str, str]] | None = None,
 ) -> Reply:
     """The fixture tool: recorded bytes into ``tests/data/``. *episode* resolves an id to a recorded episode (None:
     unknown). A copy is listed in ``.pass/fixtures.json``; an appended line names its own source.
+
+    ``parser="<id>"`` names a library function of the box that reads text: the recorded bytes, decoded as UTF-8, are
+    given to it in a confined run (*parse*, by default :func:`.procedures.reader_parse` over the box with *python*),
+    and the file holds the JSON of its result (a ``.json`` file listed with kind ``parsed``, or one input line whose
+    source names the parser). The gate runs the reader on the recorded bytes again and refuses a fixture that
+    differs.
     """
     eid = str(args.get("episode", ""))
     dest = str(args.get("dest", ""))
@@ -453,6 +462,16 @@ def fixture(
                 finally:
                     os.close(dfd)
         notes: list[str] = []
+        parser = args.get("parser")
+        work = None
+        if parser is not None and parse is None:
+            import tempfile
+
+            from .procedures import reader_parse
+            from .sandbox_run import PYTHON
+
+            work = Path(tempfile.mkdtemp(prefix="memory-reader-"))
+            parse = reader_parse(Path(box), python=python or PYTHON, work=work)
         try:
             data, entry = _fx.make(
                 ep,
@@ -463,9 +482,16 @@ def fixture(
                 append=append,
                 existing=existing,
                 notes=notes,
+                parser=None if parser is None else str(parser),
+                parse=parse,
             )
         except _fx.FixtureError as exc:
             return refused("fixture", "bad_fixture", where, reason=str(exc)[:300])
+        finally:
+            if work is not None:
+                import shutil
+
+                shutil.rmtree(work, ignore_errors=True)
         try:
             dfd = _safe.walk_dirs(root, (parts or [])[:-1], create=True)
         except _safe.LinkFound:

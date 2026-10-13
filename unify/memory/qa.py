@@ -892,6 +892,12 @@ def _imports_inputs(source: bytes, kit: bytes | None) -> bool:
     return found or (kit_used and direct(kit)[0])
 
 
+#: Stage-5 findings about how much an item's evidence shows (its drawn recorded inputs, its mutation score); in
+#: library mode they set the item's evidence level instead of refusing it. The others (the test kit, determinism,
+#: replay fidelity, truncation, fixture size, the budget) still refuse.
+EVIDENCE_TAGS = frozenset({"fixtures", "mutation"})
+
+
 class _BudgetSpent(Exception):
     """The stage-5 time budget ran out (noted once; the remaining dynamic checks are not judged)."""
 
@@ -913,7 +919,14 @@ class QAChecks:
         item: str | list[str] | None = None,
     ) -> None:
         """A G3 refusal; *item* names the manifest item(s) it belongs to (None: the whole pass), for the
-        gate's per-item admission (:meth:`.gate.Gate.merge`)."""
+        gate's per-item admission (:meth:`.gate.Gate.merge`). The drawn recorded inputs and the mutation score
+        measure how much an item's evidence shows: in library mode they set its evidence level instead
+        (:meth:`.gate._Run.cap`)."""
+        if tag in EVIDENCE_TAGS and item is not None:
+            found = getattr(self.run, "cap", None)
+            if callable(found):
+                found("G3", f"[qa:{tag}] {reason}", item)
+                return
         self.run.fail("G3", f"[qa:{tag}] {reason}", item)
 
     def _owners(self, path: str) -> list[str]:

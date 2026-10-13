@@ -158,7 +158,9 @@ def test_the_exact_assertion_refusal_shows_a_form_that_passes(library_example_wo
     mem, ev, blobs, gate = library_example_world
     files, fixtures = w.files_and_fixtures(blobs.get, test=w.WEAK_TEST_SOURCE)
     res = gate().check(mem.head(), _candidate(mem, files), w.manifest(fixtures))
-    reason = next(r for r in res.reasons if "[library_mode:exact]" in r)
+    # an evidence finding: it sets the function's evidence level instead of refusing it
+    assert res.passed and res.levels[w.ITEM_ID] == "unchecked"
+    reason = next(r for r in res.level_reasons[w.ITEM_ID] if "[library_mode:exact]" in r)
     # the passing form loads the expected value from a fixture (no literal answer in code)
     assert (
         "A form that passes" in reason

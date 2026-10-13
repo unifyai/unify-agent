@@ -8,7 +8,12 @@ item (``changed_at``).
 
 A commit no consolidation recorded (a crash between a merge and its record, or history from before library mode) reads
 the map of its nearest recorded first-parent ancestor (:func:`records_at`): statuses carry forward, and an item
-the map does not hold is ``experimental``.
+the map does not hold is ``on-trial``.
+
+Statuses and evidence levels use :mod:`.item_states`'s names. A map written before those names existed holds the old
+status names: :func:`read_records` maps them as it reads (``experimental`` to ``on-trial``, ``stable`` to
+``adopted``, ``suspect`` and ``deprecated`` to ``retired``; a ``deprecated`` item was the curator's, so it reads as a
+retirement with the rule ``curate``), so an existing library loads unchanged.
 
 Models never write these records. The writer and the actor read them through ``memory.show``
 (``.memory/items.json``, one of the generated files).
@@ -21,12 +26,24 @@ import json
 from collections.abc import Callable, Mapping
 
 from .gitio import GitError, Repo
-from .library_index import EFFECTS, STATUSES
+from .item_states import (
+    CURATE_RULE,
+    LEVELS,
+    ON_TRIAL,
+    RETIRED,
+    STATUSES,
+    level_from_stored,
+    level_of_record,
+    status_from_stored,
+)
+from .library_index import EFFECTS
 
 NOTES_REF = "items"
 RECORD_VERSION = 1
 SCAN = 200
 _HEADER = "items_map"
+#: the old stored status of a curator's retirement (an alias, or an item a curate pass retired)
+OLD_CURATOR_STATUS = "deprecated"
 _USE_TOTAL_KEYS = (
     "episodes",
     "uses",
@@ -45,13 +62,20 @@ def empty_record(item: str, kind: str) -> dict:
     effect as the gate derived it from its covers (``read``, ``write``, ``unknown``; None: not derived), and
     the bisect result with the rollback proposal. ``uid`` is the item's persistent identity, assigned once at its
     first record and carried across renames and aliases (:func:`new_uid`); ``renamed_from`` lists the ids it had
-    before, oldest first."""
+    before, oldest first.
+
+    The evidence fields: ``level`` is the evidence level of a function's current version
+    (:data:`.item_states.LEVELS`, from its gate run: :func:`.item_states.level_of_record`; None for a note),
+    and ``level_reasons`` the findings that set it, one line each. ``role`` is ``"reader"`` for a function whose
+    tests produced parsed fixtures other tests load, ``"procedure"`` for a recorded procedure, None otherwise.
+    ``reader`` lists the ids of the readers whose parsed fixtures its tests load, and ``reads_for`` the fixture
+    paths a reader produced."""
     return {
         "item": item,
         "uid": None,
         "renamed_from": [],
         "kind": kind,
-        "status": "experimental",
+        "status": ON_TRIAL,
         "status_rule": None,
         "status_reason": None,
         "status_evidence": [],
@@ -69,6 +93,11 @@ def empty_record(item: str, kind: str) -> dict:
         # (``verdicts`` or ``implicit``; None unless adopted)
         "track": None,
         "status_basis": None,
+        "level": None,
+        "level_reasons": [],
+        "role": None,
+        "reader": [],
+        "reads_for": [],
     }
 
 
@@ -90,6 +119,25 @@ def _line(obj: dict) -> str:
     )
 
 
+def record_from_stored(rec: dict) -> dict:
+    """*rec* as stored, with an old status name mapped to today's (:func:`.item_states.status_from_stored`) and an
+    old level name mapped (:func:`.item_states.level_from_stored`; a record without a level keeps none). A
+    ``deprecated`` record was the curator's (an alias, or an item a curate pass retired): it reads as ``retired``
+    with the rule ``curate``, so it stays a curator's retirement. A record already in today's names is returned
+    as it is."""
+    stored = rec.get("status")
+    level = rec.get("level")
+    if stored in STATUSES and (level is None or level in LEVELS):
+        return rec
+    out = dict(rec)
+    out["status"] = status_from_stored(stored)
+    if stored == OLD_CURATOR_STATUS:
+        out["status_rule"] = CURATE_RULE
+    if level is not None:
+        out["level"] = level_from_stored(level, default=None)
+    return out
+
+
 def write_records(repo: Repo, sha: str, records: Mapping[str, dict]) -> bool:
     """Record *records* as the map of library commit *sha*. Returns False, writing nothing, when *sha* already
     has a map: a commit's map is never rewritten. ``ValueError`` (nothing written) for a record whose ``item``
@@ -108,7 +156,8 @@ def write_records(repo: Repo, sha: str, records: Mapping[str, dict]) -> bool:
 
 
 def read_records(repo: Repo, sha: str) -> dict[str, dict] | None:
-    """The map recorded on *sha*, by item id, or None when *sha* has none (or its header is not one)."""
+    """The map recorded on *sha*, by item id, or None when *sha* has none (or its header is not one). Old status
+    and level names are read in today's names (:func:`record_from_stored`)."""
     lines = repo.notes(sha, ref=NOTES_REF)
     if not lines:
         return None
@@ -125,7 +174,7 @@ def read_records(repo: Repo, sha: str) -> dict[str, dict] | None:
         except ValueError:
             continue
         if isinstance(rec, dict) and isinstance(rec.get("item"), str):
-            out[rec["item"]] = rec
+            out[rec["item"]] = record_from_stored(rec)
     return dict(sorted(out.items()))
 
 
@@ -155,12 +204,13 @@ def records_at(
 
 
 def status_of(records: Mapping[str, dict]) -> Callable[[str], str]:
-    """A ``status_of`` function: an item's recorded status, ``experimental`` without a (valid) one."""
+    """A ``status_of`` function: an item's recorded status (an old name mapped), ``on-trial`` without a (valid)
+    one."""
 
     def get(item: str) -> str:
         rec = records.get(item)
         s = rec.get("status") if isinstance(rec, dict) else None
-        return s if s in STATUSES else "experimental"
+        return status_from_stored(s)
 
     return get
 
@@ -174,6 +224,38 @@ def effect_of(records: Mapping[str, dict]) -> Callable[[str], str | None]:
         return e if e in EFFECTS else None
 
     return get
+
+
+def level_of(records: Mapping[str, dict]) -> Callable[[str], str | None]:
+    """A function's recorded evidence level (an old name mapped), None for a note, an item with no record, or a
+    record whose level is None. A function record written before levels existed (no ``level`` key) fails closed:
+    it reads as its verification record gives it (:func:`.item_states.level_of_record`: ``unchecked`` unless its
+    example calls ran on recorded values), the level the next map writes for it."""
+
+    def get(item: str) -> str | None:
+        rec = records.get(item)
+        if not isinstance(rec, dict):
+            return None
+        if "level" not in rec:
+            return level_of_record(rec.get("verification")) if rec.get("kind") == "function" else None
+        return level_from_stored(rec.get("level"), default=None)
+
+    return get
+
+
+def level_reasons_of(record: Mapping | None) -> list[str]:
+    """The findings that set an item's evidence level, as ``memory.show`` prints them (strings only)."""
+    reasons = record.get("level_reasons") if isinstance(record, Mapping) else None
+    return [str(r) for r in reasons] if isinstance(reasons, list) else []
+
+
+def is_outcome_retirement(record: Mapping | None) -> bool:
+    """Whether *record* is retired by its outcomes (errors, negative signals, failure-only provenance, or a
+    dependency so retired), not by the curator (rule ``curate``)."""
+    if not isinstance(record, Mapping):
+        return False
+    rec = record_from_stored(dict(record))
+    return rec.get("status") == RETIRED and rec.get("status_rule") != CURATE_RULE
 
 
 def episodes_of(records: Mapping[str, dict]) -> Callable[[str], int | None]:

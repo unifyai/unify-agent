@@ -9,7 +9,7 @@ import pytest
 from unify.memory.blobs import BlobStore
 from unify.memory.episodes import Action
 from unify.memory.evidence import EvidenceStore
-from unify.memory.gate import NOT_RED_HINT, Gate
+from unify.memory.gate import RED_TEST_HINT, Gate
 from unify.memory.gitio import Repo
 from unify.memory.snapshot import blob_id, listing, materialise, tree_listing
 from unify.memory.sandbox_run import PytestOutcome
@@ -147,7 +147,23 @@ def test_gate_red_green_requires_failing_on_parent(world):
     parent = _merged(mem, FILES)
     cand = _candidate(mem, {"env/venmo/tests/test_me.py": TEST + "\n# touched\n"})
     res = gate.check(parent, cand, _man())
-    assert not res.checks["G3"]  # tests already pass on parent: not red
+    # a test-only change of an unchanged function passes G3: its test is a keeping test
+    assert res.checks["G3"], res.reasons
+    assert any("G3 keeping test: env/venmo/tests/test_me.py passes on the parent" in r for r in res.reasons)
+    # an edited function still needs a test that is red on the parent
+    cand = _candidate(
+        mem,
+        {
+            "env/venmo/__init__.py": MOD.replace('["user_id"]', '["user_id"] or "u-0"'),
+            "env/venmo/tests/test_me.py": TEST + "\n# touched again\n",
+        },
+    )
+    res = gate.check(parent, cand, _man())
+    assert not res.checks["G3"]
+    assert any(
+        r == "G3: env/venmo:me is edited, but none of its tests is red on the parent's library. " + RED_TEST_HINT
+        for r in res.reasons
+    ), res.reasons
 
 
 def test_gate_rejects_missing_effect_line(world):
@@ -190,13 +206,15 @@ def test_gate_red_run_copies_support_so_existing_code_is_not_red(world):
         {"env/venmo/tests/test_me.py": TEST, "unify_memory_testkit.py": KIT},
     )
     res = gate.check(parent, cand, MAN)
-    assert not res.checks["G3"]
-    assert any("already pass on the parent" in r for r in res.reasons)
-    # the refusal says what would satisfy the rule, and the line is attributed to the item that lists the test
-    assert any(r.endswith(NOT_RED_HINT) for r in res.reasons)
+    # the support helper is copied in, so the test passes on the parent: a keeping test, not a refusal (the
+    # function is unchanged)
+    assert res.checks["G3"], res.reasons
     assert any(
-        "already pass on the parent" in r for r in res.item_reasons["env/venmo:me"]
-    )
+        "G3 keeping test: env/venmo/tests/test_me.py passes on the parent: it records existing behaviour; it "
+        "exercises env/venmo:me" in r
+        for r in res.reasons
+    ), res.reasons
+    assert "env/venmo:me" not in res.item_reasons
 
 
 # --- G1 --------------------------------------------------------------------------------------------------
@@ -1762,14 +1780,17 @@ def test_r4_n2_a_red_test_elsewhere_does_not_block_and_a_test_only_repair_lands(
         for r in _notes(res)
     ), res.reasons
     assert all(r.startswith("note:") for r in res.reasons)
-    # dropping the red test is not a repair: no test it failed passes now
+    # replacing the red test with one that already passes on the parent is a keeping test: it lands with a note
     other = (
         "from env.slack import post\n\ndef test_other():\n    assert post(None) == 3\n"
     )
     dropped = _candidate(mem, {"env/slack/tests/test_post.py": other})
     res = gate.check(cand, dropped, {"items": [POST_ITEM]})
-    assert not res.checks["G3"], res.reasons
-    assert any("already pass on the parent" in r for r in res.reasons)
+    assert res.checks["G3"], res.reasons
+    assert any(
+        "G3 keeping test: env/slack/tests/test_post.py passes on the parent: it records existing behaviour" in r
+        for r in _notes(res)
+    ), res.reasons
     # a test-only repair: the parent's own test failed on the parent and passes on the candidate
     fixed = _candidate(mem, {"env/slack/tests/test_post.py": T_POST})
     res = gate.merge(
@@ -1782,7 +1803,12 @@ def test_r4_n2_a_red_test_elsewhere_does_not_block_and_a_test_only_repair_lands(
         "0",
     )
     assert res.passed and all(res.checks.values()), res.reasons
-    assert mem.head() == fixed and not _notes(res)
+    assert mem.head() == fixed
+    # the repair is a keeping test, noted as such
+    assert [r for r in _notes(res) if "keeping test" in r] == [
+        "note: G3 keeping test: env/slack/tests/test_post.py repairs a test the parent had red; it exercises "
+        "env/slack:post",
+    ], res.reasons
 
 
 def test_r4_n2_a_pass_cannot_add_a_failure_beside_a_pre_existing_one(r2):
@@ -1940,8 +1966,10 @@ def test_r5_a2_a_function_change_cannot_ride_a_test_repair(r2):
     )
     assert not res.passed and not res.checks["G3"], res.reasons
     assert mem.head() == red
+    # the repaired test is a keeping test, never the edited function's red test
     assert any(
-        "nor can it count as a repair" in r and "env/slack:post" in r
+        "keeping test: env/slack/tests/test_post.py" in r
+        and "it is not the red test of env/slack:post, which this pass edits" in r
         for r in res.reasons
     ), res.reasons
     assert any(
@@ -1995,7 +2023,10 @@ def test_r5_a2_a_function_change_cannot_ride_a_test_repair(r2):
     )
     res = gate.check(healthy, same, {"items": [POST_ITEM]})
     assert not res.passed and not res.checks["G3"]
-    assert any("already pass on the parent" in r for r in res.reasons), res.reasons
+    assert any(
+        "env/slack:post is edited, but none of its tests is red" in r and r.endswith(RED_TEST_HINT)
+        for r in res.reasons
+    ), res.reasons
 
 
 def test_r5_n2_a_test_only_repair_still_lands(r2):
@@ -2018,7 +2049,12 @@ def test_r5_n2_a_test_only_repair_still_lands(r2):
         "0",
     )
     assert res.passed and all(res.checks.values()), res.reasons
-    assert mem.head() == fixed and not _notes(res)
+    assert mem.head() == fixed
+    # the repair is a keeping test, noted as such
+    assert [r for r in _notes(res) if "keeping test" in r] == [
+        "note: G3 keeping test: env/slack/tests/test_post.py repairs a test the parent had red; it exercises "
+        "env/slack:post",
+    ], res.reasons
 
 
 def test_r5_a5_a_hanging_function_can_be_repaired(r2, monkeypatch):
@@ -2408,3 +2444,292 @@ def test_run_pytest_keeps_the_uncut_output_beside_the_tail(tmp_path, monkeypatch
     assert (
         sr.PytestOutcome(output="abc").full_output == "abc"
     )  # empty means the same text
+
+
+# --- any edit can land: G3 judges functions, not test files (library mode, writer role) ------------------------
+
+from tests.memory import library_example_world as lw  # noqa: E402
+from tests.memory.library_example_world import library_example_world  # noqa: E402,F401 (fixture)
+from unify.memory import fixtures as fx  # noqa: E402
+
+SECOND_TEST = "memory/acct/tests/test_users_second.py"
+NAME_TEST = "memory/acct/tests/test_names.py"
+NAME_ID = "memory.acct.users:user_name"
+NOTE = "notes/acct/ids.md"
+#: the module with a second function, user_name, beside user_id
+TWO = lw.MODULE_SOURCE + '''
+
+def user_name(response: dict) -> str:
+    """The account's display name, read from an acct.me response."""
+    if not isinstance(response, dict) or "name" not in response:
+        raise MemoryInputError("an acct.me response with a name field is needed")
+    return response["name"]
+'''
+_LOAD = '''import json
+from pathlib import Path
+
+from memory.acct.users import {name}
+
+DATA = Path(__file__).parent / "data"
+
+
+def load(name):
+    return json.loads((DATA / name).read_text())
+'''
+SECOND_SOURCE = _LOAD.format(name="user_id") + '''
+
+def test_reads_the_second_recorded_user():
+    assert user_id(load("me_2.json")) == "u-2"
+'''
+NAME_SOURCE = _LOAD.format(name="user_name") + '''
+
+def test_reads_the_recorded_names():
+    assert user_name(load("me_1.json")) == "Ada"
+    assert user_name(load("me_2.json")) == "Bo"
+'''
+
+
+def _land_through_gate(world):
+    """The shared world's function, landed through the gate (its fixture provenance is kept)."""
+    mem, ev, blobs, gate = world
+    files, fixtures = lw.files_and_fixtures(blobs.get)
+    res = gate().merge(
+        mem.head(),
+        lw.candidate(mem, files),
+        lw.manifest(fixtures),
+        "base",
+        "write",
+        None,
+        "0",
+    )
+    assert res.passed, res.reasons
+    return files
+
+
+def _land_directly(world, files):
+    """*files* on main without the gate (a stand-in for an earlier landed library)."""
+    mem = world[0]
+    old = mem.head()
+    sha = lw.candidate(mem, files)
+    mem.fast_forward("main", sha, expected_old=old)
+    return sha
+
+
+def _g3_reasons(res):
+    return [r for r in res.reasons if r.startswith("G3")]
+
+
+def _keeping(res):
+    return [r for r in res.reasons if r.startswith("note: G3 keeping test: ")]
+
+
+def test_any_edit_a_test_only_change_lands_with_a_keeping_note(library_example_world):
+    mem, ev, blobs, gate = library_example_world
+    _land_through_gate(library_example_world)
+    cand = lw.candidate(mem, {SECOND_TEST: SECOND_SOURCE})
+    res = gate().merge(
+        mem.head(),
+        cand,
+        lw.manifest({}, lw.item(tests=[SECOND_TEST])),
+        "p2",
+        "write",
+        None,
+        "0",
+    )
+    assert res.passed and _g3_reasons(res) == [], res.reasons
+    assert mem.head() == res.merged
+    assert _keeping(res) == [
+        f"note: G3 keeping test: {SECOND_TEST} passes on the parent: it records existing behaviour; it exercises "
+        f"{lw.ITEM_ID}",
+    ], res.reasons
+
+
+def test_any_edit_a_pin_only_change_lands_and_a_weakened_one_needs_its_reason(library_example_world):
+    mem, ev, blobs, gate = library_example_world
+    files = _land_through_gate(library_example_world)
+    pinned = files[lw.TEST_FILE].replace(
+        'assert user_id(load("me_1.json")) == "u-1"',
+        'assert user_id(load("me_1.json")) == load("me_1.json")["user_id"]',
+    )
+    assert pinned != files[lw.TEST_FILE]
+    why = {lw.TEST_FILE: "the expected value is read from the recorded response"}
+    res = gate().check(
+        mem.head(),
+        lw.candidate(mem, {lw.TEST_FILE: pinned}),
+        lw.manifest({}, lw.item(), tests_changed=why),
+    )
+    assert res.passed and _g3_reasons(res) == [], res.reasons
+    assert [r for r in _keeping(res) if lw.TEST_FILE in r], res.reasons
+    # a weaker assertion without a stated reason: refused by the weakening rule only, never for being not red
+    weaker = files[lw.TEST_FILE].replace(
+        'assert user_id(load("me_1.json")) == "u-1"',
+        'assert isinstance(user_id(load("me_1.json")), str)',
+    )
+    res = gate().check(
+        mem.head(),
+        lw.candidate(mem, {lw.TEST_FILE: weaker}),
+        lw.manifest({}, lw.item()),
+    )
+    assert not res.passed
+    assert _g3_reasons(res) and all("is weakened" in r for r in _g3_reasons(res)), res.reasons
+
+
+def test_any_edit_a_notes_only_change_lands(library_example_world):
+    mem, ev, blobs, gate = library_example_world
+    _land_through_gate(library_example_world)
+    note = "---\ntitle: Account ids\ndescription: Where a user id is read from.\n---\nThe acct.me response holds it.\n"
+    res = gate().merge(
+        mem.head(),
+        lw.candidate(mem, {NOTE: note}),
+        lw.manifest({}, {"item": NOTE, "kind": "note", "source_episodes": ["e1"]}),
+        "p2",
+        "write",
+        None,
+        "0",
+    )
+    assert res.passed and _g3_reasons(res) == [], res.reasons
+    assert mem.head() == res.merged
+
+
+def test_any_edit_tests_only_for_two_unchanged_functions_land(library_example_world):
+    mem, ev, blobs, gate = library_example_world
+    files, fixtures = lw.files_and_fixtures(blobs.get)
+    _land_directly(library_example_world, {**files, lw.MODULE: TWO})
+    res = gate().merge(
+        mem.head(),
+        lw.candidate(mem, {SECOND_TEST: SECOND_SOURCE, NAME_TEST: NAME_SOURCE}),
+        lw.manifest(
+            {},
+            lw.item(tests=[SECOND_TEST]),
+            lw.item(item=NAME_ID, tests=[NAME_TEST]),
+        ),
+        "p2",
+        "write",
+        None,
+        "0",
+    )
+    assert res.passed and _g3_reasons(res) == [], res.reasons
+    assert sorted(r.split(" passes on the parent")[0] for r in _keeping(res)) == [
+        f"note: G3 keeping test: {NAME_TEST}",
+        f"note: G3 keeping test: {SECOND_TEST}",
+    ], res.reasons
+
+
+def test_any_edit_a_behaviour_change_without_a_red_test_is_refused(library_example_world):
+    mem, ev, blobs, gate = library_example_world
+    files = _land_through_gate(library_example_world)
+    edited = lw.MODULE_SOURCE.replace('    return response["user_id"]\n', '    return str(response["user_id"])\n')
+    assert edited != lw.MODULE_SOURCE
+    res = gate().check(
+        mem.head(),
+        lw.candidate(mem, {lw.MODULE: edited, lw.TEST_FILE: files[lw.TEST_FILE] + "\n# touched\n"}),
+        lw.manifest({}, lw.item()),
+    )
+    assert not res.passed
+    assert (
+        f"G3: {lw.ITEM_ID} is edited, but none of its tests is red on the parent's library. {RED_TEST_HINT}"
+        in res.reasons
+    ), res.reasons
+
+
+HELPER = lw.MODULE_SOURCE.replace(
+    '    return response["user_id"]\n',
+    '    return response[_field()]\n\n\ndef _field():\n    return "user_id"\n',
+)
+
+
+def test_any_edit_a_behaviour_change_through_a_helper_is_refused(library_example_world):
+    mem, ev, blobs, gate = library_example_world
+    files, fixtures = lw.files_and_fixtures(blobs.get)
+    _land_directly(library_example_world, {**files, lw.MODULE: HELPER})
+    changed = HELPER.replace('    return "user_id"\n', '    return "name"\n')
+    res = gate().check(mem.head(), lw.candidate(mem, {lw.MODULE: changed}), lw.manifest({}, lw.item()))
+    assert not res.passed
+    assert any(r.startswith(f"G3: {lw.ITEM_ID} changes behaviour without a test") for r in res.reasons), res.reasons
+
+
+NAME_TEST_2 = "memory/acct/tests/test_names_second.py"
+NAME_SOURCE_2 = _LOAD.format(name="user_name") + '''
+
+def test_reads_the_second_recorded_name():
+    assert user_name(load("me_2.json")) == "Bo"
+'''
+RED_TEST = "memory/acct/tests/test_ids.py"
+RED_SOURCE = '''from memory.acct.users import user_id
+
+
+def test_reads_an_id_field():
+    assert user_id({"id": "u-9"}) == "u-9"
+'''
+
+
+def test_any_edit_an_edited_function_with_a_red_test_and_a_keeping_test_lands(library_example_world):
+    mem, ev, blobs, gate = library_example_world
+    files, fixtures = lw.files_and_fixtures(blobs.get)
+    # the parent's tests call both functions, so the behaviour check compares both
+    _land_directly(library_example_world, {**files, lw.MODULE: TWO, NAME_TEST: NAME_SOURCE})
+    edited = TWO.replace(
+        '    if not isinstance(response, dict) or "user_id" not in response:\n'
+        '        raise MemoryInputError("an acct.me response with a user_id field is needed")\n',
+        '    if isinstance(response, dict) and "user_id" not in response and "id" in response:\n'
+        '        return response["id"]\n'
+        '    if not isinstance(response, dict) or "user_id" not in response:\n'
+        '        raise MemoryInputError("an acct.me response with a user_id field is needed")\n',
+    )
+    assert edited != TWO
+    res = gate().check(
+        mem.head(),
+        lw.candidate(mem, {lw.MODULE: edited, RED_TEST: RED_SOURCE, NAME_TEST_2: NAME_SOURCE_2}),
+        lw.manifest(
+            {},
+            lw.item(tests=[lw.TEST_FILE, RED_TEST]),
+            lw.item(item=NAME_ID, tests=[NAME_TEST, NAME_TEST_2]),
+        ),
+    )
+    assert res.passed and _g3_reasons(res) == [], res.reasons
+    assert [r.split(" passes on the parent")[0] for r in _keeping(res)] == [
+        f"note: G3 keeping test: {NAME_TEST_2}",
+    ], res.reasons
+
+
+FAKE_RED_TEST = "memory/acct/tests/test_third.py"
+FIXTURE_3 = "memory/acct/tests/data/me_3.json"
+FAKE_RED_SOURCE = _LOAD.format(name="user_id") + '''
+
+def test_reads_the_third_recorded_user():
+    assert user_id(load("me_3.json")) == "u-3"
+'''
+
+
+def test_any_edit_a_fixture_new_in_the_pass_is_no_fake_red(library_example_world):
+    mem, ev, blobs, gate = library_example_world
+    _land_through_gate(library_example_world)
+    data, entry = fx.make(lw.E3, 0, FIXTURE_3, blob=blobs.get)
+    edited = lw.MODULE_SOURCE.replace('    return response["user_id"]\n', '    return str(response["user_id"])\n')
+    res = gate().check(
+        mem.head(),
+        lw.candidate(mem, {lw.MODULE: edited, FIXTURE_3: data.decode(), FAKE_RED_TEST: FAKE_RED_SOURCE}),
+        lw.manifest({FIXTURE_3: entry}, lw.item(tests=[lw.TEST_FILE, FAKE_RED_TEST])),
+    )
+    # the new fixture is copied onto the parent tree, so the test passes there: it is not red, and the edited
+    # function has no red test
+    assert not res.passed
+    assert (
+        f"G3: {lw.ITEM_ID} is edited, but none of its tests is red on the parent's library. {RED_TEST_HINT}"
+        in res.reasons
+    ), res.reasons
+
+
+def test_any_edit_a_repaired_red_test_lands_with_its_note(library_example_world):
+    mem, ev, blobs, gate = library_example_world
+    files, fixtures = lw.files_and_fixtures(blobs.get)
+    broken = files[lw.TEST_FILE].replace('== "u-1"', '== "u-X"')
+    assert broken != files[lw.TEST_FILE]
+    _land_directly(library_example_world, {**files, lw.TEST_FILE: broken})
+    res = gate().check(
+        mem.head(),
+        lw.candidate(mem, {lw.TEST_FILE: files[lw.TEST_FILE]}),
+        lw.manifest({}, lw.item()),
+    )
+    assert res.passed and _g3_reasons(res) == [], res.reasons
+    assert [r for r in _keeping(res) if "repairs a test the parent had red" in r and lw.TEST_FILE in r], res.reasons

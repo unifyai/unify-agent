@@ -1,6 +1,6 @@
 """Bisect and the rollback proposal of the library mode. Deterministic; no model calls.
 
-When a function turns ``suspect`` by its own use (errors or negative signals, not taint), the harness runs its
+When a function is ``retired`` by its own use (errors or negative signals, not taint), the harness runs its
 current tests on each version of it in ``main``'s history, and on each version the gate refused
 (:func:`.history_probe.refused_versions`). The current tests read its recorded inputs, the drawn inputs appended
 to them and its exact expected values, so they are the item's recorded inputs, re-run. Every run is

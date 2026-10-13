@@ -90,7 +90,7 @@ def test_served_is_created_at_main_before_main_moves_and_never_moves_without_rec
 def test_status_only_moves_retarget_without_the_gate(mem):
     parent = mem.head()
     candidate = _candidate_on(mem, parent, EXTRA)
-    status = _status(mem, {ITEM: "suspect"})
+    status = _status(mem, {ITEM: "retired"})
     assert mw.is_status_commit(mem, status) and mw.moved_only_by_status(
         mem,
         parent,
@@ -112,7 +112,7 @@ def test_a_status_subject_that_changes_the_tree_is_not_a_status_commit(mem):
     parent = mem.head()
     with mem.temp_checkout(parent) as wt:
         (wt / "memory/text/dates.py").write_text("X = 1\n")
-        sha = mem.commit_all(wt, "status: 1 item(s)", {"Status": f"{ITEM} suspect"})
+        sha = mem.commit_all(wt, "status: 1 item(s)", {"Status": f"{ITEM} retired"})
     mem.fast_forward("main", sha, expected_old=parent)
     assert not mw.is_status_commit(mem, sha)
     with pytest.raises(mw.StaleParent, match="stale"):
@@ -186,7 +186,7 @@ def test_served_lag_counts_the_first_parent_commits_served_is_behind(mem):
     assert mw.served_lag(mem) == 0  # no served yet: requests pin main itself
     c1 = mw.land(mem, _candidate_on(mem, base, EXTRA), base)
     assert mw.served_lag(mem) == 1
-    _status(mem, {ITEM: "suspect"})
+    _status(mem, {ITEM: "retired"})
     assert mw.served_lag(mem) == 2
     mw.publish(mem, has_records=lambda c: c == c1)
     assert mw.served_lag(mem) == 1
@@ -204,7 +204,7 @@ def test_publish_reads_item_records_and_recognises_memory_repo_status_commits(me
     assert mw.publish(mem) == base  # c1 has no records map: not servable
     ir.write_records(mem, c1, {ITEM: ir.empty_record(ITEM, "function")})
     assert mw.publish(mem) == c1
-    status = MemoryRepo(mem).status_commit({ITEM: "suspect"}, ["e1"])
+    status = MemoryRepo(mem).status_commit({ITEM: "retired"}, ["e1"])
     assert mw.is_status_commit(mem, status) and mw.moved_only_by_status(mem, c1, status)
 
 
@@ -248,7 +248,7 @@ def test_the_gate_retargets_over_a_status_commit(request):
     parent = mem.head()
     files, fixtures = g.files_and_fixtures(blobs.get)
     candidate = g.candidate(mem, files)
-    status = MemoryRepo(mem).status_commit({ITEM: "suspect"}, ["e1"])
+    status = MemoryRepo(mem).status_commit({ITEM: "retired"}, ["e1"])
     res = gate().merge(
         parent,
         candidate,

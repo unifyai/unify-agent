@@ -65,14 +65,26 @@ The checks:
   decision rule its recordings cannot mark wrong: its validated covers must come from at least
   :data:`RULE_EPISODES` episodes, else it is refused with its first such line (a function the analysis cannot
   bound is noted, not refused).
-* **G3 red→green and regression.** Every added or changed environment function has a new or changed
-  test; each such test passes on the candidate and is red on the parent: it fails on the parent tree with
-  the changed tests and the ``support`` helpers copied in (a run there that times out counts as
-  red once the candidate's run is green), or, as a test-only repair, it repairs a test file the parent
-  already had red (the parent's own version fails on the parent, and a test it failed now passes; a
-  collection error counts for the whole file) while importing library functions of which the pass edits
-  none. Every edited environment function has at least one test of the first kind, so its change is
-  observed by a red run.
+* **Evidence levels (library mode).** A finding about how much an item's evidence shows does not refuse it: it
+  sets the item's evidence level (:mod:`.item_states`) through :meth:`_Run.cap`, and the item lands at
+  ``unchecked`` with the findings as its ``level_reasons``; an item with none lands at ``reproduces-its-case``.
+  Those findings are G2's grounding when some call that returns still uses a value from a recorded episode, the
+  episodes rule, the check with unseen values (special-cased, refused or unjudged), the literal and rule checks,
+  a typed cover that does not validate, the docstring's ``Example:`` line, the example-shape check, G3's exact
+  and oracle checks, and stage 5's drawn recorded inputs and mutation score. Every other check refuses as
+  before: layout, provenance (every fixture re-derives from the recording, parsed fixtures by their stored
+  reader), the manifest, safety (G6), tests that are not plain or not green, regressions, the behaviour check,
+  an edited function without a red test, deleted or weakened tests without a reason, an example call that
+  raises, an incomplete call record, and a function no call of which returns on a value from a recorded
+  episode in any form (it is not landed).
+* **G3 red→green and regression.** Every added or edited function has a new or changed listed test that passes on
+  the candidate and is red on the parent: it fails on the parent tree with the changed tests, their fixtures and
+  the ``support`` helpers copied in (a run there that times out counts as red once the candidate's run is green).
+  Other new or changed tests need only pass on the candidate; each is noted as a keeping test (it passes on the
+  parent, repairs a test the parent had red, or cannot be compared there). A pass that changes only tests or
+  only notes is judged by the checks that apply to what it changes. A listed function whose body is unchanged
+  (listed to change its tests) skips the checks that judge its own code (its source episodes, its stored typed
+  covers); the checks that judge its tests still apply.
 
   **Behaviour check: any change in what a stored function returns on recorded inputs needs a
   failing-then-passing test.** In every pass, for every channel it changes (any file under
@@ -240,6 +252,7 @@ from .index import IndexOverBudget, build_index, estimate_tokens
 from .memory_helper import compare, file_shape, same_shape, value_shape
 from .shape_rows import descriptors, shapes_at, snapshot_rows
 from .memory_repo import ItemsReport, items
+from .item_states import UNCHECKED as _LOWEST_LEVEL
 from .qa import QAChecks, QAConfig, QAEnv
 from .redact import KEY_SHAPED
 from .sandbox_run import PYTHON, PytestOutcome, run_pytest
@@ -249,6 +262,7 @@ from .snapshot import (
     code_size,
     duplicate_public_defs,
     env_references,
+    library_references,
     item_bodies,
     listing,
     materialise,
@@ -271,13 +285,12 @@ _PYTEST_ENV = {
     "PYTEST_ADDOPTS": "-c /dev/null --import-mode=importlib",
 }
 _REDACTED = "<redacted:key-shaped>"
-# G3's refusal of a listed test that is not red on the parent, and not a test-only repair: what would satisfy the
-# rule, and what to do with a change the rule does not admit
-NOT_RED_HINT = (
-    "A listed test counts when it fails on the parent because this pass changes the behaviour it checks, or when "
-    "it repairs a test file the parent already had red. A change that keeps behaviour (such as new tests that "
-    "only pin what the parent already does) does not belong in this pass: take its test files and its manifest "
-    "entry out, or leave it refused and the final merge keeps it as a draft for a later pass"
+# G3's two per-function refusals (an edited function with no new or changed test, or with none red on the parent):
+# what would satisfy the rule, and what a test that already passes on the parent shows
+RED_TEST_HINT = (
+    "A function you edit needs at least one listed test that fails on the parent's version and passes on yours. A "
+    "test that already passes on the parent is accepted, but it records existing behaviour and cannot show this "
+    "change."
 )
 
 
@@ -357,6 +370,13 @@ class GateResult:
     # each refused item's own reason lines, as they stand in ``reasons`` (a failure attributed to items); the
     # writer pass's repair rounds compare them round to round (:func:`.repair.refusals`)
     item_reasons: dict[str, list[str]] = field(default_factory=dict)
+    # library mode: each manifest function's evidence level (:mod:`.item_states`; the gate gives ``unchecked`` or
+    # ``reproduces-its-case``) and the findings that set it (``level_reasons``: evidence findings, never refusals)
+    levels: dict[str, str] = field(default_factory=dict)
+    level_reasons: dict[str, list[str]] = field(default_factory=dict)
+    # library mode: each parsed fixture G1 re-derived in this check: path -> {"parser" (the readers it names),
+    # "parser_sha256" (their digests as the candidate has them), "rederived" (it re-derived), "parse_seconds"}
+    parsed: dict[str, dict] = field(default_factory=dict)
 
 
 def _failed(reason: str, check: str | None = None) -> GateResult:
@@ -404,20 +424,53 @@ def _describe(o: PytestOutcome) -> str:
 
 
 def _exercised(source: bytes, *bodies: dict) -> set[str] | None:
-    """The library functions a test file imports: by id, by channel or all of ``env`` (None: unparsable).
+    """The stored functions a test file imports, by id, by module or package, or all of them (None: unparsable).
 
-    A channel or ``env`` import stands for every environment function of *bodies* in its scope.
+    v2: a channel or ``env`` import stands for every environment function of *bodies* in its scope. Library mode:
+    ``from memory.<package>.<module> import <name>`` names one function; an import of a module, of a package
+    (``from memory.<package> import <name>`` names the module or a function of that package by that name) or of
+    ``memory`` itself stands for every function of *bodies* in its scope.
     """
     refs = env_references(source)
-    if refs is None:
+    lib = library_references(source)
+    if refs is None or lib is None:
         return None
     names, channels, everything = refs
     functions = {i for b in bodies for i, v in b.items() if v[0] == "env_function"}
-    return set(names) | {
+    out = set(names) | {
         i
         for i in functions
         if everything or i.split(":", 1)[0].split("/", 1)[1] in channels
     }
+    lib_names, scopes, lib_all = lib
+    stored = {i for b in bodies for i, v in b.items() if v[0] == "function"}
+    for i in stored:
+        module, name = i.split(":", 1)
+        package = module.rsplit(".", 1)[0]
+        if (
+            lib_all
+            or i in lib_names
+            or module in scopes
+            or package in scopes
+            or f"{package}.{name}" in lib_names
+        ):
+            out.add(i)
+    return out
+
+
+def _unchanged(run: Any, it: Any) -> bool:
+    """A listed function whose body (and kind) is the parent's: the pass lists it only to change its tests."""
+    return (
+        it.kind in ("env_function", "function")
+        and it.item in run.p_bodies
+        and it.item in run.c_bodies
+        and run.p_bodies[it.item][:2] == run.c_bodies[it.item][:2]
+    )
+
+
+def _is_fixture(path: str) -> bool:
+    """A fixture path: a file under a ``tests/data/`` directory (library mode ``memory/<package>/tests/data/``)."""
+    return "/tests/data/" in f"/{path}"
 
 
 def _library_size(files: dict, tree: Path) -> tuple[int, int, int] | None:
@@ -756,6 +809,36 @@ class _Run:
     calls_base: dict[str, Any] = field(default_factory=dict)
     calls_reg: dict[str, Any] = field(default_factory=dict)
     calls_cand: dict[str, Any] = field(default_factory=dict)
+    # library mode: evidence findings set an item's evidence level instead of refusing it (:meth:`cap`)
+    levels_on: bool = False
+    # item -> the evidence findings that set its level (in order, each once)
+    level_reasons: dict[str, list[str]] = field(default_factory=dict)
+    # library mode: per function listed only to change its tests, the episodes of the stored typed ``episode`` covers
+    # its manifest entry repeats; they were checked when it landed and are not run again
+    typed_kept: dict[str, list[str]] = field(default_factory=dict)
+
+    def cap(
+        self,
+        check: str,
+        reason: str,
+        item: str | list[str] | None = None,
+    ) -> None:
+        """Record an evidence finding of *check* about *item*: it sets the item's evidence level to
+        :data:`.item_states.UNCHECKED` and refuses nothing (library mode).
+
+        Outside library mode, or for a finding no item owns, it is a failure (:meth:`fail`), as before levels.
+        """
+        owners = [item] if isinstance(item, str) else list(item or [])
+        if not self.levels_on or not owners:
+            self.fail(check, reason, item)
+            return
+        line = KEY_SHAPED.sub(_REDACTED, f"{check}: {reason}")
+        for owner in owners:
+            found = self.level_reasons.setdefault(owner, [])
+            if line not in found:
+                found.append(line)
+                # the writer sees it in the gate's reply as a note, never as a refusal
+                self.note(f"evidence level: {owner} is {_LOWEST_LEVEL}: {line}")
 
     def fail(
         self,
@@ -923,6 +1006,7 @@ class Gate:
         res = GateResult(True, {c: True for c in CHECKS})
         tmp = Path(tempfile.mkdtemp(prefix="memory-preview-"))
         run = _Run(res, Manifest(), manifest, "", "", tmp)
+        run.levels_on = self._library_checks()
         try:
             try:
                 run.man = self._parse_manifest(manifest)
@@ -1331,6 +1415,7 @@ class Gate:
         tmp = Path(tempfile.mkdtemp(prefix="memory-gate-"))
         run = _Run(res, Manifest(), manifest, parent, candidate, tmp)
         run.seed = seed
+        run.levels_on = self._library_checks()
         reduced = None
         try:
             if self._prepare(run):
@@ -1373,6 +1458,8 @@ class Gate:
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         res.items_refused = {i: list(c) for i, c in run.item_fail.items()}
+        if run.levels_on:
+            self._levels(run)
         res.verification = {i: dict(r) for i, r in sorted(run.verification.items())}
         res.curate_due = run.curate_due
         res.curations = [dict(r) for r in run.curations]
@@ -1380,6 +1467,28 @@ class Gate:
         res.fixtures_verified = dict(run.fixtures_verified)
         passed = res.passed
         return res, (run.covers if passed else set()), run.notes, snapshot, reduced
+
+    @staticmethod
+    def _levels(run: _Run) -> None:
+        """Library mode: each manifest function's evidence level, from the findings :meth:`_Run.cap` recorded.
+
+        A function with a finding is ``unchecked``; one without is ``reproduces-its-case``. Both go in the gate
+        result and in the function's verification record (``level``, ``level_reasons``), from which the item
+        records take them; the gate never gives ``confirmed-by-outcomes``.
+        """
+        from .item_states import REPRODUCES_ITS_CASE, UNCHECKED
+
+        res = run.res
+        for it in run.man.items:
+            if it.kind != "function" or it.item not in run.c_bodies:
+                continue
+            found = list(run.level_reasons.get(it.item, []))
+            level = UNCHECKED if found else REPRODUCES_ITS_CASE
+            res.levels[it.item] = level
+            res.level_reasons[it.item] = found
+            rec = run.verification.setdefault(it.item, {})
+            rec["level"] = level
+            rec["level_reasons"] = found
 
     def _reduce(self, run: _Run, pass_id: str) -> _Reduced | None:
         """The candidate without the items its failures belong to, committed on the parent; None if none.
@@ -1643,7 +1752,9 @@ class Gate:
                     f"{it.item} ({it.kind}) is not in the candidate",
                     it.item,
                 )
-            if not it.source_episodes:
+            # a function listed only to change its tests keeps the provenance it landed with (its own code is
+            # unchanged); every other item names its source episodes
+            if not it.source_episodes and not _unchanged(run, it):
                 run.fail("G1", f"{it.item} names no source episode", it.item)
             for eid in it.source_episodes:
                 if not self.ev.episode_exists(eid):
@@ -2124,7 +2235,11 @@ class Gate:
                     unseen.add(it.item)
                 else:
                     refused.add(it.item)
-                    run.fail("G3", f"{it.item} has no new or changed test", it.item)
+                    run.fail(
+                        "G3",
+                        f"{it.item} has no new or changed test. {RED_TEST_HINT}",
+                        it.item,
+                    )
         missing = [t for t in new_tests if t not in run.c_files]
         for t in missing:
             run.fail("G3", f"listed test {t} is not in the candidate", _owners(man, t))
@@ -2135,7 +2250,10 @@ class Gate:
         if runnable:
             red_tree = run.tmp / "red"
             shutil.copytree(run.p_tree, red_tree)
-            for rel in runnable + man.support:
+            # the changed fixtures go in too, so that a test is red on the parent because the behaviour it checks
+            # differs there, never because a fixture new in this pass is missing
+            fixtures = sorted(p for p in run.changed if p in run.c_files and _is_fixture(p))
+            for rel in runnable + man.support + fixtures:
                 if rel in run.c_files:
                     (red_tree / rel).parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(run.c_tree / rel, red_tree / rel)
@@ -2151,8 +2269,10 @@ class Gate:
                 # a parent library that hangs on the test is red once the candidate's run is green
                 if _red(on_parent) or (on_parent.timed_out and _green(on_cand)):
                     classic.add(t)
-                elif not cleanup:
-                    self._test_only_repair(run, t, edited, on_cand, on_parent)
+                else:
+                    # not red on the parent: a keeping test, accepted once green on the candidate; it never stands
+                    # in for an edited function's red test
+                    self._keeping_note(run, t, edited, on_cand, on_parent)
                 if not _green(on_cand):
                     run.output(f"{t} (candidate)", on_cand)
                     run.fail(
@@ -2175,7 +2295,8 @@ class Gate:
                     refused.add(it.item)
                     run.fail(
                         "G3",
-                        f"{it.item} is edited, but none of its tests is red on the parent's library",
+                        f"{it.item} is edited, but none of its tests is red on the parent's library. "
+                        f"{RED_TEST_HINT}",
                         it.item,
                     )
         protected = self._suites(run)
@@ -2636,55 +2757,58 @@ class Gate:
             if any(fixture_fits(d, r) for d in mine for r in recorded):
                 return
         if paths:
-            run.fail(
+            run.cap(
                 "G3",
                 f"the examples of {item} read no fixture shaped like an input it covers "
                 f"({', '.join(paths[:5])})",
                 item,
             )
 
-    def _test_only_repair(
+    def _keeping_note(
         self,
         run: _Run,
         test: str,
         edited: set[str],
         on_cand: PytestOutcome,
         on_parent: PytestOutcome,
-    ) -> bool:
-        """A test that is not classically red still counts if it is a test-only repair (else G3 fails).
+    ) -> str:
+        """Note a new or changed test that is not red on the parent: a keeping test. It refuses nothing.
 
-        It must import at least one library function (same analysis as for retired tests), none of which
-        this pass edits, and :meth:`_repaired` must hold. Otherwise a function change could ride a repaired
-        test and go unobserved by any red run.
+        It is accepted once green on the candidate (checked by the caller), and it never counts as an edited
+        function's red test. The note names the test, which of three it is (it passes on the parent and records
+        existing behaviour; it repairs a test the parent had red, :meth:`_repaired`; or it cannot be compared on the
+        parent), and the library functions it exercises (:func:`_exercised`), with those this pass edits.
         """
-        uses = _exercised((run.c_tree / test).read_bytes(), run.p_bodies, run.c_bodies)
-        carried = sorted(edited & uses) if uses else []
-        if uses and not carried and self._repaired(run, test, on_cand):
-            return True
-        why = (
-            "already pass on the parent (not red)"
-            if _green(on_parent)
-            else f"are not red on the parent ({_describe(on_parent)})"
-        )
-        if carried:
-            why += (
-                f"; nor can it count as a repair of a red test, since the pass edits "
-                f"{carried[:5]}, which it exercises"
-            )
-        run.output(f"{test} (parent)", on_parent)
-        run.fail(
-            "G3",
-            f"the tests in {test} {why}. {NOT_RED_HINT}",
-            _owners(run.man, test),
-        )
-        return False
+        # a repaired test also passes on the parent's library once copied there: the repair is named first
+        if self._repaired(run, test, on_cand):
+            why = "repairs a test the parent had red"
+        elif _green(on_parent):
+            why = "passes on the parent: it records existing behaviour"
+        else:
+            why = f"not comparable on the parent ({_describe(on_parent)})"
+        try:
+            source = (run.c_tree / test).read_bytes()
+        except OSError:
+            source = b""
+        uses = _exercised(source, run.p_bodies, run.c_bodies)
+        shown = sorted(uses or ())
+        line = f"G3 keeping test: {test} {why}"
+        if shown:
+            line += f"; it exercises {', '.join(shown[:5])}" + (", …" if len(shown) > 5 else "")
+            carried = sorted(edited & set(shown))
+            if carried:
+                line += (
+                    f"; it is not the red test of {', '.join(carried[:5])}, which this pass edits"
+                )
+        run.note(line)
+        return why
 
     def _repaired(self, run: _Run, test: str, on_cand: PytestOutcome) -> bool:
         """The parent's own *test* file is already red on the parent and the candidate's version repairs it.
 
         A readable parent report must name a failed test that passes on the candidate; a collection error
         names no test, so it counts for the whole file. (The candidate's run must also be green.) Used
-        only for test-only repairs (:meth:`_test_only_repair`).
+        only for the keeping test's note (:meth:`_keeping_note`).
         """
         if test not in run.p_files:
             return False

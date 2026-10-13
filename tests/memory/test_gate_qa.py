@@ -922,8 +922,11 @@ def test_dynamic_checks_wait_for_a_candidate_that_passes_the_rest(tmp_path):
     parent = _commit(mem, files)
     mem.fast_forward("main", parent, expected_old=mem.head())
     files[HP_TEST] = files[HP_TEST] + "\n# again\n"
+    # a test-only change is accepted by G3 (a keeping test); an undeclared file refuses the candidate instead
+    files["env/dialogue_crafter/tests/undeclared.txt"] = "x\n"
     res = gate.check(parent, _commit(mem, files), man)
-    assert not res.passed and res.refused == ["G3"]  # not red on the parent
+    assert not res.passed and "G1" in res.refused
+    assert any("undeclared change env/dialogue_crafter/tests/undeclared.txt" in r for r in res.reasons)
     assert any("[qa:skipped]" in r for r in res.reasons)
 
 

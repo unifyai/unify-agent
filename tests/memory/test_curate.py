@@ -46,7 +46,7 @@ def test_each_condition_fires_with_its_reason():
     assert sorted(got.values()) == [
         "index: 4001 tokens, over its 4000-token view",
         "overlap (antiunify): memory.a.b:f, memory.a.c:g",
-        "suspect: memory.a.b:f (raised in 2 episodes)",
+        "retired by its outcomes: memory.a.b:f (raised in 2 episodes)",
     ]
     assert "overlap:1" in got and f"index:{'c' * 40}" in got
     assert cu.due(_state(index_tokens=4000), set()) == {}
@@ -64,7 +64,7 @@ def test_seen_fingerprints_do_not_fire_again_until_content_changes():
     # the suspect item is edited: it fires again; the overlap candidate, unchanged, does not
     st.bodies[F] = "def f(x):\n    return x + 0"
     assert list(cu.due(st, set(first)).values()) == [
-        "suspect: memory.a.b:f (raised in 2 episodes)",
+        "retired by its outcomes: memory.a.b:f (raised in 2 episodes)",
     ]
 
 
@@ -176,7 +176,7 @@ def test_the_brief_states_each_responsibility_and_input_and_no_benchmark_words()
     for phrase in (
         "keeping each old name working as an alias of the merged function",
         "Generalise variants into one parametric function",
-        "Repair or roll back suspect items",
+        "Repair or roll back items retired by their outcomes",
         "Retire items that are wrong",
         "Fix broken links",
         "Regroup packages",
@@ -297,7 +297,7 @@ def test_a_reason_is_settled_when_the_pass_changed_an_item_it_names():
     got = cu.settled(st, {"memory.a.c:g"}, {})
     assert got == sorted([_fp(st, "overlap:"), _fp(st, "index:")])
     assert list(cu.due(st, set(got)).values()) == [
-        "suspect: memory.a.b:f (raised in 2 episodes)",
+        "retired by its outcomes: memory.a.b:f (raised in 2 episodes)",
     ]
 
 

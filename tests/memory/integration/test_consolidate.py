@@ -1282,7 +1282,7 @@ def _run_library(stores, eid, sha, *, on=True, **kw):
 
 
 def _no_records(monkeypatch):
-    # the item records are not under test here: no suspect item, every item experimental
+    # the item records are not under test here: no retired item, every item on trial
     monkeypatch.setattr(consolidate, "_lifecycle", lambda stores, sha: (None, {}, {}))
 
 

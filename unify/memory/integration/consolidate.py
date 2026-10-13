@@ -1,7 +1,8 @@
 """The consolidation driver (integration Task 24, v1): checker signal, size trigger, writer pass, gate.
 
 Under ``UNIFY_MEMORY_LIBRARY=on``, after a WRITE pass, a CURATE pass follows when the library's state warrants it
-(:mod:`..curate`): overlap candidates, suspect items or an index over its view, each shown to CURATE once.
+(:mod:`..curate`): overlap candidates, items retired by their outcomes or an index over its view, each shown to
+CURATE once.
 
 After each request's episode is committed and indexed, :func:`run_due_passes` asks the batched size
 trigger (:class:`..trigger.Trigger`) whether the experience recorded since the last pass has
@@ -968,6 +969,10 @@ def _end_event(
                 # the writer's (or curator's) no-progress notices and whether 2 * k no-progress model calls in a row
                 # ended its round (loop_stop.AgentNoProgress.report; None: no notice was given)
                 "no_progress": getattr(outcome, "no_progress", None),
+                # the landed functions' evidence levels (counts per level) and the evidence findings that set them
+                # (counts by reason code); None when the pass landed no function with a level
+                "levels": getattr(outcome, "levels", None),
+                "capped_reasons": getattr(outcome, "capped_reasons", None),
             }
             if outcome is not None and outcome.coverage is not None
             else {}
@@ -1034,8 +1039,9 @@ def _lifecycle(
     stores: Stores,
     sha: str,
 ) -> tuple[Callable[[str], str] | None, dict[str, dict], dict[str, dict]]:
-    """The item records at library commit *sha*: each item's status, the suspect items (with their reasons,
-    episodes, bisect result and rollback target) and the use records by item. The one place CURATE reads the
+    """The item records at library commit *sha*: each item's status, the items retired by their outcomes (with
+    their reasons, episodes, bisect result and rollback target; not the curator's retirements) and the use
+    records by item. The one place CURATE reads the
     item records (``item_records.records_at`` and ``status_of``; the record fields)."""
     from .. import item_records
 
@@ -1046,7 +1052,7 @@ def _lifecycle(
     for item, r in sorted(recs.items()):
         if not isinstance(r, dict):
             continue
-        if r.get("status") == "suspect":
+        if item_records.is_outcome_retirement(r):
             # the item record fields: status_reason (str) and status_evidence (episode ids)
             reason = r.get("status_reason")
             suspects[item] = {
@@ -1066,7 +1072,8 @@ def _rollback_files(
     stores: Stores,
     suspects: dict[str, dict],
 ) -> dict[str, dict[str, bytes]]:
-    """For each suspect item with a rollback target: its module (or note) and its package's test files there."""
+    """For each item retired by its outcomes with a rollback target: its module (or note) and its package's test
+    files there."""
     from .. import layout
 
     out: dict[str, dict[str, bytes]] = {}
@@ -1099,7 +1106,7 @@ def _curate_state(
     """
     from .. import layout
     from ..library_export import item_history
-    from ..item_records import effect_of, episodes_of, records_at
+    from ..item_records import effect_of, episodes_of, level_of, records_at
     from ..example_view import example_of, tree_reader
     from ..library_index import build_links, render_index
     from ..overlap import fixture_signatures, overlap_candidates
@@ -1139,6 +1146,7 @@ def _curate_state(
                     effect_of(records),
                     example_of=example_of(records, tree_reader(tree)),
                     episodes_of=episodes_of(records),
+                    level_of=level_of(records),
                 ),
             ),
             bodies=layout.function_bodies(tree),

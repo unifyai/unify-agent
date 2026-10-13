@@ -69,6 +69,22 @@ FAILED_EVENT = "memory.call_failed"
 FAILURE_TEXT = 200
 REFUSAL = "MemoryInputError"
 DIGEST_CHARS = 16
+# The status and evidence-level names (``item_states``'s; this file imports only the standard library, so it
+# keeps its own copy, which a test holds equal): the status a row without one has, the statuses the index leaves
+# out, and the old stored names each now means.
+_NEW_ITEM_STATUS = "on-trial"
+_HIDDEN_STATUSES = ("retired",)
+_OLD_STATUSES = {
+    "experimental": "on-trial",
+    "stable": "adopted",
+    "suspect": "retired",
+    "deprecated": "retired",
+}
+_OLD_LEVELS = {
+    "unverified": "unchecked",
+    "experimental": "unchecked",
+    "verified": "reproduces-its-case",
+}
 
 
 def split_index(text: str) -> tuple[str, list[tuple[str, str]]]:
@@ -228,8 +244,8 @@ def show(item: Any) -> str:
     """One item in full: a function's signature, with an example call quoted from its tests (``Example (from
     <test id>): <call>``) when one is recorded and still in its test file, then its source with its docstring;
     or a note's text. Then its links both ways, its status with, for a function, its effect (and why, for an
-    item left out of the index or given a reason), its verification and use records, and the
-    subjects of the library commits that changed it, newest first."""
+    item left out of the index or given a reason), a function's evidence level with the findings that set it,
+    its verification and use records, and the subjects of the library commits that changed it, newest first."""
     wanted = _item_id(item)
     data = _json(ITEMS_FILE)
     row = data.get("items", {}).get(wanted)
@@ -239,11 +255,15 @@ def show(item: Any) -> str:
             "memory.<package>.<module>:<name>, a note notes/<topic>/<slug>.md)",
         )
     links = _json(LINKS_FILE).get("items", {}).get(wanted, {})
-    status = row.get("status", "experimental")
+    status = row.get("status") or _NEW_ITEM_STATUS
+    status = _OLD_STATUSES.get(status, status)
+    level = row.get("level")
+    level = _OLD_LEVELS.get(level, level) if isinstance(level, str) else None
     if row["kind"] == "function":
         effect = row.get("effect")
         out = [
             f"{row['signature']}  [{status}"
+            + (f", evidence: {level}" if level else "")
             + (f", effect: {effect}" if effect else "")
             + "]",
         ]
@@ -254,12 +274,16 @@ def show(item: Any) -> str:
         out = [
             f"{wanted}  [{status}]" + (f"  {row['title']}" if row.get("title") else ""),
         ]
-    if status in ("suspect", "deprecated"):
+    if status in _HIDDEN_STATUSES:
         out.append(
             f"Not in the index: {row.get('status_reason') or 'its status is ' + status}.",
         )
     elif row.get("status_reason"):
         out.append(f"Status: {row['status_reason']}.")
+    if level:
+        reasons = [str(r) for r in (row.get("level_reasons") or [])]
+        out.append(f"Evidence level: {level}" + (", set by:" if reasons else ""))
+        out += [f"  {r}" for r in reasons]
     out.append("")
     if row["kind"] == "function":
         out.append(_source(row["path"], wanted.split(":", 1)[1]))

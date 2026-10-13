@@ -103,13 +103,13 @@ def lib(tmp_path):
     return stores, head
 
 
-def test_a_consolidation_records_the_map_on_main_and_hides_a_suspect(lib, tmp_path):
+def test_a_consolidation_records_the_map_on_main_and_hides_a_retired_item(lib, tmp_path):
     stores, head = lib
     _episode(stores, "e1", head, {WEEK: {"called": 1, "errored": 1}})
     _episode(stores, "e2", head, {WEEK: {"called": 1, "errored": 1}, PD: {"called": 1}})
     probe = _Probe()
     out = _consolidate(stores, tmp_path, probe)
-    assert out["noted"] == head and out["changes"] == {WEEK: "suspect", SUM: "suspect"}
+    assert out["noted"] == head and out["changes"] == {WEEK: "retired", SUM: "retired"}
     recs = read_records(stores.memory, head)
     assert (recs[WEEK]["status_rule"], recs[WEEK]["status_evidence"]) == (
         "errors",
@@ -145,7 +145,7 @@ def test_a_consolidation_records_the_map_on_main_and_hides_a_suspect(lib, tmp_pa
     assert "week(" not in index and "summary(" not in index and "parse_date(" in index
     items = json.loads(files[".memory/items.json"])["items"]
     assert (
-        items[WEEK]["status"] == "suspect"
+        items[WEEK]["status"] == "retired"
         and "raised in 2 episodes" in items[WEEK]["status_reason"]
     )
     assert items[WEEK]["use"]["errors"] == 2
@@ -162,13 +162,13 @@ def test_status_change_lands_as_a_commit_and_notes_are_never_rewritten(lib, tmp_
         _episode(stores, f"c{i}", head, {PD: {"called": 1}})
     out = _consolidate(stores, tmp_path)
     status = stores.memory.head()
-    assert out["noted"] == status != head and out["changes"] == {PD: "stable"}
+    assert out["noted"] == status != head and out["changes"] == {PD: "adopted"}
     assert stores.memory.run("rev-parse", f"{status}^").strip() == head
     assert stores.memory.run("rev-parse", f"{status}^{{tree}}") == stores.memory.run(
         "rev-parse",
         f"{head}^{{tree}}",
     )
-    assert f"Status: {PD} stable" in stores.memory.run(
+    assert f"Status: {PD} adopted" in stores.memory.run(
         "log",
         "-1",
         "--format=%B",
@@ -178,7 +178,7 @@ def test_status_change_lands_as_a_commit_and_notes_are_never_rewritten(lib, tmp_
     assert (
         _copy(stores, head, tmp_path / "b") == copy
     )  # the copy of a commit never changes
-    assert read_records(stores.memory, status)[PD]["status"] == "stable"
+    assert read_records(stores.memory, status)[PD]["status"] == "adopted"
     again = _consolidate(stores, tmp_path)
     assert (
         again["noted"] is None
@@ -205,8 +205,8 @@ def test_a_new_version_lands_with_its_pass_commit_and_restarts_its_count(lib, tm
     out = _consolidate(stores, tmp_path)
     recs = read_records(stores.memory, new)
     assert out["noted"] == new and out["changes"] == {
-        WEEK: "experimental",
-        SUM: "experimental",
+        WEEK: "on-trial",
+        SUM: "on-trial",
     }
     assert recs[WEEK]["changed_at"] == new and recs[WEEK]["use"][head]["errors"] == 2
     assert recs[WEEK]["bisect"] is None
@@ -323,7 +323,7 @@ def test_the_bisect_budget_is_shared_across_items_and_the_records_are_written(
     recs = {
         i: r["bisect"] for i, r in out["bisects"].items()
     }  # published before the bisect
-    assert read_records(stores.memory, out["noted"])[WEEK]["status"] == "suspect"
+    assert read_records(stores.memory, out["noted"])[WEEK]["status"] == "retired"
     assert calls == [
         600.0,
     ]  # PD first (sorted), with the call's whole budget as its deadline
@@ -368,7 +368,7 @@ def test_a_stop_between_probe_runs_ends_the_bisect_and_the_records_are_written(
     recs = {
         i: r["bisect"] for i, r in out["bisects"].items()
     }  # published before the bisect
-    assert read_records(stores.memory, out["noted"])[WEEK]["status"] == "suspect"
+    assert read_records(stores.memory, out["noted"])[WEEK]["status"] == "retired"
     assert runs == [DATES_TEST]  # no run starts after the stop
     assert "introduced" in recs[PD] and recs[WEEK] == {
         "skipped": "stopped",
@@ -376,7 +376,7 @@ def test_a_stop_between_probe_runs_ends_the_bisect_and_the_records_are_written(
     }
 
 
-def test_an_item_is_not_bisected_again_at_the_same_suspect_version(lib, tmp_path):
+def test_an_item_is_not_bisected_again_at_the_same_retired_version(lib, tmp_path):
     from unify.memory.item_records import empty_record, write_records
 
     stores, head = lib
@@ -395,7 +395,7 @@ def test_an_item_is_not_bisected_again_at_the_same_suspect_version(lib, tmp_path
     probe = _Probe()
     out = _consolidate(stores, tmp_path, probe)
     recs = read_records(stores.memory, out["noted"])
-    assert recs[WEEK]["status"] == "suspect" and probe.calls == []
+    assert recs[WEEK]["status"] == "retired" and probe.calls == []
     assert recs[WEEK]["bisect"] == {"skipped": "budget", "at": head}
 
 
@@ -415,7 +415,7 @@ def test_the_records_are_published_before_the_bisect_and_a_killed_bisect_runs_ag
     with pytest.raises(KeyboardInterrupt):
         _consolidate(stores, tmp_path / "a", killed)
     recs = read_records(stores.memory, head)
-    assert recs[WEEK]["status"] == "suspect" and recs[WEEK]["bisect"] is None
+    assert recs[WEEK]["status"] == "retired" and recs[WEEK]["bisect"] is None
     probe = _Probe()
     out = _consolidate(stores, tmp_path / "b", probe)
     assert out["noted"] is None and out["bisected"] == [WEEK] and len(probe.calls) == 1
@@ -440,7 +440,7 @@ def test_an_item_whose_last_change_is_beyond_the_scan_is_not_promoted(
     tmp_path,
     monkeypatch,
 ):
-    """With its version unknown, three clean uses do not make an item stable; with the history
+    """With its version unknown, three clean uses do not make an item adopted; with the history
     found in its own file it is promoted as usual."""
     from unify.memory import item_bisect, library_export
 
@@ -456,7 +456,7 @@ def test_an_item_whose_last_change_is_beyond_the_scan_is_not_promoted(
     out = _consolidate(stores, tmp_path / "a")
     rec = read_records(stores.memory, out["noted"])[PD]
     assert (
-        rec["status"] == "experimental"
+        rec["status"] == "on-trial"
         and "beyond the scanned history" in rec["status_reason"]
     )
     monkeypatch.undo()
@@ -472,7 +472,7 @@ def test_an_item_whose_last_change_is_beyond_the_scan_is_not_promoted(
             note_uses={},
             unknown_version=[PD],
         )[0][PD]["status"]
-        == "experimental"
+        == "on-trial"
     )
 
 
@@ -493,4 +493,4 @@ def test_the_last_change_comes_from_the_items_own_history_when_the_scan_misses_i
     )
     out = _consolidate(stores, tmp_path / "a")
     rec = read_records(stores.memory, out["noted"])[PD]
-    assert rec["changed_at"] == head and rec["status"] == "stable"
+    assert rec["changed_at"] == head and rec["status"] == "adopted"

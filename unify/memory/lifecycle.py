@@ -34,6 +34,14 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .evidence import EvidenceStore, _unknown_items, runtime_counts
+from .item_states import (
+    ADOPTED,
+    CURATE_RULE,
+    ON_TRIAL,
+    RETIRED,
+    level_of_record,
+    status_from_stored,
+)
 from .signals import _CONTRARY, _SUPPORT, REGIME_SOURCES, Signal
 
 K_STABLE = 3
@@ -335,15 +343,12 @@ def aggregate_use(facts: Iterable[EpisodeUse]) -> dict[str, dict[str, dict]]:
 
 # --- statuses -----------------------------------------------------------------------------------------------
 
-_HIDDEN_BY_RULE = ("suspect", "deprecated")
+#: the rules of a retirement by outcomes, which a function's bisect looks into
+OUTCOME_RULES = ("errors", "negative_signals")
 
 
 def _negative(f: EpisodeUse) -> bool:
     return f.negative and f.regime != NO_SIGNAL_REGIME
-
-
-#: The trust statuses (:mod:`.trust`) under the lifecycle's names, until the rename lands.
-_TO_LIFECYCLE = {"on-trial": "experimental", "adopted": "stable", "retired": "suspect"}
 
 
 def trust_uses(f: EpisodeUse, u: ItemUse) -> list:
@@ -448,46 +453,54 @@ def decide_status(
     item: str,
     prior: str | None,
     facts: Iterable[EpisodeUse],
+    prior_rule: str | None = None,
 ) -> tuple[str, str | None, str | None, list[str]]:
     """``(status, rule, reason, evidence episodes)`` of *item* from the episodes that ran its current version, in the
     lifecycle's names. It delegates to the one decider, :func:`.trust.apply_outcome` (statuses ``on-trial``,
     ``adopted``, ``retired`` are ``experimental``, ``stable``, ``suspect`` here):
 
-    - ``deprecated`` is CURATE's and is kept as it is.
-    - ``suspect`` (rule ``errors``): an exception other than a refusal left it in at least
+    *prior* is its status before (old names are mapped), and *prior_rule* the rule that gave it.
+
+    - ``retired`` by the curator (rule ``curate``) is kept as it is, with that rule.
+    - ``retired`` (rule ``errors``): an exception other than a refusal left it in at least
       :data:`MIN_EPISODES` episodes, in any regime.
-    - ``suspect`` (rule ``negative_signals``): a negative signal followed its use in at least
+    - ``retired`` (rule ``negative_signals``): a negative signal followed its use in at least
       :data:`MIN_EPISODES` episodes, in regimes that have signals (a use the record does not attribute).
-    - ``suspect`` by an attributed failing signal (``rejected``, ``contrary_end``, ``corrected``, ``holds_false``,
+    - ``retired`` by an attributed failing signal (``rejected``, ``contrary_end``, ``corrected``, ``holds_false``,
       ``disagreed``) in :data:`MIN_EPISODES` episodes, or by failed uses of any kind together (``failed_uses``).
-    - ``stable``: used (a call returned) in at least :data:`K_STABLE` episodes, each with a known outcome, no
-      failed use, and no episode with a failed use; where attributed uses are in ``dense`` or ``sparse`` episodes, at
-      least one carries an accepted verdict or a positive end. A ``stable`` item stays ``stable`` until a
-      ``suspect`` rule fires: one episode never decides a status.
-    - otherwise ``experimental``. An import alone never promotes an item, and a refusal never demotes one: an
-      item that has only ever refused its inputs stays ``experimental``, and its reason says how often it
+      A retirement by outcomes is decided again from the facts each time.
+    - ``adopted``: used (a call returned) in at least :data:`K_STABLE` episodes, each with a known outcome, no
+      failed use, and no episode with a failed use; where attributed uses are in ``dense`` or ``sparse``
+      episodes, at least one carries an accepted verdict or a positive end. An ``adopted`` item stays
+      ``adopted`` until a retirement rule fires: one episode never decides a status.
+    - otherwise ``on-trial``. An import alone never promotes an item, and a refusal never demotes one: an
+      item that has only ever refused its inputs stays ``on-trial``, and its reason says how often it
       refused.
     """
-    if prior == "deprecated":
-        return "deprecated", None, None, []
+    from .item_records import OLD_CURATOR_STATUS
+
+    if prior == OLD_CURATOR_STATUS:  # an old name: always the curator's
+        prior, prior_rule = RETIRED, CURATE_RULE
+    prior = status_from_stored(prior, default=None) if prior is not None else None
+    if prior == RETIRED and prior_rule == CURATE_RULE:
+        return RETIRED, CURATE_RULE, None, []
     facts = list(facts)
     out, _track = item_outcome(item, prior, facts)
-    status = _TO_LIFECYCLE[out.status]
-    if status == "suspect":
-        return "suspect", out.rule, out.reason, list(out.episodes)
-    if status == "stable":
-        return "stable", None, out.reason, list(out.episodes)
+    if out.status == RETIRED:
+        return RETIRED, out.rule, out.reason, list(out.episodes)
+    if out.status == ADOPTED:
+        return ADOPTED, None, out.reason, list(out.episodes)
     rows = [f.items[item] for f in facts if item in f.items]
     refused = sorted({f.episode_id for f in facts if item in f.items and f.items[item].refused})
     if refused and not any(u.used for u in rows):
         return (
-            "experimental",
+            ON_TRIAL,
             None,
             f"it refused inputs it was not built for in {len(refused)} episodes and no call to it has "
             "returned yet; a refusal is not a failure",
             [],
         )
-    return "experimental", None, out.reason, []
+    return ON_TRIAL, None, out.reason, []
 
 
 def taint(
@@ -495,29 +508,67 @@ def taint(
     functions: Mapping[str, str],
     graph: Mapping[str, set[str]],
     note_uses: Mapping[str, list[str]],
+    rules: Mapping[str, str | None] | None = None,
+    readers: Mapping[str, Iterable[str]] | None = None,
 ) -> dict[str, tuple[str, list[str]]]:
-    """Items that depend on a ``suspect`` function, with the reason and the items
-    behind it: every function of a module that imports the suspect function's module, directly or through
-    others (the library's import graph, whose package imports resolve to the defining module), and every note whose
-    ``uses:`` names a suspect or tainted function. Functions of the suspect function's own module are not
-    tainted (the graph is per module). Items already ``suspect`` or ``deprecated`` are left out.
+    """Items that depend on a function retired by its outcomes, with the reason and the items behind it.
+
+    A retirement is one by outcomes unless its rule (*rules*: item -> status rule) is the curator's
+    (``curate``): an alias forwards to its target and a curator's retirement is a decision, not a failure, so
+    neither taints. The edges:
+
+    - every function of a module that imports the retired function's module, directly or through others (the
+      library's import graph, whose package imports resolve to the defining module). Functions of the retired
+      function's own module are not tainted (the graph is per module);
+    - every function whose tests load parsed fixtures a retired reader produced (*readers*: item -> the ids of
+      the readers its record lists), and, in turn, what depends on such a function;
+    - every note whose ``uses:`` names a retired or tainted function.
+
+    Items already ``retired`` are left out. Old status names are mapped.
     """
     from .layout import dependants
 
+    status = {i: status_from_stored(st) for i, st in status.items()}
+    rules = rules or {}
+    consumers: dict[str, list[str]] = {}
+    for f, rs in sorted((readers or {}).items()):
+        for r in sorted(set(rs or ())):
+            consumers.setdefault(r, []).append(f)
     out: dict[str, tuple[str, list[str]]] = {}
-    for s in sorted(
-        i for i, st in status.items() if st == "suspect" and i in functions
-    ):
-        mod = functions[s]
-        for m in sorted(dependants(dict(graph), {mod}) - {mod}):
-            for f in sorted(i for i, fm in functions.items() if fm == m):
-                if status.get(f) not in _HIDDEN_BY_RULE and f not in out:
-                    out[f] = (f"depends on suspect {s}", [s])
-    suspect = {i for i, st in status.items() if st == "suspect"} | set(out)
+
+    def mark(f: str, reason: str, s: str, nxt: list[tuple[str, bool]], importers: bool) -> None:
+        if status.get(f) != RETIRED and f not in out:
+            out[f] = (reason, [s])
+            nxt.append((f, importers))
+
+    # (function, whether its importers are still to be tainted): a function tainted through the import graph
+    # has its importers in the same closure already, so only its own readers' consumers are followed
+    frontier = sorted(
+        (i, True)
+        for i, st in status.items()
+        if st == RETIRED and rules.get(i) != CURATE_RULE and i in functions
+    )
+    while frontier:
+        nxt: list[tuple[str, bool]] = []
+        for s, importers in frontier:
+            if importers:
+                mod = functions[s]
+                for m in sorted(dependants(dict(graph), {mod}) - {mod}):
+                    for f in sorted(i for i, fm in functions.items() if fm == m):
+                        mark(f, f"depends on retired {s}", s, nxt, False)
+            for f in consumers.get(s, []):
+                if f in functions:
+                    mark(f, f"its tests load fixtures read by retired {s}", s, nxt, True)
+        frontier = sorted(nxt)
+    failed = {
+        i
+        for i, st in status.items()
+        if st == RETIRED and rules.get(i) != CURATE_RULE
+    } | set(out)
     for note, uses in sorted(note_uses.items()):
-        hit = sorted(u for u in uses if u in suspect)
-        if hit and status.get(note) not in _HIDDEN_BY_RULE and note not in out:
-            out[note] = (f"uses suspect {hit[0]}", hit)
+        hit = sorted(u for u in uses if u in failed)
+        if hit and status.get(note) != RETIRED and note not in out:
+            out[note] = (f"uses retired {hit[0]}", hit)
     return out
 
 
@@ -604,10 +655,8 @@ def _as_item(f: EpisodeUse, item: str, group: list[str]) -> EpisodeUse:
 
 
 def _status_in(rec: Mapping | None) -> str:
-    from .library_index import STATUSES
-
     s = rec.get("status") if isinstance(rec, Mapping) else None
-    return s if s in STATUSES else "experimental"
+    return status_from_stored(s)
 
 
 def _combined_use(rows: Iterable[Mapping[str, dict]]) -> dict[str, dict]:
@@ -712,22 +761,29 @@ def next_records(
 
     An item's status counts only the episodes pinned to the library commits that ran its current version
     (*since*: from *changed_at*, the commit that last changed it, onward). An item in *unknown_version* (that
-    commit could not be found) is never promoted to ``stable``: its counted use may be an older version's. A new version therefore starts as
-    ``experimental``, and its predecessors' use stays in its ``use`` record. ``bisect`` and ``rollback`` carry
-    over while the version is unchanged; ``alias_of`` and ``deprecated`` are CURATE's and carry over.
-    A function with failure-only provenance in at least :data:`MIN_EPISODES` episodes is ``suspect`` (rule
-    ``failure_only``: it belongs in a note); with one such episode it is only flagged. Taint is applied last.
+    commit could not be found) is never promoted to ``adopted``: its counted use may be an older version's. A new
+    version therefore starts as ``on-trial``, and its predecessors' use stays in its ``use`` record. ``bisect`` and
+    ``rollback`` carry over while the version is unchanged; ``alias_of`` and a curator's retirement (``retired``
+    with rule ``curate``) are CURATE's and carry over. A function with failure-only provenance in at least
+    :data:`MIN_EPISODES` episodes is ``retired`` (rule ``failure_only``: it belongs in a note); with one such
+    episode it is only flagged. Taint is applied last. Old status names in *prev* are mapped
+    (:func:`.item_records.record_from_stored`).
 
     CURATE's decisions (``EvidenceStore.aliases()`` and ``curations()``), when given: a live alias is
-    ``deprecated`` with ``alias_of`` its target, and an item a landed CURATE pass retired is ``deprecated`` with
-    its reason (rule ``curate``). Without them ``alias_of`` and ``deprecated`` carry over.
+    ``retired`` (rule ``curate``) with ``alias_of`` its target, and an item a landed CURATE pass retired is
+    ``retired`` (rule ``curate``) with its reason. Without them ``alias_of`` and a curator's retirement carry over.
+
+    The evidence fields of a function come from its verification record (the gate's): ``level``
+    (:func:`.item_states.level_of_record`: a verification without one, or none, fails closed), ``level_reasons``,
+    ``reads_for`` (a reader's parsed fixtures; ``role`` is then ``reader``) and ``reader`` (the readers its tests
+    load fixtures of). A note's level stays None. Nothing here raises a level or sets ``confirmed-by-outcomes``.
 
     Identity (:func:`identities`): every record has a ``uid`` and its ``renamed_from`` lineage, from the
     ``rename`` rows of *curations* and the live aliases. Use, the status rules' episodes and source episodes are
     joined through the uid: the ids an item had before (and an alias sharing its uid) count as the item, so its
     counts survive a rename.
     """
-    from .item_records import empty_record
+    from .item_records import empty_record, record_from_stored
     from .library_index import EFFECTS
 
     verification, provenance = verification or {}, provenance or {}
@@ -762,7 +818,7 @@ def next_records(
         names.setdefault(uid, set()).update([item, *lineage])
     records: dict[str, dict] = {}
     for item in sorted(items):
-        old = prev.get(item) or {}
+        old = record_from_stored(dict(prev.get(item) or {}))
         rec = empty_record(item, items[item])
         uid, lineage = ident[item]
         rec["uid"], rec["renamed_from"] = uid, list(lineage)
@@ -791,6 +847,14 @@ def next_records(
         # the effect the gate derived from the item's covers (library_checks.derive_effect); None: not derived
         effect = v.get("effect") if isinstance(v, dict) else None
         rec["effect"] = effect if effect in EFFECTS else None
+        if items[item] == "function":
+            # the gate's evidence level; a verification without one fails closed (item_states.level_of_record)
+            rec["level"] = level_of_record(v)
+        if items[item] == "function" and isinstance(v, dict):
+            rec["level_reasons"] = [str(r) for r in (v.get("level_reasons") or [])]
+            rec["reads_for"] = sorted(str(p) for p in (v.get("reads_for") or []))
+            rec["role"] = "reader" if rec["reads_for"] else None
+            rec["reader"] = sorted(str(r) for r in (v.get("readers") or []))
         rec["source_channels"] = sorted(channels.get(item, []))
         flagged = sorted(failure.get(item, []))
         p = provenance.get(item) or {}
@@ -807,37 +871,38 @@ def next_records(
             "pass": p.get("pass"),
             "failure_only": bool(flagged),
         }
-        prior = (
-            old.get("status") if (same or old.get("status") == "deprecated") else None
-        )
+        # a curator's retirement carries across versions; any other status only while the version is unchanged
+        kept = old.get("status") == RETIRED and old.get("status_rule") == CURATE_RULE
+        prior = old.get("status") if (same or kept) else None
+        prior_rule = old.get("status_rule") if (same or kept) else None
         mine = [
             _as_item(f, item, group)
             for f in facts
             if f.memory_main in since.get(item, set())
         ]
-        status, rule, reason, evidence = decide_status(item, prior, mine)
+        status, rule, reason, evidence = decide_status(item, prior, mine, prior_rule)
         # the record per kind of signal and what an adoption rests on (trust.py); the level moves only when the
         # gate set one (outcomes raise it to confirmed-by-outcomes or lower it from there)
         outcome, rec["track"] = item_outcome(item, prior, mine, rec.get("level"))
-        rec["status_basis"] = outcome.basis if status == "stable" else None
+        rec["status_basis"] = outcome.basis if status == ADOPTED else None
         if rec.get("level") is not None:
             rec["level"] = outcome.level
-        if item in unknown and status == "stable" and prior != "stable":
+        if item in unknown and status == ADOPTED and prior != ADOPTED:
             # its current version is not known: the use counted may be an older version's
-            status, rule, evidence = "experimental", None, []
-            reason = "not promoted to stable: the commit that last changed it is beyond the scanned history"
+            status, rule, evidence = ON_TRIAL, None, []
+            reason = "not promoted to adopted: the commit that last changed it is beyond the scanned history"
         if rec["alias_of"]:  # CURATE: the name forwards to its target
-            status, rule, evidence = "deprecated", "curate", []
+            status, rule, evidence = RETIRED, CURATE_RULE, []
             reason = f"an alias of {rec['alias_of']}"
         elif item in retired:
-            status, rule, evidence = "deprecated", "curate", []
+            status, rule, evidence = RETIRED, CURATE_RULE, []
             reason = f"retired: {retired[item].get('reason') or ''}".strip()
         if (
-            status in ("experimental", "stable")
+            status in (ON_TRIAL, ADOPTED)
             and items[item] == "function"
             and len(flagged) >= MIN_EPISODES
         ):
-            status, rule, evidence = "suspect", "failure_only", flagged
+            status, rule, evidence = RETIRED, "failure_only", flagged
             reason = (
                 f"failure-only provenance: its {len(flagged)} source episodes all ended with negative signals; "
                 "it belongs in a note"
@@ -850,9 +915,12 @@ def next_records(
         )
         records[item] = rec
     current = {i: r["status"] for i, r in records.items()}
-    for item, (reason, evidence) in taint(current, functions, graph, note_uses).items():
+    rules = {i: r["status_rule"] for i, r in records.items()}
+    # the reader edge of taint (taint's *readers*) is not passed here: status changes beyond the renamed rules
+    # belong to outcome tracking, which wires it
+    for item, (reason, evidence) in taint(current, functions, graph, note_uses, rules).items():
         records[item].update(
-            status="suspect",
+            status=RETIRED,
             status_rule="taint",
             status_reason=reason,
             status_evidence=evidence,
@@ -996,7 +1064,7 @@ def consolidate_records(
     The bisects of one call share :data:`.item_bisect.BISECT_BUDGET_S` (*budget_s*), and *stop* (a callable, the
     worker's SIGTERM) is checked between probe runs. An item they do not reach is ``{"skipped": "budget"}`` (or
     ``"stopped"``); the records are written all the same. An item bisected, or skipped on budget, at its current
-    suspect version (``changed_at``) is not bisected again until that version changes.
+    retired version (``changed_at``) is not bisected again until that version changes.
 
     - The map is computed from the tree at the head, every indexed episode's use and signals, the verification
       and provenance of the passes, and the map carried to the head.
@@ -1006,13 +1074,13 @@ def consolidate_records(
       new map (:meth:`.memory_repo.MemoryRepo.status_commit`). Otherwise nothing is written, and the use counts
       of this consolidation appear with the next commit's map.
     - The map is written BEFORE any bisect, so a bisect that is killed or runs long never holds back
-      the records. Then each ``suspect`` function (rules ``errors`` and ``negative_signals``) with no bisect of
+      the records. Then each ``retired`` function (rules ``errors`` and ``negative_signals``) with no bisect of
       its current version is bisected (:func:`.item_bisect.bisect_item`), and a rollback target is proposed. A
       commit's map is never rewritten, so the result is stored in the evidence store (:func:`bisect_results`)
       and reaches the next map written. One killed before it was stored is bisected again next time.
     - An item whose last change is beyond :func:`.library_export.item_history`'s scan gets it from its own
       file's history (:func:`.item_bisect.versions_of`). If that fails too, its version is unknown, and it is
-      never promoted to ``stable`` (:func:`next_records`).
+      never promoted to ``adopted`` (:func:`next_records`).
 
     Returns ``{"head", "noted", "changes", "bisected", "bisects"}``. ``noted`` is the commit whose map was
     written, or None; ``bisects`` holds this call's results, item -> ``{"bisect", "rollback"}``.
@@ -1104,10 +1172,7 @@ def consolidate_records(
     bisects: dict[str, dict] = {}
     for item in sorted(records):
         rec = records[item]
-        if rec["status"] != "suspect" or rec["status_rule"] not in (
-            "errors",
-            "negative_signals",
-        ):
+        if rec["status"] != RETIRED or rec["status_rule"] not in OUTCOME_RULES:
             continue
         at = rec.get("changed_at")
         done = rec.get("bisect")
@@ -1116,7 +1181,7 @@ def consolidate_records(
             and done.get("at") == at
             and done.get("skipped") != "stopped"
         ):
-            # once per suspect version (from the map carried to the head, or the evidence store): a bisect
+            # once per retired version (from the map carried to the head, or the evidence store): a bisect
             # cut short by the budget is never retried in a loop; one stopped, or killed before storing, is
             continue
         tests = (rec.get("verification") or {}).get("tests") or []

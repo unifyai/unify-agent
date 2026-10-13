@@ -42,6 +42,13 @@ DEFAULT_PERTURB_BUDGET_S = 240.0
 GROUNDED_KINDS = ("copied", "derived")
 
 
+def cap(run: Any, check: str, reason: str, item: Any) -> None:
+    """An evidence finding: it sets *item*'s evidence level (``run.cap``, library mode) instead of refusing it. A
+    run without levels refuses, as before them."""
+    found = getattr(run, "cap", None)
+    (found if callable(found) else run.fail)(check, reason, item)
+
+
 def _module(name: str) -> Any:
     return importlib.import_module(f"{__package__}.{name}")
 
@@ -379,6 +386,12 @@ class ExampleChecks:
         )
         for n in notes:
             run.note(n)
+        # the stored readers whose parsed fixtures its tests opened (the item record's ``reader``)
+        from .fixtures import readers_of
+
+        readers = sorted({r for c in calls for p in c.opened if p in ledger for r in readers_of(ledger[p])})
+        if readers:
+            rec["readers"] = readers
         # stage 5 draws recorded inputs of the input fixtures' families (qa)
         run.input_fixtures[item] = list(inputs)
         pool, capped = self._pool(inputs)
@@ -422,13 +435,18 @@ class ExampleChecks:
                     a.name for a in c.args if kinds[a.name] not in GROUNDED_KINDS
                 }
         if not examples_ok:
-            run.fail(
-                "G2",
+            reason = (
                 f"[examples:grounded] {item}: no call of it in its tests returns on fixture values ({len(calls)} "
                 f"calls; none that returns takes its structured arguments from fixtures: {_places(calls)}); "
-                + GROUNDED_FIX,
-                item,
+                + GROUNDED_FIX
             )
+            if grounded or self._opened_recorded(accepted, ledger):
+                # a call that returns uses a value from a recorded episode in some form (a copied or derived
+                # argument, or a value its test computed from a fixture it opened): the evidence sets the level
+                cap(run, "G2", reason, item)
+            else:
+                # no call that returns uses any recorded value: nothing shows the function on its recorded case
+                run.fail("G2", reason, item)
         raised = [c for c in calls if c.outcome == "raised"]
         named: set[tuple[str | None, str]] = set()
         for c in raised:
@@ -447,9 +465,12 @@ class ExampleChecks:
             for p in rec.get("procedures", [])
             if isinstance(p, dict) and p.get("ok") and isinstance(p.get("episode"), str)
         }
+        if not self._edited(item):
+            # a function listed only to change its tests keeps its stored typed covers, checked when it landed
+            typed |= set((getattr(run, "typed_kept", None) or {}).get(item, []))
         reasons, fields = evidence.evidence_check(item, calls, ground, typed)
         for r in reasons:
-            run.fail("G2", r, item)
+            cap(run, "G2", r, item)
         if self._edited(item):
             self._lint(it, calls, ground)
             self._rule(item, evidence.rule_episodes(ground, calls))
@@ -489,6 +510,12 @@ class ExampleChecks:
             },
         )
 
+    def _opened_recorded(self, accepted: list[ExampleCall], ledger: dict) -> bool:
+        """Whether a call that returned ran in a test that had opened a fixture with provenance (made from a
+        recorded episode with ``fixture``): its arguments may be computed from that recorded value, in any form."""
+        known = set(ledger) | set(getattr(self.run, "fixtures_verified", {}) or {})
+        return any(p in known for c in accepted for p in c.opened)
+
     def _perturbation(
         self,
         item: str,
@@ -505,13 +532,14 @@ class ExampleChecks:
         # the perturbation module renders its own refusal texts; tuples are rendered here only without them
         rendered = getattr(verdict, "reasons", None)
         for reason in rendered or []:
-            run.fail("G2", reason, item)
+            cap(run, "G2", reason, item)
         own = rendered is None
         refused = list(getattr(verdict, "refused", []))[:MAX_NAMED] if own else []
         special = list(getattr(verdict, "special", []))[:MAX_NAMED] if own else []
         unjudged = list(getattr(verdict, "unjudged", []))[:MAX_NAMED] if own else []
         for key, fixture, fld in refused:
-            run.fail(
+            cap(
+                run,
                 "G2",
                 f"[examples:perturbed-refused] {item} refuses fixture values it accepted unchanged: with {fld} of "
                 f"{fixture} replaced by an unseen value of its type, its call at {where(key)} raises "
@@ -519,7 +547,8 @@ class ExampleChecks:
                 item,
             )
         for key, fixture, fld, name in special:
-            run.fail(
+            cap(
+                run,
                 "G2",
                 f"[examples:special-cased] {item} handles {fixture} only for its recorded values: with {fld} "
                 f"replaced by an unseen value of its type, its call at {where(key)} raises {name} where it "
@@ -527,7 +556,8 @@ class ExampleChecks:
                 item,
             )
         for why in unjudged:
-            run.fail(
+            cap(
+                run,
                 "G2",
                 f"[examples:unjudged] {item}: the check with unseen fixture values did not complete ({why}); a "
                 "function is admitted only once it is judged",
@@ -589,7 +619,7 @@ class ExampleChecks:
             lint_min=getattr(cfg, "lint_min", LINT_MIN),
         )
         for r in reasons:
-            run.fail("G2", r, item)
+            cap(run, "G2", r, item)
         for n in notes:
             run.note(n)
 
@@ -611,7 +641,7 @@ class ExampleChecks:
             episodes=episodes,
         )
         for r in reasons:
-            run.fail("G2", r, item)
+            cap(run, "G2", r, item)
         for n in notes:
             run.note(n)
 
@@ -630,7 +660,8 @@ class ExampleChecks:
             calls,
             grounded,
         ):
-            self.run.fail("G1", problem, it.item)
+            # the docstring's Example: line is evidence shown to readers: it sets the level
+            cap(self.run, "G1", problem, it.item)
 
     # -- G3: behaviour of stored functions ------------------------------------------------------------------
     def behaviour(

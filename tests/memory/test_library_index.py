@@ -23,16 +23,16 @@ PARSE_DATE = "memory.text.dates:parse_date"
 NOTE_ID = "notes/text/dates.md"
 EXPECTED_INDEX = (
     INDEX_HEAD + "\n## memory.text — Text helpers.\n\n"
-    "- `memory.text.dates:parse_date(s: str) -> str` — Parse a date written as YYYY-MM-DD. [experimental]; "
+    "- `memory.text.dates:parse_date(s: str) -> str` — Parse a date written as YYYY-MM-DD. [on-trial]; "
     "notes: notes/text/dates.md\n"
-    "- `memory.text.dates:week(s)` — The ISO week of a date. [experimental]\n"
-    "- `memory.text.parse:tokens(s)` — Split text on whitespace. [experimental]\n"
-    "- `memory.text.parse:words(s)` — Count the words of a text. [experimental]\n"
-    "- `memory.text.report:summary(s)` — One line about a date. [experimental]\n"
+    "- `memory.text.dates:week(s)` — The ISO week of a date. [on-trial]\n"
+    "- `memory.text.parse:tokens(s)` — Split text on whitespace. [on-trial]\n"
+    "- `memory.text.parse:words(s)` — Count the words of a text. [on-trial]\n"
+    "- `memory.text.report:summary(s)` — One line about a date. [on-trial]\n"
     "\n## memory.web\n\n"
-    "- `memory.web.fetch:get(u)` — Fetch nothing; split the address. [experimental]\n"
+    "- `memory.web.fetch:get(u)` — Fetch nothing; split the address. [on-trial]\n"
     "\n## notes/text\n\n"
-    "- `notes/text/dates.md` — How dates are written. [experimental]; functions: memory.text.dates:parse_date\n"
+    "- `notes/text/dates.md` — How dates are written. [on-trial]; functions: memory.text.dates:parse_date\n"
 )
 
 
@@ -84,23 +84,26 @@ def test_index_is_complete_sorted_and_byte_stable(tmp_path):
     assert listed(index) == 7 and packages_of(index) == ["text", "web"]
 
 
-def test_suspect_and_deprecated_items_leave_the_index_but_not_the_links(tmp_path):
+def test_retired_items_leave_the_index_but_not_the_links(tmp_path):
     lib = _lib(tmp_path)
     links = build_links(lib)
     status = {
-        PARSE_DATE: "suspect",
-        "memory.web.fetch:get": "deprecated",
-        "memory.text.dates:week": "stable",
+        PARSE_DATE: "retired",
+        "memory.web.fetch:get": "retired",
+        "memory.text.dates:week": "adopted",
     }
-    index = render_index(lib, links, lambda i: status.get(i, "experimental"))
+    index = render_index(lib, links, lambda i: status.get(i, "on-trial"))
     assert PARSE_DATE + "(" not in index and "## memory.web" not in index
-    assert "- `memory.text.dates:week(s)` — The ISO week of a date. [stable]\n" in index
+    assert "- `memory.text.dates:week(s)` — The ISO week of a date. [adopted]\n" in index
     assert (
-        "- `notes/text/dates.md` — How dates are written. [experimental]\n" in index
+        "- `notes/text/dates.md` — How dates are written. [on-trial]\n" in index
     )  # no hidden link shown
     assert PARSE_DATE in links["items"]
     with pytest.raises(ValueError, match="unknown status 'gold'"):
         render_index(lib, links, lambda i: "gold")
+    # an old status name is not one the index renders: item_records.status_of maps it before it gets here
+    with pytest.raises(ValueError, match="unknown status 'experimental'"):
+        render_index(lib, links, lambda i: "experimental")
 
 
 def test_an_empty_library_has_an_index_with_no_items(tmp_path):
@@ -147,12 +150,12 @@ def test_a_functions_derived_effect_shows_beside_its_status(tmp_path):
     effects = {"memory.text.dates:week": "write", "memory.text.parse:tokens": "read"}
     index = render_index(lib, links, None, effects.get)
     assert (
-        "- `memory.text.dates:week(s)` — The ISO week of a date. [experimental, effect: write]\n"
+        "- `memory.text.dates:week(s)` — The ISO week of a date. [on-trial, effect: write]\n"
         in index
     )
-    assert "Split text on whitespace. [experimental, effect: read]\n" in index
+    assert "Split text on whitespace. [on-trial, effect: read]\n" in index
     assert (
-        "Count the words of a text. [experimental]\n" in index
+        "Count the words of a text. [on-trial]\n" in index
     )  # none derived: status only
     assert "effect: write" in INDEX_HEAD  # the head says what the bracket means
     # no effect function: the index is byte for byte the one without effects
@@ -182,7 +185,7 @@ def test_an_example_call_is_a_second_line_under_its_function_byte_stable(tmp_pat
     links = build_links(lib)
     index = render_index(lib, links, None, None, _example_of(tmp_path))
     first = (
-        "- `memory.text.dates:parse_date(s: str) -> str` — Parse a date written as YYYY-MM-DD. [experimental]; "
+        "- `memory.text.dates:parse_date(s: str) -> str` — Parse a date written as YYYY-MM-DD. [on-trial]; "
         "notes: notes/text/dates.md\n"
     )
     assert first + EXAMPLE_LINE in index
@@ -218,3 +221,35 @@ def test_a_stale_example_is_never_quoted_in_the_index(tmp_path):
     test_file = tmp_path / "memory/text/tests/test_dates.py"
     test_file.write_text("# edited\n" + test_file.read_text())
     assert render_index(lib, links, None, None, _example_of(tmp_path)) == EXPECTED_INDEX
+
+
+def test_a_functions_evidence_level_shows_beside_its_status(tmp_path):
+    from unify.memory.item_records import empty_record, level_of
+
+    lib = _lib(tmp_path)
+    links = build_links(lib)
+    week, tokens = "memory.text.dates:week", "memory.text.parse:tokens"
+    records = {
+        week: {**empty_record(week, "function"), "level": "unchecked"},
+        tokens: {**empty_record(tokens, "function"), "level": "reproduces-its-case"},
+        NOTE_ID: {**empty_record(NOTE_ID, "note")},
+    }
+    index = render_index(
+        lib, links, None, {week: "write"}.get, level_of=level_of(records)
+    )
+    assert (
+        "- `memory.text.dates:week(s)` — The ISO week of a date. [on-trial, evidence: unchecked, effect: write]\n"
+        in index
+    )
+    assert "Split text on whitespace. [on-trial, evidence: reproduces-its-case]\n" in index
+    # a function with no record shows no level, nor does a note
+    assert "Count the words of a text. [on-trial]\n" in index
+    assert "How dates are written. [on-trial]; " in index
+    assert "evidence: <level>" in INDEX_HEAD  # the head says what the bracket means
+    # no level function, or none known: the index is byte for byte the one without levels
+    assert render_index(lib, links) == render_index(lib, links, level_of=lambda i: None)
+    assert render_index(lib, links, level_of=level_of(records)) == render_index(
+        lib, links, level_of=level_of(records)
+    )
+    # a value outside the known levels is never rendered
+    assert "evidence" not in render_index(lib, links, level_of=lambda i: "bogus").split("\n## ", 1)[1]

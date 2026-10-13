@@ -517,7 +517,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
                 "permission": "/inputs ro",
             },
             {
-                "expectation": "read episodes cited by suspects",
+                "expectation": "read episodes cited by retired items",
                 "tool": "read_episode",
                 "permission": "recorded episodes ro",
             },

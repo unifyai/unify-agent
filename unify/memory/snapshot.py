@@ -312,6 +312,51 @@ def env_references(source: bytes) -> tuple[set[str], set[str], bool] | None:
     return names, channels, everything
 
 
+def library_references(source: bytes) -> tuple[set[str], set[str], bool] | None:
+    """What a test file imports from a memory library: names, scopes, and whether all of ``memory``.
+
+    Names are ``memory.<package>.<module>:<name>`` for ``from memory.<package>.<module> import <name>``, and
+    ``memory.<package>.<name>`` for ``from memory.<package> import <name>`` (a module or a function of the package
+    by that name; the caller resolves which). Scopes are the dotted modules and packages imported whole
+    (``import memory.<package>[.<module>]``, ``from memory.<package>.<module> import *``, ``from memory import
+    <package>``). None when the file does not parse.
+    """
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return None
+    names: set[str] = set()
+    scopes: set[str] = set()
+    everything = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            parts = node.module.split(".")
+            if parts[0] != "memory":
+                continue
+            star = any(a.name == "*" for a in node.names)
+            if len(parts) == 1:
+                everything = everything or star
+                scopes.update(f"memory.{a.name}" for a in node.names if a.name != "*")
+            elif star:
+                scopes.add(".".join(parts[:3]))
+            elif len(parts) == 2:
+                for a in node.names:
+                    names.add(f"{node.module}.{a.name}")
+                    scopes.add(f"{node.module}.{a.name}")
+            else:
+                module = ".".join(parts[:3])
+                names.update(f"{module}:{a.name}" for a in node.names)
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                parts = a.name.split(".")
+                if parts[0] == "memory":
+                    if len(parts) == 1:
+                        everything = True
+                    else:
+                        scopes.add(".".join(parts[:3]))
+    return names, scopes, everything
+
+
 def _dotted(node: ast.expr) -> str | None:
     """``a.b.c`` for a chain of names and attributes, else None."""
     parts: list[str] = []

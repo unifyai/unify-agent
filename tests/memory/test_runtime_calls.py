@@ -7,6 +7,7 @@ from __future__ import annotations
 from tests.memory.test_episodes import _ep
 from unify.memory import lifecycle as lc
 from unify.memory.evidence import EvidenceStore, runtime_counts
+from unify.memory.item_states import ADOPTED, ON_TRIAL, RETIRED
 from unify.memory.integration import hooks
 from unify.memory.integration.request import (
     MAX_RUNTIME_ITEMS,
@@ -229,8 +230,8 @@ def test_refusals_alone_never_demote_and_runtime_errors_do():
         )
         for i in range(3)
     ]
-    status, rule, reason, _ = lc.decide_status(PD, "experimental", refused)
-    assert (status, rule) == ("experimental", None) and "refused" in reason
+    status, rule, reason, _ = lc.decide_status(PD, ON_TRIAL, refused)
+    assert (status, rule) == (ON_TRIAL, None) and "refused" in reason
     erred = [
         lc.facts_from_use(
             f"e{i}",
@@ -242,7 +243,7 @@ def test_refusals_alone_never_demote_and_runtime_errors_do():
         )
         for i in range(2)
     ]
-    assert lc.decide_status(PD, "experimental", erred)[:2] == ("suspect", "errors")
+    assert lc.decide_status(PD, ON_TRIAL, erred)[:2] == (RETIRED, "errors")
     clean = [
         lc.facts_from_use(
             f"e{i}",
@@ -254,7 +255,7 @@ def test_refusals_alone_never_demote_and_runtime_errors_do():
         )
         for i in range(3)
     ]
-    assert lc.decide_status(PD, "experimental", clean)[0] == "stable"
+    assert lc.decide_status(PD, ON_TRIAL, clean)[0] == ADOPTED
 
 
 def test_the_evidence_index_and_the_record_agree_on_runtime_facts(tmp_path):
