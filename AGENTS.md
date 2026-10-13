@@ -748,6 +748,7 @@ tests/parallel_run.sh --no-cache --repeat 10 --eval-only tests/function_manager/
 These are not loaded by default. Read the file when the work matches its description.
 
 - [`.agents/global-rules/rules/shared-agent-context.md`](.agents/global-rules/rules/shared-agent-context.md) — Questions about what the team did or decided in earlier agent sessions (did we set up X, who changed Y, why Z) - every Cursor, Claude Code and Codex transcript is in ~/shared_context
+- [`.agents/global-rules/rules/rented-compute.md`](.agents/global-rules/rules/rented-compute.md) — Renting, extending or ending any cloud machine, GPU, volume, disk, IP or database (Vast, RunPod, Nebius, Hetzner, GCP, Lambda, Prime) - every machine has a lease that ends, and you end what your work leaves behind
 
 ---
 

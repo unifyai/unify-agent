@@ -15,6 +15,7 @@ shared-agent-context.md
 replying-to-the-team.md
 
 openrouter-only-llm-access.md
+rented-compute.md
 
 # --- specific to this repo ---
 python-formatting-and-pre-commit.md
