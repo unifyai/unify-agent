@@ -408,7 +408,7 @@ def test_deleting_comments_does_not_make_a_clean_up_pass(arc):
     cand = _candidate(mem, {MODULE: HEAD + READ + STATE_REORDERED})
     res = gate.check(commented, cand, {"items": [_item(SS, [T_SS], RECORDED[SS])]})
     assert not res.passed and res.refused == ["G3"], res.reasons
-    assert f"G3: {SS} has no new or changed test" in res.reasons, res.reasons
+    assert any(r.startswith(f"G3: {SS} has no new or changed test") for r in res.reasons), res.reasons
 
 
 def test_a_parent_test_that_only_imports_the_function_does_not_hold_it(arc):

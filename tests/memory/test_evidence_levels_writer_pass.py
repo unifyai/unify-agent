@@ -313,7 +313,9 @@ def _pass(tmp_path: Path, cells: list[str], eids: list[str]):
             library_mode=True,
             tools_in_code=True,
             pass_record_root=str(tmp_path / "out"),
-            max_calls=8,
+            # each fixture and check call made from code counts against the cap as a model call does: the
+            # reader script alone makes 15 or more of them
+            max_calls=24,
             cell_timeout_s=300.0,
             deadline_s=1500.0,
         ),
