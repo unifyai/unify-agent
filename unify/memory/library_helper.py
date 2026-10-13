@@ -810,7 +810,7 @@ RECOGNISED = "applies-held"
 #: Why a reader gave no outcome: one of a few fixed forms, at most 80 characters, never a value.
 _REASON = re.compile(
     r"timeout after \d{1,4}(?:\.\d{1,3})? s(?: for all readers)?|output overrun|no marker|no report|malformed report"
-    r"|(?:start|runner): [A-Za-z_][A-Za-z0-9_]{0,60}",
+    r"|(?:start|runner|load): [A-Za-z_][A-Za-z0-9_]{0,60}",
 )
 _ASK_MARK = "\x1ememory-ask-facts\x1e"
 
@@ -839,6 +839,10 @@ def recognise(text, group):
         reader = load(group["reader"])
         if not callable(reader):
             raise LookupError("no reader")
+    except Exception as exc:
+        # a reader that cannot be loaded did not read the text: it failed, which a rejected text never reads as
+        return {"read": "failed", "reason": "load: " + type(exc).__name__[:60]}
+    try:
         value = reader(text)
         out["read"] = "parsed"
     except Exception:

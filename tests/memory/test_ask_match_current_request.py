@@ -292,6 +292,22 @@ def test_a_child_that_cannot_start_or_never_prints_its_marker_is_labelled_with_i
     assert f"memory.ask: the stored reader of capture:{CAPTURE} failed (no marker)" in logged
 
 
+def test_a_reader_that_cannot_be_loaded_has_failed_with_its_reason_and_never_reads_as_not_parsing(tmp_path):
+    root = _copy(tmp_path)
+    module = root / "memory" / "tables" / "read.py"  # TOTAL's reader, READ_ROWS, lives here
+    module.write_text(module.read_text() + "\nraise RuntimeError('this module breaks on import')\n")
+    code = host(REQUEST) + (
+        "a = memory.ask()\nprint(json.dumps({'sent': sent, 'note': a.note, 'events': events}, default=list))\n"
+    )
+    out = json.loads(_py(root, code))
+    ((_, facts),) = out["sent"]
+    total = next(f for f in facts if f["id"] == TOTAL)
+    assert (total["read"], total["applies"]) == ("failed", "not-run"), total
+    assert "load: RuntimeError" in out["note"]
+    ((_, event),) = out["events"]
+    assert [TOTAL, "failed", "not-run", "load: RuntimeError"] in event[2]
+
+
 def test_a_reader_past_its_time_is_failed_and_the_others_keep_their_outcomes(tmp_path):
     root = _copy(tmp_path, _capture(SLOW, NEVER_RETURNS, DATA))
     code = host(REQUEST, DATA) + (
