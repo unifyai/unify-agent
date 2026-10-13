@@ -185,6 +185,40 @@ def test_the_preamble_names_only_what_the_agent_has():
     assert R.preamble("writer", {"flags": FULL}) == R.preamble("writer", {"flags": FULL})
 
 
+def test_one_rule_binds_the_namespaces_and_never_widens_the_allow_list():
+    for agent in R.AGENTS:
+        assert R.prebound(agent, {}) == {}
+        assert R.prebound(agent, {"tools": True}) == {"tools": ["module", "tools"]}
+        both = R.prebound(agent, {"tools": True, "memory": True})
+        assert both == {"tools": ["module", "tools"], "memory": ["lazy_module", "memory"]}
+        assert R.namespace_names(agent, {"memory": True}) == ("memory",)
+        assert R.prebound_names(agent, {"memory": True})[:2] == ("memory", "help")
+        # the allow-list is the registry's whatever is bound
+        assert R.allow_list(agent, FULL) == R.allow_list(agent, FULL)
+    assert "request_clarification" in R.prebound_names("actor", {"clarification": True})
+    assert "request_clarification" not in R.prebound_names("teammate", {"clarification": True})
+    assert "display" not in R.prebound_names("writer", {"tools": True, "memory": True})
+    with pytest.raises(ValueError):
+        R.prebound("fork", {})
+
+
+def test_the_shared_sandbox_paragraph_has_one_text_per_cell_state():
+    kept = R.sandbox_paragraph("writer", ("tools", "memory"), True)
+    assert kept.startswith(R.SANDBOX_PERSISTENT)
+    assert kept.endswith("`tools` and `memory` are already available as variables in every cell; no import needed.")
+    assert R.sandbox_paragraph("helper", ("memory",), True).endswith(
+        "`memory` is already available as a variable in every cell; no import needed.",
+    )
+    assert R.sandbox_paragraph("actor", (), False) == R.SANDBOX_FRESH
+    # the same bytes for every role apart from the names: a stable cached prefix
+    assert len({R.sandbox_paragraph(a, ("tools",), True) for a in R.AGENTS}) == 1
+    for persistent in (True, False):
+        text = R.preamble("writer", {"flags": FULL, "persistent": persistent, "names": ("tools", "memory")})
+        paragraph = R.sandbox_paragraph("writer", ("tools", "memory"), persistent)
+        assert text.count(paragraph) == 1
+    assert "restarts" in R.SANDBOX_PERSISTENT and "variables are gone and files remain" in R.SANDBOX_PERSISTENT
+
+
 # --- nothing in a definition outside the registry ---
 
 _SCANNED = ("unify/actor", "unify/common/_async_tool", "unify/memory", "unify/agents")
@@ -336,9 +370,12 @@ def _h(obj) -> str:
 
 
 def test_with_the_switch_off_the_memory_agents_json_tools_are_the_base_commits(monkeypatch):
+    """Under the ``UNIFY_CELL_STATE=fresh`` opt-out the JSON tools are the base commit's byte for byte; in the
+    persistent interpreter (the default) only ``execute_code``'s text differs (next test)."""
     from unify.settings import SETTINGS
 
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "off")
+    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "fresh")
     for m in range(16):
         flags = frozenset(f for i, f in enumerate(FLAGS) if m >> i & 1)
         assert _h(agent_profiles.tool_json("writer", flags)) == BASE[f"w{m}"], flags
@@ -348,6 +385,35 @@ def test_with_the_switch_off_the_memory_agents_json_tools_are_the_base_commits(m
     assert _h(helpers.helper_tools(True)) == BASE["h1"]
     assert _h(tool_spec.tools_section("write", frozenset(FLAGS))) == BASE["sw"]
     assert _h(tool_spec.tools_section("curate", frozenset({"edit"}))) == BASE["sc"]
+
+
+def test_in_the_persistent_interpreter_only_the_execute_code_text_differs(monkeypatch):
+    from unify.settings import SETTINGS
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "off")
+    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "fresh")
+    fresh = {
+        "writer": agent_profiles.tool_json("writer", frozenset(FLAGS)),
+        "curator": agent_profiles.tool_json("curator", frozenset({"edit"})),
+        "helper": helpers.helper_tools(True),
+    }
+    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "persistent")
+    kept = {
+        "writer": agent_profiles.tool_json("writer", frozenset(FLAGS)),
+        "curator": agent_profiles.tool_json("curator", frozenset({"edit"})),
+        "helper": helpers.helper_tools(True),
+    }
+    for agent in fresh:
+        before = {t["function"]["name"]: t for t in fresh[agent]}
+        after = {t["function"]["name"]: t for t in kept[agent]}
+        assert list(before) == list(after), agent
+        for name in before:
+            if name != "execute_code":
+                assert before[name] == after[name], (agent, name)
+        old, new = before["execute_code"]["function"], after["execute_code"]["function"]
+        assert old["parameters"] == new["parameters"], agent
+        assert "fresh" in old["description"] and "fresh" not in new["description"], agent
+        assert "your persistent interpreter" in new["description"], agent
 
 
 def test_the_refusal_codes_are_the_base_commits_plus_the_listed_additions():

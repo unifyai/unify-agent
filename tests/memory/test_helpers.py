@@ -157,6 +157,11 @@ def _drafting(task_key="draft area"):
 
 @pytest.fixture
 def fake_box(monkeypatch):
+    from unify.settings import SETTINGS
+
+    # the fresh box per cell (the UNIFY_CELL_STATE=fresh opt-out) is the one this stands in for; the persistent
+    # interpreter is tested in tests/memory/test_memory_agent_persistence.py
+    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "fresh")
     seen = []
 
     def run(argv, **kw):

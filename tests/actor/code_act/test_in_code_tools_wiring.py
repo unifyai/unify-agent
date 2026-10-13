@@ -115,7 +115,8 @@ def _assert_one_tool(call) -> None:
 
 
 OPENING_HEADING = "## How you work here"
-KEPT_SENTENCE = "keeps its variables between cells"
+KEPT_SENTENCE = "Your Python sandbox is persistent and stateful"
+FRESH_SENTENCE = "Each cell runs in a fresh Python sandbox"
 
 
 def _system_texts(call) -> list[str]:
@@ -401,16 +402,18 @@ async def test_the_default_cell_state_is_the_one_the_opening_states(tmp_path, mo
         for session in (actor, mate):
             opening = session.opening()
             assert opening.startswith(OPENING_HEADING + "\n") and KEPT_SENTENCE in opening
-            assert "fresh interpreter" not in opening
+            assert FRESH_SENTENCE not in opening
+            # no library in this run: `tools` alone is named as bound
+            assert "`tools` is already available as a variable in every cell; no import needed." in opening
             for value in (str(tmp_path), str(planted), "planted-value-for-the-opening-test"):
                 assert value not in opening
             assert "/workspace" in opening
             assert opening == session.opening()  # constant for the run: a stable prefix
         assert "A cell runs for at most 30 s." in mate.opening()
         assert "A cell runs for at most" not in actor.opening()  # no cell limit set
-        assert "The library is importable" not in actor.opening()
+        assert "`memory`" not in actor.opening()
         monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "fresh")
-        assert "each call runs a Python cell in a fresh interpreter" in actor.opening()
+        assert FRESH_SENTENCE in actor.opening() and KEPT_SENTENCE not in actor.opening()
     finally:
         await actor.close(completed=True)
         await mate.close(completed=True)

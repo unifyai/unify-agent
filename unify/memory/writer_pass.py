@@ -3819,25 +3819,7 @@ class WriterPass:
             threads=HandlerThreads(),
         )
 
-        # the cell box's binds, as _cell gives them (the generated files read-only over the writable box)
-        binds = {
-            "ro": {inputs: "/inputs"},
-            "rw": {box: "/memory"},
-            "late_ro": (
-                self._generated_binds(box)
-                if _library_on(self) and getattr(self, "_library_generated", None)
-                else {}
-            ),
-        }
-        profile = _th.memory_profile(
-            pass_id=pass_id,
-            cwd="/memory",
-            sys_path=("/inputs", "/memory"),
-            fsize_bytes=CELL_FSIZE_BYTES,
-            # the pass stamps and records the open rows with each cell's event (as for a fresh cell)
-            opens_path=None,
-            measure=lambda: _measure(box),
-        )
+        binds, profile = self._interpreter_box(agent, pass_id, box, inputs)
         session = _th.InterpreterSession(
             agent=agent,
             name=agent,
@@ -3868,6 +3850,72 @@ class WriterPass:
         scope.push_async_callback(session.close)
         return ic, session
 
+    def _interpreter_box(self, agent: str, pass_id: str, box: Path, inputs: Path) -> tuple[dict, Any]:
+        """The binds and profile of the agent's interpreter box, with tools in code on or off: the binds _cell gives
+        (the generated files read-only over the writable box), cwd /memory, the import path, the file-size limit,
+        the /memory quota measure and the names bound in every cell (``memory`` where the box holds the package)."""
+        from . import tool_handlers as _th
+
+        binds = {
+            "ro": {inputs: "/inputs"},
+            "rw": {box: "/memory"},
+            "late_ro": (
+                self._generated_binds(box)
+                if _library_on(self) and getattr(self, "_library_generated", None)
+                else {}
+            ),
+        }
+        profile = _th.memory_profile(
+            pass_id=pass_id,
+            cwd="/memory",
+            sys_path=("/inputs", "/memory"),
+            fsize_bytes=CELL_FSIZE_BYTES,
+            # the pass stamps and records the open rows with each cell's event (as for a fresh cell)
+            opens_path=None,
+            measure=lambda: _measure(box),
+            globals=_th.memory_globals(agent, box),
+        )
+        return binds, profile
+
+    def _cell_session_start(
+        self,
+        *,
+        pass_id: str,
+        box: Path,
+        inputs: Path,
+        deadline: float,
+        scope: contextlib.AsyncExitStack,
+    ) -> Any:
+        """Tools in code off, library mode, ``UNIFY_CELL_STATE=persistent``: the agent's execute_code cells run in
+        one interpreter for the pass, with no tool channel and no ``tools`` stub (its tools stay JSON tools), in the
+        box the in-code interpreter gets. It ends with the pass."""
+        from unify.common.tool_channel import HandlerThreads
+
+        from . import tool_handlers as _th
+
+        agent = "curator" if self._role == "curate" else "writer"
+        binds, profile = self._interpreter_box(agent, pass_id, box, inputs)
+        session = _th.InterpreterSession(
+            agent=agent,
+            name=agent,
+            role=self._role,
+            pass_id=pass_id,
+            state=None,
+            allow=(),
+            binds=binds,
+            env={},
+            roots={},
+            deadline=deadline,
+            cell_limit_s=float(self.cfg.cell_timeout_s),
+            on_event=lambda row: None,  # no channel: no in-code call rows
+            threads=HandlerThreads(),
+            profile=profile,
+            start=self.interpreter_start,
+            tools=False,
+        )
+        scope.push_async_callback(session.close)
+        return session
+
     async def _in_code_cell(
         self,
         session: Any,
@@ -3876,15 +3924,17 @@ class WriterPass:
         cells: Path,
         cell_no: int,
     ) -> str:
-        """One cell in the agent's interpreter, its in-code calls served by the channel; the output as _cell gives
-        it in library mode (the first 8000 bytes, the full output in /outputs/cell-<n>.txt), then the host's notes."""
+        """One cell in the agent's interpreter, its in-code calls served by the channel (*ic* None: tools in code
+        off, no channel); the output as _cell gives it in library mode (the first 8000 bytes, the full output in
+        /outputs/cell-<n>.txt), then the host's notes."""
         from . import tool_handlers as _th
 
         note = session.take_note()
         res = await session.cell(code, cell_no)
         audit = getattr(res, "opens", None)
         self._box_audit = audit if isinstance(audit, dict) else None
-        body, tail = _th.cell_parts(res, ic.finish_text, session.gone_during(), note)
+        finish_text = ic.finish_text if ic is not None else None
+        body, tail = _th.cell_parts(res, finish_text, session.gone_during(), note)
         shown, full = _head_marked(body)
         out_dir = cells.parent / "outputs"
         out_dir.mkdir(exist_ok=True)
@@ -4786,6 +4836,20 @@ class WriterPass:
                     allow=in_code_allow,
                     scope=scope,
                 )
+            # tools in code off, library mode: the cells' persistent interpreter, no channel (None: a fresh box per
+            # cell, UNIFY_CELL_STATE=fresh, or the earlier mode without the library)
+            cell_session: Any = None
+            if library and not in_code:
+                from unify.common.box_interpreter import persistent as _persistent
+
+                if _persistent():
+                    cell_session = self._cell_session_start(
+                        pass_id=pass_id,
+                        box=box,
+                        inputs=inputs,
+                        deadline=deadline,
+                        scope=scope,
+                    )
             last_prompt: list = [
                 None,
             ]  # the last model call's prompt tokens (compaction_due)
@@ -4931,6 +4995,9 @@ class WriterPass:
                             tools=", ".join(tool_names),
                         )
                     elif name == "finish":
+                        if cell_session is not None:
+                            # nothing writes /memory while it is judged; the next cell starts a new interpreter
+                            await cell_session.kill()
                         g1, empty = (
                             self._finish_manifest_problem(box)
                             if self.cfg.library_mode
@@ -5070,6 +5137,17 @@ class WriterPass:
                             self.gate._blob,
                             self._batch,
                         )
+                        if cell_session is not None and reply.status == "ok":
+                            # the quota after the call, as in code: a breach stops the interpreter
+                            over_quota = await cell_session.measure_quota()
+                            if over_quota is not None:
+                                stop = over_quota
+                                reply = _wt.Reply(
+                                    f"{reply.text}\n({over_quota}; the pass is refused)",
+                                    reply.status,
+                                    reply.form,
+                                    reply.paths,
+                                )
                     elif library and name in _et.NAMES:
                         # host-side, never through a link (edit_tools.py); the quotas are measured as after a cell
                         if stop is not None:
@@ -5083,7 +5161,12 @@ class WriterPass:
                             writing()
                             reply = _et.call(name, args, box)
                             if reply.status == "ok":
-                                over_quota = _measure(box)
+                                over_quota = (
+                                    # as in code: a breach stops the interpreter
+                                    await cell_session.measure_quota()
+                                    if cell_session is not None
+                                    else _measure(box)
+                                )
                                 if over_quota is not None:
                                     stop = over_quota
                                     reply = _wt.Reply(
@@ -5131,7 +5214,16 @@ class WriterPass:
                             1.0,
                             min(float(self.cfg.cell_timeout_s), remaining()),
                         )
-                        if ic is None:
+                        if cell_session is not None:
+                            # tools in code off: the pass's persistent interpreter, no channel
+                            content = await self._in_code_cell(
+                                cell_session,
+                                None,
+                                str(args.get("code", "")),
+                                cells,
+                                len(self.tool_events),  # the cell's event row number
+                            )
+                        elif ic is None:
                             content = await self._run_cell(
                                 str(args.get("code", "")),
                                 box,
@@ -5258,12 +5350,14 @@ class WriterPass:
                     )
             # the loop has ended: every helper still running ends now, so its row is in the outcome
             await self._close_record()
-            if ic is not None:
-                # no box can write /memory and no tool handler of the pass may run while the gate judges it
-                await session.close()
-                alive = session.box_alive()
-                idle = not alive and await ic.threads.wait_idle(self.in_code_idle_s)
-                self._handlers_at_gate = ic.threads.running()
+            if ic is not None or cell_session is not None:
+                # no box can write /memory and no tool handler of the pass may run while the gate judges it (tools
+                # in code on or off)
+                live = session if ic is not None else cell_session
+                await live.close()
+                alive = live.box_alive()
+                idle = not alive and (ic is None or await ic.threads.wait_idle(self.in_code_idle_s))
+                self._handlers_at_gate = ic.threads.running() if ic is not None else 0
                 if not idle:
                     why = (
                         "a box of this pass is still running"

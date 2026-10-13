@@ -166,6 +166,17 @@ _WRITER_EXECUTE_CODE = _EarlierJson(
     summary="run Python in a fresh confined process (cwd /memory; /inputs read-only).",
 )
 
+#: The same in the persistent interpreter (``UNIFY_CELL_STATE=persistent``, the default): the box and limits are
+#: the same; variables are kept between cells.
+_WRITER_EXECUTE_CODE_PERSISTENT = dataclasses.replace(
+    _WRITER_EXECUTE_CODE,
+    description=_WRITER_EXECUTE_CODE.description.replace(
+        "Run Python code as a script in a fresh confined process:",
+        "Run Python code as a cell in your persistent interpreter, in your confined box:",
+    ),
+    summary="run Python in your persistent interpreter (cwd /memory; /inputs read-only).",
+)
+
 CHECK = RegisteredTool(
     name="check",
     description=(
@@ -862,6 +873,15 @@ _HELPER_EXECUTE_CODE = _EarlierJson(
     },
 )
 
+#: The same in the persistent interpreter (the default).
+_HELPER_EXECUTE_CODE_PERSISTENT = dataclasses.replace(
+    _HELPER_EXECUTE_CODE,
+    description=_HELPER_EXECUTE_CODE.description.replace(
+        "Run Python in a fresh process in your box:",
+        "Run Python in your persistent interpreter, in your box:",
+    ),
+)
+
 #: The helper's own read and grep: its roots (/inputs, /task, /memory and /work; no /outputs), no per-turn count.
 _HELPER_READ = _EarlierJson(
     name="read",
@@ -1495,6 +1515,25 @@ _EARLIER: dict[tuple[str, str], _EarlierJson] = {
     (_H, "read"): _HELPER_READ,
     (_H, "grep"): _HELPER_GREP,
 }
+#: Where the earlier text differs in the persistent interpreter (``UNIFY_CELL_STATE=persistent``, the default); the
+#: texts above are the ``fresh`` opt-out's, byte for byte.
+_EARLIER_PERSISTENT: dict[tuple[str, str], _EarlierJson] = {
+    (_W, "execute_code"): _WRITER_EXECUTE_CODE_PERSISTENT,
+    (_C, "execute_code"): _WRITER_EXECUTE_CODE_PERSISTENT,
+    (_H, "execute_code"): _HELPER_EXECUTE_CODE_PERSISTENT,
+}
+
+
+def _earlier(key: tuple[str, str]) -> Optional[_EarlierJson]:
+    """The earlier text of *key* for the cell state now in force."""
+    if key in _EARLIER_PERSISTENT:
+        from unify.common.box_interpreter import persistent
+
+        if persistent():
+            return _EARLIER_PERSISTENT[key]
+    return _EARLIER.get(key)
+
+
 #: Registered tools that never were a memory agent's model-API tool.
 _IN_CODE_ONLY = frozenset({"sh", "install", "store_skills"})
 
@@ -1503,7 +1542,7 @@ def earlier_tool(agent: str, name: str) -> Any:
     """The tool definition *agent* was sent as a model-API tool named *name* before every agent had one
     ``execute_code``: its own earlier text where it had one, else the registered spec."""
     agent = OLD_ROLES.get(agent, agent)
-    return _EARLIER.get((agent, name)) or registry()[name]
+    return _earlier((agent, name)) or registry()[name]
 
 
 def earlier_refusal_template(agent: str, tool: str, form: str) -> Optional[str]:
@@ -1531,7 +1570,7 @@ def tools_for(role: str, flags: frozenset = frozenset(), specs: Optional[Iterabl
         if s.name == "execute_code" and agent == _H:
             continue
         registered = _REGISTRY_BY_NAME.get(s.name) is s
-        out.append(_EARLIER.get((agent, s.name), s) if agent != _H and registered else s)
+        out.append((_earlier((agent, s.name)) or s) if agent != _H and registered else s)
     return out
 
 
@@ -1898,30 +1937,118 @@ _END = {
 _RECORD_TOOLS = frozenset({"send", "messages", "wait", "who"})
 
 
+# --- the names bound in every agent's cells, and the paragraph that says so ---
+
+#: The worker child's ``init`` spec of each pre-bound namespace (``["module", m]``: imported when the interpreter
+#: starts; ``["lazy_module", m]``: imported by the first cell that uses it).
+_PREBOUND_SPECS = {
+    "tools": ["module", "tools"],
+    "memory": ["lazy_module", "memory"],
+}
+
+
+def prebound(agent: str, facts: dict) -> dict[str, list]:
+    """The namespaces bound in *agent*'s cells before any cell runs, as the worker child's ``init`` specs, by name.
+
+    One rule for every role, from neutral *facts*: ``tools`` (the agent's tools are the module ``tools``: tools in
+    code), ``memory`` (the library package exists in the agent's box: ``/memory/memory/__init__.py`` for a memory
+    agent, the read-only copy for the actor). A name is bound only when the thing behind it exists for this agent;
+    binding it never widens what the agent may do: ``tools`` holds exactly the agent's allow-list (the host enforces
+    it again on every call) and ``memory`` reaches only what the box's mounts already give. ``memory`` is lazy: no
+    library code runs outside a cell's clock and audit."""
+    if agent not in AGENTS:
+        raise ValueError(f"unknown agent {agent!r}")
+    out: dict[str, list] = {}
+    if facts.get("tools"):
+        out["tools"] = list(_PREBOUND_SPECS["tools"])
+    if facts.get("memory"):
+        out["memory"] = list(_PREBOUND_SPECS["memory"])
+    return out
+
+
+def namespace_names(agent: str, facts: dict) -> tuple[str, ...]:
+    """The namespaces :func:`prebound` binds for *agent* with *facts*, in the order the shared opening's names
+    sentence names them (``tools``, ``memory``)."""
+    return tuple(prebound(agent, facts))
+
+
+#: The actor's and teammates' other globals, bound as the worker's own or synced from the host's namespace (the
+#: in-code prompt's sandbox section names them; ``ModelRequestError`` is what a failed model call raises).
+_ACTOR_GLOBALS = ("display", "query_llm", "list_llms", "unillm", "run_coro_sync", "ModelRequestError")
+
+
+def prebound_names(agent: str, facts: dict) -> tuple[str, ...]:
+    """Every name bound in *agent*'s cells before any cell runs, with *facts* (``tools``, ``memory`` as for
+    :func:`prebound`; ``clarification``: the actor's session can ask its requester): the namespaces, ``help``
+    (the worker's own), and for the actor and teammates their other globals and, for the actor where it can ask,
+    ``request_clarification``. A declared set: binding a name never widens what the agent may do."""
+    names = [*namespace_names(agent, facts), "help"]
+    if agent in (_A, _T):
+        names += _ACTOR_GLOBALS
+        if agent == _A and facts.get("clarification"):
+            names.append("request_clarification")
+    return tuple(names)
+
+
+def names_sentence(names: Iterable[str]) -> str:
+    """The sentence naming the pre-bound *names* (empty when there are none)."""
+    shown = [f"`{n}`" for n in names]
+    if not shown:
+        return ""
+    if len(shown) == 1:
+        return f"{shown[0]} is already available as a variable in every cell; no import needed."
+    listed = ", ".join(shown[:-1]) + f" and {shown[-1]}"
+    return f"{listed} are already available as variables in every cell; no import needed."
+
+
+#: The persistent form of the shared sandbox paragraph (the default, ``UNIFY_CELL_STATE=persistent``).
+SANDBOX_PERSISTENT = (
+    "Your Python sandbox is persistent and stateful: variables, imports and functions you define in one cell are "
+    "still there in the next, so build on what you already have instead of defining or loading it again. If the "
+    "sandbox restarts (a cell ran out of time, broke a limit, left something running, or sat idle too long), the "
+    "cell's output says so; then variables are gone and files remain."
+)
+#: The fresh form (only under ``UNIFY_CELL_STATE=fresh``).
+SANDBOX_FRESH = (
+    "Each cell runs in a fresh Python sandbox: files you write stay, but variables, imports and functions do not "
+    "carry over to the next cell."
+)
+
+
+def sandbox_paragraph(agent: str, names: Iterable[str], persistent: bool) -> str:
+    """The shared paragraph about *agent*'s sandbox: whether it keeps its state between cells (*persistent*), when
+    it restarts, and the pre-bound namespaces *names* (:func:`namespace_names`). The same bytes for every role apart from the
+    names, so it sits in the cached prefix. It opens :func:`preamble`; an agent sent no preamble (tools in code off)
+    gets it at the top of its own instructions."""
+    if agent not in AGENTS:
+        raise ValueError(f"unknown agent {agent!r}")
+    state = SANDBOX_PERSISTENT if persistent else SANDBOX_FRESH
+    names_text = names_sentence(names)
+    return f"{state} {names_text}" if names_text else state
+
+
 def preamble(agent: str, facts: dict) -> str:
-    """The text that opens *agent*'s instructions: how it works, how to find its tools, its environment, the
-    record and how it ends. *facts* are neutral strings only (box paths, limits, never a host path):
-    ``environment`` (the roots and their modes, cell time, output limit, quotas, wall clock), ``memory`` (the
-    one line about the library, if the agent reads it), ``flags`` (a frozenset for :func:`allow_list`) and
-    ``persistent`` (whether variables carry over between cells)."""
+    """The text that opens *agent*'s instructions: how it works, its sandbox and the names bound in it, how to find
+    its tools, its environment, the record and how it ends. *facts* are neutral strings only (box paths, limits,
+    never a host path): ``environment`` (the roots and their modes, cell time, output limit, quotas, wall clock),
+    ``memory`` (the one line about the library, if the agent reads it), ``flags`` (a frozenset for
+    :func:`allow_list`), ``persistent`` (whether variables carry over between cells) and ``names`` (the pre-bound
+    namespaces, :func:`namespace_names`; default ``tools`` alone)."""
     if agent not in AGENTS:
         raise ValueError(f"unknown agent {agent!r}")
     allowed = allow_list(agent, frozenset(facts.get("flags") or ()))
     persistent = facts.get("persistent", True)
-    cells = (
-        "each call runs a Python cell in your interpreter, which keeps its variables between cells until it is "
-        "restarted (a cell that runs out of time restarts it; files stay)."
-        if persistent
-        else "each call runs a Python cell in a fresh interpreter (files stay; variables do not)."
-    )
+    names = tuple(facts.get("names") or ("tools",))
     parts = [
         "## How you work here",
-        f"You act by writing Python. Your one tool is execute_code: {cells} Print only what you need: what a "
-        "cell prints is what you see, up to the output limit below.",
+        "You act by writing Python. Your one tool is execute_code: each call runs a Python cell. Print only what "
+        "you need: what a cell prints is what you see, up to the output limit below.",
         "",
-        "Your tools are Python functions in the module `tools`, already imported: `tools.list()` prints one line "
-        "per tool you have, and `tools.help(name)` prints what one does, its arguments, what it returns and "
-        "examples; read the help rather than guess a signature. Call them like any function: "
+        sandbox_paragraph(agent, names, bool(persistent)),
+        "",
+        "Your tools are Python functions in the module `tools`: `tools.list()` prints one line per tool you have, "
+        "and `tools.help(name)` prints what one does, its arguments, what it returns and examples; read the help "
+        "rather than guess a signature. Call them like any function: "
         '`page = tools.read("/path")`. A call returns text (a str); keep it in a variable and print the part you '
         "need. A refused call raises tools.Refused with the reason; a call that was not run (a limit for this "
         "turn) raises tools.NotRun and can be made again later.",

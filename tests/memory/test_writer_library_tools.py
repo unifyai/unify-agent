@@ -150,7 +150,9 @@ def test_long_cell_output_is_head_first_with_the_full_output_readable(tmp_path):
     ]
     _, model = _pass(tmp_path, turns, eids=("e2",), max_calls=10)
     assert model.outputs["c1"].startswith("AAAA")
-    assert "[… shown bytes 0–8000 of 9005; next: offset=8000]" in model.outputs["c1"]
+    # the persistent interpreter's output ends at its last printed character (a fresh script's kept the final
+    # newline: 9005 bytes there)
+    assert "[… shown bytes 0–8000 of 9004; next: offset=8000]" in model.outputs["c1"]
     assert "(full output: /outputs/cell-0.txt)" in model.outputs["c1"]
     assert model.outputs["r1"].rstrip().endswith("TAIL")
 

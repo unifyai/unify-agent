@@ -672,6 +672,16 @@ def memory_profile(**fields: Any) -> Any:
     return MemoryProfile(**fields)
 
 
+def memory_globals(agent: str, memory_root: Path) -> dict:
+    """The names bound in *agent*'s cells besides ``tools`` (which its stub binds): the profile's ``globals``.
+    *memory_root* is the host directory bound at ``/memory``; ``memory`` is bound (lazily) when it holds the library
+    package (``memory/__init__.py``)."""
+    from unify.common import tool_registry
+
+    facts = {"memory": (Path(memory_root) / "memory" / "__init__.py").is_file()}
+    return {k: v for k, v in tool_registry.prebound(agent, facts).items() if k != "tools"}
+
+
 def _open_roots(roots: dict[str, Path]) -> dict[str, int]:
     out: dict[str, int] = {}
     for box_path, host in roots.items():
@@ -690,6 +700,11 @@ class InterpreterSession:
     channel's ``serve`` and brackets each cell with ``cell_started``/``cell_ended``. :meth:`kill` stops the box from a
     handler (``finish``/``done`` judge nothing while it lives); the next cell then starts a new interpreter.
     :meth:`close` ends it at the pass's end.
+
+    *tools* False (tools in code off: the agent's tools stay JSON tools): no channel and no ``tools`` stub, so the
+    box has no route to the host at all; everything else is the same. Under ``UNIFY_CELL_STATE=fresh``
+    (:func:`unify.common.box_interpreter.persistent` False) the interpreter is stopped after each cell, with no note,
+    as the actor's is.
     """
 
     def __init__(
@@ -711,18 +726,22 @@ class InterpreterSession:
         profile: Any,
         start: Callable[..., Awaitable[Any]] | None = None,
         specs: dict | None = None,
+        tools: bool = True,
     ) -> None:
-        """*specs*: tool specs by name for the channel (None: the shared registry's, as in a pass)."""
+        """*specs*: tool specs by name for the channel (None: the shared registry's, as in a pass). *tools*: the
+        box gets a tool channel and the ``tools`` stub (False: neither)."""
         from unify.common.tool_channel import CallContext
 
-        self.allow = tuple(allow)
+        self.tools = bool(tools)
+        self.allow = tuple(allow) if self.tools else ()
         self.binds, self.env, self.profile = binds, dict(env), profile
         self.cell_limit_s = float(cell_limit_s)
         self.on_event = on_event
         self.threads = threads
         self._start = start
         self._specs = specs
-        self._root_fds = _open_roots(roots)
+        # the channel's roots (descriptors the host's handlers resolve paths from); no channel, none opened
+        self._root_fds = _open_roots(roots) if self.tools else {}
         self.binding = CallContext(
             agent=agent,
             name=name,
@@ -772,10 +791,14 @@ class InterpreterSession:
             self._note = RESTARTED
 
     async def measure_quota(self) -> str | None:
-        """The /memory quota now (after write, edit, fixture); a breach stops the box. None without a box."""
+        """The /memory quota now (after write, edit, fixture); a breach stops the box. Without a box, the profile's
+        measure alone (nothing to stop); None when the profile has none."""
         interp = self.interp
         measure = getattr(interp, "measure_quota", None)
-        return await measure() if measure is not None else None
+        if measure is not None:
+            return await measure()
+        alone = getattr(self.profile, "measure", None)
+        return await asyncio.to_thread(alone) if alone is not None else None
 
     def box_alive(self) -> bool:
         interp = self.interp
@@ -785,14 +808,16 @@ class InterpreterSession:
     async def cell(self, code: str, cell_no: int) -> Any:
         """Run one cell: the interpreter's cell result, or None when the pass's wall clock ended first. *cell_no*:
         the cell's event row number (in-code calls' rows name it as their ``cell``)."""
+        from unify.common.box_interpreter import persistent
+
         if self.interp is None:
             self.interp = await (self._start or _default_start())(
                 agent=self.binding.agent,
                 profile=self.profile,
                 binds=self.binds,
                 env=self.env,
-                channel=self._new_channel,
-                stub_source=stub_source(self.allow, self.binding.agent),
+                channel=self._new_channel if self.tools else None,
+                stub_source=stub_source(self.allow, self.binding.agent) if self.tools else None,
                 cell_limit_s=self.cell_limit_s,
             )
         self._row_cell = cell_no
@@ -801,19 +826,27 @@ class InterpreterSession:
             self.channel.gone_during = None
         interp = self.interp
         try:
-            res = await asyncio.wait_for(
-                interp.run_cell(code, call=cell_no),
-                timeout=max(1.0, self.binding.deadline - time.monotonic() + CELL_MARGIN_S),
-            )
-        except asyncio.TimeoutError:
-            res = None
-            await self.kill()
-            self._killed_by_call = False
-        if self._killed_by_call and self.channel is not None:
-            # the call that stopped the box (finish, done) finishes its handler before the cell has ended
-            await self.channel.settled(self.binding.deadline - time.monotonic())
-        if self.channel is not None and self.channel.stuck:
-            self.stuck = True
+            try:
+                res = await asyncio.wait_for(
+                    interp.run_cell(code, call=cell_no),
+                    timeout=max(1.0, self.binding.deadline - time.monotonic() + CELL_MARGIN_S),
+                )
+            except asyncio.TimeoutError:
+                res = None
+                await self.kill()
+                self._killed_by_call = False
+            if self._killed_by_call and self.channel is not None:
+                # the call that stopped the box (finish, done) finishes its handler before the cell has ended
+                await self.channel.settled(self.binding.deadline - time.monotonic())
+            if self.channel is not None and self.channel.stuck:
+                self.stuck = True
+        finally:
+            if not persistent():
+                # UNIFY_CELL_STATE=fresh: every cell starts a new interpreter, as the setting already says
+                self._note = ""
+                interp, self.interp = self.interp, None
+                if interp is not None:
+                    await interp.stop()
         return res
 
     def gone_during(self) -> tuple[str, bool] | None:

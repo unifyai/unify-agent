@@ -114,9 +114,7 @@ HELPER_BRIEF = (
     "episodes your task names (/task/episodes/<id>.json), and /memory, the library as the writer sees it. All "
     "three are read-only. The library under /memory may be empty at the start of a run.\n"
     "{similar}"
-    "- `execute_code` runs Python in a fresh process in your own box: no network, /inputs, /task and /memory "
-    "read-only, "
-    "and /work, private to you and writable, as the working directory. Only files persist between calls. "
+    "<<execute_code>>"
     f"A call runs for at most {CELL_TIMEOUT_S:.0f} s. "
     f"/work may hold at most {WORK_ENTRIES} files, each at most {WORK_FILE_BYTES // 1024**2} MiB, "
     f"{WORK_TOTAL_BYTES // 1024**2} MiB in all; past that, execute_code stops for the rest of your task.\n"
@@ -157,6 +155,19 @@ HELPER_BRIEF = (
     "kept in every case."
 )
 
+#: The brief's ``execute_code`` sentence with tools in code off: the persistent interpreter (the default), and each
+#: call a fresh process under the ``UNIFY_CELL_STATE=fresh`` opt-out (the earlier text, byte for byte).
+EXECUTE_CODE_LINE = (
+    "- `execute_code` runs Python in your own box, in an interpreter that keeps its variables between calls: no "
+    "network, /inputs, /task and /memory read-only, and /work, private to you and writable, as the working "
+    "directory. `memory` (the library under /memory) is already bound in your cells. "
+)
+EXECUTE_CODE_LINE_FRESH = (
+    "- `execute_code` runs Python in a fresh process in your own box: no network, /inputs, /task and /memory "
+    "read-only, "
+    "and /work, private to you and writable, as the working directory. Only files persist between calls. "
+)
+
 #: The brief's line for ``similar``, present only when the helper gets the tool (the pass has a similar-code index).
 SIMILAR_LINE = (
     "- `similar(episode, cell)` or `similar(code)` finds the recorded episodes and cells that contain the same "
@@ -179,8 +190,8 @@ HELPER_BRIEF_IN_CODE = (
     "three are read-only. The library under /memory may be empty at the start of a run.\n"
     "{similar}"
     "- `execute_code` runs Python in your own box: no network, /inputs, /task and /memory read-only, and /work, "
-    "private to you and writable, as the working directory. "
-    f"A call runs for at most {CELL_TIMEOUT_S:.0f} s.\n"
+    "private to you and writable, as the working directory. `memory` (the library under /memory) is already bound "
+    f"in your cells. A call runs for at most {CELL_TIMEOUT_S:.0f} s.\n"
     "- `tools.stage(path, text)` hands one file to the writer, at one of three kinds of path: `candidates/<name>.py` "
     "(a function with a docstring), `cases/<name>.json` (the inputs that function had in the episodes and "
     "the outputs it should give, each value as the records hold it, so it can be copied from them) and `notes.md` "
@@ -229,7 +240,16 @@ def helper_brief(similar: bool, in_code: bool | None = None) -> str:
 
         opening = in_code_opening("helper", helper_flags(similar), cell_s=CELL_TIMEOUT_S)
         return opening + "\n\n" + HELPER_BRIEF_IN_CODE.replace("{similar}", SIMILAR_LINE_IN_CODE if similar else "")
-    return HELPER_BRIEF.replace("{similar}", SIMILAR_LINE if similar else "")
+    from unify.common.box_interpreter import persistent
+
+    keeps = persistent()
+    brief = HELPER_BRIEF.replace("{similar}", SIMILAR_LINE if similar else "").replace(
+        "<<execute_code>>",
+        EXECUTE_CODE_LINE if keeps else EXECUTE_CODE_LINE_FRESH,
+    )
+    # no shared opening with tools in code off: the shared sandbox paragraph comes first (the fresh opt-out's
+    # brief is the earlier one, byte for byte)
+    return _registry.sandbox_paragraph("helper", ("memory",), True) + "\n\n" + brief if keeps else brief
 
 
 def helper_flags(similar: bool) -> frozenset[str]:
@@ -1047,7 +1067,9 @@ async def _tool(
         left = ctx.deadline - time.monotonic()
         if left <= 1.0:
             return refusal("execute_code", "no_time"), []
-        if st.get("in_code") is not None:
+        if st.get("in_code") is not None or st.get("interpreter") is not None:
+            # the helper's interpreter (tools in code on or off); a fresh box per cell only under
+            # UNIFY_CELL_STATE=fresh with tools in code off
             out = await _in_code_cell(ctx, st, str(args.get("code", "")), left)
             over = work_over(st["work"])
             if over is not None:
@@ -1252,10 +1274,17 @@ async def _run_helper(
     st: dict,
     doc: dict,
 ) -> None:
-    """One helper's turns; with tools in code, inside its interpreter session, which ends with it."""
-    if not ctx.tools_in_code:
-        return await _run_helper_turns(ctx, call, task, episodes, staging, st, doc)
-    session = _in_code_session(ctx, call, st, doc)
+    """One helper's turns inside its interpreter session, which ends with it (verified kill): with tools in code, a
+    session with the tool channel; off, one with no channel (``UNIFY_CELL_STATE=fresh``: a fresh box per cell,
+    :func:`box_cell`, and no session)."""
+    if ctx.tools_in_code:
+        session = _in_code_session(ctx, call, st, doc)
+    else:
+        from unify.common.box_interpreter import persistent
+
+        if not persistent():
+            return await _run_helper_turns(ctx, call, task, episodes, staging, st, doc)
+        session = _cell_session(ctx, call, st)
     try:
         return await _run_helper_turns(ctx, call, task, episodes, staging, st, doc)
     finally:
@@ -1426,6 +1455,9 @@ async def _run_helper_turns(
                     doc["summary"] = str(args.get("summary", ""))[:4000]
                     doc["claims"] = got
                     finished, content, status = True, "ok", "ok"
+                    if st.get("interpreter") is not None:
+                        # accepted: the helper's interpreter stops now, as the in-code done stops it
+                        await st["interpreter"].kill()
             else:
                 if in_code:
                     st["n"] = n + 1  # the cell's row keeps n; its in-code calls are numbered after it
@@ -1486,6 +1518,61 @@ def _args_digest(args: dict) -> str:
     return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
 
 
+def _helper_box(ctx: DelegateContext, st: dict) -> tuple[dict, Any]:
+    """The binds and profile of the helper's interpreter box, with tools in code on or off: the writer's /inputs,
+    /task and its /memory copy read-only, /work read-write and the cwd; the file-size limit; the names bound in every
+    cell (``memory`` where the copy holds the package)."""
+    from . import tool_handlers as _th
+
+    binds = {
+        "ro": {st["hin"]: "/inputs", st["task"]: "/task", st["lib"]: "/memory"},
+        "rw": {st["work"]: "/work"},
+    }
+    profile = _th.memory_profile(
+        pass_id=ctx.pass_id,
+        cwd="/work",
+        sys_path=("/inputs", "/memory"),
+        fsize_bytes=WORK_FILE_BYTES,
+        # the helper loop stamps and records the open rows with each cell's event, as for a fresh cell
+        opens_path=None,
+        # /work's limits are checked after each cell by the helper loop (work_over), as today
+        measure=None,
+        globals=_th.memory_globals("helper", st["lib"]),
+    )
+    return binds, profile
+
+
+def _cell_session(ctx: DelegateContext, call: str, st: dict) -> Any:
+    """Tools in code off, ``UNIFY_CELL_STATE=persistent``: the helper's execute_code cells run in one interpreter
+    for the task, with no tool channel and no ``tools`` stub (its tools stay JSON tools), in the box the in-code
+    helper gets; kept on *st* (``st["cells"]`` is the fresh box's folder, so the key is ``interpreter``)."""
+    from unify.common.tool_channel import HandlerThreads
+
+    from . import tool_handlers as _th
+
+    binds, profile = _helper_box(ctx, st)
+    session = _th.InterpreterSession(
+        agent="helper",
+        name=call,
+        role="helper",
+        pass_id=ctx.pass_id,
+        state=None,
+        allow=(),
+        binds=binds,
+        env={},
+        profile=profile,
+        roots={},
+        deadline=ctx.deadline,
+        cell_limit_s=ctx.cell_timeout_s,
+        on_event=lambda row: None,  # no channel: no in-code call rows
+        threads=HandlerThreads(),
+        start=ctx.interpreter_start,
+        tools=False,
+    )
+    st["interpreter"] = session
+    return session
+
+
 def _in_code_session(ctx: DelegateContext, call: str, st: dict, doc: dict) -> Any:
     """Tools in code: the helper's handlers' state and its interpreter session (its box: the writer's /inputs,
     /task and its /memory copy read-only, /work read-write), kept on *st*."""
@@ -1504,20 +1591,7 @@ def _in_code_session(ctx: DelegateContext, call: str, st: dict, doc: dict) -> An
             row["helper_call"] = call
         _emit(ctx, row)
 
-    binds = {
-        "ro": {st["hin"]: "/inputs", st["task"]: "/task", st["lib"]: "/memory"},
-        "rw": {st["work"]: "/work"},
-    }
-    profile = _th.memory_profile(
-        pass_id=ctx.pass_id,
-        cwd="/work",
-        sys_path=("/inputs", "/memory"),
-        fsize_bytes=WORK_FILE_BYTES,
-        # the helper loop stamps and records the open rows with each cell's event, as for a fresh cell
-        opens_path=None,
-        # /work's limits are checked after each cell by the helper loop (work_over), as today
-        measure=None,
-    )
+    binds, profile = _helper_box(ctx, st)
     session = _th.InterpreterSession(
         agent="helper",
         name=call,
@@ -1543,17 +1617,24 @@ def _in_code_session(ctx: DelegateContext, call: str, st: dict, doc: dict) -> An
 
 
 async def _in_code_cell(ctx: DelegateContext, st: dict, code: str, left: float) -> str:
-    """One helper cell in its interpreter, its in-code calls served by the channel; output as :func:`box_cell` gives
-    it (the head of the output), then the host's notes."""
+    """One helper cell in its interpreter, its in-code calls served by the channel (tools in code off: the
+    interpreter with no channel, ``st["interpreter"]``); output as :func:`box_cell` gives it (the head of the
+    output), then the host's notes."""
     from . import tool_handlers as _th
 
-    hc, session = st["in_code"], st["session"]
-    hc.finish_text = None
+    hc = st.get("in_code")
+    if hc is not None:
+        session = st["session"]
+        hc.finish_text = None
+        cell_no = st["n"] - 1
+    else:
+        session = st["interpreter"]
+        cell_no = st["cells_run"] = st.get("cells_run", 0) + 1
     note = session.take_note()
-    res = await session.cell(code, st["n"] - 1)
+    res = await session.cell(code, cell_no)
     audit = getattr(res, "opens", None)
     st["box_audit"] = audit if isinstance(audit, dict) else {}
-    body, tail = _th.cell_parts(res, hc.finish_text, session.gone_during(), note)
+    body, tail = _th.cell_parts(res, hc.finish_text if hc is not None else None, session.gone_during(), note)
     data = body.encode("utf-8", "replace")
     if len(data) > OUTPUT_BYTES:
         body = (
