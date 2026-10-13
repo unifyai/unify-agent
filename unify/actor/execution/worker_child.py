@@ -684,6 +684,26 @@ class RemoteError(Exception):
     harness_type = ""
 
 
+#: Where the harness defines the request error a cell's model call raises.
+MODEL_REQUEST_ERROR_MODULE = "unify.common.cell_models"
+
+
+class ModelRequestError(RemoteError, ValueError):
+    """The provider refused a model call this code made because of the
+    request's own content: a ``response_format`` schema it does not accept, a
+    parameter the endpoint does not take, a prompt over the model's limit.
+
+    The message is the provider's. Nothing was generated; fix the request and
+    call again. The harness's error of that name arrives as this class, which
+    is the cell's ``ModelRequestError`` global.
+    """
+
+    harness_type = f"{MODEL_REQUEST_ERROR_MODULE}.ModelRequestError"
+
+
+ModelRequestError.__module__ = MODEL_REQUEST_ERROR_MODULE
+
+
 class SteerableToolHandle:
     """Stand-in for the harness's handle base class.
 
@@ -985,7 +1005,9 @@ class Worker:
         self._ids = itertools.count(1)
         self._pending: dict[int, tuple] = {}
         self._describe_cache: dict[str, Any] = {}
-        self._exc_classes: dict[tuple[str, str], type] = {}
+        self._exc_classes: dict[tuple[str, str], type] = {
+            (MODEL_REQUEST_ERROR_MODULE, "ModelRequestError"): ModelRequestError,
+        }
         self._out_fd = out_fd
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         # The session's globals are a registered module's dict, as in-process
@@ -1368,6 +1390,8 @@ class Worker:
             return _run_coro_sync
         if which == "handle_class":
             return SteerableToolHandle
+        if which == "model_request_error":
+            return ModelRequestError
         if which == "reply":
             return self.reply
         raise BoundaryRefusal(f"unknown worker-local name {which!r}")
