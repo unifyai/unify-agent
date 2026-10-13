@@ -425,7 +425,7 @@ class AgentNoProgress:
     def __init__(self, terminal: str, *, in_code: bool = False, k: Optional[int] = None) -> None:
         self.k = MEMORY_K if k is None else int(k)
         self.terminal = f"tools.{terminal}" if in_code else terminal
-        self.tracker = Tracker(2 * k)
+        self.tracker = Tracker(2 * self.k)
         self.calls = 0  # the agent's model calls read so far
         self.notices = 0
         self.ended = False
