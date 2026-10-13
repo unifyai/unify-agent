@@ -426,6 +426,7 @@ def memory_use(
     library_mode: bool = False,
     runtime_calls: dict | None = None,
     cell_errors: dict | None = None,
+    memory_bound: bool | None = None,
 ) -> dict:
     """The request's use record (:func:`..analysis.use.request_use`), with *runtime_calls*, the calls the
     actor's cells actually made as the worker's audit hook observed them (:func:`with_runtime_calls`).
@@ -438,7 +439,8 @@ def memory_use(
     cell's status from the runtime's structured result by tool call id (``RequestRun.note_result``). In
     library mode the record also counts failures (:func:`library_failures`, from *runtime_calls* and
     *cell_errors*, the cells whose error named the library's package). A failure is recorded as its
-    exception type, with the items at the pin; it never stops the episode.
+    exception type, with the items at the pin; it never stops the episode. *memory_bound* says whether the
+    worker bound ``memory`` in the cells' globals (None: as *library_mode*; see ``use.request_use``).
     """
     from ..analysis import use
 
@@ -472,6 +474,7 @@ def memory_use(
             shown=shown,
             cell_status=cell_status,
             library_mode=library_mode,
+            memory_bound=memory_bound,
         )
         record = with_runtime_calls(record, runtime_calls)
         if library_mode and isinstance(record, dict) and "error" not in record:
@@ -542,6 +545,8 @@ class RequestRun:
             None  # the library-mode switches read at open (switch.SurfacingOptions)
         )
         self.library_mode = False  # UNIFY_MEMORY_LIBRARY, read at open
+        # Whether the library copy holds the package the worker binds as ``memory`` in every cell (set at open).
+        self.memory_bound = False
         # What the memory section shows (``analysis.use.record_shown``), set where it is rendered (both modes).
         self.shown: dict | None = None
         # The memory functions of the export at the pin, taken before the actor runs (use telemetry).
@@ -754,6 +759,11 @@ class RequestRun:
             records=records,
         )
         self.item_ids = pinned_items(paths.checkout, library_mode=True)
+        # the worker binds ``memory`` in every cell when the copy holds the package (hooks.worker_globals)
+        try:
+            self.memory_bound = (paths.checkout / "memory" / "__init__.py").is_file()
+        except (OSError, ValueError):
+            self.memory_bound = False
         self.export_roots = _export_roots(paths.checkout)
         self.surface = use.library_surface(
             paths.checkout,
@@ -1161,6 +1171,7 @@ class RequestRun:
             library_mode=self.library_mode,
             runtime_calls=self.runtime_calls,
             cell_errors=dict(self.cell_errors),
+            memory_bound=self.library_mode and self.memory_bound,
         )
         sha = EpisodeWriter(
             stores.episodes,

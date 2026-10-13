@@ -70,7 +70,9 @@ kept beyond item ids and channel names).
 Names bound by a cell persist into later cells of the same execution session (the structured result's
 ``session_id``; a cell without a structured result from the runtime stays in the previous cell's
 session) and are dropped when a
-result reports a new session (``session_created``).
+result reports a new session (``session_created``). In library mode a session starts with ``memory`` bound
+to the package when the worker bound it in the cells' globals (``memory_bound``), as if ``import memory``
+had run first.
 
 What the prompt showed is a structured record, not a reading of the prompt's text: whatever renders the
 memory section calls :func:`record_shown` with the channel and item names it rendered and the exact text
@@ -2068,6 +2070,7 @@ def request_use(
     shown: Any = None,
     cell_status: Any = None,
     library_mode: bool = False,
+    memory_bound: bool | None = None,
 ) -> dict:
     """The request's ``memory_use`` record (see the module docstring); deterministic and bounded.
 
@@ -2084,8 +2087,18 @@ def request_use(
     With *library_mode* *items* are ``memory.<package>.<module>:<name>`` ids, the helper is ``memory``
     itself (``show``, ``index``, ``find``: lookups, never uses), and the record carries ``"layout": "library_mode"``. Its
     ``refused_then_accepted`` stays 0: a module has no environment channel to compare.
+
+    *memory_bound* says whether the worker bound ``memory`` in every cell's globals before any cell ran
+    (``hooks.worker_globals``: library mode with a library copy). Then each session of the analysis starts
+    with ``memory`` bound to the package, as if ``import memory`` had run first, so calls through that name
+    with no import line count like calls after the import; a cell that rebinds the name stops it, as after
+    an import. None takes it from *library_mode*, as the worker decides it (every library-mode copy holds
+    the package). In library mode the record carries it as ``memory_bound``.
     """
     lines = list(lines)
+    if memory_bound is None:
+        memory_bound = library_mode
+    memory_bound = bool(library_mode and memory_bound)
     its = (_LibraryItems if library_mode else _Items)(items, surface)
     roots = _roots(export_roots)
     changed, diff_truncated = modified_channels(memory_diff, its)
@@ -2103,7 +2116,12 @@ def request_use(
         idx = cell["index"]
         if status["fresh"]:
             sessions.pop(status["session"], None)
-        bindings = sessions.setdefault(status["session"], {})
+        bindings = sessions.get(status["session"])
+        if bindings is None:
+            # a new session starts with the names the worker binds before any cell runs
+            bindings = sessions[status["session"]] = (
+                {PACKAGE_LIBRARY: ("helper",)} if memory_bound else {}
+            )
         visitor: _Cell | None = None
         # could have run, but its code was not read: it reaches every item
         opaque = False
@@ -2213,6 +2231,7 @@ def request_use(
     }
     if library_mode:
         record["layout"] = LAYOUT_LIBRARY
+        record["memory_bound"] = memory_bound
     return record
 
 
@@ -2342,4 +2361,10 @@ def use_from_episode_dir(
         shown=recorded.get("shown_record"),
         cell_status=recorded.get("cell_status"),
         library_mode=recorded.get("layout") == LAYOUT_LIBRARY,
+        # a record from before the flag was kept: None takes it from the layout
+        memory_bound=(
+            recorded["memory_bound"]
+            if isinstance(recorded.get("memory_bound"), bool)
+            else None
+        ),
     )
