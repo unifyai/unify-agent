@@ -1,15 +1,28 @@
 """``memory.match`` (recognition by content) and ``memory.run`` (try a stored procedure), as a cell runs them; the
 index's ``input:`` line; the guide's look-first and try-first bullets; the pointer section; and the use record's
-match, run and file-lookup evidence."""
+match, run and file-lookup evidence.
+
+The library's item records are what production writes (:mod:`tests.memory.gate_records`): a pass lands the capture
+of a procedure that sums the prices of priced rows as :data:`LANDED`, the library gate checks it, and the records are
+``lifecycle.next_records`` with the gate's verification and the capture store's landing. Only a landed procedure has
+an applicability signature, so it is the library item ``memory.match`` recognises. Building the records runs code
+confined, so those tests need bubblewrap."""
 
 from __future__ import annotations
 
+import atexit
+import copy
+import functools
 import json
 import re
+import shutil
+import tempfile
 from pathlib import Path
 
 import pytest
 
+from tests.memory.gate_records import Built, Landing, build, needs_box
+from tests.memory.test_episodes import _ep
 from tests.memory.test_layout import LIB, _tree
 from tests.memory.test_library_helper import _py
 from unify.memory import library_export as lx
@@ -25,9 +38,12 @@ from unify.memory.integration.request import (
     runtime_calls_empty,
 )
 from unify.memory.analysis import use
+from unify.memory.episodes import Action
 
 DATE = "memory.text.dates:parse_date"
 TOKENS = "memory.text.parse:tokens"
+#: The procedure the pass lands from its capture, as ``land_capture`` names it.
+LANDED = "memory.prices.procedures:total_price"
 ROWS = [{"price": 3, "name": "pen"}, {"price": 5, "name": "cup"}]
 PLANTED = "alias-7f3a9c2e"  # a printed identifier the stand-in rule removes
 
@@ -89,21 +105,43 @@ def _capture(root: Path, cid: str, *, procedure: str, signature: dict, outcome: 
     return d
 
 
-def _library(tmp_path: Path, *, effect: str = "read") -> Path:
-    """The fixture library with ``parse_date`` saved against priced rows, one capture that sums prices, one that
-    failed, and one whose module would write a file if it were ever run."""
-    from unify.memory.item_records import empty_record
+#: The library stored before the pass: the layout tests' library, its note without the link to a function it lacks
+#: (the gate refuses a library with a dangling link).
+BASE = {**LIB, "notes/text/dates.md": LIB["notes/text/dates.md"].replace(", memory.text.dates:gone", "")}
 
-    root = _tree(tmp_path / "lib")
-    records = {
-        DATE: {
-            **empty_record(DATE, "function"),
-            "signature": _signature(ROWS),
-            "level": "reproduces-its-case",
-            "provenance": {"episodes": ["ep1"]},
-            "effect": effect,
-        },
-    }
+
+@functools.lru_cache(maxsize=1)
+def _built() -> Built:
+    """The pass that lands the capture of episode ``ep1`` (priced rows, as JSON text, whose total it handed back) as
+    :data:`LANDED`, the gate's check and the item records; once per process."""
+    root = Path(tempfile.mkdtemp(prefix="match-run-world-"))
+    atexit.register(shutil.rmtree, root, True)
+    request = json.dumps(ROWS)
+    episode = _ep(
+        episode_id="ep1",
+        request=[request],
+        transcript=[{"role": "user", "content": request}],
+        cells=[],
+        actions=[Action(-1, "dialogue:user", "answer", [], {"total": 8}, "Accepted.", "ok", "unknown", kind="dialogue")],
+    )
+    return build(
+        root,
+        episodes={"ep1": episode},
+        base=BASE,
+        landings=[Landing("ep1", PROCEDURE, SUMMARY, "prices", "total_price")],
+    )
+
+
+def _library(tmp_path: Path, *, effect: str | None = None) -> Path:
+    """The library the gate checked, with :data:`LANDED` saved against priced rows (its record's signature, from the
+    capture it was landed from), one capture that sums prices, one that failed, and one whose module would write a
+    file if it were ever run. *effect*: the effect the gate derives from covers (none here), for the tests about
+    it."""
+    built = _built()
+    root = _tree(tmp_path / "lib", built.files)
+    records = copy.deepcopy(built.records)
+    if effect is not None:
+        records[LANDED]["effect"] = effect
     saved = lx.saved_against_of(records, lambda e: SUMMARY if e == "ep1" else None, _strip)
     write_files(root, lx.generated_library_mode(root, records=records, saved_against=saved, strip=_strip))
     _capture(root, "a" * 16, procedure=PROCEDURE, signature=_signature(ROWS))
@@ -116,6 +154,7 @@ def _library(tmp_path: Path, *, effect: str = "read") -> Path:
 # --- match -------------------------------------------------------------------------------------------------------
 
 
+@needs_box
 def test_match_lists_procedures_whose_recorded_input_has_the_same_structure(tmp_path):
     root = _library(tmp_path)
     code = (
@@ -126,8 +165,9 @@ def test_match_lists_procedures_whose_recorded_input_has_the_same_structure(tmp_
         "print(json.dumps(repr(r)))\n"
     )
     rows, failed, text = (json.loads(line) for line in _py(root, code).splitlines())
+    assert _built().records[LANDED]["level"] == "reproduces-its-case"  # the gate's, for a landing that reproduces
     assert rows == [
-        [DATE, "exact", "reproduces-its-case", "on-trial"],
+        [LANDED, "exact", "reproduces-its-case", "on-trial"],
         ["capture:" + "a" * 16, "exact", "unchecked", "on-trial"],
     ]
     assert failed == ["capture:" + "b" * 16]  # tried on input like this and failed: apart, never runnable
@@ -135,6 +175,7 @@ def test_match_lists_procedures_whose_recorded_input_has_the_same_structure(tmp_
     assert "compares structure only" in text
 
 
+@needs_box
 def test_the_default_never_matches_by_words(tmp_path):
     """Text that shares every word with what a procedure was saved against, its docstring and its summary, but has
     another structure (or none), matches nothing."""
@@ -153,6 +194,7 @@ def test_the_default_never_matches_by_words(tmp_path):
     assert "no structure" in note
 
 
+@needs_box
 def test_match_runs_nothing(tmp_path):
     root = _library(tmp_path)
     _py(root, "import json, memory\nmemory.match(inputs={'other': [1, 2]})\n")
@@ -160,6 +202,7 @@ def test_match_runs_nothing(tmp_path):
     assert not (root / "ran.txt").exists()
 
 
+@needs_box
 def test_the_matcher_hook_can_be_replaced_and_receives_what_each_item_was_saved_against(tmp_path):
     root = _library(tmp_path)
     code = (
@@ -178,10 +221,11 @@ def test_the_matcher_hook_can_be_replaced_and_receives_what_each_item_was_saved_
     (request, candidates), = seen
     assert request == "any text at all"
     by_id = {c["id"]: c for c in candidates}
-    assert set(by_id) == {DATE, "capture:" + "a" * 16, "capture:" + "b" * 16, "capture:" + "c" * 16}
-    lib = by_id[DATE]
-    assert lib["source"] == "library" and lib["signature"]["input"] == memory_helper.value_shape(ROWS)
-    assert lib["docstring"].startswith("Parse a date written as YYYY-MM-DD.")
+    # the library's procedure is the landed one: the only library item whose record holds a signature
+    assert set(by_id) == {LANDED, "capture:" + "a" * 16, "capture:" + "b" * 16, "capture:" + "c" * 16}
+    lib = by_id[LANDED]
+    assert lib["source"] == "library" and lib["signature"]["input"] == _built().records[LANDED]["signature"]["input"]
+    assert lib["docstring"].startswith("The total price of the rows.")
     assert lib["asked"] == "Sum the prices of a list of priced rows for <id>."
     assert lib["approach"].startswith("- Added the price column")
     cap = by_id["capture:" + "a" * 16]
@@ -201,11 +245,12 @@ def test_the_exported_texts_use_the_one_identifier_rule_when_it_is_built():
 # --- run ---------------------------------------------------------------------------------------------------------
 
 
+@needs_box
 def test_run_calls_an_item_and_reports_its_outcome(tmp_path):
     root = _library(tmp_path)
     code = (
         "import json, memory\n"
-        f"r = memory.run({DATE!r}, '2026-10-09')\n"
+        f"r = memory.run({LANDED!r}, {ROWS!r})\n"
         "bad = memory.run('memory.text.dates:nope', 1)\n"
         f"err = memory.run({TOKENS!r}, 5)\n"
         "print(json.dumps([r.outcome, r.result, r.repeatable, r.level, r.status, r.agrees_with]))\n"
@@ -213,18 +258,20 @@ def test_run_calls_an_item_and_reports_its_outcome(tmp_path):
         "print(json.dumps(repr(r)))\n"
     )
     first, failures, text = (json.loads(line) for line in _py(root, code).splitlines())
-    assert first == ["returned", "2026-10-09", True, "reproduces-its-case", "on-trial", []]
+    # the capture of the same work gives the same result on these rows
+    assert first == ["returned", {"total": 8}, True, "reproduces-its-case", "on-trial", ["capture:" + "a" * 16]]
     assert failures == ["error", "LookupError", "error", "AttributeError"]  # reported, never raised
-    assert "run of memory.text.dates:parse_date: returned" in text and "repeatable: yes" in text
+    assert f"run of {LANDED}: returned" in text and "repeatable: yes" in text
     for word in ("correct", "verified", "right answer"):
         assert word not in text.lower()
 
 
+@needs_box
 def test_run_never_repeats_a_procedure_whose_effect_is_write(tmp_path):
     root = _library(tmp_path, effect="write")
     code = (
         "import json, memory\n"
-        f"r = memory.run({DATE!r}, '2026-10-09')\n"
+        f"r = memory.run({LANDED!r}, {ROWS!r})\n"
         "print(json.dumps([r.outcome, r.repeatable, r.repeat_note]))\n"
     )
     assert json.loads(_py(root, code)) == [
@@ -234,6 +281,7 @@ def test_run_never_repeats_a_procedure_whose_effect_is_write(tmp_path):
     ]
 
 
+@needs_box
 def test_run_runs_a_capture_confined_and_reports_failures(tmp_path):
     root = _library(tmp_path)
     code = (
@@ -249,6 +297,7 @@ def test_run_runs_a_capture_confined_and_reports_failures(tmp_path):
     assert failures == ["error", "LookupError", "error", "LookupError"]
 
 
+@needs_box
 def test_a_capture_that_raises_is_reported_and_its_process_ends(tmp_path):
     root = _library(tmp_path)
     d = _capture(root, "e" * 16, procedure=FAILING, signature=_signature({"q": 1}))
@@ -261,6 +310,7 @@ def test_a_capture_that_raises_is_reported_and_its_process_ends(tmp_path):
     assert d.is_dir()
 
 
+@needs_box
 def test_agrees_with_names_other_matching_procedures_with_the_same_result(tmp_path):
     root = _library(tmp_path)
     _capture(root, "f" * 16, procedure=PROCEDURE, signature=_signature(ROWS))
@@ -273,6 +323,7 @@ def test_agrees_with_names_other_matching_procedures_with_the_same_result(tmp_pa
     assert agrees == ["capture:" + "f" * 16] and note.startswith("checked against")
 
 
+@needs_box
 def test_match_and_run_raise_their_audit_events(tmp_path):
     root = _library(tmp_path)
     code = (
@@ -287,7 +338,7 @@ def test_match_and_run_raise_their_audit_events(tmp_path):
     helper = [(a[0], a[2]) for ev, a in seen if ev == "memory.helper_call"]
     assert helper == [("memory:match", "ok"), ("memory:run", "ok")]
     (rows, failed), = [a for ev, a in seen if ev == "memory.match_result"]
-    assert [r[0] for r in rows] == [DATE, "capture:" + "a" * 16] and [r[0] for r in failed] == ["capture:" + "b" * 16]
+    assert [r[0] for r in rows] == [LANDED, "capture:" + "a" * 16] and [r[0] for r in failed] == ["capture:" + "b" * 16]
     (run_args,) = [a for ev, a in seen if ev == "memory.run_result"]
     assert run_args[:3] == ["capture:" + "a" * 16, "returned", "yes"]
     calls = [a for ev, a in seen if ev == "memory.call"]
