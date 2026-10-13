@@ -128,9 +128,19 @@ _REQUEST_ERROR_TYPES = frozenset({"invalid_request_error"})
 #: (``invalid_json_schema``, ``unsupported_parameter``, ``missing_required_parameter``).
 _REQUEST_ERROR_CODE_PREFIXES = ("invalid_", "unsupported_", "missing_")
 #: A 400 whose type or code (first) or message (second) names any of these is
-#: about access, not the request's content (some providers answer a bad key
-#: with 400). It is raised as before.
-_ACCESS_CODE_MARKERS = ("auth", "key", "credential", "permission", "forbidden", "denied")
+#: about access or the account's billing, not the request's content (some
+#: providers answer a bad key or an empty balance with 400). It is not a
+#: request error of the cell's own.
+_BILLING_MARKERS = ("credit", "quota", "billing", "payment", "balance")
+_ACCESS_CODE_MARKERS = (
+    "auth",
+    "key",
+    "credential",
+    "permission",
+    "forbidden",
+    "denied",
+    *_BILLING_MARKERS,
+)
 _ACCESS_TEXT_MARKERS = (
     "api key",
     "api_key",
@@ -142,6 +152,7 @@ _ACCESS_TEXT_MARKERS = (
     "forbidden",
     "permission denied",
     "access denied",
+    *_BILLING_MARKERS,
 )
 #: How many ``{`` of an error's text are tried as the start of its JSON body.
 _JSON_STARTS = 16
@@ -230,7 +241,8 @@ def model_request_error(exc: BaseException) -> Optional[ModelRequestError]:
     One is a provider's 400 whose error object says the request was invalid as
     written (type ``invalid_request_error``, a code starting ``invalid_``,
     ``unsupported_`` or ``missing_``, or a named ``param``), and says nothing
-    of access (a key, authentication, permission). Its message is the
+    of access (a key, authentication, permission) or billing (credit, quota,
+    payment, balance). Its message is the
     provider's ``message`` alone, redacted. Called only for the calls a cell's
     code makes; what the harness sends itself never comes here.
     """

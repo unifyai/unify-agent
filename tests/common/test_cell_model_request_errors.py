@@ -175,6 +175,67 @@ def test_other_errors_are_not(error) -> None:
     assert cell_models.model_request_error(error) is None
 
 
+BILLING_WORDS = ("credit", "quota", "billing", "payment", "balance")
+
+
+def _billing_bodies(word: str) -> dict:
+    """A request-validation 400 carrying *word* in its type, its code, its message, and in an upstream error
+    routed in ``metadata.raw``."""
+    upper = word.capitalize()
+    return {
+        "type": {
+            "error": {
+                "message": "The request was not accepted.",
+                "type": f"{word}_error",
+                "code": "invalid_value",
+                "param": "model",
+            },
+        },
+        "code": {
+            "error": {
+                "message": "The request was not accepted.",
+                "type": "invalid_request_error",
+                "code": f"insufficient_{word}",
+            },
+        },
+        "message": {
+            "error": {
+                "message": f"{upper} too low for this request; add more and retry.",
+                "type": "invalid_request_error",
+                "param": "max_tokens",
+                "code": "invalid_value",
+            },
+        },
+        "routed": routed(
+            {
+                "error": {
+                    "message": f"Your {word} does not cover this request.",
+                    "type": "invalid_request_error",
+                    "code": "invalid_value",
+                },
+            },
+        ),
+    }
+
+
+@pytest.mark.parametrize("where", ["type", "code", "message", "routed"])
+@pytest.mark.parametrize("word", BILLING_WORDS)
+def test_a_400_about_billing_is_not_a_request_error(word, where) -> None:
+    error = bad_schema(_billing_bodies(word)[where])
+    assert cell_models.model_request_error(error) is None
+    # the cell gets the fixed text instead
+    assert isinstance(cell_models.model_call_failed(error), cell_models.ModelCallFailed)
+
+
+def test_the_billing_bodies_are_request_errors_without_the_word() -> None:
+    # the same bodies with a neutral word are the cell's own request errors: the word alone decides
+    for body in _billing_bodies("budget").values():
+        assert isinstance(
+            cell_models.model_request_error(bad_schema(body)),
+            cell_models.ModelRequestError,
+        ), body
+
+
 def test_the_message_carries_no_url_or_key() -> None:
     message = (
         "Invalid value for 'temperature' (see https://provider.example/docs?x=1); "
