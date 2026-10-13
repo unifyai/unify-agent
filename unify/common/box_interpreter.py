@@ -287,6 +287,9 @@ class MemoryProfile:
     opens_path: Optional[Path] = None
     measure: Optional[Callable[[], Optional[str]]] = None
     idle_restart_s: Optional[float] = 600.0
+    #: names bound in the interpreter's namespace before any cell, in the worker child's ``init`` form (``["lazy_module",
+    #: m]``: imported by the first cell that uses it, under that cell's clock and audit); ``tools`` is bound apart
+    prebound: Mapping[str, list] = field(default_factory=dict)
 
 
 @dataclass
@@ -473,7 +476,10 @@ class _MemoryBackend:
             "op": "init",
             "sys_path": [BOX_TOOLS_DIR, *self.profile.sys_path, *box_python_paths()],
             "builtins": sorted(dir(builtins)),
-            "globals": {TOOLS_MODULE: ["module", TOOLS_MODULE]} if stub_source is not None else {},
+            "globals": {
+                **dict(getattr(self.profile, "prebound", None) or {}),
+                **({TOOLS_MODULE: ["module", TOOLS_MODULE]} if stub_source is not None else {}),
+            },
             "help": False,
             "no_bytecode": True,
             "audit": {

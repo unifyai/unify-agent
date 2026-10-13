@@ -200,8 +200,11 @@ class InCodeTools:
         if asks:
             from unify.memory import librarian as _librarian
 
+            # the librarian's own rows go beside the request's, in their own file, numbered by its own channel
+            librarian_events = EventFile(self.events.folder)
+            librarian_events.NAME = "librarian-events.jsonl"
             self.state.open_librarian = librarian_opener or _librarian.opener(
-                on_event=self.events.append,
+                on_event=librarian_events.append,
                 request_id=self.request_id,
             )
         # the flags the allow-list is built with, which the opening names its tools by

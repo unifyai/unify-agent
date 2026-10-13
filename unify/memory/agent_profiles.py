@@ -857,8 +857,8 @@ _LIBRARY_LINE = {
     ),
     "helper": "/memory holds the library as the writer sees it, read-only.",
     "librarian": (
-        "The library is the Python package `memory` under /memory, read-only: `import memory` in a cell gives "
-        '`memory.show("<id>")`, which prints an item\'s source, docstring and records.'
+        "The library is the Python package `memory` under /memory, read-only, already bound as `memory` in every "
+        'cell: `memory.show("<id>")` prints an item\'s source, docstring and records.'
     ),
 }
 

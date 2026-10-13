@@ -86,8 +86,8 @@ BRIEF = (
     "reader gave. A reader that parsed the text, or an `applies` that held, is evidence that the item's input "
     "fits, and evidence only: it does not show that the item does what the question needs. A reader that did not "
     "parse the text is evidence that the input differs.\n"
-    '- `memory.show("<id>")` in a cell (after `import memory`) prints one item in full: its source, docstring, '
-    "links and records. Open an item when its card leaves you unsure whether it applies.\n"
+    '- `memory.show("<id>")` in a cell prints one item in full: its source, docstring, links and records. Open an '
+    "item when its card leaves you unsure whether it applies.\n"
     "\n"
     "## How you answer\n"
     "- Read every card before you answer. Name every item that applies, not only one, in the catalogue's order.\n"
@@ -426,6 +426,8 @@ class LibrarianSession:
                 open_areas=(LIBRARY_ROOT,),
                 opens_path=None,
                 measure=None,
+                # the library package, bound in every cell and imported by the first cell that uses it
+                prebound={"memory": ["lazy_module", "memory"]},
             ),
             roots={LIBRARY_ROOT: self.copy},
             deadline=time.monotonic() + 30 * 86400.0,
