@@ -135,6 +135,11 @@ def read_capture(store: Path, raw_id: object) -> tuple[str, str, dict]:
 # --- the landed source ------------------------------------------------------------------------------------------
 
 
+def _lines(source: str) -> list[str]:
+    """*source*'s lines with their ends, split at newlines only, as the parser and the tokenizer number them."""
+    return io.StringIO(source, newline="").readlines() if "\r" in source else re.findall(r"[^\n]*\n|[^\n]+\Z", source)
+
+
 def top_names(source: str) -> list[str]:
     """The names *source* binds at module level by ``def``, ``class`` or assignment, in order (parsed, never run)."""
     out: list[str] = []
@@ -155,7 +160,7 @@ def renamed(source: str, names: dict[str, str]) -> str:
     and a keyword argument (``f(run=1)``) are left alone; ``from __future__`` imports are dropped (a landed block
     may follow other code)."""
     toks = list(tokenize.generate_tokens(io.StringIO(source).readline))
-    lines = source.splitlines(keepends=True)
+    lines = _lines(source)
     edits: list[tuple[int, int, int, str]] = []
     depth = 0
     prev = None
@@ -183,7 +188,7 @@ def renamed(source: str, names: dict[str, str]) -> str:
         n for n in ast.parse(out).body if isinstance(n, ast.ImportFrom) and n.module == "__future__"
     ]
     if future:
-        kept = out.splitlines(keepends=True)
+        kept = _lines(out)
         for n in sorted(future, key=lambda n: n.lineno, reverse=True):
             del kept[n.lineno - 1 : (n.end_lineno or n.lineno)]
         out = "".join(kept)
@@ -199,7 +204,7 @@ def with_example(source: str, fn: str, test: str) -> str:
     )
     if node is None or not node.body:
         return source
-    lines = source.splitlines(keepends=True)
+    lines = _lines(source)
     first = node.body[0]
     indent = " " * first.col_offset
     example = f"Example: {test}"
@@ -210,14 +215,17 @@ def with_example(source: str, fn: str, test: str) -> str:
         and first.end_lineno is not None
         and first.end_col_offset is not None
     ):
+        # the parser's columns are UTF-8 byte offsets
         row, col = first.end_lineno - 1, first.end_col_offset
-        line = lines[row]
-        quote = line[col - 3 : col]
-        if quote not in ('"""', "'''") or first.end_lineno == first.lineno and line[first.col_offset :].count(quote) < 2:
+        line = lines[row].encode("utf-8")
+        quote = line[col - 3 : col].decode("utf-8", "replace")
+        start = line[first.col_offset :] if first.end_lineno == first.lineno else b""
+        if quote not in ('"""', "'''") or (start and start.decode("utf-8", "replace").count(quote) < 2):
             return source
         if example in first.value.value:
             return source
-        lines[row] = line[: col - 3] + f"\n\n{indent}{example}\n{indent}" + line[col - 3 :]
+        head, tail = line[: col - 3].decode("utf-8"), line[col - 3 :].decode("utf-8")
+        lines[row] = head + f"\n\n{indent}{example}\n{indent}" + tail
         return "".join(lines)
     if first.lineno - 1 >= len(lines) or first.lineno == node.lineno:
         return source  # a one-line body on the def line: left as it is
@@ -313,10 +321,21 @@ def _write(box: Path, rel: str, text: str, written: list[str]) -> None:
 
 
 def _packages(box: Path) -> list[str]:
+    # listed from the box's descriptor: a link at /memory/memory is never followed
     try:
-        names = sorted(os.listdir(Path(box) / "memory"))
+        root = os.open(Path(box), os.O_RDONLY | os.O_DIRECTORY)
     except OSError:
         return []
+    try:
+        mem = os.open("memory", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+        try:
+            names = sorted(os.listdir(mem))
+        finally:
+            os.close(mem)
+    except OSError:
+        return []
+    finally:
+        os.close(root)
     return [n for n in names if _IDENT.match(n)]
 
 
@@ -352,9 +371,9 @@ def _readers(box: Path) -> list[str]:
 
 def _free_case(box: Path, package: str, name: str) -> int:
     k = 1
-    while (Path(box) / f"memory/{package}/tests/data/{name}.case{k}.json").exists() or (
-        Path(box) / f"memory/{package}/tests/data/{name}.case{k}.txt"
-    ).exists():
+    while any(
+        os.path.lexists(Path(box) / f"memory/{package}/tests/data/{name}.case{k}.{ext}") for ext in ("json", "txt")
+    ):
         k += 1
     return k
 
@@ -470,9 +489,15 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work) -
     )
     refuses = None
     if not old:
+        # how the reader answers empty text, confined: it refuses (the refusal test), it returns (the refusal test
+        # records a known failure), or it raises another exception (no call is written: the gate refuses an example
+        # call that raises anything but MemoryInputError)
         _, why = _run_reader(reader_id, "", box, python, runner, work / "refusal")
-        refuses = bool(why) and " raises MemoryInputError " in why
-        text += refusal_test(name, reader_mod, reader_fn, package, refuses)
+        refuses = "raises" if why and " raises " in why and " raises MemoryInputError " not in why else (
+            bool(why) and " raises MemoryInputError " in why
+        )
+        if refuses != "raises":
+            text += refusal_test(name, reader_mod, reader_fn, package, bool(refuses))
     if _looks_like_key(text):
         raise _NotLanded("not_landed", reason="the recorded result holds a key-shaped string")
     _write(box, test_rel, text, written)
@@ -503,6 +528,11 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work) -
         lines.append(
             f"- {reader_id} does not raise MemoryInputError on empty text: its refusal test is marked as a known "
             "failure until it does",
+        )
+    elif refuses == "raises":
+        lines.append(
+            f"- {reader_id} raises another exception than MemoryInputError on empty text, so no refusal test was "
+            "written: make it raise MemoryInputError on text it was not built for, and add the test",
         )
     lines.append("Change any of them before you finish; check judges them as any other change.")
     return _wt.Reply("\n".join(lines), paths=tuple(_wt.path_row(f"/memory/{p}", "write") for p in written))

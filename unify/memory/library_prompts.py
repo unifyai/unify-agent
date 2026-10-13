@@ -398,7 +398,10 @@ CAPTURES_TEXT = (
 
 
 #: The landing tool's sentence in :data:`CAPTURES_TEXT`, when the agent has the tool.
-LAND_TEXT = "`{tools}land_capture(capture_id, package, name)` turns one into library items you can change before you finish. "
+LAND_TEXT = (
+    "`{tools}land_capture(capture_id, package, name)` turns one into library items you can change before you "
+    "finish. "
+)
 
 
 def captures_input(in_code: bool, land: bool = True) -> str:
