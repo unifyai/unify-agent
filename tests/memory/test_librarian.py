@@ -502,10 +502,9 @@ LIBRARIAN_FIRST = (
     "print('WORKSPACE', os.path.exists('/workspace'))\n"
     "tools.finish({'fits': [{'id': 'memory.nope:x', 'call': 'x', 'why': 'y'}]})\n"
 )
-LIBRARIAN_SECOND = (
-    "tools.finish({'fits': [{'id': %r, 'call': 'memory.run(%r, text)', "
-    "'why': 'reader read_rows parsed the text and its applies held'}]})\n"
-) % (TOTAL, TOTAL)
+LIBRARIAN_SECOND = "tools.finish(%r)\n" % {
+    "fits": [{"id": TOTAL, "call": f"memory.run({TOTAL!r}, text)", "why": "reader read_rows parsed the text"}],
+}
 LIBRARIAN_THIRD = (
     "tools.finish({'fits': [], 'nearest': [{'id': 'capture:%s', 'differs': 'it reverses words, not tables'}]})\n"
 ) % FAILED
