@@ -1,14 +1,17 @@
 """Symbolic: vectors are computed once per text and embedder, then served from
 the local cache, and either embedder ranks rows by meaning.
 
-The ``embedders`` fixture runs a test once through OpenRouter and once through
-the local model, which downloads its weights on the first run.
+The ``embedders`` fixture runs a test once through the OpenRouter path, its
+endpoint stubbed (the request is built and the reply read as the real call
+does; the vectors are the local model's, so ranking keeps its meaning), and
+once through the local model, whose weights the test host has cached.
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
 
+import httpx
 import numpy as np
 import pytest
 
@@ -20,12 +23,26 @@ from unify.settings import SETTINGS
 
 @pytest.fixture(
     params=[
-        pytest.param(False, id="openrouter", marks=pytest.mark.requires_provider_key),
+        pytest.param(False, id="openrouter"),
         pytest.param(True, id="local"),
     ],
 )
 def embedders(request, monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_EMBEDDINGS", request.param)
+    if not request.param:
+        # OpenRouter's embeddings endpoint, stubbed: it answers each batch with
+        # the local model's vectors, listed out of order as the real endpoint
+        # may list them
+        def post(url, *, headers, json, timeout):
+            vectors = embeddings._local(list(json["input"]))
+            data = [{"index": i, "embedding": v.tolist()} for i, v in enumerate(vectors)]
+            return httpx.Response(
+                200,
+                json={"data": data[::-1]},
+                request=httpx.Request("POST", url),
+            )
+
+        monkeypatch.setattr(embeddings.httpx, "post", post)
 
 
 def _functions() -> list[dict]:
