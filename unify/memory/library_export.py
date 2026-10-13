@@ -4,7 +4,7 @@
   type and, for one build, the earlier calls as aliases), with ``memory/_contract.py``, the contract runtime it
   checks its calls with, and ``memory/__init__.pyi``, its typed stub (:func:`stub_source`);
 * ``INDEX.md`` and ``links.json``: :mod:`.library_index`;
-* ``.memory/items.json``: what ``show`` reads per item, namely its kind, path, signature or title, status, a
+* ``.memory/items.json``: what ``memory.get`` reads per item, namely its kind, path, signature or title, status, a
   function's evidence level with the findings that set it, the verification and use records (None without item
   records), a function's example call (its record's, shown only while its test file still quotes it:
   :mod:`.example_view`) and the subjects of the commits that changed it;
@@ -266,7 +266,7 @@ def items_data(
     records: Mapping[str, dict] | None = None,
     examples: Callable[[str], dict | None] | None = None,
 ) -> dict:
-    """``.memory/items.json``: everything :func:`.library_helper.show` needs that the files do not hold.
+    """``.memory/items.json``: everything ``memory.get`` and ``memory.items`` need that the files do not hold.
 
     *examples* gives a function's shown example call (:func:`.example_view.examples_of`); None shows none.
     """
