@@ -290,8 +290,13 @@ def decide(uses: Iterable[Use], prior: str | None = None) -> Decision:
         for u, kind, _, _ in rows
     )
     basis = BASIS_VERDICTS if supported else BASIS_IMPLICIT
+    # an adoption with no verdict-giving regime behind it says only what implicit signals show
+    implicit_only = basis == BASIS_IMPLICIT and not any(
+        kind == CLEAN and u.regime in ("dense", "sparse") for u, kind, _, _ in rows
+    )
+    adopted_reason = f"used without problems in {len(clean)} episodes" if implicit_only else None
     if prior == ADOPTED:
-        return Decision(ADOPTED, basis, None, None, tuple(clean))
+        return Decision(ADOPTED, basis, None, adopted_reason, tuple(clean))
     if not failed_eps and len(clean) >= k_stable:
         if needs_support and not supported:
             return Decision(
@@ -301,7 +306,7 @@ def decide(uses: Iterable[Use], prior: str | None = None) -> Decision:
                 f"clean uses in {len(clean)} episodes, none yet with an accepted verdict or a positive end",
                 (),
             )
-        return Decision(ADOPTED, basis, None, None, tuple(clean))
+        return Decision(ADOPTED, basis, None, adopted_reason, tuple(clean))
     return Decision(ON_TRIAL, None, None, None, ())
 
 

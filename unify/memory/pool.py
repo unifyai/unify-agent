@@ -1005,6 +1005,7 @@ def from_capture(cid: str, doc: dict) -> Entry:
         kind=kind,
         title=f"capture {cid}",
         data={
+            "id": cid,
             "capture_id": cid,
             "goal": sig.get("goal") or "",
             "status": record.get("status"),
@@ -1020,6 +1021,42 @@ def from_capture(cid: str, doc: dict) -> Entry:
         [],
         ["capture"],
     )
+    return e
+
+
+def from_captures(store) -> list[Entry]:
+    """Every capture of *store* (:mod:`.captures`) as a pool entry (:func:`from_capture`), in capture-id order; [] for
+    a missing or empty store."""
+    from .captures import load
+
+    return [from_capture(cid, doc) for cid, doc in sorted(load(store).items())]
+
+
+def failure(
+    item: str,
+    episode: str,
+    signal: str,
+    result_digest: str | None = None,
+    request: str | None = None,
+) -> Entry:
+    """A failed use of a stored procedure (:func:`.lifecycle.failed_uses`) as a ``failure`` entry for the next writer
+    pass: the item, the episode, the signal that failed and the result's digest, with the episode's request as the
+    fixture source (``request:0``) a repair's red test, or a known-failure test alone, is built on. Keyed by the
+    item, the episode and the signal."""
+    files = {"request.txt": request} if request else {}
+    e = Entry(
+        id=entry_id("failure", f"{item}\0{episode}\0{signal}"),
+        kind="failure",
+        title=_clip(f"{item} failed in {episode}: {signal}"),
+        data={
+            "item": item,
+            "signal": signal,
+            "result_digest": result_digest,
+            "fixture_source": "request:0",
+        },
+        files=files,
+    )
+    e.add_provenance([episode], [], ["outcomes"])
     return e
 
 

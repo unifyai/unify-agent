@@ -41,7 +41,7 @@ start (:func:`export_files`); captures never enter ``INDEX.md`` or the prompt.
 
 Evidence: ``captures-events.jsonl`` holds one row per capture step (``capture_id``, ``episode``, ``safety``,
 ``reproduces``, ``deterministic``, ``applies``, ``holds``, ``outcome``, ``same_as``, ``seconds``,
-``published_at``), and ``episodes/<episode>.json`` holds the same row for the episode, which also marks it done.
+``published_at``); an episode with a row there is done.
 Nothing here keys on a task id, a stream boundary or a position.
 """
 
@@ -70,7 +70,6 @@ from .sandbox_run import PYTHON, SandboxResult, run_confined
 
 STORE_DIR = "memory-captures"
 EVENTS_FILE = "captures-events.jsonl"
-EPISODES_DIR = "episodes"
 LOCK_FILE = ".lock"
 PROCEDURE_FILE = "procedure.py"
 BROKE_FILE = "broke.md"
@@ -623,12 +622,28 @@ def saved_against(source: str, summary: str, request: str = "") -> dict:
     }
 
 
+def episode_rows(store: Path | str) -> dict[str, dict]:
+    """The capture step's last row per episode, from ``captures-events.jsonl`` (which also marks an episode done)."""
+    out: dict[str, dict] = {}
+    try:
+        with open(Path(store) / EVENTS_FILE, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict) and isinstance(row.get("episode"), str):
+                    out[row["episode"]] = row
+    except OSError:
+        pass
+    return out
+
+
 def episode_row(store: Path | str, eid: str) -> dict | None:
-    """The capture step's row for episode *eid* (``episodes/<eid>.json``), or None when it has none."""
+    """The capture step's row for episode *eid*, or None when it has none."""
     if not _EPISODE_ID.fullmatch(eid or ""):
         return None
-    doc = _read_json(Path(store) / EPISODES_DIR / f"{eid}.json")
-    return doc if isinstance(doc, dict) else None
+    return episode_rows(store).get(eid)
 
 
 def record_use(store: Path | str, cid: str, use: trust.Use) -> dict | None:
@@ -654,10 +669,6 @@ def _event(store: Path, row: dict) -> None:
     store.mkdir(parents=True, exist_ok=True)
     with open(store / EVENTS_FILE, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(row, sort_keys=True, default=str) + "\n")
-
-
-def _done(store: Path, eid: str, row: dict) -> None:
-    _write(store / EPISODES_DIR / f"{eid}.json", _json(row))
 
 
 def _staged(staging: Path, rel: str) -> str | None:
@@ -695,7 +706,7 @@ def capture(
     clock: Callable[[], float] = time.time,
 ) -> dict:
     """Capture episode *ep*'s attempt from its settled staging dir into *store* (module docstring). Returns the
-    capture step's row, also appended to ``captures-events.jsonl`` and kept as ``episodes/<episode>.json``. Never
+    capture step's row, also appended to ``captures-events.jsonl``. Never
     raises for what the staging holds; a step that cannot capture says why in ``safety``."""
     t0 = clock()
     staging, store = Path(staging), Path(store)
@@ -720,7 +731,6 @@ def capture(
         if _EPISODE_ID.fullmatch(eid):
             with _locked(store):
                 _event(store, row)
-                _done(store, eid, row)
         return row
 
     if not _EPISODE_ID.fullmatch(eid):
@@ -918,9 +928,10 @@ def capture_settled(
 
     store = store_dir(state_dir)
     root = Path(state_dir) / "memory-staging"
+    done = episode_rows(store)
     out = []
     for eid in eids:
-        if not _EPISODE_ID.fullmatch(eid or "") or episode_row(store, eid) is not None:
+        if not _EPISODE_ID.fullmatch(eid or "") or eid in done:
             continue
         d = root / eid
         try:

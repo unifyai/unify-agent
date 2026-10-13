@@ -353,7 +353,7 @@ CAPTURES_INPUT = (
     "procedure on its recorded request, confined; the episode's batch-map row `capture` says whether it gave the same "
     "result, what signal the episode carried, and which stored captures give the same result there. A capture is not "
     "in the library: it becomes library items only as you write them. A failed capture is knowledge too: a note of "
-    "what broke, or a test that records the failure.\n"
+    "what broke, or a test marked as a known failure.\n"
 )
 
 #: What each pool entry kind holds (only the kinds :data:`.pool.KINDS` defines are named).
