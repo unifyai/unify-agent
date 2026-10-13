@@ -416,14 +416,19 @@ def _general(form: str, **fields: object) -> Any:
 
 
 def _unknown_tool(tool: str, allow: tuple[str, ...]) -> Any:
-    """The general ``unknown_tool`` refusal with the nearest tool names before the whole list (the model-API tools
-    keep the general text as it is)."""
+    """The general ``unknown_tool`` refusal with the nearest of the caller's own tools before the whole list; a tool
+    of another role is said to be unavailable in the caller's role, and no other role's tool is named (the model-API
+    tools keep the general text as it is)."""
     from unify.common.contract_runtime import nearest
-    from unify.common.tool_registry import REFUSED
+    from unify.common.tool_registry import REFUSED, registry
 
     near = nearest(tool[:80], allow)
-    text = f"unknown tool {tool[:80]!r}; " + (f"nearest: {', '.join(near)}; " if near else "")
-    text += f"your tools: {', '.join(allow)}"
+    if tool not in allow and tool != "execute_code" and tool in registry():
+        # a tool of another role: say so, and suggest only the caller's own tools (MAIN, 13 Oct)
+        text = f"tools.{tool} isn't available in your role; "
+    else:
+        text = f"unknown tool {tool[:80]!r}; "
+    text += (f"nearest: {', '.join(near)}; " if near else "") + f"your tools: {', '.join(allow)}"
     return _reply_class()((REFUSED + text)[:600], "refused", "unknown_tool")
 
 

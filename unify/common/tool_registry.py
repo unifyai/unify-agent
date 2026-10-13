@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import hashlib
 import inspect
 import json
 import keyword
@@ -2131,9 +2132,20 @@ def errors_source() -> str:
     return "\n\n".join(parts) + "\n"
 
 
+#: What a stub's digests of other roles' tools are salted with (:func:`role_digest`).
+ROLE_DIGEST_SALT = "tools-of-another-role:"
+
+
+def role_digest(name: str) -> str:
+    """The digest a stub keeps of a tool another role has. It tells "a tool of another role" from "no such tool"
+    while no other role's tool name appears in the stub, its ``dir`` or its help (MAIN, 13 Oct)."""
+    return hashlib.sha256((ROLE_DIGEST_SALT + name).encode()).hexdigest()[:16]
+
+
 #: The stub's code that makes its Python-level errors teach (a wrong keyword or number of arguments, a name the
-#: stub does not have). It reads ``_SIGNATURES``, ``_EXAMPLES``, ``_ELSEWHERE`` (the registered tools this agent
-#: does not have) and ``_ERRORS_SOURCE``, which the stub sets first.
+#: stub does not have). It reads ``_SIGNATURES``, ``_EXAMPLES``, ``_OTHER_ROLES`` (:func:`role_digest` of each
+#: registered tool this agent does not have) and ``_ERRORS_SOURCE``, which the stub sets first. Errors suggest only
+#: the caller's own names.
 _TEACHING_SOURCE = '''
 _errors = {}
 
@@ -2185,18 +2197,24 @@ def _taught(fn):
     return call
 
 
+def _other_role(name):
+    """Whether *name* is a tool another role has: the stub keeps only salted digests of those names."""
+    import hashlib
+
+    return hashlib.sha256(("tools-of-another-role:" + name).encode()).hexdigest()[:16] in _OTHER_ROLES
+
+
 def __getattr__(name):
     if name.startswith("_"):
         raise AttributeError("module 'tools' has no attribute %r" % (name,))
     c = _contract()
+    # only the caller's own names: functions for a function name, classes (Refused, ...) for a class name
+    near = c["nearest"](name, [n for n in __all__ if n[:1].isupper() == name[:1].isupper()])
+    if _other_role(name):
+        tail = ("Nearest: " + ", ".join(near) + ". " if near else "") + "tools.list() lists yours."
+        raise AttributeError("tools.%s isn't available in your role.\n%s" % (name, tail))
     problem = "tools has no attribute %r" % (name,)
-    if name in _ELSEWHERE:
-        problem += ": it is not one of your tools"
-    # a function name is matched to functions, a class name (Refused, ...) to classes
-    same = [n for n in __all__ if n[:1].isupper() == name[:1].isupper()]
-    raise AttributeError(
-        c["render"]("tools." + name, problem, nearest=c["nearest"](name, same), hint="tools.list() lists yours.")
-    )
+    raise AttributeError(c["render"]("tools." + name, problem, nearest=near, hint="tools.list() lists yours."))
 '''
 #: The names the embedded shell source defines that the stub exports.
 SHELL_NAMES = ("sh", "ShellResult")
@@ -2218,6 +2236,10 @@ def _function_source(name: str, agent: Optional[str]) -> str:
         f"    {json.dumps(doc)}\n"
         f"    return _call({name!r}, _args({args}))\n"
     )
+
+
+#: The model-API tool, never a ``tools.<name>`` function of any role.
+EXECUTE = "execute_code"
 
 
 def render_stub(names: tuple[str, ...], agent: Optional[str] = None) -> str:
@@ -2259,7 +2281,7 @@ def render_stub(names: tuple[str, ...], agent: Optional[str] = None) -> str:
         "",
         f"_SIGNATURES = {json.dumps({n: signature_text(n, agent) for n in allowed if n != 'sh'}, indent=0)}",
         f"_EXAMPLES = {json.dumps({n: role_example(n, agent) for n in allowed if n != 'sh'}, indent=0)}",
-        f"_ELSEWHERE = {json.dumps(sorted(set(registry()) - set(allowed)))}",
+        f"_OTHER_ROLES = {json.dumps(sorted(role_digest(n) for n in set(registry()) - set(allowed) - {EXECUTE}))}",
         "_ERRORS_SOURCE = " + repr(errors_source()),
         _TEACHING_SOURCE,
     ]
