@@ -320,6 +320,7 @@ def _land_work(st: WriterCalls, args: dict) -> "_wt.Reply":
             blob=w.gate._blob,
             batch=w._batch,
             python=getattr(w.gate, "python", None),
+            pass_id=st.pass_id,
         )
 
 

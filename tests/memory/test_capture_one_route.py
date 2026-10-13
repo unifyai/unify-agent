@@ -169,10 +169,14 @@ def test_a_landing_merges_the_capture_entry_once_and_only_when_its_item_landed(t
     p.enter_captures(store, "p1")
     p.episode_captures = {"e2": cap}  # the writer pass maps each batch episode whose capture can be landed
     item = "memory.readings.procedures:row_sums"
-    landings = {landable: {"item": item, "reader": "memory.readings.readers:read_row_sums", "episode": "e2"}}
+    landing = {"item": item, "reader": "memory.readings.readers:read_row_sums", "episode": "e2"}
+    landings = {landable: {**landing, "pass": "p1"}}
     adopts = [{"item": ITEM["item"], "adopts": ["staging:e2/candidates/fill.py"]}]
     # the landed procedure did not pass the gate: the entry stays open
     assert pool.close_captures(p, "p1", landed={ITEM["item"]}, landings=landings) == []
+    assert p.entries[cap].status == "open"
+    # a landing an earlier pass made (its item refused then) never closes it, even when an item of that id lands now
+    assert pool.close_captures(p, "p1", landed={item}, landings={landable: {**landing, "pass": "p0"}}) == []
     assert p.entries[cap].status == "open"
     # it landed: merged through land_capture, and the candidate adopted in the same pass does not close it again
     got = pool.close_captures(p, "p1", landed={item, ITEM["item"]}, landings=landings, provenance=adopts)

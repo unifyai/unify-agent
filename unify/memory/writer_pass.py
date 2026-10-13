@@ -5257,6 +5257,7 @@ class WriterPass:
                             blob=self.gate._blob,
                             batch=self._batch,
                             python=getattr(self.gate, "python", None),
+                            pass_id=pass_id,
                         )
                         if cell_session is not None and reply.status == "ok":
                             # the quota after the call, as after fixture: a breach stops the interpreter

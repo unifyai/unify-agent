@@ -62,7 +62,9 @@ def test_a_landing_is_recorded_in_the_store_and_carried_into_its_item_record(tmp
     (store / cid / captures.SIGNATURE_FILE).write_text(json.dumps(SIGNATURE), encoding="utf-8")
     reply = _land(tmp_path, {"e7": ep}, capture_id=cid)
     assert reply.status == "ok", reply.text
-    assert captures.landings(store) == {cid: {"item": PROC, "reader": READER, "applies": APPLIES, "episode": "e7"}}
+    # the test's landing names no pass; a writer pass's names its own (test_capture_one_route)
+    landing = {"item": PROC, "reader": READER, "applies": APPLIES, "episode": "e7", "pass": None}
+    assert captures.landings(store) == {cid: landing}
     landed = captures.landed_items(store)
     assert landed == {PROC: {"capture": cid, "reader": READER, "signature": SIGNATURE, "applies": APPLIES}}
     # the harness's own record: never in the box, the writer's inputs or the actor's snapshot
@@ -87,6 +89,9 @@ def test_landed_items_skips_a_landing_without_an_item_and_reads_no_store_as_none
     cid = "0123456789abcdef"
     captures.record_landing(store, cid, {"item": "", "reader": READER})
     assert captures.landings(store) == {} and captures.landed_items(store) == {}
+    captures.record_landing(store, cid, {"item": PROC, "reader": READER, "pass": "p9", "extra": "dropped"})
+    want = {"item": PROC, "reader": READER, "applies": None, "episode": None, "pass": "p9"}
+    assert captures.landings(store)[cid] == want
     assert captures.landed_items(None) == {} and captures.landings(tmp_path / "missing") == {}
     with pytest.raises(ValueError):
         captures.record_landing(store, "../escape", {"item": PROC})

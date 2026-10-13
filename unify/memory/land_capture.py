@@ -487,19 +487,21 @@ def land(
     python: Path | None = None,
     runner: Callable[..., SandboxResult] = run_confined,
     parse: Callable[[str, str], tuple[str, str]] | None = None,
+    pass_id: str | None = None,
 ) -> _wt.Reply:
-    """The ``land_capture`` tool (module docstring). Never raises: a refusal is the reply."""
+    """The ``land_capture`` tool (module docstring). Never raises: a refusal is the reply. *pass_id* is recorded with
+    the landing, so only that pass's outcome closes the capture's pool entry."""
     where = (_wt.path_row("/memory/memory", "write"),)
     work = Path(tempfile.mkdtemp(prefix="land-capture-"))
     try:
-        return _land(args, store, Path(box), episode, blob, batch, python or PYTHON, runner, parse, work)
+        return _land(args, store, Path(box), episode, blob, batch, python or PYTHON, runner, parse, work, pass_id)
     except _NotLanded as n:
         return _wt.refused(TOOL, n.form, where, **n.fields)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _land(args, store, box, episode, blob, batch, python, runner, parse, work) -> _wt.Reply:
+def _land(args, store, box, episode, blob, batch, python, runner, parse, work, pass_id=None) -> _wt.Reply:
     package, name = args.get("package"), args.get("name")
     for what, v in (("package", package), ("name", name)):
         if not isinstance(v, str) or not _IDENT.match(v) or keyword.iskeyword(v):
@@ -603,7 +605,13 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work) -
     _captures.record_landing(
         Path(store),
         cid,
-        {"item": proc_id, "reader": reader_id, "applies": applies_item(source, proc_id), "episode": eid},
+        {
+            "item": proc_id,
+            "reader": reader_id,
+            "applies": applies_item(source, proc_id),
+            "episode": eid,
+            "pass": pass_id,
+        },
     )
     lines = [f"Landed capture {cid} from episode {eid}:"]
     if same is not None:

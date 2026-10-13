@@ -940,16 +940,17 @@ def close_captures(
     provenance: list[dict] | None = None,
 ) -> list[str]:
     """Close each capture's entry by the one route the writer took for it, after :func:`apply_block`. Merged, with
-    ``{"item", "via": "land_capture"}``, when ``land_capture`` landed the capture as an item the gate landed
-    (*landings*: :func:`.captures.landings`, capture id -> ``{"item", ...}``). Superseded, with ``{"item", "via":
-    "candidate"}``, when instead a landed item adopts a candidate or a case staged from the capture's episode
-    (:attr:`Pool.episode_captures`), by its staging ref or through the pool entry holding it; adopting the episode's
-    notes closes nothing. Only an open entry closes. Returns the ids changed."""
+    ``{"item", "via": "land_capture"}``, when ``land_capture`` landed the capture in this pass (*pass_id*) as an item
+    the gate landed (*landings*: :func:`.captures.landings`, capture id -> ``{"item", "pass", ...}``); a landing of
+    another pass never closes it, so one whose item the gate refused cannot close it later. Superseded, with
+    ``{"item", "via": "candidate"}``, when instead a landed item adopts a candidate or a case staged from the
+    capture's episode (:attr:`Pool.episode_captures`), by its staging ref or through the pool entry holding it;
+    adopting the episode's notes closes nothing. Only an open entry closes. Returns the ids changed."""
     changed: list[str] = []
     for cid, landing in sorted((landings or {}).items()):
         item = landing.get("item") if isinstance(landing, dict) else None
         e = pool.entries.get(entry_id("capture", str(cid)))
-        if item in landed and e is not None and e.status == "open":
+        if item in landed and landing.get("pass") == pass_id and e is not None and e.status == "open":
             pool.set_status(e.id, "merged", {"item": item, "via": "land_capture"}, pass_id)
             changed.append(e.id)
     for row in provenance or []:

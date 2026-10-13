@@ -81,8 +81,9 @@ SUMMARY_FILE = "summary.md"
 #: adds what broke.
 SAVED_FILE = "saved.json"
 #: Written by ``land_capture`` when it lands the capture (:func:`record_landing`): the procedure item it became, its
-#: reader, the item that is its stated ``applies`` and the episode it was landed from. The harness's own: never copied
-#: to a box. The item records take the landed procedure's signature and ``applies`` from it (:func:`landed_items`).
+#: reader, the item that is its stated ``applies``, the episode it was landed from and the pass that landed it. The
+#: harness's own: never copied to a box. The item records take the landed procedure's signature and ``applies`` from
+#: it (:func:`landed_items`).
 LANDED_FILE = "landed.json"
 #: The files of one capture, as the store, the pool and the actor's snapshot hold them.
 CAPTURE_FILES = (PROCEDURE_FILE, SIGNATURE_FILE, RECORD_FILE, BROKE_FILE)
@@ -1013,13 +1014,14 @@ def batch_row(store: Path | str, eid: str) -> dict | None:
 
 
 def record_landing(store: Path | str, cid: str, landing: Mapping[str, Any]) -> None:
-    """Record that capture *cid* was landed as *landing* (``item``, ``reader``, ``applies``, ``episode``), replacing an
-    earlier landing of it."""
+    """Record that capture *cid* was landed as *landing* (``item``, ``reader``, ``applies``, ``episode``, and ``pass``:
+    the pass that landed it), replacing an earlier landing of it."""
     if not _ID.fullmatch(str(cid)):
         raise ValueError(f"not a capture id: {str(cid)[:40]!r}")
     root = Path(store)
     with _locked(root):
-        _write(root / cid / LANDED_FILE, _json({k: landing.get(k) for k in ("item", "reader", "applies", "episode")}))
+        keys = ("item", "reader", "applies", "episode", "pass")
+        _write(root / cid / LANDED_FILE, _json({k: landing.get(k) for k in keys}))
 
 
 def landings(store: Path | str) -> dict[str, dict]:
