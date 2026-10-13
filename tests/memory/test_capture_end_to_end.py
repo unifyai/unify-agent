@@ -299,6 +299,7 @@ import json
 bm = json.load(open('/inputs/batch_map.json'))
 row = next(r for r in bm['episodes'] if 'e7' in (r.get('episode_id'), r.get('episode')))
 print('CAPTURE ' + json.dumps(row['capture'], sort_keys=True))
+print('ROUTE ' + json.dumps({k: row['staging'][k] for k in ('files', 'capture')}, sort_keys=True))
 print('POOL ' + tools.pool(op='list', kind='capture').replace(chr(10), ' | '))
 print('LANDED ' + tools.land_capture(row['capture']['id'], 'readings', 'row_sums').replace(chr(10), ' | '))
 print('CHECK ' + tools.check()[:3000].replace(chr(10), ' | '))
@@ -384,10 +385,28 @@ def test_a_writer_pass_lands_the_capture_as_a_library_item(tmp_path, monkeypatch
     assert row["id"] == cid and row["level"] == LEVEL_CAPTURE, row
     assert row["reproduces"] in (True, "reproduces") and "same_as" in row and "outcome" in row, row
     assert cid in _line(shown, "POOL ") or POOL_KIND in _line(shown, "POOL "), shown[:3000]
+    # one route: the episode's staging holds no second copy of the procedure, and names the capture and its call
+    route = json.loads(_line(shown, "ROUTE ") or "null")
+    assert route and PROCEDURE_FILE not in route["files"] and "summary.md" in route["files"], route
+    assert route["capture"] == {"id": cid, "land": f"tools.land_capture('{cid}', package, name)"}, route
+    assert (state / "memory-staging" / ep.episode_id / PROCEDURE_FILE).read_text() == PROCEDURE
     landed = _line(shown, "LANDED ")
     assert "readings/procedures.py" in landed and "readings/readers.py" in landed, landed
     assert out.finished and out.passed, (out.reasons, shown[:3000])
     assert PROCEDURE_ITEM in out.items_merged, (out.items_merged, out.items_refused)
+    # landed through land_capture: the capture's pool entry closed as merged into the procedure, and counted
+    from unify.memory import pool as pool_mod
+
+    entry = pool_mod.Pool(mem).load().entries[pool_mod.entry_id("capture", cid)]
+    assert (entry.status, entry.status_detail) == (
+        "merged",
+        {"item": PROCEDURE_ITEM, "via": "land_capture", "pass": "p1"},
+    ), entry.status_detail
+    assert out.pool["captures"][ep.episode_id] == {
+        "capture_id": cid,
+        "landed": PROCEDURE_ITEM,
+        "superseded_by": None,
+    }, out.pool
     # the gate admitted it at its evidence level: reproduced on its recorded case, no verdict the actor saw
     final = results[-1]
     assert gate_level(final, PROCEDURE_ITEM) == LEVEL_LANDED_WITHOUT_SIGNAL, getattr(final, "level_reasons", None)
