@@ -113,6 +113,22 @@ def worker_paths() -> list[str]:
     return [str(path)] + ([str(kit)] if kit.is_dir() else [])
 
 
+def worker_globals() -> dict[str, list]:
+    """Globals the worker binds in every cell, as init specs: in library mode with a library copy, ``memory``,
+    imported by the first cell that uses it (the actor's guide says the library is ``memory`` in its cells).
+    Nothing of the library runs when the worker starts; empty otherwise."""
+    path = _checkout()
+    if path is None or not getattr(_run(), "library_mode", False):
+        return {}
+    try:
+        present = (path / "memory" / "__init__.py").is_file()
+    except (OSError, ValueError):
+        present = False
+    if not present:
+        return {}
+    return {"memory": ["lazy_module", "memory"]}
+
+
 def worker_mounts() -> list[Path]:
     """Paths the worker's sandbox binds read-write: the run's memory export (v2), nothing else. Under
     UNIFY_MEMORY_LIBRARY there are none: the copy is bound read-only (:func:`worker_readonly_mounts`).

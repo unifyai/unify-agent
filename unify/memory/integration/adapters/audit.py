@@ -72,8 +72,14 @@ cell raised any::
                            "cell_thread"}, ...],   # at most MAX_CALL_RECORDS
               "dropped": int,          # calls of items over MAX_CALL_ITEMS
               "records_dropped": int,  # calls counted but not listed
-              "malformed": int}        # events whose arguments were not
+              "malformed": int,        # events whose arguments were not
                                        # an item id, a hex digest and an outcome
+              "helpers": {helper_id: {"ok": n, "refused": n, "error": n}}}
+                                       # only when a helper call was seen
+
+The package's own helpers raise ``memory.helper_call`` with the same
+arguments, under the ids ``memory:index``, ``memory:show`` and
+``memory:find``; they are counted under ``helpers`` only, never as items.
 
 ``counts`` holds every well-formed call of up to MAX_CALL_ITEMS items, so it
 is exact unless ``dropped`` is non-zero. Like every record here, these are
@@ -145,8 +151,11 @@ SPAWN_EVENTS = frozenset({"subprocess.Popen", "os.posix_spawn", "os.exec"})
 SYSTEM_EVENT = "os.system"
 CALL_EVENT = "memory.call"
 CALL_OUTCOMES = ("ok", "refused", "error")
+#: The library package's own helpers raise this event, with the same arguments, under these ids.
+HELPER_EVENT = "memory.helper_call"
+HELPER_ITEMS = frozenset({"memory:index", "memory:show", "memory:find"})
 #: Audit events kept; everything else returns after one set lookup.
-AUDITED = PATH_EVENTS | SPAWN_EVENTS | {SYSTEM_EVENT, CALL_EVENT}
+AUDITED = PATH_EVENTS | SPAWN_EVENTS | {SYSTEM_EVENT, CALL_EVENT, HELPER_EVENT}
 
 #: Caps per cell and per record.
 MAX_RECORDS = 2000
@@ -260,6 +269,7 @@ class CellAudit:
         self.calls_dropped = 0
         self.call_records_dropped = 0
         self.calls_malformed = 0
+        self.helper_counts: dict = {}
 
     @staticmethod
     def prefixes(roots: Iterable[str]) -> tuple:
@@ -282,6 +292,9 @@ class CellAudit:
                 return
             if event == CALL_EVENT:
                 self._call(args)
+                return
+            if event == HELPER_EVENT:
+                self._helper_call(args)
                 return
             if len(self.records) >= MAX_RECORDS:
                 self.dropped += 1
@@ -358,9 +371,33 @@ class CellAudit:
             },
         )
 
+    def _helper_call(self, args: tuple) -> None:
+        """Count one ``memory.helper_call`` event by helper and outcome; nothing else is kept."""
+        if type(args) is not tuple or len(args) != 3:
+            self.calls_malformed += 1
+            return
+        item, digest, outcome = args
+        if (
+            type(item) is not str
+            or type(digest) is not str
+            or type(outcome) is not str
+            or item not in HELPER_ITEMS
+            or outcome not in CALL_OUTCOMES
+            or _HEX_DIGEST.fullmatch(digest) is None
+        ):
+            self.calls_malformed += 1
+            return
+        counts = self.helper_counts.get(item)
+        if counts is None:
+            counts = self.helper_counts[item] = dict.fromkeys(CALL_OUTCOMES, 0)
+        counts[outcome] += 1
+
     def _calls_seen(self) -> bool:
         return bool(
-            self.call_counts or self.calls_dropped or self.calls_malformed,
+            self.call_counts
+            or self.calls_dropped
+            or self.calls_malformed
+            or self.helper_counts,
         )
 
     def _inside(self, path: Optional[str]) -> bool:
@@ -526,6 +563,8 @@ class CellAudit:
                 "records_dropped": self.call_records_dropped,
                 "malformed": self.calls_malformed,
             }
+            if self.helper_counts:
+                out["calls"]["helpers"] = self.helper_counts
         self.records, self.dropped, self.failed, self.bytes = [], 0, 0, 0
         self._reset_calls()
         return out
