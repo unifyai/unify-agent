@@ -190,3 +190,47 @@ def test_actor_index_inline_by_default_keeps_the_bytes_and_pointer_points(tmp_pa
     assert parse_library_actor_index("Pointer") == "pointer"
     with pytest.raises(ValueError, match=LIBRARY_ACTOR_INDEX):
         parse_library_actor_index("summary")
+
+
+@pytest.mark.parametrize("package", [True, False])
+def test_opening_a_request_records_whether_the_cells_have_memory_bound(tmp_path, monkeypatch, package):
+    """The request opened in library mode notes whether its copy holds the package the worker binds as ``memory``
+    in every cell (``hooks.worker_globals``), and its use record carries that same answer."""
+    from tests.memory.test_episodes import _ep
+    from unify.memory.integration import checkout
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
+    paths = Paths.under(tmp_path / "home")
+    mem = Repo.init_bare(paths.memory)
+    _commit(mem, LIB, "seed")
+    if not package:
+        real = checkout.export_actor_library_mode
+
+        def without_package(*args, **kwargs):
+            out = real(*args, **kwargs)
+            init = paths.checkout / "memory" / "__init__.py"
+            init.parent.chmod(0o755)
+            init.unlink()
+            return out
+
+        monkeypatch.setattr(checkout, "export_actor_library_mode", without_package)
+    run = request_mod.RequestRun("r", paths)
+    run.state = State.load(paths.state)
+    run.pin = mem.head()
+    run.library_mode = True
+    run._shape_rows = lambda consolidate, library_mode=False: {}  # no evidence store here
+    run._open_library_mode(None)
+    monkeypatch.setattr(request_mod, "_CURRENT", run)
+    assert run.memory_bound is package
+    assert bool(hooks.worker_globals()) is package  # the worker binds the name exactly then
+    record = request_mod.memory_use(
+        _ep(transcript=[], actions=[]),
+        run.item_ids,
+        export_roots=run.export_roots,
+        surface=run.surface,
+        library_mode=run.library_mode,
+        memory_bound=run.library_mode and run.memory_bound,
+    )
+    assert "error" not in record, record
+    assert record["memory_bound"] is package
