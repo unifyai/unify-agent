@@ -323,6 +323,23 @@ def _delegating_writer() -> Steps:
     return Steps(plan, MEMORY_END["writer"])
 
 
+def _helper_waits_answer_at_once(monkeypatch) -> None:
+    """A helper's ``wait`` and ``ask`` answer at once (as ``no_waiting`` in the other contract test): the scripted
+    writer only waits, so a helper's real ``wait`` or ``ask`` would wait for it until the pass's wall clock. The
+    writer's own ``wait`` stays real, so its wait cell sees the helper end."""
+    from unify.memory import tool_handlers as TH
+
+    for name, text in (("wait", "no new messages"), ("ask", "no answer yet")):
+        real = getattr(TH, name)
+
+        async def handler(ctx, args, _real=real, _text=text):
+            if isinstance(getattr(ctx, "state", None), TH.HelperCalls):
+                return _text
+            return await _real(ctx, args)
+
+        monkeypatch.setattr(TH, name, handler)
+
+
 def _run_memory_role(tmp_path: Path, role: str, plan_of) -> tuple[dict, Steps, Any]:
     state: dict = {}
     steps = Steps(plan_of(state), MEMORY_END[role])
@@ -485,6 +502,8 @@ def _run_role(role: str, tmp_path, request, monkeypatch, *, contract: bool) -> d
         return state
     # the memory agents' briefs and boxes follow the switch, as in a run (PassConfig.tools_in_code alone is not it)
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
+    if role == "helper":
+        _helper_waits_answer_at_once(monkeypatch)
     if contract:
         state, steps, out = _run_memory_role(tmp_path, role, contract_plan)
         state["outputs"] = [steps.outputs.get("c2", ""), steps.outputs.get("c3")]
@@ -534,7 +553,14 @@ def test_every_prebound_name_is_named_and_every_promised_name_is_bound(role, tmp
     assert {"tools", "memory"} <= set(names), names
     # an exception class the harness raises into cells (``ModelRequestError``) is bound for ``except`` clauses, not
     # offered as something to call, so only the names a cell uses need the prompt to name them; all must be bound
-    missing = [n for n in names if not n[:1].isupper() and f"`{n}`" not in prompt and f"`{n}(" not in prompt]
+    # Python's own built-in names (``help``) need no introduction either: the box binds its own version of them
+    import builtins as _builtins
+
+    missing = [
+        n
+        for n in names
+        if not n[:1].isupper() and not hasattr(_builtins, n) and f"`{n}`" not in prompt and f"`{n}(" not in prompt
+    ]
     assert not missing, f"{role}: pre-bound but never named in its prompt: {missing}"
     promised = pc.opening_names(prompt, NAMES_SENTENCE_END)
     assert promised, f"{role}: its prompt has no names sentence"
