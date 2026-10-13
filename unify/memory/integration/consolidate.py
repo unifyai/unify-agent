@@ -37,7 +37,8 @@ Each pass sends two events through ``emit`` and appends them to the harness-only
 ``reason_codes`` are codes only, never free text (deduplicated, at most 10): ``G1``..``G6`` for the gate
 checks that refused, ``no_manifest``, ``manifest_invalid``, ``over_quota``, ``deadline``, ``pass_cap``,
 ``run_guard``, ``writer_error``, ``route_not_in_effect`` (a writer call found the writer's declared route not in effect),
-and ``ok`` for a passed pass. They are structural: :attr:`PassOutcome.codes`
+``no_progress`` (the no-progress rule ended the writer's or curator's round; a gate check that then refused the
+final merge is listed beside it, and only those checks are in ``refused_by``), and ``ok`` for a passed pass. They are structural: :attr:`PassOutcome.codes`
 (set where each cause arises in the pass and the gate), the type of an exception that ended a pass, or the
 run guard; reason text is never read. A failed pass with no listed cause (memory ``main`` moved during the
 merge) is ``writer_error``. A pass the run guard holds back sends one end event (``calls`` 0, ``usd`` "0",
@@ -99,6 +100,7 @@ from ..signals import Signal, SignalMasked, post_signal
 from .. import similar as _similar
 from ..snapshot import listing, materialise
 from ..writer_pass import (
+    CODE_NO_PROGRESS,
     CODE_ROUTE_NOT_IN_EFFECT,
     CODE_STEP_GUARD,
     STEP_GUARD,
@@ -173,6 +175,7 @@ REASON_CODES = frozenset(
         "run_guard",
         "writer_error",
         CODE_ROUTE_NOT_IN_EFFECT,
+        CODE_NO_PROGRESS,
         "ok",
     },
 )

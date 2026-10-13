@@ -766,6 +766,9 @@ CODE_STEP_GUARD = (
 CODE_WRITER_ERROR = "writer_error"
 # a writer call found the writer's declared route not in effect
 CODE_ROUTE_NOT_IN_EFFECT = "route_not_in_effect"
+# library mode: the shared no-progress rule ended the agent's round (loop_stop.AgentNoProgress); the pass then went
+# to its final merge, so a refused pass lists the gate checks beside it
+CODE_NO_PROGRESS = "no_progress"
 
 
 class ModelTurn(Protocol):
@@ -5074,6 +5077,7 @@ class WriterPass:
                     if acted is not None:
                         notes.append(no_progress.note(acted))
                     if acted == "end":
+                        cause(CODE_NO_PROGRESS)
                         break
                 if finished and self.cfg.library_mode and stop is None and repair():
                     finished = (

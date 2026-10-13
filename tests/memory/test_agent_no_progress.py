@@ -181,9 +181,62 @@ def test_a_writer_repeating_a_no_op_cell_is_told_then_its_round_ends_and_the_mer
     # the final merge ran once: what passed landed and the rest is kept as a draft
     assert len(merged) == 1 and out.passed and out.items_merged == [ME] and out.items_refused == {OTHER: ["G2"]}
     assert draft_states(ev.pass_rounds()) == {"px": "open"}
-    # the end event carries the field at its top level, beside repair_stuck
+    # the end event carries the field at its top level, beside repair_stuck; a passed pass's codes are ["ok"]
     end = consolidate._end_event(_stores(tmp_path / "s"), "px", out, [], 1.0, None)
     assert end["no_progress"] == out.no_progress and end["repair_stuck"] is None
+    assert out.codes == ["ok"] and end["reason_codes"] == ["ok"] and end["refused_by"] == []
+
+
+def _refuse(writer, merged):
+    """The final merge refuses the whole pass under G2."""
+
+    def merge(parent, candidate, manifest, pass_id, kind, channel, usd, **kwargs):
+        merged.append(candidate)
+        res = GateResult(False, {"G2": False}, ["G2: env/venmo:me covers no recorded action"], ["G2"])
+        writer.gate._record(parent, candidate, pass_id, kind, channel, usd, res)
+        return res
+
+    return merge
+
+
+@needs_bwrap
+def test_a_round_ended_by_no_progress_has_its_own_reason_code_beside_the_gate_checks(tmp_path):
+    from tests.memory.integration.test_consolidate import _stores
+    from unify.memory import writer_pass
+    from unify.memory.integration import consolidate
+
+    model = Turns(
+        [_call("w0", "execute_code", {"code": FILES_CODE})]
+        + [_call(f"n{i}", "execute_code", {"code": NOOP}) for i in range(4 * MEMORY_K)],
+    )
+    mem, ev, writer = _writer(tmp_path, model, library_mode=True, max_usd=None, deadline_s=300.0)
+    merged: list = []
+    writer.gate.check = lambda *a, **k: GateResult(True, {}, [], [])
+    writer.gate.merge = _refuse(writer, merged)
+    out = _run(writer)
+    assert out.no_progress is not None and out.no_progress["ended"] is True, out.reasons
+    assert len(merged) == 1 and not out.passed
+    # the stop's own code first (where it arose), then the gate check that refused the final merge
+    assert out.codes == [writer_pass.CODE_NO_PROGRESS, "G2"] == ["no_progress", "G2"]
+    end = consolidate._end_event(_stores(tmp_path / "s"), "px", out, [], 1.0, None)
+    assert end["reason_codes"] == ["no_progress", "G2"]
+    # refused_by holds the gate's checks only: the stop is told apart from the gate's refusal
+    assert end["refused_by"] == ["G2"]
+    assert "no_progress" in consolidate.REASON_CODES
+
+
+@needs_bwrap
+def test_a_round_not_ended_by_no_progress_has_no_such_code(tmp_path):
+    from unify.memory import writer_pass
+
+    model = Turns([_call("w0", "execute_code", {"code": FILES_CODE})])
+    mem, ev, writer = _writer(tmp_path, model, library_mode=True, max_usd=None, deadline_s=300.0)
+    merged: list = []
+    writer.gate.check = lambda *a, **k: GateResult(True, {}, [], [])
+    writer.gate.merge = _refuse(writer, merged)
+    out = _run(writer)
+    assert out.no_progress is None and not out.passed
+    assert writer_pass.CODE_NO_PROGRESS not in out.codes and "G2" in out.codes
 
 
 @needs_bwrap
