@@ -145,6 +145,33 @@ def _tuples(value: object) -> object:
     return tuple(_tuples(v) for v in value) if isinstance(value, list) else value
 
 
+class _Logged(logging.Handler):
+    """The request log's warnings, as the host's log handlers receive them (whatever the logger's propagation)."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.WARNING)
+        self.lines: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.lines.append(record.getMessage())
+
+    def __enter__(self) -> "_Logged":
+        log = logging.getLogger(request_mod.__name__)
+        self._level = log.level
+        log.addHandler(self)
+        log.setLevel(logging.WARNING)
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        log = logging.getLogger(request_mod.__name__)
+        log.removeHandler(self)
+        log.setLevel(self._level)
+
+    @property
+    def text(self) -> str:
+        return "\n".join(self.lines)
+
+
 def _host_record(events: list) -> dict:
     """The events through the cell's audit hook and into the request's runtime evidence, as a cell's drain is."""
     audit = CellAudit([])
@@ -230,7 +257,7 @@ def test_match_lists_only_what_its_reader_parsed_with_its_applies_holding(tmp_pa
 # --- a reader that gives no outcome -----------------------------------------------------------------------------
 
 
-def test_a_child_that_cannot_start_or_never_prints_its_marker_is_labelled_with_its_reason(tmp_path, caplog):
+def test_a_child_that_cannot_start_or_never_prints_its_marker_is_labelled_with_its_reason(tmp_path):
     root = _copy(tmp_path)
     code = host(REQUEST) + (
         "real = sys.executable\n"
@@ -253,19 +280,19 @@ def test_a_child_that_cannot_start_or_never_prints_its_marker_is_labelled_with_i
     assert one[2][0] == [TOTAL, "not-started", "not-run", "start: FileNotFoundError"]
     assert two[2][0] == [TOTAL, "failed", "not-run", "no marker"]
 
-    with caplog.at_level(logging.WARNING, logger=request_mod.__name__):
+    with _Logged() as log:
         acc = _host_record(out["events"])
     first, second = acc["asks"]
     assert first["facts"][0] == {"id": TOTAL, "read": "not-started", "applies": "not-run",
                                  "reason": "start: FileNotFoundError"}
     assert second["facts"][1] == {"id": "capture:" + CAPTURE, "read": "failed", "applies": "not-run",
                                   "reason": "no marker"}
-    logged = caplog.text
+    logged = log.text
     assert f"memory.ask: the stored reader of {TOTAL} not-started (start: FileNotFoundError)" in logged
     assert f"memory.ask: the stored reader of capture:{CAPTURE} failed (no marker)" in logged
 
 
-def test_a_reader_past_its_time_is_failed_and_the_others_keep_their_outcomes(tmp_path, caplog):
+def test_a_reader_past_its_time_is_failed_and_the_others_keep_their_outcomes(tmp_path):
     root = _copy(tmp_path, _capture(SLOW, NEVER_RETURNS, DATA))
     code = host(REQUEST, DATA) + (
         "memory.READ_TIMEOUT_S, memory.READERS_TIMEOUT_S = 1.0, 20.0\n"
@@ -286,11 +313,11 @@ def test_a_reader_past_its_time_is_failed_and_the_others_keep_their_outcomes(tmp
     assert [row for row in ask[2] if len(row) == 4] == [["capture:" + SLOW, "failed", "not-run", "timeout after 1 s"]]
     assert match[2] == [["capture:" + SLOW, "failed", "not-run", "timeout after 1 s"]]
 
-    with caplog.at_level(logging.WARNING, logger=request_mod.__name__):
+    with _Logged() as log:
         acc = _host_record(out["events"])
     assert acc["matches"][0]["listed"][0]["id"] == TOTAL
-    assert f"memory.match: the stored reader of capture:{SLOW} failed (timeout after 1 s)" in caplog.text
-    assert f"memory.ask: the stored reader of capture:{SLOW} failed (timeout after 1 s)" in caplog.text
+    assert f"memory.match: the stored reader of capture:{SLOW} failed (timeout after 1 s)" in log.text
+    assert f"memory.ask: the stored reader of capture:{SLOW} failed (timeout after 1 s)" in log.text
 
 
 def test_the_audit_hook_keeps_only_fixed_reasons_for_readers_without_an_outcome():
