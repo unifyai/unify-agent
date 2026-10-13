@@ -338,7 +338,7 @@ CAUGHT = (
     "print('AFTER')\n"
 )
 UNCAUGHT = "await query_llm('Tag this.', response_format=schema)\n"
-NEXT = "print('NEXT CELL', 'schema' in dir())\n"
+NEXT = "print('NEXT CELL', schema['type'])\n"
 
 
 @pytest.mark.asyncio
@@ -368,7 +368,7 @@ async def test_in_a_cell_the_error_is_caught_and_the_cells_go_on(
     # cell runs in the same session
     shown = _tool_results(model.calls[-1])
     assert "ModelRequestError" in shown and PROVIDER_MESSAGE in shown, shown[-2000:]
-    assert "NEXT CELL True" in shown, shown[-2000:]
+    assert "NEXT CELL json_schema" in shown, shown[-2000:]
     assert "OpenrouterException" not in shown and "litellm" not in shown
     assert [h[llm_client.CALL_KIND_HEADER] for h in model.headers_of("query_llm")] == [
         "cell",

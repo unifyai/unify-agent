@@ -50,9 +50,11 @@ async def test_a_cells_request_errors_are_counted_on_its_row(in_code):
         query_llm=[bad_schema(), bad_schema(), reply('{"tags": ["a"]}')],
     )
     assert await _act(model, "Tag it.") == "tagged", _why(model)
-    shown = _tool_results(model.calls[-1])
+    assert model.kinds() == ["actor", "query_llm", "query_llm", "actor", "query_llm"]
+    # the second actor turn read the first cell's output: both refusals caught, and the cell went on
+    shown = _tool_results(model.calls[3])
     assert shown.count(f"CAUGHT True {PROVIDER_MESSAGE}") == 2, shown[-2000:]
-    assert "AFTER" in shown and "TAGS {'tags': ['a']}" in shown, shown[-2000:]
+    assert "AFTER" in shown, shown[-2000:]
 
     (session,) = in_code["opened"]
     cells = sorted((r for r in _rows(session) if r["tool"] == "execute_code"), key=lambda r: r["call"])
