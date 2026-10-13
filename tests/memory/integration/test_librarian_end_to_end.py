@@ -77,9 +77,9 @@ def librarian_answer(answer: dict) -> str:
 
 
 def librarian_brief() -> str:
-    from unify.memory import library_prompts
+    from unify.memory import librarian
 
-    return library_prompts.librarian_brief()
+    return librarian.BRIEF
 
 
 def scripted(answer) -> ScriptedModel:

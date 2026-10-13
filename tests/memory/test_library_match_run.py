@@ -356,6 +356,7 @@ def test_match_and_run_are_counted_with_the_helpers_and_their_rows_kept():
         "repeatable": "yes",
         "agrees_with": 0,
         "listed_by_match": True,
+        "listed_by_ask": False,
     }
     assert fields["ran_before_more_input"] is True and fields["run_first_share"] == 1.0
     late = use.match_run_fields(acc, lines[:3] + lines[-1:] + lines[3:5])

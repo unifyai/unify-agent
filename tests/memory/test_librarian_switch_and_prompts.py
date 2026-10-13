@@ -55,7 +55,9 @@ POINTER = (
 def librarian_brief() -> str:
     """The librarian's brief (design J(b).6), as its system prompt carries it between the shared opening and the
     catalogue."""
-    return library_prompts.librarian_brief()
+    from unify.memory import librarian
+
+    return librarian.BRIEF
 
 
 def actor_allow() -> tuple[str, ...]:

@@ -218,11 +218,13 @@ def test_the_catalogue_holds_no_identifier_answer_or_request_and_is_byte_stable(
 
 def test_the_dispatch_file_lists_each_procedure_with_a_reader_or_an_applies(tmp_path):
     root = _copy(tmp_path)
-    rows = json.loads((root / lx.DISPATCH_FILE).read_text())["procedures"]
+    data = json.loads((root / lx.DISPATCH_FILE).read_text())
+    rows = data["procedures"]
     assert [r["id"] for r in rows] == [TOTAL, "capture:" + CAPTURE]  # the failed capture is never offered
-    assert rows[0] == {"id": TOTAL, "reader": READ_ROWS, "applies": WIDE, "input": rows[0]["input"]}
+    assert rows[0] == {"id": TOTAL, "reader": READ_ROWS, "applies": True, "input": rows[0]["input"]}
     assert rows[0]["input"].startswith("{")
-    assert rows[1]["reader"] == rows[1]["applies"] == "capture:" + CAPTURE
+    assert rows[1]["reader"] == "capture:" + CAPTURE and rows[1]["applies"] is True
+    assert data["applies_of"] == {TOTAL: WIDE}  # where a landed procedure's applies lives
     assert all(set(r) == {"id", "reader", "applies", "input"} for r in rows)
 
 
@@ -319,10 +321,10 @@ def test_a_malformed_answer_or_an_unknown_id_is_refused_with_the_reason(answer, 
     assert got is None and why in reason
 
 
-def test_an_answer_is_put_in_the_catalogues_order_without_any_score():
+def test_an_answer_passes_as_the_librarian_gave_it_with_nothing_added_or_reordered():
     fits = [{"id": TOTAL, "call": "a", "why": "b"}, {"id": COUNT, "call": "c", "why": "d"}]
     got, _ = L.check_answer({"fits": fits}, IDS_IN_ORDER)
-    assert [f["id"] for f in got["fits"]] == [COUNT, TOTAL]
+    assert got == {"fits": fits}
     got, _ = L.check_answer({"fits": [], "nearest": [{"id": "capture:" + FAILED, "differs": "it failed"}]}, IDS_IN_ORDER)
     assert got == {"fits": [], "nearest": [{"id": "capture:" + FAILED, "differs": "it failed"}]}
 
