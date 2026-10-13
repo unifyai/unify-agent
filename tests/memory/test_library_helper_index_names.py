@@ -1,5 +1,6 @@
-"""``memory.index(name)``: a bare name is a package's section, else the notes topic of that name; a name that is
-neither raises a LookupError listing the sections. Run as a cell runs it, from the copied helper file."""
+"""``memory.index(name)``: a bare name is a package's section, else the notes topic of that name; an item's id, as
+the index lists it, shows the item; a name that is none of these raises a LookupError listing the sections. Run as a
+cell runs it, from the copied helper file."""
 
 from __future__ import annotations
 
@@ -8,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.memory.test_library_helper import _py
+from tests.memory.test_library_helper import DATE, _library, _py
 from unify.memory import library_helper
 from unify.memory.layout import INDEX_FILE, RESERVED_INIT
 from unify.memory.library_helper import find_section
@@ -75,13 +76,13 @@ def test_a_name_that_is_neither_lists_the_sections(tmp_path):
     assert nope == [
         "missing",
         "memory: no index section 'memory.nope' or 'notes/nope'; the sections are: "
-        "memory.grid, memory.text, notes/grid, notes/maps",
+        'memory.grid, memory.text, notes/grid, notes/maps; memory.show("<id>") shows one item',
     ]
     # a prefixed name means only that section
     assert prefixed == [
         "missing",
         "memory: no index section 'memory.nope'; the sections are: "
-        "memory.grid, memory.text, notes/grid, notes/maps",
+        'memory.grid, memory.text, notes/grid, notes/maps; memory.show("<id>") shows one item',
     ]
     with pytest.raises(LookupError, match="no index section 'notes/nope';"):
         find_section(INDEX, "notes/nope")
@@ -92,7 +93,8 @@ def test_an_empty_library_has_no_sections(tmp_path):
     assert whole == ["ok", HEAD]
     assert grid == [
         "missing",
-        "memory: no index section 'memory.grid' or 'notes/grid'; the sections are: (none)",
+        "memory: no index section 'memory.grid' or 'notes/grid'; the sections are: (none); "
+        'memory.show("<id>") shows one item',
     ]
 
 
@@ -107,6 +109,31 @@ def test_the_lookup_still_raises_its_helper_audit_event(tmp_path):
         "print(json.dumps(seen))\n"
     )
     assert json.loads(_py(root, code)) == [
+        ["memory.helper_call", "memory:index", "ok"],
+        ["memory.helper_call", "memory:index", "error"],
+    ]
+
+
+def test_an_item_id_given_as_a_name_shows_the_item(tmp_path):
+    """A cell that passes an id it read in the index to memory.index, not memory.show, gets the item, recorded as one
+    index lookup (in the live runs a note's id was passed so in many visits, and each call raised)."""
+    root = _library(tmp_path)
+    code = (
+        "import json, sys, memory\n"
+        "seen = []\n"
+        "sys.addaudithook(lambda ev, args: seen.append([ev, args[0], args[2]]) if ev == 'memory.helper_call' else None)\n"
+        "note = memory.index('notes/text/dates.md')\n"
+        f"fn = memory.index({DATE!r})\n"
+        "try:\n    memory.index('notes/text/nope.md')\nexcept LookupError as exc:\n    missing = str(exc)\n"
+        "events = list(seen)\n"
+        f"print(json.dumps([note, fn, missing, events, memory.show('notes/text/dates.md'), memory.show({DATE!r})]))\n"
+    )
+    note, fn, missing, events, shown_note, shown_fn = json.loads(_py(root, code))
+    assert note == shown_note and note.startswith("notes/text/dates.md  [on-trial]")
+    assert fn == shown_fn and fn.startswith("memory.text.dates:parse_date(")
+    assert missing.startswith("memory: no index section 'notes/text/nope.md'; the sections are: ")
+    assert events == [
+        ["memory.helper_call", "memory:index", "ok"],
         ["memory.helper_call", "memory:index", "ok"],
         ["memory.helper_call", "memory:index", "error"],
     ]
