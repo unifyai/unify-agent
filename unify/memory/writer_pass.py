@@ -3027,8 +3027,9 @@ class WriterPass:
                     Path(inputs) / "staging" / eid,
                 )
                 row["staging"]["candidates"] = _staged_candidates(row["staging"])
-                # the reader is counted host-side; the writer's row never names it
-                src = views[eid].source if eid in views else "none"
+                # the reader is counted host-side (an unfinished one as withheld); the writer's row never names it
+                view = views.get(eid)
+                src = "none" if view is None else (view.source if view.finished else "withheld")
             row["pool_entries"] = [
                 {"id": e.id, "kind": e.kind, "title": e.title}
                 for e in open_pool

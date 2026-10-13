@@ -233,11 +233,10 @@ BATCH_ROW_KEYS: tuple[tuple[str, str], ...] = (
     ),
 )
 
-#: What the writer is told about an episode whose drafting did not finish (``staging.status`` then starts with
-#: :data:`.staging.NO_OUTPUT`): nothing of it is handed on.
+#: What the writer is told about an episode whose drafting did not finish: its ``staging.status`` is then
+#: ``no reader output: <why>`` (:data:`.staging.NO_OUTPUT`), never ``ok``, and nothing of it is handed on.
 STAGING_UNFINISHED = (
-    "A row whose `staging.status` starts with `no reader output` has none of these, because the drafting did not "
-    "finish; the status says why. Read that episode yourself."
+    "A row whose `staging.status` is not `ok` has no reader output and says why; read that episode yourself."
 )
 #: The writer's caution about summaries (the WRITE brief's step 3, with staging on).
 SUMMARY_NOT_EVIDENCE = (
@@ -253,8 +252,8 @@ STAGING_ROW_KEY = (
     "staging",
     "dict: `status`, `files`, `refused`, `path`, `summary` (the path of the episode's `summary.md`, or null when "
     "there is none), `blocks` (the drafting reply's block counts, when it left them) and `candidates` (list of "
-    "`{name, file, cases}`): what was staged for the episode under /inputs/staging/<episode>/; a `status` that "
-    "starts with `no reader output` means nothing was handed on, and says why",
+    "`{name, file, cases}`): what was staged for the episode under /inputs/staging/<episode>/; a `status` other "
+    "than `ok` (`no reader output: <why>`) means nothing was handed on, and says why",
 )
 POOL_ROW_KEY = (
     "pool_entries",
