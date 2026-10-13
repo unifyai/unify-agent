@@ -363,12 +363,23 @@ ADDED_FORMS = {
     "stop": ["not_allowed"],
     "wait": ["bad_timeout"],
 }
-ADDED_TOOLS = ("install", "store_skills", "sh", "ask_library")
+ADDED_TOOLS = ("install", "store_skills", "sh", "ask_library", "land_capture")
+#: Tools added to the writer's JSON tools (tools not in code) since the base commit: left out of the base hashes.
+ADDED_JSON_TOOLS = ("land_capture",)
 FLAGS = ("pool", "similar", "helper", "edit")
 
 
 def _h(obj) -> str:
     return hashlib.sha256(json.dumps(obj).encode()).hexdigest()[:16]
+
+
+def _base_tools(tools: list[dict]) -> list[dict]:
+    """*tools* without the listed additions, each of which must be there."""
+    return [t for t in tools if t["function"]["name"] not in ADDED_JSON_TOOLS]
+
+
+def _base_section(text: str) -> str:
+    return "\n".join(ln for ln in text.splitlines() if not ln.startswith(tuple(f"- `{n}`" for n in ADDED_JSON_TOOLS)))
 
 
 def test_with_the_switch_off_the_memory_agents_json_tools_are_the_base_commits(monkeypatch):
@@ -380,12 +391,16 @@ def test_with_the_switch_off_the_memory_agents_json_tools_are_the_base_commits(m
     monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "fresh")
     for m in range(16):
         flags = frozenset(f for i, f in enumerate(FLAGS) if m >> i & 1)
-        assert _h(agent_profiles.tool_json("writer", flags)) == BASE[f"w{m}"], flags
+        tools = agent_profiles.tool_json("writer", flags)
+        assert "land_capture" in [t["function"]["name"] for t in tools], flags
+        assert _h(_base_tools(tools)) == BASE[f"w{m}"], flags
     assert _h(agent_profiles.tool_json("curator", frozenset())) == BASE["c0"]
     assert _h(agent_profiles.tool_json("curator", frozenset({"edit"}))) == BASE["c1"]
     assert _h(helpers.helper_tools(False)) == BASE["h0"]
     assert _h(helpers.helper_tools(True)) == BASE["h1"]
-    assert _h(tool_spec.tools_section("write", frozenset(FLAGS))) == BASE["sw"]
+    section = tool_spec.tools_section("write", frozenset(FLAGS))
+    assert "- `land_capture`" in section
+    assert _h(_base_section(section)) == BASE["sw"]
     assert _h(tool_spec.tools_section("curate", frozenset({"edit"}))) == BASE["sc"]
 
 

@@ -597,7 +597,6 @@ def test_the_capture_step_changes_nothing_outside_its_store(tmp_path):
     assert (store / _cid(PROCEDURE)).is_dir()
 
 
-@pytest.mark.xfail(strict=True, reason="land_capture needs the stored readers and request runner of the gate lane")
 def test_only_the_writer_has_the_tool_that_lands_a_capture():
     from unify.common import tool_registry as tr
 
@@ -681,7 +680,6 @@ def test_an_empty_or_missing_store_gives_no_entries(tmp_path):
     assert _from_captures(tmp_path / "empty") == []
 
 
-@pytest.mark.xfail(strict=True, reason="land_capture needs the stored readers and request runner of the gate lane")
 def test_the_writer_brief_says_captures_exist_and_how_to_land_one():
     from unify.memory import library_prompts as lp
 
