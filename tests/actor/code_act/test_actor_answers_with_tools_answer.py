@@ -7,7 +7,7 @@ process on the real ``CodeActActor`` and the real sandboxed interpreter, with th
 (tests/scripted_model.py): no key, no network.
 
 * Two requests of one session are each answered by ``tools.answer({...})`` from a cell, and each response carries
-  its answer.
+  its answer; the second answer is a benchmark's own ``{"action": "finish"}``, which reaches the host unchanged.
 * The actor's system prompt and its ``tools.list()`` name no ``finish``; the writer's and the librarian's tool lists
   still do.
 * ``tools.finish(...)`` in an actor cell fails as a tool the actor does not have (the box module has no such
@@ -45,7 +45,9 @@ from tests.scripted_model import ScriptedModel, reply
 from unify.common import tool_registry as R
 from unify.settings import SETTINGS
 
-SECOND = {"action": "submit", "grid": [[5, 6], [7, 8]]}
+#: A benchmark whose own protocol ends an instance with a "finish" action (the ARC adapter's end="finish") gets it
+#: as the request's answer, given by tools.answer like any other answer.
+SECOND = {"action": "finish"}
 #: The cell that tries the end call the actor no longer has: through the host by name (refused there as an unknown
 #: tool), then as a function of the box module (which has none).
 FINISH_CELL = (
