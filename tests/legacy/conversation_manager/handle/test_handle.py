@@ -21,7 +21,12 @@ Test Categories:
 - Unit tests: Test isolated components with mocked dependencies
 - Integration tests: Test the full flow with the CMStepDriver
 
-Note: These are primarily eval tests since they involve LLM behavior.
+The integration tests script the model (``tests/scripted_model.py``): the
+slow brain's turns that put the user's words into the conversation, and the
+ask loop's decisions (answer from the transcript, ask the user, answer in
+the response format). They check what the handle does with those decisions:
+what the loop is shown and offered, which questions reach the chat, how a
+reply is routed back to the question, and what ``result()`` returns.
 """
 
 from __future__ import annotations
@@ -35,6 +40,14 @@ import pytest
 from pydantic import BaseModel, Field
 
 from tests.helpers import _handle_project
+from tests.legacy.conversation_manager.scripted_brain import (
+    WAIT,
+    brain_requests,
+    brain_turn,
+    message_text,
+    say,
+)
+from tests.scripted_model import ScriptedModel, reply, scripted
 from unify.legacy.conversation_manager.events import (
     DirectMessageEvent,
     Event,
@@ -42,19 +55,14 @@ from unify.legacy.conversation_manager.events import (
 )
 from unify.legacy.conversation_manager.handle import ConversationManagerHandle
 
-pytestmark = pytest.mark.eval
-
 
 # =============================================================================
 # Helper Functions for Deterministic Waiting
 # =============================================================================
 
-# Ceiling for one ``ask()`` loop to reach its final answer. A cold cache means
-# several real reasoning turns, plus any nested manager ask, each of which can
-# take tens of seconds; a replayed cache finishes the same loop in milliseconds.
-# The ceiling therefore only ever binds on cache-refresh runs, where it must be
-# generous enough not to read a slow provider as a broken loop.
-_ASK_RESULT_TIMEOUT = 300.0
+# Ceiling for one ``ask()`` loop to reach its final answer. Scripted turns take
+# milliseconds; the ceiling only catches a loop that never finishes.
+_ASK_RESULT_TIMEOUT = 60.0
 
 
 async def _wait_for_condition(predicate, *, timeout: float = 30.0, poll: float = 0.05):
@@ -91,6 +99,50 @@ def _capture_questions(cm) -> list[str]:
 
     cm.cm.event_broker.publish = _tracking_publish
     return questions
+
+
+# =============================================================================
+# Scripted model turns for the ask loop
+# =============================================================================
+
+
+def _asks(text: str):
+    """The ask loop puts *text* to the user (PATH 2)."""
+    return reply(calls=[("ask_question", {"text": text})])
+
+
+def _final(answer: dict):
+    """The ask loop answers in its response format, through ``final_response``."""
+    return reply(calls=[("final_response", {"answer": answer})])
+
+
+def _ask_requests(model: ScriptedModel) -> list:
+    """The ask loop's requests, in order (they offer ``ask_question``)."""
+    return [c for c in model.of("actor") if "ask_question" in c.tool_names]
+
+
+def _system(call) -> str:
+    """A request's system message: the ask loop's prompt and transcript."""
+    return "\n".join(
+        message_text(m) for m in call.messages if m.get("role") == "system"
+    )
+
+
+def _tool_results(call) -> str:
+    """Every tool result a request carries, as one string."""
+    return "\n".join(
+        message_text(m) for m in call.messages if m.get("role") == "tool"
+    )
+
+
+def _answer_schema(call) -> str:
+    """The ``final_response`` tool's parameters a request offers, as JSON."""
+    (tool,) = [
+        t
+        for t in call.request["tools"]
+        if (t.get("function") or {}).get("name") == "final_response"
+    ]
+    return json.dumps(tool["function"]["parameters"])
 
 
 # =============================================================================
@@ -472,38 +524,56 @@ async def test_real_ask_question_survives_unanswered_question(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_ask_path1_infers_from_transcript(initialized_cm):
     """
-    PATH 1: LLM infers answer from the chat transcript without asking user.
+    PATH 1: the ask loop answers from the chat transcript without asking.
 
-    When the user has already stated something in the chat, ask() should
-    infer from that context without needing to ask again.
+    When the user has already stated something in the chat, ask() shows
+    the loop that conversation; the loop answers from it, and nothing is
+    put to the user.
     """
     cm = initialized_cm
-    await cm.step_until_wait(
-        UnifyMessageReceived(
-            content="I prefer to have meetings in the morning, around 9 AM works best for me.",
-        ),
+    stated = "I prefer to have meetings in the morning, around 9 AM works best for me."
+    model = ScriptedModel(
+        actor=[
+            brain_turn(say("Noted: mornings around 9 AM work best for you."), WAIT),
+            _final({"hour": 9, "minute": 0, "period": "AM"}),
+        ],
     )
+    with scripted(model):
+        await cm.step_until_wait(UnifyMessageReceived(content=stated))
 
-    handle = ConversationManagerHandle(
-        event_broker=cm.event_broker,
-        conversation_manager=cm.cm,
-    )
+        handle = ConversationManagerHandle(
+            event_broker=cm.event_broker,
+            conversation_manager=cm.cm,
+        )
+        questions_asked = _capture_questions(cm)
 
-    # Ask about the user's preference - should infer from transcript
-    ask_handle = await handle.ask(
-        "What time does the user prefer for meetings?",
-        response_format=MeetingTime,
-    )
+        # Ask about the user's preference - should infer from transcript
+        ask_handle = await handle.ask(
+            "What time does the user prefer for meetings?",
+            response_format=MeetingTime,
+        )
 
-    result = await ask_handle.result()
+        result = await asyncio.wait_for(
+            ask_handle.result(),
+            timeout=_ASK_RESULT_TIMEOUT,
+        )
 
     assert isinstance(result, MeetingTime)
     assert result.hour == 9
     assert result.period.upper() == "AM"
+    assert questions_asked == [], "an answer in the transcript asks nothing"
+
+    (only,) = _ask_requests(model)
+    system = _system(only)
+    assert f"- user: {stated}" in system
+    assert "- assistant: Noted: mornings around 9 AM" in system
+    assert "What time does the user prefer for meetings?" in system
+    assert {"ask_question", "final_response"} <= set(only.tool_names)
+    assert only.request["tool_choice"] == "required"
+    model.assert_used_up()
 
 
 # =============================================================================
@@ -512,63 +582,81 @@ async def test_ask_path1_infers_from_transcript(initialized_cm):
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_ask_path2_asks_when_ambiguous(initialized_cm):
     """
-    PATH 2: LLM asks clarifying question when transcript is ambiguous.
-
-    When there's no clear answer in the transcript, the LLM should use
-    the ask_question tool to ask the user directly.
+    PATH 2: the ask loop asks a clarifying question when the transcript
+    holds no answer, and the user's reply comes back as the question's
+    result.
     """
     cm = initialized_cm
-    # User says something unrelated to the question about to be asked
-    await cm.step_until_wait(
-        UnifyMessageReceived(
-            content="Hello, I wanted to discuss something with you today.",
-        ),
+    question = "What time would you like to schedule the meeting?"
+    model = ScriptedModel(
+        actor=[
+            brain_turn(say("Hi! Of course, what would you like to discuss?"), WAIT),
+            _asks(question),
+            _final({"hour": 14, "minute": 0, "period": "PM"}),
+        ],
     )
+    with scripted(model):
+        # User says something unrelated to the question about to be asked
+        await cm.step_until_wait(
+            UnifyMessageReceived(
+                content="Hello, I wanted to discuss something with you today.",
+            ),
+        )
 
-    handle = ConversationManagerHandle(
-        event_broker=cm.event_broker,
-        conversation_manager=cm.cm,
-    )
+        handle = ConversationManagerHandle(
+            event_broker=cm.event_broker,
+            conversation_manager=cm.cm,
+        )
 
-    questions_asked = _capture_questions(cm)
+        questions_asked = _capture_questions(cm)
 
-    # Ask something not in transcript - should trigger PATH 2
-    ask_handle = await handle.ask(
-        "What time would the user like to schedule the meeting?",
-        response_format=MeetingTime,
-    )
+        # Ask something not in transcript - should trigger PATH 2
+        ask_handle = await handle.ask(
+            "What time would the user like to schedule the meeting?",
+            response_format=MeetingTime,
+        )
 
-    # Wait until the question has actually been posted. ``active_ask_handle``
-    # is set synchronously by ask() before it returns, so polling it says
-    # nothing about whether PATH 2 has begun.
-    assert await _wait_for_condition(
-        lambda: len(questions_asked) >= 1,
-        timeout=_ASK_RESULT_TIMEOUT,
-    ), "PATH 2 never asked the user anything"
+        # Wait until the question has actually been posted. ``active_ask_handle``
+        # is set synchronously by ask() before it returns, so polling it says
+        # nothing about whether PATH 2 has begun.
+        assert await _wait_for_condition(
+            lambda: len(questions_asked) >= 1,
+            timeout=_ASK_RESULT_TIMEOUT,
+        ), "PATH 2 never asked the user anything"
 
-    # The handle should be waiting for user reply
-    assert not ask_handle.done()
+        # The handle should be waiting for user reply
+        assert not ask_handle.done()
 
-    # Simulate user reply via interject
-    await ask_handle.interject("Let's do 2 PM")
+        # Simulate user reply via interject
+        await ask_handle.interject("Let's do 2 PM")
 
-    # Now get result
-    result = await asyncio.wait_for(
-        ask_handle.result(),
-        timeout=_ASK_RESULT_TIMEOUT,
-    )
+        # Now get result
+        result = await asyncio.wait_for(
+            ask_handle.result(),
+            timeout=_ASK_RESULT_TIMEOUT,
+        )
 
     assert isinstance(result, MeetingTime)
     assert result.hour == 14  # 2 PM in 24-hour
     assert result.period.upper() == "PM"
+    assert questions_asked == [question]
+
+    asked, answered = _ask_requests(model)
+    assert "Hello, I wanted to discuss something" in _system(asked)
+    # The reply reaches the loop as the question's result, not as a new
+    # user message.
+    assert "User replied: Let's do 2 PM" in _tool_results(answered)
+    assert not any(
+        m.get("role") == "user" and "Let's do 2 PM" in message_text(m)
+        for m in answered.messages
+    )
+    model.assert_used_up()
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_ask_path2_inbound_chat_message_answers_the_question(initialized_cm):
     """
@@ -579,95 +667,126 @@ async def test_ask_path2_inbound_chat_message_answers_the_question(initialized_c
     ask without a brain turn in between.
     """
     cm = initialized_cm
-    await cm.step_until_wait(
-        UnifyMessageReceived(
-            content="Hey, quick question about tomorrow.",
-        ),
+    question = "What time works for the meeting tomorrow?"
+    model = ScriptedModel(
+        actor=[
+            brain_turn(say("Sure, what's your question?"), WAIT),
+            _asks(question),
+            _final({"hour": 14, "minute": 0, "period": "PM"}),
+        ],
     )
+    with scripted(model):
+        await cm.step_until_wait(
+            UnifyMessageReceived(
+                content="Hey, quick question about tomorrow.",
+            ),
+        )
 
-    handle = ConversationManagerHandle(
-        event_broker=cm.event_broker,
-        conversation_manager=cm.cm,
-    )
+        handle = ConversationManagerHandle(
+            event_broker=cm.event_broker,
+            conversation_manager=cm.cm,
+        )
 
-    questions_asked = _capture_questions(cm)
+        questions_asked = _capture_questions(cm)
 
-    ask_handle = await handle.ask(
-        "What time would the user like to schedule the meeting?",
-        response_format=MeetingTime,
-    )
+        ask_handle = await handle.ask(
+            "What time would the user like to schedule the meeting?",
+            response_format=MeetingTime,
+        )
 
-    assert await _wait_for_condition(
-        lambda: len(questions_asked) >= 1,
-        timeout=_ASK_RESULT_TIMEOUT,
-    ), "PATH 2 never asked the user anything"
-    assert not ask_handle.done()
+        assert await _wait_for_condition(
+            lambda: len(questions_asked) >= 1,
+            timeout=_ASK_RESULT_TIMEOUT,
+        ), "PATH 2 never asked the user anything"
+        assert not ask_handle.done()
 
-    # The reply arrives as an ordinary chat message, not through the handle.
-    step = await cm.step(
-        UnifyMessageReceived(content="Let's do 2 PM"),
-        run_llm=False,
-    )
-    assert not step.llm_requested, "an open ask owns the reply; no brain turn"
+        # The reply arrives as an ordinary chat message, not through the handle.
+        step = await cm.step(
+            UnifyMessageReceived(content="Let's do 2 PM"),
+            run_llm=False,
+        )
+        assert not step.llm_requested, "an open ask owns the reply; no brain turn"
 
-    result = await asyncio.wait_for(
-        ask_handle.result(),
-        timeout=_ASK_RESULT_TIMEOUT,
-    )
+        result = await asyncio.wait_for(
+            ask_handle.result(),
+            timeout=_ASK_RESULT_TIMEOUT,
+        )
 
     assert isinstance(result, MeetingTime)
     assert result.hour == 14
     assert result.period.upper() == "PM"
+    assert questions_asked == [question]
+
+    _, answered = _ask_requests(model)
+    assert "User replied: Let's do 2 PM" in _tool_results(answered)
+    # The brain took no turn for the reply: its only request is the first.
+    assert len(brain_requests(model)) == 1
+    model.assert_used_up()
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_ask_path2_multiple_followup_questions(initialized_cm):
     """
-    PATH 2: LLM can ask multiple follow-up questions to get clarity.
-
-    If the user's first reply doesn't answer the question, the LLM
-    should ask a follow-up question.
+    PATH 2: the ask loop can ask a follow-up question when the user's
+    first reply does not answer, and each reply comes back to the question
+    that is open.
     """
     cm = initialized_cm
-    handle = ConversationManagerHandle(
-        event_broker=cm.event_broker,
-        conversation_manager=cm.cm,
+    first_question = "What's the best phone number to call you back on?"
+    follow_up = "Could you share the actual number, with the digits?"
+    model = ScriptedModel(
+        actor=[
+            _asks(first_question),
+            _asks(follow_up),
+            reply("+1-555-123-4567"),
+        ],
     )
+    with scripted(model):
+        handle = ConversationManagerHandle(
+            event_broker=cm.event_broker,
+            conversation_manager=cm.cm,
+        )
 
-    questions_asked = _capture_questions(cm)
+        questions_asked = _capture_questions(cm)
 
-    # Ask something specific
-    ask_handle = await handle.ask(
-        "What is the user's phone number for callbacks?",
-    )
+        # Ask something specific
+        ask_handle = await handle.ask(
+            "What is the user's phone number for callbacks?",
+        )
 
-    # Wait for first question to be asked (poll for direct_speech event)
-    assert await _wait_for_condition(
-        lambda: len(questions_asked) >= 1,
-        timeout=_ASK_RESULT_TIMEOUT,
-    ), "PATH 2 never asked the user anything"
+        # Wait for first question to be asked (poll for direct_speech event)
+        assert await _wait_for_condition(
+            lambda: len(questions_asked) >= 1,
+            timeout=_ASK_RESULT_TIMEOUT,
+        ), "PATH 2 never asked the user anything"
 
-    # Give vague reply - should trigger follow-up
-    await ask_handle.interject("You can reach me anytime")
+        # Give vague reply - the loop asks a follow-up
+        await ask_handle.interject("You can reach me anytime")
 
-    # Wait for follow-up question (poll for second question)
-    await _wait_for_condition(
-        lambda: len(questions_asked) >= 2 or ask_handle.done(),
-        timeout=_ASK_RESULT_TIMEOUT,
-    )
+        # Wait for follow-up question (poll for second question)
+        assert await _wait_for_condition(
+            lambda: len(questions_asked) >= 2,
+            timeout=_ASK_RESULT_TIMEOUT,
+        ), "the follow-up question never reached the chat"
 
-    # Provide actual answer
-    await ask_handle.interject("+1-555-123-4567")
+        # Provide actual answer
+        await ask_handle.interject("+1-555-123-4567")
 
-    result = await asyncio.wait_for(
-        ask_handle.result(),
-        timeout=_ASK_RESULT_TIMEOUT,
-    )
+        result = await asyncio.wait_for(
+            ask_handle.result(),
+            timeout=_ASK_RESULT_TIMEOUT,
+        )
 
-    # Should have extracted the phone number
-    assert "555" in result or "123" in result or "4567" in result
+    # Without a response format the loop's final text is the answer.
+    assert result == "+1-555-123-4567"
+    assert questions_asked == [first_question, follow_up]
+
+    first, second, third = _ask_requests(model)
+    assert "User replied: You can reach me anytime" in _tool_results(second)
+    assert "User replied: +1-555-123-4567" in _tool_results(third)
+    assert "final_response" not in first.tool_names
+    model.assert_used_up()
 
 
 # =============================================================================
@@ -676,93 +795,138 @@ async def test_ask_path2_multiple_followup_questions(initialized_cm):
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_ask_returns_pydantic_model(initialized_cm):
     """
-    ask() returns validated Pydantic model when response_format is specified.
+    ask() offers the response format to the loop and returns its answer as
+    a validated Pydantic model.
     """
     cm = initialized_cm
-    await cm.step_until_wait(
-        UnifyMessageReceived(
-            content="I strongly prefer video calls over phone calls for all meetings.",
-        ),
+    model = ScriptedModel(
+        actor=[
+            brain_turn(say("Understood: video calls for all meetings."), WAIT),
+            _final({"preference": "video calls", "confidence": 0.9}),
+        ],
     )
+    with scripted(model):
+        await cm.step_until_wait(
+            UnifyMessageReceived(
+                content="I strongly prefer video calls over phone calls for all meetings.",
+            ),
+        )
 
-    handle = ConversationManagerHandle(
-        event_broker=cm.event_broker,
-        conversation_manager=cm.cm,
-    )
+        handle = ConversationManagerHandle(
+            event_broker=cm.event_broker,
+            conversation_manager=cm.cm,
+        )
 
-    ask_handle = await handle.ask(
-        "What is the user's communication preference and how confident are you?",
-        response_format=UserPreference,
-    )
+        ask_handle = await handle.ask(
+            "What is the user's communication preference and how confident are you?",
+            response_format=UserPreference,
+        )
 
-    result = await ask_handle.result()
+        result = await asyncio.wait_for(
+            ask_handle.result(),
+            timeout=_ASK_RESULT_TIMEOUT,
+        )
 
     assert isinstance(result, UserPreference)
     assert "video" in result.preference.lower()
-    assert 0 <= result.confidence <= 1
+    assert result.confidence == 0.9
+
+    (only,) = _ask_requests(model)
+    schema = _answer_schema(only)
+    assert '"preference"' in schema and '"confidence"' in schema
+    assert "I strongly prefer video calls" in _system(only)
+    model.assert_used_up()
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_ask_returns_enum_value(initialized_cm):
     """
     ask() returns correct Enum value when response_format is an Enum.
     """
     cm = initialized_cm
-    await cm.step_until_wait(
-        UnifyMessageReceived(
-            content="Can you help me understand why my payment didn't go through?",
-        ),
+    model = ScriptedModel(
+        actor=[
+            brain_turn(say("Let me look into that payment for you."), WAIT),
+            _final({"category": "billing"}),
+        ],
     )
+    with scripted(model):
+        await cm.step_until_wait(
+            UnifyMessageReceived(
+                content="Can you help me understand why my payment didn't go through?",
+            ),
+        )
 
-    handle = ConversationManagerHandle(
-        event_broker=cm.event_broker,
-        conversation_manager=cm.cm,
-    )
+        handle = ConversationManagerHandle(
+            event_broker=cm.event_broker,
+            conversation_manager=cm.cm,
+        )
 
-    ask_handle = await handle.ask(
-        "What category of issue is this?",
-        response_format=IssueCategoryResponse,
-    )
+        ask_handle = await handle.ask(
+            "What category of issue is this?",
+            response_format=IssueCategoryResponse,
+        )
 
-    result = await ask_handle.result()
+        result = await asyncio.wait_for(
+            ask_handle.result(),
+            timeout=_ASK_RESULT_TIMEOUT,
+        )
 
     assert isinstance(result, IssueCategoryResponse)
     assert result.category == IssueCategory.BILLING
 
+    # The loop is offered every category the enum allows.
+    (only,) = _ask_requests(model)
+    schema = _answer_schema(only)
+    for category in IssueCategory:
+        assert f'"{category.value}"' in schema
+    model.assert_used_up()
+
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_ask_without_response_format_returns_string(initialized_cm):
     """
-    ask() without response_format returns a string summary.
+    ask() without response_format returns the loop's final text.
     """
     cm = initialized_cm
-    await cm.step_until_wait(
-        UnifyMessageReceived(
-            content="The product code I'm asking about is SKU-12345-XYZ.",
-        ),
+    model = ScriptedModel(
+        actor=[
+            brain_turn(say("Thanks, I have the product code SKU-12345-XYZ."), WAIT),
+            reply("The user mentioned the product code SKU-12345-XYZ."),
+        ],
     )
+    with scripted(model):
+        await cm.step_until_wait(
+            UnifyMessageReceived(
+                content="The product code I'm asking about is SKU-12345-XYZ.",
+            ),
+        )
 
-    handle = ConversationManagerHandle(
-        event_broker=cm.event_broker,
-        conversation_manager=cm.cm,
-    )
+        handle = ConversationManagerHandle(
+            event_broker=cm.event_broker,
+            conversation_manager=cm.cm,
+        )
 
-    ask_handle = await handle.ask(
-        "What product code did the user mention?",
-    )
+        ask_handle = await handle.ask(
+            "What product code did the user mention?",
+        )
 
-    result = await ask_handle.result()
+        result = await asyncio.wait_for(
+            ask_handle.result(),
+            timeout=_ASK_RESULT_TIMEOUT,
+        )
 
-    # Without response_format, should return string/dict
-    assert "SKU-12345-XYZ" in str(result) or "12345" in str(result)
+    assert result == "The user mentioned the product code SKU-12345-XYZ."
+
+    (only,) = _ask_requests(model)
+    assert "final_response" not in only.tool_names
+    assert "SKU-12345-XYZ" in _system(only)
+    model.assert_used_up()
 
 
 # =============================================================================
@@ -771,7 +935,6 @@ async def test_ask_without_response_format_returns_string(initialized_cm):
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_intercepting_handle_delegates_lifecycle_methods(initialized_cm):
     """
@@ -781,62 +944,87 @@ async def test_intercepting_handle_delegates_lifecycle_methods(initialized_cm):
     - stop() sets the cancel flag
     - await result() waits for clean completion (returns None when stopped)
     - done() returns True after the inner loop completes
+
+    The loop is stopped while its question waits for the user, so the stop
+    lands mid-tool and no further request is made.
     """
     cm = initialized_cm
-    handle = ConversationManagerHandle(
-        event_broker=cm.event_broker,
-        conversation_manager=cm.cm,
-    )
+    model = ScriptedModel(actor=[_asks("What's your name?")])
+    with scripted(model):
+        handle = ConversationManagerHandle(
+            event_broker=cm.event_broker,
+            conversation_manager=cm.cm,
+        )
+        questions_asked = _capture_questions(cm)
 
-    ask_handle = await handle.ask("What is the user's name?")
+        ask_handle = await handle.ask("What is the user's name?")
 
-    # done() should return False initially (loop is running)
-    assert ask_handle.done() is False
+        # done() should return False initially (loop is running)
+        assert ask_handle.done() is False
+        assert await _wait_for_condition(
+            lambda: len(questions_asked) >= 1,
+            timeout=_ASK_RESULT_TIMEOUT,
+        ), "the question never reached the chat"
+        assert ask_handle.done() is False
 
-    # stop() tells the inner loop to cancel - this is non-blocking
-    await ask_handle.stop(reason="cancelled by test")
+        # stop() tells the inner loop to cancel - this is non-blocking
+        await ask_handle.stop(reason="cancelled by test")
 
-    # Following standard pattern: await result() for clean completion
-    # When stopped, result() returns None
-    result = await asyncio.wait_for(
-        ask_handle.result(),
-        timeout=_ASK_RESULT_TIMEOUT,
-    )
+        # Following standard pattern: await result() for clean completion
+        # When stopped, result() returns None
+        result = await asyncio.wait_for(
+            ask_handle.result(),
+            timeout=_ASK_RESULT_TIMEOUT,
+        )
     assert result is None
 
     # After the inner loop completes, done() should return True
     assert ask_handle.done() is True
+    assert cm.cm.active_ask_handle is None
+    assert len(_ask_requests(model)) == 1, "a stopped loop asks nothing more"
+    model.assert_used_up()
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_intercepting_handle_clears_active_ask_handle_on_result(initialized_cm):
     """
     When result() completes, active_ask_handle is cleared.
     """
     cm = initialized_cm
-    await cm.step_until_wait(
-        UnifyMessageReceived(
-            content="My name is Alice Johnson.",
-        ),
+    model = ScriptedModel(
+        actor=[
+            brain_turn(say("Nice to meet you, Alice!"), WAIT),
+            reply("Alice Johnson"),
+        ],
     )
+    with scripted(model):
+        await cm.step_until_wait(
+            UnifyMessageReceived(
+                content="My name is Alice Johnson.",
+            ),
+        )
 
-    handle = ConversationManagerHandle(
-        event_broker=cm.event_broker,
-        conversation_manager=cm.cm,
-    )
+        handle = ConversationManagerHandle(
+            event_broker=cm.event_broker,
+            conversation_manager=cm.cm,
+        )
 
-    ask_handle = await handle.ask("What is the user's name?")
+        ask_handle = await handle.ask("What is the user's name?")
 
-    # active_ask_handle should be set
-    assert cm.cm.active_ask_handle is ask_handle
+        # active_ask_handle should be set
+        assert cm.cm.active_ask_handle is ask_handle
 
-    # Get result
-    await ask_handle.result()
+        # Get result
+        result = await asyncio.wait_for(
+            ask_handle.result(),
+            timeout=_ASK_RESULT_TIMEOUT,
+        )
 
+    assert result == "Alice Johnson"
     # active_ask_handle should be cleared
     assert cm.cm.active_ask_handle is None
+    model.assert_used_up()
 
 
 # =============================================================================
@@ -863,44 +1051,51 @@ async def test_ask_raises_when_handle_stopped(initialized_cm):
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_ask_handles_empty_transcript(initialized_cm):
     """
     ask() handles case where transcript is empty.
 
-    Should fall back to PATH 2 and ask the user directly.
+    The loop is told there is no transcript, asks the user directly
+    (PATH 2), and answers from the reply.
     """
     cm = initialized_cm
-    handle = ConversationManagerHandle(
-        event_broker=cm.event_broker,
-        conversation_manager=cm.cm,
-    )
+    model = ScriptedModel(actor=[_asks("What's your name?"), reply("Bob")])
+    with scripted(model):
+        handle = ConversationManagerHandle(
+            event_broker=cm.event_broker,
+            conversation_manager=cm.cm,
+        )
 
-    questions_asked = _capture_questions(cm)
+        questions_asked = _capture_questions(cm)
 
-    ask_handle = await handle.ask("What is the user's name?")
+        ask_handle = await handle.ask("What is the user's name?")
 
-    # Wait until the question has actually been posted. ``active_ask_handle``
-    # is set synchronously by ask() before it returns, so polling it says
-    # nothing about whether PATH 2 has begun.
-    assert await _wait_for_condition(
-        lambda: len(questions_asked) >= 1,
-        timeout=_ASK_RESULT_TIMEOUT,
-    ), "PATH 2 never asked the user anything"
+        # Wait until the question has actually been posted. ``active_ask_handle``
+        # is set synchronously by ask() before it returns, so polling it says
+        # nothing about whether PATH 2 has begun.
+        assert await _wait_for_condition(
+            lambda: len(questions_asked) >= 1,
+            timeout=_ASK_RESULT_TIMEOUT,
+        ), "PATH 2 never asked the user anything"
 
-    # Should be waiting for user input (PATH 2)
-    assert not ask_handle.done()
+        # Should be waiting for user input (PATH 2)
+        assert not ask_handle.done()
 
-    # Provide answer via interject
-    await ask_handle.interject("My name is Bob")
+        # Provide answer via interject
+        await ask_handle.interject("My name is Bob")
 
-    result = await asyncio.wait_for(
-        ask_handle.result(),
-        timeout=_ASK_RESULT_TIMEOUT,
-    )
+        result = await asyncio.wait_for(
+            ask_handle.result(),
+            timeout=_ASK_RESULT_TIMEOUT,
+        )
 
     assert "bob" in result.lower()
+
+    asked, answered = _ask_requests(model)
+    assert "Recent Transcript: (none)" in _system(asked)
+    assert "User replied: My name is Bob" in _tool_results(answered)
+    model.assert_used_up()
 
 
 # =============================================================================
@@ -909,7 +1104,6 @@ async def test_ask_handles_empty_transcript(initialized_cm):
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_only_one_active_ask_handle_at_a_time(initialized_cm):
     """
@@ -919,32 +1113,55 @@ async def test_only_one_active_ask_handle_at_a_time(initialized_cm):
     Follows established cleanup pattern: stop() + await result().
     """
     cm = initialized_cm
-    handle = ConversationManagerHandle(
-        event_broker=cm.event_broker,
-        conversation_manager=cm.cm,
+    model = ScriptedModel(
+        actor=[
+            _asks("What's your favorite color?"),
+            _asks("What's your favorite food?"),
+            reply("Pizza"),
+        ],
     )
+    with scripted(model):
+        handle = ConversationManagerHandle(
+            event_broker=cm.event_broker,
+            conversation_manager=cm.cm,
+        )
+        questions_asked = _capture_questions(cm)
 
-    # Start first ask
-    ask_handle_1 = await handle.ask("What is the user's favorite color?")
+        # Start first ask, and let its question reach the chat
+        ask_handle_1 = await handle.ask("What is the user's favorite color?")
+        assert await _wait_for_condition(
+            lambda: len(questions_asked) >= 1,
+            timeout=_ASK_RESULT_TIMEOUT,
+        ), "the first ask never put its question"
 
-    # Verify it's active
-    assert cm.cm.active_ask_handle is ask_handle_1
+        # Verify it's active
+        assert cm.cm.active_ask_handle is ask_handle_1
 
-    # Stop first handle before starting second (clean replacement)
-    await ask_handle_1.stop(reason="replaced by new ask")
+        # Stop first handle before starting second (clean replacement)
+        await ask_handle_1.stop(reason="replaced by new ask")
 
-    # Start second ask (should replace first)
-    ask_handle_2 = await handle.ask("What is the user's favorite food?")
+        # Start second ask (should replace first)
+        ask_handle_2 = await handle.ask("What is the user's favorite food?")
 
-    # Second should now be active
-    assert cm.cm.active_ask_handle is ask_handle_2
+        # Second should now be active
+        assert cm.cm.active_ask_handle is ask_handle_2
 
-    # Complete second ask properly
-    await ask_handle_2.interject("I love pizza")
-    await ask_handle_2.result()
+        # Complete second ask properly: a reply sent before its question
+        # is posted still answers it.
+        await ask_handle_2.interject("I love pizza")
+        result_2 = await asyncio.wait_for(
+            ask_handle_2.result(),
+            timeout=_ASK_RESULT_TIMEOUT,
+        )
 
-    # Cleanup: ensure first handle completes
-    try:
-        await asyncio.wait_for(ask_handle_1.result(), timeout=5.0)
-    except Exception:
-        pass  # May already be cleaned up
+        result_1 = await asyncio.wait_for(ask_handle_1.result(), timeout=5.0)
+
+    assert result_2 == "Pizza"
+    assert result_1 is None, "the replaced ask was stopped"
+    assert cm.cm.active_ask_handle is None
+
+    first, second, third = _ask_requests(model)
+    assert "favorite color" in _system(first)
+    assert "favorite food" in _system(second)
+    assert "User replied: I love pizza" in _tool_results(third)
+    model.assert_used_up()

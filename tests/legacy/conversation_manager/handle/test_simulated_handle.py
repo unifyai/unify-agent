@@ -1,7 +1,19 @@
-# tests/conversation_manager/handle/test_simulated_handle.py
+"""Symbolic: the simulated conversation manager handle keeps one stateful
+conversation with its model.
+
+The model is the scripted transport (``tests/scripted_model.py``). The
+handle's model calls carry no tools, so each is a ``query_llm`` request. The
+tests script what the simulated user says and check what the handle sends
+and returns: the scenario in every system message, each question and
+interjection, the earlier exchanges carried into the next request, and a
+structured answer parsed into the requested model.
+"""
+
 from __future__ import annotations
 
 import asyncio
+import json
+
 import pytest
 import functools
 from pydantic import BaseModel, Field
@@ -14,6 +26,36 @@ from tests.helpers import (
     DEFAULT_TIMEOUT,
     _unique_token,
 )
+from tests.scripted_model import ScriptedModel, reply, scripted
+
+
+def _text(content) -> str:
+    """A message's text, whether a string or a list of content parts."""
+    if isinstance(content, list):
+        return "\n".join(
+            str(part.get("text", "")) if isinstance(part, dict) else str(part)
+            for part in content
+        )
+    return "" if content is None else str(content)
+
+
+def _prompt(call) -> str:
+    """The request's last message: what this call asked."""
+    return _text(call.messages[-1]["content"])
+
+
+def _system(call) -> str:
+    """The request's system message."""
+    return "\n".join(
+        _text(m["content"]) for m in call.messages if m["role"] == "system"
+    )
+
+
+def _carried(call, text: str, role: str) -> bool:
+    """Whether a *role* message before the request's last one contains *text*."""
+    return any(
+        m["role"] == role and text in _text(m["content"]) for m in call.messages[:-1]
+    )
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -54,129 +96,169 @@ def test_docstrings_match_base():
 # 1.  Basic start-and-ask
 # ────────────────────────────────────────────────────────────────────────────
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_start_and_ask():
-    cm_handle = SimulatedConversationManagerHandle(
-        assistant_id="test_assistant",
-    )
-    # The 'ask' method on the main handle returns another handle
-    answer_handle = await cm_handle.ask("Hello, who is this?")
-    answer = await answer_handle.result()
-    print(answer)
-    assert isinstance(answer, str) and answer.strip(), "Answer should be non-empty"
+    said = "Hi, this is Sam. I'm the one who asked you to sort out my travel."
+    model = ScriptedModel(query_llm=[reply(said)])
+    with scripted(model):
+        cm_handle = SimulatedConversationManagerHandle(
+            assistant_id="test_assistant",
+        )
+        # The 'ask' method on the main handle returns another handle
+        answer_handle = await cm_handle.ask("Hello, who is this?")
+        # The question goes to the model when its answer is awaited.
+        assert model.calls == [] and not answer_handle.done()
+        answer = await answer_handle.result()
+    assert answer == said, "the handle answers with what the simulated user said"
+    assert answer_handle.done()
+
+    (call,) = model.of("query_llm")
+    assert '"Hello, who is this?"' in _prompt(call)
+    assert "test_assistant" in _system(call)
+    model.assert_used_up()
 
 
 # ────────────────────────────────────────────────────────────────────────────
 # 2.  Stateful memory – serial asks
 # ────────────────────────────────────────────────────────────────────────────
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_stateful_memory_serial_asks():
     """
     Two consecutive .ask() calls should share the same conversation context
     via the stateful LLM.
 
-    Seed a unique token in the first turn and require the second turn to
-    recall it, rather than asking the model to invent a value.
+    A unique token seeded in the first turn must reach the model again with
+    the second question, inside the first exchange the handle carries.
     """
-    cm_handle = SimulatedConversationManagerHandle(
-        assistant_id="test_assistant",
-    )
-
     token = _unique_token("MARKER")
-    h1 = await cm_handle.ask(
-        "Please give a one-sentence status note. "
-        f"Ensure the note includes this exact marker verbatim: {token}",
+    model = ScriptedModel(
+        query_llm=[
+            reply(f"All on track for today. Status marker: {token}."),
+            reply(f"The marker was {token}."),
+        ],
     )
-    first_answer = (await h1.result()).strip()
-    assert first_answer, "First answer should not be empty"
+    with scripted(model):
+        cm_handle = SimulatedConversationManagerHandle(
+            assistant_id="test_assistant",
+        )
 
-    h2 = await cm_handle.ask(
-        "What exact marker did you include earlier? Quote it verbatim.",
-    )
-    answer2 = await h2.result()
+        h1 = await cm_handle.ask(
+            "Please give a one-sentence status note. "
+            f"Ensure the note includes this exact marker verbatim: {token}",
+        )
+        first_answer = (await h1.result()).strip()
+        assert first_answer, "First answer should not be empty"
+
+        h2 = await cm_handle.ask(
+            "What exact marker did you include earlier? Quote it verbatim.",
+        )
+        answer2 = await h2.result()
     assert (
         isinstance(answer2, str) and answer2.strip()
     ), "Second answer should be non-empty"
-    assert token in answer2, "LLM should recall the previously mentioned marker"
+    assert token in answer2
+
+    first, second = model.of("query_llm")
+    assert token in _prompt(first)
+    assert "Quote it verbatim" in _prompt(second)
+    # The stateful client sends the whole first exchange with the second ask.
+    assert _carried(second, token, "user"), "the first question is carried"
+    assert _carried(second, first_answer, "assistant"), "the first answer is carried"
+    model.assert_used_up()
 
 
 # ────────────────────────────────────────────────────────────────────────────
 # 3.  Interject then ask – state propagated
 # ────────────────────────────────────────────────────────────────────────────
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_stateful_interject_then_ask():
     """
-    A .interject() call should influence a subsequent .ask() call.
+    A .interject() call should influence a subsequent .ask() call: the
+    interjection reaches the model, and the next question carries it.
     """
-    cm_handle = SimulatedConversationManagerHandle(
-        assistant_id="test_assistant",
+    model = ScriptedModel(
+        query_llm=[
+            reply("Noted: the meeting is now at 4 PM."),
+            reply("Your meeting is now at 4 PM."),
+        ],
     )
+    with scripted(model):
+        cm_handle = SimulatedConversationManagerHandle(
+            assistant_id="test_assistant",
+        )
 
-    # 1) Tell the manager about a schedule change
-    await cm_handle.interject("The user's meeting has been rescheduled to 4 PM.")
+        # 1) Tell the manager about a schedule change
+        interjection_id = await cm_handle.interject(
+            "The user's meeting has been rescheduled to 4 PM.",
+        )
+        assert isinstance(interjection_id, str) and interjection_id
 
-    # 2) Ask about the meeting time – it should know about the update
-    h_q = await cm_handle.ask("What time is my meeting now?")
-    answer = (await h_q.result()).lower()
+        # 2) Ask about the meeting time – it should know about the update
+        h_q = await cm_handle.ask("What time is my meeting now?")
+        answer = (await h_q.result()).lower()
 
-    assert (
-        "4 pm" in answer or "4:00" in answer
-    ), "Answer should reflect the interjected information"
+    assert "4 pm" in answer, "the simulated user's answer is returned"
+
+    interjection, question = model.of("query_llm")
+    assert "rescheduled to 4 PM" in _prompt(interjection)
+    assert "What time is my meeting now?" in _prompt(question)
+    assert _carried(question, "rescheduled to 4 PM", "user")
+    model.assert_used_up()
 
 
 # ────────────────────────────────────────────────────────────────────────────
 # 4. Test description and simulation_guidance
 # ────────────────────────────────────────────────────────────────────────────
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_description_and_guidance():
     """
-    Tests that the description and simulation_guidance parameters correctly
-    influence the LLM's behavior.
+    The description and simulation_guidance parameters reach the model in
+    the system message of every request the handle makes.
     """
-    cm_handle = SimulatedConversationManagerHandle(
-        assistant_id="pirate_assistant",
-        description="A conversation with a pirate captain who has lost his treasure.",
-        simulation_guidance="You must always respond in pirate slang. Refer to the user as 'matey'.",
+    description = "A conversation with a pirate captain who has lost his treasure."
+    guidance = "You must always respond in pirate slang. Refer to the user as 'matey'."
+    model = ScriptedModel(
+        query_llm=[
+            reply("Ahoy, matey! I be the cap'n, and me treasure be lost."),
+            reply("That be Paris, matey."),
+        ],
     )
+    with scripted(model):
+        cm_handle = SimulatedConversationManagerHandle(
+            assistant_id="pirate_assistant",
+            description=description,
+            simulation_guidance=guidance,
+        )
 
-    h1 = await cm_handle.ask("Who are you?")
-    answer1 = await h1.result()
-    answer1_lower = answer1.lower()
-    # Check for pirate persona indicators (the LLM may use "cap'n" instead of "captain")
-    pirate_indicators = [
-        "pirate",
-        "captain",
-        "cap'n",
-        "matey",
-        "treasure",
-        "seas",
-        "ahoy",
-    ]
-    assert any(
-        indicator in answer1_lower for indicator in pirate_indicators
-    ), f"Description should set the pirate persona. Got: {answer1}"
+        h1 = await cm_handle.ask("Who are you?")
+        answer1 = await h1.result()
+        h2 = await cm_handle.ask("What is the capital of France?")
+        answer2 = await h2.result()
 
-    h2 = await cm_handle.ask("What is the capital of France?")
-    answer2 = await h2.result()
-    assert "matey" in answer2.lower(), "Simulation guidance should be followed."
+    assert answer1 == "Ahoy, matey! I be the cap'n, and me treasure be lost."
+    assert answer2 == "That be Paris, matey."
+    calls = model.of("query_llm")
+    assert len(calls) == 2
+    for call in calls:
+        system = _system(call)
+        assert description in system
+        assert guidance in system
+        assert "pirate_assistant" in system
+    model.assert_used_up()
 
 
 # ────────────────────────────────────────────────────────────────────────────
 # 5. Test ask with structured output (Pydantic)
 # ────────────────────────────────────────────────────────────────────────────
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_ask_with_structured_output():
     """
-    Tests that the ask() method can correctly parse a response into a Pydantic model.
+    The ask() method asks for the response format and parses the answer
+    into the Pydantic model.
     """
 
     # Define the Pydantic model for the expected response
@@ -185,24 +267,34 @@ async def test_ask_with_structured_output():
         is_happy: bool = Field(description="Whether the user is currently happy.")
         age: int = Field(description="The user's age.")
 
-    cm_handle = SimulatedConversationManagerHandle(
-        assistant_id="test_assistant",
-        simulation_guidance="The user's name is John Doe, he is 30 years old, and he is happy.",
+    model = ScriptedModel(
+        query_llm=[reply('{"name": "John Doe", "is_happy": true, "age": 30}')],
     )
+    with scripted(model):
+        cm_handle = SimulatedConversationManagerHandle(
+            assistant_id="test_assistant",
+            simulation_guidance="The user's name is John Doe, he is 30 years old, and he is happy.",
+        )
 
-    # Ask the question and provide the response_format
-    handle = await cm_handle.ask(
-        "Please provide the user's information.",
-        response_format=UserInfo,
-    )
+        # Ask the question and provide the response_format
+        handle = await cm_handle.ask(
+            "Please provide the user's information.",
+            response_format=UserInfo,
+        )
 
-    # The result should be an instance of the Pydantic model
-    result = await handle.result()
+        # The result should be an instance of the Pydantic model
+        result = await handle.result()
 
     assert isinstance(result, UserInfo), "Result should be an instance of UserInfo"
     assert result.name.lower() == "john doe"
     assert result.is_happy is True
     assert result.age == 30
+
+    (call,) = model.of("query_llm")
+    assert "FORMAT INSTRUCTIONS" in _prompt(call)
+    assert "UserInfo" in json.dumps(call.request["response_format"])
+    assert "John Doe" in _system(call)
+    model.assert_used_up()
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -214,22 +306,33 @@ async def test_ask_with_structured_output():
 # 6.  Interject
 # ────────────────────────────────────────────────────────────────────────────
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_interject(monkeypatch):
     """Verify that interject is called and influences the conversation state."""
-    cm_handle = SimulatedConversationManagerHandle(
-        assistant_id="test_assistant",
+    model = ScriptedModel(
+        query_llm=[
+            reply("Understood: the flight is delayed."),
+            reply("Your flight has been delayed."),
+        ],
     )
+    with scripted(model):
+        cm_handle = SimulatedConversationManagerHandle(
+            assistant_id="test_assistant",
+        )
 
-    # Interject with new information
-    await cm_handle.interject("The user's flight has been delayed.")
+        # Interject with new information
+        await cm_handle.interject("The user's flight has been delayed.")
 
-    # Ask a question that should be influenced by the interjection
-    h_q = await cm_handle.ask("What is the status of my flight?")
-    answer = (await h_q.result()).lower()
+        # Ask a question that should be influenced by the interjection
+        h_q = await cm_handle.ask("What is the status of my flight?")
+        answer = (await h_q.result()).lower()
 
-    assert "delayed" in answer, "Answer should reflect the interjected information"
+    assert "delayed" in answer, "the simulated user's answer is returned"
+
+    interjection, question = model.of("query_llm")
+    assert "flight has been delayed" in _prompt(interjection)
+    assert _carried(question, "flight has been delayed", "user")
+    model.assert_used_up()
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -308,27 +411,40 @@ async def test_pause_and_resume(monkeypatch):
 # 9.  Nested ask on handle
 # ────────────────────────────────────────────────────────────────────────────
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_handle_ask():
     """
     The `ask()` method on the handle should return its own handle, and state should
     be preserved across these interactions.
     """
-    cm_handle = SimulatedConversationManagerHandle(
-        assistant_id="test_assistant",
+    model = ScriptedModel(
+        query_llm=[
+            reply("Sure, London's been grey and drizzly all week."),
+            reply("You asked about London."),
+        ],
     )
+    with scripted(model):
+        cm_handle = SimulatedConversationManagerHandle(
+            assistant_id="test_assistant",
+        )
 
-    # Start an initial ask to obtain a live handle
-    h1 = await cm_handle.ask("Let's talk about the weather in London.")
-    await h1.result()
+        # Start an initial ask to obtain a live handle
+        h1 = await cm_handle.ask("Let's talk about the weather in London.")
+        await h1.result()
+        # A nested ask on an answer handle is that same handle.
+        assert await h1.ask("Anything else?") is h1
 
-    # Invoke a nested ask on the same handle
-    h2 = await cm_handle.ask("What city did I just ask about?")
-    nested_answer = await h2.result()
-    assert (
-        "london" in nested_answer.lower()
-    ), "LLM should recall context from the first ask call"
+        # Invoke a nested ask on the same handle
+        h2 = await cm_handle.ask("What city did I just ask about?")
+        nested_answer = await h2.result()
+    assert "london" in nested_answer.lower()
+
+    first, second = model.of("query_llm")
+    assert "weather in London" in _prompt(first)
+    # The second ask carries the first exchange.
+    assert _carried(second, "weather in London", "user")
+    assert _carried(second, "grey and drizzly", "assistant")
+    model.assert_used_up()
 
 
 # ────────────────────────────────────────────────────────────────────────────
