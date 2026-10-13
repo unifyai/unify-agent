@@ -83,7 +83,7 @@ def _failure_entry(**kw):
 # ---------------------------------------------------------------------------------------------------------------
 
 ITEM = "memory.lists.order:sort_numbers"
-MAIN = "a" * 40
+COMMIT = "a" * 40
 CORRECTNESS = re.compile(r"(?i)\b(?:correct|correctly|right|verified|accurate)\b")
 
 
@@ -103,7 +103,7 @@ def use(**kw) -> lc.ItemUse:
 
 
 def ep(eid: str, u: lc.ItemUse, regime: str, *, pos=False, neg=False) -> lc.EpisodeUse:
-    return lc.EpisodeUse(eid, MAIN, regime, pos, neg, {ITEM: u})
+    return lc.EpisodeUse(eid, COMMIT, regime, pos, neg, {ITEM: u})
 
 
 def status(facts, prior=None) -> str:
