@@ -326,6 +326,36 @@ READ_EPISODE = RegisteredTool(
     summary="read any recorded episode: its table of contents, or named parts.",
 )
 
+#: The fixture tool's arguments as the writer and the curator call it from code: the base ones and ``parser``, the id of a
+#: stored reader the recorded text is given to (:func:`unify.memory.procedures.reader_parse`).
+_FIXTURE_WITH_PARSER = _obj(
+    {
+        "episode": {"type": "string"},
+        "source": {
+            "type": ["integer", "string"],
+            "description": "'<i>', 'args:<i>', 'request:<j>', 'observation:<i>' or 'cell:<i>'",
+        },
+        "action": {
+            "type": ["integer", "string"],
+            "description": "the same as source",
+        },
+        "dest": {"type": "string"},
+        "slice": {
+            "type": "array",
+            "items": {"type": ["integer", "null"]},
+            "minItems": 1,
+            "maxItems": 2,
+        },
+        "append": {"type": "boolean"},
+        "replace": {"type": "boolean"},
+        "parser": {
+            "type": "string",
+            "description": "the id of a library function that takes one text argument (a reader)",
+        },
+    },
+    ["episode", "dest"],
+)
+
 FIXTURE = RegisteredTool(
     name="fixture",
     description=(
@@ -342,10 +372,6 @@ FIXTURE = RegisteredTool(
         "provenance is the files themselves: each appended line names its source, and a copied file is listed in "
         "/memory/.pass/fixtures.json with its sha256. A file you delete or rewrite loses its provenance (make it "
         "again with fixture). The gate re-derives every fixture from the recording and refuses one that differs."
-        " parser: the id of a library function that takes one text argument; the recorded bytes, decoded as UTF-8, "
-        "are passed to it in a confined box, and the file holds the JSON of its result (a .json file, or one input "
-        "line with append=true). The gate runs the function on the recorded bytes again and refuses a fixture that "
-        "differs."
     ),
     parameters=_obj(
         {
@@ -367,14 +393,13 @@ FIXTURE = RegisteredTool(
             },
             "append": {"type": "boolean"},
             "replace": {"type": "boolean"},
-            "parser": {
-                "type": "string",
-                "description": "the id of a library function that takes one text argument (a reader)",
-            },
         },
         ["episode", "dest"],
     ),
     roles=_WRITE_CURATE,
+    # called from code, the writer and the curator may also name a stored reader; the model-API tool (tools not in
+    # code) keeps the base text byte for byte
+    role_args={_W: _FIXTURE_WITH_PARSER, _C: _FIXTURE_WITH_PARSER},
     refusals={
         "unknown_episode": "{episode!r} is not a recorded episode; this batch: {batch}",
         "no_source": "name the recorded value with source (or action)",
@@ -1374,7 +1399,10 @@ _SHORTER = {
         "observations), 'observation:<i>' or 'cell:<i>' (a cell's output; not a cell that raised); read_episode's "
         "table of contents gives each part's source and raw length. slice [start, end] keeps raw bytes start to "
         'end-1 (end null: to the end). append=true adds one line {"input": value, "source": ...} to a .jsonl file '
-        "such as a recorded-inputs file; replace=true starts the file over.",
+        "such as a recorded-inputs file; replace=true starts the file over. parser: the id of a library function "
+        "that takes one text argument; the recorded bytes, decoded as UTF-8, are passed to it in a confined box, and "
+        "the file holds the JSON of its result (a .json file, or one input line with append=true). The gate runs the "
+        "function on the recorded bytes again and refuses a fixture that differs.",
     ),
     "pool": (
         " (as `similar` compares code: variable names renamed in order of use, literals lifted)",
