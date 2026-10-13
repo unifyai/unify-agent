@@ -2071,6 +2071,16 @@ def _argument_lines(params: dict) -> list[str]:
     return out
 
 
+#: A template field, ``{path}`` or ``{path!r}``.
+_FIELD = re.compile(r"\{([a-z_]+)(?:![rsa])?\}")
+
+
+def _slots(template: str) -> str:
+    """A refusal template as help prints it: each field a named slot (``{path}`` reads ``<path>``), since the value
+    is filled at the call."""
+    return _FIELD.sub(r"<\1>", template).replace("{{", "{").replace("}}", "}")
+
+
 def help_text(name: str, agent: Optional[str] = None) -> str:
     """``tools.help(name)``: the description, the arguments, what it returns, its refusal forms, examples and when
     to use it. With *agent*, an agent whose arguments differ reads them after :data:`ROLE_MARKER`; the text above
@@ -2084,7 +2094,7 @@ def help_text(name: str, agent: Optional[str] = None) -> str:
         parts += ["", f"Returns: {s.returns}"]
     if s.refusals:
         parts += ["", "Refusals (raised as tools.Refused, with the form code):"]
-        parts += [f"  {form}: {text}" for form, text in s.refusals.items()]
+        parts += [f"  {form}: {_slots(text)}" for form, text in s.refusals.items()]
     if s.examples:
         parts += ["", "Examples:", *[f"  {line}" for ex in s.examples for line in ex.splitlines()]]
     if s.when:
