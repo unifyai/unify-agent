@@ -3367,6 +3367,49 @@ class WriterPass:
         if opens:
             self._record_box_opens(pass_id, opens)
 
+    def _crashed_cell_event(
+        self,
+        pass_id: str,
+        raw_args: object,
+        args: object,
+        usage: dict | None,
+        call: int,
+        exc: BaseException,
+    ) -> None:
+        """The ``execute_code`` row of a cell that raised out of :meth:`_in_code_cell`, at the *call* number
+        reserved for it: status ``error`` and the exception's type only. Never raises: the cell's own exception
+        is the one the pass sees."""
+        try:
+            self.__dict__.pop("_box_audit", None)  # a crashed cell returned no audit of its own
+            self._event(
+                pass_id,
+                "execute_code",
+                raw_args,
+                _wt.Reply(f"error: the cell did not end normally ({type(exc).__name__})", "error"),
+                usage,
+                {
+                    "via": "model",
+                    "cell": None,
+                    "args_sha256": _args_sha256(args if args is not None else raw_args),
+                    "box_gone": False,
+                    "exception": type(exc).__name__,
+                },
+                call,
+            )
+        except Exception:  # noqa: BLE001 - the row is evidence; it never masks the cell's exception
+            logging.getLogger(__name__).warning(
+                "the row of a cell that raised was not written (%s)",
+                type(exc).__name__,
+            )
+            if 0 <= call < len(self.tool_events) and self.tool_events[call].get("event") == "reserved":
+                self.tool_events[call] = {
+                    "event": "tool_call",
+                    "call": call,
+                    "tool": "execute_code",
+                    "status": "error",
+                    "exception": type(exc).__name__,
+                }
+
     def _reserve_event(self) -> int:
         """Reserve the next ``call`` number for a row written later (a cell's, after its in-code calls)."""
         self.tool_events.append({"event": "reserved"})
@@ -4995,13 +5038,26 @@ class WriterPass:
                                 base,
                             )
                             ic.finish_text = None
-                            content = await self._in_code_cell(
-                                session,
-                                ic,
-                                str(args.get("code", "")),
-                                cells,
-                                event_call,
-                            )
+                            try:
+                                content = await self._in_code_cell(
+                                    session,
+                                    ic,
+                                    str(args.get("code", "")),
+                                    cells,
+                                    event_call,
+                                )
+                            except BaseException as exc:
+                                # the cell's row still lands at its reserved number, with an error status, so no
+                                # placeholder outlives the pass; the exception goes on as before
+                                self._crashed_cell_event(
+                                    pass_id,
+                                    fn.get("arguments"),
+                                    args,
+                                    turn_usage,
+                                    event_call,
+                                    exc,
+                                )
+                                raise
                             calls, checks, reads, readers = (
                                 ic.calls,
                                 ic.checks,
