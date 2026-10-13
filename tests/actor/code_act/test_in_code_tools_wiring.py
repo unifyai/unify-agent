@@ -42,7 +42,7 @@ SECOND_CELL = (
     "    except tools.Refused as exc:\n"
     "        print('REFUSED', exc.form, str(exc)[:200])\n"
     "print('KEPT', kept + 1)\n"
-    f"tools.finish({ANSWER!r})\n"
+    f"tools.answer({ANSWER!r})\n"
 )
 
 
@@ -170,15 +170,15 @@ def _assert_no_host_text(model: ScriptedModel, home: Path) -> None:
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(300)
-async def test_the_actor_calls_its_tools_from_cells_and_finishes_with_an_answer(in_code):
-    # the last entry ends the request if finish did not, so a failure shows the cells' output
+async def test_the_actor_calls_its_tools_from_cells_and_ends_with_an_answer(in_code):
+    # the last entry ends the request if answer did not, so a failure shows the cells' output
     model = ScriptedModel(
         actor=[reply(calls=[code(FIRST_CELL)]), reply(calls=[code(SECOND_CELL)]), reply("not finished")],
     )
     result = await _act(model, "Look at data.txt and answer.")
 
     assert result == ANSWER, _why(model)
-    # tools.finish ended the request: no model call after the second cell
+    # tools.answer ended the request: no model call after the second cell
     assert model.unused() == {"actor": 1}
     for call in model.calls:
         _assert_one_tool(call)
@@ -200,12 +200,12 @@ async def test_the_actor_calls_its_tools_from_cells_and_finishes_with_an_answer(
     calls = _channel_rows(rows)
     assert [r["via"] for r in cells] == ["model", "model"]
     assert sorted(r["call"] for r in rows) == list(range(len(rows)))
-    assert [r["tool"] for r in calls] == ["read", "grep", "who", "read", "read", "finish"]
+    assert [r["tool"] for r in calls] == ["read", "grep", "who", "read", "read", "answer"]
     assert {r["agent"] for r in rows} == {"actor"}
     assert {r["request_id"] for r in rows} == {session.request_id}
     first, second = (c["call"] for c in cells)
     assert [r["cell"] for r in calls] == [first] * 3 + [second] * 3
-    # a refused call raised tools.Refused in the cell, with its form; the cell went on to finish
+    # a refused call raised tools.Refused in the cell, with its form; the cell went on to answer
     refused = [r for r in calls if r["status"] == "refused"]
     assert [r["refusal"]["form"] for r in refused] == ["outside_roots", "unreadable"]
     assert calls[-1]["status"] == "ok"
@@ -241,14 +241,14 @@ async def test_a_refused_call_raises_in_the_cell(in_code):
 TEAMMATE_CELL = (
     "print('TEAM', tools.read('/workspace/data.txt').splitlines()[2])\n"
     "print('WHO', tools.who())\n"
-    "tools.finish('the third line is line 3')\n"
+    "tools.answer('the third line is line 3')\n"
 )
 ACTOR_START = "print(tools.delegate('Read /workspace/data.txt and tell me its third line, please.'))\n"
 ACTOR_WAIT = (
     "got = tools.wait(timeout=120)\n"
     "print('GOT', got)\n"
     "done = [line for line in got.splitlines() if '(done)' in line]\n"
-    "tools.finish(done[0].split(': ', 1)[1])\n"
+    "tools.answer(done[0].split(': ', 1)[1])\n"
 )
 
 
@@ -283,8 +283,8 @@ async def test_a_teammate_gets_the_same_wiring_with_its_own_allow_list(in_code):
     rows = _rows(mate)
     assert {r["agent"] for r in rows} == {"teammate"}
     calls = _channel_rows(rows)
-    assert [r["tool"] for r in calls] == ["read", "who", "finish"]
-    assert [r["tool"] for r in _channel_rows(_rows(by_agent["actor"]))] == ["delegate", "wait", "finish"]
+    assert [r["tool"] for r in calls] == ["read", "who", "answer"]
+    assert [r["tool"] for r in _channel_rows(_rows(by_agent["actor"]))] == ["delegate", "wait", "answer"]
     _assert_ended(in_code["opened"])
 
 
@@ -322,7 +322,7 @@ def test_the_channel_table_takes_the_actor_handlers_and_schemas():
         assert (spec.handler, spec.blocking) == (handler, blocking)
         assert spec.parameters == R.strict_parameters("actor", name)
     assert specs["read"].handler == "unify.actor.tool_handlers:read"
-    assert set(specs["finish"].parameters["properties"]) == {"answer"}
+    assert set(specs["answer"].parameters["properties"]) == {"answer"} and "finish" not in specs
 
 
 def test_the_event_file_is_created_new_and_never_through_a_link(tmp_path):

@@ -6,8 +6,8 @@ inherited pipe descriptors, ``fd:<request>,<reply>``; it is read once, at the fi
 one reply frame. A lock serialises the calls of a cell's threads, so frames never interleave.
 
 A call returns a :class:`Result` (a ``str``: the tool's reply text, with ``.paths`` and ``.next``) or raises:
-:class:`Refused` (the text starts ``refused: `` or ``not finished: ``), :class:`NotRun` (a call that was not run
-and can be sent again; a subclass of :class:`Refused`), :class:`ToolError` (the tool failed) or
+:class:`Refused` (the text starts ``refused: ``, ``not finished: `` or ``not answered: ``), :class:`NotRun` (a call
+that was not run and can be sent again; a subclass of :class:`Refused`), :class:`ToolError` (the tool failed) or
 :class:`ChannelClosed` (the channel is gone; its reason code). Nothing here is trusted by the host.
 """
 

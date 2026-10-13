@@ -6,7 +6,7 @@ reads JSON lines from stdout until one whose ``type`` is ``response``, ``result`
 lines ``{"message": ...}``; ``{"quit": true}`` ends the session.
 
 With ``UNIFY_TOOLS_IN_CODE=on`` the actor's one model-API tool is ``execute_code(code)`` and it ends a turn either with
-a plain text reply or with ``tools.finish(answer=...)`` from a cell (a dict answer is sent as its JSON text, and the
+a plain text reply or with ``tools.answer(answer=...)`` from a cell (a dict answer is sent as its JSON text, and the
 loop ends the turn without another model call). Each test drives the CLI's ``Act`` session in process on the real
 ``CodeActActor`` and the real sandboxed interpreter; the model is the scripted transport (tests/scripted_model.py):
 no key, no network. Every line the session emits is serialised as ``Act._emit`` serialises it.
@@ -217,14 +217,14 @@ CASES = {
         [reply(calls=[code("print(6*7)")]), reply(SUBMIT_TEXT)],
         SUBMIT,
     ),
-    # the cell's tools.finish with a dict: its JSON text is the answer, no model call after the cell
-    "finish-dict": (
-        [reply(calls=[code(f"tools.finish(answer={SUBMIT!r})")])],
+    # the cell's tools.answer with a dict: its JSON text is the answer, no model call after the cell
+    "answer-dict": (
+        [reply(calls=[code(f"tools.answer(answer={SUBMIT!r})")])],
         SUBMIT,
     ),
-    # the cell's tools.finish with a string: the string is the answer as it is
-    "finish-string": (
-        [reply(calls=[code(f"tools.finish(answer={DEMO_TEXT!r})")])],
+    # the cell's tools.answer with a string: the string is the answer as it is
+    "answer-string": (
+        [reply(calls=[code(f"tools.answer(answer={DEMO_TEXT!r})")])],
         {"action": "request_demo"},
     ),
 }
@@ -246,7 +246,7 @@ async def test_the_answer_reaches_the_session(session_world, monkeypatch, case):
     if case == "text":
         assert content == SUBMIT_TEXT
         assert "42" in _tool_results(model.calls[1]), _why(model)
-    elif case == "finish-dict":
+    elif case == "answer-dict":
         assert content == json.dumps(SUBMIT)
     else:
         assert content == DEMO_TEXT
@@ -273,12 +273,12 @@ def _two_requests(mode: str) -> list:
             reply(NOT_ENDED),
         ]
     return [
-        reply(calls=[code(f"kept = 41\ntools.finish(answer={SUBMIT!r})")]),
+        reply(calls=[code(f"kept = 41\ntools.answer(answer={SUBMIT!r})")]),
         reply(
             calls=[
                 code(
                     f"print('KEPT', kept + 1)\n"
-                    f"tools.finish(answer={{'action': 'submit', 'grid': {SECOND_GRID}}})",
+                    f"tools.answer(answer={{'action': 'submit', 'grid': {SECOND_GRID}}})",
                 ),
             ],
         ),
@@ -289,7 +289,7 @@ def _two_requests(mode: str) -> list:
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(TEST_BOUND_S)
-@pytest.mark.parametrize("mode", ["text", "finish"])
+@pytest.mark.parametrize("mode", ["text", "answer"])
 async def test_a_second_request_in_the_session_is_answered_the_same_way(session_world, monkeypatch, mode):
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     model = ScriptedModel(actor=_two_requests(mode))

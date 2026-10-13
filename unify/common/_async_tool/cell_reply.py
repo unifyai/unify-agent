@@ -101,7 +101,7 @@ def bind(reply_channel: bool) -> Optional[contextvars.Token]:
 
 def bind_always() -> contextvars.Token:
     """Set the running loop's slot whatever the switch says (``UNIFY_TOOLS_IN_CODE=on``: a cell's
-    ``tools.finish(answer)`` fills it)."""
+    ``tools.answer(answer)`` fills it)."""
     return _SLOT.set(ReplySlot())
 
 

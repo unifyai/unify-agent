@@ -279,7 +279,7 @@ async def test_ask_returns_the_librarians_answers_reuses_the_session_and_is_acco
         f"_a = memory.ask({Q1!r})\n"
         f"_b = memory.ask({Q2!r})\n"
         f"_r = memory.run({w.TOTAL!r}, {w.ROWS!r})\n"
-        f"tools.finish(json.dumps({{'a': {plain('_a')}, 'b': {plain('_b')}}}))\n"
+        f"tools.answer(json.dumps({{'a': {plain('_a')}, 'b': {plain('_b')}}}))\n"
     )
     script = Script([actor_cell], [librarian_answer(ANSWER_ONE), librarian_answer(ANSWER_TWO)])
     result, model, sent = await _ask_act(env, script)
@@ -357,7 +357,7 @@ async def test_ask_returns_the_librarians_answers_reuses_the_session_and_is_acco
 async def test_a_malformed_answer_or_an_unknown_id_goes_back_to_the_librarian_as_a_refusal(librarian):
     env = librarian
     _open_request(env["paths"], env["sha"], env["monkeypatch"])
-    actor_cell = f"import json\n_a = memory.ask({Q1!r})\ntools.finish(json.dumps({plain('_a')}))\n"
+    actor_cell = f"import json\n_a = memory.ask({Q1!r})\ntools.answer(json.dumps({plain('_a')}))\n"
     script = Script(
         [actor_cell],
         [
@@ -387,7 +387,7 @@ async def test_the_session_ends_with_the_request_and_the_next_request_opens_a_ne
     env = librarian
     before = _boxes()
     _open_request(env["paths"], env["sha"], env["monkeypatch"])
-    first_cell = f"import json\n_a = memory.ask({Q1!r})\ntools.finish(json.dumps({plain('_a')}))\n"
+    first_cell = f"import json\n_a = memory.ask({Q1!r})\ntools.answer(json.dumps({plain('_a')}))\n"
     first = Script([first_cell], [librarian_answer(ANSWER_ONE)])
     result, model_one, sent_one = await _ask_act(env, first)
     assert _json(result, model_one) == ANSWER_ONE
@@ -395,7 +395,7 @@ async def test_the_session_ends_with_the_request_and_the_next_request_opens_a_ne
     assert _boxes() <= before  # no librarian box is left
 
     _open_request(env["paths"], env["sha"], env["monkeypatch"])
-    second_cell = f"import json\n_a = memory.ask({Q2!r})\ntools.finish(json.dumps({plain('_a')}))\n"
+    second_cell = f"import json\n_a = memory.ask({Q2!r})\ntools.answer(json.dumps({plain('_a')}))\n"
     second = Script([second_cell], [librarian_answer(ANSWER_TWO)])
     result, model_two, sent_two = await _ask_act(env, second)
     assert _json(result, model_two) == ANSWER_TWO
@@ -440,7 +440,7 @@ async def test_the_librarians_box_is_read_only_on_the_library_offline_and_has_no
     _open_request(env["paths"], env["sha"], env["monkeypatch"])
     checkout = env["paths"].checkout
     files_before = sorted(p.relative_to(checkout).as_posix() for p in checkout.rglob("*"))
-    actor_cell = f"import json\n_a = memory.ask({Q1!r})\ntools.finish(json.dumps({plain('_a')}))\n"
+    actor_cell = f"import json\n_a = memory.ask({Q1!r})\ntools.answer(json.dumps({plain('_a')}))\n"
     script = Script([actor_cell], [PROBE, librarian_answer(ANSWER_ONE)])
     result, model, _ = await _ask_act(env, script)
 
@@ -472,8 +472,8 @@ async def test_no_host_path_planted_secret_or_parsed_value_reaches_the_librarian
         f"_a = memory.ask({Q1!r})\n"
         f"print(json.dumps({plain('_a')}))\n"
     )
-    finish = "tools.finish('done')\n"
-    script = Script([actor_cell, finish], [librarian_answer(ANSWER_ONE)])
+    answer = "tools.answer('done')\n"
+    script = Script([actor_cell, answer], [librarian_answer(ANSWER_ONE)])
     result, model, _ = await _ask_act(env, script)
 
     assert result == "done"
@@ -504,7 +504,7 @@ async def test_off_binds_no_ask_offers_no_tool_and_generates_no_catalogue(librar
     env = librarian
     _set(env["monkeypatch"], SWITCH, "off")
     run = _open_request(env["paths"], env["sha"], env["monkeypatch"])
-    actor_cell = "print('HAS_ASK', hasattr(memory, 'ask'))\ntools.finish('done')\n"
+    actor_cell = "print('HAS_ASK', hasattr(memory, 'ask'))\ntools.answer('done')\n"
     script = Script([actor_cell], [])
     result, model, sent = await _ask_act(env, script)
 
@@ -529,7 +529,7 @@ async def test_off_the_cell_has_no_ask(librarian):
     env = librarian
     _set(env["monkeypatch"], SWITCH, "off")
     _open_request(env["paths"], env["sha"], env["monkeypatch"])
-    actor_cell = "tools.finish('HAS_ASK ' + str(hasattr(memory, 'ask')))\n"
+    actor_cell = "tools.answer('HAS_ASK ' + str(hasattr(memory, 'ask')))\n"
     script = Script([actor_cell], [])
     result, _, _ = await _ask_act(env, script)
     assert result == "HAS_ASK False"

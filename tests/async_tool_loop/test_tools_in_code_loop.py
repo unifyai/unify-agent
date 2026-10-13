@@ -1,6 +1,6 @@
 """``UNIFY_TOOLS_IN_CODE=on`` in the agent loop (the actor's and its teammates'): ``execute_code`` is the request's
 only model-API tool; over the compaction point the loop compacts by itself before the next model call, with the same
-fork summary and restart message and no forced ``compress_context`` turn; and ``tools.finish(answer)`` from a cell
+fork summary and restart message and no forced ``compress_context`` turn; and ``tools.answer(answer)`` from a cell
 answers the request (validated against its response format) with no further model call. With the switch off
 nothing changes (tests/async_tool_loop/test_every_agent_compacts_by_default.py keeps the forced turn).
 """
@@ -105,25 +105,25 @@ async def test_below_the_compaction_point_nothing_is_compacted(switch_on):
     assert result == "done" and model.kinds() == ["actor", "actor"]
 
 
-def _finishing_cell(validate=None):
-    """An ``execute_code`` whose cell calls ``tools.finish``: the host handler, with this request's state."""
+def _answering_cell(validate=None):
+    """An ``execute_code`` whose cell calls ``tools.answer``: the host handler, with this request's state."""
 
     async def execute_code(code: str) -> str:
         """Run a cell."""
         state = tool_handlers.ActorRequestState(reply_slot=cell_reply.current(), validate=validate)
         ctx = SimpleNamespace(agent="actor", name="root", state=state)
-        out = await tool_handlers.finish(ctx, {"answer": json.loads(code)})
+        out = await tool_handlers.answer(ctx, {"answer": json.loads(code)})
         return f"{out.status}: {out.text}"
 
     return execute_code
 
 
 @pytest.mark.asyncio
-async def test_finish_from_a_cell_answers_the_request_with_no_further_model_call(switch_on):
+async def test_answer_from_a_cell_answers_the_request_with_no_further_model_call(switch_on):
     def answer(call):
         return reply(calls=[("execute_code", {"code": json.dumps("the answer is 42")})])
 
-    result, model = await _run_loop({"execute_code": _finishing_cell()}, answer)
+    result, model = await _run_loop({"execute_code": _answering_cell()}, answer)
     assert result == "the answer is 42"
     assert model.kinds() == ["actor"]
 
@@ -133,37 +133,37 @@ class Answer(BaseModel):
 
 
 @pytest.mark.asyncio
-async def test_finish_validates_against_the_response_format_and_a_refusal_lets_the_request_go_on(switch_on):
+async def test_answer_validates_against_the_response_format_and_a_refusal_lets_the_request_go_on(switch_on):
     validate = tool_handlers.response_validator(normalize_response_format(Answer))
 
     def answer(call):
         tool_results = [str(m.get("content")) for m in call.messages if m.get("role") == "tool"]
         if not tool_results:
             return reply(calls=[("execute_code", {"code": json.dumps({"value": "not a number"})})])
-        assert "not finished: the answer does not match the required response format" in tool_results[-1]
+        assert "not answered: the answer does not match the required response format" in tool_results[-1]
         return reply(calls=[("execute_code", {"code": json.dumps({"value": 42})})])
 
     result, model = await _run_loop(
-        {"execute_code": _finishing_cell(validate)},
+        {"execute_code": _answering_cell(validate)},
         answer,
         response_format=Answer,
     )
     assert getattr(result, "value", None) == 42 or json.loads(result) == {"value": 42}
     assert model.kinds() == ["actor", "actor"]
     first = model.calls[0]
-    # no response tool and no forced tool choice: the answer comes from tools.finish
+    # no response tool and no forced tool choice: the answer comes from tools.answer
     assert _names(first) == ["execute_code"] and first.request.get("tool_choice") != "required"
-    assert any("tools.finish(answer)" in str(m.get("content")) for m in first.messages)
+    assert any("tools.answer(answer)" in str(m.get("content")) for m in first.messages)
 
 
 @pytest.mark.asyncio
-async def test_a_second_finish_in_the_same_turn_is_refused(switch_on):
+async def test_a_second_answer_in_the_same_turn_is_refused(switch_on):
     async def execute_code(code: str) -> str:
         """Run a cell."""
         state = tool_handlers.ActorRequestState(reply_slot=cell_reply.current())
         ctx = SimpleNamespace(agent="actor", name="root", state=state)
-        first = await tool_handlers.finish(ctx, {"answer": "one"})
-        second = await tool_handlers.finish(ctx, {"answer": "two"})
+        first = await tool_handlers.answer(ctx, {"answer": "one"})
+        second = await tool_handlers.answer(ctx, {"answer": "two"})
         return f"{first.status} {second.status} {second.form}"
 
     def answer(call):
@@ -174,17 +174,17 @@ async def test_a_second_finish_in_the_same_turn_is_refused(switch_on):
 
 
 @pytest.mark.asyncio
-async def test_one_state_finishes_each_request_of_a_session_once():
+async def test_one_state_answers_each_request_of_a_session_once():
     # a persistent session keeps one request state; the loop takes each request's answer from the slot, so the
-    # next request starts with it empty and may finish again, while a second finish before the take is refused
+    # next request starts with it empty and may answer again, while a second answer before the take is refused
     slot = cell_reply.ReplySlot()
     state = tool_handlers.ActorRequestState(reply_slot=slot)
     ctx = SimpleNamespace(agent="actor", name="root", state=state)
-    first = await tool_handlers.finish(ctx, {"answer": "one"})
-    again = await tool_handlers.finish(ctx, {"answer": "two"})
+    first = await tool_handlers.answer(ctx, {"answer": "one"})
+    again = await tool_handlers.answer(ctx, {"answer": "two"})
     assert first.status == "ok" and again.status != "ok"
     assert slot.take()["content"] == "one"
-    second = await tool_handlers.finish(ctx, {"answer": {"action": "submit"}})
+    second = await tool_handlers.answer(ctx, {"answer": {"action": "submit"}})
     assert second.status == "ok"
     assert slot.take()["content"] == json.dumps({"action": "submit"})
 

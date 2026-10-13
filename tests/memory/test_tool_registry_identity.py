@@ -105,13 +105,31 @@ def test_every_pair_of_agents_reads_each_shared_tool_the_same(stand_ins):
 
 
 def test_the_actor_reads_its_own_arguments_after_the_marker(stand_ins):
-    text = R.help_text("finish", "actor")
-    assert R.ROLE_MARKER in text and "you call finish(answer)" in text
+    text = R.help_text("delegate", "actor")
+    assert R.ROLE_MARKER in text and "you call delegate(task)" in text
+    assert R.ROLE_MARKER not in R.help_text("delegate", "writer")
     assert R.ROLE_MARKER not in R.help_text("finish", "writer")
-    mod = _load(R.render_stub(_allowed("actor"), "actor"))
-    assert mod.finish("42") == "finish answered ['answer']"
+    assert "you call finish(answer)" in R.help_text("finish", "librarian")
     writer = _load(R.render_stub(_allowed("writer"), "writer"))
     assert writer.finish("done") == "finish answered ['summary']"
+
+
+def test_the_actor_and_a_teammate_end_with_answer_and_have_no_finish(stand_ins):
+    for agent in ("actor", "teammate"):
+        assert "answer" in _allowed(agent) and "finish" not in _allowed(agent), agent
+        mod = _load(R.render_stub(_allowed(agent), agent))
+        assert mod.answer("42") == "answer answered ['answer']", agent
+        assert not hasattr(mod, "finish"), agent
+        assert R.handler_for(agent, "answer") == ("unify.actor.tool_handlers:answer", False), agent
+    assert R.registry()["answer"].roles == ("actor", "teammate")
+    assert R.registry()["answer"].kind == "terminal"
+    assert "finish" not in R.registry()["answer"].help_description + R.help_text("answer", "actor")
+    assert R.help_text("answer", "actor").startswith("answer(answer)\n")
+    assert R.refusal("answer", "answered") == "not answered: this request already has its answer"
+    assert R.refusal("answer", "bad_answer", reason="x").startswith("not answered: the answer does not match")
+    for agent in ("writer", "curator", "helper", "librarian"):
+        assert "answer" not in _allowed(agent), agent
+    assert "finish" in _allowed("writer") and "finish" in _allowed("librarian")
 
 
 def test_every_agent_sends_execute_code_alone_and_the_same_bytes():
@@ -129,7 +147,7 @@ def test_the_allow_lists_follow_the_profiles_and_the_design():
     actor = set(R.allow_list("actor", FULL))
     teammate = set(R.allow_list("teammate", FULL))
     assert actor == {
-        "read", "grep", "install", "send", "messages", "wait", "who", "reply", "stop", "delegate", "finish",
+        "read", "grep", "install", "send", "messages", "wait", "who", "reply", "stop", "delegate", "answer",
         "store_skills", "sh",
     }  # fmt: skip
     assert teammate == actor - {"store_skills"} | {"ask"}  # any agent may start agents
@@ -180,7 +198,7 @@ def test_the_preamble_names_only_what_the_agent_has():
     helper = R.preamble("helper", {"environment": "/work read-write", "flags": FULL})
     actor = R.preamble("actor", {"environment": "/workspace read-write", "flags": FULL})
     assert "tools.finish(summary)" in writer and "tools.done(summary, claims)" in helper
-    assert "tools.finish(answer)" in actor and "tools.install" in actor
+    assert "tools.answer(answer)" in actor and "tools.install" in actor and "tools.finish" not in actor
     assert "tools.install" not in writer and "Messages:" in writer
     assert R.preamble("writer", {"flags": FULL}) == R.preamble("writer", {"flags": FULL})
 
@@ -363,7 +381,7 @@ ADDED_FORMS = {
     "stop": ["not_allowed"],
     "wait": ["bad_timeout"],
 }
-ADDED_TOOLS = ("install", "store_skills", "sh", "ask_library", "land_capture")
+ADDED_TOOLS = ("install", "store_skills", "sh", "ask_library", "land_capture", "answer")
 #: Tools added to the writer's JSON tools (tools not in code) since the base commit: left out of the base hashes.
 ADDED_JSON_TOOLS = ("land_capture",)
 FLAGS = ("pool", "similar", "helper", "edit")

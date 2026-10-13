@@ -72,7 +72,7 @@ ALLOWED = {
         {"read", "grep", "overview", "read_episode", "similar", "stage", "send", "messages", "wait", "who", "ask", "done"},
     ),
     "actor": frozenset(
-        {"read", "grep", "install", "send", "messages", "wait", "who", "reply", "stop", "delegate", "finish"},
+        {"read", "grep", "install", "send", "messages", "wait", "who", "reply", "stop", "delegate", "answer"},
     ),
     "fork": frozenset(),
 }
@@ -185,7 +185,7 @@ RULES: tuple[tuple[str, str, str], ...] = (
     ("B306", "refusals", "must still be reached when the fixture values change"),
     ("T74a", "refusals", "a link is on the way to"),
     ("A2", "actor", "Your answer is your final reply: a message without a tool call."),
-    ("A8", "actor_structured", "answer by calling `tools.finish(answer)`"),
+    ("A8", "actor_structured", "answer by calling `tools.answer(answer)`"),
     ("H3", "install_help", "Never install from a cell"),
     ("J16", "compress_context", "becomes the **only**"),
     ("M12", "library_guide", "A function raises `MemoryInputError` on an input it was not built for."),

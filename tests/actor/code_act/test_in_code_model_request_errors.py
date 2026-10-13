@@ -37,7 +37,7 @@ REFUSED_CELL = (
 FIXED_CELL = (
     "schema['json_schema']['schema']['properties']['tags']['items'] = {'type': 'string'}\n"
     "print('TAGS', run_coro_sync(query_llm('Tag this.', response_format=schema)))\n"
-    "tools.finish('tagged')\n"
+    "tools.answer('tagged')\n"
 )
 
 
@@ -94,12 +94,12 @@ async def test_an_unclassified_provider_error_reaches_the_cell_as_a_fixed_text_o
         return await send(self, msg)
 
     monkeypatch.setattr(PythonWorker, "_send", recording_send)
-    finish = "tools.finish('failed')\n"
+    answer = "tools.answer('failed')\n"
     model = ScriptedModel(
         actor=[
             reply(calls=[code(FAILED_CELL)]),
             reply(calls=[code(UNCAUGHT_CELL)]),
-            reply(calls=[code(finish)]),
+            reply(calls=[code(answer)]),
             reply("not finished"),
         ],
         query_llm=[planted(), planted(litellm.RateLimitError), planted(litellm.InternalServerError)],
