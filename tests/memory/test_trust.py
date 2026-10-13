@@ -168,13 +168,13 @@ def test_the_lifecycle_counts_attributed_outcomes_from_the_use_record():
         for i in range(2)
     ]
     assert facts[0].items[ITEM].outcomes[0].verdict == "rejected"
-    assert lc.decide_status(ITEM, None, facts)[:2] == ("suspect", "rejected")
+    assert lc.decide_status(ITEM, None, facts)[:2] == ("retired", "rejected")
     # the same calls whose results were never handed back carry no verdict: nothing counts against the item
     unanswered = [
         lc.facts_from_use(f"e{i}", "a" * 40, "dense", record(result_digest([2])), [], checker_visible=True)
         for i in range(2)
     ]
-    assert lc.decide_status(ITEM, None, unanswered)[0] == "experimental"
+    assert lc.decide_status(ITEM, None, unanswered)[0] == "on-trial"
 
 
 def test_lifecycle_names_map_onto_the_trust_statuses():

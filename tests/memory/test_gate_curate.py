@@ -306,7 +306,8 @@ def test_an_edit_without_a_red_test_lands_only_in_curate_and_only_when_behaviour
     assert res.passed, res.reasons
     res = gate(role="write").check(parent, kept, man)
     assert (
-        not res.passed and f"G3: {ITEM_ID} has no new or changed test" in res.reasons
+        not res.passed
+        and any(r.startswith(f"G3: {ITEM_ID} has no new or changed test") for r in res.reasons)
     ), res.reasons
     res = gate(role="curate").check(
         parent,

@@ -589,7 +589,8 @@ def test_staging_again_replaces_and_the_quota_is_stated(tmp_path, monkeypatch):
     assert (tmp_path / "s" / "call-0" / "notes.md").read_text() == "two!"
     monkeypatch.setattr(helpers, "QUOTA_FILES", 1)
     assert "staging quota" in st.stage("candidates/f.py", "def f(): pass")
-    assert "outside candidates" in st.stage("evil.sh", "x")
+    refused = st.stage("evil.sh", "x")
+    assert refused.startswith("refused: 'evil.sh': outside ") and "candidates/*.py" in refused, refused
     with pytest.raises(FileExistsError):
         helpers._Staging(tmp_path / "s" / "call-0")  # always a fresh directory
 
