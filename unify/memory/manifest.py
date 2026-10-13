@@ -43,10 +43,10 @@ Manifest rules for consolidators
   observation) pairs they need into data files under ``env/<channel>/tests/`` and list those files in
   ``support`` (the gate mounts nothing else). A new or changed function lists
   a new or changed test under ``env/<channel>/tests/test_*.py`` that passes on your commit and fails on
-  the parent's library (or hangs there). Repairing a parent test file that was already red also counts,
-  but only as a test-only repair: its parent version fails on the parent, a test it failed passes in
-  your version (a file that did not even import counts as a whole), and it imports no function your pass
-  changes. A changed function always needs a test that fails on the parent's library. So does any change
+  the parent's library (or hangs there). Any other new or changed test (one that records what an unchanged
+  function already does, a corrected expected value, or a repair of a parent test file that was already red)
+  needs only pass on your commit; it never stands in for a changed function's red test. A changed function
+  always needs a test that fails on the parent's library. So does any change
   in what a stored function returns on recorded inputs: for every channel your commit changes (any file
   under ``env/<channel>/``: a function, a private helper, a constant, an alias, an import), the gate runs
   every public function the parent's module had, under the same name in yours (a ``def``, ``A = B`` or an

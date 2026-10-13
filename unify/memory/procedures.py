@@ -716,3 +716,197 @@ def _dialogue(
     if result.get("value") != json.dumps(action_value(a), sort_keys=True, default=repr):
         return Outcome(False, "its result differs from the recorded action")
     return Outcome(True)
+
+
+# --- stored readers --------------------------------------------------------------------------------------------
+#
+# A reader is a library function with one text parameter that returns a value JSON can encode (and raises
+# MemoryInputError on text it was not built for). Nothing marks a function as a reader in advance: it is one when a
+# fixture names it (``fixture(..., parser="<id>")``). The writer's fixture tool runs it on the recorded bytes, and
+# the gate runs it again on the same bytes to re-derive the fixture. It runs only confined, like every procedure:
+# the library read-only at /memory, the texts read-only at /case, writable only /out, no network, an empty
+# environment.
+
+_PARSE = r"""
+import importlib, inspect, json, sys
+sys.path[:0] = ["/memory", "/kit"]
+sys.dont_write_bytecode = True
+spec = json.load(open("/case/case.json"))
+out = {"results": []}
+
+
+def _text(value):
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+
+try:
+    module, _, name = spec["item"].partition(":")
+    fn = getattr(importlib.import_module(module), name)
+    try:
+        params = list(inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        params = None
+    positional = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    out["one_text_parameter"] = bool(
+        params is not None
+        and len(params) == 1
+        and params[0].kind in positional
+        and params[0].annotation in (inspect.Parameter.empty, str, "str")
+    )
+    if out["one_text_parameter"]:
+        for text in spec["texts"]:
+            try:
+                first = fn(text)
+            except BaseException as exc:
+                out["results"].append({"outcome": "raised", "error_class": type(exc).__name__})
+                continue
+            try:
+                value = _text(first)
+            except (TypeError, ValueError, RecursionError):
+                out["results"].append({"outcome": "not_json"})
+                continue
+            try:
+                again = _text(fn(text))
+            except BaseException:
+                again = None
+            out["results"].append({"outcome": "returned", "value": value, "same": value == again})
+except BaseException as exc:
+    out["error_class"] = type(exc).__name__
+with open("/out/result.json", "w") as f:
+    json.dump(out, f)
+"""
+
+
+def reader_digest(tree: Path, item: str) -> str | None:
+    """The sha256 of reader *item*'s ``def`` source in *tree* (None: its module or ``def`` cannot be read). A parsed
+    fixture records it, so a later change of the reader is seen and its fixtures are made again."""
+    import ast
+    import hashlib
+
+    from .fixtures import module_path
+
+    try:
+        source = (Path(tree) / module_path(item)).read_text(encoding="utf-8")
+        mod = ast.parse(source)
+    except (OSError, SyntaxError, ValueError, UnicodeDecodeError):
+        return None
+    name = item.split(":", 1)[1]
+    for node in mod.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            segment = ast.get_source_segment(source, node) or ""
+            return hashlib.sha256(segment.encode("utf-8")).hexdigest()
+    return None
+
+
+def run_reader(
+    item: str,
+    texts: list[str],
+    *,
+    tree: Path,
+    python: Path,
+    work: Path,
+    runner: Callable[..., SandboxResult] = run_confined,
+    timeout_s: float = PROCEDURE_S,
+) -> tuple[list[str | None], str | None]:
+    """Run reader *item* confined on each of *texts*, twice each: (per text its result as canonical JSON text, or
+    None; why the reader cannot be used, or None).
+
+    The reader conditions, each a reason: it takes one positional text parameter; it returns on the text (a
+    ``MemoryInputError`` or any other exception is named by class); its result encodes as JSON; two runs give the
+    same result; the whole batch ends within ``timeout_s`` per text.
+    """
+    if not texts:
+        return [], None
+    case, out, kit = work / "case", work / "out", work / "kit"
+    case.mkdir(parents=True)
+    out.mkdir()
+    testkit.stage_package(kit / testkit.PACKAGE)
+    (case / "run.py").write_text(_PARSE)
+    (case / "case.json").write_text(json.dumps({"item": item, "texts": list(texts)}, ensure_ascii=False))
+    limit = float(timeout_s) * len(texts)
+    res = runner(
+        [str(python), "-I", "/case/run.py"],
+        ro={tree: "/memory", case: "/case", kit: "/kit"},
+        rw={out: "/out"},
+        cwd="/memory",
+        timeout_s=limit,
+        env={},
+    )
+    if res.timed_out:
+        return [None] * len(texts), f"reader {item} did not finish within {limit:g} s"
+    try:
+        got = json.loads((out / "result.json").read_text())
+    except (OSError, ValueError):
+        got = None
+    if not isinstance(got, dict):
+        return [None] * len(texts), f"reader {item} could not be run (no result)"
+    if got.get("error_class"):
+        return [None] * len(texts), f"reader {item} could not be loaded ({got['error_class']})"
+    if not got.get("one_text_parameter"):
+        return [None] * len(texts), f"reader {item} does not take one positional text parameter"
+    rows = got.get("results") if isinstance(got.get("results"), list) else []
+    if len(rows) != len(texts):
+        return [None] * len(texts), f"reader {item} gave {len(rows)} results for {len(texts)} texts"
+    values: list[str | None] = []
+    for row in rows:
+        outcome = row.get("outcome") if isinstance(row, dict) else None
+        if outcome == "raised":
+            return [None] * len(texts), f"reader {item} raises {row.get('error_class')} on the recorded text"
+        if outcome == "not_json":
+            return [None] * len(texts), f"reader {item} returns a value JSON cannot encode"
+        if outcome != "returned" or not isinstance(row.get("value"), str):
+            return [None] * len(texts), f"reader {item} could not be run (no result)"
+        if not row.get("same"):
+            return [None] * len(texts), f"reader {item} gives different results on two runs over the same text"
+        values.append(row["value"])
+    return values, None
+
+
+def reader_parse(
+    tree: Path,
+    *,
+    python: Path,
+    work: Path,
+    runner: Callable[..., SandboxResult] = run_confined,
+    allowed: Callable[[str], str | None] | None = None,
+) -> Callable[[str, str], tuple[str, str]]:
+    """A ``parse(reader, text) -> (canonical JSON text, reader digest)`` over the library at *tree*, for
+    :func:`.fixtures.make` and :func:`.fixtures.verify`; each (reader, text) runs once. *allowed* (reader -> why it
+    may not be used, or None) adds the caller's own conditions. Raises :class:`.fixtures.FixtureError`.
+    """
+    import hashlib
+
+    from .fixtures import FixtureError
+
+    memo: dict[tuple[str, str], tuple[str, str]] = {}
+    n = [0]
+
+    def parse(reader: object, text: str) -> tuple[str, str]:
+        from .layout import FUNCTION_ID
+
+        if not isinstance(reader, str) or not FUNCTION_ID.match(reader):
+            raise FixtureError(f"parser {str(reader)[:120]!r} is not a library function id")
+        why = allowed(reader) if allowed is not None else None
+        if why:
+            raise FixtureError(why)
+        key = (reader, hashlib.sha256(text.encode("utf-8")).hexdigest())
+        if key in memo:
+            return memo[key]
+        digest = reader_digest(tree, reader)
+        if digest is None:
+            raise FixtureError(f"reader {reader} is not a function of the library")
+        n[0] += 1
+        values, problem = run_reader(
+            reader,
+            [text],
+            tree=tree,
+            python=python,
+            work=work / f"reader-{n[0]}",
+            runner=runner,
+        )
+        if problem is not None or values[0] is None:
+            raise FixtureError(problem or f"reader {reader} could not be run")
+        memo[key] = (values[0], digest)
+        return memo[key]
+
+    return parse

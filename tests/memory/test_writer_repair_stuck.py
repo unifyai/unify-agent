@@ -9,7 +9,7 @@ from decimal import Decimal
 
 from unify.memory import repair
 from unify.memory.drafts import draft_states
-from unify.memory.gate import NOT_RED_HINT, GateResult
+from unify.memory.gate import RED_TEST_HINT, GateResult
 from unify.memory.repair import (
     PASS_WIDE,
     STUCK_REPEATS,
@@ -25,9 +25,8 @@ from tests.memory.test_writer_pass import Turns, _call, _run, _write, _writer, n
 
 ME, OTHER = "env/venmo:me", "env/venmo:other"
 TEST_PATH = "/memory/env/venmo/tests/test_me.py"
-NOT_RED = (
-    "G3: the tests in env/venmo/tests/test_me.py already pass on the parent (not red). " + NOT_RED_HINT
-)
+# a refusal that remains under any-edit landing: an edited function none of whose tests is red on the parent
+NOT_RED = "G3: env/venmo:me is edited, but none of its tests is red on the parent's library. " + RED_TEST_HINT
 
 
 def _refused(lines: dict[str, str]) -> GateResult:
@@ -78,7 +77,7 @@ def test_refusals_are_keyed_by_check_and_item():
     res.reasons += ["G1: undeclared change memory/x.py", "note: pre-existing: y"]
     got = refusals(res)
     assert set(got) == {("G3", ME), ("G2", OTHER), ("G1", PASS_WIDE)}  # notes are not refusals
-    assert got[("G3", ME)].startswith("the tests in env/venmo/tests/test_me.py already pass on the parent")
+    assert got[("G3", ME)].startswith("env/venmo:me is edited, but none of its tests is red on the parent's library")
     # without attributed lines, the lines of each check an item is refused under stand for it
     bare = GateResult(False, {}, ["G2: covers no recorded action"], ["G2"], items_refused={ME: ["G2"]})
     assert refusals(bare) == {("G2", ME): "covers no recorded action"}
@@ -130,14 +129,14 @@ def test_the_repair_message_names_the_stuck_items_and_why():
     msg = repair_message(4, "/inputs/gate/result-3.md", res, None, stuck=held)
     assert msg.startswith(plain)
     assert f"No further repair round is offered for {ME} (G3)" in msg
-    assert f"in {STUCK_REPEATS} rounds in a row" in msg and "already pass on the parent (not red)" in msg
+    assert f"in {STUCK_REPEATS} rounds in a row" in msg and "none of its tests is red on the parent's library" in msg
     assert "kept as a draft" in msg and "this round is for the other refusals" in msg
 
 
-def test_the_not_red_hint_says_what_satisfies_the_rule():
-    assert "fails on the parent because this pass changes the behaviour it checks" in NOT_RED_HINT
-    assert "only pin what the parent already does" in NOT_RED_HINT
-    assert "manifest" in NOT_RED_HINT and "draft" in NOT_RED_HINT
+def test_the_red_test_hint_says_what_satisfies_the_rule():
+    assert "needs at least one listed test that fails on the parent's version and passes on yours" in RED_TEST_HINT
+    assert "already passes on the parent is accepted" in RED_TEST_HINT
+    assert "cannot show this change" in RED_TEST_HINT
 
 
 def test_the_end_event_carries_the_stuck_refusals(tmp_path):
@@ -202,7 +201,7 @@ def test_a_repeated_refusal_stops_repair_and_the_rest_of_the_manifest_lands(tmp_
     assert out.repair_stuck["stopped"] is True and out.repair_stuck["repeats"] == STUCK_REPEATS
     (row,) = out.repair_stuck["refusals"]
     assert (row["check"], row["item"], row["rounds"]) == ("G3", ME, 5)
-    assert row["reason"].startswith("the tests in env/venmo/tests/test_me.py already pass on the parent (not red)")
+    assert row["reason"].startswith("env/venmo:me is edited, but none of its tests is red on the parent's library")
     # the writer was told, in the rounds after it became stuck, that the item gets no further round
     msgs = [m["content"] for m in model.seen if m.get("role") == "user" and "This is repair round" in m["content"]]
     assert len(msgs) == 4

@@ -291,7 +291,14 @@ async def _after_write(st: WriterCalls, reply: "_wt.Reply") -> "_wt.Reply":
 def _fixture_work(st: WriterCalls, args: dict) -> "_wt.Reply":
     w = st.writer
     with st.memory_lock:
-        return _wt.fixture(args, w._episode, st.box, w.gate._blob, w._batch)
+        return _wt.fixture(
+            args,
+            w._episode,
+            st.box,
+            w.gate._blob,
+            w._batch,
+            python=getattr(w.gate, "python", None),
+        )
 
 
 async def fixture(ctx: Any, args: dict) -> "_wt.Reply":

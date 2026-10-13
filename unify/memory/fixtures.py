@@ -265,9 +265,16 @@ def make(
     append: bool = False,
     existing: dict | None = None,
     notes: list[str] | None = None,
+    parser: str | None = None,
+    parse: Callable[[str, str], tuple[str, str]] | None = None,
 ) -> tuple[bytes, dict]:
     """The bytes to write at *dest* (or, with *append*, the one line to append) and its new provenance entry.
     *notes* (when given) receives what was adjusted, e.g. a slice cut at the record's end.
+
+    With *parser* (a stored reader's id), the recorded bytes, cut as usual and decoded as UTF-8, are given to the
+    reader through *parse* (``parse(parser, text) -> (canonical JSON text, reader digest)``, which runs it
+    confined): the file holds the JSON of its result (``kind: parsed``, a ``.json`` file), or with *append* one input
+    line whose source names the parser.
     """
     if not DATA_PATH.match(dest) or dest.split("/tests/data/", 1)[1].startswith(
         DRAWN_DIR,
@@ -285,6 +292,26 @@ def make(
         "slice": list(cut) if cut is not None else None,
         "trust": trust_of(str(source)),
     }
+    parsed: dict = {}
+    if parser is not None:
+        if parse is None:
+            raise FixtureError("no reader can be run here")
+        try:
+            text = piece.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise FixtureError("a reader takes text; these bytes are not UTF-8") from exc
+        value_text, digest = parse(parser, text)
+        parsed = {"parser": parser, "parser_sha256": digest}
+        if not append:
+            if not dest.endswith(".json"):
+                raise FixtureError("a parsed fixture holds JSON: dest must end in .json")
+            data = value_text.encode("utf-8")
+            return data, {
+                "kind": "parsed",
+                **where,
+                **parsed,
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
     if not append:
         return piece, {
             "kind": "copy",
@@ -295,8 +322,10 @@ def make(
         raise FixtureError("append builds a JSON-lines file: dest must end in .jsonl")
     if existing is not None and existing.get("kind") != "assembled":
         raise FixtureError(f"{dest} holds a copied fixture; it cannot be appended to")
-    value = _decoded(piece)
+    value = json.loads(value_text) if parser is not None else _decoded(piece)
     named = {k: where[k] for k in ("episode", "source", "slice")}
+    if parser is not None:
+        named["parser"] = parser
     line = json.dumps(
         {"input": value, "source": named},
         sort_keys=True,
@@ -305,7 +334,11 @@ def make(
     )
     lines = list((existing or {}).get("lines", []))
     lines.append(
-        {**where, "sha256": hashlib.sha256(canonical(value).encode()).hexdigest()},
+        {
+            **where,
+            **parsed,
+            "sha256": hashlib.sha256(canonical(value).encode()).hexdigest(),
+        },
     )
     return (line + "\n").encode("utf-8"), {"kind": "assembled", "lines": lines}
 
@@ -318,19 +351,61 @@ def _load(entry: dict, load: Callable[[str], Episode | None]) -> Episode:
     return ep
 
 
+def _parsed_text(
+    entry: dict,
+    load: Callable[[str], Episode | None],
+    blob: Callable[[str], bytes],
+    parse: Callable[[str, str], tuple[str, str]] | None,
+) -> str:
+    """What the entry's reader gives on its recorded bytes, as canonical JSON text."""
+    if parse is None:
+        raise FixtureError("it names a reader, which only the gate runs to re-derive it")
+    piece = _cut(source_bytes(_load(entry, load), entry.get("source"), blob), entry.get("slice"))
+    try:
+        text = piece.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise FixtureError("a reader takes text; the recorded bytes are not UTF-8") from exc
+    return parse(entry.get("parser"), text)[0]
+
+
+def readers_of(entry: object) -> list[str]:
+    """The stored readers a provenance entry names: a parsed file's ``parser``, or its input lines'."""
+    if not isinstance(entry, dict):
+        return []
+    rows = entry.get("lines") if isinstance(entry.get("lines"), list) else [entry]
+    return sorted({r["parser"] for r in rows if isinstance(r, dict) and isinstance(r.get("parser"), str)})
+
+
+REMAKE = "re-make it with fixture(..., parser=...)"
+
+
 def verify(
     path: str,
     data: bytes,
     entry: object,
     load: Callable[[str], Episode | None],
     blob: Callable[[str], bytes],
+    parse: Callable[[str, str], tuple[str, str]] | None = None,
 ) -> str | None:
-    """None when *data* at *path* re-derives from the recording as *entry* (the harness's record) says."""
+    """None when *data* at *path* re-derives from the recording as *entry* (the harness's record) says.
+
+    A parsed fixture (``kind: parsed``, or an input line whose source names a ``parser``) re-derives by running its
+    reader again on the recorded bytes through *parse* (:func:`.procedures.reader_parse`); without *parse* it does
+    not verify.
+    """
     if not isinstance(entry, dict):
         return (
             f"{path} did not come through fixture(): no provenance is recorded for it"
         )
     try:
+        if entry.get("kind") == "parsed":
+            want = _parsed_text(entry, load, blob, parse).encode("utf-8")
+            return (
+                None
+                if want == data
+                else f"{path} differs from what reader {entry.get('parser')} gives on the recorded bytes of "
+                f"{_where(entry)}; {REMAKE}"
+            )
         if entry.get("kind") == "copy":
             want = _cut(
                 source_bytes(_load(entry, load), entry.get("source"), blob),
@@ -350,12 +425,21 @@ def verify(
                 got = json.loads(text)
                 if not isinstance(got, dict) or set(got) != {"input", "source"}:
                     return f"{path} line {n} is not an input line"
-                if got["source"] != {
-                    k: row.get(k) for k in ("episode", "source", "slice")
-                }:
+                named = {k: row.get(k) for k in ("episode", "source", "slice")}
+                if row.get("parser") is not None:
+                    named["parser"] = row.get("parser")
+                if got["source"] != named:
                     return (
                         f"{path} line {n} names another source than fixture() recorded"
                     )
+                if row.get("parser") is not None:
+                    want = json.loads(_parsed_text(row, load, blob, parse))
+                    if canonical(want) != canonical(got["input"]):
+                        return (
+                            f"{path} line {n} differs from what reader {row.get('parser')} gives on the recorded "
+                            f"bytes of {_where(row)}; {REMAKE}"
+                        )
+                    continue
                 want = _decoded(
                     _cut(
                         source_bytes(_load(row, load), row.get("source"), blob),
@@ -392,12 +476,12 @@ def assembled_entry(data: bytes) -> dict | None:
             not isinstance(got, dict)
             or set(got) != {"input", "source"}
             or not isinstance(src, dict)
-            or set(src) != {"episode", "source", "slice"}
+            or set(src) - {"parser"} != {"episode", "source", "slice"}
         ):
             return None
         rows.append(
             {
-                **src,
+                **src,  # a parsed line's source names its parser
                 "trust": trust_of(str(src.get("source"))),
                 "sha256": hashlib.sha256(canonical(got["input"]).encode()).hexdigest(),
             },
@@ -487,16 +571,16 @@ def derive_ledger(box) -> dict[str, dict]:
         if (
             not isinstance(dest, str)
             or not isinstance(entry, dict)
-            or entry.get("kind") != "copy"
+            or entry.get("kind") not in ("copy", "parsed")
             or not DATA_PATH.match(dest)
         ):
             continue
         data = _read_in_box(box, dest)
         if data is not None and hashlib.sha256(data).hexdigest() == entry.get("sha256"):
-            out[dest] = {
-                k: entry.get(k)
-                for k in ("kind", "episode", "source", "slice", "trust", "sha256")
-            }
+            keys = ("kind", "episode", "source", "slice", "trust", "sha256")
+            if entry.get("kind") == "parsed":
+                keys += ("parser", "parser_sha256")
+            out[dest] = {k: entry.get(k) for k in keys}
 
     def wanted(vpath: str) -> bool:
         rel = vpath[len("/box/") :]
@@ -612,7 +696,7 @@ def _origins(entry: dict) -> list[tuple[str, str, int, int | None]]:
             trust = trust_of(src)
         return row["episode"], src, trust, line
 
-    if entry.get("kind") == "copy":
+    if entry.get("kind") in ("copy", "parsed"):
         got = one(entry, None)
         return [got] if got else []
     if entry.get("kind") in ("assembled", "replay") and isinstance(entry.get("lines"), list):

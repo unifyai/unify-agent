@@ -342,6 +342,10 @@ FIXTURE = RegisteredTool(
         "provenance is the files themselves: each appended line names its source, and a copied file is listed in "
         "/memory/.pass/fixtures.json with its sha256. A file you delete or rewrite loses its provenance (make it "
         "again with fixture). The gate re-derives every fixture from the recording and refuses one that differs."
+        " parser: the id of a library function that takes one text argument; the recorded bytes, decoded as UTF-8, "
+        "are passed to it in a confined box, and the file holds the JSON of its result (a .json file, or one input "
+        "line with append=true). The gate runs the function on the recorded bytes again and refuses a fixture that "
+        "differs."
     ),
     parameters=_obj(
         {
@@ -363,6 +367,10 @@ FIXTURE = RegisteredTool(
             },
             "append": {"type": "boolean"},
             "replace": {"type": "boolean"},
+            "parser": {
+                "type": "string",
+                "description": "the id of a library function that takes one text argument (a reader)",
+            },
         },
         ["episode", "dest"],
     ),

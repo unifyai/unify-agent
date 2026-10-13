@@ -896,6 +896,31 @@ class PassOutcome:
     # when the writer (or curator) made loop_stop.MEMORY_K no-progress model calls in a row at least once; "ended":
     # 2 * k in a row ended its round and the pass went to its final merge. None when no notice was given
     no_progress: dict | None = None
+    # library mode: the landed functions' evidence levels, as counts per level (:mod:`.item_states`), and the
+    # evidence findings that set them, as counts by reason code (``[examples:grounded]``, or the check for a finding
+    # without a code); None when the final merge recorded none
+    levels: dict | None = None
+    capped_reasons: dict | None = None
+
+
+def level_counts(res: Any) -> tuple[dict | None, dict | None]:
+    """(counts per evidence level, counts of the findings that set them by reason code) over the functions
+    *res* (a gate result) landed; (None, None) when it recorded no level."""
+    levels = getattr(res, "levels", None) or {}
+    if not levels:
+        return None, None
+    landed = set(getattr(res, "items_merged", None) or [])
+    per: dict[str, int] = {}
+    codes: dict[str, int] = {}
+    for item, level in sorted(levels.items()):
+        if landed and item not in landed:
+            continue
+        per[level] = per.get(level, 0) + 1
+        for line in (getattr(res, "level_reasons", None) or {}).get(item, []):
+            m = re.search(r"\[[a-z_]+:[a-z_-]+\]", line)
+            code = m.group(0) if m else line.split(":", 1)[0]
+            codes[code] = codes.get(code, 0) + 1
+    return dict(sorted(per.items())), dict(sorted(codes.items()))
 
 
 # --- inputs ------------------------------------------------------------------------------------------------
@@ -2221,6 +2246,7 @@ class WriterPass:
         self._staging_read_root: Path | None = None
         # the gate's {"item", "adopts"} rows for the items that landed (empty until the merge)
         self._provenance: list[dict] = []
+        self._levels: tuple[dict | None, dict | None] = (None, None)
         self._chain_rows: list[dict] = (
             []
         )  # the batch map's rows once staging is listed in it
@@ -3948,6 +3974,7 @@ class WriterPass:
         self._pool, self._pool_open, self._pool_error = None, None, None
         self._pool_at_start = None
         self._staged_views, self._staging_read_root, self._provenance = {}, None, []
+        self._levels = (None, None)
         self._chain_rows = []
         self._pool_manifest = None
         self._bmap_rows = []
@@ -4172,6 +4199,7 @@ class WriterPass:
                     )
                 o.finished = bool(phase["finish_accepted"])
                 o.provenance = list(self._provenance)
+                o.levels, o.capped_reasons = self._levels
                 if self._role != "curate":
                     try:  # measures only: they never fail a pass
                         o.chain = self._chain_counts()
@@ -4906,6 +4934,7 @@ class WriterPass:
                             box,
                             self.gate._blob,
                             self._batch,
+                            python=getattr(self.gate, "python", None),
                         )
                     elif library and name in _et.NAMES:
                         # host-side, never through a link (edit_tools.py); the quotas are measured as after a cell
@@ -5195,6 +5224,7 @@ class WriterPass:
         if getattr(res, "manifest_invalid", False):
             cause(CODE_MANIFEST_INVALID)
         self._provenance = list(getattr(res, "provenance", None) or [])
+        self._levels = level_counts(res) if res.passed else (None, None)
         for check in getattr(res, "refused", []):
             cause(check)  # the gate checks that refused: G1..G6
         # the pass's own notes (left-out entries, deadline, model failures) follow the gate's reasons

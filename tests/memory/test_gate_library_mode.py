@@ -47,6 +47,9 @@ def test_library_gate_passes_and_records_verification(library_example_world):
     res = _merge(library_example_world, files, w.manifest(fixtures))
     assert res.passed, res.reasons
     rec = res.verification[w.ITEM_ID]
+    # every evidence check holds: the function lands at the level the gate gives for that
+    assert res.levels == {w.ITEM_ID: "reproduces-its-case"} and res.level_reasons == {w.ITEM_ID: []}
+    assert rec["level"] == "reproduces-its-case" and rec["level_reasons"] == []
     assert (
         rec["mutation"]["total"] > 0
         and rec["mutation"]["killed"] == rec["mutation"]["total"]
@@ -92,12 +95,17 @@ def test_a_fixture_not_made_by_fixture_tool_is_refused(library_example_world):
     assert any("me_1.json did not come through fixture()" in r for r in res.reasons)
 
 
-def test_no_trusted_exact_assertion_is_refused(library_example_world):
+def test_no_trusted_exact_assertion_sets_the_lowest_level(library_example_world):
+    """An evidence finding no longer refuses: the function lands at ``unchecked`` with the finding as its reason."""
     mem, ev, blobs, gate = library_example_world
     assert w.WEAK_TEST_SOURCE != w.TEST_SOURCE and " == " not in w.WEAK_TEST_SOURCE
     files, fixtures = w.files_and_fixtures(blobs.get, test=w.WEAK_TEST_SOURCE)
     res = gate().check(mem.head(), w.candidate(mem, files), w.manifest(fixtures))
-    assert not res.passed and any("[library_mode:exact]" in r for r in res.reasons)
+    assert res.passed, res.reasons
+    assert not any("[library_mode:exact]" in r for r in res.reasons)
+    assert res.levels[w.ITEM_ID] == "unchecked"
+    assert any("[library_mode:exact]" in r for r in res.level_reasons[w.ITEM_ID])
+    assert res.verification[w.ITEM_ID]["level"] == "unchecked"
 
 
 def test_a_function_whose_parameters_are_all_required_passes_the_gate(
@@ -186,12 +194,12 @@ SPECIAL = re.compile(
 )
 
 
-def test_a_function_grounded_on_one_episode_passes_and_a_memorising_one_still_fails(
+def test_a_function_grounded_on_one_episode_passes_and_a_memorising_one_lands_unchecked(
     library_example_world,
 ):
     """One recorded episode is enough evidence for a function: the same request shape gets a reusable function even
-    if no other request is served by it. The exact-value test, the refusal test and the check with unseen values stay
-    mandatory, so a function that only handles its recorded values is still refused on that same single episode.
+    if no other request is served by it. The check with unseen values still runs, so a function that only handles its
+    recorded values on that same single episode is flagged: it lands at the lowest evidence level with the flag.
     """
     mem, ev, blobs, gate = library_example_world
     files, fixtures = w.files_and_fixtures(blobs.get, sources=(w.E1, w.E1))
@@ -200,6 +208,7 @@ def test_a_function_grounded_on_one_episode_passes_and_a_memorising_one_still_fa
     assert res.passed, res.reasons
     assert not any("[examples:episodes]" in r for r in res.reasons)
     assert res.verification[w.ITEM_ID]["examples"]["episodes"] == ["e1"]
+    assert res.levels[w.ITEM_ID] == "reproduces-its-case", res.level_reasons
     files, fixtures = w.files_and_fixtures(
         blobs.get,
         sources=(w.E1, w.E1),
@@ -210,12 +219,14 @@ def test_a_function_grounded_on_one_episode_passes_and_a_memorising_one_still_fa
         w.candidate(mem, files),
         w.manifest(fixtures, w.item(source_episodes=["e1"])),
     )
-    assert not res.passed
+    # the check with unseen values flags it: it lands at the lowest level, the flag kept for the agent and writer
+    assert res.passed, res.reasons
+    assert res.levels[w.ITEM_ID] == "unchecked"
     # both fixtures hold the one episode's values, so the reason names the candidates together ("one of ...")
     assert any(
         r.startswith(f"G2: [examples:special-cased] {w.ITEM_ID} handles ")
-        for r in res.reasons
-    ), res.reasons
+        for r in res.level_reasons[w.ITEM_ID]
+    ), res.level_reasons
 
 
 #: user_id with a decision rule: a value computed from the input, replaced by a constant under a condition
@@ -230,11 +241,12 @@ RULE_MEMORISED = RULE_MODULE.replace(
 )
 
 
-def test_a_decision_rule_grounded_on_one_episode_passes_and_one_that_memorises_fails(
+def test_a_decision_rule_grounded_on_one_episode_passes_and_one_that_memorises_lands_unchecked(
     library_example_world,
 ):
     """A function that encodes a decision rule needs examples from one recorded episode, like every function; the
-    check with unseen values, mandatory for every function, refuses one that only reproduces its recorded outputs.
+    check with unseen values, run for every function, flags one that only reproduces its recorded outputs, which
+    lands at the lowest evidence level.
     """
     from unify.memory.analysis.overrides import find_overrides
     import ast
@@ -270,27 +282,31 @@ def test_a_decision_rule_grounded_on_one_episode_passes_and_one_that_memorises_f
         w.candidate(mem, files),
         w.manifest(fixtures, w.item(source_episodes=["e1"])),
     )
-    assert not res.passed
+    assert res.passed, res.reasons
+    assert res.levels[w.ITEM_ID] == "unchecked"
     assert any(
         r.startswith(f"G2: [examples:special-cased] {w.ITEM_ID} handles ")
-        for r in res.reasons
-    ), res.reasons
+        for r in res.level_reasons[w.ITEM_ID]
+    ), res.level_reasons
 
 
-def test_a_function_that_handles_only_its_recorded_values_is_refused(
+def test_a_function_that_handles_only_its_recorded_values_lands_at_the_lowest_level(
     library_example_world,
 ):
     """Replaces test_cross_episode_text_input_that_crashes_is_refused (with the one-episode test above). The rule
     that replaces running a function on another episode's input: the gate replaces the fixture values its tests
-    load with unseen values of the same type, and a call that returned before must not raise now (special-cased).
+    load with unseen values of the same type, and a call that returned before and raises now is flagged
+    (special-cased); the flag sets the lowest evidence level instead of refusing.
     """
     mem, ev, blobs, gate = library_example_world
     assert SPECIAL_CASED != w.MODULE_SOURCE
     files, fixtures = w.files_and_fixtures(blobs.get, module=SPECIAL_CASED)
     res = gate().check(mem.head(), w.candidate(mem, files), w.manifest(fixtures))
-    assert not res.passed
-    found = [m for m in map(SPECIAL.match, res.reasons) if m]
-    assert found, res.reasons
+    # a flag of the check with unseen values sets the lowest evidence level; it refuses nothing
+    assert res.passed, res.reasons
+    assert res.levels[w.ITEM_ID] == "unchecked"
+    found = [m for m in map(SPECIAL.match, res.level_reasons[w.ITEM_ID]) if m]
+    assert found, res.level_reasons
     lines = {c.line for c in w.recorded_calls(blobs.get) if c.outcome == "returned"}
     for m in found:
         assert m["fixture"] in {*w.FIXTURE_PATHS, w.INPUTS_PATH}

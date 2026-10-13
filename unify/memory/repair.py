@@ -144,6 +144,19 @@ def render_result(
         lines += ["", f"## {title} ({len(body)})"]
         for r in body:
             lines += ["", r]
+    levels = dict(getattr(res, "levels", None) or {})
+    if levels:
+        found = getattr(res, "level_reasons", None) or {}
+        lines += [
+            "",
+            f"## Evidence level ({len(levels)})",
+            "",
+            "Each function's evidence level. These are not refusals: an item lands at its level, and a later pass "
+            "can raise it by adding the evidence. A finding below an item set its level to `unchecked`.",
+        ]
+        for item, level in sorted(levels.items()):
+            lines += ["", f"- {item}: {level}"]
+            lines += [f"  - {redact_error(r)}" for r in found.get(item, [])]
     outputs = sorted(getattr(res, "outputs", {}).items())
     lines += [
         "",

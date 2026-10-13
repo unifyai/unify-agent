@@ -233,6 +233,12 @@ def config_for(
     )
 
 
+def cap(run: Any, check: str, reason: str, item: Any) -> None:
+    """An evidence finding: it sets *item*'s evidence level (``run.cap``, library mode) instead of refusing it."""
+    found = getattr(run, "cap", None)
+    (found if callable(found) else run.fail)(check, reason, item)
+
+
 class LibraryChecks:
     def __init__(self, gate: Any, run: Any) -> None:
         self.gate, self.run, self.cfg = gate, run, gate.library_mode
@@ -365,14 +371,24 @@ class LibraryChecks:
                     data  # verified by replaying its instances again, not by its bytes
                 )
                 continue
-            problem = verify(p, data, entries.get(p), self.ep, self.gate._blob)
+            started = time.monotonic()
+            problem = verify(
+                p,
+                data,
+                entries.get(p),
+                self.ep,
+                self.gate._blob,
+                parse=self._parse,
+            )
+            self._parsed(p, entries.get(p), problem, time.monotonic() - started)
             if problem is None:
                 if isinstance(entries.get(p), dict):
                     # verified this pass: the examples checks' provenance, persisted on merge
                     run.fixtures_verified[p] = (
                         hashlib.sha256(data).hexdigest(),
-                        entries[p],
+                        self._current(entries[p]),
                     )
+                    self._reads_for(p, entries[p])
                 continue
             if entries.get(p) is None:
                 if index is None:
@@ -389,6 +405,127 @@ class LibraryChecks:
             run.fail("G1", f"fixture provenance: {problem}", owners)
         if replays:
             self._replays(raw, replays)
+        self._readers_changed()
+
+    # -- stored readers (parsed fixtures) -------------------------------------------------------------------
+    def _reader_allowed(self, reader: str) -> str | None:
+        """A reader a fixture names is admitted in this pass (a manifest function) or already landed (the parent's),
+        and is in the candidate; None when it may be used, else why not (a G1 reason)."""
+        run = self.run
+        if run.c_bodies.get(reader, ("",))[0] != "function":
+            return f"reader {reader} is not a function of the candidate's library"
+        listed = any(it.item == reader and it.kind == "function" for it in run.man.items)
+        if not listed and reader not in run.p_bodies:
+            return f"reader {reader} is neither listed in this pass's manifest nor stored in the library"
+        return None
+
+    def _parse(self, reader: str, text: str) -> tuple[str, str]:
+        """Run *reader* confined on the candidate's library (:func:`.procedures.reader_parse`), once per text."""
+        if getattr(self, "_parser", None) is None:
+            from .procedures import reader_parse
+
+            self._parser = reader_parse(
+                self.run.c_tree,
+                python=self.gate.python,
+                work=self.run.tmp / "readers",
+                runner=self.cfg.runner,
+                allowed=self._reader_allowed,
+            )
+        return self._parser(reader, text)
+
+    @staticmethod
+    def _readers_of(entry: object) -> list[str]:
+        from .fixtures import readers_of
+
+        return readers_of(entry)
+
+    def _current(self, entry: dict) -> dict:
+        """*entry* with each named reader's digest as the candidate has it (the version that re-derived it)."""
+        from .procedures import reader_digest
+
+        def fix(row: dict) -> dict:
+            if isinstance(row.get("parser"), str):
+                return {**row, "parser_sha256": reader_digest(self.run.c_tree, row["parser"])}
+            return row
+
+        if isinstance(entry.get("lines"), list):
+            return {**entry, "lines": [fix(r) if isinstance(r, dict) else r for r in entry["lines"]]}
+        return fix(dict(entry))
+
+    def _parsed(self, path: str, entry: object, problem: str | None, seconds: float) -> None:
+        """The gate result's evidence fields of a parsed fixture G1 re-derived (``GateResult.parsed``)."""
+        from .procedures import reader_digest
+
+        readers = self._readers_of(entry)
+        res = getattr(self.run, "res", None)
+        if not readers or res is None or not hasattr(res, "parsed"):
+            return
+        res.parsed[path] = {
+            "parser": readers,
+            "parser_sha256": {r: reader_digest(self.run.c_tree, r) for r in readers},
+            "rederived": problem is None,
+            "parse_seconds": round(max(0.0, seconds), 3),
+        }
+
+    def _reads_for(self, path: str, entry: object) -> None:
+        """Record on each reader *entry* names that it produced the fixture at *path* (``reads_for``). Only a
+        reader this pass lists gets a verification record; another keeps the record it landed with."""
+        listed = {it.item for it in self.run.man.items}
+        for reader in self._readers_of(entry):
+            if reader not in listed:
+                continue
+            found = self._record(reader).setdefault("reads_for", [])
+            if path not in found:
+                found.append(path)
+                found.sort()
+
+    def _readers_changed(self) -> None:
+        """Every unchanged parsed fixture of the candidate whose reader's code changed in this pass is re-derived
+        with the reader as it now is; one whose bytes no longer re-derive is refused (re-make it), so a reader
+        cannot change what its fixtures say unseen."""
+        from .fixtures import REMAKE
+        from .procedures import reader_digest
+
+        run = self.run
+        modules = {layout.module_of(p) for p in run.changed}
+        if not any(modules):
+            return
+        stored = getattr(self.gate.ev, "fixture_provenance", None)
+        if not callable(stored):
+            return
+        changed = set(run.changed)
+        for p in sorted(run.c_files):
+            if p in changed or not p.startswith("memory/") or "/tests/data/" not in p:
+                continue
+            try:
+                data = (run.c_tree / p).read_bytes()
+            except OSError:
+                continue
+            entry = stored(p, hashlib.sha256(data).hexdigest())
+            readers = self._readers_of(entry)
+            if not readers:
+                continue
+            rows = entry.get("lines") if isinstance(entry.get("lines"), list) else [entry]
+            recorded = {
+                r.get("parser"): r.get("parser_sha256") for r in rows if isinstance(r, dict) and r.get("parser")
+            }
+            if all(reader_digest(run.c_tree, r) == recorded.get(r) for r in readers):
+                self._reads_for(p, entry)
+                continue
+            started = time.monotonic()
+            problem = verify(p, data, entry, self.ep, self.gate._blob, parse=self._parse)
+            self._parsed(p, entry, problem, time.monotonic() - started)
+            if problem is None:
+                run.fixtures_verified[p] = (hashlib.sha256(data).hexdigest(), self._current(entry))
+                self._reads_for(p, entry)
+                continue
+            if REMAKE not in problem:
+                problem += f"; {REMAKE}"
+            run.fail(
+                "G1",
+                f"fixture provenance: its reader changed in this pass: {problem}",
+                self._owners(p),
+            )
 
     def _replays(self, raw: dict, replays: dict[str, bytes]) -> None:
         """New or changed replay case files: their instances are replayed again (:func:`.replay_verify.reverify`);
@@ -431,8 +568,26 @@ class LibraryChecks:
     def g2(self) -> None:
         self.effects()
         n = 0
+        stored: dict[str, list[Any]] | None = None
+        run = self.run
         for it in self._functions():
+            unchanged = (
+                it.item in run.p_bodies
+                and it.item in run.c_bodies
+                and run.p_bodies[it.item][:2] == run.c_bodies[it.item][:2]
+            )
             for cover in getattr(it, "typed_covers", []):
+                if unchanged:
+                    # a function listed only to change its tests: the typed covers it landed with judge its own
+                    # code, which did not change, so they are not run again; a new cover is checked as usual
+                    if stored is None:
+                        stored = self._stored_typed()
+                    if cover in stored.get(it.item, []):
+                        if cover.type == "episode":
+                            kept = getattr(run, "typed_kept", None)
+                            if isinstance(kept, dict):
+                                kept.setdefault(it.item, []).append(cover.episode)
+                        continue
                 self._typed_cover(it, cover, n)
                 n += 1
 
@@ -451,14 +606,16 @@ class LibraryChecks:
                 f["source"] == "cell" and f["cell"] == cover.index
                 for f in actor_functions(ep)
             ):
-                run.fail(
+                cap(
+                    run,
                     "G2",
                     f"{it.item} covers cell {cover.index} of {cover.episode}, which defines no Python function",
                     it.item,
                 )
         elif cover.type == "diff":
             if not any(f["source"] == "diff" for f in actor_functions(ep)):
-                run.fail(
+                cap(
+                    run,
                     "G2",
                     f"{it.item} covers the work-tree diff of {cover.episode}, which adds no Python function",
                     it.item,
@@ -483,7 +640,8 @@ class LibraryChecks:
             for note in out.notes:
                 run.note(f"G2 procedure: {it.item} on {cover.episode}: {note}")
             if not out.ok:
-                run.fail(
+                cap(
+                    run,
                     "G2",
                     f"{it.item} procedure on {cover.episode} ({cover.runner}): {out.reason}",
                     it.item,
@@ -602,7 +760,8 @@ class LibraryChecks:
                 t,
             ):
                 if e.oracle:
-                    run.fail(
+                    cap(
+                        run,
                         "G3",
                         f"[library_mode:oracle] {t} line {e.line} computes its expected value with {it.item}'s own "
                         "expression; take the expected value from a recorded fixture",
@@ -612,7 +771,8 @@ class LibraryChecks:
                     total += 1
         record["exact_assertions"] = total
         if total == 0:
-            run.fail(
+            cap(
+                run,
                 "G3",
                 f"[library_mode:exact] {it.item}'s tests hold no exact assertion of its result, on a recorded fixture, "
                 "against a trust 1-3 value (a recorded response, a value a successful episode used, or one "
