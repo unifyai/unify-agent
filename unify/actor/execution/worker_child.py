@@ -16,8 +16,9 @@ Harness -> worker::
     {"op": "init", "sys_path": [...], "builtins": [...], "globals": {...},
                                               (a global is ["module", m], ["attr", m, a] or
                                               ["lazy_module", m], imported on first use)
-     "help": bool, "audit": {"roots": [...], "path": str}, "no_bytecode": true}
-                                              (audit, no_bytecode: only under UNIFY_MEMORY)
+     "help": bool, "audit": {"roots": [...], "path": str}, "no_bytecode": true,
+     "sweep": [root, ...]}                    (audit, no_bytecode: only under UNIFY_MEMORY; sweep: only
+                                              the memory agents' interpreters, :meth:`Worker.sweep_modules`)
     {"op": "exec", "id": n, "source": str, "sync": {...}, "scratch": bool,
      "inventory": true}                       (only when asked)
     {"op": "reply", "id": k, "value": ..., "coroutine": bool}
@@ -74,11 +75,16 @@ import re
 import sys
 import tempfile
 import threading
+import time
 import traceback
 import types
 from typing import Any, Callable, Optional
 
 TAG = "__unify__"
+#: How much earlier than a cell's start a file time may be and still count as
+#: written during it (file times lag the clock by up to a timer tick).
+_SWEEP_MARGIN_NS = 2_000_000_000
+
 #: The module whose dict is the session's globals (``__name__`` of every cell).
 SESSION_MODULE = "__sandbox_worker__"
 MAX_DEPTH = 64
@@ -1034,6 +1040,15 @@ class Worker:
         # harness asks for it in init; ``audit_state`` is "on" or why not.
         self.audit: Any = None
         self.audit_state: Optional[str] = None
+        # The memory agents' persistent interpreters: the roots whose modules
+        # are checked for changed files before each cell (init's "sweep"),
+        # each module's file and stamp when first seen, the lazily bound
+        # names (rebound when their package is dropped) and when the last
+        # cell started (nanoseconds).
+        self.sweep_roots: tuple[str, ...] = ()
+        self._module_stamps: dict[str, tuple] = {}
+        self._lazy: dict[str, str] = {}
+        self._cell_started_ns = 0
 
     # -- channel -------------------------------------------------------------
     def send(self, msg: dict) -> None:
@@ -1314,6 +1329,7 @@ class Worker:
             ):
                 # imported by the first cell that uses it (:class:`_LazyModule`)
                 self.ns[name] = _LazyModule(spec[1], self.ns)
+                self._lazy[name] = spec[1]
                 continue
             value = self._import(spec)
             if isinstance(value, _Refused):
@@ -1326,8 +1342,71 @@ class Worker:
             self.ns["help"] = self.help
         if isinstance(msg.get("audit"), dict):
             self.audit_state = self._install_audit(msg["audit"])
+        sweep = msg.get("sweep")
+        if isinstance(sweep, list):
+            self.sweep_roots = tuple(
+                r.rstrip("/") for r in sweep if isinstance(r, str) and r.startswith("/") and r.rstrip("/")
+            )
         self.base_ns = dict(self.ns)
         return missing
+
+    def _under_sweep(self, path: Any) -> bool:
+        return isinstance(path, str) and any(path.startswith(r + "/") for r in self.sweep_roots)
+
+    def sweep_modules(self) -> list[str]:
+        """Before a cell in a persistent memory interpreter: drop every module
+        loaded from a file under :attr:`sweep_roots` whose file changed since
+        it was loaded, with every module of the same top-level package (a
+        package re-imported without its submodules would lose them as
+        attributes), so the next import reads the files as they are now. A
+        lazily bound name whose package was dropped is bound lazily again; a
+        name a cell bound is left as it is (it keeps the code it was bound
+        to). Fails safe: a module whose file cannot be read, or that was first
+        seen after a cell during which its file may have been written, is
+        dropped too. Standard library only; reads ``os.stat`` of paths in the
+        box. Returns the dropped names."""
+        now = time.time_ns()
+        changed: set[str] = set()
+        for name, module in list(sys.modules.items()):
+            path = getattr(module, "__file__", None)
+            if not self._under_sweep(path):
+                continue
+            try:
+                st = os.stat(path)
+                stamp: Optional[tuple] = (path, st.st_size, st.st_mtime_ns)
+            except (OSError, ValueError):
+                stamp = None
+            known = self._module_stamps.get(name)
+            if known is None:
+                # loaded during the last cell: its file may have been written
+                # after it was read, so only a file older than that cell's start
+                # is known to match its code (file times come from a coarse
+                # clock, hence the margin; a needless reload is harmless)
+                if stamp is None or stamp[2] >= self._cell_started_ns - _SWEEP_MARGIN_NS:
+                    changed.add(name)
+                else:
+                    self._module_stamps[name] = stamp
+            elif known != stamp:
+                changed.add(name)
+        tops = {n.split(".", 1)[0] for n in changed}
+        dropped: list[str] = []
+        for name in list(sys.modules):
+            if name.split(".", 1)[0] in tops and self._under_sweep(getattr(sys.modules[name], "__file__", None)):
+                sys.modules.pop(name, None)
+                self._module_stamps.pop(name, None)
+                dropped.append(name)
+        for name, target in self._lazy.items():
+            value = self.ns.get(name)
+            if (
+                target.split(".", 1)[0] in tops
+                and isinstance(value, types.ModuleType)
+                and getattr(value, "__name__", None) == target
+            ):
+                self.ns[name] = _LazyModule(target, self.ns)
+        if dropped:
+            importlib.invalidate_caches()
+        self._cell_started_ns = now
+        return dropped
 
     def _install_audit(self, spec: dict) -> str:
         """Install the memory audit hook (``unify/memory/integration/
@@ -1731,6 +1810,11 @@ class Worker:
         listing = bool(msg.get("inventory")) and not msg.get("scratch")
         inventory: Optional[str] = None
         try:
+            if self.sweep_roots:
+                try:
+                    self.sweep_modules()
+                except Exception:  # noqa: BLE001 - never the cell's error; the next cell sweeps again
+                    pass
             self.apply_sync(msg.get("sync") or {})
             self.renew_requests()
             ns = dict(self.ns) if msg.get("scratch") else self.ns

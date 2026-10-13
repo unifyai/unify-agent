@@ -275,7 +275,12 @@ class MemoryProfile:
     ``PYTHONPATH=/inputs:/memory``). *fsize_bytes*: the file-size limit lowered for the interpreter (today's per-cell
     ``prlimit --fsize``). *measure*: the ``/memory`` quota measure (``writer_pass._measure`` of the box), run after
     every cell and from :meth:`BoxInterpreter.measure_quota`; a breach text kills the box. *opens_path*: the pass's
-    ``box-opens.jsonl``. *idle_restart_s*: an interpreter idle this long is stopped (None: never).
+    ``box-opens.jsonl``. *idle_restart_s*: an interpreter idle this long is stopped (None: never). *globals*: the
+    names bound in every cell besides ``tools`` (:func:`unify.common.tool_registry.prebound`'s specs: ``memory``, lazy,
+    where the box holds the library package). *help*: the worker's own ``help`` is bound (it renders with ``pydoc`` in
+    the box; its one host request, ``doc``, is refused like every other). *sweep_roots*: before each cell, a module
+    loaded from a file under these roots that changed since it was loaded is dropped from ``sys.modules``, so the
+    next import reads the new file (a persistent interpreter never tests stale library code).
     """
 
     pass_id: Optional[str] = None
@@ -287,6 +292,9 @@ class MemoryProfile:
     opens_path: Optional[Path] = None
     measure: Optional[Callable[[], Optional[str]]] = None
     idle_restart_s: Optional[float] = 600.0
+    globals: Mapping[str, list] = field(default_factory=dict)
+    help: bool = True
+    sweep_roots: tuple[str, ...] = ("/memory",)
 
 
 @dataclass
@@ -469,12 +477,17 @@ class _MemoryBackend:
             name="box-interpreter-reader",
             daemon=True,
         ).start()
+        bound: dict[str, list] = {TOOLS_MODULE: ["module", TOOLS_MODULE]} if stub_source is not None else {}
+        for name, spec in dict(getattr(self.profile, "globals", None) or {}).items():
+            if name != TOOLS_MODULE:  # tools exists only with its stub
+                bound[name] = list(spec)
         init = {
             "op": "init",
             "sys_path": [BOX_TOOLS_DIR, *self.profile.sys_path, *box_python_paths()],
             "builtins": sorted(dir(builtins)),
-            "globals": {TOOLS_MODULE: ["module", TOOLS_MODULE]} if stub_source is not None else {},
-            "help": False,
+            "globals": bound,
+            "help": bool(getattr(self.profile, "help", False)),
+            "sweep": [r for r in getattr(self.profile, "sweep_roots", ()) or () if isinstance(r, str)],
             "no_bytecode": True,
             "audit": {
                 "roots": list(self.profile.audit_roots),
