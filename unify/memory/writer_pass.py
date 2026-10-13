@@ -2746,6 +2746,13 @@ class WriterPass:
                     if getattr(self, "_temp_kept", None)
                     else {}
                 ),
+                # tools in code: the handler threads alive when the gate would start; 0 whenever the gate ran,
+                # more than 0 beside temp_kept when a handler kept it from starting (None: the pass ended before)
+                **(
+                    {"handlers_alive_at_gate": getattr(self, "_handlers_at_gate", None)}
+                    if getattr(self, "_in_code_pass", False)
+                    else {}
+                ),
             },
         )
 
@@ -4149,6 +4156,10 @@ class WriterPass:
         self._temp_kept = None
         # tools in code (UNIFY_TOOLS_IN_CODE=on, library mode): one JSON tool, the rest called from cells
         in_code = library and bool(getattr(self.cfg, "tools_in_code", False))
+        # tools in code: the handler threads still running when the gate would start (None: that point was not
+        # reached); written on the pass end event
+        self._in_code_pass = in_code
+        self._handlers_at_gate = None
         # library mode: the shared no-progress rule (loop_stop.AgentNoProgress), always on; a capped pass without the
         # library is bounded by its call and USD caps as before
         no_progress = None
@@ -5145,7 +5156,9 @@ class WriterPass:
                 # no box can write /memory and no tool handler of the pass may run while the gate judges it
                 await session.close()
                 alive = session.box_alive()
-                if alive or not await ic.threads.wait_idle(self.in_code_idle_s):
+                idle = not alive and await ic.threads.wait_idle(self.in_code_idle_s)
+                self._handlers_at_gate = ic.threads.running()
+                if not idle:
                     why = (
                         "a box of this pass is still running"
                         if alive

@@ -276,6 +276,9 @@ def test_the_event_file_has_the_base_fields_plus_the_additive_ones(tmp_path):
             assert r["refusal"]["form"] in codes.get(r["tool"], []) + codes["*"], r
     # the rows kept on the pass are the file's rows
     assert sorted(r["call"] for r in writer.tool_events) == sorted(r["call"] for r in calls)
+    # every handler thread had returned when the gate would start
+    (end,) = [r for r in rows if r["event"] == "pass_end"]
+    assert end["handlers_alive_at_gate"] == 0 and "temp_kept" not in end
 
 
 def test_off_the_requests_and_rows_are_as_before(tmp_path):
@@ -292,6 +295,9 @@ def test_off_the_requests_and_rows_are_as_before(tmp_path):
     names = [t["function"]["name"] for t in writer_tools(library_mode=True)]
     assert model.tool_lists[0] == names
     assert all(not (ADDED_FIELDS & set(r)) for r in writer.tool_events)
+    events = [json.loads(line) for line in (tmp_path / "out" / "p1" / "tool-events.jsonl").read_text().splitlines()]
+    (end,) = [r for r in events if r["event"] == "pass_end"]
+    assert "handlers_alive_at_gate" not in end
 
 
 # --- the allow-lists ---------------------------------------------------------------------------------------------------
@@ -666,6 +672,8 @@ def test_a_pass_that_ends_with_a_handler_thread_alive_keeps_its_folder_and_says_
         (end,) = [r for r in rows if r["event"] == "pass_end"]
         assert end["temp_kept"]["reason"] == "a tool handler of this pass is still running"
         assert Path(end["temp_kept"]["path"]) == box.parent
+        # the stuck handler's thread was alive when the gate would start
+        assert end["handlers_alive_at_gate"] == 1
         closed = [r for r in rows if r["event"] == "channel_closed"]
         assert [r["reason"] for r in closed] == ["handler_stuck"]
     finally:
