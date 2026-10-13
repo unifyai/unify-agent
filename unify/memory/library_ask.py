@@ -16,6 +16,8 @@ if "wrap_call" not in globals():  # imported as a harness module of its own, not
     from .library_helper import (  # noqa: F401
         _CAPTURE_ID,
         _ROOT,
+        _bounded_exchange,
+        _stop_child,
         CAPTURE_PREFIX,
         HELPER_EVENT,
         RUN_TIMEOUT_S,
@@ -116,7 +118,6 @@ def _recognise(reader: str, rows: list, text: str, applies_of: Any = None) -> tu
     """Run *reader* once on *text*, then each row's ``applies`` on what it gave, in one confined child; the
     outcomes only (:data:`READ_OUTCOMES`, :data:`APPLIES_OUTCOMES`). A child that fails, or runs past
     :data:`RUN_TIMEOUT_S`, means the reader did not parse; nothing is retried."""
-    import signal
     import subprocess
 
     spec = _spec(reader, "read_input")
@@ -142,17 +143,13 @@ def _recognise(reader: str, rows: list, text: str, applies_of: Any = None) -> tu
     except OSError:
         return none
     try:
-        raw, _ = child.communicate(payload.encode("utf-8"), timeout=RUN_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        raw = b""
+        # bounded as memory.run's child is (library_helper: RUN_OUTPUT_MAX_BYTES); a timeout or an overrun reads as
+        # "did not parse"
+        raw, timed_out, over = _bounded_exchange(child, payload.encode("utf-8"), RUN_TIMEOUT_S)
+        if timed_out or over:
+            raw = b""
     finally:
-        try:
-            os.killpg(child.pid, signal.SIGKILL)  # the run's whole group, whatever it left running
-        except OSError:
-            pass
-        if child.poll() is None:
-            child.kill()
-        child.wait()
+        _stop_child(child)
     stdout = (raw or b"").decode("utf-8", "replace")
     if _ASK_MARK not in stdout:
         return none

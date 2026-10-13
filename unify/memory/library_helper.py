@@ -1047,7 +1047,6 @@ def _confined(capture_id: str, args: tuple, kwargs: dict, once: bool = False) ->
     (``-I``), an empty environment, its own process group, the capture's directory as its working directory and a
     bounded time (:data:`RUN_TIMEOUT_S`); the child's process group is stopped when the time runs out or the run
     ends. Inputs and the result cross as JSON. The child's report, or ``{"outcome": "error", ...}``."""
-    import signal
     import subprocess
 
     d = _capture_dir(capture_id)
@@ -1072,55 +1071,10 @@ def _confined(capture_id: str, args: tuple, kwargs: dict, once: bool = False) ->
         )
     except OSError as exc:
         return {"outcome": "error", "error": type(exc).__name__, "detail": "the run could not start"}
-    import select
-    import time
-
-    timed_out = over = False
-    raw = b""
-    data = payload.encode("utf-8")
-
-    def feed() -> None:
-        # the input goes in from its own thread, so a child that prints before reading never blocks the bounded read
-        try:
-            child.stdin.write(data)
-            child.stdin.close()
-        except OSError:
-            pass
-
-    feeder = threading.Thread(target=feed, daemon=True, name="memory-run-input")
     try:
-        feeder.start()
-        deadline = time.monotonic() + RUN_TIMEOUT_S
-        fd = child.stdout.fileno()
-        chunks: list = []
-        size = 0
-        while True:
-            left = deadline - time.monotonic()
-            if left <= 0:
-                timed_out = True
-                break
-            ready, _, _ = select.select([fd], [], [], left)
-            if not ready:
-                continue
-            chunk = os.read(fd, 65536)
-            if not chunk:
-                break
-            size += len(chunk)
-            if size > RUN_OUTPUT_MAX_BYTES:
-                over = True
-                break
-            chunks.append(chunk)
-        raw = b"".join(chunks)
+        raw, timed_out, over = _bounded_exchange(child, payload.encode("utf-8"), RUN_TIMEOUT_S)
     finally:
-        try:
-            os.killpg(child.pid, signal.SIGKILL)  # the run's whole group, whatever it left running
-        except OSError:
-            pass
-        if child.poll() is None:
-            child.kill()
-        child.wait()
-        # the input thread ends once the child is gone (its pipe closes), so no thread outlives the call
-        feeder.join(5)
+        _stop_child(child)
     if timed_out:
         return {"outcome": "error", "error": "TimeoutExpired",
                 "detail": f"it ran past {RUN_TIMEOUT_S:g} s and was stopped"}
@@ -1138,6 +1092,67 @@ def _confined(capture_id: str, args: tuple, kwargs: dict, once: bool = False) ->
         return {"outcome": "error", "error": "NoReport",
                 "detail": f"the run ended (exit {child.returncode}) without a report"}
     return rep
+
+
+def _bounded_exchange(child: Any, data: bytes, timeout_s: float) -> tuple[bytes, bool, bool]:
+    """Send *data* to *child*'s stdin and read its stdout until it closes, the time runs out or more than
+    :data:`RUN_OUTPUT_MAX_BYTES` arrive: ``(output, timed out, over the bound)``. The input is written from a thread
+    that ends with the child's pipe, so a child that prints before reading never blocks the bounded read. The caller
+    stops the child's process group afterwards, whatever this returns."""
+    import select
+    import time
+
+    def feed() -> None:
+        try:
+            child.stdin.write(data)
+            child.stdin.close()
+        except OSError:
+            pass
+
+    feeder = threading.Thread(target=feed, daemon=True, name="memory-run-input")
+    feeder.start()
+    deadline = time.monotonic() + timeout_s
+    fd = child.stdout.fileno()
+    chunks: list = []
+    size = 0
+    timed_out = over = False
+    try:
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                timed_out = True
+                break
+            ready, _, _ = select.select([fd], [], [], left)
+            if not ready:
+                continue
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > RUN_OUTPUT_MAX_BYTES:
+                over = True
+                break
+            chunks.append(chunk)
+    finally:
+        child._unify_feeder = feeder  # joined by _stop_child once the child is gone
+    return b"".join(chunks), timed_out, over
+
+
+def _stop_child(child: Any) -> None:
+    """Stop *child*'s whole process group, whatever it left running, and wait for it; the input thread of
+    :func:`_bounded_exchange` then ends with its pipe and is joined, so no thread outlives the call."""
+    import signal
+
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except OSError:
+        pass
+    if child.poll() is None:
+        child.kill()
+    child.wait()
+    feeder = getattr(child, "_unify_feeder", None)
+    if feeder is not None:
+        feeder.join(5)
 
 
 def _run_capture(capture_id: str, args: tuple, kwargs: dict) -> RunReport:
