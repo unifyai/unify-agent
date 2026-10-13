@@ -10,7 +10,12 @@ Both are written by the harness at each export, with no model call, only while `
 * the notes after the functions, and the captured procedures last, at level ``unchecked``;
 * no answer value, no raw request text, no printed identifier; the same bytes for the same commit.
 
-No model is called and no box is started.
+The item records are what production writes (``librarian_world``: a landing, the library gate's check and
+``lifecycle.next_records``), so a function's reader is the one the records name: a landed procedure's is the reader
+it was landed with, another function's is the gate's when the gate found exactly one, and a function the gate found
+several readers of has none.
+
+No model is called. Building the world's records runs code confined, so those tests need bubblewrap.
 """
 
 from __future__ import annotations
@@ -21,6 +26,8 @@ import re
 import pytest
 
 from tests.memory import librarian_world as w
+from tests.memory.librarian_world import needs_box
+from unify.memory import captures
 from unify.memory.library_index import signature_text
 from unify.memory.signatures import strip_identifiers
 from unify.settings import SETTINGS
@@ -106,6 +113,7 @@ def _capture_ids(caps: dict) -> list[str]:
 # --- the catalogue's layout ----------------------------------------------------------------------------------
 
 
+@needs_box
 def test_one_card_per_function_in_module_path_order_then_notes_then_captures(tmp_path):
     _, files, caps = _world(tmp_path)
     text = files[CATALOGUE].decode("utf-8")
@@ -115,11 +123,12 @@ def test_one_card_per_function_in_module_path_order_then_notes_then_captures(tmp
     assert "_helper" not in text
 
 
+@needs_box
 def test_a_card_holds_its_id_signature_first_docstring_paragraph_and_notes(tmp_path):
     _, files, _ = _world(tmp_path)
     text = files[CATALOGUE].decode("utf-8")
     card = _card(text, w.TOTAL)
-    assert "total_amount(rows: list) -> int" in card
+    assert "`memory.orders.procedures:total_amount(value)`" in card  # as the landing named it
     # the first paragraph, both its lines, and nothing of the second
     assert "Sum the amount column of an order table." in card
     assert "Each row is a record keyed by column name." in card
@@ -129,6 +138,7 @@ def test_a_card_holds_its_id_signature_first_docstring_paragraph_and_notes(tmp_p
         assert _card(text, item)  # every function has exactly one card
 
 
+@needs_box
 def test_a_card_shows_what_it_was_saved_against_without_identifiers(tmp_path):
     _, files, _ = _world(tmp_path)
     text = files[CATALOGUE].decode("utf-8")
@@ -141,20 +151,25 @@ def test_a_card_shows_what_it_was_saved_against_without_identifiers(tmp_path):
     assert _flat(strip_identifiers(w.LEDGER_APPROACH)) in ledger
 
 
+@needs_box
 def test_a_card_shows_its_evidence_level_status_reader_applies_and_input_line(tmp_path):
     _, files, _ = _world(tmp_path)
     text = files[CATALOGUE].decode("utf-8")
+    recs = w.records()
     card = _card(text, w.TOTAL)
     assert EVIDENCE_LABEL in card.lower()
-    assert "reproduces-its-case" in card and "adopted" in card
-    assert w.READ_ORDERS in card  # its reader
-    assert "applies" in card
-    assert _flat(signature_text(w.TOTAL_SIGNATURE)) in _flat(card)
+    # the gate's level for a landed procedure reproduced on its recorded case, and its status
+    assert recs[w.TOTAL]["level"] == "reproduces-its-case"
+    assert f"Evidence: level reproduces-its-case; status adopted; reader {w.READ_TOTAL}; applies: yes" in card
+    # its input line: the capture's applicability signature, which its record carries from the landing
+    assert f"Input: {signature_text(recs[w.TOTAL]['signature'])}" in card
     ledger = _card(text, w.RECONCILE)
-    assert "unchecked" in ledger and "on-trial" in ledger
-    assert _flat(signature_text(w.LEDGER_SIGNATURE)) in _flat(ledger)
+    assert f"level {recs[w.RECONCILE]['level']}; status on-trial;" in ledger
+    # never landed: no signature, so no input line
+    assert recs[w.RECONCILE]["signature"] is None and "Input:" not in ledger
 
 
+@needs_box
 def test_captured_procedures_come_last_at_level_unchecked(tmp_path):
     _, files, caps = _world(tmp_path)
     text = files[CATALOGUE].decode("utf-8")
@@ -167,6 +182,7 @@ def test_captured_procedures_come_last_at_level_unchecked(tmp_path):
     assert max(function_lines) < note_line < first_capture
 
 
+@needs_box
 def test_the_catalogue_carries_no_answer_raw_request_or_printed_identifier(tmp_path):
     _, files, _ = _world(tmp_path)
     text = files[CATALOGUE].decode("utf-8")
@@ -178,6 +194,7 @@ def test_the_catalogue_carries_no_answer_raw_request_or_printed_identifier(tmp_p
     assert "The total came to" not in text and "accepted:" not in text
 
 
+@needs_box
 def test_the_catalogue_is_byte_stable_for_the_same_commit_and_names_no_host_path(tmp_path):
     _, one, caps = _world(tmp_path / "a")
     _, two, _ = _world(tmp_path / "b")
@@ -190,6 +207,7 @@ def test_the_catalogue_is_byte_stable_for_the_same_commit_and_names_no_host_path
         assert str(tmp_path).encode() not in blob
 
 
+@needs_box
 def test_the_order_is_never_a_score(tmp_path):
     """Use counts, statuses and levels change nothing about where a card sits."""
     tree = w.write_tree(tmp_path / "lib")
@@ -212,6 +230,7 @@ def test_an_empty_library_has_an_empty_catalogue_and_dispatch_file(tmp_path):
 # --- the dispatch file ------------------------------------------------------------------------------------------
 
 
+@needs_box
 def test_the_dispatch_file_lists_each_procedure_with_a_reader_or_applies(tmp_path):
     _, files, caps = _world(tmp_path)
     rows = dispatch_rows(json.loads(files[DISPATCH]))
@@ -222,10 +241,14 @@ def test_the_dispatch_file_lists_each_procedure_with_a_reader_or_applies(tmp_pat
         assert isinstance(row["input"], str)
     by_id = {r["id"]: r for r in rows}
     total = by_id[w.TOTAL]
-    assert total["reader"] == w.READ_ORDERS and total["applies"] is True
-    assert total["input"] == signature_text(w.TOTAL_SIGNATURE)
-    # a function with neither a reader nor applies is not a row
-    for item in (w.TOKENS, w.WORDS, w.COUNT):
+    assert total["reader"] == w.READ_TOTAL and total["applies"] is True
+    # a landed reader is never a procedure read by itself (its own test opens the fixture it produced)
+    assert w.READ_TOTAL not in by_id and all(r["reader"] != r["id"] for r in rows)
+    assert total["input"] == signature_text(w.records()[w.TOTAL]["signature"])
+    # a function with one reader by the gate is a row, with no applies and no input line
+    assert by_id[w.COUNT] == {"id": w.COUNT, "reader": w.READ_ORDERS, "applies": False, "input": ""}
+    # a function with neither one reader nor applies is not a row
+    for item in (w.TOKENS, w.WORDS, w.RECONCILE, w.READ_ORDERS, w.READ_LEDGER, w.READ_PAYMENTS):
         assert item not in by_id
     grid, marked = (f"capture:{w.capture_id(s)}" for s in (w.CAPTURE_GRID, w.CAPTURE_MARKED))
     assert by_id[grid]["applies"] is True and by_id[grid]["reader"]
@@ -237,9 +260,78 @@ def test_the_dispatch_file_lists_each_procedure_with_a_reader_or_applies(tmp_pat
         assert planted not in blob
 
 
+# --- each function's reader, as the records production writes name it -------------------------------------------
+
+
+def _dispatched(files: dict) -> dict:
+    data = json.loads(files[DISPATCH])
+    return {"rows": {r["id"]: r for r in dispatch_rows(data)}, "applies_of": data["applies_of"]}
+
+
+def _evidence(card: str) -> str:
+    (line,) = [x for x in card.splitlines() if x.startswith("Evidence: ")]
+    return line
+
+
+@needs_box
+def test_a_landed_procedure_is_read_by_the_reader_it_was_landed_with(tmp_path):
+    """The landed procedure's record names its capture and the reader it was landed with, and carries the capture's
+    signature and its applies; the gate found two readers of it (its landed test's and the writer's test's parsed
+    fixtures), and the dispatch file and its card use the landing's, never one of the gate's two."""
+    total = w.records()[w.TOTAL]
+    assert total["landed_from"] == {"capture": w.landed_capture(), "reader": w.READ_TOTAL}
+    assert total["reader"] == sorted([w.READ_TOTAL, w.READ_ORDERS])
+    landed = captures.landed_items(w.built().store)[w.TOTAL]
+    assert total["signature"] == landed["signature"] and isinstance(total["signature"], dict)
+    assert total["applies"] == landed["applies"] == w.TOTAL_APPLIES
+    _, files, _ = _world(tmp_path)
+    got = _dispatched(files)
+    assert got["rows"][w.TOTAL] == {
+        "id": w.TOTAL,
+        "reader": w.READ_TOTAL,
+        "applies": True,
+        "input": signature_text(total["signature"]),
+    }
+    assert got["applies_of"] == {w.TOTAL: w.TOTAL_APPLIES}
+    card = _card(files[CATALOGUE].decode("utf-8"), w.TOTAL)
+    assert _evidence(card).endswith(f"; reader {w.READ_TOTAL}; applies: yes")
+
+
+@needs_box
+def test_an_unlanded_function_the_gate_finds_one_reader_of_is_dispatched_with_it(tmp_path):
+    recs = w.records()
+    count = recs[w.COUNT]
+    assert (count["landed_from"], count["signature"], count["applies"]) == (None, None, None)
+    assert count["reader"] == [w.READ_ORDERS]
+    # the reader's own record says what it read for
+    reader = recs[w.READ_ORDERS]
+    assert reader["role"] == "reader" and reader["reads_for"] == ["memory/orders/tests/data/orders.json"]
+    _, files, _ = _world(tmp_path)
+    assert _dispatched(files)["rows"][w.COUNT] == {"id": w.COUNT, "reader": w.READ_ORDERS, "applies": False, "input": ""}
+    card = _card(files[CATALOGUE].decode("utf-8"), w.COUNT)
+    assert _evidence(card).endswith(f"; reader {w.READ_ORDERS}; applies: no")
+
+
+@needs_box
+def test_an_unlanded_function_the_gate_finds_two_readers_of_is_not_dispatched_and_its_card_says_why(tmp_path):
+    rec = w.records()[w.RECONCILE]
+    assert (rec["landed_from"], rec["signature"], rec["applies"]) == (None, None, None)
+    assert rec["reader"] == [w.READ_LEDGER, w.READ_PAYMENTS]
+    for reader in (w.READ_LEDGER, w.READ_PAYMENTS):
+        assert w.records()[reader]["role"] == "reader"
+    _, files, _ = _world(tmp_path)
+    assert w.RECONCILE not in _dispatched(files)["rows"]
+    card = _card(files[CATALOGUE].decode("utf-8"), w.RECONCILE)
+    assert _evidence(card).endswith(
+        f"; reader none of its 2 ({w.READ_LEDGER}, {w.READ_PAYMENTS}): more than one reads its tests' fixtures; "
+        "applies: no",
+    )
+
+
 # --- off ---------------------------------------------------------------------------------------------------------
 
 
+@needs_box
 def test_off_generates_neither_file_and_the_other_files_keep_their_bytes(tmp_path, monkeypatch):
     from unify.memory.layout import INDEX_FILE, LINKS_FILE, RESERVED_CONTRACT, RESERVED_INIT, RESERVED_STUB
     from unify.memory.library_helper import FIND_FILE, ITEMS_FILE, MATCHER_FILE, SHAPES_FILE

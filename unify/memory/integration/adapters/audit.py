@@ -288,7 +288,7 @@ _LABEL = re.compile(r"[a-z][a-z0-9-]{0,39}")
 #: characters, never a value.
 _ASK_REASON = re.compile(
     r"timeout after \d{1,4}(?:\.\d{1,3})? s(?: for all readers)?|output overrun|no marker|no report|malformed report"
-    r"|(?:start|runner): [A-Za-z_][A-Za-z0-9_]{0,60}",
+    r"|(?:start|runner|load): [A-Za-z_][A-Za-z0-9_]{0,60}",
 )
 # The characters of a token that a clip may have cut through: a clipped text drops its trailing run of them.
 _TOKEN_CHARS = frozenset(

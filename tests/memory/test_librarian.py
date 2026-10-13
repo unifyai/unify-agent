@@ -1,20 +1,32 @@
 """The librarian (``UNIFY_MEMORY_LIBRARIAN``, design J(b)): the catalogue and dispatch file each export writes,
 ``memory.ask`` in the generated package, the ``ask_library`` tool, the librarian's session on the memory agents'
 runtime, the actor's constant pointer, the use record's ask fields, and the switch itself. Keyless: the librarian's
-model is the scripted transport (``tests/scripted_model.py``), and the boxes are real where they are named."""
+model is the scripted transport (``tests/scripted_model.py``), and the boxes are real where they are named.
+
+The library's item records are what production writes (:mod:`tests.memory.gate_records`): a pass lands the capture of
+episode ``e1`` as :data:`TOTAL`, read by the reader it was landed with (:data:`READ_ROWS`) and with its ``applies``
+(:data:`WIDE`); the library gate checks it, and the records are ``lifecycle.next_records`` with the gate's
+verification and the capture store's landing. Building them runs code confined, so the tests that read the library
+need bubblewrap."""
 
 from __future__ import annotations
 
+import atexit
+import copy
+import functools
 import json
 import os
 import re
 import shutil
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from tests.memory.gate_records import Built, Landing, build
+from tests.memory.test_episodes import _ep
 from tests.memory.test_library_helper import _py
 from tests.scripted_model import ScriptedModel, reply, scripted
 from unify.common import tool_registry as R
@@ -27,7 +39,9 @@ from unify.memory.analysis import use
 from unify.memory.catalogue import write_files
 from unify.memory.integration.adapters.audit import CellAudit
 from unify.memory.integration.request import add_runtime_calls, library_helper_calls, runtime_calls_empty
+from unify.memory.episodes import Action
 from unify.memory.layout import RESERVED_INIT, RESERVED_STUB
+from unify.memory.library_index import signature_text
 from unify.settings import SETTINGS, ProductionSettings
 
 needs_box = pytest.mark.skipif(
@@ -35,9 +49,10 @@ needs_box = pytest.mark.skipif(
     reason="bubblewrap and prlimit required",
 )
 
-TOTAL = "memory.tables.read:total"
-READ_ROWS = "memory.tables.read:read_rows"
-WIDE = "memory.tables.read:wide"
+#: The landed procedure, the reader it was landed with and its ``applies``, as ``land_capture`` names them.
+TOTAL = "memory.tables.procedures:total"
+READ_ROWS = "memory.tables.readers:read_total"
+WIDE = "memory.tables.procedures:_total_applies"
 COUNT = "memory.tables.count:count_rows"
 NOTE = "notes/tables/sums.md"
 CAPTURE = "0123456789abcdef"
@@ -48,13 +63,16 @@ REQUEST = "4096 8191 3\n5 7 11"
 PLANTED_VALUE = str(4096 * PLANTED_FACTOR)
 #: Identifiers by their form alone (signatures.strip_identifiers): never in the catalogue.
 IDS = ("run_000123", "0f3a9c7e1b", "123e4567-e89b-12d3-a456-426614174000")
-#: A value only the item records hold, under keys the catalogue never reads.
-RECORD_ONLY = "recorded-answer-value-never-shown"
+#: The request the landed procedure's episode answered and the total it handed back: only that episode and the
+#: library's fixtures hold them, never the catalogue.
+RECORDED_REQUEST = "2 3 5\n7 11 13"
+RECORDED_TOTAL = str(41 * PLANTED_FACTOR)
 
-READ = f'''"""Readers and sums of number tables."""
+#: The procedure the episode-end fork staged for ``e1``, which the pass lands as :data:`TOTAL`.
+PROCEDURE_TOTAL = f'''"""Sum every number of a table's rows."""
 
 
-def read_rows(text):
+def read_input(text):
     """Read whitespace-separated rows of integers from text.
 
     Raises ValueError on text that holds no such rows."""
@@ -64,18 +82,18 @@ def read_rows(text):
     return rows
 
 
-def wide(value):
+def applies(value):
     """Whether every row holds more than two numbers."""
     return all(len(r) > 2 for r in value)
 
 
-def total(rows):
+def run(value):
     """Sum every number of a table's rows.
 
     It takes the rows read_rows gives.
 
     Notes: notes/tables/sums.md"""
-    return sum(sum(r) for r in rows)
+    return sum(sum(r) for r in value)
 '''
 COUNT_SRC = '''"""Counting rows."""
 
@@ -87,7 +105,7 @@ def count_rows(rows):
 NOTE_SRC = """---
 title: Sums of tables
 description: How table sums are taken
-uses: [memory.tables.read:total]
+uses: [memory.tables.procedures:total]
 ---
 Sum each row, then the row sums.
 """
@@ -118,25 +136,40 @@ def _summary(episode: str) -> str | None:
     )
 
 
+#: The library stored before the pass.
+BASE = {
+    "memory/tables/__init__.py": '"""Number tables."""\n',
+    "memory/tables/count.py": COUNT_SRC,
+    "notes/tables/sums.md": NOTE_SRC,
+}
+
+
+@functools.lru_cache(maxsize=1)
+def _built() -> Built:
+    """The pass that lands the capture of episode ``e1`` as :data:`TOTAL`, the gate's check and the item records;
+    once per process."""
+    root = Path(tempfile.mkdtemp(prefix="librarian-tables-"))
+    atexit.register(shutil.rmtree, root, True)
+    episode = _ep(
+        episode_id="e1",
+        request=[RECORDED_REQUEST],
+        transcript=[{"role": "user", "content": RECORDED_REQUEST}],
+        cells=[],
+        actions=[
+            Action(-1, "dialogue:user", "answer", [int(RECORDED_TOTAL)], {}, "Accepted.", "ok", "unknown", kind="dialogue"),
+        ],
+    )
+    return build(
+        root,
+        episodes={"e1": episode},
+        base=BASE,
+        landings=[Landing("e1", PROCEDURE_TOTAL, _summary("e1"), "tables", "total")],
+    )
+
+
 def _records() -> dict:
-    sig = {
-        "input": memory_helper.value_shape({"rows": [[1, 2, 3]], "unit": "kg"}),
-        "output": memory_helper.value_shape(6),
-        "relations": ["scalar_output"],
-        "constraints": {"applies": {"stated": True, "held": True, "sha256": None}},
-        "goal": "Add up a table.",
-    }
-    return {
-        TOTAL: {
-            "signature": sig,
-            "level": "reproduces-its-case",
-            "reader": READ_ROWS,
-            "applies": WIDE,
-            "provenance": {"episodes": ["e1", "e2"]},
-            "use": {"a" * 40: {"uses": 2, "ok": 2}},
-            "answer": RECORD_ONLY,
-        },
-    }
+    """The item records production writes for the library; a fresh copy each call."""
+    return copy.deepcopy(_built().records)
 
 
 def _captures() -> dict[str, bytes]:
@@ -161,12 +194,8 @@ def _captures() -> dict[str, bytes]:
 
 
 def _tree(root: Path) -> Path:
-    for rel, text in {
-        "memory/tables/__init__.py": '"""Number tables."""\n',
-        "memory/tables/read.py": READ,
-        "memory/tables/count.py": COUNT_SRC,
-        "notes/tables/sums.md": NOTE_SRC,
-    }.items():
+    """The library the gate checked, written under *root*."""
+    for rel, text in _built().files.items():
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_text(text)
     return root
@@ -190,45 +219,53 @@ def _copy(tmp_path: Path, librarian: bool = True, name: str = "copy") -> Path:
 # --- the catalogue and the dispatch file ------------------------------------------------------------------------
 
 
+@needs_box
 def test_the_catalogue_has_one_card_per_function_in_module_order_then_notes_then_captures(tmp_path):
     root = _copy(tmp_path)
     text = (root / lx.CATALOGUE_FILE).read_text()
-    assert L.catalogue_ids(text) == [COUNT, READ_ROWS, TOTAL, WIDE, NOTE, "capture:" + CAPTURE, "capture:" + FAILED]
+    # its applies is private to the procedure's module: no card of its own
+    assert L.catalogue_ids(text) == [COUNT, TOTAL, READ_ROWS, NOTE, "capture:" + CAPTURE, "capture:" + FAILED]
     assert text.index("## Functions") < text.index("## Notes") < text.index("## Captured procedures")
     card = text.split(f"### {TOTAL}\n", 1)[1].split("\n### ", 1)[0]
-    assert "`memory.tables.read:total(rows)`" in card
+    assert f"`{TOTAL}(value)`" in card
     assert "Sum every number of a table's rows." in card and "It takes the rows" not in card  # first paragraph
     assert "- Asked: Add up a table of numbers from <id> and report the total (<id>)." in card
     assert "Approach: - Read the rows" in card and "run <id>" in card
     assert f"Evidence: level reproduces-its-case; status on-trial; reader {READ_ROWS}; applies: yes" in card
-    assert "Input: {" in card and "Record: " in card and f"Notes: {NOTE}" in card
+    sig = _records()[TOTAL]["signature"]
+    assert f"Input: {signature_text(sig)}" in card and "Input: {" in card
+    assert "Record: " in card and f"Notes: {NOTE}" in card
     failed = text.split(f"### capture:{FAILED}\n", 1)[1]
     assert "tried and failed: never offered to run" in failed and "Broke: reading the words raised ValueError <id>" in failed
     assert "level unchecked" in text.split(f"### capture:{CAPTURE}\n", 1)[1]
 
 
+@needs_box
 def test_the_catalogue_holds_no_identifier_answer_or_request_and_is_byte_stable(tmp_path):
     root = _copy(tmp_path)
     text = (root / lx.CATALOGUE_FILE).read_bytes()
-    for value in (*IDS, RECORD_ONLY, REQUEST, PLANTED_VALUE):
+    for value in (*IDS, RECORDED_TOTAL, RECORDED_REQUEST, REQUEST, PLANTED_VALUE):
         assert value.encode() not in text, value
     again = lx.librarian_files(root, records=_records(), summary_of=_summary, captures=_captures())
     assert again[lx.CATALOGUE_FILE] == text
     assert again[lx.DISPATCH_FILE] == (root / lx.DISPATCH_FILE).read_bytes()
 
 
+@needs_box
 def test_the_dispatch_file_lists_each_procedure_with_a_reader_or_an_applies(tmp_path):
     root = _copy(tmp_path)
     data = json.loads((root / lx.DISPATCH_FILE).read_text())
     rows = data["procedures"]
     assert [r["id"] for r in rows] == [TOTAL, "capture:" + CAPTURE]  # the failed capture is never offered
-    assert rows[0] == {"id": TOTAL, "reader": READ_ROWS, "applies": True, "input": rows[0]["input"]}
+    sig = _records()[TOTAL]["signature"]
+    assert rows[0] == {"id": TOTAL, "reader": READ_ROWS, "applies": True, "input": signature_text(sig)}
     assert rows[0]["input"].startswith("{")
     assert rows[1]["reader"] == "capture:" + CAPTURE and rows[1]["applies"] is True
     assert data["applies_of"] == {TOTAL: WIDE}  # where a landed procedure's applies lives
     assert all(set(r) == {"id", "reader", "applies", "input"} for r in rows)
 
 
+@needs_box
 def test_off_the_export_is_byte_for_byte_as_before(tmp_path):
     root = _tree(tmp_path / "lib")
     off = lx.generated_library_mode(root, records=_records())
@@ -265,6 +302,7 @@ FAKE_TOOLS = (
 )
 
 
+@needs_box
 def test_ask_computes_the_facts_in_its_own_process_and_sends_outcomes_only(tmp_path):
     root = _copy(tmp_path)
     code = (
@@ -298,6 +336,7 @@ def test_ask_computes_the_facts_in_its_own_process_and_sends_outcomes_only(tmp_p
     assert [r[0] for r in result[2]] == [TOTAL, "capture:" + CAPTURE]
 
 
+@needs_box
 def test_ask_without_the_tool_says_the_librarian_cannot_be_reached(tmp_path):
     root = _copy(tmp_path)
     code = (
@@ -332,6 +371,7 @@ NEAREST_TOOLS = (
 ) % NOTE
 
 
+@needs_box
 def test_ask_gives_the_nearest_items_when_nothing_applies_and_errors_that_teach(tmp_path):
     root = _copy(tmp_path)
     code = (
@@ -370,7 +410,7 @@ def test_ask_gives_the_nearest_items_when_nothing_applies_and_errors_that_teach(
 
 # --- the answer, the facts and the prompt ------------------------------------------------------------------------
 
-IDS_IN_ORDER = [COUNT, READ_ROWS, TOTAL, "capture:" + CAPTURE, "capture:" + FAILED]
+IDS_IN_ORDER = [COUNT, TOTAL, READ_ROWS, "capture:" + CAPTURE, "capture:" + FAILED]
 
 
 @pytest.mark.parametrize(
@@ -399,6 +439,7 @@ def test_an_answer_passes_as_the_librarian_gave_it_with_nothing_added_or_reorder
     assert got == {"fits": [], "nearest": [{"id": "capture:" + FAILED, "differs": "it failed"}]}
 
 
+@needs_box
 def test_only_dispatch_ids_with_their_own_reader_and_known_labels_reach_the_librarian(tmp_path):
     dispatch = L.read_dispatch(_copy(tmp_path))
     facts = [
@@ -479,6 +520,7 @@ def test_the_first_user_message_line_counts_the_copy_and_is_absent_for_an_empty_
     assert line_for(one) is None
 
 
+@needs_box
 def test_the_pointer_is_constant_across_libraries_and_replaces_the_index(tmp_path, monkeypatch):
     from unify.memory.integration.prompt import render_memory_library_mode
 
@@ -720,7 +762,7 @@ async def test_ask_end_to_end_facts_in_the_box_one_session_per_request_and_the_c
     assert all(c.messages[0]["content"] == system for c in model.calls)  # the cached prefix
     # the librarian's box: the library read-only, no network, an empty environment, no workspace
     tool_out = "\n".join(m["content"] for m in model.calls[1].messages if m.get("role") == "tool")
-    assert "def total(rows):" in tool_out
+    assert "def total(value):" in tool_out
     assert "WRITE REFUSED" in tool_out and "NETWORK REFUSED" in tool_out and "WORKSPACE False" in tool_out
     env_line = [line for line in tool_out.splitlines() if line.startswith("ENV ")][0]
     assert "PLANTED_LIBRARIAN_SECRET" not in env_line and "OPENROUTER" not in env_line
