@@ -77,6 +77,11 @@ class ActorRequestState:
     #: host work started by a call that outlives it (a storage review)
     host_tasks: set = field(default_factory=set)
     finished: bool = False
+    #: UNIFY_MEMORY_LIBRARIAN=on: what opens the request's librarian at its first question
+    #: (``unify.memory.librarian.opener``); None: the librarian is not available
+    open_librarian: Optional[Callable[[], Awaitable[Any]]] = None
+    #: the request's librarian session, once a question opened it; it ends with the request (``InCodeTools.close``)
+    librarian: Any = None
 
 
 def response_validator(rf_norm: Any) -> Callable[[Any], str]:
@@ -93,10 +98,15 @@ def response_validator(rf_norm: Any) -> Callable[[Any], str]:
     return validate
 
 
-def actor_flags(agent: str, can_store: bool) -> frozenset:
+def actor_flags(agent: str, can_store: bool, librarian: bool = False) -> frozenset:
     """The configuration flags the actor's or a teammate's allow-list is built with: teammates are offered
-    (``helper``), and storing only where the actor may store (*can_store*)."""
-    return frozenset({"helper"} | ({_registry.STORE_FLAG} if can_store and agent == "actor" else set()))
+    (``helper``), storing only where the actor may store (*can_store*), and asking the librarian only for the actor
+    with ``UNIFY_MEMORY_LIBRARIAN=on`` (*librarian*)."""
+    return frozenset(
+        {"helper"}
+        | ({_registry.STORE_FLAG} if can_store and agent == "actor" else set())
+        | ({_registry.LIBRARIAN_FLAG} if librarian and agent == "actor" else set()),
+    )
 
 
 def actor_binding(
@@ -112,6 +122,7 @@ def actor_binding(
     limits: Any = None,
     counters: Any = None,
     context_cls: Any = None,
+    librarian: bool = False,
 ) -> tuple[Any, tuple[str, ...]]:
     """The ``CallContext`` and the allow-list of the actor (``agent="actor"``) or a teammate (``"teammate"``) for
     one request: *roots* maps box roots (``/workspace``) to open directory descriptors, *record* is the agent
@@ -120,7 +131,7 @@ def actor_binding(
     ``store_skills`` only where the actor may store (*can_store*)."""
     if agent not in ("actor", "teammate"):
         raise ValueError(f"not the actor or a teammate: {agent!r}")
-    allow = _registry.allow_list(agent, actor_flags(agent, can_store))
+    allow = _registry.allow_list(agent, actor_flags(agent, can_store, librarian))
     if context_cls is None:
         from unify.common.tool_channel import CallContext as context_cls
     ctx = context_cls(
@@ -445,11 +456,44 @@ async def store_skills(ctx: Any, args: dict) -> Any:
     return _reply("the skill-storage review started; it runs on after this call")
 
 
+# --- asking the librarian (UNIFY_MEMORY_LIBRARIAN=on) ---
+
+
+async def ask_library(ctx: Any, args: dict) -> Any:
+    """One question to the request's librarian (``memory.ask`` sends it with the recognisers' outcomes): the session
+    is opened at the request's first question and kept for its follow-ups; the reply is the librarian's checked
+    answer as JSON text. The facts are checked against the copy's dispatch file before the librarian reads them."""
+    question = args.get("question")
+    if not isinstance(question, str) or not question.strip():
+        return _refused(refusal("ask_library", "no_question"))
+    state = ctx.state
+    session = getattr(state, "librarian", None)
+    if session is None:
+        start = getattr(state, "open_librarian", None)
+        if start is None:
+            return _refused(refusal("ask_library", "unavailable", why="this request has no librarian"))
+        from unify.memory import librarian as _librarian
+
+        try:
+            session = await start()
+        except _librarian.Unavailable as exc:
+            return _refused(refusal("ask_library", "unavailable", why=str(exc)[:300]))
+        state.librarian = session
+    from unify.memory import librarian as _librarian
+
+    try:
+        text = await session.ask(question, args.get("facts") or [])
+    except _librarian.NoAnswer as exc:
+        return _refused(refusal("ask_library", "no_answer", why=str(exc)[:300]))
+    return _reply(text)
+
+
 __all__ = [
     "ActorRequestState",
     "actor_binding",
     "actor_flags",
     "ask",
+    "ask_library",
     "delegate",
     "finish",
     "grep",

@@ -174,6 +174,7 @@ class InCodeTools:
         request_id: Optional[str] = None,
         events_folder: Optional[Path] = None,
         start: Optional[Callable[..., Awaitable[Any]]] = None,
+        librarian_opener: Optional[Callable[[], Awaitable[Any]]] = None,
     ) -> None:
         from unify.actor import tool_handlers as H
         from unify.common import tool_registry as R
@@ -194,8 +195,17 @@ class InCodeTools:
             spawner=spawner,
         )
         stores = can_store and store_skills is not None
+        # UNIFY_MEMORY_LIBRARIAN=on: the actor asks the request's librarian (tools.ask_library, from memory.ask)
+        asks = agent == "actor" and _librarian_on()
+        if asks:
+            from unify.memory import librarian as _librarian
+
+            self.state.open_librarian = librarian_opener or _librarian.opener(
+                on_event=self.events.append,
+                request_id=self.request_id,
+            )
         # the flags the allow-list is built with, which the opening names its tools by
-        self.flags = H.actor_flags(agent, stores)
+        self.flags = H.actor_flags(agent, stores, asks)
         self.binding, self.allow = H.actor_binding(
             agent=agent,
             name=name,
@@ -205,6 +215,7 @@ class InCodeTools:
             deadline=time.monotonic() + NO_WALL_CLOCK_S,
             state=self.state,
             can_store=stores,
+            librarian=asks,
         )
         self.specs = channel_specs(agent, self.allow)
         self.channel_allow = tuple(n for n in self.allow if n in self.specs)
@@ -475,6 +486,15 @@ class InCodeTools:
                     problems.append("the interpreter's box is still alive")
             if self.channel is not None and not self.channel.closed:
                 await self.channel.close("ended", record=False)
+            # the request's librarian ends with the request (its interpreter: verified kill)
+            session, self.state.librarian = self.state.librarian, None
+            if session is not None:
+                try:
+                    await session.close()
+                except Exception:  # noqa: BLE001 - checked just below
+                    logger.warning("closing the librarian failed", exc_info=True)
+                if session.box_alive():
+                    problems.append("the librarian's box is still alive")
             if not await self.threads.wait_idle(THREADS_GRACE_S):
                 problems.append("a tool handler thread is still running")
             tasks = list(self.state.host_tasks)
@@ -548,6 +568,15 @@ def open_for_act(
         spawner=getattr(participant, "spawner", None),
         policy=policy,
     )
+
+
+def _librarian_on() -> bool:
+    try:
+        from unify.memory import librarian as _librarian
+
+        return _librarian.enabled()
+    except Exception:  # noqa: BLE001 - no settings: off
+        return False
 
 
 def _is_reply(exc: BaseException) -> bool:

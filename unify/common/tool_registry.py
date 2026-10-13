@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional, Protocol, runtime_checkable
 
 #: Every agent a tool can be given to, by role name.
-AGENTS = ("actor", "teammate", "writer", "curator", "helper")
+AGENTS = ("actor", "teammate", "writer", "curator", "helper", "librarian")
 #: The memory pass roles the earlier JSON surface was keyed on, and the agent each one names.
 OLD_ROLES = {"write": "writer", "curate": "curator", "helper": "helper"}
 #: What a tool is, for the host: a ``reader`` counts against the reader limits, an ``action`` against the step
@@ -48,8 +48,10 @@ SIMILAR_MIN_NODES = 12
 EDIT_FLAG = "edit"
 #: the flag ``store_skills`` needs: the actor may store and storage is not admission-gated
 STORE_FLAG = "store"
+#: the flag ``ask_library`` needs: ``UNIFY_MEMORY_LIBRARIAN=on``
+LIBRARIAN_FLAG = "librarian"
 
-_W, _C, _H, _A, _T = "writer", "curator", "helper", "actor", "teammate"
+_W, _C, _H, _A, _T, _L = "writer", "curator", "helper", "actor", "teammate", "librarian"
 _MEMORY = (_W, _C, _H)
 _WRITE_CURATE = (_W, _C)
 _ALL = (_A, _T, _W, _C, _H)
@@ -1037,6 +1039,54 @@ STORE_SKILLS = RegisteredTool(
     deadline_s=60.0,
 )
 
+ASK_LIBRARY = RegisteredTool(
+    name="ask_library",
+    summary="ask the librarian which stored items fit a question (memory.ask calls it).",
+    description=(
+        "Ask the librarian, an agent that has read the library's whole catalogue, which stored items fit a "
+        "question, with the outcomes of the stored readers and conditions on that question. `memory.ask(text)` "
+        "computes those outcomes in your cell and calls this for you. The answer is JSON: "
+        '{"fits": [{"id", "call", "why"}, ...]} with every item that fits, or {"fits": [], "nearest": '
+        '[{"id", "differs"}, ...]} when nothing fits. Follow-up questions in the same request go to the same '
+        "librarian."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "question": {"type": "string", "description": "The request's text, or a question of your own."},
+            "facts": {
+                "type": "array",
+                "description": "Per stored procedure: whether its reader parsed the question and whether its "
+                "condition held (ids and outcome labels only).",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "reader": {"type": ["string", "null"]},
+                        "read": {"type": "string"},
+                        "applies": {"type": "string"},
+                    },
+                    "required": ["id", "read", "applies"],
+                },
+            },
+        },
+        "required": ["question"],
+        "additionalProperties": False,
+    },
+    refusals={
+        "no_question": "question must be a non-empty string; nothing was asked",
+        "unavailable": "the librarian is not available here ({why}); nothing was asked",
+        "no_answer": "the librarian gave no answer ({why})",
+    },
+    requires=LIBRARIAN_FLAG,
+    roles=(_A,),
+    returns="the librarian's answer as JSON text (memory.ask returns it as a plain object).",
+    examples=('print(memory.ask("Total the amounts in the attached table by month."))',),
+    when="Call memory.ask(text) rather than this tool: it adds the recognisers' outcomes the librarian reads.",
+    kind="action",
+    handler="unify.actor.tool_handlers:ask_library",
+)
+
 SH = RegisteredTool(
     name="sh",
     summary="run a shell command in your box and return its output.",
@@ -1100,6 +1150,21 @@ _TIMEOUT = {
         },
     },
     "required": ["timeout"],
+    "additionalProperties": False,
+}
+#: The librarian's answer (design J(b).4); its form and ids are checked by the handler, which refuses a malformed one.
+_LIBRARIAN_ANSWER = {
+    "type": "object",
+    "properties": {
+        "answer": {
+            "type": "object",
+            "description": (
+                'Your answer: {"fits": [{"id": ..., "call": ..., "why": ...}, ...]} listing every item that fits, '
+                'or {"fits": [], "nearest": [{"id": ..., "differs": ...}, ...]} when nothing fits.'
+            ),
+        },
+    },
+    "required": ["answer"],
     "additionalProperties": False,
 }
 _TASK_ONLY = {
@@ -1203,8 +1268,8 @@ _IN_CODE: dict[str, dict] = {
         blocking=False,
     ),
     "finish": dict(
-        roles=(_A, _T, _W, _C),
-        role_args={_A: _ANSWER, _T: _ANSWER},
+        roles=(_A, _T, _W, _C, _L),
+        role_args={_A: _ANSWER, _T: _ANSWER, _L: _LIBRARIAN_ANSWER},
         add_refusals={
             "bad_answer": "not finished: the answer does not match the required response format: {reason}",
             "answered": "not finished: this request already has its answer",
@@ -1463,6 +1528,7 @@ _REGISTRY: tuple[RegisteredTool, ...] = (
     EDIT,
     INSTALL,
     STORE_SKILLS,
+    ASK_LIBRARY,
     SH,
 )
 
@@ -1496,7 +1562,7 @@ _EARLIER: dict[tuple[str, str], _EarlierJson] = {
     (_H, "grep"): _HELPER_GREP,
 }
 #: Registered tools that never were a memory agent's model-API tool.
-_IN_CODE_ONLY = frozenset({"sh", "install", "store_skills"})
+_IN_CODE_ONLY = frozenset({"sh", "install", "store_skills", "ask_library"})
 
 
 def earlier_tool(agent: str, name: str) -> Any:
@@ -1672,11 +1738,17 @@ _ACTOR_HANDLED = {
 }
 
 
+#: The librarian's handlers (its answer is checked against its catalogue): name -> blocking.
+_LIBRARIAN_HANDLED = {"finish": False}
+
+
 def handler_for(agent: str, name: str) -> tuple[str, bool]:
     """``("module:function", blocking)`` of the host handler that serves *agent*'s call of *name*."""
     spec = registry()[name]
     if agent in (_A, _T) and name in _ACTOR_HANDLED:
         return f"unify.actor.tool_handlers:{name}", _ACTOR_HANDLED[name]
+    if agent == _L and name in _LIBRARIAN_HANDLED:
+        return f"unify.memory.librarian:{name}", _LIBRARIAN_HANDLED[name]
     return spec.handler, spec.blocking
 
 
@@ -1894,6 +1966,7 @@ _END = {
     _W: ("finish", "tools.finish(summary) ends the pass; the gate then judges your manifest and files."),
     _C: ("finish", "tools.finish(summary) ends the pass; the gate then judges your manifest and files."),
     _H: ("done", "tools.done(summary, claims) hands your summary and claims back and ends your task."),
+    _L: ("finish", "tools.finish(answer) hands your answer to the agent that asked."),
 }
 _RECORD_TOOLS = frozenset({"send", "messages", "wait", "who"})
 
