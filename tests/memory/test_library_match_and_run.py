@@ -377,10 +377,15 @@ def test_concurrent_matches_agree(tmp_path):
     got = _py(
         root,
         "out = [None] * 8\n"
-        f"def one(i):\n    out[i] = text(memory.match(inputs={ROWS!r}))\n"
+        "def one(i):\n"
+        "    try:\n"
+        f"        out[i] = text(memory.match(inputs={ROWS!r}))\n"
+        "    except Exception as exc:\n"
+        "        out[i] = 'raised ' + type(exc).__name__ + ': ' + str(exc)\n"
         "ts = [threading.Thread(target=one, args=(i,)) for i in range(8)]\n"
         "[t.start() for t in ts]\n[t.join() for t in ts]\nprint(json.dumps(out))",
     )
+    assert not any(g.startswith("raised ") for g in got), got[0]
     assert len(set(got)) == 1 and table in got[0]
 
 
