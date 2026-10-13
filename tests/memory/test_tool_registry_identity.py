@@ -278,8 +278,10 @@ def test_the_stub_holds_no_host_path_run_id_route_or_environment_value(stand_ins
         # the actor's stub is exec'd in its box as a module body: the same source works there too
         body: dict = {}
         exec(compile(stub, "<tools>", "exec"), body)
-        assert body["read"]("/workspace/a.txt") == "read answered ['path']"
-        assert body["sh"]("pwd") == "ran pwd"
+        if "read" in _allowed(agent):  # the librarian has no read: it reads its library in its cells
+            assert body["read"]("/workspace/a.txt") == "read answered ['path']"
+        if "sh" in _allowed(agent):
+            assert body["sh"]("pwd") == "ran pwd"
 
 
 def test_the_real_sources_are_embedded_cleanly_once_they_exist(monkeypatch, tmp_path):
@@ -327,7 +329,7 @@ ADDED_FORMS = {
     "stop": ["not_allowed"],
     "wait": ["bad_timeout"],
 }
-ADDED_TOOLS = ("install", "store_skills", "sh")
+ADDED_TOOLS = ("install", "store_skills", "sh", "ask_library")
 FLAGS = ("pool", "similar", "helper", "edit")
 
 
