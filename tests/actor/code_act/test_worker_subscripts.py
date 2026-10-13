@@ -298,6 +298,60 @@ def test_a_plain_list_tuple_or_dict_is_subscripted():
         )
 
 
+# ── a container crosses by value only without a credential inside ───────────
+
+KEY_SHAPED = "sk-or-v1-planted-readable-test-value"  # pragma: allowlist secret
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cfg, planted",
+    [
+        ({"OPENROUTER_API_KEY": "planted-low-entropy"}, "planted-low-entropy"),
+        ({"x": KEY_SHAPED}, KEY_SHAPED),
+        ({"outer": [{"nested": (1, KEY_SHAPED)}]}, KEY_SHAPED),
+        ([{"db_password": "planted-word"}], "planted-word"),
+        (
+            {"url": "https://user:planted-word@example.invalid/x"},
+            "planted-word",
+        ),
+        ({KEY_SHAPED: 1}, KEY_SHAPED),
+    ],
+)
+async def test_a_container_holding_a_credential_stays_in_the_harness(cfg, planted):
+    worker, shadow = _harness()
+    shadow["apis"].apps["cfg"] = cfg
+    shadow["apis"].cfg = cfg
+    for element in ("cfg", {"item": "cfg"}):
+        reply: dict = {}
+        with pytest.raises(BoundaryRefusal, match="looks like a credential") as err:
+            await worker._answer(
+                "describe",
+                {"target": {"root": "apis", "path": [element]}},
+                shadow,
+                reply,
+            )
+        assert planted not in str(err.value)
+        assert planted not in json.dumps(reply)
+
+
+@pytest.mark.asyncio
+async def test_a_container_without_a_credential_crosses_by_value():
+    worker, shadow = _harness()
+    cfg = {"name": "music", "items": [1, "two", ("three",)], "author": "a"}
+    shadow["apis"].apps["cfg"] = cfg
+    shadow["apis"].cfg = cfg
+    for element in ("cfg", {"item": "cfg"}):
+        reply = await _describe(worker, shadow, element)
+        assert reply["value"]["kind"] == "value"
+    cyclic: list = []
+    cyclic.append(cyclic)
+    from unify.actor.execution.worker import _credential_inside
+
+    assert _credential_inside(cyclic) is None
+    assert _credential_inside({"a": [cyclic, {"b": KEY_SHAPED}]}) is not None
+
+
 # ── an environment global wrapped for its observers ─────────────────────────
 
 

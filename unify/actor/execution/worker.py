@@ -216,6 +216,43 @@ def _subscriptable(obj: Any) -> bool:
     return getattr(type(target), "boundary_subscript", False) is True
 
 
+def _credential_inside(value: Any) -> Optional[str]:
+    """What in a value about to cross by value looks like a credential, or None.
+
+    Walks nested lists, tuples, sets and dicts (each container once). A dict
+    key is credential-named by the environment scrub's own test
+    (:func:`unify.sandbox._is_secret_env`, which also catches a URL with a
+    password as its value); a string anywhere, key or value, is a credential
+    when it is key-shaped or such a URL (:func:`unify.sandbox._looks_like_key`).
+    Objects of other types are not looked into: they cross by reference.
+    """
+    stack = [value]
+    seen: set = set()
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            if sandbox._looks_like_key(item):
+                return "a key-shaped string"
+            continue
+        if not isinstance(item, (list, tuple, set, frozenset, dict)):
+            continue
+        if id(item) in seen:
+            continue
+        seen.add(id(item))
+        if isinstance(item, dict):
+            for key, inner in item.items():
+                if isinstance(key, str) and sandbox._is_secret_env(
+                    key,
+                    inner if isinstance(inner, str) else "",
+                ):
+                    return f"the key {key!r}"
+                stack.append(key)
+                stack.append(inner)
+        else:
+            stack.extend(item)
+    return None
+
+
 def _model_written(value: Any) -> bool:
     """Whether *value* was defined by cell code run in a session's namespace."""
     module = getattr(value, "__module__", None)
@@ -713,6 +750,13 @@ class PythonWorker:
                 raise BoundaryRefusal(
                     f"{name!r} looks like a credential (rule `env-scrub`: "
                     f"{sandbox.RULES['env-scrub']}); its value stays in the harness",
+                )
+            found = _credential_inside(obj)
+            if found is not None:
+                raise BoundaryRefusal(
+                    f"{name!r} holds {found}, which looks like a credential (rule "
+                    f"`env-scrub`: {sandbox.RULES['env-scrub']}); its value stays "
+                    "in the harness",
                 )
             return {"kind": "value", "value": self.encode(obj)}
         return {"kind": "namespace", "repr": short_repr(obj, 200)}
