@@ -510,7 +510,8 @@ def library_file_lookups(records: Any, roots: Any) -> dict:
     package's helpers: ``reads``, the files under the copy the cell's own code opened for reading (an open made by
     the import system, by traceback formatting or by the library package is marked ``via`` by the audit hook and
     not counted), and ``searches``, the process starts that ran a search program over a path in the copy. Counts
-    only: no path or content is kept."""
+    only: no path or content is kept. ``via`` is the cell's own report (model code can make an open look like the
+    import system's), so it filters this metric only and must never feed a security audit or a stop rule."""
     roots_t = tuple(r.rstrip("/") for r in (roots or ()) if isinstance(r, str) and r.strip("/"))
     out = {"reads": 0, "searches": 0}
     if not roots_t:

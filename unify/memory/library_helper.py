@@ -430,6 +430,9 @@ REPEATABLE = ("yes", "no", "unchecked")
 CONDITIONS = ("none", "held", "not-held", "error")
 #: How long one run of a captured procedure may take, in seconds, before its process group is stopped.
 RUN_TIMEOUT_S = 120.0
+#: The most a captured procedure's run may print; past it the run is stopped, so a chatty run never fills the box's
+#: memory (its report is the last line, well within it).
+RUN_OUTPUT_MAX_BYTES = 4 * 1024 * 1024
 _CAPTURE_ID = re.compile(r"[0-9a-f]{16}")
 _LABEL = re.compile(r"[a-z][a-z0-9-]{0,39}")
 _RESULT_CHARS = 2000
@@ -1015,12 +1018,45 @@ def _confined(capture_id: str, args: tuple, kwargs: dict, once: bool = False) ->
         )
     except OSError as exc:
         return {"outcome": "error", "error": type(exc).__name__, "detail": "the run could not start"}
-    timed_out = False
+    import select
+    import time
+
+    timed_out = over = False
+    raw = b""
+    data = payload.encode("utf-8")
+
+    def feed() -> None:
+        # the input goes in from its own thread, so a child that prints before reading never blocks the bounded read
+        try:
+            child.stdin.write(data)
+            child.stdin.close()
+        except OSError:
+            pass
+
+    feeder = threading.Thread(target=feed, daemon=True, name="memory-run-input")
     try:
-        raw, _ = child.communicate(payload.encode("utf-8"), timeout=RUN_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        raw = b""
+        feeder.start()
+        deadline = time.monotonic() + RUN_TIMEOUT_S
+        fd = child.stdout.fileno()
+        chunks: list = []
+        size = 0
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                timed_out = True
+                break
+            ready, _, _ = select.select([fd], [], [], left)
+            if not ready:
+                continue
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > RUN_OUTPUT_MAX_BYTES:
+                over = True
+                break
+            chunks.append(chunk)
+        raw = b"".join(chunks)
     finally:
         try:
             os.killpg(child.pid, signal.SIGKILL)  # the run's whole group, whatever it left running
@@ -1029,9 +1065,14 @@ def _confined(capture_id: str, args: tuple, kwargs: dict, once: bool = False) ->
         if child.poll() is None:
             child.kill()
         child.wait()
+        # the input thread ends once the child is gone (its pipe closes), so no thread outlives the call
+        feeder.join(5)
     if timed_out:
         return {"outcome": "error", "error": "TimeoutExpired",
                 "detail": f"it ran past {RUN_TIMEOUT_S:g} s and was stopped"}
+    if over:
+        return {"outcome": "error", "error": "OutputLimit",
+                "detail": f"it printed more than {RUN_OUTPUT_MAX_BYTES // 1024**2} MiB and was stopped"}
     stdout = (raw or b"").decode("utf-8", "replace")
     rep: Any = None
     if _RUN_MARK in stdout:
