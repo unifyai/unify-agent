@@ -6,10 +6,19 @@ Tests for multilingual conversation handling.
 
 Verifies that the ConversationManager:
 
-1. Responds to the user in their language (detected from inbound messages)
-2. Keeps the queries delegated to ``act`` in English
+1. Carries the user's language both ways: the model is shown the user's
+   message as written, and its reply in that language reaches the chat
+   unchanged (Spanish, Japanese, Arabic script)
+2. Keeps the queries delegated to ``act`` in English: the ``act`` tool tells
+   the model to write them in English, and the English query reaches the
+   action unchanged
+
+The slow brain's model is scripted (``tests/scripted_model.py``) with the
+replies and queries a model makes in each language; which language a live
+model chooses is not tested here.
 """
 
+import json
 import re
 
 import pytest
@@ -19,13 +28,20 @@ from tests.legacy.conversation_manager.cm_helpers import (
     filter_events_by_type,
     get_exactly_one,
 )
+from tests.legacy.conversation_manager.scripted_brain import (
+    WAIT,
+    act,
+    brain_requests,
+    brain_turn,
+    conversation,
+    say,
+)
+from tests.scripted_model import ScriptedModel, scripted
 from unify.legacy.conversation_manager.events import (
     UnifyMessageReceived,
     UnifyMessageSent,
     ActorHandleStarted,
 )
-
-pytestmark = pytest.mark.eval
 
 # ---------------------------------------------------------------------------
 #  Language detection helpers
@@ -253,6 +269,44 @@ def _is_english(text: str) -> bool:
     return True
 
 
+def _act_tool(call) -> str:
+    """The ``act`` tool a brain request offers, as JSON."""
+    (tool,) = [
+        t
+        for t in call.request["tools"]
+        if (t.get("function") or {}).get("name") == "act"
+    ]
+    return json.dumps(tool, ensure_ascii=False)
+
+
+async def _reply_round_trip(cm, message: str, answer: str) -> str:
+    """Step *message* with the brain scripted to reply *answer*; check the
+    model was shown *message* as written and return the reply that reached
+    the chat."""
+    model = ScriptedModel(actor=[brain_turn(say(answer), WAIT)])
+    with scripted(model):
+        result = await cm.step_until_wait(UnifyMessageReceived(content=message))
+
+    (request,) = brain_requests(model)
+    assert conversation(request) == [message], "the model sees the words as written"
+    model.assert_used_up()
+    return get_exactly_one(result.output_events, UnifyMessageSent).content
+
+
+async def _act_round_trip(cm, message: str, query: str, answer: str):
+    """Step *message* with the brain scripted to act on *query*; check the
+    ``act`` tool asked for English and return the started actions."""
+    model = ScriptedModel(actor=[brain_turn(act(query), say(answer), WAIT)])
+    with scripted(model):
+        result = await cm.step_until_wait(UnifyMessageReceived(content=message))
+
+    (request,) = brain_requests(model)
+    assert conversation(request) == [message]
+    assert "written in English" in _act_tool(request)
+    model.assert_used_up()
+    return filter_events_by_type(result.output_events, ActorHandleStarted)
+
+
 # =====================================================================
 #  Group 1 — Response matches the sender's language
 #
@@ -265,64 +319,58 @@ def _is_english(text: str) -> bool:
 @pytest.mark.asyncio
 @_handle_project
 async def test_spanish_message_reply_in_spanish(initialized_cm):
-    """The user writes in Spanish -> assistant replies in Spanish."""
-    cm = initialized_cm
-
-    result = await cm.step_until_wait(
-        UnifyMessageReceived(
-            content=(
-                "¡Hola! Muchas gracias por tu ayuda ayer, fue muy útil. "
-                "Espero que tengas un excelente día."
-            ),
+    """The user writes in Spanish -> the Spanish reply reaches the user."""
+    answer = "¡De nada! Me alegra mucho que te haya sido útil. ¡Buen día también!"
+    sent = await _reply_round_trip(
+        initialized_cm,
+        (
+            "¡Hola! Muchas gracias por tu ayuda ayer, fue muy útil. "
+            "Espero que tengas un excelente día."
         ),
+        answer,
     )
-
-    msg = get_exactly_one(result.output_events, UnifyMessageSent)
+    assert sent == answer
     assert _has_spanish(
-        msg.content,
-    ), f"Expected Spanish reply to a Spanish-speaking user, got: {msg.content}"
+        sent,
+    ), f"Expected Spanish reply to a Spanish-speaking user, got: {sent}"
 
 
 @pytest.mark.asyncio
 @_handle_project
 async def test_japanese_unify_message_reply_in_japanese(initialized_cm):
-    """The user writes in Japanese -> reply contains Japanese."""
-    cm = initialized_cm
-
-    result = await cm.step_until_wait(
-        UnifyMessageReceived(
-            content=(
-                "こんにちは！先日はお手伝いいただきありがとうございました。"
-                "おかげさまでとても助かりました。良い一日をお過ごしください。"
-            ),
+    """The user writes in Japanese -> the Japanese reply reaches the user."""
+    answer = "どういたしまして！お役に立ててうれしいです。良い一日をお過ごしください。"
+    sent = await _reply_round_trip(
+        initialized_cm,
+        (
+            "こんにちは！先日はお手伝いいただきありがとうございました。"
+            "おかげさまでとても助かりました。良い一日をお過ごしください。"
         ),
+        answer,
     )
-
-    msg = get_exactly_one(result.output_events, UnifyMessageSent)
+    assert sent == answer
     assert _has_japanese(
-        msg.content,
-    ), f"Expected Japanese reply to a Japanese-speaking user, got: {msg.content}"
+        sent,
+    ), f"Expected Japanese reply to a Japanese-speaking user, got: {sent}"
 
 
 @pytest.mark.asyncio
 @_handle_project
 async def test_arabic_message_reply_in_arabic(initialized_cm):
-    """The user writes in Arabic -> reply contains Arabic script."""
-    cm = initialized_cm
-
-    result = await cm.step_until_wait(
-        UnifyMessageReceived(
-            content=(
-                "مرحبا! شكراً جزيلاً على مساعدتك بالأمس. "
-                "كان ذلك مفيداً جداً. أتمنى لك يوماً سعيداً."
-            ),
+    """The user writes in Arabic -> the Arabic reply reaches the user."""
+    answer = "على الرحب والسعة! يسعدني أن ذلك كان مفيداً. أتمنى لك يوماً سعيداً أيضاً."
+    sent = await _reply_round_trip(
+        initialized_cm,
+        (
+            "مرحبا! شكراً جزيلاً على مساعدتك بالأمس. "
+            "كان ذلك مفيداً جداً. أتمنى لك يوماً سعيداً."
         ),
+        answer,
     )
-
-    msg = get_exactly_one(result.output_events, UnifyMessageSent)
+    assert sent == answer
     assert _has_arabic(
-        msg.content,
-    ), f"Expected Arabic reply to an Arabic-speaking user, got: {msg.content}"
+        sent,
+    ), f"Expected Arabic reply to an Arabic-speaking user, got: {sent}"
 
 
 # =====================================================================
@@ -344,28 +392,29 @@ async def test_act_query_english_when_user_speaks_spanish(initialized_cm):
     English even though the user-facing conversation is Spanish.
     """
     cm = initialized_cm
+    query = (
+        "Create a text file with a checklist for preparing a meeting "
+        "and save it in the workspace."
+    )
 
     # The user gives an instruction in Spanish -> needs the actor (writes a file)
-    result_user = await cm.step_until_wait(
-        UnifyMessageReceived(
-            content=(
-                "Crea un archivo de texto con una lista de verificación para "
-                "preparar una reunión y guárdalo en mi espacio de trabajo"
-            ),
+    actor_events = await _act_round_trip(
+        cm,
+        (
+            "Crea un archivo de texto con una lista de verificación para "
+            "preparar una reunión y guárdalo en mi espacio de trabajo"
         ),
+        query,
+        "¡Claro! Estoy preparando la lista de verificación en tu espacio de trabajo.",
     )
 
-    actor_events = filter_events_by_type(
-        result_user.output_events,
-        ActorHandleStarted,
-    )
     assert actor_events, (
         "Expected act to be called (ActorHandleStarted), "
-        f"got tools={cm.all_tool_calls}, "
-        f"events={[type(e).__name__ for e in result_user.output_events]}"
+        f"got tools={cm.all_tool_calls}"
     )
 
     for event in actor_events:
+        assert event.query == query, "the English query reaches the action"
         instruction = _instruction_text(event.query)
         assert (
             len(instruction.split()) >= 5
@@ -373,6 +422,7 @@ async def test_act_query_english_when_user_speaks_spanish(initialized_cm):
         assert _is_english(
             instruction,
         ), f"Internal act query should be in English, got: {event.query}"
+    assert cm.cm.in_flight_actions[0]["query"] == query
 
 
 @pytest.mark.asyncio
@@ -386,27 +436,32 @@ async def test_act_query_english_when_user_speaks_japanese(initialized_cm):
     character leakage.
     """
     cm = initialized_cm
+    query = (
+        "Write a meeting preparation checklist to a text file "
+        "and save it in the workspace."
+    )
 
     # The user gives an instruction in Japanese -> needs the actor (writes a file)
-    result = await cm.step_until_wait(
-        UnifyMessageReceived(
-            content="会議の準備チェックリストをテキストファイルにまとめて、ワークスペースに保存してください",
-        ),
+    actor_events = await _act_round_trip(
+        cm,
+        "会議の準備チェックリストをテキストファイルにまとめて、ワークスペースに保存してください",
+        query,
+        "承知しました。チェックリストを作成してワークスペースに保存します。",
     )
 
-    actor_events = filter_events_by_type(result.output_events, ActorHandleStarted)
-    assert len(actor_events) >= 1, (
-        f"Expected act to be called (ActorHandleStarted), "
-        f"got: {[type(e).__name__ for e in result.output_events]}"
-    )
+    assert len(actor_events) >= 1, "Expected act to be called (ActorHandleStarted)"
 
-    query = actor_events[0].query
-    instruction = _instruction_text(query)
-    assert len(instruction.split()) >= 5, f"Act query has no instruction: {query}"
+    query_sent = actor_events[0].query
+    assert query_sent == query, "the English query reaches the action"
+    instruction = _instruction_text(query_sent)
+    assert len(instruction.split()) >= 5, f"Act query has no instruction: {query_sent}"
     assert not _has_japanese(
         instruction,
-    ), f"Act query instruction must be English, got: {query}"
-    assert _is_english(instruction), f"Act query should be in English, got: {query}"
+    ), f"Act query instruction must be English, got: {query_sent}"
+    assert _is_english(
+        instruction,
+    ), f"Act query should be in English, got: {query_sent}"
+    assert cm.cm.in_flight_actions[0]["query"] == query
 
 
 # =====================================================================
@@ -417,33 +472,40 @@ async def test_act_query_english_when_user_speaks_japanese(initialized_cm):
 @pytest.mark.asyncio
 @_handle_project
 async def test_spanish_multi_turn_stays_spanish(initialized_cm):
-    """Two-turn Spanish conversation: both replies must be in Spanish."""
+    """Two-turn Spanish conversation: both replies reach the user in Spanish,
+    and the second turn is shown the first exchange as written."""
     cm = initialized_cm
-
-    # Turn 1: simple greeting and thanks
-    result1 = await cm.step_until_wait(
-        UnifyMessageReceived(
-            content=(
-                "¡Hola! Muchas gracias por todo tu trabajo. "
-                "Me ha sido de gran ayuda."
-            ),
-        ),
+    first = "¡Hola! Muchas gracias por todo tu trabajo. Me ha sido de gran ayuda."
+    first_answer = "¡Muchas gracias a ti! Me alegra mucho poder ayudarte."
+    second = (
+        "¡Qué amable! También quería decirte que todo salió "
+        "muy bien con el proyecto. ¡Buen trabajo!"
     )
-    msg1 = get_exactly_one(result1.output_events, UnifyMessageSent)
+    second_answer = "¡Qué buena noticia! Me alegra que el proyecto saliera tan bien."
+    model = ScriptedModel(
+        actor=[
+            brain_turn(say(first_answer), WAIT),
+            brain_turn(say(second_answer), WAIT),
+        ],
+    )
+    with scripted(model):
+        # Turn 1: simple greeting and thanks
+        result1 = await cm.step_until_wait(UnifyMessageReceived(content=first))
+        msg1 = get_exactly_one(result1.output_events, UnifyMessageSent)
+
+        # Turn 2: follow-up thanks and well-wishing
+        result2 = await cm.step_until_wait(UnifyMessageReceived(content=second))
+        msg2 = get_exactly_one(result2.output_events, UnifyMessageSent)
+
+    assert msg1.content == first_answer
     assert _has_spanish(
         msg1.content,
     ), f"Turn-1 reply should be in Spanish, got: {msg1.content}"
-
-    # Turn 2: follow-up thanks and well-wishing
-    result2 = await cm.step_until_wait(
-        UnifyMessageReceived(
-            content=(
-                "¡Qué amable! También quería decirte que todo salió "
-                "muy bien con el proyecto. ¡Buen trabajo!"
-            ),
-        ),
-    )
-    msg2 = get_exactly_one(result2.output_events, UnifyMessageSent)
+    assert msg2.content == second_answer
     assert _has_spanish(
         msg2.content,
     ), f"Turn-2 reply should be in Spanish, got: {msg2.content}"
+
+    _, later = brain_requests(model)
+    assert conversation(later) == [first, first_answer, second]
+    model.assert_used_up()

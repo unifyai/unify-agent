@@ -73,3 +73,20 @@ def rendered_state(call: Call) -> str:
     """What a brain request shows the model of the conversation: its last
     message, the state rendered for this turn."""
     return message_text(call.messages[-1])
+
+
+def conversation(call: Call) -> list[str]:
+    """The text of each chat message a brain request shows, oldest first.
+
+    The ``<conversation>`` section of the rendered state has one line per
+    message, ``[Name @ time]: text``; other sections (the recent tool
+    executions, say) may quote the same words, so recall is read from here.
+    """
+    state = rendered_state(call)
+    start = state.index("<conversation>\n") + len("<conversation>\n")
+    end = state.index("\n</conversation>", start - 1)
+    return [
+        line.split("]: ", 1)[1]
+        for line in state[start:end].splitlines()
+        if "]: " in line
+    ]
