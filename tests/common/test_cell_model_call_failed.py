@@ -311,7 +311,6 @@ async def test_in_a_cell_it_is_caught_by_name_and_nothing_planted_reaches_the_tr
         with scripted(model):
             handle = await actor.act("Ask the model.", can_store=False)
             assert await asyncio.wait_for(handle.result(), 180) == "Done."
-    model.assert_used_up()
     after_caught = _tool_results(model.calls[5])
     for status, type_name in [(400, "BadRequestError"), (400, "BadRequestError"), (429, "RateLimitError"),
                               (500, "InternalServerError")]:
@@ -323,6 +322,7 @@ async def test_in_a_cell_it_is_caught_by_name_and_nothing_planted_reaches_the_tr
     # nothing planted in anything the model was sent
     for call in model.of("actor"):
         _assert_clean(json.dumps(call.request))
+    model.assert_used_up()
 
 
 # ── the access markers ──────────────────────────────────────────────────────────────────────────────────────
