@@ -342,7 +342,9 @@ def test_the_quota_is_measured_after_a_landing(tmp_path, monkeypatch):
         gate=SimpleNamespace(_blob=_no_blob, python=None),
         _batch=["e7"],
     )
-    st = SimpleNamespace(writer=writer, box=tmp_path, memory_lock=threading.Lock(), measure_quota=over, stop=None)
+    st = SimpleNamespace(
+        writer=writer, box=tmp_path, memory_lock=threading.Lock(), measure_quota=over, stop=None, pass_id="p1"
+    )
     ctx = SimpleNamespace(state=st)
     reply = asyncio.run(tool_handlers.land_capture(ctx, {"capture_id": "x", "package": "p", "name": "n"}))
     assert "the pass is refused" in reply.text and st.stop is not None
