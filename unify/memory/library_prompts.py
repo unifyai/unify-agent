@@ -23,6 +23,23 @@ from typing import Mapping
 #: The bullet optional pull helpers are inserted before. Constant bytes.
 FILES_LINE = "- The library is also plain files at the location below, so `grep` and file reads work on it.\n"
 
+#: The look-first bullet, first under "Finding items" in every guide: at the start of a request, list the stored
+#: procedures whose recorded input fits what the agent holds. It informs; nothing runs.
+MATCH_LINE = (
+    "- At the start of a request, `memory.match(request, inputs)` lists the stored procedures whose recorded input "
+    "fits what you pass: the request's text, and any data you were given as `inputs`. It compares structure only, "
+    "so a match can be wrong, and it runs nothing. Each row gives a procedure's id, evidence level, status and the "
+    "goal it was saved for; attempts that were tried on input like yours and failed are listed apart.\n"
+)
+#: The try-first bullet, first under "Using items" in every guide: a nudge, never a requirement.
+RUN_LINE = (
+    "- When a listed procedure fits, try it before working the step out yourself: `memory.run(\"<id>\", ...)` runs "
+    "it on the arguments you pass and reports whether it returned, its result, whether a second run agreed and "
+    "whether its stated conditions held; a failure is reported, not raised. Trying a matching stored procedure "
+    "costs one call, and rediscovering it usually costs many. Its result is unchecked unless its record says "
+    "otherwise.\n"
+)
+
 GUIDE_LIBRARY = (
     "### Memory Library\n"
     "\n"
@@ -31,7 +48,8 @@ GUIDE_LIBRARY = (
     "Using the library is optional: use an item when it fits, and otherwise work as usual.\n"
     "\n"
     "Finding items:\n"
-    "- The index at the end of this prompt lists every function (its id, signature, one-line summary and "
+    + MATCH_LINE
+    + "- The index at the end of this prompt lists every function (its id, signature, one-line summary and "
     "status, then a call quoted from the function's tests, when it has one) and every note (its path, "
     "description and the functions it uses). When the index is long, it shows package headings only.\n"
     '- `print(memory.index("<name>"))` prints the full section of a package or notes topic, and '
@@ -44,7 +62,8 @@ GUIDE_LIBRARY = (
     + FILES_LINE
     + "\n"
     "Using items:\n"
-    "- Import a function by its id: `memory.text.dates:parse_date` is "
+    + RUN_LINE
+    + "- Import a function by its id: `memory.text.dates:parse_date` is "
     "`from memory.text.dates import parse_date`.\n"
     "- A function raises `MemoryInputError` on an input it was not built for. Then do that step with your own "
     "code.\n"
@@ -96,7 +115,8 @@ GUIDE_LIBRARY_IN_CODE = (
     "Using the library is optional: use an item when it fits, and otherwise work as usual.\n"
     "\n"
     "Finding items:\n"
-    "- The index at the end of this prompt lists every function and note.\n"
+    + MATCH_LINE
+    + "- The index at the end of this prompt lists every function and note.\n"
     '- `print(memory.index("<name>"))` prints the full section of a package or notes topic, and '
     "`print(memory.index())` the whole index.\n"
     "- `print(memory.show(\"<id>\"))` prints one item in full, with its records and recent changes.\n"
@@ -106,7 +126,8 @@ GUIDE_LIBRARY_IN_CODE = (
     + FILES_LINE
     + "\n"
     "Using items:\n"
-    "- Import a function by its id: `memory.text.dates:parse_date` is "
+    + RUN_LINE
+    + "- Import a function by its id: `memory.text.dates:parse_date` is "
     "`from memory.text.dates import parse_date`.\n"
     "- A function raises `MemoryInputError` on an input it was not built for. Then do that step with your own "
     "code.\n"
@@ -118,19 +139,31 @@ GUIDE_LIBRARY_IN_CODE = (
 #: The guide when the actor's prompt points to the index instead of carrying it
 #: (``UNIFY_MEMORY_LIBRARY_ACTOR_INDEX=pointer``). Constant bytes, naming nothing the library holds, so the cached
 #: prefix never changes as the library grows; the index is reached in a cell.
+#: How the pointer guides say the index is reached (both forms).
+POINTER_INDEX_LINE = (
+    "- `print(memory.index())` prints the library index: every function (its id, signature, one-line summary, "
+    "status and effect: whether it reads, writes or is unknown, then a call quoted from the function's tests, "
+    "when it has one, and for a stored procedure the structure of the input it was saved against) and every note "
+    "(its path, description and the functions it uses). "
+    '`print(memory.index("<name>"))` prints the section of a package or notes topic.\n'
+)
+#: How the pointer guides say ``memory`` is reached: the worker binds it in every cell (``hooks.worker_globals``).
+POINTER_BOUND = (
+    "A Python library of tested functions, stored procedures and linked notes, built from earlier work, is "
+    "already bound as `memory` in every cell, so no import is needed. It may be empty. "
+)
+
 GUIDE_POINTER = (
     "### Memory Library\n"
     "\n"
-    "A Python library of tested functions and linked notes, built from earlier work, is importable "
-    "in your cells as `memory`. It may be empty. Before you write code for a step, look in the library for an "
+    + POINTER_BOUND
+    + "Before you write code for a step, look in the library for an "
     "item that does it. Using the library is optional: use an item when it fits, and otherwise work as usual.\n"
     "\n"
     "Finding items:\n"
-    "- `print(memory.index())` prints the library index: every function (its id, signature, one-line summary, "
-    "status and effect: whether it reads, writes or is unknown, then a call quoted from the function's tests, "
-    "when it has one) and every note (its path, description and the functions it uses). "
-    '`print(memory.index("<name>"))` prints the section of a package or notes topic.\n'
-    "- `print(memory.show(\"<id>\"))` prints one item in full: a function's source and docstring, or a note's "
+    + MATCH_LINE
+    + POINTER_INDEX_LINE
+    +     "- `print(memory.show(\"<id>\"))` prints one item in full: a function's source and docstring, or a note's "
     "text, then its links, status, test and use records, and recent changes.\n"
     "- `memory.find(value)` lists the functions whose tests call them on arguments shaped like a structured "
     "value you hold (a dict, a list of records, JSON text, or a CSV file with a header), and which parameter "
@@ -138,7 +171,8 @@ GUIDE_POINTER = (
     + FILES_LINE
     + "\n"
     "Using items:\n"
-    "- Import a function by its id: `memory.text.dates:parse_date` is "
+    + RUN_LINE
+    + "- Import a function by its id: `memory.text.dates:parse_date` is "
     "`from memory.text.dates import parse_date`.\n"
     "- A function raises `MemoryInputError` on an input it was not built for. Then do that step with your own "
     "code.\n"
@@ -148,6 +182,42 @@ GUIDE_POINTER = (
     "\n"
     "Write your own code and files in your session as usual.\n"
 )
+
+#: :data:`GUIDE_POINTER` when tools are called from code (``UNIFY_TOOLS_IN_CODE=on``): the actor's memory section,
+#: rendered after the shared opening (which already says how cells and tools work), so it carries only the
+#: library's own guidance. Constant bytes, naming nothing the library holds.
+GUIDE_POINTER_IN_CODE = (
+    "### Memory Library\n"
+    "\n"
+    + POINTER_BOUND
+    + "Before you write code for a step, look in the library for an "
+    "item that does it. Using the library is optional: use an item when it fits, and otherwise work as usual.\n"
+    "\n"
+    "Finding items:\n"
+    + MATCH_LINE
+    + POINTER_INDEX_LINE
+    + "- `print(memory.show(\"<id>\"))` prints one item in full, with its records and recent changes.\n"
+    "- `memory.find(value)` lists the functions whose tests call them on arguments shaped like a structured "
+    "value you hold (a dict, a list of records, JSON text, or a CSV file with a header), and which parameter "
+    "matched. It cannot match plain text: for text, use the index or grep.\n"
+    + FILES_LINE
+    + "\n"
+    "Using items:\n"
+    + RUN_LINE
+    + "- Import a function by its id: `memory.text.dates:parse_date` is "
+    "`from memory.text.dates import parse_date`.\n"
+    "- A function raises `MemoryInputError` on an input it was not built for. Then do that step with your own "
+    "code.\n"
+    "- `experimental` items are candidates: they passed the library's checks when they were added and have "
+    "had little use. `stable` items passed them and have been used without errors. Items found to fail are "
+    "left out of the index, and `memory.show` says why.\n"
+)
+
+
+def guide_pointer() -> str:
+    """The pointer guide the actor reads (``UNIFY_MEMORY_LIBRARY_ACTOR_INDEX=pointer``): :data:`GUIDE_POINTER`, or
+    :data:`GUIDE_POINTER_IN_CODE` when tools are called from code."""
+    return GUIDE_POINTER_IN_CODE if _in_code() else GUIDE_POINTER
 
 
 # --- the writer's briefs: store pass (WRITE) and curate pass (CURATE) ---------------------------------------------
@@ -1825,6 +1895,12 @@ RULES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
         "how find matches",
         ("guide",),
         "It cannot match plain text",
+    ),
+    (
+        "match compares structure only",
+        "how match matches",
+        ("guide",),
+        "It compares structure only",
     ),
     (
         "an input refusal means do the step yourself",

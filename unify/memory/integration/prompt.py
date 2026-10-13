@@ -159,7 +159,8 @@ def render_memory_library_mode(
       (:func:`..library_index.index_view` of the copy's ``INDEX.md``), or ``""`` while the index lists no item. The
       guide and the location are the same for the whole run, and the view changes only when a consolidation commits
       or changes a status, so each pass changes only the section's tail.
-    * ``pointer``: the pointer guide (:data:`GUIDE_POINTER`) and the copy's location, whenever the library is
+    * ``pointer``: the pointer guide (:data:`GUIDE_POINTER`, or its in-code form with tools called from code) and
+      the copy's location, whenever the library is
       mounted, empty or not. It names no item, package or count, so the section's bytes are the same for the
       whole run and the actor reaches the index with ``memory.index()`` in a cell.
 
@@ -172,7 +173,8 @@ def render_memory_library_mode(
     checkout = Path(checkout)
     mode = _actor_index_setting() if actor_index is None else actor_index
     if mode == "pointer":
-        text = GUIDE_POINTER + location_line(checkout)
+        # with tools called from code, the in-code form (it follows the shared opening)
+        text = _prompts_library_mode.guide_pointer() + location_line(checkout)
         return text, record_shown(
             text,
             channels=(),
