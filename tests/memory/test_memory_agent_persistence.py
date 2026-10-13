@@ -220,7 +220,8 @@ def test_finish_stops_the_interpreter_before_anything_is_judged_and_a_repair_cel
     # the box was alive between the cells, and never while a finish was judged
     assert model.boxes[1] > 0, model.boxes
     assert judged and all(n == 0 for n in judged), judged
-    assert model.outputs["f1"].startswith("refused"), model.outputs["f1"]
+    # refused for its missing manifest (G1); the pass goes on
+    assert "G1" in model.outputs["f1"] and "manifest" in model.outputs["f1"], model.outputs["f1"]
     out = model.outputs["c2"]
     assert out.splitlines()[0] == RESTARTED and "NameError" in out, out
     assert _descendants(os.getpid()) == []
@@ -235,6 +236,17 @@ def test_a_json_write_over_the_quota_stops_the_interpreter(tmp_path, monkeypatch
         return "over quota: the test's limit" if (Path(root) / "big.txt").exists() else real(root)
 
     monkeypatch.setattr(writer_pass, "_measure", measure)
+    from unify.common.box_interpreter import BoxInterpreter
+
+    measured = BoxInterpreter.measure_quota
+    after: list[tuple] = []
+
+    async def measure_quota(self):
+        breach = await measured(self)
+        after.append((breach, self.box_alive()))
+        return breach
+
+    monkeypatch.setattr(BoxInterpreter, "measure_quota", measure_quota)
     turns = [
         _cell("c1", "x = 41"),
         _call("w1", "write", {"path": "big.txt", "content": "x" * 100}),
@@ -242,8 +254,11 @@ def test_a_json_write_over_the_quota_stops_the_interpreter(tmp_path, monkeypatch
     writer, model = _writer(tmp_path, turns, in_code=False, edit_tools=True)
     out = _run(writer)
     assert model.boxes[1] > 0, model.boxes  # alive after the cell
-    assert "over quota: the test's limit; the pass is refused" in model.outputs["w1"], model.outputs["w1"]
-    assert model.boxes[2] == 0, model.boxes  # stopped by the write's measure
+    # the last reply is never sent back to the model: read it from the pass's conversation
+    replies = {m["tool_call_id"]: str(m["content"]) for m in writer.messages if m.get("role") == "tool"}
+    assert "over quota: the test's limit; the pass is refused" in replies["w1"], replies
+    # the write's measure found the breach and stopped the interpreter at once
+    assert ("over quota: the test's limit", False) in after, after
     assert not out.passed
     assert _descendants(os.getpid()) == []
 
