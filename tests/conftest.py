@@ -747,7 +747,8 @@ def pytest_runtest_makereport(item, call):
     report = outcome.get_result()
     if call.when == "call":
         events = getattr(item, "_unillm_cost_events", [])
-        total = sum(e.provider_cost for e in events)
+        # a call that returned nothing has an unknown cost (None), which the total leaves out
+        total = sum(e.provider_cost for e in events if e.provider_cost is not None)
         report._unillm_cost = total
         _session_costs.append((report.nodeid, total))
 
