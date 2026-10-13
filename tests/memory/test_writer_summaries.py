@@ -201,8 +201,9 @@ def test_the_brief_stays_complete_with_summaries(in_code):
 
 def test_delegate_is_still_offered_beside_the_summaries(in_code):
     text = lp.write_brief_now(staging=True, helper=True)
-    assert SUMMARY_PATH in text and "delegate" in text
+    assert "delegate" in text
     assert "delegate" in lp._tool_names("write", lp.tool_flags(staging=True, helper=True))
+    assert SUMMARY_PATH in text
 
 
 # --- the pass ---------------------------------------------------------------------------------------------------------
@@ -265,7 +266,8 @@ def test_delegate_is_offered_to_the_writer_with_the_fork_on(tmp_path):
     names = {t["function"]["name"] for t in model.tools or []}
     system = _system(model)
     assert "delegate" in names or "tools.delegate" in system
-    assert "delegate" in system and SUMMARY_PATH in system
+    assert "delegate" in system
+    assert SUMMARY_PATH in system
 
 
 def test_the_writers_input_tokens_are_summed_over_the_calls_that_reported_them(tmp_path):
