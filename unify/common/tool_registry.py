@@ -2132,7 +2132,8 @@ def errors_source() -> str:
 
 
 #: The stub's code that makes its Python-level errors teach (a wrong keyword or number of arguments, a name the
-#: stub does not have). It reads ``_SIGNATURES``, ``_EXAMPLES`` and ``_ERRORS_SOURCE``, which the stub sets first.
+#: stub does not have). It reads ``_SIGNATURES``, ``_EXAMPLES``, ``_ELSEWHERE`` (the registered tools this agent
+#: does not have) and ``_ERRORS_SOURCE``, which the stub sets first.
 _TEACHING_SOURCE = '''
 _errors = {}
 
@@ -2188,13 +2189,13 @@ def __getattr__(name):
     if name.startswith("_"):
         raise AttributeError("module 'tools' has no attribute %r" % (name,))
     c = _contract()
+    problem = "tools has no attribute %r" % (name,)
+    if name in _ELSEWHERE:
+        problem += ": it is not one of your tools"
+    # a function name is matched to functions, a class name (Refused, ...) to classes
+    same = [n for n in __all__ if n[:1].isupper() == name[:1].isupper()]
     raise AttributeError(
-        c["render"](
-            "tools." + name,
-            "tools has no %r" % (name,),
-            nearest=c["nearest"](name, __all__),
-            hint="tools.list() lists yours.",
-        )
+        c["render"]("tools." + name, problem, nearest=c["nearest"](name, same), hint="tools.list() lists yours.")
     )
 '''
 #: The names the embedded shell source defines that the stub exports.
@@ -2258,6 +2259,7 @@ def render_stub(names: tuple[str, ...], agent: Optional[str] = None) -> str:
         "",
         f"_SIGNATURES = {json.dumps({n: signature_text(n, agent) for n in allowed if n != 'sh'}, indent=0)}",
         f"_EXAMPLES = {json.dumps({n: role_example(n, agent) for n in allowed if n != 'sh'}, indent=0)}",
+        f"_ELSEWHERE = {json.dumps(sorted(set(registry()) - set(allowed)))}",
         "_ERRORS_SOURCE = " + repr(errors_source()),
         _TEACHING_SOURCE,
     ]
