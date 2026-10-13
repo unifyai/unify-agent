@@ -4,8 +4,8 @@ tests/conversation_manager/actions/test_act_failure_context.py
 
 When an act() call fails (e.g. the LLM API rejects a request because an
 image in the tool result exceeds the provider's per-image size limit), the
-ConversationManager should include context about the failure in the *next*
-act() request so the actor can avoid the same approach.
+ConversationManager shows the failure to the brain on its next turn, so a
+retry can carry it to the actor and avoid the same approach.
 
 Production failure (2026-03-11): display(img) produced a 13 MB base64 PNG
 that exceeded Anthropic's 5 MB per-image limit.  The actor's tool loop
@@ -14,13 +14,22 @@ propagated through AsyncToolLoopHandle.result().
 
 _StorageCheckHandle._run_lifecycle() captures the exception and surfaces
 it as the result string.  actor_watch_result detects "Error" in the result
-and publishes ActorResult(success=False).  The CM should then include this
-failure context in the next act() request.
+and publishes ActorResult(success=False).
+
+The brain's model is scripted (``scripted_brain``): how a live model words
+the retry is a question about the model; this checks that the failure
+reaches the brain and that the retry reaches the actor as a new action.
 """
 
 import pytest
 
 from tests.helpers import _handle_project
+from tests.legacy.conversation_manager.actions.scripted_brain import (
+    act,
+    say,
+    turn,
+    wait,
+)
 from tests.legacy.conversation_manager.cm_helpers import (
     assert_act_triggered,
     filter_events_by_type,
@@ -35,25 +44,35 @@ from unify.legacy.conversation_manager.events import (
     UnifyMessageReceived,
 )
 
-pytestmark = pytest.mark.eval
-
 
 @pytest.mark.asyncio
 @_handle_project
-async def test_second_act_includes_failure_context(initialized_cm):
-    """When act() fails with an error, the CM should include failure context
-    in the second act() request so the actor can avoid repeating the same
-    approach.
+async def test_second_act_includes_failure_context(initialized_cm, scripted_brain):
+    """When act() fails with an error, the brain's next turn shows the
+    failure, and the retry it starts reaches the actor as a new action.
 
     Sequence:
     1. User asks to extract properties from an image and create a spreadsheet.
     2. CM dispatches act().
     3. act() fails — _StorageCheckHandle surfaces the error as the result
        and actor_watch_result publishes ActorResult(success=False).
-    4. CM dispatches a second act() — this request should reference the
-       previous failure so the actor can adjust its strategy.
+    4. The brain is shown the failed action with its error, and dispatches a
+       second act() that names the failure.
     """
     cm = initialized_cm
+    image = "Attachments/att-img-1_IMG_1019.png"
+    first_query = (
+        f"Read the properties in the image at {image}, put them into an Excel "
+        "spreadsheet with each property's postcode, and plot them on a map."
+    )
+    retry_query = (
+        f"Retry: read the properties in the image at {image}, put them into an "
+        "Excel spreadsheet with postcodes, and plot them on a map. The previous "
+        "attempt failed because the image exceeded the provider's 5 MB "
+        "per-image limit; resize or compress the image before displaying it."
+    )
+    brain = scripted_brain()
+    brain.next(turn(act(first_query), say("On it, reading the image now."), wait()))
 
     result = await cm.step_until_wait(
         UnifyMessageReceived(
@@ -63,7 +82,7 @@ async def test_second_act_includes_failure_context(initialized_cm):
                 "of their postcodes listed? Could you also please plot them all "
                 "on a map?"
             ),
-            attachments=["Attachments/att-img-1_IMG_1019.png"],
+            attachments=[image],
         ),
     )
 
@@ -91,8 +110,26 @@ async def test_second_act_includes_failure_context(initialized_cm):
         result=error_message,
         success=False,
     )
+    # The failed action is no longer in flight; its history records the failure.
+    assert first_handle_id not in cm.cm.in_flight_actions
+    failed = cm.cm.completed_actions[first_handle_id]
+    assert failed["handle_actions"][-1]["action_name"] == "act_failed"
 
+    brain.next(
+        turn(
+            act(retry_query),
+            say("The image was too large to process; retrying with a smaller copy."),
+            wait(),
+        ),
+    )
     followup_events = await run_cm_until_wait(cm, max_steps=10)
+
+    # The brain's next turn was shown the failed action with its error.
+    state = brain.last_state()
+    completed = state.partition("<completed_actions>")[2]
+    assert f"<action id='{first_handle_id}'" in completed
+    assert "status='failed'" in completed
+    assert "image exceeds 5 MB maximum" in completed
 
     second_actor_events = filter_events_by_type(
         followup_events,
@@ -104,27 +141,9 @@ async def test_second_act_includes_failure_context(initialized_cm):
         f"Events emitted: {[type(e).__name__ for e in followup_events]}"
     )
 
-    second_query = second_actor_events[0].query
-    query_lower = second_query.lower()
-
-    failure_indicators = [
-        "5 mb",
-        "too large",
-        "size limit",
-        "image exceeds",
-        "failed",
-        "error",
-        "previous",
-        "resize",
-        "compress",
-    ]
-    matches = [kw for kw in failure_indicators if kw in query_lower]
-
-    assert matches, (
-        "The second act() request should reference the previous failure "
-        "(e.g. image size limit, need to resize/compress) so the actor "
-        "can avoid repeating the same approach.\n\n"
-        f"Second act() query was:\n{second_query}\n\n"
-        "Expected at least one of: "
-        f"{failure_indicators}"
-    )
+    # The retry is a new action, and its query (with the failure) reaches the actor.
+    (second,) = second_actor_events
+    assert second.handle_id != first_handle_id
+    assert second.query == retry_query
+    handle = cm.cm.in_flight_actions[second.handle_id]["handle"]
+    assert handle._request == retry_query

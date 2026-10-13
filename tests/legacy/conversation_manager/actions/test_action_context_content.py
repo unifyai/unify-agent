@@ -15,17 +15,24 @@ Test Design:
 - Symbolic tests: Directly call tools with fixed inputs, capture arguments
 - Content tests: Verify the captured context contains expected information
 
-All tests bypass the CM brain LLM to ensure determinism.
+No test reaches a model: most call the tools directly, and the two that
+drive a turn script the brain's model (``scripted_brain``).
 """
 
 import pytest
 
 from tests.helpers import _handle_project
+from tests.legacy.conversation_manager.actions.scripted_brain import (
+    act,
+    say,
+    steer,
+    turn,
+    wait,
+)
+from tests.scripted_model import reply
 from unify.legacy.conversation_manager.domains.brain_action_tools import (
     ConversationManagerBrainActionTools,
 )
-
-pytestmark = pytest.mark.eval
 
 
 # =============================================================================
@@ -622,7 +629,11 @@ class TestContextContent:
 
     @pytest.mark.asyncio
     @_handle_project
-    async def test_context_contains_conversation_from_message(self, initialized_cm):
+    async def test_context_contains_conversation_from_message(
+        self,
+        initialized_cm,
+        scripted_brain,
+    ):
         """
         Verify that when a message triggers act(), the context passed to the Actor
         contains that message's content.
@@ -633,6 +644,14 @@ class TestContextContent:
 
         cm_driver = initialized_cm
         cm = cm_driver.cm
+        brain = scripted_brain()
+        brain.next(
+            turn(
+                act("Find the XYZZY123 document in the workspace."),
+                say("Looking for the XYZZY123 document."),
+                wait(),
+            ),
+        )
 
         # Track what context is passed to actor.act()
         captured_context = []
@@ -652,21 +671,22 @@ class TestContextContent:
                 ),
             )
 
-            # Check if act was called (it might not be depending on LLM decision)
-            if captured_context and captured_context[0]:
-                context = captured_context[0]
-                content = context[0].get("content", "")
+            # act was called once, with the state the brain saw on that turn.
+            assert len(captured_context) == 1, "act() should have been called once"
+            context = captured_context[0]
+            assert context is not None and len(context) == 1
+            content = context[0].get("content", "")
 
-                # The context should contain the message that triggered the action
-                assert "XYZZY123" in content, (
-                    "Context should contain the distinctive message content. "
-                    f"Got content: {content[:500]}..."
-                )
+            # The context should contain the message that triggered the action
+            assert "Please find the XYZZY123 document for me." in content, (
+                "Context should contain the distinctive message content. "
+                f"Got content: {content[:500]}..."
+            )
 
-                # Should be marked as a state snapshot
-                assert (
-                    context[0].get("_cm_state_snapshot") is True
-                ), "Context should be marked as a state snapshot"
+            # Should be marked as a state snapshot
+            assert (
+                context[0].get("_cm_state_snapshot") is True
+            ), "Context should be marked as a state snapshot"
 
         finally:
             cm.actor.act = original_act
@@ -703,7 +723,11 @@ class TestContextContent:
 
     @pytest.mark.asyncio
     @_handle_project
-    async def test_context_shows_in_flight_action_when_steering(self, initialized_cm):
+    async def test_context_shows_in_flight_action_when_steering(
+        self,
+        initialized_cm,
+        scripted_brain,
+    ):
         """
         Verify that when steering an in-flight action, the context shows that action.
 
@@ -721,6 +745,14 @@ class TestContextContent:
 
         cm_driver = initialized_cm
         cm = cm_driver.cm
+        brain = scripted_brain(query_llm=[reply("Adding file sizes.")])
+        brain.next(
+            turn(
+                act("Search the user's workspace for the engineering notes."),
+                say("Searching for the engineering notes."),
+                wait(),
+            ),
+        )
 
         # Step 1: Start an action
         result1 = await cm_driver.step_until_wait(
@@ -729,11 +761,8 @@ class TestContextContent:
             ),
         )
 
-        # Check if an action was started
         actor_events = filter_events_by_type(result1.output_events, ActorHandleStarted)
-        if not actor_events:
-            pytest.skip("LLM did not trigger act - cannot test steering context")
-
+        assert len(actor_events) == 1, "The brain's act call should start an action"
         assert len(cm.in_flight_actions) >= 1, "Should have an in-flight action"
 
         # Step 2: Capture context when steering
@@ -750,33 +779,45 @@ class TestContextContent:
         handle.interject = capturing_interject
 
         try:
-            # Send a message that should trigger interject
+            # The user's message makes the brain interject the action
+            brain.next(
+                turn(
+                    steer(
+                        "interject",
+                        handle_id,
+                        message="Also include each file's size.",
+                    ),
+                    say("Sure, I'll include the file sizes."),
+                    wait(),
+                ),
+            )
             await cm_driver.step_until_wait(
                 UnifyMessageReceived(
                     content="Also include the file sizes.",
                 ),
             )
 
-            # If interject was called, verify the context shows relevant information
-            if captured_context and captured_context[0]:
-                content = captured_context[0][0].get("content", "")
+            # The interjection carried context that shows the action
+            assert len(captured_context) == 1, "interject should have been called once"
+            assert captured_context[0], "interject should carry context"
+            content = captured_context[0][0].get("content", "")
 
-                # With incremental diffs, the action may appear in <action_updates>
-                # (if its state changed) or the full snapshot (backward compat mode).
-                # Either format is acceptable as long as action info is present.
-                has_action_info = (
-                    "<action_updates>" in content
-                    or "<in_flight_actions>" in content
-                    or "action id='0'" in content
-                )
-                assert (
-                    has_action_info
-                ), f"Should have action information in context. Got: {content[:500]}..."
+            # With incremental diffs, the action may appear in <action_updates>
+            # (if its state changed) or the full snapshot (backward compat mode).
+            # Either format is acceptable as long as action info is present.
+            has_action_info = (
+                "<action_updates>" in content
+                or "<in_flight_actions>" in content
+                or "action id='0'" in content
+            )
+            assert (
+                has_action_info
+            ), f"Should have action information in context. Got: {content[:500]}..."
 
-                # The action should be visible as executing
-                assert (
-                    "executing" in content.lower() or "search" in content.lower()
-                ), "Context should show the in-flight action"
+            # The action should be visible as executing
+            assert (
+                "executing" in content.lower() or "search" in content.lower()
+            ), "Context should show the in-flight action"
 
         finally:
             handle.interject = original_interject
