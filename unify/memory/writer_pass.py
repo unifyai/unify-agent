@@ -2936,7 +2936,8 @@ class WriterPass:
 
     def _pool_update(self, req: PassRequest, pass_id: str, out: PassOutcome) -> dict:
         """The candidate pool after this pass: the writer's status changes (merged / superseded when the gate landed
-        them, retired and reopened when finish was accepted, and every open entry a landed item adopts merged), then,
+        them, retired and reopened when finish was accepted, every open entry a landed item adopts merged, and each
+        capture's entry closed by the route the writer took, :func:`.pool.close_captures`), then,
         on a store pass, its deferrals and its draft when nothing landed; one commit on refs/heads/pool. The pass's
         staging entered the pool at its start (:meth:`_staging_library_mode`). Never raises: a failure is recorded
         and the pass's result stands."""
@@ -2955,6 +2956,19 @@ class WriterPass:
                 library_items=getattr(self, "_pool_library_items", None),
                 notes=unapplied,
             )
+            if req.kind != "curate":
+                from .captures import landings
+
+                # each capture's entry closes by the one route the writer took: landed by land_capture, or a draft
+                # staged from its episode adopted instead
+                store = self._captures_root()
+                changed += _pool_mod.close_captures(
+                    p,
+                    pass_id,
+                    landed=set(out.items_merged or []),
+                    landings=landings(store) if store is not None else {},
+                    provenance=self._provenance,
+                )
             new: list = []
             extended: list[str] = []
             if req.kind != "curate":
@@ -2991,14 +3005,17 @@ class WriterPass:
             }
             # the backlog of episodes no writer opened (a measure, no gate)
             res["unread_open"] = sum(1 for e in p.open_entries() if e.kind == "unread")
-            # per batch episode, the attempt captured from it and the item it landed as (its pool entry merged)
+            # per batch episode, the attempt captured from it and the item it landed as (its pool entry merged), or
+            # the item that superseded it (a draft staged from its episode, adopted instead)
             caps = {}
             for eid, cap in sorted((self._capture_rows or {}).items()):
                 ent = p.entries.get(_pool_mod.entry_id("capture", cap["id"]))
-                merged = ent is not None and ent.status == "merged"
+                status = ent.status if ent is not None else None
+                detail = ent.status_detail if ent is not None else {}
                 caps[eid] = {
                     "capture_id": cap["id"],
-                    "landed": ent.status_detail.get("item") if merged else None,
+                    "landed": detail.get("item") if status == "merged" else None,
+                    "superseded_by": (detail.get("item") or detail.get("by")) if status == "superseded" else None,
                 }
             if caps:
                 res["captures"] = caps
@@ -3055,6 +3072,7 @@ class WriterPass:
 
         from . import captures as _captures
         from . import staging as _staging
+        from .pool import entry_id as _pool_entry_id
 
         capture_ids: list[str] = []
         captures_error: str | None = None
@@ -3134,6 +3152,9 @@ class WriterPass:
                 # the reader is counted host-side (an unfinished one as withheld); the writer's row never names it
                 view = views.get(eid)
                 src = "none" if view is None else (view.source if view.finished else "withheld")
+            if landable is not None and self._pool is not None:
+                # its pool entry closes when the writer lands it, or instead adopts a draft staged from the episode
+                self._pool.episode_captures[eid] = _pool_entry_id("capture", landable)
             row["pool_entries"] = [
                 {"id": e.id, "kind": e.kind, "title": e.title}
                 for e in open_pool

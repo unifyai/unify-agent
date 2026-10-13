@@ -131,7 +131,7 @@ class Entry:
     status: str = "open"
     status_detail: dict = field(
         default_factory=dict,
-    )  # merged: {item, pass}; superseded: {by, pass} or {reason, pass}; retired: {reason, pass}
+    )  # merged: {item, pass}; superseded: {by, pass}, {item, via, pass} or {reason, pass}; retired: {reason, pass}
     provenance: dict = field(
         default_factory=lambda: {"episodes": [], "passes": [], "sources": []},
     )
@@ -282,6 +282,9 @@ class Pool:
         self.skipped: list[str] = []  # entries load() refused
         # this pass's staging refs (``staging:<episode>/<file>``) -> the entry holding them (:meth:`enter_staging`)
         self.staged: dict[str, str] = {}
+        # this pass's batch episode -> the entry of its capture that can be landed (set by the writer pass as it lists
+        # its batch; :func:`close_captures` closes the entry by the route the writer took)
+        self.episode_captures: dict[str, str] = {}
         # batch episode -> its links to closed entries (set by :func:`.batch_map.add_related_closed`; staged with
         # the pool in /inputs/pool/related_closed.json)
         self.episode_links: dict[str, list[dict]] = {}
@@ -921,6 +924,46 @@ def apply_block(
             if pool.entries[eid].status == "open":
                 pool.set_status(eid, "merged", {"item": item, "via": "adopts"}, pass_id)
                 changed.append(eid)
+    return changed
+
+
+#: An adopt ref to a draft read from an episode: a staged candidate or its case (not the episode's notes).
+_STAGED_DRAFT = re.compile(r"staging:(?P<episode>[^/]+)/(?:candidates|cases)/")
+
+
+def close_captures(
+    pool: Pool,
+    pass_id: str,
+    *,
+    landed: set[str],
+    landings: dict | None = None,
+    provenance: list[dict] | None = None,
+) -> list[str]:
+    """Close each capture's entry by the one route the writer took for it, after :func:`apply_block`. Merged, with
+    ``{"item", "via": "land_capture"}``, when ``land_capture`` landed the capture as an item the gate landed
+    (*landings*: :func:`.captures.landings`, capture id -> ``{"item", ...}``). Superseded, with ``{"item", "via":
+    "candidate"}``, when instead a landed item adopts a candidate or a case staged from the capture's episode
+    (:attr:`Pool.episode_captures`), by its staging ref or through the pool entry holding it; adopting the episode's
+    notes closes nothing. Only an open entry closes. Returns the ids changed."""
+    changed: list[str] = []
+    for cid, landing in sorted((landings or {}).items()):
+        item = landing.get("item") if isinstance(landing, dict) else None
+        e = pool.entries.get(entry_id("capture", str(cid)))
+        if item in landed and e is not None and e.status == "open":
+            pool.set_status(e.id, "merged", {"item": item, "via": "land_capture"}, pass_id)
+            changed.append(e.id)
+    for row in provenance or []:
+        item = row.get("item")
+        if item not in landed:
+            continue
+        for ref in map(str, row.get("adopts") or []):
+            held = pool.entries.get(ref[len("pool:") :]) if ref.startswith("pool:") else None
+            for draft in held.refs if held is not None else [ref]:
+                m = _STAGED_DRAFT.match(draft)
+                e = pool.entries.get(pool.episode_captures.get(m.group("episode"), "")) if m else None
+                if e is not None and e.status == "open":
+                    pool.set_status(e.id, "superseded", {"item": item, "via": "candidate"}, pass_id)
+                    changed.append(e.id)
     return changed
 
 
