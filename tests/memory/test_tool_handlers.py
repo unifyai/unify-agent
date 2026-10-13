@@ -373,7 +373,8 @@ def test_a_helper_cannot_call_delegate_finish_or_check_and_a_curator_cannot_call
     out, rows = asyncio.run(main())
     for tool, exc in out.items():
         assert getattr(exc, "form", None) == "unknown_tool", (tool, exc)
-        assert f"unknown tool {tool!r}" in str(exc)
+        # another role's tool reads as unavailable in this role, never as unknown (and no other role's tool is named)
+        assert f"tools.{tool} isn't available in your role" in str(exc)
     assert [r["refusal"]["form"] for r in rows] == ["unknown_tool"] * 4
 
 
