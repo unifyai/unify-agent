@@ -4325,6 +4325,13 @@ class CodeActActor(BaseCodeActActor):
                 cell_limit_s=self._session_executor._timeout,
             )
             if in_code is not None:
+                # the in-code prompt names request_clarification where this session can ask: bound once for the
+                # request (the off path binds it per execute_code call); absent where it cannot ask
+                core_surface.bind_clarification(
+                    sandbox.global_state,
+                    env_clarification_up_q,
+                    env_clarification_down_q,
+                )
                 tools = {"execute_code": in_code.tool()}
                 # the shared opening comes first, then the actor's own prompt (both constant for the run)
                 opening = in_code.opening()

@@ -133,7 +133,7 @@ async def test_a_memory_run_builds_no_store_and_names_neither_it_nor_the_run(
         assert "stored function" not in sent.lower()
     system = requests[0]["messages"][0]["content"]
     assert "Your working directory is `/workspace`" in system
-    assert "importable in your cells as `memory`" in system
+    assert "is `memory` in your cells, already bound" in system
 
 
 @needs_bwrap

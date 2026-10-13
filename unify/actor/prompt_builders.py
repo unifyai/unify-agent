@@ -320,13 +320,13 @@ _LEAN_ROLE_LIBRARY = (
 _LEAN_ROLE_LIBRARY_MEMORY = (
     "You solve the request in this conversation by writing and running\n"
     "Python cells with `execute_code`. A library of functions and notes from\n"
-    "earlier work, when one exists, is importable in your cells as `memory`."
+    "earlier work, when one exists, is `memory` in your cells, already bound."
 )
 _SANDBOX_GLOBALS_INTRO = (
     "Python in `execute_code` and stored functions runs with the\n"
     "injected globals below."
 )
-_SANDBOX_GLOBALS_INTRO_MEMORY = "Cells run with the injected globals below."
+_SANDBOX_GLOBALS_INTRO_MEMORY = "Cells run with the globals below already bound; no import needed."
 
 _LEAN_QUERY_LLM = textwrap.dedent("""
     Use plain Python for exact steps (lookups, filters, arithmetic,
@@ -735,7 +735,8 @@ def _build_core_prompt(
 # ---------------------------------------------------------------------------
 # Every agent then has one model-API tool, ``execute_code``, and calls every
 # other harness tool in its cells as ``tools.<name>(...)``. The shared opening
-# every agent reads first (how cells work, ``tools.list()``,
+# every agent reads first (how cells work, that the sandbox keeps its state
+# and when it restarts, the names bound in it, ``tools.list()``,
 # ``tools.help(name)``, installing, messaging) says what the Tools and Sandbox
 # Objects sections said, so these sections keep only what is the actor's own:
 # its role, how it works, and the answer. Each tool's details are its help.
@@ -752,12 +753,14 @@ _ANSWER_STRUCTURED_IN_CODE = (
     "with the answer in the required format."
 )
 
-# The injected globals, named once; each one's contract is its ``help(...)``.
+# The bound globals besides the namespaces the shared opening names, named
+# once; each one's contract is its ``help(...)``.
 _SANDBOX_IN_CODE = (
-    "Cells run with injected globals: `display(obj)` (rich output, such as an "
-    "image, that comes back to you as visual input), `query_llm(...)` and "
-    "`list_llms()` (semantic LLM calls from code) and `unillm` (direct LLM use "
-    "beyond `query_llm`); `help(name)` documents each."
+    "Cells also run with these globals already bound, no import needed: "
+    "`display(obj)` (rich output, such as an image, that comes back to you as "
+    "visual input), `query_llm(...)` and `list_llms()` (semantic LLM calls "
+    "from code), `unillm` (direct LLM use beyond `query_llm`) and "
+    "`run_coro_sync(factory)`; `help(name)` documents each."
 )
 _PRIMITIVES_IN_CODE = (
     "`await primitives.actor.act(...)` spawns a sub-actor; "
@@ -777,10 +780,8 @@ _PYTHON_FIRST_IN_CODE = textwrap.dedent("""
 _LEAN_EXECUTION_RULES_IN_CODE = textwrap.dedent("""
     ### Execution
 
-    1. **Sessions**: cells share one persistent sandbox for the task, like
-       a notebook: bind results to variables and build on them, and print
-       only what the next decision needs. A `NameError` on a known name
-       usually means the sandbox restarted.
+    1. **Sessions**: bind results to variables and build on them, and print
+       only what the next decision needs.
     2. **Async**: the runtime owns the event loop, so code `await`s (and a
        sync facade uses the injected `run_coro_sync(factory)`) rather than
        calling `asyncio.run(...)`; `asyncio.gather` runs independent I/O

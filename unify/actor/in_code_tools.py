@@ -222,23 +222,36 @@ class InCodeTools:
 
     def opening(self) -> str:
         """The shared opening this agent reads first (:func:`unify.common.tool_registry.preamble`): its box (the
-        workspace and a private /tmp, writable; the network), its cell time, the library line where the run has a
-        library, the tools its allow-list has, and whether variables carry over (``UNIFY_CELL_STATE``). Box paths
-        and settings only, so it is constant for the run and the system message stays a stable prefix."""
+        workspace and a private /tmp, writable; the network), its cell time, the tools its allow-list has, whether
+        variables carry over (``UNIFY_CELL_STATE``) and the names bound in its cells (:meth:`prebound_names`). Box
+        paths and settings only, so it is constant for the run and the system message stays a stable prefix."""
         from unify.actor import tool_handlers as H
         from unify.actor.workspace_tools import _network_text
         from unify.common import tool_registry as R
         from unify.common.box_interpreter import persistent
-        from unify.memory.integration import hooks
 
         environment = f"Your box: {H.WORKSPACE} and a private /tmp are writable; {_network_text()}."
         if math.isfinite(self.cell_limit_s):
             environment += f" A cell runs for at most {self.cell_limit_s:g} s."
-        memory = "The library is importable in your cells as `memory`." if hooks.enabled() else ""
         return R.preamble(
             self.agent,
-            {"environment": environment, "memory": memory, "flags": self.flags, "persistent": persistent()},
+            {
+                "environment": environment,
+                "flags": self.flags,
+                "persistent": persistent(),
+                "names": self.prebound_names(),
+            },
         )
+
+    def prebound_names(self) -> tuple[str, ...]:
+        """The namespaces bound in this agent's cells before any runs (:func:`unify.common.tool_registry.prebound`):
+        ``tools``, and ``memory`` where the run's library copy holds the package (the worker binds it lazily,
+        :func:`unify.memory.integration.hooks.worker_globals`)."""
+        from unify.common import tool_registry as R
+        from unify.memory.integration import hooks
+
+        has_memory = "memory" in hooks.worker_globals()
+        return R.prebound_names(self.agent, {"tools": True, "memory": has_memory})
 
     # -- the model-API tool ------------------------------------------------------------------------------------
 
@@ -511,6 +524,9 @@ def open_for_act(
         if isinstance(holder, dict):
             for key in REPLACED_OBJECTS:
                 holder.pop(key, None)
+    # the prompt names display(obj): the worker binds its own (rich output comes back with the cell's output), as the
+    # off path's execute_code binds it per call
+    sandbox.global_state["display"] = display
     pool = agents.pool
     root = pool.record.root
     participant = pool.record.participants.get(agents.name)
@@ -528,6 +544,12 @@ def open_for_act(
         spawner=getattr(participant, "spawner", None),
         policy=policy,
     )
+
+
+def display(*objects: Any) -> None:
+    """Show rich output, such as an image, in the cell's output (it comes back as visual input). In a cell this name
+    is the worker's own ``display``; this host function only marks the name for the worker."""
+    raise RuntimeError("display runs in the cell's interpreter")
 
 
 def _is_reply(exc: BaseException) -> bool:
