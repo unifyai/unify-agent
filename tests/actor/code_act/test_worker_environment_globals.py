@@ -127,6 +127,39 @@ async def test_an_environment_global_is_served_from_the_harness(
         await ex.close()
 
 
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)
+async def test_a_cell_subscripts_an_environment_global_then_calls_the_result(
+    world,  # noqa: F811
+    relay_env,
+):
+    harness = fake_relay_env.process_id()
+    ex = SessionExecutor(environments={})
+    try:
+        _, res = await _run(
+            ex,
+            "(relay['music'].show('song'), relay[0].name, repr(relay['music']))",
+        )
+        assert res["error"] is None, res["error"]
+        shown, name, shown_repr = res["result"]
+        # Indexed and called in the harness, which reaches the relay.
+        assert shown["app"] == "music" and shown["token"] == TOKEN
+        assert shown["ran_in"] == harness
+        assert name == "music"
+        assert "_App" in shown_repr
+        # A missing key is the harness object's own KeyError.
+        _, res = await _run(ex, "relay['films']")
+        assert "KeyError" in str(res["error"])
+        # Other keys, and keys starting with '_', stay in the harness.
+        _, res = await _run(ex, "relay[0:1]")
+        assert "only str and int subscripts" in str(res["error"])
+        _, res = await _run(ex, "relay['_App']")
+        assert "do not cross the worker boundary" in str(res["error"])
+    finally:
+        await ex.close()
+
+
 def test_registering_an_environment_mounts_nothing_new(
     world,
     monkeypatch,

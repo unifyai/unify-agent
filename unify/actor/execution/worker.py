@@ -646,6 +646,24 @@ class PythonWorker:
             obj = self._refs[rid]
             label = f"<{child.type_name(obj)}>"
         for attr in target.get("path") or []:
+            if isinstance(attr, dict):
+                # A subscript (``proxy[key]``): a str or int key, never one
+                # starting with "_", applied with the same checks as getattr.
+                key = attr.get("item")
+                if (
+                    set(attr) != {"item"}
+                    or type(key) not in (str, int)
+                    or (isinstance(key, str) and key.startswith("_"))
+                ):
+                    raise BoundaryRefusal(
+                        f"{label}[{key!r}]: only str and int subscripts not "
+                        "starting with '_' of harness objects cross the worker "
+                        "boundary",
+                    )
+                obj = obj[key]
+                label = f"{label}[{key!r}]"
+                _refuse_unreachable(obj, label)
+                continue
             if not isinstance(attr, str) or attr.startswith("_"):
                 raise BoundaryRefusal(
                     f"{label}.{attr}: attributes starting with '_' of harness "
@@ -777,7 +795,12 @@ class PythonWorker:
         obj = self._resolve(shadow, target)
         if op == "describe":
             path = target.get("path") or [target.get("root", "")]
-            reply["value"] = self._describe(obj, str(path[-1]))
+            last = path[-1]
+            if isinstance(last, dict):
+                # A subscript's key names the value as an attribute does, so a
+                # credential-named key's value stays in the harness.
+                last = last.get("item", "")
+            reply["value"] = self._describe(obj, str(last))
         elif op == "dir":
             reply["value"] = sorted(n for n in dir(obj) if not n.startswith("_"))
         elif op == "call":

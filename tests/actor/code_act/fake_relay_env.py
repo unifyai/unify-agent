@@ -36,6 +36,13 @@ class RelayClient:
             token = fh.read().strip()
         return {"word": word, "token": token, "ran_in": process_id()}
 
+    def __getitem__(self, app: object) -> _App:
+        """``relay["music"]`` or ``relay[0]``, as AppWorld's ``apis[app]``."""
+        apps = {"music": self.music}
+        if isinstance(app, int):
+            return list(apps.values())[app]
+        return apps[app]
+
     def __repr__(self) -> str:
         return "<relay client>"
 
