@@ -69,7 +69,12 @@ def empty_record(item: str, kind: str) -> dict:
     and ``level_reasons`` the findings that set it, one line each. ``role`` is ``"reader"`` for a function whose
     tests produced parsed fixtures other tests load, ``"procedure"`` for a recorded procedure, None otherwise.
     ``reader`` lists the ids of the readers whose parsed fixtures its tests load, and ``reads_for`` the fixture
-    paths a reader produced."""
+    paths a reader produced.
+
+    A procedure landed from a capture (``land_capture``) carries from that capture, in the harness's own store
+    (:func:`.captures.landed_items`): ``landed_from`` (``{"capture", "reader"}``: the capture's id and the reader it
+    was landed with), ``signature`` (the capture's applicability signature) and ``applies`` (the item that is its
+    stated ``applies``). Each is None for any other item."""
     return {
         "item": item,
         "uid": None,
@@ -98,6 +103,9 @@ def empty_record(item: str, kind: str) -> dict:
         "role": None,
         "reader": [],
         "reads_for": [],
+        "landed_from": None,
+        "signature": None,
+        "applies": None,
     }
 
 

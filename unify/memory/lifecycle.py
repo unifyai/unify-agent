@@ -756,6 +756,7 @@ def next_records(
     aliases: Mapping[str, dict] | None = None,
     curations: Iterable[Mapping] | None = None,
     unknown_version: Iterable[str] = (),
+    landed: Mapping[str, Mapping] | None = None,
 ) -> tuple[dict[str, dict], dict[str, str]]:
     """The map of every item of the tree (*items*: id -> kind) and the status changes against *prev*.
 
@@ -777,6 +778,10 @@ def next_records(
     (:func:`.item_states.level_of_record`: a verification without one, or none, fails closed), ``level_reasons``,
     ``reads_for`` (a reader's parsed fixtures; ``role`` is then ``reader``) and ``reader`` (the readers its tests
     load fixtures of). A note's level stays None. Nothing here raises a level or sets ``confirmed-by-outcomes``.
+
+    *landed* (:func:`.captures.landed_items`: item -> its capture, reader, signature and applies) gives a procedure
+    landed from a capture its ``landed_from``, ``signature`` and ``applies``; a function it does not name keeps its
+    previous record's.
 
     Identity (:func:`identities`): every record has a ``uid`` and its ``renamed_from`` lineage, from the
     ``rename`` rows of *curations* and the live aliases. Use, the status rules' episodes and source episodes are
@@ -855,6 +860,17 @@ def next_records(
             rec["reads_for"] = sorted(str(p) for p in (v.get("reads_for") or []))
             rec["role"] = "reader" if rec["reads_for"] else None
             rec["reader"] = sorted(str(r) for r in (v.get("readers") or []))
+        if items[item] == "function":
+            got = (landed or {}).get(item)
+            if got is not None:
+                rec["landed_from"] = {"capture": got.get("capture"), "reader": got.get("reader")}
+                rec["signature"], rec["applies"] = got.get("signature"), got.get("applies")
+            else:
+                rec["landed_from"], rec["signature"], rec["applies"] = (
+                    old.get("landed_from"),
+                    old.get("signature"),
+                    old.get("applies"),
+                )
         rec["source_channels"] = sorted(channels.get(item, []))
         flagged = sorted(failure.get(item, []))
         p = provenance.get(item) or {}
@@ -1058,6 +1074,7 @@ def consolidate_records(
     stop: Any = None,
     budget_s: float | None = None,
     clock: Any = None,
+    captures: Any = None,
 ) -> dict:
     """The item records of ``main``'s head, after a consolidation's passes.
 
@@ -1087,6 +1104,7 @@ def consolidate_records(
     """
     from pathlib import Path
 
+    from .captures import landed_items
     from .gitio import GitError
     from .item_bisect import bisect_item, rollback_target, versions_of
     from .item_records import records_at
@@ -1152,6 +1170,8 @@ def consolidate_records(
         aliases=ev.aliases(),
         curations=ev.curations(),
         unknown_version=unknown_version,
+        # a procedure landed from a capture: its capture, reader, signature and applies (the capture store's)
+        landed=landed_items(captures),
     )
     for (
         item,

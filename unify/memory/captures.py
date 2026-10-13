@@ -80,6 +80,10 @@ SUMMARY_FILE = "summary.md"
 #: procedure's docstring and its episode's Asked and Approach sections, identifiers stripped; the actor's snapshot
 #: adds what broke.
 SAVED_FILE = "saved.json"
+#: Written by ``land_capture`` when it lands the capture (:func:`record_landing`): the procedure item it became, its
+#: reader, the item that is its stated ``applies`` and the episode it was landed from. The harness's own: never copied
+#: to a box. The item records take the landed procedure's signature and ``applies`` from it (:func:`landed_items`).
+LANDED_FILE = "landed.json"
 #: The files of one capture, as the store, the pool and the actor's snapshot hold them.
 CAPTURE_FILES = (PROCEDURE_FILE, SIGNATURE_FILE, RECORD_FILE, BROKE_FILE)
 #: The actor's snapshot of the store, under its library copy.
@@ -1006,6 +1010,53 @@ def batch_row(store: Path | str, eid: str) -> dict | None:
         "same_as": list(row.get("same_as") or []),
         "path": f"/inputs/captures/{cid}",
     }
+
+
+def record_landing(store: Path | str, cid: str, landing: Mapping[str, Any]) -> None:
+    """Record that capture *cid* was landed as *landing* (``item``, ``reader``, ``applies``, ``episode``), replacing an
+    earlier landing of it."""
+    if not _ID.fullmatch(str(cid)):
+        raise ValueError(f"not a capture id: {str(cid)[:40]!r}")
+    root = Path(store)
+    with _locked(root):
+        _write(root / cid / LANDED_FILE, _json({k: landing.get(k) for k in ("item", "reader", "applies", "episode")}))
+
+
+def landings(store: Path | str) -> dict[str, dict]:
+    """Every recorded landing in *store*, by capture id (:data:`LANDED_FILE`); one without an item is left out."""
+    root = Path(store)
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return {}
+    out: dict[str, dict] = {}
+    for name in names:
+        doc = _read_json(root / name / LANDED_FILE) if _ID.fullmatch(name) else None
+        if isinstance(doc, dict) and isinstance(doc.get("item"), str) and doc["item"]:
+            out[name] = doc
+    return out
+
+
+def landed_items(store: Path | str | None) -> dict[str, dict]:
+    """What each landed procedure item carries from its capture, by item id: ``capture`` (its id), ``reader`` (the
+    reader it was landed with), ``signature`` (its applicability signature as the store holds it; None: none) and
+    ``applies`` (the item that is its stated ``applies``; None: it states none). An item several captures landed (a new
+    case of an earlier landing) carries the first of them in id order."""
+    if store is None:
+        return {}
+    out: dict[str, dict] = {}
+    for cid, doc in landings(store).items():
+        if doc["item"] in out:
+            continue
+        sig = _read_json(Path(store) / cid / SIGNATURE_FILE)
+        applies, reader = doc.get("applies"), doc.get("reader")
+        out[doc["item"]] = {
+            "capture": cid,
+            "reader": reader if isinstance(reader, str) and reader else None,
+            "signature": sig if isinstance(sig, dict) else None,
+            "applies": applies if isinstance(applies, str) and applies else None,
+        }
+    return out
 
 
 def export_for_writer(store: Path | str, cids: Iterable[str], dest: Path) -> list[str]:

@@ -250,6 +250,16 @@ def procedure_block(source: str, cid: str, name: str, package: str, reader: str)
     return head + with_example(renamed(source, mapping), name, test), list(mapping.values())
 
 
+def applies_item(source: str, proc_id: str) -> str | None:
+    """The item id of the landed procedure *proc_id*'s ``applies`` when the captured *source* defines one
+    (:func:`procedure_block` keeps ``run`` as the procedure's name and makes every other name private); None when it
+    states none."""
+    if "applies" not in top_names(source):
+        return None
+    module, _, name = proc_id.rpartition(":")
+    return f"{module}:{_private(name, 'applies')}"
+
+
 def reader_block(source: str, name: str, package: str) -> tuple[str, list[str]]:
     """(the readers.py block, the names it binds): ``read_input`` as ``read_<name>``, everything else private."""
     mapping = {n: (f"read_{name}" if n == "read_input" else _private(f"read_{name}", n)) for n in top_names(source)}
@@ -588,6 +598,13 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work) -
             {"item": reader_id, "kind": "function", "source_episodes": [eid], "tests": [test_rel], "role": "reader"},
         )
     _manifest_add(box, entries)
+    # the landing, in the harness's own store: the item records take the capture's signature and applies from it, and
+    # the pass closes the capture's pool entry once the procedure lands
+    _captures.record_landing(
+        Path(store),
+        cid,
+        {"item": proc_id, "reader": reader_id, "applies": applies_item(source, proc_id), "episode": eid},
+    )
     lines = [f"Landed capture {cid} from episode {eid}:"]
     if same is not None:
         lines.append(f"- a new case of {proc_id}, which an earlier capture of the same work landed")

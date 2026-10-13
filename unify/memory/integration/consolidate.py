@@ -1004,6 +1004,7 @@ def after_passes(
     if not recorded or not library_enabled(settings):
         return
     from .. import lifecycle
+    from ..captures import store_dir as captures_store_dir
     from .switch import checker_visible
 
     try:
@@ -1014,6 +1015,8 @@ def after_passes(
                 work=Path(work),
                 action_lookup=EpisodeLookup(stores).action,
                 stop=stop,  # the worker's SIGTERM, checked between bisect runs
+                # the capture store: a landed procedure's record takes its capture's signature and applies
+                captures=captures_store_dir(stores.paths.state_dir),
             )
     except Exception as exc:  # noqa: BLE001 - the records never stop the request
         _error(stores, redact_error(f"item records: {type(exc).__name__}: {exc}"))
