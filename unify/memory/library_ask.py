@@ -311,12 +311,15 @@ def ask(request: Annotated[str, MinLen(1)]) -> list[Item]:
             hint="Browse with memory.items() and open an item with memory.get(id).",
         )
     facts = _guard(call, _facts, request)
-    refused = getattr(tools, "Refused", None)
+    # the tool's own failures (a refusal, a harness fault, a closed channel) say why in their first line
+    failures = tuple(
+        c
+        for c in (getattr(tools, name, None) for name in ("Refused", "ToolError", "ChannelClosed"))
+        if isinstance(c, type) and issubclass(c, BaseException)
+    )
     try:
         reply = send(request, facts)
-    except Exception as exc:
-        if not (isinstance(refused, type) and isinstance(exc, refused)):
-            raise
+    except failures as exc:
         raise NotFound(
             call,
             f"the librarian gave no answer ({_first_line(exc)}).",
