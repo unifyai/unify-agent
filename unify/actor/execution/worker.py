@@ -220,7 +220,8 @@ def _credential_inside(value: Any) -> Optional[str]:
     """What in a value about to cross by value looks like a credential, or None.
 
     Walks nested lists, tuples, sets and dicts (each container once). A dict
-    key is credential-named by the environment scrub's own test
+    entry whose value is non-empty text is a credential when its key is
+    credential-named by the environment scrub's own test
     (:func:`unify.sandbox._is_secret_env`, which also catches a URL with a
     password as its value); a string anywhere, key or value, is a credential
     when it is key-shaped or such a URL (:func:`unify.sandbox._looks_like_key`).
@@ -241,9 +242,13 @@ def _credential_inside(value: Any) -> Optional[str]:
         seen.add(id(item))
         if isinstance(item, dict):
             for key, inner in item.items():
-                if isinstance(key, str) and sandbox._is_secret_env(
-                    key,
-                    inner if isinstance(inner, str) else "",
+                # a credential is text: a credential-named key holding a number, a flag, a list or an empty string
+                # (``max_tokens: 5``, ``keys: [...]``) crosses, and its contents are still walked
+                if (
+                    isinstance(key, str)
+                    and isinstance(inner, (str, bytes))
+                    and len(inner) > 0
+                    and sandbox._is_secret_env(key, inner if isinstance(inner, str) else "")
                 ):
                     return f"the key {key!r}"
                 stack.append(key)

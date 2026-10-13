@@ -311,6 +311,8 @@ KEY_SHAPED = "sk-or-v1-planted-readable-test-value"  # pragma: allowlist secret
         ({"x": KEY_SHAPED}, KEY_SHAPED),
         ({"outer": [{"nested": (1, KEY_SHAPED)}]}, KEY_SHAPED),
         ([{"db_password": "planted-word"}], "planted-word"),
+        ({"keys": [{"access_token": "planted-word"}]}, "planted-word"),
+        ({"api_key": b"planted-word"}, "planted-word"),
         (
             {"url": "https://user:planted-word@example.invalid/x"},
             "planted-word",
@@ -338,7 +340,16 @@ async def test_a_container_holding_a_credential_stays_in_the_harness(cfg, plante
 @pytest.mark.asyncio
 async def test_a_container_without_a_credential_crosses_by_value():
     worker, shadow = _harness()
-    cfg = {"name": "music", "items": [1, "two", ("three",)], "author": "a"}
+    # credential-named keys holding no text cross too: a model setting, a list of names, a count, an empty value
+    cfg = {
+        "name": "music",
+        "items": [1, "two", ("three",)],
+        "author": "a",
+        "max_tokens": 5,
+        "keys": ["up", "down"],
+        "token_count": 12,
+        "password": "",
+    }
     shadow["apis"].apps["cfg"] = cfg
     shadow["apis"].cfg = cfg
     for element in ("cfg", {"item": "cfg"}):
