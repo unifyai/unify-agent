@@ -263,7 +263,7 @@ def test_the_actor_in_code_prompt_leaves_persistence_to_the_opening():
     rules = flat(pb._LEAN_EXECUTION_RULES_IN_CODE)
     assert "cells share one persistent sandbox" not in rules
     assert "usually means the sandbox restarted" not in rules
-    assert "Bind results to variables and build on them" in rules
+    assert "**Sessions**: bind results to variables and build on them" in rules
     sandbox = flat(pb._SANDBOX_IN_CODE)
     assert "already bound" in sandbox and "no import needed" in sandbox
     assert "`tools`" in sandbox and "`display(obj)`" in sandbox

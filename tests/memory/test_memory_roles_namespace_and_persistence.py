@@ -95,7 +95,7 @@ PROBE = probe(CHECK) + (
 #: the second cell: the variable is still there, and the library and help work with no import line
 NEXT = (
     "print('NEXT', x + 1)\n"
-    "print('INDEX', type(memory.index()).__name__)\n"
+    "print('INDEX', isinstance(memory.index(), str))\n"
     "help(len)\n"
     "print('HELPED')\n"
 )
@@ -151,7 +151,7 @@ def _assert_probe(output: str, role: str) -> None:
 
 def _assert_next(output: str, role: str) -> None:
     assert "NEXT 42" in output, (role, output)
-    assert "INDEX str" in output and "HELPED" in output, (role, output)
+    assert "INDEX True" in output and "HELPED" in output, (role, output)
     assert "NameError" not in output, (role, output)
 
 
@@ -415,11 +415,11 @@ def test_the_first_use_of_memory_is_in_that_cell_s_open_log(tmp_path, monkeypatc
         tmp_path,
         [
             "x = 1\nprint('NO USE', 'imported on first use' in repr(memory))",
-            "print('USE', type(memory.index()).__name__)",
+            "print('USE', isinstance(memory.index(), str))",
             "print('LAST')",
         ],
     )
-    assert "NO USE True" in out["c1"] and "USE str" in out["c2"], out
+    assert "NO USE True" in out["c1"] and "USE True" in out["c2"], out
     rows = [
         json.loads(line)
         for line in (tmp_path / "out" / "p1" / "tool-events.jsonl").read_text().splitlines()

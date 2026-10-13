@@ -59,7 +59,7 @@ def probe(names) -> str:
     lines.append("print('BOUND', sorted(_bound))")
     return "\n".join(lines) + "\n"
 PROBE = probe(CHECK)
-NEXT = "print('NEXT', x + 1)\nprint('INDEX', type(memory.index()).__name__)\nhelp(len)\nprint('HELPED')\n"
+NEXT = "print('NEXT', x + 1)\nprint('INDEX', isinstance(memory.index(), str))\nhelp(len)\nprint('HELPED')\n"
 ONLY_NEXT = "print('NEXT', x + 1)\n"
 
 
@@ -169,7 +169,7 @@ def _assert_probe(output: str, role: str) -> None:
 
 
 def _assert_next(output: str, role: str) -> None:
-    assert "NEXT 42" in output and "INDEX str" in output and "HELPED" in output, (role, output)
+    assert "NEXT 42" in output and "INDEX True" in output and "HELPED" in output, (role, output)
 
 
 # --- persistent by default --------------------------------------------------------------------------------------
