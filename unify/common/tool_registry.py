@@ -2212,7 +2212,7 @@ def __getattr__(name):
     near = c["nearest"](name, [n for n in __all__ if n[:1].isupper() == name[:1].isupper()])
     if _other_role(name):
         tail = ("Nearest: " + ", ".join(near) + ". " if near else "") + "tools.list() lists yours."
-        raise AttributeError("tools.%s isn't available in your role.\n%s" % (name, tail))
+        raise AttributeError("tools.%s isn't available in your role.\\n%s" % (name, tail))
     problem = "tools has no attribute %r" % (name,)
     raise AttributeError(c["render"]("tools." + name, problem, nearest=near, hint="tools.list() lists yours."))
 '''
