@@ -85,6 +85,17 @@ sys.stdout.write("\n" + MARK + json.dumps(out))
 _ASK_MARK = "\x1ememory-ask-facts\x1e"
 
 
+def _applies_target(row: dict, applies_of: dict) -> Any:
+    """The function whose ``applies`` a dispatch row's facts call: a captured procedure's own, a landed procedure's
+    from ``applies_of``; None when the row has none (or it cannot be located)."""
+    if row.get("applies") is not True:
+        return None
+    if isinstance(row.get("id"), str) and row["id"].startswith(CAPTURE_PREFIX):
+        return row["id"]
+    named = applies_of.get(row.get("id")) if isinstance(applies_of, dict) else None
+    return named if isinstance(named, str) else None
+
+
 def _spec(target: Any, name: str) -> Any:
     """How the child loads *target*: a library function by its id (from the copy's root), or a captured procedure's
     *name* function from its ``procedure.py``; None when *target* names neither."""
@@ -101,7 +112,7 @@ def _spec(target: Any, name: str) -> Any:
     return {"kind": "item", "id": target, "root": _ROOT}
 
 
-def _recognise(reader: str, rows: list, text: str) -> tuple[str, list]:
+def _recognise(reader: str, rows: list, text: str, applies_of: Any = None) -> tuple[str, list]:
     """Run *reader* once on *text*, then each row's ``applies`` on what it gave, in one confined child; the
     outcomes only (:data:`READ_OUTCOMES`, :data:`APPLIES_OUTCOMES`). A child that fails, or runs past
     :data:`RUN_TIMEOUT_S`, means the reader did not parse; nothing is retried."""
@@ -109,7 +120,7 @@ def _recognise(reader: str, rows: list, text: str) -> tuple[str, list]:
     import subprocess
 
     spec = _spec(reader, "read_input")
-    applies = [_spec(r.get("applies"), "applies") if r.get("applies") else None for r in rows]
+    applies = [_spec(_applies_target(r, applies_of or {}), "applies") for r in rows]
     none = ("did-not-parse", ["none" if a is None else "not-run" for a in applies])
     if spec is None:
         return none
@@ -160,7 +171,8 @@ def _facts(text: str) -> list:
     """One fact per procedure ``dispatch.json`` lists: ``{id, reader, read, applies}``, ids and outcome labels only.
     Each distinct reader runs once (:func:`_recognise`)."""
     try:
-        rows = _json(DISPATCH_FILE).get("procedures", [])
+        data = _json(DISPATCH_FILE)
+        rows, applies_of = data.get("procedures", []), data.get("applies_of") or {}
     except (RuntimeError, ValueError, AttributeError):
         return []
     rows = [r for r in rows if isinstance(r, dict) and isinstance(r.get("id"), str)] if isinstance(rows, list) else []
@@ -172,10 +184,12 @@ def _facts(text: str) -> list:
         if reader is None:
             for r in group:
                 out[r["id"]] = {"id": r["id"], "reader": None, "read": "did-not-parse",
-                                "applies": "none" if not r.get("applies") else "not-run"}
+                                "applies": "none" if r.get("applies") is not True else "not-run"}
             continue
-        read, applies = _recognise(reader, group, text)
+        read, applies = _recognise(reader, group, text, applies_of)
         for r, a in zip(group, applies):
+            if a == "none" and r.get("applies") is True:
+                a = "not-run"  # it states an applies that this copy cannot locate: not run, never guessed
             out[r["id"]] = {"id": r["id"], "reader": reader, "read": read, "applies": a}
     return [out[r["id"]] for r in rows if r["id"] in out]
 
@@ -213,15 +227,25 @@ def ask(text: Any) -> Answer:
     read. You may ask again, about the same request or another question. Nothing is run on your behalf."""
     question = text if isinstance(text, str) else json.dumps(text, default=str)
     tools = sys.modules.get("tools")
+    if tools is None:  # the box imports it before any cell; elsewhere it may be importable but not yet imported
+        try:
+            import importlib
+
+            tools = importlib.import_module("tools")
+        except ImportError:
+            tools = None
     call = getattr(tools, ASK_TOOL, None)
     if call is None:
         raise LookupError("memory.ask: the librarian cannot be reached from this agent's cells")
     facts = _facts(question)
     reply = call(question, facts)
-    try:
-        data = json.loads(str(reply))
-    except ValueError as exc:
-        raise RuntimeError("memory.ask: the librarian's answer could not be read") from exc
+    if isinstance(reply, dict):
+        data = reply
+    else:
+        try:
+            data = json.loads(str(reply))
+        except ValueError as exc:
+            raise RuntimeError("memory.ask: the librarian's answer could not be read") from exc
     answer = Answer(data if isinstance(data, dict) else {"fits": []})
     listed = tuple(f.get("id") for f in answer.get("fits") or [] if isinstance(f, dict) and isinstance(f.get("id"), str))
     _emit_event(ASK_EVENT, listed, not listed, _fact_rows(facts))

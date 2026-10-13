@@ -24,7 +24,8 @@ USD unknown.
 It answers with ``tools.finish(answer)`` (:func:`finish`): ``{"fits": [{"id", "call", "why"}, ...]}`` or
 ``{"fits": [], "nearest": [{"id", "differs"}, ...]}``. The handler checks the form and every id against the
 catalogue; a malformed answer or an unknown id goes back as a refusal for the librarian to correct, within the
-loop's existing limits (no cap of its own). The fits are put in the catalogue's order; nothing is ranked or scored.
+loop's existing limits (no cap of its own). The answer reaches the actor as the librarian gave it: the harness ranks,
+scores and reorders nothing.
 """
 
 from __future__ import annotations
@@ -89,7 +90,7 @@ BRIEF = (
     "links and records. Open an item when its card leaves you unsure whether it applies.\n"
     "\n"
     "## How you answer\n"
-    "- Read every card before you answer. Name every item that applies, not only one.\n"
+    "- Read every card before you answer. Name every item that applies, not only one, in the catalogue's order.\n"
     "- For each item that applies, give a ready call the agent can run as written, such as "
     '`memory.run("<id>", text)` for a stored procedure, and a one-line reason that names the saved-against line, '
     "the fact or the record you relied on.\n"
@@ -254,8 +255,9 @@ def _text(value: Any) -> bool:
 
 
 def check_answer(answer: Any, ids: list[str], failed: set[str] = frozenset()) -> tuple[dict | None, str]:
-    """The answer in the catalogue's order, or None with the reason it is refused: the form of design J(b).4, every
-    id one the catalogue holds, and no captured attempt that failed among the fits."""
+    """The answer as the librarian gave it, or None with the reason it is refused: the form of design J(b).4, every
+    id one the catalogue holds, and no captured attempt that failed among the fits. The harness adds, drops and
+    reorders nothing."""
     known = set(ids)
     if not isinstance(answer, dict):
         return None, 'the answer must be an object: {"fits": [...]} or {"fits": [], "nearest": [...]}'
@@ -274,11 +276,10 @@ def check_answer(answer: Any, ids: list[str], failed: set[str] = frozenset()) ->
             return None, f"fit {i}: {f['id']!r} was tried and failed; it is never offered to run (name it as nearest)"
     if len({f["id"] for f in fits}) != len(fits):
         return None, "an id is listed twice among the fits"
-    order = {i: n for n, i in enumerate(ids)}
     if fits:
         if "nearest" in answer:
             return None, "`nearest` is given only when nothing fits"
-        return {"fits": sorted((dict(f) for f in fits), key=lambda f: order[f["id"]])}, ""
+        return {"fits": [dict(f) for f in fits]}, ""
     nearest = answer.get("nearest")
     if not isinstance(nearest, list):
         return None, "when nothing fits, `nearest` must be a list of {id, differs} (empty when the catalogue is empty)"
@@ -289,7 +290,7 @@ def check_answer(answer: Any, ids: list[str], failed: set[str] = frozenset()) ->
             return None, f"nearest {i}: {n['id'][:200]!r} is not an id the catalogue holds"
     if len({n["id"] for n in nearest}) != len(nearest):
         return None, "an id is listed twice among the nearest"
-    return {"fits": [], "nearest": sorted((dict(n) for n in nearest), key=lambda n: order[n["id"]])}, ""
+    return {"fits": [], "nearest": [dict(n) for n in nearest]}, ""
 
 
 async def finish(ctx: Any, args: dict) -> Any:

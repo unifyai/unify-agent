@@ -318,7 +318,7 @@ def library_helper_calls(runtime: Any, librarian: bool = False) -> dict:
     seen = runtime.get("helpers") if isinstance(runtime, dict) else None
     seen = seen if isinstance(seen, dict) else {}
     out = {}
-    for name in (*LIBRARY_HELPERS, ASK_HELPER) if librarian else LIBRARY_HELPERS:
+    for name in (*LIBRARY_HELPERS, ASK_HELPER) if librarian or ASK_HELPER in seen else LIBRARY_HELPERS:
         row = seen.get(name)
         row = row if isinstance(row, dict) else {}
         out[name] = {k: _count(row.get(k)) for k in RUNTIME_OUTCOMES}
@@ -581,9 +581,15 @@ def _add_matches_and_runs(acc: dict, calls: dict, cell: int) -> None:
                 "runs_before": position(m.get("runs_before")),
             },
         )
+    # the ids memory.ask listed: in earlier cells (acc["asks"], added before this), or earlier in this cell
+    asked_before = {i for a in acc.get("asks") or [] if a.get("cell") != cell for i in a.get("listed") or []}
+    asks_here = [a for a in calls.get("asks") or [] if isinstance(a, dict)]
     for i, r in enumerate(runs):
         listed_here = any(
             m["runs_before"] <= i and r["target"] in {row["id"] for row in m["listed"]} for m in new
+        )
+        by_ask = r["target"] in asked_before or any(
+            position(a.get("runs_before")) <= i and r["target"] in (a.get("listed") or []) for a in asks_here
         )
         if len(acc["runs"]) >= MAX_RUN_ROWS:
             acc["match_run_dropped"] += 1
@@ -599,6 +605,7 @@ def _add_matches_and_runs(acc: dict, calls: dict, cell: int) -> None:
                 "repeatable": r.get("repeatable") if isinstance(r.get("repeatable"), str) else None,
                 "agrees_with": len(agrees) if isinstance(agrees, list) else 0,
                 "listed_by_match": r["target"] in earlier or listed_here,
+                "listed_by_ask": by_ask,
             },
         )
     for m in new:
@@ -839,10 +846,11 @@ def memory_use(
             record["library_failures_dropped"] = dropped
             record["library_file_lookups"] = library_file_lookups_total(runtime_calls)
             record.update(use.match_run_fields(runtime_calls, clean(list(ep.transcript))))
+        if library_mode and isinstance(record, dict) and "error" not in record:
+            record.update(use.ask_fields(runtime_calls))
         if librarian is not None and isinstance(record, dict) and "error" not in record:
             from ..librarian import usage_fields
 
-            record.update(use.ask_fields(runtime_calls))
             record["librarian"] = usage_fields(librarian)
         return record
     except Exception as exc:  # noqa: BLE001 - telemetry never stops recording

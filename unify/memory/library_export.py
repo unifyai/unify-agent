@@ -632,7 +632,7 @@ def catalogue_text(
         goal = _one_line(sig.get("goal")) if isinstance(sig.get("goal"), str) else ""
         lines.append(f"Saved against:\n- Asked: {goal or 'not recorded'}\n")
         input_line = signature_text(sig)
-        level = rec.get("level") if isinstance(rec.get("level"), str) else _UNCHECKED
+        level = _UNCHECKED  # captured procedures are listed at level unchecked (design J(b).3)
         state = rec.get("status") if isinstance(rec.get("status"), str) else "on-trial"
         lines.append(
             f"Evidence: level {level}; status {state}; reader read_input; "
@@ -660,13 +660,16 @@ def dispatch_data(
 ) -> dict:
     """``.memory/dispatch.json``: each listed procedure with a reader or an ``applies`` (design J(b).3), as
     ``{id, reader, applies, input}``: ``reader`` is the reader's id (an item id from the item record's ``reader``;
-    ``capture:<id>`` for a captured procedure, whose ``read_input`` is its reader), ``applies`` the id whose
-    ``applies`` the facts call (the item record's ``applies``, an item id; the capture itself) or null when it has
-    none, and ``input`` its input line. Module-path order, then the captures in id order; a captured attempt that
-    failed is left out (never offered to run)."""
+    ``capture:<id>`` for a captured procedure, whose ``read_input`` is its reader), ``applies`` whether it has one
+    (its applicability signature states one, or its item record names the function), and ``input`` its input line.
+    Module-path order, then the captures in id order; a captured attempt that failed is left out (never offered to
+    run). Beside the rows, ``applies_of`` names, for a landed procedure, the library function that is its
+    ``applies`` (the item record's ``applies``); a captured procedure's ``applies`` is the one in its own
+    ``procedure.py``."""
     from .library_index import signature_text
 
     rows: list[dict] = []
+    applies_of: dict[str, str] = {}
     for f in sorted(lib.functions, key=lambda f: (f.module, f.name)):
         if _status(status_of, f.item_id) in HIDDEN:
             continue
@@ -674,12 +677,20 @@ def dispatch_data(
         if not isinstance(rec, dict):
             continue
         reader = rec.get("reader") if isinstance(rec.get("reader"), str) and rec.get("reader") else None
-        applies = rec.get("applies") if isinstance(rec.get("applies"), str) and rec.get("applies") else None
-        if reader is None and applies is None:
-            continue
+        named = rec.get("applies") if isinstance(rec.get("applies"), str) and rec.get("applies") else None
         sig = rec.get("signature")
+        applies = named is not None or _applies_stated(sig)
+        if reader is None and not applies:
+            continue
+        if named is not None:
+            applies_of[f.item_id] = named
         rows.append(
-            {"id": f.item_id, "reader": reader, "applies": applies, "input": signature_text(sig) if isinstance(sig, dict) else ""},
+            {
+                "id": f.item_id,
+                "reader": reader,
+                "applies": applies,
+                "input": signature_text(sig) if isinstance(sig, dict) else "",
+            },
         )
     for cid, doc in _capture_docs(captures).items():
         rec = doc["record"] if isinstance(doc["record"], dict) else {}
@@ -691,11 +702,11 @@ def dispatch_data(
             {
                 "id": target,
                 "reader": target,
-                "applies": target if _applies_stated(sig) else None,
+                "applies": _applies_stated(sig),
                 "input": signature_text(sig),
             },
         )
-    return {"version": 1, "procedures": rows}
+    return {"version": 1, "procedures": rows, "applies_of": applies_of}
 
 
 def librarian_files(

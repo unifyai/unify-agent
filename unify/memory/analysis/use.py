@@ -722,6 +722,7 @@ def match_run_fields(runtime: Any, lines: Iterable[Any] = ()) -> dict:
                     "repeatable",
                     "agrees_with",
                     "listed_by_match",
+                    "listed_by_ask",
                 )
             }
             for r in runs

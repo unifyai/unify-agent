@@ -98,10 +98,14 @@ def response_validator(rf_norm: Any) -> Callable[[Any], str]:
     return validate
 
 
-def actor_flags(agent: str, can_store: bool, librarian: bool = False) -> frozenset:
+def actor_flags(agent: str, can_store: bool, librarian: Optional[bool] = None) -> frozenset:
     """The configuration flags the actor's or a teammate's allow-list is built with: teammates are offered
     (``helper``), storing only where the actor may store (*can_store*), and asking the librarian only for the actor
-    with ``UNIFY_MEMORY_LIBRARIAN=on`` (*librarian*)."""
+    with ``UNIFY_MEMORY_LIBRARIAN=on`` (*librarian*; None reads the setting)."""
+    if librarian is None:
+        from unify.settings import SETTINGS
+
+        librarian = getattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "off") == "on"
     return frozenset(
         {"helper"}
         | ({_registry.STORE_FLAG} if can_store and agent == "actor" else set())
