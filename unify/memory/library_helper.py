@@ -1,7 +1,8 @@
 """The memory library: three calls and one item type.
 
-    memory.ask(request) -> list[Item]               # with the librarian on: every item it judges applicable,
-                                                    # each with .reason; [] when nothing applies
+    memory.ask(question=None) -> list[Item]         # with the librarian on: every item it judges applicable to
+                                                    # the current request (or your question), each with .reason;
+                                                    # [] when nothing applies
     memory.items(topic=None, kind=None) -> Items    # browse; print() shows a compact table, page by page
     memory.get(ref) -> Item                         # one item, by any name that names exactly one
 
@@ -33,10 +34,13 @@ the aliases under their own names (``memory:index``, ``memory:show``, ``memory:f
 ``memory:run``), a function item's call as ``memory:run`` (a tracked call, as ``run`` is) and ``Item.fits`` as
 ``memory:match``.
 
-``match`` and ``Item.fits`` read what each stored procedure was saved against (the landed procedures in
-``.memory/find.json``'s ``procedures``, the harness's captured attempts under ``.memory/captures/``) and hand it,
-identifiers masked, to :data:`MATCHER`, a replaceable module-level hook; the default compares structure only and
-runs nothing. Each raises ``memory.match_result`` with the ids it listed. A tracked call (``run``, or calling a
+``Item.fits``, and ``match`` without the harness's ``.memory/dispatch.json``, read what each stored procedure was saved
+against (the landed procedures in ``.memory/find.json``'s ``procedures``, the harness's captured attempts under
+``.memory/captures/``) and hand it, identifiers masked, to :data:`MATCHER`, a replaceable module-level hook; the
+default compares structure only and runs nothing. With the dispatch file (``UNIFY_MEMORY_LIBRARIAN=on``), ``match``
+lists only the procedures whose stored reader parsed the request and whose stated ``applies`` held, both run in a
+separate confined process that keeps every value (:func:`_facts`); structure only orders them. Each raises
+``memory.match_result`` with the ids it listed. A tracked call (``run``, or calling a
 function item) also raises ``memory.run_result`` with its target and outcome. Neither event carries a value or a
 result. A call that raised also raises ``memory.call_failed`` with the id, the exception's type, the first line of
 its message and, for the package's own calls, the arguments' shape (types and sizes, never values).
@@ -407,10 +411,12 @@ def _find(value: Any) -> list[Found]:
 
 # --- recognition by content (``match``) and trying a stored procedure (``run``) ---------------------------------
 #
-# ``match`` informs and runs nothing: it reads what each stored procedure was saved against and asks the matcher
-# (:data:`MATCHER`, a module-level hook) which of them fit what the caller passed. ``run`` is the agent's own call of
-# one procedure, in its own cell; nothing here runs on its own. Everything read here was built by the harness with
-# identifiers already removed (signatures, docstrings, summary sections, what broke); this file strips nothing.
+# ``match`` informs and runs no procedure: it reads what each stored procedure was saved against and asks the matcher
+# (:data:`MATCHER`, a module-level hook) which of them fit what the caller passed; with the harness's dispatch file it
+# lists instead the procedures whose stored reader and ``applies`` recognise the request, run confined (outcomes
+# only). ``run`` is the agent's own call of one procedure, in its own cell; nothing here runs on its own. Everything
+# read here was built by the harness with identifiers already removed (signatures, docstrings, summary sections, what
+# broke); this file strips nothing.
 
 #: Captured attempts the harness exported beside the package, one directory per capture id (written by the capture
 #: store, never by this file): ``signature.json``, ``record.json``, ``procedure.py`` and ``saved.json`` (what the
@@ -492,14 +498,26 @@ class Matches(list):
     """The runnable procedures ``match`` lists (a list of :class:`MatchRow`), with ``failed``, the captured attempts
     that were tried on input like this and failed, kept apart. It prints as a few lines."""
 
-    def __init__(self, rows: list, failed: list, note: str = "") -> None:
+    def __init__(self, rows: list, failed: list, note: str = "", recognised: bool = False) -> None:
         super().__init__(rows)
         self.failed = list(failed)
         self.note = note
+        # the rows are the procedures that recognise the request (the dispatch file's readers and applies ran)
+        self.recognised = recognised
 
     def __repr__(self) -> str:
         out: list[str] = []
-        if self:
+        if self.recognised and self:
+            out.append(
+                f"{len(self)} stored procedure(s) recognise the request: each one's reader parsed it and its stated "
+                "applies held on what the reader gave (both ran in a separate confined process; only the outcomes "
+                "are kept). One can still be wrong for your case; memory.get(id) opens one and calling it tries it:",
+            )
+            out += [_row_text(r) for r in self]
+        elif self.recognised:
+            out.append("No stored procedure recognises the request: none has a reader that parsed it with its "
+                       "stated applies holding.")
+        elif self:
             out.append(
                 f"{len(self)} stored procedure(s) match what you passed. The match compares structure only, so "
                 "it can be wrong; memory.get(id) opens one and calling it tries it:",
@@ -665,7 +683,8 @@ def structural_match(query: Query, candidates: list[Candidate]) -> list[tuple[st
     """The default matcher: structure only, never words. A candidate matches when one of the query's shapes has the
     same shape as its signature's ``input`` (``exact``) or matches it as ``find`` matches an argument, with at least
     a structure-level match (``structure``). The docstring and the summary sections are not compared, and nothing
-    is run: a stated ``applies`` is shown, not called. Candidates keep their given order (no ranking)."""
+    is run here: a stated ``applies`` is shown, not called (``match`` with the dispatch file calls it, confined, and
+    uses this matcher only to order its rows). Candidates keep their given order (no ranking)."""
     if not query.shapes:
         return []
     m = _matcher()
@@ -761,17 +780,350 @@ def _matched(request: Any, inputs: Any) -> tuple[list[MatchRow], list[MatchRow],
     return rows, failed, query, unreadable, ""
 
 
+# --- the stored readers on a request (``match`` and ``ask``, with the harness's dispatch file) -------------------
+#
+# With ``UNIFY_MEMORY_LIBRARIAN=on`` the harness writes ``.memory/dispatch.json``: each stored procedure that has a
+# reader or an ``applies``. :func:`_facts` runs each distinct reader it names once on a request's text, and then each
+# ``applies`` whose reader parsed it, all in one child process confined as a captured procedure's call is (an isolated
+# interpreter, an empty environment, its own process group, a bounded time). Inside it every reader runs in a process
+# of its own, forked from it, with its output discarded and a time bound of its own, so one reader neither sees nor
+# changes another's outcome. The values the readers give stay there: only the outcomes come back (a reader parsed
+# the text or did not, could not be started or gave no outcome; an ``applies`` held, did not hold or raised).
+#
+# The current request reaches this file from the host tool :data:`REQUEST_TOOL`, called through the channel client
+# (``tools._call``): no name for it is bound in a cell, and its text crosses only as data.
+
+DISPATCH_FILE = ".memory/dispatch.json"
+#: The host tool that gives the current request, as JSON text ``{"text": ..., "data": ...}``.
+REQUEST_TOOL = "current_request"
+#: A reader's outcome on the text: it parsed it, or did not; its process could not be started (``not-started``); or
+#: it gave no outcome (``failed``: it ran past its time, printed past the bound, or left no or a malformed report).
+#: The last two come with a short reason (:data:`_REASON`).
+READ_OUTCOMES = ("parsed", "did-not-parse", "not-started", "failed")
+#: An ``applies`` outcome on the value its reader gave.
+APPLIES_OUTCOMES = ("held", "did-not-hold", "raised", "not-run", "none")
+#: How long one reader and its ``applies`` may take, and all of one call's readers together, in seconds.
+READ_TIMEOUT_S = 30.0
+READERS_TIMEOUT_S = RUN_TIMEOUT_S
+#: How ``match`` says a procedure it lists was recognised: its reader parsed the request and its ``applies`` held.
+RECOGNISED = "applies-held"
+#: Why a reader gave no outcome: one of a few fixed forms, at most 80 characters, never a value.
+_REASON = re.compile(
+    r"timeout after \d{1,4}(?:\.\d{1,3})? s(?: for all readers)?|output overrun|no marker|no report|malformed report"
+    r"|(?:start|runner): [A-Za-z_][A-Za-z0-9_]{0,60}",
+)
+_ASK_MARK = "\x1ememory-ask-facts\x1e"
+
+#: The child that runs the readers (stdlib only). It runs none of their code itself: for each reader it forks a
+#: process that discards its output, works in the reader's directory, runs the reader on the text and then the
+#: ``applies`` of each procedure that reads with it, and writes those outcomes to a pipe; the child stops that process
+#: at its time bound. It prints every reader's outcomes after a marker line, never a value.
+_RECOGNISER_RUNNER = r'''
+import json, os, select, sys, time
+MARK, EACH, ALL = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
+REPORT_MAX = 65536
+def load(spec):
+    if spec["kind"] == "capture":
+        ns = {"__name__": "captured_procedure", "__file__": spec["path"]}
+        with open(spec["path"], encoding="utf-8") as fh:
+            exec(compile(fh.read(), spec["path"], "exec"), ns)
+        return ns.get(spec["name"])
+    import importlib
+    sys.path.insert(0, spec["root"])
+    module, _, name = spec["id"].partition(":")
+    return getattr(importlib.import_module(module), name)
+def recognise(text, group):
+    out = {"read": "did-not-parse", "applies": []}
+    value = None
+    try:
+        reader = load(group["reader"])
+        if not callable(reader):
+            raise LookupError("no reader")
+        value = reader(text)
+        out["read"] = "parsed"
+    except Exception:
+        out["read"] = "did-not-parse"
+    for spec in group["applies"]:
+        if spec is None:
+            out["applies"].append("none")
+        elif out["read"] != "parsed":
+            out["applies"].append("not-run")
+        else:
+            try:
+                out["applies"].append("held" if bool(load(spec)(value)) else "did-not-hold")
+            except Exception:
+                out["applies"].append("raised")
+    return out
+def one(text, group, left):
+    try:
+        r, w = os.pipe()
+        pid = os.fork()
+    except OSError as exc:
+        return {"read": "not-started", "reason": "start: " + type(exc).__name__}
+    if pid == 0:
+        try:
+            os.close(r)
+            null = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(null, 1)
+            os.dup2(null, 2)
+            os.chdir(group["cwd"])
+            data = json.dumps(recognise(text, group)).encode("utf-8")
+            while data:
+                data = data[os.write(w, data):]
+        finally:
+            os._exit(0)
+    os.close(w)
+    end, got, reason = time.monotonic() + left, b"", ""
+    try:
+        while True:
+            wait = end - time.monotonic()
+            if wait <= 0:
+                reason = "timeout after %g s" % EACH if left >= EACH else "timeout after %g s for all readers" % ALL
+                break
+            if not select.select([r], [], [], wait)[0]:
+                continue
+            chunk = os.read(r, 65536)
+            if not chunk:
+                break
+            got += chunk
+            if len(got) > REPORT_MAX:
+                reason = "output overrun"
+                break
+    finally:
+        os.close(r)
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+        os.waitpid(pid, 0)
+    if reason:
+        return {"read": "failed", "reason": reason}
+    if not got:
+        return {"read": "failed", "reason": "no report"}
+    try:
+        rep = json.loads(got.decode("utf-8"))
+    except ValueError:
+        rep = None
+    return rep if isinstance(rep, dict) else {"read": "failed", "reason": "malformed report"}
+out = []
+try:
+    payload = json.loads(sys.stdin.read())
+    stop = time.monotonic() + ALL
+    for group in payload["groups"]:
+        left = min(EACH, stop - time.monotonic())
+        try:
+            out.append(one(payload["text"], group, left) if left > 0 else
+                       {"read": "failed", "reason": "timeout after %g s for all readers" % ALL})
+        except Exception as exc:
+            out.append({"read": "failed", "reason": "runner: " + type(exc).__name__})
+except Exception:
+    pass  # the groups left without an outcome read as a malformed report
+sys.stdout.write("\n" + MARK + json.dumps(out))
+'''
+
+
+def _tools() -> Any:
+    """The box module ``tools`` (the agent's host tools), or None where there is none."""
+    tools = sys.modules.get("tools")
+    if tools is None:  # the box imports it before any cell; elsewhere it may be importable but not yet imported
+        try:
+            tools = importlib.import_module("tools")
+        except ImportError:
+            tools = None
+    return tools
+
+
+def _current_request() -> tuple[str | None, Any]:
+    """The current request's text, and its data (the request itself when it was structured, else None), from the
+    host tool :data:`REQUEST_TOOL` through the channel client; ``(None, None)`` when it is not available here (no
+    channel, a refusal, a reply that cannot be read). Never raises."""
+    call = getattr(_tools(), "_call", None)
+    if not callable(call):
+        return None, None
+    try:
+        reply = json.loads(str(call(REQUEST_TOOL, {})))
+    except Exception:  # noqa: BLE001 - a refusal or a closed channel: no request here
+        return None, None
+    text = reply.get("text") if isinstance(reply, dict) else None
+    if not isinstance(text, str) or not text:
+        return None, None
+    return text, reply.get("data")
+
+
+def _dispatch() -> tuple[list, dict] | None:
+    """The procedures ``.memory/dispatch.json`` lists (dicts with an id) and its ``applies_of``; None when the copy
+    has no readable dispatch file (the librarian is off)."""
+    try:
+        data = _json(DISPATCH_FILE)
+    except (RuntimeError, ValueError):
+        return None
+    rows, applies_of = data.get("procedures"), data.get("applies_of")
+    rows = [r for r in rows if isinstance(r, dict) and isinstance(r.get("id"), str)] if isinstance(rows, list) else []
+    return rows, applies_of if isinstance(applies_of, dict) else {}
+
+
+def _applies_target(row: dict, applies_of: dict) -> Any:
+    """The function whose ``applies`` a dispatch row's facts call: a captured procedure's own, a landed procedure's
+    from ``applies_of``; None when the row has none (or it cannot be located)."""
+    if row.get("applies") is not True:
+        return None
+    if isinstance(row.get("id"), str) and row["id"].startswith(CAPTURE_PREFIX):
+        return row["id"]
+    named = applies_of.get(row.get("id")) if isinstance(applies_of, dict) else None
+    return named if isinstance(named, str) else None
+
+
+def _spec(target: Any, name: str) -> Any:
+    """How the child loads *target*: a library function by its id (from the copy's root), or a captured procedure's
+    *name* function from its ``procedure.py``; None when *target* names neither."""
+    if not isinstance(target, str) or not target:
+        return None
+    if target.startswith(CAPTURE_PREFIX):
+        cid = target[len(CAPTURE_PREFIX) :]
+        path = os.path.join(_capture_dir(cid), "procedure.py")
+        if _CAPTURE_ID.fullmatch(cid) is None or not os.path.isfile(path):
+            return None
+        return {"kind": "capture", "path": path, "name": name}
+    if ":" not in target or not target.startswith("memory."):
+        return None
+    return {"kind": "item", "id": target, "root": _ROOT}
+
+
+def _reason(value: Any) -> str:
+    """A reason as an outcome may carry it: one of :data:`_REASON`'s forms, else ``malformed report``."""
+    return value if isinstance(value, str) and _REASON.fullmatch(value) else "malformed report"
+
+
+def _group_outcome(group: dict, rep: Any) -> tuple[str, list, str]:
+    """One reader group's ``(read, applies, reason)`` from the child's report *rep*; labels only."""
+    unrun = ["none" if a is None else "not-run" for a in group["applies"]]
+    read = rep.get("read") if isinstance(rep, dict) else None
+    if read in ("not-started", "failed"):
+        return read, unrun, _reason(rep.get("reason"))
+    got = rep.get("applies") if isinstance(rep, dict) else None
+    if read not in ("parsed", "did-not-parse") or not isinstance(got, list) or len(got) != len(unrun):
+        return "failed", unrun, "malformed report"
+    return read, [a if a in APPLIES_OUTCOMES else "raised" for a in got], ""
+
+
+def _recognise(text: str, groups: list) -> list:
+    """Each reader group's ``(read, applies, reason)`` on *text*, in order, from one confined child
+    (:data:`_RECOGNISER_RUNNER`): a group is ``{"reader", "cwd", "applies"}`` (how the child loads each, and where the
+    reader works). A child that cannot be started makes every group ``not-started``; one that runs past its time,
+    prints past :data:`RUN_OUTPUT_MAX_BYTES` or leaves no readable report makes the groups without an outcome
+    ``failed``, each with the reason. Nothing is retried."""
+    import subprocess
+
+    def unrun(read: str, reason: str) -> list:
+        return [(read, ["none" if a is None else "not-run" for a in g["applies"]], reason) for g in groups]
+
+    if not groups:
+        return []
+    payload = json.dumps({"text": text, "groups": groups})
+    limit = READERS_TIMEOUT_S + READ_TIMEOUT_S  # the child's own bound, and the time to report after it
+    try:
+        child = subprocess.Popen(
+            [sys.executable, "-I", "-c", _RECOGNISER_RUNNER, _ASK_MARK, str(READ_TIMEOUT_S), str(READERS_TIMEOUT_S)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env={},
+            cwd=_ROOT,
+            start_new_session=True,
+        )
+    except (OSError, ValueError) as exc:
+        return unrun("not-started", _reason("start: " + type(exc).__name__))
+    try:
+        raw, timed_out, over = _bounded_exchange(child, payload.encode("utf-8"), limit)
+    finally:
+        _stop_child(child)
+    if timed_out or over:
+        return unrun("failed", f"timeout after {limit:g} s" if timed_out else "output overrun")
+    stdout = (raw or b"").decode("utf-8", "replace")
+    if _ASK_MARK not in stdout:
+        return unrun("failed", "no marker")
+    try:
+        reps = json.loads(stdout.rsplit(_ASK_MARK, 1)[1])
+    except ValueError:
+        reps = None
+    if not isinstance(reps, list):
+        return unrun("failed", "malformed report")
+    reps = reps[: len(groups)] + [None] * (len(groups) - len(reps))  # a group without a report: malformed
+    return [_group_outcome(g, rep) for g, rep in zip(groups, reps)]
+
+
+def _facts(text: str, dispatch: Any = None) -> list:
+    """One fact per procedure the dispatch file (*dispatch*, else :func:`_dispatch`) lists: ``{id, reader, read,
+    applies}``, with ``reason`` when its reader gave no outcome; ids, labels and a fixed short reason only. Each
+    distinct reader runs once, every one in the same confined child (:func:`_recognise`)."""
+    dispatch = dispatch if dispatch is not None else _dispatch()
+    if dispatch is None:
+        return []
+    rows, applies_of = dispatch
+    by_reader: dict = {}
+    for r in rows:
+        by_reader.setdefault(r.get("reader") if isinstance(r.get("reader"), str) else None, []).append(r)
+    out: dict = {}
+    groups: list = []
+    grouped: list = []
+    for reader, group in by_reader.items():
+        spec = _spec(reader, "read_input")
+        if spec is None:  # no reader, or one this copy cannot locate: it did not parse, and nothing ran
+            for r in group:
+                out[r["id"]] = {"id": r["id"], "reader": reader, "read": "did-not-parse",
+                                "applies": "none" if r.get("applies") is not True else "not-run"}
+            continue
+        groups.append({
+            "reader": spec,
+            "cwd": os.path.dirname(spec["path"]) if spec["kind"] == "capture" else _ROOT,
+            "applies": [_spec(_applies_target(r, applies_of), "applies") for r in group],
+        })
+        grouped.append((reader, group))
+    for (reader, group), (read, applies, reason) in zip(grouped, _recognise(text, groups)):
+        for r, a in zip(group, applies):
+            if a == "none" and r.get("applies") is True:
+                a = "not-run"  # it states an applies that this copy cannot locate: not run, never guessed
+            out[r["id"]] = {"id": r["id"], "reader": reader, "read": read, "applies": a}
+            if reason:
+                out[r["id"]]["reason"] = reason
+    return [out[r["id"]] for r in rows if r["id"] in out]
+
+
+def _fact_rows(facts: list) -> tuple:
+    """The facts as an audit event carries them: ``(id, read, applies)``, with the reason after them when the
+    reader gave no outcome."""
+    return tuple(
+        (f["id"], f["read"], f["applies"], f["reason"]) if f.get("reason") else (f["id"], f["read"], f["applies"])
+        for f in facts
+        if isinstance(f.get("id"), str)
+    )
+
+
+def _no_outcome_note(facts: list) -> str:
+    """A line naming the readers that gave no outcome, with each reason ('' when every reader gave one)."""
+    missing = [f for f in facts if f.get("read") in ("not-started", "failed")]
+    if not missing:
+        return ""
+    shown = "; ".join(f"{f['id']} {f['read']} ({f.get('reason', '')})" for f in missing[:5])
+    more = f" and {len(missing) - 5} more" if len(missing) > 5 else ""
+    return f"{len(missing)} stored reader(s) gave no outcome: {shown}{more}."
+
+
 def _event_rows(rows: list[MatchRow]) -> tuple:
     return tuple((r.id, _label(r.level, "unknown"), _label(r.status, "unknown"), _label(r.matched)) for r in rows)
 
 
 def _match_all(request: Any = None, inputs: Any = None) -> Matches:
-    """The stored procedures whose recorded input fits what you pass: *request*, the request's text, and *inputs*,
-    data you were given (a dict, a list, JSON text, or a structured file or its path). Each row gives the
-    procedure's id, evidence level, status, how it matched, the relations and conditions it was saved with, and
-    the goal it was built for; captured attempts that were tried on input like this and failed are listed apart,
-    under ``.failed``, and are never offered to run. How it matches is :data:`MATCHER`'s choice (structure only by
-    default, so plain text with no structure matches nothing); a match can be wrong. It runs nothing."""
+    """The stored procedures that fit what you pass: *request*, the request's text, and *inputs*, data you were
+    given (a dict, a list, JSON text, or a structured file or its path). Each row gives the procedure's id, evidence
+    level, status, how it matched, the relations and conditions it was saved with, and the goal it was built for;
+    captured attempts that were tried on input like this and failed are listed apart, under ``.failed``, and are
+    never offered to run. With the harness's dispatch file the rows are the procedures that recognise the request
+    (:func:`_match_recognised`). Without it, how it matches is :data:`MATCHER`'s choice (structure only by default,
+    so plain text with no structure matches nothing), a match can be wrong, and nothing runs."""
+    dispatch = _dispatch()
+    if dispatch is not None:
+        return _match_recognised(request, inputs, dispatch)
     rows, failed, query, unreadable, broken = _matched(request, inputs)
     note = broken
     if not query.shapes and not broken:
@@ -783,6 +1135,50 @@ def _match_all(request: Any = None, inputs: Any = None) -> Matches:
         note = (note + " " if note else "") + f"{unreadable} captured attempt(s) could not be read."
     _emit_event(MATCH_EVENT, _event_rows(rows), _event_rows(failed))
     return Matches(rows, failed, note)
+
+
+def _match_recognised(request: Any, inputs: Any, dispatch: tuple) -> Matches:
+    """``match`` with the dispatch file: the procedures whose reader parsed the request's text and whose stated
+    ``applies`` held on what the reader gave (:func:`_facts`, run in the confined child); a procedure that states no
+    ``applies`` is not listed. *request* None means the current request's text, and *inputs* None its data
+    (:func:`_current_request`). Structure only orders the rows: those whose recorded input has the structure of what
+    was passed (:data:`MATCHER`) come first, the rest in the dispatch file's order. The captured attempts that failed
+    on input like this are listed apart, as without the dispatch file."""
+    notes: list[str] = []
+    if request is None:
+        text, data = _current_request()
+        inputs = data if inputs is None else inputs
+        if text is None:
+            notes.append("The current request is not available here, so no stored reader ran; pass the request's "
+                         "text: memory.match('...').")
+    else:
+        text = request if isinstance(request, str) and request else None
+        if text is None:
+            notes.append("The stored readers read text, and the request you passed is not text, so none ran.")
+    facts = _facts(text, dispatch) if text is not None else []
+    shaped, failed, _, unreadable, broken = _matched(text, inputs)
+    order = {r.id: n for n, r in enumerate(shaped)}
+    held = [f["id"] for f in facts if f["read"] == "parsed" and f["applies"] == "held"]
+    held.sort(key=lambda i: order.get(i, len(order)))  # stable: the dispatch file's order within each part
+    by_id = {c.id: c for c in _candidates_all()[0]}
+    rows = [
+        _match_row(by_id[i], RECOGNISED) if i in by_id else MatchRow(
+            i, "capture" if i.startswith(CAPTURE_PREFIX) else "library", "unknown", "unknown", RECOGNISED, (),
+            "none stated", "", (),
+        )
+        for i in held
+    ]
+    if _no_outcome_note(facts):
+        notes.append(_no_outcome_note(facts))
+    if broken:
+        notes.append("The structure matcher failed, so the rows keep the library's order.")
+    if unreadable:
+        notes.append(f"{unreadable} captured attempt(s) could not be read.")
+    # the readers that gave no outcome, as a third element only when there are any (the event's shape is otherwise
+    # the one without the dispatch file)
+    missing = _fact_rows([f for f in facts if f.get("reason")])
+    _emit_event(MATCH_EVENT, _event_rows(rows), _event_rows(failed), *((missing,) if missing else ()))
+    return Matches(rows, failed, " ".join(notes), recognised=True)
 
 
 class RunReport:
@@ -2201,7 +2597,7 @@ ALIAS_LINES = {
 def _alias(name: str) -> None:
     line = ALIAS_LINES[name]
     if name in ("find", "match") and callable(globals().get("ask")):
-        line += ", or ask with memory.ask(request)"
+        line += ", or ask with memory.ask()"
     try:
         print(line, file=sys.stderr)
     except Exception:  # noqa: BLE001 - the note never changes the call
@@ -2317,13 +2713,16 @@ def find(value: Any) -> list[Found]:
 
 @checked(name="memory.match")
 def match(request: Any = None, inputs: Any = None) -> Matches:
-    """The stored procedures whose recorded input fits what you pass: *request*, the request's text, and *inputs*,
-    data you were given. Kept for one build: an item's own check, ``memory.get(ref).fits(inputs)``, replaces it;
-    each call prints one line saying so. Nothing runs.
+    """The stored procedures that fit what you pass: *request*, the request's text, and *inputs*, data you were
+    given. Kept for one build: an item's own check, ``memory.get(ref).fits(inputs)``, replaces it; each call prints
+    one line saying so. With the librarian on, it lists the procedures whose stored reader parsed the request and
+    whose stated applies held, both run in a separate confined process (outcomes only), and no procedure runs;
+    otherwise it compares structure only and nothing runs.
 
     Args:
-        request: the request's text (read as JSON only).
-        inputs: data you were given: a dict, a list, JSON text, or a structured file or its path.
+        request: the request's text; with the librarian on, None means the current request.
+        inputs: data you were given: a dict, a list, JSON text, or a structured file or its path; with the
+            librarian on, None means the current request's data.
 
     Returns:
         Matches: the rows that fit (id, level, status, how it matched, relations, conditions, goal), with the

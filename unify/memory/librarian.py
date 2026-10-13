@@ -1,7 +1,8 @@
 """The librarian: an agent the actor asks which stored items fit (``UNIFY_MEMORY_LIBRARIAN=on``; design J(b)).
 
-``memory.ask(text)`` in an actor cell computes the recognisers' outcomes in the actor's own box (the ``memory.ask``
-section of the generated package, :mod:`.library_ask`) and sends the question and those outcomes to the host through
+``memory.ask()`` in an actor cell computes the recognisers' outcomes on the current request in the actor's own box
+(:mod:`.library_helper`'s ``_facts``, used by the ``memory.ask`` section of the generated package, :mod:`.library_ask`)
+and sends the question (the request's text when none is given) and those outcomes to the host through
 the in-code tool ``ask_library`` (:func:`unify.actor.tool_handlers.ask_library`). The handler opens the request's
 :class:`LibrarianSession` on the first question and keeps it for the request's follow-ups; the session ends with the
 request (``InCodeTools.close``).
@@ -49,8 +50,8 @@ LIBRARY_ROOT = "/memory"
 #: A librarian cell's time and the head of its output it is shown (the helper's own limits).
 CELL_TIMEOUT_S = 60.0
 OUTPUT_BYTES = 8000
-#: The fact labels ``memory.ask`` sends (:mod:`.library_ask`).
-READ_OUTCOMES = ("parsed", "did-not-parse")
+#: The fact labels ``memory.ask`` sends (:mod:`.library_helper`'s ``READ_OUTCOMES`` and ``APPLIES_OUTCOMES``).
+READ_OUTCOMES = ("parsed", "did-not-parse", "not-started", "failed")
 APPLIES_OUTCOMES = ("held", "did-not-hold", "raised", "not-run", "none")
 CAPTURE_PREFIX = "capture:"
 #: What the summary after a compaction says of the files (the memory agents' restart pointer, for this box).
@@ -82,10 +83,11 @@ BRIEF = (
     "the functions. Captured procedures, recent work not yet reviewed, come last; one marked as tried and failed "
     "shows what broke and is never offered to run.\n"
     "- Each question comes with facts: for each stored procedure that has a reader, whether that reader parsed "
-    "the question's text, and, where the procedure states conditions, whether its `applies` held on what the "
-    "reader gave. A reader that parsed the text, or an `applies` that held, is evidence that the item's input "
-    "fits, and evidence only: it does not show that the item does what the question needs. A reader that did not "
-    "parse the text is evidence that the input differs.\n"
+    "the text of the agent's current request, and, where the procedure states conditions, whether its `applies` "
+    "held on what the reader gave. A reader that parsed the text, or an `applies` that held, is evidence that the "
+    "item's input fits, and evidence only: it does not show that the item does what the question needs. A reader "
+    "that did not parse the text is evidence that the input differs; one that could not be started or failed to "
+    "run is evidence of nothing.\n"
     "- `memory.get` in a cell opens one item in full. Open an item when its card leaves you unsure whether it "
     "applies.\n"
     "\n"
@@ -209,15 +211,23 @@ _APPLIES_TEXT = {
 }
 
 
+_READ_TEXT = {
+    "parsed": "parsed the text",
+    "did-not-parse": "did not parse the text",
+    "not-started": "could not be started on the text",
+    "failed": "failed to run on the text (no outcome)",
+}
+
+
 def facts_text(facts: list[dict], dropped: int = 0) -> str:
     """The facts as the librarian reads them, one line per procedure."""
     if not facts:
-        lines = ["- none: no stored procedure has a reader"]
+        lines = ["- none: no stored reader ran (no stored procedure has one, or the request was not available)"]
     else:
         lines = []
         for f in facts:
             reader = f"reader `{f['reader']}`" if f.get("reader") else "no reader"
-            read = "parsed the text" if f["read"] == "parsed" else "did not parse the text"
+            read = _READ_TEXT[f["read"]]
             lines.append(f"- `{f['id']}`: {reader} {read}; {_APPLIES_TEXT[f['applies']]}.")
     if dropped:
         lines.append(f"- ({dropped} fact(s) could not be read and are left out.)")
@@ -229,7 +239,8 @@ def question_message(question: str, facts: list[dict], dropped: int = 0) -> str:
     return (
         "Question from the agent:\n"
         f"{question}\n\n"
-        "Facts: the stored readers, run on the question's text in the agent's own sandbox (outcomes only):\n"
+        "Facts: the stored readers, run on the text of the agent's current request in its own sandbox (outcomes "
+        "only):\n"
         f"{facts_text(facts, dropped)}\n\n"
         "Answer with tools.finish(answer)."
     )
