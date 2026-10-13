@@ -286,9 +286,15 @@ EPISODES_FIX = (
     "add a test call that returns on values loaded from a fixture of a recorded episode; a refused or raised call "
     "counts for nothing"
 )
+#: ``[examples:grounded]``: what satisfies it, with the loading idiom of the library's own tests
+#: (``DATA = Path(__file__).parent / "data"``), so the refusal names a concrete change and not only the rule.
 GROUNDED_FIX = (
     "make one call that returns take each structured argument (a list, a mapping or a path; plain numbers and "
-    "strings may stay literal) from a fixture made with `fixture`, or compute it in the test from one"
+    "strings may stay literal) from a fixture made with `fixture`, or compute it in the test from one. The "
+    "fixture is a recorded episode's value saved under the package's `tests/data/`, and the test calls the "
+    'function on what it loads from it, such as `rows = json.loads((Path(__file__).parent / "data" / '
+    '"rows.json").read_text())` then `assert function(rows, 2) == <trusted value>`. A call on values written '
+    "in the test itself does not count, however close to the recorded ones"
 )
 #: ``[examples:unjudged]``: why the check with unseen fixture values did not complete -> what lets it complete.
 UNJUDGED_FIX = {

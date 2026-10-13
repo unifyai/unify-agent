@@ -925,6 +925,9 @@ def _end_event(
                 # an uncapped pass's refusals the gate repeated for the same reason in consecutive rounds, so no
                 # further repair round was offered for them, and whether that ended repair (None: none)
                 "repair_stuck": getattr(outcome, "repair_stuck", None),
+                # the writer's (or curator's) no-progress notices and whether 2 * k no-progress model calls in a row
+                # ended its round (loop_stop.AgentNoProgress.report; None: no notice was given)
+                "no_progress": getattr(outcome, "no_progress", None),
             }
             if outcome is not None and outcome.coverage is not None
             else {}

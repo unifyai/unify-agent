@@ -115,6 +115,14 @@ def test_the_grounded_refusal_ends_with_what_to_load_from_a_fixture(tmp_path):
     ex.judge()
     (reason,) = [r for r in _reasons(run) if r.startswith("[examples:grounded]")]
     assert reason.endswith(lp.GROUNDED_FIX)
+    # it says concretely what satisfies it: a call on values loaded from a recorded episode's fixture, in the
+    # loading idiom of the library's tests, on one line like every reason
+    assert "make one call that returns take each structured argument" in lp.GROUNDED_FIX
+    assert "recorded episode" in lp.GROUNDED_FIX and "`tests/data/`" in lp.GROUNDED_FIX
+    assert 'json.loads((Path(__file__).parent / "data" / "rows.json").read_text())' in lp.GROUNDED_FIX
+    assert "assert function(rows, 2) == <trusted value>" in lp.GROUNDED_FIX
+    assert "\n" not in lp.GROUNDED_FIX
+    assert lp.example_checks(lp.GROUNDED_FIX) == [] and lp.benchmark_words(lp.GROUNDED_FIX) == []
 
 
 def test_every_unjudged_cause_has_its_fix_and_every_fix_is_used():

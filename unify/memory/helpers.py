@@ -1268,6 +1268,11 @@ async def _run_helper_turns(
         },
     ]
     ctx.transcripts[call] = (messages, tools)
+    from unify.common._async_tool import loop_stop as _loop_stop
+
+    # the shared no-progress rule (loop_stop.AgentNoProgress), always on: a notice at k no-progress model calls in
+    # a row, and at 2 * k the helper ends with what it staged
+    no_progress = _loop_stop.AgentNoProgress(_loop_stop.terminal_tool("helper"), in_code=in_code)
     n = 0
     last_prompt = (
         None  # the last model call's prompt tokens (writer_pass.compaction_due)
@@ -1335,6 +1340,7 @@ async def _run_helper_turns(
                     "content": "Use your tools, then call done(summary, claims).",
                 },
             )
+            no_progress.after_call(messages)  # the nudge starts the count again
             continue
         usage = _usage_of(msg, usd)
         last_prompt = (
@@ -1431,6 +1437,13 @@ async def _run_helper_turns(
             )
         if finished:
             doc["status"] = "ok"
+            no_progress.after_call(messages, act=False)
+            doc["no_progress"] = no_progress.report()
+            return
+        acted = no_progress.after_call(messages)
+        doc["no_progress"] = no_progress.report()
+        if acted == "end":
+            doc["status"] = no_progress.note(acted)  # "no progress: ..."
             return
     doc["status"] = "operational step guard"
 
@@ -1592,11 +1605,15 @@ async def _body(ctx: DelegateContext, call: str) -> str:
         "_usd": Decimal(0),
         "summary": "",
         "claims": [],
-        # done, stop, finish or wall_clock (error or step_guard when it ended so); model calls cut mid-flight
+        # done, stop, finish or wall_clock (error, step_guard or no_progress when it ended so); model calls cut
+        # mid-flight
         "stopped_by": None,
         "calls_cut": 0,
         # the largest prompt (tokens) one of its model calls reported (None: none reported one)
         "max_prompt_tokens": None,
+        # the shared no-progress rule (loop_stop.AgentNoProgress.report): {"k", "notices", "ended", "at_call"}, or
+        # None when no notice was given; "ended": 2 * k no-progress model calls in a row ended the helper
+        "no_progress": None,
     }
     staging: _Staging | None = None
     tmp: Path | None = None
@@ -1627,9 +1644,11 @@ async def _body(ctx: DelegateContext, call: str) -> str:
 
 
 def _stopped_by(pr: _messaging.PassRecord, call: str, status: str) -> str:
-    """What ended a helper whose body returned: done, stop, finish, wall_clock, error or step_guard."""
+    """What ended a helper whose body returned: done, stop, finish, wall_clock, no_progress, error or step_guard."""
     if status == "ok":
         return "done"
+    if status.startswith("no progress: "):
+        return "no_progress"
     if status.startswith("stopped: "):
         return pr.stopped_by.get(call, "finish")
     if status.startswith("pass wall clock"):
