@@ -1126,8 +1126,9 @@ ASK_LIBRARY = RegisteredTool(
     summary="ask the librarian which stored items fit a question (memory.ask calls it).",
     description=(
         "Ask the librarian, an agent that has read the library's whole catalogue, which stored items fit a "
-        "question, with the outcomes of the stored readers and conditions on that question. `memory.ask(text)` "
-        "computes those outcomes in your cell and calls this for you. The answer is JSON: "
+        "question, with the outcomes of the stored readers and conditions on the text of your current request. "
+        "`memory.ask()` computes those outcomes in your cell and calls this for you (`memory.ask(question)` asks a "
+        "question of your own). The answer is JSON: "
         '{"fits": [{"id", "call", "why"}, ...]} with every item that fits, or {"fits": [], "nearest": '
         '[{"id", "differs"}, ...]} when nothing fits. Follow-up questions in the same request go to the same '
         "librarian."
@@ -1135,11 +1136,11 @@ ASK_LIBRARY = RegisteredTool(
     parameters={
         "type": "object",
         "properties": {
-            "question": {"type": "string", "description": "The request's text, or a question of your own."},
+            "question": {"type": "string", "description": "A question of your own, or the request's text."},
             "facts": {
                 "type": "array",
-                "description": "Per stored procedure: whether its reader parsed the question and whether its "
-                "condition held (ids and outcome labels only).",
+                "description": "Per stored procedure: whether its reader parsed the current request and whether "
+                "its condition held (ids and outcome labels only).",
                 "items": {
                     "type": "object",
                     "properties": {
@@ -1163,8 +1164,8 @@ ASK_LIBRARY = RegisteredTool(
     requires=LIBRARIAN_FLAG,
     roles=(_A,),
     returns="the librarian's answer as JSON text (memory.ask returns it as a plain object).",
-    examples=('print(memory.ask("Total the amounts in the attached table by month."))',),
-    when="Call memory.ask(text) rather than this tool: it adds the recognisers' outcomes the librarian reads.",
+    examples=("print(memory.ask())",),
+    when="Call memory.ask() rather than this tool: it adds the stored readers' outcomes on your current request.",
     kind="action",
     handler="unify.actor.tool_handlers:ask_library",
 )

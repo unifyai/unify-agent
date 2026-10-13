@@ -479,7 +479,7 @@ class ProductionSettings(BaseSettings):
     # How the actor's prompt reaches the library index: ``inline`` (default) ends it with the index view;
     # ``pointer`` ends it with a constant guide pointing to memory.index(), memory.show() and memory.find().
     UNIFY_MEMORY_LIBRARY_ACTOR_INDEX: str = "inline"
-    # ``on``: the actor asks a librarian agent which stored items fit (``memory.ask(text)`` in a cell, through the
+    # ``on``: the actor asks a librarian agent which stored items fit (``memory.ask()`` in a cell, through the
     # in-code tool ``ask_library``); the export also writes the librarian's catalogue and the procedures' dispatch
     # file, and the actor's prompt shows a constant pointer in place of the index. Requires UNIFY_TOOLS_IN_CODE=on.
     # ``off`` (the default): nothing of it exists or runs.
