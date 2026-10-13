@@ -76,7 +76,6 @@ class ActorRequestState:
     spawner: Optional[str] = None
     #: host work started by a call that outlives it (a storage review)
     host_tasks: set = field(default_factory=set)
-    finished: bool = False
 
 
 def response_validator(rf_norm: Any) -> Callable[[Any], str]:
@@ -405,7 +404,9 @@ async def finish(ctx: Any, args: dict) -> Any:
     returns, without another model call."""
     state = ctx.state
     slot = getattr(state, "reply_slot", None)
-    if getattr(state, "finished", False) or (slot is not None and getattr(slot, "replied", False)):
+    # the slot holds this request's answer until the loop takes it, and is empty again when the session's next
+    # request starts, so each request of a persistent session can finish once
+    if slot is not None and getattr(slot, "replied", False):
         return _refused(refusal("finish", "answered"))
     if "answer" not in args:
         return _refused(refusal("finish", "bad_answer", reason="Missing 'answer' in tool arguments."))
@@ -421,7 +422,6 @@ async def finish(ctx: Any, args: dict) -> Any:
     if slot is None:
         return _refused(refusal("finish", "bad_answer", reason="this request takes no answer from a cell"))
     slot.text, slot.from_value = text, True
-    state.finished = True
     return _reply("finished: the answer is recorded; the request ends when this cell returns")
 
 
