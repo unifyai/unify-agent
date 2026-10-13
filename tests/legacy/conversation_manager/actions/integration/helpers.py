@@ -28,6 +28,59 @@ T = TypeVar("T")
 
 
 # ---------------------------------------------------------------------------
+# The scripted models: the slow brain and the CodeActActor
+# ---------------------------------------------------------------------------
+
+
+def scripted_brain_and_actor(scripted_brain: Any, *actor: Any, **scripts: Any) -> Any:
+    """Script the slow brain (``brain.next``) and the CodeActActor's turns,
+    *actor*, in the order its requests arrive. The storage review after an
+    action (the fork of a finished session, or the standalone review of a
+    stopped one) stores nothing, and its gate may run."""
+    from tests.scripted_model import Always, reply
+
+    scripts.setdefault("review", Always(reply("Nothing to store.")))
+    scripts.setdefault("standalone_review", Always(reply("Nothing to store.")))
+    scripts.setdefault("allow", ("gate",))
+    return scripted_brain(actor=list(actor), **scripts)
+
+
+def held(gate: asyncio.Event, entry: Any) -> Callable[[Any], Awaitable[Any]]:
+    """A scripted model entry that answers with *entry* once *gate* is set:
+    the action whose model call it answers stays in flight until then."""
+
+    async def answer(call: Any) -> Any:
+        await gate.wait()
+        return entry
+
+    return answer
+
+
+async def wait_until_done(handle: Any, *, timeout: float = 120.0) -> None:
+    """Wait for the handle's whole lifecycle (its storage review included)."""
+    await wait_for_condition(
+        handle.done,
+        timeout=timeout,
+        timeout_message="Timed out waiting for the action's lifecycle to end.",
+    )
+
+
+def tool_results(call: Any) -> list[str]:
+    """The tool results a model request carries, in order."""
+    from tests.scripted_model import _text
+
+    return [_text(m.get("content")) for m in call.messages if m.get("role") == "tool"]
+
+
+def recent_result(cm: Any, tool_name: str) -> str:
+    """The preview of the latest result of the brain's *tool_name* call."""
+    for entry in reversed(cm.cm._recent_tool_executions):
+        if entry.get("tool_name") == tool_name:
+            return str(entry.get("result_preview"))
+    raise AssertionError(f"the brain never called {tool_name}")
+
+
+# ---------------------------------------------------------------------------
 # Generic waits (no sleeps)
 # ---------------------------------------------------------------------------
 

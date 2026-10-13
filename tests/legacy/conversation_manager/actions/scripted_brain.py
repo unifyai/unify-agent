@@ -21,11 +21,19 @@ turns than the script names; those extra turns are answered with
 :func:`idle_turn` (the brain waits) instead of taking a turn meant for the next
 step. ``brain.next`` fails when the previous step left a scripted turn
 unused, so a script cannot drift silently.
+
+A manager whose event loop runs in the test's own event loop (the
+integration tests') also runs brain turns in the background, when an event
+reaches it through the broker outside a step (an action's result after the
+step ended). Those turns come from the manager's own tasks, not from the
+test's: they have the kind ``brain_background`` and are answered with
+:func:`idle_turn`, so they never take a step's turn either.
 """
 
 from __future__ import annotations
 
 import contextlib
+import contextvars
 from typing import Any, Callable, Iterator, Optional
 
 import pytest
@@ -90,15 +98,29 @@ def is_brain_request(request: dict) -> bool:
     return BRAIN_TOOLS <= names
 
 
+# Set in the test's own task when the model is built. The test's steps run
+# the brain in that task (or in tasks it starts, which copy its context); the
+# manager's background turns run in tasks its event loop started earlier.
+_TEST_FLOW: contextvars.ContextVar[Optional["BrainModel"]] = contextvars.ContextVar(
+    "scripted_brain_test_flow",
+    default=None,
+)
+
+
 class BrainModel(ScriptedModel):
     """A :class:`ScriptedModel` whose slow-brain requests have the kind
     ``brain`` and answer from the turns :meth:`next` gives, then from *idle*
-    (``None``: an unscripted brain turn fails the test)."""
+    (``None``: an unscripted brain turn fails the test). Brain requests from
+    outside the test's flow have the kind ``brain_background`` and are
+    answered from *idle* too.
+
+    Build it in the test's own task (the ``scripted_brain`` fixture does)."""
 
     def __init__(self, *, idle: Any = idle_turn, **scripts: Any) -> None:
         super().__init__(**scripts)
         self.scripts["brain"] = []
         self.idle = idle
+        _TEST_FLOW.set(self)
 
     def next(self, *turns: Any) -> "BrainModel":
         """The brain's turns for the next step, in order."""
@@ -109,9 +131,10 @@ class BrainModel(ScriptedModel):
 
     def _next(self, call: Call) -> Any:
         if call.kind == "actor" and is_brain_request(call.request):
-            call.kind = "brain"
-            if not self.scripts["brain"] and self.idle is not None:
-                return self.idle
+            call.kind = "brain" if _TEST_FLOW.get() is self else "brain_background"
+            if call.kind == "brain_background" or not self.scripts["brain"]:
+                if self.idle is not None:
+                    return self.idle
         return super()._next(call)
 
     # ── what the brain was shown ─────────────────────────────────────────
