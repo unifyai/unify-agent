@@ -5,8 +5,9 @@ harness:
 
 * :func:`spans` takes every inline code span and fenced block of a prompt, with the sentence around it;
 * :func:`prepare` fills each placeholder by one fixed rule (a table the test owns), decides whether the span is a
-  call (a call or an attribute read on a free name, an import, or a bare name the sentence says is bound), and
-  turns ``tools.<name>(...)`` into that tool's first registry example;
+  call (a call or an attribute read on a free name inside a larger expression, an import, or a bare name the sentence
+  says is bound; a dotted name alone, such as ``memory.ask``, names a call and is not one), and turns
+  ``tools.<name>(...)`` into that tool's first registry example;
 * :func:`contract_cell` runs the prepared spans one by one in the cell, each in its own ``try``, and prints one
   ``SPAN {...}`` line per span; :func:`results` reads those lines back;
 * :func:`failures` says which results break the contract.
@@ -162,7 +163,20 @@ def _root(node: ast.AST) -> Optional[str]:
     return node.id if isinstance(node, ast.Name) else None
 
 
+def _bare_dotted(tree: ast.Module) -> bool:
+    """Whether the span is a dotted name alone (``memory.ask``, ``tools.read``): a call named, not a call made."""
+    body = tree.body
+    if len(body) != 1 or not isinstance(body[0], ast.Expr) or not isinstance(body[0].value, ast.Attribute):
+        return False
+    node = body[0].value
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return isinstance(node, ast.Name)
+
+
 def _is_call(tree: ast.Module, free: set[str], sentence: str) -> bool:
+    if _bare_dotted(tree):
+        return False
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom, ast.Call)):
             return True

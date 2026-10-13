@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from . import tool_spec as _tool_spec
 from .example_calls import CALLS_DIR, CALLS_OUT
+from .library_prompts import MEMORY_HELP_LINE
 
 #: Which spec role each tool-using agent draws from.
 SPEC_ROLE = {"writer": "write", "curator": "curate", "helper": "helper"}
@@ -125,12 +126,12 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "agent": "actor",
         "mode": "consumer",
         "instructions": "unify.memory.library_prompts:guide_library_mode",
-        # memory.index / memory.show / memory.find are library functions called in cells, not tools
+        # memory.ask / memory.items / memory.get are library functions called in cells, not tools
         "tools": [],
         "json_tools": list(_JSON_TOOLS),
         "in_code": list(_ACTOR_IN_CODE),
         # what its guide names that it does in its own cells, through no tool
-        "in_cells": ["memory.index", "memory.show", "memory.find"],
+        "in_cells": ["memory.ask", "memory.items", "memory.get"],
         "mounts": [{"path": "<library scratch copy>", "mode": "rw"}],
         "denied": [
             "/inputs",
@@ -176,7 +177,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
         ],
         "limits": [],
         "inlined": [{"what": "memory guide paragraph", "bound": _INLINE_BOUND}],
-        "capabilities": ["call memory.index, memory.show and memory.find in cells"],
+        "capabilities": ["call memory.ask, memory.items and memory.get in cells"],
         "absent_paths": [
             "/inputs",
             "/inputs/staging",
@@ -185,19 +186,19 @@ AGENT_PROFILES: tuple[dict, ...] = (
         ],
         "expectations": [
             {
-                "expectation": "look for an item before writing code for a step",
-                "tool": "memory.find",
+                "expectation": "ask what applies before working a step out",
+                "tool": "memory.ask",
                 "permission": "library copy rw",
             },
             {
-                "expectation": "read an item in full",
-                "tool": "memory.show",
+                "expectation": "open an item in full before using it",
+                "tool": "memory.get",
                 "permission": "library copy rw",
             },
         ],
         "fields": ["memory_use"],
         "emits": [],
-        "pointers": [{"pointer": "library index", "tool": "memory.index"}],
+        "pointers": [{"pointer": "library index", "tool": "memory.items"}],
     },
     {
         "agent": "teammate",
@@ -207,7 +208,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "tools": [],
         "json_tools": list(_JSON_TOOLS),
         "in_code": list(_TEAMMATE_IN_CODE),
-        "in_cells": ["memory.index", "memory.show", "memory.find"],
+        "in_cells": ["memory.ask", "memory.items", "memory.get"],
         "mounts": [{"path": "<library scratch copy>", "mode": "rw"}],
         "denied": ["store_skills", "/inputs", "library repository"],
         "consumes": [{"artifact": "agent record", "path": _AGENT_RECORD}],
@@ -681,7 +682,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "tools": [],
         "json_tools": list(_JSON_TOOLS),
         "in_code": ["finish"],
-        "in_cells": ["memory.show"],
+        "in_cells": ["memory.get"],
         # the actor's library copy, read-only; no write root, no network
         "mounts": [{"path": "/memory", "mode": "ro"}],
         "denied": ["network", "credentials", "writes", "library repository", "episodes", "state dir"],
@@ -695,11 +696,11 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "capabilities": ["read the library copy read-only", "run Python in its own box"],
         "absent_paths": ["/inputs", "/workspace", "<state>"],
         "expectations": [
-            {"expectation": "open an item's source before answering", "tool": "memory.show", "permission": "/memory ro"},
+            {"expectation": "open an item's source before answering", "tool": "memory.get", "permission": "/memory ro"},
         ],
         "fields": ["ask_calls", "ask_rows", "listed_by_ask"],
         "emits": [],
-        "pointers": [{"pointer": "an item's source", "tool": "memory.show"}],
+        "pointers": [{"pointer": "an item's source", "tool": "memory.get"}],
     },
     {
         "agent": "gate",
@@ -847,20 +848,21 @@ def in_code_names(agent: str, flags: frozenset[str] = frozenset()) -> tuple[str,
 
 _MODE_TEXT = {"ro": "read-only", "rw": "writable"}
 
-#: Where each memory agent reads the library: one line, box paths only.
+#: Where each memory agent reads the library: one line, box paths only. It names no call's arguments: the calls'
+#: help holds those, and the line points to it.
 _LIBRARY_LINE = {
     "writer": (
-        "The library is the Python package `memory` under /memory, bound as `memory` in your cells: "
-        '`memory.index()`, `memory.show("<id>")` and `memory.find(value)`.'
+        "The library is the Python package `memory` under /memory, bound as `memory` in your cells. "
+        + MEMORY_HELP_LINE
     ),
     "curator": (
-        "The library is the Python package `memory` under /memory, bound as `memory` in your cells: "
-        '`memory.index()`, `memory.show("<id>")` and `memory.find(value)`.'
+        "The library is the Python package `memory` under /memory, bound as `memory` in your cells. "
+        + MEMORY_HELP_LINE
     ),
     "helper": "/memory holds the library as the writer sees it, read-only; it is the package `memory` in your cells.",
     "librarian": (
         "The library is the Python package `memory` under /memory, read-only, already bound as `memory` in every "
-        'cell: `memory.show("<id>")` prints an item\'s source, docstring and records.'
+        "cell. " + MEMORY_HELP_LINE
     ),
 }
 

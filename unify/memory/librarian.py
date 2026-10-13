@@ -54,7 +54,7 @@ READ_OUTCOMES = ("parsed", "did-not-parse")
 APPLIES_OUTCOMES = ("held", "did-not-hold", "raised", "not-run", "none")
 CAPTURE_PREFIX = "capture:"
 #: What the summary after a compaction says of the files (the memory agents' restart pointer, for this box).
-RESTART_POINTER = "Nothing under /memory changed: open an item again with memory.show when you need it."
+RESTART_POINTER = "Nothing under /memory changed: open an item again with memory.get when you need it."
 _HEADING = re.compile(r"^### (\S+)\s*$")
 
 
@@ -86,13 +86,13 @@ BRIEF = (
     "reader gave. A reader that parsed the text, or an `applies` that held, is evidence that the item's input "
     "fits, and evidence only: it does not show that the item does what the question needs. A reader that did not "
     "parse the text is evidence that the input differs.\n"
-    '- `memory.show("<id>")` in a cell prints one item in full: its source, docstring, links and records. Open an '
-    "item when its card leaves you unsure whether it applies.\n"
+    "- `memory.get` in a cell opens one item in full. Open an item when its card leaves you unsure whether it "
+    "applies.\n"
     "\n"
     "## How you answer\n"
     "- Read every card before you answer. Name every item that applies, not only one, in the catalogue's order.\n"
-    "- For each item that applies, give a ready call the agent can run as written, such as "
-    '`memory.run("<id>", text)` for a stored procedure, and a one-line reason that names the saved-against line, '
+    "- For each item that applies, give a ready call the agent can run as written (the item opened with "
+    "`memory.get` and called on the question's input), and a one-line reason that names the saved-against line, "
     "the fact or the record you relied on.\n"
     "- When the evidence is thin, answer that nothing fits, and name the nearest items with what differs between "
     "each of them and the question.\n"

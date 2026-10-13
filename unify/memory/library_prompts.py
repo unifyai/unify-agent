@@ -114,40 +114,66 @@ def _in_code() -> bool:
     return in_code_switch.tools_in_code()
 
 
-#: The inline-index guide when tools are called from code: the index head says what each line holds, the overflow
-#: line says when the index shows headings only, and the index says what a status means once, here.
-GUIDE_LIBRARY_IN_CODE = (
-    "### Memory Library\n"
-    "\n"
-    "A Python library of tested functions and linked notes, built from earlier work, is already available "
-    "in your cells as `memory`, no import needed. Before you write code for a step, look in the index for an item "
-    "that does it. Using the library is optional: use an item when it fits, and otherwise work as usual.\n"
-    "\n"
-    "Finding items:\n"
-    + MATCH_LINE
-    + "- The index at the end of this prompt lists every function and note.\n"
-    '- `print(memory.index("<name>"))` prints the full section of a package or notes topic, and '
-    "`print(memory.index())` the whole index.\n"
-    "- `print(memory.show(\"<id>\"))` prints one item in full, with its records and recent changes.\n"
-    "- `memory.find(value)` lists the functions whose tests call them on arguments shaped like a structured "
-    "value you hold (a dict, a list of records, JSON text, or a CSV file with a header), and which parameter "
-    "matched. It cannot match plain text: for text, use the index or grep.\n"
-    + FILES_LINE_IN_CODE
-    + "\n"
-    "Using items:\n"
-    + RUN_LINE
-    + "- Import a function by its id: `memory.text.dates:parse_date` is "
-    "`from memory.text.dates import parse_date`.\n"
+#: The one line that points the in-code texts to the library's own documentation: each call's arguments, results
+#: and errors are in its help, never in a prompt.
+MEMORY_HELP_LINE = "`help(memory)` shows the library's calls and types."
+
+#: The in-code look-first bullets, first under "Finding items": when to look, and where. With the librarian off the
+#: actor looks with ``memory.items`` (in the index, when the prompt carries it); with it on, ``memory.ask`` is the
+#: librarian, and :data:`ASK_LINE_IN_CODE` says when to ask and that an answer is a lead, not proof. The switch is
+#: fixed for a run, so each guide's bytes are too.
+LOOK_LINE_IN_CODE = (
+    "- At the start of a request, and before you work a step out yourself, look for an item that applies in the "
+    "index at the end of this prompt or with `memory.items`; the index lists every function and note.\n"
+)
+LOOK_LINE_POINTER_IN_CODE = (
+    "- At the start of a request, and before you work a step out yourself, look for an item that applies with "
+    "`memory.items`, which browses every function and note in the library.\n"
+)
+ASK_LINE_IN_CODE = (
+    "- At the start of a request, and before you work a step out yourself, ask the library what applies with "
+    "`memory.ask`. What it names can still be wrong for your case.\n"
+)
+#: The in-code try-first bullet, first under "Using items": open what you will use, then call it.
+USE_LINE_IN_CODE = (
+    "- When an item applies, open it with `memory.get` and call it before you work the step out yourself. Trying "
+    "a fitting item costs one call, and working it out again usually costs many. Its result is unchecked unless "
+    "its record says otherwise.\n"
+)
+#: The in-code refusal and status bullets, after the try-first bullet.
+STATUS_LINES_IN_CODE = (
     "- A function raises `MemoryInputError` on an input it was not built for. Then do that step with your own "
     "code.\n"
     "- `on-trial` items passed the library's checks and have had little use; `adopted` items have also been "
     "used without errors. "
     "A function's brackets also give its evidence level: `evidence: unchecked` (stored, but some check of its "
-    "evidence did not hold; `memory.show` lists which), `evidence: reproduces-its-case` (its tests reproduce its "
+    "evidence did not hold; its record lists which), `evidence: reproduces-its-case` (its tests reproduce its "
     "recorded cases and every evidence check holds) or `evidence: confirmed-by-outcomes` (outcomes after use "
     "confirm it).\n"
 )
+#: The opening of every in-code guide: the bound name, the help pointer and that using the library is optional.
+_OPENING_IN_CODE = (
+    "### Memory Library\n"
+    "\n"
+    "A Python library of tested functions and linked notes, built from earlier work, is already available "
+    "in your cells as `memory`, no import needed. " + MEMORY_HELP_LINE + " Using the library is optional: use an "
+    "item when it fits, and otherwise work as usual.\n"
+    "\n"
+)
 
+#: The inline-index guide when tools are called from code (the librarian off): it says when to use which library call
+#: and how they combine (look for what applies, open what you will use, call it) and names each call without its
+#: arguments; the calls' own help holds their arguments, results and errors. The index head says what each line holds.
+GUIDE_LIBRARY_IN_CODE = (
+    _OPENING_IN_CODE
+    + "Finding items:\n"
+    + LOOK_LINE_IN_CODE
+    + FILES_LINE_IN_CODE
+    + "\n"
+    "Using items:\n"
+    + USE_LINE_IN_CODE
+    + STATUS_LINES_IN_CODE
+)
 
 #: The guide when the actor's prompt points to the index instead of carrying it
 #: (``UNIFY_MEMORY_LIBRARY_ACTOR_INDEX=pointer``). Constant bytes, naming nothing the library holds, so the cached
@@ -202,32 +228,22 @@ GUIDE_POINTER = (
 
 #: :data:`GUIDE_POINTER` when tools are called from code (``UNIFY_TOOLS_IN_CODE=on``): the actor's memory section,
 #: rendered after the shared opening (which already says how cells and tools work), so it carries only the
-#: library's own guidance. Constant bytes, naming nothing the library holds.
+#: library's own guidance: when to use which library call, each named without its arguments. Constant bytes, naming
+#: nothing the library holds.
 GUIDE_POINTER_IN_CODE = (
     "### Memory Library\n"
     "\n"
     + POINTER_BOUND
-    + "Before you write code for a step, look in the library for an "
-    "item that does it. Using the library is optional: use an item when it fits, and otherwise work as usual.\n"
+    + MEMORY_HELP_LINE
+    + " Using the library is optional: use an item when it fits, and otherwise work as usual.\n"
     "\n"
     "Finding items:\n"
-    + MATCH_LINE
-    + POINTER_INDEX_LINE
-    + "- `print(memory.show(\"<id>\"))` prints one item in full, with its records and recent changes.\n"
-    "- `memory.find(value)` lists the functions whose tests call them on arguments shaped like a structured "
-    "value you hold (a dict, a list of records, JSON text, or a CSV file with a header), and which parameter "
-    "matched. It cannot match plain text: for text, use the index or grep.\n"
-    + FILES_LINE
+    + LOOK_LINE_POINTER_IN_CODE
+    + FILES_LINE_IN_CODE
     + "\n"
     "Using items:\n"
-    + RUN_LINE
-    + "- Import a function by its id: `memory.text.dates:parse_date` is "
-    "`from memory.text.dates import parse_date`.\n"
-    "- A function raises `MemoryInputError` on an input it was not built for. Then do that step with your own "
-    "code.\n"
-    "- `experimental` items are candidates: they passed the library's checks when they were added and have "
-    "had little use. `stable` items passed them and have been used without errors. Items found to fail are "
-    "left out of the index, and `memory.show` says why.\n"
+    + USE_LINE_IN_CODE
+    + STATUS_LINES_IN_CODE
 )
 
 
@@ -237,26 +253,29 @@ def guide_pointer() -> str:
     return GUIDE_POINTER_IN_CODE if _in_code() else GUIDE_POINTER
 
 
-#: The constant pointer to the librarian (``UNIFY_MEMORY_LIBRARIAN=on``, design J(b).5): the same bytes for every
-#: library, in place of the index.
+#: The constant pointer to the librarian (``UNIFY_MEMORY_LIBRARIAN=on``): the same bytes for every library, in place
+#: of the index. It says who answers ``memory.ask``; the answer's form is in the call's help.
 LIBRARIAN_POINTER = (
-    "Your library of procedures and notes from earlier work is the `memory` package in your cells. "
-    "`memory.ask(text)` asks the librarian, who has read every item, what each was built for and how each has been "
-    "used, which items fit; it answers with each item that fits and a ready call, or says nothing fits and what "
-    "differs."
+    "Your library of procedures and notes from earlier work is the `memory` package in your cells. A librarian, "
+    "who has read every item, what each was built for and how each has been used, answers `memory.ask`."
 )
-#: The index bullet of the in-code guide that the pointer replaces, and the opening's "look in the index".
-_INDEX_BULLET = "- The index at the end of this prompt lists every function and note.\n"
-_LOOK_IN_INDEX = "look in the index for an item that does it"
 
-#: The actor's memory section with the librarian on: :data:`GUIDE_LIBRARY_IN_CODE` (the librarian requires the
-#: tools in code) with its index bullet replaced by :data:`LIBRARIAN_POINTER`, and nothing after it: no index view,
-#: whatever the size of the library, so the library never changes the actor's cached prefix. The rest of the guide
-#: (``memory.show``, ``memory.run``, the files) stays as written.
-GUIDE_LIBRARIAN = GUIDE_LIBRARY_IN_CODE.replace(_INDEX_BULLET, "- " + LIBRARIAN_POINTER + "\n", 1).replace(
-    _LOOK_IN_INDEX,
-    "look in the library for an item that does it",
-    1,
+#: The actor's memory section with the librarian on (the librarian requires the tools in code): the in-code guide
+#: with the index bullet replaced by :data:`LIBRARIAN_POINTER`, and nothing after it: no index view, whatever the
+#: size of the library, so the library never changes the actor's cached prefix.
+GUIDE_LIBRARIAN = (
+    _OPENING_IN_CODE
+    + "Finding items:\n"
+    + "- "
+    + LIBRARIAN_POINTER
+    + "\n"
+    + ASK_LINE_IN_CODE
+    + "- `memory.items` browses every function and note in the library.\n"
+    + FILES_LINE_IN_CODE
+    + "\n"
+    "Using items:\n"
+    + USE_LINE_IN_CODE
+    + STATUS_LINES_IN_CODE
 )
 
 
@@ -1577,13 +1596,15 @@ def _limits_text_in_code(limits: Limits, helper_time: bool) -> str:
     )
 
 
+#: The writer's library bullet with tools in code: which library calls to use for what, each named without its
+#: arguments (their help holds those).
 _LIBRARY_BULLET_IN_CODE = (
-    "- /memory: a writable copy of the library. There is no git history in the box; an item's recent changes "
-    'are in `memory.show("<id>")`. /memory/INDEX.md is the library index, generated by the harness like '
+    "- /memory: a writable copy of the library. There is no git history in the box; `memory.get` opens an item "
+    "with its recent changes. /memory/INDEX.md is the library index, generated by the harness like "
     "/memory/links.json and /memory/memory/__init__.py. In every cell `memory` is already bound (no import "
-    'needed): `memory.index()`, `memory.show("<id>")` and `memory.find(value)`. Names you bound earlier keep the '
-    "code they were bound to; after you edit a library file, import it again. For: knowing what exists before you "
-    "add anything.\n"
+    "needed): browse it with `memory.items` and open an item with `memory.get` before you add or change one. "
+    "Names you bound earlier keep the code they were bound to; after you edit a library file, import it again. "
+    "For: knowing what exists before you add anything.\n"
 )
 
 _WHAT_TO_WRITE_IN_CODE = (
@@ -1941,8 +1962,9 @@ _CURATE_IN_CODE = (
     "- /inputs/episodes/<episode>.json: the recorded episodes the retired items were used in. For: the evidence "
     "behind a retirement; `tools.read_episode` and `tools.overview` show them part by part.\n"
     "- /memory: a writable copy of the library. In every cell `memory` is already bound (no import needed): "
-    '`memory.index()`, `memory.find(value)`, `memory.show("<id>")`. Names you bound earlier keep the code they were '
-    "bound to; after you edit a library file, import it again. There is no git history in the box. "
+    "browse it with `memory.items` and open an item, with its records and recent changes, with `memory.get`. "
+    "Names you bound earlier keep the code they were bound to; after you edit a library file, import it again. "
+    "There is no git history in the box. "
     "/memory/INDEX.md and /memory/memory/__init__.py are generated by the harness and need no reading.\n"
     "- /inputs/gate/: the full result of each `tools.check` and each repair round of this pass, as it happens.\n"
     "\n"

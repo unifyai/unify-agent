@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import time
 from pathlib import Path
@@ -348,10 +349,12 @@ def test_only_dispatch_ids_with_their_own_reader_and_known_labels_reach_the_libr
 
 def test_the_brief_is_complete_general_and_says_nothing_of_ids_answers_or_examples():
     brief = L.BRIEF
-    for part in ("## Your role", "## What you read", "## How you answer", "memory.show", "tools.finish(answer)",
+    for part in ("## Your role", "## What you read", "## How you answer", "`memory.get`", "tools.finish(answer)",
                  "Read every card", "Name every item that applies", "nothing fits", "evidence only"):
         assert part in brief, part
     assert lp.benchmark_words(brief) == [] and lp.example_checks(brief) == []
+    # the library's calls are named without arguments: their help holds those
+    assert not re.search(r"memory\.[a-z_]+\(", brief) and "memory.show" not in brief and "memory.run" not in brief
     lowered = brief.lower()
     for word in ("task id", "identifier", "example", "store the answer", "expected"):
         assert word not in lowered, word
