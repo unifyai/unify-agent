@@ -16,11 +16,13 @@ Covers:
 """
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from tests.actor.code_act.conftest import make_fm_mock
+from tests.scripted_model import ScriptedModel, cell, reply, scripted
 from unify.actor.code_act_actor import (
     AgentContext,
     CodeActActor,
@@ -209,11 +211,17 @@ async def test_store_skills_tool_absent_without_guidance_manager():
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @pytest.mark.timeout(60)
 async def test_store_skills_filtered_when_can_store_false():
     """When can_store=False, ``store_skills`` must be removed by _filter_tools
-    even though FM+GM exist and the tool was built."""
+    even though FM+GM exist and the tool was built.
+
+    ``store_skills`` is offered only on the turn that must compress, beside
+    ``compress_context``; with can_store=False that turn offers
+    ``compress_context`` alone, and no other turn offers it either. The
+    model is scripted (tests/scripted_model.py): its first turn fills the
+    context, so the next one must compress.
+    """
     fm = make_fm_mock()
     fm._include_primitives = False
     fm.search_functions = MagicMock(return_value={"metadata": []})
@@ -225,28 +233,47 @@ async def test_store_skills_filtered_when_can_store_false():
 
     gm = _TrackingGuidanceManager()
 
+    model = ScriptedModel(
+        actor=[
+            # A context-full turn: the next one must compress.
+            reply(calls=[cell("print('big')")], prompt_tokens=900_000),
+            reply("store_skills unavailable"),
+        ],
+        compress_turn=[reply(calls=[("compress_context", {})])],
+        compression_fork=[reply("Printed 'big'; nothing else was done.")],
+    )
     actor = CodeActActor(
         function_manager=fm,
         guidance_manager=gm,
         timeout=30,
     )
     try:
-        handle = await actor.act(
-            "Call the tool store_skills with request='store everything'. "
-            "If the tool is not available, say 'store_skills unavailable'.",
-            can_store=False,
-            persist=False,
-            clarification_enabled=False,
-        )
-        result = await asyncio.wait_for(handle.result(), timeout=45)
-        assert (
-            "unavailable" in result.lower() or "store_skills" in result
-        ), f"Expected the LLM to report store_skills as unavailable, got: {result}"
+        # Built ...
+        assert "store_skills" in actor.get_tools("act")
+        with scripted(model):
+            handle = await actor.act(
+                "Call the tool store_skills with request='store everything'. "
+                "If the tool is not available, say 'store_skills unavailable'.",
+                can_store=False,
+                persist=False,
+                clarification_enabled=False,
+            )
+            result = await asyncio.wait_for(handle.result(), timeout=45)
+        assert result == "store_skills unavailable"
     finally:
         try:
             await actor.close()
         except Exception:
             pass
+
+    # ... and filtered out of what the model is offered.
+    assert model.kinds() == ["actor", "compress_turn", "compression_fork", "actor"]
+    (turn,) = model.of("compress_turn")
+    assert turn.tool_names == ["compress_context"]
+    for call in model.of("actor"):
+        assert "execute_code" in call.tool_names
+        assert "store_skills" not in call.tool_names, call.tool_names
+    model.assert_used_up()
 
 
 # ---------------------------------------------------------------------------
@@ -254,12 +281,23 @@ async def test_store_skills_filtered_when_can_store_false():
 # ---------------------------------------------------------------------------
 
 
+_ADD_CELL = "def add(a, b):\n    return a + b\n\nprint(add(2, 3))"
+_STORE_REQUEST = "Store the add function I just wrote"
+
+
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @pytest.mark.timeout(120)
 async def test_proactive_storage_loop_receives_request_and_trajectory():
     """``_start_proactive_storage_loop`` is called with the trajectory snapshot
-    and the request string from the ``store_skills`` tool."""
+    and the request string from the ``store_skills`` tool.
+
+    ``store_skills`` is offered on the turn that must compress (the context
+    window nears capacity), beside ``compress_context``; no other turn
+    offers it. The model is scripted (tests/scripted_model.py): its first
+    turn writes the function and fills the context, the forced turn calls
+    ``store_skills`` then ``compress_context``, and the restarted session
+    answers. The review gate then skips the review.
+    """
     from unify.function_manager.function_manager import FunctionManager
 
     fm = FunctionManager(include_primitives=False)
@@ -270,10 +308,26 @@ async def test_proactive_storage_loop_receives_request_and_trajectory():
         guidance_manager=gm,
         timeout=60,
     )
-
-    captured_kwargs: dict = {}
+    model = ScriptedModel(
+        actor=[
+            # A context-full turn: the next one must compress.
+            reply(calls=[cell(_ADD_CELL)], prompt_tokens=900_000),
+            reply("Wrote add (add(2, 3) == 5) and stored it."),
+        ],
+        compress_turn=[
+            reply(
+                calls=[
+                    ("store_skills", {"request": _STORE_REQUEST}),
+                    ("compress_context", {}),
+                ],
+            ),
+        ],
+        compression_fork=[reply("Wrote add(a, b); add(2, 3) printed 5; stored it.")],
+        gate=[reply('{"review": false, "reason": "store_skills stored add."}')],
+    )
 
     with (
+        scripted(model),
         patch.object(MagicMock, "__repr__", return_value="<MockHandle>"),
         patch(
             "unify.actor.code_act_actor._start_proactive_storage_loop",
@@ -294,48 +348,51 @@ async def test_proactive_storage_loop_receives_request_and_trajectory():
 
         try:
             handle = await actor.act(
-                "Write a function that adds two numbers, then call store_skills "
-                "with request='Store the add function I just wrote'. "
-                "After store_skills returns, report the result.",
+                "Write a function that adds two numbers and store it.",
                 can_store=True,
                 persist=False,
                 clarification_enabled=False,
             )
-            await asyncio.wait_for(handle.result(), timeout=90)
+            result = await asyncio.wait_for(handle.result(), timeout=90)
 
             deadline = asyncio.get_event_loop().time() + 30
             while not handle.done():
                 if asyncio.get_event_loop().time() > deadline:
                     break
                 await asyncio.sleep(0.5)
-
-            if mock_proactive.call_count > 0:
-                captured_kwargs = mock_proactive.call_args.kwargs
         finally:
             try:
                 await actor.close()
             except Exception:
                 pass
 
-    if mock_proactive.call_count == 0:
-        pytest.skip(
-            "LLM did not call store_skills in this run — "
-            "this is an eval-sensitive path",
-        )
+    assert result == "Wrote add (add(2, 3) == 5) and stored it."
+    mock_proactive.assert_called_once()
+    captured_kwargs = mock_proactive.call_args.kwargs
 
-    assert (
-        "request" in captured_kwargs
-    ), f"Expected 'request' kwarg, got: {list(captured_kwargs.keys())}"
-    assert isinstance(captured_kwargs["request"], str)
-    assert len(captured_kwargs["request"]) > 0
+    assert captured_kwargs["request"] == _STORE_REQUEST
 
-    assert (
-        "trajectory" in captured_kwargs
-    ), f"Expected 'trajectory' kwarg, got: {list(captured_kwargs.keys())}"
-    assert isinstance(captured_kwargs["trajectory"], list)
+    # The trajectory is the session so far, including the cell that wrote
+    # the function.
+    trajectory = captured_kwargs["trajectory"]
+    assert isinstance(trajectory, list)
+    assert "def add(a, b)" in json.dumps(trajectory)
 
     assert "actor" in captured_kwargs
     assert captured_kwargs["actor"] is actor
+
+    # Only the forced turn offered store_skills.
+    assert model.kinds() == [
+        "actor",
+        "compress_turn",
+        "compression_fork",
+        "actor",
+        "gate",
+    ]
+    (turn,) = model.of("compress_turn")
+    assert sorted(turn.tool_names) == ["compress_context", "store_skills"]
+    assert all("store_skills" not in c.tool_names for c in model.of("actor"))
+    model.assert_used_up()
 
 
 # ---------------------------------------------------------------------------
@@ -375,8 +432,6 @@ async def test_storage_check_receives_proactive_summaries():
     inner._client = mock_client
 
     mock_task = MagicMock()
-    mock_task.get_ask_tools = MagicMock(return_value={})
-    mock_task.get_completed_tool_metadata = MagicMock(return_value={})
     inner._task = mock_task
 
     actor_mock = MagicMock()
@@ -452,8 +507,6 @@ async def test_storage_check_no_proactive_summaries_passes_none():
     inner._client = mock_client
 
     mock_task = MagicMock()
-    mock_task.get_ask_tools = MagicMock(return_value={})
-    mock_task.get_completed_tool_metadata = MagicMock(return_value={})
     inner._task = mock_task
 
     actor_mock = MagicMock()
@@ -510,8 +563,6 @@ async def test_proactive_storage_loop_returns_none_without_managers():
 
     result = _start_proactive_storage_loop(
         trajectory=[],
-        ask_tools={},
-        completed_tool_metadata={},
         actor=actor_mock,
         request="store something",
         parent_lineage=[],
@@ -523,8 +574,6 @@ async def test_proactive_storage_loop_returns_none_without_managers():
 
     result = _start_proactive_storage_loop(
         trajectory=[],
-        ask_tools={},
-        completed_tool_metadata={},
         actor=actor_mock,
         request="store something",
         parent_lineage=[],
@@ -591,8 +640,6 @@ async def test_proactive_storage_publishes_manager_method_events():
     mock_handle._client = MagicMock()
     mock_handle._client.messages = [{"role": "user", "content": "test"}]
     mock_handle._task = MagicMock()
-    mock_handle._task.get_ask_tools = MagicMock(return_value={})
-    mock_handle._task.get_completed_tool_metadata = MagicMock(return_value={})
     ctx.handle = mock_handle
 
     token = _CURRENT_AGENT_CONTEXT.set(ctx)

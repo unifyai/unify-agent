@@ -397,7 +397,8 @@ class SimulatedHandleMixin:
 
     @property
     def _pause_event(self):
-        """Proxy for pause state compatibility with ``get_handle_paused_state``.
+        """Proxy for pause state compatibility with ``get_handle_paused_state``
+        (``unify/legacy/handle_state.py``, read by the legacy conversation manager).
 
         Simulated manager handles track pause state via a ``_paused`` boolean
         rather than a real ``threading.Event``.  This property exposes that

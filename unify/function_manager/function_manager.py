@@ -2,7 +2,7 @@ import ast
 import asyncio
 import builtins
 import concurrent.futures
-from datetime import datetime, timezone
+from contextvars import ContextVar
 import inspect
 import functools
 import logging
@@ -24,6 +24,8 @@ from typing import (
     Union,
 )
 from unify import db
+from unify import outcome as outcome_mod
+from ..common.exact_patch import PatchEdit
 from ..common.sql_filters import and_clauses, invalid_filter_error, not_in, or_clauses
 from ..common.semantic_search import SIMILARITY_FIELD, rank_by_similarity
 from .activation import (
@@ -33,13 +35,18 @@ from .activation import (
     merged_usage,
     rank_score,
 )
-from .execution_env import ENVIRONMENT_MODULES, create_base_globals
+from .execution_env import (
+    SANDBOX_RUNTIME_NAMES,
+    create_execution_globals,
+    environment_modules,
+)
 from .steering import (
     DEFAULT_TOOL_NAMESPACES,
     ExecutionStopped,
     MemoisedDispatch,
     active_session,
     bind_session,
+    format_call,
     instrument,
     restore_session,
     run_with_steering,
@@ -51,8 +58,9 @@ from .dependency_analysis import (
     detect_third_party_imports,
 )
 from .types.function import Function
-from .source_labels import compile_function_source
+from .source_labels import StoredSource, compile_function_source
 from .base import BaseFunctionManager
+from . import session_source, task_origin
 from ..common.stale_reason import (
     StaleReason,
     coerce_stale_reasons,
@@ -147,6 +155,15 @@ def _encode_function_values(entry: Dict[str, Any]) -> Dict[str, Any]:
 # The fields a search query is compared with, per function row.
 SEARCHED_FUNCTION_FIELDS = ("name", "docstring")
 
+# UNIFY_FUNCTION_PATCH: the reason ``function_history`` records for an
+# overwrite. ``patch_function`` sets it around its ``add_functions`` call; a
+# plain ``add_functions(overwrite=True)`` records the default.
+_OVERWRITE_REASON: ContextVar[Optional[str]] = ContextVar(
+    "function_overwrite_reason",
+    default=None,
+)
+DEFAULT_OVERWRITE_REASON = "overwritten with add_functions(overwrite=True)"
+
 
 class _LineageTrackedFunction:
     """Boundary wrapper for FunctionManager callables injected into CodeActActor sandboxes.
@@ -171,6 +188,7 @@ class _LineageTrackedFunction:
         wrapped_callable: Callable[..., Any],
         function_name: str,
         on_call: Optional[Callable[[], None]] = None,
+        cases: Optional[Any] = None,
     ):
         self._wrapped = wrapped_callable
         self._function_name = function_name
@@ -178,6 +196,9 @@ class _LineageTrackedFunction:
         # already passes through, and its __getattr__ delegation keeps proxy
         # identity intact, which is why the trace records here.
         self._on_call = on_call
+        # UNIFY_FUNCTION_CASES: records each call as a case
+        # (store_cases.CaseRecorder); None while the switch is off.
+        self._cases = cases
 
         # Preserve introspection attributes.
         self.__name__ = function_name
@@ -189,6 +210,12 @@ class _LineageTrackedFunction:
         return getattr(self._wrapped, name)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        from . import store_cases
+
+        if store_cases.replaying():
+            # UNIFY_FUNCTION_CASES: a callee inside a replay runs bare, so the
+            # replay records no usage or case.
+            return self._wrapped(*args, **kwargs)
         if self._on_call is not None:
             try:
                 self._on_call()
@@ -197,6 +224,9 @@ class _LineageTrackedFunction:
         # Local imports to avoid import-time cycles.
         from unify.common._async_tool.loop_config import TOOL_LOOP_LINEAGE
         from unify.common.hierarchical_logger import log_boundary_event
+
+        cases = self._cases
+        case = cases.begin(args, kwargs) if cases is not None else None
 
         suffix = token_hex(2)
 
@@ -212,9 +242,12 @@ class _LineageTrackedFunction:
         # Ensure synchronous work at call-time (if any) happens under the lineage frame.
         token_call = TOOL_LOOP_LINEAGE.set(hierarchy)
         try:
-            result = self._wrapped(*args, **kwargs)
-        except Exception:
+            with store_cases.tracing(case):
+                result = self._wrapped(*args, **kwargs)
+        except Exception as exc:
             TOOL_LOOP_LINEAGE.reset(token_call)
+            if cases is not None:
+                cases.end(case, error=exc)
             raise
         finally:
             # For async results we only needed the lineage during coroutine construction.
@@ -230,12 +263,22 @@ class _LineageTrackedFunction:
             async def _await_and_finalize():
                 token_run = TOOL_LOOP_LINEAGE.set(hierarchy)
                 try:
-                    return await result
+                    with store_cases.tracing(case):
+                        value = await result
+                except Exception as exc:
+                    if cases is not None:
+                        cases.end(case, error=exc)
+                    raise
                 finally:
                     TOOL_LOOP_LINEAGE.reset(token_run)
+                if cases is not None:
+                    cases.end(case, result=value)
+                return value
 
             return _await_and_finalize()
 
+        if cases is not None:
+            cases.end(case, result=result)
         return result
 
 
@@ -303,6 +346,12 @@ class _InProcessFunctionProxy:
         self._func_data = func_data
         self._namespace = namespace
         self._raw_callable = raw_callable
+        # UNIFY_FUNCTION_CASES: records the stateful calls, which run the raw
+        # callable directly, as cases (the other modes go through
+        # execute_function); None while off.
+        from .store_cases import CaseRecorder
+
+        self._cases = CaseRecorder.for_function(func_data)
 
         # Copy key attributes from raw callable for introspection
         self.__name__ = str(func_data.get("name") or "unknown")
@@ -329,9 +378,24 @@ class _InProcessFunctionProxy:
         if state_mode == "stateful":
             # Execute directly using the raw callable in the shared namespace.
             # This is the existing behavior - state naturally persists in the namespace.
-            result = self._raw_callable(*args, **kwargs)
-            if asyncio.iscoroutine(result):
-                result = await result
+            cases = self._cases
+            if cases is None:
+                result = self._raw_callable(*args, **kwargs)
+                if asyncio.iscoroutine(result):
+                    result = await result
+                return result
+            from . import store_cases
+
+            case = cases.begin(args, kwargs)
+            try:
+                with store_cases.tracing(case):
+                    result = self._raw_callable(*args, **kwargs)
+                    if asyncio.iscoroutine(result):
+                        result = await result
+            except Exception as exc:
+                cases.end(case, error=exc)
+                raise
+            cases.end(case, result=result)
             return result
 
         # For stateless and read_only, use execute_function with appropriate
@@ -527,6 +591,12 @@ class FunctionManager(BaseFunctionManager):
             self._filter_scope,
             not_in("function_id", self._exclude_compositional_ids),
         )
+
+    def _num_items(self) -> int:
+        """The number of stored functions in scope, primitives excluded."""
+        sql = "SELECT COUNT(*) AS n FROM all_functions"
+        sql += f" WHERE {self._compositional_scope()}"
+        return int(db.query_one(sql)["n"])
 
     def _discovery_scope(self, caller_filter: Optional[str] = None) -> str:
         """The clause selecting everything discovery may return: stored functions
@@ -760,7 +830,7 @@ class FunctionManager(BaseFunctionManager):
         fid = func_data.get("function_id")
         if fid is None:
             return
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = db.now_iso()
         kept = settings.recent_calls_kept
 
         def _write() -> None:
@@ -817,7 +887,7 @@ class FunctionManager(BaseFunctionManager):
         delete-then-add (the librarian's supersede flow) inherits the
         deleted row's usage trace so the replacement stands where its
         predecessor stood."""
-        entry_data["created_at"] = datetime.now(timezone.utc).isoformat()
+        entry_data["created_at"] = db.now_iso()
         inherited = self._take_usage_legacy(name)
         if inherited:
             entry_data.update(
@@ -878,7 +948,7 @@ class FunctionManager(BaseFunctionManager):
         settings = self.activation_settings
         if not settings.enabled:
             return rows[:n]
-        now = datetime.now(timezone.utc)
+        now = db.utc_now()
         ranked: List[tuple[float, int, Dict[str, Any]]] = []
         for idx, row in enumerate(rows):
             standing = activation(
@@ -953,10 +1023,13 @@ class FunctionManager(BaseFunctionManager):
         """
         if isinstance(raw, _LineageTrackedFunction):
             return raw
+        from .store_cases import CaseRecorder
+
         return _LineageTrackedFunction(
             raw,
             str(func_data.get("name")),
             on_call=lambda: self._note_function_use(func_data),
+            cases=CaseRecorder.for_function(func_data),
         )
 
     # ------------------------------------------------------------------ #
@@ -990,12 +1063,13 @@ class FunctionManager(BaseFunctionManager):
         rows: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         """Return actor-facing discovery rows without large structured payloads."""
-
         compact_rows: list[dict[str, Any]] = []
         for row in rows:
             compact = {
                 key: value for key, value in row.items() if key != "implementation"
             }
+            # Origin fields a removed research switch recorded are never shown.
+            compact = task_origin.strip(compact)
             if compact.get("is_primitive"):
                 # Primitive docstrings are full manual pages; discovery
                 # results must not re-import what the actor prompt
@@ -1083,13 +1157,22 @@ class FunctionManager(BaseFunctionManager):
                 raise ValueError(
                     f"Dependency {specifier!r} is not a valid requirement "
                     f"string ({e}). Use PEP 508 form, e.g. 'pandas>=2.0' or "
-                    f"'pkg @ git+https://github.com/user/repo.git'.",
+                    f"'pandas[sql]==2.1.0'.",
                 )
         if isinstance(implementations, str):
             implementations = [implementations]
+        # UNIFY_STORE_FROM_SESSION: a bare name is the session's own source.
+        implementations, parse_errors = session_source.expand(implementations)
+        # The checker's outcome, which the storage review reads, stays out
+        # of the library (unify/outcome.py).
+        outcome_mod.refuse_carried(
+            "functions.add",
+            implementations,
+            preconditions,
+            requirements,
+        )
 
         parsed: List[Tuple[str, ast.Module, ast.FunctionDef, str]] = []
-        parse_errors: Dict[str, str] = {}
         temp_names: Set[str] = set()
 
         # Parse all implementations
@@ -1143,6 +1226,15 @@ class FunctionManager(BaseFunctionManager):
         entries_to_update: List[Dict[str, Any]] = []
         log_ids_to_update: List[int] = []
         log_id_to_name: Dict[int, str] = {}
+        # UNIFY_STORE_DEDUPE=warn: stored sources, read once, and the warnings
+        # for new functions that nearly copy one of them.
+        stored_sources: Optional[Dict[str, str]] = None
+        dedupe_warnings: Dict[str, str] = {}
+        # UNIFY_FUNCTION_CASES: what replaying an updated function's recorded
+        # cases found, reported with its "updated" status.
+        case_reports: Dict[str, str] = {}
+        # UNIFY_STORE_INSTANCE_LINT: docstrings that name this task instance.
+        instance_warnings: Dict[str, str] = {}
 
         # Sandbox namespace roots whose dotted calls should be recorded in
         # depends_on (e.g. "primitives.actor.act" → depends_on includes
@@ -1166,7 +1258,7 @@ class FunctionManager(BaseFunctionManager):
 
                 tp_imports = detect_third_party_imports(
                     node,
-                    environment_modules=ENVIRONMENT_MODULES,
+                    environment_modules=environment_modules(),
                 )
                 if tp_imports and not requirements:
                     raise ValueError(
@@ -1182,11 +1274,28 @@ class FunctionManager(BaseFunctionManager):
 
                 all_calls = self._collect_function_calls(node)
                 self._validate_function_calls(name, all_calls)
-                namespace = create_base_globals()
-                exec(source, namespace)
-                fn_obj = namespace[name]
-                signature = str(inspect.signature(fn_obj))
-                docstring = inspect.getdoc(fn_obj) or ""
+                warning = self._instance_lint(name, node)
+                if warning:
+                    instance_warnings[name] = warning
+                # UNIFY_ESCAPE_DRIFT_CHECK: in a storage review, a literal of
+                # the session's cells retyped with one more escape is refused.
+                from . import escape_drift
+
+                escape_drift.check(name, source)
+                self._store_check(
+                    name=name,
+                    node=node,
+                    source=source,
+                    depends_on=dependencies_list,
+                    requirements=requirements,
+                    third_party_imports=tp_imports,
+                    stored_functions=all_known_function_names,
+                    same_batch=temp_names,
+                )
+                if self._store_verify_enabled():
+                    self._store_verify_gate(name=name, node=node, source=source)
+                signature = self._signature_from_node(node, name)
+                docstring = ast.get_docstring(node) or ""
                 precondition = preconditions.get(name)
 
                 prior = None
@@ -1195,6 +1304,16 @@ class FunctionManager(BaseFunctionManager):
                         function_id=existing_functions[name]["function_id"],
                         raise_if_missing=True,
                     )
+                    if prior.get("implementation") != source:
+                        report = self._case_replay_gate(
+                            name=name,
+                            function_id=int(prior["function_id"]),
+                            source=source,
+                            depends_on=dependencies_list,
+                            dependencies=requirements,
+                        )
+                        if report:
+                            case_reports[name] = report
 
                 entry_data = {
                     "argspec": signature,
@@ -1212,7 +1331,6 @@ class FunctionManager(BaseFunctionManager):
                         )
                     ],
                 }
-
                 if prior is not None:
                     # Update existing function
                     log_id = int(prior["function_id"])
@@ -1226,6 +1344,15 @@ class FunctionManager(BaseFunctionManager):
                     self._stamp_new_function_usage(entry_data, name)
                     entries_to_create.append(entry_data)
                     results[name] = "added"
+                    if stored_sources is None:
+                        stored_sources = self._stored_sources()
+                    warning = self._near_duplicate_warning(
+                        name,
+                        source,
+                        stored_sources,
+                    )
+                    if warning:
+                        dedupe_warnings[name] = warning
             except ValueError as e:
                 results[name] = f"error: {e}"
             except Exception as e:
@@ -1251,12 +1378,20 @@ class FunctionManager(BaseFunctionManager):
                     if results.get(name) == "added":
                         results[name] = f"error: Failed to create log - {e}"
 
+        for name, warning in dedupe_warnings.items():
+            if results.get(name) == "added":
+                results[name] = f"added; warning: {warning}"
+
         # Batch update existing functions
         if log_ids_to_update and entries_to_update:
             try:
                 with db.transaction():
                     for function_id, entry in zip(log_ids_to_update, entries_to_update):
-                        self._update_function(function_id, entry)
+                        self._update_function(
+                            function_id,
+                            entry,
+                            reason=_OVERWRITE_REASON.get() or DEFAULT_OVERWRITE_REASON,
+                        )
             except Exception as e:
                 logger.error(
                     f"Failed to batch update function logs: {e}",
@@ -1267,6 +1402,15 @@ class FunctionManager(BaseFunctionManager):
                     if name and results.get(name) == "updated":
                         results[name] = f"error: Failed to update log - {e}"
 
+        for name, report in case_reports.items():
+            if results.get(name) == "updated":
+                results[name] = f"updated; {report}"
+
+        for name, warning in instance_warnings.items():
+            status = results.get(name, "")
+            if status == "updated" or status.startswith(("updated; ", "added")):
+                results[name] = f"{status}; warning: {warning}"
+
         # Check for errors and raise if requested
         if raise_on_error:
             errors = {k: v for k, v in results.items() if v.startswith("error")}
@@ -1275,6 +1419,785 @@ class FunctionManager(BaseFunctionManager):
                 raise ValueError(f"Failed to add function(s): {error_details}")
 
         return results
+
+    # ------------------------------------------------------------------ #
+    #  Near-duplicate warning (UNIFY_STORE_DEDUPE=warn)                   #
+    # ------------------------------------------------------------------ #
+
+    def _stored_sources(self) -> Dict[str, str]:
+        """The source of each stored function in this manager's scope, by name."""
+        return {
+            row["name"]: row["implementation"]
+            for row in self._rows(self._compositional_scope())
+            if row.get("implementation")
+        }
+
+    @staticmethod
+    def _near_duplicate_warning(
+        name: str,
+        source: str,
+        stored_sources: Dict[str, str],
+    ) -> Optional[str]:
+        """A warning naming the stored function ``source`` nearly copies, or ``None``."""
+        from .near_duplicates import NEAR_DUPLICATE_JACCARD, code_tokens, jaccard
+
+        tokens = code_tokens(source)
+        best_name, best_score = None, 0.0
+        for other, other_source in stored_sources.items():
+            if other == name:
+                continue
+            score = jaccard(tokens, code_tokens(other_source))
+            if score > best_score:
+                best_name, best_score = other, score
+        if best_name is None or best_score < NEAR_DUPLICATE_JACCARD:
+            return None
+        lines = stored_sources[best_name].strip("\n").splitlines()
+        excerpt = "\n".join(line[:120] for line in lines[:4])
+        if len(lines) > 4:
+            excerpt += "\n    ..."
+        instead = (
+            f"fix '{best_name}' with FunctionManager_patch_function instead "
+            f"and delete '{name}'"
+        )
+        return (
+            f"'{name}' is nearly identical to the stored function '{best_name}' "
+            f"(code similarity {best_score:.2f} with names, docstrings and type "
+            f"hints ignored). '{best_name}' begins:\n{excerpt}\nIf '{name}' is a "
+            f"fix or variant of it, {instead}; keep both only if they do "
+            f"different things."
+        )
+
+    # ------------------------------------------------------------------ #
+    #  Patch in place (UNIFY_FUNCTION_PATCH)                              #
+    # ------------------------------------------------------------------ #
+
+    def patch_function(
+        self,
+        *,
+        name: str,
+        old: Optional[str] = None,
+        new: Optional[str] = None,
+        why: str,
+        edits: Optional[List[PatchEdit]] = None,
+        replace_all: bool = False,
+        old_string: Optional[str] = None,
+        new_string: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Fix a stored function in place by replacing excerpts of its source.
+
+        Prefer this to adding a near-duplicate or rewriting the whole
+        function. Read the current source first (search or filter with
+        implementations) and copy the lines to change as they appear. Give one
+        change as ``old``/``new``, or several as ``edits``: they apply in
+        order, each to the source as the edits before it left it, and all or
+        none are stored. Each ``old`` must occur exactly once (unless
+        ``replace_all``); if it is not found exactly, differences in line
+        endings, trailing spaces, indentation (``new`` is re-indented to match)
+        and runs of spaces are tolerated while the match stays unique.
+        Otherwise nothing changes and the reply shows the closest text or
+        every occurrence. The patched source must parse and still be one
+        function named ``name``; it keeps its id, precondition, dependencies
+        and guidance links, is checked exactly like a function passed to
+        ``FunctionManager_add_functions``, and the version it replaces is kept
+        in history with ``why``.
+
+        Args:
+            name: The stored function's exact name.
+            old: The text to replace, with enough surrounding text to occur
+                only once.
+            new: The replacement text (an empty string deletes ``old``).
+            why: One sentence on what was wrong or missing; kept with the
+                replaced version.
+            edits: Several changes in one call, instead of ``old``/``new``:
+                ``[{"old", "new", "replace_all"?}, ...]``.
+            replace_all: With ``old``/``new``, replace every occurrence of
+                ``old`` instead of exactly one.
+            old_string: Another name for ``old``.
+            new_string: Another name for ``new``.
+
+        Returns:
+            ``{"name", "status": "patched", "function_id", "edits"}``, where
+            ``edits`` gives, per edit, how it matched (``exact``,
+            ``trailing_whitespace``, ``indentation`` or
+            ``collapsed_whitespace``) and how many occurrences it replaced;
+            or ``{"name", "error"}`` saying why nothing was changed.
+        """
+        from unify.common.exact_patch import (
+            PatchRefused,
+            apply_edits,
+            collect_edits,
+            syntax_refusal,
+        )
+
+        def refused(message: str) -> Dict[str, Any]:
+            return {"name": name, "error": message}
+
+        if not str(why or "").strip():
+            return refused("say `why` the function needs this patch")
+        try:
+            wanted = collect_edits(
+                old=old,
+                new=new,
+                edits=edits,
+                replace_all=replace_all,
+                old_string=old_string,
+                new_string=new_string,
+            )
+        except PatchRefused as exc:
+            return refused(str(exc))
+        rows = self._rows(self._compositional_scope("name = ?"), (name,), limit=1)
+        if not rows:
+            return refused(
+                f"no stored function is named {name!r}; patch only a function "
+                f"that search or filter returned, by its exact name",
+            )
+        row = rows[0]
+        try:
+            patched, report = apply_edits(
+                row["implementation"],
+                wanted,
+                what=f"the source of {name!r}",
+            )
+        except PatchRefused as exc:
+            return refused(str(exc))
+        try:
+            outcome_mod.refuse_carried("functions.patch", patched, why)
+        except outcome_mod.OutcomeCarried as exc:
+            return refused(str(exc))
+        problem = syntax_refusal(patched)
+        if problem is not None:
+            return refused(
+                f"the patched source is not one function that parses, so "
+                f"nothing was changed: {problem}",
+            )
+        try:
+            patched_name = self._parse_implementation(patched)[0]
+        except ValueError as exc:
+            return refused(
+                f"the patched source is not one function, so nothing was "
+                f"changed: {exc}",
+            )
+        if patched_name != name:
+            return refused(
+                f"the patch renames the function to {patched_name!r}, so nothing "
+                f"was changed; a patch keeps the name",
+            )
+        preconditions = (
+            {name: row["precondition"]} if row.get("precondition") is not None else None
+        )
+        token = _OVERWRITE_REASON.set(str(why).strip())
+        try:
+            result = self.add_functions(
+                implementations=[patched],
+                preconditions=preconditions,
+                overwrite=True,
+                raise_on_error=False,
+                dependencies=list(row.get("dependencies") or []),
+            )
+        finally:
+            _OVERWRITE_REASON.reset(token)
+        status = str(result.get(name, "error: not stored"))
+        # UNIFY_STORE_INSTANCE_LINT's warning comes last, after any case report.
+        status, _, warning = status.partition("; warning: ")
+        if status == "updated" or status.startswith("updated; "):
+            patched_result: Dict[str, Any] = {
+                "name": name,
+                "status": "patched",
+                "function_id": int(row["function_id"]),
+                "edits": report,
+            }
+            if status != "updated":
+                # UNIFY_FUNCTION_CASES: what the replay of its cases found.
+                patched_result["cases"] = status[len("updated; ") :]
+            if warning:
+                patched_result["warning"] = warning
+            return patched_result
+        return refused(
+            status[len("error: ") :] if status.startswith("error: ") else status,
+        )
+
+    # ------------------------------------------------------------------ #
+    #  Recorded cases (UNIFY_FUNCTION_CASES)                              #
+    # ------------------------------------------------------------------ #
+
+    def _case_replay_gate(
+        self,
+        *,
+        name: str,
+        function_id: int,
+        source: str,
+        depends_on: List[str],
+        dependencies: List[str],
+    ) -> str:
+        """Replay the stored function's recorded cases against its new source.
+
+        Raises ``ValueError`` (the tool's error) naming the cases that now
+        behave differently; otherwise returns what the replay found, for the
+        result (empty when the function has no case).
+        """
+        from . import store_cases
+
+        replays = store_cases.replay(
+            self,
+            name=name,
+            function_id=function_id,
+            source=source,
+            depends_on=depends_on,
+            dependencies=dependencies,
+        )
+        refusal = store_cases.refusal(name, replays)
+        if refusal is not None:
+            raise ValueError(refusal)
+        return store_cases.report(name, replays)
+
+    def retire_case(
+        self,
+        *,
+        function_name: str,
+        case_id: int,
+        why: str,
+    ) -> Dict[str, Any]:
+        """Retire one recorded case of a stored function, so a change no longer has to reproduce it.
+
+        Every call of a stored function is recorded as a case (its arguments,
+        what it returned or raised, and the environment calls it made), and
+        an overwrite or patch that would behave differently on a case that
+        worked is refused, naming the case. Retire a case only when the
+        recorded behaviour was itself wrong (the trajectory or a check shows
+        it), never to push through a change of what the function is for:
+        that belongs under a new name. The case is kept, marked retired,
+        with ``why``.
+
+        Args:
+            function_name: The stored function's exact name.
+            case_id: The case's number, as a refusal or the ``cases`` field of
+                a search result shows it (``#12``).
+            why: One sentence on why the recorded behaviour was wrong.
+
+        Returns:
+            ``{"function_name", "case_id", "status": "retired"}``, or
+            ``{"function_name", "case_id", "error"}`` saying why nothing changed.
+        """
+        from . import store_cases
+
+        def refused(message: str) -> Dict[str, Any]:
+            return {
+                "function_name": function_name,
+                "case_id": case_id,
+                "error": message,
+            }
+
+        if not str(why or "").strip():
+            return refused("say `why` the recorded behaviour was wrong")
+        try:
+            outcome_mod.refuse_carried("functions.retire", why)
+        except outcome_mod.OutcomeCarried as exc:
+            return refused(str(exc))
+        try:
+            wanted = int(case_id)
+        except (TypeError, ValueError):
+            return refused(f"case_id must be a case number, not {case_id!r}")
+        rows = self._rows(
+            self._compositional_scope("name = ?"),
+            (function_name,),
+            limit=1,
+        )
+        if not rows:
+            return refused(f"no stored function is named {function_name!r}")
+        retired = store_cases.retire(int(rows[0]["function_id"]), wanted, str(why))
+        if retired is None:
+            return refused(
+                f"{function_name!r} has no active case #{wanted}; its cases are "
+                f"listed in search results and in a refusal",
+            )
+        return {"function_name": function_name, "case_id": wanted, "status": "retired"}
+
+    # ------------------------------------------------------------------ #
+    #  Instance identifiers (UNIFY_STORE_INSTANCE_LINT)                   #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _instance_lint(
+        name: str,
+        node: Union[ast.FunctionDef, ast.AsyncFunctionDef],
+    ) -> Optional[str]:
+        """Refuse a function whose name or code carries this task's identifiers.
+
+        Raises ``ValueError`` naming the identifier for the name and the code
+        (literals and defaults); returns a warning when only the docstring
+        names one, and ``None`` when nothing does.
+        """
+        from . import instance_lint
+
+        problem = instance_lint.name_problem(name) or instance_lint.code_problem(node)
+        if problem:
+            raise ValueError(instance_lint.refusal(name, problem))
+        return instance_lint.text_warning(
+            "its docstring",
+            ast.get_docstring(node) or "",
+        )
+
+    # ------------------------------------------------------------------ #
+    #  Storage-time check (UNIFY_STORE_CHECK=resolve)                     #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _skip_unloadable() -> Optional[List[Dict[str, str]]]:
+        """A list to collect unloadable rows in."""
+        return []
+
+    @staticmethod
+    def _unloadable_warning(skipped: List[Dict[str, str]]) -> str:
+        listed = "; ".join(f"{row['name']}: {row['error']}" for row in skipped)
+        return (
+            f"Left out {len(skipped)} stored function(s) that cannot be loaded, "
+            f"so they are not callable here: {listed}"
+        )
+
+    def _store_check(
+        self,
+        *,
+        name: str,
+        node: Union[ast.FunctionDef, ast.AsyncFunctionDef],
+        source: str,
+        depends_on: List[str],
+        requirements: List[str],
+        third_party_imports: Set[str],
+        stored_functions: Set[str],
+        same_batch: Set[str],
+    ) -> None:
+        """Refuse a function whose names do not resolve, or that does not load.
+
+        The static part (``store_check.unresolved``) resolves every global name
+        and every ``primitives.*`` reference against a fresh sandbox's globals
+        and the namespaces in this manager's scope. Then, only where Python runs
+        in this process anyway, the function is loaded exactly as a search
+        loads it (stored callees injected, the ``def`` executed) into a scratch
+        namespace that is thrown away. Executing a ``def`` runs its default
+        values and decorators, so with Python in the sandboxed worker
+        the check stays static: model-written
+        code never runs in the harness's process, which holds the credentials.
+        A function that fails as it loads then fails where it runs, in the
+        worker. The raised ``ValueError`` names what failed; the storage review
+        reads it as the tool's error.
+        """
+        from . import store_check
+
+        sandbox_globals = create_execution_globals()
+        for runtime_name in SANDBOX_RUNTIME_NAMES:
+            sandbox_globals.setdefault(runtime_name, None)
+        namespaces = {
+            alias: self._registry.primitive_methods(manager_alias=alias)
+            for alias in sorted(self._primitive_scope.scoped_managers)
+        }
+        problems = store_check.unresolved(
+            source=source,
+            node=node,
+            name=name,
+            sandbox_globals=sandbox_globals,
+            stored_functions=stored_functions,
+            namespaces=namespaces,
+            environment_modules=environment_modules(),
+            pip_supplied=third_party_imports if requirements else (),
+        )
+        if problems:
+            raise ValueError(
+                f"'{name}' was not stored, because it would fail where it runs: "
+                + "; ".join(problems)
+                + ". Fix the function and add it again.",
+            )
+        from unify.actor.execution import worker as python_worker
+
+        if python_worker.enabled():
+            return
+        scratch = create_execution_globals()
+        entry = {
+            "name": name,
+            "implementation": source,
+            "dependencies": requirements,
+            # Callees added in the same call are not stored yet; they are
+            # checked on their own.
+            "depends_on": [d for d in depends_on if d not in same_batch],
+        }
+        try:
+            self._inject_dependencies(entry, namespace=scratch, visited={name})
+            self._create_in_process_callable(entry, namespace=scratch)
+        except Exception as exc:
+            detail = f"{type(exc).__name__}: {exc}"
+            if requirements:
+                detail += f" (its declared dependencies: {requirements})"
+            raise ValueError(
+                f"'{name}' was not stored, because it does not load the way a "
+                f"search loads it: {detail}. Fix the function and add it again.",
+            ) from exc
+
+    # ------------------------------------------------------------------ #
+    #  Verify before store (UNIFY_STORE_VERIFY=module:factory)            #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _store_verify_enabled() -> bool:
+        from unify.settings import SETTINGS
+
+        return bool(str(getattr(SETTINGS, "UNIFY_STORE_VERIFY", "") or "").strip())
+
+    def _store_verify_gate(
+        self,
+        *,
+        name: str,
+        node: Union[ast.FunctionDef, ast.AsyncFunctionDef],
+        source: str,
+    ) -> None:
+        """Refuse a function whose exact source has not passed on a held-out task.
+
+        The refusal names why: no held-out task is available (nothing new is
+        stored then), the static checks' problems, or that no run of this exact
+        source has passed yet. The storage review reads the raised
+        ``ValueError`` as the tool's error.
+        """
+        from . import store_verify
+
+        if store_verify.passed(store_verify.source_sha256(source)) is not None:
+            return
+        held = store_verify.held_out(name)
+        if not held.available:
+            why = (
+                f"no held-out task is available ({held.reason or 'no reason given'}), "
+                f"so nothing new is stored now"
+            )
+        else:
+            problems = store_verify.static_problems(node, held)
+            why = (
+                "; ".join(problems)
+                if problems
+                else (
+                    "this exact source has no passing run yet; run it with "
+                    "FunctionManager_check_function and call_kwargs first"
+                )
+            )
+        raise ValueError(
+            f"'{name}' was not stored, because it has not passed on a held-out task: {why}.",
+        )
+
+    def check_function(
+        self,
+        *,
+        implementation: str,
+        call_kwargs: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Check a function on a held-out task before storing it.
+
+        A function is stored only once its exact source has passed this check.
+        Without ``call_kwargs``: the static checks run (a literal that is a
+        detail of this session's request, which a sibling request states
+        differently, must become a parameter; no credential, token or global
+        state may be kept; a credential parameter must default to None) and the
+        held-out task's request is returned, so the arguments it needs can be
+        chosen. With ``call_kwargs``: the static checks, then the function runs
+        with those keyword arguments on a fresh copy of the held-out task's
+        world, and the environment's own check judges the outcome; a pass lets
+        ``FunctionManager_add_functions`` store that exact source. Run checks
+        are limited per review.
+
+        Args:
+            implementation: The function's full source (one top-level ``def``),
+                exactly as it will be passed to ``FunctionManager_add_functions``.
+            call_kwargs: The keyword arguments for the run on the held-out task,
+                taken from the held-out request; never a credential.
+
+        Returns:
+            The static problems, the held-out request, and (for a run) whether
+            it passed, why, and the check's counts.
+        """
+        from . import store_verify
+
+        if not self._store_verify_enabled():
+            return {
+                "error": "no held-out check is configured here (UNIFY_STORE_VERIFY is not set)",
+            }
+        try:
+            name, _tree, node, source = self._parse_implementation(implementation)
+        except ValueError as exc:
+            return {
+                "error": f"the implementation does not parse as one function: {exc}",
+            }
+        out: Dict[str, Any] = {"name": name}
+        try:
+            held = store_verify.held_out(name)
+        except store_verify.StoreVerifyError as exc:
+            return {**out, "error": str(exc)}
+        if not held.available:
+            return {
+                **out,
+                "available": False,
+                "reason": held.reason,
+                "result": "no held-out task is available, so nothing new can be stored now",
+            }
+        out["available"] = True
+        out["held_out_request"] = held.held_out_text
+        if held.credential_params:
+            out["credential_parameters"] = sorted(held.credential_params)
+        problems = store_verify.static_problems(node, held)
+        all_names = set(self.list_functions()) | {name}
+        try:
+            depends_on = sorted(
+                collect_dependencies_from_function_node(
+                    node,
+                    all_names,
+                    environment_namespaces=frozenset({"primitives"}),
+                ),
+            )
+        except Exception as exc:
+            problems.append(
+                f"its dependencies cannot be read: {type(exc).__name__}: {exc}",
+            )
+            depends_on = []
+        try:
+            self._store_check(
+                name=name,
+                node=node,
+                source=source,
+                depends_on=depends_on,
+                requirements=[],
+                third_party_imports=set(),
+                stored_functions=all_names,
+                same_batch={name},
+            )
+        except ValueError as exc:
+            problems.append(str(exc))
+        out["static_problems"] = problems
+        out["run_checks_left"] = store_verify.run_checks_left()
+        if problems:
+            out["result"] = (
+                "refused by the static checks; fix the function and check it again"
+            )
+            return out
+        if call_kwargs is None:
+            out["result"] = (
+                "the static checks passed; now run it on the held-out task with "
+                "the call_kwargs its request needs"
+            )
+            return out
+        if not isinstance(call_kwargs, dict) or not all(
+            isinstance(k, str) for k in call_kwargs
+        ):
+            out["result"] = "call_kwargs must be an object of keyword arguments"
+            return out
+        credentials = sorted(set(call_kwargs) & set(held.credential_params))
+        if credentials:
+            out["result"] = (
+                f"call_kwargs may not carry credentials ({', '.join(credentials)}): "
+                f"the function must log in itself"
+            )
+            return out
+        used = store_verify.take_run_check()
+        if used is None:
+            out["result"] = (
+                f"the run checks of this review are used up ({store_verify.MAX_RUN_CHECKS}); "
+                f"nothing more can be checked now"
+            )
+            out["run_checks_left"] = 0
+            return out
+        candidate = self._verify_candidate(
+            name=name,
+            source=source,
+            depends_on=depends_on,
+        )
+        from . import store_cases
+
+        try:
+            # UNIFY_FUNCTION_CASES: a run in the held-out world is not a case.
+            with store_cases.quiet():
+                verdict = store_verify.Verdict.coerce(
+                    store_verify.verifier().run(candidate, dict(call_kwargs)),
+                )
+        except Exception as exc:
+            verdict = store_verify.Verdict(
+                False,
+                f"the check failed: {type(exc).__name__}: {str(exc)[:300]}",
+            )
+        out["run_checks_left"] = store_verify.run_checks_left()
+        out["passed"] = verdict.ok
+        out["reason"] = verdict.reason
+        out["details"] = dict(verdict.details)
+        if verdict.ok:
+            store_verify.record_pass(
+                candidate.sha256,
+                {
+                    "name": name,
+                    "call_kwargs": sorted(call_kwargs),
+                    "check": used,
+                    "reason": verdict.reason,
+                },
+            )
+            out["result"] = (
+                "passed: FunctionManager_add_functions will now store this exact source"
+            )
+        else:
+            out["result"] = (
+                "failed on the held-out task; it will not be stored in this form"
+            )
+        return out
+
+    def _verify_candidate(
+        self,
+        *,
+        name: str,
+        source: str,
+        depends_on: List[str],
+        dependencies: Sequence[str] = (),
+    ) -> Any:
+        """The ``store_verify.Candidate`` a verifier runs: ``source`` loaded as a search loads it, into a
+        scratch namespace whose ``primitives`` the verifier supplies. Its loader refuses with Python in the
+        sandboxed worker, where model-written code must not run in this process."""
+        from . import store_verify
+
+        entry = {
+            "name": name,
+            "implementation": source,
+            "dependencies": list(dependencies),
+            "depends_on": list(depends_on),
+        }
+        fm = self
+
+        def loader(
+            primitives: Any,
+            extra_globals: Optional[Dict[str, Any]] = None,
+        ) -> Callable[..., Any]:
+            from unify.actor.execution import worker as python_worker
+
+            if python_worker.enabled():
+                # Loading executes the def (defaults, decorators) and returns
+                # a callable of this process: never with Python in the worker.
+                raise RuntimeError(
+                    f"'{name}' is not loaded in the harness's process: with Python "
+                    f"in the sandboxed worker, model-written code runs only there",
+                )
+            scratch = create_execution_globals()
+            for env_name, env_value in dict(extra_globals or {}).items():
+                scratch[env_name] = env_value
+            scratch["primitives"] = primitives
+            fm._inject_dependencies(dict(entry), namespace=scratch, visited={name})
+            fm._create_in_process_callable(dict(entry), namespace=scratch)
+            return scratch[name]
+
+        return store_verify.Candidate(
+            name=name,
+            source=source,
+            signature=self._signature_of(source, name),
+            depends_on=tuple(depends_on),
+            effects=tuple(self._candidate_effects(list(depends_on))),
+            loader=loader,
+        )
+
+    @staticmethod
+    def _signature_of(source: str, name: str) -> str:
+        """Describe one function declaration without evaluating its source.
+
+        Defaults are literal values; annotations remain declared text.
+        Dynamic defaults, annotations or binding changes are unknown.
+        This metadata does not establish whether loading or calling is safe.
+        """
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return "(...)"
+        if len(tree.body) != 1:
+            return "(...)"
+        return FunctionManager._signature_from_node(tree.body[0], name)
+
+    @staticmethod
+    def _signature_from_node(node: ast.AST, name: str) -> str:
+        """Describe an already parsed declaration; never load its definition."""
+        if (
+            not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            or node.name != name
+            or node.decorator_list
+            or node.type_params
+        ):
+            return "(...)"
+        args = node.args
+        parameters = args.posonlyargs + args.args + args.kwonlyargs
+        parameters += [arg for arg in (args.vararg, args.kwarg) if arg is not None]
+        if len({arg.arg for arg in parameters}) != len(parameters):
+            return "(...)"
+        annotations = [arg.annotation for arg in parameters] + [node.returns]
+        annotation_nodes = (
+            ast.Name,
+            ast.Attribute,
+            ast.Subscript,
+            ast.Tuple,
+            ast.List,
+            ast.Constant,
+            ast.BinOp,
+            ast.BitOr,
+            ast.Load,
+        )
+        if any(
+            not isinstance(part, annotation_nodes)
+            for annotation in annotations
+            if annotation is not None
+            for part in ast.walk(annotation)
+        ):
+            return "(...)"
+
+        def parameter(arg: ast.arg, default: Optional[ast.expr] = None) -> str:
+            text = arg.arg
+            if arg.annotation is not None:
+                text += f": {ast.unparse(arg.annotation)}"
+            if default is not None:
+                # literal_eval decodes data nodes, never executes the source.
+                # Calls are unknown; set repr is not stable across processes.
+                if any(
+                    isinstance(part, (ast.Call, ast.Set)) for part in ast.walk(default)
+                ):
+                    raise ValueError("a default is not a literal")
+                value = ast.literal_eval(default)
+                text += (" = " if arg.annotation is not None else "=") + repr(value)
+            return text
+
+        positional = args.posonlyargs + args.args
+        defaults = [None] * (len(positional) - len(args.defaults)) + args.defaults
+        parts: List[str] = []
+        try:
+            for index, (arg, default) in enumerate(zip(positional, defaults), 1):
+                parts.append(parameter(arg, default))
+                if index == len(args.posonlyargs):
+                    parts.append("/")
+            if args.vararg is not None:
+                parts.append("*" + parameter(args.vararg))
+            elif args.kwonlyargs:
+                parts.append("*")
+            parts.extend(
+                parameter(arg, default)
+                for arg, default in zip(args.kwonlyargs, args.kw_defaults)
+            )
+            if args.kwarg is not None:
+                parts.append("**" + parameter(args.kwarg))
+        except (ValueError, TypeError):
+            return "(...)"
+        signature = f"({', '.join(parts)})"
+        if node.returns is not None:
+            signature += f" -> {ast.unparse(node.returns)}"
+        return signature
+
+    @staticmethod
+    def _candidate_effects(depends_on: List[str]) -> List[str]:
+        """The effect labels of the environment methods a function names (``primitives.<ns>.<method>``)."""
+        from .primitives.environment import environment_namespace
+
+        effects: Set[str] = set()
+        for dep in depends_on:
+            parts = dep.split(".")
+            if len(parts) < 3 or parts[0] != "primitives":
+                continue
+            namespace = environment_namespace(parts[1])
+            method = namespace.method(parts[2]) if namespace is not None else None
+            if method is not None:
+                effects.add(method.effect)
+            elif parts[1] == "actor":
+                effects.add("write")
+        return sorted(effects)
 
     # ------------------------------------------------------------------ #
     #  Callable return + dependency injection                             #
@@ -1288,7 +2211,7 @@ class FunctionManager(BaseFunctionManager):
     @staticmethod
     def _insert_function(entry: Dict[str, Any]) -> int:
         values = _encode_function_values(entry)
-        values.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+        values.setdefault("created_at", db.now_iso())
         columns = list(values)
         cursor = db.execute(
             f"INSERT INTO functions ({', '.join(columns)})"
@@ -1298,13 +2221,69 @@ class FunctionManager(BaseFunctionManager):
         return int(cursor.lastrowid)
 
     @staticmethod
-    def _update_function(function_id: int, changes: Dict[str, Any]) -> None:
+    def _update_function(
+        function_id: int,
+        changes: Dict[str, Any],
+        *,
+        reason: Optional[str] = None,
+    ) -> None:
+        """Apply ``changes`` to one stored function.
+
+        ``reason`` marks an overwrite of the function itself (not a refresh of
+        its stale reasons); the row as it was
+        is first appended to ``function_history`` with that reason. Callers
+        run this inside their transaction, so both writes land or neither.
+        """
+        if reason is not None:
+            FunctionManager._record_function_history(function_id, reason)
         values = _encode_function_values(changes)
         assignments = ", ".join(f"{column} = ?" for column in values)
         db.execute(
             f"UPDATE functions SET {assignments} WHERE function_id = ?",
             [*values.values(), int(function_id)],
         )
+
+    @staticmethod
+    def _record_function_history(function_id: int, reason: str) -> None:
+        """Append the stored row of ``function_id``, as it is now, to ``function_history``."""
+        row = db.query_one(
+            "SELECT * FROM functions WHERE function_id = ?",
+            (int(function_id),),
+        )
+        if row is None:
+            return
+        previous = db.decode(dict(row), db.FUNCTION_JSON_COLUMNS)
+        db.execute(
+            "INSERT INTO function_history"
+            " (function_id, name, previous, reason, replaced_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (
+                int(function_id),
+                previous["name"],
+                db.dumps(previous),
+                str(reason),
+                db.now_iso(),
+            ),
+        )
+
+    @staticmethod
+    def _refuse_in_process_execution(what: str) -> None:
+        """Raise instead of executing a stored function in this process while
+        Python runs in the sandboxed worker.
+
+        The defence behind every path that binds or runs stored code: this
+        process holds the provider credentials, so model-written code runs
+        only in the worker, and a path that would execute it here fails
+        loudly rather than run it outside the sandbox.
+        """
+        from unify.actor.execution import worker as python_worker
+
+        if python_worker.enabled():
+            raise RuntimeError(
+                f"{what} would execute model-written code in the harness; with "
+                "Python in the sandboxed worker it runs only there (from a "
+                "cell: a call by name, or functions.run)",
+            )
 
     def _create_in_process_callable(
         self,
@@ -1324,8 +2303,14 @@ class FunctionManager(BaseFunctionManager):
 
         The returned proxy provides state mode control:
         ``.stateful()`` / ``.stateless()`` / ``.read_only()``.
+
+        Refused with Python in the sandboxed worker
+        (:meth:`_refuse_in_process_execution`).
         """
         func_name = func_data.get("name")
+        self._refuse_in_process_execution(
+            f"Loading the stored function {func_name!r} in this process",
+        )
         if not isinstance(func_name, str) or not func_name:
             raise ValueError("func_data missing valid 'name'")
 
@@ -1512,6 +2497,50 @@ class FunctionManager(BaseFunctionManager):
         a fresh ``Primitives`` instance on demand.  ``Primitives`` is
         fully stateless, so a freshly constructed instance works in
         isolation without any ambient ContextVars or parent actor state.
+
+        Refused with Python in the sandboxed worker
+        (:meth:`_refuse_in_process_execution`).
+        """
+        self._refuse_in_process_execution(
+            f"Loading the stored callees of {func_data.get('name')!r} in this process",
+        )
+
+        def load(dep_name: str, dep_data: Dict[str, Any]) -> None:
+            # exec puts the raw function in the namespace. We call
+            # _create_in_process_callable to exec the function, but we DON'T
+            # overwrite the namespace with the proxy - the raw function stays
+            # for inter-function calls, decorators, and introspection.
+            self._create_in_process_callable(
+                dep_data,
+                namespace=namespace,
+            )
+            # replace namespace[dep_name] with wrapper so inter-function calls
+            # also flow through lineage/event boundaries.
+            raw_dep = namespace.get(dep_name)
+            if callable(raw_dep):
+                namespace[dep_name] = self._boundary(raw_dep, dep_data)
+
+        self._walk_dependencies(
+            func_data,
+            namespace=namespace,
+            visited=visited,
+            bind=load,
+        )
+
+    def _walk_dependencies(
+        self,
+        func_data: Dict[str, Any],
+        *,
+        namespace: Dict[str, Any],
+        visited: Set[str],
+        bind: Callable[[str, Dict[str, Any]], None],
+    ) -> None:
+        """Resolve ``func_data``'s ``depends_on`` transitively (breadth-first).
+
+        A dotted name's root is put in ``namespace`` when missing
+        (``construct_sandbox_root``, harness code); each stored function it
+        names is passed to ``bind`` as ``(name, record)``, which defines it.
+        Executes nothing itself.
         """
         from collections import deque
 
@@ -1556,19 +2585,7 @@ class FunctionManager(BaseFunctionManager):
                 )
                 continue
 
-            # exec puts the raw function in the namespace. We call
-            # _create_in_process_callable to exec the function, but we DON'T
-            # overwrite the namespace with the proxy - the raw function stays
-            # for inter-function calls, decorators, and introspection.
-            self._create_in_process_callable(
-                dep_data,
-                namespace=namespace,
-            )
-            # replace namespace[dep_name] with wrapper so inter-function calls
-            # also flow through lineage/event boundaries.
-            raw_dep = namespace.get(dep_name)
-            if callable(raw_dep):
-                namespace[dep_name] = self._boundary(raw_dep, dep_data)
+            bind(dep_name, dep_data)
 
             nested = dep_data.get("depends_on") or []
             if isinstance(nested, list):
@@ -1581,6 +2598,7 @@ class FunctionManager(BaseFunctionManager):
         func_rows: List[Dict[str, Any]],
         *,
         namespace: Dict[str, Any],
+        skipped: Optional[List[Dict[str, str]]] = None,
     ) -> List[Callable[..., Any]]:
         """Convert function records into callables and return proxies to caller.
 
@@ -1591,8 +2609,41 @@ class FunctionManager(BaseFunctionManager):
         For primitives, the callable is resolved from the live runtime registry
         via ``get_primitive_callable``. Primitives are NOT injected into the
         namespace (they are already accessible via the ``primitives`` object).
+
+        With ``skipped`` (a list), a row that fails to load is left out of the
+        returned callables and recorded there as ``{"name", "error"}`` instead
+        of failing every row; the caller drops it from what it returns.
         """
-        callables: List[Callable[..., Any]] = []
+        if skipped is not None:
+            callables: List[Callable[..., Any]] = []
+            for func_data in func_rows:
+                try:
+                    callables += self._inject_callables_for_functions(
+                        [func_data],
+                        namespace=namespace,
+                    )
+                except Exception as exc:
+                    skipped.append(
+                        {
+                            "name": str(func_data.get("name")),
+                            "error": f"{type(exc).__name__}: {exc}"[:500],
+                        },
+                    )
+                    logger.warning(
+                        "Left the stored function %r out of the result: it "
+                        "cannot be loaded (%s: %s)",
+                        func_data.get("name"),
+                        type(exc).__name__,
+                        exc,
+                    )
+            return callables
+
+        from unify.actor.execution import worker as python_worker
+
+        if python_worker.enabled():
+            return self._bind_stored_sources(func_rows, namespace=namespace)
+
+        callables = []
         visited: Set[str] = set()
 
         for func_data in func_rows:
@@ -1604,18 +2655,7 @@ class FunctionManager(BaseFunctionManager):
             # They are already accessible via the ``primitives`` object in the
             # namespace, so we don't inject a new namespace entry.
             if func_data.get("is_primitive") is True:
-                from unify.function_manager.primitives.runtime import (
-                    get_primitive_callable,
-                )
-
-                primitives_obj = namespace.get("primitives")
-                fn = get_primitive_callable(
-                    func_data,
-                    primitives=primitives_obj,
-                )
-                if fn is not None:
-                    fn = _LineageTrackedFunction(fn, name)
-                callables.append(fn)
+                callables.append(self._primitive_callable(func_data, namespace))
                 continue
 
             # Check if we've already processed this function (e.g., duplicate in results)
@@ -1662,6 +2702,105 @@ class FunctionManager(BaseFunctionManager):
             callables.append(fn)
 
         return callables
+
+    @staticmethod
+    def _primitive_callable(
+        func_data: Dict[str, Any],
+        namespace: Dict[str, Any],
+    ) -> Any:
+        """A primitive's callable, from the live runtime registry (harness code)."""
+        from unify.function_manager.primitives.runtime import get_primitive_callable
+
+        fn = get_primitive_callable(func_data, primitives=namespace.get("primitives"))
+        return (
+            _LineageTrackedFunction(fn, func_data["name"]) if fn is not None else None
+        )
+
+    def _bind_stored_sources(
+        self,
+        func_rows: List[Dict[str, Any]],
+        *,
+        namespace: Dict[str, Any],
+    ) -> List[Any]:
+        """``_inject_callables_for_functions`` with Python in the sandboxed worker.
+
+        Binds each function and its stored callees in ``namespace`` as a
+        :class:`StoredSource`, from the stored source alone: nothing is
+        executed here, and the worker defines and runs each one, confined.
+        What a load did besides executing stays: the declared dependencies
+        are installed (confined, by ``environment.ensure``), annotation names
+        get their placeholders, and a source that does not compile or does
+        not define its name fails the row.
+        """
+        callables: List[Any] = []
+        visited: Set[str] = set()
+
+        def bind(name: str, func_data: Dict[str, Any]) -> None:
+            namespace[name] = self._stored_source(func_data, namespace=namespace)
+
+        for func_data in func_rows:
+            name = func_data.get("name")
+            if not isinstance(name, str) or not name:
+                raise ValueError("Function record missing valid 'name'")
+            if func_data.get("is_primitive") is True:
+                callables.append(self._primitive_callable(func_data, namespace))
+                continue
+            if name not in visited:
+                visited.add(name)
+                self._walk_dependencies(
+                    func_data,
+                    namespace=namespace,
+                    visited=visited,
+                    bind=bind,
+                )
+                bind(name, func_data)
+            bound = namespace.get(name)
+            if not isinstance(bound, StoredSource):
+                bound = self._stored_source(func_data, namespace=namespace)
+            callables.append(bound)
+        return callables
+
+    def _stored_source(
+        self,
+        func_data: Dict[str, Any],
+        *,
+        namespace: Dict[str, Any],
+    ) -> StoredSource:
+        """The :class:`StoredSource` of one stored function; never executes it."""
+        func_name = func_data.get("name")
+        if not isinstance(func_name, str) or not func_name:
+            raise ValueError("func_data missing valid 'name'")
+        implementation = func_data.get("implementation")
+        if not isinstance(implementation, str) or not implementation.strip():
+            raise ValueError(f"Function '{func_name}' has no implementation")
+        self._inject_forward_ref_annotation_placeholders(
+            implementation,
+            namespace=namespace,
+        )
+        environment.ensure(func_data.get("dependencies") or [])
+        # Compiled to check it and to register its text; never executed here.
+        compile_function_source(func_name, implementation)
+        definition = next(
+            (
+                node
+                for node in ast.parse(implementation).body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == func_name
+            ),
+            None,
+        )
+        if definition is None:
+            raise ValueError(
+                f"Function '{func_name}' is not defined by its stored source",
+            )
+        return StoredSource(
+            func_name,
+            implementation,
+            docstring=str(
+                func_data.get("docstring") or ast.get_docstring(definition) or "",
+            ),
+            is_async=isinstance(definition, ast.AsyncFunctionDef),
+        )
 
     # 2. Listing -------------------------------------------------------- #
 
@@ -1745,6 +2884,8 @@ class FunctionManager(BaseFunctionManager):
             ):
                 if key in ent:
                     data[key] = ent.get(key)
+            # Origin fields a removed research switch recorded are never shown.
+            data = task_origin.strip(data)
             if include_implementations:
                 data["implementation"] = ent.get("implementation")
             metadata[name] = data
@@ -1753,10 +2894,18 @@ class FunctionManager(BaseFunctionManager):
             return metadata
 
         assert _namespace is not None  # validated above
+        skipped = self._skip_unloadable()
         callables_list = self._inject_callables_for_functions(
             func_rows,
             namespace=_namespace,
+            skipped=skipped,
         )
+        if skipped:
+            unloadable = {row["name"] for row in skipped}
+            func_rows = [row for row in func_rows if row.get("name") not in unloadable]
+            for name in unloadable:
+                metadata.pop(name, None)
+            metadata["(unloadable functions)"] = self._unloadable_warning(skipped)  # type: ignore[assignment]
         callables_map = {
             row["name"]: cb
             for row, cb in zip(func_rows, callables_list)
@@ -2071,6 +3220,10 @@ class FunctionManager(BaseFunctionManager):
             )
         except sqlite3.Error as exc:
             return invalid_filter_error(exc, filter, db.FUNCTION_COLUMNS).payload
+        # Origin fields a removed research switch recorded are never shown.
+        rows = [task_origin.strip(row) for row in rows]
+
+        from . import store_cases
 
         if not _return_callable:
             if not include_implementations:
@@ -2078,13 +3231,19 @@ class FunctionManager(BaseFunctionManager):
                     {k: v for k, v in row.items() if k != "implementation"}
                     for row in rows
                 ]
-            return rows
+            # UNIFY_FUNCTION_CASES: each row's recorded cases; as is while off.
+            return store_cases.with_summaries(rows)
 
         assert _namespace is not None  # validated above
+        skipped = self._skip_unloadable()
         callables_list = self._inject_callables_for_functions(
             rows,
             namespace=_namespace,
+            skipped=skipped,
         )
+        if skipped:
+            unloadable = {row["name"] for row in skipped}
+            rows = [row for row in rows if row.get("name") not in unloadable]
         if _also_return_metadata:
             metadata_rows = rows
             if not include_implementations:
@@ -2092,6 +3251,13 @@ class FunctionManager(BaseFunctionManager):
                     {k: v for k, v in row.items() if k != "implementation"}
                     for row in rows
                 ]
+            if skipped:
+                metadata_rows = [
+                    *metadata_rows,
+                    {"warning": self._unloadable_warning(skipped)},
+                ]
+            # UNIFY_FUNCTION_CASES: each row's recorded cases; as is while off.
+            store_cases.with_summaries(metadata_rows)
             return {"callables": callables_list, "metadata": metadata_rows}  # type: ignore[return-value]
         return callables_list  # type: ignore[return-value]
 
@@ -2140,8 +3306,9 @@ class FunctionManager(BaseFunctionManager):
             if activation_settings.enabled
             else n
         )
+        library = self._rows(self._discovery_scope())
         results = rank_by_similarity(
-            self._rows(self._discovery_scope()),
+            library,
             {field: query for field in SEARCHED_FUNCTION_FIELDS},
             limit=fetch_limit,
             id_field="function_id",
@@ -2152,6 +3319,7 @@ class FunctionManager(BaseFunctionManager):
             include_dormant=include_dormant,
         )
         self._bump_search_hits(results)
+        from . import store_cases
 
         if not _return_callable:
             compact_results = self._compact_function_search_rows(results)
@@ -2159,13 +3327,19 @@ class FunctionManager(BaseFunctionManager):
                 for compact, full in zip(compact_results, results, strict=True):
                     if "implementation" in full:
                         compact["implementation"] = full["implementation"]
-            return compact_results
+            # UNIFY_FUNCTION_CASES: each row's recorded cases; as is while off.
+            return store_cases.with_summaries(compact_results)
 
         assert _namespace is not None  # validated above
+        skipped = self._skip_unloadable()
         callables_list = self._inject_callables_for_functions(
             results,
             namespace=_namespace,
+            skipped=skipped,
         )
+        if skipped:
+            unloadable = {row["name"] for row in skipped}
+            results = [row for row in results if row.get("name") not in unloadable]
 
         if _also_return_metadata:
             metadata_rows = self._compact_function_search_rows(results)
@@ -2173,9 +3347,57 @@ class FunctionManager(BaseFunctionManager):
                 for compact, full in zip(metadata_rows, results, strict=True):
                     if "implementation" in full:
                         compact["implementation"] = full["implementation"]
+            # UNIFY_FUNCTION_CASES: each row's recorded cases; as is while off.
+            store_cases.with_summaries(metadata_rows)
+            if skipped:
+                metadata_rows.append({"warning": self._unloadable_warning(skipped)})
             return {"callables": callables_list, "metadata": metadata_rows}  # type: ignore[return-value]
 
         return callables_list  # type: ignore[return-value]
+
+    def _shortlist_rows(self, text: str, k: int) -> List[Dict[str, Any]]:
+        """The library shortlist: the *k* stored functions closest to *text*.
+
+        Ranked as ``search_functions`` ranks them (similarity, then the
+        activation ranking that drops lapsed functions), over the stored
+        functions in scope only, primitives excluded. Unlike a search it
+        counts no hit: the harness, not the model, asked. Rows carry
+        ``function_id``, ``name``, ``argspec``, ``docstring`` and ``_similarity``.
+        """
+        if not str(text or "").strip() or k <= 0:
+            return []
+        library = self._rows(self._compositional_scope())
+        if not library:
+            return []
+        settings = self.activation_settings
+        fetch = (
+            min(
+                max(k + 4, k * settings.search_overfetch_factor),
+                settings.search_overfetch_cap,
+            )
+            if settings.enabled
+            else k
+        )
+        ranked = rank_by_similarity(
+            library,
+            {field: text for field in SEARCHED_FUNCTION_FIELDS},
+            limit=fetch,
+            id_field="function_id",
+        )
+        ranked = self._activation_rank(ranked, n=k, include_dormant=False)
+        rows = []
+        for row in ranked:
+            compact = {
+                key: row.get(key)
+                for key in ("function_id", "name", "argspec", "docstring")
+            }
+            compact["_similarity"] = float(row.get(SIMILARITY_FIELD) or 0.0)
+            rows.append(compact)
+        return rows
+
+    def _library_rows(self) -> List[Dict[str, Any]]:
+        """The stored functions in scope, primitives excluded, with their metadata."""
+        return self._rows(self._compositional_scope())
 
     # ------------------------------------------------------------------ #
     #  Inverse linkage: Functions → Guidance                              #
@@ -2299,16 +3521,32 @@ class FunctionManager(BaseFunctionManager):
         implementation = func_data.get("implementation")
         if not isinstance(implementation, str) or not implementation.strip():
             raise ValueError(f"Function '{function_name}' has no implementation")
-
-        environment.ensure(func_data.get("dependencies") or [])
-        return await self._execute_python_function(
-            implementation=implementation,
-            call_kwargs=call_kwargs or {},
-            state_mode=state_mode,
-            session_id=session_id,
-            extra_namespaces=ns,
-            _parent_chat_context=_parent_chat_context,
+        self._refuse_in_process_execution(
+            f"Running the stored function {function_name!r} in this process",
         )
+
+        # UNIFY_FUNCTION_CASES: the run is recorded as a case; None while off.
+        from . import store_cases
+
+        cases = store_cases.CaseRecorder.for_function(func_data)
+        case = cases.begin((), call_kwargs or {}) if cases is not None else None
+        environment.ensure(func_data.get("dependencies") or [])
+        with store_cases.tracing(case):
+            outcome = await self._execute_python_function(
+                implementation=implementation,
+                call_kwargs=call_kwargs or {},
+                state_mode=state_mode,
+                session_id=session_id,
+                extra_namespaces=ns,
+                _parent_chat_context=_parent_chat_context,
+            )
+        if cases is not None:
+            cases.end(
+                case,
+                result=outcome.get("result"),
+                error=outcome.get("error"),
+            )
+        return outcome
 
     # ------------------------------------------------------------------ #
     #  Primitive Execution Helpers                                       #
@@ -2385,7 +3623,11 @@ class FunctionManager(BaseFunctionManager):
         - stateless: Fresh globals each time (pure function behavior)
         - stateful: Persistent globals per session_id (Jupyter-notebook style)
         - read_only: Reads existing state but doesn't persist changes
+
+        Refused with Python in the sandboxed worker
+        (:meth:`_refuse_in_process_execution`).
         """
+        self._refuse_in_process_execution("Running a stored function in this process")
         from .execution_env import create_base_globals
         import io
         import traceback
@@ -2409,6 +3651,14 @@ class FunctionManager(BaseFunctionManager):
                         globals_dict[key] = value
         else:  # stateless
             globals_dict = create_base_globals()
+
+        # Globals a registered environment binds, as the sandbox has them
+        # (proxied while a feature that observes environment calls is on).
+        from .primitives.environment import environment_globals
+        from .primitives.observers import observed_globals
+
+        for env_name, env_value in observed_globals(environment_globals()).items():
+            globals_dict.setdefault(env_name, env_value)
 
         # Inject all extra namespaces into globals (always, since they may
         # change between calls).
@@ -2453,6 +3703,16 @@ class FunctionManager(BaseFunctionManager):
         result = None
         error = None
 
+        def _entry_definition(tree: ast.Module) -> Any:
+            return next(
+                (
+                    node
+                    for node in tree.body
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                ),
+                None,
+            )
+
         async def _run_implementation(source: str) -> Any:
             """Define the function from *source* and call it.
 
@@ -2461,14 +3721,7 @@ class FunctionManager(BaseFunctionManager):
             keeps the shape the caller was told about.
             """
             attempt_tree = ast.parse(source)
-            definition = next(
-                (
-                    node
-                    for node in attempt_tree.body
-                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                ),
-                None,
-            )
+            definition = _entry_definition(attempt_tree)
             if definition is None:
                 raise ValueError("No function definition found in implementation")
 
@@ -2501,10 +3754,18 @@ class FunctionManager(BaseFunctionManager):
                 if steering is None:
                     result = await _run_implementation(implementation)
                 else:
+                    # The implementation is a bare definition, so unlike a
+                    # sandbox block it does not show what it was called with.
+                    entry = _entry_definition(ast.parse(implementation))
                     result = await run_with_steering(
                         implementation,
                         _run_implementation,
                         session=steering,
+                        invocation=format_call(
+                            entry.name if entry is not None else "<function>",
+                            (),
+                            call_kwargs,
+                        ),
                     )
         except ExecutionStopped as stopped:
             result = stopped.outcome

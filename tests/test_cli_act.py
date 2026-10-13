@@ -11,15 +11,20 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.scripted_model import ScriptedModel, reply, scripted
 from unify.actor.code_act_actor import SESSION_ENDED
 from unify.cli import Act, _parse_args
 
 pytestmark = pytest.mark.no_unify_context
 
 
-def test_no_command_is_chat():
-    assert _parse_args([]).command == "chat"
-    assert _parse_args(["--debug"]).debug is True
+def test_no_command_is_act_reading_stdin():
+    args = _parse_args([])
+    assert (args.command, args.request) == ("act", None)
+    args = _parse_args(["--debug"])
+    assert (args.command, args.debug) == ("act", True)
+    # The legacy conversation product is still reachable by name.
+    assert _parse_args(["chat"]).command == "chat"
 
 
 @pytest.mark.parametrize(
@@ -58,7 +63,56 @@ def test_act_flags_parse():
     assert args.request == "count the rows"
     assert args.persist and args.no_store and args.json
     assert args.timeout == 12.0
-    assert args.no_compose is False and args.no_clarify is False
+    assert args.no_clarify is False
+    assert not hasattr(args, "no_compose")
+
+
+def test_no_clarify_parses_and_turns_clarification_off(monkeypatch):
+    """``--no-clarify`` (passed by unattended launchers): even at a terminal,
+    nobody reads the record's @user posts, so the actor is started with
+    clarification off."""
+    args = _parse_args(["act", "--no-clarify", "--quiet", "hi"])
+    assert args.no_clarify is True
+
+    seen: dict = {}
+
+    class _Actor:
+        async def act(self, request, **kwargs):
+            seen.update(kwargs)
+            raise RuntimeError("stop here")
+
+    class _Tty(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    monkeypatch.setattr(sys, "stdin", _Tty())
+    session = Act(args)
+
+    async def _start() -> None:
+        session._actor = _Actor()
+
+    monkeypatch.setattr(session, "start", _start)
+    with pytest.raises(RuntimeError, match="stop here"):
+        asyncio.run(session._run("hi"))
+    assert seen["clarification_enabled"] is False
+
+
+def test_chat_says_it_is_unsupported_and_exits_zero(capsys, monkeypatch):
+    """``unify chat`` prints that it is legacy and unsupported, exits 0, and
+    never boots conversation_manager (nothing from unify.legacy is imported)."""
+    import unify.cli as cli
+
+    for name in [
+        m for m in sys.modules if m == "unify.legacy" or m.startswith("unify.legacy.")
+    ]:
+        monkeypatch.delitem(sys.modules, name)
+    assert asyncio.run(cli._run_chat(_parse_args(["chat"]))) == 0
+    err = capsys.readouterr().err
+    assert "unify chat is legacy and unsupported" in err
+    assert "Use `unify act`" in err
+    assert not any(
+        m == "unify.legacy" or m.startswith("unify.legacy.") for m in sys.modules
+    )
 
 
 class _FakeHandle:
@@ -71,7 +125,7 @@ class _FakeHandle:
     async def answer_clarification(self, call_id: str, answer: str) -> None:
         self.answers.append((call_id, answer))
 
-    async def interject(self, message: str) -> None:
+    async def submit(self, message: str) -> None:
         self.interjections.append(message)
         self.interjected.set()
 
@@ -123,10 +177,10 @@ async def test_reading_a_terminal_leaves_it_blocking(monkeypatch):
     os.close(controller)
 
 
-@pytest.mark.llm_call
 @pytest.mark.asyncio
 async def test_act_runs_one_request_and_prints_the_result(capsys, monkeypatch):
-    """The direct mode answers a request without any conversation loop."""
+    """The direct mode answers a request without any conversation loop: one
+    actor turn (the scripted model's), its reply printed, exit code 0."""
     # Whether stdin is a terminal decides whether the actor may ask
     # questions, and so the tools the model is offered: pin it rather than
     # inherit the runner's.
@@ -134,10 +188,20 @@ async def test_act_runs_one_request_and_prints_the_result(capsys, monkeypatch):
     args = _parse_args(
         ["act", "--no-store", "--quiet", "Reply with exactly the single word: pong"],
     )
-    session = Act(args)
-    try:
-        code = await asyncio.wait_for(session.run(args.request), timeout=120)
-    finally:
-        await session.close()
+    model = ScriptedModel(actor=[reply("pong")])
+    with scripted(model):
+        session = Act(args)
+        try:
+            code = await asyncio.wait_for(session.run(args.request), timeout=120)
+        finally:
+            await session.close()
     assert code == 0
-    assert capsys.readouterr().out.strip().lower().rstrip(".") == "pong"
+    assert capsys.readouterr().out.strip() == "pong"
+    # --no-store: no storage review follows the one turn.
+    assert model.kinds() == ["actor"]
+    (turn,) = model.of("actor")
+    assert any(
+        m.get("role") == "user" and "the single word: pong" in str(m.get("content"))
+        for m in turn.messages
+    )
+    model.assert_used_up()

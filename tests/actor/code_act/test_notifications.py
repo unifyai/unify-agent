@@ -5,15 +5,24 @@ import pytest
 
 from unify.actor.code_act_actor import CodeActActor
 from unify.events.active_work import ACTIVE_WORK
+from tests.baked_defaults import as_shipped  # noqa: F401
+from tests.scripted_model import ScriptedModel, reply, scripted
 
 
+# as_shipped: deleted in step 5 (notifications, replaced by the agent record)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @pytest.mark.timeout(120)
 async def test_tool_loop_handle_next_notification():
     """
     AsyncToolLoopHandle.next_notification() should surface notifications
     emitted by tools running inside the loop.
+
+    The model is scripted (tests/scripted_model.py): it calls the tool, then
+    answers. A model call that fails ends the loop without running the tool,
+    and next_notification() then waits until its timeout (it blocks until a
+    notification arrives, as a queue get does), so a keyless provider call
+    showed up here as a TimeoutError.
     """
     from unify.common.async_tool_loop import start_async_tool_loop
     from unify.common.llm_client import new_llm_client
@@ -31,36 +40,54 @@ async def test_tool_loop_handle_next_notification():
             )
         return f"Processed: {message}"
 
-    client = new_llm_client()
-    client.set_system_message(
-        "You are a helpful assistant. When asked to call a tool, call it with the "
-        "specified arguments. Do not ask for clarification - just call the tool.",
+    model = ScriptedModel(
+        actor=[
+            reply(calls=[("notifying_tool", {"message": "hello"})]),
+            reply("Processed hello."),
+        ],
     )
+    with scripted(model):
+        client = new_llm_client()
+        client.set_system_message(
+            "You are a helpful assistant. When asked to call a tool, call it with the "
+            "specified arguments. Do not ask for clarification - just call the tool.",
+        )
 
-    handle = start_async_tool_loop(
-        client,
-        "Call notifying_tool with message='hello'",
-        {"notifying_tool": notifying_tool},
-        timeout=60,
-    )
+        handle = start_async_tool_loop(
+            client,
+            "Call notifying_tool with message='hello'",
+            {"notifying_tool": notifying_tool},
+            timeout=60,
+        )
 
-    try:
-        # The inner loop should eventually call the tool and emit a notification.
-        # The tool loop wraps notifications with tool_name and call_id, but the original
-        # payload (including 'type') is merged in via **event_payload.
-        event = await asyncio.wait_for(handle.next_notification(), timeout=60)
-        assert event.get("type") == "test_notification"  # From our tool's payload
-        assert event.get("tool_name") == "notifying_tool"
-        # The message from our tool should be in the event
-        assert "hello" in str(event.get("message", ""))
-        await handle.result()
+        try:
+            # The loop calls the tool, which emits a notification. The tool
+            # loop wraps notifications with tool_name and call_id, and merges
+            # in the original payload (including 'type') via **event_payload.
+            event = await asyncio.wait_for(handle.next_notification(), timeout=60)
+            assert event.get("type") == "test_notification"  # From our tool's payload
+            assert event.get("tool_name") == "notifying_tool"
+            # The message from our tool should be in the event
+            assert "hello" in str(event.get("message", ""))
+            assert await asyncio.wait_for(handle.result(), timeout=60) == (
+                "Processed hello."
+            )
 
-    finally:
-        if not handle.done():
-            try:
-                await handle.stop("cleanup")
-            except Exception:
-                pass
+        finally:
+            if not handle.done():
+                try:
+                    await handle.stop("cleanup")
+                except Exception:
+                    pass
+
+    first, second = model.of("actor")
+    assert "notifying_tool" in first.tool_names
+    # The tool's result reached the model's next turn.
+    assert any(
+        m.get("role") == "tool" and "Processed: hello" in str(m.get("content"))
+        for m in second.messages
+    ), second.messages
+    model.assert_used_up()
 
 
 @pytest.mark.asyncio
@@ -143,7 +170,7 @@ async def test_execute_code_clears_active_work_after_exception_timeout_and_cance
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
-async def test_execute_code_fallback_progress():
+async def test_execute_code_sends_no_fallback_progress_under_the_record():
     ACTIVE_WORK.clear()
 
     actor = CodeActActor()
@@ -160,9 +187,8 @@ async def test_execute_code_fallback_progress():
             state_mode="stateless",
             _notification_up_q=notification_q,
         )
-        fallback = await asyncio.wait_for(notification_q.get(), timeout=1.0)
-        assert fallback["source"] == "active_work"
-        assert "Still working" in fallback["message"]
+        # Under the agent record (baked) nothing reaches the model while its
+        # cell runs (29b3a3d12): no heartbeat fallback is sent.
         assert notification_q.empty()
     finally:
         ACTIVE_WORK.clear()

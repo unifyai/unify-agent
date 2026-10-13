@@ -1,0 +1,528 @@
+"""Symbolic: the sandbox objects of ``UNIFY_TOOL_SURFACE=core``, called from cells.
+
+``functions``, ``guidance``, ``install``, ``read_file`` and ``grep`` are harness
+objects a cell reaches through the sandboxed worker's proxy. ``functions.run``
+replaced the ``execute_function`` tool (removed): it runs the stored code in
+the worker, confined, and records the call as that tool did -- usage, a
+``UNIFY_FUNCTION_CASES`` case with the environment calls it made (so a later
+change is checked against it), and the declared dependencies installed
+first. A stored function called by name
+is recorded the same way (as shipped the worker only notes its use).
+``state`` is ``execute_function``'s ``state_mode``; writes the session may not
+make are refused with the reason; ``help()`` prints the objects' docs.
+
+Cells run through the actor's own ``execute_code`` tool in the real sandboxed
+worker, against a fake registered environment; no model is called. The tests
+are skipped where bubblewrap is missing.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from tests.actor.code_act.core_world import (  # noqa: F401 (fixtures)
+    core_world,
+    new_actor as _actor,
+    world,
+)
+from tests.actor.code_act.sandbox_world import needs_bwrap
+from tests.helpers import _handle_project
+from unify import db
+from unify.actor import core_surface
+
+DOUBLE = "def double(x: int) -> int:\n    return x * 2\n"
+
+
+# ── functions.run: what it records ───────────────────────────────────────────
+
+REMOVE_BEFORE = (
+    "def remove_tracks_before(year: int) -> int:\n"
+    "    removed = 0\n"
+    "    for track in primitives.music.list_tracks():\n"
+    "        if track['year'] < year:\n"
+    "            primitives.music.remove_track(track_id=track['id'])\n"
+    "            removed += 1\n"
+    "    return removed\n"
+)
+LOGIN = (
+    "def fetch_profile(access_token: str) -> dict:\n"
+    "    if not access_token.isalnum():\n"
+    "        raise PermissionError(\n"
+    "            f'401 Unauthorized: {access_token!r} is not a token'\n"
+    "        )\n"
+    "    return {'user': 'ada'}\n"
+)
+
+
+class _Music:
+    def __init__(self) -> None:
+        self.tracks = [
+            {"id": 1, "year": 1990},
+            {"id": 2, "year": 2005},
+            {"id": 3, "year": 2020},
+        ]
+
+    def list_tracks(self, **kwargs):
+        return [dict(t) for t in self.tracks]
+
+    def remove_track(self, track_id: int):
+        self.tracks = [t for t in self.tracks if t["id"] != track_id]
+        return {"removed": track_id}
+
+
+@pytest.fixture
+def music():
+    """A registered environment namespace whose calls cases record."""
+    from unify.function_manager import function_manager as fm_module
+    from unify.function_manager.primitives import (
+        EnvironmentMethod,
+        EnvironmentNamespace,
+        EnvironmentSurface,
+        register_environment,
+    )
+    from unify.function_manager.primitives.environment import (
+        clear_environment_namespaces,
+    )
+
+    clear_environment_namespaces()
+    box = SimpleNamespace(world=_Music())
+    register_environment(
+        EnvironmentSurface(
+            namespaces=(
+                EnvironmentNamespace(
+                    name="music",
+                    methods=(
+                        EnvironmentMethod(
+                            name="list_tracks",
+                            call=lambda **kw: box.world.list_tracks(**kw),
+                            effect="read",
+                        ),
+                        EnvironmentMethod(
+                            name="remove_track",
+                            call=lambda track_id: box.world.remove_track(track_id),
+                            effect="destructive",
+                            signature="(track_id: int)",
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        source="tests:music",
+    )
+    fm_module._PRIMITIVES_SEEDED_FOR.clear()
+    yield box
+    clear_environment_namespaces()
+    fm_module._PRIMITIVES_SEEDED_FOR.clear()
+
+
+def _unsalted(value: Any) -> Any:
+    """*value* with each credential placeholder's per-call salt removed."""
+    return json.loads(re.sub(r"<redacted:[0-9a-f]+>", "<redacted>", json.dumps(value)))
+
+
+def _records() -> dict:
+    """Every case row, without timestamps, ids or redaction salts."""
+    cases = []
+    for row in db.query("SELECT * FROM function_cases ORDER BY case_id"):
+        row = dict(row)
+        for key in ("case_id", "recorded_at", "session"):
+            row.pop(key, None)
+        call = json.loads(row["call"]) if row.get("call") else None
+        if isinstance(call, dict):
+            call.pop("salt", None)
+        row["call"] = call
+        row["trace"] = json.loads(row["trace"]) if row.get("trace") else None
+        cases.append(row)
+    return _unsalted({"cases": cases})
+
+
+async def _reuse(monkeypatch, music, *, calls: list[tuple[str, dict]]):
+    """The given stored-function calls in one session, through
+    ``functions.run``, in a fresh store; returns what each call returned, the
+    records, the usage notes and the dependency installs."""
+    from unify import environment
+    from unify.actor.execution import PythonExecutionSession, _CURRENT_SANDBOX
+    from unify.function_manager.function_manager import FunctionManager
+    from unify.function_manager.primitives.environment import namespace_object
+
+    db.clear()
+    music.world = _Music()
+    fm = FunctionManager(include_primitives=False)
+    fm.add_functions(implementations=[REMOVE_BEFORE], dependencies=["tinydep>=1"])
+    fm.add_functions(implementations=[LOGIN])
+    installs: list = []
+    monkeypatch.setattr(environment, "ensure", lambda specs: installs.append(specs))
+    used: list = []
+    note = fm._note_function_use
+    monkeypatch.setattr(
+        fm,
+        "_note_function_use",
+        lambda data: (used.append(data["name"]), note(data)),
+    )
+    actor = _actor(function_manager=fm, can_store=False)
+    tools = actor.get_tools("act")
+    sandbox = PythonExecutionSession(environments={})
+    sandbox.global_state["primitives"] = SimpleNamespace(
+        music=namespace_object("music"),
+    )
+    objects = core_surface.sandbox_objects(
+        actor,
+        policy=core_surface.WritePolicy(),
+    )
+    sandbox.global_state.update(objects)
+    sandbox.core_globals = objects
+    token = _CURRENT_SANDBOX.set(sandbox)
+    outs = []
+    try:
+        for name, kwargs in calls:
+            args = ", ".join(f"{k}={v!r}" for k, v in kwargs.items())
+            out = await tools["execute_code"].fn(
+                thought="Reusing a stored function.",
+                code=f"await functions.run({name!r}, {args})",
+            )
+            outs.append(out)
+    finally:
+        _CURRENT_SANDBOX.reset(token)
+        await sandbox.close()
+        await actor.close()
+    return outs, _records(), used, installs
+
+
+def _last_line(text: Any) -> str:
+    return str(text).strip().splitlines()[-1] if text else ""
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(240)
+@_handle_project
+async def test_functions_run_records_the_call(
+    core_world,
+    music,
+    monkeypatch,
+):
+    """Results, errors, usage, a case with its environment calls, and the
+    declared dependencies. (Its comparison with the ``execute_function`` tool
+    went with that tool.)"""
+    calls = [
+        ("remove_tracks_before", {"year": 2000}),
+        ("fetch_profile", {"access_token": "expired-1"}),
+        ("fetch_profile", {"access_token": "{{access_token}}"}),
+    ]
+    core_outs, core_records, core_used, core_installs = await _reuse(
+        monkeypatch,
+        music,
+        calls=calls,
+    )
+    assert core_outs[0].result == 1
+    for core_out in core_outs[1:]:
+        assert core_out.result is None
+        assert "401 Unauthorized" in core_out.error
+    # Usage and cases (with the environment calls in order).
+    assert core_used == [name for name, _ in calls]
+    traced = core_records["cases"][0]
+    assert [c["call"] for c in traced["trace"]] == [
+        "music.list_tracks",
+        "music.remove_track",
+    ]
+    assert traced["trace_complete"] == 1 and traced["args_shown"] == "year=2000"
+    # The declared dependencies are installed before the call, once a call.
+    assert core_installs == [["tinydep>=1"]]
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(240)
+@_handle_project
+async def test_a_stored_function_called_by_name_is_recorded_too(
+    core_world,
+    music,
+    monkeypatch,
+):
+    """In core mode a call by name records a case, as the
+    in-process boundary wrapper does; as shipped the worker only notes use."""
+    from unify.actor.execution import PythonExecutionSession, _CURRENT_SANDBOX
+    from unify.function_manager.function_manager import FunctionManager
+    from unify.function_manager.primitives.environment import namespace_object
+
+    fm = FunctionManager(include_primitives=False)
+    fm.add_functions(implementations=[REMOVE_BEFORE, DOUBLE])
+    actor = _actor(function_manager=fm, can_store=False)
+    tools = actor.get_tools("act")
+    sandbox = PythonExecutionSession(environments={})
+    sandbox.global_state["primitives"] = SimpleNamespace(
+        music=namespace_object("music"),
+    )
+    objects = core_surface.sandbox_objects(actor, policy=core_surface.WritePolicy())
+    sandbox.global_state.update(objects)
+    sandbox.core_globals = objects
+    token = _CURRENT_SANDBOX.set(sandbox)
+    try:
+        found = await tools["execute_code"].fn(
+            thought="Find them.",
+            code="sorted(await functions.list())",
+        )
+        assert found.error is None, found.error
+        assert sorted(found.result) == ["double", "remove_tracks_before"]
+        ran = await tools["execute_code"].fn(
+            thought="Call them by name.",
+            code="(remove_tracks_before(2010), double(21))",
+        )
+    finally:
+        _CURRENT_SANDBOX.reset(token)
+        await sandbox.close()
+        await actor.close()
+    assert ran.error is None and ran.result == (2, 42)
+    records = _records()
+    by_shown = {c["args_shown"]: c for c in records["cases"]}
+    assert set(by_shown) == {"year=2010", "x=21"}
+    assert [c["call"] for c in by_shown["year=2010"]["trace"]] == [
+        "music.list_tracks",
+        "music.remove_track",
+        "music.remove_track",
+    ]
+
+
+# ── the sandbox objects ─────────────────────────────────────────────────────
+
+
+class _Cells:
+    """Cells of one core session, run through the actor's execute_code tool."""
+
+    def __init__(self, actor, policy=None, extra=None):
+        from unify.actor.execution import PythonExecutionSession, _CURRENT_SANDBOX
+
+        self.actor = actor
+        self.tools = actor.get_tools("act")
+        self.sandbox = PythonExecutionSession(environments={})
+        self.sandbox.global_state.update(extra or {})
+        objects = core_surface.sandbox_objects(
+            actor,
+            policy=policy or core_surface.WritePolicy(),
+        )
+        self.sandbox.global_state.update(objects)
+        self.sandbox.core_globals = objects
+        self._token = _CURRENT_SANDBOX.set(self.sandbox)
+
+    async def __call__(self, code: str, **kwargs: Any):
+        return await self.tools["execute_code"].fn(
+            thought="A step.",
+            code=code,
+            **kwargs,
+        )
+
+    async def close(self) -> None:
+        from unify.actor.execution import _CURRENT_SANDBOX
+
+        _CURRENT_SANDBOX.reset(self._token)
+        await self.sandbox.close()
+        await self.actor.close()
+
+
+def _stdout(out) -> str:
+    from unify.actor.execution.types import parts_to_text
+
+    return (
+        parts_to_text(out.stdout) if isinstance(out.stdout, list) else str(out.stdout)
+    )
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+@_handle_project
+async def test_help_prints_the_documentation_of_the_harness_objects(core_world):
+    cells = _Cells(_actor(can_store=False))
+    try:
+        out = await cells("help()")
+        index = _stdout(out)
+        out = await cells("help(functions)")
+        library = _stdout(out)
+        out = await cells("help(functions.run)")
+        run = _stdout(out)
+        out = await cells("help(guidance.search)\nhelp(install)")
+        more = _stdout(out)
+        out = await cells(
+            "def mine(a, b=2):\n    'Adds.'\n    return a + b\nhelp(mine)",
+        )
+        local = _stdout(out)
+    finally:
+        await cells.close()
+    assert out.error is None, out.error
+    for name in ("functions:", "guidance:", "install:", "read_file:", "grep:"):
+        assert name in index, index
+    assert "Methods:" in library
+    assert "await functions.search(query: str = ''" in library
+    assert "await functions.run(name" in library
+    # Recording internals never show, and cannot be called (underscored).
+    assert "_begin" not in library and "case_pending" not in library
+    assert run.startswith(
+        "await functions.run(name: str, /, *, state: str = 'stateless', **kwargs: Any)",
+    )
+    assert "stateless" in run and "read_only" in run
+    assert "await guidance.search(references" in more
+    assert "await install(packages" in more
+    assert "mine(a, b=2)" in local and "Adds." in local
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+@_handle_project
+async def test_functions_run_states(core_world):
+    actor = _actor(can_store=False)
+    actor.function_manager.add_functions(
+        implementations=[
+            # `global` + an assignment: the store check (resolve) refuses a
+            # free name it cannot find where the function runs.
+            "def where() -> str:\n"
+            "    global marker\n"
+            "    try:\n"
+            "        return f'sees {marker}'\n"
+            "    except NameError:\n"
+            "        marker = None\n"
+            "        return 'fresh'\n",
+            "def bump() -> int:\n"
+            "    global counter\n"
+            "    counter = counter + 1\n"
+            "    return counter\n",
+        ],
+    )
+    cells = _Cells(actor)
+    try:
+        await cells("marker = 'cell'\ncounter = 1")
+        out = await cells(
+            "(await functions.run('where'), "
+            "await functions.run('where', state='stateful'), "
+            "await functions.run('where', state='read_only'))",
+        )
+        assert out.result == ("fresh", "sees cell", "sees cell"), out.error
+        out = await cells(
+            "a = await functions.run('bump', state='read_only')\n"
+            "b = counter\n"
+            "c = await functions.run('bump', state='stateful')\n"
+            "(a, b, c, counter)",
+        )
+        assert out.result == (2, 1, 2, 2), out.error
+        # stateful leaves it defined in the session
+        out = await cells("where()")
+        assert out.result == "sees cell", out.error
+        out = await cells("await functions.run('where', state='global')")
+        assert "state must be one of" in out.error
+        out = await cells("await functions.run('nothing_by_this_name')")
+        assert "NameError" in out.error
+    finally:
+        await cells.close()
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+@_handle_project
+async def test_writes_the_session_may_not_make_are_refused_with_the_reason(
+    core_world,
+):
+    cells = _Cells(
+        _actor(),
+        policy=core_surface.WritePolicy(can_store=False),
+    )
+    try:
+        out = await cells(f"await functions.add({DOUBLE!r})")
+        assert "PermissionError" in out.error and "can_store is off" in out.error
+        # guidance.add stays allowed with can_store off, as shipped
+        out = await cells("await guidance.add(title='t', content='c')")
+        assert out.error is None, out.error
+        # the recording API is not reachable from a cell
+        out = await cells(
+            "await functions._begin(name='x', mode='run', args=[], kwargs={})",
+        )
+        assert "do not cross the worker boundary" in out.error
+    finally:
+        await cells.close()
+    cells = _Cells(
+        _actor(),
+        policy=core_surface.WritePolicy(admission_gated=True),
+    )
+    try:
+        out = await cells("await guidance.add(title='t', content='c')")
+        assert "UNIFY_STORE_ADMISSION" in out.error
+        out = await cells("await functions.list()")
+        assert out.error is None and out.result == {}
+    finally:
+        await cells.close()
+
+
+def test_the_write_policy_withholds_the_store_only_writes():
+    """Without storage every store-only write is refused; admission-gated,
+    the direct guidance writes are refused as well."""
+    for method in sorted(core_surface._STORE_ONLY):
+        family, name = method.split(".")
+        assert core_surface.WritePolicy(can_store=False).refusal(method)
+        assert core_surface.WritePolicy(admission_gated=True).refusal(method)
+    for method in ("guidance.add", "guidance.update", "guidance.delete"):
+        assert core_surface.WritePolicy(can_store=False).refusal(method) is None
+        assert core_surface.WritePolicy(admission_gated=True).refusal(method)
+
+
+REMOVE_AT_OR_AFTER = REMOVE_BEFORE.replace(
+    "track['year'] < year",
+    "track['year'] >= year",
+)
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+@_handle_project
+async def test_a_case_functions_run_recorded_refuses_a_change_of_behaviour(
+    core_world,
+    music,
+    monkeypatch,
+):
+    """The recorded case blocks a change of the function. With Python in the
+    sandboxed worker it is not replayed (a replay would execute the new
+    source in the harness; test_case_replay_confinement), so a case that
+    returned refuses the change until it is stored under a new name or the
+    case is retired."""
+    outs, _records, _used, _installs = await _reuse(
+        monkeypatch,
+        music,
+        calls=[("remove_tracks_before", {"year": 2010})],
+    )
+    assert outs[0].result == 2
+    from unify.function_manager.function_manager import FunctionManager
+
+    fm = FunctionManager(include_primitives=False)
+    out = fm.add_functions(
+        implementations=[REMOVE_AT_OR_AFTER],
+        overwrite=True,
+        raise_on_error=False,
+    )
+    assert out["remove_tracks_before"].startswith(
+        "error: 'remove_tracks_before' was not changed: 1 recorded call(s) that "
+        "worked before could not be checked against the new source:",
+    )
+
+
+def test_environment_texts_name_the_search_the_session_has(music, monkeypatch):
+    """The namespaces section and the store check's hint name
+    `functions.search`, and the delegation section names no
+    `execute_function`: core is the only surface."""
+    from unify.actor.environments import ActorEnvironment
+    from unify.actor.environments.environment_namespaces import (
+        EnvironmentNamespacesEnvironment,
+    )
+    from unify.function_manager.store_check import _methods_text
+
+    namespaces = EnvironmentNamespacesEnvironment().get_prompt_context()
+    delegation = ActorEnvironment().get_prompt_context()
+    hint = _methods_text("music", [f"m{i}" for i in range(13)])
+    assert "execute_function" not in delegation
+    assert "`await functions.search(...)`" in namespaces
+    assert "FunctionManager_" not in namespaces + hint
+    assert "functions.search or help(primitives.music)" in hint

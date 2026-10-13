@@ -2,9 +2,19 @@ from __future__ import annotations
 
 import pytest
 
+from tests.actor.code_act.library_world import install_fake_embed
 from tests.helpers import _handle_project
 from unify.function_manager.execution_env import create_base_globals
 from unify.function_manager.function_manager import FunctionManager
+
+
+@pytest.fixture(autouse=True)
+def _python_in_process(monkeypatch):
+    """Python in process (the function manager's in-process mode, for non-actor callers): these tests load
+    stored functions into this process and call them. With the sandboxed
+    worker a read binds them by source and nothing runs here
+    (tests/actor/code_act/test_bind_load_confinement.py)."""
+    monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: False)
 
 
 @_handle_project
@@ -204,7 +214,8 @@ async def test_filter_return_callable_with_dependencies_executes():
 
 @_handle_project
 @pytest.mark.asyncio
-async def test_search_return_callable_with_metadata():
+async def test_search_return_callable_with_metadata(monkeypatch):
+    install_fake_embed(monkeypatch.setattr)
     fm = FunctionManager(include_primitives=False)
     fm.add_functions(
         implementations=(
@@ -302,7 +313,7 @@ async def test_dependency_injection_supports_user_defined_forward_ref_string_ann
 
 @_handle_project
 @pytest.mark.asyncio
-async def test_search_return_callable_forward_ref_annotations_just_work():
+async def test_search_return_callable_forward_ref_annotations_just_work(monkeypatch):
     """
     Validate the CodeActActor-style flow:
       fm.search_functions(..., return_callable=True)
@@ -311,6 +322,7 @@ async def test_search_return_callable_forward_ref_annotations_just_work():
     GroupBy/TimePeriod/MetricResult), and the returned callable should still
     be able to resolve forward-ref annotations without NameError.
     """
+    install_fake_embed(monkeypatch.setattr)
     fm = FunctionManager(include_primitives=False)
     fm.add_functions(
         implementations=(
@@ -356,29 +368,19 @@ async def test_search_return_callable_forward_ref_annotations_just_work():
 
 @_handle_project
 @pytest.mark.asyncio
-async def test_dep_added_after_root_does_not_backfill_depends_on():
+async def test_a_root_is_stored_only_once_its_callee_exists():
     fm = FunctionManager()
 
     a_src = "async def a(x: int) -> int:\n    return (await b(x=x)) + 1\n"
     b_src = "async def b(x: int) -> int:\n    return x + 10\n"
 
-    # Add root first (b doesn't exist yet) → depends_on for a will NOT include b
-    fm.add_functions(implementations=[a_src])
+    # The storage check refuses a root whose callee does not exist yet.
+    with pytest.raises(ValueError, match="`b` is not defined"):
+        fm.add_functions(implementations=[a_src])
+
+    # Once b exists, a is stored with b in its depends_on, and injected.
     fm.add_functions(implementations=[b_src])
-
-    ns = create_base_globals()
-    callables = fm.filter_functions(
-        filter="name = 'a'",
-        limit=1,
-        _return_callable=True,
-        _namespace=ns,
-    )
-    assert "b" not in ns
-    with pytest.raises(NameError):
-        await callables[0](x=1)
-
-    # Now overwrite a AFTER b exists → depends_on is recomputed and injection works
-    fm.add_functions(implementations=[a_src], overwrite=True)
+    fm.add_functions(implementations=[a_src])
 
     ns2 = create_base_globals()
     callables2 = fm.filter_functions(

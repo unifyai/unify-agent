@@ -1,6 +1,6 @@
 """Incremental propagation of parent chat context through nested tool loops:
-the initial snapshot is sent once per inner tool, later updates are sent
-incrementally, and each nesting level tracks what it forwarded to whom."""
+the initial snapshot is sent once per inner tool, later local messages are
+sent incrementally, and each nesting level tracks what it forwarded to whom."""
 
 from __future__ import annotations
 
@@ -39,8 +39,6 @@ class ContextForwardingState:
     items go out on the next update."""
 
     initial_context_sent: bool = False
-    # Index into _parent_chat_context_cont_received; earlier items were sent.
-    last_cont_idx_forwarded: int = 0
     # Index into the local transcript; earlier messages were sent.
     last_local_msg_idx_forwarded: int = 0
 
@@ -48,24 +46,14 @@ class ContextForwardingState:
 @dataclass
 class LoopContextState:
     """Context state of one tool loop: the immutable snapshot it started
-    with, the continuation updates received from above via interjections,
-    and per-inner-tool tracking of what has been forwarded."""
+    with, and per-inner-tool tracking of what has been forwarded."""
 
     parent_chat_context: list[dict] = field(default_factory=list)
-
-    # Appended as updates arrive, never modified once added.
-    _parent_chat_context_cont_received: list[dict] = field(default_factory=list)
 
     # call_id -> ContextForwardingState
     inner_tool_forwarding: dict[str, ContextForwardingState] = field(
         default_factory=dict,
     )
-
-    def receive_context_continuation(self, cont_items: list[dict]) -> None:
-        """Record continuation items received from above."""
-        if cont_items:
-            safe_cont_items = make_messages_safe_for_context_dump(cont_items)
-            self._parent_chat_context_cont_received.extend(safe_cont_items)
 
     def get_forwarding_state(self, call_id: str) -> ContextForwardingState:
         """Get or create the forwarding state for an inner tool call."""
@@ -86,10 +74,7 @@ class LoopContextState:
         snapshot keep-rule (``_belongs_in_context_snapshot``) to this loop's
         own layers — the inherited parent snapshot and the local transcript.
         The filter reads the transcript; it never mutates it or the tracked
-        messages. Continuation items received from above
-        (``_parent_chat_context_cont_received``) are forwarded as received:
-        they were produced by the sending loop's own filtered compute, so
-        re-filtering here would only re-check marker-stripped copies.
+        messages.
 
         ``current_local_msgs`` is this loop's transcript without the context
         header. Returns ``(parent_chat_context, _parent_chat_context_cont)``:
@@ -124,26 +109,11 @@ class LoopContextState:
             elif local_msgs_to_send:
                 result_parent_ctx = local_msgs_to_send
 
-            if self._parent_chat_context_cont_received:
-                result_cont = list(self._parent_chat_context_cont_received)
-
             state.initial_context_sent = True
-            state.last_cont_idx_forwarded = len(self._parent_chat_context_cont_received)
             state.last_local_msg_idx_forwarded = len(current_local_msgs)
 
         else:
             incremental_cont: list[dict] = []
-
-            if state.last_cont_idx_forwarded < len(
-                self._parent_chat_context_cont_received,
-            ):
-                new_cont = self._parent_chat_context_cont_received[
-                    state.last_cont_idx_forwarded :
-                ]
-                incremental_cont.extend(new_cont)
-                state.last_cont_idx_forwarded = len(
-                    self._parent_chat_context_cont_received,
-                )
 
             # New local messages since last forward — same snapshot keep-rule
             # as the initial send, so continuations never smuggle in the
@@ -168,9 +138,3 @@ class LoopContextState:
             result_cont = make_messages_safe_for_context_dump(result_cont)
 
         return result_parent_ctx, result_cont
-
-    def mark_cont_forwarded_to_tool(self, call_id: str) -> None:
-        """Record that every pending continuation item reached this tool
-        (called after an interjection carrying them was forwarded)."""
-        state = self.get_forwarding_state(call_id)
-        state.last_cont_idx_forwarded = len(self._parent_chat_context_cont_received)

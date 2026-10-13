@@ -69,6 +69,9 @@ class Primitives:
         Raises AttributeError, saying why, if alias is not in scope.
         """
         spec = _MANAGER_BY_ALIAS.get(alias)
+        if spec is None and alias not in VALID_MANAGER_ALIASES:
+            # A namespace the environment registered has its spec there.
+            spec = get_registry().get_manager_spec(alias)
         if spec is None:
             raise AttributeError(f"No ManagerSpec for alias: {alias}")
 
@@ -81,6 +84,18 @@ class Primitives:
 
         if alias in self._managers:
             return self._managers[alias]
+
+        if alias not in VALID_MANAGER_ALIASES:
+            # A namespace the environment registered: its methods, as declared.
+            from unify.function_manager.primitives.environment import (
+                namespace_object,
+            )
+
+            env_namespace = namespace_object(alias)
+            if env_namespace is None:
+                raise AttributeError(f"No namespace registered for alias: {alias}")
+            self._managers[alias] = env_namespace
+            return env_namespace
 
         cls = get_registry()._load_manager_class(spec.primitive_class_path)
         if cls is None:
@@ -97,6 +112,13 @@ class Primitives:
         """Attribute access for manager retrieval."""
         if name in VALID_MANAGER_ALIASES:
             return self._get_manager(name)
+        if not name.startswith("_"):
+            from unify.function_manager.primitives.environment import (
+                environment_aliases,
+            )
+
+            if name in environment_aliases():
+                return self._get_manager(name)
 
         raise AttributeError(f"'Primitives' object has no attribute '{name}'")
 
@@ -137,7 +159,14 @@ def get_primitive_callable(
 
     manager_alias = _CLASS_PATH_TO_ALIAS.get(class_path)
     if not manager_alias:
-        return None
+        from unify.function_manager.primitives.environment import (
+            namespace_for_class_path,
+        )
+
+        env_namespace = namespace_for_class_path(class_path)
+        if env_namespace is None:
+            return None
+        manager_alias = env_namespace.name
 
     # Use provided primitives instance, or construct a default-scoped one.
     if primitives is None:

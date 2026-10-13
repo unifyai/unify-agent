@@ -103,6 +103,64 @@ for _spec in _MANAGER_SPECS:
     _SANDBOX_ROOTS.setdefault(_spec.sandbox_root, []).append(_spec)
 
 
+def _environment_specs(
+    primitive_scope: Optional[PrimitiveScope] = None,
+) -> List[ManagerSpec]:
+    """Specs for the namespaces the environment registered, in scope.
+
+    They live under the same ``primitives`` sandbox root as ``actor``, so
+    ``construct_sandbox_root`` and ``depends_on`` need nothing more; their
+    ``primitive_class_path`` is ``environment:<name>``, which no importable
+    class can have.
+    """
+    from unify.function_manager.primitives.environment import (
+        environment_namespaces,
+    )
+
+    return [
+        ManagerSpec(
+            manager_alias=name,
+            primitive_class_path=namespace.class_path,
+            domain="Environment",
+            description=namespace.description,
+        )
+        for name, namespace in sorted(environment_namespaces().items())
+        if primitive_scope is None or name in primitive_scope.scoped_managers
+    ]
+
+
+def _environment_rows(
+    primitive_scope: Optional[PrimitiveScope] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Primitive rows for the registered namespaces' methods (see collect_primitives)."""
+    from unify.function_manager.primitives.environment import (
+        environment_namespaces,
+        method_docstring,
+    )
+
+    rows: Dict[str, Dict[str, Any]] = {}
+    for name, namespace in sorted(environment_namespaces().items()):
+        if primitive_scope is not None and name not in primitive_scope.scoped_managers:
+            continue
+        for method in sorted(namespace.methods, key=lambda m: m.name):
+            qualified_name = f"primitives.{name}.{method.name}"
+            rows[qualified_name] = {
+                "name": qualified_name,
+                "function_id": _get_stable_id(namespace.class_path, method.name),
+                "argspec": method.signature,
+                "docstring": method_docstring(name, method),
+                "implementation": None,
+                "is_primitive": True,
+                "depends_on": [],
+                "precondition": None,
+                "guidance_ids": [],
+                "primitive_class": namespace.class_path,
+                "primitive_method": method.name,
+                "metadata": {"effect": method.effect, "environment": name},
+            }
+    return rows
+
+
 def construct_sandbox_root(
     root_name: str,
     *,
@@ -250,15 +308,24 @@ class ToolSurfaceRegistry:
         Returns:
             List of ManagerSpec for exposed managers.
         """
-        return [
+        specs = [
             spec
             for spec in _MANAGER_SPECS
             if spec.manager_alias in primitive_scope.scoped_managers
         ]
+        if primitive_scope.scoped_managers - _MANAGER_BY_ALIAS.keys():
+            specs += _environment_specs(primitive_scope)
+        return specs
 
     def get_manager_spec(self, manager_alias: str) -> Optional[ManagerSpec]:
         """Get a single manager spec by alias."""
-        return _MANAGER_BY_ALIAS.get(manager_alias)
+        spec = _MANAGER_BY_ALIAS.get(manager_alias)
+        if spec is None:
+            spec = next(
+                (s for s in _environment_specs() if s.manager_alias == manager_alias),
+                None,
+            )
+        return spec
 
     def get_function_id(self, manager_alias: str, method_name: str) -> int:
         """Compute the stable function_id for a primitive method.
@@ -279,7 +346,14 @@ class ToolSurfaceRegistry:
         """
         spec = _MANAGER_BY_ALIAS.get(manager_alias)
         if spec is None:
-            raise ValueError(f"Unknown manager alias: {manager_alias!r}")
+            from unify.function_manager.primitives.environment import (
+                environment_namespace,
+            )
+
+            env_namespace = environment_namespace(manager_alias)
+            if env_namespace is None:
+                raise ValueError(f"Unknown manager alias: {manager_alias!r}")
+            return _get_stable_id(env_namespace.class_path, method_name)
         class_name = spec.primitive_class_path.rsplit(".", 1)[-1]
         return _get_stable_id(class_name, method_name)
 
@@ -316,6 +390,13 @@ class ToolSurfaceRegistry:
         """
         spec = _MANAGER_BY_ALIAS.get(manager_alias)
         if not spec:
+            from unify.function_manager.primitives.environment import (
+                environment_namespace,
+            )
+
+            env_namespace = environment_namespace(manager_alias)
+            if env_namespace is not None:
+                return env_namespace.method_names()
             logger.warning(f"Unknown manager alias: {manager_alias}")
             return []
 
@@ -715,6 +796,8 @@ class ToolSurfaceRegistry:
                 if metadata is not None:
                     primitives[metadata["name"]] = metadata
 
+        primitives.update(_environment_rows(primitive_scope))
+
         logger.debug(f"Collected {len(primitives)} primitives")
         return primitives
 
@@ -780,6 +863,11 @@ class ToolSurfaceRegistry:
             spec = _MANAGER_BY_ALIAS.get(alias)
             if spec:
                 class_paths.append(spec.primitive_class_path)
+        if primitive_scope.scoped_managers - _MANAGER_BY_ALIAS.keys():
+            class_paths += [
+                spec.primitive_class_path
+                for spec in _environment_specs(primitive_scope)
+            ]
 
         if not class_paths:
             return "0"

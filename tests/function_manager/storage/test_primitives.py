@@ -20,6 +20,7 @@ from unify.function_manager.primitives import (
     get_primitive_callable,
     get_registry,
 )
+from tests.actor.code_act.library_world import install_fake_embed
 from tests.helpers import _handle_project
 
 _ACTOR_ACT = "primitives.actor.act"
@@ -273,8 +274,9 @@ def test_seeded_rows_resolve_to_runtime_callables(function_manager_factory):
 
 
 @_handle_project
-def test_search_includes_primitives_by_default(function_manager_factory):
+def test_search_includes_primitives_by_default(function_manager_factory, monkeypatch):
     """search_functions should include primitives by default."""
+    install_fake_embed(monkeypatch.setattr)
     function_manager = function_manager_factory()
 
     # Search for something that should match a primitive
@@ -292,8 +294,12 @@ def test_search_includes_primitives_by_default(function_manager_factory):
 
 
 @_handle_project
-def test_search_ranks_functions_and_primitives_together(function_manager_factory):
+def test_search_ranks_functions_and_primitives_together(
+    function_manager_factory,
+    monkeypatch,
+):
     """Search should return both user functions and primitives, ranked together."""
+    install_fake_embed(monkeypatch.setattr)
     function_manager = function_manager_factory()
 
     # Add a user function related to delegation

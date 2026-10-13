@@ -1,265 +1,108 @@
 import asyncio
-from unittest.mock import MagicMock
+import json
 
 import pytest
 
-from tests.actor.code_act.conftest import make_fm_mock
+from tests.scripted_model import ScriptedModel, cell, reply, scripted
 from unify.actor.code_act_actor import CodeActActor
 from unify.function_manager.function_manager import FunctionManager
-
-# ---------------------------------------------------------------------------
-# can_compose=False — symbolic tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(30)
-async def test_code_act_can_compose_false_requires_function_manager():
-    """
-    can_compose=False without a function_manager should raise RuntimeError
-    because there would be no usable tools (no execute_code, no execute_function).
-    """
-    actor = CodeActActor(
-        timeout=30,
-    )
-    # The ManagerRegistry provides a default FM, so override it to None.
-    actor.function_manager = None
-    try:
-        with pytest.raises(RuntimeError, match="function_manager is required"):
-            await actor.act("Do something", can_compose=False)
-    finally:
-        try:
-            await actor.close()
-        except Exception:
-            pass
-
-
-# ---------------------------------------------------------------------------
-# can_compose=False — eval tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.eval
-@pytest.mark.asyncio
-@pytest.mark.llm_call
-@pytest.mark.timeout(300)
-async def test_code_act_can_compose_false_executes_best_matching_function():
-    """
-    When can_compose=False, the LLM should discover stored functions via
-    FunctionManager discovery tools and invoke them via execute_function.
-    It must NOT use execute_code.
-
-    execute_function synthesises a code snippet and runs it through the
-    sandbox.  We verify that (a) the function implementation was looked up
-    via the FunctionManager, and (b) the synthesised code actually executed
-    (the implementation prints a sentinel so we can check stdout).
-    """
-    _fn_impl = "def my_task():\n    print('SENTINEL_OK')\n    return 'OK'"
-    _fn_metadata = [
-        {
-            "function_id": 123,
-            "name": "my_task",
-            "docstring": "Does the thing requested by the user",
-        },
-    ]
-    _fn_data_full = {
-        **_fn_metadata[0],
-        "implementation": _fn_impl,
-    }
-    fm = make_fm_mock()
-    fm.search_functions = MagicMock(return_value={"metadata": _fn_metadata})
-    fm.filter_functions = MagicMock(return_value={"metadata": _fn_metadata})
-    fm.list_functions = MagicMock(return_value={"metadata": _fn_metadata})
-    fm._get_function_data_by_name = MagicMock(return_value=_fn_data_full)
-    fm._get_primitive_data_by_name = MagicMock(return_value=None)
-    fm._include_primitives = False
-
-    actor = CodeActActor(
-        function_manager=fm,
-        environments=[],
-        timeout=120,
-        # Isolate can_compose execute_function routing from discovery-first gating.
-        tool_policy=None,
-    )
-    actor.guidance_manager = None
-    try:
-        handle = await actor.act(
-            "Do the thing using the stored my_task function via execute_function. "
-            "Do not ask clarifying questions.",
-            can_compose=False,
-            persist=False,
-            clarification_enabled=False,
-        )
-        await asyncio.wait_for(handle.result(), timeout=120)
-
-        # The function implementation should have been looked up.
-        fm._get_function_data_by_name.assert_called()
-    finally:
-        try:
-            await actor.close()
-        except Exception:
-            pass
-
-
-@pytest.mark.eval
-@pytest.mark.asyncio
-@pytest.mark.llm_call
-@pytest.mark.timeout(300)
-async def test_code_act_can_compose_false_no_functions_match():
-    """
-    When can_compose=False and no stored functions match the query, the LLM
-    should report the failure gracefully without invoking execute_function.
-    """
-    fm = make_fm_mock()
-    fm.search_functions = MagicMock(return_value={"metadata": []})
-    fm.filter_functions = MagicMock(return_value={"metadata": []})
-    fm.list_functions = MagicMock(return_value={"metadata": []})
-    fm._get_function_data_by_name = MagicMock(return_value=None)
-    fm._include_primitives = False
-
-    actor = CodeActActor(
-        function_manager=fm,
-        environments=[],
-        timeout=120,
-        # Isolate can_compose routing from discovery-first gating.
-        tool_policy=None,
-    )
-    # BaseActor auto-wires a GM from the registry when omitted; drop it so
-    # the agent cannot wander through discovery/read tools forever.
-    actor.guidance_manager = None
-    try:
-        handle = await actor.act(
-            "Do something completely unique. No matching function will exist. "
-            "Do not keep searching — report that you cannot fulfill the request.",
-            can_compose=False,
-            persist=False,
-            clarification_enabled=False,
-        )
-        await asyncio.wait_for(handle.result(), timeout=120)
-
-        # No matching function found — the LLM should not have attempted
-        # to look up function data for execution.
-        fm._get_function_data_by_name.assert_not_called()
-    finally:
-        try:
-            await actor.close()
-        except Exception:
-            pass
-
-
-# ---------------------------------------------------------------------------
-# can_store=False
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@pytest.mark.llm_call
-@pytest.mark.timeout(300)
-async def test_code_act_can_store_false_blocks_add_functions_tool():
-    """
-    When can_store=False, the FunctionManager_add_functions tool should not be available.
-    We validate this by instructing the agent to call it; the loop should fail gracefully
-    rather than executing the tool.
-    """
-    fm = make_fm_mock()
-    fm.add_functions.return_value = {"x": "added"}
-
-    actor = CodeActActor(
-        function_manager=fm,
-        timeout=30,
-        tool_policy=lambda *args: ("auto", {}),
-    )
-
-    try:
-        handle = await actor.act(
-            "Call the tool FunctionManager_add_functions with implementations='async def x():\\n    return 1'. "
-            "Do not call execute_code.",
-            can_store=False,
-            persist=False,
-            clarification_enabled=False,
-        )
-        out = await asyncio.wait_for(handle.result(), timeout=60)
-        # The tool should be unavailable; we accept any clear failure surface.
-        assert "FunctionManager_add_functions" in str(out)
-        fm.add_functions.assert_not_called()
-    finally:
-        try:
-            await actor.close()
-        except Exception:
-            pass
-
 
 # ---------------------------------------------------------------------------
 # can_store=True — deferred storage via post-completion review loop
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.eval
+_PARSE_AND_VALIDATE = (
+    "def parse_and_validate_records(records):\n"
+    '    """Split contact records into valid and invalid ones, with counts."""\n'
+    "    valid, invalid = [], []\n"
+    "    for index, entry in enumerate(records or []):\n"
+    "        if isinstance(entry, dict) and '@' in str(entry.get('email', '')):\n"
+    "            valid.append(entry)\n"
+    "        else:\n"
+    "            invalid.append(index)\n"
+    "    return {'valid': valid, 'invalid': invalid,\n"
+    "            'stats': {'total': len(valid) + len(invalid)}}\n"
+)
+
+
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @pytest.mark.timeout(300)
-async def test_can_store_true_defers_storage_to_review_loop():
+async def test_can_store_true_result_resolves_before_the_review_stores():
     """
-    When can_store=True, the CodeActActor should compose and execute code,
-    then run a post-completion storage-review loop that examines the
-    trajectory and stores reusable functions via FunctionManager_add_functions.
+    With can_store=True, result() resolves after the task phase while the
+    storage review is still to come, and what the review stores lands in the
+    store. The model is scripted (tests/scripted_model.py).
 
-    result() resolves after the task phase; storage runs in the background.
-    The test waits for done() to confirm the storage loop has completed
-    before asserting storage side effects.
-
-    The function must be complex enough that the librarian LLM consistently
-    judges it as worth storing (non-trivial logic, validation, edge cases).
+    The review's first turn waits until the test has the result, so a
+    result() that waited for the review would time out here.
     """
-    fm = FunctionManager(include_primitives=False)
+    review_may_start = asyncio.Event()
 
-    actor = CodeActActor(
-        function_manager=fm,
-        timeout=60,
+    async def _store_once_released(call):
+        await review_may_start.wait()
+        return reply(
+            calls=[
+                cell(
+                    "print(await functions.add("
+                    f"implementations=[{_PARSE_AND_VALIDATE!r}]))",
+                ),
+            ],
+        )
+
+    model = ScriptedModel(
+        actor=[
+            reply(
+                calls=[
+                    cell(
+                        _PARSE_AND_VALIDATE + "print(parse_and_validate_records("
+                        "[{'email': 'a@b.c'}, {'email': 'nope'}]))",
+                    ),
+                ],
+            ),
+            reply("Done: 1 valid, 1 invalid."),
+        ],
+        review=[_store_once_released, reply("Stored parse_and_validate_records.")],
+        allow={"gate"},
     )
+    fm = FunctionManager(include_primitives=False)
+    actor = CodeActActor(function_manager=fm, timeout=60)
     try:
-        handle = await actor.act(
-            "Write a reusable Python function called `parse_and_validate_records` that:\n"
-            "1. Takes a list of dicts, each with optional keys: name, email, phone, company\n"
-            "2. Validates each entry: name must be non-empty string, email must contain '@',\n"
-            "   phone (if present) must be digits/dashes/spaces only and at least 7 chars\n"
-            "3. Returns a dict with keys:\n"
-            "   - 'valid': list of cleaned entries (strip whitespace, normalize phone to digits-only)\n"
-            "   - 'invalid': list of (index, entry, errors) tuples describing validation failures\n"
-            "   - 'stats': dict with counts of total, valid, invalid, and entries_with_company\n"
-            "4. Handle edge cases: None inputs, empty lists, entries that are not dicts\n\n"
-            "Test it with a mixed list of 5 entries including at least 2 invalid ones "
-            "and verify the stats are correct.",
-            can_store=True,
-            persist=False,
-            clarification_enabled=False,
-        )
-        result = await asyncio.wait_for(handle.result(), timeout=120)
-        assert result is not None
+        with scripted(model):
+            handle = await actor.act(
+                "Write parse_and_validate_records and test it on two records.",
+                can_store=True,
+                persist=False,
+                clarification_enabled=False,
+            )
+            result = await asyncio.wait_for(handle.result(), timeout=60)
+            assert result == "Done: 1 valid, 1 invalid."
+            assert not handle.done(), "the storage review is still to run"
+            assert "parse_and_validate_records" not in {
+                f.get("name") for f in fm.filter_functions()
+            }
 
-        # result() resolves after the task phase.  Wait for the storage
-        # review loop to finish before asserting storage side effects.
-        deadline = asyncio.get_event_loop().time() + 120
-        while not handle.done():
-            if asyncio.get_event_loop().time() > deadline:
-                raise TimeoutError("Storage loop did not complete in time")
-            await asyncio.sleep(0.5)
-
-        stored = fm.filter_functions()
-        assert stored, (
-            "Expected FunctionManager to contain at least one stored function "
-            "after the storage review loop."
-        )
-        stored_names = {f.get("name", "") for f in stored if isinstance(f, dict)}
-        assert "parse_and_validate_records" in stored_names, (
-            f"Expected 'parse_and_validate_records' in stored functions, "
-            f"got: {stored_names}"
-        )
+            review_may_start.set()
+            deadline = asyncio.get_event_loop().time() + 120
+            while not handle.done():
+                if asyncio.get_event_loop().time() > deadline:
+                    raise TimeoutError("Storage loop did not complete in time")
+                await asyncio.sleep(0.1)
     finally:
         try:
             await actor.close()
         except Exception:
             pass
+
+    stored_names = {f.get("name", "") for f in fm.filter_functions()}
+    assert "parse_and_validate_records" in stored_names
+    assert [k for k in model.kinds() if k != "gate"] == [
+        "actor",
+        "actor",
+        "review",
+        "review",
+    ]
+    model.assert_used_up()
 
 
 # ---------------------------------------------------------------------------
@@ -267,24 +110,58 @@ async def test_can_store_true_defers_storage_to_review_loop():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.eval
+_GREET = (
+    "def greet(name, style='formal'):\n"
+    '    """Greet *name* formally or casually."""\n'
+    "    if style == 'casual':\n"
+    "        return f'Hey {name}!'\n"
+    "    return f'Good day, {name}.'\n"
+)
+
+# The review's merge: store the general function, then delete the narrow
+# ones it subsumes, through the review's ``functions`` library.
+_MERGE_CELL = (
+    f"print(await functions.add(implementations=[{_GREET!r}]))\n"
+    "for old in ('greet_formal', 'greet_casual'):\n"
+    "    fid = (await functions.get(old))['function_id']\n"
+    "    print(await functions.delete(fid))\n"
+)
+
+
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @pytest.mark.timeout(300)
-async def test_can_store_true_merges_redundant_functions():
+async def test_can_store_true_merges_redundant_functions(monkeypatch):
     """
-    The storage review loop should recognise overlapping functions in the
-    store and merge them: add a unified version and delete the old ones.
+    The storage review can merge overlapping functions in the store: add a
+    unified version and delete the old ones.
 
     Setup: the FunctionManager already contains two narrow greeting
-    functions (greet_formal, greet_casual). The actor composes and
-    executes a general-purpose `greet` function that subsumes both.
-    The storage review should detect the overlap, store the merged
-    version, and delete the now-redundant entries.
+    functions (greet_formal, greet_casual). The actor composes and executes
+    a general-purpose `greet` function that subsumes both, and the scripted
+    review stores it and deletes the now-redundant entries. Whether a live
+    librarian sees the overlap is the model's judgement; this test is of
+    what the review's merge does to the store.
+
+    The review gate is answered "review" here, so the review it opens runs
+    as shipped; this test is of the review's merge, not of the gate.
 
     result() resolves after the task phase; storage runs in the background.
     The test waits for done() to confirm the storage loop has completed.
     """
+    from unify.actor import review_gate
+
+    gate_asked: list[bool] = []
+
+    async def _review(**_kwargs):
+        gate_asked.append(True)
+        return review_gate.GateDecision(
+            review=True,
+            reason="test: the merge review runs",
+            decided=True,
+        )
+
+    monkeypatch.setattr(review_gate, "decide", _review)
+
     fm = FunctionManager(include_primitives=False)
 
     # Seed the store with two narrow, overlapping greeting functions.
@@ -298,59 +175,76 @@ async def test_can_store_true_merges_redundant_functions():
     seeded_ids = {f["function_id"] for f in seeded if isinstance(f, dict)}
     assert len(seeded_ids) == 2, f"Expected 2 seeded functions, got {len(seeded_ids)}"
 
+    model = ScriptedModel(
+        actor=[
+            reply(calls=[cell(_GREET + "print(greet('Alice', 'formal'))")]),
+            reply("Good day, Alice."),
+        ],
+        review=[
+            reply(calls=[cell(_MERGE_CELL)]),
+            reply("Merged greet_formal and greet_casual into greet."),
+        ],
+    )
     actor = CodeActActor(
         function_manager=fm,
         timeout=60,
     )
     try:
-        handle = await actor.act(
-            "Write a general-purpose Python function called `greet` that takes "
-            "`name` and `style` ('formal' or 'casual') parameters. "
-            "For formal: return f'Good day, {name}.'; "
-            "for casual: return f'Hey {name}!'. "
-            "Execute it with name='Alice' and style='formal' to verify.",
-            can_store=True,
-            persist=False,
-            clarification_enabled=False,
-        )
-        result = await asyncio.wait_for(handle.result(), timeout=120)
-        assert result is not None
+        with scripted(model):
+            handle = await actor.act(
+                "Write a general-purpose Python function called `greet` that takes "
+                "`name` and `style` ('formal' or 'casual') parameters. "
+                "For formal: return f'Good day, {name}.'; "
+                "for casual: return f'Hey {name}!'. "
+                "Execute it with name='Alice' and style='formal' to verify.",
+                can_store=True,
+                persist=False,
+                clarification_enabled=False,
+            )
+            result = await asyncio.wait_for(handle.result(), timeout=120)
+            assert result == "Good day, Alice."
 
-        # Wait for storage to complete before asserting side effects.
-        deadline = asyncio.get_event_loop().time() + 120
-        while not handle.done():
-            if asyncio.get_event_loop().time() > deadline:
-                raise TimeoutError("Storage loop did not complete in time")
-            await asyncio.sleep(0.5)
-
-        # The merged function should have been stored.
-        final = fm.filter_functions()
-        final_names = {f.get("name", "") for f in final if isinstance(f, dict)}
-        assert (
-            "greet" in final_names
-        ), f"Expected a unified 'greet' function in the store, got: {final_names}"
-
-        # At least one of the old redundant functions should have been deleted.
-        final_ids = {f["function_id"] for f in final if isinstance(f, dict)}
-        deleted = seeded_ids - final_ids
-        assert deleted, (
-            f"Expected at least one of the seeded functions ({seeded_ids}) to be "
-            f"deleted after merge, but all remain: {final_ids}"
-        )
+            # Wait for storage to complete before asserting side effects.
+            deadline = asyncio.get_event_loop().time() + 120
+            while not handle.done():
+                if asyncio.get_event_loop().time() > deadline:
+                    raise TimeoutError("Storage loop did not complete in time")
+                await asyncio.sleep(0.5)
     finally:
         try:
             await actor.close()
         except Exception:
             pass
 
+    # The library held entries, so the gate was asked (and said review).
+    assert gate_asked == [True]
+
+    # The merged function was stored and the redundant ones deleted.
+    final = fm.filter_functions()
+    final_names = {f.get("name", "") for f in final if isinstance(f, dict)}
+    assert final_names == {"greet"}, final_names
+    final_ids = {f["function_id"] for f in final if isinstance(f, dict)}
+    assert not seeded_ids & final_ids
+
+    assert model.kinds() == ["actor", "actor", "review", "review"]
+    # The review saw what its merge cell printed.
+    (_first, last) = model.of("review")
+    outputs = json.dumps([m for m in last.messages if m.get("role") == "tool"])
+    assert "greet_formal" in outputs and "greet_casual" in outputs
+    model.assert_used_up()
+
 
 # ---------------------------------------------------------------------------
 # Description type acceptance
 # ---------------------------------------------------------------------------
 
+# These tests stop the handle as soon as act() returns, so no turn is needed;
+# whatever request starts first (the actor's, or the storage review after the
+# stop) is answered in process rather than by a provider.
+_STOPPED_AT_ONCE = {"actor", "review", "gate"}
+
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @pytest.mark.timeout(300)
 async def test_code_act_accepts_dict_description():
     """
@@ -359,27 +253,27 @@ async def test_code_act_accepts_dict_description():
     actor = CodeActActor(
         timeout=30,
     )
-    try:
-        # We just verify the call doesn't raise TypeError and creates a handle
-        # The handle will run an LLM loop, but we stop it immediately
-        handle = await actor.act(
-            {"role": "user", "content": "What is 2+2?"},
-            persist=False,
-            clarification_enabled=False,
-        )
-        # Verify we got a handle back (not testing the full loop completion)
-        assert handle is not None
-        # Stop the handle to avoid waiting for LLM
-        await handle.stop()
-    finally:
+    # The handle is stopped at once; a request that starts before the stop
+    # is answered in process.
+    with scripted(ScriptedModel(allow=_STOPPED_AT_ONCE)):
         try:
-            await actor.close()
-        except Exception:
-            pass
+            # We just verify the call doesn't raise TypeError and creates a handle
+            handle = await actor.act(
+                {"role": "user", "content": "What is 2+2?"},
+                persist=False,
+                clarification_enabled=False,
+            )
+            # Verify we got a handle back (not testing the full loop completion)
+            assert handle is not None
+            await handle.stop()
+        finally:
+            try:
+                await actor.close()
+            except Exception:
+                pass
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @pytest.mark.timeout(300)
 async def test_code_act_accepts_list_description():
     """
@@ -388,23 +282,23 @@ async def test_code_act_accepts_list_description():
     actor = CodeActActor(
         timeout=30,
     )
-    try:
-        # We just verify the call doesn't raise TypeError and creates a handle
-        handle = await actor.act(
-            [
-                {"role": "user", "content": "Hello"},
-                {"role": "assistant", "content": "Hi there!"},
-                {"role": "user", "content": "What is 2+2?"},
-            ],
-            persist=False,
-            clarification_enabled=False,
-        )
-        # Verify we got a handle back
-        assert handle is not None
-        # Stop the handle to avoid waiting for LLM
-        await handle.stop()
-    finally:
+    with scripted(ScriptedModel(allow=_STOPPED_AT_ONCE)):
         try:
-            await actor.close()
-        except Exception:
-            pass
+            # We just verify the call doesn't raise TypeError and creates a handle
+            handle = await actor.act(
+                [
+                    {"role": "user", "content": "Hello"},
+                    {"role": "assistant", "content": "Hi there!"},
+                    {"role": "user", "content": "What is 2+2?"},
+                ],
+                persist=False,
+                clarification_enabled=False,
+            )
+            # Verify we got a handle back
+            assert handle is not None
+            await handle.stop()
+        finally:
+            try:
+                await actor.close()
+            except Exception:
+                pass

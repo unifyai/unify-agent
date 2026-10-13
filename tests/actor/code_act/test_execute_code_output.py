@@ -108,9 +108,18 @@ async def test_execute_code_can_branch_on_query_llm_structured_output(
     """execute_code can use typed semantic judgments in symbolic control flow."""
     execute_code, _runner = execute_code_tool
 
+    sent: list = []
+
     async def fake_query_llm(prompt: str, *, response_format=None, **kwargs):
         assert "Classify" in prompt
-        return response_format(category="billing", needs_reply=True)
+        sent.append(response_format)
+        answer = {"category": "billing", "needs_reply": True}
+        # As query_llm does: a schema dict gets the parsed JSON, a class an
+        # instance. With Python in the sandboxed worker (the default) a
+        # cell's class crosses as its schema and is validated in the worker.
+        if isinstance(response_format, dict):
+            return answer
+        return response_format(**answer)
 
     import unify.common.reasoning as reasoning_module
 
@@ -140,6 +149,12 @@ decision = await query_llm(
 
     assert get_error(out) is None
     assert get_result(out) == "queue_reply"
+    (response_format,) = sent
+    if isinstance(response_format, dict):
+        assert response_format["type"] == "json_schema"
+        assert response_format["json_schema"]["name"] == "Decision"
+        schema = response_format["json_schema"]["schema"]
+        assert set(schema["properties"]) == {"category", "needs_reply"}
 
 
 # ---------------------------------------------------------------------------

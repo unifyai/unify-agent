@@ -40,7 +40,7 @@ The script **always blocks** until all tests complete (or timeout), streaming pa
 
 - By default: One tmux session per *test*. All tests run concurrently (maximum speed).
 - With `-s`: One tmux session per *file*. Tests within a file run serially.
-- `-s` runs all of a file's tests in one process, each on its own event loop (`asyncio_default_test_loop_scope = function` in `pytest.ini`). That exposes module-level asyncio state (a queue, lock or task) left bound to an earlier test's loop, which the per-test default hides. Such state needs the dead-loop guard that `_adopt_running_loop` applies in `unify/conversation_manager/domains/managers_utils.py`.
+- `-s` runs all of a file's tests in one process, each on its own event loop (`asyncio_default_test_loop_scope = function` in `pytest.ini`). That exposes module-level asyncio state (a queue, lock or task) left bound to an earlier test's loop, which the per-test default hides. Such state needs the dead-loop guard that `_adopt_running_loop` applies in `unify/legacy/conversation_manager/domains/managers_utils.py`.
 
 **Examples:**
 ```bash

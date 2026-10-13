@@ -14,6 +14,10 @@ from typing import Any, Dict
 from unify.actor.environments.base import BaseEnvironment, ToolMetadata
 from unify.actor.environments.function_store import FunctionStoreEnvironment
 from unify.actor.environments.actor import ActorEnvironment
+from unify.actor.environments.environment_namespaces import (
+    EnvironmentNamespacesEnvironment,
+    registered_environments,
+)
 from unify.function_manager.primitives.registry import get_registry
 
 
@@ -91,5 +95,7 @@ __all__ = [
     "ToolMetadata",
     "FunctionStoreEnvironment",
     "ActorEnvironment",
+    "EnvironmentNamespacesEnvironment",
     "create_env",
+    "registered_environments",
 ]

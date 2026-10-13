@@ -1,5 +1,7 @@
 import asyncio
 import functools
+import json
+
 import pytest
 
 from unify.actor.simulated import SimulatedActor, SimulatedActorHandle
@@ -11,8 +13,22 @@ from tests.helpers import (
     DEFAULT_TIMEOUT,
     _unique_token,
 )
+from tests.baked_defaults import as_shipped  # noqa: F401
+from tests.scripted_model import ScriptedModel, reply, scripted
 
-pytestmark = pytest.mark.llm_call
+# as_shipped: deleted in step 5 (steerable handles)
+pytestmark = pytest.mark.usefixtures("as_shipped")
+# The structured-output, serial-ask, interject and ask tests script the
+# simulation's model (tests/scripted_model.py): its requests carry no tools,
+# so each is a ``query_llm`` request there. llm_call stays on the pause and
+# clarification tests, which go with that code in step 5. The other unmarked
+# tests drive the handle's own threads and queues and never send a request:
+# no response_format, so result() makes no model call.
+
+
+def _prompt(call) -> str:
+    """The text of the request's last message: the prompt the handle sent."""
+    return json.dumps(call.messages[-1]["content"])
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -42,20 +58,39 @@ class ActionResult(BaseModel):
 @pytest.mark.asyncio
 @_handle_project
 async def test_simulated_act_response_format():
-    """Simulated Actor.act should return structured output when response_format is provided."""
-    actor = SimulatedActor()
+    """Simulated Actor.act should return structured output when response_format is provided.
 
-    handle = await actor.act(
-        "Perform a quick demo task and report results",
-        response_format=ActionResult,
-    )
-    handle.trigger_completion()
-    result = await handle.result()
+    result() asks the model to restate the completed action in the format's
+    schema, sends that format with the request, and validates the reply into
+    the model class.
+    """
+    structured = {
+        "completed": True,
+        "steps_taken": ["Ran the demo task", "Collected the results"],
+        "outcome": "The demo task finished and its results were reported.",
+    }
+    model = ScriptedModel(query_llm=[reply(json.dumps(structured))])
+    with scripted(model):
+        actor = SimulatedActor()
+
+        handle = await actor.act(
+            "Perform a quick demo task and report results",
+            response_format=ActionResult,
+        )
+        handle.trigger_completion()
+        result = await handle.result()
 
     assert isinstance(result, ActionResult)
-    assert isinstance(result.completed, bool)
-    assert isinstance(result.steps_taken, list)
-    assert result.outcome.strip(), "Outcome should be non-empty"
+    assert result == ActionResult(**structured)
+
+    (call,) = model.calls
+    assert (
+        "Completed 'Perform a quick demo task and report results' (triggered)."
+        in _prompt(call)
+    )
+    # The format went with the request (as the class or its JSON schema).
+    assert "ActionResult" in json.dumps(call.request["response_format"])
+    model.assert_used_up()
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -68,35 +103,50 @@ async def test_stateful_memory_serial_asks():
     Two consecutive activities should share the same stateful LLM context.
     We exercise this by asking questions via the handle's ask() method.
 
-    Seed a unique token in the first ask and require the second ask to recall
-    it, rather than asking the model to invent a codename.
+    Seed a unique token in the first ask: the second ask's request must carry
+    the first exchange (the question with the token and the model's answer),
+    which is what lets the model recall it.
     """
-    actor = SimulatedActor()
-
     token = _unique_token("MARKER")
-    h1 = await actor.act("Start some new research.")
-    ask_handle1 = await h1.ask(
-        "Acknowledge the research start in one short sentence. "
-        f"Include this exact marker verbatim: {token}",
+    first = f"Research started. {token}"
+    model = ScriptedModel(
+        query_llm=[reply(first), reply(f"The marker was {token}.")],
     )
-    first_answer = (await ask_handle1.result()).strip()
-    assert first_answer, "First answer should not be empty"
+    with scripted(model):
+        actor = SimulatedActor()
 
-    h2 = await actor.act("Continue the research.")
-    ask_handle2 = await h2.ask(
-        "What exact marker did you include earlier? Quote it verbatim.",
-    )
-    answer2 = await ask_handle2.result()
-    assert (
-        isinstance(answer2, str) and answer2.strip()
-    ), "Second answer should be non-empty"
-    assert token in answer2, "LLM should recall the previously mentioned marker"
+        h1 = await actor.act("Start some new research.")
+        ask_handle1 = await h1.ask(
+            "Acknowledge the research start in one short sentence. "
+            f"Include this exact marker verbatim: {token}",
+        )
+        first_answer = (await ask_handle1.result()).strip()
+        assert first_answer == first
 
-    # Explicitly complete both handles
-    h1.trigger_completion()
-    h2.trigger_completion()
-    await h1.result()
-    await h2.result()
+        h2 = await actor.act("Continue the research.")
+        ask_handle2 = await h2.ask(
+            "What exact marker did you include earlier? Quote it verbatim.",
+        )
+        answer2 = await ask_handle2.result()
+        assert answer2 == f"The marker was {token}."
+
+        # Explicitly complete both handles
+        h1.trigger_completion()
+        h2.trigger_completion()
+        await h1.result()
+        await h2.result()
+
+    one, two = model.of("query_llm")
+    assert token in _prompt(one)
+    assert "Start some new research." in _prompt(one)
+    assert "Continue the research." in _prompt(two)
+    # The second request carries the first ask and its answer before it.
+    earlier = two.messages[:-1]
+    assert any(m["role"] == "user" and token in json.dumps(m["content"]) for m in earlier)
+    assert any(
+        m["role"] == "assistant" and m.get("content") == first for m in earlier
+    ), earlier
+    model.assert_used_up()
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -120,13 +170,25 @@ async def test_handle_interject(monkeypatch):
 
     monkeypatch.setattr(SimulatedActorHandle, "interject", wrapped, raising=True)
 
-    actor = SimulatedActor()
-    handle = await actor.act("Show me all steps performed so far.")
-    await asyncio.sleep(0.05)
-    await handle.interject("Also consider revenue trends.")
-    handle.trigger_completion()
-    await handle.result()
+    model = ScriptedModel(query_llm=[reply("Noted: revenue trends are in scope.")])
+    with scripted(model):
+        actor = SimulatedActor()
+        handle = await actor.act("Show me all steps performed so far.")
+        await asyncio.sleep(0.05)
+        await handle.interject("Also consider revenue trends.")
+        handle.trigger_completion()
+        result = await handle.result()
     assert calls["interject"] == 1, ".interject should be invoked exactly once"
+
+    # The interjection reaches the simulation's model and the result.
+    (call,) = model.calls
+    assert any(
+        m["role"] == "user" and "Also consider revenue trends." in json.dumps(m["content"])
+        for m in call.messages
+    ), call.messages
+    assert "Show me all steps performed so far." in _prompt(call)
+    assert "Guidance applied: 'Also consider revenue trends.'" in result
+    model.assert_used_up()
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -147,6 +209,7 @@ async def test_handle_stop(monkeypatch):
 # ────────────────────────────────────────────────────────────────────────────
 # 5.  Clarification handshake                                                 #
 # ────────────────────────────────────────────────────────────────────────────
+@pytest.mark.llm_call
 @pytest.mark.asyncio
 @_handle_project
 async def test_handle_requests_clarification():
@@ -171,6 +234,7 @@ async def test_handle_requests_clarification():
     assert "q1 report" in result.lower()
 
 
+@pytest.mark.llm_call
 @pytest.mark.asyncio
 @_handle_project
 async def test_next_clarification_blocks_without_queue():
@@ -205,6 +269,7 @@ async def test_next_clarification_blocks_without_queue():
 # ────────────────────────────────────────────────────────────────────────────
 # 6.  Pause → Resume round-trip                                              #
 # ────────────────────────────────────────────────────────────────────────────
+@pytest.mark.llm_call
 @pytest.mark.asyncio
 @_handle_project
 async def test_handle_pause_and_resume(monkeypatch):
@@ -263,24 +328,33 @@ async def test_handle_pause_and_resume(monkeypatch):
 @pytest.mark.asyncio
 @_handle_project
 async def test_handle_ask():
-    actor = SimulatedActor()
-    handle = await actor.act("Summarize all unread messages this week.")
+    answer = "Emphasise the two messages that need a reply today."
+    model = ScriptedModel(query_llm=[reply(answer)])
+    with scripted(model):
+        actor = SimulatedActor()
+        handle = await actor.act("Summarize all unread messages this week.")
 
-    # Ask a follow-up while running
-    await asyncio.sleep(0.05)
-    ask_handle = await handle.ask("What is the key point to emphasize?")
-    reply = await ask_handle.result()
-    assert isinstance(reply, str) and reply.strip()
+        # Ask a follow-up while running
+        await asyncio.sleep(0.05)
+        ask_handle = await handle.ask("What is the key point to emphasize?")
+        assert await ask_handle.result() == answer
 
-    # Trigger completion and get the result
-    handle.trigger_completion()
-    result = await handle.result()
-    assert isinstance(result, str) and result.strip()
+        # Trigger completion and get the result
+        handle.trigger_completion()
+        result = await handle.result()
+    assert result == "Completed 'Summarize all unread messages this week.' (triggered)."
+
+    # The question reaches the model with the action it is about.
+    (call,) = model.calls
+    assert "User asks: What is the key point to emphasize?" in _prompt(call)
+    assert "Summarize all unread messages this week." in _prompt(call)
+    model.assert_used_up()
 
 
 # ────────────────────────────────────────────────────────────────────────────
 # 8.  Pause should freeze duration timer                                       #
 # ────────────────────────────────────────────────────────────────────────────
+@pytest.mark.llm_call
 @pytest.mark.asyncio
 @_handle_project
 async def test_pause_freezes_duration():
@@ -346,6 +420,7 @@ async def test_next_notification_emits_progress():
 # ────────────────────────────────────────────────────────────────────────────
 # 10.  Stop while paused should finish immediately                           #
 # ────────────────────────────────────────────────────────────────────────────
+@pytest.mark.llm_call
 @pytest.mark.asyncio
 @_handle_project
 async def test_stop_while_paused_finishes_immediately():
@@ -379,6 +454,7 @@ async def test_stop_while_paused_finishes_immediately():
 # ────────────────────────────────────────────────────────────────────────────
 # 11.  Stop while waiting for clarification should finish immediately         #
 # ────────────────────────────────────────────────────────────────────────────
+@pytest.mark.llm_call
 @pytest.mark.asyncio
 @_handle_project
 async def test_stop_while_waiting_for_clarification_finishes_immediately():
