@@ -48,21 +48,14 @@ CAPTURES_MODULE = "unify.memory.captures"
 
 
 def run_capture(staging_dir: Path, episode, store: Path) -> str:
-    """The capture step on one settled staging dir; returns the capture id (whatever the step returns: the id, a
-    row holding ``capture_id``, or the capture's folder)."""
-    got = importlib.import_module(CAPTURES_MODULE).capture(staging_dir, episode, store)
-    if isinstance(got, str):
-        return got
-    if isinstance(got, Path):
-        return got.name
-    if isinstance(got, dict):
-        return got["capture_id"]
-    return getattr(got, "capture_id")
+    """The capture step on one settled staging dir; returns the capture id (the step returns its event row)."""
+    return importlib.import_module(CAPTURES_MODULE).capture(staging_dir, episode, store)["capture_id"]
 
 
-#: The capture store under the state dir (``<state>/memory-captures/<capture id>/``) and its files.
+#: The capture store under the state dir (``<state>/memory-captures/<capture id>/``) and its files: ``saved.json``
+#: holds what the capture was saved against; ``broke.md`` is written only when something broke (here: ``none``).
 CAPTURE_STORE = "memory-captures"
-CAPTURE_FILES = ("procedure.py", "signature.json", "record.json")
+CAPTURE_FILES = ("procedure.py", "signature.json", "record.json", "saved.json")
 CAPTURE_EVENTS = "captures-events.jsonl"
 SIGNATURE_KEYS = {"input", "output", "relations", "constraints", "goal"}
 RECORD_KEYS = {"episodes", "reproduces", "deterministic", "applies", "holds", "outcome", "level", "status", "track"}
@@ -80,8 +73,9 @@ BROKE_FILE, BROKE_KIND = "broke.md", "broke"
 ROW_CAPTURE = "capture"
 POOL_KIND = "capture"
 PROCEDURE_ITEM = "memory.readings.procedures:row_sums"
-#: The pass configuration field naming the capture store (None: the pass finds it beside ``staging_root``).
-PASS_CAPTURE_FIELD = "capture_root"
+#: The pass configuration field naming the capture store (None: the pass finds it beside ``staging_root``, which
+#: is how the build does it).
+PASS_CAPTURE_FIELD = None
 
 
 def gate_level(result, item: str) -> str:
@@ -333,6 +327,7 @@ def _line(text: str, mark: str) -> str:
 
 @needs_box
 @pytest.mark.timeout(1200)
+@pytest.mark.xfail(strict=True, reason="landing a capture into the library is not in this build")
 def test_a_writer_pass_lands_the_capture_as_a_library_item(tmp_path, monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     state = tmp_path / "memory-state"

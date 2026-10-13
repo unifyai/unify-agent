@@ -70,13 +70,15 @@ NAMES_SENTENCE_END = "already available as variables in every cell; no import ne
 #: The shared opening's first line and the start of its last part (``tool_registry.preamble``).
 OPENING_HEADING = "## How you work here"
 OPENING_LAST = "You end your work with"
-#: Design B.1: ``tool_registry.prebound_names(agent, facts)``; *facts* as this run's configuration gives them.
+#: Design B.1: ``tool_registry.prebound_names(agent, facts)``; *facts* as this run's configuration gives them. The
+#: keys it reads: ``tools`` (tools in code), ``memory`` (the library package is in the box) and, for the actor,
+#: ``clarification`` (its session can ask its requester; left off here, so ``request_clarification`` is not required).
 PREBOUND_FACTS = {
-    "actor": {"tools_in_code": True, "library": True, "clarification": False},
-    "teammate": {"tools_in_code": True, "library": True, "clarification": False},
-    "writer": {"tools_in_code": True, "library": True},
-    "curator": {"tools_in_code": True, "library": True},
-    "helper": {"tools_in_code": True, "library": True},
+    "actor": {"tools": True, "memory": True, "clarification": False},
+    "teammate": {"tools": True, "memory": True},
+    "writer": {"tools": True, "memory": True},
+    "curator": {"tools": True, "memory": True},
+    "helper": {"tools": True, "memory": True},
 }
 
 
@@ -84,8 +86,11 @@ def prebound_names(role: str) -> list[str]:
     return list(R.prebound_names(role, PREBOUND_FACTS[role]))
 
 
-#: The reviewed list of spans that do not parse, one ``<role>\t<span>`` per line.
+#: The reviewed list of spans that do not parse, one ``<role>\t<span>`` per line (design F.1, step 2).
 SKIPPED_LIST = Path(__file__).parent / "data" / "contract_skipped.txt"
+#: The spans a prompt shows that parse but are not calls to run (what not to call, a form written in library code, a
+#: command quoted for reference), each with its reason: the reviewed list of the other contract test, kept in one place.
+from tests.memory.test_prompt_runtime_contract import NOT_RUN  # noqa: E402
 # ── end of assumed names ──────────────────────────────────────────────────────────────────────────────────────
 
 ROLES = ("actor", "teammate", "writer", "curator", "helper")
@@ -141,6 +146,9 @@ BARE_RULES = {
     "source": "'request:0'",
     "agent": "'writer'",
     "factory": "None",
+    # the helper's prompt shows ``tools.ask(question)``; ``tools.stage``'s first example stages ``src``
+    "question": "'@writer is there anything to add?'",
+    "src": "'def area(w, h):\\n    return w * h\\n'",
 }
 
 MEMORY_END = {
@@ -162,6 +170,7 @@ def _prepare(text: str, names: list[str] | None) -> pc.Plan:
         bare_rules=BARE_RULES,
         namespace=names or [],
         example=_example,
+        skip=NOT_RUN,
     )
 
 

@@ -1,6 +1,7 @@
 """The calls a prompt shows, taken from its text and made ready to run as written in an agent's own sandbox.
 
-Used by the prompt-to-runtime contract test (``test_prompt_runtime_contract.py``). Nothing here imports the harness:
+Used by the prompt-to-runtime contract test (``test_prompt_runtime_contract_from_spec.py``). Nothing here imports the
+harness:
 
 * :func:`spans` takes every inline code span and fenced block of a prompt, with the sentence around it;
 * :func:`prepare` fills each placeholder by one fixed rule (a table the test owns), decides whether the span is a
@@ -205,6 +206,7 @@ def prepare(
     bare_rules: dict[str, str],
     namespace: Iterable[str],
     example: Callable[[str], Optional[str]],
+    skip: Iterable[str] = (),
 ) -> Plan:
     """The calls *text* shows, ready to run in a sandbox whose names before the first cell are *namespace*.
 
@@ -216,11 +218,15 @@ def prepare(
       first registry example (None: a failure). ``f(...)`` on any other name only resolves ``f`` (the shape of its
       arguments is not shown).
     * A call of an end tool (``tools.finish``, ``tools.done``) runs last.
+    * A span in *skip* (the reviewed spans a prompt shows as something not to run) is neither run nor listed.
     """
     plan = Plan()
     bound_before = set(namespace) | set(dir(builtins))
     seen: set[str] = set()
+    skipped = set(skip)
     for sp in spans(text):
+        if sp.text in skipped:
+            continue
         filled, missing = fill(sp.text, angle_rules)
         try:
             tree = ast.parse(filled)

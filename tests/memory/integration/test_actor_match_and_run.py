@@ -3,7 +3,8 @@
 A recorded episode's fork staged a procedure, and the capture step stored it (``tests/memory/test_capture_end_to_end``).
 The next request, of the same work with other numbers and another reference line, opens in library mode: its copy
 of the library holds the capture under ``.memory/captures/``. The scripted actor never writes an import line: its
-first cell calls ``memory.match(<the request>)``, its second ``memory.run("capture:<id>", <the request>)``. The
+first cell calls ``memory.match(<the request>, inputs=<its rows>)``, its second
+``memory.run("capture:<id>", <the request>)``. The
 episode's use record, written as ``memory_use.json`` by the episode writer, then records:
 
 * ``memory_bound: true`` (the worker bound ``memory`` in every cell);
@@ -46,9 +47,15 @@ from unify.memory.redact import Redactor
 from unify.settings import SETTINGS
 
 # ── assumed names: the integrator adapts these to the build in this one block ─────────────────────────────────
-#: Design I.4.1 and I.5.1: the helpers ``memory.match(text)`` and ``memory.run(target, text)``, counted in the use
-#: record's ``library_helper_calls`` by these names.
+#: Design I.4.1 and I.5.1, with J.3's seam: the helpers ``memory.match(request=None, inputs=None)`` and
+#: ``memory.run(item, /, *args, **kwargs)`` (``unify/memory/library_helper.py``), counted in the use record's
+#: ``library_helper_calls`` by these names.
 MATCH, RUN = "match", "run"
+#: The match cell. The build's default matcher compares structure only and reads the request's text as JSON only
+#: (J.3 supersedes I.4.1's reader step), so the actor passes the rows it has read from the request as ``inputs``.
+MATCH_CALL = "memory.match({request!r}, inputs={inputs!r})"
+#: The run cell: the captured procedure is given the request's text and reads its input from it.
+RUN_CALL = "memory.run({item!r}, {request!r})"
 #: Design I.5.1: a capture's call raises ``memory.call`` with this id, so its use row is keyed by it.
 CAPTURE_ITEM = "capture:{cid}"
 #: Design I.2.6: the actor's copy of the capture store.
@@ -61,8 +68,10 @@ WANT = {"sums": [3, 30]}
 
 
 def _cells(cid: str) -> tuple[str, str]:
-    match = f"rows = memory.match({NEW_REQUEST!r})\nprint('MATCH', rows)\n"
-    run = f"report = memory.run({('capture:' + cid)!r}, {NEW_REQUEST!r})\nprint('RUN', report)\n"
+    rows = [list(r) for r in NEW_ROWS]
+    match = f"rows = {MATCH_CALL.format(request=NEW_REQUEST, inputs=rows)}\nprint('MATCH', rows)\n"
+    item = CAPTURE_ITEM.format(cid=cid)
+    run = f"report = {RUN_CALL.format(item=item, request=NEW_REQUEST)}\nprint('RUN', report)\n"
     return match, run
 
 

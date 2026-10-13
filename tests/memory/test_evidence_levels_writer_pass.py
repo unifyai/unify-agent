@@ -37,13 +37,16 @@ from unify.memory.writer_pass import PassConfig, WriterPass
 from unify.settings import SETTINGS
 
 # ── assumed names: the integrator adapts these to the build in this one block ─────────────────────────────────
-#: Design I.11 decision 3: the evidence levels, lowest first (I.3.1's unverified, experimental, verified).
-LEVELS = ("unchecked", "reproduces-its-case", "confirmed-by-outcomes")
-LEVEL_LOW, LEVEL_TOP = LEVELS[1], LEVELS[2]
+#: Design I.11 decision 3: the evidence levels, lowest first. I.3.1's ``experimental`` is ``unchecked`` (I.11: it
+#: means the status ``on-trial`` at the level ``unchecked``) and its ``verified`` is ``reproduces-its-case``; the
+#: gate gives only those two, and ``confirmed-by-outcomes`` comes from outcomes after use, never from the gate.
+from unify.memory.item_states import LEVELS, REPRODUCES_ITS_CASE, UNCHECKED  # noqa: E402
+
+LEVEL_LOW, LEVEL_TOP = UNCHECKED, REPRODUCES_ITS_CASE
 #: Design I.3.3: the ``fixture`` tool's argument naming the stored reader.
 PARSER_ARG = "parser"
 #: The evidence finding a value computed from recorded text by the test itself is capped for (I.3.2).
-GROUNDED_CODE = "grounded"
+GROUNDED_CODE = "[examples:grounded]"
 
 
 def gate_level(result, item: str) -> str:
