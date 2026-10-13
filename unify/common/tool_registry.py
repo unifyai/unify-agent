@@ -2024,9 +2024,10 @@ def example_call(name: str, schema: dict, examples: Iterable[str] = (), base: Op
     for source in examples:
         for text, call in _tool_calls(source, name):
             args = _bound(call, order)
-            if args is not None and set(first) <= set(args):
-                literal = {k: v for k, v in args.items() if v is not _VARIABLE}
-                if set(args) <= set(props) and validate(schema, literal) is None:
+            if args is not None and set(first) <= set(args) and set(args) <= set(props):
+                # a variable stands for a valid value: check a value of its type in its place
+                values = {k: _sample(props[k] or {}) if v is _VARIABLE else v for k, v in args.items()}
+                if validate(schema, values) is None:
                     return text
             for key, node in list(zip(base_order, call.args)) + [(k.arg, k.value) for k in call.keywords]:
                 if key in props and key not in seen:
