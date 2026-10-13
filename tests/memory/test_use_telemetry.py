@@ -1783,6 +1783,26 @@ def test_catalogue_lookups_in_cells_count_as_exposure():
     assert only["items"] == [] and only["channels"] == ["x"]  # channel lines only
 
 
+def test_the_env_catalogue_calls_count_as_the_lookups_they_took_over():
+    """``env.items`` shows what ``memory.catalog`` did and ``env.get`` what ``memory.describe`` did: the same exposure
+    and the same call counts, by attribute or by name, and neither is read as a channel module."""
+    rec = _static(
+        [
+            "import env\nprint(env.items())\n",
+            "print(env.items('env.x'))\nprint(env.get('env/x:strict'))\n",
+            "from env import get as g\ng(ref='x.lookup')\n",
+        ],
+    )
+    assert rec["cell_exposure"] == {
+        "items": ITEMS,  # the channel view lists its functions
+        "channels": ["x"],
+        "calls": {"catalog": 2, "find": 0, "describe": 2, "help": 0},
+    }
+    assert rec["module_imports"] == {} and "env/x:strict" not in rec["items"]
+    only = _static(["import env\nenv.items(page=2)\n"])["cell_exposure"]
+    assert only["items"] == [] and only["channels"] == ["x"]  # channel lines only
+
+
 def test_describe_and_help_show_one_function_and_nothing_is_guessed():
     rec = _static(
         [
