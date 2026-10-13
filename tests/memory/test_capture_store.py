@@ -1,0 +1,691 @@
+"""Capturing every completed attempt at once, into a store of its own beside the library.
+
+When the episode-end fork settles, the harness (never an agent) captures the attempt: it checks the fork's
+``procedure.py`` for safety, runs it confined on the episode's request text, compares its result with what the
+episode handed back, and writes ``procedure.py``, ``signature.json`` and ``record.json`` under
+``<store>/<capture id>/``, where the capture id is the first 16 hex digits of the sha256 of ``procedure.py``. The
+store is not the library: only the writer edits the library, and the writer reads captures as pool entries.
+
+The applicability signature is computed by the harness and holds no identifier and no request text, even when the
+request prints aliases or ids. A failed attempt is captured as negative knowledge (``outcome: "failed"``).
+
+Every name this file assumes for code that does not exist yet is in the block of constants below, so the code's
+real names can be put in one place.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import importlib
+import json
+import os
+import shutil
+import sys
+import threading
+from pathlib import Path
+
+import pytest
+
+from tests.actor.code_act.sandbox_world import world  # noqa: F401
+from unify.memory.episodes import Action, Episode
+from unify.memory.signals import Signal
+
+# ---------------------------------------------------------------------------------------------------------------
+# Assumed names (the spec leaves these open; adapt them here)
+# ---------------------------------------------------------------------------------------------------------------
+#: The capture step's module and function: ``capture(staging_dir, episode, store, *, signals, checker_visible)``.
+CAPTURES_MODULE = "unify.memory.captures"
+CAPTURE_FN = "capture"
+#: The store's directory name under the state home, and the ``Paths`` property that names it.
+STORE_DIR_NAME = "memory-captures"
+PATHS_STORE_ATTR = "captures"
+#: The files of one capture, and the store's event log.
+PROCEDURE_FILE = "procedure.py"
+SIGNATURE_FILE = "signature.json"
+RECORD_FILE = "record.json"
+EVENTS_FILE = "captures-events.jsonl"
+#: Fork files: the procedure and what broke, and their block kinds in the fork's ledger.
+FORK_PROCEDURE = "procedure.py"
+FORK_BROKE = "broke.md"
+FORK_PROCEDURE_KIND = "procedure"
+FORK_BROKE_KIND = "broke"
+#: Signature fields.
+SIGNATURE_FIELDS = ("input", "output", "relations", "constraints", "goal")
+#: Reproduction outcomes, the failed outcome, and the renamed starting level and status.
+REPRODUCES, DIFFERS = "reproduces", "differs"
+FAILED = "failed"
+LEVELS = ("unchecked", "reproduces-its-case", "confirmed-by-outcomes")
+START_STATUS = "on-trial"
+#: Pool kinds the writer reads captures through, and the pool's reader of the store.
+POOL_CAPTURE_KIND = "capture"
+POOL_FAILURE_KIND = "failure"
+POOL_FROM_CAPTURES = "from_captures"  # pool.from_captures(store) -> list[Entry]
+#: The writer's tool that lands a capture, and its brief text (quoted from the spec).
+LAND_TOOL = "land_capture"
+LAND_CALL_TEXT = "land_capture(capture_id, package, name)"
+BRIEF_CAPTURE_TEXT = "The harness has already run each procedure on its recorded request"
+BRIEF_FAILURE_TEXT = (
+    "A failed capture is knowledge too: a note of what broke, or a test marked as a known failure."
+)
+
+
+def _capture(staging: Path, ep: Episode, store: Path, signals: list[Signal]):
+    mod = importlib.import_module(CAPTURES_MODULE)
+    return getattr(mod, CAPTURE_FN)(
+        staging,
+        ep,
+        store,
+        signals=signals,
+        checker_visible=True,
+    )
+
+
+def _from_captures(store: Path):
+    from unify.memory import pool
+
+    return getattr(pool, POOL_FROM_CAPTURES)(store)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+
+needs_bwrap = pytest.mark.skipif(
+    shutil.which("bwrap") is None or not sys.platform.startswith("linux"),
+    reason="bubblewrap required: model-written code runs only confined",
+)
+
+#: Identifiers the request prints; none may reach a signature.
+IDS = ("ALPHA-7731", "cobalt-otter", "3f9a2c1e")
+OTHER_IDS = ("BRAVO-0042", "amber-lynx", "7d1e0b44")
+
+
+def _request(ids=IDS, numbers="5 3 9 1") -> str:
+    return (
+        f"Ticket {ids[0]} (alias: {ids[1]}), ref {ids[2]}\n"
+        "Sort the numbers below in ascending order and reply with the list.\n"
+        f"{numbers}\n"
+    )
+
+
+def _summary(ids=IDS) -> str:
+    return (
+        "## Asked\n"
+        f"Sort the numbers of ticket {ids[0]} (alias: {ids[1]}, ref {ids[2]}) in ascending order.\n\n"
+        "## Approach\nParsed the last line of numbers and sorted them.\n\n"
+        "## Worked\nsorted() on the parsed list.\n\n"
+        "## Failed\nnone\n\n"
+        "## Outcome\nThe list was handed back.\n"
+    )
+
+
+PROCEDURE = '''"""Sort the numbers of a request. Accepted: not shown."""
+import os
+import re
+
+
+def read_input(text):
+    """The numbers on the last line that holds only digits and spaces."""
+    rows = [ln for ln in text.splitlines() if ln.strip() and re.fullmatch(r"[0-9 ]+", ln.strip())]
+    return [int(x) for x in rows[-1].split()]
+
+
+def run(value):
+    """The numbers in ascending order."""
+    return sorted(value)
+
+
+def applies(value):
+    """A list of whole numbers."""
+    return isinstance(value, list) and all(isinstance(x, int) for x in value)
+
+
+def holds(value, result):
+    """The result is the input in ascending order."""
+    return result == sorted(value)
+'''
+
+#: Ignores its input: reproduces on [5, 3, 9, 1], differs on any other list of the same shape.
+CONSTANT_PROCEDURE = '''"""Always the same list."""
+
+
+def read_input(text):
+    """The numbers on the last line."""
+    return [int(x) for x in text.strip().splitlines()[-1].split()]
+
+
+def run(value):
+    """A fixed list."""
+    return [1, 3, 5, 9]
+'''
+
+RANDOM_PROCEDURE = '''"""Sorted, with noise."""
+import random
+
+
+def read_input(text):
+    """The numbers on the last line."""
+    return [int(x) for x in text.strip().splitlines()[-1].split()]
+
+
+def run(value):
+    """The numbers in ascending order, plus a random draw."""
+    return sorted(value) + [random.random()]
+'''
+
+WRONG_PROCEDURE = '''"""Sort descending (the request asked for ascending)."""
+
+
+def read_input(text):
+    """The numbers on the last line."""
+    return [int(x) for x in text.strip().splitlines()[-1].split()]
+
+
+def run(value):
+    """The numbers in descending order."""
+    return sorted(value, reverse=True)
+'''
+
+#: A planted, readable, key-shaped test string (never a real credential).
+PLANTED_KEY = "sk-" + "planted-test-value-" * 2  # pragma: allowlist secret
+#: The planted environment value a confined run must never see.
+PLANTED_ENV_NAME = "CAPTURE_TEST_PLANTED_VALUE"
+PLANTED_ENV_VALUE = "planted-readable-value-for-capture-tests"  # pragma: allowlist secret
+
+
+def _confinement_probe(sentinel: Path) -> str:
+    """A procedure that tries to write a host file and reads a planted environment value; it reproduces only when
+    it runs with an empty environment, and the host file appears only if it ran on the host."""
+    return f'''"""Sort, while probing the box."""
+import os
+
+
+def read_input(text):
+    """The numbers on the last line."""
+    return [int(x) for x in text.strip().splitlines()[-1].split()]
+
+
+def run(value):
+    """The numbers in ascending order."""
+    try:
+        with open({str(sentinel)!r}, "w") as f:
+            f.write("ran on the host")
+    except OSError:
+        pass
+    if os.environ.get({PLANTED_ENV_NAME!r}):
+        return []
+    return sorted(value)
+'''
+
+
+def _cid(source: str) -> str:
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
+
+
+def _episode(eid: str, request: str, handed_back) -> Episode:
+    return Episode(
+        episode_id=eid,
+        started_at="2026-10-13T01:00:00Z",
+        ended_at="2026-10-13T01:01:00Z",
+        build="0" * 9,
+        model="test/model",
+        effort="low",
+        regime="dense",
+        memory_main="0" * 40,
+        worktree_before=None,
+        worktree_after=None,
+        request=[request],
+        transcript=[{"role": "user", "content": request}],
+        cells=[],
+        actions=[
+            Action(
+                0,
+                "user",
+                "act",
+                [handed_back],
+                {},
+                "received",
+                "ok",
+                "write",
+                kind="dialogue",
+            ),
+        ],
+        replies=[json.dumps(handed_back)],
+    )
+
+
+def _signal(eid: str, label: str) -> Signal:
+    return Signal(
+        signal_id=f"{eid}-checker",
+        episode_id=eid,
+        source="checker",
+        label=label,
+        ts="2026-10-13T01:01:00Z",
+        regime="dense",
+        visible_to_actor=True,
+    )
+
+
+def _stage(
+    home: Path,
+    eid: str,
+    procedure: str | None,
+    *,
+    summary: str | None = None,
+    broke: str = "none\n",
+) -> Path:
+    """A settled fork's staging directory, as the fork worker leaves it."""
+    d = home / "memory-staging" / eid
+    d.mkdir(parents=True)
+    (d / "summary.md").write_text(summary if summary is not None else _summary())
+    if procedure is not None:
+        (d / FORK_PROCEDURE).write_text(procedure)
+    (d / FORK_BROKE).write_text(broke)
+    (d / "fork.json").write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "episode": eid,
+                "procedure": procedure is not None,
+                "broke": True,
+            },
+        ),
+    )
+    return d
+
+
+def _store(home: Path) -> Path:
+    return home / STORE_DIR_NAME
+
+
+def _record(store: Path, cid: str) -> dict:
+    return json.loads((store / cid / RECORD_FILE).read_text())
+
+
+def _signature_bytes(store: Path, cid: str) -> str:
+    return (store / cid / SIGNATURE_FILE).read_text()
+
+
+def _events(store: Path) -> list[dict]:
+    p = store / EVENTS_FILE
+    if not p.exists():
+        return []
+    return [json.loads(ln) for ln in p.read_text().splitlines() if ln.strip()]
+
+
+def _held(relations) -> set[str]:
+    """The relation names that held, from a list of names or a mapping of name to bool."""
+    if isinstance(relations, dict):
+        return {k for k, v in relations.items() if v}
+    return set(relations or [])
+
+
+def _tree_bytes(root: Path, skip: Path) -> dict[str, bytes]:
+    out = {}
+    for p in sorted(root.rglob("*")):
+        if p.is_file() and skip not in p.parents:
+            out[p.relative_to(root).as_posix()] = p.read_bytes()
+    return out
+
+
+def _captured(tmp_path: Path, procedure: str = PROCEDURE, *, ids=IDS, label="pass"):
+    home = tmp_path / "home"
+    eid = "ep-0001"
+    staging = _stage(home, eid, procedure, summary=_summary(ids))
+    store = _store(home)
+    _capture(staging, _episode(eid, _request(ids), [1, 3, 5, 9]), store, [_signal(eid, label)])
+    return store, _cid(procedure)
+
+
+# --- the fork writes the procedure and what broke ------------------------------------------------------------
+
+
+def test_the_fork_may_write_a_procedure_and_what_broke():
+    from unify.memory.integration import fork_worker as fw
+
+    assert any(rx.fullmatch(FORK_PROCEDURE) for rx in fw.ALLOWED)
+    assert any(rx.fullmatch(FORK_BROKE) for rx in fw.ALLOWED)
+    assert fw.kind(FORK_PROCEDURE) == FORK_PROCEDURE_KIND
+    assert fw.kind(FORK_BROKE) == FORK_BROKE_KIND
+    # only those exact names: no directories, no other suffixes
+    assert not any(rx.fullmatch("x/procedure.py") for rx in fw.ALLOWED)
+    assert not any(rx.fullmatch("procedure.sh") for rx in fw.ALLOWED)
+
+
+# --- a completed attempt is captured with its procedure and signature ----------------------------------------
+
+
+@needs_bwrap
+def test_a_completed_attempt_is_captured_with_its_procedure_signature_and_record(
+    tmp_path,
+):
+    store, cid = _captured(tmp_path)
+    d = store / cid
+    assert (d / PROCEDURE_FILE).read_text() == PROCEDURE
+    sig = json.loads((d / SIGNATURE_FILE).read_text())
+    assert set(SIGNATURE_FIELDS) <= set(sig)
+    assert sig["input"] and sig["output"]
+    held = _held(sig["relations"])
+    assert "same_outer_length" in held and "scalar_output" not in held
+    constraints = json.dumps(sig["constraints"])
+    assert "applies" in constraints and "holds" in constraints
+    assert "ascending" in sig["goal"]  # the goal is the summary's Asked section
+
+    rec = _record(store, cid)
+    assert rec["episodes"] == ["ep-0001"]
+    assert rec["reproduces"] == REPRODUCES
+    assert rec["deterministic"] is True
+    assert rec["applies"] is True and rec["holds"] is True
+    assert rec["outcome"] != FAILED
+    assert rec["level"] in LEVELS[:2]
+    assert rec["status"] == START_STATUS
+    assert isinstance(rec["track"], dict)
+
+    rows = _events(store)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["capture_id"] == cid and row["episode"] == "ep-0001"
+    assert row["safety"] == "ok" and row["reproduces"] == REPRODUCES
+    assert row["published_at"]
+
+
+@needs_bwrap
+def test_the_signature_carries_no_identifier_or_request_text(tmp_path):
+    store, cid = _captured(tmp_path)
+    text = _signature_bytes(store, cid)
+    for ident in IDS:
+        assert ident not in text, ident
+    assert "5 3 9 1" not in text
+    assert "Sort the numbers below" not in text
+
+
+@needs_bwrap
+def test_the_signature_is_the_same_when_only_printed_identifiers_change(tmp_path):
+    a, cid = _captured(tmp_path / "a", ids=IDS)
+    b, cid_b = _captured(tmp_path / "b", ids=OTHER_IDS)
+    assert cid == cid_b
+    assert json.loads(_signature_bytes(a, cid)) == json.loads(_signature_bytes(b, cid))
+    for ident in OTHER_IDS:
+        assert ident not in _signature_bytes(b, cid)
+
+
+@needs_bwrap
+def test_the_procedure_runs_confined_never_on_the_host(tmp_path, monkeypatch, request):
+    # outside /tmp on purpose: the box's /tmp is private, so a probe there would prove nothing
+    root = Path(__file__).resolve().parents[2] / "logs" / "capture_store_tests"
+    digest = hashlib.md5(request.node.nodeid.encode()).hexdigest()[:12]
+    probe_dir = root / f"{digest}-{os.getpid()}"
+    shutil.rmtree(probe_dir, ignore_errors=True)
+    probe_dir.mkdir(parents=True)
+    sentinel = probe_dir / "escaped.txt"
+    monkeypatch.setenv(PLANTED_ENV_NAME, PLANTED_ENV_VALUE)
+    try:
+        source = _confinement_probe(sentinel)
+        store, cid = _captured(tmp_path, source)
+        assert not sentinel.exists(), "the procedure ran on the host"
+        assert _record(store, cid)["reproduces"] == REPRODUCES  # it saw an empty environment
+    finally:
+        shutil.rmtree(probe_dir, ignore_errors=True)
+
+
+@needs_bwrap
+def test_a_procedure_that_ignores_its_input_differs_on_a_second_request(tmp_path):
+    home = tmp_path / "home"
+    store = _store(home)
+    first = _stage(home, "ep-0001", CONSTANT_PROCEDURE)
+    _capture(
+        first,
+        _episode("ep-0001", _request(), [1, 3, 5, 9]),
+        store,
+        [_signal("ep-0001", "pass")],
+    )
+    second = _stage(home, "ep-0002", CONSTANT_PROCEDURE)
+    _capture(
+        second,
+        _episode("ep-0002", _request(numbers="8 2 7 4"), [2, 4, 7, 8]),
+        store,
+        [_signal("ep-0002", "pass")],
+    )
+    rows = {r["episode"]: r for r in _events(store)}
+    assert rows["ep-0001"]["reproduces"] == REPRODUCES
+    assert rows["ep-0002"]["reproduces"] == DIFFERS
+    # the same code is one capture; both attempts join its record
+    cid = _cid(CONSTANT_PROCEDURE)
+    assert sorted(_record(store, cid)["episodes"]) == ["ep-0001", "ep-0002"]
+    assert [p.name for p in store.iterdir() if p.is_dir()] == [cid]
+
+
+@needs_bwrap
+def test_a_non_deterministic_procedure_is_marked(tmp_path):
+    store, cid = _captured(tmp_path, RANDOM_PROCEDURE)
+    assert _record(store, cid)["deterministic"] is False
+
+
+@needs_bwrap
+def test_a_key_shaped_string_is_refused_before_anything_runs(tmp_path):
+    source = PROCEDURE + f"\nTOKEN = {PLANTED_KEY!r}\n"
+    store, cid = _captured(tmp_path, source)
+    assert not (store / cid).exists()
+    rows = _events(store)
+    assert len(rows) == 1 and rows[0]["safety"] != "ok"
+    for p in store.rglob("*"):
+        if p.is_file():
+            assert PLANTED_KEY not in p.read_text(errors="replace"), p
+
+
+@needs_bwrap
+def test_an_attempt_without_a_procedure_captures_nothing(tmp_path):
+    home = tmp_path / "home"
+    staging = _stage(home, "ep-0001", None)
+    store = _store(home)
+    _capture(
+        staging,
+        _episode("ep-0001", _request(), [1, 3, 5, 9]),
+        store,
+        [_signal("ep-0001", "pass")],
+    )
+    assert not store.exists() or not [p for p in store.iterdir() if p.is_dir()]
+
+
+@needs_bwrap
+def test_concurrent_captures_of_the_same_code_share_one_record(tmp_path):
+    home = tmp_path / "home"
+    store = _store(home)
+    errors: list[BaseException] = []
+
+    def one(eid: str) -> None:
+        try:
+            staging = _stage(home, eid, PROCEDURE)
+            _capture(
+                staging,
+                _episode(eid, _request(), [1, 3, 5, 9]),
+                store,
+                [_signal(eid, "pass")],
+            )
+        except BaseException as exc:  # noqa: BLE001 - reported below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=one, args=(f"ep-000{i}",)) for i in (1, 2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=300)
+    assert not errors, errors
+    cid = _cid(PROCEDURE)
+    assert sorted(_record(store, cid)["episodes"]) == ["ep-0001", "ep-0002"]
+    assert len(_events(store)) == 2
+
+
+# --- a failure is captured as negative knowledge -------------------------------------------------------------
+
+
+@needs_bwrap
+def test_an_attempt_with_a_contrary_signal_is_captured_as_failed(tmp_path):
+    store, cid = _captured(tmp_path, label="fail")
+    rec = _record(store, cid)
+    assert rec["outcome"] == FAILED
+    assert rec["status"] == START_STATUS
+
+
+@needs_bwrap
+def test_a_procedure_whose_result_differs_is_captured_as_failed(tmp_path):
+    store, cid = _captured(tmp_path, WRONG_PROCEDURE)
+    rec = _record(store, cid)
+    assert rec["reproduces"] == DIFFERS
+    assert rec["outcome"] == FAILED
+    assert rec["level"] == LEVELS[0]
+
+
+# --- the store sits outside every root a box can write or read -----------------------------------------------
+
+
+def test_the_store_is_harness_only_state():
+    from unify.memory.integration.paths import Paths
+
+    paths = Paths.under(Path("/srv/unify-home"))
+    store = getattr(paths, PATHS_STORE_ATTR)
+    assert store.name == STORE_DIR_NAME
+    assert store in paths.harness_only()
+    for p in (paths.checkout, paths.memory):
+        assert p != store and p not in store.parents and store not in p.parents
+
+
+def _within(p: Path, root: Path) -> bool:
+    p, root = Path(os.path.realpath(p)), Path(os.path.realpath(root))
+    return p == root or root in p.parents
+
+
+def test_no_cell_can_read_or_write_the_store(world):  # noqa: F811
+    from unify import sandbox, transcripts
+    from unify.memory.integration.paths import Paths
+
+    paths = Paths.under(world["state"])
+    store = getattr(paths, PATHS_STORE_ATTR)
+    store.mkdir(parents=True)
+    (store / "probe.json").write_text("{}")
+    policy = sandbox.build_policy(fresh=True)
+    assert policy.readable_violation(store) is not None
+    assert policy.readable_violation(store / "probe.json") is not None
+    for root in (
+        policy.workspace,
+        *policy.readonly_state,
+        *policy.root_visible,
+        transcripts.transcripts_dir(),
+        paths.checkout,  # the one path mounted read-write into the worker
+    ):
+        assert not _within(store, root), (store, root)
+
+
+# --- only the writer edits the library; the writer reads captures ------------------------------------------
+
+
+@needs_bwrap
+def test_the_capture_step_changes_nothing_outside_its_store(tmp_path):
+    home = tmp_path / "home"
+    (home / "memory").mkdir(parents=True)
+    (home / "memory" / "HEAD").write_text("ref: refs/heads/main\n")
+    (home / "memory-checkout" / "memory").mkdir(parents=True)
+    (home / "memory-checkout" / "memory" / "__init__.py").write_text("")
+    staging = _stage(home, "ep-0001", PROCEDURE)
+    store = _store(home)
+    before = _tree_bytes(home, store)
+    _capture(
+        staging,
+        _episode("ep-0001", _request(), [1, 3, 5, 9]),
+        store,
+        [_signal("ep-0001", "pass")],
+    )
+    assert _tree_bytes(home, store) == before
+    assert (store / _cid(PROCEDURE)).is_dir()
+
+
+def test_only_the_writer_has_the_tool_that_lands_a_capture():
+    from unify.common import tool_registry as tr
+
+    spec = tr.registry()[LAND_TOOL]
+    assert tuple(spec.roles) == ("writer",)
+    flags = frozenset(
+        s.requires for s in tr.registry().values() if s.requires is not None
+    )
+    for agent in tr.AGENTS:
+        names = tr.allow_list(agent, flags)
+        assert (LAND_TOOL in names) == (agent == "writer"), agent
+
+
+def _write_record(store: Path, source: str, record: dict, broke: str = "none\n") -> str:
+    cid = _cid(source)
+    d = store / cid
+    d.mkdir(parents=True)
+    (d / PROCEDURE_FILE).write_text(source)
+    (d / FORK_BROKE).write_text(broke)
+    (d / SIGNATURE_FILE).write_text(
+        json.dumps(
+            {
+                "input": {"kind": "value", "tree": ["int"], "lengths": {"": "few"}},
+                "output": {"kind": "value", "tree": ["int"], "lengths": {"": "few"}},
+                "relations": ["same_shape", "same_outer_length"],
+                "constraints": {},
+                "goal": "Sort the numbers in ascending order.",
+            },
+        ),
+    )
+    base = {
+        "episodes": ["ep-0001"],
+        "reproduces": REPRODUCES,
+        "deterministic": True,
+        "applies": None,
+        "holds": None,
+        "outcome": "none",
+        "level": LEVELS[0],
+        "status": START_STATUS,
+        "track": {},
+        "same_as": [],
+    }
+    base.update(record)
+    (d / RECORD_FILE).write_text(json.dumps(base))
+    return cid
+
+
+def test_the_writer_reads_each_capture_as_a_pool_entry(tmp_path):
+    from unify.memory import pool
+
+    assert POOL_CAPTURE_KIND in pool.KINDS and POOL_FAILURE_KIND in pool.KINDS
+    store = tmp_path / STORE_DIR_NAME
+    ok = _write_record(store, PROCEDURE, {})
+    bad = _write_record(
+        store,
+        WRONG_PROCEDURE,
+        {"reproduces": DIFFERS, "outcome": FAILED, "episodes": ["ep-0002"]},
+        broke="- run: sorted descending; the record shows the ascending list was asked for\n",
+    )
+    entries = _from_captures(store)
+    by_kind: dict[str, list] = {}
+    for e in entries:
+        by_kind.setdefault(e.kind, []).append(e)
+    (cap,) = by_kind[POOL_CAPTURE_KIND]
+    (fail,) = by_kind[POOL_FAILURE_KIND]
+    assert cap.data["id"] == ok and cap.data["reproduces"] == REPRODUCES
+    assert {"id", "reproduces", "outcome", "level", "same_as"} <= set(cap.data)
+    assert PROCEDURE in cap.files.values()
+    assert cap.provenance["episodes"] == ["ep-0001"]
+    # a failed capture is negative knowledge: listed as a failure, with what broke, never as a capture
+    assert fail.data["id"] == bad and fail.data["outcome"] == FAILED
+    assert any("sorted descending" in v for v in fail.files.values())
+    assert bad not in [e.data.get("id") for e in by_kind[POOL_CAPTURE_KIND]]
+    # the same store gives the same entries
+    assert [e.id for e in _from_captures(store)] == [e.id for e in entries]
+
+
+def test_an_empty_or_missing_store_gives_no_entries(tmp_path):
+    assert _from_captures(tmp_path / "absent") == []
+    (tmp_path / "empty").mkdir()
+    assert _from_captures(tmp_path / "empty") == []
+
+
+def test_the_writer_brief_says_captures_exist_and_how_to_land_one():
+    from unify.memory import library_prompts as lp
+
+    brief = lp.write_brief_now(staging=True, pool=True)
+    assert LAND_CALL_TEXT in brief
+    assert BRIEF_CAPTURE_TEXT in brief
+    assert BRIEF_FAILURE_TEXT in brief
+    assert lp.benchmark_words(brief) == []
+    assert lp.example_checks(brief) == []
