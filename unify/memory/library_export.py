@@ -6,7 +6,9 @@
   verification and use records (None without item records), a function's example call (its record's, shown only
   while its test file still quotes it: :mod:`.example_view`) and the subjects of the commits that changed it;
 * ``.memory/find.json``: the listed functions with the recorded shapes of their example calls' arguments, each
-  naming its parameter, keyed by body digest (:mod:`.shape_rows`);
+  naming its parameter, keyed by body digest (:mod:`.shape_rows`); and, once any listed function has an applicability
+  signature, ``procedures``: what each such function was saved against, for ``memory.match``
+  (:func:`find_data`);
 * ``.memory/matcher.py``: v2's matcher (:mod:`.memory_helper` up to its catalogue section, so none of v2's
   catalogue or its footer ships);
 * ``.memory/shapes.py``: :mod:`.analysis.shapes`, byte for byte.
@@ -17,6 +19,7 @@ statuses, the recorded shapes and the history, so the same commit gives the same
 
 from __future__ import annotations
 
+import ast
 import json
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -46,6 +49,99 @@ _MATCHER_START = "from __future__ import annotations"
 _MATCHER_END = "\n# --- the catalogue"
 _HERE = Path(__file__).resolve().parent
 History = tuple[dict[str, list[str]], bool]
+#: What a function was saved against (:func:`saved_against_of`): ``signature`` (its applicability signature, the
+#: capture store's ``signature.json`` shape), ``asked`` and ``approach`` (its source episode's ``summary.md``
+#: sections) and ``level`` (its evidence level); None when it has no signature.
+SavedAgainst = Callable[[str], "dict | None"]
+#: An episode's ``summary.md`` text by episode id, None when it has none (the integration reads
+#: ``<state>/memory-staging/<episode>/summary.md``).
+SummaryOf = Callable[[str], "str | None"]
+#: Text with its printed identifiers removed (the one rule, ``signatures.strip_identifiers``).
+Strip = Callable[[str], str]
+#: What a captured attempt was saved against besides its signature, beside it in the actor's copy.
+CAPTURE_SAVED_FILE = "saved.json"
+
+
+def default_strip() -> Strip:
+    """The one identifier rule: ``signatures.strip_identifiers``, owned by the capture store. Every text ``match``
+    hands its matcher (a docstring, a summary section, what broke) is stripped with it here, on the harness side;
+    the generated helper strips nothing."""
+    from .signatures import strip_identifiers
+
+    return strip_identifiers
+
+
+def _section(text: str, heading: str) -> str:
+    """The body of the ``## <heading>`` section of a ``summary.md``, stripped of surrounding blank lines."""
+    out: list[str] = []
+    inside = False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            if inside:
+                break
+            inside = line[3:].strip().lower() == heading.lower()
+            continue
+        if inside:
+            out.append(line)
+    return "\n".join(out).strip()
+
+
+def summary_sections(text: str, strip: Strip | None = None) -> dict[str, str]:
+    """The ``Asked`` and ``Approach`` sections of a ``summary.md`` text (design H.4), identifiers removed."""
+    strip = strip or default_strip()
+    return {
+        "asked": strip(_section(text, "Asked")),
+        "approach": strip(_section(text, "Approach")),
+    }
+
+
+def _docstring_of(source: str | None, name: str = "run") -> str:
+    """The docstring of function *name* in *source*, else its module docstring; read with ``ast``, never run."""
+    if not source:
+        return ""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return ""
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            doc = ast.get_docstring(node)
+            if doc:
+                return doc
+    return ast.get_docstring(tree) or ""
+
+
+def capture_saved(capture_dir: Path, summary: str | None, strip: Strip | None = None) -> dict:
+    """What a captured attempt was saved against besides its signature, as ``memory.match`` reads it from
+    ``<copy>/.memory/captures/<id>/saved.json``: ``docstring`` (its ``procedure.py``'s ``run``, else module,
+    docstring), ``asked`` and ``approach`` (its episode's ``summary.md``, *summary*) and ``broke`` (the lines of its
+    ``broke.md``, ``none`` left out), every text with identifiers removed."""
+    strip = strip or default_strip()
+    d = Path(capture_dir)
+
+    def read(name: str) -> str | None:
+        try:
+            return (d / name).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+
+    sections = summary_sections(summary, strip) if summary else {"asked": "", "approach": ""}
+    broke = [
+        strip(line.strip().lstrip("-* ").strip())
+        for line in (read("broke.md") or "").splitlines()
+        if line.strip() and line.strip().lower() != "none"
+    ]
+    return {
+        "docstring": strip(_docstring_of(read("procedure.py"))),
+        "asked": sections["asked"],
+        "approach": sections["approach"],
+        "broke": broke,
+    }
+
+
+def capture_saved_bytes(capture_dir: Path, summary: str | None, strip: Strip | None = None) -> bytes:
+    """:func:`capture_saved` as the bytes of ``saved.json`` (sorted keys, one trailing newline)."""
+    return _json_bytes(capture_saved(capture_dir, summary, strip))
 
 
 def matcher_source() -> bytes:
@@ -184,18 +280,101 @@ def items_data(
     }
 
 
+def saved_against_of(
+    records: Mapping[str, dict] | None,
+    summary_of: SummaryOf | None = None,
+    strip: Strip | None = None,
+) -> SavedAgainst:
+    """What each function was saved against, from its item record: ``signature`` (the record's ``signature``, an
+    applicability signature as the capture store writes it, identifiers already removed; a function without one
+    gives None), ``level`` (the record's ``level``), and the ``Asked`` and ``Approach`` sections of the
+    ``summary.md`` of the first of its provenance episodes that *summary_of* has one for, identifiers removed with
+    *strip* (:func:`default_strip` when None)."""
+
+    def get(item: str) -> dict | None:
+        rec = records.get(item) if records else None
+        sig = rec.get("signature") if isinstance(rec, dict) else None
+        if not isinstance(sig, dict):
+            return None
+        out = {
+            "signature": {k: v for k, v in sig.items() if k != "goal"},
+            "asked": "",
+            "approach": "",
+            "level": rec.get("level") if isinstance(rec.get("level"), str) else None,
+        }
+        prov = rec.get("provenance") if isinstance(rec.get("provenance"), dict) else {}
+        episodes = prov.get("episodes") if isinstance(prov.get("episodes"), list) else []
+        for episode in episodes if summary_of is not None else []:
+            text = summary_of(str(episode)) if isinstance(episode, str) else None
+            if text:
+                out.update(summary_sections(text, strip))
+                break
+        if not out["asked"] and isinstance(sig.get("goal"), str):
+            out["asked"] = sig["goal"]  # the signature's own goal: stripped when it was built
+        return out
+
+    return get
+
+
+def staging_summaries(staging_root: Path) -> SummaryOf:
+    """An episode's ``summary.md`` under *staging_root* (``<state>/memory-staging``), as H.4 stages it:
+    ``<staging_root>/<episode>/summary.md``; None when it is missing or the episode id is not a single path part."""
+
+    def get(episode: str) -> str | None:
+        if not episode or "/" in episode or episode in (".", ".."):
+            return None
+        try:
+            return (Path(staging_root) / episode / "summary.md").read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+
+    return get
+
+
+def _docstrings(tree: Path, lib: Library, wanted: set[str]) -> dict[str, str]:
+    """The full docstring of each function in *wanted*, read from its module with ``ast`` (never imported)."""
+    out: dict[str, str] = {}
+    by_path: dict[str, list] = {}
+    for f in lib.functions:
+        if f.item_id in wanted:
+            by_path.setdefault(f.path, []).append(f)
+    for path, fns in by_path.items():
+        try:
+            mod = ast.parse((Path(tree) / path).read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, ValueError, UnicodeDecodeError):
+            continue
+        defs = {
+            n.name: n
+            for n in mod.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        for f in fns:
+            node = defs.get(f.name)
+            if node is not None:
+                out[f.item_id] = ast.get_docstring(node) or ""
+    return out
+
+
 def find_data(
     tree: Path,
     lib: Library,
     status_of: Callable[[str], str] | None,
     shapes: ShapeLookup | None,
     records: Mapping[str, dict] | None = None,
+    saved_against: SavedAgainst | None = None,
+    strip: Strip | None = None,
 ) -> dict:
     """``.memory/find.json``: each listed function with the recorded input shapes of its current body.
 
     ``input_shapes`` are the shapes of the arguments its example calls returned on, each naming its parameter
     (``"param"``; a row recorded before arguments were shaped has none). *records* are accepted for the export's
     signature and not read: a function's shapes come only from *shapes*.
+
+    With *saved_against*, each listed function it gives a signature for is also a row of ``procedures`` (in id
+    order): ``{id, signature, docstring, asked, approach, level, status, summary}``, the docstring and summary with
+    identifiers removed by *strip* (:func:`default_strip` when None), which
+    ``memory.match`` hands its matcher. The key is left out while no function has one, so the file is then byte for
+    byte what it was.
     """
     bodies = function_bodies(tree) if shapes is not None else {}
     out: list[dict] = []
@@ -214,7 +393,30 @@ def find_data(
             if found and found[0]:
                 entry["input_shapes"] = found[0]
         out.append(entry)
-    return {"version": 1, "functions": out}
+    data: dict = {"version": 1, "functions": out}
+    saved = {
+        e["id"]: s
+        for e in out
+        if saved_against is not None and (s := saved_against(e["id"])) is not None
+    }
+    if saved:
+        strip = strip or default_strip()
+        docs = _docstrings(tree, lib, set(saved))
+        data["procedures"] = [
+            {
+                "id": e["id"],
+                "signature": saved[e["id"]].get("signature") or {},
+                "docstring": strip(docs.get(e["id"], "")),
+                "asked": saved[e["id"]].get("asked") or "",
+                "approach": saved[e["id"]].get("approach") or "",
+                "level": saved[e["id"]].get("level") or "unknown",
+                "status": _status(status_of, e["id"]),
+                "summary": strip(e.get("summary", "")),
+            }
+            for e in sorted(out, key=lambda e: e["id"])
+            if e["id"] in saved
+        ]
+    return data
 
 
 def _json_bytes(data: dict) -> bytes:
@@ -231,13 +433,17 @@ def generated_library_mode(
     history: History | None = None,
     records: Mapping[str, dict] | None = None,
     tests: ReadFile | None = None,
+    saved_against: SavedAgainst | None = None,
+    strip: Strip | None = None,
 ) -> dict[str, bytes]:
     """Every generated file of the copy of the library at *tree*, by relative path (module docstring).
 
     *records* are the item records at the copy's commit (:func:`.item_records.records_at`); None gives the files
     without item records, byte for byte. *tests* reads a test file of the commit by its tree-relative path, to
     re-check each recorded example call before it is shown; None reads them from *tree* (a copy without its
-    tests, as the actor's export is, then shows no example)."""
+    tests, as the actor's export is, then shows no example). *saved_against* gives what each function was saved
+    against (:func:`saved_against_of`); None reads only the item records' ``signature`` (no summaries). A function
+    with a signature gets an ``input:`` line in the index and a ``procedures`` row in ``find.json``."""
     tree = Path(tree)
     lib = discover(tree)
     links = build_links(lib)
@@ -248,6 +454,13 @@ def generated_library_mode(
         ex = shown(item)
         return example_text(ex) if ex is not None else None
 
+    if saved_against is None and records is not None:
+        saved_against = saved_against_of(records, None, strip)
+
+    def signature_of(item: str) -> dict | None:
+        got = saved_against(item) if saved_against is not None else None
+        return got.get("signature") if isinstance(got, dict) else None
+
     return {
         RESERVED_INIT: (_HERE / "library_helper.py").read_bytes(),
         INDEX_FILE: render_index(
@@ -257,12 +470,15 @@ def generated_library_mode(
             effect_of(records) if records is not None else None,
             example_of if records is not None else None,
             episodes_of(records) if records is not None else None,
+            signature_of if saved_against is not None else None,
         ).encode("utf-8"),
         LINKS_FILE: render_links(links).encode("utf-8"),
         ITEMS_FILE: _json_bytes(
             items_data(lib, status_of, found, complete, records, shown),
         ),
-        FIND_FILE: _json_bytes(find_data(tree, lib, status_of, shapes, records)),
+        FIND_FILE: _json_bytes(
+            find_data(tree, lib, status_of, shapes, records, saved_against, strip),
+        ),
         MATCHER_FILE: matcher_source(),
         SHAPES_FILE: (_HERE / "analysis" / "shapes.py").read_bytes(),
     }
