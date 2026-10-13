@@ -1170,6 +1170,8 @@ async def test_11_requeue_at_front_keeps_the_queue_order():
 async def test_12_loop_stop_ends_a_request_of_no_progress_cells(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_LOOP_STOP", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_LOOP_STOP_K", 3)
+    # the stop takes the model's last word with UNIFY_STEP_CAP_REPLY empty (with draft it quotes the draft)
+    monkeypatch.setattr(SETTINGS, "UNIFY_STEP_CAP_REPLY", "")
 
     def _turn(messages):
         return _reply(calls=[_cell("print('thinking')")])
