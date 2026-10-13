@@ -6,6 +6,7 @@ from tests.memory.test_episodes import _ep
 from unify.memory import lifecycle as lc
 from unify.memory.evidence import EvidenceStore
 from unify.memory.item_records import empty_record
+from unify.memory.item_states import ADOPTED, CURATE_RULE, ON_TRIAL, RETIRED
 
 PD, WEEK, TOK = (
     "memory.text.dates:parse_date",
@@ -42,58 +43,91 @@ def _f(eid, item, u, *, main=A, regime="dense", pos=False, neg=False):
 
 
 def test_one_episode_never_decides_a_status():
-    assert lc.decide_status(WEEK, None, [_f("e1", WEEK, RAISED)])[0] == "experimental"
+    assert lc.decide_status(WEEK, None, [_f("e1", WEEK, RAISED)])[0] == ON_TRIAL
     two = [_f("e1", WEEK, RAISED), _f("e2", WEEK, RAISED)]
-    assert lc.decide_status(WEEK, None, two)[:2] == ("suspect", "errors")
+    assert lc.decide_status(WEEK, None, two)[:2] == (RETIRED, "errors")
     assert (
         lc.decide_status(WEEK, None, [_f("e1", WEEK, OK, neg=True)])[0]
-        == "experimental"
+        == ON_TRIAL
     )
     negative = [_f("e1", WEEK, OK, neg=True), _f("e2", WEEK, OK, neg=True)]
-    assert lc.decide_status(WEEK, None, negative)[:2] == ("suspect", "negative_signals")
+    assert lc.decide_status(WEEK, None, negative)[:2] == (RETIRED, "negative_signals")
     assert (
         lc.decide_status(WEEK, None, [_f(f"e{i}", WEEK, OK) for i in range(2)])[0]
-        == "experimental"
+        == ON_TRIAL
     )
     three = [_f(f"e{i}", WEEK, OK) for i in range(3)]
     assert lc.decide_status(WEEK, None, three) == (
-        "stable",
+        ADOPTED,
         None,
         None,
         ["e0", "e1", "e2"],
     )
     assert (
         lc.decide_status(WEEK, None, three + [_f("e3", WEEK, RAISED)])[0]
-        == "experimental"
+        == ON_TRIAL
     )  # an error blocks it
     assert (
-        lc.decide_status(WEEK, "stable", three + [_f("e3", WEEK, RAISED)])[0]
-        == "stable"
+        lc.decide_status(WEEK, ADOPTED, three + [_f("e3", WEEK, RAISED)])[0]
+        == ADOPTED
     )  # one error: kept
     demoted = three + [_f("e3", WEEK, RAISED), _f("e4", WEEK, RAISED)]
-    assert lc.decide_status(WEEK, "stable", demoted)[0] == "suspect"
-    assert (
-        lc.decide_status(WEEK, "deprecated", demoted)[0] == "deprecated"
-    )  # CURATE's, never the harness's
+    assert lc.decide_status(WEEK, ADOPTED, demoted)[0] == RETIRED
+    # a curator's retirement is CURATE's, never the harness's: kept, with its rule, so it stays sticky
+    assert lc.decide_status(WEEK, RETIRED, demoted, CURATE_RULE) == (RETIRED, CURATE_RULE, None, [])
+    assert lc.decide_status(WEEK, RETIRED, three, CURATE_RULE)[:2] == (RETIRED, CURATE_RULE)
+    # the old stored name of a curator's retirement is one too
+    assert lc.decide_status(WEEK, "deprecated", three)[:2] == (RETIRED, CURATE_RULE)
+    # a retirement by outcomes is decided again from the facts
+    assert lc.decide_status(WEEK, RETIRED, three, "errors")[:2] == (ADOPTED, None)
+    assert lc.decide_status(WEEK, "suspect", three, "errors")[:2] == (ADOPTED, None)
+    # the old stored names of the other statuses are read in today's names
+    assert lc.decide_status(WEEK, "stable", three + [_f("e3", WEEK, RAISED)])[0] == ADOPTED
 
 
 def test_in_a_no_signal_regime_only_errors_count():
     quiet = [_f(f"e{i}", WEEK, OK, regime="none", neg=True) for i in range(3)]
-    assert lc.decide_status(WEEK, None, quiet)[0] == "stable"
+    assert lc.decide_status(WEEK, None, quiet)[0] == ADOPTED
     raised = [_f(f"r{i}", WEEK, RAISED, regime="none") for i in range(2)]
-    assert lc.decide_status(WEEK, None, raised)[:2] == ("suspect", "errors")
+    assert lc.decide_status(WEEK, None, raised)[:2] == (RETIRED, "errors")
 
 
 def test_taint_reaches_importers_and_notes_but_not_siblings():
-    status = {i: "experimental" for i in FUNCS} | {NOTE: "experimental", TOK: "suspect"}
-    out = lc.taint(status, FUNCS, GRAPH, {NOTE: [PD]})
-    why = f"depends on suspect {TOK}"
+    status = {i: ON_TRIAL for i in FUNCS} | {NOTE: ON_TRIAL, TOK: RETIRED}
+    out = lc.taint(status, FUNCS, GRAPH, {NOTE: [PD]}, {TOK: "errors"})
+    why = f"depends on retired {TOK}"
     assert out == {
         PD: (why, [TOK]),
         WEEK: (why, [TOK]),
         SUM: (why, [TOK]),
-        NOTE: (f"uses suspect {PD}", [PD]),
+        NOTE: (f"uses retired {PD}", [PD]),
     }  # WORDS (the same module) and GET (no import) are untouched
+    # without rules a retirement counts as one by outcomes, and the old stored name is read as retired
+    assert lc.taint(status, FUNCS, GRAPH, {NOTE: [PD]}) == out
+    assert lc.taint({**status, TOK: "suspect"}, FUNCS, GRAPH, {NOTE: [PD]}) == out
+
+
+def test_a_curators_retirement_taints_nothing():
+    status = {i: ON_TRIAL for i in FUNCS} | {NOTE: ON_TRIAL, TOK: RETIRED}
+    assert lc.taint(status, FUNCS, GRAPH, {NOTE: [TOK]}, {TOK: CURATE_RULE}) == {}
+
+
+def test_a_retired_reader_taints_the_functions_that_load_its_fixtures():
+    """A reader (GET) retired by its outcomes taints the function whose tests load what it read (WORDS, in a
+    module that does not import it), and through the import graph what depends on that function."""
+    status = {i: ON_TRIAL for i in FUNCS} | {NOTE: ON_TRIAL, GET: RETIRED}
+    out = lc.taint(status, FUNCS, GRAPH, {NOTE: [WEEK]}, {GET: "errors"}, {WORDS: [GET]})
+    read = f"its tests load fixtures read by retired {GET}"
+    dep = f"depends on retired {WORDS}"
+    assert out == {
+        WORDS: (read, [GET]),
+        PD: (dep, [WORDS]),
+        WEEK: (dep, [WORDS]),
+        SUM: (dep, [WORDS]),
+        NOTE: (f"uses retired {WEEK}", [WEEK]),
+    }  # TOK shares WORDS's module and is not tainted
+    # a reader the curator retired taints nothing
+    assert lc.taint(status, FUNCS, GRAPH, {}, {GET: CURATE_RULE}, {WORDS: [GET]}) == {}
 
 
 def test_failure_only_provenance_is_found_through_the_citing_items(tmp_path):
@@ -119,10 +153,11 @@ def test_failure_only_provenance_is_found_through_the_citing_items(tmp_path):
 def test_next_records_restarts_a_new_version_and_reports_changes():
     items = {WEEK: "function", PD: "function", NOTE: "note"}
     prev = {
-        WEEK: {**empty_record(WEEK, "function"), "status": "suspect", "changed_at": A},
+        WEEK: {**empty_record(WEEK, "function"), "status": RETIRED, "status_rule": "errors", "changed_at": A},
         PD: {
             **empty_record(PD, "function"),
-            "status": "deprecated",
+            "status": RETIRED,
+            "status_rule": CURATE_RULE,
             "alias_of": WEEK,
             "changed_at": A,
         },
@@ -146,20 +181,21 @@ def test_next_records_restarts_a_new_version_and_reports_changes():
         same[WEEK]["status_rule"],
         same[WEEK]["status_evidence"],
     ) == (
-        "suspect",
+        RETIRED,
         "errors",
         ["e1", "e2"],
     )
-    assert same[PD]["status"] == "deprecated" and same[PD]["alias_of"] == WEEK
-    assert same[NOTE]["status"] == "experimental" and changes == {}
+    assert same[PD]["status"] == RETIRED and same[PD]["alias_of"] == WEEK
+    assert same[PD]["status_rule"] == CURATE_RULE
+    assert same[NOTE]["status"] == ON_TRIAL and changes == {}
     fixed = {**every, WEEK: {B}}
     new, changes = lc.next_records(
         **base,
         since=fixed,
         changed_at={WEEK: B, PD: A, NOTE: A},
     )
-    assert new[WEEK]["status"] == "experimental" and new[WEEK]["use"][A]["errors"] == 2
-    assert changes == {WEEK: "experimental"}
+    assert new[WEEK]["status"] == ON_TRIAL and new[WEEK]["use"][A]["errors"] == 2
+    assert changes == {WEEK: ON_TRIAL}
     flagged, _ = lc.next_records(
         **{**base, "facts": []},
         since=fixed,
@@ -167,7 +203,7 @@ def test_next_records_restarts_a_new_version_and_reports_changes():
         failure={WEEK: ["e1"]},
     )
     assert (
-        flagged[WEEK]["status"] == "experimental"
+        flagged[WEEK]["status"] == ON_TRIAL
         and flagged[WEEK]["provenance"]["failure_only"] is True
     )
     hidden, _ = lc.next_records(
@@ -177,20 +213,21 @@ def test_next_records_restarts_a_new_version_and_reports_changes():
         failure={WEEK: ["e1", "e2"]},
     )
     assert (hidden[WEEK]["status"], hidden[WEEK]["status_rule"]) == (
-        "suspect",
+        RETIRED,
         "failure_only",
     )
 
 
-def test_curate_aliases_and_retirements_deprecate_items():
-    """CURATE's decisions reach the records: a live alias is deprecated with alias_of its target; a
-    retired item still in the tree is deprecated with its reason; a dropped alias no longer forwards.
+def test_curate_aliases_and_retirements_retire_items():
+    """CURATE's decisions reach the records: a live alias is retired (rule curate) with alias_of its target; a
+    retired item still in the tree is retired with its reason; a dropped alias no longer forwards.
     """
     items = {WEEK: "function", PD: "function", NOTE: "note"}
     prev = {
         PD: {
             **empty_record(PD, "function"),
-            "status": "deprecated",
+            "status": RETIRED,
+            "status_rule": CURATE_RULE,
             "alias_of": WEEK,
             "changed_at": A,
         },
@@ -218,18 +255,21 @@ def test_curate_aliases_and_retirements_deprecate_items():
     ]
     recs, changes = lc.next_records(**base, aliases=live, curations=retired)
     assert (recs[PD]["status"], recs[PD]["alias_of"], recs[PD]["status_rule"]) == (
-        "deprecated",
+        RETIRED,
         WEEK,
-        "curate",
+        CURATE_RULE,
     )
-    assert (recs[NOTE]["status"], recs[NOTE]["status_reason"]) == (
-        "deprecated",
+    assert (recs[NOTE]["status"], recs[NOTE]["status_rule"], recs[NOTE]["status_reason"]) == (
+        RETIRED,
+        CURATE_RULE,
         "retired: stale",
     )
-    assert recs[WEEK]["status"] == "experimental" and recs[WEEK]["alias_of"] is None
-    assert changes == {NOTE: "deprecated"}
+    assert recs[WEEK]["status"] == ON_TRIAL and recs[WEEK]["alias_of"] is None
+    assert changes == {NOTE: RETIRED}
     dropped, _ = lc.next_records(**base, aliases={}, curations=[])
     assert dropped[PD]["alias_of"] is None
+    # the retirement stays the curator's (sticky), with its rule, so the map after this keeps it too
+    assert (dropped[PD]["status"], dropped[PD]["status_rule"]) == (RETIRED, CURATE_RULE)
 
 
 IMPORTED = lc.ItemUse(False, 0, False, False, False, seen=True)
@@ -237,38 +277,38 @@ REFUSED = lc.ItemUse(False, 1, True, False, False, seen=True)
 REFUSED_THEN_RETURNED = lc.ItemUse(True, 2, True, False, False)
 
 
-def test_an_import_alone_never_makes_an_item_stable():
+def test_an_import_alone_never_makes_an_item_adopted():
     imported = [_f(f"e{i}", WEEK, IMPORTED) for i in range(5)]
-    assert lc.decide_status(WEEK, None, imported) == ("experimental", None, None, [])
+    assert lc.decide_status(WEEK, None, imported) == (ON_TRIAL, None, None, [])
     # a negative signal in an episode that only imported it is not counted against it
     quiet = [_f(f"e{i}", WEEK, IMPORTED, neg=True) for i in range(3)]
-    assert lc.decide_status(WEEK, None, quiet)[0] == "experimental"
+    assert lc.decide_status(WEEK, None, quiet)[0] == ON_TRIAL
 
 
 def test_a_refusal_is_never_a_failure():
     refused = [_f(f"e{i}", WEEK, REFUSED) for i in range(4)]
     status, rule, reason, evidence = lc.decide_status(WEEK, None, refused)
-    assert (status, rule, evidence) == ("experimental", None, [])
+    assert (status, rule, evidence) == (ON_TRIAL, None, [])
     assert "refused inputs it was not built for in 4 episodes" in reason
     assert "not a failure" in reason
-    # refusals beside calls that returned: the item can still become stable
+    # refusals beside calls that returned: the item can still be adopted
     mixed = [_f(f"e{i}", WEEK, REFUSED_THEN_RETURNED) for i in range(3)]
-    assert lc.decide_status(WEEK, None, mixed)[:2] == ("stable", None)
-    # nor do they demote a stable item
-    assert lc.decide_status(WEEK, "stable", refused)[0] == "stable"
+    assert lc.decide_status(WEEK, None, mixed)[:2] == (ADOPTED, None)
+    # nor do they demote an adopted item
+    assert lc.decide_status(WEEK, ADOPTED, refused)[0] == ADOPTED
 
 
-def test_suspect_fires_on_errors_and_on_negative_signals_after_a_use():
+def test_retirement_fires_on_errors_and_on_negative_signals_after_a_use():
     assert lc.decide_status(
         WEEK,
         None,
         [_f("e1", WEEK, RAISED), _f("e2", WEEK, RAISED)],
-    ) == ("suspect", "errors", "it raised in 2 episodes", ["e1", "e2"])
+    ) == (RETIRED, "errors", "it raised in 2 episodes", ["e1", "e2"])
     used = [
         _f("e1", WEEK, OK, neg=True),
         _f("e2", WEEK, REFUSED_THEN_RETURNED, neg=True),
     ]
-    assert lc.decide_status(WEEK, None, used)[:2] == ("suspect", "negative_signals")
+    assert lc.decide_status(WEEK, None, used)[:2] == (RETIRED, "negative_signals")
 
 
 def test_the_effect_the_gate_derived_reaches_the_record():

@@ -1,5 +1,5 @@
 """The pool index is a file the brief points to (never inlined in the first message), a deferral can add evidence
-to an open entry the writer names, the WRITE brief says new items start as experimental and are revised later, and
+to an open entry the writer names, the WRITE brief says new items start on trial and are revised later, and
 two read_episode refusals are gone.
 """
 
@@ -120,10 +120,10 @@ def test_a_deferral_must_name_an_open_entry_or_new(tmp_path, monkeypatch):
 # --- (c) the WRITE brief ---------------------------------------------------------------------------------------
 
 
-def test_the_write_brief_says_new_items_are_experimental_and_revised_later():
+def test_the_write_brief_says_new_items_are_on_trial_and_revised_later():
     text = pv.write_brief_now()
     sentence = (
-        "A new item starts as `experimental`; later passes and the curate pass revise, generalise or remove it as "
+        "A new item starts as `on-trial`; later passes and the curate pass revise, generalise or remove it as "
         "evidence arrives, so storing a rule that worked is not a final commitment."
     )
     assert sentence in text and sentence not in pv.curate_brief_now()

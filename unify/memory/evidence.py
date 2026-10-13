@@ -66,7 +66,7 @@ _FIXTURE_PROVENANCE_SCHEMA = (
 
 # CURATE passes: the fingerprints each CURATE pass was shown, and the aliases,
 # retirements and dropped aliases each landed CURATE pass made (the item records read them for alias_of and
-# deprecated).
+# the curator's retirements).
 # Created by the first write, so a store that never runs CURATE keeps the v2 schema (as with _SHAPE_SCHEMA).
 _CURATE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS curate_seen(fingerprint TEXT PRIMARY KEY, pass_id TEXT);

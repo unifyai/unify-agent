@@ -94,18 +94,18 @@ def test_index_and_show_from_the_generated_helper(tmp_path):
     )
     assert (
         fn.splitlines()[0]
-        == "memory.text.dates:parse_date(s: str) -> str  [experimental]"
+        == "memory.text.dates:parse_date(s: str) -> str  [on-trial]"
     )
     assert "def parse_date(s: str) -> str:" in fn and "Notes: notes/text/dates.md" in fn
     assert "Links to: notes/text/dates.md\nLinked from: notes/text/dates.md\n" in fn
     assert "Verification: no record yet\nUse: no record yet\n" in fn
     assert "History (newest first):\n  abc123def456 add dates\n" in fn
     assert (
-        week.splitlines()[0] == "memory.text.dates:week(s)  [experimental]"
+        week.splitlines()[0] == "memory.text.dates:week(s)  [on-trial]"
         and "History: none recorded" in week
     )
     assert (
-        note.startswith("notes/text/dates.md  [experimental]  Dates\n")
+        note.startswith("notes/text/dates.md  [on-trial]  Dates\n")
         and "Dates are YYYY-MM-DD." in note
     )
     assert by_object == fn
@@ -116,7 +116,7 @@ def test_index_and_show_from_the_generated_helper(tmp_path):
 def test_show_explains_a_hidden_item(tmp_path):
     root = _library(
         tmp_path,
-        status_of=lambda i: "suspect" if i.endswith(":week") else "experimental",
+        status_of=lambda i: "retired" if i.endswith(":week") else "on-trial",
     )
     out = json.loads(
         _py(
@@ -125,8 +125,8 @@ def test_show_explains_a_hidden_item(tmp_path):
         ),
     )
     assert out.splitlines()[:2] == [
-        "memory.text.dates:week(s)  [suspect]",
-        "Not in the index: its status is suspect.",
+        "memory.text.dates:week(s)  [retired]",
+        "Not in the index: its status is retired.",
     ]
     assert "memory.text.dates:week(" not in (root / "INDEX.md").read_text()
 
@@ -280,20 +280,80 @@ def test_the_derived_effect_shows_beside_the_status_in_the_index_and_show(tmp_pa
     root = _library(tmp_path, records=records)
     index = (root / "INDEX.md").read_text()
     assert (
-        "`memory.text.dates:week(s)` — The ISO week of a date. [experimental, effect: write]"
+        "`memory.text.dates:week(s)` — The ISO week of a date. [on-trial, effect: write]"
         in index
     )
-    assert "[experimental, effect: read]" in index
+    assert "[on-trial, effect: read]" in index
     # an item without a derived effect keeps the plain status
-    assert "Split text on whitespace. [experimental]\n" in index
+    assert "Split text on whitespace. [on-trial]\n" in index
     out = json.loads(
         _py(root, f"import json, memory\nprint(json.dumps(memory.show({week!r})))"),
     )
     assert out.splitlines()[:2] == [
-        "memory.text.dates:week(s)  [experimental, effect: write]",
+        "memory.text.dates:week(s)  [on-trial, effect: write]",
         "Status: it refused inputs it was not built for in 2 episodes and no call to it has returned yet; "
         "a refusal is not a failure.",
     ]
+
+
+def test_show_gives_the_evidence_level_and_the_findings_that_set_it(tmp_path):
+    from unify.memory.item_records import empty_record
+
+    week = "memory.text.dates:week"
+    reasons = [
+        "examples: no call of it returns on a value from a recorded episode",
+        "exact assertion: its tests assert no exact value",
+    ]
+    records = {
+        DATE: {**empty_record(DATE, "function"), "level": "reproduces-its-case"},
+        week: {**empty_record(week, "function"), "level": "unchecked", "level_reasons": reasons},
+    }
+    root = _library(tmp_path, records=records)
+    index = (root / "INDEX.md").read_text()
+    assert "The ISO week of a date. [on-trial, evidence: unchecked]\n" in index
+    out = json.loads(
+        _py(root, f"import json, memory\nprint(json.dumps(memory.show({week!r})))"),
+    )
+    assert out.splitlines()[:4] == [
+        "memory.text.dates:week(s)  [on-trial, evidence: unchecked]",
+        "Evidence level: unchecked, set by:",
+        "  " + reasons[0],
+        "  " + reasons[1],
+    ]
+    date = json.loads(
+        _py(root, f"import json, memory\nprint(json.dumps(memory.show({DATE!r})))"),
+    )
+    assert date.splitlines()[:2] == [
+        "memory.text.dates:parse_date(s: str) -> str  [on-trial, evidence: reproduces-its-case]",
+        "Evidence level: reproduces-its-case",
+    ]
+
+
+def test_show_reads_old_status_and_level_names_in_todays_names(tmp_path):
+    """A row written before the names changed (the bytes of an older copy's items.json) shows today's names."""
+    root = _library(tmp_path)
+    items = json.loads((root / ITEMS_FILE).read_text())
+    row = items["items"]["memory.text.dates:week"]
+    row.update(status="suspect", status_reason=None, level="verified", level_reasons=[])
+    (root / ITEMS_FILE).write_text(json.dumps(items))
+    out = json.loads(
+        _py(root, "import json, memory\nprint(json.dumps(memory.show('memory.text.dates:week')))"),
+    )
+    assert out.splitlines()[:3] == [
+        "memory.text.dates:week(s)  [retired, evidence: reproduces-its-case]",
+        "Not in the index: its status is retired.",
+        "Evidence level: reproduces-its-case",
+    ]
+
+
+def test_the_helpers_own_copy_of_the_names_matches_item_states():
+    """The generated helper imports only the standard library, so it keeps its own copy of the names."""
+    from unify.memory import item_states, library_helper
+
+    assert library_helper._NEW_ITEM_STATUS == item_states.ON_TRIAL
+    assert set(library_helper._HIDDEN_STATUSES) == set(item_states.HIDDEN)
+    assert library_helper._OLD_STATUSES == item_states.OLD_STATUSES
+    assert library_helper._OLD_LEVELS == item_states.OLD_LEVELS
 
 
 GUARD = '''class MemoryInputError(ValueError):
@@ -424,7 +484,7 @@ import memory.text.tests.test_dates as t
 assert getattr(double, "__memory_item__") == "memory.text.guard:double"
 assert not hasattr(t.test_parse_date, "__memory_item__")
 text = memory.show(double)
-assert "def double(x):" in text and "[experimental" in text
+assert "def double(x):" in text and "[on-trial" in text
 assert memory.index("text")
 memory.find({"date": "2026-10-09"})
 print(json.dumps(events))

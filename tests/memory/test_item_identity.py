@@ -111,8 +111,8 @@ def test_use_and_source_episodes_before_a_rename_count_after_it():
     )[WEEKDAY]
     assert rec["use"][A]["episodes"] == 2 and rec["use"][C]["episodes"] == 1
     assert sorted(rec["provenance"]["episodes"]) == ["e0", "e3"]
-    # the status rules count the old id's episodes as the item's: three clean uses make it stable
-    assert rec["status"] == "stable"
+    # the status rules count the old id's episodes as the item's: three clean uses make it adopted
+    assert rec["status"] == "adopted"
 
 
 def test_an_alias_target_carries_the_old_items_uid():

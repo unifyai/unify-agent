@@ -2,9 +2,10 @@
 
 * ``memory/__init__.py``: :mod:`.library_helper`, byte for byte (``index``, ``show``, ``find``);
 * ``INDEX.md`` and ``links.json``: :mod:`.library_index`;
-* ``.memory/items.json``: what ``show`` reads per item, namely its kind, path, signature or title, status, the
-  verification and use records (None without item records), a function's example call (its record's, shown only
-  while its test file still quotes it: :mod:`.example_view`) and the subjects of the commits that changed it;
+* ``.memory/items.json``: what ``show`` reads per item, namely its kind, path, signature or title, status, a
+  function's evidence level with the findings that set it, the verification and use records (None without item
+  records), a function's example call (its record's, shown only while its test file still quotes it:
+  :mod:`.example_view`) and the subjects of the commits that changed it;
 * ``.memory/find.json``: the listed functions with the recorded shapes of their example calls' arguments, each
   naming its parameter, keyed by body digest (:mod:`.shape_rows`);
 * ``.memory/matcher.py``: v2's matcher (:mod:`.memory_helper` up to its catalogue section, so none of v2's
@@ -36,7 +37,15 @@ from .layout import (
 )
 from .library_helper import FIND_FILE, ITEMS_FILE, MATCHER_FILE, SHAPES_FILE
 from .example_view import ReadFile, example_text, examples_of, tree_reader
-from .item_records import effect_of, episodes_of, use_totals, verification_summary
+from .item_records import (
+    effect_of,
+    episodes_of,
+    level_of,
+    level_reasons_of,
+    use_totals,
+    verification_summary,
+)
+from .item_states import ON_TRIAL
 from .library_index import HIDDEN, build_links, render_index, render_links
 from .redact import redact_error
 
@@ -124,7 +133,7 @@ def item_history(repo: Repo, sha: str, *, scan: int = HISTORY_SCAN) -> History:
 
 
 def _status(status_of: Callable[[str], str] | None, item: str) -> str:
-    return status_of(item) if status_of is not None else "experimental"
+    return status_of(item) if status_of is not None else ON_TRIAL
 
 
 def items_data(
@@ -163,6 +172,9 @@ def items_data(
             "summary": f.summary,
             # the effect the gate derived from its covers (None: not derived)
             "effect": effect_of(records)(f.item_id) if records else None,
+            # its evidence level (None: none recorded) and the findings that set it
+            "level": level_of(records)(f.item_id) if records else None,
+            "level_reasons": level_reasons_of(records.get(f.item_id)) if records else [],
             # {"test", "line", "call"}: a call quoted from its tests, re-checked against them (None: none shown)
             "example": examples(f.item_id) if examples is not None else None,
             **common(f.item_id),
@@ -257,6 +269,7 @@ def generated_library_mode(
             effect_of(records) if records is not None else None,
             example_of if records is not None else None,
             episodes_of(records) if records is not None else None,
+            level_of(records) if records is not None else None,
         ).encode("utf-8"),
         LINKS_FILE: render_links(links).encode("utf-8"),
         ITEMS_FILE: _json_bytes(
