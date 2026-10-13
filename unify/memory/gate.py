@@ -2776,10 +2776,11 @@ class Gate:
         existing behaviour; it repairs a test the parent had red, :meth:`_repaired`; or it cannot be compared on the
         parent), and the library functions it exercises (:func:`_exercised`), with those this pass edits.
         """
-        if _green(on_parent):
-            why = "passes on the parent: it records existing behaviour"
-        elif self._repaired(run, test, on_cand):
+        # a repaired test also passes on the parent's library once copied there: the repair is named first
+        if self._repaired(run, test, on_cand):
             why = "repairs a test the parent had red"
+        elif _green(on_parent):
+            why = "passes on the parent: it records existing behaviour"
         else:
             why = f"not comparable on the parent ({_describe(on_parent)})"
         try:
