@@ -126,6 +126,16 @@ class ProductionSettings(BaseSettings):
     # count toward it, so keep it well above what a long reasoning turn plus a
     # large code block needs. Set to 0 to restore the provider ceiling.
     UNIFY_MAX_OUTPUT_TOKENS: int = 32768
+    # ``on``: every model call of a client made by ``new_llm_client`` (or
+    # forked from one) is sent as a stream and read to its end, and unillm
+    # reassembles the reply into the completion the same call returns
+    # unstreamed (its ``stream_transport``), so transcripts, caching, cost
+    # and postprocessing are unchanged. Bytes then arrive while the model is
+    # still generating, so a proxy in front that cancels a call after a spell
+    # without traffic does not cancel a long one. Nothing is sent but the
+    # model's own reply. Empty (or ``off``): calls are not streamed, as
+    # shipped (unify/common/llm_client.py).
+    UNIFY_STREAM_MODEL_CALLS: str = ""
 
     # Ceiling on tool-calling iterations for one agent run. Unset, a run ends
     # only when the model decides to stop, so a loop that never converges
@@ -816,6 +826,17 @@ class ProductionSettings(BaseSettings):
             raise ValueError(
                 "UNIFY_REQUEST_METADATA_HEADERS must be empty, 'off' or 'on', "
                 f"not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_STREAM_MODEL_CALLS", mode="before")
+    @classmethod
+    def parse_stream_model_calls(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "off" else value
+        if value not in ("", "on"):
+            raise ValueError(
+                f"UNIFY_STREAM_MODEL_CALLS must be empty, 'off' or 'on', not {v!r}",
             )
         return value
 

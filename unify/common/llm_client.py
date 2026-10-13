@@ -272,6 +272,12 @@ def _build_llm_client(
     else:
         client = unillm.Unify(model, **config)
 
+    # UNIFY_STREAM_MODEL_CALLS=on: the client's calls are streamed so a long
+    # one shows traffic while the model generates; unillm reassembles each
+    # reply, and ``copy()`` (a fork) keeps the setting.
+    if SETTINGS.UNIFY_STREAM_MODEL_CALLS == "on":
+        client.set_stream_transport(True)
+
     if origin:
         pending_log = PendingThinkingLog(origin)
         client.set_on_log_file_pending(pending_log.on_pending_path)

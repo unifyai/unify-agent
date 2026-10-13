@@ -157,3 +157,10 @@ The three long-horizon switches share the step-limit reply path.
 - **Default:** `persistent`.
 - **What it does:** With `persistent`, each agent's cells run in one interpreter that keeps its variables between cells until it is restarted (a cell that runs out of time restarts it; files stay). With `fresh`, every cell starts in a new interpreter (files stay; variables do not).
 - **Evidence:** Set together with `UNIFY_TOOLS_IN_CODE=on` in the same paired replay.
+
+## UNIFY_STREAM_MODEL_CALLS
+
+- **Values:** empty (the same as `off`) or `on`.
+- **Default:** empty.
+- **What it does:** When on, every model call of a client made by `new_llm_client` (or forked from one) goes out as a stream and is read to its end, and unillm reassembles the reply into the completion the same call returns unstreamed (its `stream_transport` flag). Transcripts, caching, cost and postprocessing are unchanged. Bytes arrive while the model is still generating, so a proxy that cancels a call after a spell with no traffic does not cancel a long one. Nothing is sent but the model's own reply: no keepalive or filler bytes.
+- **Evidence:** A benchmark adapter's proxy cancels a turn after 300 s with no bytes, and an actor call of 377 s was cancelled by it, because Unify's calls are never streamed while the other agent harnesses compared with it all stream. Keyless tests only so far (unillm's `tests/test_clients/test_stream_transport.py`, on a hand-written OpenRouter stream, and `tests/common/test_stream_model_calls.py`). A recorded real stream is to confirm that the reassembled reply matches the unstreamed one before the switch becomes the default.
