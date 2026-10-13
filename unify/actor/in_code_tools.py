@@ -332,8 +332,9 @@ class InCodeTools:
                 # the cell's model calls are served in tasks this one starts, so they count here
                 with counting_model_request_errors() as request_errors:
                     res = await interp.run_cell(code, call=call)
-            except asyncio.CancelledError:
-                raise
+            except asyncio.CancelledError as exc:
+                # the cell's task was cancelled: its row is still written (below), then the cancellation goes on
+                raised = exc
             except Exception as exc:  # noqa: BLE001 - the interpreter failed: told as the cell's error, never a host trace
                 logger.warning("an in-code cell could not run", exc_info=True)
                 failed = (
@@ -348,9 +349,16 @@ class InCodeTools:
                 if not persistent() and self.interp is not None:
                     interp, self.interp = self.interp, None
                     await interp.stop()
-            out = self._result(res, raised, started, failed)
-            self._cell_row(call, code, out, request_errors.n if request_errors is not None else 0)
-            if raised is not None and not _is_reply(raised):
+            crashed = raised is not None and not _is_reply(raised)
+            out = self._result(res, None if crashed else raised, started, failed)
+            self._cell_row(
+                call,
+                code,
+                out,
+                request_errors.n if request_errors is not None else 0,
+                exception=type(raised).__name__ if crashed else None,
+            )
+            if crashed:
                 raise raised
             return out
 
@@ -408,7 +416,17 @@ class InCodeTools:
             duration_ms=int((time.monotonic() - started) * 1000),
         )
 
-    def _cell_row(self, call: int, code: str, out: Any, model_request_errors: int = 0) -> None:
+    def _cell_row(
+        self,
+        call: int,
+        code: str,
+        out: Any,
+        model_request_errors: int = 0,
+        exception: Optional[str] = None,
+    ) -> None:
+        """The cell's ``execute_code`` row at its reserved *call* number. A cell that did not end normally (its
+        task cancelled, or a control exception out of it: *exception*, the type's name only) has status
+        ``error``."""
         from unify.actor.execution.types import parts_to_text
         from unify.common.tool_channel import canonical_args
 
@@ -423,7 +441,7 @@ class InCodeTools:
             "call": call,
             "utc": _utc(),
             "tool": "execute_code",
-            "status": "ok",
+            "status": "ok" if exception is None else "error",
             "refusal": None,
             "paths": [],
             "args_bytes": len(args),
@@ -431,10 +449,12 @@ class InCodeTools:
             "result_truncated": False,
             "usage": None,
             "via": "model",
-            "error": out.error is not None,
+            "error": out.error is not None or exception is not None,
             # the cell's model calls the provider refused for the request's own content (a count, never the text)
             "model_request_errors": model_request_errors,
         }
+        if exception is not None:
+            row["exception"] = exception
         self.events.append(row)
 
     # -- the end of the request --------------------------------------------------------------------------------

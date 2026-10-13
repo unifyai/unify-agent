@@ -766,6 +766,9 @@ CODE_STEP_GUARD = (
 CODE_WRITER_ERROR = "writer_error"
 # a writer call found the writer's declared route not in effect
 CODE_ROUTE_NOT_IN_EFFECT = "route_not_in_effect"
+# library mode: the shared no-progress rule ended the agent's round (loop_stop.AgentNoProgress); the pass then went
+# to its final merge, so a refused pass lists the gate checks beside it
+CODE_NO_PROGRESS = "no_progress"
 
 
 class ModelTurn(Protocol):
@@ -2743,6 +2746,13 @@ class WriterPass:
                     if getattr(self, "_temp_kept", None)
                     else {}
                 ),
+                # tools in code: the handler threads alive when the gate would start; 0 whenever the gate ran,
+                # more than 0 beside temp_kept when a handler kept it from starting (None: the pass ended before)
+                **(
+                    {"handlers_alive_at_gate": getattr(self, "_handlers_at_gate", None)}
+                    if getattr(self, "_in_code_pass", False)
+                    else {}
+                ),
             },
         )
 
@@ -3363,6 +3373,49 @@ class WriterPass:
         self._write_event(pass_id, row)
         if opens:
             self._record_box_opens(pass_id, opens)
+
+    def _crashed_cell_event(
+        self,
+        pass_id: str,
+        raw_args: object,
+        args: object,
+        usage: dict | None,
+        call: int,
+        exc: BaseException,
+    ) -> None:
+        """The ``execute_code`` row of a cell that raised out of :meth:`_in_code_cell`, at the *call* number
+        reserved for it: status ``error`` and the exception's type only. Never raises: the cell's own exception
+        is the one the pass sees."""
+        try:
+            self.__dict__.pop("_box_audit", None)  # a crashed cell returned no audit of its own
+            self._event(
+                pass_id,
+                "execute_code",
+                raw_args,
+                _wt.Reply(f"error: the cell did not end normally ({type(exc).__name__})", "error"),
+                usage,
+                {
+                    "via": "model",
+                    "cell": None,
+                    "args_sha256": _args_sha256(args if args is not None else raw_args),
+                    "box_gone": False,
+                    "exception": type(exc).__name__,
+                },
+                call,
+            )
+        except Exception:  # noqa: BLE001 - the row is evidence; it never masks the cell's exception
+            logging.getLogger(__name__).warning(
+                "the row of a cell that raised was not written (%s)",
+                type(exc).__name__,
+            )
+            if 0 <= call < len(self.tool_events) and self.tool_events[call].get("event") == "reserved":
+                self.tool_events[call] = {
+                    "event": "tool_call",
+                    "call": call,
+                    "tool": "execute_code",
+                    "status": "error",
+                    "exception": type(exc).__name__,
+                }
 
     def _reserve_event(self) -> int:
         """Reserve the next ``call`` number for a row written later (a cell's, after its in-code calls)."""
@@ -4103,6 +4156,10 @@ class WriterPass:
         self._temp_kept = None
         # tools in code (UNIFY_TOOLS_IN_CODE=on, library mode): one JSON tool, the rest called from cells
         in_code = library and bool(getattr(self.cfg, "tools_in_code", False))
+        # tools in code: the handler threads still running when the gate would start (None: that point was not
+        # reached); written on the pass end event
+        self._in_code_pass = in_code
+        self._handlers_at_gate = None
         # library mode: the shared no-progress rule (loop_stop.AgentNoProgress), always on; a capped pass without the
         # library is bounded by its call and USD caps as before
         no_progress = None
@@ -4992,13 +5049,26 @@ class WriterPass:
                                 base,
                             )
                             ic.finish_text = None
-                            content = await self._in_code_cell(
-                                session,
-                                ic,
-                                str(args.get("code", "")),
-                                cells,
-                                event_call,
-                            )
+                            try:
+                                content = await self._in_code_cell(
+                                    session,
+                                    ic,
+                                    str(args.get("code", "")),
+                                    cells,
+                                    event_call,
+                                )
+                            except BaseException as exc:
+                                # the cell's row still lands at its reserved number, with an error status, so no
+                                # placeholder outlives the pass; the exception goes on as before
+                                self._crashed_cell_event(
+                                    pass_id,
+                                    fn.get("arguments"),
+                                    args,
+                                    turn_usage,
+                                    event_call,
+                                    exc,
+                                )
+                                raise
                             calls, checks, reads, readers = (
                                 ic.calls,
                                 ic.checks,
@@ -5074,6 +5144,7 @@ class WriterPass:
                     if acted is not None:
                         notes.append(no_progress.note(acted))
                     if acted == "end":
+                        cause(CODE_NO_PROGRESS)
                         break
                 if finished and self.cfg.library_mode and stop is None and repair():
                     finished = (
@@ -5085,7 +5156,9 @@ class WriterPass:
                 # no box can write /memory and no tool handler of the pass may run while the gate judges it
                 await session.close()
                 alive = session.box_alive()
-                if alive or not await ic.threads.wait_idle(self.in_code_idle_s):
+                idle = not alive and await ic.threads.wait_idle(self.in_code_idle_s)
+                self._handlers_at_gate = ic.threads.running()
+                if not idle:
                     why = (
                         "a box of this pass is still running"
                         if alive

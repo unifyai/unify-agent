@@ -399,6 +399,10 @@ class HandlerThreads:
     def alive(self) -> bool:
         return any(not f.done() for f in self._futures)
 
+    def running(self) -> int:
+        """How many tracked threads have not returned yet."""
+        return sum(1 for f in list(self._futures) if not f.done())
+
     async def wait_idle(self, timeout: float) -> bool:
         """Wait up to *timeout* seconds for every tracked thread to return; True when none is running."""
         pending = [f for f in self._futures if not f.done()]
