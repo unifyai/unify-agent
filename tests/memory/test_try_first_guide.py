@@ -3,21 +3,33 @@ memory section, and the index line that shows an item's applicability signature.
 
 The guide informs and never forces: it says to look for stored procedures at the start of a request and that
 trying a matching one is cheaper than working it out again; it says nothing about checking a task's examples.
+
+The index line's item records are what production writes (:mod:`tests.memory.gate_records`): a pass lands a captured
+procedure, the library gate checks it, and the records are ``lifecycle.next_records`` with the gate's verification and
+the capture store's landing. Only a landed procedure carries an applicability signature; building the records runs
+code confined, so those tests need bubblewrap.
 """
 
 from __future__ import annotations
 
+import atexit
+import functools
+import json
 import re
+import shutil
+import tempfile
 from pathlib import Path
 
 import pytest
 
+from tests.memory.gate_records import Built, Landing, build, needs_box
+from tests.memory.test_episodes import _ep
 from tests.memory.test_layout import LIB, _tree
 from unify.common import in_code_switch
 from unify.memory import library_export as lx
 from unify.memory import library_prompts as lp
-from unify.memory import memory_helper
 from unify.memory.catalogue import write_files
+from unify.memory.episodes import Action
 
 # ==== ASSUMED NAMES (the integrator adapts these to the code, here only) ======================================
 #: The guide texts the actor reads (``library_prompts``): with tools in code off, and in code (which name the
@@ -42,21 +54,13 @@ INPUT_LINE = re.compile(r"^\s*input: (?P<shape>.+)$")
 INDEX_HEAD_INPUT = "`input:`"
 
 
-def _export_with_signature(root: Path, shapes: dict) -> str:
-    """``INDEX.md`` of the copy at *root*, where each function in *shapes* has that recorded input (its
-    applicability signature): here, the recorded input shapes of its example calls, given to the export as the
-    item's signature (``saved_against``, with the one identifier rule applied as the export applies it)."""
-    from unify.memory.library_export import strip_signature
-
-    files = lx.generated_library_mode(
-        root,
-        shapes=lambda item, digest: (shapes[item], False) if item in shapes else None,
-        saved_against=lambda item: (
-            {"signature": strip_signature({"input": {k: v for k, v in shapes[item][0].items() if k != "param"}})}
-            if item in shapes
-            else None
-        ),
-    )
+def _export(root: Path) -> str:
+    """``INDEX.md`` of a copy at *root* of the library the gate checked, exported with the item records production
+    writes for it: a landed procedure's record carries its capture's applicability signature, which the export reads
+    through ``saved_against_of`` (with the one identifier rule applied as the export applies it)."""
+    built = _built()
+    _tree(root, built.files)
+    files = lx.generated_library_mode(root, records=built.records, saved_against=lx.saved_against_of(built.records))
     write_files(root, files)
     return files["INDEX.md"].decode("utf-8")
 
@@ -66,6 +70,55 @@ def _export_with_signature(root: Path, shapes: dict) -> str:
 DATE = "memory.text.dates:parse_date"
 WEEK = "memory.text.dates:week"
 ALIAS = "3f2c8a10-9b7e-4c51-a2d4-6e0f1b9c7d35"
+#: The procedure the pass lands from its capture, as ``land_capture`` names it.
+STAMP = "memory.stamps.procedures:stamp"
+#: What its episode was given: a date and its zone, and rows under a key that is a printed identifier.
+RECORDED = {"date": "2026-10-09", "zone": "UTC", ALIAS: [{"item": "case-0093", "amount": 3}]}
+STAMP_PROCEDURE = '''"""Write a recorded date with its zone."""
+
+import json
+
+
+def read_input(text):
+    """The JSON object of the request."""
+    return json.loads(text)
+
+
+def run(value):
+    """The date and its zone, as one stamp."""
+    return value["date"] + " " + value["zone"]
+'''
+STAMP_SUMMARY = (
+    "## Asked\nWrite the order's date with its zone.\n## Approach\n- Read the JSON and joined the date and zone.\n"
+    "## Worked\n- the stamp\n## Failed\nnone\n## Outcome\nnot shown\n"
+)
+#: The library stored before the pass: the layout tests' library, its note without the link to a function it lacks
+#: (the gate refuses a library with a dangling link).
+BASE = {**LIB, "notes/text/dates.md": LIB["notes/text/dates.md"].replace(", memory.text.dates:gone", "")}
+
+
+@functools.lru_cache(maxsize=1)
+def _built() -> Built:
+    """The pass that lands the capture of episode ``ep-stamp`` as :data:`STAMP`, the gate's check and the item
+    records; once per process."""
+    root = Path(tempfile.mkdtemp(prefix="try-first-world-"))
+    atexit.register(shutil.rmtree, root, True)
+    request = json.dumps(RECORDED)
+    episode = _ep(
+        episode_id="ep-stamp",
+        request=[request],
+        transcript=[{"role": "user", "content": request}],
+        cells=[],
+        actions=[
+            Action(-1, "dialogue:user", "answer", ["2026-10-09 UTC"], {}, "Accepted.", "ok", "unknown", kind="dialogue"),
+        ],
+    )
+    return build(
+        root,
+        episodes={"ep-stamp": episode},
+        base=BASE,
+        landings=[Landing("ep-stamp", STAMP_PROCEDURE, STAMP_SUMMARY, "stamps", "stamp")],
+    )
 
 
 def _guide(name: str) -> str:
@@ -263,34 +316,33 @@ def _input_lines(index: str, item: str) -> list[str]:
     return out
 
 
+@needs_box
 def test_an_items_index_line_shows_its_applicability_signature(tmp_path):
-    root = _tree(tmp_path / "lib")
-    shape = {**memory_helper.value_shape({"date": "2026-10-09", "zone": "UTC"}), "param": "s"}
-    index = _export_with_signature(root, {DATE: [shape]})
-    shown = _input_lines(index, DATE)
+    index = _export(tmp_path / "lib")
+    assert isinstance(_built().records[STAMP]["signature"], dict)  # carried from its capture by the landing
+    shown = _input_lines(index, STAMP)
     assert len(shown) == 1
     assert "date" in shown[0] and "zone" in shown[0]
-    assert _input_lines(index, WEEK) == []  # an item with no recorded input has no such line
+    # a function that was never landed has no recorded input, so no such line
+    for item in (DATE, WEEK):
+        assert _built().records[item]["signature"] is None and _input_lines(index, item) == []
     assert INDEX_HEAD_INPUT in index.split("\n## ", 1)[0]  # the head says what the line holds
 
 
+@needs_box
 def test_the_index_with_signatures_is_byte_stable(tmp_path):
-    shape = {**memory_helper.value_shape([{"item": "pen", "amount": 3}]), "param": "rows"}
-    a = _export_with_signature(_tree(tmp_path / "a"), {DATE: [shape]})
-    b = _export_with_signature(_tree(tmp_path / "b"), {DATE: [shape]})
+    a = _export(tmp_path / "a")
+    b = _export(tmp_path / "b")
     assert a == b
-    assert a == _export_with_signature(_tree(tmp_path / "a"), {DATE: [shape]})
+    assert a == _export(tmp_path / "a")
 
 
+@needs_box
 def test_no_identifier_or_recorded_value_appears_in_a_signature_line(tmp_path):
     """A signature is structure: no recorded value, and no printed identifier even where one was a key."""
-    root = _tree(tmp_path / "lib")
-    shape = {
-        **memory_helper.value_shape({ALIAS: [{"item": "case-0093", "amount": 3}], "total": 3}),
-        "param": "s",
-    }
-    index = _export_with_signature(root, {DATE: [shape]})
-    shown = "\n".join(_input_lines(index, DATE))
+    root = tmp_path / "lib"
+    index = _export(root)
+    shown = "\n".join(_input_lines(index, STAMP))
     assert shown
-    assert ALIAS not in index and "case-0093" not in index
+    assert ALIAS not in index and "case-0093" not in index and "2026-10-09 UTC" not in index
     assert str(root) not in index
