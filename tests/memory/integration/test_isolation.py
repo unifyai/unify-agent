@@ -58,6 +58,7 @@ def _open_run(world, monkeypatch):  # noqa: F811
     (paths.worktree_git / "HEAD").write_text("ref: refs/heads/main\n")
     paths.events.parent.mkdir(parents=True, exist_ok=True)
     paths.events.write_text('{"type": "consolidation"}\n')
+    paths.captures.mkdir(parents=True, exist_ok=True)  # made on the first capture, like the work tree and events
     ctx = contextvars.copy_context()
     run = ctx.run(request_mod.RequestRun.begin, "hi")
     for p in _stores(paths):

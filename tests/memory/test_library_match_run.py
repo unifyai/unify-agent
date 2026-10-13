@@ -126,7 +126,7 @@ def test_match_lists_procedures_whose_recorded_input_has_the_same_structure(tmp_
     )
     rows, failed, text = (json.loads(line) for line in _py(root, code).splitlines())
     assert rows == [
-        [DATE, "exact", "reproduces-its-case", "experimental"],
+        [DATE, "exact", "reproduces-its-case", "on-trial"],
         ["capture:" + "a" * 16, "exact", "unchecked", "on-trial"],
     ]
     assert failed == ["capture:" + "b" * 16]  # tried on input like this and failed: apart, never runnable
@@ -212,7 +212,7 @@ def test_run_calls_an_item_and_reports_its_outcome(tmp_path):
         "print(json.dumps(repr(r)))\n"
     )
     first, failures, text = (json.loads(line) for line in _py(root, code).splitlines())
-    assert first == ["returned", "2026-10-09", True, "reproduces-its-case", "experimental", []]
+    assert first == ["returned", "2026-10-09", True, "reproduces-its-case", "on-trial", []]
     assert failures == ["error", "LookupError", "error", "AttributeError"]  # reported, never raised
     assert "run of memory.text.dates:parse_date: returned" in text and "repeatable: yes" in text
     for word in ("correct", "verified", "right answer"):

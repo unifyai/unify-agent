@@ -199,7 +199,7 @@ def test_the_catalogue_has_one_card_per_function_in_module_order_then_notes_then
     assert "Sum every number of a table's rows." in card and "It takes the rows" not in card  # first paragraph
     assert "- Asked: Add up a table of numbers from <id> and report the total (<id>)." in card
     assert "Approach: - Read the rows" in card and "run <id>" in card
-    assert f"Evidence: level reproduces-its-case; status experimental; reader {READ_ROWS}; applies: yes" in card
+    assert f"Evidence: level reproduces-its-case; status on-trial; reader {READ_ROWS}; applies: yes" in card
     assert "Input: {" in card and "Record: " in card and f"Notes: {NOTE}" in card
     failed = text.split(f"### capture:{FAILED}\n", 1)[1]
     assert "tried and failed: never offered to run" in failed and "Broke: reading the words raised ValueError <id>" in failed
@@ -441,7 +441,8 @@ def test_ask_is_a_helper_call_and_its_rows_and_listed_by_ask_reach_the_use_recor
     add_runtime_calls(acc, first)
     add_runtime_calls(acc, second)
     assert library_helper_calls(acc, librarian=True)["ask"] == {"ok": 2, "refused": 0, "error": 0}
-    assert "ask" not in library_helper_calls(acc)
+    assert library_helper_calls(acc)["ask"] == {"ok": 2, "refused": 0, "error": 0}  # a seen ask is always counted
+    assert "ask" not in library_helper_calls(runtime_calls_empty())  # no librarian and no ask: no ask row
     assert TOTAL in acc["counts"] and "memory:ask" not in acc["counts"]  # asking is never a use
     fields = use.ask_fields(acc)
     assert fields["ask_calls"] == 2

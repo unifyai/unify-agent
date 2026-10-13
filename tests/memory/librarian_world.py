@@ -206,7 +206,7 @@ def records() -> dict[str, dict]:
     out: dict[str, dict] = {}
     for item in FUNCTIONS:
         rec = item_records.empty_record(item, "function")
-        rec["status"] = "stable" if item == TOTAL else "experimental"
+        rec["status"] = "adopted" if item == TOTAL else "on-trial"
         out[item] = rec
     total = out[TOTAL]
     total.update(

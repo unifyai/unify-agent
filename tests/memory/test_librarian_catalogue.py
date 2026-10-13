@@ -146,12 +146,12 @@ def test_a_card_shows_its_evidence_level_status_reader_applies_and_input_line(tm
     text = files[CATALOGUE].decode("utf-8")
     card = _card(text, w.TOTAL)
     assert EVIDENCE_LABEL in card.lower()
-    assert "reproduces-its-case" in card and "stable" in card
+    assert "reproduces-its-case" in card and "adopted" in card
     assert w.READ_ORDERS in card  # its reader
     assert "applies" in card
     assert _flat(signature_text(w.TOTAL_SIGNATURE)) in _flat(card)
     ledger = _card(text, w.RECONCILE)
-    assert "unchecked" in ledger and "experimental" in ledger
+    assert "unchecked" in ledger and "on-trial" in ledger
     assert _flat(signature_text(w.LEDGER_SIGNATURE)) in _flat(ledger)
 
 
@@ -195,7 +195,7 @@ def test_the_order_is_never_a_score(tmp_path):
     tree = w.write_tree(tmp_path / "lib")
     recs = w.records()
     recs[w.WORDS]["use"] = {"2" * 40: {"episodes": 50, "uses": 90, "seen": 90}}
-    recs[w.WORDS]["status"] = "stable"
+    recs[w.WORDS]["status"] = "adopted"
     recs[w.WORDS]["level"] = "confirmed-by-outcomes"
     text = w.generate(tree, records=recs, summaries=w.SUMMARIES)[CATALOGUE].decode("utf-8")
     assert [h[2] for h in card_heads(text) if h[2] in w.FUNCTIONS] == w.FUNCTIONS
