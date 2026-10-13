@@ -91,19 +91,53 @@ def check(text: str, ep: Any) -> dict:
     }
 
 
+def _count(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _reader_record(view: Any) -> dict:
+    """The reader's own record of its spend, wall time and tokens (``fork.json``), as the end event carries them."""
+    if view is None:
+        return {"reader_usd": None, "reader_seconds": None, "reader_tokens": None}
+    from decimal import Decimal, InvalidOperation
+
+    rec = getattr(view, "record", None) or {}
+    try:
+        usd = rec.get("usd")
+        usd = format(Decimal(str(usd)), "f") if usd is not None and not isinstance(usd, bool) else "unknown"
+    except (InvalidOperation, ValueError):
+        usd = "unknown"
+    seconds = rec.get("seconds")
+    usage = rec.get("usage") if isinstance(rec.get("usage"), dict) else {}
+    return {
+        "reader_usd": usd,
+        "reader_seconds": seconds if isinstance(seconds, (int, float)) and not isinstance(seconds, bool) else None,
+        "reader_tokens": {
+            "prompt": _count(usage.get("prompt_tokens")),
+            "cached": _count(usage.get("cached_tokens")),
+            "completion": _count(usage.get("completion_tokens")),
+            "reasoning": _count(usage.get("reasoning_tokens")),
+        },
+    }
+
+
 def episode_row(eid: str, entry: dict | None, view: Any, load: Any) -> dict:
     """One ``staging_episodes`` row of a pass's end event, for a batch episode: its staging as the writer got it
-    (*entry*, the batch-map row's ``staging``), which reader staged it and what an unfinished reader left that was
-    not handed on (*view*, :class:`.staging.StagingView`; the writer's row never names the reader), and its
-    summary's size and pointer counts against the recorded episode (``load(eid)``). The pointer counts are None when there is no summary; ``summary_error`` says why the episode
-    could not be read for them. Never raises."""
+    (*entry*, the batch-map row's ``staging``); which reader staged it (``reader``: the view's source, ``none``
+    without staging), its recorded status, spend, wall time and tokens, and what an unfinished reader left that was
+    not handed on (*view*, :class:`.staging.StagingView`; the writer's row never names the reader); and its
+    summary's size and pointer counts against the recorded episode (``load(eid)``). The pointer counts are None when
+    there is no summary; ``summary_error`` says why the episode could not be read for them. ``reader_usd`` is a
+    Decimal string, ``unknown`` when the reader recorded none, None without a reader. Never raises."""
     entry = entry if isinstance(entry, dict) else {}
     files = getattr(view, "files", None) or {}
     summary = files.get("summary.md")
     row: dict = {
         "episode": eid,
-        "source": getattr(view, "source", None) or "none",
+        "reader": getattr(view, "source", None) or "none",
         "status": entry.get("status", "none"),
+        "reader_status": getattr(view, "status", None),
+        **_reader_record(view),
         "files": len(entry.get("files") or []),
         "candidates": len(entry.get("candidates") or []),
         "withheld": len(getattr(view, "withheld", None) or []),
