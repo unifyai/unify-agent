@@ -216,15 +216,6 @@ def _copy(tmp_path: Path, librarian: bool = True, name: str = "copy") -> Path:
     return root
 
 
-#: A landed reader's own test loads its parsed fixture before calling it (land_capture.case_tests), the gate records
-#: every parsed fixture a test module opened before a call as that call's reader (example_checks), so the reader's
-#: record names itself as its one reader and the dispatch file offers it as a procedure read by itself.
-SELF_READ = pytest.mark.xfail(
-    strict=True,
-    reason="the landed reader is dispatched as a procedure whose reader is itself",
-)
-
-
 # --- the catalogue and the dispatch file ------------------------------------------------------------------------
 
 
@@ -261,7 +252,6 @@ def test_the_catalogue_holds_no_identifier_answer_or_request_and_is_byte_stable(
 
 
 @needs_box
-@SELF_READ
 def test_the_dispatch_file_lists_each_procedure_with_a_reader_or_an_applies(tmp_path):
     root = _copy(tmp_path)
     data = json.loads((root / lx.DISPATCH_FILE).read_text())
@@ -313,7 +303,6 @@ FAKE_TOOLS = (
 
 
 @needs_box
-@SELF_READ
 def test_ask_computes_the_facts_in_its_own_process_and_sends_outcomes_only(tmp_path):
     root = _copy(tmp_path)
     code = (

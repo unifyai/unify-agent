@@ -242,6 +242,8 @@ def test_the_dispatch_file_lists_each_procedure_with_a_reader_or_applies(tmp_pat
     by_id = {r["id"]: r for r in rows}
     total = by_id[w.TOTAL]
     assert total["reader"] == w.READ_TOTAL and total["applies"] is True
+    # a landed reader is never a procedure read by itself (its own test opens the fixture it produced)
+    assert w.READ_TOTAL not in by_id and all(r["reader"] != r["id"] for r in rows)
     assert total["input"] == signature_text(w.records()[w.TOTAL]["signature"])
     # a function with one reader by the gate is a row, with no applies and no input line
     assert by_id[w.COUNT] == {"id": w.COUNT, "reader": w.READ_ORDERS, "applies": False, "input": ""}
