@@ -65,6 +65,10 @@ def empty_record(item: str, kind: str) -> dict:
         "source_channels": [],
         "bisect": None,
         "rollback": None,
+        # outcome-driven trust (trust.py): the record per kind of signal, and what an adoption rests on
+        # (``verdicts`` or ``implicit``; None unless adopted)
+        "track": None,
+        "status_basis": None,
     }
 
 
