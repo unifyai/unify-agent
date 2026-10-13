@@ -88,6 +88,10 @@ def test_the_fork_instruction_asks_for_the_summary_first_in_the_format(monkeypat
     assert lp.SUMMARY_FORMAT in text and fork_mod.NUMBERING in text
     assert text.index(lp.SUMMARY_FORMAT) < text.index("Limits:")
     assert not lp.example_checks(text) and not lp.benchmark_words(text)
+    # the format and its example name no benchmark or environment: a general task only
+    for part in (fork_mod.FORMAT_EXAMPLE, lp.SUMMARY_FORMAT, fork_mod.NUMBERING, fork_mod.PARTS_HEAD):
+        assert lp.benchmark_words(part) == [] and lp.example_checks(part) == []
+    assert "grid" not in fork_mod.FORMAT_EXAMPLE.lower()
     assert fw.allowed("summary.md") is None and fw.kind("summary.md") == "summary"
 
 
