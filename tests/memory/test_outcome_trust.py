@@ -32,7 +32,7 @@ from unify.memory.fixtures import canonical
 ON_TRIAL, ADOPTED, RETIRED = "on-trial", "adopted", "retired"
 OLD_STATUSES = ("experimental", "stable", "suspect")
 LEVELS = ("unchecked", "reproduces-its-case", "confirmed-by-outcomes")
-LEVELS_HOME = ("unify.memory.item_records", "LEVELS")
+LEVELS_HOME = ("unify.memory.trust", "LEVELS")
 #: ItemUse gains these fields (keyword arguments with defaults).
 ACCEPTED, REJECTED = "accepted", "rejected"
 POSITIVE, CONTRARY = "positive", "contrary"
@@ -49,7 +49,7 @@ TRACK_GROUPS = {
     "implicit": ("ran_ok", "agreed", "disagreed", "corrected", "reused_episodes"),
 }
 #: Which signal failed, as a failed-use row names it, for a rejected verdict.
-FAILED_BY_VERDICT = "verdict"
+FAILED_BY_VERDICT = "rejected"
 #: The pool kind for a failed use.
 POOL_FAILURE_KIND = "failure"
 
@@ -71,7 +71,9 @@ def _failed_uses(facts: list) -> list[dict]:
 
 
 def _result_digest(value) -> str | None:
-    return lc.result_digest(value)
+    from unify.memory.analysis.use import result_digest
+
+    return result_digest(value)
 
 
 def _failure_entry(**kw):

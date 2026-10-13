@@ -70,6 +70,14 @@ class ItemUse:
     # per-call outcome rows (:class:`.trust.Use`: answered, verdict, end outcome, conditions, correction) when the
     # use record attributes its calls (``items[<id>].outcomes``); empty: the facts above, attributed as always
     outcomes: tuple = ()
+    # what the use record says of a returned call: whether its result was handed back (None: not recorded), the
+    # visible verdict after it, the episode's end outcome, its stated conditions (held, failed or none) and whether
+    # a correction followed (:mod:`.trust`)
+    answered: bool | None = None
+    verdict: str | None = None
+    end_outcome: str | None = None
+    conditions: str | None = None
+    corrected: bool = False
 
 
 def returned(called: int, refused: int, errored: int) -> bool:
@@ -348,7 +356,21 @@ def trust_uses(f: EpisodeUse, u: ItemUse) -> list:
         return list(u.outcomes)
     regime = f.regime if f.regime in trust.REGIMES else NO_SIGNAL_REGIME
     out = []
-    if u.used:
+    if u.used and u.answered is not None:
+        out.append(
+            trust.Use(
+                f.episode_id,
+                regime,
+                "returned",
+                answered=u.answered,
+                verdict=u.verdict if u.verdict in trust.VERDICTS else None,
+                end_outcome=u.end_outcome if u.end_outcome in trust.END_OUTCOMES else None,
+                holds={"held": True, "failed": False}.get(u.conditions or ""),
+                corrected=u.corrected,
+                unknown=u.unknown,
+            ),
+        )
+    elif u.used:
         out.append(
             trust.Use(
                 f.episode_id,
@@ -378,8 +400,48 @@ def item_outcome(
     from . import trust
 
     uses = [x for f in facts if item in f.items for x in trust_uses(f, f.items[item])]
-    prior_trust = trust.FROM_LIFECYCLE.get(prior) if prior else None
+    # the prior status in either set of names (the lifecycle's, or the trust statuses once renamed)
+    prior_trust = trust.FROM_LIFECYCLE.get(prior, prior if prior in trust.STATUSES else None) if prior else None
     return trust.apply_outcome(level, prior_trust, uses), trust.track(uses)
+
+
+def aggregate_track(facts: Iterable[EpisodeUse]) -> dict[str, dict]:
+    """Each item's track record per kind of signal (:func:`.trust.track`) over *facts*."""
+    from . import trust
+
+    facts = list(facts)
+    items = sorted({i for f in facts for i in f.items})
+    return {
+        i: trust.track([x for f in facts if i in f.items for x in trust_uses(f, f.items[i])])
+        for i in items
+    }
+
+
+def status_basis(item: str, facts: Iterable[EpisodeUse]) -> str | None:
+    """What *item*'s adoption rests on (``verdicts`` or ``implicit``), or None when it is not adopted."""
+    from . import trust
+
+    out, _ = item_outcome(item, None, facts)
+    return out.basis if out.status == trust.ADOPTED else None
+
+
+def failed_uses(facts: Iterable[EpisodeUse]) -> list[dict]:
+    """Every failed use in *facts*, one row per item, episode and failing signal: ``{item, episode, regime,
+    signal}``, the signal as :func:`.trust.judge` names it (``rejected``, ``contrary_end``, ``holds_false``,
+    ``corrected``, ``disagreed``, ``error``, ``negative``). A refusal is never one."""
+    from . import trust
+
+    out: list[dict] = []
+    seen: set[tuple] = set()
+    for f in facts:
+        for item, u in sorted(f.items.items()):
+            for x in trust_uses(f, u):
+                kind, why, _ = trust.judge(x)
+                key = (item, f.episode_id, why)
+                if kind == trust.FAILED and key not in seen:
+                    seen.add(key)
+                    out.append({"item": item, "episode": f.episode_id, "regime": x.regime, "signal": why})
+    return out
 
 
 def decide_status(
@@ -414,7 +476,7 @@ def decide_status(
     if status == "suspect":
         return "suspect", out.rule, out.reason, list(out.episodes)
     if status == "stable":
-        return "stable", None, None, list(out.episodes)
+        return "stable", None, out.reason, list(out.episodes)
     rows = [f.items[item] for f in facts if item in f.items]
     refused = sorted({f.episode_id for f in facts if item in f.items and f.items[item].refused})
     if refused and not any(u.used for u in rows):

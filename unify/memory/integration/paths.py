@@ -66,6 +66,11 @@ class Paths:
         in the harness-only state directory."""
         return self.state_dir / "events.jsonl"
 
+    @property
+    def captures(self) -> Path:
+        """The capture store (``captures.py``): attempts the harness captured, written only by the harness."""
+        return self.state_dir / "memory-captures"
+
     def harness_only(self) -> list[Path]:
         """Every path a cell must never see."""
         return [
@@ -74,5 +79,6 @@ class Paths:
             self.blobs,
             self.evidence,
             self.state_dir,
+            self.captures,
             self.worktree_git,
         ]
