@@ -37,11 +37,32 @@ ENTRY_FIELDS = {"kind", "target", "exception", "message", "cell"}
 KINDS = {"item", "index", "show", "find", "match", "import", "name"}
 
 
+def _transcript(run: Any) -> list[dict]:
+    """The episode's transcript lines for the cells the run noted, in order: each ``execute_code`` call and its
+    result, under the call id ``_run`` gave it, so a failure's ``cell`` resolves as it does for a recorded episode."""
+    lines: list[dict] = []
+    for call in run.cell_status:
+        lines.append(
+            {
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": call, "type": "function", "function": {"name": "execute_code", "arguments": "{}"}},
+                    ],
+                },
+            },
+        )
+        lines.append({"type": "message", "message": {"role": "tool", "tool_call_id": call, "content": ""}})
+    return lines
+
+
 def use_record(run: Any, *, library_mode: bool = True) -> dict:
     """The request's use record built from what the run collected, as ``RequestRun`` builds ``memory_use.json``
     at the end of a request (the integrator adapts this call if the failures reach ``memory_use`` another way)."""
     return memory_use(
-        _ep(transcript=[], actions=[]),
+        _ep(transcript=_transcript(run), actions=[]),
         list(getattr(run, "item_ids", None) or []),
         runtime_calls=run.runtime_calls,
         cell_errors=dict(run.cell_errors),

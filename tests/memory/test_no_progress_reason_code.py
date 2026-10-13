@@ -1,6 +1,8 @@
 """A writer pass whose round the memory agents' no-progress stop ended (``loop_stop.AgentNoProgress``: 2 * k
-no-progress model calls in a row) has a reason code of its own: in the consolidation end event's ``refused_by``
-and in its ``reason_codes``. A pass that only got the notice, or never got one, does not carry it.
+no-progress model calls in a row) has a reason code of its own. A refused pass lists it in the consolidation end
+event's ``reason_codes`` beside the gate checks (``refused_by`` stays the gate checks alone); a passed pass's codes
+stay exactly ``["ok"]``, and the end event's ``no_progress`` report says the stop ended its round. A pass that only
+got the notice, or never got one, does not carry it.
 
 Keyless: the model is scripted; the end-to-end case runs the writer's cells in the real box.
 """
@@ -67,15 +69,23 @@ def test_the_code_is_a_known_reason_code_of_its_own():
     assert NO_PROGRESS_CODE not in others
 
 
-@pytest.mark.parametrize("passed", [True, False], ids=["merge-landed", "nothing-landed"])
-def test_an_ended_round_is_in_refused_by_and_the_reason_codes(tmp_path, passed):
-    out = _outcome(codes=[CODE_OK if passed else "G2", NO_PROGRESS_CODE], no_progress=ENDED, passed=passed)
+def test_a_refused_pass_the_stop_ended_lists_the_code_beside_the_gate_checks(tmp_path):
+    # refused_by stays the gate checks that refused; the stop is a reason code beside them
+    out = _outcome(codes=["G2", NO_PROGRESS_CODE], no_progress=ENDED, passed=False)
     end = _end(tmp_path, out)
-    assert NO_PROGRESS_CODE in end["reason_codes"], end["reason_codes"]
-    assert NO_PROGRESS_CODE in end["refused_by"], end["refused_by"]
-    assert "writer_error" not in end["reason_codes"]
+    assert end["reason_codes"] == ["G2", NO_PROGRESS_CODE], end["reason_codes"]
+    assert end["refused_by"] == ["G2"], end["refused_by"]
+    assert end["no_progress"]["ended"] is True
     # codes only, never text
     assert all(isinstance(c, str) and " " not in c for c in end["reason_codes"] + end["refused_by"])
+
+
+def test_a_passed_pass_the_stop_ended_is_ok_and_its_report_says_so(tmp_path):
+    # a passed pass's codes are exactly ["ok"]; the stop's own report on the end event tells it apart
+    end = _end(tmp_path, _outcome(codes=[CODE_OK], no_progress=ENDED, passed=True))
+    assert end["reason_codes"] == [CODE_OK]
+    assert end["refused_by"] == []
+    assert end["no_progress"]["ended"] is True
 
 
 def test_a_notice_alone_or_no_notice_carries_no_code(tmp_path):
@@ -98,9 +108,10 @@ def test_a_writer_pass_the_stop_ended_reports_the_code(tmp_path):
     writer.gate.merge = _admit(writer, merged)
     out = _run(writer)
     assert out.no_progress and out.no_progress["ended"] is True, out.reasons
-    assert NO_PROGRESS_CODE in out.codes, out.codes
+    # the final merge landed the items, so the pass passed: exactly ["ok"], with the stop in its report
+    assert out.passed and out.codes == [CODE_OK], out.codes
     end = _end(tmp_path, out)
-    assert NO_PROGRESS_CODE in end["reason_codes"] and NO_PROGRESS_CODE in end["refused_by"], end
+    assert end["no_progress"]["ended"] is True and end["reason_codes"] == [CODE_OK], end
     # not mistaken for the operational step guard or a writer error
     assert "operational_step_guard" not in end["reason_codes"]
     assert "writer_error" not in end["reason_codes"]
