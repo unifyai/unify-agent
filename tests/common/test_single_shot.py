@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from tests.helpers import _handle_project
+from tests.scripted_model import ScriptedModel, reply, scripted
 from unify.common.llm_helpers import inject_tool_call_thoughts, method_to_schema
 from unify.common.single_shot import (
     single_shot_tool_decision,
@@ -317,7 +319,7 @@ async def test_debug_level_logs_single_shot_response_shape(caplog):
 
 
 # --------------------------------------------------------------------------- #
-#  Integration tests: real LLM calls (cached)                                 #
+#  Cancellation: a fake client stands in for the model                        #
 # --------------------------------------------------------------------------- #
 
 
@@ -414,309 +416,349 @@ async def test_single_shot_defers_cancellation_after_tool_execution_starts():
     assert result.tool_result == 8
 
 
+# --------------------------------------------------------------------------- #
+#  A scripted model: what single_shot_tool_decision makes of a reply          #
+# --------------------------------------------------------------------------- #
+#
+# The model is the scripted transport (tests/scripted_model.py): each test
+# scripts the reply a model would give and checks what the request offered
+# (tools, tool_choice, response_format, the messages) and what the decision
+# did with the reply (which callable ran, with which arguments, and what came
+# back). A request that offers tools is an ``actor`` request there, one
+# without tools a ``query_llm`` request.
+
+
+def _scripted_client(system: str):
+    """A client built inside the scripted block, so it never reads a recording."""
+    client = new_llm_client()
+    client.set_system_message(system)
+    return client
+
+
+def _says(message: dict, text: str) -> bool:
+    return text in json.dumps(message.get("content"))
+
+
+def _sent(call, system: str, user: str) -> None:
+    """The request carried the client's system message and the user message."""
+    assert any(
+        m.get("role") == "system" and _says(m, system) for m in call.messages
+    ), call.messages
+    assert call.messages[-1]["role"] == "user"
+    assert _says(call.messages[-1], user), call.messages[-1]
+
+
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_single_shot_calls_tool():
-    """LLM should call the greet tool when asked to greet someone."""
-    client = new_llm_client()
-    client.set_system_message(
-        "You are a helpful assistant. Use the available tools to respond to requests.",
-    )
-
-    tools = {
-        "greet": greet,
-        "add_numbers": add_numbers,
-    }
-
-    result = await single_shot_tool_decision(
-        client,
-        "Please greet Alice.",
-        tools,
-    )
+    """The tool the model calls runs with the model's arguments; every tool is
+    offered, with tool_choice auto."""
+    system = "You are a helpful assistant. Use the available tools to respond to requests."
+    model = ScriptedModel(actor=[reply(calls=[("greet", {"name": "Alice"})])])
+    with scripted(model):
+        result = await single_shot_tool_decision(
+            _scripted_client(system),
+            "Please greet Alice.",
+            {"greet": greet, "add_numbers": add_numbers},
+        )
 
     assert result.tool_name == "greet"
     assert result.tool_args == {"name": "Alice"}
     assert result.tool_result == "Hello, Alice!"
+    (call,) = model.calls
+    assert sorted(call.tool_names) == ["add_numbers", "greet"]
+    assert call.request["tool_choice"] == "auto"
+    _sent(call, system, "Please greet Alice.")
+    model.assert_used_up()
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_single_shot_chooses_correct_tool():
-    """LLM should choose add_numbers when asked to add."""
-    client = new_llm_client()
-    client.set_system_message(
-        "You are a calculator assistant. Use tools to perform calculations.",
-    )
-
-    tools = {
-        "greet": greet,
-        "add_numbers": add_numbers,
-    }
-
-    result = await single_shot_tool_decision(
-        client,
-        "What is 5 + 7?",
-        tools,
-    )
+    """Of several tools, the one the model names runs (and only that one)."""
+    model = ScriptedModel(actor=[reply(calls=[("add_numbers", {"a": 5, "b": 7})])])
+    with scripted(model):
+        result = await single_shot_tool_decision(
+            _scripted_client(
+                "You are a calculator assistant. Use tools to perform calculations.",
+            ),
+            "What is 5 + 7?",
+            {"greet": greet, "add_numbers": add_numbers},
+        )
 
     assert result.tool_name == "add_numbers"
     assert result.tool_args == {"a": 5, "b": 7}
     assert result.tool_result == 12
+    assert len(result.tools) == 1
+    (call,) = model.calls
+    assert sorted(call.tool_names) == ["add_numbers", "greet"]
+    model.assert_used_up()
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_single_shot_async_tool():
-    """Async tools should be awaited correctly."""
-    client = new_llm_client()
-    client.set_system_message(
-        "You are a calculator assistant. Use tools to perform calculations.",
-    )
-
-    tools = {
-        "multiply": async_multiply,
-    }
-
-    result = await single_shot_tool_decision(
-        client,
-        "What is 6 times 8?",
-        tools,
-    )
+    """An async tool is awaited: its result is the value, not a coroutine."""
+    model = ScriptedModel(actor=[reply(calls=[("multiply", {"x": 6, "y": 8})])])
+    with scripted(model):
+        result = await single_shot_tool_decision(
+            _scripted_client(
+                "You are a calculator assistant. Use tools to perform calculations.",
+            ),
+            "What is 6 times 8?",
+            {"multiply": async_multiply},
+        )
 
     assert result.tool_name == "multiply"
     assert result.tool_args == {"x": 6, "y": 8}
     assert result.tool_result == 48
+    (call,) = model.calls
+    assert call.tool_names == ["multiply"]
+    model.assert_used_up()
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_single_shot_tool_choice_required():
-    """With tool_choice='required', LLM must call a tool."""
-    client = new_llm_client()
-    client.set_system_message("You must use a tool to respond.")
+    """tool_choice='required' reaches the request, and the called tool runs."""
+    model = ScriptedModel(actor=[reply(calls=[("do_nothing", {})])])
+    with scripted(model):
+        result = await single_shot_tool_decision(
+            _scripted_client("You must use a tool to respond."),
+            "Hello, how are you?",
+            {"do_nothing": do_nothing},
+            tool_choice="required",
+        )
 
-    tools = {
-        "do_nothing": do_nothing,
-    }
-
-    result = await single_shot_tool_decision(
-        client,
-        "Hello, how are you?",
-        tools,
-        tool_choice="required",
-    )
-
-    # With tool_choice="required", the LLM must pick something
     assert result.tool_name == "do_nothing"
+    assert result.tool_args == {}
     assert result.tool_result == "Nothing done."
+    (call,) = model.calls
+    assert call.request["tool_choice"] == "required"
+    model.assert_used_up()
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_single_shot_no_tools():
-    """With empty tools dict, LLM should just respond with text."""
-    client = new_llm_client()
-    client.set_system_message("You are a helpful assistant.")
+    """With no tools the request offers none (and no tool_choice), and the
+    model's text is the response."""
+    system = "You are a helpful assistant."
+    model = ScriptedModel(query_llm=[reply("2 + 2 = 4.")])
+    with scripted(model):
+        result = await single_shot_tool_decision(
+            _scripted_client(system),
+            "What is 2+2?",
+            {},
+        )
 
-    result = await single_shot_tool_decision(
-        client,
-        "What is 2+2?",
-        {},  # No tools
-    )
-
-    # No tools available, so text response only
+    assert result.tools == []
     assert result.tool_name is None
     assert result.tool_result is None
-    # Should have some text response
-    assert result.text_response is not None or True  # May vary by model
+    assert result.text_response == "2 + 2 = 4."
+    assert result.structured_output is None
+    (call,) = model.calls
+    assert not call.request["tools"]
+    assert call.request["tool_choice"] is None
+    _sent(call, system, "What is 2+2?")
+    model.assert_used_up()
 
 
 # --------------------------------------------------------------------------- #
-#  Integration tests: response_format (structured output)                      #
+#  response_format (structured output), scripted                              #
 # --------------------------------------------------------------------------- #
+
+
+def _schema_of(call) -> dict:
+    """The JSON schema the request's response_format carries."""
+    response_format = call.request["response_format"]
+    assert response_format["type"] == "json_schema", response_format
+    return response_format["json_schema"]["schema"]
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_single_shot_structured_output_no_tools():
-    """With response_format and no tools, LLM returns structured output."""
-    client = new_llm_client()
-    client.set_system_message(
-        "You are a decision assistant. Always provide your reasoning.",
-    )
+    """With response_format and no tools, the request carries the schema and
+    the model's JSON text is parsed into the model class."""
+    decision = {
+        "thoughts": "A $50 expense is within the usual limit.",
+        "decision": "approve",
+        "confidence": 8,
+    }
+    model = ScriptedModel(query_llm=[reply(json.dumps(decision))])
+    with scripted(model):
+        result = await single_shot_tool_decision(
+            _scripted_client(
+                "You are a decision assistant. Always provide your reasoning.",
+            ),
+            "Should I approve this expense report for $50?",
+            {},
+            response_format=DecisionResponse,
+        )
 
-    result = await single_shot_tool_decision(
-        client,
-        "Should I approve this expense report for $50?",
-        {},  # No tools
-        response_format=DecisionResponse,
-    )
-
-    # No tools, so no tool call
     assert result.tool_name is None
     assert result.tool_result is None
-
-    # Should have structured output
-    assert result.structured_output is not None
     assert isinstance(result.structured_output, DecisionResponse)
-    assert result.structured_output.thoughts  # Non-empty
-    assert result.structured_output.decision in ("approve", "reject")
-    assert 1 <= result.structured_output.confidence <= 10
+    assert result.structured_output.model_dump() == decision
+    assert result.text_response == json.dumps(decision)
+    (call,) = model.calls
+    assert not call.request["tools"]
+    assert set(_schema_of(call)["properties"]) == {"thoughts", "decision", "confidence"}
+    model.assert_used_up()
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_single_shot_structured_output_with_tools():
-    """With response_format AND tools, LLM returns structured output AND calls tool."""
-    client = new_llm_client()
-    client.set_system_message(
-        "You are a helpful assistant. First think about the request, then use "
-        "the appropriate tool. Your response must include your thoughts as JSON.",
+    """With response_format AND tools, one reply carries both: the tool runs
+    and the JSON content is parsed."""
+    model = ScriptedModel(
+        actor=[
+            reply(
+                json.dumps({"thoughts": "Bob asked for a greeting."}),
+                calls=[("greet", {"name": "Bob"})],
+            ),
+        ],
     )
+    with scripted(model):
+        result = await single_shot_tool_decision(
+            _scripted_client(
+                "You are a helpful assistant. First think about the request, then use "
+                "the appropriate tool. Your response must include your thoughts as JSON.",
+            ),
+            "Please greet Bob. Think about why this is a good greeting.",
+            {"greet": greet, "add_numbers": add_numbers},
+            response_format=ThoughtsResponse,
+        )
 
-    tools = {
-        "greet": greet,
-        "add_numbers": add_numbers,
-    }
-
-    result = await single_shot_tool_decision(
-        client,
-        "Please greet Bob. Think about why this is a good greeting.",
-        tools,
-        response_format=ThoughtsResponse,
-    )
-
-    # Should call the greet tool
     assert result.tool_name == "greet"
     assert result.tool_args == {"name": "Bob"}
     assert result.tool_result == "Hello, Bob!"
-
-    # May or may not have structured output depending on model behavior
-    # (some models only return tool calls, some return both)
-    # We don't assert on structured_output here as behavior varies
+    assert result.structured_output == ThoughtsResponse(
+        thoughts="Bob asked for a greeting.",
+    )
+    (call,) = model.calls
+    assert sorted(call.tool_names) == ["add_numbers", "greet"]
+    assert set(_schema_of(call)["properties"]) == {"thoughts"}
+    model.assert_used_up()
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_single_shot_structured_output_complex():
-    """Test structured output with a more complex model."""
-    client = new_llm_client()
-    client.set_system_message(
-        "You are a sentiment analyzer. Analyze the sentiment and provide your "
-        "decision with confidence.",
+    """A multi-field model: every field, its type and its description reach
+    the schema, and a reply is parsed with its types."""
+    model = ScriptedModel(
+        query_llm=[
+            reply(
+                '{"thoughts": "Strongly positive wording.", '
+                '"decision": "approve", "confidence": 9}',
+            ),
+        ],
     )
+    with scripted(model):
+        result = await single_shot_tool_decision(
+            _scripted_client(
+                "You are a sentiment analyzer. Analyze the sentiment and provide your "
+                "decision with confidence.",
+            ),
+            "The product is absolutely amazing and I love it!",
+            {},
+            response_format=DecisionResponse,
+        )
 
-    result = await single_shot_tool_decision(
-        client,
-        "The product is absolutely amazing and I love it!",
-        {},  # No tools
-        response_format=DecisionResponse,
-    )
-
-    assert result.structured_output is not None
     assert isinstance(result.structured_output, DecisionResponse)
-    # Should be a positive sentiment, likely "approve"
-    assert result.structured_output.decision in ("approve", "reject")
-    assert result.structured_output.thoughts  # Non-empty reasoning
+    assert result.structured_output.decision == "approve"
+    assert result.structured_output.confidence == 9
+    assert result.structured_output.thoughts == "Strongly positive wording."
+    (call,) = model.calls
+    schema = _schema_of(call)
+    assert set(schema["required"]) == {"thoughts", "decision", "confidence"}
+    assert schema["properties"]["confidence"]["type"] == "integer"
+    for name, field in DecisionResponse.model_fields.items():
+        assert schema["properties"][name]["description"] == field.description
+    model.assert_used_up()
 
 
 # --------------------------------------------------------------------------- #
-#  Integration tests: multiple concurrent tool calls                          #
+#  Several tool calls in one decision, scripted                               #
 # --------------------------------------------------------------------------- #
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_single_shot_multiple_concurrent_tools():
-    """LLM can call multiple tools concurrently in a single thinking step.
-
-    This tests the core behavior: one LLM decision can trigger multiple parallel
-    tool executions, all of which are executed and returned.
-    """
-    client = new_llm_client()
-    client.set_system_message(
-        "You are an efficient assistant. When asked to do multiple things, "
-        "call ALL relevant tools in parallel in a single response. Do not call "
-        "them one at a time - use parallel tool calls.",
+    """One decision with several tool calls runs every one and returns all
+    their results, in the order the model called them."""
+    model = ScriptedModel(
+        actor=[
+            reply(
+                calls=[
+                    ("start_background_task", {"task_name": "data_sync"}),
+                    ("send_notification", {"message": "Sync started"}),
+                ],
+            ),
+        ],
     )
+    with scripted(model):
+        result = await single_shot_tool_decision(
+            _scripted_client(
+                "You are an efficient assistant. When asked to do multiple things, "
+                "call ALL relevant tools in parallel in a single response. Do not call "
+                "them one at a time - use parallel tool calls.",
+            ),
+            "Start a background task called 'data_sync' AND send a notification "
+            "saying 'Sync started'. Do both in parallel.",
+            {
+                "send_notification": send_notification,
+                "start_background_task": start_background_task,
+            },
+            tool_choice="required",
+        )
 
-    tools = {
-        "send_notification": send_notification,
-        "start_background_task": start_background_task,
-    }
-
-    result = await single_shot_tool_decision(
-        client,
-        "Start a background task called 'data_sync' AND send a notification "
-        "saying 'Sync started'. Do both in parallel.",
-        tools,
-        tool_choice="required",
-    )
-
-    # Should have called both tools
-    assert len(result.tools) == 2, (
-        f"Expected 2 concurrent tool calls, got {len(result.tools)}: "
-        f"{[t.name for t in result.tools]}"
-    )
-
-    # Check that both tools were called (order may vary)
-    tool_names = {t.name for t in result.tools}
-    assert tool_names == {"send_notification", "start_background_task"}
-
-    # Check results
-    for tool in result.tools:
-        if tool.name == "send_notification":
-            assert "Notification sent:" in tool.result
-            assert "Sync started" in tool.result
-        elif tool.name == "start_background_task":
-            assert "data_sync" in tool.result
-            assert "started" in tool.result
+    assert [(t.name, t.args, t.result) for t in result.tools] == [
+        (
+            "start_background_task",
+            {"task_name": "data_sync"},
+            "Task 'data_sync' started",
+        ),
+        (
+            "send_notification",
+            {"message": "Sync started"},
+            "Notification sent: Sync started",
+        ),
+    ]
+    # The first call answers the backward-compatible properties.
+    assert result.tool_name == "start_background_task"
+    (call,) = model.calls
+    assert call.request["tool_choice"] == "required"
+    model.assert_used_up()
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
 async def test_single_shot_multiple_tools_same_type():
-    """LLM can call the same tool multiple times concurrently."""
-    client = new_llm_client()
-    client.set_system_message(
-        "You are an efficient assistant. When asked to do multiple things, "
-        "call ALL relevant tools in parallel in a single response.",
+    """The same tool called twice in one decision runs twice, once per call's
+    arguments."""
+    model = ScriptedModel(
+        actor=[
+            reply(calls=[("greet", {"name": "Alice"}), ("greet", {"name": "Bob"})]),
+        ],
     )
+    with scripted(model):
+        result = await single_shot_tool_decision(
+            _scripted_client(
+                "You are an efficient assistant. When asked to do multiple things, "
+                "call ALL relevant tools in parallel in a single response.",
+            ),
+            "Greet both Alice and Bob. Call the greet tool twice in parallel - "
+            "once for Alice and once for Bob.",
+            {"greet": greet},
+            tool_choice="required",
+        )
 
-    tools = {
-        "greet": greet,
-    }
-
-    result = await single_shot_tool_decision(
-        client,
-        "Greet both Alice and Bob. Call the greet tool twice in parallel - "
-        "once for Alice and once for Bob.",
-        tools,
-        tool_choice="required",
-    )
-
-    # Should have called greet twice
-    assert (
-        len(result.tools) == 2
-    ), f"Expected 2 concurrent greet calls, got {len(result.tools)}"
-
-    # Both should be greet tool
-    assert all(t.name == "greet" for t in result.tools)
-
-    # Check that both names were greeted
-    greeted_names = {t.args["name"] for t in result.tools}
-    assert greeted_names == {"Alice", "Bob"}
-
-    # Check results
-    results = {t.result for t in result.tools}
-    assert results == {"Hello, Alice!", "Hello, Bob!"}
+    assert [t.name for t in result.tools] == ["greet", "greet"]
+    assert [t.args for t in result.tools] == [{"name": "Alice"}, {"name": "Bob"}]
+    assert [t.result for t in result.tools] == ["Hello, Alice!", "Hello, Bob!"]
+    model.assert_used_up()
