@@ -545,3 +545,41 @@ async def test_off_the_cell_has_no_ask(librarian):
     script = Script([actor_cell], [])
     result, _, _ = await _ask_act(env, script)
     assert result == "HAS_ASK False"
+
+
+# --- the first user message ---------------------------------------------------------------------------------------
+
+
+def _first_user(call) -> str:
+    return next(_text(m.get("content")) for m in call.messages if m.get("role") == "user")
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(900)
+async def test_the_first_user_message_says_how_large_the_library_is_and_the_system_prompt_is_unchanged(librarian):
+    from unify.memory.integration import hooks
+
+    env = librarian
+    _open_request(env["paths"], env["sha"], env["monkeypatch"])
+    functions, notes = hooks.library_counts(env["paths"].checkout)
+    assert (functions, notes) == (6, 1)  # the library world's functions and notes, as memory.items() lists them
+    script = Script(["tools.answer('done')\n"], [])
+    result, _, _ = await _ask_act(env, script)
+    assert result == "done"
+    first = script.actor_calls[0]
+    line = (
+        "Your memory library holds 6 functions and 1 note; memory.ask() shows the ones that apply, memory.items() "
+        "lists them all."
+    )
+    assert line in _first_user(first) and "Your memory library holds" not in _system(first)
+    _assert_ended(env["opened"])
+
+    # the same request without the line: the system prompt is the same bytes, so its cached prefix is kept
+    _open_request(env["paths"], env["sha"], env["monkeypatch"])
+    env["monkeypatch"].setattr(hooks, "library_line", lambda actor=True: None)
+    again = Script(["tools.answer('done')\n"], [])
+    await _ask_act(env, again)
+    assert "Your memory library holds" not in _first_user(again.actor_calls[0])
+    assert _system(again.actor_calls[0]) == _system(first)
+    _assert_ended(env["opened"])

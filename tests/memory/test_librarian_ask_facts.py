@@ -1,8 +1,8 @@
-"""``memory.ask(text)`` on the cell's side (design J(b).4 steps 1, 2 and 5): the recogniser facts are computed where
-the cell runs, and only their outcomes go to the host.
+"""``memory.ask(question)`` on the cell's side (design J(b).4 steps 1, 2 and 5): the recogniser facts are computed
+where the cell runs, on the current request the host gives, and only their outcomes go to the host.
 
-1. Each distinct reader the dispatch file lists runs once on the text, then each ``applies`` whose reader parsed it,
-   in the same confined, time-bounded child process as ``memory.run``. A reader that raises means "did not parse";
+1. Each distinct reader the dispatch file lists runs once on the current request's text, then each ``applies`` whose
+   reader parsed it, in one confined, time-bounded child process. A reader that raises means "did not parse";
    nothing is retried, and its ``applies`` is never called.
 2. The question and the outcomes go to the host through the in-code tool ``ask_library``. A value a reader parsed
    never leaves the cell's side.
@@ -10,8 +10,8 @@ the cell runs, and only their outcomes go to the host.
    ranking, score or top-k of the harness's own, and nothing word-matched added.
 
 The generated package runs here as a cell imports it, in a fresh isolated interpreter with the library copy first on
-its path. The host is a stand-in ``tools`` module that records what it is sent and returns a fixed answer. No model is
-called.
+its path. The host is a stand-in ``tools`` module that records what it is sent, gives the current request through
+the channel client's ``_call`` and returns a fixed answer. No model is called.
 """
 
 from __future__ import annotations
@@ -57,7 +57,9 @@ import memory
 """
 
 
-def _stand_in_host(tools_dir: Path, sent: Path, answer: dict) -> None:
+def _stand_in_host(tools_dir: Path, sent: Path, answer: dict, request: str | None = None) -> None:
+    """The host as the package reaches it: ``ask_library``, and the channel client's ``_call``, which answers
+    ``current_request`` with *request* (and refuses it when *request* is None)."""
     tools_dir.mkdir(parents=True, exist_ok=True)
     (tools_dir / f"{TOOLS_MODULE}.py").write_text(
         "import json\n\n\n"
@@ -65,6 +67,14 @@ def _stand_in_host(tools_dir: Path, sent: Path, answer: dict) -> None:
         f"    with open({str(sent)!r}, 'a') as fh:\n"
         "        fh.write(json.dumps({'args': args, 'kwargs': kwargs}, default=repr) + '\\n')\n"
         f"    return json.loads({json.dumps(answer)!r})\n"
+        "\n\n"
+        "class Refused(Exception):\n"
+        "    pass\n"
+        "\n\n"
+        "def _call(tool, args):\n"
+        f"    if tool != 'current_request' or {request!r} is None:\n"
+        "        raise Refused('refused: the current request is not available here (no current request is known)')\n"
+        f"    return json.dumps({{'text': {request!r}, 'data': None}})\n"
     )
 
 
@@ -90,7 +100,7 @@ def _capture(mark: Path, name: str, reader_body: str, applies: bool = True) -> s
     return src
 
 
-def _world(tmp_path: Path, answer: dict | None = None):
+def _world(tmp_path: Path, answer: dict | None = None, request: str | None = None):
     mark = tmp_path / "marks.txt"
     sources = {
         "ep-grid": (
@@ -111,7 +121,7 @@ def _world(tmp_path: Path, answer: dict | None = None):
     write_files(root, w.generate(root, records=w.records(), summaries=w.SUMMARIES, captures=caps))
     write_files(root, caps)
     sent = tmp_path / "sent.jsonl"
-    _stand_in_host(tmp_path / "host", sent, answer if answer is not None else {FITS: []})
+    _stand_in_host(tmp_path / "host", sent, answer if answer is not None else {FITS: []}, request or TEXT)
     ids = {e: f"capture:{w.capture_id(src)}" for e, (src, _) in sources.items()}
     return root, mark, sent, ids
 
@@ -200,8 +210,8 @@ def test_nothing_fits_comes_back_with_the_nearest_and_what_differs(tmp_path):
 def test_text_sharing_only_words_with_a_procedure_adds_nothing_to_the_answer(tmp_path):
     """The words of a card's docstring and goal, copied into the question, never make a fit on the cell's side:
     the answer is the librarian's, and no reader parses plain words."""
-    root, mark, sent, _ = _world(tmp_path)
     words = "Turn rows into columns. Decode the marked part. Sum the amount column of an order table."
+    root, mark, sent, _ = _world(tmp_path, request=words)
     got = _py(root, tmp_path / "host", f"r = memory.ask({words!r})\nprint(json.dumps({as_plain('r')}))")
     assert got == {FITS: []}
     marks = mark.read_text().splitlines() if mark.exists() else []
@@ -213,7 +223,7 @@ def test_a_question_with_no_procedures_to_recognise_still_reaches_the_host(tmp_p
     root = w.write_tree(tmp_path / "copy", {"memory/text/parse.py": w.PARSE})
     write_files(root, w.generate(root))
     sent = tmp_path / "sent.jsonl"
-    _stand_in_host(tmp_path / "host", sent, {FITS: []})
+    _stand_in_host(tmp_path / "host", sent, {FITS: []}, "Count the words of the attached text.")
     got = _py(root, tmp_path / "host", "r = memory.ask('Which item counts words?')\nprint(json.dumps(" + as_plain("r") + "))")
     assert got == {FITS: []}
     assert len(_sent(sent)) == 1

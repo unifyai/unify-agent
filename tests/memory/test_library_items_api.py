@@ -608,7 +608,7 @@ def test_the_stub_is_generated_valid_python_and_holds_the_contract(tmp_path):
             "def get(ref: str | Item | Callable) -> Item:",
         ):
             assert line in stub, line
-    assert "def ask(" not in off and "def ask(request: str) -> list[Item]:" in on
+    assert "def ask(" not in off and "def ask(question: str | None = None) -> list[Item]:" in on
     for gone in ("def index(", "def show(", "def find(", "def match(", "def run("):
         assert gone not in on
     assert layout.classify(RESERVED_STUB) == "generated" and RESERVED_STUB in layout.GENERATED_ROOT_FILES

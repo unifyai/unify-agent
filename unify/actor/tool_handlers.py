@@ -15,6 +15,8 @@ its worker pool); one that waits on the record or the request is a coroutine fun
 * ``answer(answer)`` records the request's answer, validated against the request's response format as the loop
   validates a response tool's payload; the loop ends the request when the cell returns.
 * ``store_skills(request)`` starts the storage review as host work that outlives the call.
+* ``current_request()`` gives the memory package the request the agent works on (``memory.ask()`` and
+  ``memory.match()`` run the stored readers on it); it is on the channel but never in a cell's ``tools``.
 """
 
 from __future__ import annotations
@@ -81,6 +83,10 @@ class ActorRequestState:
     open_librarian: Optional[Callable[[], Awaitable[Any]]] = None
     #: the request's librarian session, once a question opened it; it ends with the request (``InCodeTools.close``)
     librarian: Any = None
+    #: the request this agent works on, as ``current_request`` gives it to the memory package: its text, and the
+    #: structured request as JSON data (None for a text or a message); None: not known here
+    request_text: Optional[str] = None
+    request_data: Any = None
 
 
 def response_validator(rf_norm: Any) -> Callable[[Any], str]:
@@ -492,6 +498,56 @@ async def ask_library(ctx: Any, args: dict) -> Any:
     return _reply(text)
 
 
+# --- the current request, for the memory package (never in a cell's tools) ---
+
+#: The most bytes of JSON text ``current_request`` replies with (a channel reply carries at most 1 MiB).
+REQUEST_REPLY_BYTES = 1_000_000
+
+
+def request_of(request: Any) -> tuple[Optional[str], Any]:
+    """An ``act()`` request as ``current_request`` gives it: ``(text, data)``. The text is the requester's text
+    (``bound_request.text_of``); a structured request (an object or a list that is not a message) is its JSON text,
+    with the request itself, as JSON data, for *data*. ``(None, None)`` when it has neither."""
+    from unify.common._async_tool.bound_request import text_of
+
+    text = text_of(request)
+    if text is not None or not isinstance(request, (dict, list)):
+        return (text or None), None
+    try:
+        data = json.loads(json.dumps(request))
+    except (TypeError, ValueError):
+        return None, None
+    return json.dumps(data), data
+
+
+def _memory_run_request() -> Optional[str]:
+    """The text of the memory run's request (``integration.request.current()``), when one is open."""
+    try:
+        from unify.memory.integration import request as _request
+
+        text = getattr(_request.current(), "request", None)
+    except Exception:  # noqa: BLE001 - no memory run here
+        return None
+    return text if isinstance(text, str) and text else None
+
+
+def current_request(ctx: Any, args: dict) -> Any:
+    """The request the calling agent works on, as JSON text ``{"text": ..., "data": ...}``: the ``act()`` request the
+    request's state holds, else the memory run's (``integration.request``), whose data is None. The memory package
+    calls it through the channel client; it is never in a cell's ``tools``. Refused when no request is known, or
+    when its JSON is larger than a reply carries."""
+    state = ctx.state
+    text, data = getattr(state, "request_text", None), getattr(state, "request_data", None)
+    if not isinstance(text, str) or not text:
+        text, data = _memory_run_request(), None
+    if text is None:
+        return _refused(refusal("current_request", "unavailable", why="no current request is known"))
+    reply = json.dumps({"text": text, "data": data})
+    if len(reply.encode("utf-8")) > REQUEST_REPLY_BYTES:
+        return _refused(refusal("current_request", "unavailable", why="the request is larger than a reply carries"))
+    return _reply(reply)
+
+
 __all__ = [
     "ActorRequestState",
     "actor_binding",
@@ -499,12 +555,14 @@ __all__ = [
     "answer",
     "ask",
     "ask_library",
+    "current_request",
     "delegate",
     "grep",
     "install",
     "messages",
     "read",
     "reply",
+    "request_of",
     "response_validator",
     "send",
     "stop",

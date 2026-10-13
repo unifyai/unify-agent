@@ -382,7 +382,7 @@ ADDED_FORMS = {
     "stop": ["not_allowed"],
     "wait": ["bad_timeout"],
 }
-ADDED_TOOLS = ("install", "store_skills", "sh", "ask_library", "land_capture", "answer")
+ADDED_TOOLS = ("install", "store_skills", "sh", "ask_library", "land_capture", "answer", "current_request")
 #: Tools added to the writer's JSON tools (tools not in code) since the base commit: left out of the base hashes.
 ADDED_JSON_TOOLS = ("land_capture",)
 FLAGS = ("pool", "similar", "helper", "edit")

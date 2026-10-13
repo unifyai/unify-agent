@@ -7,6 +7,7 @@ objects are withdrawn.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -127,6 +128,53 @@ def worker_globals() -> dict[str, list]:
     if not present:
         return {}
     return {"memory": ["lazy_module", "memory"]}
+
+
+#: The actor's first user message's line on the library in its cells (with the librarian on), filled from the copy.
+LIBRARY_LINE = (
+    "Your memory library holds {functions} and {notes}; memory.ask() shows the ones that apply, memory.items() "
+    "lists them all."
+)
+
+
+def _counted(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def library_counts(copy: Path) -> tuple[int, int]:
+    """How many functions and notes the library copy at *copy* holds, as ``memory.items()`` lists them (every one
+    but the retired), from its ``.memory/items.json``; ``(0, 0)`` when that cannot be read."""
+    from unify.memory.library_helper import _HIDDEN_STATUSES, ITEMS_FILE, _status_of
+
+    try:
+        rows = json.loads((Path(copy) / ITEMS_FILE).read_text(encoding="utf-8")).get("items")
+    except (OSError, ValueError, UnicodeDecodeError, AttributeError):
+        return 0, 0
+    kinds = [
+        v.get("kind")
+        for v in (rows.values() if isinstance(rows, dict) else ())
+        if isinstance(v, dict) and _status_of(v) not in _HIDDEN_STATUSES
+    ]
+    return kinds.count("function"), kinds.count("note")
+
+
+def library_line(actor: bool = True) -> str | None:
+    """The line on the library that opens the actor's first user message of a request (never the system prompt,
+    whose cached prefix stays the same for every request): how many functions and notes the run's copy holds when
+    the request starts (:func:`library_counts`), generated from the copy. Only for the actor (*actor*), with the
+    library bound in its cells and the librarian on (it names ``memory.ask``); None otherwise, and when the copy
+    holds no function and no note."""
+    if not actor or "memory" not in worker_globals():
+        return None
+    from unify.memory import librarian
+
+    path = _checkout()
+    if path is None or not librarian.enabled():
+        return None
+    functions, notes = library_counts(path)
+    if functions + notes == 0:
+        return None
+    return LIBRARY_LINE.format(functions=_counted(functions, "function"), notes=_counted(notes, "note"))
 
 
 def worker_mounts() -> list[Path]:

@@ -252,10 +252,15 @@ FAKE_TOOLS = (
     "import json, sys, types\n"
     "tools = types.ModuleType('tools')\n"
     "sent = []\n"
+    "requests = []\n"
     "def ask_library(question, facts=None):\n"
     "    sent.append([question, facts])\n"
     f"    return {FAKE_ANSWER!r}\n"
+    "def _call(tool, args):\n"
+    "    requests.append([tool, args])\n"
+    f"    return json.dumps({{'text': {REQUEST!r}, 'data': None}})\n"
     "tools.ask_library = ask_library\n"
+    "tools._call = _call\n"
     "sys.modules['tools'] = tools\n"
 )
 
@@ -267,11 +272,14 @@ def test_ask_computes_the_facts_in_its_own_process_and_sends_outcomes_only(tmp_p
         + "import memory\n"
         "seen = []\n"
         "sys.addaudithook(lambda ev, a: seen.append([ev, list(a)]) if ev.startswith('memory.') else None)\n"
-        f"answer = memory.ask({REQUEST!r})\n"
+        "answer = memory.ask()\n"
         "fits = [[i.id, i.kind, i.reason, type(i).__name__] for i in answer]\n"
-        "print(json.dumps({'answer': fits, 'list': isinstance(answer, list), 'sent': sent, 'seen': seen}, default=list))\n"
+        "print(json.dumps({'answer': fits, 'list': isinstance(answer, list), 'sent': sent, 'seen': seen, "
+        "'requests': requests}, default=list))\n"
     )
     out = json.loads(_py(root, code))
+    # the current request came from the host, through the channel client, and was asked about itself
+    assert out["requests"] == [["current_request", {}]]
     # a list of items, each with the librarian's reason (the stand-in host's answer)
     assert out["list"] is True and out["answer"] == [[TOTAL, "function", "its reader parsed it", "Item"]]
     (question, facts), = out["sent"]
@@ -316,7 +324,10 @@ NEAREST_TOOLS = (
     "    raise Refused('refused: the librarian is not available here (no session); nothing was asked')\n"
     "def garbled(question, facts=None):\n"
     "    return 'not json'\n"
+    "def _call(tool, args):\n"
+    "    return json.dumps({'text': 'How many rows does the table have?', 'data': None})\n"
     "tools.ask_library = ask_library\n"
+    "tools._call = _call\n"
     "sys.modules['tools'] = tools\n"
 ) % NOTE
 
@@ -343,10 +354,9 @@ def test_ask_gives_the_nearest_items_when_nothing_applies_and_errors_that_teach(
     fits, nearest, shown, number, empty, refused, garbled = json.loads(_py(root, code))
     assert fits == [] and nearest == [[NOTE, "note", "it sums a table; this counts rows"]]
     assert shown == f"Nothing in the library applies.\n- nearest {NOTE} (note): it sums a table; this counts rows\n"
-    example = "e.g. memory.ask('Total the amounts in the attached table by month.')."
-    expected = f"Expected request: str non-empty, {example}"
-    assert number == ["ArgumentError", f"memory.ask(3): request is 3 (int).\n{expected}"]
-    assert empty == ["ArgumentError", f"memory.ask(''): request is '' (str).\n{expected}"]
+    expected = "Expected question: str non-empty | None, e.g. memory.ask()."
+    assert number == ["ArgumentError", f"memory.ask(3): question is 3 (int).\n{expected}"]
+    assert empty == ["ArgumentError", f"memory.ask(''): question is '' (str).\n{expected}"]
     assert refused == [
         "NotFound",
         "memory.ask('q'): the librarian gave no answer (refused: the librarian is not available here (no session); "
@@ -424,6 +434,49 @@ def test_the_brief_is_complete_general_and_says_nothing_of_ids_answers_or_exampl
     assert "/memory (read-only)" in opening and "no network" in opening
     system = L.system_prompt("CATALOGUE")
     assert system.index(opening) == 0 and system.index(brief) < system.index("CATALOGUE")
+
+
+def test_the_first_user_message_line_counts_the_copy_and_is_absent_for_an_empty_library(tmp_path, monkeypatch):
+    """The actor's first user message of a request opens with how many functions and notes its library copy holds
+    (as ``memory.items()`` lists them: the retired are left out), with the library bound in its cells and the
+    librarian on; never for an empty library, a teammate, or with the librarian off."""
+    from types import SimpleNamespace
+
+    from unify.memory.integration import hooks
+    from unify.memory.integration import request as request_mod
+
+    def copy_with(name: str, items: dict) -> Path:
+        root = tmp_path / name
+        (root / "memory").mkdir(parents=True)
+        (root / "memory" / "__init__.py").write_text("")
+        (root / ".memory").mkdir()
+        (root / ".memory" / "items.json").write_text(json.dumps({"items": items}))
+        return root
+
+    def line_for(copy: Path, **kw) -> str | None:
+        monkeypatch.setattr(request_mod, "_CURRENT", SimpleNamespace(paths=SimpleNamespace(checkout=copy),
+                                                                      library_mode=True))
+        return hooks.library_line(**kw)
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "on")
+    tail = "; memory.ask() shows the ones that apply, memory.items() lists them all."
+    assert line_for(_copy(tmp_path)) == "Your memory library holds 4 functions and 1 note" + tail
+    one = copy_with("one", {
+        "memory.a.b:c": {"kind": "function"},
+        "memory.a.b:d": {"kind": "function", "status": "retired"},
+        "notes/a/x.md": {"kind": "note"},
+        "notes/a/y.md": {"kind": "note", "status": "deprecated"},
+    })
+    assert line_for(one) == "Your memory library holds 1 function and 1 note" + tail
+    assert line_for(one, actor=False) is None
+    assert line_for(copy_with("empty", {})) is None
+    assert line_for(copy_with("retired", {"memory.a.b:c": {"kind": "function", "status": "retired"}})) is None
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "off")
+    assert line_for(one) is None
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "on")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")
+    assert line_for(one) is None
 
 
 def test_the_pointer_is_constant_across_libraries_and_replaces_the_index(tmp_path, monkeypatch):
@@ -576,7 +629,7 @@ LIBRARIAN_THIRD = (
 
 ACTOR_FIRST = (
     "import json, memory\n"
-    f"first = memory.ask({REQUEST!r})\n"
+    "first = memory.ask()\n"
     "print('FIRST', json.dumps([[i.id, i.reason] for i in first]))\n"
 )
 ACTOR_SECOND = (
@@ -612,17 +665,17 @@ async def test_ask_end_to_end_facts_in_the_box_one_session_per_request_and_the_c
         opened.append(session)
         return session
 
-    state = H.ActorRequestState(open_librarian=open_librarian)
+    state = H.ActorRequestState(open_librarian=open_librarian, request_text=REQUEST)
     actor_events: list[dict] = []
     # the actor's cells: the copy read-only at /library, its memory package importable, ask_library on its
-    # allow-list
+    # allow-list and current_request on its channel
     actor = th.InterpreterSession(
         agent="actor",
         name="root",
         role="actor",
         pass_id="r1",
         state=state,
-        allow=("ask_library",),
+        allow=("ask_library", "current_request"),
         binds={"ro": {copy: "/library"}, "rw": {}},
         env={},
         roots={"/library": copy},

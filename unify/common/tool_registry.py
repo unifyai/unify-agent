@@ -1169,6 +1169,26 @@ ASK_LIBRARY = RegisteredTool(
     handler="unify.actor.tool_handlers:ask_library",
 )
 
+#: The current request for the ``memory`` package (``memory.ask()`` and ``memory.match()`` read it): on the channel
+#: of the actor and a teammate, never in their ``tools`` (:data:`CHANNEL_ONLY`).
+CURRENT_REQUEST = RegisteredTool(
+    name="current_request",
+    summary="the request you are working on, for the memory package (never called from a cell).",
+    description=(
+        "The request this agent is working on: its text, and, when the request was structured (an object or a "
+        "list rather than a message), the request itself as JSON data. The `memory` package calls it so that "
+        "`memory.ask()` and `memory.match()` run the stored readers on the current request."
+    ),
+    parameters={"type": "object", "properties": {}, "additionalProperties": False},
+    refusals={"unavailable": "the current request is not available here ({why})"},
+    roles=(_A, _T),
+    returns='JSON text: {"text": the request\'s text, "data": the structured request, or null}.',
+    examples=('tools._call("current_request", {})',),
+    when="Never from a cell: memory.ask() and memory.match() call it.",
+    kind="reader",
+    handler="unify.actor.tool_handlers:current_request",
+)
+
 SH = RegisteredTool(
     name="sh",
     summary="run a shell command in your box and return its output.",
@@ -1653,6 +1673,7 @@ _REGISTRY: tuple[RegisteredTool, ...] = (
     INSTALL,
     STORE_SKILLS,
     ASK_LIBRARY,
+    CURRENT_REQUEST,
     SH,
 )
 
@@ -1705,7 +1726,7 @@ def _earlier(key: tuple[str, str]) -> Optional[_EarlierJson]:
 
 
 #: Registered tools that never were a memory agent's model-API tool.
-_IN_CODE_ONLY = frozenset({"sh", "install", "store_skills", "ask_library", "answer"})
+_IN_CODE_ONLY = frozenset({"sh", "install", "store_skills", "ask_library", "answer", "current_request"})
 
 
 def earlier_tool(agent: str, name: str) -> Any:
@@ -1862,6 +1883,17 @@ def allow_list(agent: str, flags: frozenset = frozenset()) -> tuple[str, ...]:
     )
 
 
+#: Registered tools that only the ``memory`` package calls, through the channel client (``tools._call``): on the
+#: channel's allow-list of the agents in their ``roles``, never in the ``tools`` module, ``tools.list()`` or
+#: ``tools.help`` (:func:`render_stub` leaves them out).
+CHANNEL_ONLY = frozenset({"current_request"})
+
+
+def channel_only(agent: str) -> tuple[str, ...]:
+    """The :data:`CHANNEL_ONLY` tools *agent* is eligible for, in registry order."""
+    return tuple(s.name for s in _REGISTRY if s.name in CHANNEL_ONLY and agent in s.roles)
+
+
 #: The actor's and a teammate's handlers, where they differ from the memory agents' (the record is the agent
 #: record, the roots the request's workspace, and answer ends the request): name -> blocking.
 _ACTOR_HANDLED = {
@@ -1878,6 +1910,7 @@ _ACTOR_HANDLED = {
     "delegate": False,
     "answer": False,
     "store_skills": False,
+    "current_request": False,
 }
 
 
@@ -2044,8 +2077,10 @@ def render_stub(names: tuple[str, ...], agent: Optional[str] = None) -> str:
     its own namespace, so the stub's ``list`` and ``help`` never shadow a builtin they use), one function per
     allowed tool with its help text as docstring, and ``list()`` and ``help(name)`` (which also answers the help
     topics *agent* has, :data:`HELP_TOPICS`). Built from registry fields and those two constant sources only: no
-    host path, run id, route or environment value."""
-    allowed = [s.name for s in _REGISTRY if s.name in set(names) and s.name != "execute_code"]
+    host path, run id, route or environment value. A :data:`CHANNEL_ONLY` tool is never in it."""
+    allowed = [
+        s.name for s in _REGISTRY if s.name in set(names) and s.name != "execute_code" and s.name not in CHANNEL_ONLY
+    ]
     unknown = set(names) - set(registry())
     if unknown:
         raise KeyError(f"not registered: {sorted(unknown)}")

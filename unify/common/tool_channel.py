@@ -700,10 +700,12 @@ class Channel:
         loop, before anything runs), then the handler under its deadline."""
         fields = self._call_fields(tool) if tool in self.allow else None
         if fields is None:
+            from unify.common.tool_registry import CHANNEL_ONLY
+
             return _general(
                 "unknown_tool",
                 name=tool[:80],
-                tools=", ".join(self.allow),
+                tools=", ".join(n for n in self.allow if n not in CHANNEL_ONLY),  # as the agent's tools list them
             )
         spec, schema, handler, blocking = fields
         problem = validate(schema, args)

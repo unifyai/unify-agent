@@ -574,6 +574,7 @@ def _add_matches_and_runs(acc: dict, calls: dict, cell: int) -> None:
 
     new: list[dict] = []
     for m in matches:
+        _log_no_outcome("memory.match", m.get("no_outcome"))
         listed = _labelled_rows(m.get("listed"))
         after = set(called[position(m.get("calls_before")) :]) | {
             r["target"] for r in runs[position(m.get("runs_before")) :]
@@ -622,11 +623,20 @@ def _add_matches_and_runs(acc: dict, calls: dict, cell: int) -> None:
         acc["matches"].append(m)
 
 
+def _log_no_outcome(call: str, facts: Any) -> None:
+    """Log each stored reader that gave no outcome in *call* (``not-started`` or ``failed``) with its fixed short
+    reason: ids, labels and the reason only (the audit hook let nothing else through)."""
+    for f in facts if isinstance(facts, list) else []:
+        if isinstance(f, dict) and f.get("read") in ("not-started", "failed"):
+            logger.warning("%s: the stored reader of %s %s (%s)", call, f.get("id"), f.get("read"), f.get("reason"))
+
+
 def _add_asks(acc: dict, calls: dict, cell: int) -> None:
     """Add one cell's ``memory.ask`` results (UNIFY_MEMORY_LIBRARIAN=on) to *acc*: each with the ids it listed as
-    fitting, whether it said nothing fits and the facts' outcome labels; and mark which listed ids were called
-    afterwards (a library call or a run in a later cell, or later in the same cell). Ids and labels only. Added
-    under ``asks`` and ``listed_by_ask`` only once an ask was seen, so a request without one is unchanged."""
+    fitting, whether it said nothing fits and the facts' outcome labels (with the reason of a reader that gave no
+    outcome, which is also logged); and mark which listed ids were called afterwards (a library call or a run in a
+    later cell, or later in the same cell). Ids and labels only. Added under ``asks`` and ``listed_by_ask`` only
+    once an ask was seen, so a request without one is unchanged."""
     asks = [a for a in calls.get("asks") or [] if isinstance(a, dict)]
     records = calls.get("records") if isinstance(calls.get("records"), list) else []
     called = [r.get("item") for r in records if isinstance(r, dict) and isinstance(r.get("item"), str)]
@@ -645,6 +655,7 @@ def _add_asks(acc: dict, calls: dict, cell: int) -> None:
         return value if type(value) is int and value >= 0 else 0
 
     for a in asks:
+        _log_no_outcome("memory.ask", a.get("facts"))
         listed = [i for i in a.get("listed") or [] if isinstance(i, str)]
         after = set(called[position(a.get("calls_before")) :]) | {
             r["target"] for r in runs[position(a.get("runs_before")) :]
@@ -658,7 +669,7 @@ def _add_asks(acc: dict, calls: dict, cell: int) -> None:
                 "listed": listed,
                 "nothing_fits": bool(a.get("nothing_fits")),
                 "facts": [
-                    {k: f.get(k) for k in ("id", "read", "applies")}
+                    {k: f.get(k) for k in ("id", "read", "applies", "reason") if k != "reason" or f.get(k)}
                     for f in a.get("facts") or []
                     if isinstance(f, dict)
                 ],
