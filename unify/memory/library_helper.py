@@ -6,7 +6,7 @@ and the harness's data under ``.memory/``. In a cell::
 
     import memory
     print(memory.index())                          # the whole index
-    print(memory.index("<package>"))               # one package's section ("notes/<topic>" for notes)
+    print(memory.index("<package>"))               # one package's or notes topic's section
     print(memory.show("memory.<package>.<module>:<name>"))   # source, links, status, records, history
     memory.find(value)                             # functions whose tests call them on arguments shaped like value
 
@@ -82,15 +82,28 @@ def wanted_key(name: object) -> str:
     return "memory." + n
 
 
+def wanted_keys(name: object) -> list[str]:
+    """The sections a name can mean, in order: :func:`wanted_key`, then for a bare name (no ``memory.``,
+    ``memory/`` or ``notes/`` prefix) the notes topic of that name, ``notes/<name>``."""
+    n = str(name).strip().strip("/")
+    keys = [wanted_key(name)]
+    if n and not n.startswith(("memory.", "memory/", "notes/")):
+        keys.append("notes/" + n)
+    return keys
+
+
 def find_section(text: str, name: object) -> str:
-    """The full section of the index *text* that *name* means; LookupError naming the sections otherwise."""
-    key = wanted_key(name)
+    """The full section of the index *text* that *name* means: a package, else for a bare name the notes
+    topic of that name; LookupError naming the sections otherwise."""
     _, sections = split_index(text)
-    for heading, body in sections:
-        if section_key(heading) == key:
-            return f"## {heading}\n{body}"
+    wanted = wanted_keys(name)
+    for key in wanted:
+        for heading, body in sections:
+            if section_key(heading) == key:
+                return f"## {heading}\n{body}"
     keys = ", ".join(section_key(h) for h, _ in sections) or "(none)"
-    raise LookupError(f"memory: no index section {key!r}; the sections are: {keys}")
+    tried = " or ".join(repr(k) for k in wanted)
+    raise LookupError(f"memory: no index section {tried}; the sections are: {keys}")
 
 
 def item_count(body: str) -> int:
@@ -143,7 +156,8 @@ def _json(rel: str) -> dict:
 
 def index(package: str | None = None) -> str:
     """The whole index (``INDEX.md``), or the full section of one package (``"<package>"``,
-    ``"memory.<package>"``) or notes topic (``"notes/<topic>"``)."""
+    ``"memory.<package>"``) or notes topic (``"notes/<topic>"``, or ``"<topic>"`` when no package has
+    that name)."""
     text = _read(INDEX_FILE)
     return _Text(text if package is None else find_section(text, package))
 

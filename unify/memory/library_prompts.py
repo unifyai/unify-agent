@@ -34,8 +34,8 @@ GUIDE_LIBRARY = (
     "- The index at the end of this prompt lists every function (its id, signature, one-line summary and "
     "status, then a call quoted from the function's tests, when it has one) and every note (its path, "
     "description and the functions it uses). When the index is long, it shows package headings only.\n"
-    '- `print(memory.index("<package>"))` prints one package\'s full section, and `print(memory.index())` the '
-    "whole index.\n"
+    '- `print(memory.index("<name>"))` prints the full section of a package or notes topic, and '
+    "`print(memory.index())` the whole index.\n"
     "- `print(memory.show(\"<id>\"))` prints one item in full: a function's source and docstring, or a note's "
     "text, then its links, status, test and use records, and recent changes.\n"
     "- `memory.find(value)` lists the functions whose tests call them on arguments shaped like a structured "
@@ -97,8 +97,8 @@ GUIDE_LIBRARY_IN_CODE = (
     "\n"
     "Finding items:\n"
     "- The index at the end of this prompt lists every function and note.\n"
-    '- `print(memory.index("<package>"))` prints one package\'s full section, and `print(memory.index())` the '
-    "whole index.\n"
+    '- `print(memory.index("<name>"))` prints the full section of a package or notes topic, and '
+    "`print(memory.index())` the whole index.\n"
     "- `print(memory.show(\"<id>\"))` prints one item in full, with its records and recent changes.\n"
     "- `memory.find(value)` lists the functions whose tests call them on arguments shaped like a structured "
     "value you hold (a dict, a list of records, JSON text, or a CSV file with a header), and which parameter "
@@ -129,7 +129,7 @@ GUIDE_POINTER = (
     "- `print(memory.index())` prints the library index: every function (its id, signature, one-line summary, "
     "status and effect: whether it reads, writes or is unknown, then a call quoted from the function's tests, "
     "when it has one) and every note (its path, description and the functions it uses). "
-    '`print(memory.index("<package>"))` prints one package\'s section.\n'
+    '`print(memory.index("<name>"))` prints the section of a package or notes topic.\n'
     "- `print(memory.show(\"<id>\"))` prints one item in full: a function's source and docstring, or a note's "
     "text, then its links, status, test and use records, and recent changes.\n"
     "- `memory.find(value)` lists the functions whose tests call them on arguments shaped like a structured "

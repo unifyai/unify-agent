@@ -136,7 +136,7 @@ def test_sections_are_found_by_package_or_notes_topic(tmp_path):
     assert find_section(index, "notes/text").startswith("## notes/text\n")
     with pytest.raises(
         LookupError,
-        match="no index section 'memory.nope'; the sections are: memory.text",
+        match="no index section 'memory.nope' or 'notes/nope'; the sections are: memory.text",
     ):
         find_section(index, "nope")
 
