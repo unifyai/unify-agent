@@ -558,13 +558,10 @@ def refresh(record: dict) -> dict:
     uses = [u for u in (trust.use_from_row(r) for r in record.get("uses") or []) if u is not None]
     record["track"] = trust.track(uses)
     prior = record.get("status") if record.get("status") in trust.STATUSES else None
-    # the capture's own reproduction sets its base level (the harness ran it on its recorded case); outcomes do the
-    # rest, through the one decider
-    base = (
-        trust.REPRODUCES_ITS_CASE
-        if record["reproduces"] == REPRODUCES and record["deterministic"] is not False
-        else trust.UNCHECKED
-    )
+    # a capture starts unchecked (I.2.3, I.11): whether its run reproduced its case is recorded beside it, in
+    # ``reproduces``; the levels above unchecked are the gate's to give when it is landed, and outcomes move it
+    # through the one decider
+    base = trust.UNCHECKED
     out = trust.apply_outcome(base, prior, uses)
     if record["outcome"] == FAILED and out.status == trust.ADOPTED:
         # a capture that failed is negative knowledge: it is never adopted, whatever later uses show

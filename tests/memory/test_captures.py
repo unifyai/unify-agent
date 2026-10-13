@@ -145,7 +145,7 @@ def test_a_completed_attempt_is_captured_with_its_signature_and_holds_no_identif
     assert sig["input"]["kind"] == "value" and cp.ID_MARK in json.dumps(sig["input"]["tree"])
     assert sig["constraints"]["holds"]["stated"] and not sig["constraints"]["applies"]["stated"]
     rec = json.loads((d / "record.json").read_text())
-    assert rec["episodes"] == ["e1"] and rec["level"] == tr.REPRODUCES_ITS_CASE
+    assert rec["episodes"] == ["e1"] and rec["level"] == tr.UNCHECKED  # a capture starts unchecked (I.2.3)
     assert rec["status"] == tr.ON_TRIAL and rec["track"]["verdicts"]["accepted"] == 1
     events = [json.loads(x) for x in (store / cp.EVENTS_FILE).read_text().splitlines()]
     assert [e["capture_id"] for e in events] == [cid]
@@ -225,7 +225,7 @@ def test_attempts_with_identical_code_share_one_capture_and_their_outcomes_join_
     for eid in ("u1", "u2"):
         cp.record_use(store, cid, tr.Use(eid, "dense", answered=True, verdict="rejected"))
     rec = cp.load(store)[cid]["record"]
-    assert (rec["status"], rec["status_rule"], rec["level"]) == (tr.RETIRED, "rejected", tr.REPRODUCES_ITS_CASE)
+    assert (rec["status"], rec["status_rule"], rec["level"]) == (tr.RETIRED, "rejected", tr.UNCHECKED)
 
 
 def test_without_verdicts_a_capture_is_adopted_on_implicit_signals_only(tmp_path):
@@ -235,7 +235,7 @@ def test_without_verdicts_a_capture_is_adopted_on_implicit_signals_only(tmp_path
         runner, _ = _box(VALUE, [6, 9])
         cp.capture(staging, _ep(f"n{i}", regime="none"), store, runner=runner)
     rec = cp.load(store)[cp.capture_id(PROC)]["record"]
-    assert (rec["status_text"], rec["level"]) == ("adopted (implicit)", tr.REPRODUCES_ITS_CASE)
+    assert (rec["status_text"], rec["level"]) == ("adopted (implicit)", tr.UNCHECKED)
     for text in (rec["record_line"], rec["status_reason"] or "", rec["status_text"]):
         assert not re.search(r"\b(correct|right|verified)\b", text, re.I), text
     assert rec["record_line"] == "its record has no verdicts; it ran without errors in 3 episodes"
