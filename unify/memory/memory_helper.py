@@ -1,16 +1,16 @@
-"""The ``memory`` helper: find, inspect and list the functions of this memory library.
+"""The ``memory`` helper: find the functions of this memory library by the shape of data you hold.
 
 In a cell::
 
     import memory
     memory.find(value)      # the functions whose recorded inputs have the shape of value
-    memory.describe(fn)     # one function's documentation: signature, input form, sections, example
-    print(memory.catalog()) # every channel (counts, summary, suspect flag) and function, bounded
-    print(memory.catalog("env.<channel>"))  # one channel's functions (page=2, ... past the bound)
 
 *value* is data you hold: a path to a file, the file's bytes or text, or a parsed value (a dict or a list,
-or a string holding JSON). *fn* is an imported function, or its name (``"env.<channel>.<function>"`` or the
-bare function name when only one channel has it).
+or a string holding JSON).
+
+The library's catalogue (its channels and functions, and one function's documentation) is ``env.items()`` and
+``env.get(fn)`` (:mod:`.env_helper`, the export's ``env/__init__.py``). ``memory.catalog`` and ``memory.describe``
+still work for one build: each prints one line naming its new call, then returns that call's text.
 
 Matching is by data shape only, never by words. A shape's **signature** is its named key paths (a JSON
 value's or file's keys, ``a.b``, ``items[].id``; a table's header columns, ``[].column``) with the type
@@ -28,16 +28,6 @@ shapes match, then by name, at most :data:`MAX_RESULTS`, each with the keys or c
 value of more than :data:`MAX_NODES` nodes is shaped from its first part (its descriptor says
 ``truncated``), so a huge nested value is matched in bounded time. A DataFrame, array or other object
 that is not a dict, list or JSON text has no shape here: pass its records or its file instead.
-
-The system prompt names no channel or function (it carries a constant guide pointing here), so
-:func:`catalog` is where a cell learns what the library holds: the channels with their function and note
-counts, one-line summaries and suspect flags (a channel the harness holds suspect: the environment changed
-since its functions were built), then one line per function. The guide asks for it at the start of every
-request, so its output is bounded: at most :data:`CATALOG_MAX_TOKENS` estimated tokens (4 characters per
-token). Past that, ``catalog()`` prints the channel lines with their counts and points at
-``memory.find(value)`` and ``memory.catalog(channel)``; ``catalog(channel)`` lists one channel's functions
-under the same bound, in pages (``page=2``, ...). Channels are in name order and functions in the
-catalogue's order, so the same library always prints the same pages.
 
 The helper reads only the catalogue the harness wrote beside it (``.memory/catalog.json``, rendered from
 the library's commit, with the harness's suspect flags); it makes no network call and no call to the
@@ -384,42 +374,6 @@ def same_shape(mine: dict, recorded: dict) -> bool:
 # --- the catalogue -----------------------------------------------------------------------------------------
 
 
-SUSPECT_NOTE = (
-    "suspect: the environment changed since these were built; verify before use"
-)
-_EMPTY = (
-    "Memory library: empty (no channel holds a function yet). Do the work directly.\n"
-)
-_FOOTER = (
-    "Import with `from env.<channel> import <function>`. `help(<function>)` or "
-    '`memory.describe("env.<channel>.<function>")` shows a function\'s documentation and runnable '
-    "example; `memory.find(value)` lists the functions built on inputs shaped like data you hold. Notes are "
-    "in `env/<channel>/NOTES.md`; `README.md` beside this file holds the same list. Functions are "
-    "candidates, not authority: check the example before relying on one. A MemoryInputError means the input "
-    "differs from what the function was built from; then do the work directly. The library is a scratch "
-    "copy: edits to it, or a new `proposals/<name>.md`, are discarded when the request ends but recorded for "
-    "the next consolidation.\n"
-)
-
-
-def _plural(n: int, word: str) -> str:
-    return f"{n} {word}{'' if n == 1 else 's'}"
-
-
-def channel_line(row: dict, suspect: bool = False) -> str:
-    """One channel of the catalogue (a ``channels`` row of ``.memory/catalog.json``): its module, function
-    and note counts, summary and, when *suspect*, the drift flag."""
-    counts = _plural(row["functions"], "function")
-    if row["notes"]:
-        counts += ", " + _plural(row["notes"], "note")
-    line = f"- `env.{row['channel']}`: {counts}"
-    if row["summary"]:
-        line += f". {row['summary']}"
-    if suspect:
-        line += f" ({SUSPECT_NOTE})"
-    return line
-
-
 class _Text(str):
     """Text that shows as itself when a cell's last expression evaluates to it."""
 
@@ -536,259 +490,68 @@ def find(value: Any) -> list[Found]:
     return [f for *_, f in sorted(ranked, key=lambda r: r[:4])][:MAX_RESULTS]
 
 
-def _entry(fn_or_name: Any) -> dict:
-    entries = _catalog().get("functions", [])
-    if callable(fn_or_name) and not isinstance(fn_or_name, str):
-        module = getattr(fn_or_name, "__module__", "") or ""
-        wanted = f"{module}.{getattr(fn_or_name, '__name__', '')}"
+# --- the environment catalogue's old names: env.items and env.get ------------------------------------------
+
+#: The environment catalogue's module beside this file: the export's ``env/__init__.py``.
+ENV_HELPER_FILE = os.path.join("env", "__init__.py")
+_ENV: list[Any] = []
+
+
+def _env() -> Any:
+    """The module ``env.items`` and ``env.get`` live in: the harness's own, or the export's ``env/__init__.py``
+    beside this file, loaded once by its path (a cell's own ``import env`` is left as it is)."""
+    if _ENV:
+        return _ENV[0]
+    if __package__:  # inside the harness package
+        from . import env_helper as module
     else:
-        wanted = str(fn_or_name).strip()
-        if (
-            wanted.startswith("env/") and ":" in wanted
-        ):  # an item id, env/<channel>:<function>
-            wanted = wanted.replace("/", ".", 1).replace(":", ".", 1)
-        if wanted.count(".") == 1:
-            wanted = "env." + wanted
-    exact = [e for e in entries if f"{e['module']}.{e['name']}" == wanted]
-    if exact:
-        return exact[0]
-    by_name = [e for e in entries if e["name"] == wanted]
-    if len(by_name) == 1:
-        return by_name[0]
-    if by_name:
-        names = ", ".join(f"{e['module']}.{e['name']}" for e in by_name)
-        raise LookupError(
-            f"memory: {wanted!r} names several functions ({names}); pass one of them",
-        )
-    raise LookupError(
-        f"memory: no function {wanted!r} in the catalogue; memory.catalog() lists every function (or "
-        "memory.catalog(channel) a channel's, past its bound)",
-    )
+        import importlib.util
+        import sys
+
+        name = "_memory_env_catalogue"
+        spec = importlib.util.spec_from_file_location(name, os.path.join(_HERE, ENV_HELPER_FILE))
+        if spec is None or spec.loader is None:
+            raise ImportError("memory: the environment catalogue (env.items, env.get) is missing")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(name, None)
+            raise
+    _ENV.append(module)
+    return module
 
 
-def _shape_text(desc: dict) -> str:
-    if desc.get("kind") == "value":
-        tree = desc.get("tree")
-        if isinstance(tree, dict):
-            return "a value with keys " + ", ".join(sorted(tree))
-        return "a list value"
-    s = desc.get("shape") or {}
-    fmt = s.get("format")
-    ext = desc.get("ext") or ""
-    if fmt == "csv":
-        cols = s.get("columns")
-        what = (
-            f"columns {', '.join(cols)}"
-            if cols
-            else f"{len(s.get('types') or [])} columns, no header"
-        )
-        return f"a {ext or 'delimited'} table with {what}"
-    if fmt in ("json", "yaml", "jsonl"):
-        tree = s.get("tree")
-        if isinstance(tree, dict):
-            return f"a {fmt} file with keys " + ", ".join(sorted(tree))
-        return f"a {fmt} file of lists or records"
-    if fmt == "xlsx":
-        return "a workbook with sheets " + ", ".join(
-            str(x.get("name")) for x in s.get("sheets") or []
-        )
-    return f"a {fmt} file"
+def _arg(value: Any) -> str:
+    """*value* as the renamed call shows it: a function by its name, anything else by its repr (cut)."""
+    if callable(value) and not isinstance(value, str):
+        return str(getattr(value, "__name__", type(value).__name__))
+    text = repr(value)
+    return text if len(text) <= 60 else text[:59] + "…"
 
 
-def _indent(text: str) -> str:
-    return "\n".join(("    " + ln) if ln.strip() else "" for ln in text.splitlines())
+def _renamed(old: str, new: str, args: list[str]) -> None:
+    """The one line an old name prints: the call as the new name takes it."""
+    shown = ", ".join(args)
+    print(f"{old}({shown}) is now {new}({shown}); import env to call it. The old name will be removed.")
+
+
+def catalog(channel: Any = None, page: int = 1) -> str:
+    """Renamed :func:`env.items` (``import env``): prints one line naming it, then returns its listing as text.
+
+    Every channel (function and note counts, summary, suspect flag) and every function, or with *channel* one
+    channel's functions, in pages (*page*) past the bound; ``help(env.items)`` says the rest.
+    """
+    args = ([] if channel is None else [_arg(channel)]) + ([] if page == 1 else [f"page={_arg(page)}"])
+    _renamed("memory.catalog", "env.items", args)
+    items = _env().items
+    return _Text(str(items(page=page) if channel is None else items(channel, page=page)))
 
 
 def describe(fn_or_name: Any) -> str:
-    """One function's documentation: signature, summary, input form, effect, sections and recorded inputs."""
-    e = _entry(fn_or_name)
-    cat = _catalog()
-    doc = e.get("doc", {})
-    out = [f"{e['module']}.{e.get('signature', e['name'])}", e.get("summary", "")]
-    if doc.get("description"):
-        out += ["", doc["description"]]
-    form = e.get("input", "")
-    meaning = cat.get("input_forms", {}).get(form, "")
-    out.append("")
-    if form:
-        out.append(f"Input: {form}" + (f" ({meaning})" if meaning else ""))
-    if e.get("effect"):
-        out.append(f"Effect: {e['effect']}")
-    for title, key in (
-        ("Args", "args"),
-        ("Returns", "returns"),
-        ("Raises", "raises"),
-        ("Example", "example"),
-        ("Use when", "use_when"),
-        ("Don't use when", "dont_use_when"),
-        ("Notes", "notes"),
-    ):
-        if doc.get(key):
-            out += [f"{title}:", _indent(doc[key])]
-    if any(
-        c.get("suspect") and c.get("channel") == e.get("channel")
-        for c in cat.get("channels", [])
-    ):
-        out.append(f"Channel {e['module']} is {SUSPECT_NOTE}.")
-    shapes = e.get("input_shapes")
-    if shapes:
-        out.append("Built and checked on inputs shaped as:")
-        out += [f"    - {_shape_text(d)}" for d in shapes]
-    if doc.get("example"):
-        out.append(
-            f"Example paths are relative to the library root ({_HERE}); check the example before "
-            "relying on the function.",
-        )
-    return _Text("\n".join(out).rstrip() + "\n")
-
-
-def _function_line(e: dict) -> str:
-    line = f"- `{e['module']}.{e.get('signature') or e['name']}`"
-    if e.get("summary"):
-        line += f": {e['summary']}"
-    if e.get("input"):
-        line += f" (input: {e['input']})"
-    return line + "\n"
-
-
-def _cut(line: str) -> str:
-    """*line* (ending in a newline) at most :data:`_LINE_MAX_CHARS` characters."""
-    if len(line) <= _LINE_MAX_CHARS:
-        return line
-    return line[: _LINE_MAX_CHARS - 2] + "…\n"
-
-
-def _pages(lines: list[str], room: int) -> list[list[str]]:
-    """*lines* packed in order into pages of at most *room* characters (every page holds one line at least)."""
-    pages: list[list[str]] = [[]]
-    used = 0
-    for line in lines:
-        if pages[-1] and used + len(line) > room:
-            pages.append([])
-            used = 0
-        pages[-1].append(line)
-        used += len(line)
-    return pages
-
-
-def _page_of(
-    head: str,
-    lines: list[str],
-    tail: str,
-    page: int,
-    call: str,
-) -> str:
-    """*head*, page *page* of *lines* and *tail*, at most :data:`_CATALOG_MAX_CHARS` characters; a page
-    that is not the last says how to print the next (``memory.catalog(<call>page=N)``).
-    """
-    lines = [_cut(ln) for ln in lines]
-    nav = (
-        "- ... page 999999 of 999999 (999999 more lines): "
-        f"memory.catalog({call}page=999999) prints the next\n"
-    )
-    room = max(_CATALOG_MAX_CHARS - len(head) - len(tail) - len(nav), _LINE_MAX_CHARS)
-    pages = _pages(lines, room)
-    if (
-        not isinstance(page, int)
-        or isinstance(page, bool)
-        or not 1 <= page <= len(pages)
-    ):
-        raise LookupError(
-            f"memory: no catalog page {page!r}; pages run from 1 to {len(pages)}",
-        )
-    body = "".join(pages[page - 1])
-    if page < len(pages):
-        rest = sum(len(p) for p in pages[page:])
-        body += (
-            f"- ... page {page} of {len(pages)} ({rest} more lines): "
-            f"memory.catalog({call}page={page + 1}) prints the next\n"
-        )
-    elif len(pages) > 1:
-        body += f"- (page {page} of {len(pages)}, the last)\n"
-    return head + body + tail
-
-
-def _forms_line(cat: dict) -> str:
-    forms = cat.get("input_forms") or {}
-    if not forms:
-        return ""
-    return (
-        "Input forms (what a function's first parameter takes): "
-        + "; ".join(f"`{k}` {v}" for k, v in forms.items())
-        + ".\n"
-    )
-
-
-def _channel_name(channel: Any) -> str:
-    name = str(channel).strip()
-    if name.startswith("env."):
-        name = name[4:]
-    elif name.startswith("env/"):
-        name = name[4:].rstrip("/")
-    return name
-
-
-def catalog(channel: str | None = None, page: int = 1) -> str:
-    """What the library holds: each channel (function and note counts, summary, suspect flag), then each
-    function (``env.<channel>.<signature>``, summary, input form), then how to use them. Read from
-    ``.memory/catalog.json``; ``print()`` it.
-
-    At most :data:`CATALOG_MAX_TOKENS` estimated tokens. When everything does not fit, only the channel
-    lines are printed (in pages, if even they do not fit), with how to reach the functions:
-    ``memory.find(value)``, or ``memory.catalog(channel)`` for one channel's functions (``"env.<channel>"``
-    or ``"<channel>"``), itself paged past the bound (``page=2``, ...).
-    """
-    cat = _catalog()
-    rows = sorted(cat.get("channels", []), key=lambda r: str(r.get("channel")))
-    fns = cat.get("functions", [])
-    if not rows:
-        return _Text(_EMPTY)
-    if channel is not None:
-        return _Text(_channel_catalog(cat, rows, fns, _channel_name(channel), page))
-    order = {r["channel"]: n for n, r in enumerate(rows)}
-    fns = sorted(
-        fns,
-        key=lambda e: order.get(e.get("channel"), len(order)),
-    )  # stable: the catalogue's order within a channel
-    head = (
-        f"Memory library: {_plural(len(rows), 'channel')}, {_plural(len(fns), 'function')}, at {_HERE} "
-        "(first on the import path).\nChannels:\n"
-    )
-    lines = [channel_line(r, bool(r.get("suspect"))) + "\n" for r in rows]
-    full = head + "".join(lines)
-    if fns:
-        full += "Functions:\n" + "".join(_function_line(e) for e in fns)
-    full += _forms_line(cat) + _FOOTER
-    if len(full) <= _CATALOG_MAX_CHARS and page == 1:
-        return _Text(full)
-    tail = (
-        f"Functions: {len(fns)}, not listed here: the whole list is over this view's bound of "
-        f"{CATALOG_MAX_TOKENS} tokens. Use memory.find(value) or memory.catalog(channel) for the rest "
-        '(e.g. memory.catalog("env.<channel>")).\n' + _FOOTER
-    )
-    return _Text(_page_of(head, lines, tail, page, ""))
-
-
-def _channel_catalog(
-    cat: dict,
-    rows: list[dict],
-    fns: list[dict],
-    name: str,
-    page: int,
-) -> str:
-    row = next((r for r in rows if r.get("channel") == name), None)
-    if row is None:
-        raise LookupError(
-            f"memory: no channel {name!r} in the catalogue; memory.catalog() lists the channels",
-        )
-    mine = [e for e in fns if e.get("channel") == name]
-    head = (
-        f"Memory library, channel `env.{name}` (at {_HERE}):\n"
-        + _cut(channel_line(row, bool(row.get("suspect"))) + "\n")
-        + ("Functions:\n" if mine else "")
-    )
-    tail = _forms_line(cat) + (
-        "Import with `from env.<channel> import <function>`; `help(<function>)` or "
-        '`memory.describe("env.<channel>.<function>")` shows one with its example.\n'
-    )
-    return _page_of(head, [_function_line(e) for e in mine], tail, page, f"{name!r}, ")
+    """Renamed :func:`env.get` (``import env``): prints one line naming it, then returns the function's
+    documentation as text (signature, summary, input form, effect, sections and recorded input shapes).
+    ``help(env.get)`` says the rest."""
+    _renamed("memory.describe", "env.get", [_arg(fn_or_name)])
+    return _Text(str(_env().get(fn_or_name)))

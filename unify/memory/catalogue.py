@@ -8,11 +8,14 @@ harness writes, beside the committed files and never into a commit:
   harness holds the channel suspect (drift), ``"suspect": true``; per function its module, name, signature,
   docstring sections, input form, effect, a ``tier`` field reserved for promotion (always null for now),
   and the recorded input-shape signatures of the inputs the gate admitted it on (``input_shapes``; left out
-  when none were recorded). ``memory.catalog()`` prints the channels from it, so the system prompt names
+  when none were recorded). ``env.items()`` prints the channels from it, so the system prompt names
   none of this;
 * ``memory.py`` (importable as ``memory``) and ``.memory/shapes.py``: :mod:`.memory_helper` and
   :mod:`.analysis.shapes`, copied byte for byte, so the cell's ``memory.find`` computes shapes with the
-  same functions the gate recorded them with.
+  same functions the gate recorded them with;
+* ``env/__init__.py``, ``env/__init__.pyi`` and ``.memory/contract.py``: :mod:`.env_helper` byte for byte (the
+  library's ``env`` package gains ``env.items`` and ``env.get``, which read the catalog), its typed stub, and the
+  contract runtime (:mod:`unify.common.contract_runtime`, byte for byte) its calls check their arguments with.
 
 Everything except ``input_shapes`` and the suspect flags (the harness's drift state, which changes only
 between requests) is a pure function of the exported tree. **Where the shapes come from.**
@@ -41,7 +44,8 @@ from pathlib import Path
 
 from . import docstrings
 from .manifest import INPUT_KINDS, shadows_import
-from .memory_helper import channel_line
+from .env_helper import channel_line
+from .env_helper import stub as env_stub
 from .memory_repo import items
 from .snapshot import item_bodies
 
@@ -49,9 +53,13 @@ README = "README.md"
 HELPER = "memory.py"
 CATALOG = ".memory/catalog.json"
 SHAPES = ".memory/shapes.py"
-GENERATED = (README, HELPER, CATALOG, SHAPES)
+#: The ``env`` package's own module (``env.items``, ``env.get``), its typed stub and the contract runtime they use.
+ENV_HELPER = "env/__init__.py"
+ENV_STUB = "env/__init__.pyi"
+CONTRACT = ".memory/contract.py"
+GENERATED = (README, HELPER, CATALOG, SHAPES, ENV_HELPER, ENV_STUB, CONTRACT)
 CATALOG_VERSION = 1
-# The soft size of the catalogue (README plus the channel lines ``memory.catalog()`` prints), in estimated
+# The soft size of the catalogue (README plus the channel lines ``env.items()`` prints), in estimated
 # tokens. Past it the gate notes that hygiene is due (UNIFY_MEMORY_SOFT_BUDGET=on); it never refuses growth.
 SOFT_BUDGET_TOKENS = 4000
 _MODULE_SUMMARY_CHARS = 120
@@ -65,7 +73,7 @@ def reserved(path: str) -> bool:
     """Whether *path* (relative, POSIX) is one the harness generates in every export, or a root entry that
     could shadow ``import memory`` or ``import env`` (any ``memory.*`` or ``env.*``, ``memory/``). Compiled
     code and other root entries are refused by :func:`.manifest.unsafe_path`."""
-    if path in (README, HELPER) or path == ".memory" or path.startswith(".memory/"):
+    if path in (README, HELPER, ENV_HELPER, ENV_STUB) or path == ".memory" or path.startswith(".memory/"):
         return True
     return shadows_import(path)
 
@@ -289,7 +297,7 @@ def render_catalog(
 
 def catalogue_tokens(tree: Path) -> int:
     """The catalogue's size for G4's soft budget: the README plus the channel lines (what
-    ``memory.catalog()`` prints of the channels; the prompt carries neither)."""
+    ``env.items()`` prints of the channels; the prompt carries neither)."""
     return estimate_tokens(render_readme(tree)) + estimate_tokens(channel_lines(tree))
 
 
@@ -304,6 +312,9 @@ def generated(
         CATALOG: render_catalog(tree, shapes, suspect).encode("utf-8"),
         HELPER: (_HERE / "memory_helper.py").read_bytes(),
         SHAPES: (_HERE / "analysis" / "shapes.py").read_bytes(),
+        ENV_HELPER: (_HERE / "env_helper.py").read_bytes(),
+        ENV_STUB: env_stub().encode("utf-8"),
+        CONTRACT: (_HERE.parent / "common" / "contract_runtime.py").read_bytes(),
     }
 
 

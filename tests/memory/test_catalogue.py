@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from unify.memory import catalogue, memory_helper
+from unify.memory import catalogue, env_helper, memory_helper
 from unify.memory.analysis import shapes as shapes_module
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gitio import Repo
@@ -212,6 +212,9 @@ def test_the_catalogue_is_byte_stable_for_the_same_commit(library, tmp_path):
     # the helper and the shape functions are the harness's own files, byte for byte
     here = Path(memory_helper.__file__)
     assert written["memory.py"] == here.read_bytes()
+    # so are the env package's catalogue calls and the contract runtime they check their arguments with
+    assert written["env/__init__.py"] == Path(env_helper.__file__).read_bytes()
+    assert written["env/__init__.pyi"].decode() == env_helper.stub()
     assert written[".memory/shapes.py"] == Path(shapes_module.__file__).read_bytes()
 
 
@@ -635,7 +638,7 @@ def test_describe_renders_the_docstring_sections_and_recorded_inputs(library):
     feedback = memory.describe("parse_feedback")
     assert "- a value with keys notes, score, type" in feedback
     assert "Example paths" not in feedback  # it has no example section
-    with pytest.raises(LookupError, match=r"memory\.catalog\(\) lists every function"):
+    with pytest.raises(LookupError, match=r"env\.items\(\) lists every channel and function"):
         memory.describe("no_such_function")
 
 
@@ -662,7 +665,7 @@ def test_catalog_lists_the_channels_and_functions_the_prompt_no_longer_names(lib
     assert "hidden_reader" not in text and "suspect" not in text
     for phrase in (
         "memory.find(value)",
-        "memory.describe(",
+        "env.get(",
         "MemoryInputError",
         "proposals/<name>.md",
     ):
@@ -671,7 +674,7 @@ def test_catalog_lists_the_channels_and_functions_the_prompt_no_longer_names(lib
     data = json.loads(written[".memory/catalog.json"])
     for row in data["channels"]:
         assert catalogue.channel_line(row) + "\n" in text
-    assert catalogue.channel_line is memory_helper.channel_line
+    assert catalogue.channel_line is env_helper.channel_line
     # the README is still written, and none of this changes it
     assert written["README.md"].decode().startswith("# Memory library\n")
 
@@ -705,7 +708,7 @@ def test_suspect_channels_are_flagged_in_the_catalog_and_in_describe(library):
     # describe names the export's directory, which sits under this test's tmp_path ("test_suspect_…"): look
     # for the flag's text, not the bare word
     assert "is suspect" not in memory.describe("read_ledger")
-    assert memory_helper.SUSPECT_NOTE not in memory.describe("read_ledger")
+    assert env_helper.SUSPECT_NOTE not in memory.describe("read_ledger")
     # with no suspect channel the catalog is byte for byte what it was
     again = catalogue.write_generated(export, shapes=_shapes(ev, sha))
     assert again == written
@@ -868,9 +871,9 @@ def test_the_catalog_is_bounded_and_points_at_find_and_the_channel_view(tmp_path
         text.index("- `env.gamma`: 3 functions\n"),
     )
     assert a < b < g
-    assert "Use memory.find(value) or memory.catalog(channel) for the rest" in text
+    assert "Use memory.find(value) or env.items(channel) for the rest" in text
     assert "`env.alpha.f0(" not in text  # no function line past the bound
-    assert "memory.describe(" in text and "MemoryInputError" in text  # the footer stays
+    assert "env.get(" in text and "MemoryInputError" in text  # the footer stays
     # deterministic: the same library prints the same bytes
     assert text == memory.catalog() == _helper(tree).catalog()
 
@@ -888,7 +891,7 @@ def test_a_channel_pages_its_functions_under_the_same_bound(tmp_path):
         assert "- `env.alpha`: 400 functions" in page
         assert "`env.gamma." not in page
         if n < len(pages):
-            assert f"memory.catalog('alpha', page={n + 1}) prints the next" in page
+            assert f"env.items('alpha', page={n + 1}) prints the next" in page
         else:
             assert f"(page {n} of {len(pages)}, the last)" in page
         seen += [
@@ -930,9 +933,9 @@ def test_many_channels_page_the_channel_lines_too(tmp_path):
     for n, page in enumerate(pages, 1):
         assert catalogue.estimate_tokens(page) <= memory.CATALOG_MAX_TOKENS, n
         assert page.startswith("Memory library: 200 channels, 200 functions")
-        assert "memory.find(value) or memory.catalog(channel)" in page
+        assert "memory.find(value) or env.items(channel)" in page
         if n < len(pages):
-            assert f"memory.catalog(page={n + 1}) prints the next" in page
+            assert f"env.items(page={n + 1}) prints the next" in page
         seen += [
             ln.split("`env.")[1].split("`")[0]
             for ln in page.splitlines()
