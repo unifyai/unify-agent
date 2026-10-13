@@ -17,10 +17,12 @@ def test_tools_in_code_is_on_or_off_and_off_by_default():
             ProductionSettings(UNIFY_TOOLS_IN_CODE=bad)
 
 
-def test_cell_state_is_persistent_or_fresh_and_fresh_by_default():
-    assert ProductionSettings.model_fields["UNIFY_CELL_STATE"].default == "fresh"
-    assert ProductionSettings().UNIFY_CELL_STATE == "fresh"
+def test_cell_state_is_persistent_or_fresh_and_persistent_by_default():
+    assert ProductionSettings.model_fields["UNIFY_CELL_STATE"].default == "persistent"
+    assert ProductionSettings().UNIFY_CELL_STATE == "persistent"
+    assert ProductionSettings(UNIFY_CELL_STATE="").UNIFY_CELL_STATE == "persistent"
     assert ProductionSettings(UNIFY_CELL_STATE="Persistent").UNIFY_CELL_STATE == "persistent"
+    assert ProductionSettings(UNIFY_CELL_STATE=" Fresh ").UNIFY_CELL_STATE == "fresh"
     for bad in ("on", "stateful", "keep"):
         with pytest.raises(ValueError, match="UNIFY_CELL_STATE"):
             ProductionSettings(UNIFY_CELL_STATE=bad)

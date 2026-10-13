@@ -57,11 +57,11 @@ def test_cell_state_setting(monkeypatch):
     # settings without the field (read from the environment), then with it
     monkeypatch.setattr(unify.settings, "SETTINGS", SimpleNamespace())
     monkeypatch.delenv(bi.CELL_STATE_SETTING, raising=False)
+    assert bi.cell_state() == "persistent" and bi.persistent()  # the default
+    monkeypatch.setenv(bi.CELL_STATE_SETTING, "fresh")
     assert bi.cell_state() == "fresh" and not bi.persistent()
-    monkeypatch.setenv(bi.CELL_STATE_SETTING, "persistent")
-    assert bi.persistent()
-    monkeypatch.setattr(unify.settings, "SETTINGS", SimpleNamespace(**{bi.CELL_STATE_SETTING: "fresh"}))
-    assert bi.cell_state() == "fresh"  # the settings field wins over the environment
+    monkeypatch.setattr(unify.settings, "SETTINGS", SimpleNamespace(**{bi.CELL_STATE_SETTING: "persistent"}))
+    assert bi.cell_state() == "persistent"  # the settings field wins over the environment
     monkeypatch.setattr(unify.settings, "SETTINGS", SimpleNamespace(**{bi.CELL_STATE_SETTING: "sometimes"}))
     with pytest.raises(ValueError):
         bi.cell_state()

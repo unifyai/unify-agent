@@ -154,6 +154,6 @@ The three long-horizon switches share the step-limit reply path.
 ## UNIFY_CELL_STATE
 
 - **Values:** `persistent` or `fresh`.
-- **Default:** `fresh`.
-- **What it does:** With `persistent`, each agent's cells run in one interpreter that keeps its variables between cells until it is restarted (a cell that runs out of time restarts it; files stay). With `fresh`, every cell starts as before.
+- **Default:** `persistent`.
+- **What it does:** With `persistent`, each agent's cells run in one interpreter that keeps its variables between cells until it is restarted (a cell that runs out of time restarts it; files stay). With `fresh`, every cell starts in a new interpreter (files stay; variables do not).
 - **Evidence:** Set together with `UNIFY_TOOLS_IN_CODE=on` in the same paired replay.

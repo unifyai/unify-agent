@@ -75,7 +75,7 @@ CELL_STATES = ("persistent", "fresh")
 
 
 def cell_state() -> str:
-    """``persistent`` or ``fresh`` (the default): the settings field when the settings define it, else the process
+    """``persistent`` (the default) or ``fresh``: the settings field when the settings define it, else the process
     environment. Any other value is refused."""
     value: Any = None
     try:
@@ -86,7 +86,7 @@ def cell_state() -> str:
         value = None
     if value is None:
         value = os.environ.get(CELL_STATE_SETTING)
-    text = str(value if value is not None else "fresh").strip().lower() or "fresh"
+    text = str(value if value is not None else "persistent").strip().lower() or "persistent"
     if text not in CELL_STATES:
         raise ValueError(f"{CELL_STATE_SETTING} must be one of {', '.join(CELL_STATES)}, not {text!r}")
     return text

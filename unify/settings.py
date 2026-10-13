@@ -307,10 +307,10 @@ class ProductionSettings(BaseSettings):
     # and ``tools.finish(answer)`` replaces the response tool. ``off`` (the
     # default): every agent's requests are as before.
     UNIFY_TOOLS_IN_CODE: str = "off"
-    # ``persistent``: each agent's cells run in one interpreter that keeps
-    # its variables between cells until it restarts. ``fresh`` (the
-    # default): as before.
-    UNIFY_CELL_STATE: str = "fresh"
+    # ``persistent`` (the default): each agent's cells run in one
+    # interpreter that keeps its variables between cells until it restarts.
+    # ``fresh``: every cell starts in a new interpreter.
+    UNIFY_CELL_STATE: str = "persistent"
     # ``on``: model code in a cell reads the current request as ``request``
     # (in the sandboxed worker): ``request.text``
     # is the requester's latest message, the request or a later message of a
@@ -839,7 +839,7 @@ class ProductionSettings(BaseSettings):
     @field_validator("UNIFY_CELL_STATE", mode="before")
     @classmethod
     def parse_cell_state(cls, v: Any) -> str:
-        value = str(v or "fresh").strip().lower()
+        value = str(v or "persistent").strip().lower()
         if value not in ("persistent", "fresh"):
             raise ValueError(
                 f"UNIFY_CELL_STATE must be 'persistent' or 'fresh', not {v!r}",
