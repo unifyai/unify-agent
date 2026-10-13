@@ -294,7 +294,7 @@ def test_a_child_that_cannot_start_or_never_prints_its_marker_is_labelled_with_i
 
 def test_a_reader_that_cannot_be_loaded_has_failed_with_its_reason_and_never_reads_as_not_parsing(tmp_path):
     root = _copy(tmp_path)
-    module = root / "memory" / "tables" / "read.py"  # TOTAL's reader, READ_ROWS, lives here
+    module = root / "memory" / "tables" / "readers.py"  # TOTAL's reader, READ_ROWS, lives here
     module.write_text(module.read_text() + "\nraise RuntimeError('this module breaks on import')\n")
     code = host(REQUEST) + (
         "a = memory.ask()\nprint(json.dumps({'sent': sent, 'note': a.note, 'events': events}, default=list))\n"
