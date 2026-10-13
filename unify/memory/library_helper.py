@@ -50,6 +50,39 @@ import sys
 import threading
 from typing import Any, NamedTuple
 
+# The contract runtime: typed arguments checked at the call and errors that teach. In the library package it is
+# the sibling file memory/_contract.py (the harness's module byte for byte); in the harness, the module itself.
+if __name__ == "memory":
+    from memory._contract import (  # noqa: F401 - the package's own contract
+        Ambiguous,
+        ArgumentError,
+        ContractError,
+        Ge,
+        Le,
+        MinLen,
+        NotFound,
+        WrongCall,
+        call_text,
+        checked,
+        nearest,
+        render_pyi,
+    )
+else:
+    from unify.common.contract_runtime import (  # noqa: F401
+        Ambiguous,
+        ArgumentError,
+        ContractError,
+        Ge,
+        Le,
+        MinLen,
+        NotFound,
+        WrongCall,
+        call_text,
+        checked,
+        nearest,
+        render_pyi,
+    )
+
 INDEX_FILE = "INDEX.md"
 LINKS_FILE = "links.json"
 ITEMS_FILE = ".memory/items.json"

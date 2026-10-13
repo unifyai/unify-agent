@@ -31,10 +31,12 @@ from .memory_repo import _signature
 PACKAGE_ROOT = "memory"
 NOTES_ROOT = "notes"
 RESERVED_INIT = "memory/__init__.py"
+#: The contract runtime (unify/common/contract_runtime.py byte for byte) the package checks its calls with.
+RESERVED_CONTRACT = "memory/_contract.py"
 INDEX_FILE = "INDEX.md"
 LINKS_FILE = "links.json"
 DATA_DIR = ".memory"
-GENERATED_ROOT_FILES = (RESERVED_INIT, INDEX_FILE, LINKS_FILE)
+GENERATED_ROOT_FILES = (RESERVED_INIT, RESERVED_CONTRACT, INDEX_FILE, LINKS_FILE)
 # Package names a subpackage import would bind over the helpers on ``memory`` (and the optional ones).
 RESERVED_PACKAGES = frozenset(
     {"index", "show", "find", "match", "run", "search", "suggest", "tests"},

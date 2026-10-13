@@ -12,7 +12,7 @@ from unify.memory import library_export as lx
 from unify.memory import memory_helper
 from unify.memory.catalogue import write_files
 from unify.memory.gitio import Repo
-from unify.memory.layout import INDEX_FILE, LINKS_FILE, RESERVED_INIT
+from unify.memory.layout import INDEX_FILE, LINKS_FILE, RESERVED_CONTRACT, RESERVED_INIT
 from unify.memory.library_helper import (
     FIND_FILE,
     ITEMS_FILE,
@@ -57,11 +57,12 @@ def _commit(mem: Repo, files: dict, message: str) -> str:
     return sha
 
 
-def test_generated_files_are_the_seven_and_deterministic(tmp_path):
+def test_generated_files_are_the_eight_and_deterministic(tmp_path):
     root = _tree(tmp_path / "lib")
     files = lx.generated_library_mode(root)
     assert set(files) == {
         RESERVED_INIT,
+        RESERVED_CONTRACT,
         INDEX_FILE,
         LINKS_FILE,
         ITEMS_FILE,
@@ -70,6 +71,7 @@ def test_generated_files_are_the_seven_and_deterministic(tmp_path):
         SHAPES_FILE,
     }
     assert lx.generated_library_mode(root) == files
+    assert files[RESERVED_CONTRACT] == lx.CONTRACT_SOURCE.read_bytes()
     assert (
         files[RESERVED_INIT]
         == (Path(lx.__file__).parent / "library_helper.py").read_bytes()

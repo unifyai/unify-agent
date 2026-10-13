@@ -241,13 +241,22 @@ def test_the_dispatch_file_lists_each_procedure_with_a_reader_or_applies(tmp_pat
 
 
 def test_off_generates_neither_file_and_the_other_files_keep_their_bytes(tmp_path, monkeypatch):
-    from unify.memory.layout import INDEX_FILE, LINKS_FILE, RESERVED_INIT
+    from unify.memory.layout import INDEX_FILE, LINKS_FILE, RESERVED_CONTRACT, RESERVED_INIT
     from unify.memory.library_helper import FIND_FILE, ITEMS_FILE, MATCHER_FILE, SHAPES_FILE
 
     set_switch(monkeypatch, "off")
     tree = w.write_tree(tmp_path / "lib")
     off = w.generate_off(tree, records=w.records(), summaries=w.SUMMARIES, captures=w.capture_files())
-    assert set(off) == {RESERVED_INIT, INDEX_FILE, LINKS_FILE, ITEMS_FILE, FIND_FILE, MATCHER_FILE, SHAPES_FILE}
+    assert set(off) == {
+        RESERVED_INIT,
+        RESERVED_CONTRACT,
+        INDEX_FILE,
+        LINKS_FILE,
+        ITEMS_FILE,
+        FIND_FILE,
+        MATCHER_FILE,
+        SHAPES_FILE,
+    }
     set_switch(monkeypatch, "on")
     on = w.generate(tree, records=w.records(), summaries=w.SUMMARIES)
     # the files both modes generate are the same bytes, except the package and the index the actor no longer reads

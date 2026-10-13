@@ -33,6 +33,7 @@ from .gitio import GitError, Repo
 from .layout import (
     INDEX_FILE,
     LINKS_FILE,
+    RESERVED_CONTRACT,
     RESERVED_INIT,
     Library,
     classify,
@@ -774,6 +775,9 @@ def librarian_files(
 #: :mod:`.library_helper`'s bytes; off, the package is that file byte for byte.
 ASK_SOURCE = _HERE / "library_ask.py"
 
+#: The contract runtime the package imports as ``memory._contract`` (standard library only), byte for byte.
+CONTRACT_SOURCE = _HERE.parent / "common" / "contract_runtime.py"
+
 
 def package_source(librarian: bool = False) -> bytes:
     """The generated ``memory/__init__.py``: :mod:`.library_helper` byte for byte, followed, with *librarian*, by
@@ -829,6 +833,7 @@ def generated_library_mode(
 
     out = {
         RESERVED_INIT: (_HERE / "library_helper.py").read_bytes(),
+        RESERVED_CONTRACT: CONTRACT_SOURCE.read_bytes(),
         INDEX_FILE: render_index(
             lib,
             links,

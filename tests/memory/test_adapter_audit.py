@@ -518,6 +518,9 @@ def test_the_generated_library_reports_its_calls_to_the_installed_hook(tmp_path)
     (ws / "memory" / "__init__.py").write_bytes(
         Path(library_helper.__file__).read_bytes(),
     )
+    from unify.memory.library_export import CONTRACT_SOURCE
+
+    (ws / "memory" / "_contract.py").write_bytes(CONTRACT_SOURCE.read_bytes())
     (ws / "memory" / "m" / "f.py").write_text(
         "class MemoryInputError(ValueError):\n    pass\n\n\n"
         "def half(x):\n"

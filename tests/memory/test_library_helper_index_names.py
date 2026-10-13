@@ -11,7 +11,7 @@ import pytest
 
 from tests.memory.test_library_helper import DATE, _library, _py
 from unify.memory import library_helper
-from unify.memory.layout import INDEX_FILE, RESERVED_INIT
+from unify.memory.layout import INDEX_FILE, RESERVED_CONTRACT, RESERVED_INIT
 from unify.memory.library_helper import find_section
 
 HEAD = "# Memory index\n\nOne line per item.\n"
@@ -24,12 +24,19 @@ INDEX = (
 )
 
 
+def lx_contract() -> Path:
+    from unify.memory import library_export
+
+    return library_export.CONTRACT_SOURCE
+
+
 def _copy(tmp_path: Path, index: str) -> Path:
-    """A library copy holding only the helper (byte for byte as generated) and *index*."""
+    """A library copy holding only the helper and its contract runtime (byte for byte as generated) and *index*."""
     root = tmp_path / "copy"
     init = root / RESERVED_INIT
     init.parent.mkdir(parents=True)
     init.write_bytes(Path(library_helper.__file__).read_bytes())
+    (root / RESERVED_CONTRACT).write_bytes(lx_contract().read_bytes())
     (root / INDEX_FILE).write_text(index)
     return root
 
