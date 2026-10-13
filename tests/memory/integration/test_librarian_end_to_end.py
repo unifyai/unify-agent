@@ -117,10 +117,8 @@ GHOST = "memory.orders.nope:ghost"
 
 
 def _set(monkeypatch, name: str, value: str) -> None:
-    try:
-        monkeypatch.setattr(SETTINGS, name, value, raising=False)
-    except (ValueError, AttributeError, TypeError):
-        pass
+    if hasattr(SETTINGS, name):  # while the setting does not exist yet, the test fails on what it checks
+        monkeypatch.setattr(SETTINGS, name, value)
 
 
 def _open_request(paths: Paths, sha: str, monkeypatch) -> request_mod.RequestRun:
@@ -191,6 +189,17 @@ class Script:
         if self.librarian_cells:
             return reply(calls=[code(self.librarian_cells.pop(0))])
         return reply(calls=[code(librarian_answer({"fits": []}))])
+
+
+def _json(result: str, model: ScriptedModel):
+    """The actor's answer as JSON; when it is not, the last tool results show why."""
+    try:
+        return json.loads(result)
+    except ValueError:
+        tail = "\n".join(
+            _text(m.get("content")) for m in model.calls[-1].messages if m.get("role") == "tool"
+        )[-3000:] if model.calls else ""
+        raise AssertionError(f"the actor answered {result[:300]!r}; its last tool results:\n{tail}") from None
 
 
 def _system(call) -> str:
@@ -271,7 +280,7 @@ async def test_ask_returns_the_librarians_answers_reuses_the_session_and_is_acco
     script = Script([actor_cell], [librarian_answer(ANSWER_ONE), librarian_answer(ANSWER_TWO)])
     result, model, sent = await _ask_act(env, script)
 
-    got = json.loads(result)
+    got = _json(result, model)
     assert got == {"a": ANSWER_ONE, "b": ANSWER_TWO}, result[:2000]
     lib = script.librarian_calls
     assert len(lib) == 2, [c.kind for c in model.calls]
@@ -348,7 +357,7 @@ async def test_a_malformed_answer_or_an_unknown_id_goes_back_to_the_librarian_as
     )
     result, model, _ = await _ask_act(env, script)
 
-    assert json.loads(result) == ANSWER_ONE, result[:2000]
+    assert _json(result, model) == ANSWER_ONE, result[:2000]
     lib = script.librarian_calls
     assert len(lib) == 3, [c.kind for c in model.calls]
     # each refusal reached the librarian in the next request of its session, outside its own turns
@@ -370,7 +379,7 @@ async def test_the_session_ends_with_the_request_and_the_next_request_opens_a_ne
     first_cell = f"import json\n_a = memory.ask({Q1!r})\ntools.finish(json.dumps({plain('_a')}))\n"
     first = Script([first_cell], [librarian_answer(ANSWER_ONE)])
     result, model_one, sent_one = await _ask_act(env, first)
-    assert json.loads(result) == ANSWER_ONE
+    assert _json(result, model_one) == ANSWER_ONE
     _assert_ended(env["opened"])
     assert _boxes() <= before  # no librarian box is left
 
@@ -378,7 +387,7 @@ async def test_the_session_ends_with_the_request_and_the_next_request_opens_a_ne
     second_cell = f"import json\n_a = memory.ask({Q2!r})\ntools.finish(json.dumps({plain('_a')}))\n"
     second = Script([second_cell], [librarian_answer(ANSWER_TWO)])
     result, model_two, sent_two = await _ask_act(env, second)
-    assert json.loads(result) == ANSWER_TWO
+    assert _json(result, model_two) == ANSWER_TWO
     (lib_one,), (lib_two,) = first.librarian_calls, second.librarian_calls
     # the second request's librarian starts afresh: nothing of the first request's question
     assert "Which stored items fit this text?" not in _not_assistant(lib_two)
@@ -424,7 +433,7 @@ async def test_the_librarians_box_is_read_only_on_the_library_offline_and_has_no
     script = Script([actor_cell], [PROBE, librarian_answer(ANSWER_ONE)])
     result, model, _ = await _ask_act(env, script)
 
-    assert json.loads(result) == ANSWER_ONE, result[:2000]
+    assert _json(result, model) == ANSWER_ONE, result[:2000]
     lib = script.librarian_calls
     assert len(lib) >= 2
     shown = _not_assistant(lib[1])

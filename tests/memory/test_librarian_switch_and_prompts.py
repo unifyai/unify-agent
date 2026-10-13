@@ -70,10 +70,8 @@ def actor_allow() -> tuple[str, ...]:
 
 
 def _set(monkeypatch, name: str, value: str) -> None:
-    try:
-        monkeypatch.setattr(SETTINGS, name, value, raising=False)
-    except (ValueError, AttributeError, TypeError):
-        pass
+    if hasattr(SETTINGS, name):  # while the setting does not exist yet, the test fails on what it checks
+        monkeypatch.setattr(SETTINGS, name, value)
 
 
 def _flat(text: str) -> str:

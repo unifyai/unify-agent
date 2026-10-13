@@ -63,10 +63,8 @@ def dispatch_rows(data) -> list[dict]:
 def set_switch(monkeypatch, value: str) -> None:
     """Set the switch on the live settings; while the setting does not exist yet the generating call's own
     argument still says which mode it is."""
-    try:
-        monkeypatch.setattr(SETTINGS, SWITCH, value, raising=False)
-    except (ValueError, AttributeError, TypeError):
-        pass
+    if hasattr(SETTINGS, SWITCH):  # while the setting does not exist yet, the test fails on what it checks
+        monkeypatch.setattr(SETTINGS, SWITCH, value)
 
 
 @pytest.fixture(autouse=True)
