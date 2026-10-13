@@ -643,9 +643,25 @@ def _query(m: Any, request: Any, inputs: Any, candidates: list[Candidate]) -> Qu
         desc = m.value_shape(request)
         if desc is not None:
             shapes.append(desc)
-    if inputs is not None:
+    if isinstance(inputs, (str, bytes, bytearray)) and not _is_file(m, inputs):
+        # text that is not a file's path is read as JSON only, like the request: never sniffed as a table
+        desc = m.value_shape(inputs) if inputs else None
+        if desc is not None:
+            shapes.append(desc)
+    elif inputs is not None:
         shapes += _candidates(m, inputs, exts)
     return Query(request, inputs, tuple(shapes))
+
+
+def _is_file(m: Any, value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and len(value) <= m._MAX_PATH_CHARS
+        and "\n" not in value
+        and "\0" not in value
+        and os.path.isfile(value)
+    )
 
 
 def structural_match(query: Query, candidates: list[Candidate]) -> list[tuple[str, str]]:
@@ -691,7 +707,7 @@ def _conditions(signature: dict) -> str:
     parts = []
     for name in ("applies", "holds"):
         c = cons.get(name)
-        if isinstance(c, dict) and c.get("exists"):
+        if isinstance(c, dict) and (c.get("stated") or c.get("exists")):
             held = c.get("held")
             state = "held" if held is True else "did not hold" if held is False else "not shown"
             parts.append(f"{name} {state} on its recorded case")
@@ -720,8 +736,10 @@ def _emit_event(event: str, *args: Any) -> None:
         pass
 
 
-def _matched(request: Any, inputs: Any) -> tuple[list[MatchRow], list[MatchRow], Query, int]:
-    """The rows :data:`MATCHER` gives for *request* and *inputs*: runnable, failed, the query, unreadable captures."""
+def _matched(request: Any, inputs: Any) -> tuple[list[MatchRow], list[MatchRow], Query, int, str]:
+    """The rows :data:`MATCHER` gives for *request* and *inputs*: runnable, failed, the query, unreadable captures,
+    and why the matcher gave nothing when it raised (``""`` otherwise): a failing matcher lists nothing and never
+    breaks the cell."""
     m = _matcher()
     candidates, unreadable = _candidates_all()
     query = _query(m, request, inputs, candidates)
@@ -729,7 +747,11 @@ def _matched(request: Any, inputs: Any) -> tuple[list[MatchRow], list[MatchRow],
     rows: list[MatchRow] = []
     failed: list[MatchRow] = []
     seen: set[str] = set()
-    for pair in MATCHER(query, list(candidates)) or ():
+    try:
+        pairs = list(MATCHER(query, list(candidates)) or ())
+    except Exception as exc:  # noqa: BLE001 - the matcher's failure is reported, not raised
+        return rows, failed, query, unreadable, f"the matcher failed ({type(exc).__name__}), so nothing is listed."
+    for pair in pairs:
         try:
             cid, how = pair
         except (TypeError, ValueError):
@@ -739,7 +761,7 @@ def _matched(request: Any, inputs: Any) -> tuple[list[MatchRow], list[MatchRow],
             continue
         seen.add(cid)
         (failed if c.failed else rows).append(_match_row(c, str(how)[:40]))
-    return rows, failed, query, unreadable
+    return rows, failed, query, unreadable, ""
 
 
 def _event_rows(rows: list[MatchRow]) -> tuple:
@@ -753,9 +775,9 @@ def match(request: Any = None, inputs: Any = None) -> Matches:
     the goal it was built for; captured attempts that were tried on input like this and failed are listed apart,
     under ``.failed``, and are never offered to run. How it matches is :data:`MATCHER`'s choice (structure only by
     default, so plain text with no structure matches nothing); a match can be wrong. It runs nothing."""
-    rows, failed, query, unreadable = _matched(request, inputs)
-    note = ""
-    if not query.shapes:
+    rows, failed, query, unreadable, broken = _matched(request, inputs)
+    note = broken
+    if not query.shapes and not broken:
         note = (
             "What you passed has no structure the matcher reads (plain text has none); pass data you were "
             "given as inputs=..., or look in the index."
@@ -787,6 +809,8 @@ class RunReport:
         self.record: str = kw.get("record", "")
         self.agrees_with: list[str] = list(kw.get("agrees_with") or [])
         self.agreement_note: str = kw.get("agreement_note", "")
+        # the value a captured procedure read from the text it was given (JSON, not too large), for agreement
+        self._read_value: Any = kw.get("read_value", _NO_VALUE)
 
     def __repr__(self) -> str:
         out = [f"run of {self.target}: {self.outcome}"]
@@ -862,8 +886,8 @@ def _item_function(target: str) -> Any:
 
 def _run_item(target: str, args: tuple, kwargs: dict) -> RunReport:
     """Call a library function by id in this process (an ordinary use: the wrapper raises ``memory.call``). A
-    second call checks that it repeats, only when the harness derived its effect as ``read`` (a call that may change
-    state is never repeated) and its arguments can be copied first."""
+    second call checks that it repeats, unless the harness derived its effect as ``write`` (a call known to change state
+    is never repeated), on a copy of the arguments taken first."""
     import copy
 
     row = _item_row(target)
@@ -886,8 +910,8 @@ def _run_item(target: str, args: tuple, kwargs: dict) -> RunReport:
         return RunReport(target, outcome="error", error=type(exc).__name__, detail=str(exc)[:_DETAIL_CHARS], **base)
     copied: Any = None
     note = ""
-    if row.get("effect") != "read":
-        note = "a second call is made only for a procedure whose effect is read"
+    if row.get("effect") == "write":
+        note = "a procedure whose recorded effect is write is called once"
     else:
         try:
             copied = copy.deepcopy((args, kwargs))
@@ -935,6 +959,12 @@ try:
     if callable(read) and len(args) == 1 and not kwargs and isinstance(args[0], str):
         value = read(args[0])
         call = lambda: run(value)
+        try:
+            text = json.dumps(value)
+            if len(text) <= 262144:
+                out["value"] = value
+        except Exception:
+            pass
     else:
         value = args[0] if len(args) == 1 and not kwargs else None
         call = lambda: run(*args, **kwargs)
@@ -1115,21 +1145,35 @@ def _run_capture(capture_id: str, args: tuple, kwargs: dict) -> RunReport:
         conditions=conditions,
         conditions_code=code,
         record=_record_line(rec.get("track") if isinstance(rec.get("track"), dict) else None),
+        read_value=rep["value"] if "value" in rep else _NO_VALUE,
         **base,
     )
 
 
-def _agreement(target: str, args: tuple, kwargs: dict, result: Any) -> tuple[list[str], str]:
+_NO_VALUE = object()
+
+
+def _agreement(
+    target: str,
+    args: tuple,
+    kwargs: dict,
+    result: Any,
+    read_value: Any = _NO_VALUE,
+) -> tuple[list[str], str]:
     """The other runnable procedures :data:`MATCHER` lists for the same single argument whose result equals
-    *result*, and a line saying how many were tried. A library function is tried only when its effect is ``read``
+    *result*, and a line saying how many were tried. A library function is tried unless its effect is ``write``
     (called unwrapped, and the library calls it makes raise no event, so the check is not a use); a captured one
-    runs confined. Agreement between stored
-    procedures only: nothing is compared with anything the request states."""
+    runs confined. The other procedures are the ones that match the value the target read from its text, when it
+    read one (*read_value*), else the argument itself. Agreement between stored procedures only: nothing is compared
+    with anything the request states."""
     if len(args) != 1 or kwargs:
         return [], "agreement with other procedures is checked for a single argument only"
     arg = args[0]
     try:
-        rows, _, _, _ = _matched(arg, None) if isinstance(arg, str) else _matched(None, arg)
+        if read_value is not _NO_VALUE:
+            rows = _matched(None, read_value)[0]
+        else:
+            rows = _matched(arg, None)[0] if isinstance(arg, str) else _matched(None, arg)[0]
     except Exception as exc:  # noqa: BLE001 - the report still stands without agreement
         return [], f"agreement was not checked ({type(exc).__name__})"
     others = [r for r in rows if r.id != target]
@@ -1145,7 +1189,7 @@ def _agreement(target: str, args: tuple, kwargs: dict, result: Any) -> tuple[lis
                 other = rep.get("result")
             else:
                 row = _item_row(r.id)
-                if row is None or row.get("effect") != "read":
+                if row is None or row.get("effect") == "write":
                     continue
                 fn = inspect.unwrap(_item_function(r.id))
                 _QUIET.depth = getattr(_QUIET, "depth", 0) + 1
@@ -1178,7 +1222,13 @@ def run(item: Any, /, *args: Any, **kwargs: Any) -> RunReport:
     else:
         report = _run_item(target, args, kwargs)
     if report.outcome == "returned":
-        report.agrees_with, report.agreement_note = _agreement(report.target, args, kwargs, report.result)
+        report.agrees_with, report.agreement_note = _agreement(
+            report.target,
+            args,
+            kwargs,
+            report.result,
+            report._read_value,
+        )
     repeat = "unchecked" if report.repeatable is None else ("yes" if report.repeatable else "no")
     _emit_event(
         RUN_EVENT,

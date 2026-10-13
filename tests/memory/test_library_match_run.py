@@ -219,7 +219,7 @@ def test_run_calls_an_item_and_reports_its_outcome(tmp_path):
         assert word not in text.lower()
 
 
-def test_run_repeats_only_a_procedure_whose_effect_is_read(tmp_path):
+def test_run_never_repeats_a_procedure_whose_effect_is_write(tmp_path):
     root = _library(tmp_path, effect="write")
     code = (
         "import json, memory\n"
@@ -229,7 +229,7 @@ def test_run_repeats_only_a_procedure_whose_effect_is_read(tmp_path):
     assert json.loads(_py(root, code)) == [
         "returned",
         None,
-        "a second call is made only for a procedure whose effect is read",
+        "a procedure whose recorded effect is write is called once",
     ]
 
 

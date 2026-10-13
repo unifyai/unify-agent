@@ -602,16 +602,20 @@ def _add_matches_and_runs(acc: dict, calls: dict, cell: int) -> None:
 def add_runtime_calls(acc: dict, drained: Any, library_roots: Any = ()) -> None:
     """Add one cell's drained audit records (the worker's ``done`` message ``audit``) to *acc*: the cell is
     counted as observed, and its ``calls`` block (``adapters.audit``), when present, adds its per-item counts, its
-    ``memory.match`` results and its ``memory.run`` runs (:func:`_add_matches_and_runs`). With *library_roots* (the
-    library copy's paths as the cell sees them) its path and process records add to ``file_lookups``
-    (:func:`library_file_lookups`). Malformed parts are skipped; calls of items beyond :data:`MAX_RUNTIME_ITEMS`
+    ``memory.match`` results and its ``memory.run`` runs (:func:`_add_matches_and_runs`). Its path and process records
+    add to ``file_lookups`` (:func:`library_file_lookups`) for the sandbox's library mount and *library_roots* (the
+    copy's other paths as the cell sees them). Malformed parts are skipped; calls of items beyond :data:`MAX_RUNTIME_ITEMS`
     count as dropped.
     """
     if not isinstance(drained, dict):
         return
     acc["cells"] += 1
-    if library_roots:
-        found = library_file_lookups(drained.get("records"), library_roots)
+    if isinstance(drained.get("records"), list) and drained["records"]:
+        from unify.sandbox import LIBRARY_MOUNT
+
+        # the sandbox's fixed mount is always the library copy; *library_roots* add its other paths
+        roots = tuple(library_roots or ()) + (LIBRARY_MOUNT,)
+        found = library_file_lookups(drained.get("records"), roots)
         have = acc.setdefault("file_lookups", {"reads": 0, "searches": 0})
         for k in ("reads", "searches"):
             have[k] = _count(have.get(k)) + found[k]

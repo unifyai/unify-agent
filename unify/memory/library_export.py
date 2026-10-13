@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ast
 import json
+from typing import Any
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -69,6 +70,24 @@ def default_strip() -> Strip:
     from .signatures import strip_identifiers
 
     return strip_identifiers
+
+
+def strip_signature(value: Any, strip: Strip | None = None, _under: str = "") -> Any:
+    """A signature (or any JSON-like value) with the one identifier rule applied to every mapping key and to the
+    column and header names a file shape lists; other values are kept. A signature the capture store built is
+    already stripped, so this changes nothing there; it keeps a signature from any other source to the rule."""
+    strip = strip or default_strip()
+    if isinstance(value, dict):
+        return {
+            (strip(k) if isinstance(k, str) else k): strip_signature(v, strip, k if isinstance(k, str) else "")
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            strip(v) if isinstance(v, str) and _under in ("columns", "header") else strip_signature(v, strip)
+            for v in value
+        ]
+    return value
 
 
 def _section(text: str, heading: str) -> str:
@@ -297,7 +316,7 @@ def saved_against_of(
         if not isinstance(sig, dict):
             return None
         out = {
-            "signature": {k: v for k, v in sig.items() if k != "goal"},
+            "signature": strip_signature({k: v for k, v in sig.items() if k != "goal"}, strip),
             "asked": "",
             "approach": "",
             "level": rec.get("level") if isinstance(rec.get("level"), str) else None,
@@ -310,7 +329,7 @@ def saved_against_of(
                 out.update(summary_sections(text, strip))
                 break
         if not out["asked"] and isinstance(sig.get("goal"), str):
-            out["asked"] = sig["goal"]  # the signature's own goal: stripped when it was built
+            out["asked"] = (strip or default_strip())(sig["goal"])
         return out
 
     return get

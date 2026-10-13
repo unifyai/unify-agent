@@ -265,7 +265,10 @@ def test_the_actor_snapshot_and_the_writer_inputs_carry_the_capture_files(tmp_pa
     runner, _ = _box(VALUE, [6, 9])
     cid = cp.capture(staging, _ep("e1"), store, runner=runner)["capture_id"]
     snap = cp.export_files(store)
-    assert sorted(snap) == sorted(f"{cp.EXPORT_DIR}/{cid}/{n}" for n in cp.CAPTURE_FILES)
+    assert sorted(snap) == sorted(f"{cp.EXPORT_DIR}/{cid}/{n}" for n in (*cp.CAPTURE_FILES, cp.SAVED_FILE))
+    # what memory.match hands its matcher besides the signature: the docstring, the summary sections, what broke
+    saved = json.loads(snap[f"{cp.EXPORT_DIR}/{cid}/{cp.SAVED_FILE}"])
+    assert set(saved) == {"docstring", "asked", "approach", "broke"} and isinstance(saved["broke"], list)
     assert not any(p.endswith("INDEX.md") for p in snap)
     dest = tmp_path / "inputs" / "captures"
     assert cp.export_for_writer(store, [cid], dest) == [cid]

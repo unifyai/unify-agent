@@ -77,6 +77,10 @@ BROKE_FILE = "broke.md"
 SIGNATURE_FILE = "signature.json"
 RECORD_FILE = "record.json"
 SUMMARY_FILE = "summary.md"
+#: What a capture was saved against besides its signature (``memory.match`` hands it to its matcher): its
+#: procedure's docstring and its episode's Asked and Approach sections, identifiers stripped; the actor's snapshot
+#: adds what broke.
+SAVED_FILE = "saved.json"
 #: The files of one capture, as the store, the pool and the actor's snapshot hold them.
 CAPTURE_FILES = (PROCEDURE_FILE, SIGNATURE_FILE, RECORD_FILE, BROKE_FILE)
 #: The actor's snapshot of the store, under its library copy.
@@ -601,8 +605,22 @@ def load(store: Path | str) -> dict[str, dict]:
             "signature": _read_json(d / SIGNATURE_FILE),
             "procedure": _read_text(d / PROCEDURE_FILE),
             "broke": _read_text(d / BROKE_FILE),
+            "saved": _read_json(d / SAVED_FILE),
         }
     return out
+
+
+def saved_against(source: str, summary: str, request: str = "") -> dict:
+    """What a capture was saved against besides its signature (:data:`SAVED_FILE`): its procedure's docstring and
+    its episode's ``summary.md`` Asked and Approach sections, every identifier stripped (with the values *request*
+    labels as identifiers)."""
+    from .library_export import _docstring_of, _section
+
+    return {
+        "docstring": strip_identifiers(_docstring_of(source), request=request),
+        "asked": asked(summary, request),
+        "approach": strip_identifiers(_section(str(summary), "Approach"), request=request),
+    }
 
 
 def episode_row(store: Path | str, eid: str) -> dict | None:
@@ -793,6 +811,8 @@ def capture(
                 _write(d / PROCEDURE_FILE, source.encode("utf-8", "surrogatepass"))
             if not (d / SIGNATURE_FILE).exists():
                 _write(d / SIGNATURE_FILE, _json(sig))
+            if not (d / SAVED_FILE).exists():
+                _write(d / SAVED_FILE, _json(saved_against(source, summary, request_text)))
             if broke is not None and broke.strip():
                 old = _read_text(d / BROKE_FILE) or ""
                 if broke.strip() not in old:
@@ -940,6 +960,16 @@ def export_files(store: Path | str) -> dict[str, bytes]:
         out[f"{EXPORT_DIR}/{cid}/{RECORD_FILE}"] = _json(doc["record"])
         if isinstance(doc.get("signature"), dict):
             out[f"{EXPORT_DIR}/{cid}/{SIGNATURE_FILE}"] = _json(doc["signature"])
+        saved = doc.get("saved") if isinstance(doc.get("saved"), dict) else {}
+        broke = doc.get("broke") if isinstance(doc.get("broke"), str) else ""
+        out[f"{EXPORT_DIR}/{cid}/{SAVED_FILE}"] = _json(
+            {
+                "docstring": str(saved.get("docstring") or ""),
+                "asked": str(saved.get("asked") or ""),
+                "approach": str(saved.get("approach") or ""),
+                "broke": [strip_identifiers(line) for line in _broke_lines(broke)] if broke else [],
+            },
+        )
     return out
 
 

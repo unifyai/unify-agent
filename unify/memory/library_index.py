@@ -107,7 +107,8 @@ def signature_text(signature: "dict | None") -> str:
     """The ``input:`` line's text for an applicability signature: its input's key paths with their value types (a
     file's format first), at most :data:`INPUT_LINE_PATHS` of them, then the relations it was saved with. The
     signature arrives with its identifiers already removed (the capture store builds it). ``""`` when it has no
-    readable input shape."""
+    readable input shape. Identifiers are stripped from the line with the one rule (``signatures``), so none shows
+    even where one was a key."""
     from .memory_helper import signature as key_paths
 
     if not isinstance(signature, dict) or not isinstance(signature.get("input"), dict):
@@ -129,7 +130,9 @@ def signature_text(signature: "dict | None") -> str:
     rel = signature.get("relations")
     if isinstance(rel, list) and rel:
         text += "; relations: " + ", ".join(str(r) for r in rel)
-    return text
+    from .signatures import strip_identifiers  # the one rule: no printed identifier, even one that was a key
+
+    return strip_identifiers(text)
 
 
 def build_links(lib: Library) -> dict:
