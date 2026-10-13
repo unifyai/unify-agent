@@ -118,7 +118,18 @@ def _in_code() -> bool:
 #: and errors are in its help, never in a prompt.
 MEMORY_HELP_LINE = "`help(memory)` shows the library's calls and types."
 
-#: The in-code look-first bullet, first under "Finding items": when to ask, and that an answer is a lead, not proof.
+#: The in-code look-first bullets, first under "Finding items": when to look, and where. With the librarian off the
+#: actor looks with ``memory.items`` (in the index, when the prompt carries it); with it on, ``memory.ask`` is the
+#: librarian, and :data:`ASK_LINE_IN_CODE` says when to ask and that an answer is a lead, not proof. The switch is
+#: fixed for a run, so each guide's bytes are too.
+LOOK_LINE_IN_CODE = (
+    "- At the start of a request, and before you work a step out yourself, look for an item that applies in the "
+    "index at the end of this prompt or with `memory.items`; the index lists every function and note.\n"
+)
+LOOK_LINE_POINTER_IN_CODE = (
+    "- At the start of a request, and before you work a step out yourself, look for an item that applies with "
+    "`memory.items`, which browses every function and note in the library.\n"
+)
 ASK_LINE_IN_CODE = (
     "- At the start of a request, and before you work a step out yourself, ask the library what applies with "
     "`memory.ask`. What it names can still be wrong for your case.\n"
@@ -150,14 +161,13 @@ _OPENING_IN_CODE = (
     "\n"
 )
 
-#: The inline-index guide when tools are called from code: it says when to use which library call and how they
-#: combine (ask what applies, open what you will use, call it) and names each call without its arguments; the
-#: calls' own help holds their arguments, results and errors. The index head says what each line holds.
+#: The inline-index guide when tools are called from code (the librarian off): it says when to use which library call
+#: and how they combine (look for what applies, open what you will use, call it) and names each call without its
+#: arguments; the calls' own help holds their arguments, results and errors. The index head says what each line holds.
 GUIDE_LIBRARY_IN_CODE = (
     _OPENING_IN_CODE
     + "Finding items:\n"
-    + ASK_LINE_IN_CODE
-    + "- The index at the end of this prompt lists every function and note; `memory.items` browses them.\n"
+    + LOOK_LINE_IN_CODE
     + FILES_LINE_IN_CODE
     + "\n"
     "Using items:\n"
@@ -228,8 +238,7 @@ GUIDE_POINTER_IN_CODE = (
     + " Using the library is optional: use an item when it fits, and otherwise work as usual.\n"
     "\n"
     "Finding items:\n"
-    + ASK_LINE_IN_CODE
-    + "- `memory.items` browses every function and note in the library.\n"
+    + LOOK_LINE_POINTER_IN_CODE
     + FILES_LINE_IN_CODE
     + "\n"
     "Using items:\n"

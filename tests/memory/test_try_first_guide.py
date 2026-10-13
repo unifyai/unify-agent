@@ -28,9 +28,11 @@ GUIDES = OFF_GUIDES + IN_CODE_GUIDES
 #: How the guides with tools in code off name the two helpers.
 MATCH_CALL = "memory.match("
 RUN_CALL = "memory.run("
-#: How the in-code guides name the calls that find and open an item: by name, with no arguments.
+#: How the in-code guides name the calls that find and open an item: by name, with no arguments. ``memory.ask`` is
+#: the librarian, so only the librarian's guide names it.
 ASK_NAME = "`memory.ask`"
 GET_NAME = "`memory.get`"
+ITEMS_NAME = "`memory.items`"
 #: The opening's library sentence for the actor (``unify/actor/in_code_tools.py``, ``opening``): the pointer
 #: section under tools in code must not say it again.
 OPENING_MEMORY_LINE = "The library is importable in your cells as `memory`."
@@ -84,9 +86,10 @@ def test_the_guide_names_match_and_run(name):
 
 
 @pytest.mark.parametrize("name", IN_CODE_GUIDES)
-def test_the_in_code_guide_names_ask_and_get_without_arguments(name):
+def test_the_in_code_guide_names_its_calls_without_arguments(name):
     text = _guide(name)
-    assert ASK_NAME in text and GET_NAME in text and "`memory.items`" in text
+    assert GET_NAME in text and ITEMS_NAME in text
+    assert (ASK_NAME in text) is (name == "GUIDE_LIBRARIAN"), "memory.ask is named only where the librarian answers"
     assert not re.search(r"memory\.[a-z_]+\(", text), "a library call shown with its arguments"
     assert MATCH_CALL not in text and RUN_CALL not in text
     assert lp.MEMORY_HELP_LINE in text
@@ -100,7 +103,7 @@ def test_the_guide_nudges_to_look_for_stored_procedures_at_the_start_of_a_reques
         for s in _sentences(text)
         if re.search(r"\b(start|begin\w*)\b", s, re.I)
         and re.search(r"\brequest\b", s, re.I)
-        and re.search(r"stored procedure|memory\.match|memory\.ask", s, re.I)
+        and re.search(r"stored procedure|memory\.(?:match|ask|items)", s, re.I)
     ]
     assert hits, "no sentence says to look for stored procedures at the start of a request"
 
@@ -133,7 +136,10 @@ def test_the_nudge_informs_and_never_forces(name):
     about = [
         s
         for s in _sentences(text)
-        if any(word in s for word in ("memory.match", "memory.run", "memory.ask", "memory.get", "stored procedure"))
+        if any(
+            word in s
+            for word in ("memory.match", "memory.run", "memory.ask", "memory.items", "memory.get", "stored procedure")
+        )
     ]
     assert about
     for s in about:
@@ -151,7 +157,7 @@ def test_the_guide_never_tells_the_agent_to_store_or_avoid_ids_or_answers(name):
 def test_the_in_code_guide_is_what_the_actor_reads_with_tools_in_code(monkeypatch):
     monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: True)
     assert lp.guide_library() == lp.GUIDE_LIBRARY_IN_CODE and lp.guide_pointer() == lp.GUIDE_POINTER_IN_CODE
-    assert ASK_NAME in lp.guide_library() and GET_NAME in lp.guide_library() and MATCH_CALL not in lp.guide_library()
+    assert GET_NAME in lp.guide_library() and ASK_NAME not in lp.guide_library() and MATCH_CALL not in lp.guide_library()
     monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: False)
     assert MATCH_CALL in lp.guide_library() and RUN_CALL in lp.guide_library()
 
@@ -190,7 +196,8 @@ def test_the_pointer_section_names_match_and_run_and_says_memory_is_bound(tmp_pa
     monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: in_code)
     text = render_memory_library_mode(_copies(tmp_path)[1], actor_index="pointer")[0]
     if in_code:
-        assert ASK_NAME in text and GET_NAME in text and MATCH_CALL not in text and RUN_CALL not in text
+        assert ITEMS_NAME in text and GET_NAME in text and ASK_NAME not in text
+        assert MATCH_CALL not in text and RUN_CALL not in text
     else:
         assert MATCH_CALL in text and RUN_CALL in text
     assert re.search(r"\bmemory\b`?[^.\n]*\balready\b|\balready\b[^.\n]*`memory`", text), text

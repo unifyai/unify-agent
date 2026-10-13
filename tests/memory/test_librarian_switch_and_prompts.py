@@ -149,8 +149,7 @@ def test_off_the_actor_section_is_the_inline_index_as_before(tmp_path, monkeypat
     _set(monkeypatch, SWITCH, "off")
     _, co = _export(tmp_path, "lib", FILES)
     text = prompt.render_memory_library_mode(co, actor_index="inline")[0]
-    # the guide names the same calls (asking what applies is how an item is found), but no librarian answers
-    assert library_prompts.LIBRARIAN_POINTER not in text and "librarian" not in text
+    assert "memory.ask" not in text
     assert text.startswith(library_prompts.GUIDE_LIBRARY_IN_CODE)
     assert "total_amount" in text  # the index view is still there
 

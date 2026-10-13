@@ -464,16 +464,21 @@ def test_the_guides_nudge_to_match_and_try_first_and_never_mention_examples():
     assert "already available in your cells as `memory`, no import needed" in lp.GUIDE_POINTER_IN_CODE
 
 
-def test_the_in_code_guides_say_when_to_ask_open_and_call_and_name_no_arguments():
-    """With tools in code the guides orchestrate: ask what applies before working a step out, open what you will use,
-    call it. They name the library's calls with no arguments, id form or result shape (each call's help has those)."""
+def test_the_in_code_guides_say_when_to_look_open_and_call_and_name_no_arguments():
+    """With tools in code the guides orchestrate: look for what applies before working a step out (with the librarian
+    on, ask it), open what you will use, call it. They name the library's calls with no arguments, id form or result
+    shape (each call's help has those); ``memory.ask`` is the librarian, so only its guide names it."""
     texts = {
         "guide in code": lp.GUIDE_LIBRARY_IN_CODE,
         "pointer in code": lp.GUIDE_POINTER_IN_CODE,
         "librarian": lp.GUIDE_LIBRARIAN,
     }
+    assert lp.LOOK_LINE_IN_CODE in texts["guide in code"]
+    assert lp.LOOK_LINE_POINTER_IN_CODE in texts["pointer in code"]
     for name, text in texts.items():
-        assert lp.ASK_LINE_IN_CODE in text and lp.USE_LINE_IN_CODE in text, name
+        assert (lp.ASK_LINE_IN_CODE in text) is (name == "librarian"), name
+        assert ("memory.ask" in text) is (name == "librarian"), name
+        assert lp.USE_LINE_IN_CODE in text, name
         assert "Trying a fitting item costs one call, and working it out again usually costs many." in text, name
         assert "`memory.items`" in text and lp.MEMORY_HELP_LINE in text, name
         assert not re.search(r"\b(?:memory|env)\.[a-z_]+\(", text), name

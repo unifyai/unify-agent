@@ -1,8 +1,9 @@
 """Symbolic: with tools called from code, a role's prompt orchestrates and the library's calls describe themselves.
 
 A prompt says when to use which call and how to combine them, and names each call without its arguments
-(``memory.ask``, ``memory.items``, ``memory.get``). Signatures, argument forms, item id formats, result shapes and
-error mechanics live in each call's help (``help(memory)``, ``help(env.get)``), never in a prompt. This test renders
+(``memory.items``, ``memory.get``, and ``memory.ask`` where the librarian answers it). Signatures, argument forms,
+item id formats, result shapes and error mechanics live in each call's help (``help(memory)``), never in a prompt.
+This test renders
 every role's in-code prompt from the role's own builders (the actor, a teammate, the writer, the curator, a helper,
 the librarian, and the episode-end fork) and fails on any of:
 
@@ -238,6 +239,25 @@ def test_the_library_memory_texts_name_only_the_librarys_calls(in_code):
         assert lp.MEMORY_HELP_LINE in texts[name], name
     for agent in ("writer", "curator", "librarian"):
         assert lp.MEMORY_HELP_LINE in agent_profiles._LIBRARY_LINE[agent], agent
+
+
+@pytest.mark.parametrize("librarian", [False, True], ids=["librarian off", "librarian on"])
+def test_memory_ask_is_named_only_where_the_librarian_answers_it(in_code, tmp_path, librarian):
+    """``memory.ask`` is the librarian: the actor's section names it only with the librarian on, in either index
+    form; both switch states name ``memory.items`` and ``memory.get`` and show no call's mechanics."""
+    from unify.memory import library_index as li
+    from unify.memory.integration.prompt import render_memory_library_mode
+
+    copy = tmp_path / "copy"
+    copy.mkdir()
+    (copy / "INDEX.md").write_text(li.INDEX_HEAD + _SECTION)
+    for form in ("inline", "pointer"):
+        text = render_memory_library_mode(copy, budget_tokens=1, actor_index=form, librarian=librarian)[0]
+        assert text, form
+        assert ("`memory.ask`" in text) is librarian, form
+        assert "`memory.items`" in text and "`memory.get`" in text, form
+        assert ("memory.text" in text) is (form == "inline" and not librarian), form  # the index view's heading
+        assert hits("actor", text) == [], (form, hits("actor", text))
 
 
 def test_the_tools_off_texts_are_unchanged(monkeypatch):
