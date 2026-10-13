@@ -296,3 +296,38 @@ def test_a_plain_list_tuple_or_dict_is_subscripted():
         assert worker._resolve(shadow, {"root": "apis", "path": path})("x") == (
             "shown x"
         )
+
+
+# ── an environment global wrapped for its observers ─────────────────────────
+
+
+def _observed(value):
+    from unify.function_manager.primitives.observers import observed_globals
+
+    return observed_globals({"apis": value}, enabled=True)["apis"]
+
+
+def test_a_wrapped_object_is_subscripted_as_the_object_it_wraps():
+    worker, shadow = _harness()
+    shadow["apis"] = _observed(_Apps())
+    show = worker._resolve(
+        shadow,
+        {"root": "apis", "path": [{"item": "music"}, "show"]},
+    )
+    assert show("song") == "shown song"
+    recorder = _Recorder()
+    shadow["apis"] = _observed(recorder)
+    with pytest.raises(BoundaryRefusal, match="boundary_subscript = True"):
+        worker._resolve(shadow, {"root": "apis", "path": [{"item": "music"}]})
+    assert recorder.calls == []
+
+
+def test_a_module_or_the_environment_behind_a_wrapped_object_is_refused():
+    worker, shadow = _harness()
+    shadow["apis"] = _observed(_Apps())
+    for element in ("env", {"item": "env"}):
+        with pytest.raises(BoundaryRefusal, match="harness's environment"):
+            worker._resolve(shadow, {"root": "apis", "path": [element]})
+    for element in ("os", {"item": "os"}):
+        with pytest.raises(BoundaryRefusal, match="harness module"):
+            worker._resolve(shadow, {"root": "apis", "path": [element]})

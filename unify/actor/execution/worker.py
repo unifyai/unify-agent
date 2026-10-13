@@ -180,8 +180,12 @@ def _refuse_unreachable(obj: Any, label: str) -> None:
     """Modules and the environment never cross, whatever holds them.
 
     Without this, any exposed object with a module among its public attributes
-    (``unillm.os``) would hand the worker ``os.environ.get``.
+    (``unillm.os``) would hand the worker ``os.environ.get``. An object
+    wrapped for an environment's observers is judged by what it wraps.
     """
+    from unify.function_manager.primitives.observers import proxy_target
+
+    obj = proxy_target(obj)
     if isinstance(obj, types.ModuleType):
         raise BoundaryRefusal(
             f"{label} is a harness module ({obj.__name__}); harness modules do not "
@@ -202,9 +206,14 @@ def _subscriptable(obj: Any) -> bool:
     safe to reach from a cell as its public attributes, with the class
     attribute ``boundary_subscript = True``. Checked before ``obj[key]`` runs.
     """
-    if type(obj) in (list, tuple, dict):
+    from unify.function_manager.primitives.observers import proxy_target
+
+    # An environment global wrapped for its observers forwards obj[key] to
+    # the object it wraps, so that object's class is the one that decides.
+    target = proxy_target(obj)
+    if type(target) in (list, tuple, dict):
         return True
-    return getattr(type(obj), "boundary_subscript", False) is True
+    return getattr(type(target), "boundary_subscript", False) is True
 
 
 def _model_written(value: Any) -> bool:
