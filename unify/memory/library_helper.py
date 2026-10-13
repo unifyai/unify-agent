@@ -8,11 +8,12 @@
 An :class:`Item` is a frozen record of one function or note: ``id``, ``kind``, ``summary``, ``applies``,
 ``evidence``, ``status``, ``example``, ``text``, ``links``, ``history`` (and ``reason``, from ``ask``).
 ``print(item)`` shows its card; ``item.fits(inputs)`` is its own applicability check (a :class:`Fit`); a function
-item is called directly, ``item(*args)``, and the call is tracked; calling a note raises an error that says what to
-do instead. Every call checks its arguments' types first, and every error names the call as written, what was
-expected with an example call, and the nearest valid targets or the right call. The whole typed contract is
-``memory/__init__.pyi`` beside this file; ``help(memory)`` shows the same calls and types. Library functions also
-import as ordinary modules: ``from memory.text.dates import parse_date``.
+item is called directly, ``item(*args)``: the call is tracked, and what the function raises reaches the caller
+unchanged; calling a note raises an error that says what to do instead. Every call checks its arguments' types
+first, and every error of the package's own names the call as written, what was expected with an example call,
+and the nearest valid targets or the right call. The whole typed contract is ``memory/__init__.pyi`` beside this
+file; ``help(memory)`` shows the same calls and types. Library functions also import as ordinary modules:
+``from memory.text.dates import parse_date``.
 
 For one build the earlier calls stay as aliases that work and print one line naming the new call:
 ``index`` (now ``items``), ``show`` (now ``get``), ``find`` and ``match`` (now ``Item.fits``, and ``ask``) and
@@ -807,8 +808,8 @@ class RunReport:
         self.agreement_note: str = kw.get("agreement_note", "")
         # the value a captured procedure read from the text it was given (JSON, not too large), for agreement
         self._read_value: Any = kw.get("read_value", _NO_VALUE)
-        # the exception a library function raised in this process (None otherwise): an item call chains its error
-        # from it, so its traceback shows the function's own frames
+        # the exception a library function raised in this process (None otherwise): an item call re-raises it, the
+        # same object with its traceback, as a direct call would
         self._raised: BaseException | None = kw.get("raised")
 
     def __repr__(self) -> str:
@@ -1428,9 +1429,9 @@ class Item:
         history: the library commits that changed it, newest first.
         reason: why ``memory.ask`` judged it applicable ('' from ``memory.get`` and ``memory.items``).
 
-    A function item is called directly, ``item(*args, **kwargs)``: the call is tracked and returns what the
-    function returned. ``item.fits(inputs)`` checks whether it applies to data you were given. Calling a note
-    raises an error that says to read it instead.
+    A function item is called directly, ``item(*args, **kwargs)``: the call is tracked, returns what the function
+    returned and raises what it raised. ``item.fits(inputs)`` checks whether it applies to data you were given.
+    Calling a note raises an error that says to read it instead.
     """
 
     id: str
@@ -1476,9 +1477,10 @@ class Item:
 
     @checked(name="Item.__call__")
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        """Call a function item on *args* and *kwargs*. The call is tracked: a library function runs in this cell, as
-        an import would call it; a captured procedure runs in a separate confined process and takes text or JSON
-        values.
+        """Call a function item on *args* and *kwargs*, as calling the function directly would. The call is tracked:
+        a library function runs in this cell, as an import would call it, and what it raises reaches you unchanged
+        (its refusal is its own ``MemoryInputError``); a captured procedure runs in a separate confined process and
+        takes text or JSON values.
 
         Args:
             args: the function's own positional arguments.
@@ -1488,8 +1490,9 @@ class Item:
             What the function returned.
 
         Raises:
-            ArgumentError: the function refused the input or did not return; the error says why and how to see
-                what it takes.
+            Exception: whatever a library function raised, the same exception with its traceback.
+            ArgumentError: a captured procedure refused the input or did not return; the error says why.
+            NotFound: the function could not be loaded from this copy of the library.
             WrongCall: the item is a note, which is read, not called.
 
         Example:
@@ -1498,15 +1501,24 @@ class Item:
         report = _RUN_TARGET(self.id, *args, **kwargs)
         if report.outcome == "returned":
             return report.result
-        what = "refused this input" if report.outcome == "refused" else "did not return"
-        detail = f"{report.error}: {report.detail}" if report.detail else report.error
-        raise ArgumentError(
-            call_text(f"memory.get({self.id!r})", args, kwargs),
-            f"it {what} ({detail.rstrip('.')}).",
-            expected="an input it was built for",
-            example=self.example or None,
-            hint=f"Its card shows what it takes: print(memory.get({self.id!r})).",
-        ) from report._raised
+        if report._raised is not None:
+            raise report._raised  # the function's own exception, as a direct call raises it
+        call = call_text(f"memory.get({self.id!r})", args, kwargs)
+        detail = (f"{report.error}: {report.detail}" if report.detail else report.error).rstrip(".")
+        if self.id.startswith(CAPTURE_PREFIX):
+            what = "refused this input" if report.outcome == "refused" else "did not return"
+            raise ArgumentError(
+                call,
+                f"it {what} ({detail}).",
+                expected="text or a JSON value like the input it was recorded on",
+                example=f"memory.get({self.id!r})(text)",
+                hint=f"Its card shows what it was built for: print(memory.get({self.id!r})).",
+            )
+        raise NotFound(
+            call,
+            f"it could not be called ({detail}).",
+            hint=f"Its card shows its source: print(memory.get({self.id!r})).",
+        )
 
 
 def _plain_card(item: Item) -> str:

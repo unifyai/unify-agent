@@ -96,9 +96,10 @@ def err(fn, *a, **k):
 '''
 
 
-def _library(tmp_path: Path, **kw) -> Path:
+def _library(tmp_path: Path, extra: dict | None = None, **kw) -> Path:
+    """The fixture library (:data:`LIB`, with *extra* files) and its generated files, as an export writes them."""
     root = tmp_path / "lib"
-    for rel, text in LIB.items():
+    for rel, text in {**LIB, **(extra or {})}.items():
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_text(text)
     write_files(root, lx.generated_library_mode(root, **kw))
@@ -413,30 +414,91 @@ def test_calling_a_function_item_is_tracked_as_run_is(tmp_path):
     ]
 
 
-def test_a_refused_call_raises_from_the_items_own_error_and_counts_as_run_did(tmp_path):
+#: A cell's code that calls *call*, catches what it raises and prints its type, text, the file and function of its
+#: innermost frame, the classes it derives from, whether it was raised alone (not chained), and the call's events.
+RAISED = (
+    "start = len(seen)\n"
+    "try:\n"
+    "    {call}\n"
+    "except Exception as exc:\n"
+    "    tb = exc.__traceback__\n"
+    "    while tb.tb_next is not None:\n"
+    "        tb = tb.tb_next\n"
+    "    caught = [type(exc).__name__, str(exc), tb.tb_frame.f_code.co_filename.rsplit('/', 1)[-1],\n"
+    "              tb.tb_frame.f_code.co_name, [c.__name__ for c in type(exc).__mro__],\n"
+    "              exc.__cause__ is None and exc.__context__ is None]\n"
+    "print(json.dumps([*caught, seen[start:]]))\n"
+)
+
+
+def test_a_refusal_reaches_the_caller_as_the_functions_own_error(tmp_path):
+    """A direct call's refusal is the function's own ``MemoryInputError``: the same exception, raised in the stored
+    function's frame, unwrapped; the tracked call's events are as ``run``'s."""
     root = _library(tmp_path)
-    kind, text, cause, events = _json(
+    kind, text, where, function, bases, alone, events = _json(
         root,
-        EVENTS
-        + f"paint = memory.get({PAINT!r})\n"
-        "start = len(seen)\n"
-        "try:\n"
-        "    paint('not a grid')\n"
-        "except Exception as exc:\n"
-        "    caught = [type(exc).__name__, str(exc), type(exc.__cause__).__name__]\n"
-        "print(json.dumps([*caught, seen[start:]]))\n",
+        EVENTS + f"paint = memory.get({PAINT!r})\n" + RAISED.format(call="paint('not a grid')"),
     )
-    assert kind == "ArgumentError" and cause == "MemoryInputError"
-    assert text == (
-        f"memory.get({PAINT!r})('not a grid'): it refused this input (MemoryInputError: expected a grid: a list "
-        "of rows).\n"
-        "Expected an input it was built for.\n"
-        f"Its card shows what it takes: print(memory.get({PAINT!r}))."
-    )
-    # the item's own refusal is its memory.call; the tracked call itself went as run's does
+    assert (kind, text) == ("MemoryInputError", "expected a grid: a list of rows")
+    assert (where, function) == ("stencil.py", "paint") and "ValueError" in bases and alone is True
+    assert "ContractError" not in bases
     assert _events(events, "memory.call", "memory.run_result", "memory.helper_call") == [
         ("memory.call", PAINT, "refused"),
         ("memory.run_result", PAINT, "refused"),
+        ("memory.helper_call", "memory:run", "ok"),
+    ]
+
+
+LOOKUP = '''"""Looking values up."""
+
+
+def cell(rows, key):
+    """The row stored under key."""
+    return rows[key]
+'''
+CELL = "memory.grid.lookup:cell"
+
+
+def test_a_functions_own_error_reaches_the_caller_unchanged(tmp_path):
+    """A ``KeyError`` inside a stored function is that function's error, not a bad argument: it propagates as a
+    direct call raises it, from the function's own frame, and counts as the item's error."""
+    root = _library(tmp_path, {"memory/grid/lookup.py": LOOKUP})
+    kind, text, where, function, bases, alone, events = _json(
+        root,
+        EVENTS + f"cell = memory.get({CELL!r})\n" + RAISED.format(call="cell({}, 'row-9')"),
+    )
+    assert (kind, text) == ("KeyError", "'row-9'")
+    assert (where, function) == ("lookup.py", "cell") and "ContractError" not in bases and alone is True
+    assert _events(events, "memory.call", "memory.run_result", "memory.helper_call") == [
+        ("memory.call", CELL, "error"),
+        ("memory.run_result", CELL, "error"),
+        ("memory.helper_call", "memory:run", "ok"),
+    ]
+
+
+def test_a_captured_procedures_failure_carries_its_detail_and_the_four_parts(tmp_path):
+    """A captured procedure runs in a separate process, so no exception object comes back: its failure is one error
+    that says what it did, what it takes with an example call, and where to see what it was built for."""
+    root = _library(tmp_path)
+    capture = "capture:" + "e" * 16
+    d = root / ".memory" / "captures" / ("e" * 16)
+    d.mkdir(parents=True)
+    (d / "procedure.py").write_text("def run(value):\n    raise ValueError('no rows')\n")
+    (d / "signature.json").write_text(json.dumps({"input": {}, "relations": [], "constraints": {}}))
+    (d / "record.json").write_text(json.dumps({"level": "unchecked", "status": "on-trial", "outcome": "none"}))
+    kind, text, _, _, bases, alone, events = _json(
+        root,
+        EVENTS + f"procedure = memory.get({capture!r})\n" + RAISED.format(call="procedure('x')"),
+    )
+    assert kind == "ArgumentError" and "TypeError" in bases and alone is True
+    assert text == (
+        f"memory.get({capture!r})('x'): it did not return (ValueError: no rows).\n"
+        f"Expected text or a JSON value like the input it was recorded on, e.g. memory.get({capture!r})(text).\n"
+        f"Its card shows what it was built for: print(memory.get({capture!r}))."
+    )
+    assert _events(events, "memory.call", "memory.run_result", "memory.helper_call") == [
+        ("memory.call", capture, "error"),
+        ("memory.run_result", capture, "error"),
         ("memory.helper_call", "memory:run", "ok"),
     ]
 
