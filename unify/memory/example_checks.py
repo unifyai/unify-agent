@@ -386,10 +386,13 @@ class ExampleChecks:
         )
         for n in notes:
             run.note(n)
-        # the stored readers whose parsed fixtures its tests opened (the item record's ``reader``)
+        # the stored readers whose parsed fixtures its tests opened (the item record's ``reader``); a reader's own test
+        # opens the fixture it produced, and a function is never its own reader
         from .fixtures import readers_of
 
-        readers = sorted({r for c in calls for p in c.opened if p in ledger for r in readers_of(ledger[p])})
+        readers = sorted(
+            {r for c in calls for p in c.opened if p in ledger for r in readers_of(ledger[p]) if r != item},
+        )
         if readers:
             rec["readers"] = readers
         # stage 5 draws recorded inputs of the input fixtures' families (qa)
