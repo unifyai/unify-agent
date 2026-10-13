@@ -7,8 +7,8 @@ switch, the limit ends only the request: the reply says so and quotes the
 latest text drafted for the request, a pending call is cancelled and answered
 as such, and the next request is counted from its own message. The limit
 itself is unchanged. A loop that is not persistent still ends at the limit,
-its notice followed by the draft. The transport is scripted, so nothing
-leaves the process.
+its notice followed by the draft. ``draft`` is the default since 13 October
+2026. The transport is scripted, so nothing leaves the process.
 """
 
 from __future__ import annotations
@@ -83,6 +83,40 @@ def _assert_every_call_answered(messages: list) -> None:
     for message in messages:
         for call in message.get("tool_calls") or []:
             assert call["id"] in answered, call
+
+
+def test_the_default_is_draft():
+    from unify.settings import ProductionSettings
+
+    assert ProductionSettings.model_fields["UNIFY_STEP_CAP_REPLY"].default == "draft"
+
+
+@pytest.mark.asyncio
+async def test_by_default_the_limit_ends_the_request_and_the_next_one_is_answered(monkeypatch):
+    """With the setting at its default, a persistent loop answers the request after the one the limit ended."""
+    from unify.settings import ProductionSettings
+
+    monkeypatch.setattr(
+        SETTINGS,
+        "UNIFY_STEP_CAP_REPLY",
+        ProductionSettings.model_fields["UNIFY_STEP_CAP_REPLY"].default,
+    )
+    model = _Model()
+    with h.scripted(()):
+        import unillm.clients.uni_llm as uni_llm
+
+        uni_llm._acompletion_with_transient_retry = model
+        handle = _start({"look": look}, persist=True)
+        capped = (await h._next_response(handle))["content"]
+        await handle.submit(CONTINUE)
+        answered = (await h._next_response(handle))["content"]
+        assert not handle.done()
+        await handle.stop()
+        await asyncio.wait_for(handle.result(), 20)
+
+    assert capped.startswith(f"🔚 Stopped at the step limit: max_steps ({MAX_STEPS}) exceeded")
+    assert capped.endswith(f"Best current answer:\n{DRAFT}")
+    assert answered == FINAL
 
 
 @pytest.mark.asyncio
