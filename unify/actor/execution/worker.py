@@ -220,7 +220,7 @@ def _credential_inside(value: Any) -> Optional[str]:
     """What in a value about to cross by value looks like a credential, or None.
 
     Walks nested lists, tuples, sets and dicts (each container once in each
-    context). A text leaf (``str``, or ``bytes`` read as latin-1) anywhere,
+    context). A text leaf (``str``, or ``bytes``/``bytearray`` read as latin-1) anywhere,
     key or value, is a credential when it is key-shaped or a URL with a
     password (:func:`unify.sandbox._looks_like_key`). Everything under a
     credential-named dict key (:func:`unify.sandbox._is_secret_env`, the
@@ -233,8 +233,8 @@ def _credential_inside(value: Any) -> Optional[str]:
     seen: set = set()
     while stack:
         item, secret = stack.pop()
-        if isinstance(item, (str, bytes)):
-            text = item.decode("latin-1") if isinstance(item, bytes) else item
+        if isinstance(item, (str, bytes, bytearray)):
+            text = item if isinstance(item, str) else bytes(item).decode("latin-1")
             if secret is not None and len(text) > 0:
                 return f"the key {secret!r}"
             if sandbox._looks_like_key(text):

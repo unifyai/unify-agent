@@ -317,6 +317,8 @@ KEY_SHAPED = "sk-or-v1-planted-readable-test-value"  # pragma: allowlist secret
         ({"password": ["planted-word"]}, "planted-word"),
         ({"api_key": {"value": "planted-word"}}, "planted-word"),
         ({"auth": [b"planted-word"]}, "planted-word"),
+        ({"auth": [bytearray(b"planted-word")]}, "planted-word"),
+        ({"x": bytearray(KEY_SHAPED.encode())}, KEY_SHAPED),
         ({"keys": ["planted-word"]}, "planted-word"),
         # a key-shaped bytes leaf anywhere
         ({"x": KEY_SHAPED.encode()}, KEY_SHAPED),
