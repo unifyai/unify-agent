@@ -76,13 +76,13 @@ def test_a_name_that_is_neither_lists_the_sections(tmp_path):
     assert nope == [
         "missing",
         "memory: no index section 'memory.nope' or 'notes/nope'; the sections are: "
-        "memory.grid, memory.text, notes/grid, notes/maps",
+        'memory.grid, memory.text, notes/grid, notes/maps; memory.show("<id>") shows one item',
     ]
     # a prefixed name means only that section
     assert prefixed == [
         "missing",
         "memory: no index section 'memory.nope'; the sections are: "
-        "memory.grid, memory.text, notes/grid, notes/maps",
+        'memory.grid, memory.text, notes/grid, notes/maps; memory.show("<id>") shows one item',
     ]
     with pytest.raises(LookupError, match="no index section 'notes/nope';"):
         find_section(INDEX, "notes/nope")
@@ -93,7 +93,8 @@ def test_an_empty_library_has_no_sections(tmp_path):
     assert whole == ["ok", HEAD]
     assert grid == [
         "missing",
-        "memory: no index section 'memory.grid' or 'notes/grid'; the sections are: (none)",
+        "memory: no index section 'memory.grid' or 'notes/grid'; the sections are: (none); "
+        'memory.show("<id>") shows one item',
     ]
 
 

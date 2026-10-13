@@ -137,7 +137,10 @@ def find_section(text: str, name: object) -> str:
                 return f"## {heading}\n{body}"
     keys = ", ".join(section_key(h) for h, _ in sections) or "(none)"
     tried = " or ".join(repr(k) for k in wanted)
-    raise LookupError(f"memory: no index section {tried}; the sections are: {keys}")
+    raise LookupError(
+        f"memory: no index section {tried}; the sections are: {keys}; "
+        'memory.show("<id>") shows one item',
+    )
 
 
 def item_count(body: str) -> int:
