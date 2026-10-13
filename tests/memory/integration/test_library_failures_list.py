@@ -46,6 +46,7 @@ def use_record(run: Any, *, library_mode: bool = True) -> dict:
         runtime_calls=run.runtime_calls,
         cell_errors=dict(run.cell_errors),
         library_mode=library_mode,
+        failures=run.failures,
     )
 
 

@@ -43,9 +43,14 @@ def call_failed_class() -> type:
     return getattr(cell_models, CALL_FAILED_NAME)
 
 
-def expected_args(status: int, type_name: str) -> tuple:
-    """``ModelCallFailed(<status>, <exception type>)``: its args are the status and the exception's type name."""
-    return (status, type_name)
+def call_failed_fields(exc: BaseException) -> tuple:
+    """The status and the provider exception's type name a ``ModelCallFailed`` carries (``status``, ``kind``)."""
+    return (exc.status, exc.kind)
+
+
+def call_failed_text(status: int, type_name: str) -> str:
+    """The part of the fixed message that names the status and the type, which is all a cell sees."""
+    return f"(status {status}, {type_name})"
 
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -160,7 +165,7 @@ async def test_a_cells_query_llm_raises_model_call_failed_with_fixed_text(sessio
             await cell_models.cell_query_llm("Say ok.")
     exc = info.value
     assert type(exc).__name__ == CALL_FAILED_NAME
-    assert exc.args == expected_args(status, type_name)
+    assert call_failed_fields(exc) == (status, type_name)
     assert not isinstance(exc, cell_models.ModelRequestError)
     # nothing chained, no body: raised apart from the provider's exception
     assert exc.__cause__ is None and exc.__context__ is None
@@ -200,7 +205,7 @@ async def test_a_cells_unillm_client_raises_it_too(session, make, status, type_n
         client = cell_models.cell_unillm.AsyncUnify(LUNA)
         with pytest.raises(failed) as info:
             await client.generate(user_message="Say ok.")
-    assert info.value.args == expected_args(status, type_name)
+    assert call_failed_fields(info.value) == (status, type_name)
     assert info.value.__cause__ is None and info.value.__context__ is None
     _assert_clean(str(info.value))
 
@@ -287,7 +292,7 @@ CAUGHT = (
     "        await query_llm('Say ok.')\n"
     "        print('NO ERROR')\n"
     f"    except {CALL_FAILED_NAME} as exc:\n"
-    "        print('CAUGHT', type(exc).__name__, exc.args[0], exc.args[1], isinstance(exc, ModelRequestError))\n"
+    "        print('CAUGHT', type(exc).__name__, str(exc), isinstance(exc, ModelRequestError))\n"
     "print('AFTER')\n"
 )
 UNCAUGHT = "await query_llm('Say ok.')\n"
@@ -314,7 +319,8 @@ async def test_in_a_cell_it_is_caught_by_name_and_nothing_planted_reaches_the_tr
     after_caught = _tool_results(model.calls[5])
     for status, type_name in [(400, "BadRequestError"), (400, "BadRequestError"), (429, "RateLimitError"),
                               (500, "InternalServerError")]:
-        assert f"CAUGHT {CALL_FAILED_NAME} {status} {type_name} False" in after_caught, after_caught[-2000:]
+        caught = [l for l in after_caught.splitlines() if l.startswith(f"CAUGHT {CALL_FAILED_NAME} ")]
+        assert any(call_failed_text(status, type_name) in l and l.endswith(" False") for l in caught), after_caught[-2000:]
     assert "AFTER" in after_caught and "NO ERROR" not in after_caught
     # uncaught, it is the cell's error by name; the next cell runs
     shown = _tool_results(model.calls[-1])
@@ -376,5 +382,5 @@ async def test_a_cell_gets_model_call_failed_for_it(session, word, where):
             with pytest.raises(call_failed_class()) as info:
                 await cell_models.cell_query_llm("Say ok.")
     assert not isinstance(info.value, cell_models.ModelRequestError)
-    assert info.value.args == expected_args(400, "BadRequestError")
+    assert call_failed_fields(info.value) == (400, "BadRequestError")
     assert count.n == 0
