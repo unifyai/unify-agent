@@ -808,7 +808,9 @@ class InterpreterSession:
         return await asyncio.to_thread(alone) if alone is not None else None
 
     def box_alive(self) -> bool:
-        interp = self.interp
+        """Whether the interpreter's box is alive: the running one's, or, after :meth:`close`, the one it stopped (so
+        a box that survived its stop is seen by the check that keeps the gate from judging /memory)."""
+        interp = self.interp if self.interp is not None else getattr(self, "_stopped", None)
         alive = getattr(interp, "box_alive", None)
         return bool(alive()) if alive is not None else False
 
@@ -870,6 +872,8 @@ class InterpreterSession:
         try:
             interp, self.interp = self.interp, None
             if interp is not None:
+                # kept so box_alive() reads the stopped box's own liveness after the stop
+                self._stopped = interp
                 await interp.stop()
             if self.channel is not None and not self.channel.closed:
                 await self.channel.close("ended")

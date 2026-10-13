@@ -5383,8 +5383,13 @@ class WriterPass:
                 # no box can write /memory and no tool handler of the pass may run while the gate judges it (tools
                 # in code on or off)
                 live = session if ic is not None else cell_session
-                await live.close()
-                alive = live.box_alive()
+                try:
+                    await live.close()
+                except Exception:  # noqa: BLE001 - a stop that failed is a box that may still run: fail closed
+                    logging.getLogger(__name__).warning("the pass's interpreter did not stop cleanly", exc_info=True)
+                    alive = True
+                else:
+                    alive = live.box_alive()
                 idle = not alive and (ic is None or await ic.threads.wait_idle(self.in_code_idle_s))
                 self._handlers_at_gate = ic.threads.running() if ic is not None else 0
                 if not idle:
