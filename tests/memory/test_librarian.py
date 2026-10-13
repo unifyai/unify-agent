@@ -436,6 +436,49 @@ def test_the_brief_is_complete_general_and_says_nothing_of_ids_answers_or_exampl
     assert system.index(opening) == 0 and system.index(brief) < system.index("CATALOGUE")
 
 
+def test_the_first_user_message_line_counts_the_copy_and_is_absent_for_an_empty_library(tmp_path, monkeypatch):
+    """The actor's first user message of a request opens with how many functions and notes its library copy holds
+    (as ``memory.items()`` lists them: the retired are left out), with the library bound in its cells and the
+    librarian on; never for an empty library, a teammate, or with the librarian off."""
+    from types import SimpleNamespace
+
+    from unify.memory.integration import hooks
+    from unify.memory.integration import request as request_mod
+
+    def copy_with(name: str, items: dict) -> Path:
+        root = tmp_path / name
+        (root / "memory").mkdir(parents=True)
+        (root / "memory" / "__init__.py").write_text("")
+        (root / ".memory").mkdir()
+        (root / ".memory" / "items.json").write_text(json.dumps({"items": items}))
+        return root
+
+    def line_for(copy: Path, **kw) -> str | None:
+        monkeypatch.setattr(request_mod, "_CURRENT", SimpleNamespace(paths=SimpleNamespace(checkout=copy),
+                                                                      library_mode=True))
+        return hooks.library_line(**kw)
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "on")
+    tail = "; memory.ask() shows the ones that apply, memory.items() lists them all."
+    assert line_for(_copy(tmp_path)) == "Your memory library holds 4 functions and 1 note" + tail
+    one = copy_with("one", {
+        "memory.a.b:c": {"kind": "function"},
+        "memory.a.b:d": {"kind": "function", "status": "retired"},
+        "notes/a/x.md": {"kind": "note"},
+        "notes/a/y.md": {"kind": "note", "status": "deprecated"},
+    })
+    assert line_for(one) == "Your memory library holds 1 function and 1 note" + tail
+    assert line_for(one, actor=False) is None
+    assert line_for(copy_with("empty", {})) is None
+    assert line_for(copy_with("retired", {"memory.a.b:c": {"kind": "function", "status": "retired"}})) is None
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "off")
+    assert line_for(one) is None
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "on")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")
+    assert line_for(one) is None
+
+
 def test_the_pointer_is_constant_across_libraries_and_replaces_the_index(tmp_path, monkeypatch):
     from unify.memory.integration.prompt import render_memory_library_mode
 

@@ -4223,9 +4223,10 @@ class CodeActActor(BaseCodeActActor):
 
         # UNIFY_LIBRARY_SNAPSHOT: the first user message says how large the
         # libraries are at task start.
-        # A memory run has no function or guidance store, so nothing to count.
+        # A memory run has no function or guidance store: with the librarian
+        # on, the line counts the actor's library copy instead (hooks.library_line).
         snapshot = (
-            None
+            _mv2.library_line(actor=_agents.name == _agents.pool.record.root)
             if _mv2.enabled()
             else _library_snapshot_line(
                 _library_counts(self.function_manager, self.guidance_manager),
