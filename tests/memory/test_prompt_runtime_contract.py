@@ -677,7 +677,10 @@ def _actor_turns(seen: list):
     state: dict = {"queue": None, "cells": [], "texts": [], "namespace": set(), "done": asyncio.Event()}
 
     def text_of(content) -> str:
-        return content if isinstance(content, str) else json.dumps(content)
+        """A message's text: a string as it is, a list of parts as their texts joined."""
+        if isinstance(content, list):
+            return "".join(str(p.get("text", "")) if isinstance(p, dict) else str(p) for p in content)
+        return "" if content is None else str(content)
 
     def turn(call):
         try:
