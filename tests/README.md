@@ -134,9 +134,9 @@ harness does with it. The guard in `tests/conftest.py` holds in every
 session, with or without a key loaded: unillm's provider calls
 (completion and embedding) fail with an error that says how to script
 the model, and a socket may connect only to this machine. A test that
-still carries `live_provider` or `requires_provider_key` fails. A test
-whose only subject was the quality of a live model's answers is not a
-test of this repository and is not kept.
+still carries `live_provider` or `requires_provider_key` fails. An eval
+whose subject is a live model's answers lives in `model_evals/`, run by
+hand with a key (`model_evals/README.md`); the suite never collects it.
 
 ### Running by Category
 

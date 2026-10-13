@@ -33,7 +33,8 @@ from unify.common._async_tool.context_compression import (
 #
 # The ``compress_messages`` tests check what the function does with the
 # compactor's edits, so the compactor is scripted (``scripted_model``): its
-# ``update`` calls are written in the test.
+# ``update`` calls are written in the test. Whether a real compactor chooses
+# good edits is what model_evals/eval_context_compression.py measures.
 with open(Path(__file__).parent / "cat.jpg", "rb") as _f:
     _CAT_IMG = base64.b64encode(_f.read()).decode("utf-8")
 
@@ -695,7 +696,7 @@ async def test_compress_preserves_image_placeholders(llm_config, scripted_model)
     edit, which is the right one here (only an open question about the picture
     keeps it live): the compactor is shown the image after its tag's label, and
     the tag left in its entry is reported as surviving. Whether a real compactor
-    makes that choice is the compactor model's, not this repository's.
+    makes that choice is the compactor model's (model_evals/eval_context_compression.py).
     """
     messages = [
         {
