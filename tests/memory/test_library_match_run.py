@@ -452,7 +452,9 @@ def test_the_guides_nudge_to_match_and_try_first_and_never_mention_examples():
         "pointer in code": lp.GUIDE_POINTER_IN_CODE,
     }
     for name, text in texts.items():
-        assert "At the start of a request, `memory.match(request, inputs)`" in text, name
+        assert "At the start of a request, `memory.match(request)`" in text, name
+        assert "pass any data you were given as `inputs=` too" in text, name
+        assert "memory.match(request, inputs)" not in text, name
         assert "`memory.run(\"<id>\", ...)`" in text, name
         assert "Trying a matching stored procedure costs one call, and rediscovering it usually costs many." in text
         assert "It compares structure only" in text and "it runs nothing" in text, name
@@ -460,7 +462,8 @@ def test_the_guides_nudge_to_match_and_try_first_and_never_mention_examples():
         assert lp.example_checks(text) == [] and lp.benchmark_words(text) == [], name
         assert "stored function" not in text.lower(), name
     for name in ("pointer", "pointer in code"):
-        assert "already bound as `memory` in every cell, so no import is needed" in texts[name]
+        assert lp.POINTER_BOUND in texts[name]
+        assert "already available in your cells as `memory`, no import needed" in texts[name]
 
 
 def test_the_pointer_section_is_the_same_bytes_as_the_library_grows(tmp_path, monkeypatch):

@@ -1,0 +1,76 @@
+# Reviewed spans the role prompts show that do not parse as Python (paths, item ids, labels, placeholders).
+# One <role><TAB><span> per line; other lines are ignored. Regenerate from the test's own listing when a prompt changes.
+actor	/memory-library
+actor	/workspace
+actor	await
+actor	e.g.
+actor	effect: read
+actor	effect: unknown
+actor	effect: write
+actor	evidence: <level>
+actor	evidence: confirmed-by-outcomes
+actor	evidence: reproduces-its-case
+actor	evidence: unchecked
+actor	examples from one episode
+actor	input:
+actor	memory.<package>.<module>:<name>(<parameters>)
+actor	memory.text.dates:parse_date
+actor	memory.text.dates:parse_date(s: str) -> str
+actor	memory.text.dates:week(s)
+actor	memory.text.parse:tokens(s)
+actor	memory.text.parse:words(s)
+actor	memory.text.report:summary(s)
+actor	memory.web.fetch:get(u)
+actor	notes/<topic>/<slug>.md
+actor	notes/text/dates.md
+actor	inputs=
+teammate	/memory-library
+teammate	/workspace
+teammate	await
+teammate	e.g.
+teammate	effect: read
+teammate	effect: unknown
+teammate	effect: write
+teammate	evidence: <level>
+teammate	evidence: confirmed-by-outcomes
+teammate	evidence: reproduces-its-case
+teammate	evidence: unchecked
+teammate	examples from one episode
+teammate	input:
+teammate	memory.<package>.<module>:<name>(<parameters>)
+teammate	memory.text.dates:parse_date
+teammate	memory.text.dates:parse_date(s: str) -> str
+teammate	memory.text.dates:week(s)
+teammate	memory.text.parse:tokens(s)
+teammate	memory.text.parse:words(s)
+teammate	memory.text.report:summary(s)
+teammate	memory.web.fetch:get(u)
+teammate	notes/<topic>/<slug>.md
+teammate	notes/text/dates.md
+teammate	inputs=
+writer	<episode>/<part>
+writer	Args:
+writer	Example:
+writer	Input:
+writer	Notes:
+writer	Raises:
+writer	Returns:
+writer	[shared:<id>]
+writer	memory.<package>.<module>:<name>
+writer	memory/
+writer	memory/<package>/<module>.py
+writer	memory/<package>/tests/data/
+writer	memory/<package>/tests/data/<module>.<function>.inputs.jsonl
+writer	memory/<package>/tests/test_<module>.py
+writer	memory/<package>/tests/test_<module>.py::test_<case>
+writer	notes/
+writer	notes/<topic>/<slug>.md
+writer	tests/
+curator	<episode>/<part>
+curator	Example:
+curator	memory/
+curator	notes/
+curator	tests/data/
+helper	<episode>/<part>
+helper	candidates/<name>.py
+helper	cases/<name>.json
