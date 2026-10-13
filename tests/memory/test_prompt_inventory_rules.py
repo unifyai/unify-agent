@@ -22,8 +22,9 @@ import pytest
 
 from unify.common import in_code_switch
 
-#: Tools every agent's ``tools`` module has besides its allow-list: listing, help and the shell.
-COMMON = frozenset({"list", "help", "sh"})
+#: Names every agent's ``tools`` module has besides its allow-list: listing, help, the shell, and the two exceptions a
+#: call raises (the shared opening that starts every brief names them).
+COMMON = frozenset({"list", "help", "sh", "Refused", "NotRun"})
 
 #: Each agent's in-code tools (the design's per-agent allow-lists); the writer's optional tools by the flag that
 #: offers them.

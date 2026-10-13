@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from tests.actor.code_act.core_world import core_world  # noqa: F401 (fixture)
-from tests.actor.code_act.sandbox_world import ENV_SECRET, needs_bwrap, world  # noqa: F401 (fixture)
+from tests.actor.code_act.sandbox_world import ENV_SECRET, TOKEN_VALUE, needs_bwrap, world  # noqa: F401 (fixture)
 from tests.scripted_model import ScriptedModel, reply, scripted
 from unify.actor import in_code_tools
 from unify.common import tool_registry as R
@@ -113,6 +113,35 @@ def _assert_one_tool(call) -> None:
     assert call.request["tools"] == R.json_tools("actor")
 
 
+OPENING_HEADING = "## How you work here"
+KEPT_SENTENCE = "keeps its variables between cells"
+
+
+def _system_texts(call) -> list[str]:
+    return [_text(m.get("content")) for m in call.messages if m.get("role") == "system"]
+
+
+def _assert_opening_first(call, session, world: dict) -> str:
+    """The request's system message starts with the agent's shared opening, then its own prompt; the opening holds
+    box paths only. Returns the system message."""
+    systems = _system_texts(call)
+    assert systems, "no system message"
+    system = systems[0]
+    opening = session.opening()
+    assert system.startswith(opening + "\n\n"), system[:600]
+    assert opening.startswith(OPENING_HEADING + "\n")
+    assert "`tools.list()` prints one line per tool you have" in opening
+    assert "\n".join(systems).count(OPENING_HEADING) == 1
+    names = R.tool_names_in(opening) - {"list", "help", "Refused", "NotRun"}
+    assert names <= set(session.allow), sorted(names - set(session.allow))
+    for value in (ENV_SECRET, TOKEN_VALUE, os.path.expanduser("~")):
+        assert value not in opening
+    for root in ("home", "state", "workspace"):
+        for path in {str(world[root]), os.path.realpath(world[root])}:
+            assert path not in opening, root
+    return system
+
+
 def _assert_ended(opened: list) -> None:
     assert opened
     for session in opened:
@@ -155,6 +184,10 @@ async def test_the_actor_calls_its_tools_from_cells_and_finishes_with_an_answer(
     (session,) = in_code["opened"]
     assert session.agent == "actor"
     assert "delegate" in session.allow and "ask" not in session.allow
+    # every request of the actor opens with the shared opening, the same bytes each time
+    system = _assert_opening_first(model.calls[0], session, in_code["world"])
+    assert KEPT_SENTENCE in session.opening()
+    assert all(_system_texts(c)[0] == system for c in model.calls)
     rows = _rows(session)
     cells = sorted((r for r in rows if r["tool"] == "execute_code"), key=lambda r: r["call"])
     calls = _channel_rows(rows)
@@ -232,6 +265,11 @@ async def test_a_teammate_gets_the_same_wiring_with_its_own_allow_list(in_code):
     by_agent = {s.agent: s for s in in_code["opened"]}
     assert set(by_agent) == {"actor", "teammate"}
     mate = by_agent["teammate"]
+    # the teammate's first request opens with its own opening (its allow-list, its end), the actor's with the actor's
+    mate_system = _assert_opening_first(model.of("helper")[0], mate, in_code["world"])
+    actor_system = _assert_opening_first(model.of("actor")[0], by_agent["actor"], in_code["world"])
+    assert mate.opening() != by_agent["actor"].opening()
+    assert "answers whoever started you" in mate_system and "answers whoever started you" not in actor_system
     assert mate.allow == R.allow_list("teammate", frozenset({"helper"}))
     assert "delegate" in mate.allow and "ask" in mate.allow  # any agent may start agents
     assert mate.state.spawner == by_agent["actor"].binding.name
@@ -256,6 +294,7 @@ async def test_off_the_actor_is_as_before(core_world, monkeypatch):  # noqa: F81
     result = await _act(model, "Sum 0..3.")
 
     assert result == "6" and collect.opened == []
+    assert not any(OPENING_HEADING in t for c in model.calls for t in _system_texts(c))
     (tool,) = model.calls[0].request["tools"]
     params = tool["function"]["parameters"]["properties"]
     assert "thought" in params and "code" in params
@@ -326,6 +365,49 @@ def _session(tmp_path, **kw):
         events_folder=tmp_path / "events",
         **kw,
     )
+
+
+@pytest.mark.asyncio
+async def test_the_default_cell_state_is_the_one_the_opening_states(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from unify.common import box_interpreter
+    from unify.settings import ProductionSettings
+
+    default = ProductionSettings.model_fields["UNIFY_CELL_STATE"].default
+    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", default)
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")
+    assert box_interpreter.cell_state() == "persistent" and box_interpreter.persistent()
+    planted = tmp_path / "planted-run-root"
+    monkeypatch.setenv("UNIFY_HOME", str(planted))
+    monkeypatch.setenv("PLANTED_VALUE_FOR_THE_OPENING_TEST", "planted-value-for-the-opening-test")
+    actor = _session(tmp_path)
+    mate = in_code_tools.InCodeTools(
+        agent="teammate",
+        name="mate",
+        record=SimpleNamespace(),
+        workspace_root=str(tmp_path),
+        shadow={},
+        cell_limit_s=30.0,
+        events_folder=tmp_path / "mate-events",
+    )
+    try:
+        for session in (actor, mate):
+            opening = session.opening()
+            assert opening.startswith(OPENING_HEADING + "\n") and KEPT_SENTENCE in opening
+            assert "fresh interpreter" not in opening
+            for value in (str(tmp_path), str(planted), "planted-value-for-the-opening-test"):
+                assert value not in opening
+            assert "/workspace" in opening
+            assert opening == session.opening()  # constant for the run: a stable prefix
+        assert "A cell runs for at most 30 s." in mate.opening()
+        assert "A cell runs for at most" not in actor.opening()  # no cell limit set
+        assert "The library is importable" not in actor.opening()
+        monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "fresh")
+        assert "each call runs a Python cell in a fresh interpreter" in actor.opening()
+    finally:
+        await actor.close(completed=True)
+        await mate.close(completed=True)
 
 
 @pytest.mark.asyncio
