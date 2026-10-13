@@ -318,17 +318,51 @@ def test_a_name_the_stub_lacks_names_the_nearest_and_where_to_look(stub):
         tools.reed("/inputs/a.md")
     text = str(err.value)
     assert text.startswith("tools.reed: tools has no attribute 'reed'") and "Nearest: read" in text, text
+    assert _names_in(text, _others("writer")) == set(), text
     assert "Refused" not in text, text
     assert teaches(text, "tools.reed", right_call="tools.list() lists yours.") == []
     assert not hasattr(tools, "finish_now") and not hasattr(tools, "_private") and not hasattr(tools, "__wrapped__")
 
 
-def test_a_tool_of_another_role_says_it_is_not_one_of_yours(stub):
-    with pytest.raises(AttributeError) as err:
-        stub("actor").finish("done")
-    text = str(err.value)
-    assert text.startswith("tools.finish: tools has no attribute 'finish': it is not one of your tools"), text
-    assert teaches(text, "tools.finish", right_call="tools.list() lists yours.") == []
+def _others(agent: str) -> set[str]:
+    """The registered tools *agent* does not have (``tools.<name>`` functions of other roles)."""
+    return set(R.registry()) - set(R.allow_list(agent, FULL)) - {R.EXECUTE}
+
+
+def _names_in(text: str, names: set[str]) -> set[str]:
+    return {n for n in names if re.search(rf"\b{re.escape(n)}\b", text)}
+
+
+def test_a_tool_of_another_role_is_unavailable_and_only_the_callers_tools_are_suggested(stub):
+    for agent, name in (("actor", "finish"), ("writer", "answer"), ("helper", "pool"), ("librarian", "read")):
+        tools = stub(agent)
+        assert name in _others(agent), (agent, name)
+        with pytest.raises(AttributeError) as err:
+            getattr(tools, name)
+        text = str(err.value)
+        assert text.startswith(f"tools.{name} isn't available in your role.\n"), text
+        assert teaches(text, f"tools.{name}", right_call="tools.list() lists yours.") == []
+        assert _names_in(text, _others(agent) - {name}) == set(), text
+
+
+def test_no_other_roles_tool_name_is_in_the_stubs_dir_or_its_digests(stub):
+    for agent in R.AGENTS:
+        tools, others = stub(agent), _others(agent)
+        assert others and not others & set(dir(tools)), agent
+        digests = tools._OTHER_ROLES
+        assert all(re.fullmatch(r"[0-9a-f]{16}", d) for d in digests) and not others & set(digests), agent
+        assert sorted(digests) == sorted(R.role_digest(n) for n in others), agent
+        assert all(tools._other_role(n) for n in others), agent
+        assert not any(tools._other_role(n) for n in (*R.allow_list(agent, FULL), "reed", R.EXECUTE)), agent
+
+
+def test_the_channel_says_another_roles_tool_is_unavailable_and_names_only_the_callers_tools():
+    allow = tuple(n for n in R.allow_list("actor", FULL) if R.registry()[n].kind != "local")
+    (got,) = _calls("actor", allow, [("finish", {"answer": "x"})])
+    text = str(got)
+    assert got.form == "unknown_tool" and text.startswith("refused: tools.finish isn't available in your role; "), text
+    assert text.endswith(f"your tools: {', '.join(allow)}"), text
+    assert _names_in(text, _others("actor") - {"finish"}) == set(), text
 
 
 def test_the_stub_keeps_its_signatures_help_and_errors_raised_inside_a_call(stub):
