@@ -54,6 +54,12 @@ MAX_STATUSES = 10_000
 #: The most distinct items a request's runtime call counts keep; calls of more are counted as dropped.
 MAX_RUNTIME_ITEMS = 2000
 RUNTIME_OUTCOMES = ("ok", "refused", "error")
+#: ``memory.match`` results and ``memory.run`` runs a request's evidence lists; past these they are counted only.
+MAX_MATCH_RESULTS = 200
+MAX_RUN_ROWS = 1000
+#: Programs that search files: a cell's process start naming one of them and a path in the library copy is a search.
+SEARCH_PROGRAMS = frozenset({"grep", "egrep", "fgrep", "rg", "ag", "ack"})
+_SPAWN_EVENTS = frozenset({"subprocess.Popen", "os.posix_spawn", "os.exec", "os.system"})
 #: The last line of a cell error that names the library's package as a missing name, or as a failed import.
 _NAME_ERROR = re.compile(r"NameError: name 'memory' is not defined")
 _IMPORT_ERROR = re.compile(
@@ -272,16 +278,21 @@ def runtime_calls_empty() -> dict:
         "malformed": 0,
         "helpers_failed": 0,
         "helpers": {},
+        "matches": [],
+        "runs": [],
+        "match_run_dropped": 0,
+        "file_lookups": {"reads": 0, "searches": 0},
     }
 
 
 #: The library package's own helpers whose calls the use record counts (``memory.helper_call`` audit events).
-LIBRARY_HELPERS = ("index", "show", "find")
+LIBRARY_HELPERS = ("index", "show", "find", "match", "run")
 
 
 def library_helper_calls(runtime: Any) -> dict:
     """The library-mode use record's ``library_helper_calls``: for each of the package's helpers
-    (``memory.index``, ``memory.show``, ``memory.find``), the calls the audit hook saw, by outcome
+    (``memory.index``, ``memory.show``, ``memory.find``, ``memory.match``, ``memory.run``), the calls the audit hook
+    saw, by outcome
     ({ok, refused, error}). Counts only; zeros when none was seen."""
     seen = runtime.get("helpers") if isinstance(runtime, dict) else None
     seen = seen if isinstance(seen, dict) else {}
@@ -291,6 +302,15 @@ def library_helper_calls(runtime: Any) -> dict:
         row = row if isinstance(row, dict) else {}
         out[name] = {k: _count(row.get(k)) for k in RUNTIME_OUTCOMES}
     return out
+
+
+def library_file_lookups_total(runtime: Any) -> dict:
+    """The library-mode use record's ``library_file_lookups``: ``{"reads": n, "searches": n}``, the request's file
+    reads and searches of the library copy that went around the package's helpers (:func:`library_file_lookups`).
+    Counts only; zeros when none was seen."""
+    seen = runtime.get("file_lookups") if isinstance(runtime, dict) else None
+    seen = seen if isinstance(seen, dict) else {}
+    return {k: _count(seen.get(k)) for k in ("reads", "searches")}
 
 
 def library_cell_error(error: Any) -> str | None:
@@ -328,17 +348,156 @@ def library_failures(runtime: Any, cell_errors: Any) -> dict:
     }
 
 
-def add_runtime_calls(acc: dict, drained: Any) -> None:
+def _under(path: Any, roots: tuple[str, ...]) -> bool:
+    return isinstance(path, str) and any(path == r or path.startswith(r + "/") for r in roots)
+
+
+def _read_mode(mode: Any) -> bool:
+    return isinstance(mode, str) and not any(c in mode for c in "wax+")
+
+
+def _argv_tokens(argv: Any) -> list[str]:
+    """A process start's words: each argument split as a shell would (a ``sh -c`` command, ``os.system``'s string)."""
+    import shlex
+
+    out: list[str] = []
+    for arg in argv if isinstance(argv, list) else []:
+        if not isinstance(arg, str):
+            continue
+        try:
+            out += shlex.split(arg)
+        except ValueError:
+            out += arg.split()
+    return out
+
+
+def _searches_library(argv: Any, roots: tuple[str, ...]) -> bool:
+    """Whether a process start runs a search program (:data:`SEARCH_PROGRAMS`, or ``git grep``) over a path in
+    the library copy."""
+    words = _argv_tokens(argv)
+    names = [os.path.basename(w) for w in words]
+    program = any(n in SEARCH_PROGRAMS for n in names) or any(
+        n == "git" and "grep" in names[i + 1 :] for i, n in enumerate(names)
+    )
+    return program and any(_under(w.rstrip("/") or w, roots) for w in words)
+
+
+def library_file_lookups(records: Any, roots: Any) -> dict:
+    """One cell's lookups of the library copy at *roots* (its paths as the cell sees them) that went around the
+    package's helpers: ``reads``, the files under the copy the cell's own code opened for reading (an open made by
+    the import system, by traceback formatting or by the library package is marked ``via`` by the audit hook and
+    not counted), and ``searches``, the process starts that ran a search program over a path in the copy. Counts
+    only: no path or content is kept."""
+    roots_t = tuple(r.rstrip("/") for r in (roots or ()) if isinstance(r, str) and r.strip("/"))
+    out = {"reads": 0, "searches": 0}
+    if not roots_t:
+        return out
+    for rec in records if isinstance(records, list) else []:
+        if not isinstance(rec, dict):
+            continue
+        event = rec.get("event")
+        if event == "open":
+            if "via" not in rec and _read_mode(rec.get("mode")) and _under(rec.get("path"), roots_t):
+                out["reads"] += 1
+        elif event in _SPAWN_EVENTS and _searches_library(rec.get("argv"), roots_t):
+            out["searches"] += 1
+    return out
+
+
+def _labelled_rows(rows: Any) -> list[dict]:
+    keep = ("id", "level", "status", "matched")
+    rows = rows if isinstance(rows, list) else []
+    return [
+        {k: r.get(k) for k in keep}
+        for r in rows
+        if isinstance(r, dict) and isinstance(r.get("id"), str)
+    ]
+
+
+def _add_matches_and_runs(acc: dict, calls: dict, cell: int) -> None:
+    """Add one cell's ``memory.match`` results and ``memory.run`` runs to *acc*, and mark which listed ids were
+    called afterwards: by a library call or a run in a later cell, or later in the same cell (the hook's
+    ``calls_before``/``runs_before`` positions)."""
+    records = calls.get("records") if isinstance(calls.get("records"), list) else []
+    called = [r.get("item") for r in records if isinstance(r, dict) and isinstance(r.get("item"), str)]
+    counts = calls.get("counts") if isinstance(calls.get("counts"), dict) else {}
+    runs = [r for r in calls.get("runs") or [] if isinstance(r, dict) and isinstance(r.get("target"), str)]
+    matches = [m for m in calls.get("matches") or [] if isinstance(m, dict)]
+    here = {k for k in counts if isinstance(k, str)} | {r["target"] for r in runs}
+    for m in acc["matches"]:  # earlier cells' results: anything this cell called came after them
+        listed = {row["id"] for row in m["listed"]}
+        m["called_after"] = sorted(set(m["called_after"]) | (listed & here))
+    earlier = {row["id"] for m in acc["matches"] for row in m["listed"]}
+
+    def position(value: Any) -> int:
+        return value if type(value) is int and value >= 0 else 0
+
+    new: list[dict] = []
+    for m in matches:
+        listed = _labelled_rows(m.get("listed"))
+        after = set(called[position(m.get("calls_before")) :]) | {
+            r["target"] for r in runs[position(m.get("runs_before")) :]
+        }
+        new.append(
+            {
+                "cell": cell,
+                "listed": listed,
+                "failed": _labelled_rows(m.get("failed")),
+                "called_after": sorted({row["id"] for row in listed} & after),
+                "runs_before": position(m.get("runs_before")),
+            },
+        )
+    for i, r in enumerate(runs):
+        listed_here = any(
+            m["runs_before"] <= i and r["target"] in {row["id"] for row in m["listed"]} for m in new
+        )
+        if len(acc["runs"]) >= MAX_RUN_ROWS:
+            acc["match_run_dropped"] += 1
+            continue
+        agrees = r.get("agrees_with")
+        acc["runs"].append(
+            {
+                "cell": cell,
+                "target": r["target"],
+                "level": r.get("level") if isinstance(r.get("level"), str) else None,
+                "outcome": r.get("outcome") if isinstance(r.get("outcome"), str) else None,
+                "conditions": r.get("conditions") if isinstance(r.get("conditions"), str) else None,
+                "repeatable": r.get("repeatable") if isinstance(r.get("repeatable"), str) else None,
+                "agrees_with": len(agrees) if isinstance(agrees, list) else 0,
+                "listed_by_match": r["target"] in earlier or listed_here,
+            },
+        )
+    for m in new:
+        m.pop("runs_before")
+        if len(acc["matches"]) >= MAX_MATCH_RESULTS:
+            acc["match_run_dropped"] += 1
+            continue
+        acc["matches"].append(m)
+
+
+def add_runtime_calls(acc: dict, drained: Any, library_roots: Any = ()) -> None:
     """Add one cell's drained audit records (the worker's ``done`` message ``audit``) to *acc*: the cell is
-    counted as observed, and its ``calls`` block (``adapters.audit``), when present, adds its per-item counts.
-    Malformed parts are skipped; calls of items beyond :data:`MAX_RUNTIME_ITEMS` count as dropped.
+    counted as observed, and its ``calls`` block (``adapters.audit``), when present, adds its per-item counts, its
+    ``memory.match`` results and its ``memory.run`` runs (:func:`_add_matches_and_runs`). With *library_roots* (the
+    library copy's paths as the cell sees them) its path and process records add to ``file_lookups``
+    (:func:`library_file_lookups`). Malformed parts are skipped; calls of items beyond :data:`MAX_RUNTIME_ITEMS`
+    count as dropped.
     """
     if not isinstance(drained, dict):
         return
     acc["cells"] += 1
+    if library_roots:
+        found = library_file_lookups(drained.get("records"), library_roots)
+        have = acc.setdefault("file_lookups", {"reads": 0, "searches": 0})
+        for k in ("reads", "searches"):
+            have[k] = _count(have.get(k)) + found[k]
     calls = drained.get("calls")
     if not isinstance(calls, dict):
         return
+    acc.setdefault("matches", [])
+    acc.setdefault("runs", [])
+    acc.setdefault("match_run_dropped", 0)
+    _add_matches_and_runs(acc, calls, acc["cells"] - 1)
     for key in ("dropped", "records_dropped", "malformed"):
         acc[key] += _count(calls.get(key))
     helpers = calls.get("helpers")
@@ -480,6 +639,8 @@ def memory_use(
         if library_mode and isinstance(record, dict) and "error" not in record:
             record.update(library_failures(runtime_calls, cell_errors))
             record["library_helper_calls"] = library_helper_calls(runtime_calls)
+            record["library_file_lookups"] = library_file_lookups_total(runtime_calls)
+            record.update(use.match_run_fields(runtime_calls, clean(list(ep.transcript))))
         return record
     except Exception as exc:  # noqa: BLE001 - telemetry never stops recording
         return {
@@ -854,7 +1015,11 @@ class RequestRun:
     def note_calls(self, drained: Any) -> None:
         """Add one cell's drained audit records to the request's runtime call evidence
         (:func:`add_runtime_calls`; ``hooks.worker_cell_done``)."""
-        add_runtime_calls(self.runtime_calls, drained)
+        add_runtime_calls(
+            self.runtime_calls,
+            drained,
+            self.export_roots if self.library_mode else (),
+        )
 
     def note_failure(self, call_id: Any, exc: BaseException) -> None:
         """Keep that a code cell's tool call raised instead of returning (``hooks.tool_result``): its

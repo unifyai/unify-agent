@@ -62,7 +62,7 @@ def test_calls_through_the_bound_name_count_with_no_import_line(library_root):
     assert rec["cell_exposure"] == {
         "items": [PD, WEEK, TOK],
         "channels": ["text", "text.dates"],
-        "calls": {"show": 1, "index": 2, "find": 0, "help": 0},
+        "calls": {"show": 1, "index": 2, "find": 0, "match": 0, "run": 0, "help": 0},
     }
     assert set(rec["items"]) == {WEEK} and rec["items"][WEEK]["called"] == 1
     assert rec["items"][WEEK]["cells"] == [0]
@@ -86,7 +86,14 @@ def test_a_request_without_the_binding_is_not_seeded(library_root):
     rec = _use(library_root, [LOOKUPS], memory_bound=False)
     assert rec["memory_bound"] is False
     assert rec["items"] == {}
-    assert rec["cell_exposure"]["calls"] == {"show": 0, "index": 0, "find": 0, "help": 0}
+    assert rec["cell_exposure"]["calls"] == {
+        "show": 0,
+        "index": 0,
+        "find": 0,
+        "match": 0,
+        "run": 0,
+        "help": 0,
+    }
     assert rec["cell_exposure"]["items"] == []
     # a request outside library mode is never seeded, whatever is passed
     for flag in (None, True):

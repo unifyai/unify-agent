@@ -154,9 +154,10 @@ def worker_audit() -> dict | None:
     installs no hook).
 
     While a request captures the work tree: the workspace root, for file events; in library mode without a
-    capture, no roots, so only the library's runtime calls are recorded. With a capture: the workspace root as the sandbox
-    shows it (``/workspace``) and the file of the audit hook, which the child loads by path
-    (stdlib only; no ``unify`` import there).
+    capture, only the library copy's roots, so the library's runtime calls and the cells' reads of the copy are
+    recorded (the use record's ``library_file_lookups``). With a capture: the workspace root as the sandbox
+    shows it (``/workspace``), the library copy's roots in library mode, and the file of the audit hook, which the
+    child loads by path (stdlib only; no ``unify`` import there).
     """
     if _run() is None:
         return None
@@ -166,22 +167,51 @@ def worker_audit() -> dict | None:
         from .worktree_capture import active
 
         capture = active()
+        library = _library_roots() if memory_library_on() else []
         if capture is None:
             # library mode still needs the library's runtime calls (the evidence "used" rests on): the hook goes
-            # in with no file roots, so it records calls and no file events
+            # in with the library copy's roots only, so it records calls and the cells' opens of the copy
             if not memory_library_on():
                 return None
-            return {"roots": [], "path": str(Path(audit.__file__))}
+            return {"roots": library, "path": str(Path(audit.__file__))}
         # The sandbox binds the workspace at a fixed path (``unify.sandbox.WORKSPACE_MOUNT``), so that is
         # the root the child sees; the records are mapped back to the host's in :func:`worker_cell_done`.
         from unify.sandbox import WORKSPACE_MOUNT
 
-        return {"roots": [WORKSPACE_MOUNT], "path": str(Path(audit.__file__))}
+        return {"roots": [WORKSPACE_MOUNT] + library, "path": str(Path(audit.__file__))}
     except (
         Exception
     ) as exc:  # noqa: BLE001 - the worker always starts; this request then records no file events
         logger.warning("memory v2: no audit for this worker (%s)", type(exc).__name__)
         return None
+
+
+def _library_roots() -> list[str]:
+    """The library copy's paths as a cell can see them: the run's export roots (``RequestRun.export_roots``, the
+    sandbox's fixed mount among them), else the sandbox's fixed mount alone."""
+    from unify.sandbox import LIBRARY_MOUNT
+
+    roots = getattr(_run(), "export_roots", None)
+    roots = [r for r in roots if isinstance(r, str) and r] if isinstance(roots, list) else []
+    return roots or [LIBRARY_MOUNT]
+
+
+def _without_library(events: Any, roots: list[str]) -> Any:
+    """*events* without the path records under the library copy (*roots*): the work-tree capture records the
+    workspace only."""
+    if not roots or not isinstance(events, dict) or not isinstance(events.get("records"), list):
+        return events
+    prefixes = tuple(r.rstrip("/") for r in roots)
+
+    def inside(value: Any) -> bool:
+        return isinstance(value, str) and any(value == r or value.startswith(r + "/") for r in prefixes)
+
+    kept = [
+        r
+        for r in events["records"]
+        if not (isinstance(r, dict) and inside(r.get("path")) and not r.get("dst"))
+    ]
+    return {**events, "records": kept}
 
 
 def result_hook() -> Callable[..., None] | None:
@@ -256,7 +286,11 @@ def worker_cell_done(events: Any) -> None:
 
         capture = active()
         if capture is not None:
-            capture.cell_done(time.time(), _host_paths(events, capture.workspace))
+            library = _library_roots() if getattr(run, "library_mode", False) else []
+            capture.cell_done(
+                time.time(),
+                _host_paths(_without_library(events, library), capture.workspace),
+            )
     except Exception as exc:  # noqa: BLE001 - recording never fails a cell
         logger.warning(
             "memory v2: a cell's audit records were lost (%s)",
