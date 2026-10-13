@@ -12,10 +12,10 @@ reader of staged replies applies the same rules, and the offline replay imports 
 * **Turns:** one POST per turn. A reply with tool calls is never executed: each call is answered with
   :data:`TOOL_REPLY` and the conversation continues. The fork ends at the first reply without tool calls.
 * **Output:** the files the reply's blocks name (:func:`parse_reply`), from the reply text and from every tool
-  call's arguments. Only ``candidates/<name>.py``, ``cases/<name>.json`` and ``notes.md`` are written; every block
-  found is recorded as parsed, refused or dropped with a reason. Written in this order: the staged files, the raw
-  reply (``fork-reply.json``), the block ledger (``fork-blocks.json``, with the raw reply's sha256), then
-  ``fork.json``. ``fork.json`` is written last, and its existence means the fork has settled.
+  call's arguments. Only ``summary.md``, ``candidates/<name>.py``, ``cases/<name>.json`` and ``notes.md`` are
+  written; every block found is recorded as parsed, refused or dropped with a reason. Written in this order: the
+  staged files, the raw reply (``fork-reply.json``), the block ledger (``fork-blocks.json``, with the raw reply's
+  sha256), then ``fork.json``. ``fork.json`` is written last, and its existence means the fork has settled.
 
 Operational guards, which are run safety and not design: :data:`QUOTA_BYTES` and :data:`QUOTA_FILES` per episode,
 :data:`TURN_GUARD` turns, :data:`HTTP_TIMEOUT_S` per call and :data:`WALL_GUARD_S` for the whole fork (on reaching
@@ -45,11 +45,15 @@ HTTP_TIMEOUT_S = 900.0
 #: The fork's own wall bound; below the CLI's wait guard (``fork.WAIT_GUARD_S``), so the worker settles first.
 WALL_GUARD_S = 1500.0
 ALLOWED = (
+    re.compile(r"summary\.md"),
     re.compile(r"candidates/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\.py"),
     re.compile(r"cases/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\.json"),
     re.compile(r"notes\.md"),
 )
 FORK_JSON = "fork.json"
+#: The fork's account of its episode (what was asked, the approach, what worked or failed, the outcome, with pointers
+#: into the record); the writer reads it first.
+SUMMARY_FILE = "summary.md"
 BLOCKS_JSON = "fork-blocks.json"
 REPLY_JSON = "fork-reply.json"
 LOCK_FILE = "fork.lock"
@@ -80,6 +84,7 @@ _INFO = re.compile(
     re.IGNORECASE,
 )
 _KINDS = (
+    (re.compile(r"summary\.md"), "summary"),
     (re.compile(r"candidates/[^/]+\.py"), "candidate"),
     (re.compile(r"cases/[^/]+\.json"), "case"),
     (re.compile(r"notes\.md"), "notes"),
@@ -91,7 +96,7 @@ def _sha(text: str) -> str:
 
 
 def kind(rel: str | None) -> str:
-    """candidate, case, notes or other, by the path's shape."""
+    """summary, candidate, case, notes or other, by the path's shape."""
     for rx, name in _KINDS:
         if rel is not None and rx.fullmatch(rel):
             return name
@@ -169,7 +174,7 @@ def allowed(rel: str) -> str | None:
     if not _plain(rel):
         return "not a plain relative path"
     if not any(rx.fullmatch(rel) for rx in ALLOWED):
-        return "outside candidates/*.py, cases/*.json and notes.md"
+        return "outside summary.md, candidates/*.py, cases/*.json and notes.md"
     return None
 
 
@@ -735,7 +740,9 @@ def run(
     wall_s: float = WALL_GUARD_S,
     clock=time.monotonic,
 ) -> dict:
-    """The fork's turns and files; returns the ``fork.json`` document (also written to *staging*, last).
+    """The fork's turns and files; returns the ``fork.json`` document (also written to *staging*, last). It records
+    ``seconds``, the fork's own wall time, and ``summary_bytes``, the size of the ``summary.md`` it staged (None when
+    it staged none).
 
     *wall_s* bounds the fork: past it no further turn starts, and :func:`main` also raises :class:`WallTimeout` from
     a timer inside a turn. Either way the fork stages what it has and records status ``"timeout"``.
@@ -795,6 +802,11 @@ def run(
         doc["status"] = "ok: operational quota reached"
     usd = usage.pop("_usd", None) if usage else None
     doc["usage"], doc["usd"] = usage, (str(usd) if usd is not None else None)
+    doc["summary_bytes"] = next(
+        (f["bytes"] for f in files if f["path"] == SUMMARY_FILE),
+        None,
+    )
+    doc["seconds"] = round(max(0.0, clock() - started), 3)
     record = write_record(staging, req.get("episode"), text, ledger(blocks), replies)
     doc["reply_sha256"], doc["blocks"] = record["reply_sha256"], counts(blocks)
     atomic_json(staging / FORK_JSON, doc)

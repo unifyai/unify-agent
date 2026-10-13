@@ -1173,8 +1173,10 @@ class RequestRun:
                 if reservation is not None:
                     reservation.abandon("refused: the episode was not recorded")
                 return
+            # the recorded episode's part list, read before the similar index takes the recorded episode
+            parts = self._fork_parts(reservation, progress)
             self._index_similar(progress)
-            fork = self._start_fork(handle, eid, progress, reservation)
+            fork = self._start_fork(handle, eid, progress, reservation, parts)
             if consolidate:
                 await self._consolidate(eid, sha, progress, emit)
             else:
@@ -1236,12 +1238,28 @@ class RequestRun:
             self._error("fork", exc, progress)
             return None
 
+    def _fork_parts(self, reservation: Any, progress: Callable[[str], None]) -> str | None:
+        """The episode just recorded as the fork's part list (:func:`.fork.part_list`), only when its fork is
+        reserved; None otherwise or when it cannot be read (the fork then names parts by its numbering rule alone).
+        Never raises."""
+        recorded = getattr(self, "_recorded", None)
+        if reservation is None or recorded is None:
+            return None
+        try:
+            from . import fork as _fork
+
+            return _fork.part_list(recorded[0])
+        except Exception as exc:  # noqa: BLE001 - the part list never stops a request
+            self._error("fork part list", exc, progress)
+            return None
+
     def _start_fork(
         self,
         handle: Any,
         eid: str,
         progress: Callable[[str], None],
         reservation: Any = None,
+        parts: str | None = None,
     ) -> Any:
         """The episode-end fork, only under ``UNIFY_MEMORY_LIBRARY_FORK=on``; never raises."""
         from unify.settings import SETTINGS
@@ -1260,6 +1278,7 @@ class RequestRun:
                 SETTINGS,
                 progress=progress,
                 reservation=reservation,
+                parts=parts,
             )
         except Exception as exc:  # noqa: BLE001
             self._error("fork", exc, progress)

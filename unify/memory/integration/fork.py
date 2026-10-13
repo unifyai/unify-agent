@@ -2,8 +2,10 @@
 
 After the reply has been returned and the episode recorded, the actor's own conversation is continued once more by a
 separate process: its last request's messages and tools unchanged, so the provider serves the prefix from cache,
-plus one fixed instruction (:func:`fork_instruction`). The process writes what the reply stages into
-``<state>/memory-staging/<episode>/`` and nothing else.
+plus one user message after that prefix (:func:`fork_message`): the fixed instruction (:func:`fork_instruction`) and
+the recorded episode's part list (:func:`part_list`), so the pointers in the fork's ``summary.md`` name parts the
+writer can read. The process writes what the reply stages into ``<state>/memory-staging/<episode>/`` and nothing
+else.
 
 * **The boundary:**
   - :mod:`.fork_worker` runs by path with the system python (``/usr/bin/python3 -I /s/fork_worker.py``). It is
@@ -60,7 +62,11 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from ..library_prompts import CANDIDATE_CONTRACT, CANDIDATE_CONTRACT_IN_CODE
+from ..library_prompts import (
+    CANDIDATE_CONTRACT,
+    CANDIDATE_CONTRACT_IN_CODE,
+    SUMMARY_FORMAT,
+)
 from .fork_worker import (
     FORK_JSON,
     HTTP_TIMEOUT_S,
@@ -72,6 +78,20 @@ from .fork_worker import (
 )
 
 FORMAT_EXAMPLE = (
+    "```path: summary.md\n"
+    "## Asked\n"
+    "Read a table of numbers from a text file and report its size.\n"
+    "## Approach\n"
+    '- Parsed the first line as the size (`cell:0` "int(lines[0])").\n'
+    '- Skipped the header line, then parsed the first number (`cell:1` "for line in lines:").\n'
+    "## Worked\n"
+    '- Skipping lines until the first number (`cell:1` "size = 12").\n'
+    "## Failed\n"
+    '- Reading the size from the first line, which was a header (`cell:0` "ValueError: invalid literal for int()").\n'
+    "## Outcome\n"
+    'Reported the size 12; the record does not show whether it was right: not shown (`action:2` "size: 12").\n'
+    "```\n"
+    "\n"
     "```path: candidates/double.py\n"
     "class MemoryInputError(ValueError):\n"
     '    """An input of a shape this module was not built for."""\n'
@@ -94,12 +114,29 @@ FORMAT_EXAMPLE = (
     "```"
 )
 
+#: How the fork names the parts of its own conversation in its summary's pointers: it sees a conversation, while the
+#: writer reads the recorded episode's parts. The part list that follows the instruction (:func:`part_list`) gives the
+#: recorded names themselves.
+NUMBERING = (
+    "Here, the request is your first user message. `observation:<n>` is the n-th message from the user or the "
+    "environment after it, counting from 0. `cell:<n>` is the n-th code cell you ran, counting from 0. `action:<n>` "
+    "is the n-th tool call the harness ran for you, counting from 0."
+)
+#: The heading of the part list that follows the instruction when the recorded episode could be read.
+PARTS_HEAD = (
+    "The record of this episode has these parts, in this order, each with its first line or what it was, so you "
+    "can match it to this conversation. Use exactly these names in the summary's pointers:"
+)
+#: The characters of a part's first line the part list shows.
+PART_GIST_CHARS = 80
+
 INSTRUCTION = (
     "Your work on this request is finished and your reply has been sent; nothing you write now changes it. "
     "Now write down what would help with similar requests later, as files: write each file as a fenced block in "
     "your reply, in the format below. Do not call any tool: tools are not available here, and any call gets only a "
     "reply saying so.\n\n"
     "What to write:\n"
+    "- `summary.md`: a short account of this episode for a reader who has not seen it, in the format below.\n"
     "- `candidates/<name>.py`: for code you wrote here that ran and worked and could be reused, a function "
     "with a docstring. <name> uses only letters, digits and underscores. Only code that actually ran here; never "
     "say code worked if it did not. " + CANDIDATE_CONTRACT + "\n"
@@ -111,6 +148,10 @@ INSTRUCTION = (
     "- `notes.md`: each thing that failed and why, and any other lesson, in general terms so it applies beyond this "
     "request, each quoting the short line or error message from this conversation it comes from. If nothing here "
     "is worth keeping, write `notes.md` saying so.\n\n"
+    + SUMMARY_FORMAT
+    + "\n\n"
+    + NUMBERING
+    + "\n\n"
     f"Limits: at most {QUOTA_FILES} files and {QUOTA_BYTES // 1024**2} MiB in all are kept. Each reply has "
     f"{HTTP_TIMEOUT_S:.0f} s. A reply that calls a tool gets the reply saying tools are not available and another "
     f"turn, up to {TURN_GUARD} turns in all; then the conversation stops.\n\n"
@@ -127,6 +168,7 @@ INSTRUCTION_IN_CODE = (
     "Now write down what would help with similar requests later, as files: write each file as a fenced block in "
     "your reply, in the format below. Do not call tools.\n\n"
     "What to write:\n"
+    "- `summary.md`: a short account of this episode for a reader who has not seen it, in the format below.\n"
     "- `candidates/<name>.py`: for code you wrote here that ran and worked and could be reused, a function "
     "with a docstring. <name> uses only letters, digits and underscores. Only code that actually ran here; never "
     "say code worked if it did not. " + CANDIDATE_CONTRACT_IN_CODE + "\n"
@@ -138,6 +180,10 @@ INSTRUCTION_IN_CODE = (
     "- `notes.md`: each thing that failed and why, and any other lesson, in general terms so it applies beyond this "
     "request, each quoting the short line or error message from this conversation it comes from. If nothing here "
     "is worth keeping, write `notes.md` saying so.\n\n"
+    + SUMMARY_FORMAT
+    + "\n\n"
+    + NUMBERING
+    + "\n\n"
     f"Limits: at most {QUOTA_FILES} files and {QUOTA_BYTES // 1024**2} MiB in all are kept. A reply that calls a "
     f"tool gets another turn, up to {TURN_GUARD} turns in all.\n\n"
     "Format: each file is one fenced block. Its opening line is three backticks followed by `path: ` and the "
@@ -168,6 +214,46 @@ def fork_instruction() -> str:
     from unify.common import in_code_switch
 
     return INSTRUCTION_IN_CODE if in_code_switch.tools_in_code() else INSTRUCTION
+
+
+def _first_line(text: object) -> str:
+    line = next((ln.strip() for ln in str(text or "").splitlines() if ln.strip()), "")
+    return line[:PART_GIST_CHARS] + (" ..." if len(line) > PART_GIST_CHARS else "")
+
+
+def part_list(ep: Any) -> str:
+    """The recorded episode's part list as the fork reads it: one line per part, in the order the writer's table of
+    contents lists them (:func:`..writer_tools.part_names`), each with its first line (a cell's first line of code
+    and whether it raised; an action's kind, call and status), so the fork can match each part to its own
+    conversation and its pointers use the names the writer reads."""
+    from ..writer_tools import part_names
+
+    obs = list(ep.request[1:])
+    cells = {f"cell:{c.index}": c for c in ep.cells}
+    lines = [PARTS_HEAD]
+    for name in part_names(ep):
+        if name == "request":
+            gist = _first_line(ep.request[0] if ep.request else "")
+        elif name.startswith("observation:"):
+            gist = _first_line(obs[int(name[12:])])
+        elif name.startswith("cell:"):
+            c = cells[name]
+            raised = c.error is not None or "Traceback (most recent call last)" in (c.output or "")
+            gist = _first_line(c.code) + ("  (raised an error)" if raised else "")
+        elif name.startswith("action:"):
+            a = ep.actions[int(name[7:])]
+            gist = f"{a.kind} {a.channel}.{a.method}: {a.status}"
+        else:
+            gist = "the work-tree diff"
+        lines.append(f"- {name}: {gist}" if gist else f"- {name}")
+    return "\n".join(lines)
+
+
+def fork_message(parts: str | None = None) -> str:
+    """The user message the fork's request ends with: :func:`fork_instruction`, then the episode's part list when
+    there is one. Both follow the cached prefix."""
+    text = fork_instruction()
+    return f"{text}\n\n{parts}" if parts else text
 
 
 def staging_dir(paths: Any, eid: str) -> Path:
@@ -212,6 +298,7 @@ def request_doc(
     eid: str,
     url: str,
     key: str,
+    parts: str | None = None,
 ) -> tuple[dict | None, str | None]:
     """The fork's request, from the session's last request as sent, or why the session cannot be forked."""
     from unify.actor.code_act_actor import _session_fork_source
@@ -220,7 +307,7 @@ def request_doc(
     source, why = _session_fork_source(inner, getattr(handle, "_actor", None))
     if source is None:
         return None, why
-    return request_from_source(eid, source, url, key)
+    return request_from_source(eid, source, url, key, parts=parts)
 
 
 def request_from_source(
@@ -228,12 +315,15 @@ def request_from_source(
     source: dict,
     base_url: str,
     token: str,
+    *,
+    parts: str | None = None,
 ) -> tuple[dict | None, str | None]:
     """``(request document, None)`` for the fork from a conversation *source* (``client``, ``sent_messages``,
     ``tools`` and optionally ``tool_choice``, as the actor's session reader gives them), or ``(None, why)`` when it
-    cannot be forked: the messages and tool schemas unchanged, then :func:`fork_instruction`. *base_url* is the fork
-    lane's URL (``/chat/completions`` is added when it is not already there); *token* goes only into the headers,
-    which reach the worker on its stdin."""
+    cannot be forked: the messages and tool schemas unchanged, then :func:`fork_message` (the instruction, and
+    *parts*, the episode's part list from :func:`part_list`, when given). *base_url* is the fork lane's URL
+    (``/chat/completions`` is added when it is not already there); *token* goes only into the headers, which reach
+    the worker on its stdin."""
     eid = episode_id
     url = (
         base_url
@@ -249,7 +339,7 @@ def request_from_source(
         "model": model,
         "messages": [
             *source["sent_messages"],
-            {"role": "user", "content": fork_instruction()},
+            {"role": "user", "content": fork_message(parts)},
         ],
         "tools": source["tools"],
     }
@@ -576,9 +666,12 @@ def start(
     popen: Callable[..., Any] = subprocess.Popen,
     progress: Callable[[str], None] = lambda _m: None,
     reservation: Reservation | None = None,
+    parts: str | None = None,
 ) -> Fork | None:
     """Start the episode's fork, or record why not; never raises. Off: returns None and touches nothing. Without a
-    *reservation* (made before the episode was recorded), one is made here."""
+    *reservation* (made before the episode was recorded), one is made here. *parts* is the recorded episode's part
+    list (:func:`part_list`), which follows the instruction; without it the fork names parts by
+    :data:`NUMBERING` alone."""
     from . import switch
 
     if not (switch.library_enabled(settings) and switch.library_fork(settings)):
@@ -595,7 +688,7 @@ def start(
         r, why = route()
         doc = None
         if r is not None:
-            doc, why = request_doc(handle, eid, *r)
+            doc, why = request_doc(handle, eid, *r, parts=parts)
         if doc is None:
             reservation.abandon(f"refused: {why}")
             progress(f"memory: fork refused: {why}")
