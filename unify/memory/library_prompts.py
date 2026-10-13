@@ -374,15 +374,18 @@ SUMMARY_NOT_EVIDENCE = (
 )
 
 #: Row keys the pass adds when an optional input exists (described only then).
-#: The keys of a batch-map row's ``staging`` entry (:func:`.staging.export`, plus ``candidates``), in the order the
-#: row key's text names them. Which reader staged the files is not among them: that stays in the host-side records.
-STAGING_ROW_FIELDS = ("status", "files", "refused", "path", "summary", "blocks", "candidates")
+#: The keys of a batch-map row's ``staging`` entry (:func:`.staging.export`, plus ``candidates`` and ``capture``), in
+#: the order the row key's text names them. Which reader staged the files is not among them: that stays in the
+#: host-side records.
+STAGING_ROW_FIELDS = ("status", "files", "refused", "path", "summary", "blocks", "candidates", "capture")
 STAGING_ROW_KEY = (
     "staging",
     "dict: `status`, `files`, `refused`, `path`, `summary` (the path of the episode's `summary.md`, or null when "
-    "there is none), `blocks` (the drafting reply's block counts, when it left them) and `candidates` (list of "
-    "`{name, file, cases}`): what was staged for the episode under /inputs/staging/<episode>/; a `status` other "
-    "than `ok` (`no reader output: <why>`) means nothing was handed on, and says why",
+    "there is none), `blocks` (the drafting reply's block counts, when it left them), `candidates` (list of "
+    "`{name, file, cases}`) and `capture` (`{id, land}` when the episode's capture can be landed: its id and the one "
+    "call that lands it, its procedure then under /inputs/captures/<id>/ only; else null): what was staged for the "
+    "episode under /inputs/staging/<episode>/; a `status` other than `ok` (`no reader output: <why>`) means nothing "
+    "was handed on, and says why",
 )
 CAPTURE_ROW_KEY = (
     "capture",
@@ -408,7 +411,8 @@ RELATED_ROW_KEY = (
 CAPTURES_TEXT = (
     "Beside it, /inputs/captures/<id>/ holds attempts the harness captured when their episode ended: `procedure.py` (the "
     "procedure that produced the result the episode handed back), `broke.md` (what broke), `signature.json` (the "
-    "structure of its input and result) and `record.json` (its uses and outcomes). The harness has already run each "
+    "structure of its input and result) and `record.json` (its uses and outcomes). When an episode's capture can be "
+    "landed, its procedure is here only, not in /inputs/staging/. The harness has already run each "
     "procedure on its recorded request, confined; the episode's batch-map row `capture` says whether it gave the same "
     "result, what signal the episode carried, and which stored captures give the same result there. "
     "{land}A capture is not in the library: it becomes library items only as you write them. A failed capture is "
@@ -419,7 +423,7 @@ CAPTURES_TEXT = (
 #: The landing tool's sentence in :data:`CAPTURES_TEXT`, when the agent has the tool.
 LAND_TEXT = (
     "`{tools}land_capture(capture_id, package, name)` turns one into library items you can change before you "
-    "finish. "
+    "finish; its row's `staging.capture.land` is that call. "
 )
 
 

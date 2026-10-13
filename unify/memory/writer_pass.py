@@ -612,6 +612,22 @@ def _staged_candidates(entry: dict) -> list[dict]:
     return out
 
 
+def _capture_lands(store: Path, cid: str) -> bool:
+    """Whether capture *cid* of the store can be landed: its record (a regular file, never through a link) says its
+    attempt did not fail and it is not retired, the test :func:`.land_capture.read_capture` applies."""
+    from .captures import FAILED, MAX_RESULT_BYTES, RECORD_FILE
+
+    p = Path(store) / cid / RECORD_FILE
+    try:
+        st = os.lstat(p)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_RESULT_BYTES:
+            return False
+        rec = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(rec, dict) and rec.get("outcome") != FAILED and rec.get("status") != "retired"
+
+
 def _with_fixtures(manifest: object, made: dict) -> object:
     """The harness's fixture provenance replaces whatever the manifest says under ``fixtures``."""
     if not isinstance(manifest, dict):
@@ -3029,10 +3045,14 @@ class WriterPass:
         pass_id: str = "",
     ) -> None:
         """With staging on (:meth:`_staging_on`), each batch episode's staging: entered into the pool at once (so
-        this pass can merge it), copied to ``/inputs/staging/<episode>/`` and listed in batch_map.json. Staging is
+        this pass can merge it), copied to ``/inputs/staging/<episode>/`` and listed in batch_map.json. An episode
+        whose capture can be landed reaches the writer by that one route: its staging is copied without the fork's
+        ``procedure.py``, and its row's ``staging.capture`` names the capture and the call that lands it. Staging is
         untrusted: :mod:`.staging` takes only allowed regular files and nothing staged is run. Helpers are launched
         by the writer itself (the ``delegate`` tool, :mod:`.helpers`), never here.
         """
+        import dataclasses
+
         from . import captures as _captures
         from . import staging as _staging
 
@@ -3078,27 +3098,42 @@ class WriterPass:
         if staging_on:
             # the brief names /inputs/staging/ whenever staging is on: it exists even when nothing was staged
             (Path(inputs) / "staging").mkdir(parents=True, exist_ok=True)
+        # the call that lands a capture, as the writer makes it (in code: through ``tools``)
+        land_call = ("tools." if getattr(self, "_in_code_pass", False) else "") + "land_capture('{}', package, name)"
         for row in bmap.get("episodes", []):
             eid = row["episode_id"]
             src = "none"
-            if staging_on:
-                row["staging"] = _staging.export(
-                    views.get(eid),
-                    Path(inputs) / "staging" / eid,
-                )
-                row["staging"]["candidates"] = _staged_candidates(row["staging"])
-                # the reader is counted host-side (an unfinished one as withheld); the writer's row never names it
-                view = views.get(eid)
-                src = "none" if view is None else (view.source if view.finished else "withheld")
+            landable: str | None = None
             if captures_root is not None:
                 # the attempt captured from this episode, if any: what reproducing it gave, its outcome, level and
                 # status, and the stored captures that gave the same result on this request
                 row["capture"] = _captures.batch_row(captures_root, eid)
                 if row["capture"] is not None:
                     capture_ids.append(row["capture"]["id"])
+                    if _capture_lands(captures_root, row["capture"]["id"]):
+                        landable = row["capture"]["id"]
             elif staging_on:
                 # the brief lists the capture key whenever staging is on; with no capture store it is null
                 row["capture"] = None
+            if staging_on:
+                view = views.get(eid)
+                if landable is not None and view is not None and _captures.PROCEDURE_FILE in view.files:
+                    # one route per episode: a capture that can be landed reaches the writer as the capture alone,
+                    # so the fork's copy of its procedure is left out of the export (the host's staging, and the
+                    # pool's view of it, keep the file)
+                    view = dataclasses.replace(
+                        view,
+                        files={k: v for k, v in view.files.items() if k != _captures.PROCEDURE_FILE},
+                    )
+                row["staging"] = _staging.export(view, Path(inputs) / "staging" / eid)
+                row["staging"]["candidates"] = _staged_candidates(row["staging"])
+                # the episode's capture and the one call that lands it, when it can be landed
+                row["staging"]["capture"] = (
+                    None if landable is None else {"id": landable, "land": land_call.format(landable)}
+                )
+                # the reader is counted host-side (an unfinished one as withheld); the writer's row never names it
+                view = views.get(eid)
+                src = "none" if view is None else (view.source if view.finished else "withheld")
             row["pool_entries"] = [
                 {"id": e.id, "kind": e.kind, "title": e.title}
                 for e in open_pool

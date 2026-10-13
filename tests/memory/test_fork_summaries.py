@@ -223,6 +223,7 @@ def test_the_staging_row_keys_are_the_built_rows_keys_with_the_summary_and_no_re
     assert view.source == "fork"  # kept host-side
     entry = staging.export(view, tmp_path / "out" / "e4")
     entry["candidates"] = _staged_candidates(entry)
+    entry["capture"] = None  # the pass names the episode's capture here when it can be landed
     assert set(entry) == set(lp.STAGING_ROW_FIELDS)
     assert "fork" not in json.dumps({k: v for k, v in entry.items() if k != "refused"})
 
