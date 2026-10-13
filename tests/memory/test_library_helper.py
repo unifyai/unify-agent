@@ -377,6 +377,63 @@ print(json.dumps(events))
     assert "private" not in out
 
 
+def test_a_failed_call_raises_one_failure_event_with_its_type_and_first_line_and_no_values(tmp_path):
+    root = _guarded(tmp_path)
+    out = _py(
+        root,
+        """
+import json
+failed = []
+sys.addaudithook(lambda e, a: failed.append(list(a)) if e == "memory.call_failed" else None)
+import memory
+from memory.text.guard import double, MemoryInputError
+assert double(2) == 4
+for arg in ("a private value", -1):
+    try:
+        double(arg)
+    except (MemoryInputError, ValueError):
+        pass
+try:
+    memory.show({"private-key-name": "private value"}, )
+except Exception:
+    pass
+print(json.dumps(failed))
+""",
+    )
+    failed = json.loads(out)
+    item = "memory.text.guard:double"
+    # an ok call raises none; each failed call raises one, after its memory.call event
+    assert failed[:2] == [
+        [item, "MemoryInputError", "not an int", ""],
+        [item, "ValueError", "negative", ""],
+    ]
+    # a helper's failure carries the arguments' types and sizes, never their values (its message is the
+    # exception's own first line, which the harness redacts when it lists it)
+    (show,) = failed[2:]
+    assert show[:2] == ["memory:show", "LookupError"] and show[3] == "(dict[1])", show
+    assert show[2].startswith("memory: no item") and "\n" not in show[2]
+    assert "private" not in json.dumps([e[3] for e in failed])
+
+
+def test_the_failure_event_keeps_the_first_line_and_shapes_hold_no_values():
+    from unify.memory import library_helper
+
+    class Multi(Exception):
+        def __str__(self):
+            return "\n  first line of it\nsecond line with a value"
+
+    class Unprintable(Exception):
+        def __str__(self):
+            raise RuntimeError("no text")
+
+    assert library_helper._first_line(Multi()) == "first line of it"
+    assert library_helper._first_line(Unprintable()) == ""
+    assert library_helper._first_line(ValueError("x" * 500)) == "x" * library_helper.FAILURE_TEXT
+    shape = library_helper.args_shape(("a value", [1, 2], {"k": "v"}, 3.5, object()), {"limit": 10, "name": "n"})
+    assert shape == "(str[7], list[2], dict[1], float, object; limit=int, name=str[1])"
+    assert library_helper.args_shape(tuple(range(10)), {}) == "(" + ", ".join(["int"] * 8) + ", +2)"
+
+
 def test_the_digest_never_runs_argument_code_and_a_failing_hook_changes_nothing(
     tmp_path,
 ):

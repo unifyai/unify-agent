@@ -21,7 +21,9 @@ the item id, a short digest of the arguments (never their values) and the outcom
 (a ``MemoryInputError`` left it) or ``error`` (any other exception). The wrapper returns what the function
 returns and re-raises what it raises, unchanged; whatever audit hooks the process has decide what is kept.
 Its own ``index``, ``show`` and ``find`` raise ``memory.helper_call`` the same way, with the ids
-``memory:index``, ``memory:show`` and ``memory:find``.
+``memory:index``, ``memory:show`` and ``memory:find``. A call that raised also raises ``memory.call_failed``
+with the id, the exception's type, the first line of its message and, for the helpers, the arguments' shape
+(types and sizes, never values).
 """
 
 from __future__ import annotations
@@ -49,6 +51,11 @@ CALL_EVENT = "memory.call"
 #: as ``memory.call``, kept apart because the helpers are not library items.
 HELPER_EVENT = "memory.helper_call"
 CALL_OUTCOMES = ("ok", "refused", "error")
+#: The audit event of a call that raised: the id, the exception's type, its message's first line and, for the
+#: helpers, the arguments' shape (:func:`args_shape`).
+FAILED_EVENT = "memory.call_failed"
+#: The most characters of a failed call's message line and of its arguments' shape the event carries.
+FAILURE_TEXT = 200
 REFUSAL = "MemoryInputError"
 DIGEST_CHARS = 16
 
@@ -435,6 +442,47 @@ def args_digest(args: tuple, kwargs: dict) -> str:
     ]
 
 
+#: Exact builtin types whose size :func:`args_shape` shows (their own ``len``, never a user type's ``__len__``).
+_SIZED = (str, bytes, bytearray, list, tuple, dict, set, frozenset)
+_SHAPE_ARGS = 8
+
+
+def _type_size(value: Any) -> str:
+    t = type(value)
+    if t in _SIZED:
+        return f"{t.__name__}[{len(value)}]"
+    return t.__name__
+
+
+def args_shape(args: tuple, kwargs: dict) -> str:
+    """The call's arguments as types and sizes only, never values: ``(dict[3], str[12]; limit=int)``."""
+    try:
+        parts = [_type_size(v) for v in tuple(args)[:_SHAPE_ARGS]]
+        if len(args) > _SHAPE_ARGS:
+            parts.append(f"+{len(args) - _SHAPE_ARGS}")
+        named = [
+            f"{k}={_type_size(v)}"
+            for k, v in list(kwargs.items())[:_SHAPE_ARGS]
+            if type(k) is str and k.isidentifier()
+        ]
+        text = "(" + ", ".join(parts) + ("; " + ", ".join(named) if named else "") + ")"
+    except Exception:  # noqa: BLE001 - a shape never fails a call
+        text = "(unreadable)"
+    return text[:FAILURE_TEXT]
+
+
+def _first_line(exc: BaseException) -> str:
+    """The first non-blank line of *exc*'s message, at most :data:`FAILURE_TEXT` characters."""
+    try:
+        text = str(exc)
+    except Exception:  # noqa: BLE001 - an unprintable message is empty
+        return ""
+    for line in text.splitlines():
+        if line.strip():
+            return line.strip()[:FAILURE_TEXT]
+    return ""
+
+
 def call_outcome(exc: BaseException) -> str:
     """``refused`` when *exc* is a ``MemoryInputError`` (any class of that name in its type's bases: each
     library module may define its own), else ``error``."""
@@ -446,6 +494,14 @@ def call_outcome(exc: BaseException) -> str:
 def _emit(item: str, digest: str, outcome: str, event: str = CALL_EVENT) -> None:
     try:
         sys.audit(event, item, digest, outcome)
+    except Exception:  # noqa: BLE001 - an audit hook never changes the call
+        pass
+
+
+def _emit_failed(item: str, exc: BaseException, args: tuple, kwargs: dict, event: str) -> None:
+    try:
+        shape = args_shape(args, kwargs) if event == HELPER_EVENT else ""
+        sys.audit(FAILED_EVENT, item, type(exc).__name__, _first_line(exc), shape)
     except Exception:  # noqa: BLE001 - an audit hook never changes the call
         pass
 
@@ -465,6 +521,7 @@ def wrap_call(fn: Any, item: str, event: str = CALL_EVENT) -> Any:
                 result = await fn(*args, **kwargs)
             except Exception as exc:
                 _emit(item, digest, call_outcome(exc), event)
+                _emit_failed(item, exc, args, kwargs, event)
                 raise
             _emit(item, digest, "ok", event)
             return result
@@ -478,6 +535,7 @@ def wrap_call(fn: Any, item: str, event: str = CALL_EVENT) -> Any:
                 result = fn(*args, **kwargs)
             except Exception as exc:
                 _emit(item, digest, call_outcome(exc), event)
+                _emit_failed(item, exc, args, kwargs, event)
                 raise
             _emit(item, digest, "ok", event)
             return result
