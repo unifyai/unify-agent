@@ -268,7 +268,10 @@ def test_a_fork_stopped_by_its_wall_bound_keeps_its_files_but_hands_over_none(tm
 
 
 def test_the_fork_request_carries_the_recorded_part_list_after_the_cached_prefix(mv2, monkeypatch, lane):  # noqa: F811
-    from unify.memory.integration.consolidate import EpisodeLookup, open_stores
+    from unify.memory.blobs import BlobStore
+    from unify.memory.episodes import episode_dir, load_episode
+    from unify.memory.evidence import EvidenceStore
+    from unify.memory.gitio import Repo
     from unify.memory.writer_tools import part_names
 
     import unify.actor.code_act_actor as caa
@@ -297,7 +300,10 @@ def test_the_fork_request_carries_the_recorded_part_list_after_the_cached_prefix
     )
     _finish(mv2, run, consolidate=False)
     eid = run.episode_id
-    ep = EpisodeLookup(open_stores(mv2.paths)).episode(eid)
+    # the episode as recorded (read from the episodes repo; the request lifecycle's consolidate is a stand-in here)
+    sha, started_at = EvidenceStore(mv2.paths.evidence).episode_ref(eid)
+    rel = episode_dir(SimpleNamespace(episode_id=eid, started_at=started_at))
+    ep = load_episode(Repo(mv2.paths.episodes), sha, rel, BlobStore(mv2.paths.blobs))
     names = part_names(ep)
     assert "request" in names and len(names) > 1, names  # the fixture records more than the request
     (data,) = sent
