@@ -73,8 +73,9 @@ def test_library_first_message_points_to_the_index_and_no_library_json(
 
 @needs_bwrap
 def test_a_writer_cell_cannot_write_a_generated_path(tmp_path):
-    """Amendment C: memory/__init__.py, INDEX.md, links.json and .memory/ are read-only binds over the writable
-    box; a write fails at once with the ordinary OS error, and the rest of the box stays writable.
+    """Amendment C: memory/__init__.py (with memory/_contract.py and the stub memory/__init__.pyi), INDEX.md,
+    links.json and .memory/ are read-only binds over the writable box; a write fails at once with the ordinary OS
+    error, and the rest of the box stays writable.
     """
     box = _tree(tmp_path / "box")
     writer = WriterPass.__new__(WriterPass)
@@ -83,6 +84,8 @@ def test_a_writer_cell_cannot_write_a_generated_path(tmp_path):
     binds = WriterPass._generated_binds(box)
     assert set(binds.values()) == {
         "/memory/memory/__init__.py",
+        "/memory/memory/_contract.py",
+        "/memory/memory/__init__.pyi",
         "/memory/INDEX.md",
         "/memory/links.json",
         "/memory/.memory",
@@ -90,7 +93,8 @@ def test_a_writer_cell_cannot_write_a_generated_path(tmp_path):
     code = (
         "import errno\n"
         "out = []\n"
-        "for p in ('INDEX.md', 'links.json', 'memory/__init__.py', '.memory/items.json', '.memory/new.json'):\n"
+        "for p in ('INDEX.md', 'links.json', 'memory/__init__.py', 'memory/__init__.pyi', '.memory/items.json',"
+        " '.memory/new.json'):\n"
         "    try:\n"
         "        open(p, 'a').close()\n"
         "        out.append('wrote')\n"
@@ -105,5 +109,5 @@ def test_a_writer_cell_cannot_write_a_generated_path(tmp_path):
         cwd="/memory",
         late_ro=binds,
     )
-    assert r.stdout.strip() == str([errno.errorcode[errno.EROFS]] * 5), r.stderr
+    assert r.stdout.strip() == str([errno.errorcode[errno.EROFS]] * 6), r.stderr
     assert (box / "memory/text/new.py").read_text() == "x = 1\n"

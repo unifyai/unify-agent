@@ -303,6 +303,60 @@ def test_ask_without_the_tool_says_the_librarian_cannot_be_reached(tmp_path):
     assert json.loads(_py(off, "import json, memory\nprint(json.dumps(hasattr(memory, 'ask')))")) is False
 
 
+NEAREST_TOOLS = (
+    "import json, sys, types\n"
+    "tools = types.ModuleType('tools')\n"
+    "class Refused(Exception):\n"
+    "    pass\n"
+    "tools.Refused = Refused\n"
+    "def ask_library(question, facts=None):\n"
+    "    return json.dumps({'fits': [], 'nearest': [{'id': %r, 'differs': 'it sums a table; this counts rows'}]})\n"
+    "def refuse(question, facts=None):\n"
+    "    raise Refused('refused: the librarian is not available here (no session); nothing was asked')\n"
+    "def garbled(question, facts=None):\n"
+    "    return 'not json'\n"
+    "tools.ask_library = ask_library\n"
+    "sys.modules['tools'] = tools\n"
+) % NOTE
+
+
+def test_ask_gives_the_nearest_items_when_nothing_applies_and_errors_that_teach(tmp_path):
+    root = _copy(tmp_path)
+    code = (
+        NEAREST_TOOLS
+        + "import memory\n"
+        "def err(fn, *a):\n"
+        "    try:\n"
+        "        fn(*a)\n"
+        "    except Exception as exc:\n"
+        "        return [type(exc).__name__, str(exc)]\n"
+        "answer = memory.ask('How many rows does the table have?')\n"
+        "out = [list(answer), [[i.id, i.kind, i.reason] for i in answer.nearest], str(answer)]\n"
+        "out += [err(memory.ask, 3), err(memory.ask, '')]\n"
+        "tools.ask_library = refuse\n"
+        "out.append(err(memory.ask, 'q'))\n"
+        "tools.ask_library = garbled\n"
+        "out.append(err(memory.ask, 'q'))\n"
+        "print(json.dumps(out))\n"
+    )
+    fits, nearest, shown, number, empty, refused, garbled = json.loads(_py(root, code))
+    assert fits == [] and nearest == [[NOTE, "note", "it sums a table; this counts rows"]]
+    assert shown == f"Nothing in the library applies.\n- nearest {NOTE} (note): it sums a table; this counts rows\n"
+    example = "e.g. memory.ask('Total the amounts in the attached table by month.')."
+    expected = f"Expected request: str non-empty, {example}"
+    assert number == ["ArgumentError", f"memory.ask(3): request is 3 (int).\n{expected}"]
+    assert empty == ["ArgumentError", f"memory.ask(''): request is '' (str).\n{expected}"]
+    assert refused == [
+        "NotFound",
+        "memory.ask('q'): the librarian gave no answer (refused: the librarian is not available here (no session); "
+        "nothing was asked). Ask again later, or browse with memory.items() and open an item with memory.get(id).",
+    ]
+    assert garbled == [
+        "NotFound",
+        "memory.ask('q'): the librarian's answer could not be read. Ask again, or browse with memory.items().",
+    ]
+
+
 # --- the answer, the facts and the prompt ------------------------------------------------------------------------
 
 IDS_IN_ORDER = [COUNT, READ_ROWS, TOTAL, "capture:" + CAPTURE, "capture:" + FAILED]
