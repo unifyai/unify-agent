@@ -1184,8 +1184,10 @@ def profile_conflicts(settings: Any) -> list[str]:
     out: list[str] = []
     given = getattr(settings, "model_fields_set", None)
     model = _stripped(getattr(settings, WRITER_MODEL, ""))
-    # a setting given at all (the environment or an argument); without that record, a value other than the default
-    explicit = WRITER_MODEL in given if isinstance(given, (set, frozenset)) else model not in ("", WRITER_MODEL_DEFAULT)
+    # a value other than the default, or the default given explicitly where the settings record what was given
+    explicit = model not in ("", WRITER_MODEL_DEFAULT) or (
+        isinstance(given, (set, frozenset)) and WRITER_MODEL in given
+    )
     actor = _stripped(getattr(settings, "UNIFY_MODEL", ""))
     if explicit and model and (not actor or _endpoint(model) != _endpoint(actor)):
         out.append(WRITER_MODEL)
