@@ -398,7 +398,8 @@ def test_events_start_and_end_with_decimal_money_and_the_inherited_effort(
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
     got: list[dict] = []
-    ticks = iter([100.0, 102.5])
+    # the pass's start, its one model call's progress row, its end
+    ticks = iter([100.0, 101.0, 102.5])
     out = asyncio.run(
         run_due_passes(
             stores,
@@ -412,7 +413,11 @@ def test_events_start_and_end_with_decimal_money_and_the_inherited_effort(
         ),
     )
     assert len(out) == 1 and fake.made == [("openai/gpt-6-sol", "medium")]
-    start, end = got
+    (turn,) = [g for g in got if g["phase"] == "turn"]
+    assert turn == {
+        "type": "consolidation", "phase": "turn", "pass_id": "e1.p0", "seconds": 1.0, "turn": 1, "returned": True,
+    }
+    start, end = [g for g in got if g["phase"] not in consolidate.PROGRESS_PHASES]
     assert start == {
         "type": "consolidation",
         "phase": "start",
@@ -443,8 +448,10 @@ def test_events_start_and_end_with_decimal_money_and_the_inherited_effort(
         "items_merged",
         "items_refused",
         "episodes",
+        "result",
     }
     assert end["phase"] == "end" and end["pass_id"] == "e1.p0"
+    assert end["result"] == "abandoned"  # no manifest: nothing landed, and not the writer's own "nothing to store"
     assert end["usd"] == "0.0000001" and MONEY.match(end["usd"])
     assert (end["calls"], end["unknown_cost_calls"], end["seconds"]) == (1, 0, 2.5)
     assert end["checks"] == 0
@@ -454,7 +461,7 @@ def test_events_start_and_end_with_decimal_money_and_the_inherited_effort(
         int,
     )
     assert end["items_merged"] == [] and end["items_refused"] == {}
-    assert _events(stores) == got  # the same rows, always appended to the events file
+    assert _events(stores, progress=True) == got  # the same rows, always appended to the events file
     assert events_path(stores.paths) == stores.paths.state_dir / "events.jsonl"
     for line in events_path(stores.paths).read_text().splitlines():
         assert not re.search(r"[0-9][eE][-+]?[0-9]", line)
