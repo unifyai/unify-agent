@@ -279,3 +279,37 @@ def test_a_journal_without_its_header_is_kept_aside_and_never_retried(home):
     home.ctx.run(run.abort)
     assert run.recovered == [] and not torn.exists()
     assert (home.paths.journal / (torn.name + journal_mod.UNRECORDED)).read_text() == '{"type": "mess'
+
+
+def test_an_episode_that_could_not_be_recorded_keeps_its_journal_for_the_next_start(home, monkeypatch):
+    from unify.memory import episodes
+
+    real = episodes.EpisodeWriter.write
+    failed: list[str] = []
+
+    def write_once_broken(self, ep):
+        if not failed:
+            failed.append(ep.episode_id)
+            raise RuntimeError("the episodes repo is unavailable")
+        return real(self, ep)
+
+    monkeypatch.setattr(episodes.EpisodeWriter, "write", write_once_broken)
+    run = home.ctx.run(request_mod.RequestRun.begin, REQUEST)
+    try:
+        _publish(home, TURNS)
+        with asyncio.Runner() as runner:
+            runner.run(run.finish(None, progress=lambda _t: None, consolidate=False), context=home.ctx)
+    finally:
+        home.ctx.run(run.abort)  # after finish: changes nothing
+    assert failed == [run.episode_id]
+    assert [p.name for p in _journals(home.paths)] == [f"{run.episode_id}.jsonl"]
+    assert [json.loads(x)["stage"] for x in home.paths.errors.read_text().splitlines()] == ["episode"]
+
+    again = home.ctx.run(request_mod.RequestRun.begin, "the next request")
+    home.ctx.run(again.abort)
+    assert again.recovered == [run.episode_id] and _journals(home.paths) == []
+    _, _, ep = _recorded(home.paths, run.episode_id)
+    assert ep.incomplete["reason"] == journal_mod.UNKNOWN_REASON
+    assert [r["message"]["role"] for r in ep.transcript if r.get("type") == "message"] == [
+        t["role"] for t in TURNS
+    ]
