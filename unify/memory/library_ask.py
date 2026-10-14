@@ -9,7 +9,8 @@
 # (:func:`_facts`, defined above with ``match``). The values the readers give stay in that child: only the outcomes
 # come back. Then the question (the given one, else the request's text) and those outcomes go to the librarian through
 # ``tools.ask_library``; its answer comes back as JSON text, which this section reads into a list of :class:`Item`,
-# each with the librarian's reason. The call raises ``memory.helper_call`` with the id ``memory:ask`` (asking is never
+# each with the librarian's reason (marked ``already_given`` when the host returned the answer the librarian already
+# gave in this request to the same question with the same outcomes). The call raises ``memory.helper_call`` with the id ``memory:ask`` (asking is never
 # a use) and ``memory.ask_result`` with the ids the answer lists, whether it said nothing fits, and the outcomes (ids,
 # labels and, for a reader that gave no outcome, a fixed short reason; never text or values).
 
@@ -56,6 +57,9 @@ if "wrap_call" not in globals():  # imported as a harness module of its own, not
 ASK_EVENT = "memory.ask_result"
 #: The tool the question goes through (the host's librarian session for this request).
 ASK_TOOL = "ask_library"
+#: The field of a reply that is an answer the librarian already gave in this request (the host's
+#: ``librarian.ALREADY_GIVEN``).
+_ALREADY_GIVEN = "already_given"
 #: The fact fields the question carries to the host (a reader's reason for giving no outcome goes in the audit event).
 _SENT = ("id", "reader", "read", "applies")
 
@@ -66,17 +70,23 @@ class Answer(list):
     """What ``memory.ask`` returns: a list of :class:`Item`, every item the librarian judged applicable, each with
     its ``reason``. When nothing applies the list is empty and ``nearest`` holds the items the librarian named as
     nearest, each with what differs as its ``reason``. ``note`` says what the answer could not use (the current
-    request, a reader that gave no outcome); ``asked`` is False when nothing could be asked. It prints as a few
-    lines."""
+    request, a reader that gave no outcome); ``asked`` is False when nothing could be asked; ``already_given`` is True
+    when this is the answer the librarian already gave in this request (the same question and outcomes). It prints
+    as a few lines."""
 
-    def __init__(self, fits: list, nearest: list = (), note: str = "", asked: bool = True) -> None:
+    def __init__(
+        self, fits: list, nearest: list = (), note: str = "", asked: bool = True, already_given: bool = False,
+    ) -> None:
         super().__init__(fits)
         self.nearest = list(nearest)
         self.note = note
         self.asked = asked
+        self.already_given = already_given
 
     def __repr__(self) -> str:
         out: list = []
+        if self.already_given:
+            out.append("The librarian already gave this answer in this request.")
         if not self.asked:
             out.append(self.note)
         elif self:
@@ -139,7 +149,9 @@ def ask(question: Annotated[str, MinLen(1)] | None = None) -> list[Item]:
     librarian has read every item, what each was built for and how each has been used. Before the question goes,
     each stored reader runs once on the current request's text in a separate confined process, and the librarian is
     told only whether each parsed it and whether each stated condition held, never what they read. You may ask
-    again, with the same question or another. Nothing is run on your behalf, and nothing is ranked.
+    again, with the same question or another; asked the same question again with the same outcomes, it returns the
+    answer the librarian already gave in this request, marked as such. Nothing is run on your behalf, and nothing
+    is ranked.
 
     Args:
         question: a question of your own (non-empty); None asks about the current request itself.
@@ -147,6 +159,7 @@ def ask(question: Annotated[str, MinLen(1)] | None = None) -> list[Item]:
     Returns:
         Every item the librarian judged applicable, each an Item with ``.reason``; [] when nothing applies (the
         list's ``.nearest`` then holds the nearest items, each with what differs as its ``.reason``).
+        ``.already_given`` is True when it is the answer already given in this request.
 
     Raises:
         ArgumentError: question is not a non-empty str.
@@ -206,9 +219,15 @@ def ask(question: Annotated[str, MinLen(1)] | None = None) -> list[Item]:
     fits, nearest = _named(data.get("fits"), "why"), _named(data.get("nearest"), "differs")
     listed = tuple(iid for iid, _ in fits)
     _emit_event(ASK_EVENT, listed, not listed, _fact_rows(facts))
+    again = data.get(_ALREADY_GIVEN) is True
     return _guard(
         call,
-        lambda: Answer(_answer_items(fits, call), _answer_items(nearest, call) if not fits else [], " ".join(notes)),
+        lambda: Answer(
+            _answer_items(fits, call),
+            _answer_items(nearest, call) if not fits else [],
+            " ".join(notes),
+            already_given=again,
+        ),
     )
 
 

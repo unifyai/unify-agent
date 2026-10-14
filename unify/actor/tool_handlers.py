@@ -472,7 +472,9 @@ async def store_skills(ctx: Any, args: dict) -> Any:
 async def ask_library(ctx: Any, args: dict) -> Any:
     """One question to the request's librarian (``memory.ask`` sends it with the recognisers' outcomes): the session
     is opened at the request's first question and kept for its follow-ups; the reply is the librarian's checked
-    answer as JSON text. The facts are checked against the copy's dispatch file before the librarian reads them."""
+    answer as JSON text. The facts are checked against the copy's dispatch file before the librarian reads them. A
+    question it already answered about the current request, with the same facts, gets that answer again, marked as
+    already given, with no model call (``LibrarianSession.ask``)."""
     question = args.get("question")
     if not isinstance(question, str) or not question.strip():
         return _refused(refusal("ask_library", "no_question"))
@@ -491,8 +493,12 @@ async def ask_library(ctx: Any, args: dict) -> Any:
         state.librarian = session
     from unify.memory import librarian as _librarian
 
+    # the current request, as current_request gives it to the cells: part of what an answer answered
+    request = getattr(state, "request_text", None)
+    if not isinstance(request, str) or not request:
+        request = _memory_run_request() if getattr(ctx, "agent", None) == "actor" else None
     try:
-        text = await session.ask(question, args.get("facts") or [])
+        text = await session.ask(question, args.get("facts") or [], request=request)
     except _librarian.NoAnswer as exc:
         return _refused(refusal("ask_library", "no_answer", why=str(exc)[:300]))
     return _reply(text)

@@ -786,7 +786,7 @@ async def test_a_librarian_that_never_answers_is_a_refusal_not_a_crash(tmp_path,
     class Silent:
         questions = 0
 
-        async def ask(self, question, facts):
+        async def ask(self, question, facts, request=None):
             raise L.NoAnswer("no progress")
 
     state = H.ActorRequestState(librarian=Silent())
