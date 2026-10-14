@@ -93,6 +93,8 @@ class EpisodeJournal:
         fd = os.open(journal.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND | os.O_CLOEXEC, 0o600)
         journal._fd = fd
         row = {"type": HEADER, **{k: header.get(k) for k in _FIELDS}, "library_mode": bool(header.get("library_mode"))}
+        if header.get("profile"):  # UNIFY_PROFILE, only when set: a default run's header is as before
+            row["profile"] = str(header["profile"])
         try:
             journal._write(json.dumps(redactor().obj(row), ensure_ascii=False, default=str))
         except BaseException:
@@ -244,6 +246,7 @@ def _record(path: Path, stores: Any, library_index: Callable[[Any, Any], None] |
         effort=str(header.get("effort") or ""),
         pin=str(header.get("memory_main") or ""),
         request=str(header.get("request") or ""),
+        profile=str(header.get("profile") or ""),
         observer=None,
         costs=None,
     )

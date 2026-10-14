@@ -111,6 +111,8 @@ class Episode:
     # ``{"reason": "unknown", "recovered_at": ...}`` in ``meta.json``; None (no key) for an episode its request
     # finished.
     incomplete: dict | None = None
+    # The run's ``UNIFY_PROFILE`` (``paper``), in ``meta.json`` only when set; empty (no key) for today's behaviour.
+    profile: str = ""
 
 
 def episode_dir(ep: Episode) -> str:
@@ -204,6 +206,8 @@ class EpisodeWriter:
         }
         if ep.incomplete is not None:
             meta["incomplete"] = ep.incomplete
+        if ep.profile:
+            meta["profile"] = ep.profile
         actions = []
         for a in ep.actions:
             row = r.obj(asdict(a))

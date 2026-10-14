@@ -76,6 +76,16 @@ and read only while ``UNIFY_MEMORY`` is on:
 - ``UNIFY_MEMORY_QA_FIXTURE_SIZE``: ``on``, ``off`` or empty. A bound on test files, blob references and
   truncation markers.
 
+The comparison profile:
+
+- ``UNIFY_PROFILE``: empty (today's behaviour) or ``paper``: the one setting every reported row runs under. With
+  ``paper`` the memory writer runs on the actor's model (:func:`.request.actor_model`), at the actor's effort,
+  through the actor's provider route and credential path (no writer route of its own), and no ``{"checker": ...}``
+  line is taken. Its budget is the cell's own settings (E, the allowance and the effort scale), unchanged. A paper run that
+  also sets a setting the profile fixes to another value (:func:`profile_conflicts`: the writer's model, route,
+  token or token descriptor, its effort, the checker line) is refused before anything runs, naming the settings,
+  never a value. The profile is recorded in each episode's meta and each pass's start event.
+
 Not switched (a declared safety fix in every mode): the gate refuses bytecode, native code, start-up hooks
 and root entries other than ``env/``, ``workflows/`` and the test kit before extraction
 (:func:`unify.memory.manifest.unsafe_path`), and changes to the paths the harness reserves for its
@@ -129,6 +139,7 @@ QA_MIN_KILL = "UNIFY_MEMORY_QA_MUTATION_MIN_KILL"
 QA_DETERMINISM = "UNIFY_MEMORY_QA_DETERMINISM"
 QA_REPLAY = "UNIFY_MEMORY_QA_REPLAY"
 QA_FIXTURE_SIZE = "UNIFY_MEMORY_QA_FIXTURE_SIZE"
+PROFILE = "UNIFY_PROFILE"
 
 EXPERIENCE_BUDGET_DEFAULT = 150000
 WRITER_MODEL_DEFAULT = "openai/gpt-6-sol"
@@ -1114,9 +1125,92 @@ def writer_journal(settings: Any) -> str | None:
 
 def checker_visible(settings: Any) -> bool:
     """The bed's declaration ``checker_visible_to_actor``: whether the checker's verdict is one
-    the actor itself sees. Only then does the item lifecycle count checker signals. Missing is off. The one
-    switch the checker-line reader reads too."""
+    the actor itself sees. Only then does the item lifecycle count checker signals. Missing is off; always off under
+    the paper profile. The one switch the checker-line reader reads too."""
+    if paper_profile(settings):
+        return False
     return parse_checker_visible(getattr(settings, CHECKER_VISIBLE, "") or "") == "on"
+
+
+# --- the comparison profile -----------------------------------------------------------------------------------
+
+#: The profiles: empty (today's behaviour) and the one every reported row runs under.
+PAPER = "paper"
+PROFILES = ("", PAPER)
+#: The settings the paper profile fixes, in the order a refusal names them.
+PAPER_FIXED = (WRITER_MODEL, WRITER_BASE_URL, WRITER_TOKEN, WRITER_TOKEN_FD, WRITER_EFFORT, CHECKER_VISIBLE)
+
+
+def parse_profile(v: Any) -> str:
+    """``UNIFY_PROFILE``: empty (today's behaviour) or ``paper``."""
+    value = _stripped(v).lower()
+    if value not in PROFILES:
+        raise ValueError(f"{PROFILE} must be empty or {PAPER!r}, not {v!r}"[:200])
+    return value
+
+
+def profile(settings: Any) -> str:
+    """The run's profile in *settings* (missing is empty)."""
+    return parse_profile(getattr(settings, PROFILE, "") or "")
+
+
+def paper_profile(settings: Any) -> bool:
+    """Whether the run is under the paper profile."""
+    return profile(settings) == PAPER
+
+
+def _endpoint(model: str) -> str:
+    """A model id as an endpoint (a bare id is an OpenRouter one, as the writer's client reads it)."""
+    return model if "@" in model else f"{model}@openrouter"
+
+
+def profile_conflicts(settings: Any) -> list[str]:
+    """The settings in :data:`PAPER_FIXED` that a paper run sets to another value than the profile gives them, by
+    name, in that order (empty under any other profile). The profile gives: the writer's model, the actor's
+    (``UNIFY_MODEL``; a writer model set to that same model is no conflict); no writer route, token or token
+    descriptor (the writer takes the actor's route and credential path); the writer's effort, ``actor``; the
+    checker line, off. Names only: no value is read into the result."""
+    if not paper_profile(settings):
+        return []
+    out: list[str] = []
+    given = getattr(settings, "model_fields_set", None)
+    model = _stripped(getattr(settings, WRITER_MODEL, ""))
+    # a setting given at all (the environment or an argument); without that record, a value other than the default
+    explicit = WRITER_MODEL in given if isinstance(given, (set, frozenset)) else model not in ("", WRITER_MODEL_DEFAULT)
+    actor = _stripped(getattr(settings, "UNIFY_MODEL", ""))
+    if explicit and model and (not actor or _endpoint(model) != _endpoint(actor)):
+        out.append(WRITER_MODEL)
+    if _stripped(getattr(settings, WRITER_BASE_URL, "")):
+        out.append(WRITER_BASE_URL)
+    token = getattr(settings, WRITER_TOKEN, "")
+    if _stripped(token.get_secret_value() if isinstance(token, SecretStr) else token):
+        out.append(WRITER_TOKEN)
+    if _stripped(getattr(settings, WRITER_TOKEN_FD, "")):
+        out.append(WRITER_TOKEN_FD)
+    try:
+        effort = parse_writer_effort(getattr(settings, WRITER_EFFORT, "") or "")
+    except ValueError:
+        effort = ""
+    if effort != WRITER_EFFORT_DEFAULT:
+        out.append(WRITER_EFFORT)
+    try:
+        checker = parse_checker_visible(getattr(settings, CHECKER_VISIBLE, "") or "")
+    except ValueError:
+        checker = ""
+    if checker != "off":
+        out.append(CHECKER_VISIBLE)
+    return out
+
+
+def profile_refusal(settings: Any) -> str | None:
+    """Why this run may not start under its profile (the settings named, never a value), or None."""
+    bad = profile_conflicts(settings)
+    if not bad:
+        return None
+    return (
+        f"{PROFILE}={PAPER} fixes {', '.join(bad)} (the writer runs on the actor's model, route, credential path and "
+        "effort, and no checker line is taken); unset them, so nothing runs"
+    )
 
 
 @dataclass(frozen=True)
@@ -1259,6 +1353,7 @@ PARSERS = {
     WRITER_PRICES: parse_writer_prices,
     LIBRARY_PASS_WALL_S: parse_library_pass_wall_s,
     WRITER_JOURNAL: parse_writer_journal,
+    PROFILE: parse_profile,
 }
 
 

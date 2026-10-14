@@ -104,6 +104,16 @@ def actor_model() -> str:
     return resolve_default_model()[0]
 
 
+def check_profile(settings: Any) -> None:
+    """Refuse a run that sets a setting its profile fixes to another value (:func:`.switch.profile_refusal`: the
+    settings are named, never a value)."""
+    from .switch import profile_refusal
+
+    refusal = profile_refusal(settings)
+    if refusal is not None:
+        raise MemoryUnavailable(refusal)
+
+
 def check_library_switches(settings: Any) -> None:
     """Refuse a library-mode run whose v2 settings contradict its prompts or gate (switch.LIBRARY_CONFLICTS)."""
     from .switch import library_conflicts
@@ -119,9 +129,13 @@ def check_library_switches(settings: Any) -> None:
 
 def writer_effort(actor: str) -> str:
     """The writer's effort for this run: ``UNIFY_MEMORY_WRITER_EFFORT`` when it fixes one (a declared mismatch
-    ablation), else the actor's (*actor*; the default ``actor``)."""
+    ablation), else the actor's (*actor*; the default ``actor``). Always the actor's under the paper profile."""
     from unify.settings import SETTINGS
 
+    from .switch import paper_profile
+
+    if paper_profile(SETTINGS):
+        return actor
     value = (
         str(getattr(SETTINGS, "UNIFY_MEMORY_WRITER_EFFORT", "") or "actor")
         .strip()
@@ -210,13 +224,14 @@ def librarian_on() -> bool:
 
 def checker_visible_on() -> bool:
     """Whether the CLI takes ``{"checker": ...}`` lines: ``UNIFY_MEMORY_LIBRARY`` and
-    ``UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE`` both on."""
+    ``UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE`` both on, and not the paper profile."""
     from unify.settings import SETTINGS
 
-    from .switch import CHECKER_VISIBLE, parse_checker_visible
+    from .switch import CHECKER_VISIBLE, paper_profile, parse_checker_visible
 
     return (
         memory_library_on()
+        and not paper_profile(SETTINGS)
         and parse_checker_visible(getattr(SETTINGS, CHECKER_VISIBLE, "") or "") == "on"
     )
 
@@ -971,6 +986,8 @@ class RequestRun:
         self.model = ""
         self.effort = ""
         self.build = ""
+        # UNIFY_PROFILE (empty: today's behaviour), recorded in the episode's meta when set
+        self.profile = ""
         self.stores: Any = None
         self.state: Any = None
         # The tool adapter is not wired in this build (deferred): ``assemble`` records no tool calls.
@@ -1028,11 +1045,13 @@ class RequestRun:
         from . import consolidate, cost, worktree_capture
         from .checkout import export_checkout
         from .state import State
-        from .switch import surfacing_options, library_enabled
+        from .switch import library_enabled, profile, surfacing_options
 
         paths = self.paths
         policy = sandbox.build_policy(fresh=True)
         check_hidden(paths, policy)
+        check_profile(SETTINGS)
+        self.profile = profile(SETTINGS)
         self.library_mode = library_enabled(SETTINGS)
         if (
             self.library_mode
@@ -1131,6 +1150,8 @@ class RequestRun:
             "request": self.request,
             # the record format the episode writer uses (memory_library_on, as at finish)
             "library_mode": memory_library_on(),
+            # UNIFY_PROFILE, only when set (a default run's header is as before)
+            **({"profile": self.profile} if self.profile else {}),
         }
         try:
             self.journal = journal.EpisodeJournal.open(self.paths.journal, header, self.redactor)

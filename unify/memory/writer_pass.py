@@ -922,6 +922,10 @@ class PassOutcome:
     cache_read_tokens: int | None = None
     input_tokens_calls: int = 0
     cache_read_calls: int = 0
+    # the output tokens (reasoning included, as providers count them) summed over the calls that reported them (None:
+    # no call did), and how many calls did
+    output_tokens: int | None = None
+    output_tokens_calls: int = 0
     writer_calls: int = 0
     # the first writer call's prompt tokens (the brief and the first message, before any reading); None: unreported
     writer_first_prompt_tokens: int | None = None
@@ -2250,6 +2254,8 @@ class WriterPass:
         self._max_prompt: int | None = None
         # input, cache read, calls that reported input, calls that reported cache read, calls counted
         self._cache_tokens: list[int] = [0, 0, 0, 0, 0]
+        # output tokens, calls that reported them
+        self._output_tokens: list[int] = [0, 0]
         # the first counted call's prompt tokens: (counted, value)
         self._first_prompt: tuple[bool, int | None] = (False, None)
         # with staging on, one end-event row per batch episode (summaries.episode_row), filled when staging is listed
@@ -2339,11 +2345,14 @@ class WriterPass:
         return lines
 
     def _count_cache(self, usage: dict) -> None:
-        """Count a model call: add its prompt tokens and its cache-read tokens to the pass's sums, each when it
+        """Count a model call: add its prompt, cache-read and output tokens to the pass's sums, each when it
         reported it; keep the largest prompt any call reported and the first call's prompt."""
-        inp, cached = usage.get("input"), usage.get("cache_read")
+        inp, cached, out = usage.get("input"), usage.get("cache_read"), usage.get("output")
         inp = inp if isinstance(inp, int) and not isinstance(inp, bool) else None
         cached = cached if isinstance(cached, int) and not isinstance(cached, bool) else None
+        if isinstance(out, int) and not isinstance(out, bool):
+            self._output_tokens[0] += out
+            self._output_tokens[1] += 1
         self._cache_tokens[4] += 1
         if not self._first_prompt[0]:
             self._first_prompt = (True, inp)
@@ -4239,6 +4248,7 @@ class WriterPass:
         self._tools_json, self._archived = [], []
         self._compaction = {"compactions": 0, "chars_moved": 0, "messages_moved": 0}
         self._cache_tokens = [0, 0, 0, 0, 0]
+        self._output_tokens = [0, 0]
         self._first_prompt = (False, None)
         self._staging_episodes = None
         self._max_prompt = None
@@ -4485,6 +4495,9 @@ class WriterPass:
                 if self._cache_tokens[3]:
                     o.cache_read_tokens = self._cache_tokens[1]
                 o.input_tokens_calls, o.cache_read_calls = self._cache_tokens[2], self._cache_tokens[3]
+                if self._output_tokens[1]:
+                    o.output_tokens = self._output_tokens[0]
+                o.output_tokens_calls = self._output_tokens[1]
                 o.writer_calls = self._cache_tokens[4]
                 o.writer_first_prompt_tokens = self._first_prompt[1]
                 o.finished = bool(phase["finish_accepted"])

@@ -449,6 +449,12 @@ class ProductionSettings(BaseSettings):
     # ``{"checker": {"label": ...}}`` stdin line records the verdict the bed
     # showed the actor as an agent-visible checker signal. Off: refused.
     UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE: str = "off"
+    # The comparison profile: empty (default: today's behaviour) or ``paper``, the one setting every reported row
+    # runs under: the memory writer on the actor's model, at the actor's effort, through the actor's route and
+    # credential path, and no checker line. A paper run that also sets one of those settings to another value is
+    # refused before anything runs (unify/memory/integration/switch.py, ``profile_conflicts``). Recorded in each
+    # episode's meta and each pass's start event.
+    UNIFY_PROFILE: str = ""
     # The library mode's E (recorded tokens at which a pass becomes due), one pass's wall-clock bound (s), and the
     # writer route proxy's journal (absolute path; empty: none) used only to reconcile cancelled calls.
     UNIFY_MEMORY_LIBRARY_E: int = 100000
@@ -768,6 +774,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_QA_DETERMINISM",
         "UNIFY_MEMORY_QA_REPLAY",
         "UNIFY_MEMORY_QA_FIXTURE_SIZE",
+        "UNIFY_PROFILE",
         mode="before",
     )
     @classmethod
