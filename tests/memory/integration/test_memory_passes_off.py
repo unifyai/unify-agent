@@ -5,7 +5,7 @@ names bound in its cells), and after a request nothing of memory runs: no pass (
 due) starts, no writer call is made, the episode-end fork does not start, and the library never changes. Every other
 memory setting keeps its value. The episode is recorded as before, its meta saying ``"memory_passes": "off"``.
 
-No model is called: turns, the fork and the pass worker are spies.
+No model is called: turns, the fork and the pass worker are spies; the request runs on the real tracks.
 """
 
 from __future__ import annotations
@@ -18,10 +18,17 @@ from types import SimpleNamespace
 import pytest
 
 from tests.memory.integration import test_consolidate as tc
-from tests.memory.integration.test_request import _begin, _finish, _transcript, mv2  # noqa: F401
-from tests.memory.test_episodes import _ep
+from tests.memory.integration.test_episode_journal import (  # noqa: F401 (the home fixture)
+    REQUEST,
+    TURNS,
+    _publish,
+    _recorded,
+    home,
+)
+from tests.memory.test_batch_map import _ep
 from unify.memory.gitio import Repo
 from unify.memory.integration import async_pass as ap
+from unify.memory.integration import request as request_mod
 from unify.memory.integration import consolidate, hooks, switch
 from unify.memory.integration import fork as fork_mod
 from unify.memory.integration.paths import Paths
@@ -99,9 +106,16 @@ def _surface(run) -> dict:
     }
 
 
+def _finish(env, run) -> list[dict]:
+    emitted: list[dict] = []
+    with asyncio.Runner() as runner:
+        runner.run(run.finish(None, progress=lambda _t: None, emit=emitted.append), context=env.ctx)
+    return emitted
+
+
 @pytest.mark.parametrize("passes", ["on", "off"])
 def test_a_request_with_a_capture_runs_no_memory_work_when_off_and_keeps_its_surface(  # noqa: F811
-    mv2,
+    home,
     monkeypatch,
     passes,
 ):
@@ -112,29 +126,34 @@ def test_a_request_with_a_capture_runs_no_memory_work_when_off_and_keeps_its_sur
     monkeypatch.setattr(fork_mod, "start", lambda *a, **k: work.append("fork"))
     monkeypatch.setattr(ap, "maybe_spawn", lambda *a, **k: work.append("pass") or {"phase": "not_due"})
     monkeypatch.setattr(consolidate, "unillm_turn", lambda *a, **k: work.append("writer call"))
-    # the surface with passes on, from a request that is then abandoned
-    probe = _begin(mv2, "Double 21.")
-    on_surface = _surface(probe)
-    mv2.ctx.run(probe.abort)
+    # the surface with passes on, from a request that is then abandoned before it records anything
+    probe = home.ctx.run(request_mod.RequestRun.begin, REQUEST)
+    try:
+        on_surface = _surface(probe)
+    finally:
+        home.ctx.run(probe._drop_journal)
+        home.ctx.run(probe.abort)
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_PASSES", passes)
-    memory = Repo(mv2.paths.memory)
+    memory = Repo(home.paths.memory)
     before = memory.head()
-    run = _begin(mv2, "Double 21.")
-    assert _surface(run) == on_surface  # the actor's memory surface does not depend on the switch
-    _transcript(run)
-    # the episode carries a verdict: a capture the driver posted
-    assert run.take_outcome({"solved": True})["accepted"] is True
-    _progress, emitted = _finish(mv2, run)
+    run = home.ctx.run(request_mod.RequestRun.begin, REQUEST)
+    try:
+        assert _surface(run) == on_surface  # the actor's memory surface does not depend on the switch
+        _publish(home, TURNS)
+        # the episode carries a verdict: a checked outcome the driver posted
+        assert run.take_outcome({"solved": True})["accepted"] is True
+        emitted = _finish(home, run)
+    finally:
+        home.ctx.run(run.abort)
     if passes == "off":
         assert work == []
         assert [e for e in emitted if e.get("type") == "consolidation"] == []
-        assert not (Path(mv2.paths.state_dir) / "memory-staging").exists()
+        assert not (Path(home.paths.state_dir) / "memory-staging").exists()
     else:
         assert work == ["fork", "pass"]  # the same request with passes on: the fork and the pass worker start
     assert memory.head() == before  # the library never changed
-    repo = Repo(mv2.paths.episodes)
-    names = repo.run("ls-tree", "-r", "--name-only", "main").split()
-    (meta_path,) = [n for n in names if n.endswith(f"/{run.episode_id}/meta.json")]
-    meta = json.loads(repo.show("main", meta_path))
+    repo, rel, ep = _recorded(home.paths, run.episode_id)
+    meta = json.loads(repo.show("main", f"{rel}/meta.json"))
+    assert ep.memory_passes == ("off" if passes == "off" else "")
     assert meta.get("memory_passes") == ("off" if passes == "off" else None)
     assert ("memory_passes" in meta) is (passes == "off")
