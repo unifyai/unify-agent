@@ -675,13 +675,14 @@ AGENT_PROFILES: tuple[dict, ...] = (
     },
     {
         # UNIFY_MEMORY_LIBRARIAN=on: one session per actor request, on the actor's model and effort, answering which
-        # stored items fit the actor's questions (memory.ask); its system prompt holds the whole catalogue
+        # stored items fit the actor's questions (memory.ask); its system prompt is constant (a pointer to the
+        # library's layout), and it finds items with search, read and grep
         "agent": "librarian",
         "mode": "librarian",
         "instructions": "unify.memory.librarian:system_prompt",
-        "tools": [],
+        "tools": ["search", "read", "grep", "finish"],
         "json_tools": list(_JSON_TOOLS),
-        "in_code": ["finish"],
+        "in_code": ["search", "read", "grep", "finish"],
         "in_cells": ["memory.get"],
         # the actor's library copy, read-only; no write root, no network
         "mounts": [{"path": "/memory", "mode": "ro"}],
@@ -692,15 +693,24 @@ AGENT_PROFILES: tuple[dict, ...] = (
         ],
         "produces": [{"artifact": "librarian answer", "path": "tools.finish(answer)", "consumer": "actor"}],
         "limits": [{"limit": "cell time", "value": 60, "unit": "s"}],
-        "inlined": [{"what": "the brief and the library's catalogue (constant per library commit)", "bound": {}}],
+        "inlined": [{"what": "the brief: a pointer to the library's layout (constant)", "bound": {}}],
         "capabilities": ["read the library copy read-only", "run Python in its own box"],
         "absent_paths": ["/inputs", "/workspace", "<state>"],
         "expectations": [
-            {"expectation": "open an item's source before answering", "tool": "memory.get", "permission": "/memory ro"},
+            {"expectation": "search the items' when-to-use text first", "tool": "search", "permission": "/memory ro"},
+            {
+                "expectation": "read an item's when-to-use section before naming it",
+                "tool": "read",
+                "permission": "/memory ro",
+            },
         ],
         "fields": ["ask_calls", "ask_rows", "listed_by_ask"],
         "emits": [],
-        "pointers": [{"pointer": "an item's source", "tool": "memory.get"}],
+        "pointers": [
+            {"pointer": "the items closest to a situation", "tool": "search"},
+            {"pointer": "a file of the library", "tool": "read"},
+            {"pointer": "a name or a call in the library", "tool": "grep"},
+        ],
     },
     {
         "agent": "gate",

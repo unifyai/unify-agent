@@ -1163,7 +1163,7 @@ ASK_LIBRARY = RegisteredTool(
     name="ask_library",
     summary="ask the librarian which stored items fit a question (memory.ask calls it).",
     description=(
-        "Ask the librarian, an agent that has read the library's whole catalogue, which stored items fit a "
+        "Ask the librarian, an agent that searches and reads the library, which stored items fit a "
         "question, with the outcomes of the stored readers and conditions on the text of your current request. "
         "`memory.ask()` computes those outcomes in your cell and calls this for you (`memory.ask(question)` asks a "
         "question of your own). The answer is JSON: "
@@ -1207,6 +1207,40 @@ ASK_LIBRARY = RegisteredTool(
     when="Call memory.ask() rather than this tool: it adds the stored readers' outcomes on your current request.",
     kind="action",
     handler="unify.actor.tool_handlers:ask_library",
+)
+
+SEARCH = RegisteredTool(
+    name="search",
+    summary="find the library's items whose when-to-use text is closest to a situation.",
+    description=(
+        "Rank every item of the library (functions, notes and captured procedures) by how close its \"When to "
+        "use\" text is to the query: by meaning when the library has an embedding index, else by the words they "
+        "share, and the result says which. Each line is one item: its rank, its path under /memory (for read), "
+        "its id, kind and score, and its one-line card; a procedure with a recipe has on its card the call that "
+        "applies it to the agent's current request. Every item is listed, best first, one page of 8000 bytes at a "
+        "time; the last line names the offset of the next page."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "The situation, in words: the request or a part of it."},
+            "offset": {"type": "integer", "description": "The rank to start the page at (0: the best)."},
+        },
+        "required": ["query"],
+        "additionalProperties": False,
+    },
+    refusals={"no_query": "query must be a non-empty string; nothing was searched"},
+    roles=(_L,),
+    returns="the ranking as text: how it was ranked, then one line per item, best first.",
+    examples=('print(tools.search("total the amounts of a table of orders"))',),
+    when=(
+        "Search first, with the situation the question describes; then read the README of the folder and the "
+        "When to use section of each item you might name."
+    ),
+    kind="reader",
+    handler="unify.memory.librarian:search",
+    deadline_s=120.0,
+    blocking=True,
 )
 
 #: The current request for the ``memory`` package (``memory.ask()`` and ``memory.match()`` read it): on the channel
@@ -1309,6 +1343,26 @@ _LIBRARIAN_ANSWER = {
     "required": ["answer"],
     "additionalProperties": False,
 }
+#: The librarian's read and grep: paths inside the library only.
+_LIBRARY_READ = {
+    "type": "object",
+    "properties": {
+        "path": {"type": "string", "description": "A file or folder of the library, under /memory."},
+        "offset": _OFFSET,
+    },
+    "required": ["path"],
+    "additionalProperties": False,
+}
+_LIBRARY_GREP = {
+    "type": "object",
+    "properties": {
+        "pattern": {"type": "string", "description": "A Python regular expression."},
+        "path": {"type": "string", "description": "A file or folder of the library to search; default /memory."},
+        "offset": {"type": "integer", "description": "hit number to start the page at"},
+    },
+    "required": ["pattern"],
+    "additionalProperties": False,
+}
 _TASK_ONLY = {
     "type": "object",
     "properties": {
@@ -1330,7 +1384,10 @@ def _mem(name: str) -> str:
 #: unchanged; a refusal form is only ever added).
 _IN_CODE: dict[str, dict] = {
     "read": dict(
-        roles=_ALL,
+        roles=(*_ALL, _L),
+        role_args={_L: _LIBRARY_READ},
+        # the librarian's read is inside the library only
+        add_refusals={"outside_library": "{path} is outside the library, /memory"},
         returns="the file's text from offset (or the directory's listing), at most 8000 bytes, with `.next`: the "
         "offset of the next page, or None.",
         examples=('page = tools.read("/inputs/batch_map.json")\nprint(page[:2000])',),
@@ -1343,8 +1400,9 @@ _IN_CODE: dict[str, dict] = {
         blocking=True,
     ),
     "grep": dict(
-        roles=_ALL,
-        add_refusals={"not_found": "{path} does not exist"},
+        roles=(*_ALL, _L),
+        role_args={_L: _LIBRARY_GREP},
+        add_refusals={"not_found": "{path} does not exist", "outside_library": "{path} is outside the library, /memory"},
         returns="the hits as `path:line: text` lines, one page at a time, with `.next`: the hit number of the next "
         "page, or None.",
         examples=('hits = tools.grep(r"def \\w+_total", "/memory")',),
@@ -1713,6 +1771,7 @@ _REGISTRY: tuple[RegisteredTool, ...] = (
     INSTALL,
     STORE_SKILLS,
     ASK_LIBRARY,
+    SEARCH,
     CURRENT_REQUEST,
     SH,
 )
@@ -1954,8 +2013,9 @@ _ACTOR_HANDLED = {
 }
 
 
-#: The librarian's handlers (its answer is checked against its catalogue): name -> blocking.
-_LIBRARIAN_HANDLED = {"finish": False}
+#: The librarian's handlers (its reads stay inside the library; its answer is checked against the library's items):
+#: name -> blocking.
+_LIBRARIAN_HANDLED = {"search": True, "read": True, "grep": True, "finish": False}
 
 
 def handler_for(agent: str, name: str) -> tuple[str, bool]:

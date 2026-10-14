@@ -147,7 +147,7 @@ def _named(rows: Any, key: str) -> list:
 @checked(name="memory.ask")
 def ask(question: Annotated[str, MinLen(1)] | None = None) -> list[Item]:
     """Ask the librarian which stored items apply to your current request, or to a question of your own. The
-    librarian has read every item, what each was built for and how each has been used. Before the question goes,
+    librarian searches the library by what each item was saved for and reads what it needs. Before the question goes,
     each stored reader runs once on the current request's text in a separate confined process, and the librarian is
     told only whether each parsed it and whether each stated condition held, never what they read. You may ask
     again, with the same question or another; asked the same question again with the same outcomes, it returns the

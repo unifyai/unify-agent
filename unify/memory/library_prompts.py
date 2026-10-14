@@ -257,7 +257,7 @@ def guide_pointer() -> str:
 #: of the index. It says who answers ``memory.ask``; the answer's form is in the call's help.
 LIBRARIAN_POINTER = (
     "Your library of procedures and notes from earlier work is the `memory` package in your cells. A librarian, "
-    "who has read every item, what each was built for and how each has been used, answers `memory.ask`."
+    "who searches the library by what each item was saved for and reads each item it names, answers `memory.ask`."
 )
 
 #: The actor's memory section with the librarian on (the librarian requires the tools in code): the in-code guide
