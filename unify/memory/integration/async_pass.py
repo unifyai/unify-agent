@@ -14,6 +14,14 @@ it lands.
 spawner) for its whole life. ``pass-inflight.json`` names it: pid, process group, ``/proc`` start time (the
 ownership check) and deadline.
 
+**Verdict passes.** A capture that is a verdict (positive, reproducing its handed-back value) makes a pass due at
+once (:class:`..trigger.Trigger`'s ``verdict``). A request's end also starts a worker when a settled fork whose
+episode's signals are positive has no capture yet (:func:`.consolidate.verdict_candidates`): the worker captures it
+first. A verdict that comes due while a worker runs waits for it: the worker, still holding the lock, runs the pass
+in a slot of its own once the slot before it ended (:func:`.consolidate.run_slots`), and every slot rewrites
+``pass-inflight.json``. Passes never run side by side, and a verdict is never dropped: until a pass covers its
+episode it stays due in the capture store and the cursor.
+
 **Results.** The worker appends one row to ``pass-results.jsonl`` and never writes the request state
 (``state.json``). The next request applies the row under its lock (:func:`apply_results`) and reports the pass as
 ``landed``, naming itself: the first request that ran on the new commit.
@@ -417,12 +425,14 @@ def maybe_spawn(
     popen: Callable[..., Any] = subprocess.Popen,
     argv_prefix: list[str] | None = None,
 ) -> dict:
-    """At a library-mode request's end: start a pass if one is due and none is in flight, and return at once.
-    Delivers one event (``spawned`` or ``busy``) and returns it; ``not_due`` and ``error`` deliver nothing.
-    Never raises: a failure is recorded in ``errors.jsonl``, and the request stays due.
+    """At a library-mode request's end: start a pass if one is due (a batch that reached E, or a verdict) and none
+    is in flight, and return at once. With nothing due, a worker still starts to capture the settled forks whose
+    episodes' signals are positive (``spawned_for_capture``: a capture that is a verdict makes its pass due in it).
+    Delivers one event (``spawned``, ``spawned_for_capture`` or ``busy``) and returns it; ``not_due`` and ``error``
+    deliver nothing. Never raises: a failure is recorded in ``errors.jsonl``, and the request stays due.
     """
     from ..trigger import Trigger
-    from .consolidate import _deliver, _error
+    from .consolidate import _deliver, _error, verdict_candidates, verdict_check
     from .fork import admission
     from .switch import library_experience_budget, library_pass_wall_s
 
@@ -446,8 +456,10 @@ def maybe_spawn(
             mode="batched",
             experience_budget=budget,
             admission=admission(paths, settings),
+            verdict=verdict_check(paths, settings),
         ).after_episode(eid)
-        if not due:
+        to_capture = [] if due else verdict_candidates(stores, settings)
+        if not due and not to_capture:
             return {"phase": "not_due"}
         wall_s = library_pass_wall_s(settings)
         rec = spawn(
@@ -467,6 +479,15 @@ def maybe_spawn(
                 "episode_id": eid,
                 "pass_id": None,
             }
+        elif not due:
+            event = {
+                "type": "consolidation",
+                "phase": "spawned_for_capture",
+                "episode_id": eid,
+                "pass_id": rec.pass_id,
+                "capture_episodes": list(to_capture),
+                "wall_s": wall_s,
+            }
         else:
             event = {
                 "type": "consolidation",
@@ -478,6 +499,9 @@ def maybe_spawn(
                 "experience_budget": budget,
                 "wall_s": wall_s,
             }
+            if due[0].verdicts:
+                event["pass_kind"] = due[0].kind
+                event["verdict_episodes"] = list(due[0].verdicts)
         _deliver(stores, emit, event)
         return event
     except (
@@ -647,6 +671,10 @@ def wait_slot(
         if tail is not None:
             tail.relay(relay)
         sleep(0.5)
+        now = read_inflight(paths)
+        if now is not None and now.pid == rec.pid and now.pass_id != rec.pass_id and budget_s is None:
+            # the same worker started its next slot (a verdict pass): that slot has its own bound
+            rec, deadline = now, now.started_at + bound
     out: dict = {"waited": True, "ended": "worker_ended"}
     if owns(rec) or _group_alive(rec.pgid) is True:
         out = {

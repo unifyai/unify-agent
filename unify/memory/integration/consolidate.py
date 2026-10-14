@@ -1211,6 +1211,54 @@ def capture_settled_forks(stores: Stores, settings: Any) -> list[dict]:
         return []
 
 
+def verdict_check(paths: Any, settings: Any) -> Callable[[str], bool] | None:
+    """In the library mode, whether an episode's capture is a verdict (:func:`..captures.verdict`), read from the
+    capture store now; None with the library mode off (no verdict passes)."""
+    from .. import captures
+
+    if not library_enabled(settings):
+        return None
+    found = captures.verdict_episodes(captures.store_dir(Path(paths.state_dir)))
+    return found.__contains__
+
+
+def verdict_candidates(stores: Stores, settings: Any) -> list[str]:
+    """The settled forks not captured yet whose episode's signals are positive (as the capture step reads them), so
+    that capturing one may make a verdict: a worker starts to capture them and to run the pass a verdict makes due.
+    Files and the evidence store only, nothing is run; [] with the fork off. Never raises."""
+    from .. import captures, trust
+    from ..staging import STATUS_FILES
+
+    if not (library_enabled(settings) and library_fork(settings)):
+        return []
+    try:
+        state = Path(stores.paths.state_dir)
+        root = state / "memory-staging"
+        done = captures.episode_rows(captures.store_dir(state))
+        out = []
+        for eid in sorted(os.listdir(root)) if root.is_dir() else []:
+            d = root / eid
+            if eid in done or d.is_symlink() or not d.is_dir():
+                continue
+            if not any(os.path.lexists(d / name) for name in STATUS_FILES):
+                continue  # not settled yet
+            if not stores.evidence.episode_exists(eid):
+                continue
+            regime = stores.evidence.regime_of(eid)
+            got = trust.signal_outcome(
+                list(stores.evidence.signals_for(eid)),
+                regime if regime in trust.REGIMES else "none",
+                checker_visible=checker_visible(settings),
+            )
+            contrary = got["verdict"] == "rejected" or got["end_outcome"] == "contrary"
+            if not contrary and (got["verdict"] == "accepted" or got["end_outcome"] == "positive"):
+                out.append(eid)
+        return out
+    except Exception as exc:  # noqa: BLE001 - a worker then starts only when a pass is due
+        _error(stores, f"verdict candidates: {type(exc).__name__}")
+        return []
+
+
 async def run_due_passes(
     stores: Stores,
     eid: str,
@@ -1222,6 +1270,9 @@ async def run_due_passes(
     emit: Callable[[dict], None] | None,
     clock: Callable[[], float] = time.monotonic,
     supervise: Any = None,
+    first: int = 0,
+    new_verdicts_only: set[str] | None = None,
+    ran: list[PassRequest] | None = None,
 ) -> list[PassOutcome]:
     """Run the passes due once episode *eid* (commit *sha*) is indexed, in order; blocking.
 
@@ -1236,6 +1287,11 @@ async def run_due_passes(
     journal's window before it is settled (unpriced calls are booked at the worst case of one
     writer call; with no readable journal the pass is not settled and its whole cap stays committed), the end event
     adds ``ended`` and ``reconciled``, and only the first due pass runs.
+
+    In the library mode a capture that is a verdict makes a pass due at once (kind ``"verdict"``,
+    :class:`..trigger.Trigger`'s ``verdict``). *first* numbers the passes from ``<eid>.p<first>`` (a worker's later
+    slots); with *new_verdicts_only* only a due pass that covers a verdict episode not in it runs; *ran* gets each
+    WRITE pass's request as it starts.
     """
     try:
         cfg = writer_settings(settings)
@@ -1278,11 +1334,15 @@ async def run_due_passes(
         usd_per_token=cfg.usd_per_token,
         # with the fork on, an episode joins a batch only once its fork has settled; the rest roll to the next pass
         admission=_fork.admission(stores.paths, settings),
+        # the library mode: a capture that is a verdict makes a pass due at once
+        verdict=verdict_check(stores.paths, settings),
     )
     drift = sorted(getattr(state, "drift", set()) or set())
     for ch in drift:
         trig.queue_drift(ch)
     due = trig.after_episode(eid)
+    if new_verdicts_only is not None:
+        due = [r for r in due if set(r.verdicts) - new_verdicts_only]
     if not due:
         return []
     cap = trig.pass_budget_usd() * scale
@@ -1375,7 +1435,7 @@ async def run_due_passes(
     )  # the passes recorded since the last item records (library mode, after_passes)
     i = 0
     while i < len(queue):
-        req, pass_id = queue[i], f"{eid}.p{i}"
+        req, pass_id = queue[i], f"{eid}.p{first + i}"
         i += 1
         curating = req.kind == "curate"
         if curating and curate_gate is None:
@@ -1434,6 +1494,12 @@ async def run_due_passes(
             _error(stores, f"{pass_id}: ledger: {type(exc).__name__}: {exc}")
             break
         start = _start_event(req, pass_id, cfg.model, effort, cap, max_calls, scale)
+        if req.verdicts:
+            # due at once on these episodes' captures (or a batch that covers them)
+            start["pass_kind"] = req.kind
+            start["verdict_episodes"] = list(req.verdicts)
+        if ran is not None and not curating:
+            ran.append(req)
         if cfg.library_mode:
             # the E and the read cap this pass ran with (v2's start event is unchanged)
             start["experience_budget"] = int(cfg.experience_budget)
@@ -1629,6 +1695,70 @@ async def run_due_passes(
                 },
             )
     return outcomes
+
+
+#: How a supervised pass ended when the worker may start the next slot: the writer is done and no call of it can
+#: still be in flight at its proxy.
+_SLOT_ENDS = ("landed", "refused")
+
+
+async def run_slots(
+    stores: Stores,
+    eid: str,
+    sha: str,
+    state: Any,
+    *,
+    effort: str,
+    settings: Any,
+    supervisor: Callable[[int], Any],
+    on_slot: Callable[[int, str], None] | None = None,
+    on_slot_end: Callable[[int, Any, list[PassOutcome]], None] | None = None,
+) -> list[tuple[Any, list[PassOutcome]]]:
+    """The library mode's worker, one writer at a time: its first slot runs the due pass (and the CURATE it makes
+    due) as :func:`run_due_passes` does under a supervisor; then, slot after slot, each pass a verdict made due
+    meanwhile (a capture taken at the slot's start, :func:`capture_settled_forks`, that is a verdict), each starting
+    only after the slot before it ended. A verdict is never dropped: one that is due while a writer runs waits for it,
+    and one this worker cannot reach stays due in the capture store and the cursor, for the next worker. Nothing caps
+    the slots; the loop ends when no pass that covers a new verdict is due, when the stop is set, or when a pass did not
+    end as landed or refused (a writer call may still be in flight). *supervisor(k)* makes slot *k*'s supervisor;
+    *on_slot(k, pass_id)* is called before each slot (the worker's in-flight record and failsafe), and
+    *on_slot_end(k, supervisor, outcomes)* after each slot that ran (its result row). The slots that ran, each with its
+    supervisor and outcomes."""
+    slots: list[tuple[Any, list[PassOutcome]]] = []
+    tried: set[str] = set()
+    k = 0
+    while True:
+        sup = supervisor(k)
+        first = 2 * k  # a slot's WRITE pass, then the CURATE it made due
+        if on_slot is not None:
+            on_slot(k, f"{eid}.p{first}")
+        ran: list[PassRequest] = []
+        outcomes = await run_due_passes(
+            stores,
+            eid,
+            sha,
+            state,
+            effort=effort,
+            settings=settings,
+            emit=None,
+            supervise=sup,
+            first=first,
+            new_verdicts_only=tried if k else None,
+            ran=ran,
+        )
+        if sup.last is None:
+            break  # nothing was due, or the run guard held it back
+        slots.append((sup, outcomes))
+        if on_slot_end is not None:
+            on_slot_end(k, sup, outcomes)
+        for req in ran:
+            tried.update(req.verdicts)
+        if sup.stop.is_set() or sup.runs[0][0].ended not in _SLOT_ENDS:
+            break
+        if any(_CALL_MAY_BE_IN_FLIGHT & set(getattr(o, "codes", None) or ()) for o in outcomes):
+            break
+        k += 1
+    return slots
 
 
 def _records_step(
