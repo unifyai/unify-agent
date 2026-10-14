@@ -133,8 +133,11 @@ PART_GIST_CHARS = 80
 #: the result handed back, and what broke. One text for both instruction forms.
 CAPTURE_BULLETS = (
     "- `procedure.py`, when your reply handed back a result: the procedure that produced it, from code that ran here, "
-    "as functions with docstrings. `read_input(text)` takes the whole request text and returns the value your "
-    "procedure worked on; where your code used a value you typed into a cell, read it from the text instead. "
+    "as functions with docstrings. `read_input(request)` takes the request and returns the value your procedure "
+    "worked on: `request` is the whole request text, and `request.data` is the list of the JSON objects and arrays "
+    "it contains, in order of appearance. Where the request carries the values as JSON, read them from "
+    "`request.data`, not from line positions or the prose around them; where your code used a value you typed into "
+    "a cell, read it from the request instead. "
     "`run(value)` returns the result you handed back. If the request states conditions on its input or on its "
     "result, write them as `applies(value)` and `holds(value, result)`, each returning True or False. Write it "
     "whether or not the result was accepted; say which in its docstring, quoting the line of the record that shows "
