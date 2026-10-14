@@ -1640,7 +1640,7 @@ _WHAT_TO_WRITE_IN_CODE = (
     "or the environment showed with the output it showed for it, a later observation included. The gate runs the "
     "recipe, confined, on every case and lands the procedure only if it gives every expected output; a failing case "
     "comes back with the difference. An episode whose recipe does not pass, or that failed, lands no procedure (a "
-    "note of what was tried may still land). `land_capture` writes the recipe and the source case; add the shown "
+    "note of what was tried may still land). `tools.land_capture` writes the recipe and the source case; add the shown "
     "cases.\n"
     "- A function's docstring has a one-line summary; `Args:`, `Returns:` and `Raises:` sections "
     "(`MemoryInputError` on an input it was not built for); an `Example:` section of one line naming one of "
