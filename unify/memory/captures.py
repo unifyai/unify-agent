@@ -451,6 +451,38 @@ def handed_back(ep: Any) -> tuple[bool, Any]:
     return False, None
 
 
+def _given_order(sig: Any) -> tuple:
+    """A checker verdict's place among the episode's: its time, then its number (``<episode>.checker.<n>``)."""
+    sid = str(getattr(sig, "signal_id", ""))
+    tail = sid.rsplit(".", 1)[-1]
+    return (str(getattr(sig, "ts", "")), int(tail) if tail.isdigit() else -1, sid)
+
+
+def final_value_signals(signals: Iterable[Any], ep: Any) -> list:
+    """The signals that judge the value the episode handed back (:func:`handed_back`), so a capture of the final
+    procedure is never judged by a verdict on another value.
+
+    A checker verdict names the action it judged (``<episode>/actions/<i>``) where the pairing is certain. Those on
+    the answered action (:func:`answered_action`) judge the handed-back value; one that names another action judged
+    another value and is left out (an attempt that was rejected and then accepted is judged by its acceptance). When
+    verdicts name actions but none names this one, no verdict judges it. When none names an action, the last verdict
+    given stands for the final value. Every other signal (provenance, the reader's corrections) is about the episode
+    and is kept."""
+    sigs = list(signals)
+    checker = [s for s in sigs if getattr(s, "source", None) == "checker"]
+    if not checker:
+        return sigs
+    others = [s for s in sigs if getattr(s, "source", None) != "checker"]
+    eid = str(getattr(ep, "episode_id", ""))
+    named = [s for s in checker if str(getattr(s, "refers_to", "")).startswith(f"{eid}/actions/")]
+    i = answered_action(ep)
+    if named:
+        kept = [s for s in named if i is not None and getattr(s, "refers_to", "") == f"{eid}/actions/{i}"]
+    else:
+        kept = [max(checker, key=_given_order)]
+    return others + kept
+
+
 def completed(ep: Any) -> bool:
     """Whether the episode is a completed attempt: it handed back a value or changed the work tree."""
     found, _ = handed_back(ep)
@@ -764,7 +796,8 @@ def capture(
         reproduces = compare(run, found, value) if run.get("outcome") != "not run" else UNKNOWN
         regime = str(getattr(ep, "regime", "") or "none")
         regime = regime if regime in trust.REGIMES else "none"
-        sig_out = trust.signal_outcome(list(signals), regime, checker_visible=checker_visible)
+        # judged by the signals on the value it reproduces: a verdict on an earlier, other value never counts
+        sig_out = trust.signal_outcome(final_value_signals(signals, ep), regime, checker_visible=checker_visible)
         contrary = sig_out["verdict"] == "rejected" or sig_out["end_outcome"] == "contrary"
         positive = sig_out["verdict"] == "accepted" or sig_out["end_outcome"] == "positive"
         outcome = FAILED if (contrary or reproduces == DIFFERS) else ("positive" if positive else "none")
