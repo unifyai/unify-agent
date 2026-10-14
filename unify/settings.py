@@ -455,6 +455,10 @@ class ProductionSettings(BaseSettings):
     # refused before anything runs (unify/memory/integration/switch.py, ``profile_conflicts``). Recorded in each
     # episode's meta and each pass's start event.
     UNIFY_PROFILE: str = ""
+    # Memory work after a request: empty or ``on`` (default: today's behaviour) or ``off``: the actor's memory
+    # surface is unchanged, and no pass, writer call or episode-end fork runs, so the library never changes; the
+    # other memory settings keep their values. Recorded in each episode's meta when off.
+    UNIFY_MEMORY_PASSES: str = ""
     # The library mode's E (recorded tokens at which a pass becomes due), one pass's wall-clock bound (s), and the
     # writer route proxy's journal (absolute path; empty: none) used only to reconcile cancelled calls.
     UNIFY_MEMORY_LIBRARY_E: int = 100000
@@ -775,6 +779,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_QA_REPLAY",
         "UNIFY_MEMORY_QA_FIXTURE_SIZE",
         "UNIFY_PROFILE",
+        "UNIFY_MEMORY_PASSES",
         mode="before",
     )
     @classmethod

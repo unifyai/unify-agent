@@ -81,10 +81,18 @@ The comparison profile:
 - ``UNIFY_PROFILE``: empty (today's behaviour) or ``paper``: the one setting every reported row runs under. With
   ``paper`` the memory writer runs on the actor's model (:func:`.request.actor_model`), at the actor's effort,
   through the actor's provider route and credential path (no writer route of its own), and no ``{"checker": ...}``
-  line is taken. Its budget is the cell's own settings (E, the allowance and the effort scale), unchanged. A paper run that
-  also sets a setting the profile fixes to another value (:func:`profile_conflicts`: the writer's model, route,
-  token or token descriptor, its effort, the checker line) is refused before anything runs, naming the settings,
-  never a value. The profile is recorded in each episode's meta and each pass's start event.
+  line is taken. Its budget is the cell's own settings (E, the allowance and the effort scale), unchanged. A paper
+  run that also sets a setting the profile fixes to another value (:func:`profile_conflicts`: the writer's model,
+  route, token or token descriptor, its effort, the checker line) is refused before anything runs, naming the
+  settings, never a value. The profile is recorded in each episode's meta and each pass's start event.
+
+The no-pass memory set:
+
+- ``UNIFY_MEMORY_PASSES``: empty or ``on`` (today's behaviour) or ``off``. Off, the actor's memory surface is exactly
+  as it is (its tools, the library pointer or index, the librarian when it is on) and no memory work runs after a
+  request: no consolidation pass (WRITE, CURATE, a pass a verdict makes due) is started or run, no writer call is
+  made, the episode-end fork does not start, and the library never changes. Every other memory setting keeps its
+  value. The episode is recorded as before, its meta saying ``"memory_passes": "off"``.
 
 Not switched (a declared safety fix in every mode): the gate refuses bytecode, native code, start-up hooks
 and root entries other than ``env/``, ``workflows/`` and the test kit before extraction
@@ -140,6 +148,7 @@ QA_DETERMINISM = "UNIFY_MEMORY_QA_DETERMINISM"
 QA_REPLAY = "UNIFY_MEMORY_QA_REPLAY"
 QA_FIXTURE_SIZE = "UNIFY_MEMORY_QA_FIXTURE_SIZE"
 PROFILE = "UNIFY_PROFILE"
+MEMORY_PASSES = "UNIFY_MEMORY_PASSES"
 
 EXPERIENCE_BUDGET_DEFAULT = 150000
 WRITER_MODEL_DEFAULT = "openai/gpt-6-sol"
@@ -1202,6 +1211,20 @@ def profile_conflicts(settings: Any) -> list[str]:
     return out
 
 
+def parse_memory_passes(v: Any) -> str:
+    """``UNIFY_MEMORY_PASSES``: ``on`` (also for empty: today's behaviour) or ``off`` (no memory work after a
+    request; the actor's memory surface unchanged)."""
+    value = _stripped(v).lower() or "on"
+    if value not in ("on", "off"):
+        raise ValueError(f"{MEMORY_PASSES} must be empty, 'on' or 'off', not {v!r}"[:200])
+    return value
+
+
+def memory_passes_on(settings: Any) -> bool:
+    """Whether memory work runs after a request (missing is on): False under ``UNIFY_MEMORY_PASSES=off``."""
+    return parse_memory_passes(getattr(settings, MEMORY_PASSES, "") or "") == "on"
+
+
 def profile_refusal(settings: Any) -> str | None:
     """Why this run may not start under its profile (the settings named, never a value), or None."""
     bad = profile_conflicts(settings)
@@ -1354,6 +1377,7 @@ PARSERS = {
     LIBRARY_PASS_WALL_S: parse_library_pass_wall_s,
     WRITER_JOURNAL: parse_writer_journal,
     PROFILE: parse_profile,
+    MEMORY_PASSES: parse_memory_passes,
 }
 
 

@@ -988,6 +988,8 @@ class RequestRun:
         self.build = ""
         # UNIFY_PROFILE (empty: today's behaviour), recorded in the episode's meta when set
         self.profile = ""
+        # UNIFY_MEMORY_PASSES: "off" (no memory work after the request), recorded in the episode's meta; else empty
+        self.memory_passes = ""
         self.stores: Any = None
         self.state: Any = None
         # The tool adapter is not wired in this build (deferred): ``assemble`` records no tool calls.
@@ -1045,13 +1047,14 @@ class RequestRun:
         from . import consolidate, cost, worktree_capture
         from .checkout import export_checkout
         from .state import State
-        from .switch import library_enabled, profile, surfacing_options
+        from .switch import library_enabled, memory_passes_on, profile, surfacing_options
 
         paths = self.paths
         policy = sandbox.build_policy(fresh=True)
         check_hidden(paths, policy)
         check_profile(SETTINGS)
         self.profile = profile(SETTINGS)
+        self.memory_passes = "" if memory_passes_on(SETTINGS) else "off"
         self.library_mode = library_enabled(SETTINGS)
         if (
             self.library_mode
@@ -1150,8 +1153,9 @@ class RequestRun:
             "request": self.request,
             # the record format the episode writer uses (memory_library_on, as at finish)
             "library_mode": memory_library_on(),
-            # UNIFY_PROFILE, only when set (a default run's header is as before)
+            # UNIFY_PROFILE and UNIFY_MEMORY_PASSES=off, only when set (a default run's header is as before)
             **({"profile": self.profile} if self.profile else {}),
+            **({"memory_passes": self.memory_passes} if self.memory_passes else {}),
         }
         try:
             self.journal = journal.EpisodeJournal.open(self.paths.journal, header, self.redactor)
@@ -1565,7 +1569,9 @@ class RequestRun:
             parts = self._fork_parts(reservation, progress)
             self._index_similar(progress)
             fork = self._start_fork(handle, eid, progress, reservation, parts)
-            if consolidate:
+            if self.memory_passes == "off":
+                pass  # UNIFY_MEMORY_PASSES=off: recorded, and no memory work runs; the library never changes
+            elif consolidate:
                 await self._consolidate(eid, sha, progress, emit)
             else:
                 self._report_landed(progress, emit)
@@ -1611,12 +1617,13 @@ class RequestRun:
             self._error("similar index", exc, progress)
 
     def _reserve_fork(self, progress: Callable[[str], None]) -> Any:
-        """The episode-end fork's staging dir and lock, only under ``UNIFY_MEMORY_LIBRARY_FORK=on``; never raises."""
+        """The episode-end fork's staging dir and lock, only under ``UNIFY_MEMORY_LIBRARY_FORK=on`` (and not
+        ``UNIFY_MEMORY_PASSES=off``); never raises."""
         from unify.settings import SETTINGS
 
-        from .switch import library_enabled, library_fork
+        from .switch import library_enabled, library_fork, memory_passes_on
 
-        if not (library_enabled(SETTINGS) and library_fork(SETTINGS)):
+        if not (library_enabled(SETTINGS) and library_fork(SETTINGS) and memory_passes_on(SETTINGS)):
             return None
         try:
             from . import fork as _fork
@@ -1649,12 +1656,13 @@ class RequestRun:
         reservation: Any = None,
         parts: str | None = None,
     ) -> Any:
-        """The episode-end fork, only under ``UNIFY_MEMORY_LIBRARY_FORK=on``; never raises."""
+        """The episode-end fork, only under ``UNIFY_MEMORY_LIBRARY_FORK=on`` (and not ``UNIFY_MEMORY_PASSES=off``);
+        never raises."""
         from unify.settings import SETTINGS
 
-        from .switch import library_enabled, library_fork
+        from .switch import library_enabled, library_fork, memory_passes_on
 
-        if not (library_enabled(SETTINGS) and library_fork(SETTINGS)):
+        if not (library_enabled(SETTINGS) and library_fork(SETTINGS) and memory_passes_on(SETTINGS)):
             return None
         try:
             from . import fork as _fork

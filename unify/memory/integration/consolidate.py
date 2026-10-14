@@ -1317,7 +1317,13 @@ async def run_due_passes(
     :class:`..trigger.Trigger`'s ``verdict``). *first* numbers the passes from ``<eid>.p<first>`` (a worker's later
     slots); with *new_verdicts_only* only a due pass that covers a verdict episode not in it runs; *ran* gets each
     WRITE pass's request as it starts.
+
+    Under ``UNIFY_MEMORY_PASSES=off`` nothing runs: no settings are read, no pass starts and no call is made.
     """
+    from .switch import memory_passes_on
+
+    if not memory_passes_on(settings):
+        return []
     try:
         cfg = writer_settings(settings)
     except WriterRouteRefused:

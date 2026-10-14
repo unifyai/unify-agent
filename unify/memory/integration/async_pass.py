@@ -434,8 +434,11 @@ def maybe_spawn(
     from ..trigger import Trigger
     from .consolidate import _deliver, _error, verdict_candidates, verdict_check
     from .fork import admission
-    from .switch import library_experience_budget, library_pass_wall_s
+    from .switch import library_experience_budget, library_pass_wall_s, memory_passes_on
 
+    if not memory_passes_on(settings):
+        # UNIFY_MEMORY_PASSES=off: no worker starts, for a pass or a capture; nothing is delivered
+        return {"type": "consolidation", "phase": "passes_off", "episode_id": eid}
     paths = stores.paths
     try:
         rec = read_inflight(paths)
