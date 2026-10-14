@@ -289,13 +289,19 @@ async def test_the_actor_checks_a_function_of_its_session_against_examples_in_it
         "r = tools.check_examples(line_of, [{'input': '/workspace/data.txt', 'expected': 'line 1'},"
         " ['/workspace/data.txt', 'line 2']])\n"
         "print(r)\n"
-        f"tools.answer({ANSWER!r})\n"
     )
-    model = ScriptedModel(actor=[reply(calls=[code(define)]), reply(calls=[code(check)]), reply("not finished")])
+    model = ScriptedModel(
+        actor=[
+            reply(calls=[code(define)]),
+            reply(calls=[code(check)]),
+            reply(calls=[code(f"tools.answer({ANSWER!r})")]),
+            reply("not finished"),
+        ],
+    )
     result = await _act(model, "Check the first line of data.txt.")
 
     assert result == ANSWER, _why(model)
-    shown = _tool_results(model.calls[1])
+    shown = _tool_results(model.calls[2])
     assert "passed 1 of 2" in shown, shown[:2000]
     assert "example 2: failed" in shown and "  expected: 'line 2'" in shown and "  actual: 'line 1'" in shown
     assert "-line 2" not in shown and "line 2: expected" not in shown  # one-line text: one line naming both
