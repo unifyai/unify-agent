@@ -11,6 +11,11 @@ With ``Gate(library_mode=None)`` (the default) nothing here runs and the gate is
 * **G2:**
   - typed covers: an actor cell or work-tree diff that defines a function, or an ``episode`` cover verified by its
     procedure runner (:mod:`.procedures`);
+  - the generalisation check: a procedure (``role: procedure``) carries its recipe, and the recipe, run confined,
+    gives the expected output on every case it lists, each re-derived from the recording (:mod:`.recipes`); a
+    source case (its request with the value it handed back) counts only from an episode that did not fail, and no
+    procedure lands from a failed episode. Each failing case refuses the procedure and its recipe with the case and
+    the difference report; the counts go to the procedure's verification record (``recipe``);
   - the cross-episode held-out check, for inputs with nothing to perturb;
   - the literal lint (:mod:`.code_lint`).
 * **G3:**
@@ -590,6 +595,109 @@ class LibraryChecks:
                         continue
                 self._typed_cover(it, cover, n)
                 n += 1
+        self._recipes()
+
+    # -- the generalisation check ---------------------------------------------------------------------------
+    def _episode_failed(self, eid: str) -> bool:
+        """Whether episode *eid*'s outcome is failed: a signal the regime lets the run observe contradicts the value
+        it handed back (a checker verdict only when the actor saw it; :func:`.trust.signal_outcome`). An episode with
+        no such signal (none recorded, or a regime without one) has not failed."""
+        from .captures import final_value_signals
+        from .trust import signal_outcome
+
+        ep = self.ep(eid)
+        if ep is None:
+            return False
+        try:
+            sigs = list(self.gate.ev.signals_for(eid) or [])
+        except Exception:  # noqa: BLE001 - no readable signal: nothing contradicts it
+            sigs = []
+        regime = str(getattr(ep, "regime", "") or "none")
+        out = signal_outcome(final_value_signals(sigs, ep), regime, checker_visible=self.cfg.checker_visible)
+        return out["verdict"] == "rejected" or out["end_outcome"] == "contrary"
+
+    def _recipes(self) -> None:
+        """The generalisation check (module docstring, G2) on every procedure of the manifest."""
+        from .fixtures import read_case
+        from .recipes import check_cases
+
+        run = self.run
+        listed = {it.item for it in run.man.items}
+        for k, it in enumerate(self._functions()):
+            if getattr(it, "role", None) != "procedure":
+                continue
+            recipe = getattr(it, "recipe", None)
+            owners = [it.item] + ([recipe] if recipe and recipe != it.item and recipe in listed else [])
+            if not recipe:
+                run.fail(
+                    "G2",
+                    f"{it.item} is a procedure without a recipe: add apply(request) to its module, the whole job on "
+                    "the request it is handed with every parameter read from it, and name it in the entry's recipe",
+                    it.item,
+                )
+                continue
+            if run.c_bodies.get(recipe, ("",))[0] != "function":
+                run.fail("G2", f"{it.item}: its recipe {recipe} is not a function of the candidate's library", owners)
+                continue
+            failed = sorted(e for e in set(it.source_episodes) if self._episode_failed(e))
+            if failed:
+                run.fail(
+                    "G2",
+                    f"{it.item}: its source episode {', '.join(failed)} failed; a failed episode never lands a "
+                    "procedure (land a note of what was tried and what broke)",
+                    owners,
+                )
+            cases: list[tuple[str, dict]] = []
+            for path in it.cases:
+                if path not in run.c_files:
+                    run.fail("G2", f"{it.item}: case {path} is not in the candidate", owners)
+                    continue
+                case, problem = read_case(path, (run.c_tree / path).read_bytes(), self.ep, self.gate._blob)
+                if problem is not None:
+                    run.fail("G2", f"{it.item}: case {problem}", owners)
+                    continue
+                if case["kind"] == "source" and self._episode_failed(case["episode"]):
+                    run.fail(
+                        "G2",
+                        f"{it.item}: case {path} is the source case of {case['episode']}, which failed: the value it "
+                        "handed back is not a known outcome",
+                        owners,
+                    )
+                    continue
+                cases.append((path, case))
+            if not it.cases:
+                run.fail(
+                    "G2",
+                    f"{it.item}: its recipe has no case to run on: list in cases the source case (its request with "
+                    "the value it handed back) and every input the request or the environment showed with its "
+                    "output, each made with fixture(..., expected=...)",
+                    owners,
+                )
+            reports = check_cases(
+                recipe,
+                [c for _, c in cases],
+                tree=run.c_tree,
+                python=self.gate.python,
+                work=run.tmp / f"recipe-{k}",
+                runner=self.cfg.runner,
+            )
+            kinds = {kind: 0 for kind in ("source", "shown")}
+            for _, case in cases:
+                kinds[case["kind"]] = kinds.get(case["kind"], 0) + 1
+            self._record(it.item)["recipe"] = {
+                "item": recipe,
+                "cases": len(it.cases),
+                "passed": sum(1 for r in reports if r is None),
+                "kinds": kinds,
+            }
+            for (path, case), report in zip(cases, reports):
+                if report is not None:
+                    run.fail(
+                        "G2",
+                        f"{it.item}: its recipe {recipe} does not give the expected output of case {path} (a "
+                        f"{case['kind']} case of {case['episode']}):\n{report}",
+                        owners,
+                    )
 
     def _typed_cover(self, it: Any, cover: Any, n: int) -> None:
         run = self.run

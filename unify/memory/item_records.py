@@ -316,7 +316,22 @@ def verification_summary(record: Mapping | None) -> dict | None:
         if isinstance(m, dict)
         else "not run"
     )
+    recipe = recipe_text(record)
+    if recipe is not None:
+        out["recipe"] = recipe
     return out
+
+
+def recipe_text(record: Mapping | None) -> str | None:
+    """A procedure's recipe and how it did on its cases at the gate, from its verification record (``recipe``:
+    ``{"item", "cases", "passed", "kinds"}``, :mod:`.recipes`), as one line; None for an item without one."""
+    v = record.get("verification") if isinstance(record, Mapping) else None
+    r = v.get("recipe") if isinstance(v, dict) else None
+    if not isinstance(r, dict) or not isinstance(r.get("item"), str):
+        return None
+    kinds = r.get("kinds") if isinstance(r.get("kinds"), dict) else {}
+    shown = ", ".join(f"{kinds[k]} {k}" for k in sorted(kinds) if isinstance(kinds[k], int) and kinds[k])
+    return f"{r['item']}; {r.get('passed', 0)} of {r.get('cases', 0)} cases passed" + (f" ({shown})" if shown else "")
 
 
 def use_totals(record: Mapping | None) -> dict:

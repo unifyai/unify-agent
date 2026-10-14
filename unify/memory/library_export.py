@@ -53,6 +53,7 @@ from .item_records import (
     episodes_of,
     level_of,
     level_reasons_of,
+    recipe_text,
     use_totals,
     verification_summary,
 )
@@ -677,6 +678,9 @@ def catalogue_text(
         )
         if input_line:
             lines.append(f"Input: {input_line}\n")
+        if recipe_text(rec):
+            # a procedure's one-call entry, and how it did on the cases its episodes observed when the gate ran it
+            lines.append(f"Recipe: {recipe_text(rec)}\n")
         if _recognition_line(rec):
             lines.append(f"Recognition: {_recognition_line(rec)}\n")
         lines.append(f"Record: {_track_line(rec)}\n")
