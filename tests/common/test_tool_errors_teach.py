@@ -334,7 +334,7 @@ def _names_in(text: str, names: set[str]) -> set[str]:
 
 
 def test_a_tool_of_another_role_is_unavailable_and_only_the_callers_tools_are_suggested(stub):
-    for agent, name in (("actor", "finish"), ("writer", "answer"), ("helper", "pool"), ("librarian", "read")):
+    for agent, name in (("actor", "finish"), ("writer", "answer"), ("helper", "pool"), ("librarian", "pool")):
         tools = stub(agent)
         assert name in _others(agent), (agent, name)
         with pytest.raises(AttributeError) as err:

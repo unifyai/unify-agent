@@ -46,6 +46,14 @@ COVERAGE: dict[tuple[str, str], str] = {
         "only an I/O error other than a missing or forbidden entry gives it (the writer answers any other read "
         "failure as not_found, a helper a forbidden entry as outside_box); no call's arguments make one"
     ),
+    ("read", "outside_library"): (
+        "given only by the librarian's read, for a path outside the library; no pass agent gets it (reached in "
+        "test_librarian_navigation.py)"
+    ),
+    ("grep", "outside_library"): (
+        "given only by the librarian's grep, for a path outside the library; no pass agent gets it (reached in "
+        "test_librarian_navigation.py)"
+    ),
     ("grep", "outside_roots"): R,
     ("grep", "outside_box"): R,
     ("grep", "bad_pattern"): R,

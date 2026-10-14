@@ -145,7 +145,7 @@ def role_texts() -> dict[str, list[str]]:
         ],
         "curator": [lp.curate_brief_now(compact=True, finish_capped=True, edit_tools=True), tool_text],
         "helper": [helpers.helper_brief(True), helpers.helper_brief(False), tool_text],
-        "librarian": [L.system_prompt(""), tool_text],
+        "librarian": [L.system_prompt(), tool_text],
         "fork": [fork.fork_instruction()],
     }
 

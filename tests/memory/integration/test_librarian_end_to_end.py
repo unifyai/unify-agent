@@ -5,7 +5,7 @@ The actor's cells run in their persistent confined interpreter and reach the hos
 host handler opens the request's librarian session on the first question, keeps it for the request's follow-ups and
 ends it with the request. The librarian runs on the shared agent runtime in its own box, which mounts the library
 copy read-only, with no network and no write root; it answers with ``tools.finish(answer)``; a malformed answer, or
-one naming an id the catalogue does not hold, goes back to it as a refusal.
+one naming an id the library does not hold, goes back to it as a refusal.
 
 Requests are read at unillm's transport (``tests/scripted_model.py``), headers included, so nothing leaves the
 process. The boxes need bubblewrap, as the other box tests do.
@@ -118,7 +118,8 @@ Q2 = "And is there one that matches ledger rows against payments?"
 ANSWER_ONE = {
     "fits": [
         {"id": w.READ_ORDERS, "call": "rows = read_orders(text)", "why": "its reader parsed the text"},
-        {"id": w.TOTAL, "call": "total_amount(read_orders(text))", "why": "saved against totalling an order table"},
+        # a procedure with a recipe: its fit carries the call that applies the recipe to the current request
+        {"id": w.TOTAL, "call": item_records.recipe_call(w.TOTAL_RECIPE), "why": "saved against totalling an order table"},
     ],
 }
 ANSWER_TWO = {
@@ -302,13 +303,11 @@ async def test_ask_returns_the_librarians_answers_reuses_the_session_and_is_acco
     lib = script.librarian_calls
     assert len(lib) == 2, [c.kind for c in model.calls]
 
-    # the librarian's system prompt: the shared opening, the brief, then the whole catalogue, in that order
-    catalogue = (env["paths"].checkout / CATALOGUE).read_text(encoding="utf-8")
+    # the librarian's system prompt: the shared opening, then the brief, and nothing of the library itself
     system = _system(lib[0])
     assert system.startswith(OPENING_HEADING)
     brief = librarian_brief()
-    assert brief in system and catalogue in system
-    assert system.index(brief) < system.index(catalogue)
+    assert system.endswith(brief) and w.TOTAL not in system
     assert all(_system(c) == system for c in lib)
     # the question and the facts reach it; the value a reader parsed never does
     assert "Which stored items fit this text?" in _not_assistant(lib[0])
