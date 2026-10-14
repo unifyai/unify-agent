@@ -42,6 +42,8 @@ from tests.memory.test_episodes import _ep
 
 ITEM_ID = "memory.acct.users:user_id"
 PACKAGE_INIT = "memory/acct/__init__.py"
+#: The package folder's README (every library folder holds one, :mod:`unify.memory.when_to_use`).
+README = "memory/acct/README.md"
 MODULE = "memory/acct/users.py"
 TEST_FILE = "memory/acct/tests/test_users.py"
 EXAMPLE_TEST = f"{TEST_FILE}::test_reads_the_recorded_user_ids"
@@ -86,6 +88,12 @@ def user_id(response: dict) -> str:
 
     Effect: read
     Example: {EXAMPLE_TEST}
+
+    When to use:
+        Saved for: reading the user id from an account response.
+        Recognise: the request needs the id of the account an acct.me response describes.
+        Not for: responses of other calls, or the account's other fields.
+        Example request: Which user id does this account response hold?
     """
     if not isinstance(response, dict) or "user_id" not in response:
         raise MemoryInputError("an acct.me response with a user_id field is needed")
@@ -181,6 +189,7 @@ def files_and_fixtures(
     made = make_fixtures(blob, sources)
     files = {
         PACKAGE_INIT: '"""Accounts."""\n',
+        README: "Reading account responses.\n",
         MODULE: module,
         TEST_FILE: example_test_source(sources) if test is None else test,
         **{path: data.decode() for path, (data, _) in made.items()},
@@ -213,8 +222,13 @@ def manifest(fixtures: dict[str, dict], *items: dict, **top: Any) -> dict:
 
 
 def candidate(mem: Repo, files: dict[str, str | None], base: str = "main") -> str:
-    """Commit *files* (``None`` deletes) on *base* and return the candidate commit."""
+    """Commit *files* (``None`` deletes) on *base* and return the candidate commit, as a writer leaves them: each
+    module's functions and each note with its "when to use" section, each folder with its README.md
+    (:func:`tests.memory.writer_sections.as_written`)."""
+    from tests.memory.writer_sections import as_written
+
     with mem.temp_checkout(base) as wt:
+        files = as_written(files, _Present(wt))
         for rel, text in files.items():
             if text is None:
                 (wt / rel).unlink()
@@ -222,6 +236,16 @@ def candidate(mem: Repo, files: dict[str, str | None], base: str = "main") -> st
             (wt / rel).parent.mkdir(parents=True, exist_ok=True)
             (wt / rel).write_text(text)
         return mem.commit_all(wt, "pass", {"Pass": "p1"})
+
+
+class _Present:
+    """The paths of a checkout, for ``in``."""
+
+    def __init__(self, root) -> None:
+        self.root = root
+
+    def __contains__(self, rel: object) -> bool:
+        return isinstance(rel, str) and (self.root / rel).is_file()
 
 
 def _digest(value: Any) -> str:
