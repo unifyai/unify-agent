@@ -11,7 +11,9 @@ and the librarian read (``dispatch.json``, ``find.json``, the catalogue). Nothin
 * an ``applies`` that holds where the procedure reproduces the value a successful episode handed back is a true hold,
   and the procedure is listed;
 * reproducing the value of an episode recorded as failed is unknown, never a true hold;
-* a landing with no other recorded request is listed, untested.
+* a landing with no other recorded request is listed, untested;
+* a reader that fails on a recorded variant of its own request (a request of the same work recognised by content, or
+  its own request with blank lines around it or a line of prose after it) is brittle, and its procedure is not listed.
 
 Keyless; the capture step and the landing run code confined, so they need bubblewrap and prlimit.
 """
@@ -91,20 +93,31 @@ def run(value):
         out.append(p)
     return {"sums": out}
 '''
+#: The same procedure with a reader that reads by line position: the rows between the first line and the last two,
+#: the worked case on the line before the last.
+BRITTLE = LOOSE.replace(
+    LOOSE[LOOSE.index("def read_input(") : LOOSE.index("\n\ndef run(")],
+    '''def read_input(text):
+    """The rows: the lines between the first line and the last two; the worked case: the line before the last."""
+    lines = text.splitlines()
+    rows = [[int(x) for x in line[len("row:"):].split()] for line in lines[1:-2]]
+    left, right = lines[-2][len("Worked case:"):].split("->")
+    return {"rows": rows, "cases": [[[int(x) for x in left.split()], int(right)]]}''',
+)
 SUMMARY = "## Asked\nCombine each row of numbers.\n## Approach\n- Read the rows.\n## Outcome\nReplied.\n"
 
 
-def _request(rows, case, op: str) -> str:
+def _request(rows, case, op: str, tail: str = "") -> str:
     lines = "\n".join("row: " + " ".join(str(x) for x in r) for r in rows)
     return (
         f"Readings, one row per line:\n{lines}\nWorked case: {' '.join(str(x) for x in case[0])} -> {case[1]}\n"
-        f"Reply with the {op} of each row."
+        f"Reply with the {op} of each row." + tail
     )
 
 
-def _episode(eid: str, rows, case, op: str, answer):
+def _episode(eid: str, rows, case, op: str, answer, tail: str = ""):
     """A recorded episode: a text request and the dialogue action that handed *answer* back."""
-    text = _request(rows, case, op)
+    text = _request(rows, case, op, tail)
     return _ep(
         episode_id=eid,
         request=[text],
@@ -114,8 +127,8 @@ def _episode(eid: str, rows, case, op: str, answer):
     )
 
 
-def _sum_work(eid: str, rows):
-    return _episode(eid, rows, ([2, 3], 5), "sum", [sum(r) for r in rows])
+def _sum_work(eid: str, rows, tail: str = ""):
+    return _episode(eid, rows, ([2, 3], 5), "sum", [sum(r) for r in rows], tail)
 
 
 def _product_work(eid: str, rows):
@@ -142,11 +155,15 @@ def _capture(root: Path, ep, source: str, verdict: str | None) -> dict:
     return captures.capture(staging, ep, root / "store", signals=signals, checker_visible=True)
 
 
-def _world(tmp_path: Path, source: str, others: list[tuple]) -> tuple[dict, dict, Path]:
-    """Capture e1 (the sum work, accepted) with *source*, then each of *others* (episode, staged source, verdict),
-    then land e1's capture. Returns (the landing reply's text and the landing, the item records, the box)."""
+def _world(tmp_path: Path, source: str, others: list[tuple], before: list[tuple] = ()) -> tuple[dict, dict, Path]:
+    """Capture each of *before* (episode, staged source, verdict), then e1 (the sum work, accepted) with *source*,
+    then each of *others*, then land e1's capture. Returns (the landing reply's text, the landing and the capture id;
+    the item records; the box)."""
     own = _sum_work("e1", [[1, 2, 2], [3, 4, 5]])
     episodes = {"e1": own}
+    for ep, staged, verdict in before:
+        episodes[ep.episode_id] = ep
+        _capture(tmp_path, ep, staged, verdict)
     row = _capture(tmp_path, own, source, "pass")
     assert row["safety"] == "ok", row
     for ep, staged, verdict in others:
@@ -209,7 +226,7 @@ def test_a_loose_applies_that_holds_where_its_holds_fails_is_a_false_hold_and_no
     assert (rec["requests"], rec["tested"], rec["true_holds"], rec["false_holds"], rec["unknown"]) == (1, 1, 0, 1, 0)
     assert rec["listed"] is False and rec["why"].startswith("not listed: its applies held on 1 of 1")
     assert records[PROC]["recognition"] == rec
-    assert "recognition on the other recorded requests: not listed" in got["reply"]
+    assert "recognition on the recorded requests: not listed" in got["reply"]
     dispatched, found = _listed_by_match(box, records, tmp_path / "store")
     assert PROC not in dispatched and PROC not in found
     # the captured procedure is the same code: it is not listed either, and its exported record says why
@@ -235,6 +252,8 @@ def test_an_applies_that_holds_where_the_procedure_reproduces_a_successful_episo
     rec = got["landing"]["recognition"]
     assert (rec["requests"], rec["tested"], rec["true_holds"], rec["false_holds"], rec["unknown"]) == (1, 1, 1, 0, 0)
     assert rec["listed"] is True and rec["why"].startswith("tested on 1 recorded request(s): 1 true hold(s)")
+    # its reader reads every recorded variant of its own request: the three mechanical ones
+    assert (rec["variants"], rec["reads"], rec["fails"], rec["failed_on"]) == (3, 3, 0, [])
     dispatched, found = _listed_by_match(box, records, tmp_path / "store")
     assert PROC in dispatched and PROC in found
     assert f"capture:{got['cid']}" in dispatched
@@ -287,6 +306,34 @@ def test_a_request_the_reader_does_not_parse_is_not_tested_and_applies_that_does
     assert rec["listed"] is True and rec["why"] == "untested: its reader parsed none of the 1 other recorded request(s)"
 
 
+@needs_box
+@pytest.mark.timeout(900)
+def test_a_reader_that_fails_on_a_recorded_variant_of_its_own_request_is_brittle_and_not_listed(tmp_path):
+    # the same work visited with a line after the request, captured first with a reader that reads by line prefix;
+    # e1's capture is recognised as the same work when it is captured (its run on e2's request gives e2's value)
+    later = _sum_work("e2", [[9, 1], [0, 5], [7, 7]], tail="\nThanks for checking.")
+    got, records, box = _world(tmp_path, BRITTLE, [], before=[(later, LOOSE, "pass")])
+    store = tmp_path / "store"
+    same = captures.load(store)[got["cid"]]["record"]["same_as"]
+    assert len(same) == 1 and "e2" in captures.load(store)[same[0]]["record"]["episodes"]
+    rec = got["landing"]["recognition"]
+    # e2's request and the three mechanical variants of its own: it reads none of them
+    assert (rec["variants"], rec["reads"], rec["fails"]) == (4, 0, 4)
+    assert rec["failed_on"] == [
+        recognition.RECORDED_VARIANT,
+        recognition.LEADING_BLANK,
+        recognition.TRAILING_BLANK,
+        recognition.TRAILING_PROSE,
+    ]
+    assert rec["false_holds"] == 0 and rec["listed"] is False
+    assert rec["why"].startswith("not listed: its reader failed on 4 of 4 recorded variant(s) of its own request")
+    assert records[PROC]["recognition"] == rec
+    dispatched, found = _listed_by_match(box, records, store)
+    assert PROC not in dispatched and PROC not in found
+    card = lx.catalogue_text(box, records=records, captures=captures.export_files(store))
+    assert f"Recognition: {rec['why']}" in card
+
+
 def test_the_listing_rule_reads_the_counts():
     assert recognition.listing(None) == (True, "")
     assert recognition.listing({"tested": 3, "false_holds": 1})[0] is False
@@ -297,3 +344,9 @@ def test_the_listing_rule_reads_the_counts():
     listed, why = recognition.listing({"tested": 2, "true_holds": 1, "unknown": 1, "false_holds": 0})
     assert listed and why == "tested on 2 recorded request(s): 1 true hold(s), 0 false holds, 1 unknown"
     assert recognition.listing({"error": "load: ImportError"})[1].startswith("untested: its test could not be run")
+    brittle = recognition.listing({"tested": 2, "reads": 1, "fails": 2, "failed_on": [recognition.TRAILING_PROSE]})
+    assert brittle == (
+        False,
+        "not listed: its reader failed on 2 of 3 recorded variant(s) of its own request (a line of prose after it); "
+        "make it read the values the request carries, not the layout around them",
+    )
