@@ -282,6 +282,28 @@ def test_wait_slot_on_returns_only_after_the_worker_ends(tmp_path):
         _stop(rec)
 
 
+def test_a_request_that_spawned_nothing_still_waits_for_the_worker_in_flight(tmp_path, monkeypatch):
+    """A worker another request spawned (one of a session that has since restarted, say) is waited for too, so the
+    session never ends while it runs; with the switch off nothing waits."""
+    import asyncio
+
+    from unify.memory.integration.request import RequestRun
+    from unify.settings import SETTINGS as LIVE
+
+    paths, rec = _spawn(tmp_path, 1)
+    run = RequestRun("a request that spawned nothing", paths)
+    try:
+        monkeypatch.setattr(LIVE, "UNIFY_MEMORY_LIBRARY_WAIT_SLOT", "off")
+        assert asyncio.run(run._wait_for_pass_worker(lambda _: None)) is None
+
+        monkeypatch.setattr(LIVE, "UNIFY_MEMORY_LIBRARY_WAIT_SLOT", "on")
+        monkeypatch.setattr(LIVE, "UNIFY_MEMORY_LIBRARY_PASS_WALL_S", 60)
+        out = asyncio.run(run._wait_for_pass_worker(lambda _: None))
+        assert out == {"waited": True, "ended": "worker_ended"} and not ap.owns(rec)
+    finally:
+        _stop(rec)
+
+
 def test_wait_slot_respects_its_bound_then_drains(tmp_path):
     paths, rec = _spawn(tmp_path, 30)
     drained = []

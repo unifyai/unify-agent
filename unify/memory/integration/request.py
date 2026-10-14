@@ -905,9 +905,10 @@ async def wait_after_finish(
     relay: Callable[[dict], None] | None = None,
     events_from: int = 0,
 ) -> dict | None:
-    """``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on``: before the CLI exits, wait for the pass slot this request
-    spawned (:func:`.async_pass.wait_slot`), so a host whose sandbox ends the controller's processes with it does
-    not kill the worker. Off: returns None at once, as built. Never raises."""
+    """``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on``: before the CLI exits, wait for the pass slot in flight, whichever
+    request spawned it (:func:`.async_pass.wait_slot`), so a host whose sandbox ends the controller's processes with
+    it does not kill the worker, and a host that clears the state after the session never clears it under a running
+    worker. Off: returns None at once, as built. Never raises."""
     import asyncio
 
     from .switch import library_pass_wall_s, library_wait_slot
@@ -1557,17 +1558,8 @@ class RequestRun:
             if reservation is not None:
                 reservation.close()  # a no-op once the fork has started or settled
             self._cleanup()
-        if getattr(self, "_spawned", False):
-            from unify.settings import SETTINGS
-
-            # after the lock is released: the waiting CLI holds nothing a later request needs
-            await wait_after_finish(
-                self.paths,
-                SETTINGS,
-                progress,
-                relay=getattr(self, "_relay", None),
-                events_from=getattr(self, "_events_from", 0),
-            )
+        # after the lock is released: the waiting CLI holds nothing a later request needs
+        await self._wait_for_pass_worker(progress)
         if fork is not None:
             from unify.settings import SETTINGS
 
@@ -1575,6 +1567,21 @@ class RequestRun:
 
             # after the reply and the lock: hand over the request, and wait where the host needs it
             await asyncio.to_thread(_fork.finish, fork, SETTINGS, progress)
+
+    async def _wait_for_pass_worker(self, progress: Callable[[str], None]) -> dict | None:
+        """``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on``: wait for the pass worker in flight, whichever request spawned it,
+        this one, an earlier one, or one of a process that has since ended (a restarted session), so the CLI never
+        ends while a worker it could have waited for still runs (:func:`wait_after_finish`). Nothing in flight, or
+        the switch off: returns at once."""
+        from unify.settings import SETTINGS
+
+        return await wait_after_finish(
+            self.paths,
+            SETTINGS,
+            progress,
+            relay=getattr(self, "_relay", None),
+            events_from=getattr(self, "_events_from", 0),
+        )
 
     def _index_similar(self, progress: Callable[[str], None]) -> None:
         """The ``similar`` tool's index entry for the episode just recorded (library mode only), built here once,
@@ -1792,7 +1799,7 @@ class RequestRun:
                 ev_file = events_path(self.paths)
                 self._events_from = ev_file.stat().st_size if ev_file.exists() else 0
                 self._relay = self._emitter(emit)
-                spawned = maybe_spawn(
+                maybe_spawn(
                     self.stores,
                     eid,
                     sha,
@@ -1800,8 +1807,6 @@ class RequestRun:
                     settings=SETTINGS,
                     emit=self._emitter(emit),
                 )
-                # a worker started, for a pass or to capture first: WAIT_SLOT waits for it either way
-                self._spawned = spawned.get("phase") in ("spawned", "spawned_for_capture")
             except Exception as exc:  # noqa: BLE001
                 self._error("passes", exc, progress)
             try:
