@@ -662,6 +662,70 @@ def _error(stores: Stores, text: str) -> None:
         pass
 
 
+#: What a running pass reports between its start and its end: each writer model call (``turn``) and each gate verdict
+#: (``gate``: a check, or the merge that lands), each with ``seconds`` since the pass started. Real events only, as
+#: they happen, so a host that watches the session's output for work sees the pass working (the waiting CLI relays
+#: them with the slot's start and end: :data:`.async_pass._RELAYED`).
+PROGRESS_PHASES = ("turn", "gate")
+
+
+def _reporting_turn(turn: Any, report: Callable[..., None]) -> Any:
+    """*turn*, reporting each call as it returns or fails (its number, whether it returned); the return value and
+    the turn's attributes pass through unchanged."""
+    count = [0]
+
+    async def reported(messages: list[dict], tools: list[dict]) -> Any:
+        count[0] += 1
+        n = count[0]
+        try:
+            out = await turn(messages, tools)
+        except BaseException:
+            report("turn", turn=n, returned=False)
+            raise
+        report("turn", turn=n, returned=True)
+        return out
+
+    reported.__dict__.update(getattr(turn, "__dict__", None) or {})
+    return reported
+
+
+class _ReportingGate:
+    """A pass's gate, reporting each verdict as it is given: a check (no merge) and the merge, whether it passed,
+    the refusing checks by name and, for the merge, whether ``main`` moved. Everything else is the gate's own."""
+
+    def __init__(self, gate: Any, report: Callable[..., None]) -> None:
+        self._gate, self._report = gate, report
+
+    def check(self, *args: Any, **kwargs: Any) -> Any:
+        res = self._gate.check(*args, **kwargs)
+        self._report("gate", step="check", passed=bool(res.passed), refused=list(getattr(res, "refused", []) or []))
+        return res
+
+    def merge(self, *args: Any, **kwargs: Any) -> Any:
+        res = self._gate.merge(*args, **kwargs)
+        self._report(
+            "gate",
+            step="merge",
+            passed=bool(res.passed),
+            refused=list(getattr(res, "refused", []) or []),
+            landed=getattr(res, "merged", None) is not None,
+        )
+        return res
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._gate, name)
+
+
+def _result(outcome: PassOutcome | None) -> str:
+    """How the pass ended, for its end event: ``landed`` (items reached ``main``), ``nothing_to_store`` (the writer
+    stored nothing, by its own word) or ``abandoned`` (refused, failed or cut)."""
+    if outcome is not None and outcome.passed and list(outcome.items_merged or []):
+        return "landed"
+    if outcome is not None and getattr(outcome, "nothing_to_store", False):
+        return "nothing_to_store"
+    return "abandoned"
+
+
 def _deliver(stores: Stores, emit: Callable[[dict], None] | None, row: dict) -> None:
     line = json.dumps(row, sort_keys=True)
     try:
@@ -1505,12 +1569,23 @@ async def run_due_passes(
             turn = unillm_turn(cfg.model, effort, route=cfg.route, session=session)
         else:
             turn = unillm_turn(cfg.model, effort)
+        # the pass's progress, as it runs: seconds from its start (set when the start event is delivered)
+        began: list[float | None] = [None]
+
+        def report(phase: str, _pass: str = pass_id, _began: list = began, **fields: Any) -> None:
+            seconds = round(max(0.0, clock() - _began[0]), 3) if _began[0] is not None else 0.0
+            _deliver(
+                stores,
+                emit,
+                {"type": "consolidation", "phase": phase, "pass_id": _pass, "seconds": seconds, **fields},
+            )
+
         writer = WriterPass(
             stores.memory,
-            curate_gate if curating else gate,
+            _ReportingGate(curate_gate if curating else gate, report),
             stores.evidence,
             lookup.episode,
-            recording_turn(turn, rows, cfg.model),
+            recording_turn(_reporting_turn(turn, report), rows, cfg.model),
             config,
             redactor=Redactor.from_environ(os.environ),
             curate=curate_state if curating else None,
@@ -1552,6 +1627,7 @@ async def run_due_passes(
             start["curate"] = sorted(curate_state.fired.values())
         _deliver(stores, emit, start)
         started = clock()
+        began[0] = started
         outcome: PassOutcome | None = None
         failure: str | None = None
         failure_code: str | None = None
@@ -1616,6 +1692,7 @@ async def run_due_passes(
             event["episodes"] = list(
                 req.episodes,
             )  # ties the fork's and the helpers' spend to this pass's batch
+            event["result"] = _result(outcome)
             if library_enabled(settings):
                 # Amendment C: the lag when the pass ended, before publishing
                 event["served_lag_commits"] = _served_lag(stores)

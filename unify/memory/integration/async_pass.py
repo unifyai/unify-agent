@@ -652,8 +652,8 @@ def wait_slot(
     start (*budget_s* replaces that bound). A worker still alive then goes through :func:`drain` at once: SIGTERM,
     the grace, a verified end; its late result is reported as not counted. Nothing in flight: returns at once.
 
-    *relay*: the slot's pass events (``start``, ``end`` and ``held`` rows of its passes, WRITE and
-    CURATE) appended to ``events.jsonl`` after byte *events_from* are handed to it once each, in order, exactly as
+    *relay*: the slot's pass events (``start``, the progress rows ``turn`` and ``gate``
+    (:data:`.consolidate.PROGRESS_PHASES`), ``end`` and ``held`` rows of its passes, WRITE and CURATE) appended to ``events.jsonl`` after byte *events_from* are handed to it once each, in order, exactly as
     the synchronous v2 path emitted them (the same dicts :func:`.consolidate._deliver` wrote).
     """
     rec = read_inflight(paths)
@@ -690,7 +690,7 @@ def wait_slot(
     return out
 
 
-_RELAYED = ("start", "end", "held")
+_RELAYED = ("start", "turn", "gate", "end", "held")
 
 
 class _EventTail:

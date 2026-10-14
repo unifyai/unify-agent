@@ -253,7 +253,7 @@ def test_checker_text_never_lands_anywhere(monkeypatch, tmp_path):
         sent
     ), f"no pass ran (progress: {progress})"  # otherwise the check below proves nothing
     assert staged, "nothing was staged for the writer"
-    assert [e["phase"] for e in emitted][:2] == ["start", "end"]
+    assert [e["phase"] for e in emitted if e["phase"] not in ("turn", "gate")][:2] == ["start", "end"]
     assert SENTINEL.encode() not in fake_tracks.dump_home(home)
     assert not any(SENTINEL in m for m in sent)
     assert not any(SENTINEL.encode() in b for b in staged)

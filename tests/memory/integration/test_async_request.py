@@ -360,6 +360,8 @@ def test_wait_slot_relays_the_slots_pass_events_once_in_order(tmp_path):
             "effort": "low",
             "cap_usd": "1",
         },
+        {"type": "consolidation", "phase": "turn", "pass_id": "e1.p0", "seconds": 0.5, "turn": 1, "returned": True},
+        {"type": "consolidation", "phase": "gate", "pass_id": "e1.p0", "seconds": 0.9, "step": "check", "passed": True},
         {"type": "consolidation", "phase": "end", "pass_id": "e1.p0", "usd": "0.01"},
         {"type": "consolidation", "phase": "records", "passes": ["e1.p0"]},
         {
@@ -379,7 +381,7 @@ def test_wait_slot_relays_the_slots_pass_events_once_in_order(tmp_path):
         ap.wait_slot(paths, 60, relay=seen.append, events_from=offset)
     finally:
         _stop(rec)
-    assert seen == [r for r in rows if r["phase"] in ("start", "end")]
+    assert seen == [r for r in rows if r["phase"] in ("start", "turn", "gate", "end")]
 
 
 TOKEN_CHILD = """

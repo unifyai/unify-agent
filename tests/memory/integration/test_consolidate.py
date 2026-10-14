@@ -141,9 +141,11 @@ def _run(stores, eid, sha, state=None, *, effort="low", emit=None, **kw):
     )
 
 
-def _events(stores):
+def _events(stores, progress=False):
+    """The events file's rows; the running passes' progress rows (``turn``, ``gate``) only with *progress*."""
     p = events_path(stores.paths)
-    return [json.loads(ln) for ln in p.read_text().splitlines()] if p.exists() else []
+    rows = [json.loads(ln) for ln in p.read_text().splitlines()] if p.exists() else []
+    return rows if progress else [r for r in rows if r.get("phase") not in consolidate.PROGRESS_PHASES]
 
 
 # --- (a) the checker -------------------------------------------------------------------------------------
@@ -1582,3 +1584,70 @@ def test_with_no_compaction_setting_the_writer_and_its_helpers_compact(
         spend=SimpleNamespace(usd=Decimal("0"), unknown=0),
     )
     assert ctx.compact is True
+
+
+# --- a running pass reports its progress ---------------------------------------------------------------------------
+
+
+def test_a_running_pass_reports_each_model_call_and_each_gate_verdict_with_its_seconds(tmp_path):
+    """Real events only, as they happen: the start, a ``turn`` row per writer model call, a ``gate`` row per verdict,
+    then the end with its wall time and how the pass ended; the emitter sees the same rows as the events file."""
+    stores = _stores(tmp_path)
+    sha, _ = _record(stores, "e1")
+    emitted: list[dict] = []
+    fake = FakeWriter()
+    import unify.memory.integration.consolidate as c
+
+    original = c.unillm_turn
+    c.unillm_turn = fake
+    try:
+        asyncio.run(
+            run_due_passes(stores, "e1", sha, State(stores.paths.state), effort="low", settings=_settings(),
+                           emit=emitted.append),
+        )
+    finally:
+        c.unillm_turn = original
+    rows = _events(stores, progress=True)
+    phases = [r["phase"] for r in rows if r.get("pass_id") == "e1.p0"]
+    assert phases[0] == "start" and phases[-1] == "end"
+    turns = [r for r in rows if r["phase"] == "turn"]
+    assert [t["turn"] for t in turns] == list(range(1, fake.calls + 1)) and all(t["returned"] for t in turns)
+    assert all(isinstance(r["seconds"], float) and r["seconds"] >= 0 for r in turns)
+    end = rows[-1] if rows[-1]["phase"] == "end" else next(r for r in reversed(rows) if r["phase"] == "end")
+    assert end["result"] in ("landed", "nothing_to_store", "abandoned") and end["seconds"] >= turns[-1]["seconds"]
+    assert [r["phase"] for r in emitted if r.get("pass_id") == "e1.p0"] == phases
+    # the default view leaves the progress rows out
+    assert not any(r["phase"] in consolidate.PROGRESS_PHASES for r in _events(stores))
+
+
+def test_the_reporting_gate_reports_a_check_and_a_merge_and_is_the_gate_otherwise():
+    reports: list[tuple[str, dict]] = []
+
+    class Gate:
+        _blob = "the gate's own"
+
+        def check(self, *a, **k):
+            return SimpleNamespace(passed=False, refused=["G2"])
+
+        def merge(self, *a, **k):
+            return SimpleNamespace(passed=True, refused=[], merged="abc")
+
+    gate = consolidate._ReportingGate(Gate(), lambda phase, **f: reports.append((phase, f)))
+    assert gate.check("p", "c", {}).refused == ["G2"] and gate.merge("p", "c", {}, "id", "k", None, "0").merged == "abc"
+    assert gate._blob == "the gate's own"
+    assert reports == [
+        ("gate", {"step": "check", "passed": False, "refused": ["G2"]}),
+        ("gate", {"step": "merge", "passed": True, "refused": [], "landed": True}),
+    ]
+
+
+def test_a_failed_model_call_is_reported_as_not_returned():
+    reports: list[tuple[str, dict]] = []
+
+    async def failing(messages, tools):
+        raise RuntimeError("down")
+
+    turn = consolidate._reporting_turn(failing, lambda phase, **f: reports.append((phase, f)))
+    with pytest.raises(RuntimeError):
+        asyncio.run(turn([], []))
+    assert reports == [("turn", {"turn": 1, "returned": False})]
