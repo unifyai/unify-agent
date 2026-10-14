@@ -1020,12 +1020,23 @@ EXECUTE_CODE = RegisteredTool(
         "your instructions state. A refusal names the rule behind it. Returns what the cell printed (stdout and "
         "stderr) and its error, if it raised, up to the output limit your instructions state; the rest is saved "
         "and the output says where. Your other tools are Python functions in the module `tools`, already "
-        "imported: `tools.list()` lists them and `tools.help(name)` documents one."
+        "imported: `tools.list()` lists them and `tools.help(name)` documents one. A call may carry a thought, "
+        "your reasoning at this step, beside the code or alone; it stays in the conversation, and a call with no "
+        "code runs nothing."
     ),
     parameters={
         "type": "object",
-        "properties": {"code": {"type": "string", "description": "The Python source of the cell."}},
-        "required": ["code"],
+        "properties": {
+            "thought": {
+                "type": "string",
+                "description": "Your reasoning at this step (optional). It stays in the conversation and runs nothing.",
+            },
+            "code": {
+                "type": "string",
+                "description": "The Python source of the cell (optional: a call with a thought alone runs nothing).",
+            },
+        },
+        "required": [],
         "additionalProperties": False,
     },
     refusals={
@@ -2478,13 +2489,21 @@ def sandbox_paragraph(agent: str, names: Iterable[str], persistent: bool) -> str
     return f"{state} {names_text}" if names_text else state
 
 
-#: Where thinking goes: the text of a message sent with an ``execute_code`` call. It stays in the conversation and
-#: ends nothing (an answer is a message without a tool call, or ``tools.answer``), so a cell is never needed just to
-#: keep thinking.
-THINK_BESIDE_CELLS = (
-    "Text you write in a message beside an execute_code call stays in the conversation for you to read and does "
-    "not end your work: think there, and use cells to compute."
+#: Where thinking goes: execute_code's ``thought`` argument. It stays in the conversation and ends nothing (an answer
+#: is a message without a tool call, or ``tools.answer``), and a call with a thought and no code runs nothing, so a
+#: cell is never needed just to keep thinking.
+WHERE_TO_THINK = (
+    "Think in execute_code's `thought` argument: it stays in the conversation and ends nothing, and a call with a "
+    "thought and no code runs nothing. Use cells to compute."
 )
+#: What a call with a thought and no code gets back: nothing ran, and nothing is refused.
+THOUGHT_ONLY_REPLY = "(no code: nothing ran; your thought stays in the conversation)"
+
+
+def thought_only(args: object) -> bool:
+    """Whether execute_code's *args* hold no code to run (a thought alone, or nothing)."""
+    code = args.get("code") if isinstance(args, dict) else None
+    return not (isinstance(code, str) and code.strip())
 
 
 def preamble(agent: str, facts: dict) -> str:
@@ -2504,7 +2523,7 @@ def preamble(agent: str, facts: dict) -> str:
         "## How you work here",
         "You compute by writing Python. Your one tool is execute_code: each call runs a Python cell. Print only "
         "what you need: what a cell prints is what you see, up to the output limit below. "
-        + THINK_BESIDE_CELLS,
+        + WHERE_TO_THINK,
         "",
         sandbox_paragraph(agent, names, bool(persistent)),
         "",

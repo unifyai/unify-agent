@@ -1062,6 +1062,11 @@ async def _tool(
         named = isinstance(eid, str) and not form_of(out)
         return out, ([{"path": f"/episodes/{eid}", "mode": "search"}] if named else [])
     if name == "execute_code":
+        from unify.common.tool_registry import THOUGHT_ONLY_REPLY, thought_only
+
+        if thought_only(args):
+            # a thought alone: nothing runs and nothing is refused; the thought stays in the conversation
+            return THOUGHT_ONLY_REPLY, []
         if st["work_over"] is not None:
             return refusal("execute_code", "work_full", why=st["work_over"]), []
         stopping = ctx.pass_record.stopping.get(st["call"])

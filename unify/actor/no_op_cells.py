@@ -52,6 +52,5 @@ def refusal_text(code: object, *, can_answer_in_code: bool) -> Optional[str]:
         "did not write. It was not run.",
         expected="a cell that computes something: it reads your data or variables, calls a tool or writes a file",
         example="execute_code(code=\"rows = [r for r in data if r]\\nprint(len(rows))\")",
-        hint=f"Think in the text of your message beside a cell: it stays in the conversation and does not end your "
-        f"work. {answer}",
+        hint=f"Think in execute_code's thought argument: it stays in the conversation and runs nothing. {answer}",
     )

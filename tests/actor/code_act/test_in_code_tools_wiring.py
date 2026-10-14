@@ -237,9 +237,43 @@ async def test_text_beside_a_cell_stays_in_the_conversation_and_does_not_end_the
     assert any(note in text for text in sent_back), sent_back
     # the opening and the answer rule, as the model reads them, agree
     system = _system_texts(model.calls[0])[0]
-    assert "You compute by writing Python." in system and R.THINK_BESIDE_CELLS in system
+    assert "You compute by writing Python." in system and R.WHERE_TO_THINK in system
     assert "You act by writing Python" not in system
     assert "Your answer is your final reply: a message without a tool call." in system
+
+
+def test_execute_code_takes_an_optional_thought_with_the_same_bytes_for_every_agent():
+    sent = {json.dumps(R.json_tools(agent), sort_keys=True) for agent in R.AGENTS}
+    assert len(sent) == 1  # one schema, the same bytes for every agent: the cached prefix is shared
+    (tool,) = R.json_tools("actor")
+    params = tool["function"]["parameters"]
+    assert list(params["properties"]) == ["thought", "code"] and params["required"] == []
+    assert R.thought_only({"thought": "the rows look sorted"}) and R.thought_only({"code": "  "})
+    assert not R.thought_only({"code": "print(len(rows))", "thought": "count them"})
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(300)
+async def test_a_thought_alone_runs_nothing_and_is_not_refused(in_code):
+    thought = "The file has a header line; I will count the lines first."
+    model = ScriptedModel(
+        actor=[
+            reply(calls=[("execute_code", {"thought": thought})]),
+            reply(calls=[("execute_code", {"thought": "Now answer.", "code": f"tools.answer({ANSWER!r})"})]),
+            reply("not finished"),
+        ],
+    )
+    result = await _act(model, "Count the lines of data.txt.")
+
+    assert result == ANSWER, _why(model)
+    assert R.THOUGHT_ONLY_REPLY in _tool_results(model.calls[1])
+    # the thought is in the conversation the model reads next
+    sent_back = json.dumps(model.calls[1].messages)
+    assert thought in sent_back
+    (session,) = in_code["opened"]
+    cells = [r for r in _rows(session) if r["tool"] == "execute_code"]
+    assert len(cells) == 1  # only the cell with code ran; the thought alone is no cell
 
 
 @needs_bwrap

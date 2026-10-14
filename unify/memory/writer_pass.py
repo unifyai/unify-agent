@@ -103,6 +103,18 @@ CHECK_FLOOR_S = 60.0
 _RULES_HEADING = "Manifest rules for consolidators"
 
 
+def _thought_only(args: object) -> bool:
+    """Whether execute_code's *args* hold no code to run (:func:`unify.common.tool_registry.thought_only`)."""
+    from unify.common.tool_registry import thought_only
+
+    return thought_only(args)
+
+
+def _thought_only_reply() -> str:
+    from unify.common.tool_registry import THOUGHT_ONLY_REPLY
+
+    return THOUGHT_ONLY_REPLY
+
 def _manifest_rules() -> str:
     """The consolidator rules of :mod:`.manifest`'s docstring, verbatim, so prompt and gate cannot drift."""
     doc = _manifest.__doc__ or ""
@@ -5320,6 +5332,9 @@ class WriterPass:
                             name=str(name)[:80],
                             tools="execute_code, check, finish",
                         )
+                    elif _thought_only(args):
+                        # a thought alone: nothing runs and nothing is refused; the thought stays in the conversation
+                        reply = _wt.Reply(_thought_only_reply())
                     elif stop is not None:
                         reply = _wt.general("stopped", reason=stop)
                     elif ran >= _MAX_CELLS_PER_TURN:

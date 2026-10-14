@@ -587,9 +587,14 @@ class LibrarianSession:
             args = json.loads(fn.get("arguments") or "{}")
         except (TypeError, ValueError):
             args = None
-        code = args.get("code") if isinstance(args, dict) else None
-        if not isinstance(code, str):
-            return str(refusal(GENERAL, "bad_arguments", reason="execute_code takes one string argument, code"))
+        if not isinstance(args, dict):
+            return str(refusal(GENERAL, "bad_arguments", reason="execute_code takes strings: thought and code"))
+        from unify.common.tool_registry import THOUGHT_ONLY_REPLY, thought_only
+
+        if thought_only(args):
+            # a thought alone: nothing runs and nothing is refused; the thought stays in the conversation
+            return THOUGHT_ONLY_REPLY
+        code = args["code"]
         self.state.finish_text = None
         note = self.interp.take_note()
         res = await self.interp.cell(code, self._cell)

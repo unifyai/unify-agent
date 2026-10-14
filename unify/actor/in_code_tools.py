@@ -276,13 +276,18 @@ class InCodeTools:
     # -- the model-API tool ------------------------------------------------------------------------------------
 
     def tool(self) -> Any:
-        """The request's ``execute_code`` for the loop: one argument, ``code`` (the schema the model is sent is the
-        registry's, ``tool_registry.json_tools``)."""
+        """The request's ``execute_code`` for the loop: ``thought`` and ``code``, both optional (the schema the model
+        is sent is the registry's, ``tool_registry.json_tools``). A call with no code runs nothing."""
+        from unify.common import tool_registry as R
         from unify.common.tool_spec import ToolSpec
 
         session = self
 
-        async def execute_code(code: str) -> Any:
+        async def execute_code(code: str = "", thought: str = "") -> Any:
+            if R.thought_only({"code": code}):
+                # a thought alone: nothing runs and nothing is refused; the thought stays in the conversation (a
+                # plain reply, so no cell result is noted for it)
+                return R.THOUGHT_ONLY_REPLY
             return await session.run_cell(code)
 
         execute_code.__doc__ = _execute_code_doc()

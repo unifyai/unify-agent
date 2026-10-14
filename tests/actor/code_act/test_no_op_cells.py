@@ -67,7 +67,7 @@ def test_the_error_has_the_four_parts():
     assert expected.startswith("Expected a cell that computes something") and "e.g. execute_code(code=" in expected
     # where the thought and the answer go
     assert hint == (
-        "Think in the text of your message beside a cell: it stays in the conversation and does not end your work. "
+        "Think in execute_code's thought argument: it stays in the conversation and runs nothing. "
         'To answer, call tools.answer("...") in a cell, or reply with the answer as text.'
     )
     without = no_op_cells.refusal_text("pass", can_answer_in_code=False)
