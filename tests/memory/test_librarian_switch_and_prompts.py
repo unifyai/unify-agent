@@ -48,13 +48,12 @@ ASK_CALLS, ASK_ROWS = "ask_calls", "ask_rows"
 #: without its arguments or its answer's form (the call's help has those).
 POINTER = (
     "Your library of procedures and notes from earlier work is the `memory` package in your cells. A librarian, "
-    "who has read every item, what each was built for and how each has been used, answers `memory.ask`."
+    "who searches the library by what each item was saved for and reads each item it names, answers `memory.ask`."
 )
 
 
 def librarian_brief() -> str:
-    """The librarian's brief (design J(b).6), as its system prompt carries it between the shared opening and the
-    catalogue."""
+    """The librarian's brief (design J(b).6), as its system prompt carries it after the shared opening."""
     from unify.memory import librarian
 
     return librarian.BRIEF

@@ -977,6 +977,8 @@ class RequestRun:
         # The tool adapter is not wired in this build (deferred): ``assemble`` records no tool calls.
         self.observer: Any = None
         self.costs: Any = None
+        #: the embedding requests the library export sent (``embeddings.embed``'s ``on_call``), booked in _open
+        self.export_embedding_calls: list[dict] = []
         self.worktree: Any = None
         self._worktree_finished = False
         # Only the checker's verdict of a posted outcome: True, False or None (none posted).
@@ -1094,6 +1096,9 @@ class RequestRun:
         self.costs = cost.install()
         self.costs.activate()
         self._scope.callback(self.costs.deactivate)
+        # the embedding requests the library export sent before the cost record opened
+        for call in self.export_embedding_calls:
+            self.costs.add_embedding(call)
 
     def _recover_journals(self) -> None:
         """Record each episode journal a process that died mid-request left, as an incomplete episode
@@ -1244,10 +1249,15 @@ class RequestRun:
             captured = {}
         librarian = librarian_on()
         summary_of = None
+        search = None
         if librarian:
             from ..library_export import staging_summaries
+            from ..library_search import backend
 
             summary_of = staging_summaries(Path(paths.state_dir) / "memory-staging")
+            # the search index's vectors: each request the embedder sends is booked once the request's cost
+            # record opens (_open)
+            search = backend(on_call=self.export_embedding_calls.append)
         self.generated = export_actor_library_mode(
             paths.memory,
             self.pin,
@@ -1258,6 +1268,7 @@ class RequestRun:
             captures=captured,
             librarian=librarian,
             summary_of=summary_of,
+            search=search,
         )
         self.item_ids = pinned_items(paths.checkout, library_mode=True)
         # the worker binds ``memory`` in every cell when the copy holds the package (hooks.worker_globals)

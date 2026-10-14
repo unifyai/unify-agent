@@ -9,6 +9,7 @@ not sent, so nothing leaves the process.
 from __future__ import annotations
 
 import httpx
+import pytest
 
 from unify.common import embeddings
 from unify.settings import SETTINGS
@@ -33,11 +34,13 @@ def _recording(monkeypatch) -> list[str]:
     return urls
 
 
-def test_default_posts_to_openrouter(monkeypatch):
+def test_without_a_route_nothing_is_posted_and_the_refusal_names_the_settings(monkeypatch):
+    """No default endpoint: a provider is never called directly, outside the model client and the run's proxy."""
     urls = _recording(monkeypatch)
-    monkeypatch.setattr(SETTINGS, "UNIFY_EMBED_URL", "")
-    embeddings._openrouter(["a text"])
-    assert urls == ["https://openrouter.ai/api/v1/embeddings"]
+    monkeypatch.setattr(SETTINGS, "UNIFY_EMBED_URL", "  ")
+    with pytest.raises(embeddings.EmbeddingRouteRefused, match="UNIFY_EMBED_URL.*UNIFY_LOCAL_EMBEDDINGS"):
+        embeddings._openrouter(["a text"])
+    assert urls == []
 
 
 def test_the_switch_names_the_endpoint(monkeypatch):

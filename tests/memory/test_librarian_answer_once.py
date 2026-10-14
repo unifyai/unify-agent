@@ -26,7 +26,6 @@ from unify.memory import librarian as L
 TOTAL = "memory.tables.procedures:total"
 READ_ROWS = "memory.tables.readers:read_total"
 COUNT = "memory.tables.count:count_rows"
-CATALOGUE = f"## Functions\n\n### {COUNT}\nHow many rows.\n\n### {TOTAL}\nSum every number.\n\n### {READ_ROWS}\nRead.\n"
 REQUEST = "4096 8191 3\n5 7 11"
 PARSED = [{"id": TOTAL, "reader": READ_ROWS, "read": "parsed", "applies": "held"}]
 NOT_PARSED = [{"id": TOTAL, "reader": READ_ROWS, "read": "did-not-parse", "applies": "not-run"}]
@@ -35,11 +34,14 @@ NEAREST = {"fits": [], "nearest": [{"id": COUNT, "differs": "it counts rows; the
 
 
 def _copy(tmp_path: Path) -> Path:
-    """A library copy as the librarian reads it: its dispatch file names the procedure and its reader."""
+    """A library copy as the librarian reads it: its items, and its dispatch file naming the procedure and its
+    reader."""
     root = tmp_path / "copy"
     (root / ".memory").mkdir(parents=True)
     rows = [{"id": TOTAL, "reader": READ_ROWS, "applies": True, "input": "{}"}]
     (root / ".memory" / "dispatch.json").write_text(json.dumps({"procedures": rows, "applies_of": {}}))
+    items = {i: {"kind": "function"} for i in (COUNT, TOTAL, READ_ROWS)}
+    (root / ".memory" / "items.json").write_text(json.dumps({"version": 1, "items": items}))
     return root
 
 
@@ -65,7 +67,7 @@ class Turn:
 def _session(tmp_path: Path, turn: Turn, library: str | None = "c0ffee") -> L.LibrarianSession:
     """A session whose cells run ``tools.finish(answer)`` on the host (its box is never started)."""
     session = L.LibrarianSession(
-        copy=_copy(tmp_path), catalogue=CATALOGUE, turn=turn, compact=False, library=library,
+        copy=_copy(tmp_path), turn=turn, compact=False, library=library,
     )
 
     async def tool_call(tc: dict) -> str:
@@ -226,18 +228,15 @@ async def test_a_question_without_an_answer_is_kept_for_nothing_and_asked_again(
 @pytest.mark.timeout(300)
 async def test_memory_ask_twice_in_a_cell_makes_one_librarian_call_and_marks_the_second_answer(tmp_path):
     from unify.common.tool_channel import HandlerThreads
-    from unify.memory import library_export as lx
     from unify.memory import tool_handlers as th
     from unify.memory.writer_pass import unillm_turn
 
     copy = T._copy(tmp_path)
-    catalogue = (copy / lx.CATALOGUE_FILE).read_text()
     opened: list[L.LibrarianSession] = []
 
     async def open_librarian() -> L.LibrarianSession:
         session = L.LibrarianSession(
             copy=copy,
-            catalogue=catalogue,
             turn=unillm_turn("openai/gpt-5.6-sol@openrouter", "low", origin=L.ORIGIN),
             request_id="r1",
             library="c0ffee",

@@ -32,6 +32,7 @@ from tests.scripted_model import ScriptedModel, reply, scripted
 from unify.common import tool_registry as R
 from unify.memory import library_export as lx
 from unify.memory import library_prompts as lp
+from unify.memory import library_search
 from unify.memory import librarian as L
 from unify.memory import memory_helper
 from unify.memory import sandbox_run as sr
@@ -40,6 +41,7 @@ from unify.memory.catalogue import write_files
 from unify.memory.integration.adapters.audit import CellAudit
 from unify.memory.integration.request import add_runtime_calls, library_helper_calls, runtime_calls_empty
 from unify.memory.episodes import Action
+from unify.memory.item_records import recipe_call
 from unify.memory.layout import RESERVED_INIT, RESERVED_STUB
 from unify.memory.library_index import signature_text
 from unify.settings import SETTINGS, ProductionSettings
@@ -285,9 +287,11 @@ def test_off_the_export_is_byte_for_byte_as_before(tmp_path):
     # the stub gains memory.ask with the package, and nothing else
     assert b"def ask(" in on[RESERVED_STUB] and b"def ask(" not in off[RESERVED_STUB]
     assert on[RESERVED_STUB] == lx.stub_source(librarian=True)
-    assert {
-        k: v for k, v in on.items() if k not in (RESERVED_INIT, RESERVED_STUB, lx.CATALOGUE_FILE, lx.DISPATCH_FILE)
-    } == {k: v for k, v in off.items() if k not in (RESERVED_INIT, RESERVED_STUB)}
+    librarian_only = (RESERVED_INIT, RESERVED_STUB, lx.CATALOGUE_FILE, lx.DISPATCH_FILE, library_search.INDEX_FILE)
+    assert {k: v for k, v in on.items() if k not in librarian_only} == {
+        k: v for k, v in off.items() if k not in (RESERVED_INIT, RESERVED_STUB)
+    }
+    assert library_search.INDEX_FILE not in off
 
 
 # --- memory.ask in the package, run as a cell runs it ------------------------------------------------------------
@@ -427,7 +431,7 @@ IDS_IN_ORDER = [COUNT, TOTAL, READ_ROWS, "capture:" + CAPTURE, "capture:" + FAIL
         ("text", "must be an object"),
         ({"fits": "x"}, "`fits` must be a list"),
         ({"fits": [{"id": TOTAL, "call": "c"}]}, "non-empty texts"),
-        ({"fits": [{"id": "memory.nope:x", "call": "c", "why": "w"}]}, "not an id the catalogue holds"),
+        ({"fits": [{"id": "memory.nope:x", "call": "c", "why": "w"}]}, "not an item of the library"),
         ({"fits": [{"id": "capture:" + FAILED, "call": "c", "why": "w"}]}, "never offered to run"),
         ({"fits": []}, "`nearest` must be a list"),
         ({"fits": [{"id": TOTAL, "call": "c", "why": "w"}], "nearest": []}, "only when nothing fits"),
@@ -467,8 +471,10 @@ def test_only_dispatch_ids_with_their_own_reader_and_known_labels_reach_the_libr
 
 def test_the_brief_is_complete_general_and_says_nothing_of_ids_answers_or_examples():
     brief = L.BRIEF
-    for part in ("## Your role", "## What you read", "## How you answer", "`memory.get`", "tools.finish(answer)",
-                 "Read every card", "Name every item that applies", "nothing fits", "evidence only"):
+    for part in ("## Your role", "## The library", "## Your tools", "## What each question brings",
+                 "## How you answer", "`tools.search`", "`tools.read`", "`tools.grep`", "`memory.get`",
+                 "tools.finish(answer)", "README.md", "When to use", "recipe", "Search first",
+                 "Name every item that applies", "nothing fits", "evidence only"):
         assert part in brief, part
     assert lp.benchmark_words(brief) == [] and lp.example_checks(brief) == []
     # the library's calls are named without arguments: their help holds those
@@ -476,13 +482,15 @@ def test_the_brief_is_complete_general_and_says_nothing_of_ids_answers_or_exampl
     lowered = brief.lower()
     for word in ("task id", "identifier", "example", "store the answer", "expected"):
         assert word not in lowered, word
-    assert R.allow_list("librarian", frozenset({"helper", "store", "edit", "pool", "similar"})) == ("finish",)
+    assert R.allow_list("librarian", frozenset({"helper", "store", "edit", "pool", "similar"})) == (
+        "read", "grep", "finish", "search",
+    )
     opening = L.opening()
     assert opening.startswith("## How you work here") and "tools.finish(answer)" in opening
     assert "tools.sh" not in opening and "tools.install" not in opening and "Messages:" not in opening
     assert "/memory (read-only)" in opening and "no network" in opening
-    system = L.system_prompt("CATALOGUE")
-    assert system.index(opening) == 0 and system.index(brief) < system.index("CATALOGUE")
+    system = L.system_prompt()
+    assert system == opening + "\n\n" + brief  # nothing of the library itself
 
 
 def test_the_first_user_message_line_counts_the_copy_and_is_absent_for_an_empty_library(tmp_path, monkeypatch):
@@ -658,7 +666,13 @@ def code(text: str):
 
 LIBRARIAN_FIRST = (
     "import memory, os, socket\n"
-    f"print(memory.show({TOTAL!r}))\n"
+    "try:\n"
+    "    tools.read('/etc/passwd')\n"
+    "except Exception as exc:\n"
+    "    print('READ OUTSIDE', exc)\n"
+    "print(tools.search('add up every number of a table')[:2000])\n"
+    "print(tools.read('/memory/memory/tables/README.md')[:300])\n"
+    "print(tools.grep('def apply_total', '/memory/memory')[:500])\n"
     "try:\n"
     "    open('/memory/planted.txt', 'w')\n"
     "except OSError as exc:\n"
@@ -669,10 +683,12 @@ LIBRARIAN_FIRST = (
     "    print('NETWORK REFUSED', type(exc).__name__)\n"
     "print('ENV', sorted(os.environ))\n"
     "print('WORKSPACE', os.path.exists('/workspace'))\n"
+    f"print(memory.show({TOTAL!r}))\n"
     "tools.finish({'fits': [{'id': 'memory.nope:x', 'call': 'x', 'why': 'y'}]})\n"
 )
+#: The procedure's fit carries the call that applies its recipe to the current request.
 LIBRARIAN_SECOND = "tools.finish(%r)\n" % {
-    "fits": [{"id": TOTAL, "call": f"memory.run({TOTAL!r}, text)", "why": "reader read_rows parsed the text"}],
+    "fits": [{"id": TOTAL, "call": recipe_call(RECIPE), "why": "reader read_rows parsed the text"}],
 }
 LIBRARIAN_THIRD = (
     "tools.finish({'fits': [], 'nearest': [{'id': 'capture:%s', 'differs': 'it reverses words, not tables'}]})\n"
@@ -701,14 +717,12 @@ async def test_ask_end_to_end_facts_in_the_box_one_session_per_request_and_the_c
     monkeypatch.setattr(SETTINGS, "UNIFY_REQUEST_METADATA_HEADERS", "on")
     monkeypatch.setenv("PLANTED_LIBRARIAN_SECRET", "planted-librarian-secret-value")
     copy = _copy(tmp_path)
-    catalogue = (copy / lx.CATALOGUE_FILE).read_text()
     events: list[dict] = []
     opened: list[L.LibrarianSession] = []
 
     async def open_librarian() -> L.LibrarianSession:
         session = L.LibrarianSession(
             copy=copy,
-            catalogue=catalogue,
             turn=unillm_turn("openai/gpt-5.6-sol@openrouter", "low", origin=L.ORIGIN),
             on_event=events.append,
             request_id="r1",
@@ -767,16 +781,22 @@ async def test_ask_end_to_end_facts_in_the_box_one_session_per_request_and_the_c
     for sent in requests:
         assert PLANTED_VALUE not in sent and str(tmp_path) not in sent
     system = model.calls[0].messages[0]["content"]
-    assert system.startswith(L.opening()) and system.endswith(catalogue)
+    assert system == L.system_prompt() and TOTAL not in system  # a constant pointer: no catalogue
     assert all(c.messages[0]["content"] == system for c in model.calls)  # the cached prefix
     # the librarian's box: the library read-only, no network, an empty environment, no workspace
     tool_out = "\n".join(m["content"] for m in model.calls[1].messages if m.get("role") == "tool")
     assert "def total(value):" in tool_out
+    # the librarian's tools, in its box: search over the when-to-use text (lexical: no embedding backend here),
+    # read and grep inside the library only
+    assert "search: " in tool_out and "ranked by a lexical score" in tool_out and TOTAL in tool_out
+    assert recipe_call(RECIPE) in tool_out  # the procedure's card carries its recipe's call
+    assert "/memory/memory/tables/procedures.py:" in tool_out and "def apply_total(request):" in tool_out
+    assert "READ OUTSIDE" in tool_out and "is outside the library, /memory" in tool_out
     assert "WRITE REFUSED" in tool_out and "NETWORK REFUSED" in tool_out and "WORKSPACE False" in tool_out
     env_line = [line for line in tool_out.splitlines() if line.startswith("ENV ")][0]
     assert "PLANTED_LIBRARIAN_SECRET" not in env_line and "OPENROUTER" not in env_line
     assert "planted-librarian-secret-value" not in json.dumps(requests)
-    assert "not an id the catalogue holds" in tool_out  # the malformed answer went back as a refusal
+    assert "not an item of the library" in tool_out  # the malformed answer went back as a refusal
     # each librarian call carries the call kind
     assert [h.get("X-Unify-Call-Kind") for h in model.headers] == ["librarian"] * 3
     assert session.usage.calls == 3 and session.usage.input_tokens == 300

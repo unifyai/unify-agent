@@ -17,11 +17,15 @@ given again and the model calls apart (:func:`usage_fields`).
 The session runs on the memory agents' runtime, as a helper does: the shared opening
 (:func:`unify.common.tool_registry.preamble`) for the agent ``librarian``, one model-API tool (``execute_code``), its
 cells in a persistent confined interpreter (:class:`.tool_handlers.InterpreterSession`) whose ``tools`` module holds
-the allow-list (``finish`` only), the memory agents' compaction (:func:`.writer_pass.compact_by_summary`) and the
-shared no-progress rule (:class:`unify.common._async_tool.loop_stop.AgentNoProgress`). Its box mounts the actor's
-library copy read-only at ``/memory``; it has no write root (a private ``/tmp`` only), no network and an empty
-environment, as every memory box. Its system message is the shared opening, the brief (:data:`BRIEF`) and the
-catalogue (``.memory/catalogue.md``), in that order, so the catalogue is a cached prefix every question shares.
+the allow-list (``search``, ``read``, ``grep`` and ``finish``), the memory agents' compaction
+(:func:`.writer_pass.compact_by_summary`) and the shared no-progress rule
+(:class:`unify.common._async_tool.loop_stop.AgentNoProgress`). Its box mounts the actor's library copy read-only at
+``/memory``; it has no write root (a private ``/tmp`` only), no network and an empty environment, as every memory box.
+Its system message is the shared opening and the brief (:data:`BRIEF`): a pointer to where the library is and how it
+is laid out, the same bytes whatever the library holds, so the prompt prefix stays cached as the library grows. It
+finds items with its tools: ``search`` (:func:`search`) ranks every item by its "When to use" text against a query
+(:mod:`.library_search`, over the index the export wrote), ``read`` and ``grep`` (:func:`read`, :func:`grep`) read
+and search the library's files, inside the library only.
 
 Its model calls go through the actor's route on the actor's model and effort (:func:`.writer_pass.unillm_turn` with
 the origin :data:`ORIGIN`): the request's cost listener counts them as the actor's own (``integration.cost``), and
@@ -30,10 +34,11 @@ session also keeps its own totals (calls, tokens, cache reads, USD) for the use 
 USD unknown.
 
 It answers with ``tools.finish(answer)`` (:func:`finish`): ``{"fits": [{"id", "call", "why"}, ...]}`` or
-``{"fits": [], "nearest": [{"id", "differs"}, ...]}``. The handler checks the form and every id against the
-catalogue; a malformed answer or an unknown id goes back as a refusal for the librarian to correct, within the
-loop's existing limits (no cap of its own). The answer reaches the actor as the librarian gave it: the harness ranks,
-scores and reorders nothing.
+``{"fits": [], "nearest": [{"id", "differs"}, ...]}``. The handler checks the form and every id against the items of
+the library copy (:func:`library_items`: what ``memory.items`` lists, and the captured procedures); a malformed
+answer or an unknown id goes back as a refusal for the librarian to correct, within the loop's existing limits (no
+cap of its own). The answer reaches the actor as the librarian gave it: the harness ranks, scores and reorders
+nothing.
 """
 
 from __future__ import annotations
@@ -83,36 +88,52 @@ BRIEF = (
     "## Your role\n"
     "You are the librarian of a library of stored procedures and notes that an agent built from its earlier work. "
     "The agent is working on a request, and it asks you which stored items apply to a question: its request's "
-    "text, or a question of its own. Your job is to say which items apply. You do not do the agent's work, and you "
-    "change nothing.\n"
+    "text, or a question of its own. Your job is to find every item that applies and say why. You do not do the "
+    "agent's work, and you change nothing.\n"
     "\n"
-    "## What you read\n"
-    "- The catalogue below holds one card per stored function: its id, its signature and the first paragraph of "
-    "its docstring; what it was saved against (what the work it was built from asked, and how that work went about "
-    "it); and its record: its evidence level, its status, its reader, whether it states the conditions it applies "
-    "under (`applies`), the structure of the input it was saved against, and how it has been used. Notes follow "
-    "the functions. Captured procedures, recent work not yet reviewed, come last; one marked as tried and failed "
-    "shows what broke and is never offered to run.\n"
-    "- Each question comes with facts: for each stored procedure that has a reader, whether that reader parsed "
-    "the text of the agent's current request, and, where the procedure states conditions, whether its `applies` "
-    "held on what the reader gave. A reader that parsed the text, or an `applies` that held, is evidence that the "
-    "item's input fits, and evidence only: it does not show that the item does what the question needs. A reader "
-    "that did not parse the text is evidence that the input differs; one that could not be started or failed to "
-    "run is evidence of nothing.\n"
-    "- `memory.get` in a cell opens one item in full. Open an item when its card leaves you unsure whether it "
-    "applies.\n"
+    "## The library\n"
+    "- It is under /memory, read-only. The stored functions are the Python package `memory`: one folder per package "
+    "under /memory/memory, each module a file of functions. The notes are Markdown files under /memory/notes, one "
+    "folder per topic. Captured procedures, recent work not yet reviewed, are under /memory/.memory/captures, one "
+    "folder each with its procedure.py.\n"
+    "- Every package and topic folder has a README.md: what the folder holds and how its items relate.\n"
+    "- Every stored function's docstring and every note has a When to use section: what the item was saved for, how "
+    "to recognise that situation, and what it is not for.\n"
+    "- A procedure may have a recipe: one function that does the procedure's whole job on the agent's current "
+    "request. The procedure's card in a search result shows the call that applies the recipe.\n"
+    "\n"
+    "## Your tools\n"
+    "- `tools.search` ranks every item of the library by how close its When to use text is to a situation, best "
+    "first, with each item's path, id and one-line card. Search first, with the situation the question describes; "
+    "search again in other words when the first ranking does not settle it.\n"
+    "- `tools.read` reads a file or lists a folder of the library. Before you name an item, read the README of its "
+    "folder and the item's When to use section.\n"
+    "- `tools.grep` finds where a name or a call occurs in the library's files: which functions call a function, "
+    "which notes mention it.\n"
+    "- `memory.get` in a cell gives an item's record: its status, its evidence level and how it has been used.\n"
+    "- `tools.finish` gives your answer.\n"
+    "\n"
+    "## What each question brings\n"
+    "Each question comes with facts: for each stored procedure that has a reader, whether that reader parsed the "
+    "text of the agent's current request, and, where the procedure states conditions, whether its `applies` held on "
+    "what the reader gave. A reader that parsed the text, or an `applies` that held, is evidence that the item's "
+    "input fits, and evidence only: it does not show that the item does what the question needs. A reader that did "
+    "not parse the text is evidence that the input differs; one that could not be started or failed to run is "
+    "evidence of nothing. Many requests carry no structured data, and then there are no such facts: the When to use "
+    "text decides.\n"
     "\n"
     "## How you answer\n"
-    "- Read every card before you answer. Name every item that applies, not only one, in the catalogue's order.\n"
-    "- For each item that applies, give a ready call the agent can run as written (the item opened with "
-    "`memory.get` and called on the question's input), and a one-line reason that names the saved-against line, "
-    "the fact or the record you relied on.\n"
-    "- When the evidence is thin, answer that nothing fits, and name the nearest items with what differs between "
-    "each of them and the question.\n"
+    "- Name every item that applies, not only one, each with why it applies: the When to use line, the fact or the "
+    "record you relied on.\n"
+    "- For each item that applies, give a call the agent can run as written: for a procedure whose card shows the "
+    "call that applies its recipe to the current request, that call; for another function, the item called on the "
+    "question's input.\n"
+    "- When nothing applies, answer that nothing fits, and name the nearest items with what differs between each of "
+    "them and the question.\n"
     '- Answer with `tools.finish(answer)`, where answer is `{"fits": [{"id": ..., "call": ..., "why": ...}, ...]}`, '
-    'or `{"fits": [], "nearest": [{"id": ..., "differs": ...}, ...]}` when nothing fits. Every id is one the '
-    "catalogue holds. An answer in another form, or with an id the catalogue does not hold, is refused with the "
-    "reason; correct it and call `tools.finish` again.\n"
+    'or `{"fits": [], "nearest": [{"id": ..., "differs": ...}, ...]}` when nothing fits. Every id is the id of an '
+    "item of the library, as search shows it. An answer in another form, or with an id the library does not hold, "
+    "is refused with the reason; correct it and call `tools.finish` again.\n"
     "- The agent may ask follow-up questions in the same request. Each arrives as a new message with its own "
     "facts, and you answer each one with `tools.finish`.\n"
 )
@@ -145,9 +166,10 @@ def opening(cell_s: float = CELL_TIMEOUT_S) -> str:
     )
 
 
-def system_prompt(catalogue: str, cell_s: float = CELL_TIMEOUT_S) -> str:
-    """The librarian's system message: the shared opening, the brief and the catalogue, in that order."""
-    return opening(cell_s) + "\n\n" + BRIEF + "\n" + catalogue
+def system_prompt(cell_s: float = CELL_TIMEOUT_S) -> str:
+    """The librarian's system message: the shared opening and the brief, in that order. It holds nothing of the
+    library itself, so it is the same bytes for every library."""
+    return opening(cell_s) + "\n\n" + BRIEF
 
 
 def catalogue_ids(catalogue: str) -> list[str]:
@@ -160,17 +182,52 @@ def catalogue_ids(catalogue: str) -> list[str]:
     return out
 
 
-def failed_captures(catalogue: str) -> set[str]:
-    """The captured attempts the catalogue lists as tried and failed (never offered to run)."""
-    out: set[str] = set()
-    current = None
-    for line in catalogue.splitlines():
-        m = _HEADING.match(line)
-        if m:
-            current = m.group(1)
-        elif current and current.startswith(CAPTURE_PREFIX) and "tried and failed" in line:
-            out.add(current)
-    return out
+#: The captured procedures of a library copy, as its export holds them.
+_CAPTURES_DIR = ".memory/captures"
+_CAPTURE_DIR = re.compile(r"[0-9a-f]{16}")
+#: The statuses ``memory.items`` leaves out (:data:`.library_index.HIDDEN`).
+_HIDDEN = ("retired",)
+
+
+def library_items(copy: Path) -> tuple[list[str], set[str], dict[str, str]] | None:
+    """The items of the library copy at *copy*, as the actor's ``memory.items`` lists them (``.memory/items.json``:
+    the functions and notes, the retired left out), then its captured procedures in id order; the captured
+    procedures that were tried and failed (never offered to run); and, for each procedure with a recipe and for the
+    recipe itself, the call that applies the recipe to the current request (:func:`.item_records.recipe_call`). None
+    when the copy's items cannot be read."""
+    from .item_records import recipe_call
+
+    from .library_helper import ITEMS_FILE
+
+    try:
+        data = json.loads((Path(copy) / ITEMS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    rows = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(rows, dict):
+        return None
+    ids = [i for i, r in rows.items() if isinstance(i, str) and not (isinstance(r, dict) and r.get("status") in _HIDDEN)]
+    recipes = {
+        i: recipe_call(r["recipe"])
+        for i, r in rows.items()
+        if i in ids and isinstance(r, dict) and isinstance(r.get("recipe"), str) and r["recipe"]
+    }
+    failed: set[str] = set()
+    try:
+        names = sorted(os.listdir(Path(copy) / _CAPTURES_DIR))
+    except OSError:
+        names = []
+    for name in names:
+        if _CAPTURE_DIR.fullmatch(name) is None:
+            continue
+        ids.append(CAPTURE_PREFIX + name)
+        try:
+            rec = json.loads((Path(copy) / _CAPTURES_DIR / name / "record.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError):
+            rec = None
+        if isinstance(rec, dict) and rec.get("outcome") == "failed":
+            failed.add(CAPTURE_PREFIX + name)
+    return ids, failed, recipes
 
 
 # --- the facts ------------------------------------------------------------------------------------------------------
@@ -246,10 +303,10 @@ def facts_text(facts: list[dict], dropped: int = 0) -> str:
 
 
 def sent_to_librarian(question: str, facts: list[dict], dropped: int, library: Mapping[str, Any]) -> dict:
-    """Exactly what one ask sends the librarian beyond its fixed opening (the shared opening, the brief and the
-    catalogue, the same for every ask of the session): the user message (:func:`question_message`: the question and
-    its checked facts) and the library it reads in its box (*library*: the copy's commit and its dispatch file as the
-    ask read it). :func:`answer_key` is this structure's digest, and the message the session sends is its
+    """Exactly what one ask sends the librarian beyond its fixed opening (the shared opening and the brief, the same
+    for every ask and every library): the user message (:func:`question_message`: the question and its checked
+    facts) and the library it reads in its box with its tools (*library*: the copy's commit and its dispatch file as
+    the ask read it). :func:`answer_key` is this structure's digest, and the message the session sends is its
     ``message``, so nothing the librarian reads can be missing from the key."""
     return {"message": question_message(question, facts, dropped), "library": dict(library)}
 
@@ -286,11 +343,14 @@ def question_message(question: str, facts: list[dict], dropped: int = 0) -> str:
 
 @dataclass
 class LibrarianCalls:
-    """The librarian's in-code handler state (``CallContext.state``): the catalogue's ids, and the answer of the
-    question in progress."""
+    """The librarian's in-code handler state (``CallContext.state``): the library copy its tools read, its items'
+    ids (:func:`library_items`), and the answer of the question in progress."""
 
     ids: list[str]
     failed: set[str] = field(default_factory=set)
+    copy: Path | None = None
+    #: item id -> the call that applies its recipe to the current request (:func:`library_items`)
+    recipes: dict[str, str] = field(default_factory=dict)
     answer: dict | None = None
     finish_text: str | None = None
     finished: bool = False
@@ -300,10 +360,17 @@ def _text(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def check_answer(answer: Any, ids: list[str], failed: set[str] = frozenset()) -> tuple[dict | None, str]:
+def check_answer(
+    answer: Any,
+    ids: list[str],
+    failed: set[str] = frozenset(),
+    recipes: Mapping[str, str] | None = None,
+) -> tuple[dict | None, str]:
     """The answer as the librarian gave it, or None with the reason it is refused: the form of design J(b).4, every
-    id one the catalogue holds, and no captured attempt that failed among the fits. The harness adds, drops and
-    reorders nothing."""
+    id an item of the library (*ids*), no captured attempt that failed among the fits, and each fit that names a
+    procedure with a recipe (or the recipe) carrying the call that applies it to the current request (*recipes*:
+    id -> that call), so the agent has the one call. The harness adds, drops and reorders nothing."""
+    recipes = recipes or {}
     known = set(ids)
     if not isinstance(answer, dict):
         return None, 'the answer must be an object: {"fits": [...]} or {"fits": [], "nearest": [...]}'
@@ -317,9 +384,15 @@ def check_answer(answer: Any, ids: list[str], failed: set[str] = frozenset()) ->
         if not isinstance(f, dict) or set(f) != {"id", "call", "why"} or not all(_text(f[k]) for k in f):
             return None, f"fit {i} must be an object with the non-empty texts `id`, `call` and `why`, and no other key"
         if f["id"] not in known:
-            return None, f"fit {i}: {f['id'][:200]!r} is not an id the catalogue holds"
+            return None, f"fit {i}: {f['id'][:200]!r} is not an item of the library"
         if f["id"] in failed:
             return None, f"fit {i}: {f['id']!r} was tried and failed; it is never offered to run (name it as nearest)"
+        entry = recipes.get(f["id"])
+        if entry and entry not in f["call"]:
+            return None, (
+                f"fit {i}: {f['id']!r} has a recipe that does its whole job on the current request; give its call "
+                f"as written: {entry}"
+            )
     if len({f["id"] for f in fits}) != len(fits):
         return None, "an id is listed twice among the fits"
     if fits:
@@ -328,12 +401,12 @@ def check_answer(answer: Any, ids: list[str], failed: set[str] = frozenset()) ->
         return {"fits": [dict(f) for f in fits]}, ""
     nearest = answer.get("nearest")
     if not isinstance(nearest, list):
-        return None, "when nothing fits, `nearest` must be a list of {id, differs} (empty when the catalogue is empty)"
+        return None, "when nothing fits, `nearest` must be a list of {id, differs} (empty when the library is empty)"
     for i, n in enumerate(nearest):
         if not isinstance(n, dict) or set(n) != {"id", "differs"} or not all(_text(n[k]) for k in n):
             return None, f"nearest {i} must be an object with the non-empty texts `id` and `differs`, and no other key"
         if n["id"] not in known:
-            return None, f"nearest {i}: {n['id'][:200]!r} is not an id the catalogue holds"
+            return None, f"nearest {i}: {n['id'][:200]!r} is not an item of the library"
     if len({n["id"] for n in nearest}) != len(nearest):
         return None, "an id is listed twice among the nearest"
     return {"fits": [], "nearest": [dict(n) for n in nearest]}, ""
@@ -349,7 +422,7 @@ async def finish(ctx: Any, args: dict) -> Any:
     if state.finished:
         text = refusal("finish", "answered")
         return Reply(str(text), "refused", text.form)
-    got, why = check_answer(args.get("answer"), state.ids, state.failed)
+    got, why = check_answer(args.get("answer"), state.ids, state.failed, state.recipes)
     if got is None:
         text = refusal("finish", "bad_answer", reason=why[:2000])
         state.finish_text = str(text)
@@ -357,6 +430,97 @@ async def finish(ctx: Any, args: dict) -> Any:
     state.answer, state.finished = got, True
     state.finish_text = "finished: your answer goes to the agent that asked"
     return Reply(state.finish_text)
+
+
+# --- finding items: search, read, grep -------------------------------------------------------------------------------
+
+
+def _offset(args: dict) -> int:
+    value = args.get("offset", 0)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def search(ctx: Any, args: dict) -> Any:
+    """The librarian's ``tools.search(query, offset=None)``: every item of the library ranked by its "When to use"
+    text against *query* (:func:`.library_search.search_text`, over the copy's index), by meaning with the run's
+    embedding backend (each request it sends booked: ``integration.cost.book_embedding``), else by a lexical score,
+    and the result says which. Runs in the worker pool."""
+    from unify.memory import writer_tools as _wt
+
+    from .integration.cost import book_embedding
+    from .library_search import INDEX_FILE, backend, read_index, search_text
+
+    state: LibrarianCalls = ctx.state
+    query = args.get("query")
+    if not _text(query):
+        return _wt.refused("search", "no_query")
+    where = ({"path": f"{LIBRARY_ROOT}/{INDEX_FILE}", "mode": "search"},)
+    data = read_index(state.copy) if state.copy is not None else None
+    return _wt.Reply(search_text(data, str(query), backend(on_call=book_embedding), _offset(args)), paths=where)
+
+
+def _library_path(tool: str, args: dict, default: str = "") -> tuple[str, str | None, Any]:
+    """(the path asked for, its box path, None) inside the library; or a refusal as the third item."""
+    from unify.memory import safe_paths as _safe
+    from unify.memory import writer_tools as _wt
+
+    vpath = str(args.get("path") or default)
+    try:
+        prefix, parts = _safe.split(vpath, [LIBRARY_ROOT])
+    except _safe.Outside:
+        return vpath, None, _wt.refused(tool, "outside_library", path=vpath[:200])
+    return vpath, _safe.virtual(prefix, parts), None
+
+
+def read(ctx: Any, args: dict) -> Any:
+    """The librarian's ``tools.read(path, offset=None)``: a page of a file of the library, or a folder's listing;
+    a path outside the library is refused and nothing is read. Runs in the worker pool."""
+    from unify.memory import safe_paths as _safe
+    from unify.memory import views as _views
+    from unify.memory import writer_tools as _wt
+
+    state: LibrarianCalls = ctx.state
+    vpath, virtual, refusal_reply = _library_path("read", args)
+    if refusal_reply is not None:
+        return refusal_reply
+    where = ({"path": virtual, "mode": "read"},)
+    try:
+        text, mode = _views.read_entry(vpath, {LIBRARY_ROOT: state.copy}, _offset(args))
+    except _safe.Outside:
+        return _wt.refused("read", "outside_library", path=vpath[:200])
+    except (_safe.LinkFound, _safe.NotRegular) as exc:
+        return _wt.refused("read", "unreadable", where, error=exc.reason, path=vpath[:200])
+    except OSError:
+        return _wt.refused("read", "not_found", where, path=vpath[:200])
+    return _wt.Reply(text, paths=({"path": virtual, "mode": mode},))
+
+
+def grep(ctx: Any, args: dict) -> Any:
+    """The librarian's ``tools.grep(pattern, path=None)``: the lines of the library's files under *path* (default
+    the whole library) that match *pattern*, one page at a time; a path outside the library is refused and nothing
+    is searched. The pattern runs in a child process (:func:`.views.grep_bounded`). Runs in the worker pool."""
+    from unify.memory import safe_paths as _safe
+    from unify.memory import views as _views
+    from unify.memory import writer_tools as _wt
+
+    state: LibrarianCalls = ctx.state
+    vpath, virtual, refusal_reply = _library_path("grep", args, LIBRARY_ROOT)
+    if refusal_reply is not None:
+        return refusal_reply
+    where = ({"path": virtual, "mode": "search"},)
+    try:
+        text = _views.grep_bounded(str(args.get("pattern", "")), vpath, {LIBRARY_ROOT: state.copy}, _offset(args))
+    except _views.PatternProblem as exc:
+        return _wt.refused("grep", "bad_pattern", where, reason=str(exc))
+    except _views.SearchFailed:
+        return _wt.refused("grep", "search_failed", where)
+    except _safe.Outside:
+        return _wt.refused("grep", "outside_library", where, path=vpath[:200])
+    except _safe.LinkFound as exc:
+        return _wt.refused("grep", "unreadable", where, error=exc.reason, path=vpath[:200])
+    except OSError as exc:
+        return _wt.refused("grep", "unreadable", where, error=_safe.errno_name(exc), path=vpath[:200])
+    return _wt.Reply(text, paths=where)
 
 
 # --- the session ----------------------------------------------------------------------------------------------------
@@ -421,7 +585,6 @@ class LibrarianSession:
         self,
         *,
         copy: Path,
-        catalogue: str,
         turn: Turn,
         start: Callable[..., Awaitable[Any]] | None = None,
         on_event: Callable[[dict], None] | None = None,
@@ -439,7 +602,8 @@ class LibrarianSession:
         self.copy = Path(copy)
         self.library = library if isinstance(library, str) and library else None
         self.dispatch = read_dispatch(self.copy)
-        self.state = LibrarianCalls(ids=catalogue_ids(catalogue), failed=failed_captures(catalogue))
+        ids, failed, recipes = library_items(self.copy) or ([], set(), {})
+        self.state = LibrarianCalls(ids=ids, failed=failed, copy=self.copy, recipes=recipes)
         self.turn = turn
         self.cell_limit_s = float(cell_limit_s)
         self.step_guard = STEP_GUARD if step_guard is None else int(step_guard)
@@ -455,7 +619,7 @@ class LibrarianSession:
         self._lock = asyncio.Lock()
         self._cell = 0
         self._on_event = on_event
-        self.messages: list[dict] = [{"role": "system", "content": system_prompt(catalogue, self.cell_limit_s)}]
+        self.messages: list[dict] = [{"role": "system", "content": system_prompt(self.cell_limit_s)}]
         from unify.common import tool_registry
 
         self.tools = tool_registry.json_tools(AGENT)
@@ -510,6 +674,8 @@ class LibrarianSession:
         async with self._lock:
             # the library as the ask finds it: a copy that changed since the session opened is asked about afresh
             self.dispatch = read_dispatch(self.copy)
+            ids, failed, recipes = library_items(self.copy) or ([], set(), {})
+            self.state.ids, self.state.failed, self.state.recipes = ids, failed, recipes
             kept, dropped = checked_facts(facts, self.dispatch)
             self.questions += 1
             library = {"commit": self.library, "dispatch": _digest_of(self.dispatch)}
@@ -670,26 +836,23 @@ def opener(
     turn_factory: Callable[[], Turn] | None = None,
     start: Callable[..., Awaitable[Any]] | None = None,
 ) -> Callable[[], Awaitable[LibrarianSession]]:
-    """What opens this request's session at its first question: the run's library copy and its catalogue
-    (``RequestRun.paths.checkout``; refused while no library copy is mounted), a turn on the actor's model
+    """What opens this request's session at its first question: the run's library copy
+    (``RequestRun.paths.checkout``; refused while no library copy is mounted or its items cannot be read), a turn on
+    the actor's model
     (:func:`actor_turn`, or *turn_factory*'s), and the commit the copy was exported at (``RequestRun.pin``). The
     session is registered with the run, whose use record reads its totals."""
 
     async def open_session() -> LibrarianSession:
         from .integration import request as _request
-        from .library_export import CATALOGUE_FILE
 
         run = _request.current()
         copy = getattr(getattr(run, "paths", None), "checkout", None)
         if run is None or copy is None or not getattr(run, "library_mode", False):
             raise Unavailable("no library is mounted in this request")
-        try:
-            catalogue = (Path(copy) / CATALOGUE_FILE).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
-            raise Unavailable(f"the catalogue cannot be read ({type(exc).__name__})") from None
+        if library_items(Path(copy)) is None:
+            raise Unavailable("the library's items cannot be read")
         session = LibrarianSession(
             copy=Path(copy),
-            catalogue=catalogue,
             turn=(turn_factory or actor_turn)(),
             start=start,
             on_event=on_event,
@@ -742,7 +905,11 @@ __all__ = [
     "checked_facts",
     "enabled",
     "finish",
+    "grep",
+    "library_items",
     "opener",
+    "read",
+    "search",
     "system_prompt",
     "usage_fields",
 ]

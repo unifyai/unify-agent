@@ -373,7 +373,8 @@ BASE = {
 }
 #: Refusal forms added since the base (each under its tool) and the tools that are new.
 ADDED_FORMS = {
-    "grep": ["search_failed"],
+    "read": ["outside_library"],
+    "grep": ["search_failed", "outside_library"],
     "finish": ["answered", "bad_answer"],
     "delegate": ["bad_name", "not_main_agent", "record_full", "short_request", "spawn_off", "too_large"],
     "send": ["record_full", "too_fast", "too_large"],
@@ -382,7 +383,7 @@ ADDED_FORMS = {
     "stop": ["not_allowed"],
     "wait": ["bad_timeout"],
 }
-ADDED_TOOLS = ("install", "store_skills", "sh", "ask_library", "land_capture", "answer", "current_request")
+ADDED_TOOLS = ("install", "store_skills", "sh", "ask_library", "land_capture", "answer", "current_request", "search")
 #: Tools added to the writer's JSON tools (tools not in code) since the base commit: left out of the base hashes.
 ADDED_JSON_TOOLS = ("land_capture",)
 FLAGS = ("pool", "similar", "helper", "edit")

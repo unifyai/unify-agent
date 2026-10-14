@@ -30,6 +30,8 @@ from unify.settings import SETTINGS
 def embedders(request, monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_EMBEDDINGS", request.param)
     if not request.param:
+        # the run's route for embeddings (there is no default endpoint)
+        monkeypatch.setattr(SETTINGS, "UNIFY_EMBED_URL", "http://127.0.0.1:9/v1/embeddings")
         # OpenRouter's embeddings endpoint, stubbed: it answers each batch with
         # the local model's vectors, listed out of order as the real endpoint
         # may list them

@@ -8,10 +8,12 @@ any number of stores can share one.
 
 Two embedders produce the vectors:
 
-- ``openai/text-embedding-3-small`` through OpenRouter, the default, on the
-  same ``OPENROUTER_API_KEY`` as the LLM. It reads the first 2,048 tokens of
-  a text. ``UNIFY_EMBED_URL`` posts the same requests to another endpoint
-  (for example a proxy that tracks their cost) instead of openrouter.ai.
+- ``openai/text-embedding-3-small`` in OpenRouter's form, posted to
+  ``UNIFY_EMBED_URL`` (a proxy that routes and books them) on the same
+  ``OPENROUTER_API_KEY`` as the LLM. It reads the first 2,048 tokens of a
+  text. With no ``UNIFY_EMBED_URL`` a text not in the cache is refused
+  (:class:`EmbeddingRouteRefused`): nothing is posted to a provider directly,
+  outside the model client and the run's proxy.
 - ``BAAI/bge-small-en-v1.5`` in process, when ``UNIFY_LOCAL_EMBEDDINGS`` is
   set. It needs no network once its weights are in the Hugging Face cache,
   but reads only English and the first 512 tokens of a text.
@@ -52,12 +54,31 @@ class Embedder:
 
 
 _OPENROUTER_MODEL = "openai/text-embedding-3-small"
-_OPENROUTER_URL = "https://openrouter.ai/api/v1/embeddings"
+
+
+class EmbeddingRouteRefused(RuntimeError):
+    """A text needs a provider's embedding and no route for it is set (``UNIFY_EMBED_URL``)."""
+
+
 # One vector of a whole long procedure averages its purpose, which comes
 # first, away with its appendices, so a text is embedded from its first 2,048
 # tokens. The API caps a request at 300,000 tokens, which 128 such texts fit.
 _OPENROUTER_MAX_TOKENS = 2048
 _OPENROUTER_BATCH = 128
+
+# Who is told of each request the embedder sends (``embed``'s ``on_call``), per thread.
+_calls = threading.local()
+
+
+def _tell(row: dict) -> None:
+    """Tell this thread's ``on_call`` of one request sent to the model; it never fails the embedding."""
+    on_call = getattr(_calls, "on_call", None)
+    if on_call is None:
+        return
+    try:
+        on_call(row)
+    except Exception:  # noqa: BLE001 - an observer never changes an embedding
+        pass
 
 
 def _fit_openrouter_input(encoding: tiktoken.Encoding, text: str) -> str:
@@ -68,25 +89,38 @@ def _fit_openrouter_input(encoding: tiktoken.Encoding, text: str) -> str:
 
 
 def _openrouter(texts: list[str]) -> np.ndarray:
+    url = SETTINGS.UNIFY_EMBED_URL.strip()
+    if not url:
+        raise EmbeddingRouteRefused(
+            "no embedding route: set UNIFY_EMBED_URL to the run's proxy lane for embeddings, or "
+            "UNIFY_LOCAL_EMBEDDINGS for the local model; a provider is never called directly",
+        )
     encoding = tiktoken.get_encoding("cl100k_base")
     inputs = [_fit_openrouter_input(encoding, text) for text in texts]
     headers = {
         "Authorization": f"Bearer {unillm.SETTINGS.OPENROUTER_API_KEY.get_secret_value()}",
     }
-    url = SETTINGS.UNIFY_EMBED_URL.strip() or _OPENROUTER_URL
     vectors: list[list[float]] = []
     for start in range(0, len(inputs), _OPENROUTER_BATCH):
-        response = httpx.post(
-            url,
-            headers=headers,
-            json={
-                "model": _OPENROUTER_MODEL,
-                "input": inputs[start : start + _OPENROUTER_BATCH],
-            },
-            timeout=120,
-        )
-        response.raise_for_status()
-        data = sorted(response.json()["data"], key=lambda item: item["index"])
+        batch = inputs[start : start + _OPENROUTER_BATCH]
+        # a request that fails after it was sent may still be billed: it is told with its cost unknown
+        row = {"model": _OPENROUTER_MODEL, "texts": len(batch), "prompt_tokens": None, "cost": None}
+        try:
+            response = httpx.post(
+                url,
+                headers=headers,
+                json={"model": _OPENROUTER_MODEL, "input": batch},
+                timeout=120,
+            )
+            response.raise_for_status()
+            body = response.json()
+            usage = body.get("usage") if isinstance(body, dict) else None
+            if isinstance(usage, dict):
+                row["prompt_tokens"] = usage.get("prompt_tokens")
+                row["cost"] = usage.get("cost")
+        finally:
+            _tell(row)
+        data = sorted(body["data"], key=lambda item: item["index"])
         vectors.extend(item["embedding"] for item in data)
     return np.asarray(vectors, dtype=np.float32)
 
@@ -186,12 +220,22 @@ def _stored(
     }
 
 
-def embed(texts: Sequence[str]) -> np.ndarray:
+def embed(
+    texts: Sequence[str],
+    *,
+    on_call: Callable[[dict], None] | None = None,
+) -> np.ndarray:
     """Unit vectors for ``texts``, one row per text, in order.
 
     Texts already in the cache never reach the model. The rest are embedded
     in one pass, stored, and read back, so a text that two processes embed at
     once still resolves to the one stored vector.
+
+    ``on_call`` is told of each request sent to a provider (the OpenRouter
+    embedder's; the local model sends none), sent or failed, as
+    ``{"model", "texts", "prompt_tokens", "cost"}``: the token count and the
+    cost the reply reports, ``None`` where it reports none, so a caller can
+    book what it spent.
     """
     chosen = embedder()
     hashes = [hashlib.sha256(text.encode()).hexdigest() for text in texts]
@@ -201,7 +245,11 @@ def embed(texts: Sequence[str]) -> np.ndarray:
             digest: text for digest, text in zip(hashes, texts) if digest not in found
         }
         if missing:
-            vectors = chosen.compute(list(missing.values()))
+            _calls.on_call = on_call
+            try:
+                vectors = chosen.compute(list(missing.values()))
+            finally:
+                _calls.on_call = None
             vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
             with conn:
                 conn.executemany(
