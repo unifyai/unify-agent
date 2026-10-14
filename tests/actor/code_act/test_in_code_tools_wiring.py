@@ -272,8 +272,10 @@ async def test_a_thought_alone_runs_nothing_and_is_not_refused(in_code):
     sent_back = json.dumps(model.calls[1].messages)
     assert thought in sent_back
     (session,) = in_code["opened"]
-    cells = [r for r in _rows(session) if r["tool"] == "execute_code"]
-    assert len(cells) == 1  # only the cell with code ran; the thought alone is no cell
+    calls = sorted((r for r in _rows(session) if r["tool"] == "execute_code"), key=lambda r: r["call"])
+    # the thought alone keeps its number and its row, marked for the census; only the call with code ran a cell
+    assert [r.get("thought_only", False) for r in calls] == [True, False]
+    assert calls[0]["status"] == "ok" and calls[0]["error"] is False
 
 
 @needs_bwrap

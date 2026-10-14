@@ -287,7 +287,7 @@ class InCodeTools:
             if R.thought_only({"code": code}):
                 # a thought alone: nothing runs and nothing is refused; the thought stays in the conversation (a
                 # plain reply, so no cell result is noted for it)
-                return R.THOUGHT_ONLY_REPLY
+                return await session.thought_alone(thought)
             return await session.run_cell(code)
 
         execute_code.__doc__ = _execute_code_doc()
@@ -463,6 +463,41 @@ class InCodeTools:
             error=error,
             duration_ms=int((time.monotonic() - started) * 1000),
         )
+
+    async def thought_alone(self, thought: str) -> str:
+        """An ``execute_code`` call with a thought and no code: nothing runs. Its row keeps its call number and says
+        ``thought_only`` (the census counts these per request, and their longest run between cells)."""
+        from unify.common import tool_registry as R
+        from unify.common.tool_channel import canonical_args
+
+        if self.closed:
+            raise RuntimeError("this request's tools have ended")
+        async with self._lock:
+            args = canonical_args({"thought": thought if isinstance(thought, str) else ""})
+            self.events.append(
+                {
+                    "event": "tool_call",
+                    "agent": self.binding.agent,
+                    "name": self.binding.name,
+                    "pass_id": None,
+                    "request_id": self.request_id,
+                    "call": self._next_call(),
+                    "utc": _utc(),
+                    "tool": "execute_code",
+                    "status": "ok",
+                    "refusal": None,
+                    "paths": [],
+                    "args_bytes": len(args),
+                    "result_bytes": len(R.THOUGHT_ONLY_REPLY.encode("utf-8")),
+                    "result_truncated": False,
+                    "usage": None,
+                    "via": "model",
+                    "error": False,
+                    "model_request_errors": 0,
+                    "thought_only": True,
+                },
+            )
+        return R.THOUGHT_ONLY_REPLY
 
     def _cell_row(
         self,
