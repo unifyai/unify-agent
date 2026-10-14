@@ -205,11 +205,10 @@ def kill_tree(
         nonlocal group_held
         table = _table()
         found = {p: start for p, start in targets.items() if alive(p, start)}
-        if not leader_ended and leader_start is not None and alive(pid, leader_start):
-            for child, start in descendants(pid):
-                if child != me:
-                    found.setdefault(child, start)
         roots = list(found)
+        # the tree from the leader while it still holds its pid, walked in this round's table (one /proc read a round)
+        if not leader_ended and leader_start is not None and pid in table and table[pid][3] == leader_start:
+            roots.append(pid)
         children: dict[int, list[int]] = {}
         for p, row in table.items():
             children.setdefault(row[0], []).append(p)
