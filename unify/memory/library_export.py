@@ -53,6 +53,8 @@ from .item_records import (
     episodes_of,
     level_of,
     level_reasons_of,
+    recipe_ids,
+    recipe_text,
     use_totals,
     verification_summary,
 )
@@ -677,6 +679,9 @@ def catalogue_text(
         )
         if input_line:
             lines.append(f"Input: {input_line}\n")
+        if recipe_text(rec):
+            # a procedure's one-call entry, and how it did on the cases its episodes observed when the gate ran it
+            lines.append(f"Recipe: {recipe_text(rec)}\n")
         if _recognition_line(rec):
             lines.append(f"Recognition: {_recognition_line(rec)}\n")
         lines.append(f"Record: {_track_line(rec)}\n")
@@ -755,16 +760,18 @@ def dispatch_data(
     ``capture:<id>`` for a captured procedure, whose ``read_input`` is its reader), ``applies`` whether it has one
     (its applicability signature states one, or its item record names the function), and ``input`` its input line.
     Module-path order, then the captures in id order; a captured attempt that failed is left out (never offered to
-    run), and so is a procedure its item record does not list (:func:`.recognition.listed`) and a captured procedure
-    whose landing is not listed (its record's ``listing``: the same code). Beside the rows, ``applies_of`` names, for
+    run), and so is a procedure its item record does not list (:func:`.recognition.listed`), a captured procedure
+    whose landing is not listed (its record's ``listing``: the same code) and a procedure's recipe (it takes the
+    request itself, so no reader reads for it; its procedure's card names it). Beside the rows, ``applies_of`` names, for
     a landed procedure, the library function that is its ``applies`` (the item record's ``applies``); a captured
     procedure's ``applies`` is the one in its own ``procedure.py``."""
     from .library_index import signature_text
 
     rows: list[dict] = []
     applies_of: dict[str, str] = {}
+    recipes = recipe_ids(records)
     for f in sorted(lib.functions, key=lambda f: (f.module, f.name)):
-        if _status(status_of, f.item_id) in HIDDEN:
+        if _status(status_of, f.item_id) in HIDDEN or f.item_id in recipes:
             continue
         rec = records.get(f.item_id) if records else None
         if not isinstance(rec, dict) or not listed(rec):

@@ -9,6 +9,13 @@ a path the box names), checks it, and writes into the writer's ``/memory``:
   reader: :func:`.procedures.run_reader`), which is then reused;
 - the procedure, ``memory/<package>/procedures.py``: the capture's ``run`` as ``<name>``, with its ``applies`` and
   ``holds`` (when present) and every other top-level name of the capture kept private under ``_<name>_``;
+- the recipe, ``apply_<name>(request)`` in the same module (:func:`recipe_block`): the capture's
+  ``run(read_input(request))`` lifted into the library, the reader on the request it is handed, then the procedure,
+  with ``applies`` as its precondition (a request it does not hold for is refused with ``MemoryInputError``);
+- the cases the recipe is checked on (:mod:`.recipes`), case files made by the fixture tool: the source case, the
+  recorded request with the value its episode handed back (``<name>.case<k>.source.case.json``), and each case the
+  call names in *cases* (an input of the episode with the output the request or the environment showed for it,
+  ``<name>.case<k>.shown<j>.case.json``);
 - two fixtures of the request text: the text itself and the reader's value on it (a parsed fixture,
   ``fixture(..., parser=...)``), and a fixture of the handed-back value, a slice of the recorded arguments of the
   dialogue action that handed it back (``args:<i>``), all made by the fixture tool, so the gate re-derives them from
@@ -19,11 +26,12 @@ a path the box names), checks it, and writes into the writer's ``/memory``:
   ``.data``, :mod:`.request_value`), so a reader of the request's data is tested as it is used. When the value was
   handed back in the final reply, which no fixture source holds, the expected value is written in the test instead,
   and the gate keeps the procedure ``unchecked``;
-- the manifest entries, the procedure with ``role: "procedure"`` and ``reader``, a new reader with ``role:
-  "reader"``.
+- the manifest entries: the procedure with ``role: "procedure"``, its ``reader``, its ``recipe`` and its ``cases``;
+  the recipe; a new reader with ``role: "reader"``.
 
 When the capture's ``same_as`` names a capture already landed (its marker line is in a ``procedures.py`` of the
-library), this request becomes a new case of that procedure instead: two fixtures and one test function more.
+library), this request becomes a new case of that procedure instead: its fixtures, its source case and its test
+functions (the procedure's recipe is written then if the earlier landing has none).
 
 Once written, the landed reader, ``applies``, procedure and ``holds`` run, confined, on the other requests the capture
 store records, and the reader on recorded variants of its own request (:func:`.recognition.recognise_landing`): the
@@ -259,6 +267,55 @@ def procedure_block(source: str, cid: str, name: str, package: str, reader: str)
     return head + with_example(renamed(source, mapping), name, test), list(mapping.values())
 
 
+#: The name of a landed procedure's recipe: ``apply_<name>`` (:func:`recipe_block`).
+RECIPE_PREFIX = "apply_"
+
+
+def recipe_name(name: str) -> str:
+    return f"{RECIPE_PREFIX}{name}"
+
+
+def recipe_block(name: str, package: str, reader_id: str, applies: bool) -> tuple[str, list[str]]:
+    """(the procedures.py block of procedure *name*'s recipe, the names it binds): ``apply_<name>(request)``, the
+    capture's ``run(read_input(request))`` lifted into the library: the reader *reader_id* on the request, then, when
+    the capture stated one (*applies*), its ``applies`` as the precondition (``MemoryInputError`` when it does not
+    hold), then the procedure."""
+    module, reader = reader_id.split(":")
+    recipe = recipe_name(name)
+    test = f"memory/{package}/tests/test_{name}.py::test_{name}_case1_recipe_gives_the_recorded_result"
+    body = [
+        f"# The recipe of the procedure {name}: the whole job on the request it is handed.",
+        f"def {recipe}(request):",
+        f'    """Do the whole job of {name} on *request*: read it with {reader}, then run {name} on what it read.',
+        "",
+        "    Args:",
+        "        request: the request as the harness hands it (its text, with .text and .data).",
+        "",
+        "    Returns:",
+        f"        What {name} returns on the value the reader reads from the request.",
+        "",
+        "    Raises:",
+        "        MemoryInputError: the request is not one the procedure was built for.",
+        "",
+        f"    Example: {test}",
+        '    """',
+        f"    from {module} import {reader} as read",
+        "",
+        "    value = read(request)",
+    ]
+    if applies:
+        body += [
+            f"    if not {_private(name, 'applies')}(value):",
+            "",
+            "        class MemoryInputError(ValueError):",
+            '            """The request is not one the procedure was built for."""',
+            "",
+            f'        raise MemoryInputError("the request is not one {name} applies to")',
+        ]
+    body.append(f"    return {name}(value)")
+    return "\n".join(body) + "\n", [recipe]
+
+
 def applies_item(source: str, proc_id: str) -> str | None:
     """The item id of the landed procedure *proc_id*'s ``applies`` when the captured *source* defines one
     (:func:`procedure_block` keeps ``run`` as the procedure's name and makes every other name private); None when it
@@ -357,8 +414,8 @@ def case_tests(
     result: Any,
     from_fixture: bool = True,
 ) -> str:
-    """The test functions of case *k*: the reader on the recorded text, and the procedure on the reader's value of
-    it against the handed-back value. *reader_mod* is the reader's module, dotted (``memory.<package>.<module>``).
+    """The test functions of case *k*: the reader on the recorded text, the procedure on the reader's value of it
+    against the handed-back value, and the recipe on the recorded request against the same value. *reader_mod* is the reader's module, dotted (``memory.<package>.<module>``).
     With *from_fixture*, the expected value is loaded from :func:`result_fixture`, a fixture of the recording; else
     *result* is written in the test (a value the fixture tool has no source for)."""
     reader = reader_fn if reader_fn != name else f"read_{name}"
@@ -379,6 +436,11 @@ def case_tests(
         f'    text = (DATA / "{name}.case{k}.txt").read_text(encoding="utf-8")\n'
         f"    expected = {expected}\n"
         f"    assert json.loads(json.dumps({name}({reader}({REQUEST_HELPER}(text))))) == expected\n"
+        f"\n\ndef test_{name}_case{k}_recipe_gives_the_recorded_result():\n"
+        f"    from memory.{package}.procedures import {recipe_name(name)}\n\n"
+        f'    text = (DATA / "{name}.case{k}.txt").read_text(encoding="utf-8")\n'
+        f"    expected = {expected}\n"
+        f"    assert json.loads(json.dumps({recipe_name(name)}({REQUEST_HELPER}(text)))) == expected\n"
     )
 
 
@@ -477,7 +539,7 @@ def _free_case(box: Path, package: str, name: str) -> int:
     k = 1
     while any(
         os.path.lexists(Path(box) / f"memory/{package}/tests/data/{name}.case{k}.{ext}")
-        for ext in ("json", "txt", "result.json")
+        for ext in ("json", "txt", "result.json", "source.case.json")
     ):
         k += 1
     return k
@@ -494,11 +556,14 @@ def _manifest_add(box: Path, entries: list[dict]) -> None:
         if old is None:
             items.append(entry)
             continue
-        for key in ("source_episodes", "tests"):
+        for key in ("source_episodes", "tests", "cases"):
+            if key not in entry and key not in old:
+                continue
             have = old.get(key) if isinstance(old.get(key), list) else []
             old[key] = have + [v for v in entry.get(key, []) if v not in have]
-        for key in ("role", "reader", "kind"):
-            old.setdefault(key, entry.get(key))
+        for key in ("role", "reader", "kind", "recipe"):
+            if key in entry:
+                old.setdefault(key, entry.get(key))
     manifest["items"] = items
     try:
         _wt.write_manifest(box, manifest)
@@ -545,6 +610,15 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
         raise _NotLanded("bad_name", what="package", value=package)
     if store is None:
         raise _NotLanded("unknown_capture", capture_id=str(args.get("capture_id"))[:40])
+    shown = args.get("cases")
+    if shown is None:
+        shown = []
+    if not isinstance(shown, list) or not all(isinstance(c, dict) and set(c) == {"input", "expected"} for c in shown):
+        raise _NotLanded(
+            "not_landed",
+            reason='cases is a list of {"input": <source>, "expected": <source>}, each a source id or {"source": '
+            '<id>, "slice": [start, end]} of the capture\'s episode',
+        )
     cid, source, record = read_capture(Path(store), args.get("capture_id"))
     # the request the capture was recorded on, and the value its episode handed back
     eid, ep = next(
@@ -571,6 +645,7 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
         package = proc_id.split(".")[1]
         name = proc_id.rsplit(":", 1)[1]
         reused, new_reader = True, False
+        _write_recipe(box, package, name, reader_id, _stated(box, proc_id, "applies") is not None, written)
     else:
         proc_id = f"memory.{package}.procedures:{name}"
         reader_id = ""
@@ -582,6 +657,8 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
         reused, new_reader = bool(reader_id), not reader_id
         reader_id = reader_id or f"memory.{package}.readers:read_{name}"
         _write_procedure(box, source, cid, package, name, reader_id, new_reader, written)
+        _write_recipe(box, package, name, reader_id, "applies" in top_names(source), written)
+    recipe_id = f"memory.{package}.procedures:{recipe_name(name)}"
     reader_mod, reader_fn = reader_id.split(":")
     k = _free_case(box, package, name)
     data_dir = f"memory/{package}/tests/data"
@@ -593,6 +670,15 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
         plan.append(
             {"source": f"args:{answer}", "slice": result_cut, "dest": f"{data_dir}/{result_fixture(name, k)}"},
         )
+    # the cases the gate runs the recipe on: the request with the value it handed back, and each one the call names
+    cases = [f"{data_dir}/{name}.case{k}.source.case.json"]
+    plan.append({"source": "request:0", "expected": _fx.ANSWER, "dest": cases[0]})
+    for j, case in enumerate(shown, 1):
+        given = case["input"] if isinstance(case["input"], dict) else {"source": case["input"]}
+        if not isinstance(given, dict) or set(given) - {"source", "slice"} or "source" not in given:
+            raise _NotLanded("not_landed", reason=f"case {j}: its input is a source id or {{\"source\", \"slice\"}}")
+        cases.append(f"{data_dir}/{name}.case{k}.shown{j}.case.json")
+        plan.append({**given, "expected": case["expected"], "dest": cases[-1]})
     for fx_args in plan:
         dest = fx_args["dest"]
         reply = _wt.fixture({"episode": eid, **fx_args}, episode, box, blob, batch, python=python, parse=parse)
@@ -629,7 +715,10 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
             "tests": [test_rel],
             "role": "procedure",
             "reader": reader_id,
+            "recipe": recipe_id,
+            "cases": cases,
         },
+        {"item": recipe_id, "kind": "function", "source_episodes": [eid], "tests": [test_rel]},
     ]
     if new_reader:
         entries.append(
@@ -660,6 +749,12 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
     else:
         lines.append(f"- procedure {proc_id}")
         lines.append(f"- reader {reader_id}" + (" (reused: it gives the same value on this request)" if reused else ""))
+    lines.append(
+        f"- recipe {recipe_id}: the whole job on a request; the gate runs it, confined, on each of the "
+        f"procedure's cases ({', '.join(cases)}) and lands the procedure only if it gives every expected output. "
+        "Add a case for every input the request or the environment showed with its output (fixture(..., "
+        "expected=...), listed in the procedure's cases); derive every value the job needs from the request",
+    )
     lines += [f"- wrote /memory/{p}" for p in written]
     lines.append(f"- recognition on the recorded requests: {recognition['why']}")
     lines.append("- the manifest entries of " + ", ".join(e["item"] for e in entries) + " in /memory/.pass/manifest.json")
@@ -723,6 +818,20 @@ def _run_reader(item, text, box, python, runner, work):
 
     work.mkdir(parents=True, exist_ok=True)
     return run_reader(item, [text], tree=box, python=python, work=work, runner=runner)
+
+
+def _write_recipe(box, package, name, reader_id, applies, written) -> None:
+    """The procedure's recipe (:func:`recipe_block`) appended to its ``procedures.py``, unless the module defines it
+    already."""
+    rel = f"memory/{package}/procedures.py"
+    old = _box_text(box, rel) or ""
+    try:
+        if recipe_name(name) in top_names(old):
+            return
+    except (SyntaxError, ValueError):
+        raise _NotLanded("not_landed", reason=f"/memory/{rel} does not parse") from None
+    block, _ = recipe_block(name, package, reader_id, applies)
+    _write(box, rel, _join(old, block), written)
 
 
 def _write_procedure(box, source, cid, package, name, reader_id, new_reader, written) -> None:

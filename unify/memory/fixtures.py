@@ -17,6 +17,15 @@ changed fixture from the recording and refuses one that differs (:func:`verify`)
 * **Assembled** (``kind: assembled``, a ``.jsonl`` file): each line is ``{"input": <value>, "source": {...}}``.
   The value is the JSON-decoded slice, or its text when it is not JSON. A function's recorded-inputs file
   (:func:`inputs_file`) is assembled this way, and the gate appends its drawn inputs to a copy of it (:mod:`.qa`).
+* **Cases** (``kind: case``, a ``.case.json`` file, :func:`make_case`): an input with the output the episode knew for
+  it, ``{"input": <text>, "expected": <value>, "kind": "source" | "shown", "source": {...}}``. The input is a recorded
+  text (any source, sliced as a copy is). The expected output is either what the request or the environment showed
+  the actor (a message, ``request:<j>`` or ``observation:<i>``, including one received after answering, or an
+  action's response or file), its JSON value or its text; or ``answer``, the value the episode handed back, which
+  pairs only with the whole request it answered (``request:0``, no slice: a *source* case). Never an action's
+  arguments or a cell's output (values the episode computed, not outcomes it was shown), and never a signal: a
+  grader's verdict is not a source. The file names its sources, so it is its own ledger entry, and the gate
+  re-derives it from the recording.
 * **Trust**: a response, blob or message is trust 1 (the environment's own). Arguments and cell outputs are trust 2
   (a value an episode used or computed).
 * **The ledger is the files** (:func:`derive_ledger`): an assembled file's lines name their own sources, and a copied
@@ -24,7 +33,8 @@ changed fixture from the recording and refuses one that differs (:func:`verify`)
   its listing, has no entry. Nothing else is kept, so the ledger cannot drift from what the writer sees; the gate
   re-derives every entry's bytes from the recording, so an edited listing proves nothing by itself.
 * **Across passes** (:func:`ledger_for`): the gate keeps each verified entry by ``(path, sha256)``, so a fixture
-  made in an earlier pass keeps its provenance; an older file is re-derived from its bytes where it can be.
+  made in an earlier pass keeps its provenance; an older file is re-derived from its bytes where it can be, and a
+  case file from the sources it names.
 * **Views** (:func:`value_views`): the values a test can load from a fixture (its bytes, its text, its parsed value
   and every part of it, its lines and rows and columns), each by the digest an example call's argument has when it
   holds that value, with the episode and source it came from.
@@ -62,6 +72,13 @@ INPUTS_SUFFIX = ".inputs.jsonl"
 REPLAY_SUFFIX = ".replay.jsonl"
 _REPLAY_SOURCE = re.compile(r"replay:(\d{1,9}):(\d{1,9})-(\d{1,9})\Z")
 DRAWN_DIR = "_drawn/"  # reserved under tests/data/ for the gate's appended drawn inputs
+#: A case file (``tests/data/<name>.case.json``): an input with its known output (:func:`make_case`).
+CASE_SUFFIX = ".case.json"
+#: The expected-output source naming the value the episode handed back (:func:`.captures.handed_back`).
+ANSWER = "answer"
+#: A case's kind: the episode's own request with the value it handed back, or an input with the output the request
+#: or the environment showed.
+CASE_KINDS = ("source", "shown")
 _INDEX = re.compile(r"\d{1,9}\Z")
 
 
@@ -343,6 +360,161 @@ def make(
     return (line + "\n").encode("utf-8"), {"kind": "assembled", "lines": lines}
 
 
+def is_case_file(path: object) -> bool:
+    return str(path).endswith(CASE_SUFFIX)
+
+
+def _side(raw: object, what: str) -> tuple[str, object]:
+    """A case side as ``(canonical source, slice)``: a source id, or ``{"source": id, "slice": [a, b]}``."""
+    if isinstance(raw, dict):
+        unknown = sorted(set(raw) - {"source", "slice"})
+        if unknown or raw.get("source") is None:
+            raise FixtureError(f'the {what} is a source id or {{"source": <id>, "slice": [start, end]}}')
+        return canonical_source(raw["source"]), raw.get("slice")
+    if isinstance(raw, (str, int)) and not isinstance(raw, bool):
+        return canonical_source(raw), None
+    raise FixtureError(f'the {what} is a source id or {{"source": <id>, "slice": [start, end]}}')
+
+
+def _shown_source(source: str) -> bool:
+    """Whether *source* holds what the request or the environment showed the actor: a message, or an action's
+    response or file (never its arguments, a cell's output or a replayed value)."""
+    return source.startswith("request:") or bool(_INDEX.match(source))
+
+
+def case_doc(
+    ep: Episode,
+    given: object,
+    expected: object,
+    *,
+    blob: Callable[[str], bytes],
+    notes: list[str] | None = None,
+) -> dict:
+    """The case file's value (module docstring, *Cases*): *given* names the input's recorded bytes and *expected* the
+    output's, each a source id or ``{"source", "slice"}``; *expected* may be :data:`ANSWER`. Raises
+    :class:`FixtureError` naming ids and offsets only."""
+    in_src, in_cut = _side(given, "input")
+    if in_src == ANSWER:
+        raise FixtureError("a case's input is recorded bytes of a message or an action; answer names an output")
+    data = source_bytes(ep, in_src, blob)
+    in_cut = _clamped(data, in_cut, notes)
+    try:
+        text = _cut(data, in_cut).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise FixtureError("a case's input is text; these bytes are not UTF-8") from exc
+    out_src, out_cut = _side(expected, "expected output")
+    if out_src == ANSWER:
+        whole = in_cut is None or list(in_cut) == [0, len(data)]
+        if out_cut is not None or in_src != "request:0" or not whole:
+            raise FixtureError(
+                "answer (the value the episode handed back) pairs only with the whole request it answered: input "
+                "request:0 with no slice",
+            )
+        from .captures import handed_back
+
+        found, value = handed_back(ep)
+        if not found:
+            raise FixtureError(f"episode {ep.episode_id} handed back no value")
+        value = json.loads(json.dumps(value, sort_keys=True, ensure_ascii=False, default=str))
+        kind, out_cut = "source", None
+    else:
+        if not _shown_source(out_src):
+            raise FixtureError(
+                f"source {out_src[:40]} is not something the request or the environment showed: an expected output "
+                "comes from a message (request:<j>, observation:<i>), an action's response or file (<i>), or is "
+                "answer, the value the episode handed back",
+            )
+        piece_src = source_bytes(ep, out_src, blob)
+        out_cut = _clamped(piece_src, out_cut, notes)
+        value = _decoded(_cut(piece_src, out_cut))
+        kind = "shown"
+    return {
+        "input": text,
+        "expected": value,
+        "kind": kind,
+        "source": {
+            "episode": ep.episode_id,
+            "input": {"source": in_src, "slice": list(in_cut) if in_cut is not None else None},
+            "expected": {"source": out_src, "slice": list(out_cut) if out_cut is not None else None},
+        },
+    }
+
+
+def case_bytes(doc: dict) -> bytes:
+    """A case file's bytes: its value as sorted, indented JSON with a final newline."""
+    return (json.dumps(doc, sort_keys=True, ensure_ascii=False, indent=1) + "\n").encode("utf-8")
+
+
+def make_case(
+    ep: Episode,
+    given: object,
+    expected: object,
+    dest: str,
+    *,
+    blob: Callable[[str], bytes],
+    notes: list[str] | None = None,
+) -> tuple[bytes, dict]:
+    """The bytes of the case file at *dest* (:func:`case_doc`) and its provenance entry (:func:`case_entry`)."""
+    if not DATA_PATH.match(dest) or not is_case_file(dest) or dest.split("/tests/data/", 1)[1].startswith(DRAWN_DIR):
+        raise FixtureError(
+            f"{dest[:200]} is not a case file name under memory/<package>/tests/data/ ending {CASE_SUFFIX}",
+        )
+    data = case_bytes(case_doc(ep, given, expected, blob=blob, notes=notes))
+    entry = case_entry(data)
+    assert entry is not None
+    return data, entry
+
+
+def case_entry(data: bytes) -> dict | None:
+    """The provenance a case file states (``kind: case``: its episode, the input's source and slice, the expected
+    output's, its case kind), or None when *data* is not a case file's value."""
+    try:
+        doc = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None
+    src = doc.get("source") if isinstance(doc, dict) else None
+    if (
+        not isinstance(doc, dict)
+        or set(doc) != {"input", "expected", "kind", "source"}
+        or doc["kind"] not in CASE_KINDS
+        or not isinstance(src, dict)
+        or set(src) != {"episode", "input", "expected"}
+        or not isinstance(src.get("episode"), str)
+        or not all(isinstance(src[k], dict) and set(src[k]) == {"source", "slice"} for k in ("input", "expected"))
+    ):
+        return None
+    return {
+        "kind": "case",
+        "case": doc["kind"],
+        "episode": src["episode"],
+        "source": str(src["input"]["source"]),
+        "slice": src["input"]["slice"],
+        "expected": {"source": str(src["expected"]["source"]), "slice": src["expected"]["slice"]},
+        "trust": trust_of(str(src["input"]["source"])),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+
+
+def read_case(
+    path: str,
+    data: bytes,
+    load: Callable[[str], Episode | None],
+    blob: Callable[[str], bytes],
+) -> tuple[dict | None, str | None]:
+    """``(the case, None)`` when the case file at *path* re-derives from the recording, its value
+    ``{"input", "expected", "kind", "episode"}``; else ``(None, why)``."""
+    if not is_case_file(path):
+        return None, f"{path} is not a case file (a name ending {CASE_SUFFIX}, made with fixture(..., expected=...))"
+    entry = case_entry(data)
+    if entry is None:
+        return None, f"{path} is not a case file made with fixture(..., expected=...)"
+    problem = verify(path, data, entry, load, blob)
+    if problem is not None:
+        return None, problem
+    doc = json.loads(data.decode("utf-8"))
+    return {"input": doc["input"], "expected": doc["expected"], "kind": doc["kind"], "episode": entry["episode"]}, None
+
+
 def _load(entry: dict, load: Callable[[str], Episode | None]) -> Episode:
     eid = entry.get("episode")
     ep = load(eid) if isinstance(eid, str) else None
@@ -398,6 +570,24 @@ def verify(
             f"{path} did not come through fixture(): no provenance is recorded for it"
         )
     try:
+        if entry.get("kind") == "case":
+            exp = entry.get("expected") if isinstance(entry.get("expected"), dict) else {}
+            want = case_bytes(
+                case_doc(
+                    _load(entry, load),
+                    {"source": entry.get("source"), "slice": entry.get("slice")},
+                    {"source": exp.get("source"), "slice": exp.get("slice")},
+                    blob=blob,
+                ),
+            )
+            if want == data:
+                return None
+            cut = exp.get("slice")
+            return (
+                f"{path} differs from the case that {_where(entry)} with its expected output from source "
+                f"{exp.get('source')}" + (f" slice {cut}" if cut else "") + " gives; make it again with "
+                "fixture(..., expected=...)"
+            )
         if entry.get("kind") == "parsed":
             want = _parsed_text(entry, load, blob, parse).encode("utf-8")
             return (
@@ -561,7 +751,8 @@ def derive_ledger(box) -> dict[str, dict]:
     * copied fixtures: each ``.pass/fixtures.json`` entry whose file still exists and still hashes to the listed
       sha256 (a deleted or rewritten file has no entry);
     * assembled fixtures: every ``.jsonl`` file under ``memory/**/tests/data/`` whose lines are all input lines, with
-      the sources those lines name.
+      the sources those lines name;
+    * case files: every ``.case.json`` file there that is a case file's value, with the sources it names.
 
     Every file is opened from *box*'s descriptor without following a link (:mod:`.safe_paths`).
     """
@@ -585,7 +776,7 @@ def derive_ledger(box) -> dict[str, dict]:
     def wanted(vpath: str) -> bool:
         rel = vpath[len("/box/") :]
         return (
-            rel.endswith(".jsonl")
+            (rel.endswith(".jsonl") or is_case_file(rel))
             and rel not in out
             and bool(DATA_PATH.match(rel))
             and not rel.split("/tests/data/", 1)[1].startswith(DRAWN_DIR)
@@ -594,7 +785,7 @@ def derive_ledger(box) -> dict[str, dict]:
     try:
         with _safe.Roots({"/box": box}) as roots:
             for vpath, data in _safe.iter_files(roots, "/box/memory", want=wanted):
-                entry = assembled_entry(data)
+                entry = case_entry(data) if is_case_file(vpath) else assembled_entry(data)
                 if entry is not None:
                     out[vpath[len("/box/") :]] = entry
     except OSError:  # /memory/memory is a link, or the box cannot be opened
@@ -989,8 +1180,8 @@ def ledger_for(
     For each file, the first that applies:
     1. its entry in *in_pass* (G1 verified it in this pass);
     2. a kept entry with the same ``(path, sha256)`` (*stored*, the evidence store's ``fixture_provenance``);
-    3. an assembled file whose lines re-derive from the recording now (:func:`verify`; at most
-       :data:`MAX_REVERIFY` files per call, the rest are noted);
+    3. a case file that re-derives from the sources it names, or an assembled file whose lines re-derive from the
+       recording now (:func:`verify`; at most :data:`MAX_REVERIFY` assembled files per call, the rest are noted);
     4. bytes equal to a whole recorded source of one of *episodes* (the episodes the package's items cite): a copy
        entry with ``"backfilled": true``, noted;
     5. none: the file grounds no argument, noted.
@@ -1009,6 +1200,13 @@ def ledger_for(
         kept = stored(path, sha)
         if isinstance(kept, dict):
             out[path] = kept
+            continue
+        case = case_entry(data) if is_case_file(path) else None
+        if case is not None:
+            if verify(path, data, case, load, blob) is None:
+                out[path] = case
+            else:
+                notes.append(f"G2 examples: case file {path} does not re-derive from the recording; it grounds nothing")
             continue
         lines = assembled_entry(data) if path.endswith(".jsonl") else None
         if lines is not None and lines.get("kind") == "replay":

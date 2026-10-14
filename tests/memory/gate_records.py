@@ -55,13 +55,15 @@ needs_box = pytest.mark.skipif(
 @dataclass(frozen=True)
 class Landing:
     """A captured procedure the writer lands: the episode it was captured from, the ``procedure.py`` and
-    ``summary.md`` the episode-end fork staged, and the package and name ``land_capture`` is given."""
+    ``summary.md`` the episode-end fork staged, the package and name ``land_capture`` is given, and the shown cases
+    it names (``{"input", "expected"}``, as ``land_capture`` takes them)."""
 
     episode: str
     procedure: str
     summary: str
     package: str
     name: str
+    cases: tuple = ()
 
 
 @dataclass
@@ -112,10 +114,14 @@ def build(
     files: Mapping[str, str] | None = None,
     fixtures: Sequence[Mapping] = (),
     items: Sequence[Mapping] = (),
+    signals: Sequence[Any] = (),
+    require_pass: bool = True,
+    edit_manifest: Any = None,
 ) -> Built:
     """The world under *root* (module docstring): *base* is committed first; the pass lands *landings*, then writes
     *files* (path -> text), makes *fixtures* (fixture tool arguments) and lists *items* beside the landings' manifest
-    entries."""
+    entries. *signals* are indexed for the gate to read; with *require_pass* off a refused check is returned too;
+    *edit_manifest* (manifest -> manifest) changes the draft manifest as a writer would before the check."""
     root = Path(root)
     episodes = dict(episodes)
     batch = sorted(episodes)
@@ -125,6 +131,8 @@ def build(
     ev = EvidenceStore(root / "evidence.sqlite")
     for n, ep in enumerate(episodes.values()):
         ev.index_episode(ep, str(n + 1) * 40)
+    for sig in signals:
+        ev.add_signal(sig)
     blobs = BlobStore(root / "blobs")
     store = root / "captures"
     box = root / "box"
@@ -142,8 +150,11 @@ def build(
         row = captures.capture(staging, episodes[landing.episode], store)
         assert row["safety"] == "ok" and row["capture_id"], row
         captured[landing.episode] = row["capture_id"]
+        args = {"capture_id": row["capture_id"], "package": landing.package, "name": landing.name}
+        if landing.cases:
+            args["cases"] = [dict(c) for c in landing.cases]
         reply = land_capture.land(
-            {"capture_id": row["capture_id"], "package": landing.package, "name": landing.name},
+            args,
             store=store,
             box=box,
             episode=episodes.get,
@@ -161,6 +172,8 @@ def build(
     drafted = box / writer_tools.MANIFEST
     manifest = json.loads(drafted.read_text(encoding="utf-8")) if drafted.is_file() else {}
     manifest = _merge(manifest, items)
+    if edit_manifest is not None:
+        manifest = edit_manifest(manifest)
     writer_tools.write_manifest(box, manifest)
 
     # what the pass hands the gate: the draft manifest, with the fixture provenance the harness derives from the box
@@ -186,7 +199,7 @@ def build(
         library_mode=LibraryConfig(checks=True, episodes=episodes.get),
     )
     result = gate.check(mem.head(), commit, checked)
-    assert result.passed, result.reasons
+    assert result.passed or not require_pass, result.reasons
 
     with mem.temp_checkout(commit) as wt:
         lib = discover(wt)

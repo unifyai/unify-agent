@@ -225,6 +225,13 @@ class ManifestItem:
     adopts: list[str] = field(default_factory=list)
     #: how each adopted draft was used (ref -> one of ADOPT_HOW), the same refs as ``adopts``
     adopt_how: dict[str, str] = field(default_factory=dict)
+    # library mode: the function's role (one of ITEM_ROLES; None: none), a procedure's reader, its recipe (the id of
+    # the function in its module that does the whole job on a request) and its case files (``.case.json`` fixtures
+    # of its package, each an input with its known output, :func:`.fixtures.make_case`)
+    role: str | None = None
+    reader: str | None = None
+    recipe: str | None = None
+    cases: list[str] = field(default_factory=list)
 
     @property
     def channel(self) -> str | None:
@@ -540,9 +547,44 @@ LIBRARY_ITEM_FIELDS: tuple[str, ...] = (
     "replaces",
     "role",
     "reader",
+    "recipe",
+    "cases",
 )
 #: A library function's ``role``, when it has one: a whole-request procedure, or a reader of request text.
 ITEM_ROLES: tuple[str, ...] = ("procedure", "reader")
+#: The name ending of a case file (:data:`.fixtures.CASE_SUFFIX`).
+CASE_SUFFIX = ".case.json"
+
+
+def _recipe_and_cases(raw: dict, item: str, role: object) -> tuple[str | None, list[str]]:
+    """A procedure's ``recipe`` (a function id in the procedure's own module) and ``cases`` (case files under its
+    package's ``tests/data/``, each listed once); either is refused on any other item."""
+    from . import layout
+
+    recipe, cases = raw.get("recipe"), raw.get("cases")
+    if (recipe is not None or cases is not None) and role != "procedure":
+        raise ManifestError(f"{item}: recipe and cases belong on a function whose role is procedure")
+    if recipe is not None:
+        if not isinstance(recipe, str) or not layout.FUNCTION_ID.match(recipe):
+            raise ManifestError(f"{item}: recipe names a function id (memory.<package>.<module>:<name>)"[:300])
+        if recipe.split(":", 1)[0] != item.split(":", 1)[0]:
+            raise ManifestError(
+                f"{item}: its recipe {recipe} is in another module; a procedure's recipe lives in its own module"[:300],
+            )
+    out: list[str] = []
+    if cases is not None:
+        data_dir = f"{item.split(':', 1)[0].rsplit('.', 1)[0].replace('.', '/')}/tests/data/"
+        for path in _str_list(cases, f"{item}: cases"):
+            safe_rel(path)
+            if not path.startswith(data_dir) or not path.endswith(CASE_SUFFIX) or len(path) <= len(data_dir):
+                raise ManifestError(
+                    f"{item}: case {_key_repr(path)} is not a case file of its package ({data_dir}<name>{CASE_SUFFIX}, "
+                    "made with fixture(..., expected=...))",
+                )
+            if path in out:
+                raise ManifestError(f"{item}: case {_key_repr(path)} is listed twice")
+            out.append(path)
+    return recipe, out
 #: The top-level keys a library-mode manifest takes; any other key is refused, never dropped. ``fixtures`` is
 #: always rewritten by the harness; the other keys this parser does not read are read by the gate's library checks,
 #: the pool, the curate pass and the pass itself.
@@ -702,6 +744,7 @@ def _parse_library_mode(manifest: dict) -> Manifest:
                 )
             typed.append(c)
         field_types = _library_field_types(raw.get("field_types"), item, kind)
+        recipe, cases = _recipe_and_cases(raw, item, role)
         out.items.append(
             ManifestItem(
                 item,
@@ -714,6 +757,10 @@ def _parse_library_mode(manifest: dict) -> Manifest:
                 None,
                 typed,
                 *_adopts(raw.get("adopts"), item),
+                role=role,
+                reader=reader,
+                recipe=recipe,
+                cases=cases,
             ),
         )
     out.support = [safe_rel(p) for p in _str_list(manifest.get("support"), "support")]

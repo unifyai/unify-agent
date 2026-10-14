@@ -138,6 +138,21 @@ def test_landing_writes_the_reader_procedure_fixtures_test_and_manifest_entries(
     assert proc["tests"] == ["memory/readings/tests/test_row_sums.py"] and proc["source_episodes"] == ["e7"]
     assert "covers" not in proc  # the request runner's episode cover is not built in this build
     assert items["memory.readings.readers:read_row_sums"]["role"] == "reader"
+    # the recipe: the capture's run(read_input(request)) lifted into the library, its applies the precondition
+    assert proc["recipe"] == "memory.readings.procedures:apply_row_sums"
+    assert "def apply_row_sums(request):" in procedures
+    recipe = procedures[procedures.index("def apply_row_sums(request):") :]
+    assert "from memory.readings.readers import read_row_sums as read" in recipe
+    assert "if not _row_sums_applies(value):" in recipe and "raise MemoryInputError(" in recipe
+    assert "return row_sums(value)" in recipe
+    assert items["memory.readings.procedures:apply_row_sums"]["tests"] == ["memory/readings/tests/test_row_sums.py"]
+    assert "def test_row_sums_case1_recipe_gives_the_recorded_result():" in test
+    assert "assert json.loads(json.dumps(apply_row_sums(request(text)))) == expected" in test
+    # its source case: the recorded request with the value the episode handed back, re-derived by the gate
+    assert proc["cases"] == ["memory/readings/tests/data/row_sums.case1.source.case.json"]
+    case = json.loads((data / "row_sums.case1.source.case.json").read_text())
+    assert (case["input"], case["expected"], case["kind"]) == (ep.request[0], {"sums": [5, 12]}, "source")
+    assert "recipe memory.readings.procedures:apply_row_sums" in reply.text
     parse_manifest(_manifest(tmp_path), library_mode=True)
     # the reply lists the files written, as the box sees them
     for rel in (
@@ -172,7 +187,7 @@ def test_a_landed_reader_that_gives_the_same_value_is_reused(tmp_path):
     assert not (tmp_path / "box" / "memory" / "readings" / "readers.py").exists()
     items = {i["item"]: i for i in _manifest(tmp_path)["items"]}
     assert items["memory.readings.procedures:row_sums"]["reader"] == "memory.text.readers:labelled_rows"
-    assert set(items) == {"memory.readings.procedures:row_sums"}
+    assert set(items) == {"memory.readings.procedures:row_sums", "memory.readings.procedures:apply_row_sums"}
     fixture = tmp_path / "box" / "memory" / "readings" / "tests" / "data" / "row_sums.case1.json"
     assert json.loads(fixture.read_text()) == ROWS
     assert "from memory.text.readers import labelled_rows" in (
@@ -352,6 +367,30 @@ def test_the_quota_is_measured_after_a_landing(tmp_path, monkeypatch):
     assert "the pass is refused" in reply.text and st.stop is not None
     # the store is the harness's own, never a path from the call
     assert calls and calls[0]["store"] == tmp_path / "store" and calls[0]["box"] == tmp_path
+
+
+def test_the_manifest_takes_a_procedures_recipe_in_its_module_and_its_case_files():
+    item = {
+        "item": "memory.readings.procedures:row_sums",
+        "kind": "function",
+        "source_episodes": ["e7"],
+        "tests": ["memory/readings/tests/test_row_sums.py"],
+        "role": "procedure",
+        "recipe": "memory.readings.procedures:apply_row_sums",
+        "cases": ["memory/readings/tests/data/row_sums.case1.source.case.json"],
+    }
+    got = parse_manifest({"items": [item]}, library_mode=True).items[0]
+    assert (got.role, got.recipe, got.cases) == ("procedure", item["recipe"], item["cases"])
+    for bad in (
+        {"recipe": "memory.readings.other:apply_row_sums"},  # another module
+        {"recipe": "apply_row_sums"},
+        {"cases": ["memory/elsewhere/tests/data/x.case.json"]},  # another package
+        {"cases": ["memory/readings/tests/data/x.json"]},  # not a case file
+        {"cases": ["memory/readings/tests/data/x.case.json"] * 2},
+        {"role": "reader"},  # recipe and cases are a procedure's
+    ):
+        with pytest.raises(ManifestError):
+            parse_manifest({"items": [{**item, **bad}]}, library_mode=True)
 
 
 def test_the_manifest_takes_a_procedure_role_and_its_reader():

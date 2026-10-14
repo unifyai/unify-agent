@@ -397,6 +397,11 @@ def fixture(
     and the file holds the JSON of its result (a ``.json`` file listed with kind ``parsed``, or one input line whose
     source names the parser). The gate runs the reader on the recorded bytes again and refuses a fixture that
     differs.
+
+    ``expected=...`` makes a case file instead (a ``.case.json`` dest, :func:`.fixtures.make_case`): the recorded
+    bytes named by ``source`` and ``slice`` are the input, and *expected* names its output, a source id or
+    ``{"source", "slice"}`` the request or the environment showed, or ``"answer"``, the value the episode handed back
+    (with the whole request, ``request:0``, as the input). The file names its sources and is not listed.
     """
     eid = str(args.get("episode", ""))
     dest = str(args.get("dest", ""))
@@ -463,7 +468,15 @@ def fixture(
                     os.close(dfd)
         notes: list[str] = []
         parser = args.get("parser")
+        expected = args.get("expected")
         work = None
+        if expected is not None and (append or parser is not None):
+            return refused(
+                "fixture",
+                "bad_fixture",
+                where,
+                reason="a case file (expected=...) is made whole from its two sources: no append and no parser",
+            )
         if parser is not None and parse is None:
             import tempfile
 
@@ -473,18 +486,28 @@ def fixture(
             work = Path(tempfile.mkdtemp(prefix="memory-reader-"))
             parse = reader_parse(Path(box), python=python or PYTHON, work=work)
         try:
-            data, entry = _fx.make(
-                ep,
-                source,
-                dest,
-                blob=blob,
-                cut=args.get("slice"),
-                append=append,
-                existing=existing,
-                notes=notes,
-                parser=None if parser is None else str(parser),
-                parse=parse,
-            )
+            if expected is not None:
+                data, entry = _fx.make_case(
+                    ep,
+                    {"source": source, "slice": args.get("slice")},
+                    expected,
+                    dest,
+                    blob=blob,
+                    notes=notes,
+                )
+            else:
+                data, entry = _fx.make(
+                    ep,
+                    source,
+                    dest,
+                    blob=blob,
+                    cut=args.get("slice"),
+                    append=append,
+                    existing=existing,
+                    notes=notes,
+                    parser=None if parser is None else str(parser),
+                    parse=parse,
+                )
         except _fx.FixtureError as exc:
             return refused("fixture", "bad_fixture", where, reason=str(exc)[:300])
         finally:
@@ -519,7 +542,8 @@ def fixture(
                 else b""
             )
             _safe.replace_at(dfd, leaf, before + data)
-            _fx.write_listing(box, dest, None if append else entry)
+            # an appended line and a case file name their own sources: only a copy or a parsed file is listed
+            _fx.write_listing(box, dest, None if (append or expected is not None) else entry)
         except _safe.LinkFound:
             return refused("fixture", "link", where, what="dest")
         except (OSError, _fx.FixtureError) as exc:
@@ -538,6 +562,14 @@ def fixture(
         if (append and replace)
         else ("appended a line to" if append else "wrote")
     )
+    if expected is not None:
+        exp = entry["expected"]
+        return Reply(
+            f"ok: wrote {dest} ({len(data)} bytes, sha256 {hashlib.sha256(data).hexdigest()[:12]}; a {entry['case']} "
+            f"case of {eid}: input from source {entry['source']}, expected output from source {exp['source']})"
+            + "".join(f"; {n}" for n in notes),
+            paths=(path_row(f"/episodes/{eid}", "read"), *where),
+        )
     return Reply(
         f"ok: {verb} {dest} ({len(data)} bytes, sha256 {hashlib.sha256(data).hexdigest()[:12]}; source "
         f"{entry.get('source', (entry.get('lines') or [{}])[-1].get('source'))} of {eid})"

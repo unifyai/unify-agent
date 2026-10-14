@@ -342,8 +342,9 @@ READ_EPISODE = RegisteredTool(
     summary="read any recorded episode: its table of contents, or named parts.",
 )
 
-#: The fixture tool's arguments as the writer and the curator call it from code: the base ones and ``parser``, the id of a
-#: stored reader the recorded text is given to (:func:`unify.memory.procedures.reader_parse`).
+#: The fixture tool's arguments as the writer and the curator call it from code: the base ones, ``parser``, the id of a
+#: stored reader the recorded text is given to (:func:`unify.memory.procedures.reader_parse`), and ``expected``, the
+#: known output that makes the recorded bytes a case's input (:func:`unify.memory.fixtures.make_case`).
 _FIXTURE_WITH_PARSER = _obj(
     {
         "episode": {"type": "string"},
@@ -367,6 +368,16 @@ _FIXTURE_WITH_PARSER = _obj(
         "parser": {
             "type": "string",
             "description": "the id of a library function that takes one text argument (a reader)",
+        },
+        "expected": {
+            "type": ["integer", "string", "object"],
+            "description": (
+                "makes a case file (dest <name>.case.json) whose input is the recorded bytes source and slice name: "
+                "the output the request or the environment showed for that input (a worked example's output, or a "
+                "later observation showing the right value), as a source id or {\"source\": id, \"slice\": [start, "
+                "end]}; or 'answer', the value the episode handed back, with the whole request (source='request:0') "
+                "as the input. The gate runs a procedure's recipe on its cases"
+            ),
         },
     },
     ["episode", "dest"],
@@ -450,16 +461,29 @@ LAND_CAPTURE = RegisteredTool(
         "Turn a captured attempt (/inputs/captures/<capture_id>/) into library items under memory/<package>/: its "
         "read_input as the reader read_<name> in readers.py (or a stored reader that gives the same value on its "
         "request, which is reused), its run as <name> in procedures.py with its applies and holds, two fixtures of "
-        "the recorded request (its text, and the reader's value on it), a test of the recorded result with one "
-        "refusal test in tests/test_<name>.py, and the manifest entries (role procedure, with its reader). When the "
-        "capture's same_as names a capture already landed, this request becomes a new case of that procedure "
-        "instead. You may change any of them before you finish."
+        "the recorded request (its text, and the reader's value on it), its recipe apply_<name>(request) (the "
+        "whole job on a request: the reader, its applies as a precondition, then the procedure), the source case "
+        "(the request with the value its episode handed back, <name>.case<k>.source.case.json) and each case you "
+        "name in cases, a test of the recorded result with one refusal test in tests/test_<name>.py, and the "
+        "manifest entries (role procedure, with its reader, recipe and cases; the recipe). The gate runs the recipe "
+        "on every case and lands the procedure only if all pass. When the capture's same_as names a capture already "
+        "landed, this request becomes a new case of that procedure instead. You may change any of them before you "
+        "finish."
     ),
     parameters=_obj(
         {
             "capture_id": {"type": "string", "description": "the capture's id (its directory name)"},
             "package": {"type": "string", "description": "the package to land in, a plain module name"},
             "name": {"type": "string", "description": "the procedure's name, a plain module name"},
+            "cases": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": (
+                    'more cases of the capture\'s episode, each {"input": <source>, "expected": <source>} as '
+                    "fixture takes them (a source id or {\"source\", \"slice\"}): an input the request or the "
+                    "environment showed with the output it showed for it"
+                ),
+            },
         },
         ["capture_id", "package", "name"],
     ),
@@ -1564,7 +1588,7 @@ _SHORTER = {
         "such as a recorded-inputs file; replace=true starts the file over. parser: the id of a library function "
         "that takes one text argument; the recorded bytes, decoded as UTF-8, are passed to it in a confined box, and "
         "the file holds the JSON of its result (a .json file, or one input line with append=true). The gate runs the "
-        "function on the recorded bytes again and refuses a fixture that differs.",
+        "function on the recorded bytes again and refuses a fixture that differs. expected: makes a case file.",
     ),
     "pool": (
         " (as `similar` compares code: variable names renamed in order of use, literals lifted)",
