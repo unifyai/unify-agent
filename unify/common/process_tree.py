@@ -137,6 +137,7 @@ def kill_tree(
     watched = {pid_ns} if pid_ns and pid_ns != own_ns else set()
     leader = proc_stat(pid)
     leader_start = leader[2] if leader is not None else None
+    born = int(leader_start) if leader_start is not None and leader_start.isdigit() else None
     targets: dict[int, str] = {}
     group_held = leader is not None
     leader_ended = leader is None
@@ -182,6 +183,9 @@ def kill_tree(
             for p, row in table.items():
                 if p in found or p in (me, pid) or row[1] in _ENDED:
                     continue
+                # a process started before the box cannot be in its namespace: its namespace is not read
+                if born is not None and row[3].isdigit() and int(row[3]) < born:
+                    continue
                 if pid_namespace(p) in watched:
                     found[p] = row[3]
         return found
@@ -219,4 +223,5 @@ def kill_tree(
             raise RuntimeError(
                 f"sandbox processes survived SIGKILL: leader {pid}, others {sorted(found)}",
             )
-        time.sleep(0.05)
+        # a first empty scan is confirmed at once; processes still dying are looked at again a little later
+        time.sleep(0.01 if empty else 0.05)
