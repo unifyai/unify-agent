@@ -87,6 +87,9 @@ class ActorRequestState:
     #: structured request as JSON data (None for a text or a message); None: not known here
     request_text: Optional[str] = None
     request_data: Any = None
+    #: what the agent received from its tools so far (every in-code call but the memory package's own), as a digest
+    #: that changes with each new one; None: not known here. Part of what a cached librarian answer answered.
+    observed: Optional[Callable[[], str]] = None
 
 
 def response_validator(rf_norm: Any) -> Callable[[Any], str]:
@@ -498,7 +501,7 @@ async def ask_library(ctx: Any, args: dict) -> Any:
     if not isinstance(request, str) or not request:
         request = _memory_run_request() if getattr(ctx, "agent", None) == "actor" else None
     try:
-        text = await session.ask(question, args.get("facts") or [], request=request)
+        text = await session.ask(question, args.get("facts") or [], request=request, observed=_observed(state))
     except _librarian.NoAnswer as exc:
         return _refused(refusal("ask_library", "no_answer", why=str(exc)[:300]))
     return _reply(text)
@@ -531,6 +534,23 @@ def request_data(text: str) -> list:
     from unify.actor.execution.worker_child import json_values
 
     return json_values(text)
+
+
+def _observed(state: Any) -> str:
+    """What the request received from outside so far, as one key: the memory run's user messages (the requester and
+    the environment's observations, ``RequestRun.observed``) and the agent's own tool calls (``state.observed``). A
+    new observation of either kind changes it."""
+    parts = []
+    try:
+        from unify.memory.integration import request as _request
+
+        run = _request.current()
+        parts.append(run.observed() if run is not None and hasattr(run, "observed") else "")
+    except Exception:  # noqa: BLE001 - no memory run here
+        parts.append("")
+    fn = getattr(state, "observed", None)
+    parts.append(fn() if callable(fn) else "")
+    return "|".join(parts)
 
 
 def _memory_run_request() -> Optional[str]:

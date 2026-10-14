@@ -237,3 +237,104 @@ async def test_memory_ask_twice_in_a_cell_makes_one_librarian_call_and_marks_the
     (session,) = opened
     assert len(model.calls) == 1 and session.usage.calls == 1
     assert session.questions == 2 and session.from_cache == 1
+
+
+# --- when a kept answer no longer answers: the library, the facts, what the request received, the question ----------
+
+
+@pytest.mark.asyncio
+async def test_a_library_that_changed_since_the_answer_is_asked_again(tmp_path):
+    turn = Turn([FITS, NEAREST])
+    session = _session(tmp_path, turn)
+    ctx = _ctx(session)
+    try:
+        await _ask(ctx, PARSED)
+        # the copy changes after the first ask (its dispatch file is read at every ask, whatever the commit says)
+        dispatch = session.copy / ".memory" / "dispatch.json"
+        data = json.loads(dispatch.read_text())
+        data["procedures"].append({"id": COUNT, "reader": None, "applies": True, "input": ""})
+        dispatch.write_text(json.dumps(data))
+        _, second = await _ask(ctx, PARSED)
+    finally:
+        await session.close()
+    assert second == NEAREST and len(turn.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_new_observation_asks_again_and_nothing_new_keeps_the_answer(tmp_path):
+    turn = Turn([FITS, NEAREST])
+    session = _session(tmp_path, turn)
+    ctx = _ctx(session)
+    seen = {"n": 0}
+    ctx.state.observed = lambda: f"calls:{seen['n']}"
+    try:
+        await _ask(ctx, PARSED)
+        _, again = await _ask(ctx, PARSED)  # nothing received since: the kept answer
+        seen["n"] += 1  # a tool's result or a user message since the last ask
+        _, third = await _ask(ctx, PARSED)
+    finally:
+        await session.close()
+    assert again == {**FITS, L.ALREADY_GIVEN: True}
+    assert third == NEAREST and len(turn.calls) == 2
+
+
+def test_the_runs_observed_changes_with_each_user_message_and_nothing_else():
+    import hashlib
+
+    from unify.memory.integration.request import RequestRun
+
+    run = SimpleNamespace(_observed=hashlib.sha256(), observed_messages=0, journal=None)
+
+    def line(role: str, content: str = "x") -> str:
+        return json.dumps({"seq": 1, "type": "message", "message": {"role": role, "content": content}})
+
+    before = RequestRun.observed(run)
+    for role in ("assistant", "tool", "system"):
+        RequestRun._on_transcript_line(run, line(role))
+    assert RequestRun.observed(run) == before  # what the agent wrote, or its own cells, is no observation
+    RequestRun._on_transcript_line(run, line("user", "the environment's next observation"))
+    after = RequestRun.observed(run)
+    assert after != before
+    RequestRun._on_transcript_line(run, line("user", "another"))
+    assert RequestRun.observed(run) not in (before, after)
+
+
+@pytest.mark.asyncio
+async def test_the_agents_observed_changes_with_each_tool_call_but_the_memory_packages_own(tmp_path, monkeypatch):
+    from unify.actor import in_code_tools
+    from unify.settings import SETTINGS
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")
+    session = in_code_tools.InCodeTools(
+        agent="actor",
+        name="root",
+        record=SimpleNamespace(),
+        workspace_root=str(tmp_path),
+        shadow={},
+        cell_limit_s=None,
+        events_folder=tmp_path / "events",
+    )
+    try:
+        before = session.state.observed()
+        for own in ("ask_library", "current_request"):
+            session._on_event({"event": "tool_call", "tool": own, "status": "ok", "via": "channel"})
+        assert session.state.observed() == before
+        session._on_event({"event": "tool_call", "tool": "read", "status": "ok", "via": "channel", "result_bytes": 10})
+        assert session.state.observed() != before
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_answers_never_cross_requests(tmp_path):
+    # each request opens its own session (the actor's request state holds it; it ends with the request), so a
+    # second request asks afresh what the first was answered
+    first_turn, second_turn = Turn([FITS]), Turn([FITS])
+    first, second = _session(tmp_path / "a", first_turn), _session(tmp_path / "b", second_turn)
+    try:
+        await _ask(_ctx(first), PARSED)
+        _, got = await _ask(_ctx(second), PARSED)
+    finally:
+        await first.close()
+        await second.close()
+    assert got == FITS and len(second_turn.calls) == 1  # no mark: not from the other request's answers
