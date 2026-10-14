@@ -347,6 +347,12 @@ class InCodeTools:
 
         if self.closed:
             raise RuntimeError("this request's tools have ended")
+        from unify.actor.no_op_cells import refusal
+
+        # a cell that only shows text written in it is refused before it runs, with what to do instead
+        refused = refusal(code, can_answer_in_code="answer" in self.allow)
+        if refused is not None:
+            raise refused
         async with self._lock:
             # the loop's slot for the turn's reply, which tools.answer fills (the loop that runs this call set it)
             self.state.reply_slot = cell_reply.current()

@@ -3283,6 +3283,13 @@ class CodeActActor(BaseCodeActActor):
                     "session_created": False,
                     "duration_ms": 0,
                 }
+            if _language == "python":
+                from unify.actor.no_op_cells import refusal
+
+                # a cell that only shows text written in it is refused before it runs, with what to do instead
+                refused = refusal(code, can_answer_in_code=False)
+                if refused is not None:
+                    raise refused
 
             # ──────────────────────────────────────────────────────────────
             # Boundary wrapper: execute_code (lineage + events + terminal log)
