@@ -186,6 +186,9 @@ def kill_tree(
                     found[p] = row[3]
         return found
 
+    # the tree as it stands before the signal: a process the signal leaves running is waited on even once the
+    # leader's pid no longer leads to it
+    targets.update((child, start) for child, start in descendants(pid) if child != me)
     if leader is not None:
         try:
             os.killpg(pid, signal.SIGKILL)
