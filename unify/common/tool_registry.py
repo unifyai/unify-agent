@@ -342,8 +342,9 @@ READ_EPISODE = RegisteredTool(
     summary="read any recorded episode: its table of contents, or named parts.",
 )
 
-#: The fixture tool's arguments as the writer and the curator call it from code: the base ones and ``parser``, the id of a
-#: stored reader the recorded text is given to (:func:`unify.memory.procedures.reader_parse`).
+#: The fixture tool's arguments as the writer and the curator call it from code: the base ones, ``parser``, the id of a
+#: stored reader the recorded text is given to (:func:`unify.memory.procedures.reader_parse`), and ``expected``, the
+#: known output that makes the recorded bytes a case's input (:func:`unify.memory.fixtures.make_case`).
 _FIXTURE_WITH_PARSER = _obj(
     {
         "episode": {"type": "string"},
@@ -367,6 +368,16 @@ _FIXTURE_WITH_PARSER = _obj(
         "parser": {
             "type": "string",
             "description": "the id of a library function that takes one text argument (a reader)",
+        },
+        "expected": {
+            "type": ["integer", "string", "object"],
+            "description": (
+                "makes a case file (dest <name>.case.json) whose input is the recorded bytes source and slice name: "
+                "the output the request or the environment showed for that input (a worked example's output, or a "
+                "later observation showing the right value), as a source id or {\"source\": id, \"slice\": [start, "
+                "end]}; or 'answer', the value the episode handed back, with the whole request (source='request:0') "
+                "as the input. The gate runs a procedure's recipe on its cases"
+            ),
         },
     },
     ["episode", "dest"],
@@ -1564,7 +1575,7 @@ _SHORTER = {
         "such as a recorded-inputs file; replace=true starts the file over. parser: the id of a library function "
         "that takes one text argument; the recorded bytes, decoded as UTF-8, are passed to it in a confined box, and "
         "the file holds the JSON of its result (a .json file, or one input line with append=true). The gate runs the "
-        "function on the recorded bytes again and refuses a fixture that differs.",
+        "function on the recorded bytes again and refuses a fixture that differs. expected: makes a case file.",
     ),
     "pool": (
         " (as `similar` compares code: variable names renamed in order of use, literals lifted)",
