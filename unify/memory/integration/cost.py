@@ -9,6 +9,8 @@ Two sources, one row shape (:class:`..episodes.CostRow`):
   skipped, because the pass records its own through :func:`recording_turn`; an origin containing
   ``embed`` is ``embedding``; every other call is ``actor``.
 * :func:`recording_turn` wraps the writer's model turn and appends one ``writer`` row per turn.
+* :meth:`CostListener.add_embedding` (:func:`book_embedding`) appends one ``embedding`` row per request the
+  embedder sends (``unify.common.embeddings.embed``'s ``on_call``), which never goes through unillm.
 
 Money is a plain decimal string (never an exponent). A cost that is missing, not a finite non-negative
 number, or in any other form (``"x+unknown"``) is ``"unknown"``; an unknown cost is never zero. Token
@@ -36,6 +38,8 @@ __all__ = [
     "HELPER_ORIGIN",
     "UNKNOWN",
     "CostListener",
+    "book_embedding",
+    "embedding_row",
     "install",
     "money",
     "recording_turn",
@@ -129,6 +133,42 @@ class CostListener:
         with self._lock:
             if self._active:
                 self.rows.append(row)
+
+    def add_embedding(self, call: Any) -> None:
+        """One request the embedder sent (:func:`embedding_row`), appended while active; never raises."""
+        try:
+            row = embedding_row(call)
+        except Exception:  # noqa: BLE001 - metering never changes a call
+            with self._lock:
+                self.failed += 1
+            return
+        with self._lock:
+            if self._active:
+                self.rows.append(row)
+
+
+def embedding_row(call: Any) -> CostRow:
+    """The ``embedding`` row of one request the embedder sent (``{"model", "prompt_tokens", "cost"}``): its cost
+    as the reply reported it, ``unknown`` when it reported none (a failed request may still be billed)."""
+    call = call if isinstance(call, dict) else {}
+    model = call.get("model")
+    tokens = call.get("prompt_tokens")
+    cost = call.get("cost")
+    return CostRow(
+        "embedding",
+        model if isinstance(model, str) and model else UNKNOWN,
+        tokens if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens >= 0 else None,
+        None,
+        UNKNOWN if cost is None or isinstance(cost, bool) else money(cost),
+    )
+
+
+def book_embedding(call: Any) -> None:
+    """Book one request the embedder sent as the current request's ``embedding`` row (the process's listener,
+    while a request is active); never raises."""
+    listener = _LISTENER
+    if listener is not None:
+        listener.add_embedding(call)
 
 
 _LISTENER: CostListener | None = None
