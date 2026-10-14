@@ -334,6 +334,24 @@ def recipe_text(record: Mapping | None) -> str | None:
     return f"{r['item']}; {r.get('passed', 0)} of {r.get('cases', 0)} cases passed" + (f" ({shown})" if shown else "")
 
 
+def recipe_of(record: Mapping | None) -> str | None:
+    """The id of a procedure's recipe, by its verification record (:func:`recipe_text`); None for an item without
+    one."""
+    v = record.get("verification") if isinstance(record, Mapping) else None
+    r = v.get("recipe") if isinstance(v, dict) else None
+    return r["item"] if isinstance(r, dict) and isinstance(r.get("item"), str) and r["item"] else None
+
+
+#: The call that applies a recipe to the current request in an actor's cell (the library package's
+#: ``_recipe_call`` writes the same).
+RECIPE_CALL = "memory.get({item!r})(memory.request())"
+
+
+def recipe_call(recipe: str) -> str:
+    """The one-call entry of the recipe *recipe*: the recipe applied to the current request (:data:`RECIPE_CALL`)."""
+    return RECIPE_CALL.format(item=recipe)
+
+
 def recipe_ids(records: Mapping | None) -> set[str]:
     """The functions that are a procedure's recipe, by the procedures' verification records (:func:`recipe_text`)."""
     out: set[str] = set()

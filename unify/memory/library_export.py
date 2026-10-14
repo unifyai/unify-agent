@@ -16,8 +16,8 @@
   catalogue or its footer ships);
 * ``.memory/shapes.py``: :mod:`.analysis.shapes`, byte for byte;
 * with ``UNIFY_MEMORY_LIBRARIAN=on`` only: ``.memory/catalogue.md`` and ``.memory/dispatch.json``, the librarian's
-  catalogue and the procedures' recognisers (:func:`librarian_files`), and ``memory.ask`` in the package and its
-  stub.
+  catalogue and the procedures' recognisers, and ``.memory/search.json``, the index its ``search`` ranks
+  (:mod:`.library_search`) (:func:`librarian_files`), and ``memory.ask`` in the package and its stub.
 
 None of these is ever committed (the gate's G1 check refuses them). Each is a pure function of the tree, the item
 statuses, the recorded shapes and the history, so the same commit gives the same bytes (cache rule).
@@ -817,13 +817,18 @@ def librarian_files(
     summary_of: SummaryOf | None = None,
     captures: Mapping[str, bytes] | None = None,
     strip: Strip | None = None,
+    search: Any = None,
 ) -> dict[str, bytes]:
     """The librarian's generated files of the copy at *tree* (``UNIFY_MEMORY_LIBRARIAN=on``): ``catalogue.md``,
-    ``dispatch.json``, and the package with ``memory.ask`` (:data:`ASK_SOURCE` after :mod:`.library_helper`) and
-    its stub."""
+    ``dispatch.json``, ``search.json`` (:func:`.library_search.index_files`, its vectors made with *search*, a
+    :class:`.library_search.Backend`; None: none, the ranking lexical), and the package with ``memory.ask``
+    (:data:`ASK_SOURCE` after :mod:`.library_helper`) and its stub."""
+    from .library_search import index_files
+
     tree = Path(tree)
     lib = discover(tree)
     return {
+        **index_files(tree, lib, status_of=status_of, records=records, captures=captures, use=search),
         RESERVED_INIT: package_source(librarian=True),
         RESERVED_STUB: stub_source(librarian=True),
         CATALOGUE_FILE: catalogue_text(
@@ -896,12 +901,13 @@ def generated_library_mode(
     librarian: bool = False,
     summary_of: SummaryOf | None = None,
     captures: Mapping[str, bytes] | None = None,
+    search: Any = None,
 ) -> dict[str, bytes]:
     """Every generated file of the copy of the library at *tree*, by relative path (module docstring).
 
     *librarian* (``UNIFY_MEMORY_LIBRARIAN=on``) adds the librarian's files (:func:`librarian_files`: the catalogue
-    with *summary_of*'s summaries and the *captures* snapshot, the dispatch file, and the package with
-    ``memory.ask``); off, every byte is as without it.
+    with *summary_of*'s summaries and the *captures* snapshot, the dispatch file, the search index with *search*'s
+    vectors, and the package with ``memory.ask``); off, every byte is as without it.
 
     *records* are the item records at the copy's commit (:func:`.item_records.records_at`); None gives the files
     without item records, byte for byte. *tests* reads a test file of the commit by its tree-relative path, to
@@ -959,6 +965,7 @@ def generated_library_mode(
                 summary_of=summary_of,
                 captures=captures,
                 strip=strip,
+                search=search,
             ),
         )
     return out

@@ -100,6 +100,7 @@ def export_actor_library_mode(
     captures=None,
     librarian: bool = False,
     summary_of=None,
+    search=None,
 ) -> dict[str, bytes]:
     """``UNIFY_MEMORY_LIBRARY=on``: replace *dest* with the actor's read-only copy of memory commit *sha*. It
     holds:
@@ -110,7 +111,8 @@ def export_actor_library_mode(
     - with *captures* (:func:`..captures.export_files`: paths under ``.memory/captures/``), a snapshot of the capture
       store as this request starts. Captures never enter ``INDEX.md`` or the prompt;
     - with *librarian* (``UNIFY_MEMORY_LIBRARIAN=on``), the librarian's catalogue (with *summary_of*'s episode
-      summaries and the captures' cards last) and the dispatch file, and ``memory.ask`` in the package.
+      summaries and the captures' cards last), the dispatch file and the search index (its vectors made with
+      *search*, a :class:`..library_search.Backend`; None: a lexical index), and ``memory.ask`` in the package.
 
     Every write bit is then dropped, and the sandbox binds the copy read-only (:func:`.hooks.worker_readonly_mounts`).
     Returns the generated files.
@@ -149,6 +151,7 @@ def export_actor_library_mode(
         librarian=librarian,
         summary_of=summary_of,
         captures=captures if librarian else None,
+        search=search,
     )
     if captures:
         from ..captures import EXPORT_DIR
