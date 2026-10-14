@@ -756,9 +756,9 @@ def dispatch_data(
     (its applicability signature states one, or its item record names the function), and ``input`` its input line.
     Module-path order, then the captures in id order; a captured attempt that failed is left out (never offered to
     run), and so is a procedure its item record does not list (:func:`.recognition.listed`) and a captured procedure
-    whose landing is not listed (its record's ``listing``: the same code). Beside the rows, ``applies_of`` names, for a landed procedure, the library function that is its
-    ``applies`` (the item record's ``applies``); a captured procedure's ``applies`` is the one in its own
-    ``procedure.py``."""
+    whose landing is not listed (its record's ``listing``: the same code). Beside the rows, ``applies_of`` names, for
+    a landed procedure, the library function that is its ``applies`` (the item record's ``applies``); a captured
+    procedure's ``applies`` is the one in its own ``procedure.py``."""
     from .library_index import signature_text
 
     rows: list[dict] = []

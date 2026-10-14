@@ -16,8 +16,9 @@ a path the box names), checks it, and writes into the writer's ``/memory``:
 - a test, ``memory/<package>/tests/test_<name>.py``: the procedure on the reader's value of the recorded text against
   the handed-back value's fixture, the reader on the recorded text, and one refusal of text the reader was not built
   for. Each reader call hands the request over as the harness does (``request(text)``: the text with ``.text`` and
-  ``.data``, :mod:`.request_value`), so a reader of the request's data is tested as it is used. When the value was handed back in the final reply, which no fixture source holds, the expected value is
-  written in the test instead, and the gate keeps the procedure ``unchecked``;
+  ``.data``, :mod:`.request_value`), so a reader of the request's data is tested as it is used. When the value was
+  handed back in the final reply, which no fixture source holds, the expected value is written in the test instead,
+  and the gate keeps the procedure ``unchecked``;
 - the manifest entries, the procedure with ``role: "procedure"`` and ``reader``, a new reader with ``role:
   "reader"``.
 

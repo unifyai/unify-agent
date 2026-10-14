@@ -1,4 +1,4 @@
-"""Whether a landed procedure recognises the requests it fits, tested when it lands on the store's own recorded requests.
+"""Whether a landed procedure recognises the requests it fits, tested when it lands, on the store's recorded requests.
 
 ``memory.match`` and the librarian list a stored procedure where its reader parses the current request and its
 ``applies`` holds on what the reader gave. That listing is only as good as the ``applies`` (an ``applies`` written for
