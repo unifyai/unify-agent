@@ -16,8 +16,8 @@ the request as one episode (with ``UNIFY_MEMORY_DIALOGUE`` set, its transcript's
 store's ``item_use`` table), removes the journal, and runs the consolidation passes that are due, blocking; it never
 raises (an episode that could not be recorded keeps its journal, recorded as incomplete at the next start). The
 passes' start and end events go to the CLI's ``--jsonl`` output when it has one; the consolidation driver
-appends them to the state directory's ``events.jsonl`` (``Paths.events``) either way. ``abort`` cleans up,
-removes the journal and records nothing. The harness hooks read the current run (``current()``) for ``index``
+appends them to the state directory's ``events.jsonl`` (``Paths.events``) either way. ``abort`` cleans up
+and records nothing now: its journal stays, and the next start records it as an incomplete episode. The harness hooks read the current run (``current()``) for ``index``
 and ``paths``.
 
 Only pass/fail of a posted outcome is kept: ``take_outcome`` keeps ``solved`` and drops
@@ -1840,11 +1840,13 @@ class RequestRun:
         except Exception as exc:  # noqa: BLE001
             logger.warning("memory v2: request scope not closed cleanly: %s", exc)
 
-    def abort(self) -> None:
-        """End the run with nothing recorded (the process is closing without a finished request): its journal is
-        removed too. After ``finish`` it changes nothing."""
-        if not self._closed:
-            self._drop_journal()
+    def abort(self, stopped: dict | None = None) -> None:
+        """End the run with nothing recorded now (the process is closing without a finished request). Its journal
+        stays, with why it stopped (*stopped*: ``{"reason": "timeout"}`` or ``{"reason": "error", "error": <class
+        name>}``), so the next start records the turns that ran as an incomplete episode. After ``finish`` it changes
+        nothing."""
+        if not self._closed and self.journal is not None and stopped:
+            self.journal.stopped(stopped)
         self._cleanup()
 
     def _cleanup(self) -> None:

@@ -3,8 +3,9 @@
 A request run journals every line of its episode's transcript as the loop publishes it (``unify.transcripts``' tap),
 through the redaction the episode record uses, in the harness-only state directory. A request that ends normally
 records its episode as before and removes the journal; one that ends unfinished (``abort``) records nothing and
-removes it; a process killed mid-request leaves it, and the next request's start records it as an incomplete episode
-with every turn that ran, the one that stopped it included, whole.
+keeps it with why it stopped (a timeout, or an error's class name); a process killed mid-request leaves it; the next
+request's start records either as an incomplete episode with every turn that ran, the one that stopped it included,
+whole.
 
 The runs are real (``RequestRun.begin``, the real trajectory, episode writer and evidence store) on a seeded
 ``UNIFY_HOME``; the turns go through the loop's message dispatcher, as the actor's do. No model is called: nothing
@@ -168,20 +169,36 @@ def _lines_of(data: bytes) -> list[dict]:
     return [json.loads(x) for x in data.decode("utf-8").splitlines() if x.strip()]
 
 
-def test_an_aborted_request_records_nothing_and_leaves_no_journal(home):
+@pytest.mark.parametrize(
+    "stopped, recorded",
+    [
+        ({"reason": "timeout"}, {"reason": "timeout"}),
+        ({"reason": "error", "error": "RuntimeError"}, {"reason": "error", "error": "RuntimeError"}),
+        ({"reason": "error", "error": "not a class name: some text"}, {"reason": "error"}),
+        (None, {"reason": journal_mod.UNKNOWN_REASON}),
+    ],
+)
+def test_an_aborted_request_keeps_its_journal_and_the_next_start_records_it_incomplete(home, stopped, recorded):
     run = home.ctx.run(request_mod.RequestRun.begin, REQUEST)
     head = Repo(home.paths.episodes).head()
-    _publish(home, TURNS[:2])
-    assert len(_journals(home.paths)) == 1
-    home.ctx.run(run.abort)
-    assert _journals(home.paths) == []
+    _publish(home, TURNS)
+    if stopped is None:
+        home.ctx.run(run.abort)
+    else:
+        home.ctx.run(lambda: run.abort(stopped=stopped))
+    # nothing is recorded now; the journal keeps every turn, and why the request stopped
     assert Repo(home.paths.episodes).head() == head
-    # nothing is recovered at the next start
-    again = home.ctx.run(request_mod.RequestRun.begin, REQUEST)
-    try:
-        assert again.recovered == []
-    finally:
-        home.ctx.run(again.abort)
+    (left,) = _journals(home.paths)
+    assert left.name == f"{run.episode_id}.jsonl"
+    assert "some text" not in left.read_text()
+    again = home.ctx.run(request_mod.RequestRun.begin, "the next request")
+    home.ctx.run(again.abort)
+    assert again.recovered == [run.episode_id]
+    _, _, ep = _recorded(home.paths, run.episode_id)
+    assert {k: v for k, v in ep.incomplete.items() if k != "recovered_at"} == recorded
+    assert [r["message"]["role"] for r in ep.transcript if r.get("type") == "message"] == [t["role"] for t in TURNS]
+    assert not [r for r in ep.transcript if r.get("type") == journal_mod.STOPPED]  # the stop line is meta only
+    assert [c.output for c in ep.cells] == ["78\nfound <redacted:key-shaped>\n"]
 
 
 #: A request killed mid-episode: it publishes the turns, the last one a runaway reply, then kills itself.
@@ -252,7 +269,7 @@ def test_a_request_killed_mid_episode_is_recorded_incomplete_with_every_turn_at_
         assert _journals(home.paths) == [home.paths.journal / f"{run.episode_id}.jsonl"]  # only the new one
     finally:
         home.ctx.run(run.abort)
-    assert _journals(home.paths) == []
+    assert _journals(home.paths) == [home.paths.journal / f"{run.episode_id}.jsonl"]  # the aborted one keeps its own
     repo, rel, ep = _recorded(home.paths, eid)
     assert repo.head() != episodes_before
     # marked incomplete, the reason unknown; its meta as its process opened it
@@ -307,7 +324,8 @@ def test_an_episode_that_could_not_be_recorded_keeps_its_journal_for_the_next_st
 
     again = home.ctx.run(request_mod.RequestRun.begin, "the next request")
     home.ctx.run(again.abort)
-    assert again.recovered == [run.episode_id] and _journals(home.paths) == []
+    assert again.recovered == [run.episode_id]
+    assert _journals(home.paths) == [home.paths.journal / f"{again.episode_id}.jsonl"]  # the aborted one's own
     _, _, ep = _recorded(home.paths, run.episode_id)
     assert ep.incomplete["reason"] == journal_mod.UNKNOWN_REASON
     assert [r["message"]["role"] for r in ep.transcript if r.get("type") == "message"] == [
