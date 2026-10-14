@@ -27,6 +27,10 @@ provider credential unillm holds, is replaced by ``[REDACTED:<name>]``, and
 every outcome section the harness rendered is replaced by
 ``[REDACTED:outcome]``, before a line is written, in either directory.
 
+A session's lines can also be handed, as written, to a tap (:func:`tap`): the
+memory run journals its episode's transcript that way, so the turns survive a
+process that dies before the episode is recorded.
+
 With the switch off nothing here touches the filesystem: :func:`attach`
 returns ``None`` and every other entry point is a no-op for a loop it did not
 attach.
@@ -45,7 +49,7 @@ import threading
 import weakref
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
 
 __all__ = [
     "SECRET_NAME_MARKERS",
@@ -58,6 +62,7 @@ __all__ = [
     "record_compaction",
     "resume_session",
     "session_for_messages",
+    "tap",
     "transcripts_dir",
 ]
 
@@ -90,6 +95,9 @@ _BY_LABEL: "weakref.WeakValueDictionary[str, TranscriptSession]" = (
 )
 _REGISTRY_LOCK = threading.Lock()
 _INDEX_LOCK = threading.Lock()
+# Per session id, what each line written for that session is handed to once it
+# is on disk (:func:`tap`).
+_TAPS: dict[str, Callable[[str], None]] = {}
 
 
 def transcripts_dir() -> Path:
@@ -291,6 +299,13 @@ class TranscriptSession:
                 fh.write(line + "\n")
             self._seq += 1
             self.ended_at = now
+            # under the session's lock, so a tap sees the lines in file order
+            fn = None if self.internal else _TAPS.get(self.id)
+            if fn is not None:
+                try:
+                    fn(line)
+                except Exception:
+                    logger.warning("transcript tap failed", exc_info=True)
 
     def _client_messages(self) -> Optional[list]:
         client = self._client_ref() if self._client_ref is not None else None
@@ -466,6 +481,18 @@ def _finalize_session(session: TranscriptSession) -> None:
 # ---------------------------------------------------------------------------
 # Entry points used by the tool loop
 # ---------------------------------------------------------------------------
+
+
+def tap(session_id: str, fn: Optional[Callable[[str], None]]) -> None:
+    """Hand every line written from now on for the session *session_id* (in
+    :func:`transcripts_dir`), exactly as it went to disk, to *fn*, in order;
+    None removes the tap. A tap's failure is logged and never stops the write.
+    """
+    with _REGISTRY_LOCK:
+        if fn is None:
+            _TAPS.pop(session_id, None)
+        else:
+            _TAPS[session_id] = fn
 
 
 @contextmanager
