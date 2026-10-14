@@ -196,7 +196,7 @@ class InCodeTools:
             policy=policy,
             spawner=spawner,
         )
-        # the request the memory package reads through current_request (its text, and its data when structured)
+        # the request the memory package reads through current_request (its text, and the JSON values it carries)
         self.state.request_text, self.state.request_data = H.request_of(request)
         stores = can_store and store_skills is not None
         # UNIFY_MEMORY_LIBRARIAN=on: the actor asks the request's librarian (tools.ask_library, from memory.ask)

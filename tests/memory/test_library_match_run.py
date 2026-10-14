@@ -73,7 +73,8 @@ import json
 
 
 def read_input(text):
-    return json.loads(text)
+    """The JSON value the request starts with."""
+    return json.JSONDecoder().raw_decode(text.strip())[0]
 
 
 def run(value):

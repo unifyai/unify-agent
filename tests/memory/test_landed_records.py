@@ -64,16 +64,31 @@ def test_a_landing_is_recorded_in_the_store_and_carried_into_its_item_record(tmp
     assert reply.status == "ok", reply.text
     # the test's landing names no pass; a writer pass's names its own (test_capture_one_route)
     landing = {"item": PROC, "reader": READER, "applies": APPLIES, "episode": "e7", "pass": None}
-    assert captures.landings(store) == {cid: landing}
+    got = captures.landings(store)
+    assert set(got) == {cid} and isinstance(got[cid].pop("at"), float)
+    # the store records no other request, so the landing's recognition test had nothing to run on
+    recognition = got[cid].pop("recognition")
+    assert got[cid] == landing
+    assert (recognition["requests"], recognition["tested"], recognition["listed"]) == (0, 0, True)
     landed = captures.landed_items(store)
-    assert landed == {PROC: {"capture": cid, "reader": READER, "signature": SIGNATURE, "applies": APPLIES}}
+    assert landed == {
+        PROC: {
+            "capture": cid,
+            "reader": READER,
+            "signature": SIGNATURE,
+            "applies": APPLIES,
+            "recognition": recognition,
+        },
+    }
     # the harness's own record: never in the box, the writer's inputs or the actor's snapshot
     assert not [p for p in (tmp_path / "box").rglob("*") if p.name == captures.LANDED_FILE]
     assert not [p for p in captures.export_files(store) if p.endswith(captures.LANDED_FILE)]
     recs = _records(landed, verification={PROC: {"readers": [READER]}, OTHER: {"readers": []}})
     assert recs[PROC]["landed_from"] == {"capture": cid, "reader": READER}
     assert recs[PROC]["signature"] == SIGNATURE and recs[PROC]["applies"] == APPLIES
+    assert recs[PROC]["recognition"] == recognition
     assert (recs[OTHER]["landed_from"], recs[OTHER]["signature"], recs[OTHER]["applies"]) == (None, None, None)
+    assert recs[OTHER]["recognition"] is None
 
 
 def test_a_function_no_landing_names_keeps_its_previous_records_fields():
@@ -90,7 +105,9 @@ def test_landed_items_skips_a_landing_without_an_item_and_reads_no_store_as_none
     captures.record_landing(store, cid, {"item": "", "reader": READER})
     assert captures.landings(store) == {} and captures.landed_items(store) == {}
     captures.record_landing(store, cid, {"item": PROC, "reader": READER, "pass": "p9", "extra": "dropped"})
-    want = {"item": PROC, "reader": READER, "applies": None, "episode": None, "pass": "p9"}
+    want = {
+        "item": PROC, "reader": READER, "applies": None, "episode": None, "pass": "p9", "recognition": None, "at": None,
+    }
     assert captures.landings(store)[cid] == want
     assert captures.landed_items(None) == {} and captures.landings(tmp_path / "missing") == {}
     with pytest.raises(ValueError):

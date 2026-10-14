@@ -15,13 +15,20 @@ a path the box names), checks it, and writes into the writer's ``/memory``:
   the recording;
 - a test, ``memory/<package>/tests/test_<name>.py``: the procedure on the reader's value of the recorded text against
   the handed-back value's fixture, the reader on the recorded text, and one refusal of text the reader was not built
-  for. When the value was handed back in the final reply, which no fixture source holds, the expected value is
-  written in the test instead, and the gate keeps the procedure ``unchecked``;
+  for. Each reader call hands the request over as the harness does (``request(text)``: the text with ``.text`` and
+  ``.data``, :mod:`.request_value`), so a reader of the request's data is tested as it is used. When the value was
+  handed back in the final reply, which no fixture source holds, the expected value is written in the test instead,
+  and the gate keeps the procedure ``unchecked``;
 - the manifest entries, the procedure with ``role: "procedure"`` and ``reader``, a new reader with ``role:
   "reader"``.
 
 When the capture's ``same_as`` names a capture already landed (its marker line is in a ``procedures.py`` of the
 library), this request becomes a new case of that procedure instead: two fixtures and one test function more.
+
+Once written, the landed reader, ``applies``, procedure and ``holds`` run, confined, on the other requests the capture
+store records, and the reader on recorded variants of its own request (:func:`.recognition.recognise_landing`): the
+counts of true and false holds and of the variants the reader read and failed on, and whether ``memory.match`` and
+the librarian list the procedure, are recorded with the landing and told in the reply.
 
 Checks, each a fixed refusal: the id is 16 hex digits (optionally ``capture:``-prefixed) and in the store; the store's
 files are read without following a link, only as regular files, size-bounded; ``procedure.py``'s sha256 starts with
@@ -46,6 +53,7 @@ import re
 import shutil
 import stat
 import tempfile
+import time
 import tokenize
 from collections.abc import Callable
 from pathlib import Path
@@ -57,6 +65,7 @@ from . import fixtures as _fx
 from . import safe_paths as _safe
 from . import writer_tools as _wt
 from .redact import KEY_SHAPED
+from .request_value import REQUEST_CLASS
 from .sandbox_run import PYTHON, SandboxResult, run_confined
 
 TOOL = "land_capture"
@@ -275,8 +284,32 @@ def _join(old: str | None, block: str) -> str:
 def _test_head(package: str) -> str:
     return (
         f'"""Landed from captured attempts: each procedure of memory.{package}.procedures on its recorded '
-        'request."""\n\nimport json\nfrom pathlib import Path\n\nimport pytest\n\n'
-        'DATA = Path(__file__).parent / "data"\n'
+        'request."""\n\nimport json\nimport re\nfrom pathlib import Path\n\nimport pytest\n\n'
+        'DATA = Path(__file__).parent / "data"\n' + request_helper()
+    )
+
+
+#: The name of the helper a landed test hands a reader the request with (:func:`request_helper`).
+REQUEST_HELPER = "request"
+
+
+def request_helper() -> str:
+    """The test module's ``request(text)``: the request as the harness hands it to a reader (its text, with ``.text``
+    and ``.data``), the class from :data:`.request_value.REQUEST_CLASS` and the scan from
+    ``worker_child.json_values``, the one definition, copied as they are."""
+    import inspect
+
+    from unify.actor.execution import worker_child
+
+    return (
+        "\n\n# The request as the harness hands it to a reader: its text, with .text and .data (the JSON objects and "
+        "arrays\n# it contains, in order).\n"
+        + REQUEST_CLASS
+        + "\n\n_JSON_DECODER = json.JSONDecoder()\n_JSON_OPEN = re.compile(r\"[\\[{]\")\n\n\n"
+        + inspect.getsource(worker_child.json_values)
+        + f"\n\ndef {REQUEST_HELPER}(text):\n"
+        + '    """The request with this text, as a reader is handed it."""\n'
+        + "    return Request(text, json_values(text))\n"
     )
 
 
@@ -339,13 +372,13 @@ def case_tests(
         f"    from {reader_mod} import {imported}\n\n"
         f'    text = (DATA / "{name}.case{k}.txt").read_text(encoding="utf-8")\n'
         f'    value = json.loads((DATA / "{name}.case{k}.json").read_text(encoding="utf-8"))\n'
-        f"    assert json.loads(json.dumps({reader}(text))) == value\n"
+        f"    assert json.loads(json.dumps({reader}({REQUEST_HELPER}(text)))) == value\n"
         f"\n\ndef test_{name}_case{k}_gives_the_recorded_result():\n"
         f"    from {reader_mod} import {imported}\n"
         f"    from memory.{package}.procedures import {name}\n\n"
         f'    text = (DATA / "{name}.case{k}.txt").read_text(encoding="utf-8")\n'
         f"    expected = {expected}\n"
-        f"    assert json.loads(json.dumps({name}({reader}(text)))) == expected\n"
+        f"    assert json.loads(json.dumps({name}({reader}({REQUEST_HELPER}(text))))) == expected\n"
     )
 
 
@@ -362,7 +395,7 @@ def refusal_test(name: str, reader_mod: str, reader_fn: str, package: str, refus
         f"\n\n{mark}def test_{name}_reader_refuses_text_it_was_not_built_for():\n"
         f"    from {reader_mod} import {reader_fn}\n\n"
         "    with pytest.raises(Exception) as caught:\n"
-        f'        {reader_fn}("")\n'
+        f'        {reader_fn}({REQUEST_HELPER}(""))\n'
         '    assert any(c.__name__ == "MemoryInputError" for c in type(caught.value).__mro__)\n'
     )
 
@@ -568,6 +601,9 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
         written.append(dest)
     test_rel = f"memory/{package}/tests/test_{name}.py"
     old = _box_text(box, test_rel)
+    if old and f"\ndef {REQUEST_HELPER}(text):" not in old:
+        # a test module landed before readers were handed the request: it gains the helper its new case calls
+        old = old.rstrip("\n") + "\n" + ("" if "\nimport re\n" in old else "\nimport re\n") + request_helper()
     text = (old.rstrip("\n") + "\n" if old else _test_head(package)) + case_tests(
         name, reader_mod, reader_fn, package, k, handed, from_fixture=result_cut is not None,
     )
@@ -600,8 +636,11 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
             {"item": reader_id, "kind": "function", "source_episodes": [eid], "tests": [test_rel], "role": "reader"},
         )
     _manifest_add(box, entries)
-    # the landing, in the harness's own store: the item records take the capture's signature and applies from it, and
-    # the pass closes the capture's pool entry once the procedure lands
+    # the landed items on the other recorded requests, confined: whether its applies holds only where it is right,
+    # and whether its reader reads the recorded variants of its own request
+    recognition = _recognition(store, cid, eid, request_text, box, proc_id, reader_id, episode, python, runner, work)
+    # the landing, in the harness's own store: the item records take the capture's signature, applies and recognition
+    # from it, and the pass closes the capture's pool entry once the procedure lands
     _captures.record_landing(
         Path(store),
         cid,
@@ -611,6 +650,8 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
             "applies": applies_item(source, proc_id),
             "episode": eid,
             "pass": pass_id,
+            "recognition": recognition,
+            "at": time.time(),
         },
     )
     lines = [f"Landed capture {cid} from episode {eid}:"]
@@ -620,6 +661,7 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
         lines.append(f"- procedure {proc_id}")
         lines.append(f"- reader {reader_id}" + (" (reused: it gives the same value on this request)" if reused else ""))
     lines += [f"- wrote /memory/{p}" for p in written]
+    lines.append(f"- recognition on the recorded requests: {recognition['why']}")
     lines.append("- the manifest entries of " + ", ".join(e["item"] for e in entries) + " in /memory/.pass/manifest.json")
     if refuses is False:
         lines.append(
@@ -639,6 +681,41 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
         )
     lines.append("Change any of them before you finish; check judges them as any other change.")
     return _wt.Reply("\n".join(lines), paths=tuple(_wt.path_row(f"/memory/{p}", "write") for p in written))
+
+
+def _stated(box: Path, proc_id: str, fn: str) -> str | None:
+    """The item id of the landed procedure *proc_id*'s private *fn* (``applies``, ``holds``) when its module in the
+    box defines it (parsed as data, never run); None otherwise."""
+    module, _, name = proc_id.rpartition(":")
+    try:
+        names = top_names(_box_text(box, module.replace(".", "/") + ".py") or "")
+    except (SyntaxError, ValueError, _NotLanded):
+        return None
+    private = _private(name, fn)
+    return f"{module}:{private}" if private in names else None
+
+
+def _recognition(store, cid, eid, request_text, box, proc_id, reader_id, episode, python, runner, work) -> dict:
+    """The landed procedure's recognition record (:func:`.recognition.recognise_landing`); a test that cannot be made
+    is recorded as such (the procedure is then listed, untested), never refusing the landing."""
+    from .recognition import listing, recognise_landing
+
+    items = {
+        "reader": reader_id,
+        "applies": _stated(box, proc_id, "applies"),
+        "procedure": proc_id,
+        "holds": _stated(box, proc_id, "holds"),
+    }
+    try:
+        return recognise_landing(
+            Path(store), cid, eid, request_text, items, tree=box, episode=episode, python=python, runner=runner,
+            work=work / "recognition",
+        )
+    except (OSError, ValueError, TypeError) as exc:
+        rec: dict = {"requests": 0, "tested": 0, "true_holds": 0, "false_holds": 0, "unknown": 0}
+        rec["error"] = f"the test could not be made ({type(exc).__name__})"
+        rec["listed"], rec["why"] = listing(rec)
+        return rec
 
 
 def _run_reader(item, text, box, python, runner, work):

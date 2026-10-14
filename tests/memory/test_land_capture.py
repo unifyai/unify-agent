@@ -123,7 +123,9 @@ def test_landing_writes_the_reader_procedure_fixtures_test_and_manifest_entries(
     test = (mem / "tests" / "test_row_sums.py").read_text()
     assert "def test_row_sums_case1_gives_the_recorded_result():" in test
     assert 'expected = json.loads((DATA / "row_sums.case1.result.json").read_text(encoding="utf-8"))' in test
-    assert "assert json.loads(json.dumps(row_sums(read_row_sums(text)))) == expected" in test
+    assert "assert json.loads(json.dumps(row_sums(read_row_sums(request(text))))) == expected" in test
+    # the reader is handed the request as the harness hands it: the text with its data (request.data)
+    assert "\ndef request(text):" in test and "return Request(text, json_values(text))" in test
     assert '"sums"' not in test
     assert "def test_row_sums_case1_reader_reads_the_recorded_request():" in test
     assert "def test_row_sums_reader_refuses_text_it_was_not_built_for():" in test

@@ -58,6 +58,7 @@ from .item_records import (
 )
 from .item_states import ON_TRIAL
 from .library_index import HIDDEN, build_links, render_index, render_links
+from .recognition import listed, listing
 from .redact import redact_error
 
 HISTORY_SCAN = 200
@@ -287,6 +288,8 @@ def items_data(
         }
 
     for f in lib.functions:
+        rec = records.get(f.item_id) if records else None
+        recognition = _recognition_line(rec)
         rows[f.item_id] = {
             "kind": "function",
             "path": f.path,
@@ -299,6 +302,8 @@ def items_data(
             "level_reasons": level_reasons_of(records.get(f.item_id)) if records else [],
             # {"test", "line", "call"}: a call quoted from its tests, re-checked against them (None: none shown)
             "example": examples(f.item_id) if examples is not None else None,
+            # whether memory.match and the librarian list it, and why (only for a procedure tested when it landed)
+            **({"recognition": recognition} if recognition else {}),
             **common(f.item_id),
         }
     for n in lib.notes:
@@ -411,8 +416,8 @@ def find_data(
     With *saved_against*, each listed function it gives a signature for is also a row of ``procedures`` (in id
     order): ``{id, signature, docstring, asked, approach, level, status, summary}``, the docstring and summary with
     identifiers removed by *strip* (:func:`default_strip` when None), which
-    ``memory.match`` hands its matcher. The key is left out while no function has one, so the file is then byte for
-    byte what it was.
+    ``memory.match`` hands its matcher. A procedure its item record does not list (:func:`.recognition.listed`) is no
+    row. The key is left out while no function has one, so the file is then byte for byte what it was.
     """
     bodies = function_bodies(tree) if shapes is not None else {}
     out: list[dict] = []
@@ -435,7 +440,9 @@ def find_data(
     saved = {
         e["id"]: s
         for e in out
-        if saved_against is not None and (s := saved_against(e["id"])) is not None
+        if saved_against is not None
+        and listed((records or {}).get(e["id"]))
+        and (s := saved_against(e["id"])) is not None
     }
     if saved:
         strip = strip or default_strip()
@@ -547,6 +554,22 @@ def _applies_stated(sig: object) -> bool:
     return isinstance(a, dict) and bool(a.get("stated") or a.get("exists"))
 
 
+def _recognition_line(rec: Mapping | None) -> str:
+    """Whether ``memory.match`` and the librarian list a procedure tested when it landed, and why
+    (:func:`.recognition.listing`); ``""`` for an item with no recognition record."""
+    got = rec.get("recognition") if isinstance(rec, Mapping) else None
+    return listing(got)[1] if isinstance(got, Mapping) else ""
+
+
+def _capture_unlisted(rec: Mapping | None) -> str:
+    """Why a captured procedure is not listed (its exported record's ``listing``, :func:`.captures.listed_record`);
+    ``""`` when it is listed."""
+    got = rec.get("listing") if isinstance(rec, Mapping) else None
+    if isinstance(got, Mapping) and got.get("listed") is False:
+        return str(got.get("why") or "not listed")
+    return ""
+
+
 def _track_line(rec: Mapping | None) -> str:
     """The one-line track record of an item record: its use totals, or that it has none yet."""
     if not isinstance(rec, Mapping) or not isinstance(rec.get("use"), dict) or not rec.get("use"):
@@ -654,6 +677,8 @@ def catalogue_text(
         )
         if input_line:
             lines.append(f"Input: {input_line}\n")
+        if _recognition_line(rec):
+            lines.append(f"Recognition: {_recognition_line(rec)}\n")
         lines.append(f"Record: {_track_line(rec)}\n")
         notes = sorted(
             i
@@ -706,6 +731,9 @@ def catalogue_text(
         )
         if input_line:
             lines.append(f"Input: {input_line}\n")
+        why = _capture_unlisted(rec)
+        if why:
+            lines.append(f"Recognition: {why}\n")
         if failed:
             for line in (doc["broke"] or "").splitlines():
                 line = _one_line(strip(line.strip().lstrip("-* ")))
@@ -727,9 +755,10 @@ def dispatch_data(
     ``capture:<id>`` for a captured procedure, whose ``read_input`` is its reader), ``applies`` whether it has one
     (its applicability signature states one, or its item record names the function), and ``input`` its input line.
     Module-path order, then the captures in id order; a captured attempt that failed is left out (never offered to
-    run). Beside the rows, ``applies_of`` names, for a landed procedure, the library function that is its
-    ``applies`` (the item record's ``applies``); a captured procedure's ``applies`` is the one in its own
-    ``procedure.py``."""
+    run), and so is a procedure its item record does not list (:func:`.recognition.listed`) and a captured procedure
+    whose landing is not listed (its record's ``listing``: the same code). Beside the rows, ``applies_of`` names, for
+    a landed procedure, the library function that is its ``applies`` (the item record's ``applies``); a captured
+    procedure's ``applies`` is the one in its own ``procedure.py``."""
     from .library_index import signature_text
 
     rows: list[dict] = []
@@ -738,7 +767,7 @@ def dispatch_data(
         if _status(status_of, f.item_id) in HIDDEN:
             continue
         rec = records.get(f.item_id) if records else None
-        if not isinstance(rec, dict):
+        if not isinstance(rec, dict) or not listed(rec):
             continue
         reader = _reader_of(rec)
         named = rec.get("applies") if isinstance(rec.get("applies"), str) and rec.get("applies") else None
@@ -758,7 +787,7 @@ def dispatch_data(
         )
     for cid, doc in _capture_docs(captures).items():
         rec = doc["record"] if isinstance(doc["record"], dict) else {}
-        if rec.get("outcome") == "failed" or not isinstance(doc["procedure"], str):
+        if rec.get("outcome") == "failed" or not isinstance(doc["procedure"], str) or _capture_unlisted(rec):
             continue
         sig = doc["signature"] if isinstance(doc["signature"], dict) else {}
         target = CAPTURE_PREFIX + cid

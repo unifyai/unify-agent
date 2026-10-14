@@ -514,20 +514,23 @@ def request_of(request: Any) -> tuple[Optional[str], Any]:
     """An ``act()`` request as ``current_request`` gives it: ``(text, data)``, exactly what the actor's first user
     message shows and nothing more. The text is the requester's text as the loop gives it (``bound_request.text_of``:
     a string, a user message's content, the latest user message of a list); a field of the request the message does
-    not show (an id, a label) never reaches the box. *data* is that text's JSON value when the whole text is JSON (an
-    object or a list), else None. ``(None, None)`` when the request shows no text."""
+    not show (an id, a label) never reaches the box. *data* is the list of the JSON objects and arrays that text
+    contains, in order of appearance, exactly as the bound request's ``data`` (:func:`request_data`). ``(None, None)``
+    when the request shows no text."""
     from unify.common._async_tool.bound_request import text_of
 
     text = text_of(request)
     if not isinstance(text, str) or not text.strip():
         return None, None
-    data = None
-    if text.strip()[:1] in ("{", "["):
-        try:
-            data = json.loads(text)
-        except ValueError:
-            data = None
-    return text, data
+    return text, request_data(text)
+
+
+def request_data(text: str) -> list:
+    """The JSON objects and arrays *text* contains, in order of appearance: ``worker_child.json_values``, the one
+    definition the bound ``request.data`` uses."""
+    from unify.actor.execution.worker_child import json_values
+
+    return json_values(text)
 
 
 def _memory_run_request() -> Optional[str]:
@@ -543,14 +546,16 @@ def _memory_run_request() -> Optional[str]:
 
 def current_request(ctx: Any, args: dict) -> Any:
     """The request the calling agent works on, as JSON text ``{"text": ..., "data": ...}``: the ``act()`` request the
-    request's state holds (:func:`request_of`), else, for the actor only, the memory run's (``integration.request``),
-    whose data is None; a teammate gets only the task it was given. The memory package calls it through the channel
+    request's state holds (:func:`request_of`), else, for the actor only, the memory run's (``integration.request``);
+    *data* is the JSON objects and arrays the text contains, in order (:func:`request_data`); a teammate gets only the
+    task it was given. The memory package calls it through the channel
     client; it is never in a cell's ``tools``. Refused when no request is known, or when its JSON is larger than a
     reply carries."""
     state = ctx.state
     text, data = getattr(state, "request_text", None), getattr(state, "request_data", None)
     if (not isinstance(text, str) or not text) and getattr(ctx, "agent", None) == "actor":
-        text, data = _memory_run_request(), None
+        text = _memory_run_request()
+        data = request_data(text) if text else None
     if not isinstance(text, str) or not text:
         text = None
     if text is None:

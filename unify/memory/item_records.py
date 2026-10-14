@@ -73,8 +73,10 @@ def empty_record(item: str, kind: str) -> dict:
 
     A procedure landed from a capture (``land_capture``) carries from that capture, in the harness's own store
     (:func:`.captures.landed_items`): ``landed_from`` (``{"capture", "reader"}``: the capture's id and the reader it
-    was landed with), ``signature`` (the capture's applicability signature) and ``applies`` (the item that is its
-    stated ``applies``). Each is None for any other item."""
+    was landed with), ``signature`` (the capture's applicability signature), ``applies`` (the item that is its
+    stated ``applies``) and ``recognition`` (how its ``applies`` did on the other recorded requests when it landed,
+    and whether ``memory.match`` and the librarian list it, with why: :mod:`.recognition`). Each is None for any other
+    item."""
     return {
         "item": item,
         "uid": None,
@@ -106,6 +108,7 @@ def empty_record(item: str, kind: str) -> dict:
         "landed_from": None,
         "signature": None,
         "applies": None,
+        "recognition": None,
     }
 
 

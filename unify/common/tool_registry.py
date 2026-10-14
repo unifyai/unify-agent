@@ -1191,14 +1191,14 @@ CURRENT_REQUEST = RegisteredTool(
     name="current_request",
     summary="the request you are working on, for the memory package (never called from a cell).",
     description=(
-        "The request this agent is working on: its text, and, when the request was structured (an object or a "
-        "list rather than a message), the request itself as JSON data. The `memory` package calls it so that "
+        "The request this agent is working on: its text, and the JSON objects and arrays the text contains, in "
+        "order of appearance, as data (the bound `request.data`). The `memory` package calls it so that "
         "`memory.ask()` and `memory.match()` run the stored readers on the current request."
     ),
     parameters={"type": "object", "properties": {}, "additionalProperties": False},
     refusals={"unavailable": "the current request is not available here ({why})"},
     roles=(_A, _T),
-    returns='JSON text: {"text": the request\'s text, "data": the structured request, or null}.',
+    returns='JSON text: {"text": the request\'s text, "data": the list of JSON objects and arrays it contains}.',
     examples=('tools._call("current_request", {})',),
     when="Never from a cell: memory.ask() and memory.match() call it.",
     kind="reader",
