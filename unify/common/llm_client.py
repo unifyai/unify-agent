@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import copy
+import os
 import re
 import secrets
 from pathlib import Path
@@ -277,6 +278,7 @@ def _build_llm_client(
     # reply, and ``copy()`` (a fork) keeps the setting.
     if SETTINGS.UNIFY_STREAM_MODEL_CALLS == "on":
         client.set_stream_transport(True)
+    pass_stream_idle_limit()
 
     if origin:
         pending_log = PendingThinkingLog(origin)
@@ -290,6 +292,22 @@ def _build_llm_client(
 
     _install_request_metadata(client)
     return client
+
+
+# unillm's limit on a streamed call's silence, read on each call.
+UNILLM_STREAM_IDLE_ENV = "UNILLM_STREAM_IDLE_S"
+
+
+def pass_stream_idle_limit() -> None:
+    """UNIFY_STREAM_IDLE_S, when set, becomes unillm's ``UNILLM_STREAM_IDLE_S``.
+
+    unillm reads it from the environment on every streamed call, so setting it
+    here applies to every client this process has made, forks included. Empty
+    leaves unillm's own value as it is.
+    """
+    value = SETTINGS.UNIFY_STREAM_IDLE_S
+    if value:
+        os.environ[UNILLM_STREAM_IDLE_ENV] = value
 
 
 def new_llm_client(

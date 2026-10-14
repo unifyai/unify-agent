@@ -51,6 +51,8 @@ CONFIGURATION = frozenset(
         "UNIFY_WORKSPACE_PROXY_PORT",
         # The compaction point: a context size, not a behaviour under test.
         "UNIFY_COMPACTION_AT_TOKENS",
+        # A transport limit: how long a streamed model call may receive nothing before it is retried.
+        "UNIFY_STREAM_IDLE_S",
         # The memory writer's model, route, credential channel, effort (the actor's for the run), spending caps,
         # call bounds, journal and prices.
         "UNIFY_MEMORY_WRITER_MODEL",

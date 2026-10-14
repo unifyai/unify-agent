@@ -8,6 +8,7 @@ All settings can be overridden via environment variables or the ``.env`` file
 in the working directory.
 """
 
+import math
 import os
 import re
 from typing import Any, Optional
@@ -136,6 +137,14 @@ class ProductionSettings(BaseSettings):
     # model's own reply. Empty (or ``off``): calls are not streamed, as
     # shipped (unify/common/llm_client.py).
     UNIFY_STREAM_MODEL_CALLS: str = ""
+    # How long, in seconds, a streamed model call may go without receiving a
+    # single byte before unillm aborts it and retries it within the same turn
+    # (unillm's ``UNILLM_STREAM_IDLE_S``, which every client this process
+    # makes passes on). Every byte counts, keep-alive comments included, so
+    # only a call on which nothing at all arrives is cut. Empty leaves
+    # unillm's own value (120 s unless set); ``0`` or ``off`` turns it off.
+    # Only streamed calls (UNIFY_STREAM_MODEL_CALLS=on) have a byte to wait for.
+    UNIFY_STREAM_IDLE_S: str = ""
 
     # Ceiling on tool-calling iterations for one agent run. Unset, a run ends
     # only when the model decides to stop, so a loop that never converges
@@ -839,6 +848,23 @@ class ProductionSettings(BaseSettings):
                 f"UNIFY_STREAM_MODEL_CALLS must be empty, 'off' or 'on', not {v!r}",
             )
         return value
+
+    @field_validator("UNIFY_STREAM_IDLE_S", mode="before")
+    @classmethod
+    def parse_stream_idle_s(cls, v: Any) -> str:
+        text = str(v if v is not None else "").strip().lower()
+        if text in ("", "off"):
+            return "0" if text == "off" else ""
+        try:
+            seconds = float(text)
+        except ValueError:
+            seconds = float("nan")
+        if isinstance(v, bool) or not math.isfinite(seconds) or seconds < 0:
+            raise ValueError(
+                "UNIFY_STREAM_IDLE_S must be empty, 'off' or a number of seconds, "
+                f"not {v!r}",
+            )
+        return format(seconds, "g")
 
     @field_validator("UNIFY_VARIABLE_INVENTORY", mode="before")
     @classmethod
