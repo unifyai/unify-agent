@@ -377,11 +377,13 @@ class _Tail:
 
 
 def _kill_box(proc: subprocess.Popen) -> None:
-    """SIGKILL bubblewrap's process group and every process below it; raise unless all are gone."""
+    """SIGKILL bubblewrap's process group, every process below it and every process in the box's pid namespace
+    (recorded when it started, :func:`_spawn_box`); raise unless all are gone."""
     process_tree.kill_tree(
         proc.pid,
         exited=lambda: proc.poll() is not None,
         grace_s=_KILL_GRACE_S,
+        pid_ns=getattr(proc, "box_pid_ns", None),
     )
 
 
@@ -516,7 +518,7 @@ def _spawn_box(
             env_fd=env_fd,
             bpf_fd=bpf_fd,
         )
-        return subprocess.Popen(
+        proc = subprocess.Popen(
             args,
             stdin=stdin,
             stdout=subprocess.PIPE,
@@ -525,6 +527,10 @@ def _spawn_box(
             env={"PATH": "/usr/bin:/bin"},
             pass_fds=(env_fd, bpf_fd, *pass_fds),
         )
+        # the box's pid namespace, recorded as it starts: the verified kill finds every process in it, whatever its
+        # parent, group or session (process_tree.kill_tree)
+        proc.box_pid_ns = process_tree.box_namespace(proc.pid)
+        return proc
 
 
 def run_confined(

@@ -3283,6 +3283,24 @@ class CodeActActor(BaseCodeActActor):
                     "session_created": False,
                     "duration_ms": 0,
                 }
+            if _language == "python":
+                from unify.actor.no_op_cells import refusal_text
+
+                # a cell that only shows text written in it is not run: its result is the error that says what to
+                # do instead
+                taught = refusal_text(code, can_answer_in_code=False)
+                if taught is not None:
+                    return {
+                        "stdout": "",
+                        "stderr": "",
+                        "result": None,
+                        "error": taught,
+                        "state_mode": state_mode,
+                        "session_id": session_id,
+                        "session_name": session_name,
+                        "session_created": False,
+                        "duration_ms": 0,
+                    }
 
             # ──────────────────────────────────────────────────────────────
             # Boundary wrapper: execute_code (lineage + events + terminal log)

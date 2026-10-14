@@ -99,7 +99,7 @@ async def test_a_cancelled_cell_still_writes_its_row_at_its_number(tmp_path, mon
     tools = _tools(tmp_path, monkeypatch, interp)
     try:
         with pytest.raises(asyncio.CancelledError):
-            await tools.run_cell("print('never')")
+            await tools.run_cell("x = 'never'")
     finally:
         await tools.close(completed=False)
     assert interp.calls == [0]
@@ -127,7 +127,7 @@ async def test_a_control_exception_out_of_the_cell_writes_an_error_row(tmp_path,
     tools = _tools(tmp_path, monkeypatch, interp)
     try:
         with pytest.raises(Halt):
-            await tools.run_cell("print('x')")
+            await tools.run_cell("x = 1")
     finally:
         await tools.close(completed=False)
     _assert_error_row(_rows(tmp_path), 0)
@@ -139,8 +139,8 @@ async def test_the_next_cell_takes_the_next_number_and_ends_normally(tmp_path, m
     tools = _tools(tmp_path, monkeypatch, interp)
     try:
         with pytest.raises(asyncio.CancelledError):
-            await tools.run_cell("print('first')")
-        out = await tools.run_cell("print('second')")
+            await tools.run_cell("x = 'first'")
+        out = await tools.run_cell("x = 'second'")
         assert out.error is None
     finally:
         await tools.close(completed=True)
@@ -161,7 +161,7 @@ async def test_an_interpreter_failure_is_still_written_as_before(tmp_path, monke
     interp = StandIn([RuntimeError("the box went away")])
     tools = _tools(tmp_path, monkeypatch, interp)
     try:
-        out = await tools.run_cell("print('x')")
+        out = await tools.run_cell("x = 1")
     finally:
         await tools.close(completed=False)
     assert out.error and "could not run" in out.error

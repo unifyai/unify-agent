@@ -217,6 +217,34 @@ async def test_the_actor_calls_its_tools_from_cells_and_ends_with_an_answer(in_c
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(300)
+async def test_text_beside_a_cell_stays_in_the_conversation_and_does_not_end_the_request(in_code):
+    """The opening says where thinking goes (the text of a message sent with a cell), and it is so: that text ends
+    nothing and the next model request carries it; the answer rule is unchanged beside it."""
+    note = "My plan: count the lines of data.txt first, then answer."
+    model = ScriptedModel(
+        actor=[
+            reply(note, calls=[code("n = len(tools.read('/workspace/data.txt').splitlines())\nprint('N', n)")]),
+            reply(calls=[code(f"tools.answer({ANSWER!r})")]),
+            reply("not finished"),
+        ],
+    )
+    result = await _act(model, "Count the lines of data.txt.")
+
+    assert result == ANSWER, _why(model)
+    # the message with text and a cell did not end the request; the next request carries the text back
+    assert len(model.calls) == 2
+    sent_back = [_text(m.get("content")) for m in model.calls[1].messages if m.get("role") == "assistant"]
+    assert any(note in text for text in sent_back), sent_back
+    # the opening and the answer rule, as the model reads them, agree
+    system = _system_texts(model.calls[0])[0]
+    assert "You compute by writing Python." in system and R.THINK_BESIDE_CELLS in system
+    assert "You act by writing Python" not in system
+    assert "Your answer is your final reply: a message without a tool call." in system
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(300)
 async def test_a_refused_call_raises_in_the_cell(in_code):
     probe = (
         "for path in ('/etc/passwd', '/workspace/.env'):\n"

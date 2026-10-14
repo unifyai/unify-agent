@@ -17,7 +17,7 @@ async def test_execute_code_can_run_without_bound_sandbox():
 
     out = await execute_code(
         "run",
-        "print('x')",
+        "msg = 'x'\nprint(msg)",
         state_mode="stateful",
         session_id=0,
     )

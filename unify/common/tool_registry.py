@@ -2478,6 +2478,15 @@ def sandbox_paragraph(agent: str, names: Iterable[str], persistent: bool) -> str
     return f"{state} {names_text}" if names_text else state
 
 
+#: Where thinking goes: the text of a message sent with an ``execute_code`` call. It stays in the conversation and
+#: ends nothing (an answer is a message without a tool call, or ``tools.answer``), so a cell is never needed just to
+#: keep thinking.
+THINK_BESIDE_CELLS = (
+    "Text you write in a message beside an execute_code call stays in the conversation for you to read and does "
+    "not end your work: think there, and use cells to compute."
+)
+
+
 def preamble(agent: str, facts: dict) -> str:
     """The text that opens *agent*'s instructions: how it works, its sandbox and the names bound in it, how to find
     its tools, its environment, the record and how it ends (for the actor and a teammate, one line pointing to the
@@ -2493,8 +2502,9 @@ def preamble(agent: str, facts: dict) -> str:
     names = tuple(facts.get("names") or ("tools",))
     parts = [
         "## How you work here",
-        "You act by writing Python. Your one tool is execute_code: each call runs a Python cell. Print only what "
-        "you need: what a cell prints is what you see, up to the output limit below.",
+        "You compute by writing Python. Your one tool is execute_code: each call runs a Python cell. Print only "
+        "what you need: what a cell prints is what you see, up to the output limit below. "
+        + THINK_BESIDE_CELLS,
         "",
         sandbox_paragraph(agent, names, bool(persistent)),
         "",

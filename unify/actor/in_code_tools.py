@@ -347,6 +347,16 @@ class InCodeTools:
 
         if self.closed:
             raise RuntimeError("this request's tools have ended")
+        from unify.actor import no_op_cells
+
+        # a cell that only shows text written in it is not run: its result is the error that says what to do instead
+        taught = no_op_cells.refusal_text(code, can_answer_in_code="answer" in self.allow)
+        if taught is not None:
+            async with self._lock:
+                call = self._next_call()
+                out = self._result(None, None, time.monotonic(), failed=taught)
+                self._cell_row(call, code, out, refusal=no_op_cells.REFUSAL)
+            return out
         async with self._lock:
             # the loop's slot for the turn's reply, which tools.answer fills (the loop that runs this call set it)
             self.state.reply_slot = cell_reply.current()
@@ -456,10 +466,11 @@ class InCodeTools:
         out: Any,
         model_request_errors: int = 0,
         exception: Optional[str] = None,
+        refusal: Optional[str] = None,
     ) -> None:
         """The cell's ``execute_code`` row at its reserved *call* number. A cell that did not end normally (its
         task cancelled, or a control exception out of it: *exception*, the type's name only) has status
-        ``error``."""
+        ``error``; a cell that was not run says why in *refusal* (``no_op_cells.REFUSAL``)."""
         from unify.actor.execution.types import parts_to_text
         from unify.common.tool_channel import canonical_args
 
@@ -475,7 +486,7 @@ class InCodeTools:
             "utc": _utc(),
             "tool": "execute_code",
             "status": "ok" if exception is None else "error",
-            "refusal": None,
+            "refusal": refusal,
             "paths": [],
             "args_bytes": len(args),
             "result_bytes": len(text.encode("utf-8", errors="replace")),
