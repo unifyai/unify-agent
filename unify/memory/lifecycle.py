@@ -779,9 +779,9 @@ def next_records(
     ``reads_for`` (a reader's parsed fixtures; ``role`` is then ``reader``) and ``reader`` (the readers its tests
     load fixtures of). A note's level stays None. Nothing here raises a level or sets ``confirmed-by-outcomes``.
 
-    *landed* (:func:`.captures.landed_items`: item -> its capture, reader, signature and applies) gives a procedure
-    landed from a capture its ``landed_from``, ``signature`` and ``applies``; a function it does not name keeps its
-    previous record's.
+    *landed* (:func:`.captures.landed_items`: item -> its capture, reader, signature, applies and recognition) gives
+    a procedure landed from a capture its ``landed_from``, ``signature``, ``applies`` and ``recognition``; a function
+    it does not name keeps its previous record's.
 
     Identity (:func:`identities`): every record has a ``uid`` and its ``renamed_from`` lineage, from the
     ``rename`` rows of *curations* and the live aliases. Use, the status rules' episodes and source episodes are
@@ -865,11 +865,13 @@ def next_records(
             if got is not None:
                 rec["landed_from"] = {"capture": got.get("capture"), "reader": got.get("reader")}
                 rec["signature"], rec["applies"] = got.get("signature"), got.get("applies")
+                rec["recognition"] = got.get("recognition")
             else:
-                rec["landed_from"], rec["signature"], rec["applies"] = (
+                rec["landed_from"], rec["signature"], rec["applies"], rec["recognition"] = (
                     old.get("landed_from"),
                     old.get("signature"),
                     old.get("applies"),
+                    old.get("recognition"),
                 )
         rec["source_channels"] = sorted(channels.get(item, []))
         flagged = sorted(failure.get(item, []))
@@ -1170,7 +1172,7 @@ def consolidate_records(
         aliases=ev.aliases(),
         curations=ev.curations(),
         unknown_version=unknown_version,
-        # a procedure landed from a capture: its capture, reader, signature and applies (the capture store's)
+        # a procedure landed from a capture: its capture, reader, signature, applies and recognition (the store's)
         landed=landed_items(captures),
     )
     for (

@@ -596,7 +596,8 @@ def _capture_dir(capture_id: str) -> str:
 
 
 def _capture_candidates() -> tuple[list[Candidate], int]:
-    """The exported captures, in id order, and how many could not be read (no ``signature.json`` object)."""
+    """The exported captures, in id order, and how many could not be read (no ``signature.json`` object). A captured
+    procedure whose landing found it not listed (its record's ``listing``) is no candidate."""
     base = os.path.join(_ROOT, CAPTURES_DIR)
     try:
         names = sorted(os.listdir(base))
@@ -614,6 +615,8 @@ def _capture_candidates() -> tuple[list[Candidate], int]:
             continue
         rec = _read_json(os.path.join(d, "record.json"))
         rec = rec if isinstance(rec, dict) else {}
+        if isinstance(rec.get("listing"), dict) and rec["listing"].get("listed") is False:
+            continue
         saved = _read_json(os.path.join(d, "saved.json"))
         saved = saved if isinstance(saved, dict) else {}
         failed = rec.get("outcome") == "failed"

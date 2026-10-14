@@ -81,9 +81,9 @@ SUMMARY_FILE = "summary.md"
 #: adds what broke.
 SAVED_FILE = "saved.json"
 #: Written by ``land_capture`` when it lands the capture (:func:`record_landing`): the procedure item it became, its
-#: reader, the item that is its stated ``applies``, the episode it was landed from and the pass that landed it. The
-#: harness's own: never copied to a box. The item records take the landed procedure's signature and ``applies`` from
-#: it (:func:`landed_items`).
+#: reader, the item that is its stated ``applies``, the episode it was landed from, the pass that landed it, its
+#: recognition record (:mod:`.recognition`) and when it was tested. The harness's own: never copied to a box. The item
+#: records take the landed procedure's signature, ``applies`` and recognition from it (:func:`landed_items`).
 LANDED_FILE = "landed.json"
 #: The files of one capture, as the store, the pool and the actor's snapshot hold them.
 CAPTURE_FILES = (PROCEDURE_FILE, SIGNATURE_FILE, RECORD_FILE, BROKE_FILE)
@@ -967,9 +967,22 @@ def capture_settled(
 # --- what the actor and the writer read -----------------------------------------------------------------------
 
 
+def listed_record(record: dict, landing: Mapping[str, Any] | None) -> dict:
+    """*record* as a box reads it: with ``listing`` (``{"listed": false, "why"}``) when the capture's *landing* tested
+    its procedure and it is not listed (:func:`.recognition.listing`), so a captured procedure, the same code, is not
+    listed either; *record* itself otherwise."""
+    from .recognition import listing
+
+    rec = landing.get("recognition") if isinstance(landing, Mapping) else None
+    listed, why = listing(rec if isinstance(rec, Mapping) else None)
+    return record if listed else {**record, "listing": {"listed": False, "why": why}}
+
+
 def export_files(store: Path | str) -> dict[str, bytes]:
-    """The actor's snapshot of the store, by path under its library copy (``.memory/captures/<id>/<file>``)."""
+    """The actor's snapshot of the store, by path under its library copy (``.memory/captures/<id>/<file>``). The
+    record of a capture whose landed procedure is not listed says so (:func:`listed_record`)."""
     out: dict[str, bytes] = {}
+    landed = landings(store)
     for cid, doc in load(store).items():
         for name, key in (
             (PROCEDURE_FILE, "procedure"),
@@ -977,7 +990,7 @@ def export_files(store: Path | str) -> dict[str, bytes]:
         ):
             if isinstance(doc.get(key), str):
                 out[f"{EXPORT_DIR}/{cid}/{name}"] = doc[key].encode("utf-8", "surrogatepass")
-        out[f"{EXPORT_DIR}/{cid}/{RECORD_FILE}"] = _json(doc["record"])
+        out[f"{EXPORT_DIR}/{cid}/{RECORD_FILE}"] = _json(listed_record(doc["record"], landed.get(cid)))
         if isinstance(doc.get("signature"), dict):
             out[f"{EXPORT_DIR}/{cid}/{SIGNATURE_FILE}"] = _json(doc["signature"])
         saved = doc.get("saved") if isinstance(doc.get("saved"), dict) else {}
@@ -1014,13 +1027,14 @@ def batch_row(store: Path | str, eid: str) -> dict | None:
 
 
 def record_landing(store: Path | str, cid: str, landing: Mapping[str, Any]) -> None:
-    """Record that capture *cid* was landed as *landing* (``item``, ``reader``, ``applies``, ``episode``, and ``pass``:
-    the pass that landed it), replacing an earlier landing of it."""
+    """Record that capture *cid* was landed as *landing* (``item``, ``reader``, ``applies``, ``episode``, ``pass``: the
+    pass that landed it, ``recognition``: its recognition record, :mod:`.recognition`, and ``at``: when that was
+    tested), replacing an earlier landing of it."""
     if not _ID.fullmatch(str(cid)):
         raise ValueError(f"not a capture id: {str(cid)[:40]!r}")
     root = Path(store)
     with _locked(root):
-        keys = ("item", "reader", "applies", "episode", "pass")
+        keys = ("item", "reader", "applies", "episode", "pass", "recognition", "at")
         _write(root / cid / LANDED_FILE, _json({k: landing.get(k) for k in keys}))
 
 
@@ -1041,30 +1055,43 @@ def landings(store: Path | str) -> dict[str, dict]:
 
 def landed_items(store: Path | str | None) -> dict[str, dict]:
     """What each landed procedure item carries from its capture, by item id: ``capture`` (its id), ``reader`` (the
-    reader it was landed with), ``signature`` (its applicability signature as the store holds it; None: none) and
-    ``applies`` (the item that is its stated ``applies``; None: it states none). An item several captures landed (a new
-    case of an earlier landing) carries the first of them in id order."""
+    reader it was landed with), ``signature`` (its applicability signature as the store holds it; None: none),
+    ``applies`` (the item that is its stated ``applies``; None: it states none) and ``recognition`` (its recognition
+    record, :mod:`.recognition`; None: not tested). An item several captures landed (a new case of an earlier landing)
+    carries the first of them in id order, and the recognition of the one tested last (each landing tests the
+    library's procedure as it then is)."""
     if store is None:
         return {}
     out: dict[str, dict] = {}
+    tested: dict[str, float] = {}
     for cid, doc in landings(store).items():
-        if doc["item"] in out:
+        item = doc["item"]
+        recognition, at = doc.get("recognition"), doc.get("at")
+        at = float(at) if isinstance(at, (int, float)) and not isinstance(at, bool) else float("-inf")
+        if item in out:
+            if isinstance(recognition, dict) and at >= tested.get(item, float("-inf")):
+                out[item]["recognition"], tested[item] = recognition, at
             continue
         sig = _read_json(Path(store) / cid / SIGNATURE_FILE)
         applies, reader = doc.get("applies"), doc.get("reader")
-        out[doc["item"]] = {
+        out[item] = {
             "capture": cid,
             "reader": reader if isinstance(reader, str) and reader else None,
             "signature": sig if isinstance(sig, dict) else None,
             "applies": applies if isinstance(applies, str) and applies else None,
+            "recognition": recognition if isinstance(recognition, dict) else None,
         }
+        if isinstance(recognition, dict):
+            tested[item] = at
     return out
 
 
 def export_for_writer(store: Path | str, cids: Iterable[str], dest: Path) -> list[str]:
     """Copy the captures *cids* (with the captures their ``same_as`` names) to the writer's ``/inputs/captures/``
-    (*dest*); returns the ids copied."""
+    (*dest*); returns the ids copied. The record of a capture whose landed procedure is not listed says why
+    (:func:`listed_record`)."""
     docs = load(store)
+    landed = landings(store)
     want = set()
     for cid in cids:
         if cid in docs:
@@ -1074,7 +1101,7 @@ def export_for_writer(store: Path | str, cids: Iterable[str], dest: Path) -> lis
         d = dest / cid
         d.mkdir(parents=True, exist_ok=True)
         doc = docs[cid]
-        (d / RECORD_FILE).write_bytes(_json(doc["record"]))
+        (d / RECORD_FILE).write_bytes(_json(listed_record(doc["record"], landed.get(cid))))
         if isinstance(doc.get("signature"), dict):
             (d / SIGNATURE_FILE).write_bytes(_json(doc["signature"]))
         for name, key in ((PROCEDURE_FILE, "procedure"), (BROKE_FILE, "broke")):

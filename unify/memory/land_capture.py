@@ -23,6 +23,10 @@ a path the box names), checks it, and writes into the writer's ``/memory``:
 When the capture's ``same_as`` names a capture already landed (its marker line is in a ``procedures.py`` of the
 library), this request becomes a new case of that procedure instead: two fixtures and one test function more.
 
+Once written, the landed reader, ``applies``, procedure and ``holds`` run, confined, on the other requests the capture
+store records (:func:`.recognition.recognise_landing`): the counts of true and false holds, and whether
+``memory.match`` and the librarian list the procedure, are recorded with the landing and told in the reply.
+
 Checks, each a fixed refusal: the id is 16 hex digits (optionally ``capture:``-prefixed) and in the store; the store's
 files are read without following a link, only as regular files, size-bounded; ``procedure.py``'s sha256 starts with
 the id; the capture is not failed and not retired; the gate's safety checks hold (:func:`.captures.safety`); nothing
@@ -46,6 +50,7 @@ import re
 import shutil
 import stat
 import tempfile
+import time
 import tokenize
 from collections.abc import Callable
 from pathlib import Path
@@ -600,8 +605,10 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
             {"item": reader_id, "kind": "function", "source_episodes": [eid], "tests": [test_rel], "role": "reader"},
         )
     _manifest_add(box, entries)
-    # the landing, in the harness's own store: the item records take the capture's signature and applies from it, and
-    # the pass closes the capture's pool entry once the procedure lands
+    # the landed items on the other recorded requests, confined: whether its applies holds only where it is right
+    recognition = _recognition(store, cid, eid, request_text, box, proc_id, reader_id, episode, python, runner, work)
+    # the landing, in the harness's own store: the item records take the capture's signature, applies and recognition
+    # from it, and the pass closes the capture's pool entry once the procedure lands
     _captures.record_landing(
         Path(store),
         cid,
@@ -611,6 +618,8 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
             "applies": applies_item(source, proc_id),
             "episode": eid,
             "pass": pass_id,
+            "recognition": recognition,
+            "at": time.time(),
         },
     )
     lines = [f"Landed capture {cid} from episode {eid}:"]
@@ -620,6 +629,7 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
         lines.append(f"- procedure {proc_id}")
         lines.append(f"- reader {reader_id}" + (" (reused: it gives the same value on this request)" if reused else ""))
     lines += [f"- wrote /memory/{p}" for p in written]
+    lines.append(f"- recognition on the other recorded requests: {recognition['why']}")
     lines.append("- the manifest entries of " + ", ".join(e["item"] for e in entries) + " in /memory/.pass/manifest.json")
     if refuses is False:
         lines.append(
@@ -639,6 +649,41 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
         )
     lines.append("Change any of them before you finish; check judges them as any other change.")
     return _wt.Reply("\n".join(lines), paths=tuple(_wt.path_row(f"/memory/{p}", "write") for p in written))
+
+
+def _stated(box: Path, proc_id: str, fn: str) -> str | None:
+    """The item id of the landed procedure *proc_id*'s private *fn* (``applies``, ``holds``) when its module in the
+    box defines it (parsed as data, never run); None otherwise."""
+    module, _, name = proc_id.rpartition(":")
+    try:
+        names = top_names(_box_text(box, module.replace(".", "/") + ".py") or "")
+    except (SyntaxError, ValueError, _NotLanded):
+        return None
+    private = _private(name, fn)
+    return f"{module}:{private}" if private in names else None
+
+
+def _recognition(store, cid, eid, request_text, box, proc_id, reader_id, episode, python, runner, work) -> dict:
+    """The landed procedure's recognition record (:func:`.recognition.recognise_landing`); a test that cannot be made
+    is recorded as such (the procedure is then listed, untested), never refusing the landing."""
+    from .recognition import listing, recognise_landing
+
+    items = {
+        "reader": reader_id,
+        "applies": _stated(box, proc_id, "applies"),
+        "procedure": proc_id,
+        "holds": _stated(box, proc_id, "holds"),
+    }
+    try:
+        return recognise_landing(
+            Path(store), cid, eid, request_text, items, tree=box, episode=episode, python=python, runner=runner,
+            work=work / "recognition",
+        )
+    except (OSError, ValueError, TypeError) as exc:
+        rec: dict = {"requests": 0, "tested": 0, "true_holds": 0, "false_holds": 0, "unknown": 0}
+        rec["error"] = f"the test could not be made ({type(exc).__name__})"
+        rec["listed"], rec["why"] = listing(rec)
+        return rec
 
 
 def _run_reader(item, text, box, python, runner, work):
