@@ -58,6 +58,7 @@ from .fixtures import canonical
 from .gitio import Repo
 from .replay import UnknownEffect
 from .replay import calls as recorded_calls
+from .request_value import REQUEST_CLASS, request_data
 from .sandbox_run import SandboxResult, run_confined
 from .signals import _CONTRARY, _SUPPORT
 from .snapshot import listing, materialise
@@ -733,6 +734,7 @@ sys.path[:0] = ["/memory", "/kit"]
 sys.dont_write_bytecode = True
 spec = json.load(open("/case/case.json"))
 out = {"results": []}
+""" + REQUEST_CLASS + r"""
 
 
 def _text(value):
@@ -754,9 +756,9 @@ try:
         and params[0].annotation in (inspect.Parameter.empty, str, "str")
     )
     if out["one_text_parameter"]:
-        for text in spec["texts"]:
+        for text, data in zip(spec["texts"], spec["data"]):
             try:
-                first = fn(text)
+                first = fn(Request(text, data))
             except BaseException as exc:
                 out["results"].append({"outcome": "raised", "error_class": type(exc).__name__})
                 continue
@@ -766,7 +768,7 @@ try:
                 out["results"].append({"outcome": "not_json"})
                 continue
             try:
-                again = _text(fn(text))
+                again = _text(fn(Request(text, data)))
             except BaseException:
                 again = None
             out["results"].append({"outcome": "returned", "value": value, "same": value == again})
@@ -809,7 +811,8 @@ def run_reader(
     timeout_s: float = PROCEDURE_S,
 ) -> tuple[list[str | None], str | None]:
     """Run reader *item* confined on each of *texts*, twice each: (per text its result as canonical JSON text, or
-    None; why the reader cannot be used, or None).
+    None; why the reader cannot be used, or None). The reader is handed each text with its data, as every reader is
+    (:mod:`.request_value`).
 
     The reader conditions, each a reason: it takes one positional text parameter; it returns on the text (a
     ``MemoryInputError`` or any other exception is named by class); its result encodes as JSON; two runs give the
@@ -822,7 +825,9 @@ def run_reader(
     out.mkdir()
     testkit.stage_package(kit / testkit.PACKAGE)
     (case / "run.py").write_text(_PARSE)
-    (case / "case.json").write_text(json.dumps({"item": item, "texts": list(texts)}, ensure_ascii=False))
+    texts = [str(t) for t in texts]
+    data = [request_data(t) for t in texts]
+    (case / "case.json").write_text(json.dumps({"item": item, "texts": texts, "data": data}, ensure_ascii=False))
     limit = float(timeout_s) * len(texts)
     res = runner(
         [str(python), "-I", "/case/run.py"],

@@ -8,8 +8,9 @@ attempt) and ``broke.md`` (what broke). :func:`capture` then, without waiting fo
 1. **checks safety first**: no key-shaped string, a file that parses as Python, and the gate's path rules; a file that
    fails is not captured, and the reason is recorded;
 2. **runs it confined** (:func:`.sandbox_run.run_confined`: no network, an empty environment, the procedure and the
-   request read-only, only ``/out`` writable): ``read_input`` on the request text, ``applies`` on the value, ``run``
-   twice and ``holds`` on the value and the result. Model-written code never runs on the host;
+   request read-only, only ``/out`` writable): ``read_input`` on the request (its text, with ``.text`` and ``.data``,
+   the JSON values it contains: :mod:`.request_value`), ``applies`` on the value, ``run`` twice and ``holds`` on the
+   value and the result. Model-written code never runs on the host;
 3. **compares** the result with the value the episode handed back, by the digest of their canonical JSON:
    ``reproduces``, ``differs`` or ``unknown`` (the attempt handed back no value, for example a work-tree change);
 4. **writes the capture** to ``<state>/memory-captures/<capture id>/``: ``procedure.py``, ``signature.json``,
@@ -66,6 +67,7 @@ from . import signatures as _signatures
 from . import trust
 from .fixtures import canonical
 from .redact import KEY_SHAPED
+from .request_value import REQUEST_CLASS, request_data
 from .sandbox_run import PYTHON, SandboxResult, run_confined
 
 STORE_DIR = "memory-captures"
@@ -297,7 +299,7 @@ def safety(source: str, rel: str = PROCEDURE_FILE) -> str | None:
 _RUN = r"""
 import copy, importlib.util, json, sys
 sys.dont_write_bytecode = True
-
+""" + REQUEST_CLASS + r"""
 
 def canon(v):
     return json.dumps(v, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
@@ -310,8 +312,10 @@ try:
     spec.loader.exec_module(mod)
     with open("/case/request.txt", encoding="utf-8") as f:
         text = f.read()
+    with open("/case/data.json", encoding="utf-8") as f:
+        data = json.load(f)
     stage = "read_input"
-    value = mod.read_input(text)
+    value = mod.read_input(Request(text, data))
     out["value"] = canon(value)
     if callable(getattr(mod, "applies", None)):
         stage = "applies"
@@ -347,7 +351,8 @@ def run_box(
     python: Path = PYTHON,
     timeout_s: float = RUN_S,
 ) -> dict:
-    """Run the procedure *source* on *request_text* in a confined box. Returns ``{outcome, value, result,
+    """Run the procedure *source* on *request_text* (handed to ``read_input`` with its data, :mod:`.request_value`) in a
+    confined box. Returns ``{outcome, value, result,
     deterministic, applies, holds, error_class, stage}``: ``outcome`` is ``returned``, ``refused``, ``error`` or
     ``not run`` (the box gave no result, or timed out); ``value`` and ``result`` are parsed JSON."""
     work.mkdir(parents=True, exist_ok=True)
@@ -356,6 +361,7 @@ def run_box(
     try:
         (case / PROCEDURE_FILE).write_text(source, encoding="utf-8")
         (case / "request.txt").write_text(request_text, encoding="utf-8")
+        (case / "data.json").write_text(json.dumps(request_data(request_text), ensure_ascii=False), encoding="utf-8")
         (case / "run.py").write_text(_RUN, encoding="utf-8")
         res = runner(
             [str(python), "-I", "/case/run.py"],

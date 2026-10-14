@@ -797,6 +797,50 @@ def _matched(request: Any, inputs: Any) -> tuple[list[MatchRow], list[MatchRow],
 # (``tools._call``): no name for it is bound in a cell, and its text crosses only as data.
 
 DISPATCH_FILE = ".memory/dispatch.json"
+#: How every reader is handed the request (the capture contract, ``request_value.REQUEST_CLASS`` on the harness side,
+#: byte for byte): its text, a str, with ``.text`` and ``.data``, the JSON objects and arrays it contains, in order.
+_REQUEST_CLASS = '''
+class Request(str):
+    """The request: its text (a str), with .text and .data (the JSON objects and arrays it contains, in order)."""
+
+    def __new__(cls, text, data=None):
+        obj = super().__new__(cls, text)
+        obj._data = data
+        return obj
+
+    @property
+    def text(self):
+        return str.__str__(self)
+
+    @property
+    def data(self):
+        return self._data
+'''
+_JSON_DECODER = json.JSONDecoder()
+_JSON_OPEN = re.compile(r"[\[{]")
+
+
+def _json_values(text: str) -> list:
+    """Every top-level JSON object and array in *text*, parsed, in order: the bound request's ``data``
+    (``worker_child.json_values`` on the harness side, the same scan line for line)."""
+    values: list = []
+    index = 0
+    while True:
+        found = _JSON_OPEN.search(text, index)
+        if found is None:
+            return values
+        start = found.start()
+        try:
+            value, end = _JSON_DECODER.raw_decode(text, start)
+        except json.JSONDecodeError as exc:
+            index = max(exc.pos, start + 1)
+            continue
+        except RecursionError:
+            return values
+        values.append(value)
+        index = end
+
+
 #: The host tool that gives the current request, as JSON text ``{"text": ..., "data": ...}``.
 REQUEST_TOOL = "current_request"
 #: A reader's outcome on the text: it parsed it, or did not; its process could not be started (``not-started``); or
@@ -825,6 +869,7 @@ _RECOGNISER_RUNNER = r'''
 import json, os, select, sys, time
 MARK, EACH, ALL = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
 REPORT_MAX = 65536
+''' + _REQUEST_CLASS + r'''
 def load(spec):
     if spec["kind"] == "capture":
         ns = {"__name__": "captured_procedure", "__file__": spec["path"]}
@@ -835,7 +880,7 @@ def load(spec):
     sys.path.insert(0, spec["root"])
     module, _, name = spec["id"].partition(":")
     return getattr(importlib.import_module(module), name)
-def recognise(text, group):
+def recognise(text, data, group):
     out = {"read": "did-not-parse", "applies": []}
     value = None
     try:
@@ -846,7 +891,7 @@ def recognise(text, group):
         # a reader that cannot be loaded did not read the text: it failed, which a rejected text never reads as
         return {"read": "failed", "reason": "load: " + type(exc).__name__[:60]}
     try:
-        value = reader(text)
+        value = reader(Request(text, data))
         out["read"] = "parsed"
     except Exception:
         out["read"] = "did-not-parse"
@@ -861,7 +906,7 @@ def recognise(text, group):
             except Exception:
                 out["applies"].append("raised")
     return out
-def one(text, group, left):
+def one(text, data, group, left):
     try:
         r, w = os.pipe()
         pid = os.fork()
@@ -874,9 +919,9 @@ def one(text, group, left):
             os.dup2(null, 1)
             os.dup2(null, 2)
             os.chdir(group["cwd"])
-            data = json.dumps(recognise(text, group)).encode("utf-8")
-            while data:
-                data = data[os.write(w, data):]
+            report = json.dumps(recognise(text, data, group)).encode("utf-8")
+            while report:
+                report = report[os.write(w, report):]
         finally:
             os._exit(0)
     os.close(w)
@@ -919,7 +964,7 @@ try:
     for group in payload["groups"]:
         left = min(EACH, stop - time.monotonic())
         try:
-            out.append(one(payload["text"], group, left) if left > 0 else
+            out.append(one(payload["text"], payload.get("data"), group, left) if left > 0 else
                        {"read": "failed", "reason": "timeout after %g s for all readers" % ALL})
         except Exception as exc:
             out.append({"read": "failed", "reason": "runner: " + type(exc).__name__})
@@ -941,7 +986,7 @@ def _tools() -> Any:
 
 
 def _current_request() -> tuple[str | None, Any]:
-    """The current request's text, and its data (the request itself when it was structured, else None), from the
+    """The current request's text, and its data (the JSON objects and arrays the text contains, in order), from the
     host tool :data:`REQUEST_TOOL` through the channel client; ``(None, None)`` when it is not available here (no
     channel, a refusal, a reply that cannot be read). Never raises."""
     call = getattr(_tools(), "_call", None)
@@ -1026,7 +1071,7 @@ def _recognise(text: str, groups: list) -> list:
 
     if not groups:
         return []
-    payload = json.dumps({"text": text, "groups": groups})
+    payload = json.dumps({"text": text, "data": _json_values(text), "groups": groups})
     limit = READERS_TIMEOUT_S + READ_TIMEOUT_S  # the child's own bound, and the time to report after it
     try:
         child = subprocess.Popen(
@@ -1154,7 +1199,11 @@ def _match_recognised(request: Any, inputs: Any, dispatch: tuple) -> Matches:
     notes: list[str] = []
     if request is None:
         text, data = _current_request()
-        inputs = data if inputs is None else inputs
+        if inputs is None and isinstance(data, list):
+            # the JSON values the request carries, for the ordering only: one value is itself, none is no input
+            inputs = (data[0] if len(data) == 1 else data) if data else None
+        elif inputs is None:
+            inputs = data
         if text is None:
             notes.append("The current request is not available here, so no stored reader ran; pass the request's "
                          "text: memory.match('...').")
@@ -1334,12 +1383,14 @@ def _run_item(target: str, args: tuple, kwargs: dict) -> RunReport:
 
 
 #: The child process that runs a captured procedure (stdlib only): it loads ``procedure.py``, reads the request text
-#: through ``read_input`` when the procedure has one and it was given one text, checks ``applies``, runs ``run``
+#: through ``read_input`` when the procedure has one and it was given one text (handed over with its data, as every
+#: reader is: :data:`_REQUEST_CLASS`), checks ``applies``, runs ``run``
 #: twice (once with ``"once": true``), checks ``holds``, and prints one JSON report after a marker line.
 _CAPTURE_RUNNER = r'''
 import json, sys
 MARK = sys.argv[2]
 out = {}
+''' + _REQUEST_CLASS + r'''
 def same(a, b):
     try:
         return json.dumps(a, sort_keys=True, default=repr) == json.dumps(b, sort_keys=True, default=repr)
@@ -1359,7 +1410,7 @@ try:
         raise LookupError("the captured procedure defines no run(value)")
     read = ns.get("read_input")
     if callable(read) and len(args) == 1 and not kwargs and isinstance(args[0], str):
-        value = read(args[0])
+        value = read(Request(args[0], payload.get("data")))
         call = lambda: run(value)
         try:
             text = json.dumps(value)
@@ -1433,7 +1484,8 @@ def _confined(capture_id: str, args: tuple, kwargs: dict, once: bool = False) ->
         return {"outcome": "error", "error": "LookupError",
                 "detail": "no captured procedure has this id; memory.items('captures') lists them"}
     try:
-        payload = json.dumps({"args": list(args), "kwargs": kwargs, "once": once})
+        data = _json_values(args[0]) if len(args) == 1 and not kwargs and isinstance(args[0], str) else None
+        payload = json.dumps({"args": list(args), "kwargs": kwargs, "once": once, "data": data})
     except (TypeError, ValueError) as exc:
         return {"outcome": "error", "error": type(exc).__name__,
                 "detail": "a captured procedure takes text or JSON values"}

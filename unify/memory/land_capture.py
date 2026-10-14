@@ -15,7 +15,8 @@ a path the box names), checks it, and writes into the writer's ``/memory``:
   the recording;
 - a test, ``memory/<package>/tests/test_<name>.py``: the procedure on the reader's value of the recorded text against
   the handed-back value's fixture, the reader on the recorded text, and one refusal of text the reader was not built
-  for. When the value was handed back in the final reply, which no fixture source holds, the expected value is
+  for. Each reader call hands the request over as the harness does (``request(text)``: the text with ``.text`` and
+  ``.data``, :mod:`.request_value`), so a reader of the request's data is tested as it is used. When the value was handed back in the final reply, which no fixture source holds, the expected value is
   written in the test instead, and the gate keeps the procedure ``unchecked``;
 - the manifest entries, the procedure with ``role: "procedure"`` and ``reader``, a new reader with ``role:
   "reader"``.
@@ -63,6 +64,7 @@ from . import fixtures as _fx
 from . import safe_paths as _safe
 from . import writer_tools as _wt
 from .redact import KEY_SHAPED
+from .request_value import REQUEST_CLASS
 from .sandbox_run import PYTHON, SandboxResult, run_confined
 
 TOOL = "land_capture"
@@ -281,8 +283,32 @@ def _join(old: str | None, block: str) -> str:
 def _test_head(package: str) -> str:
     return (
         f'"""Landed from captured attempts: each procedure of memory.{package}.procedures on its recorded '
-        'request."""\n\nimport json\nfrom pathlib import Path\n\nimport pytest\n\n'
-        'DATA = Path(__file__).parent / "data"\n'
+        'request."""\n\nimport json\nimport re\nfrom pathlib import Path\n\nimport pytest\n\n'
+        'DATA = Path(__file__).parent / "data"\n' + request_helper()
+    )
+
+
+#: The name of the helper a landed test hands a reader the request with (:func:`request_helper`).
+REQUEST_HELPER = "request"
+
+
+def request_helper() -> str:
+    """The test module's ``request(text)``: the request as the harness hands it to a reader (its text, with ``.text``
+    and ``.data``), the class from :data:`.request_value.REQUEST_CLASS` and the scan from
+    ``worker_child.json_values``, the one definition, copied as they are."""
+    import inspect
+
+    from unify.actor.execution import worker_child
+
+    return (
+        "\n\n# The request as the harness hands it to a reader: its text, with .text and .data (the JSON objects and "
+        "arrays\n# it contains, in order).\n"
+        + REQUEST_CLASS
+        + "\n\n_JSON_DECODER = json.JSONDecoder()\n_JSON_OPEN = re.compile(r\"[\\[{]\")\n\n\n"
+        + inspect.getsource(worker_child.json_values)
+        + f"\n\ndef {REQUEST_HELPER}(text):\n"
+        + '    """The request with this text, as a reader is handed it."""\n'
+        + "    return Request(text, json_values(text))\n"
     )
 
 
@@ -345,13 +371,13 @@ def case_tests(
         f"    from {reader_mod} import {imported}\n\n"
         f'    text = (DATA / "{name}.case{k}.txt").read_text(encoding="utf-8")\n'
         f'    value = json.loads((DATA / "{name}.case{k}.json").read_text(encoding="utf-8"))\n'
-        f"    assert json.loads(json.dumps({reader}(text))) == value\n"
+        f"    assert json.loads(json.dumps({reader}({REQUEST_HELPER}(text)))) == value\n"
         f"\n\ndef test_{name}_case{k}_gives_the_recorded_result():\n"
         f"    from {reader_mod} import {imported}\n"
         f"    from memory.{package}.procedures import {name}\n\n"
         f'    text = (DATA / "{name}.case{k}.txt").read_text(encoding="utf-8")\n'
         f"    expected = {expected}\n"
-        f"    assert json.loads(json.dumps({name}({reader}(text)))) == expected\n"
+        f"    assert json.loads(json.dumps({name}({reader}({REQUEST_HELPER}(text))))) == expected\n"
     )
 
 
@@ -368,7 +394,7 @@ def refusal_test(name: str, reader_mod: str, reader_fn: str, package: str, refus
         f"\n\n{mark}def test_{name}_reader_refuses_text_it_was_not_built_for():\n"
         f"    from {reader_mod} import {reader_fn}\n\n"
         "    with pytest.raises(Exception) as caught:\n"
-        f'        {reader_fn}("")\n'
+        f'        {reader_fn}({REQUEST_HELPER}(""))\n'
         '    assert any(c.__name__ == "MemoryInputError" for c in type(caught.value).__mro__)\n'
     )
 
@@ -574,6 +600,9 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
         written.append(dest)
     test_rel = f"memory/{package}/tests/test_{name}.py"
     old = _box_text(box, test_rel)
+    if old and f"\ndef {REQUEST_HELPER}(text):" not in old:
+        # a test module landed before readers were handed the request: it gains the helper its new case calls
+        old = old.rstrip("\n") + "\n" + ("" if "\nimport re\n" in old else "\nimport re\n") + request_helper()
     text = (old.rstrip("\n") + "\n" if old else _test_head(package)) + case_tests(
         name, reader_mod, reader_fn, package, k, handed, from_fixture=result_cut is not None,
     )

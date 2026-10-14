@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any
 
 from . import captures as _captures
+from .request_value import REQUEST_CLASS, request_data
 from .sandbox_run import PYTHON, SandboxResult, run_confined
 
 TRUE_HOLD, FALSE_HOLD, UNKNOWN, NO_HOLD = "true-hold", "false-hold", "unknown", "no-hold"
@@ -62,14 +63,16 @@ EACH_S = _captures.RUN_S
 SLACK_S = 30.0
 
 #: The child that runs the landed items on each request (stdlib only). It imports them from the library at
-#: ``/memory``, hands each reader the request's text, and writes only labels: whether the reader parsed, whether ``applies`` and ``holds`` held,
-#: whether the result reproduces the expected digest, the stage that raised or ran past its bound.
+#: ``/memory``, hands each reader the request (its text, with its data: :mod:`.request_value`), and writes only
+#: labels: whether the reader parsed, whether ``applies`` and ``holds`` held, whether the result reproduces the
+#: expected digest, the stage that raised or ran past its bound.
 _CHILD = r"""
 import copy, hashlib, importlib, json, signal, sys
 sys.path[:0] = ["/memory", "/kit"]
 sys.dont_write_bytecode = True
 spec = json.load(open("/case/case.json", encoding="utf-8"))
 EACH = float(spec["each_s"])
+""" + REQUEST_CLASS + r"""
 
 
 class Late(BaseException):
@@ -102,7 +105,7 @@ else:
         try:
             signal.setitimer(signal.ITIMER_REAL, EACH)
             try:
-                value = fns["reader"](req["text"])
+                value = fns["reader"](Request(req["text"], req["data"]))
                 row["read"] = "parsed"
                 stage = "applies"
                 if fns["applies"] is not None and not req.get("reader_only"):
@@ -155,7 +158,7 @@ def run_rows(
     each_s: float = EACH_S,
 ) -> tuple[list[dict], str | None]:
     """Run the landed *items* (``reader``, ``applies``, ``procedure``, ``holds``: item ids, None for one not stated)
-    from the library at *tree* on each of *requests* (``{text, expect, reader_only}``: only the reader runs on one
+    from the library at *tree* on each of *requests* (``{text, data, expect, reader_only}``: only the reader runs on one
     marked ``reader_only``), in one confined box.
     Returns (one row of labels per request, why none could be run or None)."""
     from . import testkit
@@ -238,8 +241,8 @@ def _text(ep: Any) -> str | None:
 
 
 def recorded_requests(store: Path | str, own: str, episode: Callable[[str], Any]) -> list[dict]:
-    """Every other recorded request of the store (module docstring), as the box takes it: ``{episode, text, expect,
-    success}``, ``expect`` the digest of the value the episode handed back (None: it handed back none) and
+    """Every other recorded request of the store (module docstring), as the box takes it: ``{episode, text, data,
+    expect, success}``, ``expect`` the digest of the value the episode handed back (None: it handed back none) and
     ``success`` whether the store records a success for it. An episode that cannot be read is left out."""
     store = Path(store)
     outcomes = episode_outcomes(store)
@@ -259,6 +262,7 @@ def recorded_requests(store: Path | str, own: str, episode: Callable[[str], Any]
             {
                 "episode": eid,
                 "text": text,
+                "data": request_data(text),
                 "expect": _captures.digest(value) if found else None,
                 "success": outcomes.get(eid) == "success",
             },
@@ -268,7 +272,7 @@ def recorded_requests(store: Path | str, own: str, episode: Callable[[str], Any]
 
 def variants(store: Path | str, cid: str, own: str, own_text: str, episode: Callable[[str], Any]) -> list[dict]:
     """The recorded variants of the request episode *own* was recorded on (module docstring), as the box takes
-    them: ``{kind, text, reader_only}``. The recorded ones are the requests of the other episodes of capture *cid*
+    them: ``{kind, text, data, reader_only}``. The recorded ones are the requests of the other episodes of capture *cid*
     and of the captures its record names as the same work (``same_as``, recognised by content when they were
     captured); each mechanical one keeps the request's content as it is."""
     store = Path(store)
@@ -293,7 +297,7 @@ def variants(store: Path | str, cid: str, own: str, own_text: str, episode: Call
         {"kind": TRAILING_BLANK, "text": own_text + "\n\n"},
         {"kind": TRAILING_PROSE, "text": own_text.rstrip("\n") + "\n\n" + PROSE + "\n"},
     ]
-    return [{**v, "reader_only": True} for v in out]
+    return [{**v, "data": request_data(v["text"]), "reader_only": True} for v in out]
 
 
 # --- the test and the listing rule ---------------------------------------------------------------------------------
@@ -319,8 +323,8 @@ def recognise_landing(
     counted)."""
     others = recorded_requests(store, own, episode)
     varied = variants(store, cid, own, own_text, episode)
-    sent = [{k: r[k] for k in ("text", "expect")} for r in others] + [
-        {k: v[k] for k in ("text", "reader_only")} for v in varied
+    sent = [{k: r[k] for k in ("text", "data", "expect")} for r in others] + [
+        {k: v[k] for k in ("text", "data", "reader_only")} for v in varied
     ]
     rows, why = run_rows(Path(tree), items, sent, python=python, work=Path(work), runner=runner)
     counts = {TRUE_HOLD: 0, FALSE_HOLD: 0, UNKNOWN: 0, NO_HOLD: 0}
@@ -378,7 +382,8 @@ def listing(rec: Mapping[str, Any] | None) -> tuple[bool, str]:
         shown = "; ".join(str(k) for k in kinds) or "not recorded"
         return False, (
             f"not listed: its reader failed on {n('fails')} of {n('fails') + n('reads')} recorded variant(s) of its "
-            f"own request ({shown}); make it read the values the request carries, not the layout around them"
+            f"own request ({shown}); make it read the values the request carries (request.data), not the layout "
+            "around them"
         )
     if isinstance(rec.get("error"), str) and rec["error"]:
         return True, f"untested: its test could not be run ({rec['error']})"
