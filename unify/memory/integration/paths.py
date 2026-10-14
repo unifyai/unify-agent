@@ -67,6 +67,12 @@ class Paths:
         return self.state_dir / "events.jsonl"
 
     @property
+    def journal(self) -> Path:
+        """The episode journals (``journal.py``): each request's transcript, kept turn by turn until its episode is
+        recorded; in the harness-only state directory."""
+        return self.state_dir / "episode-journal"
+
+    @property
     def captures(self) -> Path:
         """The capture store (``captures.py``): attempts the harness captured, written only by the harness."""
         return self.state_dir / "memory-captures"
