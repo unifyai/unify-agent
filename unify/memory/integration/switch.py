@@ -80,11 +80,12 @@ The comparison profile:
 
 - ``UNIFY_PROFILE``: empty (today's behaviour) or ``paper``: the one setting every reported row runs under. With
   ``paper`` the memory writer runs on the actor's model (:func:`.request.actor_model`), at the actor's effort,
-  through the actor's provider route and credential path (no writer route of its own), and no ``{"checker": ...}``
-  line is taken. Its budget is the cell's own settings (E, the allowance and the effort scale), unchanged. A paper
-  run that also sets a setting the profile fixes to another value (:func:`profile_conflicts`: the writer's model,
-  route, token or token descriptor, its effort, the checker line) is refused before anything runs, naming the
-  settings, never a value. The profile is recorded in each episode's meta and each pass's start event.
+  through its own accounting lane on that model (the writer route, required: :data:`PAPER_LANE_REFUSAL`; its
+  journal tells its calls from the actor's and its caps bound them), and no ``{"checker": ...}`` line is taken. Its
+  budget is the cell's own settings (E, the allowance and the effort scale), unchanged. A paper run that also sets
+  a setting the profile fixes to another value (:func:`profile_conflicts`: the writer's model, its effort, the
+  checker line) is refused before anything runs, naming the settings, never a value. The profile is recorded in
+  each episode's meta and each pass's start event.
 
 The no-pass memory set:
 
@@ -1147,7 +1148,13 @@ def checker_visible(settings: Any) -> bool:
 PAPER = "paper"
 PROFILES = ("", PAPER)
 #: The settings the paper profile fixes, in the order a refusal names them.
-PAPER_FIXED = (WRITER_MODEL, WRITER_BASE_URL, WRITER_TOKEN, WRITER_TOKEN_FD, WRITER_EFFORT, CHECKER_VISIBLE)
+PAPER_FIXED = (WRITER_MODEL, WRITER_EFFORT, CHECKER_VISIBLE)
+#: Why a paper run starts no pass without the writer's own route: the writer's calls are told apart from the actor's,
+#: and bounded by the writer's own caps, only on a lane of their own (its journal), though on the actor's model.
+PAPER_LANE_REFUSAL = (
+    f"{PROFILE}={PAPER} runs the writer on the actor's model and effort through its own accounting lane: "
+    f"{WRITER_BASE_URL} and its token must be set, so no consolidation pass starts"
+)
 
 
 def parse_profile(v: Any) -> str:
@@ -1176,9 +1183,9 @@ def _endpoint(model: str) -> str:
 def profile_conflicts(settings: Any) -> list[str]:
     """The settings in :data:`PAPER_FIXED` that a paper run sets to another value than the profile gives them, by
     name, in that order (empty under any other profile). The profile gives: the writer's model, the actor's
-    (``UNIFY_MODEL``; a writer model set to that same model is no conflict); no writer route, token or token
-    descriptor (the writer takes the actor's route and credential path); the writer's effort, ``actor``; the
-    checker line, off. Names only: no value is read into the result."""
+    (``UNIFY_MODEL``; a writer model set to that same model is no conflict); the writer's effort, ``actor``; the
+    checker line, off. The writer's route is its own accounting lane on that model (:data:`PAPER_LANE_REFUSAL`),
+    set as for any run. Names only: no value is read into the result."""
     if not paper_profile(settings):
         return []
     out: list[str] = []
@@ -1191,13 +1198,6 @@ def profile_conflicts(settings: Any) -> list[str]:
     actor = _stripped(getattr(settings, "UNIFY_MODEL", ""))
     if explicit and model and (not actor or _endpoint(model) != _endpoint(actor)):
         out.append(WRITER_MODEL)
-    if _stripped(getattr(settings, WRITER_BASE_URL, "")):
-        out.append(WRITER_BASE_URL)
-    token = getattr(settings, WRITER_TOKEN, "")
-    if _stripped(token.get_secret_value() if isinstance(token, SecretStr) else token):
-        out.append(WRITER_TOKEN)
-    if _stripped(getattr(settings, WRITER_TOKEN_FD, "")):
-        out.append(WRITER_TOKEN_FD)
     try:
         effort = parse_writer_effort(getattr(settings, WRITER_EFFORT, "") or "")
     except ValueError:
@@ -1233,8 +1233,8 @@ def profile_refusal(settings: Any) -> str | None:
     if not bad:
         return None
     return (
-        f"{PROFILE}={PAPER} fixes {', '.join(bad)} (the writer runs on the actor's model, route, credential path and "
-        "effort, and no checker line is taken); unset them, so nothing runs"
+        f"{PROFILE}={PAPER} fixes {', '.join(bad)} (the writer runs on the actor's model and effort, and no checker "
+        "line is taken); unset them, so nothing runs"
     )
 
 

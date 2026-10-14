@@ -450,10 +450,10 @@ class ProductionSettings(BaseSettings):
     # showed the actor as an agent-visible checker signal. Off: refused.
     UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE: str = "off"
     # The comparison profile: empty (default: today's behaviour) or ``paper``, the one setting every reported row
-    # runs under: the memory writer on the actor's model, at the actor's effort, through the actor's route and
-    # credential path, and no checker line. A paper run that also sets one of those settings to another value is
-    # refused before anything runs (unify/memory/integration/switch.py, ``profile_conflicts``). Recorded in each
-    # episode's meta and each pass's start event.
+    # runs under: the memory writer on the actor's model, at the actor's effort, through its own accounting lane
+    # (the writer route, required), and no checker line. A paper run that also sets one of those settings to another
+    # value is refused before anything runs (unify/memory/integration/switch.py, ``profile_conflicts``). Recorded in
+    # each episode's meta and each pass's start event.
     UNIFY_PROFILE: str = ""
     # Memory work after a request: empty or ``on`` (default: today's behaviour) or ``off``: the actor's memory
     # surface is unchanged, and no pass, writer call or episode-end fork runs, so the library never changes; the

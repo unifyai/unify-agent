@@ -1,8 +1,9 @@
 """The comparison profile ``UNIFY_PROFILE=paper``: one setting for every reported row.
 
-Under it the memory writer runs on the actor's model, at the actor's effort, through the actor's route and credential
-path (no writer route of its own), and no checker line is taken. A run that also sets one of those settings to
-another value is refused before anything runs, naming the settings and never a value. The profile is recorded in the
+Under it the memory writer runs on the actor's model, at the actor's effort, through its own accounting lane (the
+writer route, required, so its calls are told apart from the actor's), and no checker line is taken. A run that also
+sets one of those settings to another value is refused before anything runs, naming the settings and never a value;
+without the lane no pass starts. The profile is recorded in the
 episode's meta, the journal's header and each pass's start event; a pass's end event has its output tokens beside its
 wall time. Without the profile everything is as before.
 
@@ -36,9 +37,6 @@ from unify.settings import SETTINGS, ProductionSettings
 ACTOR_MODEL = "vendor/actor-model@openrouter"
 PLANTED = {
     switch.WRITER_MODEL: "vendor/planted-writer-model",
-    switch.WRITER_BASE_URL: "http://127.0.0.1:18099/planted/v1",
-    switch.WRITER_TOKEN: SecretStr("planted-writer-token-0123456789"),  # pragma: allowlist secret
-    switch.WRITER_TOKEN_FD: "7",
     switch.WRITER_EFFORT: "low",
     switch.CHECKER_VISIBLE: "on",
 }
@@ -63,10 +61,19 @@ class Turns:
         return turn
 
 
+#: The writer's own accounting lane (a placeholder route and token).
+LANE = {
+    switch.WRITER_BASE_URL: "http://127.0.0.1:18099/writer/v1",
+    switch.WRITER_TOKEN: SecretStr("lane-writer-token-0123456789"),  # pragma: allowlist secret
+}
+
+
 def _paper(**extra) -> SimpleNamespace:
     s = tc._settings()
     s.UNIFY_PROFILE = "paper"
     s.UNIFY_MODEL = ACTOR_MODEL
+    for k, v in LANE.items():
+        setattr(s, k, v)
     for k, v in extra.items():
         setattr(s, k, v)
     return s
@@ -100,17 +107,17 @@ def test_the_setting_takes_empty_or_paper_and_defaults_to_empty():
 # --- what the profile sets --------------------------------------------------------------------------------------
 
 
-def test_paper_runs_the_writer_on_the_actors_model_route_and_effort(tmp_path, monkeypatch):
+def test_paper_runs_the_writer_on_the_actors_model_and_effort_on_its_own_lane(tmp_path, monkeypatch):
     monkeypatch.setattr(request_mod, "actor_model", lambda: ACTOR_MODEL)
     cfg = consolidate.writer_settings(_paper())
-    assert (cfg.model, cfg.route, cfg.profile) == (ACTOR_MODEL, None, "paper")
+    assert (cfg.model, cfg.profile) == (ACTOR_MODEL, "paper") and cfg.route is not None
     fake = Turns()
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     got = _pass(tmp_path, _paper(), "high", fake)
-    # one turn, on the actor's model at the cell's effort, with no route of its own: the actor's transport and key
+    # one turn, on the actor's model at the cell's effort, on the writer's own lane
     ((model, effort, kw),) = fake.made
     assert (model, effort) == (ACTOR_MODEL, "high")
-    assert "route" not in kw and kw == {"session": "writer.e1.p0"}
+    assert set(kw) == {"route", "session"} and kw["route"] is not None and kw["session"] == "writer.e1.p0"
     start = got[0]
     assert start["phase"] == "start" and start["profile"] == "paper"
     assert (start["writer_model"], start["writer_effort"]) == (ACTOR_MODEL, "high")
@@ -140,6 +147,29 @@ def test_without_the_profile_the_writer_is_as_before(tmp_path, monkeypatch):
     got = _pass(tmp_path, tc._settings(), "low", fake)
     assert fake.made == [("openai/gpt-6-sol", "low", {})]
     assert "profile" not in got[0] and consolidate.writer_settings(tc._settings()).profile == ""
+
+
+@pytest.mark.parametrize("unset", list(LANE))
+def test_paper_without_the_writers_lane_starts_no_pass(tmp_path, monkeypatch, unset):
+    """On the actor's own route the writer's calls could not be told from the actor's, nor bounded by its caps."""
+    monkeypatch.setattr(request_mod, "actor_model", lambda: ACTOR_MODEL)
+    settings = _paper(**{switch.WRITER_BASE_URL: "", switch.WRITER_TOKEN: SecretStr("")})
+    if unset == switch.WRITER_TOKEN:  # a route half set is refused as for any run
+        settings = _paper(**{switch.WRITER_TOKEN: SecretStr("")})
+    made: list = []
+    monkeypatch.setattr(consolidate, "unillm_turn", lambda *a, **k: made.append(1))
+    with pytest.raises(switch.WriterRouteRefused) as refused:
+        consolidate.writer_settings(settings)
+    assert switch.WRITER_BASE_URL in str(refused.value)
+    stores = tc._stores(tmp_path)
+    sha, _ = tc._record(stores, "e1")
+    with pytest.raises(switch.WriterRouteRefused):
+        asyncio.run(
+            consolidate.run_due_passes(
+                stores, "e1", sha, State(stores.paths.state), effort="low", settings=settings, emit=None
+            ),
+        )
+    assert made == []
 
 
 # --- a conflicting setting: refused by name, before anything runs ----------------------------------------------------
@@ -209,9 +239,6 @@ def _paper_settings(monkeypatch) -> None:
     """The profile on the process's settings, with every setting it fixes at the value it gives it."""
     monkeypatch.setattr(SETTINGS, "UNIFY_PROFILE", "paper")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_WRITER_MODEL", SETTINGS.UNIFY_MODEL)
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_WRITER_BASE_URL", "")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_WRITER_TOKEN", SecretStr(""))
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_WRITER_TOKEN_FD", "")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_WRITER_EFFORT", "actor")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE", "off")
 

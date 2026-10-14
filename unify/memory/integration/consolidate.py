@@ -462,7 +462,7 @@ def writer_settings(settings: Any) -> WriterSettings:
     model = str(getattr(settings, "UNIFY_MEMORY_WRITER_MODEL", "") or "").strip()
     run_profile = profile(settings)
     if run_profile:
-        # the paper profile: the writer runs on the actor's model (its route and credential path: no route of its own)
+        # the paper profile: the writer runs on the actor's model, through its own accounting lane (checked below)
         from .request import actor_model
 
         model = actor_model()
@@ -509,6 +509,10 @@ def writer_settings(settings: Any) -> WriterSettings:
     # both or neither, checked here (before any pass starts); no error quotes a value
     pair = writer_route(getattr(settings, WRITER_BASE_URL, ""), writer_token(settings))
     route = WriterRoute(*pair) if pair is not None else None
+    if run_profile and route is None:
+        from .switch import PAPER_LANE_REFUSAL
+
+        raise WriterRouteRefused(PAPER_LANE_REFUSAL)
     model = model or WRITER_MODEL
     if route is not None and otel_on():
         raise WriterRouteRefused(OTEL_REFUSAL)
@@ -1494,13 +1498,11 @@ async def run_due_passes(
             )
             break
         rows: list[CostRow] = []
-        # the pass this spend belongs to, as the fork's calls carry fork.<episode>: on the writer's route, and under
-        # the paper profile (the actor's route) as its calls' session; a default run's call is as shipped
+        # the pass this spend belongs to, as the fork's calls carry fork.<episode>, on the writer's route (always set
+        # under the paper profile); a default run's call without a route is as shipped
         session = f"{'curator' if curating else 'writer'}.{pass_id}"
         if cfg.route is not None:
             turn = unillm_turn(cfg.model, effort, route=cfg.route, session=session)
-        elif cfg.profile:
-            turn = unillm_turn(cfg.model, effort, session=session)
         else:
             turn = unillm_turn(cfg.model, effort)
         writer = WriterPass(
