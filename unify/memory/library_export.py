@@ -54,6 +54,7 @@ from .item_records import (
     level_of,
     level_reasons_of,
     recipe_ids,
+    recipe_of,
     recipe_text,
     use_totals,
     verification_summary,
@@ -274,6 +275,12 @@ def items_data(
     *examples* gives a function's shown example call (:func:`.example_view.examples_of`); None shows none.
     """
     rows: dict[str, dict] = {}
+    # a procedure's recipe, by the procedure and by the recipe itself: its card shows the call that applies it
+    recipes: dict[str, str] = {}
+    for item, rec in (records or {}).items():
+        rid = recipe_of(rec)
+        if rid:
+            recipes[item] = recipes[rid] = rid
 
     def common(item: str) -> dict:
         h = history.get(item, [])
@@ -306,6 +313,8 @@ def items_data(
             "example": examples(f.item_id) if examples is not None else None,
             # whether memory.match and the librarian list it, and why (only for a procedure tested when it landed)
             **({"recognition": recognition} if recognition else {}),
+            # the recipe that does a procedure's whole job on the current request (only where there is one)
+            **({"recipe": recipes[f.item_id]} if f.item_id in recipes else {}),
             **common(f.item_id),
         }
     for n in lib.notes:
@@ -873,8 +882,8 @@ STUB_HEADER = (
 def stub_source(librarian: bool = False) -> bytes:
     """The generated ``memory/__init__.pyi``: the package's public contract as typed Python
     (:func:`unify.common.contract_runtime.render_pyi` over the package's own definitions): the types :class:`Fit`,
-    :class:`Item` and :class:`Items`, then ``memory.ask`` (with *librarian*), ``memory.items`` and ``memory.get``,
-    each with its docstring. The same code gives the same bytes."""
+    :class:`Item` and :class:`Items`, then ``memory.ask`` (with *librarian*), ``memory.items``, ``memory.get`` and
+    ``memory.request``, each with its docstring. The same code gives the same bytes."""
     from unify.common.contract_runtime import render_pyi
 
     from . import library_helper as lh
@@ -884,7 +893,7 @@ def stub_source(librarian: bool = False) -> bytes:
         from . import library_ask
 
         namespace["ask"] = library_ask.ask
-    namespace.update({"items": lh.items, "get": lh.get})
+    namespace.update({"items": lh.items, "get": lh.get, "request": lh.request})
     return render_pyi(namespace, header=STUB_HEADER).encode("utf-8")
 
 

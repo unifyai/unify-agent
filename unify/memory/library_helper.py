@@ -1,16 +1,19 @@
-"""The memory library: three calls and one item type.
+"""The memory library: four calls and one item type.
 
     memory.ask(question=None) -> list[Item]         # with the librarian on: every item it judges applicable to
                                                     # the current request (or your question), each with .reason;
                                                     # [] when nothing applies
     memory.items(topic=None, kind=None) -> Items    # browse; print() shows a compact table, page by page
     memory.get(ref) -> Item                         # one item, by any name that names exactly one
+    memory.request() -> str                         # the current request, as a procedure's recipe takes it
 
 An :class:`Item` is a frozen record of one function or note: ``id``, ``kind``, ``summary``, ``applies``,
 ``evidence``, ``status``, ``example``, ``text``, ``links``, ``history`` (and ``reason``, from ``ask``).
 ``print(item)`` shows its card; ``item.fits(inputs)`` is its own applicability check (a :class:`Fit`); a function
 item is called directly, ``item(*args)``: the call is tracked, and what the function raises reaches the caller
-unchanged; calling a note raises an error that says what to do instead. Every call checks its arguments' types
+unchanged; calling a note raises an error that says what to do instead. A procedure with a recipe (one function
+that does its whole job on a request) shows on its card the one call that applies it to the current request,
+``memory.get(<recipe id>)(memory.request())``; nothing runs it until that call is made. Every call checks its arguments' types
 first, and every error of the package's own names the call as written, what was expected with an example call,
 and the nearest valid targets or the right call. The whole typed contract is ``memory/__init__.pyi`` beside this
 file; ``help(memory)`` shows the same calls and types. Library functions also import as ordinary modules:
@@ -209,6 +212,7 @@ __all__ = [
     "WrongCall",
     "get",
     "items",
+    "request",
 ]
 
 _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1000,6 +1004,46 @@ def _current_request() -> tuple[str | None, Any]:
     if not isinstance(text, str) or not text:
         return None, None
     return text, reply.get("data")
+
+
+#: The call that applies a recipe to the current request (the harness's ``item_records.RECIPE_CALL``, the same text).
+_RECIPE_CALL = "memory.get({item!r})(memory.request())"
+
+
+def _recipe_call(recipe: str) -> str:
+    """The one-call entry of the recipe *recipe*: the recipe applied to the current request."""
+    return _RECIPE_CALL.format(item=recipe)
+
+
+_REQUEST_NAMES: dict = {}
+exec(_REQUEST_CLASS, _REQUEST_NAMES)  # noqa: S102 - the class's one definition, a constant of this file
+#: The request as every reader and recipe takes it: its text (a str), with ``.text`` and ``.data``.
+Request = _REQUEST_NAMES["Request"]
+
+
+@checked(name="memory.request")
+def request() -> str:
+    """The request you are working on, as a stored procedure's recipe and reader take it: its text (a str), with
+    ``.text`` and ``.data`` (the JSON objects and arrays the text contains, in order). A procedure's card shows the
+    one call that applies its recipe to it.
+
+    Returns:
+        The current request: a str with ``.text`` and ``.data``.
+
+    Raises:
+        NotFound: the current request is not available in these cells.
+
+    Example:
+        memory.request().data
+    """
+    text, data = _current_request()
+    if text is None:
+        raise NotFound(
+            "memory.request()",
+            "the current request is not available in these cells.",
+            hint="Pass the request's text to the item yourself.",
+        )
+    return Request(text, data if isinstance(data, list) else _json_values(text))
 
 
 def _dispatch() -> tuple[list, dict] | None:
@@ -2422,6 +2466,9 @@ class _Catalog:
             example = row.get("example")
             if isinstance(example, dict) and example.get("call"):
                 out.append(f"Example (from {example.get('test')}): {example['call']}")
+            if isinstance(row.get("recipe"), str) and row["recipe"]:
+                # a procedure's one-call entry: its recipe applied to the current request (run only when called)
+                out.append(f"Applies to the current request: {_recipe_call(row['recipe'])}")
         else:
             out = [f"{wanted}  [{status}]" + (f"  {row['title']}" if row.get("title") else "")]
         if status in _HIDDEN_STATUSES:

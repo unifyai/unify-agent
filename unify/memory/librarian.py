@@ -189,10 +189,14 @@ _CAPTURE_DIR = re.compile(r"[0-9a-f]{16}")
 _HIDDEN = ("retired",)
 
 
-def library_items(copy: Path) -> tuple[list[str], set[str]] | None:
+def library_items(copy: Path) -> tuple[list[str], set[str], dict[str, str]] | None:
     """The items of the library copy at *copy*, as the actor's ``memory.items`` lists them (``.memory/items.json``:
-    the functions and notes, the retired left out), then its captured procedures in id order; and the captured
-    procedures that were tried and failed (never offered to run). None when the copy's items cannot be read."""
+    the functions and notes, the retired left out), then its captured procedures in id order; the captured
+    procedures that were tried and failed (never offered to run); and, for each procedure with a recipe and for the
+    recipe itself, the call that applies the recipe to the current request (:func:`.item_records.recipe_call`). None
+    when the copy's items cannot be read."""
+    from .item_records import recipe_call
+
     from .library_helper import ITEMS_FILE
 
     try:
@@ -203,6 +207,11 @@ def library_items(copy: Path) -> tuple[list[str], set[str]] | None:
     if not isinstance(rows, dict):
         return None
     ids = [i for i, r in rows.items() if isinstance(i, str) and not (isinstance(r, dict) and r.get("status") in _HIDDEN)]
+    recipes = {
+        i: recipe_call(r["recipe"])
+        for i, r in rows.items()
+        if i in ids and isinstance(r, dict) and isinstance(r.get("recipe"), str) and r["recipe"]
+    }
     failed: set[str] = set()
     try:
         names = sorted(os.listdir(Path(copy) / _CAPTURES_DIR))
@@ -218,7 +227,7 @@ def library_items(copy: Path) -> tuple[list[str], set[str]] | None:
             rec = None
         if isinstance(rec, dict) and rec.get("outcome") == "failed":
             failed.add(CAPTURE_PREFIX + name)
-    return ids, failed
+    return ids, failed, recipes
 
 
 # --- the facts ------------------------------------------------------------------------------------------------------
@@ -340,6 +349,8 @@ class LibrarianCalls:
     ids: list[str]
     failed: set[str] = field(default_factory=set)
     copy: Path | None = None
+    #: item id -> the call that applies its recipe to the current request (:func:`library_items`)
+    recipes: dict[str, str] = field(default_factory=dict)
     answer: dict | None = None
     finish_text: str | None = None
     finished: bool = False
@@ -349,10 +360,17 @@ def _text(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def check_answer(answer: Any, ids: list[str], failed: set[str] = frozenset()) -> tuple[dict | None, str]:
+def check_answer(
+    answer: Any,
+    ids: list[str],
+    failed: set[str] = frozenset(),
+    recipes: Mapping[str, str] | None = None,
+) -> tuple[dict | None, str]:
     """The answer as the librarian gave it, or None with the reason it is refused: the form of design J(b).4, every
-    id an item of the library (*ids*), and no captured attempt that failed among the fits. The harness adds, drops
-    and reorders nothing."""
+    id an item of the library (*ids*), no captured attempt that failed among the fits, and each fit that names a
+    procedure with a recipe (or the recipe) carrying the call that applies it to the current request (*recipes*:
+    id -> that call), so the agent has the one call. The harness adds, drops and reorders nothing."""
+    recipes = recipes or {}
     known = set(ids)
     if not isinstance(answer, dict):
         return None, 'the answer must be an object: {"fits": [...]} or {"fits": [], "nearest": [...]}'
@@ -369,6 +387,12 @@ def check_answer(answer: Any, ids: list[str], failed: set[str] = frozenset()) ->
             return None, f"fit {i}: {f['id'][:200]!r} is not an item of the library"
         if f["id"] in failed:
             return None, f"fit {i}: {f['id']!r} was tried and failed; it is never offered to run (name it as nearest)"
+        entry = recipes.get(f["id"])
+        if entry and entry not in f["call"]:
+            return None, (
+                f"fit {i}: {f['id']!r} has a recipe that does its whole job on the current request; give its call "
+                f"as written: {entry}"
+            )
     if len({f["id"] for f in fits}) != len(fits):
         return None, "an id is listed twice among the fits"
     if fits:
@@ -398,7 +422,7 @@ async def finish(ctx: Any, args: dict) -> Any:
     if state.finished:
         text = refusal("finish", "answered")
         return Reply(str(text), "refused", text.form)
-    got, why = check_answer(args.get("answer"), state.ids, state.failed)
+    got, why = check_answer(args.get("answer"), state.ids, state.failed, state.recipes)
     if got is None:
         text = refusal("finish", "bad_answer", reason=why[:2000])
         state.finish_text = str(text)
@@ -578,8 +602,8 @@ class LibrarianSession:
         self.copy = Path(copy)
         self.library = library if isinstance(library, str) and library else None
         self.dispatch = read_dispatch(self.copy)
-        ids, failed = library_items(self.copy) or ([], set())
-        self.state = LibrarianCalls(ids=ids, failed=failed, copy=self.copy)
+        ids, failed, recipes = library_items(self.copy) or ([], set(), {})
+        self.state = LibrarianCalls(ids=ids, failed=failed, copy=self.copy, recipes=recipes)
         self.turn = turn
         self.cell_limit_s = float(cell_limit_s)
         self.step_guard = STEP_GUARD if step_guard is None else int(step_guard)
@@ -650,8 +674,8 @@ class LibrarianSession:
         async with self._lock:
             # the library as the ask finds it: a copy that changed since the session opened is asked about afresh
             self.dispatch = read_dispatch(self.copy)
-            ids, failed = library_items(self.copy) or ([], set())
-            self.state.ids, self.state.failed = ids, failed
+            ids, failed, recipes = library_items(self.copy) or ([], set(), {})
+            self.state.ids, self.state.failed, self.state.recipes = ids, failed, recipes
             kept, dropped = checked_facts(facts, self.dispatch)
             self.questions += 1
             library = {"commit": self.library, "dispatch": _digest_of(self.dispatch)}

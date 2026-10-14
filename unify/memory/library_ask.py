@@ -72,17 +72,25 @@ class Answer(list):
     its ``reason``. When nothing applies the list is empty and ``nearest`` holds the items the librarian named as
     nearest, each with what differs as its ``reason``. ``note`` says what the answer could not use (the current
     request, a reader that gave no outcome); ``asked`` is False when nothing could be asked; ``already_given`` is True
-    when this is the answer the librarian already gave in this request (the same question and outcomes). It prints
-    as a few lines."""
+    when this is the answer the librarian already gave in this request (the same question and outcomes); ``calls``
+    holds, by item id, the call the librarian gave for each item that applies (for a procedure with a recipe, the
+    call that applies the recipe to the current request). It prints as a few lines."""
 
     def __init__(
-        self, fits: list, nearest: list = (), note: str = "", asked: bool = True, already_given: bool = False,
+        self,
+        fits: list,
+        nearest: list = (),
+        note: str = "",
+        asked: bool = True,
+        already_given: bool = False,
+        calls: dict | None = None,
     ) -> None:
         super().__init__(fits)
         self.nearest = list(nearest)
         self.note = note
         self.asked = asked
         self.already_given = already_given
+        self.calls = dict(calls or {})
 
     def __repr__(self) -> str:
         out: list = []
@@ -92,8 +100,11 @@ class Answer(list):
             out.append(self.note)
         elif self:
             out.append(f"{len(self)} item(s) apply:")
-            out += [f"- {i.id} ({i.kind}): {i.reason}" for i in self]
-            out.append("Each is an Item: print(item) shows its card; item(...) calls a function item.")
+            for i in self:
+                out.append(f"- {i.id} ({i.kind}): {i.reason}")
+                if self.calls.get(i.id):
+                    out.append(f"  call: {self.calls[i.id]}")
+            out.append("Each is an Item: print(item) shows its card; item(...) calls a function item. Nothing has run.")
         else:
             out.append("Nothing in the library applies.")
             out += [f"- nearest {i.id} ({i.kind}): {i.reason}" for i in self.nearest]
@@ -218,6 +229,7 @@ def ask(question: Annotated[str, MinLen(1)] | None = None) -> list[Item]:
             ) from None
     data = data if isinstance(data, dict) else {}
     fits, nearest = _named(data.get("fits"), "why"), _named(data.get("nearest"), "differs")
+    calls = dict(_named(data.get("fits"), "call"))
     listed = tuple(iid for iid, _ in fits)
     _emit_event(ASK_EVENT, listed, not listed, _fact_rows(facts))
     again = data.get(_ALREADY_GIVEN) is True
@@ -228,6 +240,7 @@ def ask(question: Annotated[str, MinLen(1)] | None = None) -> list[Item]:
             _answer_items(nearest, call) if not fits else [],
             " ".join(notes),
             already_given=again,
+            calls=calls,
         ),
     )
 
