@@ -1730,6 +1730,10 @@ class Gate:
                 for p in list(declared)
                 if p.startswith("memory/") and p.count("/") >= 2
             }
+            # a folder's README.md is the writer's description of the folder, kept by any pass (library_checks)
+            from .layout import classify as _classify
+
+            declared |= {p for p in run.changed if _classify(p) == "readme"}
         for p in run.changed:
             if p not in declared:
                 run.fail("G1", f"undeclared change {p}")

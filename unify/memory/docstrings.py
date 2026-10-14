@@ -59,6 +59,8 @@ from dataclasses import dataclass, field
 
 REQUIRED_SECTIONS = ("Args", "Returns", "Raises", "Example")
 OPTIONAL_SECTIONS = ("Use when", "Don't use when", "Notes")
+#: The library mode's section (:mod:`.when_to_use`): parsed as a section so that it never runs into the one before it.
+LIBRARY_SECTIONS = ("When to use",)
 LINE_FIELDS = ("Effect", "Input")
 ERROR_NAME = "MemoryInputError"
 MIN_REFUSAL_CHARS = 24
@@ -72,6 +74,7 @@ SECTION_KEYS = {
     "Use when": "use_when",
     "Don't use when": "dont_use_when",
     "Notes": "notes",
+    "When to use": "when_to_use",
 }
 _ALIASES = {
     "Examples": "Example",
@@ -81,7 +84,7 @@ _ALIASES = {
     "Return": "Returns",
 }
 _NAMES = sorted(
-    set(REQUIRED_SECTIONS) | set(OPTIONAL_SECTIONS) | set(LINE_FIELDS) | set(_ALIASES),
+    set(REQUIRED_SECTIONS) | set(OPTIONAL_SECTIONS) | set(LIBRARY_SECTIONS) | set(LINE_FIELDS) | set(_ALIASES),
     key=len,
     reverse=True,
 )

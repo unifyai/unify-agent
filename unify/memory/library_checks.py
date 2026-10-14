@@ -5,6 +5,9 @@ With ``Gate(library_mode=None)`` (the default) nothing here runs and the gate is
 
 * **G1:**
   - scope: only ``memory/`` and ``notes/``, never the harness-generated paths;
+  - when to use: every new or changed function and note carries its writer-written ``When to use`` section, with
+    its four parts (:mod:`.when_to_use`; shape only, never wording), and every folder the pass changes holds a
+    ``README.md`` with some text;
   - links: no dangling ``uses:``/``Notes:`` target;
   - fixture provenance: every new or changed file under ``tests/data/`` came through ``fixture()`` and re-derives
     from the recording (:mod:`.fixtures`).
@@ -33,6 +36,7 @@ also appends that record to the pass row as one ``library_mode-verification`` li
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import re
@@ -50,6 +54,7 @@ from .gitio import Repo
 from .held_out import OUTPUTS_BUDGET_S
 from .catalogue import estimate_tokens
 from . import layout
+from . import when_to_use
 from .aliases import forwards, uses_name
 from .layout import classify, discover, misplaced
 from .library_index import INDEX_VIEW_TOKENS, build_links, render_index
@@ -326,6 +331,57 @@ class LibraryChecks:
                 run.fail("G1", f"file {p}: {why}")
         self._links()
         self._fixtures()
+        self._when_to_use()
+        self._readmes()
+
+    def _when_to_use(self) -> None:
+        """Every new or changed function and note carries its "when to use" section, its four parts present."""
+        run = self.run
+        functions = [(it.item, "function") for it in self._edited()]
+        notes = [
+            (it.item, "note")
+            for it in run.man.items
+            if it.kind == "note"
+            and it.item in run.c_bodies
+            and run.p_bodies.get(it.item) != run.c_bodies[it.item]
+        ]
+        for item, kind in functions + notes:
+            text = run.c_bodies[item][1]
+            if kind == "function":
+                try:
+                    node = ast.parse(text).body[0]
+                except (SyntaxError, ValueError, IndexError):
+                    continue  # an unreadable definition is refused elsewhere
+                problems = when_to_use.function_problems(ast.get_docstring(node) or "")
+            else:
+                problems = when_to_use.note_problems(text)
+            for problem in problems:
+                run.fail("G1", f"{item} {problem}", item)
+
+    def _readmes(self) -> None:
+        """Every library folder the pass changes, and that still holds a file, holds a ``README.md`` with text."""
+        run = self.run
+        folders = sorted({f for p in run.changed if (f := when_to_use.folder(p)) is not None})
+        for folder in folders:
+            if not any(p.startswith(folder + "/") for p in run.c_files):
+                continue  # the pass emptied it
+            readme = when_to_use.readme_of(folder)
+            data = None
+            if readme in run.c_files:
+                try:
+                    data = (Path(run.c_tree) / readme).read_bytes()
+                except OSError:
+                    data = None
+            why = when_to_use.readme_problem(data)
+            if why is None:
+                continue
+            reason = (
+                f"folder {folder}/ {why}: each library folder holds a short {when_to_use.README} saying what it "
+                "holds and how its items relate"
+            )
+            items = [it.item for it in run.man.items if when_to_use.folder(layout.item_path(it.item)) == folder]
+            for item in items or [None]:
+                run.fail("G1", reason, item)
 
     def _links(self) -> None:
         run = self.run
