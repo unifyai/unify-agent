@@ -556,8 +556,8 @@ class Act:
     # and when no response has come after CANCEL_INTERRUPT_GRACE_S it raises
     # CellInterrupted in the cell running on the main thread, if one is.
     # Code blocked in C that never returns to the interpreter cannot be
-    # interrupted in process; the sandboxed worker (a process, killed on
-    # cancel) can.
+    # interrupted in process; the sandboxed worker (a process: interrupted on
+    # cancel, and killed if that does not stop it) can.
 
     def _on_channel_line(self, raw: bytes) -> None:
         """On the reader thread: arm the escalation for a host's cancel."""

@@ -701,19 +701,55 @@ async def test_a_timeout_kills_the_worker_and_the_next_cell_starts_fresh(
         await ex.close()
 
 
+async def _stop_after(ex, code: str, seconds: float = 1.0) -> float:
+    """Start *code* as a cell, cancel it after *seconds*, and return how long the cancel took to take effect."""
+    task = asyncio.create_task(run(ex, code))
+    await asyncio.sleep(seconds)
+    started = asyncio.get_running_loop().time()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    return asyncio.get_running_loop().time() - started
+
+
 @needs_bwrap
 @pytest.mark.asyncio
-async def test_a_stopped_cell_kills_the_worker(worker_world):
+@pytest.mark.parametrize(
+    "code",
+    [
+        pytest.param("await asyncio.sleep(60)", id="waiting"),
+        pytest.param("while True:\n    pass", id="computing"),
+        pytest.param("import time\ntime.sleep(60)", id="sleeping"),
+        pytest.param("try:\n    while True:\n        pass\nexcept Exception:\n    pass", id="catching-exception"),
+    ],
+)
+async def test_a_stopped_cell_is_interrupted_and_the_worker_keeps_its_variables(worker_world, code):
+    """A cancel stops the cell where it is; the worker, and everything earlier cells bound, stays."""
+    ex, _ = executor_with_fakes()
+    try:
+        await run(ex, "x = 1")
+        pid = worker_pid(ex)
+        took = await _stop_after(ex, code)
+        assert took < worker_mod.INTERRUPT_GRACE_S
+        out, res = await run(ex, HAS_X)
+        assert res["result"] is True and "fresh Python worker" not in out
+        assert worker_pid(ex) == pid
+    finally:
+        await ex.close()
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+async def test_a_stopped_cell_that_will_not_stop_kills_the_worker(worker_world):
+    """A cell that swallows its interrupt and runs on is killed with its worker after the grace."""
     ex, _ = executor_with_fakes()
     try:
         await run(ex, "x = 1")
         pid = worker_pid(ex)
         tree = worker_tree(ex)
-        task = asyncio.create_task(run(ex, "await asyncio.sleep(60)"))
-        await asyncio.sleep(1.0)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        stubborn = "while True:\n    try:\n        while True:\n            pass\n    except BaseException:\n        pass"
+        took = await _stop_after(ex, stubborn)
+        assert took >= worker_mod.INTERRUPT_GRACE_S
         assert await all_gone(tree)
         out, res = await run(ex, HAS_X)
         assert res["result"] is False and "was stopped" in out
