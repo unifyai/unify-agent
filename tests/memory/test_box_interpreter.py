@@ -334,6 +334,33 @@ async def test_sh_keeps_the_working_directory_and_exports(tmp_path):
 @needs_box
 @pytest.mark.asyncio
 @pytest.mark.timeout(180)
+async def test_check_examples_runs_a_function_of_the_session_in_the_box(tmp_path):
+    """The example check runs the candidate where the agent's cells run: a function defined in an earlier cell, on
+    a path only the box has, with no channel at all (a host call would fail)."""
+    from unify.common import tool_registry as R
+
+    stub = R.render_stub(R.allow_list("writer", frozenset()), "writer")
+    interp = await _start(tmp_path, stub=stub)
+    try:
+        r1 = await interp.run_cell("def first_line(path):\n    return open(path).read().splitlines()[0]\n")
+        assert r1.error is None, r1.text()
+        r2 = await interp.run_cell(
+            "r = tools.check_examples(first_line, [('/inputs/seed.txt', 'seed'), {'input': '/inputs/seed.txt',"
+            " 'expected': 'other'}, ('/inputs/none.txt', 'x')])\n"
+            "print(r.splitlines()[0], r.passed, r.total)\n"
+            "print([row['passed'] for row in r.results], r.results[2]['error'].split(':')[0])\n",
+        )
+        assert r2.output.strip().split("\n") == ["passed 1 of 3 1 3", "[True, False, False] FileNotFoundError"], (
+            r2.text()
+        )
+        assert not r2.restarted
+    finally:
+        await interp.stop()
+
+
+@needs_box
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
 async def test_the_open_log_fields_are_filled_per_cell(tmp_path):
     interp = await _start(tmp_path)
     try:

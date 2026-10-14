@@ -281,6 +281,36 @@ async def test_a_thought_alone_runs_nothing_and_is_not_refused(in_code):
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(300)
+async def test_the_actor_checks_a_function_of_its_session_against_examples_in_its_box(in_code):
+    """tools.check_examples runs a function the actor defined in an earlier cell, in the actor's own box (the path
+    exists only there), and is never a host call; the opening holds its one line once."""
+    define = "def line_of(path):\n    return open(path).read().splitlines()[0]\n"
+    check = (
+        "r = tools.check_examples(line_of, [{'input': '/workspace/data.txt', 'expected': 'line 1'},"
+        " ['/workspace/data.txt', 'line 2']])\n"
+        "print(r)\n"
+        f"tools.answer({ANSWER!r})\n"
+    )
+    model = ScriptedModel(actor=[reply(calls=[code(define)]), reply(calls=[code(check)]), reply("not finished")])
+    result = await _act(model, "Check the first line of data.txt.")
+
+    assert result == ANSWER, _why(model)
+    shown = _tool_results(model.calls[1])
+    assert "passed 1 of 2" in shown, shown[:2000]
+    assert "example 2: failed" in shown and "  expected: 'line 2'" in shown and "  actual: 'line 1'" in shown
+    assert "-line 2" not in shown and "line 2: expected" not in shown  # one-line text: one line naming both
+    assert 'the value: expected "line 2", got "line 1"' in shown, shown[:2000]
+    (session,) = in_code["opened"]
+    assert "check_examples" in session.allow
+    assert [r["tool"] for r in _channel_rows(_rows(session))] == ["answer"]
+    system = _system_texts(model.calls[0])[0]
+    assert system.count(R.EXAMPLES_LINE) == 1
+    _assert_ended(in_code["opened"])
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(300)
 async def test_a_refused_call_raises_in_the_cell(in_code):
     probe = (
         "for path in ('/etc/passwd', '/workspace/.env'):\n"

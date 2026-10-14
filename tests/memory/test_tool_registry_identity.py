@@ -99,7 +99,7 @@ def test_every_pair_of_agents_reads_each_shared_tool_the_same(stand_ins):
                 pairs += 1
                 assert ha == hb, (name, a, b)
                 assert R.list_text([name], a) == R.list_text([name], b), (name, a, b)
-                if name != "sh":
+                if name not in R.EMBEDDED:
                     assert stubs[a][name] == stubs[b][name], (name, a, b)
     assert pairs > 50
 
@@ -148,7 +148,7 @@ def test_the_allow_lists_follow_the_profiles_and_the_design():
     teammate = set(R.allow_list("teammate", FULL))
     assert actor == {
         "read", "grep", "install", "send", "messages", "wait", "who", "reply", "stop", "delegate", "answer",
-        "store_skills", "sh",
+        "store_skills", "sh", "check_examples",
     }  # fmt: skip
     assert teammate == actor - {"store_skills"} | {"ask"}  # any agent may start agents
     assert "store_skills" not in R.allow_list("actor", FULL - {"store"})
@@ -382,7 +382,16 @@ ADDED_FORMS = {
     "stop": ["not_allowed"],
     "wait": ["bad_timeout"],
 }
-ADDED_TOOLS = ("install", "store_skills", "sh", "ask_library", "land_capture", "answer", "current_request")
+ADDED_TOOLS = (
+    "install",
+    "store_skills",
+    "sh",
+    "ask_library",
+    "land_capture",
+    "answer",
+    "current_request",
+    "check_examples",
+)
 #: Tools added to the writer's JSON tools (tools not in code) since the base commit: left out of the base hashes.
 ADDED_JSON_TOOLS = ("land_capture",)
 FLAGS = ("pool", "similar", "helper", "edit")
