@@ -58,7 +58,7 @@ def test_an_action_cover_is_refused_and_typed_covers_are_kept():
 def test_an_unknown_item_field_is_refused():
     assert _refusal({"items": [_item(examples=["memory/acct/tests/test_users.py::test_one"])]}) == (
         "memory.acct.users:user_id: unknown field 'examples'; an item takes item, kind, source_episodes, tests, "
-        "covers, field_types, adopts, replaces, role, reader"
+        "covers, field_types, adopts, replaces, role, reader, recipe, cases"
     )
 
 

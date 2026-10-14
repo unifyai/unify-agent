@@ -103,6 +103,8 @@ PLANTED_B64 = base64.b64encode(PLANTED_VALUE.encode()).decode()
 TOTAL = "memory.orders.procedures:total_amount"
 READ_TOTAL = "memory.orders.readers:read_total_amount"
 TOTAL_APPLIES = "memory.orders.procedures:_total_amount_applies"
+#: The landed procedure's recipe, the whole job on a request (``land_capture`` writes it beside the procedure).
+TOTAL_RECIPE = "memory.orders.procedures:apply_total_amount"
 COUNT = "memory.orders.sums:count_rows"
 READ_ORDERS = "memory.orders.tables:read_orders"
 RECONCILE = "memory.billing.ledger:reconcile"
@@ -112,7 +114,7 @@ TOKENS = "memory.text.parse:tokens"
 WORDS = "memory.text.parse:words"
 NOTE = "notes/orders/totals.md"
 #: Every function of the library, in module-path order (the catalogue's order).
-FUNCTIONS = [RECONCILE, READ_LEDGER, READ_PAYMENTS, TOTAL, READ_TOTAL, COUNT, READ_ORDERS, TOKENS, WORDS]
+FUNCTIONS = [RECONCILE, READ_LEDGER, READ_PAYMENTS, TOTAL_RECIPE, TOTAL, READ_TOTAL, COUNT, READ_ORDERS, TOKENS, WORDS]
 
 #: The order table of the landed episode: its amounts add up to the answer it handed back.
 ROWS = [{"item": "pen", "amount": int(ANSWER) - 4}, {"item": "ink", "amount": 4}]
