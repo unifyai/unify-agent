@@ -41,7 +41,9 @@ start (:func:`export_files`); captures never enter ``INDEX.md`` or the prompt.
 
 Evidence: ``captures-events.jsonl`` holds one row per capture step (``capture_id``, ``episode``, ``safety``,
 ``reproduces``, ``deterministic``, ``applies``, ``holds``, ``outcome``, ``same_as``, ``seconds``,
-``published_at``); an episode with a row there is done.
+``published_at``); an episode with a row there is done. A row whose outcome is positive and whose capture reproduced
+the handed-back value is a *verdict* (:func:`verdict`): a writer pass covering its episode starts at once
+(``trigger.Trigger``'s ``verdict``), without waiting for the batch.
 Nothing here keys on a task id, a stream boundary or a position.
 """
 
@@ -646,6 +648,17 @@ def episode_rows(store: Path | str) -> dict[str, dict]:
     except OSError:
         pass
     return out
+
+
+def verdict(row: Any) -> bool:
+    """Whether a capture step's row is a verdict: its attempt's outcome was positive and its capture reproduced the
+    value the attempt handed back."""
+    return isinstance(row, Mapping) and row.get("outcome") == "positive" and row.get("reproduces") == REPRODUCES
+
+
+def verdict_episodes(store: Path | str) -> set[str]:
+    """The episodes whose capture step's row is a verdict (:func:`verdict`)."""
+    return {eid for eid, row in episode_rows(store).items() if verdict(row)}
 
 
 def episode_row(store: Path | str, eid: str) -> dict | None:
