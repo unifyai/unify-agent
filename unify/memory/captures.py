@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import datetime as dt
 import fcntl
 import hashlib
 import json
@@ -71,6 +72,7 @@ from .fixtures import canonical
 from .redact import KEY_SHAPED
 from .request_value import REQUEST_CLASS, request_data
 from .sandbox_run import PYTHON, SandboxResult, run_confined
+from .signals import REGIME_SOURCES
 
 STORE_DIR = "memory-captures"
 EVENTS_FILE = "captures-events.jsonl"
@@ -459,6 +461,30 @@ def handed_back(ep: Any) -> tuple[bool, Any]:
     return False, None
 
 
+#: The implicit corrections: a reader that corrected the answer or asked again, and the same request asked again.
+#: Each says the episode's answer was wrong only when it came after the answer was handed back.
+IMPLICIT_CORRECTIONS = frozenset({("reader", "correct"), ("reader", "re_ask"), ("recurrence", "re_ask")})
+
+
+def _instant(ts: Any) -> dt.datetime | None:
+    """An ISO time as an aware datetime (``Z`` read as UTC), or None when it is not one."""
+    if not isinstance(ts, str) or not ts:
+        return None
+    try:
+        at = dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return at if at.tzinfo is not None else at.replace(tzinfo=dt.UTC)
+
+
+def came_after(sig: Any, ep: Any) -> bool:
+    """Whether *sig* came after episode *ep* handed back its value: after the episode ended (no action carries a
+    time of its own, and the value is final when the episode ends). Unknown when either time is missing or not a
+    time, and then False."""
+    at, ended = _instant(getattr(sig, "ts", None)), _instant(getattr(ep, "ended_at", None))
+    return at is not None and ended is not None and at > ended
+
+
 def _given_order(sig: Any) -> tuple:
     """A checker verdict's place among the episode's: its time, then its number (``<episode>.checker.<n>``)."""
     sid = str(getattr(sig, "signal_id", ""))
@@ -474,9 +500,14 @@ def final_value_signals(signals: Iterable[Any], ep: Any) -> list:
     the answered action (:func:`answered_action`) judge the handed-back value; one that names another action judged
     another value and is left out (an attempt that was rejected and then accepted is judged by its acceptance). When
     verdicts name actions but none names this one, no verdict judges it. When none names an action, the last verdict
-    given stands for the final value. Every other signal (provenance, the reader's corrections) is about the episode
-    and is kept."""
-    sigs = list(signals)
+    given stands for the final value. An implicit correction (:data:`IMPLICIT_CORRECTIONS`) judges it only when it
+    came after the value was handed back (:func:`came_after`); one that came before was about an earlier value. Every
+    other signal (provenance) is about the episode and is kept."""
+    sigs = [
+        s
+        for s in signals
+        if (getattr(s, "source", None), getattr(s, "label", None)) not in IMPLICIT_CORRECTIONS or came_after(s, ep)
+    ]
     checker = [s for s in sigs if getattr(s, "source", None) == "checker"]
     if not checker:
         return sigs
@@ -819,8 +850,15 @@ def capture(
         regime = str(getattr(ep, "regime", "") or "none")
         regime = regime if regime in trust.REGIMES else "none"
         # judged by the signals on the value it reproduces: a verdict on an earlier, other value never counts
-        sig_out = trust.signal_outcome(final_value_signals(signals, ep), regime, checker_visible=checker_visible)
-        contrary = sig_out["verdict"] == "rejected" or sig_out["end_outcome"] == "contrary"
+        judged = final_value_signals(signals, ep)
+        sig_out = trust.signal_outcome(judged, regime, checker_visible=checker_visible)
+        # a correction after the answer, where the regime observes its source, says the answer was wrong
+        corrected = any(
+            (getattr(s, "source", None), getattr(s, "label", None)) in IMPLICIT_CORRECTIONS
+            and getattr(s, "source", None) in REGIME_SOURCES.get(regime, frozenset())
+            for s in judged
+        )
+        contrary = sig_out["verdict"] == "rejected" or sig_out["end_outcome"] == "contrary" or corrected
         positive = sig_out["verdict"] == "accepted" or sig_out["end_outcome"] == "positive"
         outcome = FAILED if (contrary or reproduces == DIFFERS) else ("positive" if positive else "none")
         returned = run.get("outcome") == "returned"
