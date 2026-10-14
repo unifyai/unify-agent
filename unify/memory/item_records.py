@@ -334,6 +334,17 @@ def recipe_text(record: Mapping | None) -> str | None:
     return f"{r['item']}; {r.get('passed', 0)} of {r.get('cases', 0)} cases passed" + (f" ({shown})" if shown else "")
 
 
+def recipe_ids(records: Mapping | None) -> set[str]:
+    """The functions that are a procedure's recipe, by the procedures' verification records (:func:`recipe_text`)."""
+    out: set[str] = set()
+    for rec in (records or {}).values():
+        v = rec.get("verification") if isinstance(rec, Mapping) else None
+        r = v.get("recipe") if isinstance(v, dict) else None
+        if isinstance(r, dict) and isinstance(r.get("item"), str):
+            out.add(r["item"])
+    return out
+
+
 def use_totals(record: Mapping | None) -> dict:
     """What ``memory.show`` prints of the use record: the totals over every library commit."""
     use = record.get("use") if isinstance(record, Mapping) else None

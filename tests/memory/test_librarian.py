@@ -52,6 +52,8 @@ needs_box = pytest.mark.skipif(
 #: The landed procedure, the reader it was landed with and its ``applies``, as ``land_capture`` names them.
 TOTAL = "memory.tables.procedures:total"
 READ_ROWS = "memory.tables.readers:read_total"
+#: The procedure's recipe, the whole job on a request: an item with a card, never a dispatch row of its own.
+RECIPE = "memory.tables.procedures:apply_total"
 WIDE = "memory.tables.procedures:_total_applies"
 COUNT = "memory.tables.count:count_rows"
 NOTE = "notes/tables/sums.md"
@@ -227,8 +229,8 @@ def _copy(tmp_path: Path, librarian: bool = True, name: str = "copy") -> Path:
 def test_the_catalogue_has_one_card_per_function_in_module_order_then_notes_then_captures(tmp_path):
     root = _copy(tmp_path)
     text = (root / lx.CATALOGUE_FILE).read_text()
-    # its applies is private to the procedure's module: no card of its own
-    assert L.catalogue_ids(text) == [COUNT, TOTAL, READ_ROWS, NOTE, "capture:" + CAPTURE, "capture:" + FAILED]
+    # its applies is private to the procedure's module: no card of its own; its recipe is a function with a card
+    assert L.catalogue_ids(text) == [COUNT, RECIPE, TOTAL, READ_ROWS, NOTE, "capture:" + CAPTURE, "capture:" + FAILED]
     assert text.index("## Functions") < text.index("## Notes") < text.index("## Captured procedures")
     card = text.split(f"### {TOTAL}\n", 1)[1].split("\n### ", 1)[0]
     assert f"`{TOTAL}(value)`" in card
@@ -239,6 +241,8 @@ def test_the_catalogue_has_one_card_per_function_in_module_order_then_notes_then
     sig = _records()[TOTAL]["signature"]
     assert f"Input: {signature_text(sig)}" in card and "Input: {" in card
     assert "Record: " in card and f"Notes: {NOTE}" in card
+    # the recipe the gate ran on the procedure's cases, and how it did
+    assert f"Recipe: {RECIPE}; 1 of 1 cases passed (1 source)" in card
     failed = text.split(f"### capture:{FAILED}\n", 1)[1]
     assert "tried and failed: never offered to run" in failed and "Broke: reading the words raised ValueError <id>" in failed
     assert "level unchecked" in text.split(f"### capture:{CAPTURE}\n", 1)[1]
@@ -506,8 +510,8 @@ def test_the_first_user_message_line_counts_the_copy_and_is_absent_for_an_empty_
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "on")
     tail = "; memory.ask() shows the ones that apply, memory.items() lists them all."
-    # the world's catalogue: COUNT, TOTAL and READ_ROWS, and NOTE
-    assert line_for(_copy(tmp_path)) == "Your memory library holds 3 functions and 1 note" + tail
+    # the world's catalogue: COUNT, TOTAL, its recipe and READ_ROWS, and NOTE
+    assert line_for(_copy(tmp_path)) == "Your memory library holds 4 functions and 1 note" + tail
     one = copy_with("one", {
         "memory.a.b:c": {"kind": "function"},
         "memory.a.b:d": {"kind": "function", "status": "retired"},
