@@ -1800,7 +1800,8 @@ class RequestRun:
                     settings=SETTINGS,
                     emit=self._emitter(emit),
                 )
-                self._spawned = spawned.get("phase") == "spawned"
+                # a worker started, for a pass or to capture first: WAIT_SLOT waits for it either way
+                self._spawned = spawned.get("phase") in ("spawned", "spawned_for_capture")
             except Exception as exc:  # noqa: BLE001
                 self._error("passes", exc, progress)
             try:
