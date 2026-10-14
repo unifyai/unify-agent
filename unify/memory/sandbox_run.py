@@ -378,13 +378,28 @@ class _Tail:
 
 def _kill_box(proc: subprocess.Popen) -> None:
     """SIGKILL bubblewrap's process group, every process below it and every process in the box's pid namespace
-    (recorded when it started, :func:`_spawn_box`); raise unless all are gone."""
-    process_tree.kill_tree(
-        proc.pid,
-        exited=lambda: proc.poll() is not None,
-        grace_s=_KILL_GRACE_S,
-        pid_ns=getattr(proc, "box_pid_ns", None),
-    )
+    (held open since it started, :func:`_spawn_box`); raise unless all are gone. The namespace is released after."""
+    try:
+        process_tree.kill_tree(
+            proc.pid,
+            exited=lambda: proc.poll() is not None,
+            grace_s=_KILL_GRACE_S,
+            pid_ns=getattr(proc, "box_pid_ns", None),
+            pid_ns_fd=getattr(proc, "box_pid_ns_fd", None),
+        )
+    finally:
+        _release_namespace(proc)
+
+
+def _release_namespace(proc: subprocess.Popen) -> None:
+    """Close the fd that holds the box's pid namespace (:func:`_spawn_box`). Safe to repeat."""
+    fd = getattr(proc, "box_pid_ns_fd", None)
+    proc.box_pid_ns_fd = None
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 def _check_box_request(env: dict[str, str] | None, pass_fds: tuple[int, ...]) -> str:
@@ -527,9 +542,11 @@ def _spawn_box(
             env={"PATH": "/usr/bin:/bin"},
             pass_fds=(env_fd, bpf_fd, *pass_fds),
         )
-        # the box's pid namespace, recorded as it starts: the verified kill finds every process in it, whatever its
-        # parent, group or session (process_tree.kill_tree)
-        proc.box_pid_ns = process_tree.box_namespace(proc.pid)
+        # the box's pid namespace, pinned (held open) as it starts: the verified kill finds every process in it,
+        # whatever its parent, group or session, and a later box can never take its number meanwhile
+        # (process_tree.kill_tree); released by the kill or when the box ends
+        pinned = process_tree.pin_box_namespace(proc.pid)
+        proc.box_pid_ns, proc.box_pid_ns_fd = pinned if pinned is not None else (None, None)
         return proc
 
 
@@ -590,6 +607,8 @@ def run_confined(
         tails.append(_Tail(proc.stdout, spool=spool[0] if spool is not None else None))
         tails.append(_Tail(proc.stderr, spool=spool[1] if spool is not None else None))
         proc.wait(timeout=timeout_s)
+        # the box ended by itself: its namespace went with it, and its pin is released
+        _release_namespace(proc)
         return result(proc.returncode, False)
     except subprocess.TimeoutExpired:
         _kill_box(proc)

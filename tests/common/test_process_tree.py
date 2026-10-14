@@ -150,3 +150,52 @@ def test_a_detached_sleep_never_outlives_the_box_kill_under_load():
             burner.wait()
         for argument in arguments:
             _sweep(argument)
+
+
+def _box_that_keeps_a_sleep(argument: str) -> "sandbox_run.ConfinedBox":
+    """A box whose Python waits on a ``sleep``: it stays alive until it is killed."""
+    code = f"import subprocess\nsubprocess.Popen(['/bin/sleep', {argument!r}]).wait()\n"
+    return sandbox_run.start_confined([str(sandbox_run.PYTHON), "-I", "-c", code])
+
+
+@needs_bwrap
+@pytest.mark.timeout(300)
+def test_a_box_that_ended_never_has_a_later_box_killed_in_its_place():
+    # box A ends by itself; its namespace stays pinned (held open since its start) until its kill releases it, so no
+    # box started meanwhile can take its number, and A's kill finds nothing of theirs
+    a = sandbox_run.start_confined([str(sandbox_run.PYTHON), "-I", "-c", "pass"])
+    name_a, fd_a = a.proc.box_pid_ns, a.proc.box_pid_ns_fd
+    assert name_a is not None and fd_a is not None
+    a.proc.wait(timeout=60)
+    later: list = []
+    arguments: list[str] = []
+    try:
+        for _ in range(20):
+            arguments.append(_sleep_argument())
+            later.append(_box_that_keeps_a_sleep(arguments[-1]))
+            assert later[-1].proc.box_pid_ns != name_a  # A's number is still held
+        for argument in arguments:
+            assert _alive_with(argument)
+        a.kill()  # A's cleanup: its namespace, held, matched by name
+        assert a.proc.box_pid_ns_fd is None  # released after the kill
+        for argument in arguments:
+            assert _alive_with(argument), "a later box was killed by an earlier box's cleanup"
+        # a name without its open fd is never trusted: a kill handed only box B's name leaves B alone
+        dummy = subprocess.Popen([sys.executable, "-I", "-c", "import time; time.sleep(60)"], start_new_session=True)
+        try:
+            process_tree.kill_tree(
+                dummy.pid,
+                exited=lambda: dummy.poll() is not None,
+                grace_s=10,
+                pid_ns=later[0].proc.box_pid_ns,
+            )
+        finally:
+            if dummy.poll() is None:
+                dummy.kill()
+                dummy.wait()
+        assert _alive_with(arguments[0])
+    finally:
+        for box in later:
+            box.kill()
+        for argument in arguments:
+            _sweep(argument)

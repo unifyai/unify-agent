@@ -18,6 +18,8 @@ __all__ = [
     "KILL_GRACE_S",
     "alive",
     "box_namespace",
+    "pin_box_namespace",
+    "pin_namespace",
     "descendants",
     "kill_tree",
     "pid_namespace",
@@ -72,6 +74,47 @@ def pid_namespace(pid: int | str) -> str | None:
         return None
 
 
+def pin_namespace(pid: int | str) -> tuple[str, int] | None:
+    """The pid namespace *pid* runs in, held open: ``(name, fd)``. While the fd is open the namespace's inode stays
+    allocated, so no namespace created later can take its number (``pid:[N]``) while it is matched by name; the
+    caller closes the fd. None when it cannot be opened, or the namespace opened is not the one named."""
+    name = pid_namespace(pid)
+    if name is None:
+        return None
+    try:
+        fd = os.open(f"/proc/{pid}/ns/pid", os.O_RDONLY | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        same = name == f"pid:[{os.fstat(fd).st_ino}]"
+    except OSError:
+        same = False
+    if not same:
+        os.close(fd)
+        return None
+    return name, fd
+
+
+def pin_box_namespace(pid: int, timeout_s: float = 2.0) -> tuple[str, int] | None:
+    """:func:`box_namespace`, held open (:func:`pin_namespace`): ``(name, fd)`` of the box's pid namespace, or
+    None."""
+    own = pid_namespace("self")
+    deadline = time.monotonic() + timeout_s
+    while True:
+        for child, _ in descendants(pid):
+            ns = pid_namespace(child)
+            if ns is not None and ns != own:
+                pinned = pin_namespace(child)
+                if pinned is not None and pinned[0] == ns:
+                    return pinned
+                if pinned is not None:
+                    os.close(pinned[1])
+        st = proc_stat(pid)
+        if time.monotonic() >= deadline or st is None or st[1] in _ENDED:
+            return None
+        time.sleep(0.005)
+
+
 def box_namespace(pid: int, timeout_s: float = 2.0) -> str | None:
     """The pid namespace of the box that *pid* started (bubblewrap with ``--unshare-pid``): the namespace of the
     first process below *pid* that is not in this process's own, waiting up to *timeout_s* for the box to make it.
@@ -111,6 +154,7 @@ def kill_tree(
     exited: Optional[Callable[[], bool]] = None,
     grace_s: Optional[float] = None,
     pid_ns: Optional[str] = None,
+    pid_ns_fd: Optional[int] = None,
 ) -> None:
     """SIGKILL the process group led by *pid*, every process below *pid* and every process in the box's pid
     namespace; return only once all are verified gone, raise otherwise.
@@ -122,9 +166,12 @@ def kill_tree(
       running;
     * the group: a process whose group is *pid*'s, while that group has never been empty since the kill began
       (so its id cannot have been reused);
-    * the namespace: a process in the box's pid namespace, *pid_ns* (recorded when the box started:
-      :func:`box_namespace`) or any namespace other than this process's own that a targeted process runs in,
-      whatever its parent, group or session (one that left by ``setsid`` or was reparented included).
+    * the namespace: a process in the box's pid namespace, *pid_ns* held open by *pid_ns_fd* (pinned when the box
+      started: :func:`pin_box_namespace`; a name without its open fd is not trusted), or any namespace other than
+      this process's own that a targeted process runs in, pinned as it is found, whatever the process's parent,
+      group or session (one that left by ``setsid`` or was reparented included). A namespace is matched by name
+      only while it is held open, so a namespace created after it ended can never take its number and be killed
+      in its place; the fds the kill opens are closed before it returns or raises.
 
     Every process found gets SIGKILL. The kill returns once the leader has ended and two consecutive scans find
     nothing alive; ``RuntimeError`` names the survivors when any outlives *grace_s* seconds.
@@ -134,7 +181,14 @@ def kill_tree(
     """
     me = os.getpid()
     own_ns = pid_namespace("self")
-    watched = {pid_ns} if pid_ns and pid_ns != own_ns else set()
+    watched: set[str] = set()
+    held: list[int] = []  # the fds this kill opened on the namespaces it watches
+    if pid_ns and pid_ns != own_ns and pid_ns_fd is not None:
+        try:
+            if pid_ns == f"pid:[{os.fstat(pid_ns_fd).st_ino}]":
+                watched.add(pid_ns)
+        except OSError:
+            pass
     leader = proc_stat(pid)
     leader_start = leader[2] if leader is not None else None
     born = int(leader_start) if leader_start is not None and leader_start.isdigit() else None
@@ -177,8 +231,12 @@ def kill_tree(
                     found.setdefault(p, row[3])
         for p in list(found):
             ns = pid_namespace(p)
-            if ns is not None and ns != own_ns:
-                watched.add(ns)
+            if ns is not None and ns != own_ns and ns not in watched:
+                pinned = pin_namespace(p)
+                if pinned is not None:
+                    held.append(pinned[1])
+                    if pinned[0] == ns:
+                        watched.add(ns)
         if watched:
             for p, row in table.items():
                 if p in found or p in (me, pid) or row[1] in _ENDED:
@@ -190,38 +248,45 @@ def kill_tree(
                     found[p] = row[3]
         return found
 
-    # the tree as it stands before the signal: a process the signal leaves running is waited on even once the
-    # leader's pid no longer leads to it
-    targets.update((child, start) for child, start in descendants(pid) if child != me)
-    if leader is not None:
-        try:
-            os.killpg(pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-        if alive(pid, leader[2]):
+    try:
+        # the tree as it stands before the signal: a process the signal leaves running is waited on even once the
+        # leader's pid no longer leads to it
+        targets.update((child, start) for child, start in descendants(pid) if child != me)
+        if leader is not None:
             try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-
-    deadline = time.monotonic() + (KILL_GRACE_S if grace_s is None else grace_s)
-    empty = 0
-    while True:
-        found = scan()
-        for p, start in found.items():
-            targets[p] = start
-            try:
-                os.kill(p, signal.SIGKILL)
+                os.killpg(pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
-        if leader_gone():
-            leader_ended = True
-        empty = empty + 1 if leader_ended and not found else 0
-        if empty >= 2:
-            return
-        if time.monotonic() > deadline:
-            raise RuntimeError(
-                f"sandbox processes survived SIGKILL: leader {pid}, others {sorted(found)}",
-            )
-        # a first empty scan is confirmed at once; processes still dying are looked at again a little later
-        time.sleep(0.01 if empty else 0.05)
+            if alive(pid, leader[2]):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+        deadline = time.monotonic() + (KILL_GRACE_S if grace_s is None else grace_s)
+        empty = 0
+        while True:
+            found = scan()
+            for p, start in found.items():
+                targets[p] = start
+                try:
+                    os.kill(p, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            if leader_gone():
+                leader_ended = True
+            empty = empty + 1 if leader_ended and not found else 0
+            if empty >= 2:
+                return
+            if time.monotonic() > deadline:
+                raise RuntimeError(
+                    f"sandbox processes survived SIGKILL: leader {pid}, others {sorted(found)}",
+                )
+            # a first empty scan is confirmed at once; processes still dying are looked at again a little later
+            time.sleep(0.01 if empty else 0.05)
+    finally:
+        for fd in held:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
