@@ -119,12 +119,14 @@ def test_a_box_records_its_own_pid_namespace():
         _sweep(argument)
 
 
+#: Busy processes beside the kills: enough to load the box's scheduling, few enough that a suite running in parallel
+#: keeps its pace (one per CPU starved the other test processes).
+BURNERS = 2
+
+
 def _burners() -> list[subprocess.Popen]:
-    """One busy process per CPU, so the kills below run under load."""
-    return [
-        subprocess.Popen([sys.executable, "-I", "-S", "-c", "while True: pass"])
-        for _ in range(max(2, os.cpu_count() or 2))
-    ]
+    """A few busy processes, so the kills below run under load."""
+    return [subprocess.Popen([sys.executable, "-I", "-S", "-c", "while True: pass"]) for _ in range(BURNERS)]
 
 
 @needs_bwrap
