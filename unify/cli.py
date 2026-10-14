@@ -347,6 +347,9 @@ class Act:
         self._mv2 = None
         # "consolidate": false on any stdin line: when the session ends, record the episode, start no pass.
         self._mv2_consolidate = True
+        # Why the request stopped unfinished, for its memory run's journal: "timeout", or "error" with the
+        # exception's class name (never its text); None when nothing stopped it.
+        self._mv2_stop: dict | None = None
 
     # ── lifecycle ────────────────────────────────────────────────────────
 
@@ -382,8 +385,9 @@ class Act:
             except Exception:
                 pass
         if self._mv2 is not None:
-            # A run not finished (a timeout, an error) records nothing.
-            self._mv2.abort()
+            # A run not finished (a timeout, an error) records nothing now; its journal keeps the turns, and the
+            # next start records them as an incomplete episode with why it stopped.
+            self._mv2.abort(**({"stopped": self._mv2_stop} if self._mv2_stop else {}))
 
     # ── output ───────────────────────────────────────────────────────────
 
@@ -711,9 +715,11 @@ class Act:
             result = await asyncio.wait_for(self._handle.result(), timeout=args.timeout)
         except asyncio.TimeoutError:
             print(f"timed out after {args.timeout:g}s", file=sys.stderr, flush=True)
+            self._mv2_stop = {"reason": "timeout"}
             return 1
         except Exception as exc:
             print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            self._mv2_stop = {"reason": "error", "error": type(exc).__name__}
             return 1
         finally:
             if reader is not None and not args.persist:

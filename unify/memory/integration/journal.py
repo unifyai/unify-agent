@@ -14,11 +14,13 @@ request finishes it.
 
 The journal is in the harness-only state directory: no box mounts it and the actor never reads it.
 
-When the episode is recorded the journal is removed, and a request that ends unfinished (``RequestRun.abort``, which
-records nothing) removes it too. A journal still there when the next request opens (under the request lock, so no
-other request writes it) is one whose process died mid-request: :func:`recover` records it as an incomplete episode,
-from the journal's lines alone, with ``incomplete`` (:data:`UNKNOWN_REASON`, and when it was recovered) in its meta,
-and removes it. A journal whose header cannot be read is renamed with :data:`UNRECORDED`, kept and never retried.
+When the episode is recorded the journal is removed. A request that ends unfinished (``RequestRun.abort``: a timeout
+or an error) keeps it, with one last line saying why it stopped (:data:`STOPPED`: ``"timeout"``, or ``"error"`` and the
+exception's class name, never its text). A journal still there when the next request opens (under the request lock,
+so no other request writes it) is one whose request stopped or whose process died mid-request: :func:`recover`
+records it as an incomplete episode, from the journal's lines alone, with ``incomplete`` (why it stopped, else
+:data:`UNKNOWN_REASON`, and when it was recovered) in its meta, and removes it. A journal whose header cannot be read
+is renamed with :data:`UNRECORDED`, kept and never retried.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ import datetime as dt
 import json
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,8 +37,12 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-#: The ``type`` of the journal's first line.
+#: The ``type`` of the journal's first line, and of the line an unfinished request ends it with.
 HEADER = "episode_journal"
+STOPPED = "episode_journal_stopped"
+#: Why a request stopped, as the journal may say it: these reasons, and an exception's class name.
+STOP_REASONS = ("timeout", "error")
+_CLASS_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,99}\Z")
 #: Why a recovered episode ended, as far as its journal tells.
 UNKNOWN_REASON = "unknown"
 #: The suffix a journal is renamed with when it cannot be recorded (kept as it is, never retried).
@@ -119,6 +126,18 @@ class EpisodeJournal:
                     self._failed = True
                     logger.warning("memory: a turn was not journaled (%s)", type(exc).__name__)
 
+    def stopped(self, why: dict) -> None:
+        """End the journal with why the request stopped (:data:`STOP_REASONS`, and an error's class name only), then
+        stop journaling; the file stays for the next start."""
+        row = {"type": STOPPED, **_stop_fields(why)}
+        with self._lock:
+            if self._fd is not None:
+                try:
+                    self._write(json.dumps(row))
+                except OSError as exc:
+                    logger.warning("memory: the journal's stop was not written (%s)", type(exc).__name__)
+        self.close()
+
     def close(self) -> None:
         """Stop journaling; the file stays."""
         with self._lock:
@@ -139,9 +158,20 @@ class EpisodeJournal:
         _fsync_dir(self.path.parent)
 
 
+def _stop_fields(why: Any) -> dict:
+    """*why* as the journal keeps it: a known reason, and for an error the exception's class name; anything else is
+    :data:`UNKNOWN_REASON`."""
+    why = why if isinstance(why, dict) else {}
+    reason = why.get("reason") if why.get("reason") in STOP_REASONS else UNKNOWN_REASON
+    out = {"reason": reason}
+    if reason == "error" and isinstance(why.get("error"), str) and _CLASS_NAME.match(why["error"]):
+        out["error"] = why["error"]
+    return out
+
+
 def read(path: Path) -> tuple[dict | None, list[dict]]:
-    """A journal's header (None when its first line is not one) and its transcript lines; a line that cannot be
-    read (one cut off when the process died) is skipped."""
+    """A journal's header (None when its first line is not one) and its lines; a line that cannot be read (one cut
+    off when the process died) is skipped."""
     rows = []
     with open(path, "rb") as fh:
         for raw in fh:
@@ -199,6 +229,8 @@ def _record(path: Path, stores: Any, library_index: Callable[[Any, Any], None] |
     from . import trajectory
 
     header, lines = read(path)
+    stops = [r for r in lines if r.get("type") == STOPPED]
+    lines = [r for r in lines if r.get("type") != STOPPED]
     if header is None:
         path.rename(path.with_name(path.name + UNRECORDED))
         logger.warning("memory: the journal %s has no header; kept as %s", path.name, path.name + UNRECORDED)
@@ -222,7 +254,7 @@ def _record(path: Path, stores: Any, library_index: Callable[[Any, Any], None] |
         _last_ts(lines) or run.started_at,
         worktree_before=header.get("worktree_before") if isinstance(header.get("worktree_before"), str) else None,
     )
-    ep.incomplete = {"reason": UNKNOWN_REASON, "recovered_at": recovered_at}
+    ep.incomplete = {**_stop_fields(stops[-1] if stops else None), "recovered_at": recovered_at}
     writer = EpisodeWriter(
         stores.episodes,
         stores.blobs,
@@ -246,4 +278,4 @@ def _record(path: Path, stores: Any, library_index: Callable[[Any, Any], None] |
     return ep.episode_id
 
 
-__all__ = ["EpisodeJournal", "HEADER", "UNKNOWN_REASON", "UNRECORDED", "read", "recover"]
+__all__ = ["EpisodeJournal", "HEADER", "STOPPED", "STOP_REASONS", "UNKNOWN_REASON", "UNRECORDED", "read", "recover"]
