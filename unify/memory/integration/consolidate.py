@@ -411,6 +411,8 @@ class WriterSettings:
     library_mode: bool = (
         False  # UNIFY_MEMORY_LIBRARY: the writer's batch map, views and coverage
     )
+    # UNIFY_PROFILE (empty: today's behaviour); under ``paper`` the model is the actor's and there is no route
+    profile: str = ""
 
     @property
     def cap_usd(self) -> Decimal:
@@ -439,15 +441,31 @@ def writer_settings(settings: Any) -> WriterSettings:
     route with one of its two settings empty, say) starts no pass and makes no call. The writer's route is settled
     against the process environment again first (:func:`.switch.settle_writer_route_env`), so a value that
     reached the environment late (``.env`` loaded by an embedder after unify was imported) is refused here
-    too, not only on the CLI's path. Every refusal of the route is a :class:`.switch.WriterRouteRefused`.
+    too, not only on the CLI's path. Every refusal of the route is a :class:`.switch.WriterRouteRefused`. Under
+    ``UNIFY_PROFILE=paper`` the model is the actor's (:func:`.request.actor_model`), and a run that sets a setting the
+    profile fixes is refused before anything else is read (:func:`.switch.profile_refusal`).
     """
-    settle_writer_route_env(os.environ, settings)
-    model = str(getattr(settings, "UNIFY_MEMORY_WRITER_MODEL", "") or "").strip()
     from .switch import (
         library_enabled,
         library_experience_budget,
         library_writer_usd_per_token,
+        profile,
+        profile_refusal,
     )
+
+    # a run that sets a setting its profile fixes starts no pass and makes no call (the settings named, never a
+    # value); checked first, so no route setting is read for it
+    refused = profile_refusal(settings)
+    if refused is not None:
+        raise WriterRouteRefused(refused)
+    settle_writer_route_env(os.environ, settings)
+    model = str(getattr(settings, "UNIFY_MEMORY_WRITER_MODEL", "") or "").strip()
+    run_profile = profile(settings)
+    if run_profile:
+        # the paper profile: the writer runs on the actor's model, through its own accounting lane (checked below)
+        from .request import actor_model
+
+        model = actor_model()
 
     if library_enabled(settings):
         e = library_experience_budget(
@@ -491,6 +509,10 @@ def writer_settings(settings: Any) -> WriterSettings:
     # both or neither, checked here (before any pass starts); no error quotes a value
     pair = writer_route(getattr(settings, WRITER_BASE_URL, ""), writer_token(settings))
     route = WriterRoute(*pair) if pair is not None else None
+    if run_profile and route is None:
+        from .switch import PAPER_LANE_REFUSAL
+
+        raise WriterRouteRefused(PAPER_LANE_REFUSAL)
     model = model or WRITER_MODEL
     if route is not None and otel_on():
         raise WriterRouteRefused(OTEL_REFUSAL)
@@ -521,6 +543,7 @@ def writer_settings(settings: Any) -> WriterSettings:
         scale,
         calls,
         library_mode,
+        run_profile,
     )
 
 
@@ -957,6 +980,10 @@ def _end_event(
                 # prompt (the brief and the first message, before any reading)
                 "input_tokens_calls": int(getattr(outcome, "input_tokens_calls", 0)),
                 "cache_read_calls": int(getattr(outcome, "cache_read_calls", 0)),
+                # the writer's output tokens (its reasoning included, as providers count it) and how many calls
+                # reported them (None: no call did): the pass's own tokens beside its wall time (seconds)
+                "output_tokens": getattr(outcome, "output_tokens", None),
+                "output_tokens_calls": int(getattr(outcome, "output_tokens_calls", 0)),
                 "writer_calls": int(getattr(outcome, "writer_calls", 0)),
                 "writer_first_prompt_tokens": getattr(outcome, "writer_first_prompt_tokens", None),
                 # the largest prompt one call reported, and the model's window as the compaction trigger reads it
@@ -1294,7 +1321,13 @@ async def run_due_passes(
     :class:`..trigger.Trigger`'s ``verdict``). *first* numbers the passes from ``<eid>.p<first>`` (a worker's later
     slots); with *new_verdicts_only* only a due pass that covers a verdict episode not in it runs; *ran* gets each
     WRITE pass's request as it starts.
+
+    Under ``UNIFY_MEMORY_PASSES=off`` nothing runs: no settings are read, no pass starts and no call is made.
     """
+    from .switch import memory_passes_on
+
+    if not memory_passes_on(settings):
+        return []
     try:
         cfg = writer_settings(settings)
     except WriterRouteRefused:
@@ -1465,26 +1498,19 @@ async def run_due_passes(
             )
             break
         rows: list[CostRow] = []
+        # the pass this spend belongs to, as the fork's calls carry fork.<episode>, on the writer's route (always set
+        # under the paper profile); a default run's call without a route is as shipped
+        session = f"{'curator' if curating else 'writer'}.{pass_id}"
+        if cfg.route is not None:
+            turn = unillm_turn(cfg.model, effort, route=cfg.route, session=session)
+        else:
+            turn = unillm_turn(cfg.model, effort)
         writer = WriterPass(
             stores.memory,
             curate_gate if curating else gate,
             stores.evidence,
             lookup.episode,
-            recording_turn(
-                (
-                    unillm_turn(cfg.model, effort)
-                    if cfg.route is None
-                    else unillm_turn(
-                        cfg.model,
-                        effort,
-                        route=cfg.route,
-                        # the pass this spend belongs to, as the fork's calls carry fork.<episode>
-                        session=f"{'curator' if curating else 'writer'}.{pass_id}",
-                    )
-                ),
-                rows,
-                cfg.model,
-            ),
+            recording_turn(turn, rows, cfg.model),
             config,
             redactor=Redactor.from_environ(os.environ),
             curate=curate_state if curating else None,
@@ -1496,6 +1522,8 @@ async def run_due_passes(
             _error(stores, f"{pass_id}: ledger: {type(exc).__name__}: {exc}")
             break
         start = _start_event(req, pass_id, cfg.model, effort, cap, max_calls, scale)
+        if cfg.profile:
+            start["profile"] = cfg.profile  # UNIFY_PROFILE, only when set
         if req.verdicts:
             # due at once on these episodes' captures (or a batch that covers them)
             start["pass_kind"] = req.kind

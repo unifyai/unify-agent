@@ -178,3 +178,10 @@ The three long-horizon switches share the step-limit reply path.
 - **Default:** `off`.
 - **What it does:** When on, the actor asks a librarian agent which stored items fit its request (`memory.ask()` in a cell, through the in-code tool `ask_library`); the library export also writes the librarian's catalogue and the procedures' dispatch file, and the actor's prompt shows a constant pointer in place of the index. It requires `UNIFY_TOOLS_IN_CODE=on` (refused at start-up otherwise). Off, nothing of it exists or runs.
 - **Evidence:** the memory design under evaluation, as for the library switches above; keyless tests only so far (the librarian, catalogue, dispatch and ask tests under `tests/memory/`, on records the gate writes).
+
+## UNIFY_MEMORY_PASSES
+
+- **Values:** `on` or `off` (empty is `on`).
+- **Default:** empty (`on`).
+- **What it does:** When off, the actor's memory surface is exactly as with it on (its tools, the library pointer or index, the librarian when that is on), and no memory work runs after a request: no consolidation pass of any kind starts (a batch's WRITE, the CURATE it makes due, a pass a verdict makes due), no writer call is made, the episode-end fork does not start, and the library never changes. Every other memory setting keeps its value. The episode is still recorded, its meta saying `"memory_passes": "off"`.
+- **Evidence:** the no-pass twin of the memory arm: the same surface with no learning, so a paired comparison separates what the library adds from what the surface alone does. No counted readout yet; keyless tests only.

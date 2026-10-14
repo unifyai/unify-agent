@@ -80,6 +80,7 @@ _ACTOR_IN_CODE = [
     # only with UNIFY_MEMORY_LIBRARIAN=on (registry flag "librarian")
     "ask_library",
     "sh",
+    "check_examples",
 ]
 _TEAMMATE_IN_CODE = [
     "read",
@@ -92,6 +93,7 @@ _TEAMMATE_IN_CODE = [
     "delegate",
     "answer",
     "sh",
+    "check_examples",
 ]
 _BOX_MOUNTS = [
     {"path": "/inputs", "mode": "ro"},
@@ -333,6 +335,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
             "check",
             "finish",
             "sh",
+            "check_examples",
         ],
         "mounts": list(_BOX_MOUNTS),
         "denied": ["network", "credentials", "/outputs inside cells", ".git"],
@@ -476,6 +479,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
             "check",
             "finish",
             "sh",
+            "check_examples",
         ],
         "mounts": list(_BOX_MOUNTS),
         "denied": [
@@ -599,6 +603,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
             "ask",
             "done",
             "sh",
+            "check_examples",
         ],
         "mounts": [
             # the writer's own /inputs (staging, pool, batch map, drafts, gate results, other helpers' output)

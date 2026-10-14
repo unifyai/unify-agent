@@ -79,6 +79,9 @@ CONFIGURATION = frozenset(
         "UNIFY_MEMORY_LIBRARY_WAIT_SLOT",
         # Benchmark policy: whether the checker's verdict a bed showed the actor is recorded for the library.
         "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE",
+        # Benchmark policy: the comparison profile every reported row runs under (the writer's model, route and
+        # effort, and the checker line); it fixes configuration, it is no arm under test.
+        "UNIFY_PROFILE",
         # Retired: only their off values are accepted, so an old configuration fails loudly.
         "UNIFY_MEMORY_LIBRARY_ANALYSTS",
         "UNIFY_MEMORY_LIBRARY_COVERAGE",

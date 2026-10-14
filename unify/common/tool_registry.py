@@ -1289,6 +1289,76 @@ SH = RegisteredTool(
     kind="local",
 )
 
+#: The example check: runs a candidate function of the agent's own session on each example's input, in the agent's
+#: box (the stub embeds :mod:`unify.common.box_check_source` and the comparison :mod:`unify.memory.value_diff`), and
+#: reports each difference. The writer's and curator's ``check`` is the gate's check of their manifest.
+CHECK_EXAMPLES = RegisteredTool(
+    name="check_examples",
+    summary="run a function of yours on example inputs, in your box, and compare its outputs with the expected ones.",
+    description=(
+        "Run `candidate`, a function defined in your session, on the input of each example, here in your box (the "
+        "interpreter your cells run in, so it sees what they see), and compare what it returns with the example's "
+        "expected output. `examples` is a list of examples, each {\"input\": ..., \"expected\": ...} (\"output\" "
+        "may stand for \"expected\") or a pair (input, expected). Each input is passed to `candidate` as its one "
+        "argument, unless `candidate` needs two or more positional arguments: then an input that is a tuple or a "
+        "list is passed as those arguments (to choose otherwise, pass a wrapper such as `lambda args: f(*args)`). "
+        "Each input is copied first, so the candidate cannot change your examples. Values are compared as JSON: "
+        "text that parses as JSON is compared as the value it parses to, other text without its leading and "
+        "trailing whitespace, and a tuple as a list. Every example runs, whatever the others do; your cell's time "
+        "limit bounds the whole check. Returns a report: the first line is `passed n of m`; then, per example, its "
+        "input and, for each one that did not pass, its expected output and the actual one (or the exception it "
+        "raised: its type, message and line) and the difference: for JSON values one line per place they differ "
+        "(`[2][1]: expected 3, got 4`, a missing or an extra key, a list of another length), for text a unified "
+        "diff of its lines. Long values are cut in the text, and the cut is marked; the report's `.results` holds "
+        "every value whole (one dict per example: input, expected, actual, error, passed, difference), and "
+        "`.passed`, `.total` and `.ok` (at least one example ran and all passed) the counts."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "candidate": {"description": "The function to check: any callable defined in your session."},
+            "examples": {
+                "type": "array",
+                "description": (
+                    'The examples: each {"input": ..., "expected": ...} ("output" may stand for "expected") or a '
+                    "pair [input, expected]."
+                ),
+                "items": {
+                    "anyOf": [
+                        {
+                            "type": "object",
+                            "properties": {"input": {}, "expected": {}, "output": {}},
+                            "required": ["input"],
+                        },
+                        {"type": "array", "minItems": 2, "maxItems": 2},
+                    ],
+                },
+            },
+        },
+        "required": ["candidate", "examples"],
+        "additionalProperties": False,
+    },
+    roles=_ALL,
+    returns=(
+        "the report as text (`passed n of m`, then each example), with `.passed`, `.total`, `.ok` and `.results`; a "
+        "malformed call raises with a call that works."
+    ),
+    examples=(
+        'def totals(order):\n    return {"count": len(order["prices"]), "sum": sum(order["prices"])}\n'
+        'report = tools.check_examples(totals, [{"input": {"prices": [2, 3]}, "expected": {"count": 2, "sum": 5}}])\n'
+        "print(report)",
+        'def initials(name):\n    return ".".join(w[0] for w in name.split()) + "."\n'
+        'print(tools.check_examples(initials, [["Ada Lovelace", "A.L."], ["Alan Mathison Turing", "A.M.T."]]))',
+    ),
+    when=(
+        "When the request or the environment shows examples of the expected behaviour (inputs with their outputs, "
+        "calls with their results, a sample of the expected form), check your candidate against them before you "
+        "act on it or answer with it; read each failing example's difference, change the candidate and check "
+        "again."
+    ),
+    kind="local",
+)
+
 
 # --- what the in-code surface adds to each moved tool: help texts, kinds, handlers and the actor's arguments ---
 
@@ -1774,6 +1844,7 @@ _REGISTRY: tuple[RegisteredTool, ...] = (
     SEARCH,
     CURRENT_REQUEST,
     SH,
+    CHECK_EXAMPLES,
 )
 
 
@@ -1825,7 +1896,9 @@ def _earlier(key: tuple[str, str]) -> Optional[_EarlierJson]:
 
 
 #: Registered tools that never were a memory agent's model-API tool.
-_IN_CODE_ONLY = frozenset({"sh", "install", "store_skills", "ask_library", "answer", "current_request"})
+_IN_CODE_ONLY = frozenset(
+    {"sh", "install", "store_skills", "ask_library", "answer", "current_request", "check_examples"},
+)
 
 
 def earlier_tool(agent: str, name: str) -> Any:
@@ -2248,6 +2321,23 @@ def shell_source() -> str:
     return box_shell_source.SOURCE
 
 
+def check_source() -> str:
+    """The box-local ``check_examples``, embedded verbatim in every stub that has it
+    (``unify.common.box_check_source``)."""
+    from unify.common import box_check_source
+
+    return box_check_source.SOURCE
+
+
+def comparison_source() -> str:
+    """The module source of the one comparison of an expected value with an actual one
+    (:mod:`unify.memory.value_diff`), byte for byte: the stub runs it in its own namespace, so ``check_examples`` in a
+    box compares with the same function the gate uses (standard library only, pure)."""
+    from unify.memory import value_diff
+
+    return inspect.getsource(value_diff)
+
+
 #: The names the embedded client defines that the stub exports.
 CLIENT_NAMES = ("Result", "Refused", "NotRun", "ToolError", "ChannelClosed", "_call")
 
@@ -2348,6 +2438,8 @@ def __getattr__(name):
 '''
 #: The names the embedded shell source defines that the stub exports.
 SHELL_NAMES = ("sh", "ShellResult")
+#: The registered tools whose function the stub embeds rather than generates (they run in the box, never on the host).
+EMBEDDED = frozenset({"sh", "check_examples"})
 
 
 def _function_source(name: str, agent: Optional[str]) -> str:
@@ -2423,8 +2515,24 @@ def render_stub(names: tuple[str, ...], agent: Optional[str] = None) -> str:
         "_ERRORS_SOURCE = " + repr(errors_source()),
         _TEACHING_SOURCE,
     ]
+    if "check_examples" in allowed:
+        # run in the box: the comparison's module in its own namespace, then the check, which calls it; a wrong
+        # number of arguments teaches as every other call does
+        out += [
+            "",
+            "_COMPARISON_SOURCE = " + repr(comparison_source()),
+            "_comparison = {'__name__': 'value_diff'}",
+            "exec(compile(_COMPARISON_SOURCE, '<tools: comparison>', 'exec'), _comparison)",
+            "_CHECK_SOURCE = " + repr(check_source()),
+            "_check = {'__name__': __name__, '_difference': _comparison['difference'], '_contract': _contract}",
+            "exec(compile(_CHECK_SOURCE, '<tools: check_examples>', 'exec'), _check)",
+            "CheckReport = _check['CheckReport']",
+            "check_examples = _taught(_check['check_examples'])",
+            f"check_examples.__doc__ = {json.dumps(help_text('check_examples', agent))}",
+            "",
+        ]
     for n in allowed:
-        if n != "sh":
+        if n not in EMBEDDED:
             out += ["", _function_source(n, agent), f"{n} = _taught({n})", ""]
     helps = {n: help_text(n, agent) for n in allowed}
     # the help topics the agent has besides its tools (topics are never listed or callable)
@@ -2573,6 +2681,11 @@ def sandbox_paragraph(agent: str, names: Iterable[str], persistent: bool) -> str
     return f"{state} {names_text}" if names_text else state
 
 
+#: The one line of the actor's and a teammate's opening about examples (``tools.check_examples``).
+EXAMPLES_LINE = (
+    "When the request or the environment shows examples of the expected behaviour, check a candidate against them "
+    "with `tools.check_examples` before acting on it."
+)
 #: Where thinking goes: execute_code's ``thought`` argument. It stays in the conversation and ends nothing (an answer
 #: is a message without a tool call, or ``tools.answer``), and a call with a thought and no code runs nothing, so a
 #: cell is never needed just to keep thinking.
@@ -2622,6 +2735,8 @@ def preamble(agent: str, facts: dict) -> str:
         parts += ["", 'Shell: `tools.sh("ls -la")` runs a shell command in your box and returns its output.']
     if "install" in allowed:
         parts += ["", "Install packages with `tools.install(...)`; a cell has no network, so pip there fails."]
+    if agent in (_A, _T) and "check_examples" in allowed:
+        parts += ["", EXAMPLES_LINE]
     env = str(facts.get("environment") or "").strip()
     if env:
         parts += ["", env]

@@ -817,9 +817,23 @@ async def _run_act(args: argparse.Namespace) -> int:
         await session.close()
 
 
+def _profile_refusal() -> str | None:
+    """Why this run may not start under its ``UNIFY_PROFILE`` (the settings it fixes that are set otherwise, by name,
+    never a value), or None."""
+    from unify.memory.integration.switch import profile_refusal
+    from unify.settings import SETTINGS
+
+    return profile_refusal(SETTINGS)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     _configure_environment(args)
+    refusal = _profile_refusal()
+    if refusal is not None:
+        # fail closed: nothing starts, no model is called
+        print(f"unify: {refusal}", file=sys.stderr)
+        return 2
     runner = _run_act if args.command == "act" else _run_chat
     try:
         return asyncio.run(runner(args))

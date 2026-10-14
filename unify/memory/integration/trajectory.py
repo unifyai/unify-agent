@@ -378,7 +378,9 @@ def assemble(
     *run* supplies ``episode_id``, ``started_at``, ``build``, ``model``, ``effort``, ``pin`` (memory
     ``main`` at the request's start), ``request`` (used when the transcript holds no user message),
     ``observer`` (the tool recorder, drained here; may be None), ``costs`` (a
-    :class:`.cost.CostListener`) and optionally ``regime`` (default ``"dense"``). The tool actions come
+    :class:`.cost.CostListener`) and optionally ``regime`` (default ``"dense"``), ``profile`` (the run's
+    ``UNIFY_PROFILE``; default empty) and ``memory_passes`` (``"off"`` under ``UNIFY_MEMORY_PASSES=off``; default
+    empty). The tool actions come
     first, then *extra_actions* in their order; an action's index in the episode is what covers cite.
     """
     folded = fold(lines)
@@ -413,5 +415,7 @@ def assemble(
         costs=list(getattr(costs, "rows", None) or []),
         fingerprints=_fingerprints(actions),
         replies=replies,
+        profile=str(getattr(run, "profile", "") or ""),
+        memory_passes=str(getattr(run, "memory_passes", "") or ""),
     )
     return ep, Redactor(secrets)
