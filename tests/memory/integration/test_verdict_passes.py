@@ -1,10 +1,11 @@
 """Writer passes at the verdict, in the library mode's worker: one writer at a time.
 
-A capture that is a verdict (positive, reproducing its handed-back value) starts a writer pass for its episode at
+A capture that is a verdict (it reproduces its handed-back value and nothing contradicted it: positive, or no
+signal at all) starts a writer pass for its episode at
 once. The worker runs its due pass, then, slot after slot, every pass a verdict made due meanwhile, each starting only
 after the one before it ended: two writers never run side by side, and a verdict that comes due during a pass (a
 batched one or another verdict's) waits for it and then runs. A request's end starts a worker for a verdict, or to
-capture a settled fork whose episode's signals are positive.
+capture a settled fork (positive ones first; one with no signal too).
 
 The writer is a stand-in that records when each pass starts and ends and how many passes run at once; the capture
 step is a stand-in that writes the capture rows the real one would (no box runs). No model is called.
@@ -161,7 +162,7 @@ def test_a_verdict_starts_a_pass_for_its_episode_at_once(world):
         {"outcome": "failed", "reproduces": "differs"},
         {"outcome": "failed", "reproduces": "reproduces"},
         {"outcome": "positive", "reproduces": "unknown"},
-        {"outcome": "none", "reproduces": "reproduces"},
+        {"outcome": "none", "reproduces": "differs"},
     ],
 )
 def test_a_capture_that_failed_or_did_not_reproduce_starts_no_pass(world, row):
@@ -170,6 +171,14 @@ def test_a_capture_that_failed_or_did_not_reproduce_starts_no_pass(world, row):
     ran, slots = world.worker("e1", sha, _settings())
     assert world.passes == [] and ran == [] and slots == ["e1.p0"]
     assert captures.episode_rows(world.store)["e1"]["outcome"] == row["outcome"]  # captured all the same
+
+
+def test_a_reproducing_capture_with_no_signal_starts_a_pass(world):
+    # an environment with no reward or feedback: the capture reproduces and nothing contradicts it
+    sha = _record(world.stores, "e1")
+    world.settled["e1"] = {"outcome": "none", "reproduces": "reproduces"}
+    world.worker("e1", sha, _settings())
+    assert [(p["kind"], p["verdicts"]) for p in world.passes] == [("verdict", ["e1"])]
 
 
 def test_without_a_verdict_the_batched_pass_runs_as_before(world):
@@ -261,7 +270,7 @@ class _Proc:
     pid = os.getpid()  # a live process, so the record has a start time
 
 
-def test_a_request_end_starts_a_worker_for_a_verdict_or_to_capture_a_positive_fork(world):
+def test_a_request_end_starts_a_worker_for_a_verdict_or_to_capture_a_settled_fork(world):
     stores = world.stores
     settings = _settings(visible="on")
     spawned = []
@@ -278,8 +287,7 @@ def test_a_request_end_starts_a_worker_for_a_verdict_or_to_capture_a_positive_fo
     sha1 = _record(stores, "e1")
     assert end("e1", sha1)["phase"] == "not_due" and spawned == []  # nothing settled, nothing due
     _settle(stores, "e1")
-    assert end("e1", sha1)["phase"] == "not_due"  # settled, but no positive signal: it waits for the batch
-    _seen_pass(stores, "e1", sha1, "pass")
+    # settled with no signal at all: still a candidate, so it is captured and may make a verdict
     assert consolidate.verdict_candidates(stores, settings) == ["e1"]
     ev = end("e1", sha1)
     assert ev["phase"] == "spawned_for_capture" and ev["capture_episodes"] == ["e1"] and len(spawned) == 1
@@ -288,11 +296,16 @@ def test_a_request_end_starts_a_worker_for_a_verdict_or_to_capture_a_positive_fo
     assert consolidate.verdict_candidates(stores, settings) == []
     ev = end("e1", sha1)
     assert ev["phase"] == "spawned" and ev["pass_kind"] == "verdict" and ev["verdict_episodes"] == ["e1"]
-    # a failed verdict seen by the actor makes no candidate
+    # positive first, then no signal, then contradicted (captured as failed: it makes no pass)
     sha2 = _record(stores, "e2")
     _settle(stores, "e2")
     _seen_pass(stores, "e2", sha2, "fail")
-    assert consolidate.verdict_candidates(stores, settings) == []
+    _record(stores, "e3")
+    _settle(stores, "e3")
+    sha4 = _record(stores, "e4")
+    _settle(stores, "e4")
+    _seen_pass(stores, "e4", sha4, "pass")
+    assert consolidate.verdict_candidates(stores, settings) == ["e4", "e3", "e2"]
     # with the fork off there is nothing to capture
     assert consolidate.verdict_candidates(stores, _settings(fork="off", visible="on")) == []
 

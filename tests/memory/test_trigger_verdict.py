@@ -17,13 +17,15 @@ def _indexed(tmp_path, *eids):
     return ev
 
 
-def test_a_verdict_capture_is_positive_and_reproducing_only():
+def test_a_verdict_capture_reproduces_and_is_not_contradicted_with_or_without_a_signal():
     assert captures.verdict({"outcome": "positive", "reproduces": "reproduces"})
+    # no reward or feedback at all: a reproducing capture is still a verdict
+    assert captures.verdict({"outcome": "none", "reproduces": "reproduces"})
     for row in (
         {"outcome": "failed", "reproduces": "reproduces"},
         {"outcome": "failed", "reproduces": "differs"},
         {"outcome": "positive", "reproduces": "unknown"},
-        {"outcome": "none", "reproduces": "reproduces"},
+        {"outcome": "none", "reproduces": "differs"},
         {"outcome": "positive", "reproduces": None},
         None,
         "positive",
@@ -37,7 +39,8 @@ def test_the_verdict_episodes_come_from_each_episodes_last_capture_row(tmp_path)
     captures._event(store, {"episode": "b", "outcome": "positive", "reproduces": "differs"})
     captures._event(store, {"episode": "c", "outcome": "failed", "reproduces": "reproduces"})
     captures._event(store, {"episode": "d", "outcome": "positive", "reproduces": "unknown"})
-    assert captures.verdict_episodes(store) == {"a"}
+    captures._event(store, {"episode": "e", "outcome": "none", "reproduces": "reproduces"})
+    assert captures.verdict_episodes(store) == {"a", "e"}
 
 
 def test_a_verdict_makes_a_pass_due_at_once_covering_what_a_batch_would(tmp_path):

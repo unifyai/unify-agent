@@ -14,10 +14,10 @@ it lands.
 spawner) for its whole life. ``pass-inflight.json`` names it: pid, process group, ``/proc`` start time (the
 ownership check) and deadline.
 
-**Verdict passes.** A capture that is a verdict (positive, reproducing its handed-back value) makes a pass due at
-once (:class:`..trigger.Trigger`'s ``verdict``). A request's end also starts a worker when a settled fork whose
-episode's signals are positive has no capture yet (:func:`.consolidate.verdict_candidates`): the worker captures it
-first. A verdict that comes due while a worker runs waits for it: the worker, still holding the lock, runs the pass
+**Verdict passes.** A capture that is a verdict (it reproduces its handed-back value and nothing contradicted its
+attempt: positive, or no signal at all) makes a pass due at once (:class:`..trigger.Trigger`'s ``verdict``). A
+request's end also starts a worker when a settled fork has no capture yet (:func:`.consolidate.verdict_candidates`,
+positive ones first): the worker captures it first. A verdict that comes due while a worker runs waits for it: the worker, still holding the lock, runs the pass
 in a slot of its own once the slot before it ended (:func:`.consolidate.run_slots`), and every slot rewrites
 ``pass-inflight.json``. Passes never run side by side, and a verdict is never dropped: until a pass covers its
 episode it stays due in the capture store and the cursor.

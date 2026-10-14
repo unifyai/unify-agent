@@ -689,9 +689,12 @@ def episode_rows(store: Path | str) -> dict[str, dict]:
 
 
 def verdict(row: Any) -> bool:
-    """Whether a capture step's row is a verdict: its attempt's outcome was positive and its capture reproduced the
-    value the attempt handed back."""
-    return isinstance(row, Mapping) and row.get("outcome") == "positive" and row.get("reproduces") == REPRODUCES
+    """Whether a capture step's row makes a writer pass due at once: its capture reproduced the value its attempt
+    handed back, and nothing contradicted the attempt (outcome positive, or none where the environment gives no
+    signal; never failed). A positive signal only orders what is captured first
+    (:func:`.integration.consolidate.verdict_candidates`), it never gates a pass, so the passes run where no reward or
+    feedback exists."""
+    return isinstance(row, Mapping) and row.get("reproduces") == REPRODUCES and row.get("outcome") in ("positive", "none")
 
 
 def verdict_episodes(store: Path | str) -> set[str]:

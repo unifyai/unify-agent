@@ -1223,9 +1223,11 @@ def verdict_check(paths: Any, settings: Any) -> Callable[[str], bool] | None:
 
 
 def verdict_candidates(stores: Stores, settings: Any) -> list[str]:
-    """The settled forks not captured yet whose episode's signals are positive (as the capture step reads them), so
-    that capturing one may make a verdict: a worker starts to capture them and to run the pass a verdict makes due.
-    Files and the evidence store only, nothing is run; [] with the fork off. Never raises."""
+    """The settled forks not captured yet, so that capturing one may make a verdict (:func:`..captures.verdict`): a
+    worker starts to capture them and to run the pass a verdict makes due. Every such fork is a candidate, with or
+    without a signal (an environment may give none); a positive one comes first, then one with no signal, then a
+    contradicted one (it is captured as failed and makes no pass). Files and the evidence store only, nothing is run;
+    [] with the fork off. Never raises."""
     from .. import captures, trust
     from ..staging import STATUS_FILES
 
@@ -1235,7 +1237,7 @@ def verdict_candidates(stores: Stores, settings: Any) -> list[str]:
         state = Path(stores.paths.state_dir)
         root = state / "memory-staging"
         done = captures.episode_rows(captures.store_dir(state))
-        out = []
+        ranked: list[tuple[int, str]] = []
         for eid in sorted(os.listdir(root)) if root.is_dir() else []:
             d = root / eid
             if eid in done or d.is_symlink() or not d.is_dir():
@@ -1251,9 +1253,9 @@ def verdict_candidates(stores: Stores, settings: Any) -> list[str]:
                 checker_visible=checker_visible(settings),
             )
             contrary = got["verdict"] == "rejected" or got["end_outcome"] == "contrary"
-            if not contrary and (got["verdict"] == "accepted" or got["end_outcome"] == "positive"):
-                out.append(eid)
-        return out
+            positive = got["verdict"] == "accepted" or got["end_outcome"] == "positive"
+            ranked.append((2 if contrary else 0 if positive else 1, eid))
+        return [eid for _, eid in sorted(ranked)]
     except Exception as exc:  # noqa: BLE001 - a worker then starts only when a pass is due
         _error(stores, f"verdict candidates: {type(exc).__name__}")
         return []
