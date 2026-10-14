@@ -26,6 +26,7 @@ from tests.memory import library_example_world as w
 from tests.memory.test_episodes import _ep
 from tests.memory.test_tool_channel_box import needs_box
 from tests.memory.test_writer_pass import _call
+from tests.memory.writer_sections import README_TEXT, as_written
 from unify.memory import fixtures as fx
 from unify.memory.blobs import BlobStore
 from unify.memory.evidence import EvidenceStore
@@ -214,6 +215,8 @@ ITEM_ACCOUNT = {**ITEM_READER, "item": ACCOUNT_ID, "tests": [ACCOUNT_TEST]}
 
 
 def _write(rel: str, text: str) -> str:
+    # as a writer writes it: each function and note with its "when to use" section
+    text = as_written({rel: text})[rel]
     return (
         f"_p = pathlib.Path('/memory') / {rel!r}\n"
         "_p.parent.mkdir(parents=True, exist_ok=True)\n"
@@ -230,6 +233,7 @@ def _structured_cell() -> str:
     recorded-inputs file, all made through the fixture tool."""
     out = ["import pathlib\n"]
     out += [_write(w.PACKAGE_INIT, '"""Accounts."""\n'), _write(w.MODULE, w.MODULE_SOURCE), _write(w.TEST_FILE, w.TEST_SOURCE)]
+    out.append(_write(w.README, README_TEXT))
     for path, eid in zip(w.FIXTURE_PATHS, ("e1", "e2")):
         out.append(_fixture(episode=eid, dest=path, source="0"))
     for eid in ("e1", "e2"):
@@ -243,6 +247,7 @@ def _text_cell(*, parsed: bool) -> str:
     out = [
         "import pathlib\n",
         _write("memory/fields/__init__.py", PACKAGE_INIT),
+        _write("memory/fields/README.md", README_TEXT),
         _write(READERS, READERS_SOURCE),
         _write(ACCOUNTS, ACCOUNTS_SOURCE),
         _write(READER_TEST, READER_TEST_SOURCE),

@@ -6,7 +6,7 @@ is never judged.
 """
 
 import ast
-import inspect
+import textwrap
 
 from unify.memory import docstrings, layout, when_to_use
 from unify.memory.library_prompts import WHEN_TO_USE_TEXT
@@ -34,7 +34,7 @@ FUNCTION = f'''def total(rows):
 
     Example: memory/calc/tests/test_sums.py::test_total
 
-{inspect.cleandoc(SECTION).replace(chr(10), chr(10) + "    ")}
+    {SECTION.replace(chr(10), chr(10) + "    ")}
     """
     return {{}}
 '''
@@ -212,4 +212,4 @@ def test_the_writer_is_told_the_shape_the_gate_checks():
         assert f"`{label}:`" in flat
     assert "`When to use:`" in flat and "`## When to use`" in flat and "README.md" in flat
     example = WHEN_TO_USE_TEXT.split("For example:\n", 1)[1].split("  The gate", 1)[0]
-    assert when_to_use.function_problems("Summary.\n\n" + inspect.cleandoc(example)) == []
+    assert when_to_use.function_problems("Summary.\n\n" + textwrap.dedent(example)) == []

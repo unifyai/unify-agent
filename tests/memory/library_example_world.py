@@ -222,13 +222,18 @@ def manifest(fixtures: dict[str, dict], *items: dict, **top: Any) -> dict:
 
 
 def candidate(mem: Repo, files: dict[str, str | None], base: str = "main") -> str:
-    """Commit *files* (``None`` deletes) on *base* and return the candidate commit, as a writer leaves them: each
-    module's functions and each note with its "when to use" section, each folder with its README.md
-    (:func:`tests.memory.writer_sections.as_written`)."""
+    """Commit *files* (``None`` deletes) on *base* and return the candidate commit. What they add or change is
+    committed as a writer leaves it: each function and note with its "when to use" section, each folder with its
+    README.md (:func:`tests.memory.writer_sections.as_written`); what they leave as *base* has it stays as it is."""
     from tests.memory.writer_sections import as_written
 
     with mem.temp_checkout(base) as wt:
-        files = as_written(files, _Present(wt))
+        written = {
+            rel: text
+            for rel, text in files.items()
+            if text is None or not (wt / rel).is_file() or (wt / rel).read_text() != text
+        }
+        files = {**files, **as_written(written, _Present(wt))}
         for rel, text in files.items():
             if text is None:
                 (wt / rel).unlink()

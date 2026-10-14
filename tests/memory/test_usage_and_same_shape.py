@@ -1,4 +1,4 @@
-"""Measured use for the writer, same-shape functions for CURATE, the when-to-use note."""
+"""Measured use for the writer, same-shape functions for CURATE, the when-to-use section."""
 
 from unify.memory import curate, library_prompts as pv
 from unify.memory.evidence import EvidenceStore
@@ -23,12 +23,12 @@ def test_the_library_usage_table_can_list_every_item(tmp_path):
     assert all(i in full for i in ids)
 
 
-def test_write_asks_for_a_linked_when_to_use_note_without_rules_about_ids():
+def test_write_asks_for_each_items_when_to_use_section_and_a_linked_note_of_preconditions():
+    """Each item says when to use it itself (its section, unify/memory/when_to_use.py); a linked note keeps the
+    function's preconditions and known failures."""
     text = pv.write_brief_now()
-    assert (
-        "linked note says when to use it, its preconditions and its known failures"
-        in text
-    )
+    assert "linked note says its preconditions and its known failures" in text
+    assert pv.WHEN_TO_USE_TEXT in text
     assert pv.benchmark_words(text) == [] and pv.example_checks(text) == []
 
 
