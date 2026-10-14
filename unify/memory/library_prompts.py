@@ -520,8 +520,9 @@ UNJUDGED_FIX = {
 #: What each check the gate names in its refusals and results means (the same names: G1 to G6).
 _CHECK_NAMES = (
     "Its results and refusals name the check: G1, layout and provenance (only `memory/` and `notes/` change and "
-    "never the generated files, the manifest is well formed, every link names an item that exists, and every "
-    "fixture came through `fixture` unchanged, a parsed one re-made by its reader); G2, evidence (each "
+    "never the generated files, the manifest is well formed, every link names an item that exists, every "
+    "fixture came through `fixture` unchanged, a parsed one re-made by its reader, every new or changed function "
+    "and note has its `When to use` section, and every folder the pass changes has its README.md); G2, evidence (each "
     "function's listed tests call it, and the calls they make of it return or raise `MemoryInputError`; what else "
     "those calls show sets its evidence level: `unchecked` when a call that returns uses a value from a recorded "
     "episode in any form but some evidence check does not hold, `reproduces-its-case` when its structured "
@@ -602,6 +603,28 @@ _LIBRARY_BULLET = (
     "library file, import it again. For: knowing what exists before you add anything.\n"
 )
 
+#: The "when to use" section every stored function and note carries and the README every folder holds, as the writer
+#: and the curator are told them (:mod:`.when_to_use`: the gate checks the shape, never the words).
+WHEN_TO_USE_TEXT = (
+    "- Every function and note carries a section saying when to use it, written for a reader who has a new "
+    "request and must decide whether this item fits it. In a function's docstring it is a `When to use:` section; "
+    "in a note it is the body's `## When to use` heading. Either holds four labelled lines, each with its text: "
+    "`Saved for:` what the request it was saved from asked for, summarised; `Recognise:` how to tell that a new request is that situation; `Not for:` the "
+    "requests that look alike but need something else; `Example request:` one request it fits, in a requester's "
+    "words. For example:\n"
+    "  When to use:\n"
+    "      Saved for: totalling the amounts of a list of payment rows per currency.\n"
+    "      Recognise: the request gives rows with an amount and a currency and asks for totals.\n"
+    "      Not for: rows that must first be converted to one currency, or totals per date.\n"
+    "      Example request: Sum these payments per currency.\n"
+    "  The gate refuses a new or changed function or note without the section or one of its four lines. Keep it "
+    "true when you change what the item does.\n"
+    "- Every folder, `memory/<package>/` and `notes/<topic>/`, holds a short `README.md` you keep: what the "
+    "folder holds and how its items relate. The gate refuses the items of a folder the pass changes when the "
+    "folder has no README.md, or an empty one.\n"
+)
+
+
 _WHAT_TO_WRITE = (
     "# What to write\n"
     "- Functions go in `memory/<package>/<module>.py`, in packages you choose by what the code does. Each "
@@ -624,7 +647,7 @@ _WHAT_TO_WRITE = (
     "- A function's docstring has a one-line summary; `Args:`, `Returns:` and `Raises:` sections "
     "(`MemoryInputError` on an input it was not built for); an `Example:` section of one line naming one of "
     "the function's tests, `memory/<package>/tests/test_<module>.py::test_<case>`, with no doctest and no "
-    "`Input:` line; and, optionally, a `Notes:` line naming note paths.\n"
+    "`Input:` line; a `When to use:` section (below); and, optionally, a `Notes:` line naming note paths.\n"
     "- Notes go in `notes/<topic>/<slug>.md`: free-form markdown of any kind (a fact, a pitfall, a how-to, or "
     "how to combine functions), starting with front matter: `title`, `description` (one line, shown in the "
     "index) and `uses` (the ids of the functions it uses). A link is written only in a note's `uses` or a "
@@ -632,8 +655,9 @@ _WHAT_TO_WRITE = (
     "pitfall in general terms where it can; a rule for one kind of request is worth keeping when that kind of "
     "request comes back. A new item starts as `on-trial`; later passes and the curate pass revise, generalise "
     "or remove it as evidence arrives, so storing a rule that worked is not a final commitment. A function's "
-    "linked note says when to use it, its preconditions and its known failures.\n"
-    "- Tests go in `memory/<package>/tests/test_<module>.py`: plain pytest, importing only the library and the "
+    "linked note says its preconditions and its known failures.\n"
+    + WHEN_TO_USE_TEXT
+    + "- Tests go in `memory/<package>/tests/test_<module>.py`: plain pytest, importing only the library and the "
     "standard library, with fixtures under `memory/<package>/tests/data/`. `tests/` takes no `__init__.py`: "
     "pytest imports each test file by its path. " + _RUN_TESTS + "\n"
     "- The manifest is /memory/.pass/manifest.json (never committed):\n"
@@ -782,7 +806,10 @@ _CURATE = (
     "reason in `retired`.\n"
     "- Fix broken links and add missing ones between notes and functions.\n"
     "- Regroup packages when that makes the index clearer, keeping each moved function's old id as an alias.\n"
-    "- Leave alone what is fine, and say why in `kept`: changing nothing is a valid result when no candidate is "
+    "- Keep each item's `When to use` section and each folder's README.md true to what they hold now: a merged or "
+    "generalised item's section covers the requests of the items it replaces. "
+    + WHEN_TO_USE_TEXT[2:]
+    + "- Leave alone what is fine, and say why in `kept`: changing nothing is a valid result when no candidate is "
     "really one job.\n"
     "- Write the manifest, /memory/.pass/manifest.json (never committed):\n"
     '  {"items": [{"item": "<id>", "kind": "function" or "note", "source_episodes": [...], "tests": [...], '
@@ -1529,8 +1556,10 @@ def _check_names_in_code(g5: str, g3_mutations: str) -> str:
     tests must catch, as the role's brief states it."""
     return (
         "Its results and refusals name the check: G1, layout and provenance (only `memory/` and `notes/` change and "
-        "never the generated files, the manifest is well formed, every link names an item that exists, and every "
-        "fixture came through `tools.fixture` unchanged, a parsed one re-made by its reader); G2, evidence (each "
+        "never the generated files, the manifest is well formed, every link names an item that exists, every "
+        "fixture came through `tools.fixture` unchanged, a parsed one re-made by its reader, every new or changed "
+        "function and note has its `When to use` section, and every folder the pass changes has its README.md); "
+        "G2, evidence (each "
         "function's listed tests call it, and the calls they make of it return or raise `MemoryInputError`; what "
         "else those calls show sets its evidence level: `unchecked` when a call that returns uses a value from a recorded "
         "episode in any form but some evidence check does not hold, `reproduces-its-case` when its structured "
@@ -1645,13 +1674,14 @@ _WHAT_TO_WRITE_IN_CODE = (
     "- A function's docstring has a one-line summary; `Args:`, `Returns:` and `Raises:` sections "
     "(`MemoryInputError` on an input it was not built for); an `Example:` section of one line naming one of "
     "the function's tests, `memory/<package>/tests/test_<module>.py::test_<case>`, with no doctest and no "
-    "`Input:` line; and, optionally, a `Notes:` line naming note paths.\n"
+    "`Input:` line; a `When to use:` section (below); and, optionally, a `Notes:` line naming note paths.\n"
     "- Notes go in `notes/<topic>/<slug>.md`: free-form markdown (a fact, a pitfall, a how-to, or how to combine "
     "functions) with front matter `title`, `description` (one line, shown in the index) and `uses` (the ids of the "
     "functions it uses). A link is written only in a note's `uses` or a function's `Notes:` line, and must name an "
     "item that exists. A new item starts as `on-trial`; later passes revise or remove it. A function's linked "
-    "note says when to use it, its preconditions and its known failures.\n"
-    "- Tests go in `memory/<package>/tests/test_<module>.py`: plain pytest, importing only the library and the "
+    "note says its preconditions and its known failures.\n"
+    + WHEN_TO_USE_TEXT
+    + "- Tests go in `memory/<package>/tests/test_<module>.py`: plain pytest, importing only the library and the "
     "standard library, with fixtures under `memory/<package>/tests/data/`. `tests/` takes no `__init__.py`: "
     "pytest imports each test file by its path. " + _RUN_TESTS + "\n"
     "- The manifest is /memory/.pass/manifest.json (never committed):\n"
@@ -2008,7 +2038,10 @@ _CURATE_IN_CODE = (
     "reason in `retired`.\n"
     "- Fix broken links and add missing ones between notes and functions.\n"
     "- Regroup packages when that makes the index clearer, keeping each moved function's old id as an alias.\n"
-    "- Leave alone what is fine, and say why in `kept`: changing nothing is a valid result when no candidate is "
+    "- Keep each item's `When to use` section and each folder's README.md true to what they hold now: a merged or "
+    "generalised item's section covers the requests of the items it replaces. "
+    + WHEN_TO_USE_TEXT[2:]
+    + "- Leave alone what is fine, and say why in `kept`: changing nothing is a valid result when no candidate is "
     "really one job.\n"
     "- Write the manifest, /memory/.pass/manifest.json (never committed):\n"
     '  {"items": [{"item": "<id>", "kind": "function" or "note", "source_episodes": [...], "tests": [...], '

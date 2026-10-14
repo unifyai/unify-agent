@@ -10,6 +10,8 @@ after it run, in order:
    the manifest entries, and the landing in the capture store (``landed.json``);
 3. the writer's own files, its fixtures through the fixture tool (a parsed fixture runs its reader confined) and its
    manifest entries;
+   then, as a writer does, each new or changed function and note gets its "when to use" section and each folder
+   its README.md (:func:`tests.memory.writer_sections.as_written`);
 4. the library gate's check of that candidate (``Gate.check``), whose verification records hold each function's
    level, example and readers;
 5. ``lifecycle.next_records`` over the candidate's tree, given the gate's verification and the capture store's
@@ -33,6 +35,7 @@ import pytest
 
 from tests.memory.library_example_world import candidate
 from tests.memory.test_library_helper import _commit
+from tests.memory.writer_sections import as_written
 from unify.memory import captures
 from unify.memory import fixtures as fx
 from unify.memory import land_capture
@@ -169,6 +172,12 @@ def build(
     for args in fixtures:
         reply = writer_tools.fixture(dict(args), episodes.get, box, blobs.get, batch)
         assert reply.status == "ok", reply.text
+    # as a writer does: each new or changed function and note says when to use it, each folder has its README.md
+    written = {rel: text for rel, text in _tree_files(box).items() if base.get(rel) != text}
+    for rel, text in as_written(written, base).items():
+        if text is not None and text != written.get(rel):
+            (box / rel).parent.mkdir(parents=True, exist_ok=True)
+            (box / rel).write_text(text, encoding="utf-8")
     drafted = box / writer_tools.MANIFEST
     manifest = json.loads(drafted.read_text(encoding="utf-8")) if drafted.is_file() else {}
     manifest = _merge(manifest, items)

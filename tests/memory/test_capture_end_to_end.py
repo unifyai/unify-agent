@@ -302,6 +302,27 @@ print('CAPTURE ' + json.dumps(row['capture'], sort_keys=True))
 print('ROUTE ' + json.dumps({k: row['staging'][k] for k in ('files', 'capture')}, sort_keys=True))
 print('POOL ' + tools.pool(op='list', kind='capture').replace(chr(10), ' | '))
 print('LANDED ' + tools.land_capture(row['capture']['id'], 'readings', 'row_sums').replace(chr(10), ' | '))
+# as a writer does: each landed function says when to use it, and the package folder has its README.md
+import ast, pathlib
+WHEN = ['When to use:', '    Saved for: summing the values of each row of a table of readings.',
+        '    Recognise: the request gives rows of numbers and asks for each row total.',
+        '    Not for: totals per column, or rows that hold text.', '    Example request: Sum each row of these readings.']
+for f in sorted(pathlib.Path('/memory/memory/readings').glob('*.py')):
+    src = f.read_text(); lines = src.splitlines(keepends=True)
+    for node in reversed(ast.parse(src).body):
+        if not isinstance(node, ast.FunctionDef) or node.name.startswith('_'):
+            continue
+        doc = ast.get_docstring(node)
+        d = node.body[0]; ind = ' ' * d.col_offset
+        section = ''.join(ind + w + chr(10) for w in WHEN)
+        if doc is None:
+            q = chr(34) * 3
+            lines.insert(d.lineno - 1, ind + q + node.name.replace('_', ' ').capitalize() + '.' + chr(10) + chr(10) + section + ind + q + chr(10))
+        elif 'When to use:' not in doc:
+            at = d.end_lineno - 1; close = d.end_col_offset - 3
+            lines[at] = lines[at][:close].rstrip() + chr(10) + chr(10) + section + ind + lines[at][close:]
+    f.write_text(''.join(lines))
+pathlib.Path('/memory/memory/readings/README.md').write_text('Readers and sums of tables of readings.' + chr(10))
 print('CHECK ' + tools.check()[:3000].replace(chr(10), ' | '))
 """
 FINISH_CELL = "tools.finish('landed the captured procedure')\nprint('NOT REACHED')\n"
