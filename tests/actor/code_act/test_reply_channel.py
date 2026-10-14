@@ -64,6 +64,13 @@ CELL = (
 # Every session a test drives ends within this, once its sandboxed worker
 # runs; a wait that starts the worker also has WORKER_START_BOUND_S.
 SESSION_BOUND_S = 2.0
+# A one-shot act (one cell, then a text reply) ends within this. It is above SESSION_BOUND_S on purpose: every act
+# ends with the verified kill of its sandboxes (unify/common/process_tree.kill_tree: full /proc scans until two in a
+# row find nothing, every process in the box's pinned pid namespace included), a deliberate per-act cost. Measured on
+# the keyless test host, 14 Oct 2026: alone these acts end under 2.0 s; under the full suite's load (-j12 / -j14)
+# they took 2.04-2.28 s (2.06 s at -j12 with the kill's final pauses), so the kill adds up to ~0.3 s an act under
+# load: negligible beside a model call. The bound encodes that cost, not a slack for anything else.
+ONE_SHOT_BOUND_S = 2.5
 
 
 def _flat(text: str) -> str:
@@ -318,7 +325,7 @@ async def test_a_one_shot_act_answers_with_the_cells_reply(
         await actor.close()
 
     assert result == ANSWER
-    assert elapsed < SESSION_BOUND_S
+    assert elapsed < ONE_SHOT_BOUND_S
     # No model call after the reply: the one scripted reply was the only one.
     assert len(provider.requests) == 1
     final = messages[-1]

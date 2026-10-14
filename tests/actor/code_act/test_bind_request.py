@@ -54,6 +54,13 @@ SENTENCE = (
 # Every session a test drives ends within this, once its sandboxed worker
 # runs; a wait that starts the worker also has WORKER_START_BOUND_S.
 SESSION_BOUND_S = 2.0
+# A one-shot act (one cell, then a text reply) ends within this. It is above SESSION_BOUND_S on purpose: every act
+# ends with the verified kill of its sandboxes (unify/common/process_tree.kill_tree: full /proc scans until two in a
+# row find nothing, every process in the box's pinned pid namespace included), a deliberate per-act cost. Measured on
+# the keyless test host, 14 Oct 2026: alone these acts end under 2.0 s; under the full suite's load (-j12 / -j14)
+# they took 2.04-2.28 s (2.06 s at -j12 with the kill's final pauses), so the kill adds up to ~0.3 s an act under
+# load: negligible beside a model call. The bound encodes that cost, not a slack for anything else.
+ONE_SHOT_BOUND_S = 2.5
 
 FIRST = (
     'Sum the values in [1, 2, 3] scaled by {"scale": 2}.\n'
@@ -476,7 +483,7 @@ async def test_a_one_shot_act_binds_its_request(
     finally:
         await actor.close()
 
-    assert elapsed < SESSION_BOUND_S
+    assert elapsed < ONE_SHOT_BOUND_S
     system = _flat(str(requests[0]["messages"][0]["content"]))
     if switch:
         assert _seen(tool) == [{"bound": True, "text": FIRST, "data": FIRST_DATA}]
@@ -506,7 +513,7 @@ async def test_a_one_shot_act_binds_its_request_on_the_core_surface(
     finally:
         await actor.close()
 
-    assert elapsed < SESSION_BOUND_S
+    assert elapsed < ONE_SHOT_BOUND_S
     assert _seen(tool) == [{"bound": True, "text": FIRST, "data": FIRST_DATA}]
     system = _flat(str(requests[0]["messages"][0]["content"]))
     assert system.count(SENTENCE) == 1
