@@ -210,3 +210,31 @@ def test_a_box_that_ended_never_has_a_later_box_killed_in_its_place():
             box.kill()
         for argument in arguments:
             _sweep(argument)
+
+
+def _open_fds() -> int:
+    return len(os.listdir("/proc/self/fd"))
+
+
+def test_a_namespace_is_pinned_only_for_the_process_it_was_found_as():
+    """Given the start time a process was found with, its namespace is pinned only while that process still holds
+    its pid: a pid that ended and was taken by another process would pin the other's namespace."""
+    child = subprocess.Popen(["sleep", "30"])
+    try:
+        st = process_tree.proc_stat(child.pid)
+        assert st is not None
+        before = _open_fds()
+
+        pinned = process_tree.pin_namespace(child.pid, st[2])
+        assert pinned is not None
+        assert pinned[0] == process_tree.pid_namespace(child.pid)
+        os.close(pinned[1])
+
+        # another start time: the pid now belongs to another process, so nothing is pinned and no fd is left open
+        assert process_tree.pin_namespace(child.pid, str(int(st[2]) + 1)) is None
+        assert _open_fds() == before
+    finally:
+        child.kill()
+        child.wait()
+    # the process ended: its pid pins nothing for the start time it was found with
+    assert process_tree.pin_namespace(child.pid, st[2]) is None
