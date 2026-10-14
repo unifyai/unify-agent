@@ -1192,10 +1192,10 @@ def _match_all(request: Any = None, inputs: Any = None) -> Matches:
 def _match_recognised(request: Any, inputs: Any, dispatch: tuple) -> Matches:
     """``match`` with the dispatch file: the procedures whose reader parsed the request's text and whose stated
     ``applies`` held on what the reader gave (:func:`_facts`, run in the confined child); a procedure that states no
-    ``applies`` is not listed. *request* None means the current request's text, and *inputs* None its data
-    (:func:`_current_request`). Structure only orders the rows: those whose recorded input has the structure of what
-    was passed (:data:`MATCHER`) come first, the rest in the dispatch file's order. The captured attempts that failed
-    on input like this are listed apart, as without the dispatch file."""
+    ``applies`` is not listed. *request* None means the current request's text, and *inputs* None the JSON values it
+    carries (:func:`_current_request`; one value stands for itself). Structure only orders the rows: those whose
+    recorded input has the structure of what was passed (:data:`MATCHER`) come first, the rest in the dispatch file's
+    order. The captured attempts that failed on input like this are listed apart, as without the dispatch file."""
     notes: list[str] = []
     if request is None:
         text, data = _current_request()
