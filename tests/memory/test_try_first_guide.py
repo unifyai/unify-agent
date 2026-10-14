@@ -80,8 +80,8 @@ import json
 
 
 def read_input(text):
-    """The JSON object of the request."""
-    return json.loads(text)
+    """The JSON object the request starts with."""
+    return json.JSONDecoder().raw_decode(text.strip())[0]
 
 
 def run(value):

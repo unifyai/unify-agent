@@ -73,10 +73,14 @@ PROCEDURE_TOTAL = f'''"""Sum every number of a table's rows."""
 
 
 def read_input(text):
-    """Read whitespace-separated rows of integers from text.
+    """Read whitespace-separated rows of integers from text: each line that holds only integers.
 
     Raises ValueError on text that holds no such rows."""
-    rows = [[int(x) * {PLANTED_FACTOR} for x in line.split()] for line in text.splitlines() if line.strip()]
+    rows = [
+        [int(x) * {PLANTED_FACTOR} for x in line.split()]
+        for line in text.splitlines()
+        if line.split() and all(x.lstrip("-").isdigit() for x in line.split())
+    ]
     if not rows:
         raise ValueError("no rows")
     return rows
