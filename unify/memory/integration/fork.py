@@ -330,6 +330,25 @@ def request_doc(
     return request_from_source(eid, source, url, key, parts=parts)
 
 
+def as_sent(message: Any) -> Any:
+    """*message* in the form the actor's own request carried it: unillm strips keys that start with ``_`` (the
+    harness's annotations, e.g. which reply ended a turn) from a message and its content blocks, and LiteLLM leaves out
+    a top-level key whose value is ``None``. The fork posts its body itself, so it applies both, and its prefix is
+    the actor's, byte for byte, rather than the history as the harness holds it."""
+    if not isinstance(message, dict):
+        return message
+    out = {k: v for k, v in message.items() if not (isinstance(k, str) and k.startswith("_")) and v is not None}
+    content = out.get("content")
+    if isinstance(content, list):
+        out["content"] = [
+            {k: v for k, v in block.items() if not (isinstance(k, str) and k.startswith("_"))}
+            if isinstance(block, dict)
+            else block
+            for block in content
+        ]
+    return out
+
+
 def request_from_source(
     episode_id: str,
     source: dict,
@@ -340,10 +359,10 @@ def request_from_source(
 ) -> tuple[dict | None, str | None]:
     """``(request document, None)`` for the fork from a conversation *source* (``client``, ``sent_messages``,
     ``tools`` and optionally ``tool_choice``, as the actor's session reader gives them), or ``(None, why)`` when it
-    cannot be forked: the messages and tool schemas unchanged, then :func:`fork_message` (the instruction, and
-    *parts*, the episode's part list from :func:`part_list`, when given). *base_url* is the fork lane's URL
-    (``/chat/completions`` is added when it is not already there); *token* goes only into the headers, which reach
-    the worker on its stdin."""
+    cannot be forked: the messages as the actor sent them (:func:`as_sent`) and the tool schemas unchanged, then
+    :func:`fork_message` (the instruction, and *parts*, the episode's part list from :func:`part_list`, when given).
+    *base_url* is the fork lane's URL (``/chat/completions`` is added when it is not already there); *token* goes only
+    into the headers, which reach the worker on its stdin."""
     eid = episode_id
     url = (
         base_url
@@ -358,7 +377,7 @@ def request_from_source(
     body: dict = {
         "model": model,
         "messages": [
-            *source["sent_messages"],
+            *(as_sent(m) for m in source["sent_messages"]),
             {"role": "user", "content": fork_message(parts)},
         ],
         "tools": source["tools"],

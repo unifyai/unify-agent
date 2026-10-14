@@ -74,10 +74,12 @@ def pid_namespace(pid: int | str) -> str | None:
         return None
 
 
-def pin_namespace(pid: int | str) -> tuple[str, int] | None:
+def pin_namespace(pid: int | str, starttime: str | None = None) -> tuple[str, int] | None:
     """The pid namespace *pid* runs in, held open: ``(name, fd)``. While the fd is open the namespace's inode stays
     allocated, so no namespace created later can take its number (``pid:[N]``) while it is matched by name; the
-    caller closes the fd. None when it cannot be opened, or the namespace opened is not the one named."""
+    caller closes the fd. None when it cannot be opened, or the namespace opened is not the one named, or, given
+    the *starttime* the caller found *pid* with, *pid* no longer runs as that process once the namespace is open
+    (it ended and its pid was taken by another process, whose namespace this would be)."""
     name = pid_namespace(pid)
     if name is None:
         return None
@@ -89,6 +91,9 @@ def pin_namespace(pid: int | str) -> tuple[str, int] | None:
         same = name == f"pid:[{os.fstat(fd).st_ino}]"
     except OSError:
         same = False
+    if same and starttime is not None:
+        st = proc_stat(int(pid))
+        same = st is not None and st[2] == starttime
     if not same:
         os.close(fd)
         return None
@@ -101,10 +106,10 @@ def pin_box_namespace(pid: int, timeout_s: float = 2.0) -> tuple[str, int] | Non
     own = pid_namespace("self")
     deadline = time.monotonic() + timeout_s
     while True:
-        for child, _ in descendants(pid):
+        for child, start in descendants(pid):
             ns = pid_namespace(child)
             if ns is not None and ns != own:
-                pinned = pin_namespace(child)
+                pinned = pin_namespace(child, start)
                 if pinned is not None and pinned[0] == ns:
                     return pinned
                 if pinned is not None:
@@ -231,7 +236,7 @@ def kill_tree(
         for p in list(found):
             ns = pid_namespace(p)
             if ns is not None and ns != own_ns and ns not in watched:
-                pinned = pin_namespace(p)
+                pinned = pin_namespace(p, found[p])
                 if pinned is not None:
                     held.append(pinned[1])
                     if pinned[0] == ns:

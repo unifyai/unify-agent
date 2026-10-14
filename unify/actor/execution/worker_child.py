@@ -23,6 +23,7 @@ Harness -> worker::
      "inventory": true}                       (only when asked)
     {"op": "reply", "id": k, "value": ..., "coroutine": bool}
     {"op": "reply", "id": k, "error": {"type", "module", "message", "args"}}
+    {"op": "interrupt", "id": n}              (a cancel: cell n stops where it is, the namespace is kept)
 
 Worker -> harness::
 
@@ -73,6 +74,7 @@ import linecache
 import os
 import re
 import sys
+import signal
 import tempfile
 import threading
 import time
@@ -131,6 +133,16 @@ class BoundaryRefusal(TypeError):
 #: Every stored function is compiled under ``<function:NAME>``
 #: (unify/function_manager/source_labels.py).
 STORED_FUNCTION_PREFIX = "<function:"
+
+
+#: The signal the channel's reader sends this process's main thread to interrupt the running cell.
+INTERRUPT_SIGNAL = signal.SIGUSR1
+
+
+class CellInterrupted(BaseException):
+    """Raised in a cell the requester cancelled while it ran: the cell stops where it is, and everything the
+    session's earlier cells bound is kept. A ``BaseException``, so a cell's ``except Exception`` does not
+    swallow it."""
 
 
 class CellReply(BaseException):
@@ -1073,6 +1085,9 @@ class Worker:
         self._module_stamps: dict[str, tuple] = {}
         self._lazy: dict[str, str] = {}
         self._cell_started_ns = 0
+        # The cell running now (its id and task) and the id of one the harness asked to interrupt (a cancel).
+        self._running: Optional[tuple[Any, asyncio.Task]] = None
+        self._interrupt_id: Any = None
 
     # -- channel -------------------------------------------------------------
     def send(self, msg: dict) -> None:
@@ -1090,6 +1105,9 @@ class Worker:
                 msg = json.loads(line)
             except ValueError:
                 continue
+            if msg.get("op") == "interrupt":
+                self.interrupt(msg.get("id"))
+                continue
             if msg.get("op") == "reply":
                 entry = self._pending.pop(msg.get("id"), None)
                 if entry is None:
@@ -1105,6 +1123,36 @@ class Worker:
                 self.loop.call_soon_threadsafe(self.handle, msg)
         # The harness closed the channel: nothing more can be asked of us.
         os._exit(0)
+
+    def interrupt(self, cid: Any) -> None:
+        """On the reader thread: stop cell *cid* if it is still running. A cell waiting on an ``await`` is
+        cancelled there; one running code is interrupted by :data:`INTERRUPT_SIGNAL` (:meth:`on_interrupt`). Either
+        way it ends as an error and the namespace is kept. A cell that already ended is left alone."""
+        running = self._running
+        if running is None or running[0] != cid or self.loop is None:
+            return
+        self._interrupt_id = cid
+        self.loop.call_soon_threadsafe(running[1].cancel)
+        try:
+            signal.pthread_kill(threading.main_thread().ident, INTERRUPT_SIGNAL)
+        except (OSError, ValueError):
+            pass
+
+    def on_interrupt(self, signum: int, frame: Any) -> None:
+        """:data:`INTERRUPT_SIGNAL`'s handler, on the main thread: raise :class:`CellInterrupted` in the cell the
+        harness asked to interrupt, when its code is what runs (otherwise it waits, and its cancellation stops
+        it)."""
+        running = self._running
+        if running is None or self._interrupt_id is None or running[0] != self._interrupt_id:
+            return
+        while frame is not None:
+            if frame.f_code.co_name == "__exec_wrapper":
+                self._interrupt_id = None
+                raise CellInterrupted(
+                    "the requester cancelled the request while this cell ran: it was interrupted here, and the "
+                    "session's variables are kept",
+                )
+            frame = frame.f_back
 
     @staticmethod
     def _with_cases(fields: dict) -> dict:
@@ -1834,7 +1882,7 @@ class Worker:
         op = msg.get("op")
         if op == "exec":
             assert self.loop is not None
-            self.loop.create_task(self.run_cell(msg))
+            self._running = (msg.get("id"), self.loop.create_task(self.run_cell(msg)))
         elif op == "variables":
             self.send(
                 {"op": "done", "id": msg.get("id"), "variables": self.variables()},
@@ -1897,6 +1945,8 @@ class Worker:
             remote = isinstance(exc, RemoteError)
             message = str(exc)
             result = None
+        # the cell has ended: an interrupt that comes now finds nothing to stop
+        self._running, self._interrupt_id = None, None
         try:
             encoded = self.encode_result(result)
         except Exception as exc:  # noqa: BLE001
@@ -2014,6 +2064,7 @@ def main() -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     worker.loop = loop
+    signal.signal(INTERRUPT_SIGNAL, worker.on_interrupt)
     threading.Thread(target=worker.reader, daemon=True).start()
     ready = {"op": "ready", "missing": missing, "pid": os.getpid()}
     if worker.audit_state is not None:

@@ -712,3 +712,46 @@ def test_any_status_file_settles_and_helpers_are_a_source(tmp_path):
         (tmp_path / eid / name).write_text('{"status": "ok"}')
     assert admit_settled(tmp_path, ["r", "h", "a"]) == (["r", "h"], ["a"])
     assert staging.read(tmp_path, "h").source == "helper"
+
+
+def test_the_fork_sends_the_messages_as_the_actor_sent_them():
+    """The history the harness holds carries its own annotations (keys that start with ``_``) and keys with no
+    value; the actor's request carried neither (unillm strips the one, LiteLLM leaves out the other), so the fork's
+    prefix leaves them out too and is the actor's, byte for byte."""
+    held = [
+        {"role": "user", "content": "double 21", "_ctx_header": "x"},
+        {
+            "role": "assistant",
+            "content": "42",
+            "tool_calls": None,
+            "function_call": None,
+            "provider_specific_fields": None,
+            "_reply_source": "cell",
+            "_reply_from_value": True,
+        },
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "kept", "_static": True}],
+            "reasoning_details": [{"type": "reasoning.encrypted", "data": "e"}],
+        },
+    ]
+    source = {
+        "client": SimpleNamespace(endpoint="provider/model@route"),
+        "sent_messages": held,
+        "tools": [],
+    }
+
+    doc, why = fork_mod.request_from_source("e1", source, "http://127.0.0.1:9/fork/v1", "tok")
+
+    assert why is None
+    assert doc["body"]["messages"][:-1] == [
+        {"role": "user", "content": "double 21"},
+        {"role": "assistant", "content": "42"},
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "kept"}],
+            "reasoning_details": [{"type": "reasoning.encrypted", "data": "e"}],
+        },
+    ]
+    # the history itself is left as it is
+    assert held[1]["_reply_source"] == "cell" and "_static" in held[2]["content"][0]

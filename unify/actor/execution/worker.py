@@ -36,8 +36,10 @@ comes back as a cell result only as its repr. Exceptions raised here are
 re-raised in the worker under their own type (builtins) or a class of the same
 name and module.
 
-A cell that times out or is stopped kills the worker (its whole sandbox); the
-next cell starts a fresh one and its output says so.
+A cell that is stopped (a cancel) is interrupted where it is and the worker,
+with its variables, is kept; a cell that times out, or does not stop within
+``INTERRUPT_GRACE_S`` of its interrupt, kills the worker (its whole sandbox);
+the next cell starts a fresh one and its output says so.
 """
 
 from __future__ import annotations
@@ -73,6 +75,9 @@ __all__ = [
 #: Largest single message either side may send.
 MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 START_TIMEOUT_S = 60.0
+#: How long a cancelled cell has to stop after the worker is asked to interrupt it (inside the tool loop's own
+#: two seconds for a cancelled call) before the worker is killed instead.
+INTERRUPT_GRACE_S = 1.5
 
 #: Appended to a timed-out cell's error.
 KILLED_NOTE = (
@@ -459,6 +464,29 @@ class PythonWorker:
         if self._stderr_task is not None:
             self._stderr_task.cancel()
             self._stderr_task = None
+
+    async def _interrupt(self, cid: int, shadow: Dict[str, Any]) -> bool:
+        """A cancelled cell: ask the worker to interrupt cell *cid* where it is, and serve it until it ends. True
+        when it ends within :data:`INTERRUPT_GRACE_S` (the worker and its variables are kept); False otherwise
+        (a cell that ignores the interrupt, code blocked where it cannot be interrupted, a broken channel), and
+        the caller kills the worker."""
+        try:
+            await self._send({"op": "interrupt", "id": cid})
+        except (WorkerDied, BoundaryRefusal):
+            return False
+        serving = asyncio.ensure_future(self._serve_until_done(cid, shadow))
+        finished, _ = await asyncio.wait({serving}, timeout=INTERRUPT_GRACE_S)
+        if not finished:
+            serving.cancel()
+            await asyncio.gather(serving, return_exceptions=True)
+            return False
+        if serving.exception() is not None:
+            return False
+        from unify.memory.integration import hooks as _mv2
+
+        # UNIFY_MEMORY=on: the interrupted cell's audit records, as for any cell that ends
+        _mv2.worker_cell_done(serving.result().get("audit"))
+        return True
 
     async def _kill(self, why: str) -> None:
         await self.close()
@@ -1002,7 +1030,12 @@ class PythonWorker:
             await self._kill(f"the cell timed out after {timeout}s")
             raise
         except asyncio.CancelledError:
-            await self._kill("the cell was stopped")
+            kept = False
+            try:
+                kept = await self._interrupt(cid, shadow)
+            finally:
+                if not kept:
+                    await self._kill("the cell was stopped")
             raise
         except WorkerDied as exc:
             code = self._proc.returncode if self._proc is not None else None
