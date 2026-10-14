@@ -4,7 +4,7 @@ The writer writes both; the gate checks their shape only (library mode, G1, :mod
 wording. A function's docstring holds the section as one more docstring section::
 
     When to use:
-        Saved for: what the source request asked for, in general terms (no names, ids or values of that request).
+        Saved for: what the source request asked for, summarised.
         Recognise: how to tell that a new request is that situation.
         Not for: the requests that look alike but need something else.
         Example request: one request it fits, in the words a requester might use.
