@@ -1,8 +1,10 @@
 """Whether a landed procedure recognises the requests it fits, tested when it lands on the store's own recorded requests.
 
 ``memory.match`` and the librarian list a stored procedure where its reader parses the current request and its
-``applies`` holds on what the reader gave. That listing is only as good as the ``applies``: one written for one case may
-hold almost anywhere. It is tested here, when ``land_capture`` lands the procedure, on recorded requests only:
+``applies`` holds on what the reader gave. That listing is only as good as the ``applies`` (an ``applies`` written for
+one case may hold almost anywhere) and the reader (a reader written on one request may reject the next request of the
+same kind, whose layout differs). Both are tested here, when ``land_capture`` lands the procedure, on recorded
+requests only:
 
 * **the other recorded requests** (:func:`recorded_requests`): every episode the capture step saw (its rows in
   ``captures-events.jsonl``) but the one the procedure is landed from. The landed reader, the procedure's ``applies``,
@@ -16,8 +18,14 @@ hold almost anywhere. It is tested here, when ``land_capture`` lands the procedu
   - **unknown**: ``applies`` held and nothing says whether the procedure is right there;
   - otherwise ``applies`` did not hold (or the procedure states none), which is no hold.
 
+* **recorded variants of its own request** (:func:`variants`): the requests of the other episodes its capture and the
+  captures recognised as the same work (``same_as``) were recorded on, and its own request with blank lines before it,
+  blank lines after it, or a line of prose after it. Only the reader runs on these: ``reads`` and ``fails`` count
+  them, and ``failed_on`` names each kind it failed on. A reader that fails on a recorded variant of its own request
+  is *brittle*.
+
 **The listing rule** (:func:`listing`): a procedure whose ``applies`` held where its ``holds`` failed (``false_holds``
-at least 1) is not listed by ``memory.match`` or in the librarian's facts until the
+at least 1), or whose reader is brittle, is not listed by ``memory.match`` or in the librarian's facts until the
 writer fixes it; a procedure with no other recorded request to test is listed, marked untested. The landing records
 the counts and the reason with it (:func:`.captures.record_landing`), the item record carries them
 (``recognition``), and the catalogue card and ``memory.get`` say why an item is not listed.
@@ -41,6 +49,13 @@ from . import captures as _captures
 from .sandbox_run import PYTHON, SandboxResult, run_confined
 
 TRUE_HOLD, FALSE_HOLD, UNKNOWN, NO_HOLD = "true-hold", "false-hold", "unknown", "no-hold"
+#: The kinds of recorded variant of a procedure's own request its reader is run on (:func:`variants`).
+RECORDED_VARIANT = "a recorded request of the same work"
+LEADING_BLANK = "blank lines before it"
+TRAILING_BLANK = "blank lines after it"
+TRAILING_PROSE = "a line of prose after it"
+#: The line of prose put after a request (a variant that keeps its content).
+PROSE = "Please reply when you can."
 #: Each request's own time bound in the box, in seconds (the capture runs' own, :data:`.captures.RUN_S`).
 EACH_S = _captures.RUN_S
 #: The box's slack beyond the requests' bounds, for starting and reporting.
@@ -90,7 +105,7 @@ else:
                 value = fns["reader"](req["text"])
                 row["read"] = "parsed"
                 stage = "applies"
-                if fns["applies"] is not None:
+                if fns["applies"] is not None and not req.get("reader_only"):
                     row["applies"] = bool(fns["applies"](copy.deepcopy(value)))
                 if row.get("applies") is True:
                     stage = "run"
@@ -140,7 +155,8 @@ def run_rows(
     each_s: float = EACH_S,
 ) -> tuple[list[dict], str | None]:
     """Run the landed *items* (``reader``, ``applies``, ``procedure``, ``holds``: item ids, None for one not stated)
-    from the library at *tree* on each of *requests* (``{text, expect}``), in one confined box.
+    from the library at *tree* on each of *requests* (``{text, expect, reader_only}``: only the reader runs on one
+    marked ``reader_only``), in one confined box.
     Returns (one row of labels per request, why none could be run or None)."""
     from . import testkit
 
@@ -250,6 +266,36 @@ def recorded_requests(store: Path | str, own: str, episode: Callable[[str], Any]
     return out
 
 
+def variants(store: Path | str, cid: str, own: str, own_text: str, episode: Callable[[str], Any]) -> list[dict]:
+    """The recorded variants of the request episode *own* was recorded on (module docstring), as the box takes
+    them: ``{kind, text, reader_only}``. The recorded ones are the requests of the other episodes of capture *cid*
+    and of the captures its record names as the same work (``same_as``, recognised by content when they were
+    captured); each mechanical one keeps the request's content as it is."""
+    store = Path(store)
+    docs = _captures.load(store)
+    rec = docs.get(cid, {}).get("record") or {}
+    same = [c for c in rec.get("same_as") or [] if isinstance(c, str)]
+    eids: list[str] = []
+    for c in [cid, *same]:
+        for e in (docs.get(c, {}).get("record") or {}).get("episodes") or []:
+            if isinstance(e, str) and e != own and e not in eids:
+                eids.append(e)
+    out: list[dict] = []
+    for eid in sorted(eids):
+        try:
+            text = _text(episode(eid))
+        except Exception:  # noqa: BLE001 - not readable: no variant
+            text = None
+        if text is not None and text != own_text:
+            out.append({"kind": RECORDED_VARIANT, "text": text})
+    out += [
+        {"kind": LEADING_BLANK, "text": "\n\n" + own_text},
+        {"kind": TRAILING_BLANK, "text": own_text + "\n\n"},
+        {"kind": TRAILING_PROSE, "text": own_text.rstrip("\n") + "\n\n" + PROSE + "\n"},
+    ]
+    return [{**v, "reader_only": True} for v in out]
+
+
 # --- the test and the listing rule ---------------------------------------------------------------------------------
 
 
@@ -267,26 +313,42 @@ def recognise_landing(
     runner: Callable[..., SandboxResult] = run_confined,
 ) -> dict:
     """The recognition record of a procedure landed from capture *cid*'s episode *own* (module docstring): its
-    landed *items* run from the library at *tree* on the store's other recorded requests. ``{requests, tested,
-    true_holds, false_holds, unknown, listed, why}``, with ``error`` when the runs could not be made (nothing is then
+    landed *items* run from the library at *tree* on the store's other recorded requests, and its reader on the
+    recorded variants of its own request *own_text*. ``{requests, tested, true_holds, false_holds, unknown, variants,
+    reads, fails, failed_on, listed, why}``, with ``error`` when the runs could not be made (nothing is then
     counted)."""
     others = recorded_requests(store, own, episode)
-    sent = [{k: r[k] for k in ("text", "expect")} for r in others]
+    varied = variants(store, cid, own, own_text, episode)
+    sent = [{k: r[k] for k in ("text", "expect")} for r in others] + [
+        {k: v[k] for k in ("text", "reader_only")} for v in varied
+    ]
     rows, why = run_rows(Path(tree), items, sent, python=python, work=Path(work), runner=runner)
     counts = {TRUE_HOLD: 0, FALSE_HOLD: 0, UNKNOWN: 0, NO_HOLD: 0}
-    tested = 0
+    tested = reads = fails = 0
+    failed_on: list[str] = []
     if why is None:
-        for req, row in zip(others, rows):
+        for req, row in zip(others, rows[: len(others)]):
             got = _label(row, req["expect"] is not None, req["success"])
             if got is not None:
                 tested += 1
                 counts[got] += 1
+        for v, row in zip(varied, rows[len(others) :]):
+            if row.get("read") == "parsed":
+                reads += 1
+                continue
+            fails += 1
+            if v["kind"] not in failed_on:
+                failed_on.append(v["kind"])
     out: dict = {
         "requests": len(others),
         "tested": tested,
         "true_holds": counts[TRUE_HOLD],
         "false_holds": counts[FALSE_HOLD],
         "unknown": counts[UNKNOWN],
+        "variants": len(varied) if why is None else 0,
+        "reads": reads,
+        "fails": fails,
+        "failed_on": failed_on,
     }
     if why is not None:
         out["error"] = why
@@ -310,6 +372,13 @@ def listing(rec: Mapping[str, Any] | None) -> tuple[bool, str]:
         return False, (
             f"not listed: its applies held on {n('false_holds')} of {n('tested')} tested recorded request(s) where "
             "its own holds failed; make applies hold only where the procedure is right"
+        )
+    if n("fails"):
+        kinds = rec.get("failed_on") if isinstance(rec.get("failed_on"), list) else []
+        shown = "; ".join(str(k) for k in kinds) or "not recorded"
+        return False, (
+            f"not listed: its reader failed on {n('fails')} of {n('fails') + n('reads')} recorded variant(s) of its "
+            f"own request ({shown}); make it read the values the request carries, not the layout around them"
         )
     if isinstance(rec.get("error"), str) and rec["error"]:
         return True, f"untested: its test could not be run ({rec['error']})"

@@ -24,8 +24,9 @@ When the capture's ``same_as`` names a capture already landed (its marker line i
 library), this request becomes a new case of that procedure instead: two fixtures and one test function more.
 
 Once written, the landed reader, ``applies``, procedure and ``holds`` run, confined, on the other requests the capture
-store records (:func:`.recognition.recognise_landing`): the counts of true and false holds, and whether
-``memory.match`` and the librarian list the procedure, are recorded with the landing and told in the reply.
+store records, and the reader on recorded variants of its own request (:func:`.recognition.recognise_landing`): the
+counts of true and false holds and of the variants the reader read and failed on, and whether ``memory.match`` and
+the librarian list the procedure, are recorded with the landing and told in the reply.
 
 Checks, each a fixed refusal: the id is 16 hex digits (optionally ``capture:``-prefixed) and in the store; the store's
 files are read without following a link, only as regular files, size-bounded; ``procedure.py``'s sha256 starts with
@@ -605,7 +606,8 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
             {"item": reader_id, "kind": "function", "source_episodes": [eid], "tests": [test_rel], "role": "reader"},
         )
     _manifest_add(box, entries)
-    # the landed items on the other recorded requests, confined: whether its applies holds only where it is right
+    # the landed items on the other recorded requests, confined: whether its applies holds only where it is right,
+    # and whether its reader reads the recorded variants of its own request
     recognition = _recognition(store, cid, eid, request_text, box, proc_id, reader_id, episode, python, runner, work)
     # the landing, in the harness's own store: the item records take the capture's signature, applies and recognition
     # from it, and the pass closes the capture's pool entry once the procedure lands
@@ -629,7 +631,7 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
         lines.append(f"- procedure {proc_id}")
         lines.append(f"- reader {reader_id}" + (" (reused: it gives the same value on this request)" if reused else ""))
     lines += [f"- wrote /memory/{p}" for p in written]
-    lines.append(f"- recognition on the other recorded requests: {recognition['why']}")
+    lines.append(f"- recognition on the recorded requests: {recognition['why']}")
     lines.append("- the manifest entries of " + ", ".join(e["item"] for e in entries) + " in /memory/.pass/manifest.json")
     if refuses is False:
         lines.append(
