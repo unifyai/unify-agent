@@ -29,7 +29,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import datetime as dt
-import hashlib
 import json
 import logging
 import os
@@ -964,10 +963,6 @@ class RequestRun:
         self.librarian_sessions: list = []
         # The episode's journal (journal.EpisodeJournal), fed by the transcript's tap; None while there is none.
         self.journal: Any = None
-        #: what the episode received from outside so far: its user messages (the requester, the environment's
-        #: observations), a running digest (:meth:`observed`)
-        self._observed = hashlib.sha256()
-        self.observed_messages = 0
         # The episodes recorded at open from journals a process that died mid-request left (journal.recover).
         self.recovered: list[str] = []
         self.episode_id = ""
@@ -1142,39 +1137,21 @@ class RequestRun:
         except Exception as exc:  # noqa: BLE001 - the request runs without a journal
             logger.warning("memory: no episode journal for this request (%s)", type(exc).__name__)
             self.journal = None
-        transcripts.tap(self.episode_id, self._on_transcript_line)
-
-    def _on_transcript_line(self, line: str) -> None:
-        """Each line the episode's transcript writes, in file order: a user message joins :meth:`observed`; every
-        line goes to the journal when there is one."""
-        try:
-            record = json.loads(line)
-            msg = record.get("message") if isinstance(record, dict) and record.get("type") == "message" else None
-            if isinstance(msg, dict) and msg.get("role") == "user":
-                self._observed.update(json.dumps(msg, sort_keys=True, default=str).encode("utf-8", "replace"))
-                self.observed_messages += 1
-        except ValueError:
-            pass
-        found = self.journal
-        if found is not None:
-            found.append(line)
-
-    def observed(self) -> str:
-        """A digest of what the episode received from outside so far (its user messages): it changes with each new
-        one. Part of what a cached librarian answer answered."""
-        return f"{self.observed_messages}:{self._observed.hexdigest()}"
+            return
+        transcripts.tap(self.episode_id, self.journal.append)
 
     def _close_journal(self) -> None:
         """Stop journaling; the journal stays (for the next start to record)."""
         found, self.journal = self.journal, None
+        if found is None:
+            return
         try:
             from unify import transcripts
 
             transcripts.tap(self.episode_id, None)
         except Exception:  # noqa: BLE001
             pass
-        if found is not None:
-            found.close()
+        found.close()
 
     def _drop_journal(self) -> None:
         """Stop journaling and remove the journal: its episode is recorded, or the request records nothing."""

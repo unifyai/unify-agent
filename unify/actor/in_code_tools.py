@@ -198,11 +198,6 @@ class InCodeTools:
         )
         # the request the memory package reads through current_request (its text, and the JSON values it carries)
         self.state.request_text, self.state.request_data = H.request_of(request)
-        import hashlib
-
-        self._observed = hashlib.sha256()
-        self._observed_calls = 0
-        self.state.observed = self.observed
         stores = can_store and store_skills is not None
         # UNIFY_MEMORY_LIBRARIAN=on: the actor asks the request's librarian (tools.ask_library, from memory.ask)
         asks = agent == "actor" and _librarian_on()
@@ -300,26 +295,10 @@ class InCodeTools:
 
     # -- the channel and the interpreter -----------------------------------------------------------------------
 
-    #: the memory package's own in-code tools: what they return is not something the agent observed
-    _OWN_TOOLS = frozenset({"ask_library", "current_request"})
-
     def _on_event(self, row: dict) -> None:
         if row.get("event") == "tool_call":
             row["call"] = self._next_call()
-            if row.get("tool") not in self._OWN_TOOLS:
-                self._observed.update(
-                    json.dumps(
-                        [row.get("tool"), row.get("status"), row.get("args_sha256"), row.get("result_bytes")],
-                        default=str,
-                    ).encode("utf-8"),
-                )
-                self._observed_calls += 1
         self.events.append(row)
-
-    def observed(self) -> str:
-        """A digest of the tool calls this agent made from its cells so far (the memory package's own left out): it
-        changes with each new one (``ActorRequestState.observed``)."""
-        return f"{self._observed_calls}:{self._observed.hexdigest()}"
 
     def _next_call(self) -> int:
         n = self.calls

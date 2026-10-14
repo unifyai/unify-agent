@@ -243,40 +243,18 @@ def facts_text(facts: list[dict], dropped: int = 0) -> str:
     return "\n".join(lines)
 
 
-def answer_key(
-    question: str,
-    request: str | None,
-    facts: list[dict],
-    dropped: int,
-    library: str | None,
-    observed: str | None = None,
-) -> str:
+def answer_key(question: str, request: str | None, facts: list[dict], dropped: int, library: str | None) -> str:
     """What one answer of the librarian answered, as a digest: the question, the current request (None when the
-    handler does not know it), the checked facts (:func:`checked_facts`) and how many were left out, the library as
-    the ask found it (the copy's commit and its dispatch file read at the ask), and what the request had received
-    from outside by then (*observed*: its user messages and tool calls). Two asks with the same key ask the same of
-    the same library about the same state of the request; any change asks again."""
+    handler does not know it), the checked facts (:func:`checked_facts`) and how many were left out, and the library
+    copy's commit. Two asks with the same key ask the same of the same library."""
     import hashlib
 
     text = json.dumps(
-        {
-            "question": question,
-            "request": request,
-            "facts": facts,
-            "dropped": dropped,
-            "library": library,
-            "observed": observed,
-        },
+        {"question": question, "request": request, "facts": facts, "dropped": dropped, "library": library},
         ensure_ascii=False,
         sort_keys=True,
     )
     return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
-
-
-def _digest_of(value: Any) -> str:
-    import hashlib
-
-    return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode("utf-8", "replace")).hexdigest()[:16]
 
 
 def question_message(question: str, facts: list[dict], dropped: int = 0) -> str:
@@ -508,7 +486,7 @@ class LibrarianSession:
         except Exception:  # noqa: BLE001 - a measurement never stops the librarian
             pass
 
-    async def ask(self, question: str, facts: Any, request: str | None = None, observed: str | None = None) -> str:
+    async def ask(self, question: str, facts: Any, request: str | None = None) -> str:
         """One question about the current request (*request*, when the caller knows it): its facts checked against
         the dispatch file. When the librarian already answered the same (:func:`answer_key`), that answer as it gave
         it, with :data:`ALREADY_GIVEN`, and no model call; otherwise the question goes as the next user message and
@@ -517,12 +495,9 @@ class LibrarianSession:
         if self.closed:
             raise NoAnswer("the request has ended")
         async with self._lock:
-            # the library as the ask finds it: a copy that changed since the session opened is asked about afresh
-            self.dispatch = read_dispatch(self.copy)
             kept, dropped = checked_facts(facts, self.dispatch)
             self.questions += 1
-            library = f"{self.library}:{_digest_of(self.dispatch)}"
-            key = answer_key(question, request, kept, dropped, library, observed)
+            key = answer_key(question, request, kept, dropped, self.library)
             given = self.answers.get(key)
             if given is not None:
                 self.from_cache += 1
