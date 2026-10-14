@@ -8,13 +8,17 @@ once the library has listed anything in this run, after writing the generated ca
 README, ``.memory/catalog.json`` with the suspect flags, and the ``memory`` helper, :mod:`..catalogue`) and
 records what it shows in either mode (``shown``: names and a digest, :func:`..analysis.use.record_shown`;
 under ``catalogue`` that is the guide alone), takes the work tree's before snapshot, and opens the scope the
-actor runs in (its transcript continues the episode id and model costs are recorded). ``finish`` records
+actor runs in (its transcript continues the episode id and model costs are recorded). Before that, each episode
+journal a process that died mid-request left is recorded as an incomplete episode, and this request's journal is
+opened: the transcript's lines, kept turn by turn until the episode is recorded (:mod:`.journal`). ``finish`` records
 the request as one episode (with ``UNIFY_MEMORY_DIALOGUE`` set, its transcript's dialogue actions too:
 :mod:`.adapters.dialogue`), with how it used the library (``memory_use.json``, indexed in the evidence
-store's ``item_use`` table), and runs the consolidation passes that are due, blocking; it never raises. The
+store's ``item_use`` table), removes the journal, and runs the consolidation passes that are due, blocking; it never
+raises (an episode that could not be recorded keeps its journal, recorded as incomplete at the next start). The
 passes' start and end events go to the CLI's ``--jsonl`` output when it has one; the consolidation driver
-appends them to the state directory's ``events.jsonl`` (``Paths.events``) either way. ``abort`` cleans up
-and records nothing. The harness hooks read the current run (``current()``) for ``index`` and ``paths``.
+appends them to the state directory's ``events.jsonl`` (``Paths.events``) either way. ``abort`` cleans up,
+removes the journal and records nothing. The harness hooks read the current run (``current()``) for ``index``
+and ``paths``.
 
 Only pass/fail of a posted outcome is kept: ``take_outcome`` keeps ``solved`` and drops
 everything else at once, so no checker text reaches an episode, the evidence, the writer or a cell.
@@ -957,6 +961,10 @@ class RequestRun:
         # UNIFY_MEMORY_LIBRARIAN=on: the request's librarian sessions (librarian.opener registers each), whose
         # totals the use record reads
         self.librarian_sessions: list = []
+        # The episode's journal (journal.EpisodeJournal), fed by the transcript's tap; None while there is none.
+        self.journal: Any = None
+        # The episodes recorded at open from journals a process that died mid-request left (journal.recover).
+        self.recovered: list[str] = []
         self.episode_id = ""
         self.started_at = ""
         self.pin = ""
@@ -1007,6 +1015,7 @@ class RequestRun:
         try:
             run._open(sandbox, transcripts)
         except BaseException:
+            run._drop_journal()  # a request that never began records nothing
             run._cleanup()
             raise
         _CURRENT = run
@@ -1064,6 +1073,8 @@ class RequestRun:
                     self.state.suspect,
                     sys.maxsize if self.surfacing.soft_budget else None,
                 )
+        # under the request lock, before this request's own journal exists
+        self._recover_journals()
         self.episode_id = new_episode_id(transcripts.transcripts_dir())
         self.started_at = _now()
         self.model, self.effort, self.build = actor_model(), actor_effort(), build_id()
@@ -1077,10 +1088,80 @@ class RequestRun:
             **({"library_mode": True} if memory_library_on() else {}),
         )
         self.worktree.begin()
+        self._open_journal(transcripts)
         self._scope.enter_context(transcripts.resume_session(self.episode_id))
         self.costs = cost.install()
         self.costs.activate()
         self._scope.callback(self.costs.deactivate)
+
+    def _recover_journals(self) -> None:
+        """Record each episode journal a process that died mid-request left, as an incomplete episode
+        (:func:`.journal.recover`; with the similar index in library mode); never raises."""
+        from . import journal
+
+        def similar_index(ep: Any, redactor: Any) -> None:
+            from .. import similar
+
+            similar.record_episode(self.paths.state_dir, ep, redactor)
+
+        try:
+            self.recovered = journal.recover(
+                self.paths,
+                self.stores,
+                library_index=similar_index if memory_library_on() else None,
+            )
+        except Exception as exc:  # noqa: BLE001 - a recovery never stops a request
+            logger.warning("memory: episode journals not recovered (%s)", type(exc).__name__)
+
+    def _open_journal(self, transcripts: Any) -> None:
+        """This request's journal (:mod:`.journal`): its header, then every line of the episode's transcript as it
+        is written (the transcript's tap). A request whose journal cannot be opened runs and is recorded as before,
+        without one."""
+        from . import journal
+
+        recorder = getattr(self.worktree, "_recorder", None)
+        header = {
+            "episode_id": self.episode_id,
+            "started_at": self.started_at,
+            "build": self.build,
+            "model": self.model,
+            "effort": self.effort,
+            "memory_main": self.pin,
+            "worktree_before": getattr(recorder, "before", None),
+            "request": self.request,
+            # the record format the episode writer uses (memory_library_on, as at finish)
+            "library_mode": memory_library_on(),
+        }
+        try:
+            self.journal = journal.EpisodeJournal.open(self.paths.journal, header, self.redactor)
+        except Exception as exc:  # noqa: BLE001 - the request runs without a journal
+            logger.warning("memory: no episode journal for this request (%s)", type(exc).__name__)
+            self.journal = None
+            return
+        transcripts.tap(self.episode_id, self.journal.append)
+
+    def _close_journal(self) -> None:
+        """Stop journaling; the journal stays (for the next start to record)."""
+        found, self.journal = self.journal, None
+        if found is None:
+            return
+        try:
+            from unify import transcripts
+
+            transcripts.tap(self.episode_id, None)
+        except Exception:  # noqa: BLE001
+            pass
+        found.close()
+
+    def _drop_journal(self) -> None:
+        """Stop journaling and remove the journal: its episode is recorded, or the request records nothing."""
+        found = self.journal
+        self._close_journal()
+        if found is not None:
+            try:
+                found.remove()
+            except OSError as exc:
+                logger.warning("memory: the episode journal was not removed (%s)", type(exc).__name__)
 
     def _surface_catalogue(self, consolidate: Any) -> None:
         """``UNIFY_MEMORY_SURFACING=catalogue``: the generated catalogue beside the export (the pinned
@@ -1635,6 +1716,8 @@ class RequestRun:
             ),  # record format 2; off, the call as at 4675a3c45
         ).write(ep)
         stores.evidence.index_episode(ep, sha)
+        # recorded: the journal has served its turn
+        self._drop_journal()
         # the episode and the redactor it was stored with, for the similar index (:meth:`_index_similar`)
         self._recorded = (ep, redactor)
         consolidate.post_checker(
@@ -1757,7 +1840,10 @@ class RequestRun:
             logger.warning("memory v2: request scope not closed cleanly: %s", exc)
 
     def abort(self) -> None:
-        """End the run with nothing recorded (the process is closing without a finished request)."""
+        """End the run with nothing recorded (the process is closing without a finished request): its journal is
+        removed too. After ``finish`` it changes nothing."""
+        if not self._closed:
+            self._drop_journal()
         self._cleanup()
 
     def _cleanup(self) -> None:
@@ -1769,6 +1855,8 @@ class RequestRun:
         from .state import release_lock
 
         self._close_scope()
+        # a journal still open (the episode was not recorded) stays for the next start
+        self._close_journal()
         if self.worktree is not None and not self._worktree_finished:
             # A run that never reached the capture's finish (abort, a failed begin or a failed
             # finish before it) ends the capture so the worker installs no audit hook for it.

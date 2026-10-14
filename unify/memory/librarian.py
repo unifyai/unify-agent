@@ -7,6 +7,12 @@ the in-code tool ``ask_library`` (:func:`unify.actor.tool_handlers.ask_library`)
 :class:`LibrarianSession` on the first question and keeps it for the request's follow-ups; the session ends with the
 request (``InCodeTools.close``).
 
+The session keeps the first answer the librarian gives for each distinct question it was asked (:func:`answer_key`:
+the question, the current request, the checked facts and the library copy's commit). Asked the same again, it returns
+that answer, marked as already given (:data:`ALREADY_GIVEN`), with no model call; a question with other facts is
+asked anew. Every ask is answered and none is refused for repeating; the use record counts the asks, the answers
+given again and the model calls apart (:func:`usage_fields`).
+
 The session runs on the memory agents' runtime, as a helper does: the shared opening
 (:func:`unify.common.tool_registry.preamble`) for the agent ``librarian``, one model-API tool (``execute_code``), its
 cells in a persistent confined interpreter (:class:`.tool_handlers.InterpreterSession`) whose ``tools`` module holds
@@ -54,6 +60,9 @@ OUTPUT_BYTES = 8000
 READ_OUTCOMES = ("parsed", "did-not-parse", "not-started", "failed")
 APPLIES_OUTCOMES = ("held", "did-not-hold", "raised", "not-run", "none")
 CAPTURE_PREFIX = "capture:"
+#: The field a reply carries when it is an answer the librarian already gave in this request (``true``); a first
+#: answer never has it.
+ALREADY_GIVEN = "already_given"
 #: What the summary after a compaction says of the files (the memory agents' restart pointer, for this box).
 RESTART_POINTER = "Nothing under /memory changed: open an item again with memory.get when you need it."
 _HEADING = re.compile(r"^### (\S+)\s*$")
@@ -234,6 +243,20 @@ def facts_text(facts: list[dict], dropped: int = 0) -> str:
     return "\n".join(lines)
 
 
+def answer_key(question: str, request: str | None, facts: list[dict], dropped: int, library: str | None) -> str:
+    """What one answer of the librarian answered, as a digest: the question, the current request (None when the
+    handler does not know it), the checked facts (:func:`checked_facts`) and how many were left out, and the library
+    copy's commit. Two asks with the same key ask the same of the same library."""
+    import hashlib
+
+    text = json.dumps(
+        {"question": question, "request": request, "facts": facts, "dropped": dropped, "library": library},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+
+
 def question_message(question: str, facts: list[dict], dropped: int = 0) -> str:
     """The user message that carries one question and its facts."""
     return (
@@ -380,7 +403,7 @@ Turn = Callable[[list, list], Awaitable[tuple[dict, Any]]]
 
 class LibrarianSession:
     """One actor request's librarian (module docstring): opened at the first question, kept for the follow-ups,
-    closed with the request."""
+    closed with the request. *library* is the library copy's commit (part of what an answer answered)."""
 
     def __init__(
         self,
@@ -394,6 +417,7 @@ class LibrarianSession:
         cell_limit_s: float = CELL_TIMEOUT_S,
         step_guard: int | None = None,
         compact: bool | None = None,
+        library: str | None = None,
     ) -> None:
         from unify.common.tool_channel import HandlerThreads
 
@@ -401,6 +425,7 @@ class LibrarianSession:
         from .writer_pass import STEP_GUARD
 
         self.copy = Path(copy)
+        self.library = library if isinstance(library, str) and library else None
         self.dispatch = read_dispatch(self.copy)
         self.state = LibrarianCalls(ids=catalogue_ids(catalogue), failed=failed_captures(catalogue))
         self.turn = turn
@@ -408,7 +433,12 @@ class LibrarianSession:
         self.step_guard = STEP_GUARD if step_guard is None else int(step_guard)
         self.compact = _compact_on() if compact is None else bool(compact)
         self.usage = Usage()
+        #: every ask this session answered or tried to (the use record's ``questions``), and those answered with an
+        #: answer it already gave (``answers_from_cache``)
         self.questions = 0
+        self.from_cache = 0
+        #: the first accepted answer for each distinct ask (:func:`answer_key`)
+        self.answers: dict[str, dict] = {}
         self.closed = False
         self._lock = asyncio.Lock()
         self._cell = 0
@@ -456,17 +486,26 @@ class LibrarianSession:
         except Exception:  # noqa: BLE001 - a measurement never stops the librarian
             pass
 
-    async def ask(self, question: str, facts: Any) -> str:
-        """One question: its facts checked against the dispatch file, sent as the next user message; the
-        librarian's accepted answer as JSON text. Raises :class:`NoAnswer` when it ends without one."""
+    async def ask(self, question: str, facts: Any, request: str | None = None) -> str:
+        """One question about the current request (*request*, when the caller knows it): its facts checked against
+        the dispatch file. When the librarian already answered the same (:func:`answer_key`), that answer as it gave
+        it, with :data:`ALREADY_GIVEN`, and no model call; otherwise the question goes as the next user message and
+        the librarian's accepted answer is kept and returned. JSON text either way. Raises :class:`NoAnswer` when it
+        ends without one (nothing is kept, so the next ask asks again)."""
         if self.closed:
             raise NoAnswer("the request has ended")
         async with self._lock:
             kept, dropped = checked_facts(facts, self.dispatch)
             self.questions += 1
+            key = answer_key(question, request, kept, dropped, self.library)
+            given = self.answers.get(key)
+            if given is not None:
+                self.from_cache += 1
+                return json.dumps({**given, ALREADY_GIVEN: True}, ensure_ascii=False, sort_keys=True)
             self.state.answer, self.state.finished, self.state.finish_text = None, False, None
             self.messages.append({"role": "user", "content": question_message(question, kept, dropped)})
             answer = await self._turns()
+            self.answers[key] = answer
             return json.dumps(answer, ensure_ascii=False, sort_keys=True)
 
     async def _model_call(self) -> tuple[dict, Any]:
@@ -611,8 +650,8 @@ def opener(
 ) -> Callable[[], Awaitable[LibrarianSession]]:
     """What opens this request's session at its first question: the run's library copy and its catalogue
     (``RequestRun.paths.checkout``; refused while no library copy is mounted), a turn on the actor's model
-    (:func:`actor_turn`, or *turn_factory*'s). The session is registered with the run, whose use record reads its
-    totals."""
+    (:func:`actor_turn`, or *turn_factory*'s), and the commit the copy was exported at (``RequestRun.pin``). The
+    session is registered with the run, whose use record reads its totals."""
 
     async def open_session() -> LibrarianSession:
         from .integration import request as _request
@@ -633,6 +672,7 @@ def opener(
             start=start,
             on_event=on_event,
             request_id=request_id,
+            library=getattr(run, "pin", None),
         )
         sessions = getattr(run, "librarian_sessions", None)
         if isinstance(sessions, list):
@@ -643,7 +683,8 @@ def opener(
 
 
 def usage_fields(sessions: Any) -> dict:
-    """The use record's ``librarian`` block over a request's sessions (:meth:`Usage.fields`)."""
+    """The use record's ``librarian`` block over a request's sessions (:meth:`Usage.fields`): ``calls`` the model
+    calls, ``questions`` every ask, and ``answers_from_cache`` the asks answered with an answer already given."""
     total = Usage()
     for s in sessions if isinstance(sessions, list) else []:
         u = getattr(s, "usage", None)
@@ -657,13 +698,14 @@ def usage_fields(sessions: Any) -> dict:
         total.usd += u.usd
         total.unpriced_calls += u.unpriced_calls
     out = total.fields()
-    out["questions"] = sum(
-        int(getattr(s, "questions", 0) or 0) for s in (sessions if isinstance(sessions, list) else [])
-    )
+    rows = sessions if isinstance(sessions, list) else []
+    out["questions"] = sum(int(getattr(s, "questions", 0) or 0) for s in rows)
+    out["answers_from_cache"] = sum(int(getattr(s, "from_cache", 0) or 0) for s in rows)
     return out
 
 
 __all__ = [
+    "ALREADY_GIVEN",
     "BRIEF",
     "CALL_KIND",
     "LibrarianCalls",
@@ -672,6 +714,7 @@ __all__ = [
     "ORIGIN",
     "Unavailable",
     "Usage",
+    "answer_key",
     "check_answer",
     "checked_facts",
     "enabled",

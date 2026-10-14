@@ -107,6 +107,10 @@ class Episode:
     # How the request used the memory library (``analysis.use.request_use``), written as
     # ``memory_use.json``; None (no file) when nothing computed it.
     memory_use: dict | None = None
+    # An episode recorded from its journal after its process died mid-request (``integration.journal``):
+    # ``{"reason": "unknown", "recovered_at": ...}`` in ``meta.json``; None (no key) for an episode its request
+    # finished.
+    incomplete: dict | None = None
 
 
 def episode_dir(ep: Episode) -> str:
@@ -198,6 +202,8 @@ class EpisodeWriter:
                 "fingerprints",
             )
         }
+        if ep.incomplete is not None:
+            meta["incomplete"] = ep.incomplete
         actions = []
         for a in ep.actions:
             row = r.obj(asdict(a))

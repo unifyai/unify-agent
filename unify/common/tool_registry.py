@@ -1134,7 +1134,8 @@ ASK_LIBRARY = RegisteredTool(
         "question of your own). The answer is JSON: "
         '{"fits": [{"id", "call", "why"}, ...]} with every item that fits, or {"fits": [], "nearest": '
         '[{"id", "differs"}, ...]} when nothing fits. Follow-up questions in the same request go to the same '
-        "librarian."
+        "librarian; a question it already answered in this request, with the same facts, gets that answer again, "
+        'with "already_given": true.'
     ),
     parameters={
         "type": "object",
