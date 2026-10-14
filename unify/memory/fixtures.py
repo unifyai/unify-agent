@@ -456,7 +456,9 @@ def make_case(
 ) -> tuple[bytes, dict]:
     """The bytes of the case file at *dest* (:func:`case_doc`) and its provenance entry (:func:`case_entry`)."""
     if not DATA_PATH.match(dest) or not is_case_file(dest) or dest.split("/tests/data/", 1)[1].startswith(DRAWN_DIR):
-        raise FixtureError(f"{dest[:200]} is not a case file name under memory/<package>/tests/data/ ending {CASE_SUFFIX}")
+        raise FixtureError(
+            f"{dest[:200]} is not a case file name under memory/<package>/tests/data/ ending {CASE_SUFFIX}",
+        )
     data = case_bytes(case_doc(ep, given, expected, blob=blob, notes=notes))
     entry = case_entry(data)
     assert entry is not None

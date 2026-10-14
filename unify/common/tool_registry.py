@@ -461,16 +461,29 @@ LAND_CAPTURE = RegisteredTool(
         "Turn a captured attempt (/inputs/captures/<capture_id>/) into library items under memory/<package>/: its "
         "read_input as the reader read_<name> in readers.py (or a stored reader that gives the same value on its "
         "request, which is reused), its run as <name> in procedures.py with its applies and holds, two fixtures of "
-        "the recorded request (its text, and the reader's value on it), a test of the recorded result with one "
-        "refusal test in tests/test_<name>.py, and the manifest entries (role procedure, with its reader). When the "
-        "capture's same_as names a capture already landed, this request becomes a new case of that procedure "
-        "instead. You may change any of them before you finish."
+        "the recorded request (its text, and the reader's value on it), its recipe apply_<name>(request) (the "
+        "whole job on a request: the reader, its applies as a precondition, then the procedure), the source case "
+        "(the request with the value its episode handed back, <name>.case<k>.source.case.json) and each case you "
+        "name in cases, a test of the recorded result with one refusal test in tests/test_<name>.py, and the "
+        "manifest entries (role procedure, with its reader, recipe and cases; the recipe). The gate runs the recipe "
+        "on every case and lands the procedure only if all pass. When the capture's same_as names a capture already "
+        "landed, this request becomes a new case of that procedure instead. You may change any of them before you "
+        "finish."
     ),
     parameters=_obj(
         {
             "capture_id": {"type": "string", "description": "the capture's id (its directory name)"},
             "package": {"type": "string", "description": "the package to land in, a plain module name"},
             "name": {"type": "string", "description": "the procedure's name, a plain module name"},
+            "cases": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": (
+                    'more cases of the capture\'s episode, each {"input": <source>, "expected": <source>} as '
+                    "fixture takes them (a source id or {\"source\", \"slice\"}): an input the request or the "
+                    "environment showed with the output it showed for it"
+                ),
+            },
         },
         ["capture_id", "package", "name"],
     ),
