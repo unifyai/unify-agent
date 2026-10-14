@@ -7,8 +7,9 @@ the in-code tool ``ask_library`` (:func:`unify.actor.tool_handlers.ask_library`)
 :class:`LibrarianSession` on the first question and keeps it for the request's follow-ups; the session ends with the
 request (``InCodeTools.close``).
 
-The session keeps the first answer the librarian gives for each distinct question it was asked (:func:`answer_key`:
-the question, the current request, the checked facts and the library copy's commit). Asked the same again, it returns
+The session keeps the first answer the librarian gives for each distinct ask (:func:`answer_key`: the digest of exactly
+what the ask sends it, :func:`sent_to_librarian`: the question with its checked facts, and the library copy's commit and
+dispatch file as the ask read them). Asked the same again, it returns
 that answer, marked as already given (:data:`ALREADY_GIVEN`), with no model call; a question with other facts is
 asked anew. Every ask is answered and none is refused for repeating; the use record counts the asks, the answers
 given again and the model calls apart (:func:`usage_fields`).
@@ -45,6 +46,7 @@ import time
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any, Awaitable, Callable
 
 #: The origin of the librarian's model calls (the key proxy refuses a "." in a call kind) and their call kind.
@@ -243,18 +245,28 @@ def facts_text(facts: list[dict], dropped: int = 0) -> str:
     return "\n".join(lines)
 
 
-def answer_key(question: str, request: str | None, facts: list[dict], dropped: int, library: str | None) -> str:
-    """What one answer of the librarian answered, as a digest: the question, the current request (None when the
-    handler does not know it), the checked facts (:func:`checked_facts`) and how many were left out, and the library
-    copy's commit. Two asks with the same key ask the same of the same library."""
+def sent_to_librarian(question: str, facts: list[dict], dropped: int, library: Mapping[str, Any]) -> dict:
+    """Exactly what one ask sends the librarian beyond its fixed opening (the shared opening, the brief and the
+    catalogue, the same for every ask of the session): the user message (:func:`question_message`: the question and
+    its checked facts) and the library it reads in its box (*library*: the copy's commit and its dispatch file as the
+    ask read it). :func:`answer_key` is this structure's digest, and the message the session sends is its
+    ``message``, so nothing the librarian reads can be missing from the key."""
+    return {"message": question_message(question, facts, dropped), "library": dict(library)}
+
+
+def answer_key(sent: Mapping[str, Any]) -> str:
+    """The digest of what an ask sent (:func:`sent_to_librarian`): two asks with the same key sent the librarian the
+    same, so its first answer answers both."""
     import hashlib
 
-    text = json.dumps(
-        {"question": question, "request": request, "facts": facts, "dropped": dropped, "library": library},
-        ensure_ascii=False,
-        sort_keys=True,
-    )
+    text = json.dumps(sent, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _digest_of(value: Any) -> str:
+    import hashlib
+
+    return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode("utf-8", "replace")).hexdigest()[:16]
 
 
 def question_message(question: str, facts: list[dict], dropped: int = 0) -> str:
@@ -487,23 +499,28 @@ class LibrarianSession:
             pass
 
     async def ask(self, question: str, facts: Any, request: str | None = None) -> str:
-        """One question about the current request (*request*, when the caller knows it): its facts checked against
-        the dispatch file. When the librarian already answered the same (:func:`answer_key`), that answer as it gave
+        """One question about the current request (*request* is not sent to the librarian, so it is not in the key):
+        its facts checked against the dispatch file. When the librarian was already sent the same
+        (:func:`answer_key` of :func:`sent_to_librarian`), that answer as it gave
         it, with :data:`ALREADY_GIVEN`, and no model call; otherwise the question goes as the next user message and
         the librarian's accepted answer is kept and returned. JSON text either way. Raises :class:`NoAnswer` when it
         ends without one (nothing is kept, so the next ask asks again)."""
         if self.closed:
             raise NoAnswer("the request has ended")
         async with self._lock:
+            # the library as the ask finds it: a copy that changed since the session opened is asked about afresh
+            self.dispatch = read_dispatch(self.copy)
             kept, dropped = checked_facts(facts, self.dispatch)
             self.questions += 1
-            key = answer_key(question, request, kept, dropped, self.library)
+            library = {"commit": self.library, "dispatch": _digest_of(self.dispatch)}
+            sent = sent_to_librarian(question, kept, dropped, library)
+            key = answer_key(sent)
             given = self.answers.get(key)
             if given is not None:
                 self.from_cache += 1
                 return json.dumps({**given, ALREADY_GIVEN: True}, ensure_ascii=False, sort_keys=True)
             self.state.answer, self.state.finished, self.state.finish_text = None, False, None
-            self.messages.append({"role": "user", "content": question_message(question, kept, dropped)})
+            self.messages.append({"role": "user", "content": sent["message"]})
             answer = await self._turns()
             self.answers[key] = answer
             return json.dumps(answer, ensure_ascii=False, sort_keys=True)
@@ -720,6 +737,7 @@ __all__ = [
     "Unavailable",
     "Usage",
     "answer_key",
+    "sent_to_librarian",
     "check_answer",
     "checked_facts",
     "enabled",

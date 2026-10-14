@@ -137,17 +137,69 @@ async def test_other_facts_or_another_question_are_asked_again_one_answer_per_ke
     assert (fields["questions"], fields["answers_from_cache"], fields["calls"]) == (5, 2, 3)
 
 
-def test_the_key_is_the_question_the_request_the_checked_facts_and_the_library():
-    key = L.answer_key(REQUEST, REQUEST, PARSED, 0, "c0ffee")
-    assert key == L.answer_key(REQUEST, REQUEST, [dict(PARSED[0])], 0, "c0ffee")
+def test_the_key_is_the_digest_of_exactly_what_the_librarian_is_sent():
+    library = {"commit": "c0ffee", "dispatch": "d1"}
+    sent = L.sent_to_librarian(REQUEST, PARSED, 0, library)
+    # the message in the structure is the one the session sends
+    assert sent["message"] == L.question_message(REQUEST, PARSED, 0)
+    key = L.answer_key(sent)
+    assert key == L.answer_key(L.sent_to_librarian(REQUEST, [dict(PARSED[0])], 0, dict(library)))
     for other in (
-        L.answer_key("another question", REQUEST, PARSED, 0, "c0ffee"),
-        L.answer_key(REQUEST, "another request", PARSED, 0, "c0ffee"),
-        L.answer_key(REQUEST, REQUEST, NOT_PARSED, 0, "c0ffee"),
-        L.answer_key(REQUEST, REQUEST, PARSED, 1, "c0ffee"),
-        L.answer_key(REQUEST, REQUEST, PARSED, 0, "beef"),
+        L.sent_to_librarian("another question", PARSED, 0, library),
+        L.sent_to_librarian(REQUEST, NOT_PARSED, 0, library),
+        L.sent_to_librarian(REQUEST, PARSED, 1, library),
+        L.sent_to_librarian(REQUEST, PARSED, 0, {"commit": "beef", "dispatch": "d1"}),
+        L.sent_to_librarian(REQUEST, PARSED, 0, {"commit": "c0ffee", "dispatch": "d2"}),
     ):
-        assert other != key
+        assert L.answer_key(other) != key
+
+
+@pytest.mark.asyncio
+async def test_the_session_sends_the_message_its_key_was_made_from(tmp_path):
+    turn = Turn([FITS])
+    session = _session(tmp_path, turn)
+    try:
+        await _ask(_ctx(session), PARSED)
+    finally:
+        await session.close()
+    (sent_message,) = [m["content"] for m in session.messages if m.get("role") == "user"]
+    library = {"commit": "c0ffee", "dispatch": L._digest_of(L.read_dispatch(session.copy))}
+    kept, dropped = L.checked_facts(PARSED, session.dispatch)
+    sent = L.sent_to_librarian(REQUEST, kept, dropped, library)
+    assert sent_message == sent["message"] and list(session.answers) == [L.answer_key(sent)]
+
+
+@pytest.mark.asyncio
+async def test_a_library_that_changed_since_the_answer_is_asked_again(tmp_path):
+    turn = Turn([FITS, NEAREST])
+    session = _session(tmp_path, turn)
+    ctx = _ctx(session)
+    try:
+        await _ask(ctx, PARSED)
+        # the copy changes after the first ask (its dispatch file is read at every ask, whatever the commit says)
+        dispatch = session.copy / ".memory" / "dispatch.json"
+        data = json.loads(dispatch.read_text())
+        data["procedures"].append({"id": COUNT, "reader": None, "applies": True, "input": ""})
+        dispatch.write_text(json.dumps(data))
+        _, second = await _ask(ctx, PARSED)
+    finally:
+        await session.close()
+    assert second == NEAREST and len(turn.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_answers_never_cross_requests(tmp_path):
+    # each request opens its own session (held on that request's state; it ends with the request), so a second
+    # request asks afresh what the first was answered
+    first_turn, second_turn = Turn([FITS]), Turn([FITS])
+    first, second = _session(tmp_path / "a", first_turn), _session(tmp_path / "b", second_turn)
+    try:
+        await _ask(_ctx(first), PARSED)
+        _, got = await _ask(_ctx(second), PARSED)
+    finally:
+        await first.close()
+        await second.close()
+    assert got == FITS and len(second_turn.calls) == 1  # no mark: not from the other request's answers
 
 
 @pytest.mark.asyncio
