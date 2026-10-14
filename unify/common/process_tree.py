@@ -281,8 +281,14 @@ def kill_tree(
                 raise RuntimeError(
                     f"sandbox processes survived SIGKILL: leader {pid}, others {sorted(found)}",
                 )
-            # a first empty scan is confirmed at once; processes still dying are looked at again a little later
-            time.sleep(0.01 if empty else 0.05)
+            if found:
+                # wait for the processes just signalled to end, checking only them (a full scan only after)
+                settle = min(deadline, time.monotonic() + 0.05)
+                while time.monotonic() < settle and any(alive(p, start) for p, start in found.items()):
+                    time.sleep(0.002)
+            else:
+                # an empty scan is confirmed by the next one at once (the leader being reaped meanwhile)
+                time.sleep(0.001)
     finally:
         for fd in held:
             try:
