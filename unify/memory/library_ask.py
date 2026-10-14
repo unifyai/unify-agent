@@ -10,9 +10,10 @@
 # come back. Then the question (the given one, else the request's text) and those outcomes go to the librarian through
 # ``tools.ask_library``; its answer comes back as JSON text, which this section reads into a list of :class:`Item`,
 # each with the librarian's reason (marked ``already_given`` when the host returned the answer the librarian already
-# gave in this request to the same question with the same outcomes). The call raises ``memory.helper_call`` with the id ``memory:ask`` (asking is never
-# a use) and ``memory.ask_result`` with the ids the answer lists, whether it said nothing fits, and the outcomes (ids,
-# labels and, for a reader that gave no outcome, a fixed short reason; never text or values).
+# gave in this request to the same question with the same outcomes). The call raises ``memory.helper_call`` with the
+# id ``memory:ask`` (asking is never a use) and ``memory.ask_result`` with the ids the answer lists, whether it said
+# nothing fits, and the outcomes (ids, labels and, for a reader that gave no outcome, a fixed short reason; never text
+# or values).
 
 if "wrap_call" not in globals():  # imported as a harness module of its own, not as part of the package
     from .library_helper import (  # noqa: F401
