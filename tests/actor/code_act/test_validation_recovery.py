@@ -27,7 +27,7 @@ class ValidationRecoveryResult(BaseModel):
 def _execute(**params) -> tuple[str, dict]:
     return (
         "execute_code",
-        {"thought": "Printing a greeting.", "code": 'print("hi")', **params},
+        {"thought": "Printing a greeting.", "code": 'msg = "hi"\nprint(msg)', **params},
     )
 
 

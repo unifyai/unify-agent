@@ -442,7 +442,7 @@ async def test_4b_a_hung_cell_is_interrupted_at_the_cell_timeout(worker_pids):
     model = _Model(
         [
             _reply(calls=[_cell("while True:\n    pass")]),
-            _reply(calls=[_cell("print('alive')")]),
+            _reply(calls=[_cell("msg = 'alive'\nprint(msg)")]),
             _reply(DONE),
         ],
     )
@@ -469,7 +469,7 @@ async def test_4c_a_worker_that_dies_is_replaced_for_the_next_cell(worker_pids):
                     _cell("import os, signal\nos.kill(os.getpid(), signal.SIGKILL)"),
                 ],
             ),
-            _reply(calls=[_cell("print('alive')")]),
+            _reply(calls=[_cell("msg = 'alive'\nprint(msg)")]),
             _reply(DONE),
         ],
     )

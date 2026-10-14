@@ -88,7 +88,7 @@ async def test_execute_code_boundary_publishes_events_and_cleans_lineage(monkeyp
         async with capture_events("ManagerMethod") as events:
             out = await execute_code(
                 thought="run",
-                code="print('hi')",
+                code="msg = 'hi'\nprint(msg)",
                 state_mode="stateless",
                 session_id=None,
                 session_name=None,
@@ -135,7 +135,7 @@ async def test_execute_code_boundary_marks_error_when_executor_raises(monkeypatc
     async with capture_events("ManagerMethod") as events:
         out = await execute_code(
             thought="run",
-            code="print('hi')",
+            code="msg = 'hi'\nprint(msg)",
             state_mode="stateless",
             session_id=None,
             session_name=None,
