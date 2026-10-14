@@ -12,6 +12,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -152,6 +153,16 @@ def test_a_detached_sleep_never_outlives_the_box_kill_under_load():
             _sweep(argument)
 
 
+def _eventually_alive(argument: str, timeout_s: float = 30.0) -> bool:
+    """Whether a process with *argument* is alive within *timeout_s* seconds."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if _alive_with(argument):
+            return True
+        time.sleep(0.05)
+    return False
+
+
 def _box_that_keeps_a_sleep(argument: str) -> "sandbox_run.ConfinedBox":
     """A box whose Python waits on a ``sleep``: it stays alive until it is killed."""
     code = f"import subprocess\nsubprocess.Popen(['/bin/sleep', {argument!r}]).wait()\n"
@@ -174,8 +185,8 @@ def test_a_box_that_ended_never_has_a_later_box_killed_in_its_place():
             arguments.append(_sleep_argument())
             later.append(_box_that_keeps_a_sleep(arguments[-1]))
             assert later[-1].proc.box_pid_ns != name_a  # A's number is still held
-        for argument in arguments:
-            assert _alive_with(argument)
+        for argument in arguments:  # each box's Python starts its sleep a moment after the box starts
+            assert _eventually_alive(argument)
         a.kill()  # A's cleanup: its namespace, held, matched by name
         assert a.proc.box_pid_ns_fd is None  # released after the kill
         for argument in arguments:
