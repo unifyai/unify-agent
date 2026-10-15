@@ -185,8 +185,12 @@ def test_an_import_from_a_draft_is_recorded_with_its_names_and_whether_it_is_thi
         rows = {r["file"]: r for r in session.events}
         assert rows["drafts/d20261015T210300Z.py"]["names"] == ["Box", "double"]
         assert rows["drafts/d20261016T000000Z.py"]["names"] == []
-        assert rows[session.rel]["same_session"] is True
-        assert rows["drafts/d20261015T210300Z.py"]["same_session"] is False and len(rows) == 3
+        assert len(rows) == 3 and all(r["same_session"] is False for r in rows.values())  # no file of its own yet
+        session.events.clear()
+        session.take({"defs": {"f": "def f():\n    pass"}, "imports": []})
+        session.events.clear()
+        session.note_use(f"from drafts import {session.module}\n")
+        assert session.events[0]["file"] == session.rel and session.events[0]["same_session"] is True
     finally:
         os.close(fd)
 
@@ -245,7 +249,7 @@ async def test_with_the_drafts_alone_there_is_no_extra_turn_and_nothing_in_the_p
     assert await _act(model, "Define and answer.") == "done", _why(model)
     assert model.kinds() == ["actor"]
     system = "\n".join(_system_texts(model.calls[0]))
-    assert "draft" not in system.lower() and "decide" not in system
+    # nothing in the prompt or the tools: the same as with the drafts off (below)
     monkeypatch.setattr(SETTINGS, "UNIFY_DRAFTS", "")
     off = ScriptedModel(actor=[reply(calls=[code(DEFINE_AND_ANSWER)])])
     assert await _act(off, "Define and answer.") == "done", _why(off)

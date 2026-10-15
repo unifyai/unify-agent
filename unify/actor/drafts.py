@@ -299,7 +299,8 @@ class SessionDrafts:
                     "type": "draft_use",
                     "file": f"{DIR}/{module}.py",
                     "names": sorted(set(names)),
-                    "same_session": module == self.module,
+                    # this session's own file only once it has one (an unclaimed name may be another session's)
+                    "same_session": self._claimed and module == self.module,
                 },
             )
 
