@@ -910,6 +910,25 @@ class BoxInterpreter:
         backend = self._backend
         return backend is not None and backend.alive()
 
+    async def probe(self, source: str, *, timeout: float) -> Any:
+        """Run the harness's *source* (an ``async def __exec_wrapper()``) in a scratch copy of the live actor
+        interpreter's namespace and return its value (the worker's JSON); None when no interpreter is alive, which
+        this never starts. Nothing the cells bound is changed, and it has no cell number or event row. The actor's
+        backend only (a memory agent's has no scratch run)."""
+        async with self._lock:
+            backend = self._backend
+            worker = getattr(backend, "worker", None)
+            if backend is None or worker is None or not backend.alive():
+                return None
+            return await worker.run_cell(
+                source,
+                backend.profile.shadow,
+                timeout=timeout,
+                scratch=True,
+                stdout=[],
+                stderr=[],
+            )
+
     async def measure_quota(self) -> Optional[str]:
         """Measure the ``/memory`` quota now (after a ``write``, ``edit`` or ``fixture`` call as after every cell);
         a breach kills the box, and the running cell's result reports it. Returns the breach text or None."""

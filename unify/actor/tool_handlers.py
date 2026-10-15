@@ -87,6 +87,9 @@ class ActorRequestState:
     #: structured request as JSON data (None for a text or a message); None: not known here
     request_text: Optional[str] = None
     request_data: Any = None
+    #: UNIFY_DRAFTS=on: the session's draft file and its open question (``unify.actor.drafts.SessionDrafts``), which
+    #: ``decide`` answers; None: off
+    drafts: Any = None
 
 
 def response_validator(rf_norm: Any) -> Callable[[Any], str]:
@@ -111,10 +114,15 @@ def actor_flags(agent: str, can_store: bool, librarian: Optional[bool] = None) -
         from unify.settings import SETTINGS
 
         librarian = getattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "off") == "on"
+    # UNIFY_HANDBACK_DECISION=on: the actor answers the hand-back question with ``decide``
+    from unify.actor import drafts as _drafts
+
+    decides = agent == "actor" and _drafts.decision_enabled()
     return frozenset(
         {"helper"}
         | ({_registry.STORE_FLAG} if can_store and agent == "actor" else set())
-        | ({_registry.LIBRARIAN_FLAG} if librarian and agent == "actor" else set()),
+        | ({_registry.LIBRARIAN_FLAG} if librarian and agent == "actor" else set())
+        | ({_registry.DECISION_FLAG} if decides else set()),
     )
 
 
@@ -464,6 +472,24 @@ async def store_skills(ctx: Any, args: dict) -> Any:
     state.host_tasks.add(task)
     task.add_done_callback(state.host_tasks.discard)
     return _reply("the skill-storage review started; it runs on after this call")
+
+
+# --- the hand-back decision (UNIFY_HANDBACK_DECISION=on) ---
+
+
+async def decide(ctx: Any, args: dict) -> Any:
+    """Answer the question asked before the request's answer is handed back: keep named definitions in the session's
+    draft (with a one-line reason) or skip (``unify.actor.drafts.SessionDrafts.decide``). Recorded as a ``decision``
+    row; the answer itself is handed back unchanged either way."""
+    session = getattr(ctx.state, "drafts", None)
+    if session is None:
+        return _refused(refusal("decide", "no_question"))
+    code, text = session.decide(args.get("choice"), args.get("names"), args.get("why"))
+    if code == "not_asked":
+        return _refused(refusal("decide", code, names=text))
+    if code is not None:
+        return _refused(refusal("decide", code))
+    return _reply(text)
 
 
 # --- asking the librarian (UNIFY_MEMORY_LIBRARIAN=on) ---

@@ -716,6 +716,7 @@ async def async_tool_loop_inner(
     compression_tools_on_demand: bool = False,
     reply_channel: bool = False,
     on_turn_boundary: Optional[Callable[[], Awaitable[Optional[str]]]] = None,
+    on_hand_back: Optional[Callable[..., Awaitable[Optional[str]]]] = None,
     bind_request: Any = False,
     tools_in_code: bool = False,
 ) -> str:
@@ -848,6 +849,16 @@ async def async_tool_loop_inner(
         footer) is appended. A non-empty string it returns is appended as one
         loop-authored user message. Never called while a model call or a tool
         runs, nor after a turn has ended (the agent record).
+
+    on_hand_back : optional coroutine function, default ``None``
+        Called at each hand-back, once the request's answer is final and
+        before it is returned or the loop parks (UNIFY_DRAFTS,
+        UNIFY_HANDBACK_DECISION): ``on_hand_back(False, may_ask=...)``. A
+        non-empty string it returns is a question: the answer is held, the
+        string is appended as one loop-authored user message, and the model
+        gets one more turn; after that turn (whatever it did) the held answer
+        is handed back unchanged and ``on_hand_back(True)`` is called. Never
+        asked in a loop whose answer is a response tool's.
 
     bind_request : ``bool`` or ``RequestSlot``, default ``False``
         ``True`` (the actor's task loop, ``UNIFY_BIND_REQUEST=on``): the
@@ -2243,6 +2254,11 @@ async def async_tool_loop_inner(
     # those the provider withheld (content_filter).
     _provider_error_retries = 0
     _content_filter_retries = 0
+    # UNIFY_HANDBACK_DECISION: the answer held while the hand-back question's
+    # turn runs (its text, and a persistent loop's response), and whether this
+    # pass through the hand-back hands that held answer back.
+    _held_answer: Optional[tuple] = None
+    _handing_back_held = False
     # Bounded retries for a terminal turn that returns empty content with no
     # substantive answer anywhere else in the conversation to fall back on.
     _empty_final_answer_retries = 0
@@ -2256,7 +2272,8 @@ async def async_tool_loop_inner(
 
     try:
         while True:
-            if timer.has_exceeded_time():
+            # (A held hand-back answer is never lost to a limit: its one question turn runs.)
+            if _held_answer is None and timer.has_exceeded_time():
                 if await _timeout_ends_request():
                     continue
                 return await _timeout_limit()
@@ -2993,7 +3010,7 @@ async def async_tool_loop_inner(
                         prefix=ICONS["llm_response"],
                     )
 
-            if timer.has_exceeded_time():
+            if _held_answer is None and timer.has_exceeded_time():
                 if await _timeout_ends_request():
                     continue
                 return await _timeout_limit()
@@ -3260,10 +3277,12 @@ async def async_tool_loop_inner(
                     if await _timeout_ends_request():
                         continue
                     return await _timeout_limit()
-                else:
+                elif _held_answer is None:
                     # Every call has its result (a cancelled request is ended
                     # at the next boundary): back to the very top.
                     continue
+                # UNIFY_HANDBACK_DECISION: the hand-back question's turn ran
+                # its calls; the held answer is handed back below.
 
             # ── F. No new tool calls ─────────────────────────────────────
             # A plain assistant message (or the response a persistent loop's
@@ -3275,14 +3294,14 @@ async def async_tool_loop_inner(
             if not persist and _queued_message():
                 continue
 
-            if timer.has_exceeded_time():
+            if _held_answer is None and timer.has_exceeded_time():
                 if await _timeout_ends_request():
                     continue
                 return await _timeout_limit()
 
             # UNIFY_STEP_CAP_COMPACT: a reply given at the limit is the
             # request's answer; a loop that can compact goes on to give it.
-            if timer.has_exceeded_msgs() and not _can_compact_at_step_limit():
+            if _held_answer is None and timer.has_exceeded_msgs() and not _can_compact_at_step_limit():
                 if _step_cap_reply and persist:
                     await _end_request_at_step_limit()
                     _persist_response_content = None
@@ -3295,6 +3314,12 @@ async def async_tool_loop_inner(
                 )
 
             final_content = extract_substantive_text(msg["content"])
+            if _held_answer is not None:
+                # The hand-back question's turn is over: the request's answer
+                # is the one held before it, unchanged.
+                final_content, _persist_response_content = _held_answer
+                _held_answer = None
+                _handing_back_held = True
 
             # An empty/whitespace-only terminal turn must never override a
             # substantive answer already in the transcript: a model with
@@ -3363,6 +3388,22 @@ async def async_tool_loop_inner(
                         prefix=ICONS["llm_error"],
                     )
                     return notice["content"]
+
+            # The hand-back (UNIFY_DRAFTS, UNIFY_HANDBACK_DECISION): the answer
+            # is final; the hook drafts what the request defined and may ask
+            # one question, whose turn runs before this answer goes back.
+            if on_hand_back is not None:
+                if _handing_back_held:
+                    _handing_back_held = False
+                    await on_hand_back(True)
+                else:
+                    _question = await on_hand_back(False, may_ask=response_format is None)
+                    if _question:
+                        _held_answer = (final_content, _persist_response_content)
+                        await _msg_dispatcher.append_msgs(
+                            [loop_user_notice(_question, _nudge_msg=True)],
+                        )
+                        continue
 
             # ── Persist mode: wait for the next interjection ─────────────
             if persist:

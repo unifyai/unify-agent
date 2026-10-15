@@ -53,6 +53,8 @@ EDIT_FLAG = "edit"
 STORE_FLAG = "store"
 #: the flag ``ask_library`` needs: ``UNIFY_MEMORY_LIBRARIAN=on``
 LIBRARIAN_FLAG = "librarian"
+#: the flag ``decide`` needs: ``UNIFY_HANDBACK_DECISION=on`` (unify/actor/drafts.py)
+DECISION_FLAG = "decision"
 
 _W, _C, _H, _A, _T, _L = "writer", "curator", "helper", "actor", "teammate", "librarian"
 _MEMORY = (_W, _C, _H)
@@ -1209,6 +1211,45 @@ ASK_LIBRARY = RegisteredTool(
     handler="unify.actor.tool_handlers:ask_library",
 )
 
+
+DECIDE = RegisteredTool(
+    name="decide",
+    summary="answer the hand-back question: keep definitions from the draft, or skip.",
+    description=(
+        "Answer the question asked before your answer is handed back (UNIFY_HANDBACK_DECISION=on): keep the "
+        "definitions worth keeping, named from the question, with a one-line reason, or skip. Keep leaves the named "
+        "ones in the session's draft file, marked with the reason, and drops the question's others from it; skip "
+        "drops the question's definitions. Your answer is handed back unchanged either way."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "choice": {"type": "string", "enum": ["keep", "skip"], "description": "keep or skip."},
+            "names": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "With keep: the definitions to keep, from the question.",
+            },
+            "why": {"type": "string", "description": "With keep: one line on why they are worth keeping."},
+        },
+        "required": ["choice"],
+        "additionalProperties": False,
+    },
+    refusals={
+        "no_question": "there is no open question to answer; nothing was recorded",
+        "bad_choice": "choice must be 'keep' or 'skip'; nothing was recorded",
+        "no_names": "keep needs names, a list of the definitions to keep; nothing was recorded",
+        "not_asked": "these were not in the question: {names}; nothing was recorded",
+    },
+    requires=DECISION_FLAG,
+    roles=(_A,),
+    returns="what was recorded.",
+    examples=('tools.decide("keep", names=["parse_grid"], why="reads any grid text")', 'tools.decide("skip")'),
+    when="Only when a question asks you before your answer is handed back.",
+    kind="action",
+    handler="unify.actor.tool_handlers:decide",
+)
+
 SEARCH = RegisteredTool(
     name="search",
     summary="find the library's items whose when-to-use text is closest to a situation.",
@@ -1845,6 +1886,7 @@ _REGISTRY: tuple[RegisteredTool, ...] = (
     CURRENT_REQUEST,
     SH,
     CHECK_EXAMPLES,
+    DECIDE,
 )
 
 
@@ -1897,7 +1939,7 @@ def _earlier(key: tuple[str, str]) -> Optional[_EarlierJson]:
 
 #: Registered tools that never were a memory agent's model-API tool.
 _IN_CODE_ONLY = frozenset(
-    {"sh", "install", "store_skills", "ask_library", "answer", "current_request", "check_examples"},
+    {"sh", "install", "store_skills", "ask_library", "answer", "current_request", "check_examples", "decide"},
 )
 
 

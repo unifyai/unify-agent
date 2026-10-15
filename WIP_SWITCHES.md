@@ -199,3 +199,17 @@ The three long-horizon switches share the step-limit reply path.
 - **Default:** both empty (no suffix).
 - **What it does:** The text ends the system prompt of every `act()` (the actor's and a teammate's), after one blank line and after everything else the prompt carries. The two are set together and must match, or the run is refused at start-up, naming the settings and never the text. The CLI's `ended` line carries `system_suffix_sha256` when a suffix is set.
 - **Evidence:** the minimal-agent arms' one paragraph (M0, and M1 with the cost sentence); a paired comparison of the two isolates the sentence. No counted readout yet; keyless tests only.
+
+## UNIFY_DRAFTS
+
+- **Values:** `on` or `off` (empty is `off`).
+- **Default:** empty (`off`).
+- **What it does:** When on, at every hand-back (the request's answer, by `tools.answer` or as a plain-text reply) the functions and classes the actor's cells defined that are new or changed since the last hand-back are written, unchanged, with the cells' top-level imports, to one draft file per session in the workspace, `drafts/d<session start, UTC>.py`, read from the live interpreter without a model call. The file's header says only when the harness wrote it and how to import from it (no request text). The workspace is the last entry of the interpreter's import path, so a later session imports a draft in one line. Each draft is a `draft` row of the request's `tool-events.jsonl`, and each cell that imports from a draft a `draft_use` row (file, names, whether it is the same session's). Nothing is added to the prompt.
+- **Evidence:** the decision-points arms (drafts by default, P3 of `docs/design/decision-points-principles-20261015.md`): M0+D1 against M0. No counted readout yet; keyless tests only.
+
+## UNIFY_HANDBACK_DECISION
+
+- **Values:** `on` or `off` (empty is `off`).
+- **Default:** empty (`off`).
+- **What it does:** Needs `UNIFY_DRAFTS=on` and `UNIFY_TOOLS_IN_CODE=on` (refused at start-up otherwise). When a hand-back drafted new or changed definitions, the loop holds the answer and gives the actor one more turn with one question: keep the ones worth keeping, with a one-line reason (`tools.decide("keep", names=[...], why=...)`), or skip (`tools.decide("skip")`). Keep marks the named definitions in the draft and drops the question's others from it; skip drops the question's definitions. Whatever the turn does, the held answer is handed back unchanged after it. `tools.decide` exists only with this on. Each decision (keep, skip, or none when the turn did not answer) is a `decision` row of `tool-events.jsonl`.
+- **Evidence:** the decision-points arms (a decision at hand-back, P1 + P2): M0+D1+D2 against M0+D1. No counted readout yet; keyless tests only.

@@ -337,6 +337,11 @@ class PythonWorker:
         if policy is not None:
             mounts = sandbox.neutral_mounts(policy, self._binds)
             paths = [sandbox.box_path(p, policy, mounts=mounts) for p in paths]
+            # UNIFY_DRAFTS=on: the workspace last, so a draft imports in one line and never shadows a library
+            from unify.actor import drafts as _drafts
+
+            if _drafts.enabled() and sandbox.WORKSPACE_MOUNT not in paths:
+                paths.append(sandbox.WORKSPACE_MOUNT)
         msg = {
             "op": "init",
             "sys_path": paths,

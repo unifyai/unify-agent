@@ -4409,6 +4409,13 @@ class CodeActActor(BaseCodeActActor):
                 on_notify=None,
                 compression_tools_on_demand=True,
                 on_turn_boundary=_agents.on_turn_boundary,
+                # UNIFY_DRAFTS: the actor's definitions are drafted at each
+                # hand-back (and UNIFY_HANDBACK_DECISION asks about them)
+                on_hand_back=(
+                    in_code.on_hand_back
+                    if in_code is not None and getattr(in_code, "drafts", None) is not None
+                    else None
+                ),
                 **(
                     {
                         "first_message_context": "\n\n".join(

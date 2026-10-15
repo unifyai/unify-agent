@@ -198,6 +198,15 @@ class InCodeTools:
         )
         # the request the memory package reads through current_request (its text, and the JSON values it carries)
         self.state.request_text, self.state.request_data = H.request_of(request)
+        # UNIFY_DRAFTS=on: the actor's definitions are drafted to the workspace at each hand-back (unify/actor/drafts.py)
+        from unify.actor import drafts as _drafts
+
+        self.drafts = (
+            _drafts.SessionDrafts(root_fd=self._root_fd, events=self.events)
+            if agent == "actor" and _drafts.enabled()
+            else None
+        )
+        self.state.drafts = self.drafts
         stores = can_store and store_skills is not None
         # UNIFY_MEMORY_LIBRARIAN=on: the actor asks the request's librarian (tools.ask_library, from memory.ask)
         asks = agent == "actor" and _librarian_on()
@@ -341,6 +350,28 @@ class InCodeTools:
     def threads_alive(self) -> bool:
         return self.threads.alive()
 
+    # -- the hand-back (UNIFY_DRAFTS, UNIFY_HANDBACK_DECISION) ---------------------------------------------------
+
+    async def on_hand_back(self, after_question: bool = False, may_ask: bool = True) -> Optional[str]:
+        """At a hand-back, with the interpreter still alive: draft the definitions that are new or changed since the
+        last one (UNIFY_DRAFTS=on) and, with UNIFY_HANDBACK_DECISION=on and something drafted, return the question
+        the loop asks before handing back. *after_question*: the question's turn ended (an unanswered question is
+        recorded as ``none``). *may_ask*: False where the loop's answer is a response tool's (drafts only). None
+        when there is nothing to ask."""
+        from unify.actor import drafts as _drafts
+
+        session = self.drafts
+        if session is None or self.closed:
+            return None
+        if after_question:
+            session.after_question()
+            return None
+        async with self._lock:
+            names = await session.hand_back(self.interp)
+        if names and may_ask and _drafts.decision_enabled():
+            return session.question(names)
+        return None
+
     # -- cells -------------------------------------------------------------------------------------------------
 
     async def run_cell(self, code: str) -> Any:
@@ -367,6 +398,9 @@ class InCodeTools:
             self.state.reply_slot = cell_reply.current()
             call = self._next_call()
             self._cell_call = call
+            if self.drafts is not None:
+                # UNIFY_DRAFTS=on: a cell that imports from a draft is recorded (a draft_use row; nothing changes)
+                self.drafts.note_use(code)
             started = time.monotonic()
             res: Any = None
             raised: Optional[BaseException] = None

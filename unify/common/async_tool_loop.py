@@ -755,6 +755,7 @@ def start_async_tool_loop(
     compression_tools_on_demand: bool = False,
     reply_channel: bool = False,
     on_turn_boundary: Optional[Callable[[], Awaitable[Optional[str]]]] = None,
+    on_hand_back: Optional[Callable[..., Awaitable[Optional[str]]]] = None,
     bind_request: bool = False,
     tools_in_code: bool = False,
 ) -> AsyncToolLoopHandle:
@@ -780,6 +781,9 @@ def start_async_tool_loop(
         See ``async_tool_loop_inner``; the defaults are as shipped.
 
     on_turn_boundary : optional coroutine function
+        See ``async_tool_loop_inner``; ``None`` (as shipped) adds nothing.
+
+    on_hand_back : optional coroutine function
         See ``async_tool_loop_inner``; ``None`` (as shipped) adds nothing.
 
     timeout : int | None, default None
@@ -866,6 +870,7 @@ def start_async_tool_loop(
             compression_tools_on_demand=compression_tools_on_demand,
             reply_channel=reply_channel,
             on_turn_boundary=on_turn_boundary,
+            on_hand_back=on_hand_back,
             bind_request=request_slot,
             tools_in_code=tools_in_code,
         )
@@ -917,6 +922,7 @@ def start_async_tool_loop(
         "compression_tools_on_demand": compression_tools_on_demand,
         "reply_channel": reply_channel,
         "on_turn_boundary": on_turn_boundary,
+        "on_hand_back": on_hand_back,
         "bind_request": request_slot,
         "tools_in_code": tools_in_code,
     }

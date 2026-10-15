@@ -469,6 +469,14 @@ class ProductionSettings(BaseSettings):
     # runs (unify/actor/system_suffix.py). The sha256 is on the CLI's ``ended`` line.
     UNIFY_SYSTEM_SUFFIX: str = ""
     UNIFY_SYSTEM_SUFFIX_SHA256: str = ""
+    # Drafts by default: empty (off) or ``on``: at each hand-back the actor's functions and classes that are new or
+    # changed are written, unchanged, to one draft file per session in the workspace (``drafts/``), which later
+    # sessions import in one line (unify/actor/drafts.py).
+    UNIFY_DRAFTS: str = ""
+    # A decision at hand-back: empty (off) or ``on``, with UNIFY_DRAFTS and UNIFY_TOOLS_IN_CODE on (refused at
+    # start-up otherwise): when a hand-back drafted something, one more turn asks to keep or skip it
+    # (``tools.decide``), and the answer is handed back unchanged after it.
+    UNIFY_HANDBACK_DECISION: str = ""
     # The library mode's E (recorded tokens at which a pass becomes due), one pass's wall-clock bound (s), and the
     # writer route proxy's journal (absolute path; empty: none) used only to reconcile cancelled calls.
     UNIFY_MEMORY_LIBRARY_E: int = 100000
@@ -811,6 +819,16 @@ class ProductionSettings(BaseSettings):
         from unify.actor import system_suffix
 
         return system_suffix.parse_sha256(v)
+
+    @field_validator("UNIFY_DRAFTS", "UNIFY_HANDBACK_DECISION", mode="before")
+    @classmethod
+    def parse_drafts(cls, v: Any, info: Any) -> str:
+        from unify.actor import drafts
+
+        try:
+            return drafts.parse(v)
+        except ValueError as exc:
+            raise ValueError(f"{info.field_name}: {exc}") from None
 
     @field_validator("UNIFY_COMPACTION_AT_TOKENS", mode="before")
     @classmethod

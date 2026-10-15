@@ -393,6 +393,7 @@ ADDED_TOOLS = (
     "current_request",
     "search",
     "check_examples",
+    "decide",
 )
 #: Tools added to the writer's JSON tools (tools not in code) since the base commit: left out of the base hashes.
 ADDED_JSON_TOOLS = ("land_capture",)
