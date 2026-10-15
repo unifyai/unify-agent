@@ -2082,6 +2082,13 @@ class _StorageCheckHandle(ToolLoopHandle):
         if loop_stop.enabled():
             runtime_state = getattr(self._inner, "_runtime_state", None)
             stats.update(loop_stop.run_stats(runtime_state))
+        # Replies the provider withheld (content_filter): sent again, and the
+        # turns that ended saying so; only when there were any.
+        runtime_state = getattr(self._inner, "_runtime_state", None)
+        for key in ("content_filter_retries", "content_filter_withheld"):
+            count = int(getattr(runtime_state, key, 0) or 0)
+            if count:
+                stats[key] = count
         return stats
 
     # ── Internal helpers ──────────────────────────────────────────────

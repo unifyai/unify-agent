@@ -107,6 +107,11 @@ class ToolLoopRuntimeState:
     # Replies dropped and sent again because their choice carried a
     # provider error.
     provider_error_retries: int = 0
+    # Replies the provider withheld (finish_reason content_filter, no text and
+    # no tool call): sent again, and the turns that ended with the
+    # withheld-reply text once the retries were spent.
+    content_filter_retries: int = 0
+    content_filter_withheld: int = 0
     # UNIFY_REPLY_CHANNEL=code+text: turns a cell's reply() ended, and those
     # whose text was a computed value rather than a string literal.
     replies_from_cell: int = 0
@@ -310,6 +315,34 @@ def _completion_provider_error(completion: Any) -> Optional[str]:
     if isinstance(error, dict):
         return f"{error.get('code', '?')}: {error.get('message', 'error')}"
     return str(error or "finish_reason error")
+
+
+#: The turn's text once a withheld reply was sent the retries and still withheld.
+WITHHELD_REPLY = (
+    "The provider withheld the model's reply to this turn (finish_reason "
+    "content_filter) {attempts} times in a row, so this turn has no answer."
+)
+
+
+def _completion_withheld(completion: Any) -> bool:
+    """Whether the provider withheld a completion's reply: its first choice
+    finished with ``content_filter`` (as LiteLLM maps it, or OpenRouter's own
+    ``native_finish_reason``) and holds no text and no tool call."""
+    try:
+        choice = completion.choices[0]
+    except Exception:
+        return False
+    fields = getattr(choice, "provider_specific_fields", None)
+    if not isinstance(fields, dict):
+        fields = {}
+    if "content_filter" not in (
+        getattr(choice, "finish_reason", None),
+        fields.get("native_finish_reason"),
+    ):
+        return False
+    message = getattr(choice, "message", None)
+    content = getattr(message, "content", None)
+    return not str(content or "").strip() and not getattr(message, "tool_calls", None)
 
 
 def _parse_tool_policy_result(
@@ -2159,8 +2192,10 @@ async def async_tool_loop_inner(
             for item in list(getattr(interject_queue, "_queue", None) or ())
         )
 
-    # Consecutive replies of this turn dropped for a provider error.
+    # Consecutive replies of this turn dropped for a provider error, and
+    # those the provider withheld (content_filter).
     _provider_error_retries = 0
+    _content_filter_retries = 0
     # Bounded retries for a terminal turn that returns empty content with no
     # substantive answer anywhere else in the conversation to fall back on.
     _empty_final_answer_retries = 0
@@ -2804,6 +2839,46 @@ async def async_tool_loop_inner(
                     prefix=ICONS["early_exit"],
                 )
             _provider_error_retries = 0
+
+            # A reply the provider withheld (finish_reason "content_filter"
+            # with no text and no tool call: an HTTP 200 with nothing charged)
+            # is not the model's turn either: it is sent again in the same
+            # way, counted apart. Once the retries are spent the turn ends
+            # with a text that says so, never an empty answer.
+            if _completion_withheld(_full_completion):
+                _failed = (client.messages or [None])[-1]
+                _owned = (
+                    isinstance(_failed, dict)
+                    and _failed.get("role") == "assistant"
+                    and is_mutable(client, _failed)
+                )
+                if _owned and _content_filter_retries < _PROVIDER_ERROR_RETRIES:
+                    _content_filter_retries += 1
+                    runtime_state.content_filter_retries += 1
+                    client.messages.pop()
+                    _backoff = _PROVIDER_ERROR_BACKOFF_S * 2 ** (
+                        _content_filter_retries - 1
+                    )
+                    logger.error(
+                        "The provider withheld the model's reply (content_filter); "
+                        f"sending the turn again in {_backoff:g}s (retry "
+                        f"{_content_filter_retries}/{_PROVIDER_ERROR_RETRIES})",
+                        prefix=ICONS["early_exit"],
+                    )
+                    with suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(cancel_event.wait(), _backoff)
+                    continue
+                if _owned:
+                    _failed["content"] = WITHHELD_REPLY.format(
+                        attempts=_content_filter_retries + 1,
+                    )
+                    runtime_state.content_filter_withheld += 1
+                    logger.error(
+                        "The provider withheld the model's reply (content_filter); "
+                        "retries spent, the turn ends with a text saying so",
+                        prefix=ICONS["early_exit"],
+                    )
+            _content_filter_retries = 0
 
             # The step's assistant message is the tail.
             msg = client.messages[-1]
