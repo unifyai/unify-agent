@@ -185,3 +185,17 @@ The three long-horizon switches share the step-limit reply path.
 - **Default:** empty (`on`).
 - **What it does:** When off, the actor's memory surface is exactly as with it on (its tools, the library pointer or index, the librarian when that is on), and no memory work runs after a request: no consolidation pass of any kind starts (a batch's WRITE, the CURATE it makes due, a pass a verdict makes due), no writer call is made, the episode-end fork does not start, and the library never changes. Every other memory setting keeps its value. The episode is still recorded, its meta saying `"memory_passes": "off"`.
 - **Evidence:** the no-pass twin of the memory arm: the same surface with no learning, so a paired comparison separates what the library adds from what the surface alone does. No counted readout yet; keyless tests only.
+
+## UNIFY_LIBRARY
+
+- **Values:** `on` or `off` (empty is `on`).
+- **Default:** empty (`on`).
+- **What it does:** When off, the actor has no library: it removes memory and library surface only. The sandbox has no `functions` or `guidance` object, so the prompt has no library sections, no shortlist of stored entries and no line giving the library's size; the session may not store, so there is no `store_skills`, no storage review at a turn or at the end and no library write; and the system prompt no longer points to `functions.search` or says the actor has stored functions to draw on. Everything else is as it is (`execute_code`, `install`, `read_file`, `grep`, `sh`, `tools.check_examples`, the record, teammates). A run that also sets `UNIFY_MEMORY=on` is refused at start-up.
+- **Evidence:** the minimal-agent arms: j3 with only memory and the library removed, so a paired comparison with j3 isolates what memory adds. No counted readout yet; keyless tests only.
+
+## UNIFY_SYSTEM_SUFFIX and UNIFY_SYSTEM_SUFFIX_SHA256
+
+- **Values:** `UNIFY_SYSTEM_SUFFIX` a text; `UNIFY_SYSTEM_SUFFIX_SHA256` the lowercase hex sha256 of its UTF-8 bytes.
+- **Default:** both empty (no suffix).
+- **What it does:** The text ends the system prompt of every `act()` (the actor's and a teammate's), after one blank line and after everything else the prompt carries. The two are set together and must match, or the run is refused at start-up, naming the settings and never the text. The CLI's `ended` line carries `system_suffix_sha256` when a suffix is set.
+- **Evidence:** the minimal-agent arms' one paragraph (M0, and M1 with the cost sentence); a paired comparison of the two isolates the sentence. No counted readout yet; keyless tests only.

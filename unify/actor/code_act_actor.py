@@ -3895,6 +3895,10 @@ class CodeActActor(BaseCodeActActor):
         from unify.memory.integration import hooks as _mv2
 
         effective_can_store = _mv2.can_store(effective_can_store)
+        # UNIFY_LIBRARY=off: no library at all, so no storage review or write either.
+        from unify.actor import library_switch as _library
+
+        effective_can_store = _library.can_store(effective_can_store)
         # UNIFY_STORE_ADMISSION: the post-session review is the only writer,
         # and it runs only when an external check of the outcome admits it.
         admission_gated = effective_can_store and bool(_store_admission_path())
@@ -4195,6 +4199,12 @@ class CodeActActor(BaseCodeActActor):
             system_prompt = notebook_cells.rewrite_prompt(system_prompt)
         # UNIFY_MEMORY=on: the memory index ends the cached system prompt.
         system_prompt = _mv2.system_prompt(system_prompt)
+        # UNIFY_LIBRARY=off: no prompt text naming stored functions.
+        system_prompt = _library.system_prompt(system_prompt)
+        # UNIFY_SYSTEM_SUFFIX: its text ends the system prompt, after everything else.
+        from unify.actor import system_suffix as _suffix
+
+        system_prompt = _suffix.append(system_prompt)
         # What opens the session's first user message (first_message_context),
         # in this order: the host clock (UNIFY_CLOCK_PLACEMENT=first_message),
         # the library's size (UNIFY_LIBRARY_SNAPSHOT), then a rule and the

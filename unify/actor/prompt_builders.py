@@ -322,6 +322,11 @@ _LEAN_ROLE_LIBRARY_MEMORY = (
     "Python cells with `execute_code`. A library of functions and notes from\n"
     "earlier work, when one exists, is `memory` in your cells, already bound."
 )
+# A run with no library at all (UNIFY_LIBRARY=off, unify/actor/library_switch.py).
+_LEAN_ROLE_NO_LIBRARY = (
+    "You solve the request in this conversation by writing and running\n"
+    "Python cells with `execute_code`."
+)
 _SANDBOX_GLOBALS_INTRO = (
     "Python in `execute_code` and stored functions runs with the\n"
     "injected globals below."
@@ -653,6 +658,8 @@ _CORE_SANDBOX_SEARCH_PYTHON = (
     "`await functions.search(...)`, then read live docs in-sandbox with\n"
     "`help(...)`"
 )
+# The same pointer with no function store (UNIFY_LIBRARY=off; a memory run reads the same words, hooks._HELP_ONLY).
+_CORE_SANDBOX_HELP_ONLY = "Read live docs in-sandbox with\n`help(...)`"
 
 
 # The lean rules' pointer to the session tools, which the core surface does not have.

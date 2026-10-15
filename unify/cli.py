@@ -760,7 +760,10 @@ class Act:
                 emit=(lambda event: self._emit(**event)) if args.jsonl else None,
             )
         if args.jsonl:
-            self._emit(type="ended")
+            # UNIFY_SYSTEM_SUFFIX: the run records which text ended its system prompt (only when one did).
+            from unify.actor import system_suffix
+
+            self._emit(type="ended", **system_suffix.record())
         return 0
 
     def _print_result(self, result: object) -> None:
@@ -819,11 +822,13 @@ async def _run_act(args: argparse.Namespace) -> int:
 
 def _profile_refusal() -> str | None:
     """Why this run may not start under its ``UNIFY_PROFILE`` (the settings it fixes that are set otherwise, by name,
-    never a value), or None."""
+    never a value), its ``UNIFY_LIBRARY`` (off with memory on) or its system suffix (set without its sha256, or not
+    matching it), or None."""
+    from unify.actor import library_switch, system_suffix
     from unify.memory.integration.switch import profile_refusal
     from unify.settings import SETTINGS
 
-    return profile_refusal(SETTINGS)
+    return profile_refusal(SETTINGS) or library_switch.refusal(SETTINGS) or system_suffix.refusal(SETTINGS)
 
 
 def main(argv: list[str] | None = None) -> int:

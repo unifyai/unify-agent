@@ -459,6 +459,16 @@ class ProductionSettings(BaseSettings):
     # surface is unchanged, and no pass, writer call or episode-end fork runs, so the library never changes; the
     # other memory settings keep their values. Recorded in each episode's meta when off.
     UNIFY_MEMORY_PASSES: str = ""
+    # The actor's library: empty or ``on`` (default: today's behaviour) or ``off``, which removes memory and library
+    # surface only: no ``functions`` or ``guidance`` in the sandbox, no ``store_skills``, no storage review, no
+    # shortlist or library line, and no prompt text naming stored functions. Refused with UNIFY_MEMORY on
+    # (unify/actor/library_switch.py).
+    UNIFY_LIBRARY: str = ""
+    # Text appended at the very end of the system prompt (empty: none), with UNIFY_SYSTEM_SUFFIX_SHA256 the lowercase
+    # hex sha256 of its UTF-8 bytes: set together, and a run whose text does not match is refused before anything
+    # runs (unify/actor/system_suffix.py). The sha256 is on the CLI's ``ended`` line.
+    UNIFY_SYSTEM_SUFFIX: str = ""
+    UNIFY_SYSTEM_SUFFIX_SHA256: str = ""
     # The library mode's E (recorded tokens at which a pass becomes due), one pass's wall-clock bound (s), and the
     # writer route proxy's journal (absolute path; empty: none) used only to reconcile cancelled calls.
     UNIFY_MEMORY_LIBRARY_E: int = 100000
@@ -787,6 +797,20 @@ class ProductionSettings(BaseSettings):
         from unify.memory.integration import switch
 
         return switch.PARSERS[info.field_name](v)
+
+    @field_validator("UNIFY_LIBRARY", mode="before")
+    @classmethod
+    def parse_library(cls, v: Any) -> str:
+        from unify.actor import library_switch
+
+        return library_switch.parse(v)
+
+    @field_validator("UNIFY_SYSTEM_SUFFIX_SHA256", mode="before")
+    @classmethod
+    def parse_system_suffix_sha256(cls, v: Any) -> str:
+        from unify.actor import system_suffix
+
+        return system_suffix.parse_sha256(v)
 
     @field_validator("UNIFY_COMPACTION_AT_TOKENS", mode="before")
     @classmethod

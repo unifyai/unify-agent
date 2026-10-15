@@ -1749,6 +1749,10 @@ def start_session(
     from unify.memory.integration import hooks as _mv2
 
     objects = _mv2.sandbox_objects(objects)
+    # UNIFY_LIBRARY=off: the same, with no memory either.
+    from unify.actor import library_switch as _library
+
+    objects = _library.sandbox_objects(objects)
     sandbox.global_state.update(objects)
     sandbox.core_globals = dict(objects)
     clarification = (
