@@ -481,8 +481,9 @@ async def store_skills(ctx: Any, args: dict) -> Any:
 
 async def decide(ctx: Any, args: dict) -> Any:
     """Answer the question asked before the request's answer is handed back: keep named definitions in the session's
-    draft (with a one-line reason) or skip (``unify.actor.drafts.SessionDrafts.decide``). Recorded as a ``decision``
-    row; the answer itself is handed back unchanged either way."""
+    draft, or the request's working-cells file, with a one-line reason; or skip
+    (``unify.actor.drafts.SessionDrafts.decide``). Recorded as a ``decision`` row; the answer itself is handed back
+    unchanged either way."""
     session = getattr(ctx.state, "drafts", None)
     if session is None:
         return _refused(refusal("decide", "no_question"))

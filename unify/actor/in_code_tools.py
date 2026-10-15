@@ -240,6 +240,8 @@ class InCodeTools:
                 writes=bool(knobs["drafts"]),
                 writer={"session": self.request_id, "arm": self.policy.arm} if self.policy is not None else None,
                 on_import=self._imported if self.policy is not None else None,
+                # UNIFY_DRAFTS's mode (definitions, working cells or both); the policy's drafting arms draft definitions
+                mode=_drafts.mode() or _drafts.ON,
             )
             if actor and (knobs["drafts"] or self.policy is not None)
             else None
@@ -408,13 +410,18 @@ class InCodeTools:
                 session.after_question()
             return None
         names: list = []
+        written: Optional[str] = None
         if session is not None:
-            async with self._lock:
-                probed = await _drafts.probe(self.interp)
+            probed = None
+            if session.definitions:
+                async with self._lock:
+                    probed = await _drafts.probe(self.interp)
             names = session.take(probed)
             if self.policy is not None and probed is not None:
                 # UNIFY_ADAPTIVE_POLICY: rework of an earlier session's definitions is debited to its arm
                 self.policy.defined(probed.get("defs") or {})
+            # UNIFY_DRAFTS=cells or both: the request's working cells, from the host's record of each cell
+            written = session.take_cells()
             session.request_ended()
         if self.mirror is not None:
             # UNIFY_CONSEQUENCES: the next request's cost is counted from here
@@ -423,6 +430,8 @@ class InCodeTools:
             return None
         if self.decision == "built" and names:
             return session.question(names)
+        if self.decision == "built" and written:
+            return session.question_file(written)
         if self.decision == "always":
             undecided = session.undecided()
             if undecided:
@@ -495,6 +504,9 @@ class InCodeTools:
                     await interp.stop()
             crashed = raised is not None and not _is_reply(raised)
             out = self._result(res, None if crashed else raised, started, failed)
+            if self.drafts is not None:
+                # UNIFY_DRAFTS=cells or both: the cell's source and whether it ran without error, as it ended
+                self.drafts.note_cell(call, code, out.error is None and not crashed)
             self._cell_row(
                 call,
                 code,

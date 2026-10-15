@@ -1214,12 +1214,14 @@ ASK_LIBRARY = RegisteredTool(
 
 DECIDE = RegisteredTool(
     name="decide",
-    summary="answer the hand-back question: keep definitions from the draft, or skip.",
+    summary="answer the hand-back question: keep what the draft holds, or skip.",
     description=(
-        "Answer the question asked before your answer is handed back (UNIFY_HANDBACK_DECISION=on): keep the "
-        "definitions worth keeping, named from the question, with a one-line reason, or skip. Keep leaves the named "
-        "ones in the session's draft file, marked with the reason, and drops the question's others from it; skip "
-        "drops the question's definitions. Your answer is handed back unchanged either way."
+        "Answer the question asked before your answer is handed back (UNIFY_HANDBACK_DECISION=on). When it asks about "
+        "definitions: keep the ones worth keeping, named from the question, with a one-line reason, or skip; keep "
+        "leaves the named ones in the session's draft file, marked with the reason, and drops the question's others "
+        "from it; skip drops the question's definitions. When it asks about a file of the request's working cells: "
+        "keep it, with a one-line reason (no names), or skip, which removes it. Your answer is handed back unchanged "
+        "either way."
     ),
     parameters={
         "type": "object",
@@ -1228,9 +1230,9 @@ DECIDE = RegisteredTool(
             "names": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "With keep: the definitions to keep, from the question.",
+                "description": "With keep, when the question names definitions: the ones to keep, from it.",
             },
-            "why": {"type": "string", "description": "With keep: one line on why they are worth keeping."},
+            "why": {"type": "string", "description": "With keep: one line on why it is worth keeping."},
         },
         "required": ["choice"],
         "additionalProperties": False,
@@ -1244,7 +1246,11 @@ DECIDE = RegisteredTool(
     requires=DECISION_FLAG,
     roles=(_A,),
     returns="what was recorded.",
-    examples=('tools.decide("keep", names=["parse_grid"], why="reads any grid text")', 'tools.decide("skip")'),
+    examples=(
+        'tools.decide("keep", names=["parse_grid"], why="reads any grid text")',
+        'tools.decide("keep", why="the steps that built the table")',
+        'tools.decide("skip")',
+    ),
     when="Only when a question asks you before your answer is handed back.",
     kind="action",
     handler="unify.actor.tool_handlers:decide",

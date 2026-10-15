@@ -91,7 +91,14 @@ def refusal(settings: Any = None) -> str | None:
         return f"{SETTING}=on needs UNIFY_TOOLS_IN_CODE=on; nothing runs"
     if str(getattr(settings, "UNIFY_MEMORY", "") or "").strip().lower() == "on":
         return f"{SETTING}=on chooses among the drafts arms, so UNIFY_MEMORY must be off; nothing runs"
-    explicit = [n for n in ("UNIFY_DRAFTS", "UNIFY_HANDBACK_DECISION", "UNIFY_CONSEQUENCES") if _on(settings, n)]
+    from unify.actor import drafts
+
+    # UNIFY_DRAFTS counts as set in any of its modes (on, cells, both)
+    explicit = [
+        n
+        for n in ("UNIFY_DRAFTS", "UNIFY_HANDBACK_DECISION", "UNIFY_CONSEQUENCES")
+        if (drafts.mode(settings) != "" if n == "UNIFY_DRAFTS" else _on(settings, n))
+    ]
     if explicit:
         return f"{SETTING}=on chooses {', '.join(explicit)} itself; unset them, so nothing runs"
     return None

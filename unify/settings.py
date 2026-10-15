@@ -469,9 +469,10 @@ class ProductionSettings(BaseSettings):
     # runs (unify/actor/system_suffix.py). The sha256 is on the CLI's ``ended`` line.
     UNIFY_SYSTEM_SUFFIX: str = ""
     UNIFY_SYSTEM_SUFFIX_SHA256: str = ""
-    # Drafts by default: empty (off) or ``on``: at each hand-back the actor's functions and classes that are new or
-    # changed are written, unchanged, to one draft file per session in the workspace (``drafts/``), which later
-    # sessions import in one line (unify/actor/drafts.py).
+    # Drafts by default: empty (off), ``on``, ``cells`` or ``both``: at each hand-back the actor's functions and classes
+    # that are new or changed are written, unchanged, to one draft file per session in the workspace (``drafts/``),
+    # which later sessions import in one line (``on``); the request's working cells go to a file of that hand-back
+    # for reading (``cells``); or both (unify/actor/drafts.py).
     UNIFY_DRAFTS: str = ""
     # A decision at hand-back: empty (off) or ``on``, with UNIFY_DRAFTS and UNIFY_TOOLS_IN_CODE on (refused at
     # start-up otherwise): when a hand-back drafted something, one more turn asks to keep or skip it
@@ -829,7 +830,6 @@ class ProductionSettings(BaseSettings):
         return system_suffix.parse_sha256(v)
 
     @field_validator(
-        "UNIFY_DRAFTS",
         "UNIFY_HANDBACK_DECISION",
         "UNIFY_CONSEQUENCES",
         "UNIFY_ADAPTIVE_POLICY",
@@ -843,6 +843,16 @@ class ProductionSettings(BaseSettings):
             return drafts.parse(v)
         except ValueError as exc:
             raise ValueError(f"{info.field_name}: {exc}") from None
+
+    @field_validator("UNIFY_DRAFTS", mode="before")
+    @classmethod
+    def parse_drafts_mode(cls, v: Any) -> str:
+        from unify.actor import drafts
+
+        try:
+            return drafts.parse_mode(v)
+        except ValueError as exc:
+            raise ValueError(f"UNIFY_DRAFTS: {exc}") from None
 
     @field_validator("UNIFY_COMPACTION_AT_TOKENS", mode="before")
     @classmethod
