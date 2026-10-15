@@ -9,7 +9,8 @@ any number of stores can share one.
 Two embedders produce the vectors:
 
 - ``openai/text-embedding-3-small`` in OpenRouter's form, posted to
-  ``UNIFY_EMBED_URL`` (a proxy that routes and books them) on the same
+  ``UNIFY_EMBED_URL`` (the run's proxy lane, which routes and books them;
+  only ``http://127.0.0.1:<port>/...``, :func:`embed_route`) on the same
   ``OPENROUTER_API_KEY`` as the LLM. It reads the first 2,048 tokens of a
   text. With no ``UNIFY_EMBED_URL`` a text not in the cache is refused
   (:class:`EmbeddingRouteRefused`): nothing is posted to a provider directly,
@@ -30,6 +31,7 @@ from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 from typing import Any, Callable, Sequence
+from urllib.parse import urlsplit
 
 import httpx
 import numpy as np
@@ -57,7 +59,40 @@ _OPENROUTER_MODEL = "openai/text-embedding-3-small"
 
 
 class EmbeddingRouteRefused(RuntimeError):
-    """A text needs a provider's embedding and no route for it is set (``UNIFY_EMBED_URL``)."""
+    """A text needs a provider's embedding and no usable route for it is set (``UNIFY_EMBED_URL``)."""
+
+
+#: The one host the embedding route may name: the run's loopback bridge to its proxy lane, which holds the real
+#: credential and books the calls (the key this process sends goes only there).
+EMBED_HOST = "127.0.0.1"
+
+
+def embed_route(value: Any) -> str:
+    """``UNIFY_EMBED_URL`` checked: ``http://127.0.0.1:<port>/<path>``, with no user, password, query or fragment;
+    :class:`EmbeddingRouteRefused` otherwise, naming the rule and never the value (it is where a key would go)."""
+    text = str(value or "").strip()
+    if not text:
+        raise EmbeddingRouteRefused(
+            "no embedding route: set UNIFY_EMBED_URL to the run's proxy lane for embeddings, or "
+            "UNIFY_LOCAL_EMBEDDINGS for the local model; a provider is never called directly",
+        )
+    rule = f"UNIFY_EMBED_URL must be http://{EMBED_HOST}:<port>/<path> with no user, password, query or fragment"
+    if any(c.isspace() or not c.isprintable() for c in text):
+        raise EmbeddingRouteRefused(f"{rule}: it holds a space or control character")
+    try:
+        parts = urlsplit(text)
+        port = parts.port  # a malformed port raises here
+    except ValueError:
+        raise EmbeddingRouteRefused(f"{rule}: it does not parse") from None
+    if parts.scheme.lower() != "http" or parts.hostname != EMBED_HOST:
+        raise EmbeddingRouteRefused(f"{rule}: it names another scheme or host")
+    if "@" in parts.netloc or parts.username is not None or parts.password is not None:
+        raise EmbeddingRouteRefused(f"{rule}: it carries a user or password")
+    if port is None or port == 0:
+        raise EmbeddingRouteRefused(f"{rule}: it has no port")
+    if parts.query or parts.fragment or "?" in text or "#" in text:
+        raise EmbeddingRouteRefused(f"{rule}: it has a query or fragment")
+    return text
 
 
 # One vector of a whole long procedure averages its purpose, which comes
@@ -89,12 +124,8 @@ def _fit_openrouter_input(encoding: tiktoken.Encoding, text: str) -> str:
 
 
 def _openrouter(texts: list[str]) -> np.ndarray:
-    url = SETTINGS.UNIFY_EMBED_URL.strip()
-    if not url:
-        raise EmbeddingRouteRefused(
-            "no embedding route: set UNIFY_EMBED_URL to the run's proxy lane for embeddings, or "
-            "UNIFY_LOCAL_EMBEDDINGS for the local model; a provider is never called directly",
-        )
+    # checked before the key is read: the key goes only to the run's loopback proxy lane
+    url = embed_route(SETTINGS.UNIFY_EMBED_URL)
     encoding = tiktoken.get_encoding("cl100k_base")
     inputs = [_fit_openrouter_input(encoding, text) for text in texts]
     headers = {

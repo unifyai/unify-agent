@@ -49,3 +49,32 @@ def test_the_switch_names_the_endpoint(monkeypatch):
     vectors = embeddings._openrouter(["a text", "another"])
     assert urls == ["http://127.0.0.1:9/v1/embeddings"]
     assert vectors.shape == (2, 2)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://openrouter.ai/api/v1/embeddings",  # a provider, directly
+        "http://10.0.0.5:9/v1/embeddings",  # another host
+        "http://localhost:9/v1/embeddings",  # a name, not the loopback address
+        "http://127.0.0.1/v1/embeddings",  # no port
+        "http://user:pw@127.0.0.1:9/v1/embeddings",  # pragma: allowlist secret
+        "http://127.0.0.1:9/v1/embeddings?k=v",
+        "http://127.0.0.1:9/v1/embeddings#f",
+        "http://127.0.0.1:9/v1 embeddings",
+        "http://127.0.0.1:notaport/v1",
+    ],
+)
+def test_only_a_loopback_route_with_a_port_is_taken_and_the_refusal_never_quotes_it(monkeypatch, url):
+    """The embedder sends the process's key to the route, so only the run's loopback proxy lane is accepted."""
+    urls = _recording(monkeypatch)
+    monkeypatch.setattr(SETTINGS, "UNIFY_EMBED_URL", url)
+    with pytest.raises(embeddings.EmbeddingRouteRefused) as refused:
+        embeddings._openrouter(["a text"])
+    assert urls == [] and "UNIFY_EMBED_URL" in str(refused.value)
+    assert url not in str(refused.value) and "pw" not in str(refused.value)
+
+
+def test_the_loopback_route_is_taken_as_written():
+    url = "http://127.0.0.1:18200/lane/v1/embeddings"
+    assert embeddings.embed_route(f"  {url} ") == url
