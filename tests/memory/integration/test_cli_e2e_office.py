@@ -248,8 +248,12 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch, surfacing):
     model = ScriptedModel(actor=[first_turn, reply(FINAL)])
     code, lines = await _visit(core_world, monkeypatch, model, REQUEST, outcome=OUTCOME)
 
-    # 1. exit 0; the accepted outcome, a consolidation start and end, then ended
+    # 1. exit 0; the accepted outcome, a consolidation start and end (and the pass's progress rows between them),
+    # then ended
     assert code == 0, lines
+    progress = [line for line in lines if line["type"] == "consolidation" and line.get("phase") in ("turn", "gate")]
+    assert progress and all(line["phase"] in ("turn", "gate") and line["seconds"] >= 0 for line in progress)
+    lines = [line for line in lines if line not in progress]
     types = [line["type"] for line in lines]
     assert types == [
         "response",

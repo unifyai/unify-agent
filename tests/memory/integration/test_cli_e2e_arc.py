@@ -191,9 +191,14 @@ def _episode_ids(paths: Paths) -> list[str]:
     ]
 
 
+def _progress(line: dict) -> bool:
+    """A running pass's progress row (a model call or a gate verdict, between its start and its end)."""
+    return line["type"] == "consolidation" and line.get("phase") in ("turn", "gate")
+
+
 def _types(lines: list[dict]) -> list[str]:
-    """The line types, without storage lines or record posts to @user (none is scripted here)."""
-    return [line["type"] for line in lines if line["type"] not in ("storage", "record")]
+    """The line types, without storage lines, record posts to @user (none is scripted here) or progress rows."""
+    return [line["type"] for line in lines if line["type"] not in ("storage", "record") and not _progress(line)]
 
 
 def _files(root: Path) -> list[str]:
@@ -302,9 +307,13 @@ async def test_arc_visits_capture_dialogue_and_merge_an_env_item(
     ], lines
     eid1_again, eid2 = _episode_ids(paths)
     assert eid1_again == eid1
-    start, end = (line for line in lines if line["type"] == "consolidation")
+    start, end = (line for line in lines if line["type"] == "consolidation" and not _progress(line))
     assert start["phase"] == "start" and end["phase"] == "end"
     assert start["episodes"] == [eid1, eid2] and start["pass_id"] == end["pass_id"]
+    # the pass reported its model calls as they happened, between its start and its end
+    turns = [line for line in lines if _progress(line) and line["phase"] == "turn"]
+    assert turns and all(t["pass_id"] == start["pass_id"] and t["seconds"] >= 0 for t in turns)
+    assert lines.index(start) < lines.index(turns[0]) and lines.index(turns[-1]) < lines.index(end)
     assert start["trigger_tokens"] >= t1 + 1
     assert writer_calls == [(defaults["UNIFY_MEMORY_WRITER_MODEL"].default, EFFORT)]
     assert "EPISODES 2" in script.outputs["c1"], script.outputs
