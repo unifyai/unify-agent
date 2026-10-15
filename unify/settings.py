@@ -477,6 +477,10 @@ class ProductionSettings(BaseSettings):
     # start-up otherwise): when a hand-back drafted something, one more turn asks to keep or skip it
     # (``tools.decide``), and the answer is handed back unchanged after it.
     UNIFY_HANDBACK_DECISION: str = ""
+    # The consequence mirror: empty (off) or ``on``, with UNIFY_TOOLS_IN_CODE on (refused at start-up otherwise):
+    # each cell result ends with one line of measured facts, the request's model calls and USD so far and the record
+    # of each draft a cell imported (unify/actor/consequences.py).
+    UNIFY_CONSEQUENCES: str = ""
     # The library mode's E (recorded tokens at which a pass becomes due), one pass's wall-clock bound (s), and the
     # writer route proxy's journal (absolute path; empty: none) used only to reconcile cancelled calls.
     UNIFY_MEMORY_LIBRARY_E: int = 100000
@@ -820,7 +824,7 @@ class ProductionSettings(BaseSettings):
 
         return system_suffix.parse_sha256(v)
 
-    @field_validator("UNIFY_DRAFTS", "UNIFY_HANDBACK_DECISION", mode="before")
+    @field_validator("UNIFY_DRAFTS", "UNIFY_HANDBACK_DECISION", "UNIFY_CONSEQUENCES", mode="before")
     @classmethod
     def parse_drafts(cls, v: Any, info: Any) -> str:
         from unify.actor import drafts

@@ -213,3 +213,10 @@ The three long-horizon switches share the step-limit reply path.
 - **Default:** empty (`off`).
 - **What it does:** Needs `UNIFY_DRAFTS=on` and `UNIFY_TOOLS_IN_CODE=on` (refused at start-up otherwise). When a hand-back drafted new or changed definitions, the loop holds the answer and gives the actor one more turn with one question: keep the ones worth keeping, with a one-line reason (`tools.decide("keep", names=[...], why=...)`), or skip (`tools.decide("skip")`). Keep marks the named definitions in the draft and drops the question's others from it; skip drops the question's definitions. Whatever the turn does, the held answer is handed back unchanged after it. `tools.decide` exists only with this on. Each decision (keep, skip, or none when the turn did not answer) is a `decision` row of `tool-events.jsonl`.
 - **Evidence:** the decision-points arms (a decision at hand-back, P1 + P2): M0+D1+D2 against M0+D1. No counted readout yet; keyless tests only.
+
+## UNIFY_CONSEQUENCES
+
+- **Values:** `on` or `off` (empty is `off`).
+- **Default:** empty (`off`).
+- **What it does:** Needs `UNIFY_TOOLS_IN_CODE=on` (refused at start-up otherwise). When on, every cell result the actor reads ends with one line of measured facts and nothing else: the current request's model calls and their USD so far (from the run's meter; calls with no reported cost are counted, never priced), and for each draft module (`UNIFY_DRAFTS`) a cell of this request imported, the requests that imported it so far and the names kept or skipped at hand-back, from the deployment's draft record (`drafts-record.json` in the harness's home, which no cell sees). A request starts at the session's start and after each hand-back. No advice and no world terms.
+- **Evidence:** the decision-points arms (a consequence mirror, P4 of `docs/design/decision-points-principles-20261015.md`). No counted readout yet; keyless tests only.

@@ -199,14 +199,23 @@ class InCodeTools:
         # the request the memory package reads through current_request (its text, and the JSON values it carries)
         self.state.request_text, self.state.request_data = H.request_of(request)
         # UNIFY_DRAFTS=on: the actor's definitions are drafted to the workspace at each hand-back (unify/actor/drafts.py)
+        from unify.actor import consequences as _consequences
         from unify.actor import drafts as _drafts
 
+        # the deployment's record of each draft's imports and decisions (in the harness's home, which no cell sees)
+        self.record = None
+        if agent == "actor" and _drafts.enabled():
+            from unify.db import store_home
+
+            self.record = _consequences.DraftRecord(store_home() / _consequences.RECORD)
         self.drafts = (
-            _drafts.SessionDrafts(root_fd=self._root_fd, events=self.events)
+            _drafts.SessionDrafts(root_fd=self._root_fd, events=self.events, record=self.record)
             if agent == "actor" and _drafts.enabled()
             else None
         )
         self.state.drafts = self.drafts
+        # UNIFY_CONSEQUENCES=on: each cell result ends with the facts line (unify/actor/consequences.py)
+        self.mirror = _consequences.Mirror() if agent == "actor" and _consequences.enabled() else None
         stores = can_store and store_skills is not None
         # UNIFY_MEMORY_LIBRARIAN=on: the actor asks the request's librarian (tools.ask_library, from memory.ask)
         asks = agent == "actor" and _librarian_on()
@@ -361,13 +370,22 @@ class InCodeTools:
         from unify.actor import drafts as _drafts
 
         session = self.drafts
-        if session is None or self.closed:
+        if self.closed or (session is None and self.mirror is None):
             return None
         if after_question:
-            session.after_question()
+            if session is not None:
+                session.after_question()
             return None
-        async with self._lock:
-            names = await session.hand_back(self.interp)
+        names: list = []
+        if session is not None:
+            async with self._lock:
+                names = await session.hand_back(self.interp)
+            session.request_ended()
+        if self.mirror is not None:
+            # UNIFY_CONSEQUENCES: the next request's cost is counted from here
+            from unify.common.llm_meter import current_run_meter
+
+            self.mirror.request_ended(current_run_meter.get())
         if names and may_ask and _drafts.decision_enabled():
             return session.question(names)
         return None
@@ -489,6 +507,13 @@ class InCodeTools:
             error = refused if refused is not None else error
         if failed is not None:
             error = failed
+        if self.mirror is not None:
+            from unify.common.llm_meter import current_run_meter
+
+            imported = list(self.drafts.imported_now) if self.drafts is not None else []
+            fact = self.mirror.line(current_run_meter.get(), imported, self.record)
+            if fact:
+                after.append(fact)
         stdout += [TextPart(text=n + "\n") for n in after]
         return ExecutionResult(
             stdout=stdout,

@@ -4410,10 +4410,15 @@ class CodeActActor(BaseCodeActActor):
                 compression_tools_on_demand=True,
                 on_turn_boundary=_agents.on_turn_boundary,
                 # UNIFY_DRAFTS: the actor's definitions are drafted at each
-                # hand-back (and UNIFY_HANDBACK_DECISION asks about them)
+                # hand-back (and UNIFY_HANDBACK_DECISION asks about them);
+                # UNIFY_CONSEQUENCES measures each request from its start
                 on_hand_back=(
                     in_code.on_hand_back
-                    if in_code is not None and getattr(in_code, "drafts", None) is not None
+                    if in_code is not None
+                    and (
+                        getattr(in_code, "drafts", None) is not None
+                        or getattr(in_code, "mirror", None) is not None
+                    )
                     else None
                 ),
                 **(

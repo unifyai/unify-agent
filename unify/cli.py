@@ -824,7 +824,7 @@ def _profile_refusal() -> str | None:
     """Why this run may not start under its ``UNIFY_PROFILE`` (the settings it fixes that are set otherwise, by name,
     never a value), its ``UNIFY_LIBRARY`` (off with memory on), its system suffix (set without its sha256, or not
     matching it) or its hand-back decision (on without the drafts or the tools in code), or None."""
-    from unify.actor import drafts, library_switch, system_suffix
+    from unify.actor import consequences, drafts, library_switch, system_suffix
     from unify.memory.integration.switch import profile_refusal
     from unify.settings import SETTINGS
 
@@ -833,6 +833,7 @@ def _profile_refusal() -> str | None:
         or library_switch.refusal(SETTINGS)
         or system_suffix.refusal(SETTINGS)
         or drafts.refusal(SETTINGS)
+        or consequences.refusal(SETTINGS)
     )
 
 

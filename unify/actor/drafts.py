@@ -153,9 +153,13 @@ def _utc(at: float) -> str:
 class SessionDrafts:
     """One session's draft file and the decisions about it (the actor's, one per ``InCodeTools``)."""
 
-    def __init__(self, *, root_fd: int, events: Any, started: Optional[float] = None) -> None:
+    def __init__(self, *, root_fd: int, events: Any, started: Optional[float] = None, record: Any = None) -> None:
         self.root_fd = root_fd
         self.events = events
+        #: the deployment's draft record (``unify.actor.consequences.DraftRecord``): imports and decisions; None: none
+        self.record = record
+        #: the draft modules a cell of the current request imported, in order (each counted once per request)
+        self.imported_now: list[str] = []
         at = started if started is not None else time.time()
         self.module = "d" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(at))
         #: name -> source as drafted (the session's latest), in first-drafted order
@@ -294,6 +298,10 @@ class SessionDrafts:
                     for alias in node.names:
                         uses.setdefault(alias.name, [])
         for module, names in uses.items():
+            if module not in self.imported_now:
+                self.imported_now.append(module)
+                if self.record is not None:
+                    self.record.imported(module)
             self._event(
                 {
                     "type": "draft_use",
@@ -339,10 +347,16 @@ class SessionDrafts:
                 self.kept.pop(name, None)
         self._write()
         self.decided = True
+        if self.record is not None:
+            self.record.decided(self.module, keep, [n for n in self.asked if n not in keep])
         self._event({"type": "decision", "choice": choice, "names": keep, "why": reason, "asked": list(self.asked)})
         if keep:
             return None, f"recorded: kept {', '.join(keep)} in {self.rel}"
         return None, f"recorded: skipped; dropped {', '.join(dropped)}"
+
+    def request_ended(self) -> None:
+        """A hand-back: the next request's imports are counted afresh."""
+        self.imported_now = []
 
     def after_question(self) -> None:
         """The decision turn ended: an unanswered question is recorded as ``none``."""
