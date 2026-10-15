@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests import cache_discipline_helpers as h
-from tests.actor.code_act.core_world import core_world, new_actor  # noqa: F401 (fixture)
+from tests.actor.code_act.core_world import core_world, new_actor, world  # noqa: F401 (fixtures)
 from tests.actor.code_act.sandbox_world import needs_bwrap
 from tests.actor.code_act.test_in_code_tools_wiring import _act, _system_texts, _tool_results, _why, code
 from tests.helpers import _handle_project
