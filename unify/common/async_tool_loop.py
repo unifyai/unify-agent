@@ -514,6 +514,14 @@ class AsyncToolLoopHandle(ToolLoopHandle):
             False,
         )
 
+    @property
+    def run_stats(self) -> dict:
+        """The loop's counters for the CLI's run stats where no storage wrapper reports them (a session that may not
+        store: ``--no-store``, the library off): the replies the provider withheld, only when there were any."""
+        from unify.common._async_tool.loop import withheld_stats
+
+        return withheld_stats(getattr(self, "_runtime_state", None))
+
     def _keep_prefix_this_pass(self) -> bool:
         """Whether this compaction keeps the sent prefix
         (``UNIFY_COMPACTION_KEEP_PREFIX=on``): not when the first call after

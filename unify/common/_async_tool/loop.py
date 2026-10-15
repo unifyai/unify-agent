@@ -324,6 +324,17 @@ WITHHELD_REPLY = (
 )
 
 
+def withheld_stats(runtime_state: Any) -> dict:
+    """The run-stats counts of replies the provider withheld: those sent again
+    and the turns that ended saying so, each only when there were any."""
+    out = {}
+    for key in ("content_filter_retries", "content_filter_withheld"):
+        count = int(getattr(runtime_state, key, 0) or 0)
+        if count:
+            out[key] = count
+    return out
+
+
 def _completion_withheld(completion: Any) -> bool:
     """Whether the provider withheld a completion's reply: its first choice
     finished with ``content_filter`` (as LiteLLM maps it, or OpenRouter's own
