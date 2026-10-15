@@ -857,8 +857,11 @@ async def async_tool_loop_inner(
         non-empty string it returns is a question: the answer is held, the
         string is appended as one loop-authored user message, and the model
         gets one more turn; after that turn (whatever it did) the held answer
-        is handed back unchanged and ``on_hand_back(True)`` is called. Never
-        asked in a loop whose answer is a response tool's.
+        is handed back unchanged and ``on_hand_back(True)`` is called. When
+        that call returns a string too (UNIFY_HANDBACK_DECISION=required: no
+        decision yet), it is asked the same way, the answer held again; the
+        hook bounds how often (twice at most). Never asked in a loop whose
+        answer is a response tool's.
 
     bind_request : ``bool`` or ``RequestSlot``, default ``False``
         ``True`` (the actor's task loop, ``UNIFY_BIND_REQUEST=on``): the
@@ -3395,7 +3398,14 @@ async def async_tool_loop_inner(
             if on_hand_back is not None:
                 if _handing_back_held:
                     _handing_back_held = False
-                    await on_hand_back(True)
+                    _again = await on_hand_back(True)
+                    if _again:
+                        # a required decision not made yet: asked once more, the answer held again
+                        _held_answer = (final_content, _persist_response_content)
+                        await _msg_dispatcher.append_msgs(
+                            [loop_user_notice(_again, _nudge_msg=True)],
+                        )
+                        continue
                 else:
                     _question = await on_hand_back(False, may_ask=response_format is None)
                     if _question:

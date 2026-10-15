@@ -216,9 +216,12 @@ The three long-horizon switches share the step-limit reply path.
 
 ## UNIFY_HANDBACK_DECISION
 
-- **Values:** `on` or `off` (empty is `off`).
+- **Values:** `on`, `required` or `off` (empty is `off`).
 - **Default:** empty (`off`).
-- **What it does:** Needs `UNIFY_DRAFTS` (any mode) and `UNIFY_TOOLS_IN_CODE=on` (refused at start-up otherwise). When a hand-back drafted new or changed definitions, the loop holds the answer and gives the actor one more turn with one question: keep the ones worth keeping, with a one-line reason (`tools.decide("keep", names=[...], why=...)`), or skip (`tools.decide("skip")`). Keep marks the named definitions in the draft and drops the question's others from it; skip drops the question's definitions. When the hand-back drafted no definitions but wrote a working-cells file (`cells` or `both`), the question is about that file instead: `tools.decide("keep", why=...)` marks it, `tools.decide("skip")` removes it. Whatever the turn does, the held answer is handed back unchanged after it. `tools.decide` exists only with this on. Each decision (keep, skip, or none when the turn did not answer) is a `decision` row of `tool-events.jsonl`.
+- **What it does:** Needs `UNIFY_DRAFTS` (any mode) and `UNIFY_TOOLS_IN_CODE=on` (refused at start-up otherwise). When a hand-back drafted new or changed definitions, the loop holds the answer and gives the actor one more turn with one question: keep the ones worth keeping, with a one-line reason (`tools.decide("keep", names=[...], why=...)`), or skip (`tools.decide("skip")`). Keep marks the named definitions in the draft and drops the question's others from it; skip drops the question's definitions. When the hand-back drafted no definitions but wrote a working-cells file (`cells` or `both`), the question is about that file instead: `tools.decide("keep", why=...)` marks it, `tools.decide("skip")` removes it. Whatever the turn does, the held answer is handed back unchanged after it. `tools.decide` exists only with this on. Each decision (keep, skip, or none when the turn did not answer) is a `decision` row of `tool-events.jsonl`. With `required`:
+  - The held answer waits for a `tools.decide` call. A question turn that ends without one gets the question once more, with one added line: "A keep or skip is needed before your answer goes back." That is a `decision_asked_again` row.
+  - After that second turn the answer goes back unchanged whatever it did, recorded as `none`. The requester never waits on the model indefinitely.
+  - Decision rows carry `asks` (1 or 2). Skip stays one word, and nothing has to be stored or checked.
 - **Evidence:** the decision-points arms (a decision at hand-back, P1 + P2): M0+D1+D2 against M0+D1. No counted readout yet; keyless tests only.
 
 ## UNIFY_CONSEQUENCES

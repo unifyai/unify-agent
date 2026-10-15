@@ -247,6 +247,9 @@ class InCodeTools:
             else None
         )
         self.state.drafts = self.drafts
+        if self.drafts is not None:
+            # UNIFY_HANDBACK_DECISION=required: the answer waits for a decision, asked at most twice
+            self.drafts.required = self.policy is None and _drafts.decision_mode() == _drafts.REQUIRED
         # UNIFY_CONSEQUENCES=on: each cell result ends with the facts line (unify/actor/consequences.py)
         self.mirror = _consequences.Mirror() if actor and knobs["mirror"] else None
         stores = can_store and store_skills is not None
@@ -406,9 +409,8 @@ class InCodeTools:
         if self.closed or (session is None and self.mirror is None):
             return None
         if after_question:
-            if session is not None:
-                session.after_question()
-            return None
+            # a required decision not made yet is asked again (the question's text, returned); otherwise None
+            return session.after_question() if session is not None else None
         names: list = []
         written: Optional[str] = None
         if session is not None:

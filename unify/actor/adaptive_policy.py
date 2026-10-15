@@ -93,12 +93,13 @@ def refusal(settings: Any = None) -> str | None:
         return f"{SETTING}=on chooses among the drafts arms, so UNIFY_MEMORY must be off; nothing runs"
     from unify.actor import drafts
 
-    # UNIFY_DRAFTS counts as set in any of its modes (on, cells, both)
-    explicit = [
-        n
-        for n in ("UNIFY_DRAFTS", "UNIFY_HANDBACK_DECISION", "UNIFY_CONSEQUENCES")
-        if (drafts.mode(settings) != "" if n == "UNIFY_DRAFTS" else _on(settings, n))
-    ]
+    # UNIFY_DRAFTS and UNIFY_HANDBACK_DECISION count as set in any of their modes
+    set_by_hand = {
+        "UNIFY_DRAFTS": drafts.mode(settings) != "",
+        "UNIFY_HANDBACK_DECISION": drafts.decision_mode(settings) != "",
+        "UNIFY_CONSEQUENCES": _on(settings, "UNIFY_CONSEQUENCES"),
+    }
+    explicit = [n for n, on in set_by_hand.items() if on]
     if explicit:
         return f"{SETTING}=on chooses {', '.join(explicit)} itself; unset them, so nothing runs"
     return None

@@ -1,7 +1,8 @@
 """``UNIFY_DRAFTS`` (drafts by default) and ``UNIFY_HANDBACK_DECISION`` (a decision at hand-back), for the actor.
 
 Both are empty (off) by default. ``UNIFY_DRAFTS`` is ``on`` (definitions), ``cells`` (a request's working cells) or
-``both``; ``UNIFY_HANDBACK_DECISION`` is ``on``. Off, nothing here runs and the actor's prompt and tools are unchanged.
+``both``; ``UNIFY_HANDBACK_DECISION`` is ``on`` (asked once) or ``required`` (the answer waits for a decision, asked at
+most twice). Off, nothing here runs and the actor's prompt and tools are unchanged.
 
 **Drafts by default.** A function or class the actor defines in its interpreter lives as long as the interpreter: to
 the end of the session (one ``act()``), or to a restart. At every hand-back (the request's answer, by
@@ -30,7 +31,12 @@ worth keeping, with a one-line reason, or skip, through ``tools.decide`` (which 
 marks the named definitions in the draft (``# Kept: <why>``) and drops this hand-back's others from it; skip drops
 this hand-back's definitions from it. When the hand-back drafted no definitions but wrote a working-cells file, the
 turn asks the same about that file (:data:`CELLS_QUESTION`): keep marks it, skip removes it. Nothing requires storing, calling or checking anything; whatever the turn does,
-the held answer is handed back unchanged after it. Each draft and each decision is a row of the request's
+the held answer is handed back unchanged after it.
+
+**A required decision** (``UNIFY_HANDBACK_DECISION=required``). The same question, but the held answer goes back only
+after a ``tools.decide`` call: a turn that ends without one gets the question once more, with :data:`REASK_LINE`
+added. After that second turn the answer goes back unchanged whatever it did, recorded as ``none``, so the requester
+never waits on the model indefinitely. Skip stays one word; nothing has to be stored or checked. Each draft and each decision is a row of the request's
 ``tool-events.jsonl``.
 
 The module reads the settings only when called (``unify.settings`` imports it to parse the values).
@@ -46,6 +52,8 @@ from typing import Any, Callable, Optional
 SETTING = "UNIFY_DRAFTS"
 DECISION_SETTING = "UNIFY_HANDBACK_DECISION"
 ON = "on"
+#: UNIFY_HANDBACK_DECISION's other value: the answer waits for a decision (asked at most MAX_ASKS times)
+REQUIRED = "required"
 CELLS = "cells"
 BOTH = "both"
 #: UNIFY_DRAFTS's values besides empty: definitions, a request's working cells, or both
@@ -68,6 +76,10 @@ CELLS_QUESTION = (
 )
 #: what the record keeps for a working-cells file's decision (a file, not named definitions)
 CELLS_RECORD = "cells"
+#: the line a required decision's second ask adds to the question
+REASK_LINE = "A keep or skip is needed before your answer goes back."
+#: the most times a required decision is asked before the answer goes back without one
+MAX_ASKS = 2
 #: The notice of the decision turn; ``{names}`` are the definitions asked about, ``{path}`` the draft's path.
 QUESTION = (
     "Before your answer is handed back: this request defined {names}. They are saved as a draft in {path}, which "
@@ -157,11 +169,23 @@ def _settings(settings: Any) -> Any:
     return settings
 
 
-def _on(settings: Any, name: str) -> bool:
+def parse_decision(v: Any) -> str:
+    """``UNIFY_HANDBACK_DECISION``'s value: ``""`` for empty or ``off``, ``on`` or ``required``; anything else is
+    refused."""
+    value = str(v if v is not None else "").strip().lower()
+    if value in ("", "off"):
+        return ""
+    if value in (ON, REQUIRED):
+        return value
+    raise ValueError(f"the value must be empty, 'off', 'on' or 'required', not {v!r}"[:200])
+
+
+def decision_mode(settings: Any = None) -> str:
+    """``UNIFY_HANDBACK_DECISION``'s mode: ``""`` (off), ``on`` or ``required``."""
     try:
-        return parse(getattr(_settings(settings), name, "") or "") == ON
+        return parse_decision(getattr(_settings(settings), DECISION_SETTING, "") or "")
     except ValueError:
-        return False
+        return ""
 
 
 def mode(settings: Any = None) -> str:
@@ -178,8 +202,8 @@ def enabled(settings: Any = None) -> bool:
 
 
 def decision_enabled(settings: Any = None) -> bool:
-    """Whether ``UNIFY_HANDBACK_DECISION=on``."""
-    return _on(settings, DECISION_SETTING)
+    """Whether ``UNIFY_HANDBACK_DECISION`` is on or required."""
+    return decision_mode(settings) != ""
 
 
 def refusal(settings: Any = None) -> str | None:
@@ -347,6 +371,11 @@ class SessionDrafts:
         self.cells_files: dict[str, list[tuple[int, str]]] = {}
         #: the working-cells file the open question asks about, if it asks about one
         self.asked_file: Optional[str] = None
+        #: UNIFY_HANDBACK_DECISION=required: the answer waits for a decision (set by the session's owner)
+        self.required = False
+        #: how many times the open question was asked, and its text (a required decision asks it again)
+        self.asks = 0
+        self.question_text = ""
 
     @property
     def rel(self) -> str:
@@ -551,12 +580,14 @@ class SessionDrafts:
         self.asked, self.decided, self.asked_file = list(names), False, None
         self.decided_names.update(names)
         shown = ", ".join(f"`{n}`" for n in names)
-        return QUESTION.format(names=shown, path=f"`{self.rel}`")
+        self.asks, self.question_text = 1, QUESTION.format(names=shown, path=f"`{self.rel}`")
+        return self.question_text
 
     def question_file(self, rel: str) -> str:
         """The decision turn's notice about the working-cells file *rel*, and the question opened."""
         self.asked, self.decided, self.asked_file = [], False, rel
-        return CELLS_QUESTION.format(path=f"`{rel}`")
+        self.asks, self.question_text = 1, CELLS_QUESTION.format(path=f"`{rel}`")
+        return self.question_text
 
     def _decide_file(self, choice: str, reason: str) -> tuple[Optional[str], str]:
         rel = self.asked_file or ""
@@ -569,7 +600,8 @@ class SessionDrafts:
         self.decided = True
         if self.record is not None:
             self.record.decided(key, [CELLS_RECORD] if choice == "keep" else [], [] if choice == "keep" else [CELLS_RECORD])
-        self._event({"type": "decision", "choice": choice, "names": [], "why": reason, "asked": [rel], "mode": CELLS})
+        self._event(self._asks({"type": "decision", "choice": choice, "names": [], "why": reason, "asked": [rel],
+                                "mode": CELLS}))
         return None, (f"recorded: kept {rel}" if choice == "keep" else f"recorded: skipped; removed {rel}")
 
     def decide(self, choice: Any, names: Any, why: Any) -> tuple[Optional[str], str]:
@@ -605,7 +637,8 @@ class SessionDrafts:
         self.decided = True
         if self.record is not None:
             self.record.decided(self.module, keep, [n for n in self.asked if n not in keep])
-        self._event({"type": "decision", "choice": choice, "names": keep, "why": reason, "asked": list(self.asked)})
+        self._event(self._asks({"type": "decision", "choice": choice, "names": keep, "why": reason,
+                                "asked": list(self.asked)}))
         if keep:
             return None, f"recorded: kept {', '.join(keep)} in {self.rel}"
         return None, f"recorded: skipped; dropped {', '.join(dropped)}"
@@ -618,11 +651,28 @@ class SessionDrafts:
         """A hand-back: the next request's imports are counted afresh."""
         self.imported_now = []
 
-    def after_question(self) -> None:
-        """The decision turn ended: an unanswered question is recorded as ``none``."""
+    def _asks(self, row: dict) -> dict:
+        """A decision row, with how many times it was asked when the decision is required."""
+        if self.required:
+            row["asks"] = self.asks
+        return row
+
+    def after_question(self) -> Optional[str]:
+        """The decision turn ended. A required decision not made yet is asked again (the question with
+        :data:`REASK_LINE`; returned) until it was asked :data:`MAX_ASKS` times; otherwise an unanswered question is
+        recorded as ``none`` and the question closes (None)."""
+        open_question = (self.asked_file is not None or bool(self.asked)) and not self.decided
+        if open_question and self.required and self.asks < MAX_ASKS:
+            self.asks += 1
+            asked = [self.asked_file] if self.asked_file is not None else list(self.asked)
+            self._event({"type": "decision_asked_again", "asked": asked, "asks": self.asks})
+            return f"{self.question_text}\n{REASK_LINE}"
         if self.asked_file is not None and not self.decided:
-            self._event({"type": "decision", "choice": "none", "names": [], "why": "", "asked": [self.asked_file],
-                         "mode": CELLS})
+            self._event(self._asks({"type": "decision", "choice": "none", "names": [], "why": "",
+                                    "asked": [self.asked_file], "mode": CELLS}))
         elif self.asked and not self.decided:
-            self._event({"type": "decision", "choice": "none", "names": [], "why": "", "asked": list(self.asked)})
+            self._event(self._asks({"type": "decision", "choice": "none", "names": [], "why": "",
+                                    "asked": list(self.asked)}))
         self.asked, self.decided, self.asked_file = [], False, None
+        self.asks, self.question_text = 0, ""
+        return None

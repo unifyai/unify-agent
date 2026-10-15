@@ -474,9 +474,10 @@ class ProductionSettings(BaseSettings):
     # which later sessions import in one line (``on``); the request's working cells go to a file of that hand-back
     # for reading (``cells``); or both (unify/actor/drafts.py).
     UNIFY_DRAFTS: str = ""
-    # A decision at hand-back: empty (off) or ``on``, with UNIFY_DRAFTS and UNIFY_TOOLS_IN_CODE on (refused at
-    # start-up otherwise): when a hand-back drafted something, one more turn asks to keep or skip it
-    # (``tools.decide``), and the answer is handed back unchanged after it.
+    # A decision at hand-back: empty (off), ``on`` or ``required``, with UNIFY_DRAFTS and UNIFY_TOOLS_IN_CODE on
+    # (refused at start-up otherwise): when a hand-back drafted something, one more turn asks to keep or skip it
+    # (``tools.decide``), and the answer is handed back unchanged after it; ``required`` asks once more when that turn
+    # did not decide, then hands the answer back.
     UNIFY_HANDBACK_DECISION: str = ""
     # The consequence mirror: empty (off) or ``on``, with UNIFY_TOOLS_IN_CODE on (refused at start-up otherwise):
     # each cell result ends with one line of measured facts, the request's model calls and USD so far and the record
@@ -830,7 +831,6 @@ class ProductionSettings(BaseSettings):
         return system_suffix.parse_sha256(v)
 
     @field_validator(
-        "UNIFY_HANDBACK_DECISION",
         "UNIFY_CONSEQUENCES",
         "UNIFY_ADAPTIVE_POLICY",
         mode="before",
@@ -843,6 +843,16 @@ class ProductionSettings(BaseSettings):
             return drafts.parse(v)
         except ValueError as exc:
             raise ValueError(f"{info.field_name}: {exc}") from None
+
+    @field_validator("UNIFY_HANDBACK_DECISION", mode="before")
+    @classmethod
+    def parse_handback_decision(cls, v: Any) -> str:
+        from unify.actor import drafts
+
+        try:
+            return drafts.parse_decision(v)
+        except ValueError as exc:
+            raise ValueError(f"UNIFY_HANDBACK_DECISION: {exc}") from None
 
     @field_validator("UNIFY_DRAFTS", mode="before")
     @classmethod
