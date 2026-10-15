@@ -381,7 +381,8 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch, surfacing):
         STRAY in ep.memory_diff
     )  # the cell's write into the export was seen, then discarded
 
-    # 4. one pass/fail checker note, one passes row, both events in the state dir
+    # 4. one pass/fail checker note, one passes row, the pass's events in the state dir (the start, the progress
+    # rows the CLI relayed, the end)
     signals = episodes.notes(sha)
     assert len(signals) == 1, signals
     note = json.loads(signals[0])
@@ -394,7 +395,7 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch, surfacing):
         ("writer", WRITER_USD, WRITER_EFFORT),
     ]
     events = [json.loads(x) for x in paths.events.read_text().splitlines() if x.strip()]
-    assert events == [start, end]
+    assert events == [start, *progress, end]
 
     # 6 (first half). the export is removed after the request
     assert not paths.checkout.exists()
