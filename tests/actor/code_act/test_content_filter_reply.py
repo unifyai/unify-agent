@@ -66,7 +66,8 @@ async def _act(*replies) -> tuple[str, dict, int]:
         with h.scripted(replies) as provider:
             handle = await actor.act("Do the task.", persist=False)
             result = await asyncio.wait_for(handle.result(), 120)
-            stats = dict(actor.run_stats)
+            # The CLI reads the run stats from the request's handle.
+            stats = dict(handle.run_stats)
     finally:
         await actor.close()
     return result, stats, len(provider.requests)
