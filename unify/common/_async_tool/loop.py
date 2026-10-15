@@ -335,10 +335,42 @@ def withheld_stats(runtime_state: Any) -> dict:
     return out
 
 
+def _usage_counts(completion: Any) -> tuple[Optional[int], bool]:
+    """The completion's output tokens (None when not reported) and whether its
+    reported usage is all zero (every count given is 0, and at least one is)."""
+    usage = getattr(completion, "usage", None)
+    if usage is None:
+        return None, False
+
+    def _count(name: str) -> Optional[int]:
+        value = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    output = _count("completion_tokens")
+    if output is None:
+        output = _count("output_tokens")
+    counts = [
+        c
+        for c in (
+            _count("prompt_tokens"),
+            _count("completion_tokens"),
+            _count("total_tokens"),
+            _count("input_tokens"),
+            _count("output_tokens"),
+        )
+        if c is not None
+    ]
+    return output, bool(counts) and all(c == 0 for c in counts)
+
+
 def _completion_withheld(completion: Any) -> bool:
     """Whether the provider withheld a completion's reply: its first choice
     finished with ``content_filter`` (as LiteLLM maps it, or OpenRouter's own
-    ``native_finish_reason``) and holds no text and no tool call."""
+    ``native_finish_reason``) with no tool call, and the reply is a stand-in
+    rather than the model's: its text is blank, or it reports no output
+    tokens, or its usage is all zero. (A provider's stand-in text is not
+    matched: a filtered reply with output tokens and text is the model's
+    turn.)"""
     try:
         choice = completion.choices[0]
     except Exception:
@@ -352,8 +384,12 @@ def _completion_withheld(completion: Any) -> bool:
     ):
         return False
     message = getattr(choice, "message", None)
-    content = getattr(message, "content", None)
-    return not str(content or "").strip() and not getattr(message, "tool_calls", None)
+    if getattr(message, "tool_calls", None):
+        return False
+    if not str(getattr(message, "content", None) or "").strip():
+        return True
+    output, all_zero = _usage_counts(completion)
+    return output == 0 or all_zero
 
 
 def _parse_tool_policy_result(
