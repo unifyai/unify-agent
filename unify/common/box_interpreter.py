@@ -161,27 +161,41 @@ def wrap_cell(code: str, filename: str, *, last_value: bool = False) -> str:
     """The ``exec`` message's source for *code*: an ``async def __exec_wrapper()`` (what the worker child runs)
     that compiles the code under *filename* and runs it at the namespace's top level, so every name it binds
     persists exactly as in a script, and registers its lines so a traceback shows them. The standard ``builtins``
-    module's ``exec`` and ``compile`` are used, since a namespace may hold a reduced builtins mapping (the actor's);
-    the code itself still runs with the namespace's own builtins. *last_value*: a final expression statement is
-    evaluated apart and its value is the cell's result (the actor's cells)."""
+    module's ``eval`` and ``compile`` are used, since a namespace may hold a reduced builtins mapping (the actor's);
+    the code itself still runs with the namespace's own builtins. A top-level ``await`` (and ``async for``,
+    ``async with``) is allowed, as in a notebook: such code compiles to a coroutine, which the wrapper awaits; code
+    without one runs as before, and a value that is itself a coroutine is returned, not awaited. *last_value*: a final
+    expression statement is evaluated apart and its value is the cell's result (the actor's cells)."""
     lines = [
         "async def __exec_wrapper():",
         "    __b = __import__('builtins')",
+        "    __a = __import__('ast')",
+        "    __co = __import__('inspect').CO_COROUTINE",
         f"    __s = {code!r}",
         f"    __import__('linecache').cache[{filename!r}] = (__b.len(__s), None, __s.splitlines(True), {filename!r})",
     ]
     if last_value:
         lines += [
-            "    __a = __import__('ast')",
-            f"    __t = __b.compile(__s, {filename!r}, 'exec', __a.PyCF_ONLY_AST, dont_inherit=True)",
+            f"    __t = __b.compile(__s, {filename!r}, 'exec', __a.PyCF_ONLY_AST | __a.PyCF_ALLOW_TOP_LEVEL_AWAIT,"
+            " dont_inherit=True)",
             "    __e = __t.body.pop() if __t.body and __b.isinstance(__t.body[-1], __a.Expr) else None",
-            f"    __b.exec(__b.compile(__t, {filename!r}, 'exec', dont_inherit=True), __b.globals())",
+            f"    __c = __b.compile(__t, {filename!r}, 'exec', __a.PyCF_ALLOW_TOP_LEVEL_AWAIT, dont_inherit=True)",
+            "    __r = __b.eval(__c, __b.globals())",
+            "    if __c.co_flags & __co:",
+            "        await __r",
             "    if __e is not None:",
-            f"        return __b.eval(__b.compile(__a.Expression(__e.value), {filename!r}, 'eval', dont_inherit=True),"
-            " __b.globals())",
+            f"        __c = __b.compile(__a.Expression(__e.value), {filename!r}, 'eval',"
+            " __a.PyCF_ALLOW_TOP_LEVEL_AWAIT, dont_inherit=True)",
+            "        __r = __b.eval(__c, __b.globals())",
+            "        return (await __r) if __c.co_flags & __co else __r",
         ]
     else:
-        lines.append(f"    __b.exec(__b.compile(__s, {filename!r}, 'exec', dont_inherit=True), __b.globals())")
+        lines += [
+            f"    __c = __b.compile(__s, {filename!r}, 'exec', __a.PyCF_ALLOW_TOP_LEVEL_AWAIT, dont_inherit=True)",
+            "    __r = __b.eval(__c, __b.globals())",
+            "    if __c.co_flags & __co:",
+            "        await __r",
+        ]
     return "\n".join(lines) + "\n"
 
 

@@ -128,6 +128,51 @@ def test_the_cell_wrapper_runs_code_at_top_level():
     assert value == 2 and ns["x"] == 1
 
 
+async def _later(value):
+    await asyncio.sleep(0)
+    return value
+
+
+def _run_wrapped(code: str, ns: dict, *, last_value: bool):
+    exec(compile(bi.wrap_cell(code, "<cell 1>", last_value=last_value), "<string>", "exec"), ns)
+    return asyncio.run(ns["__exec_wrapper"]())
+
+
+@pytest.mark.parametrize("last_value", [True, False])
+def test_a_top_level_await_runs_and_its_names_persist(last_value):
+    ns: dict = {"__builtins__": {"__import__": __import__}, "later": _later}
+    value = _run_wrapped("x = await later(5)\ny = x + 1\n", ns, last_value=last_value)
+    assert value is None and ns["x"] == 5 and ns["y"] == 6
+    ns = {"__builtins__": __builtins__, "later": _later}
+    _run_wrapped(
+        "async def count():\n    for i in range(3):\n        yield await later(i)\nseen = [i async for i in count()]\n",
+        ns,
+        last_value=last_value,
+    )
+    assert ns["seen"] == [0, 1, 2]
+
+
+def test_a_last_value_await_returns_its_value():
+    ns: dict = {"__builtins__": {"__import__": __import__}, "later": _later}
+    assert _run_wrapped("x = 2\nawait later(x * 21)", ns, last_value=True) == 42
+    assert ns["x"] == 2
+
+
+def test_a_cell_without_await_is_unchanged_and_a_coroutine_value_is_returned_not_awaited():
+    ns: dict = {"__builtins__": {"__import__": __import__}, "make": lambda: _later(7)}
+    assert _run_wrapped("a = 1\nb = a + 1\nb * 10", ns, last_value=True) == 20 and ns["b"] == 2
+    value = _run_wrapped("make()", ns, last_value=True)
+    assert asyncio.iscoroutine(value)
+    value.close()
+
+
+@pytest.mark.parametrize("last_value", [True, False])
+def test_a_syntax_error_still_reports_the_cell_line(last_value):
+    with pytest.raises(SyntaxError) as raised:
+        _run_wrapped("x = 1\ny = (2,\n", {"__builtins__": {"__import__": __import__}}, last_value=last_value)
+    assert raised.value.filename == "<cell 1>" and raised.value.text is not None
+
+
 # --- in the box -----------------------------------------------------------------------------------------------
 
 
@@ -149,6 +194,23 @@ async def test_state_persists_across_cells(tmp_path):
     finally:
         await interp.stop()
     assert not interp.box_alive()
+
+
+@needs_box
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+async def test_a_top_level_await_runs_in_the_box_and_its_names_persist(tmp_path):
+    interp = await _start(tmp_path)
+    try:
+        r1 = await interp.run_cell("import asyncio\nv = await asyncio.sleep(0, 41)\nprint('AWAITED', v)")
+        assert r1.error is None and r1.output.strip() == "AWAITED 41", r1.text()
+        r2 = await interp.run_cell("print(v + 1)")
+        assert r2.output.strip() == "42" and not r2.restarted
+        r3 = await interp.run_cell("await asyncio.sleep(0)\nraise ValueError('after the await')")
+        assert r3.error is not None and "ValueError: after the await" in r3.error
+        assert "__exec_wrapper" not in r3.error and '<cell 3>", line 2' in r3.error
+    finally:
+        await interp.stop()
 
 
 @needs_box

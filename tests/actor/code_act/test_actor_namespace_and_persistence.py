@@ -148,6 +148,21 @@ async def test_the_actor_has_its_names_bound_and_keeps_variables(in_code):
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(400)
+async def test_the_actor_can_await_at_the_top_level_of_a_cell(in_code):
+    awaited = "import asyncio\nv = await asyncio.sleep(0, 41)\nprint('AWAITED', v)\n"
+    model = ScriptedModel(
+        actor=[reply(calls=[code(awaited)]), reply(calls=[code("print('NEXT', v + 1)\n")]), reply("done")],
+    )
+    assert await _act(model, "Await in a cell.") == "done", _why(model)
+    first, both = _tool_results(model.calls[1]), _tool_results(model.calls[2])
+    assert "AWAITED 41" in first and "SyntaxError" not in first, first
+    assert "NEXT 42" in both and "NameError" not in both, both
+    _assert_ended(in_code["opened"])
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(400)
 async def test_a_teammate_has_its_names_bound_and_keeps_variables(in_code):
     model = ScriptedModel(
         actor=[reply(calls=[code(TEAMMATE_START)]), reply(calls=[code(ACTOR_WAIT)]), reply("not finished")],
