@@ -481,6 +481,10 @@ class ProductionSettings(BaseSettings):
     # each cell result ends with one line of measured facts, the request's model calls and USD so far and the record
     # of each draft a cell imported (unify/actor/consequences.py).
     UNIFY_CONSEQUENCES: str = ""
+    # The adaptive per-world policy: empty (off) or ``on``, with UNIFY_TOOLS_IN_CODE on and the three switches above
+    # unset (refused at start-up otherwise): each session's drafts, hand-back decision and mirror are chosen by a
+    # discounted Thompson-sampling learner from the deployment's own records (unify/actor/adaptive_policy.py).
+    UNIFY_ADAPTIVE_POLICY: str = ""
     # The library mode's E (recorded tokens at which a pass becomes due), one pass's wall-clock bound (s), and the
     # writer route proxy's journal (absolute path; empty: none) used only to reconcile cancelled calls.
     UNIFY_MEMORY_LIBRARY_E: int = 100000
@@ -824,7 +828,13 @@ class ProductionSettings(BaseSettings):
 
         return system_suffix.parse_sha256(v)
 
-    @field_validator("UNIFY_DRAFTS", "UNIFY_HANDBACK_DECISION", "UNIFY_CONSEQUENCES", mode="before")
+    @field_validator(
+        "UNIFY_DRAFTS",
+        "UNIFY_HANDBACK_DECISION",
+        "UNIFY_CONSEQUENCES",
+        "UNIFY_ADAPTIVE_POLICY",
+        mode="before",
+    )
     @classmethod
     def parse_drafts(cls, v: Any, info: Any) -> str:
         from unify.actor import drafts

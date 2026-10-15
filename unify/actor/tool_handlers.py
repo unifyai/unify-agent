@@ -114,10 +114,12 @@ def actor_flags(agent: str, can_store: bool, librarian: Optional[bool] = None) -
         from unify.settings import SETTINGS
 
         librarian = getattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "off") == "on"
-    # UNIFY_HANDBACK_DECISION=on: the actor answers the hand-back question with ``decide``
+    # UNIFY_HANDBACK_DECISION=on: the actor answers the hand-back question with ``decide`` (and under
+    # UNIFY_ADAPTIVE_POLICY=on, whose arms may ask, the tool is there for the whole run)
+    from unify.actor import adaptive_policy as _policy
     from unify.actor import drafts as _drafts
 
-    decides = agent == "actor" and _drafts.decision_enabled()
+    decides = agent == "actor" and (_drafts.decision_enabled() or _policy.enabled())
     return frozenset(
         {"helper"}
         | ({_registry.STORE_FLAG} if can_store and agent == "actor" else set())

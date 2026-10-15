@@ -198,24 +198,55 @@ class InCodeTools:
         )
         # the request the memory package reads through current_request (its text, and the JSON values it carries)
         self.state.request_text, self.state.request_data = H.request_of(request)
-        # UNIFY_DRAFTS=on: the actor's definitions are drafted to the workspace at each hand-back (unify/actor/drafts.py)
+        # UNIFY_DRAFTS=on: the actor's definitions are drafted to the workspace at each hand-back
+        # (unify/actor/drafts.py)
+        from unify.actor import adaptive_policy as _policy
         from unify.actor import consequences as _consequences
         from unify.actor import drafts as _drafts
+        from unify.common.llm_meter import current_run_meter
 
-        # the deployment's record of each draft's imports and decisions (in the harness's home, which no cell sees)
+        # the run's meter (the act set it before this session opened): the mirror's and the policy's cost
+        self.meter = current_run_meter.get()
+        # UNIFY_ADAPTIVE_POLICY=on: the session's arm chooses the drafts, the decision and the mirror
+        # (unify/actor/adaptive_policy.py); otherwise their own switches do
+        self.policy = None
+        actor = agent == "actor"
+        if actor and _policy.enabled():
+            from unify.db import store_home
+
+            self.policy = _policy.SessionPolicy(store_home(), self.request_id, self.events)
+            _policy.register(self.policy)
+            knobs = self.policy.knobs
+        else:
+            knobs = {
+                "drafts": _drafts.enabled(),
+                "decision": "built" if _drafts.decision_enabled() else "never",
+                "mirror": _consequences.enabled(),
+            }
+        #: never / built / always: when a hand-back asks to keep or skip (UNIFY_HANDBACK_DECISION, the policy)
+        self.decision = knobs["decision"] if actor else "never"
+        # the deployment's record of each draft's writer, imports and decisions (in the harness's home)
         self.record = None
-        if agent == "actor" and _drafts.enabled():
+        if actor and (knobs["drafts"] or self.policy is not None):
             from unify.db import store_home
 
             self.record = _consequences.DraftRecord(store_home() / _consequences.RECORD)
         self.drafts = (
-            _drafts.SessionDrafts(root_fd=self._root_fd, events=self.events, record=self.record)
-            if agent == "actor" and _drafts.enabled()
+            _drafts.SessionDrafts(
+                root_fd=self._root_fd,
+                events=self.events,
+                record=self.record,
+                # under the policy every arm notices imports and definitions; only drafting arms write
+                writes=bool(knobs["drafts"]),
+                writer={"session": self.request_id, "arm": self.policy.arm} if self.policy is not None else None,
+                on_import=self._imported if self.policy is not None else None,
+            )
+            if actor and (knobs["drafts"] or self.policy is not None)
             else None
         )
         self.state.drafts = self.drafts
         # UNIFY_CONSEQUENCES=on: each cell result ends with the facts line (unify/actor/consequences.py)
-        self.mirror = _consequences.Mirror() if agent == "actor" and _consequences.enabled() else None
+        self.mirror = _consequences.Mirror() if actor and knobs["mirror"] else None
         stores = can_store and store_skills is not None
         # UNIFY_MEMORY_LIBRARIAN=on: the actor asks the request's librarian (tools.ask_library, from memory.ask)
         asks = agent == "actor" and _librarian_on()
@@ -379,16 +410,29 @@ class InCodeTools:
         names: list = []
         if session is not None:
             async with self._lock:
-                names = await session.hand_back(self.interp)
+                probed = await _drafts.probe(self.interp)
+            names = session.take(probed)
+            if self.policy is not None and probed is not None:
+                # UNIFY_ADAPTIVE_POLICY: rework of an earlier session's definitions is debited to its arm
+                self.policy.defined(probed.get("defs") or {})
             session.request_ended()
         if self.mirror is not None:
             # UNIFY_CONSEQUENCES: the next request's cost is counted from here
-            from unify.common.llm_meter import current_run_meter
-
-            self.mirror.request_ended(current_run_meter.get())
-        if names and may_ask and _drafts.decision_enabled():
+            self.mirror.request_ended(self.meter)
+        if session is None or not may_ask:
+            return None
+        if self.decision == "built" and names:
             return session.question(names)
+        if self.decision == "always":
+            undecided = session.undecided()
+            if undecided:
+                return session.question(undecided)
         return None
+
+    def _imported(self, module: str, same_session: bool) -> None:
+        """UNIFY_ADAPTIVE_POLICY: a request's first import of a draft credits the arm of the session that wrote it."""
+        if self.policy is not None and not same_session and self.record is not None:
+            self.policy.imported(module, self.record.writer(module))
 
     # -- cells -------------------------------------------------------------------------------------------------
 
@@ -511,7 +555,8 @@ class InCodeTools:
             from unify.common.llm_meter import current_run_meter
 
             imported = list(self.drafts.imported_now) if self.drafts is not None else []
-            fact = self.mirror.line(current_run_meter.get(), imported, self.record)
+            meter = self.meter if self.meter is not None else current_run_meter.get()
+            fact = self.mirror.line(meter, imported, self.record)
             if fact:
                 after.append(fact)
         stdout += [TextPart(text=n + "\n") for n in after]
@@ -609,6 +654,16 @@ class InCodeTools:
         if self.closed:
             return
         self.closed = True
+        if self.policy is not None:
+            # UNIFY_ADAPTIVE_POLICY: the session's own reward, and its definitions into the shadow record
+            from unify.actor import adaptive_policy as _policy
+
+            calls = sum(int(v) for v in getattr(self.meter, "calls", {}).values()) if self.meter is not None else None
+            kept = set(self.drafts.drafted) if self.drafts is not None and self.drafts.writes else set()
+            try:
+                self.policy.close(calls, kept)
+            finally:
+                _policy.unregister(self.policy)
         problems: list[str] = []
         try:
             interp, self.interp = self.interp, None

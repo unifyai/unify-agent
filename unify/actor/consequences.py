@@ -95,6 +95,21 @@ class DraftRecord:
         entry.setdefault("skipped", [])
         return entry
 
+    def wrote(self, module: str, writer: dict) -> None:
+        """*module* is written by *writer* (``{"session", "arm"}``, UNIFY_ADAPTIVE_POLICY's credit to its arm)."""
+        try:
+            data = self.load()
+            self._entry(data, module)["writer"] = dict(writer)
+            self._save(data)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def writer(self, module: str) -> Optional[dict]:
+        """Who wrote *module*, when the record knows."""
+        entry = self.load().get(module)
+        writer = entry.get("writer") if isinstance(entry, dict) else None
+        return writer if isinstance(writer, dict) else None
+
     def imported(self, module: str) -> None:
         """One more request imported *module*."""
         try:

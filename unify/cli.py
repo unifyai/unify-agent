@@ -654,13 +654,30 @@ class Act:
                 self._progress(f"outcome refused: {answer['reason']}")
             self._emit(**answer)
             return
+        # UNIFY_ADAPTIVE_POLICY=on: the session's policy takes the world's posted verdict (typed fields only), also in
+        # a session that does not store; nothing the agent sees changes
+        from unify.actor import adaptive_policy
+
+        policy_took: dict | None = None
+        if adaptive_policy.enabled():
+            try:
+                normalized = outcome_mod.normalize(raw)
+            except outcome_mod.OutcomeError as exc:
+                self._progress(f"outcome refused: {exc}")
+                self._emit(type="outcome", accepted=False, reason=str(exc))
+                return
+            if adaptive_policy.take_outcome(normalized):
+                policy_took = normalized
         session_id = getattr(self._handle, "outcome_session_id", None)
         try:
-            if session_id is None:
+            if session_id is None and policy_took is not None:
+                normalized = policy_took
+            elif session_id is None:
                 raise outcome_mod.OutcomeError(
                     "this session takes no outcome (it does not store)",
                 )
-            normalized = outcome_mod.post(session_id, raw)
+            else:
+                normalized = outcome_mod.post(session_id, raw)
         except outcome_mod.OutcomeError as exc:
             self._progress(f"outcome refused: {exc}")
             self._emit(type="outcome", accepted=False, reason=str(exc))
@@ -824,7 +841,7 @@ def _profile_refusal() -> str | None:
     """Why this run may not start under its ``UNIFY_PROFILE`` (the settings it fixes that are set otherwise, by name,
     never a value), its ``UNIFY_LIBRARY`` (off with memory on), its system suffix (set without its sha256, or not
     matching it) or its hand-back decision (on without the drafts or the tools in code), or None."""
-    from unify.actor import consequences, drafts, library_switch, system_suffix
+    from unify.actor import adaptive_policy, consequences, drafts, library_switch, system_suffix
     from unify.memory.integration.switch import profile_refusal
     from unify.settings import SETTINGS
 
@@ -834,6 +851,7 @@ def _profile_refusal() -> str | None:
         or system_suffix.refusal(SETTINGS)
         or drafts.refusal(SETTINGS)
         or consequences.refusal(SETTINGS)
+        or adaptive_policy.refusal(SETTINGS)
     )
 
 

@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import ast
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 SETTING = "UNIFY_DRAFTS"
 DECISION_SETTING = "UNIFY_HANDBACK_DECISION"
@@ -150,12 +150,41 @@ def _utc(at: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(at))
 
 
+async def probe(interp: Any) -> Optional[dict]:
+    """The live interpreter's definitions and imports (:data:`PROBE`); None when there is none or the probe fails."""
+    if interp is None or not hasattr(interp, "probe"):
+        return None
+    try:
+        probed = await interp.probe(PROBE, timeout=PROBE_TIMEOUT_S)
+    except Exception:  # noqa: BLE001 - a failed probe drafts nothing and never ends the request
+        return None
+    return probed if isinstance(probed, dict) else None
+
+
 class SessionDrafts:
     """One session's draft file and the decisions about it (the actor's, one per ``InCodeTools``)."""
 
-    def __init__(self, *, root_fd: int, events: Any, started: Optional[float] = None, record: Any = None) -> None:
+    def __init__(
+        self,
+        *,
+        root_fd: int,
+        events: Any,
+        started: Optional[float] = None,
+        record: Any = None,
+        writes: bool = True,
+        writer: Optional[dict] = None,
+        on_import: Optional[Callable[[str, bool], None]] = None,
+    ) -> None:
         self.root_fd = root_fd
         self.events = events
+        #: False under UNIFY_ADAPTIVE_POLICY's arm without drafts: imports are still noticed, nothing is written
+        self.writes = writes
+        #: who writes this session's draft (``{"session", "arm"}``), kept in the draft record; None: not recorded
+        self.writer = writer
+        #: called with (module, same session) at a request's first import of each draft module
+        self.on_import = on_import
+        #: the names a question already asked about (answered or not)
+        self.decided_names: set = set()
         #: the deployment's draft record (``unify.actor.consequences.DraftRecord``): imports and decisions; None: none
         self.record = record
         #: the draft modules a cell of the current request imported, in order (each counted once per request)
@@ -217,6 +246,8 @@ class SessionDrafts:
             return 0
         if not self._claimed:
             self._claim()
+            if self.record is not None and self.writer is not None:
+                self.record.wrote(self.module, self.writer)
         data = self.render(time.time()).encode("utf-8")
         safe_paths.write_rel(self.root_fd, [DIR, f"{self.module}.py"], data)
         return len(data)
@@ -246,7 +277,7 @@ class SessionDrafts:
     def take(self, probed: Any) -> list[str]:
         """Merge a probe's result: the names new or changed since the last hand-back (the draft is rewritten when
         there are any)."""
-        if not isinstance(probed, dict) or not isinstance(probed.get("defs"), dict):
+        if not self.writes or not isinstance(probed, dict) or not isinstance(probed.get("defs"), dict):
             return []
         defs = {str(k): str(v) for k, v in probed["defs"].items() if isinstance(v, str)}
         changed = [name for name, src in defs.items() if self.drafted.get(name) != src]
@@ -264,13 +295,7 @@ class SessionDrafts:
 
     async def hand_back(self, interp: Any) -> list[str]:
         """At a hand-back: probe the live interpreter and draft what is new or changed (nothing when it is gone)."""
-        if interp is None or not hasattr(interp, "probe"):
-            return []
-        try:
-            probed = await interp.probe(PROBE, timeout=PROBE_TIMEOUT_S)
-        except Exception:  # noqa: BLE001 - a failed probe drafts nothing and never ends the request
-            return []
-        return self.take(probed)
+        return self.take(await probe(interp))
 
     def note_use(self, code: str) -> None:
         """A ``draft_use`` row for each draft module a cell imports from (``import drafts.<m>``, ``from drafts.<m>
@@ -298,23 +323,30 @@ class SessionDrafts:
                     for alias in node.names:
                         uses.setdefault(alias.name, [])
         for module, names in uses.items():
+            # this session's own file only once it has one (an unclaimed name may be another session's)
+            same = self._claimed and module == self.module
             if module not in self.imported_now:
                 self.imported_now.append(module)
                 if self.record is not None:
                     self.record.imported(module)
+                if self.on_import is not None:
+                    try:
+                        self.on_import(module, same)
+                    except Exception:  # noqa: BLE001 - a listener never ends the request
+                        pass
             self._event(
                 {
                     "type": "draft_use",
                     "file": f"{DIR}/{module}.py",
                     "names": sorted(set(names)),
-                    # this session's own file only once it has one (an unclaimed name may be another session's)
-                    "same_session": self._claimed and module == self.module,
+                    "same_session": same,
                 },
             )
 
     def question(self, names: list[str]) -> str:
         """The decision turn's notice about *names*, and the question opened."""
         self.asked, self.decided = list(names), False
+        self.decided_names.update(names)
         shown = ", ".join(f"`{n}`" for n in names)
         return QUESTION.format(names=shown, path=f"`{self.rel}`")
 
@@ -353,6 +385,10 @@ class SessionDrafts:
         if keep:
             return None, f"recorded: kept {', '.join(keep)} in {self.rel}"
         return None, f"recorded: skipped; dropped {', '.join(dropped)}"
+
+    def undecided(self) -> list[str]:
+        """The drafted names no question has asked about yet (a decision at every hand-back asks about these)."""
+        return [name for name in self.drafted if name not in self.decided_names]
 
     def request_ended(self) -> None:
         """A hand-back: the next request's imports are counted afresh."""
