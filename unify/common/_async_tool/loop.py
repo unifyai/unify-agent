@@ -860,8 +860,11 @@ async def async_tool_loop_inner(
         is handed back unchanged and ``on_hand_back(True)`` is called. When
         that call returns a string too (UNIFY_HANDBACK_DECISION=required: no
         decision yet), it is asked the same way, the answer held again; the
-        hook bounds how often (twice at most). Never asked in a loop whose
-        answer is a response tool's.
+        hook bounds how often (twice at most). While an answer is held, after
+        the model's calls ran, ``on_hand_back(True, cell_ran=True)`` says
+        whether the question's turn goes on (non-empty: another model turn;
+        the hook bounds the turns). Never asked in a loop whose answer is a
+        response tool's.
 
     bind_request : ``bool`` or ``RequestSlot``, default ``False``
         ``True`` (the actor's task loop, ``UNIFY_BIND_REQUEST=on``): the
@@ -3283,6 +3286,11 @@ async def async_tool_loop_inner(
                 elif _held_answer is None:
                     # Every call has its result (a cancelled request is ended
                     # at the next boundary): back to the very top.
+                    continue
+                elif on_hand_back is not None and await on_hand_back(True, cell_ran=True):
+                    # UNIFY_HANDBACK_DECISION=required: the question's turn
+                    # goes on through the model's own calls until it decides
+                    # or replies (the hook bounds the calls per ask).
                     continue
                 # UNIFY_HANDBACK_DECISION: the hand-back question's turn ran
                 # its calls; the held answer is handed back below.

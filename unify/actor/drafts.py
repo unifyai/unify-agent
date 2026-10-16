@@ -33,10 +33,12 @@ this hand-back's definitions from it. When the hand-back drafted no definitions 
 turn asks the same about that file (:data:`CELLS_QUESTION`): keep marks it, skip removes it. Nothing requires storing, calling or checking anything; whatever the turn does,
 the held answer is handed back unchanged after it.
 
-**A required decision** (``UNIFY_HANDBACK_DECISION=required``). The same question, but the held answer goes back only
-after a ``tools.decide`` call: a turn that ends without one gets the question once more, with :data:`REASK_LINE`
-added. After that second turn the answer goes back unchanged whatever it did, recorded as ``none``, so the requester
-never waits on the model indefinitely. Skip stays one word; nothing has to be stored or checked. Each draft and each decision is a row of the request's
+**A required decision** (``UNIFY_HANDBACK_DECISION=required``). The same question, but the question's turn goes on
+through the model's own cells (looking the tool up first is what the actor's instructions ask) until a
+``tools.decide`` call or a text reply, at most :data:`MAX_CELLS_PER_ASK` cells per ask. A turn that ended without
+deciding (a text reply, or its cells used up) gets the question once more, with :data:`REASK_LINE` added; after the
+second ask's turn the answer goes back unchanged whatever it did, recorded as ``none``, so the requester never waits on
+the model indefinitely. A decision in text is not one: only ``tools.decide`` records it. Skip stays one word; nothing has to be stored or checked. Each draft and each decision is a row of the request's
 ``tool-events.jsonl``.
 
 The module reads the settings only when called (``unify.settings`` imports it to parse the values).
@@ -80,6 +82,10 @@ CELLS_RECORD = "cells"
 REASK_LINE = "A keep or skip is needed before your answer goes back."
 #: the most times a required decision is asked before the answer goes back without one
 MAX_ASKS = 2
+#: the most model turns with cells one ask of a required decision gets before it is asked again (or released)
+MAX_CELLS_PER_ASK = 3
+#: what the hook returns while a required decision's turn goes on (any non-empty text: the loop gives another turn)
+CONTINUE_TURN = "continue"
 #: The notice of the decision turn; ``{names}`` are the definitions asked about, ``{path}`` the draft's path.
 QUESTION = (
     "Before your answer is handed back: this request defined {names}. They are saved as a draft in {path}, which "
@@ -376,6 +382,8 @@ class SessionDrafts:
         #: how many times the open question was asked, and its text (a required decision asks it again)
         self.asks = 0
         self.question_text = ""
+        #: a required decision: the model turns with cells this ask has had
+        self.cells_this_ask = 0
 
     @property
     def rel(self) -> str:
@@ -581,12 +589,14 @@ class SessionDrafts:
         self.decided_names.update(names)
         shown = ", ".join(f"`{n}`" for n in names)
         self.asks, self.question_text = 1, QUESTION.format(names=shown, path=f"`{self.rel}`")
+        self.cells_this_ask = 0
         return self.question_text
 
     def question_file(self, rel: str) -> str:
         """The decision turn's notice about the working-cells file *rel*, and the question opened."""
         self.asked, self.decided, self.asked_file = [], False, rel
         self.asks, self.question_text = 1, CELLS_QUESTION.format(path=f"`{rel}`")
+        self.cells_this_ask = 0
         return self.question_text
 
     def _decide_file(self, choice: str, reason: str) -> tuple[Optional[str], str]:
@@ -657,13 +667,24 @@ class SessionDrafts:
             row["asks"] = self.asks
         return row
 
+    def turn_continues(self) -> bool:
+        """A required decision's question turn ran the model's cells: whether the turn goes on (another model turn)
+        rather than ending here. It goes on while the question is open, until :data:`MAX_CELLS_PER_ASK` turns with
+        cells in this ask; then it ends, and the question is asked again (:meth:`after_question`)."""
+        if not self.required or self.decided or (self.asked_file is None and not self.asked):
+            return False
+        self.cells_this_ask += 1
+        return self.cells_this_ask < MAX_CELLS_PER_ASK
+
     def after_question(self) -> Optional[str]:
-        """The decision turn ended. A required decision not made yet is asked again (the question with
-        :data:`REASK_LINE`; returned) until it was asked :data:`MAX_ASKS` times; otherwise an unanswered question is
-        recorded as ``none`` and the question closes (None)."""
+        """The decision turn ended. A required decision not made yet (a text reply, or the turn's cells used up) is
+        asked again (the question with :data:`REASK_LINE`; returned), until it was asked :data:`MAX_ASKS` times;
+        otherwise (a decision, or the asks used up) an unanswered question is recorded as ``none`` and the question
+        closes (None)."""
         open_question = (self.asked_file is not None or bool(self.asked)) and not self.decided
         if open_question and self.required and self.asks < MAX_ASKS:
             self.asks += 1
+            self.cells_this_ask = 0
             asked = [self.asked_file] if self.asked_file is not None else list(self.asked)
             self._event({"type": "decision_asked_again", "asked": asked, "asks": self.asks})
             return f"{self.question_text}\n{REASK_LINE}"
@@ -675,4 +696,5 @@ class SessionDrafts:
                                     "asked": list(self.asked)}))
         self.asked, self.decided, self.asked_file = [], False, None
         self.asks, self.question_text = 0, ""
+        self.cells_this_ask = 0
         return None

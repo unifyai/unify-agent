@@ -397,7 +397,12 @@ class InCodeTools:
 
     # -- the hand-back (UNIFY_DRAFTS, UNIFY_HANDBACK_DECISION) ---------------------------------------------------
 
-    async def on_hand_back(self, after_question: bool = False, may_ask: bool = True) -> Optional[str]:
+    async def on_hand_back(
+        self,
+        after_question: bool = False,
+        may_ask: bool = True,
+        cell_ran: bool = False,
+    ) -> Optional[str]:
         """At a hand-back, with the interpreter still alive: draft the definitions that are new or changed since the
         last one (UNIFY_DRAFTS=on) and, with UNIFY_HANDBACK_DECISION=on and something drafted, return the question
         the loop asks before handing back. *after_question*: the question's turn ended (an unanswered question is
@@ -408,6 +413,10 @@ class InCodeTools:
         session = self.drafts
         if self.closed or (session is None and self.mirror is None):
             return None
+        if cell_ran:
+            # UNIFY_HANDBACK_DECISION=required: the question's turn ran the model's cells; it goes on (a non-empty
+            # return) until a decision, a text reply or the cells' bound
+            return _drafts.CONTINUE_TURN if session is not None and session.turn_continues() else None
         if after_question:
             # a required decision not made yet is asked again (the question's text, returned); otherwise None
             return session.after_question() if session is not None else None
