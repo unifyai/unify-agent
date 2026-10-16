@@ -898,7 +898,8 @@ class BoxInterpreter:
         """UNIFY_CELL_STATE=deployment: run the restore source in the new box's live namespace (no cell number, no
         event row of its own) and queue what its result says before the next cell's output. A restore that raises or
         times out is reported and not tried again by this interpreter (a timed-out one killed the worker: the next
-        cell starts a box without it)."""
+        cell starts a box without it); one that leaves a process or thread running is reported, its box killed and a
+        fresh box started without it."""
         source = self.restore_source
         worker = getattr(self._backend, "worker", None)
         if not source or self.memory or worker is None:
@@ -917,6 +918,15 @@ class BoxInterpreter:
         except Exception as exc:  # noqa: BLE001 - a failed restore is reported, never the cell's error
             error = type(exc).__name__
             self.restore_source = None
+        else:
+            # what the restore left running (a thread a restored value started, say) is not any cell's: that box is
+            # killed and a fresh one started without the restore, so no cell after it restarts because of it
+            left = await self._left_running()
+            if left is not None:
+                error = f"it left {left} running"
+                self.restore_source = None
+                await self._kill_box(f"the restore left {left} running")
+                await self._start_box()
         note = None
         if self.on_restored is not None:
             try:

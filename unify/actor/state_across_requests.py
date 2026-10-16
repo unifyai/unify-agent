@@ -18,7 +18,8 @@ kept across requests, by a save at each hand-back and a restore whenever an inte
 
 The host never unpickles anything: both sources run in the actor's confined box, which already runs this agent's own
 code, and the host sees only their JSON counts. Nothing is capped; a snapshot is what the agent keeps defined (``del``
-drops a name). Requires ``UNIFY_TOOLS_IN_CODE=on`` (refused at start-up otherwise).
+drops a name). Requires ``UNIFY_TOOLS_IN_CODE=on`` and every memory switch off (:data:`MEMORY_SWITCHES`: memory
+agents read the actor's workspace), refused at start-up otherwise.
 """
 
 from __future__ import annotations
@@ -31,6 +32,9 @@ DEPLOYMENT = "deployment"
 DIR = ".python-state"
 #: How long a save or a restore may run (s): it pickles or loads what the agent keeps, which has no cap.
 TIMEOUT_S = 300.0
+#: The switches that give other agents (the memory writer, its fork, the librarian) the actor's workspace: a snapshot
+#: there must never reach a box but the actor's own, so ``deployment`` is refused while any of them is on.
+MEMORY_SWITCHES = ("UNIFY_MEMORY", "UNIFY_MEMORY_LIBRARY", "UNIFY_MEMORY_LIBRARIAN", "UNIFY_MEMORY_LIBRARY_FORK")
 #: What a restart note says is lost under ``deployment`` (``box_interpreter._LOST`` otherwise).
 LOST = "names kept at the last hand-back are restored, later ones are gone; files remain"
 
@@ -220,6 +224,12 @@ def refusal(settings: Any = None) -> Optional[str]:
         return None
     if str(getattr(settings, "UNIFY_TOOLS_IN_CODE", "") or "").strip().lower() != "on":
         return f"{SETTING}={DEPLOYMENT} keeps the actor's cell names through tools in code, so UNIFY_TOOLS_IN_CODE must be on; nothing runs"
+    on = [name for name in MEMORY_SWITCHES if str(getattr(settings, name, "") or "").strip().lower() == "on"]
+    if on:
+        return (
+            f"{SETTING}={DEPLOYMENT} keeps the actor's names in its workspace, which memory agents read, so "
+            f"{', '.join(on)} must be off; nothing runs"
+        )
     return None
 
 
@@ -246,5 +256,5 @@ def counts(result: Any) -> dict:
     return out
 
 
-__all__ = ["SETTING", "DEPLOYMENT", "DIR", "TIMEOUT_S", "LOST", "RESTORE", "save_source", "enabled", "refusal",
+__all__ = ["SETTING", "DEPLOYMENT", "DIR", "TIMEOUT_S", "MEMORY_SWITCHES", "LOST", "RESTORE", "save_source", "enabled", "refusal",
            "not_kept_note", "counts"]

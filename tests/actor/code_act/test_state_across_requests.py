@@ -167,6 +167,11 @@ def test_the_setting_is_refused_without_tools_in_code_and_counts_as_persistent(m
     assert kept.refusal(on) is None
     assert "UNIFY_TOOLS_IN_CODE must be on" in kept.refusal(off)
     assert kept.refusal(SimpleNamespace(UNIFY_CELL_STATE="persistent", UNIFY_TOOLS_IN_CODE="off")) is None
+    # memory agents read the actor's workspace: any memory switch on refuses (RUNTIME, 16 Oct 04:47Z)
+    for name in kept.MEMORY_SWITCHES:
+        why = kept.refusal(SimpleNamespace(UNIFY_CELL_STATE="deployment", UNIFY_TOOLS_IN_CODE="on", **{name: "on"}))
+        assert why and name in why and "must be off" in why, (name, why)
+    assert kept.refusal(SimpleNamespace(UNIFY_CELL_STATE="deployment", UNIFY_TOOLS_IN_CODE="on", UNIFY_MEMORY="off")) is None
     monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "deployment")
     assert box_interpreter.persistent() and box_interpreter.deployment()
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "off")
@@ -230,4 +235,33 @@ async def test_a_restart_restores_the_names_of_the_last_hand_back(in_code, monke
     assert "AFTER 41" in after and "NO Y" in after, after
     crashed = _tool_results(second.calls[2])
     assert kept.LOST in crashed or kept.LOST in after, (crashed, after)
+    _assert_ended(in_code["opened"])
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(600)
+async def test_a_restore_that_leaves_a_thread_running_is_reported_and_a_fresh_box_runs_the_cells(in_code, monkeypatch):
+    """A value whose unpickling starts a thread: the restore is reported as failed, its box is killed and the request's
+    cells run in a fresh box without the restored names, with no restart after any of them (RUNTIME, 04:47Z)."""
+    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "deployment")
+    define = (
+        "class Starter:\n"
+        "    def __init__(self):\n"
+        "        self.n = 1\n"
+        "    def __setstate__(self, state):\n"
+        "        import threading, time\n"
+        "        self.__dict__.update(state)\n"
+        "        threading.Thread(target=time.sleep, args=(60,), daemon=True).start()\n"
+        "\n"
+        "s = Starter()\nx = 41\nprint('DEFINED')\n"
+    )
+    first = ScriptedModel(actor=[reply(calls=[code(define)]), reply("done")])
+    assert await _act(first, "Define a starter.") == "done", _why(first)
+    probe = "try:\n    x\n    print('HAS X')\nexcept NameError:\n    print('NO X')\n"
+    second = ScriptedModel(actor=[reply(calls=[code(probe)]), reply(calls=[code("print('AGAIN')\n")]), reply("done")])
+    assert await _act(second, "Look around.") == "done", _why(second)
+    shown, again = _tool_results(second.calls[1]), _tool_results(second.calls[2])
+    assert "could not be restored: it left a thread running" in shown and "NO X" in shown, shown
+    assert "AGAIN" in again and "restarted" not in again, again
     _assert_ended(in_code["opened"])

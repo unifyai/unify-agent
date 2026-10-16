@@ -331,8 +331,8 @@ class ProductionSettings(BaseSettings):
     # ``fresh``: every cell starts in a new interpreter. ``deployment``: as
     # ``persistent``, and the actor's top-level names are also kept at each
     # hand-back and restored in later requests and after a restart, with
-    # UNIFY_TOOLS_IN_CODE on (refused at start-up otherwise;
-    # unify/actor/state_across_requests.py).
+    # UNIFY_TOOLS_IN_CODE on and every memory switch off (refused at
+    # start-up otherwise; unify/actor/state_across_requests.py).
     UNIFY_CELL_STATE: str = "persistent"
     # ``on``: model code in a cell reads the current request as ``request``
     # (in the sandboxed worker): ``request.text``
