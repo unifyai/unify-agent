@@ -434,7 +434,12 @@ def maybe_spawn(
     from ..trigger import Trigger
     from .consolidate import _deliver, _error, verdict_candidates, verdict_check
     from .fork import admission
-    from .switch import library_experience_budget, library_pass_wall_s, memory_passes_on
+    from .switch import (
+        library_experience_budget,
+        library_pass_wall_s,
+        memory_passes_on,
+        writer_passes_on,
+    )
 
     if not memory_passes_on(settings):
         # UNIFY_MEMORY_PASSES=off: no worker starts, for a pass or a capture; nothing is delivered
@@ -453,14 +458,19 @@ def maybe_spawn(
             return event
         budget = library_experience_budget(settings)
         # with the fork on, only episodes whose fork has settled count toward a pass (the worker's pass admits
-        # the same way); the others roll to a later pass
-        due = Trigger(
-            stores.evidence,
-            mode="batched",
-            experience_budget=budget,
-            admission=admission(paths, settings),
-            verdict=verdict_check(paths, settings),
-        ).after_episode(eid)
+        # the same way); the others roll to a later pass. UNIFY_MEMORY_WRITER_PASSES=off: no pass is ever due, and
+        # a worker starts only to capture the settled forks
+        due = (
+            Trigger(
+                stores.evidence,
+                mode="batched",
+                experience_budget=budget,
+                admission=admission(paths, settings),
+                verdict=verdict_check(paths, settings),
+            ).after_episode(eid)
+            if writer_passes_on(settings)
+            else []
+        )
         to_capture = [] if due else verdict_candidates(stores, settings)
         if not due and not to_capture:
             return {"phase": "not_due"}

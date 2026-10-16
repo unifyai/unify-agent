@@ -94,6 +94,11 @@ The no-pass memory set:
   request: no consolidation pass (WRITE, CURATE, a pass a verdict makes due) is started or run, no writer call is
   made, the episode-end fork does not start, and the library never changes. Every other memory setting keeps its
   value. The episode is recorded as before, its meta saying ``"memory_passes": "off"``.
+- ``UNIFY_MEMORY_WRITER_PASSES``: empty or ``on`` (today's behaviour) or ``off``. Off, in the library mode with the
+  episode-end fork on, each settled fork's attempt is still captured as built (host code, confined runs only), the
+  actor still reads and runs the captures, and nothing else runs after a request: no pass (WRITE, CURATE, a pass a
+  verdict makes due) starts, no writer or helper call is made, and the library never changes. Refused unless
+  ``UNIFY_MEMORY_LIBRARY`` and ``UNIFY_MEMORY_LIBRARY_FORK`` are on and ``UNIFY_MEMORY_PASSES`` is not off.
 
 Not switched (a declared safety fix in every mode): the gate refuses bytecode, native code, start-up hooks
 and root entries other than ``env/``, ``workflows/`` and the test kit before extraction
@@ -150,6 +155,7 @@ QA_REPLAY = "UNIFY_MEMORY_QA_REPLAY"
 QA_FIXTURE_SIZE = "UNIFY_MEMORY_QA_FIXTURE_SIZE"
 PROFILE = "UNIFY_PROFILE"
 MEMORY_PASSES = "UNIFY_MEMORY_PASSES"
+WRITER_PASSES = "UNIFY_MEMORY_WRITER_PASSES"
 
 EXPERIENCE_BUDGET_DEFAULT = 150000
 WRITER_MODEL_DEFAULT = "openai/gpt-6-sol"
@@ -1238,11 +1244,49 @@ def memory_passes_on(settings: Any) -> bool:
     return parse_memory_passes(getattr(settings, MEMORY_PASSES, "") or "") == "on"
 
 
+def parse_writer_passes(v: Any) -> str:
+    """``UNIFY_MEMORY_WRITER_PASSES``: ``on`` (also for empty: today's behaviour) or ``off`` (the settled forks are
+    captured and no pass or writer call runs)."""
+    value = _stripped(v).lower() or "on"
+    if value not in ("on", "off"):
+        raise ValueError(f"{WRITER_PASSES} must be empty, 'on' or 'off', not {v!r}"[:200])
+    return value
+
+
+def writer_passes_on(settings: Any) -> bool:
+    """Whether consolidation passes run (missing is on): False under ``UNIFY_MEMORY_WRITER_PASSES=off``."""
+    return parse_writer_passes(getattr(settings, WRITER_PASSES, "") or "") == "on"
+
+
+def writer_passes_refusal(settings: Any) -> str | None:
+    """Why ``UNIFY_MEMORY_WRITER_PASSES=off`` may not run with these settings (the settings named, never a
+    value), or None: it keeps only the capture step, which needs the library mode and the episode-end fork, and
+    memory work after a request."""
+    if writer_passes_on(settings):
+        return None
+    missing = [
+        name
+        for name, ok in (
+            (LIBRARY_MODE + "=on", library_enabled(settings)),
+            (LIBRARY_FORK + "=on", library_fork(settings)),
+            (MEMORY_PASSES + " not off", memory_passes_on(settings)),
+        )
+        if not ok
+    ]
+    if not missing:
+        return None
+    return (
+        f"{WRITER_PASSES}=off keeps only the capture of each settled fork, so it needs {', '.join(missing)}; "
+        "nothing runs"
+    )
+
+
 def profile_refusal(settings: Any) -> str | None:
-    """Why this run may not start under its profile (the settings named, never a value), or None."""
+    """Why this run may not start under its profile, or under UNIFY_MEMORY_WRITER_PASSES=off without what it needs
+    (:func:`writer_passes_refusal`; the settings named, never a value), or None."""
     bad = profile_conflicts(settings)
     if not bad:
-        return None
+        return writer_passes_refusal(settings)
     return (
         f"{PROFILE}={PAPER} fixes {', '.join(bad)} (the writer runs on the actor's model and effort, and no checker "
         "line is taken); unset them, so nothing runs"
@@ -1392,6 +1436,7 @@ PARSERS = {
     PROFILE: parse_profile,
     MEMORY_PASSES: parse_memory_passes,
     NOTEBOOK: parse_notebook,
+    WRITER_PASSES: parse_writer_passes,
 }
 
 

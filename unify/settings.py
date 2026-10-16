@@ -469,6 +469,11 @@ class ProductionSettings(BaseSettings):
     # runs (unify/actor/system_suffix.py). The sha256 is on the CLI's ``ended`` line.
     UNIFY_SYSTEM_SUFFIX: str = ""
     UNIFY_SYSTEM_SUFFIX_SHA256: str = ""
+    # Consolidation passes: empty or ``on`` (default: today's behaviour) or ``off``: in the library mode with the
+    # episode-end fork on, the settled forks are still captured and the actor still runs the captures, and no pass,
+    # writer or helper call runs, so the library never changes. Refused without the library mode, the fork, or with
+    # UNIFY_MEMORY_PASSES=off.
+    UNIFY_MEMORY_WRITER_PASSES: str = ""
     # The library mode's E (recorded tokens at which a pass becomes due), one pass's wall-clock bound (s), and the
     # writer route proxy's journal (absolute path; empty: none) used only to reconcile cancelled calls.
     UNIFY_MEMORY_LIBRARY_E: int = 100000
@@ -796,6 +801,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_PROFILE",
         "UNIFY_MEMORY_PASSES",
         "UNIFY_MEMORY_NOTEBOOK",
+        "UNIFY_MEMORY_WRITER_PASSES",
         mode="before",
     )
     @classmethod
