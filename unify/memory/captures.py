@@ -443,15 +443,20 @@ def answered_action(ep: Any) -> int | None:
 
 
 def handed_back(ep: Any) -> tuple[bool, Any]:
-    """``(True, value)`` for the value the episode handed back: the last answered dialogue action's value, else
-    the final reply's trailing value (its trailing JSON object, else its last non-empty line, read as a dialogue
-    action is); ``(False, None)`` when it handed back no value (a work-tree change only, or nothing)."""
+    """``(True, value)`` for the value the episode handed back: the last answered dialogue action's value, else,
+    when the work tree did not change, the final reply's trailing value (its trailing JSON object, else its last
+    non-empty line, read as a dialogue action is); ``(False, None)`` when it handed back no value: nothing, or a
+    work-tree change with no answered dialogue action, whose outcome is the change itself (its closing reply, often a
+    prose summary of what was done, is not a value to reproduce)."""
     from .integration.adapters.dialogue import action_payload, split_action
     from .procedures import action_value
 
     i = answered_action(ep)
     if i is not None:
         return True, action_value((getattr(ep, "actions", []) or [])[i])
+    before, after = getattr(ep, "worktree_before", None), getattr(ep, "worktree_after", None)
+    if after is not None and after != before:
+        return False, None
     replies = [r for r in getattr(ep, "replies", []) or [] if isinstance(r, str) and r.strip()]
     if replies:
         _method, args, kwargs = split_action(action_payload(replies[-1], None))
