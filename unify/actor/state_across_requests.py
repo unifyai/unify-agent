@@ -7,7 +7,8 @@ kept across requests, by a save at each hand-back and a restore whenever an inte
 * **Save** (:data:`SAVE`, run in a scratch copy of the live namespace, so nothing the cells bound changes): the cells'
   top-level import lines, the source of every function and class the cells (or an earlier restore) defined that is
   still bound, and every other top-level value that pickles and unpickles back to the same type. Private names
-  (``_x``), modules and the pre-bound names (``tools`` and the rest) are never saved. A value that does not round-trip
+  (``_x``), modules, the pre-bound names (``tools`` and the rest) and any class or function of the harness's own
+  packages (which it binds again in every interpreter) are never saved. A value that does not round-trip
   is named with its type in the snapshot's list of names not kept. The snapshot is written to :data:`DIR` in the
   workspace (code as JSON text, values as one pickle), then ``latest.json`` points to it.
 * **Restore** (:data:`RESTORE`, run in the live namespace before the first cell of an interpreter: a request's first
@@ -106,6 +107,10 @@ _SAVE = """async def __exec_wrapper():
             continue
         if __b.isinstance(__v, __types.ModuleType) or __name in __bound_by_import:
             continue
+        if __b.isinstance(__v, __b.type) or __b.isinstance(__v, (__types.FunctionType, __types.BuiltinFunctionType)):
+            __home = __b.getattr(__v, '__module__', None)
+            if __b.isinstance(__home, __b.str) and __home.split('.')[0] in ('unify', 'unillm'):
+                continue   # the harness's own classes and functions: it binds them again in every interpreter
         try:
             __data = __pickle.dumps(__v, protocol=5)
             __back = __pickle.loads(__data)

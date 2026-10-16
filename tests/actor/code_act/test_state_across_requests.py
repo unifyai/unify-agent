@@ -93,6 +93,10 @@ FIRST = (
 
 def test_a_save_keeps_names_and_a_restore_in_a_new_namespace_brings_them_back(workspace):
     box = Box()
+    # a class of the harness's own package bound in the namespace (as the worker binds ModelCallFailed): never saved,
+    # never named as not kept (the suite on w230, 16 Oct, found one named)
+    harness_class = type("ModelCallFailed", (RuntimeError,), {"__module__": "unify.common.cell_models"})
+    box.ns["ModelCallFailed"] = harness_class
     for cell in FIRST:
         box.cell(cell)
     saved = box.run(kept.save_source(["tools"]), scratch=True)
