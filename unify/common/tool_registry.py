@@ -2710,6 +2710,16 @@ SANDBOX_PERSISTENT = (
     "sandbox restarts (a cell ran out of time, broke a limit, left something running, or sat idle too long), the "
     "cell's output says so; then variables are gone and files remain."
 )
+#: The actor's form under ``UNIFY_CELL_STATE=deployment`` (unify/actor/state_across_requests.py): the persistent form,
+#: and its names are kept at each hand-back and come back in later requests and after a restart.
+SANDBOX_DEPLOYMENT = (
+    "Your Python sandbox is persistent and stateful: variables, imports and functions you define in one cell are "
+    "still there in the next, so build on what you already have instead of defining or loading it again. Top-level "
+    "names (imports, functions, classes, and values that can be saved) are also kept each time you hand back an "
+    "answer, and come back in later requests and after a restart; the first cell's output then names anything that "
+    "could not be kept. If the sandbox restarts (a cell ran out of time, broke a limit, left something running, or "
+    "sat idle too long), the cell's output says so; files remain."
+)
 #: The fresh form (only under ``UNIFY_CELL_STATE=fresh``).
 SANDBOX_FRESH = (
     "Each cell runs in a fresh Python sandbox: files you write stay, but variables, imports and functions do not "
@@ -2717,14 +2727,18 @@ SANDBOX_FRESH = (
 )
 
 
-def sandbox_paragraph(agent: str, names: Iterable[str], persistent: bool) -> str:
+def sandbox_paragraph(agent: str, names: Iterable[str], persistent: Any) -> str:
     """The shared paragraph about *agent*'s sandbox: whether it keeps its state between cells (*persistent*), when
-    it restarts, and the pre-bound namespaces *names* (:func:`namespace_names`). The same bytes for every role apart from the
-    names, so it sits in the cached prefix. It opens :func:`preamble`; an agent sent no preamble (tools in code off)
+    it restarts, and the pre-bound namespaces *names* (:func:`namespace_names`); *persistent* ``"deployment"``: the
+    actor's names are also kept across requests. The same bytes for every role apart from the names (and the actor's
+    form under ``deployment``), so it sits in the cached prefix. It opens :func:`preamble`; an agent sent no preamble (tools in code off)
     gets it at the top of its own instructions."""
     if agent not in AGENTS:
         raise ValueError(f"unknown agent {agent!r}")
-    state = SANDBOX_PERSISTENT if persistent else SANDBOX_FRESH
+    if persistent == "deployment":
+        state = SANDBOX_DEPLOYMENT if agent == _A else SANDBOX_PERSISTENT
+    else:
+        state = SANDBOX_PERSISTENT if persistent else SANDBOX_FRESH
     names_text = names_sentence(names)
     return f"{state} {names_text}" if names_text else state
 
@@ -2770,7 +2784,7 @@ def preamble(agent: str, facts: dict) -> str:
         "what you need: what a cell prints is what you see, up to the output limit below. "
         + WHERE_TO_THINK,
         "",
-        sandbox_paragraph(agent, names, bool(persistent)),
+        sandbox_paragraph(agent, names, persistent if persistent == "deployment" else bool(persistent)),
         "",
         "Your tools are Python functions in the module `tools`: `tools.list()` prints one line per tool you have, "
         "and `tools.help(name)` prints what one does, its arguments, what it returns and examples; read the help "

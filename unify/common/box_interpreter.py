@@ -71,7 +71,7 @@ __all__ = [
 
 #: The setting that selects the persistent interpreter (``persistent``) or a fresh box per cell (``fresh``).
 CELL_STATE_SETTING = "UNIFY_CELL_STATE"
-CELL_STATES = ("persistent", "fresh")
+CELL_STATES = ("persistent", "fresh", "deployment")
 
 
 def cell_state() -> str:
@@ -93,7 +93,14 @@ def cell_state() -> str:
 
 
 def persistent() -> bool:
-    return cell_state() == "persistent"
+    """Whether names carry over between cells (``persistent``, and ``deployment``, which also keeps the actor's
+    names across requests: unify/actor/state_across_requests.py)."""
+    return cell_state() in ("persistent", "deployment")
+
+
+def deployment() -> bool:
+    """``UNIFY_CELL_STATE=deployment``: the actor's top-level names are also kept across requests."""
+    return cell_state() == "deployment"
 
 
 # --- what the model is told -----------------------------------------------------------------------------------
@@ -101,12 +108,12 @@ def persistent() -> bool:
 _LOST = "variables are gone, files remain"
 
 
-def _timed_out_note(limit_s: float) -> str:
-    return f"(the cell timed out after {limit_s:g} s; the interpreter was restarted: {_LOST})"
+def _timed_out_note(limit_s: float, lost: str = _LOST) -> str:
+    return f"(the cell timed out after {limit_s:g} s; the interpreter was restarted: {lost})"
 
 
-def _restart_note(why: str) -> str:
-    return f"({why}; the interpreter was restarted: {_LOST})"
+def _restart_note(why: str, lost: str = _LOST) -> str:
+    return f"({why}; the interpreter was restarted: {lost})"
 
 
 # --- in-box layout --------------------------------------------------------------------------------------------
@@ -772,6 +779,10 @@ class BoxInterpreter:
         channel: Any,
         stub_source: Optional[str],
         cell_limit_s: float,
+        restore_source: Optional[str] = None,
+        restore_timeout_s: float = 300.0,
+        on_restored: Optional[Callable[[Any, Optional[str]], Optional[str]]] = None,
+        lost: str = _LOST,
     ) -> None:
         self.agent = agent
         self.profile = profile
@@ -799,6 +810,13 @@ class BoxInterpreter:
         self._started = False
         #: boxes started after the first one
         self.restarts = 0
+        #: UNIFY_CELL_STATE=deployment (the actor's box only): the harness's source run in the live namespace right
+        #: after each box starts, before its first cell, and what its result becomes (a line before the next cell's
+        #: output, or None); what a restart says is lost
+        self.restore_source = restore_source
+        self.restore_timeout_s = float(restore_timeout_s)
+        self.on_restored = on_restored
+        self._lost = lost
 
     # -- lifecycle -------------------------------------------------------------------------------------------------
     @classmethod
@@ -812,6 +830,10 @@ class BoxInterpreter:
         channel: Any = None,
         stub_source: Optional[str] = None,
         cell_limit_s: float,
+        restore_source: Optional[str] = None,
+        restore_timeout_s: float = 300.0,
+        on_restored: Optional[Callable[[Any, Optional[str]], Optional[str]]] = None,
+        lost: str = _LOST,
     ) -> "BoxInterpreter":
         self = cls(
             agent=agent,
@@ -821,6 +843,10 @@ class BoxInterpreter:
             channel=channel,
             stub_source=stub_source,
             cell_limit_s=cell_limit_s,
+            restore_source=restore_source,
+            restore_timeout_s=restore_timeout_s,
+            on_restored=on_restored,
+            lost=lost,
         )
         await self._start_box()
         idle = getattr(profile, "idle_restart_s", None)
@@ -866,6 +892,39 @@ class BoxInterpreter:
         self._worker_pid = _worker_pid(pid, self._baseline) if pid is not None else None
         self._baseline_threads = _threads(self._worker_pid)
         self._last_used = time.monotonic()
+        await self._restore()
+
+    async def _restore(self) -> None:
+        """UNIFY_CELL_STATE=deployment: run the restore source in the new box's live namespace (no cell number, no
+        event row of its own) and queue what its result says before the next cell's output. A restore that raises or
+        times out is reported and not tried again by this interpreter (a timed-out one killed the worker: the next
+        cell starts a box without it)."""
+        source = self.restore_source
+        worker = getattr(self._backend, "worker", None)
+        if not source or self.memory or worker is None:
+            return
+        result: Any = None
+        error: Optional[str] = None
+        try:
+            result = await worker.run_cell(
+                source,
+                self._backend.profile.shadow,
+                timeout=self.restore_timeout_s,
+                scratch=False,
+                stdout=[],
+                stderr=[],
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed restore is reported, never the cell's error
+            error = type(exc).__name__
+            self.restore_source = None
+        note = None
+        if self.on_restored is not None:
+            try:
+                note = self.on_restored(result, error)
+            except Exception:  # noqa: BLE001 - the listener never stops the box
+                logger.debug("the restore listener failed", exc_info=True)
+        if note:
+            self._pending.append(note)
 
     async def _kill_box(self, reason: str) -> None:
         """The verified kill of the current box and the close of its channel; the next cell starts a new box."""
@@ -892,7 +951,7 @@ class BoxInterpreter:
         """Kill the box (verified) and start a fresh one; the next cell is told its state is gone."""
         async with self._lock:
             await self._kill_box(reason)
-            self._pending.append(f"(the interpreter was restarted ({reason}): {_LOST})")
+            self._pending.append(f"(the interpreter was restarted ({reason}): {self._lost})")
             await self._start_box()
 
     async def stop(self) -> None:
@@ -958,7 +1017,7 @@ class BoxInterpreter:
                     logger.exception("stopping an idle interpreter failed")
                     raise
                 self._pending.append(
-                    f"(the interpreter was idle for more than {idle_s:g} s and was restarted: {_LOST})",
+                    f"(the interpreter was idle for more than {idle_s:g} s and was restarted: {self._lost})",
                 )
 
     # -- checks between cells ----------------------------------------------------------------------------------------
@@ -1018,10 +1077,10 @@ class BoxInterpreter:
             closed = self._channel_closed()
             if closed is not None:
                 await self._kill_box(f"channel {closed}")
-                before.append(_restart_note(f"tool channel closed: {closed}"))
+                before.append(_restart_note(f"tool channel closed: {closed}", self._lost))
             elif not self._backend.alive():
                 await self._kill_box("exited")
-                before.append(_restart_note("the interpreter had exited"))
+                before.append(_restart_note("the interpreter had exited", self._lost))
         if self._pending:
             before = [*self._pending, *before]
             self._pending = []
@@ -1056,7 +1115,7 @@ class BoxInterpreter:
             died = str(exc)
         except asyncio.CancelledError:
             await self._kill_box("cancelled")
-            self._pending.append(_restart_note("the previous cell was stopped"))
+            self._pending.append(_restart_note("the previous cell was stopped", self._lost))
             raise
         finally:
             if self.channel is not None:
@@ -1068,7 +1127,7 @@ class BoxInterpreter:
             res.timed_out = True
             await self._kill_box("timeout")
             res.restarted = True
-            res.notes_after.append(_timed_out_note(self.cell_limit_s))
+            res.notes_after.append(_timed_out_note(self.cell_limit_s, self._lost))
             res.opens = self._opens(None, cell, call, dead_reason="killed") if self.memory else None
             return await self._after(res, measure=True)
         if died is not None:
@@ -1077,9 +1136,9 @@ class BoxInterpreter:
             res.restarted = True
             if breach is not None:
                 res.quota = breach
-                res.notes_after.append(_restart_note(breach))
+                res.notes_after.append(_restart_note(breach, self._lost))
             else:
-                res.notes_after.append(_restart_note("the interpreter exited during the cell"))
+                res.notes_after.append(_restart_note("the interpreter exited during the cell", self._lost))
             res.opens = self._opens(None, cell, call, dead_reason="killed") if self.memory else None
             return await self._after(res, measure=breach is None)
         self._fill(res, done)
@@ -1089,14 +1148,14 @@ class BoxInterpreter:
         if closed is not None:
             await self._kill_box(f"channel {closed}")
             res.restarted = True
-            res.notes_after.append(_restart_note(f"tool channel closed: {closed}"))
+            res.notes_after.append(_restart_note(f"tool channel closed: {closed}", self._lost))
         else:
             left = await self._left_running()
             if left is not None:
                 await self._kill_box("left running")
                 res.restarted = True
                 res.notes_after.append(
-                    _restart_note(f"{left} this cell started was still running after it ended"),
+                    _restart_note(f"{left} this cell started was still running after it ended", self._lost),
                 )
         res = await self._after(res, measure=True)
         raised = done.get("raise")
@@ -1113,7 +1172,7 @@ class BoxInterpreter:
             if breach is not None:
                 res.quota = breach
                 res.restarted = True
-                res.notes_after.append(_restart_note(breach))
+                res.notes_after.append(_restart_note(breach, self._lost))
         return res
 
     def _fill(self, res: CellResult, done: dict) -> None:

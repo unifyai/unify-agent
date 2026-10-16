@@ -328,7 +328,11 @@ class ProductionSettings(BaseSettings):
     UNIFY_TOOLS_IN_CODE: str = "off"
     # ``persistent`` (the default): each agent's cells run in one
     # interpreter that keeps its variables between cells until it restarts.
-    # ``fresh``: every cell starts in a new interpreter.
+    # ``fresh``: every cell starts in a new interpreter. ``deployment``: as
+    # ``persistent``, and the actor's top-level names are also kept at each
+    # hand-back and restored in later requests and after a restart, with
+    # UNIFY_TOOLS_IN_CODE on (refused at start-up otherwise;
+    # unify/actor/state_across_requests.py).
     UNIFY_CELL_STATE: str = "persistent"
     # ``on``: model code in a cell reads the current request as ``request``
     # (in the sandboxed worker): ``request.text``
@@ -1012,9 +1016,9 @@ class ProductionSettings(BaseSettings):
     @classmethod
     def parse_cell_state(cls, v: Any) -> str:
         value = str(v or "persistent").strip().lower()
-        if value not in ("persistent", "fresh"):
+        if value not in ("persistent", "fresh", "deployment"):
             raise ValueError(
-                f"UNIFY_CELL_STATE must be 'persistent' or 'fresh', not {v!r}",
+                f"UNIFY_CELL_STATE must be 'persistent', 'fresh' or 'deployment', not {v!r}",
             )
         return value
 

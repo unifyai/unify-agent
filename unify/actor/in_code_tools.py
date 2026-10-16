@@ -29,7 +29,8 @@ One :class:`InCodeTools` serves one request of one agent:
   normally; each is checked to have ended.
 
 ``UNIFY_CELL_STATE=persistent`` keeps the interpreter between cells; ``fresh`` stops it after every cell, so each
-cell starts in a new one.
+cell starts in a new one; ``deployment`` (the actor only) also keeps its top-level names at each hand-back and
+restores them before the first cell of each later interpreter (unify/actor/state_across_requests.py).
 """
 
 from __future__ import annotations
@@ -312,7 +313,7 @@ class InCodeTools:
             {
                 "environment": environment,
                 "flags": self.flags,
-                "persistent": persistent(),
+                "persistent": "deployment" if self.keeps_state else persistent(),
                 "names": self.namespace_names(),
             },
         )
@@ -377,6 +378,17 @@ class InCodeTools:
             from unify.common.box_interpreter import ActorProfile, BoxInterpreter
 
             start = self._start or BoxInterpreter.start
+            extra: dict = {}
+            if self.keeps_state:
+                # UNIFY_CELL_STATE=deployment: names kept at earlier hand-backs come back before the first cell
+                from unify.actor import state_across_requests as kept
+
+                extra = {
+                    "restore_source": kept.RESTORE,
+                    "restore_timeout_s": kept.TIMEOUT_S,
+                    "on_restored": self._restored,
+                    "lost": kept.LOST,
+                }
             self.interp = await start(
                 agent=self.agent,
                 profile=ActorProfile(shadow=self.shadow),
@@ -385,8 +397,48 @@ class InCodeTools:
                 channel=self._new_channel,
                 stub_source=self.stub,
                 cell_limit_s=self.cell_limit_s,
+                **extra,
             )
         return self.interp
+
+    @property
+    def keeps_state(self) -> bool:
+        """UNIFY_CELL_STATE=deployment, for the actor: its top-level names are kept across requests."""
+        from unify.common.box_interpreter import deployment
+
+        return self.agent == "actor" and deployment()
+
+    def _restored(self, result: Any, error: Optional[str]) -> Optional[str]:
+        """A restore ended (UNIFY_CELL_STATE=deployment): its event row (counts only) and the line before the next
+        cell's output, if anything could not be kept."""
+        from unify.actor import state_across_requests as kept
+
+        self.events.append({"type": "state_restored", **({"error": error} if error else kept.counts(result))})
+        return kept.not_kept_note(result, error)
+
+    async def _save_state(self) -> None:
+        """At a hand-back (UNIFY_CELL_STATE=deployment): save the live interpreter's top-level names (a scratch run;
+        nothing the cells bound changes). No interpreter alive this request: nothing new to save, the last snapshot
+        stays."""
+        from unify.actor import state_across_requests as kept
+        from unify.common import tool_registry as R
+        from unify.memory.integration import hooks
+
+        interp = self.interp
+        if interp is None:
+            return
+        prebound = R.prebound_names(
+            self.agent,
+            {"tools": True, "memory": "memory" in hooks.worker_globals(), "clarification": True},
+        )
+        try:
+            async with self._lock:
+                result = await interp.probe(kept.save_source(prebound), timeout=kept.TIMEOUT_S)
+        except Exception as exc:  # noqa: BLE001 - a failed save is recorded; the previous snapshot stays
+            self.events.append({"type": "state_saved", "error": type(exc).__name__})
+            return
+        if result is not None:
+            self.events.append({"type": "state_saved", **kept.counts(result)})
 
     def box_alive(self) -> bool:
         interp = self.interp
@@ -411,7 +463,7 @@ class InCodeTools:
         from unify.actor import drafts as _drafts
 
         session = self.drafts
-        if self.closed or (session is None and self.mirror is None):
+        if self.closed or (session is None and self.mirror is None and not self.keeps_state):
             return None
         if cell_ran:
             # UNIFY_HANDBACK_DECISION=required: the question's turn ran the model's cells; it goes on (a non-empty
@@ -420,6 +472,9 @@ class InCodeTools:
         if after_question:
             # a required decision not made yet is asked again (the question's text, returned); otherwise None
             return session.after_question() if session is not None else None
+        if self.keeps_state:
+            # UNIFY_CELL_STATE=deployment: what this request defined is kept for later requests
+            await self._save_state()
         names: list = []
         written: Optional[str] = None
         if session is not None:
