@@ -12,7 +12,8 @@ kept across requests, by a save at each hand-back and a restore whenever an inte
   is named with its type in the snapshot's list of names not kept. The snapshot is written to :data:`DIR` in the
   workspace (code as JSON text, values as one pickle), then ``latest.json`` points to it.
 * **Restore** (:data:`RESTORE`, run in the live namespace before the first cell of an interpreter: a request's first
-  cell, or the cell after a restart): imports, then definitions (each under ``<restored N>`` in ``linecache``, so a
+  cell, or the cell after a restart): first it records the names already bound (the harness's: the pre-bound names
+  and what it syncs in), which this interpreter's saves leave out; then imports, then definitions (each under ``<restored N>`` in ``linecache``, so a
   later save finds its source and the drafts probe, which reads ``<cell N>`` sources only, never drafts it again),
   then values; whatever failed is tried once more after the others. What could not be kept, at the save or now, is
   returned, and the cell's output names it.
@@ -49,7 +50,11 @@ _SAVE = """async def __exec_wrapper():
     __time = __import__('time')
     __types = __import__('types')
     __g = __b.globals()
-    __skip = __b.set(__PREBOUND__)
+    if '__harness_names__' not in __g:
+        # no restore ran in this interpreter (an earlier one failed), so the harness's names are not known: no save,
+        # the last snapshot stays
+        return {'snapshot': None, 'skipped': 'no record of the names bound at start'}
+    __skip = __b.set(__PREBOUND__) | __b.set(__g['__harness_names__'])
     __keys = []
     for __k in __b.list(__lc.cache):
         if not (__b.isinstance(__k, __b.str) and __k.endswith('>')):
@@ -154,6 +159,9 @@ RESTORE = """async def __exec_wrapper():
     __json = __import__('json')
     __pickle = __import__('pickle')
     __g = __b.globals()
+    # every name bound before the first cell is the harness's (the pre-bound names and what it syncs in): the saves
+    # of this interpreter leave them out, so a later restore never puts an old copy over a fresh one
+    __g['__harness_names__'] = __b.frozenset(__g)
     __dir = __DIR__
     try:
         with __b.open(__os.path.join(__dir, 'latest.json')) as __f:

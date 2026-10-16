@@ -97,6 +97,7 @@ def test_a_save_keeps_names_and_a_restore_in_a_new_namespace_brings_them_back(wo
     # never named as not kept (the suite on w230, 16 Oct, found one named)
     harness_class = type("ModelCallFailed", (RuntimeError,), {"__module__": "unify.common.cell_models"})
     box.ns["ModelCallFailed"] = harness_class
+    box.run(kept.RESTORE, scratch=False)   # the interpreter's start (no snapshot yet)
     for cell in FIRST:
         box.cell(cell)
     saved = box.run(kept.save_source(["tools"]), scratch=True)
@@ -119,8 +120,20 @@ def test_a_save_keeps_names_and_a_restore_in_a_new_namespace_brings_them_back(wo
     assert probed["defs"] == {}, probed
 
 
+def test_names_bound_before_the_first_cell_are_the_harness_s_and_never_saved(workspace):
+    box = Box()
+    box.ns["synced_in"] = {"from": "the harness"}   # bound before any cell, as the worker's sync binds names
+    box.run(kept.RESTORE, scratch=False)            # an interpreter's start: no snapshot yet, the names are recorded
+    box.cell("x = 41\n")
+    saved = box.run(kept.save_source(["tools"]), scratch=True)
+    assert saved["values"] == 1 and saved["not_kept"] == [], saved
+    manifest = json.loads((workspace / kept.DIR / f"{saved['snapshot']}.json").read_text())
+    assert manifest["values"] == ["x"], manifest
+
+
 def test_a_restored_definition_is_saved_again_and_a_redefinition_replaces_it(workspace):
     box = Box()
+    box.run(kept.RESTORE, scratch=False)
     box.cell("def f():\n    return 1\n")
     box.run(kept.save_source(["tools"]), scratch=True)
     second = Box()
@@ -142,6 +155,8 @@ def test_a_restored_definition_is_saved_again_and_a_redefinition_replaces_it(wor
 
 def test_no_snapshot_restores_nothing_and_a_broken_one_is_reported(workspace):
     box = Box()
+    assert Box().run(kept.save_source(["tools"]), scratch=True)["snapshot"] is None   # no start record: no save
+    assert not (workspace / kept.DIR).exists()
     assert box.run(kept.RESTORE, scratch=False) == {"snapshot": None}
     assert kept.not_kept_note({"snapshot": None}, None) is None
     (workspace / kept.DIR).mkdir()
