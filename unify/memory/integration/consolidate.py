@@ -1387,10 +1387,16 @@ async def run_due_passes(
     WRITE pass's request as it starts.
 
     Under ``UNIFY_MEMORY_PASSES=off`` nothing runs: no settings are read, no pass starts and no call is made.
+    Under ``UNIFY_MEMORY_WRITER_PASSES=off`` the settled forks are captured (in the library mode with the fork on)
+    and nothing else runs: no writer setting is read, no pass starts and no model call is made.
     """
-    from .switch import memory_passes_on
+    from .switch import memory_passes_on, writer_passes_on
 
     if not memory_passes_on(settings):
+        return []
+    if not writer_passes_on(settings):
+        if stores is not None and library_enabled(settings) and library_fork(settings):
+            capture_settled_forks(stores, settings)
         return []
     try:
         cfg = writer_settings(settings)
