@@ -293,6 +293,30 @@ def test_actor_environment_lists_the_namespaces(weather):
     )
 
 
+def test_namespaces_context_names_the_library_only_when_it_is_on(weather, monkeypatch):
+    from unify.actor.environments import registered_environments
+    from unify.settings import SETTINGS
+
+    on_text = (
+        "`primitives.<namespace>.<method>(...)`. A stored function that calls them needs "
+        "no import: they are recorded and injected when it runs later. Each method's "
+        "signature and documentation come back from `await functions.search(...)` "
+        "(as primitive rows) and from `help(primitives.<namespace>.<method>)`. "
+    )
+    monkeypatch.setattr(SETTINGS, "UNIFY_LIBRARY", "")
+    on = registered_environments()[0].get_prompt_context()
+    assert on_text in on
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_LIBRARY", "off")
+    off = registered_environments()[0].get_prompt_context()
+    assert "functions" not in off and "stored function" not in off
+    assert (
+        "Each method's signature and documentation come back from "
+        "`help(primitives.<namespace>.<method>)`. "
+    ) in off
+    assert "| `primitives.weather` | 3 (1 / 1 / 1) | A weather service |" in off
+
+
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
 @_handle_project

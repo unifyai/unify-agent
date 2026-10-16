@@ -77,18 +77,32 @@ class EnvironmentNamespacesEnvironment(BaseEnvironment):
         return tools
 
     def get_prompt_context(self) -> str:
+        from unify.actor import library_switch
+
         namespaces = environment_namespaces()
-        # The library search is the sandbox's (the core surface).
-        search = "`await functions.search(...)`"
+        # The library search is the sandbox's (the core surface). With
+        # UNIFY_LIBRARY=off the sandbox has no `functions` and nothing is
+        # stored, so the docs come from help() alone.
+        library = not library_switch.off()
+        stored = (
+            "A stored function that calls them needs no import: they are "
+            "recorded and injected when it runs later. "
+            if library
+            else ""
+        )
+        search = (
+            "`await functions.search(...)` (as primitive rows) and from "
+            if library
+            else ""
+        )
         lines = [
             "### `primitives.*` — This Environment's Namespaces\n",
             "The environment you work in registered the namespaces below. "
             "Call their methods from Python as "
-            "`primitives.<namespace>.<method>(...)`. A stored function that "
-            "calls them needs no import: they are recorded and injected when it "
-            "runs later. Each method's signature and "
-            f"documentation come back from {search} "
-            "(as primitive rows) and from `help(primitives.<namespace>.<method>)`. "
+            f"`primitives.<namespace>.<method>(...)`. {stored}Each method's "
+            "signature and "
+            f"documentation come back from {search}"
+            "`help(primitives.<namespace>.<method>)`. "
             "Effects: `read` methods change nothing, `write` methods create or "
             "change state, `destructive` methods delete or overwrite it.\n",
             "| Namespace | Methods (read / write / destructive) | What it is |",
