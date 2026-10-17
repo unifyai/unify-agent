@@ -470,6 +470,10 @@ class ProductionSettings(BaseSettings):
     # The library mode: ``on`` forks the actor's conversation once at each episode's end, in a confined process
     # writing only to the episode's staging dir (integration/fork.py); ``off`` (default): nothing happens.
     UNIFY_MEMORY_LIBRARY_FORK: str = "off"
+    # The library mode with the fork on: ``on`` captures an episode's attempt as soon as its fork settles, from the CLI
+    # that recorded it (the harness, confined runs only), and a request that begins first captures any settled fork
+    # not captured yet; ``off`` (default): a later pass worker captures it, as before.
+    UNIFY_MEMORY_LIBRARY_CAPTURE_AT_SETTLE: str = "off"
     # The fork lane's route: the key proxy's /fork/v1 base URL and the inherited
     # descriptor carrying its token, read once at start-up and then removed from the environment (empty: no fork lane).
     UNIFY_MEMORY_LIBRARY_FORK_BASE_URL: str = ""
@@ -758,6 +762,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_LIBRARY_MAX_READS",
         "UNIFY_MEMORY_LIBRARY_WAIT_SLOT",
         "UNIFY_MEMORY_LIBRARY_FORK",
+        "UNIFY_MEMORY_LIBRARY_CAPTURE_AT_SETTLE",
         "UNIFY_MEMORY_LIBRARY_FORK_BASE_URL",
         "UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD",
         "UNIFY_MEMORY_LIBRARY_ANALYSTS",

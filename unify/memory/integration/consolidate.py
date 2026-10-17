@@ -1301,6 +1301,26 @@ def capture_settled_forks(stores: Stores, settings: Any) -> list[dict]:
         return []
 
 
+def capture_at_settle(
+    paths: Paths,
+    settings: Any,
+    busy_timeout_s: float | None = None,
+    progress: Callable[[str], None] = lambda _m: None,
+) -> list[dict]:
+    """``UNIFY_MEMORY_LIBRARY_CAPTURE_AT_SETTLE=on``: right after the episode's fork settles (:func:`.fork.finish`),
+    capture every settled fork that has no capture yet (:func:`capture_settled_forks`), from the CLI that recorded
+    the episode: the harness writes the capture store, the procedure runs only confined. The next request's snapshot
+    then holds it, instead of a pass worker capturing it at a later request's end. Never raises."""
+    try:
+        rows = capture_settled_forks(open_stores(paths, busy_timeout_s=busy_timeout_s), settings)
+    except Exception as exc:  # noqa: BLE001 - the capture never stops the request's end
+        progress(f"memory: capture at settle skipped ({type(exc).__name__})")
+        return []
+    if rows:
+        progress(f"memory: {len(rows)} captured at settle")
+    return rows
+
+
 def verdict_check(paths: Any, settings: Any) -> Callable[[str], bool] | None:
     """In the library mode, whether an episode's capture is a verdict (:func:`..captures.verdict`), read from the
     capture store now; None with the library mode off (no verdict passes)."""

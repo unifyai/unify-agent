@@ -1050,7 +1050,7 @@ class RequestRun:
         from . import consolidate, cost, worktree_capture
         from .checkout import export_checkout
         from .state import State
-        from .switch import library_enabled, memory_passes_on, profile, surfacing_options
+        from .switch import library_capture_at_settle, library_enabled, memory_passes_on, profile, surfacing_options
 
         paths = self.paths
         policy = sandbox.build_policy(fresh=True)
@@ -1073,6 +1073,10 @@ class RequestRun:
             from .async_pass import apply_results
 
             # under the request lock, before _open_library_mode copies the pin
+            if library_capture_at_settle(SETTINGS):
+                # a settled fork its own request did not capture (it ended before the fork settled): captured before
+                # the snapshot, so this request already sees it
+                consolidate.capture_settled_forks(self.stores, SETTINGS)
             self._landed = apply_results(self.state, paths)
             # the served head, whose item records are already written
             self.pin = served_head(self.stores.memory)
@@ -1605,6 +1609,17 @@ class RequestRun:
 
             # after the reply and the lock: hand over the request, and wait where the host needs it
             await asyncio.to_thread(_fork.finish, fork, SETTINGS, progress)
+            from . import consolidate
+            from .switch import library_capture_at_settle
+
+            if library_capture_at_settle(SETTINGS):  # the fork has settled (or was recorded lost or timed out)
+                await asyncio.to_thread(
+                    consolidate.capture_at_settle,
+                    self.paths,
+                    SETTINGS,
+                    _LIBRARY_BUSY_TIMEOUT_S,
+                    progress,
+                )
 
     async def _wait_for_pass_worker(self, progress: Callable[[str], None]) -> dict | None:
         """``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on``: wait for the pass worker in flight, whichever request spawned it,

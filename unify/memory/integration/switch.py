@@ -677,6 +677,7 @@ LIBRARY_MAX_READS = "UNIFY_MEMORY_LIBRARY_MAX_READS"
 #: Opt-in: the CLI waits for the pass slot it spawned before it exits, for hosts whose sandbox ends
 #: every process of the controller with it (a PID namespace); off: the request returns at once, as built.
 LIBRARY_WAIT_SLOT = "UNIFY_MEMORY_LIBRARY_WAIT_SLOT"
+LIBRARY_CAPTURE_AT_SETTLE = "UNIFY_MEMORY_LIBRARY_CAPTURE_AT_SETTLE"
 #: At each episode's end the actor's own conversation is forked once, in a confined
 #: process that writes only to the episode's staging dir (integration/fork.py); off: nothing happens, as built.
 LIBRARY_FORK = "UNIFY_MEMORY_LIBRARY_FORK"
@@ -843,6 +844,18 @@ def parse_library_fork(v: Any) -> str:
 
 def library_fork(settings: Any) -> bool:
     return parse_library_fork(getattr(settings, LIBRARY_FORK, "") or "") == "on"
+
+
+def parse_library_capture_at_settle(v: Any) -> str:
+    """``UNIFY_MEMORY_LIBRARY_CAPTURE_AT_SETTLE``: ``off`` (also for empty) or ``on``."""
+    return _on_off(LIBRARY_CAPTURE_AT_SETTLE, v)
+
+
+def library_capture_at_settle(settings: Any) -> bool:
+    """Capture each attempt as soon as its fork settles (the fork on); otherwise a later pass worker captures it."""
+    return library_fork(settings) and (
+        parse_library_capture_at_settle(getattr(settings, LIBRARY_CAPTURE_AT_SETTLE, "") or "") == "on"
+    )
 
 
 # --- the fork lane's route (docs/design/fork-lane-design.md) ----------------------------------------------------
@@ -1363,6 +1376,7 @@ PARSERS = {
     LIBRARY_MAX_READS: parse_library_max_reads,
     LIBRARY_WAIT_SLOT: parse_library_wait_slot,
     LIBRARY_FORK: parse_library_fork,
+    LIBRARY_CAPTURE_AT_SETTLE: parse_library_capture_at_settle,
     LIBRARY_FORK_BASE_URL: parse_library_fork_base_url,
     LIBRARY_FORK_TOKEN_FD: parse_library_fork_token_fd,
     LIBRARY_ANALYSTS: parse_library_analysts,

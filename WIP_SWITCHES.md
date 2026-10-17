@@ -172,6 +172,13 @@ The three long-horizon switches share the step-limit reply path.
 - **What they do:** `UNIFY_MEMORY_LIBRARY=on` is the library mode: the writer reads a batch map and bounded views and keeps a function library (off: the earlier memory mode as built). In it, `_E` is the recorded experience at which a pass becomes due; `_FORK=on` forks the actor's conversation once at each episode's end into a confined process that writes only to the episode's staging directory; `_POOL=on` keeps every proposal open across passes in the candidate pool until the writer closes it; `_EDIT_TOOLS=on` gives the writer and the curator the `write` and `edit` file tools; `_COMPACT` (on by default) lets the memory agents compact their conversations as the agent loop does; `_ACTOR_INDEX` chooses whether the actor's prompt ends with the index view (`inline`) or a constant guide (`pointer`); `UNIFY_MEMORY_WRITER_USAGE=on` ends each pass's first message with the table of how requests used each library function. Each switch's comment in `unify/settings.py` gives the full behaviour.
 - **Evidence:** the memory design under evaluation (continual-harness-research: the memory preregistrations and the build ledgers); a run's configuration sets them, and each default is the build's behaviour without the switch.
 
+## UNIFY_MEMORY_LIBRARY_CAPTURE_AT_SETTLE
+
+- **Values:** `on` or `off` (empty is `off`).
+- **Default:** `off`.
+- **What it does:** With the library mode and the fork on, an episode's attempt is captured as soon as its fork settles, by the CLI that recorded the episode, instead of by a pass worker at a later request's end; a request that begins first captures any settled fork not captured yet, before its snapshot. The capture itself is unchanged (the harness writes the store; the procedure runs only confined). Off, captures are taken as before.
+- **Evidence:** captures reached the next visit 2-6 minutes after their episode under the earlier timing (continual-harness-research: the reuse-lag analysis and the detached-writer design note); keyless tests only so far (`tests/memory/integration/test_capture_at_settle.py`).
+
 ## UNIFY_MEMORY_LIBRARIAN
 
 - **Values:** `on` or `off` (empty is `off`).
