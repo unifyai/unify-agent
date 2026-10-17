@@ -38,10 +38,13 @@ RESERVED_INIT = "memory/__init__.py"
 RESERVED_CONTRACT = "memory/_contract.py"
 #: The package's typed stub: its whole contract, generated from the package's own definitions.
 RESERVED_STUB = "memory/__init__.pyi"
+#: The learned-skill families (unify/memory/learned.py byte for byte), generated only with
+#: ``UNIFY_MEMORY_LEARNED_SKILLS=on`` and never committed (:mod:`.learned_store`).
+RESERVED_LEARNED = "memory/_learned.py"
 INDEX_FILE = "INDEX.md"
 LINKS_FILE = "links.json"
 DATA_DIR = ".memory"
-GENERATED_ROOT_FILES = (RESERVED_INIT, RESERVED_CONTRACT, RESERVED_STUB, INDEX_FILE, LINKS_FILE)
+GENERATED_ROOT_FILES = (RESERVED_INIT, RESERVED_CONTRACT, RESERVED_STUB, RESERVED_LEARNED, INDEX_FILE, LINKS_FILE)
 # Package names a subpackage import would bind over the calls on ``memory`` (and the optional ones).
 RESERVED_PACKAGES = frozenset(
     {"ask", "get", "items", "index", "show", "find", "match", "run", "search", "suggest", "tests"},

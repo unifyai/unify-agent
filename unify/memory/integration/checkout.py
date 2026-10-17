@@ -101,6 +101,7 @@ def export_actor_library_mode(
     librarian: bool = False,
     summary_of=None,
     search=None,
+    learned: bool = False,
 ) -> dict[str, bytes]:
     """``UNIFY_MEMORY_LIBRARY=on``: replace *dest* with the actor's read-only copy of memory commit *sha*. It
     holds:
@@ -113,6 +114,10 @@ def export_actor_library_mode(
     - with *librarian* (``UNIFY_MEMORY_LIBRARIAN=on``), the librarian's catalogue (with *summary_of*'s episode
       summaries and the captures' cards last), the dispatch file and the search index (its vectors made with
       *search*, a :class:`..library_search.Backend`; None: a lexical index), and ``memory.ask`` in the package.
+
+    - with *learned* (``UNIFY_MEMORY_LEARNED_SKILLS=on``), the learned-skill families as ``memory/_learned.py`` and
+      each learned module's stored state and fixture cases under ``.memory/learned/``
+      (:func:`..learned_store.export_files`).
 
     Every write bit is then dropped, and the sandbox binds the copy read-only (:func:`.hooks.worker_readonly_mounts`).
     Returns the generated files.
@@ -160,6 +165,20 @@ def export_actor_library_mode(
             **generated,
             **{p: v for p, v in captures.items() if p.startswith(EXPORT_DIR + "/")},
         }
+    if learned:
+        from ..learned_store import export_files as learned_files
+
+        exported_files = {
+            p: (dest / p).read_bytes()
+            for p in files
+            if exported(p) and p.startswith("memory/") and p.endswith(".py")
+        }
+        tests = {
+            p: repo.show(sha, p)
+            for p in files
+            if p.endswith(".learned.json") and "/tests/data/" in p
+        }
+        generated = {**generated, **learned_files(repo, {**exported_files, **tests})}
     write_files(dest, generated)
     make_read_only(dest)
     return generated

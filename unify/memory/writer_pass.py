@@ -2677,6 +2677,21 @@ class WriterPass:
             status_of=status_of(records),
             records=records,
         )
+        from unify.settings import SETTINGS
+
+        from .integration.switch import learned_skills
+
+        if learned_skills(SETTINGS):
+            # the families and the learned modules' stored states, so a cell can fit a skill as the actor does;
+            # the box's own fixtures are read from its tests (memory.learned)
+            from .learned_store import export_files as learned_files
+
+            mods = {
+                p.relative_to(box).as_posix(): p.read_bytes()
+                for p in (box / "memory").glob("*/*.py")
+                if p.is_file() and not p.is_symlink()
+            }
+            files = {**files, **learned_files(self.mem, mods)}
         write_files(box, files)
         return files
 

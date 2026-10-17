@@ -1046,6 +1046,60 @@ def request() -> str:
     return Request(text, data if isinstance(data, list) else _json_values(text))
 
 
+_LEARNED_REF = re.compile(r"(?:memory\.)?([a-z][a-z0-9_]*)\.([a-z][a-z0-9_]*)(?::([A-Za-z][A-Za-z0-9_]*))?\Z")
+
+
+def learned(ref: str) -> Any:
+    """A learned skill: a library function whose module declares a parameter family (``LEARNED_FAMILY``), fitted to
+    the examples you have. ``fitted = memory.learned(ref).fit(examples)`` returns a plain callable,
+    ``fitted(x)``, built from the stored parameters plus a short fit on *examples*: (input, output) pairs from the
+    request, from tool calls and their results, from values you computed, or a dict of input to output; with no
+    examples, the item's own stored cases. ``fitted.reproduced`` says whether every example's output came back.
+    Fitting never changes the stored parameters; the harness updates them after the request, behind the item's
+    stored cases. Only with ``UNIFY_MEMORY_LEARNED_SKILLS=on``.
+
+    Example:
+        memory.learned('memory.text.labels:label_of').fit([('a', 'x'), ('b', 'y')])('a')
+    """
+    if __name__ == "memory":
+        try:
+            from memory import _learned as rt  # type: ignore[import-not-found]
+        except ImportError:
+            raise LookupError("memory.learned: learned skills are off in this run") from None
+    else:
+        from . import learned as rt
+    m = _LEARNED_REF.match(str(ref).strip()) if isinstance(ref, str) else None
+    if m is None:
+        raise rt.LearnedError(
+            f"memory.learned({ref!r}): give a function id 'memory.<package>.<module>:<name>' or a module "
+            "'memory.<package>.<module>'",
+        )
+    pkg, mod, name = m.groups()
+    module_id = f"memory.{pkg}.{mod}"
+    rel = f"memory/{pkg}/{mod}"
+
+    def read(*parts: str) -> str | None:
+        try:
+            with open(os.path.join(_ROOT, *parts), encoding="utf-8") as f:
+                return f.read()
+        except OSError:
+            return None
+
+    source = read(rel + ".py")
+    if source is None:
+        raise LookupError(f"memory.learned({ref!r}): the library has no module {module_id}")
+    import importlib
+
+    module = importlib.import_module(module_id)
+    state = read(".memory", "learned", rel + ".state.json")
+    fixtures = read("memory", pkg, "tests", "data", mod + ".learned.json") or read(
+        ".memory",
+        "learned",
+        rel + ".fixtures.json",
+    )
+    return rt.load_skill(module_id + (f":{name}" if name else ""), module, source, state, fixtures)
+
+
 def _dispatch() -> tuple[list, dict] | None:
     """The procedures ``.memory/dispatch.json`` lists (dicts with an id) and its ``applies_of``; None when the copy
     has no readable dispatch file (the librarian is off)."""

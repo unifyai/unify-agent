@@ -470,6 +470,10 @@ class ProductionSettings(BaseSettings):
     # The library mode: ``on`` forks the actor's conversation once at each episode's end, in a confined process
     # writing only to the episode's staging dir (integration/fork.py); ``off`` (default): nothing happens.
     UNIFY_MEMORY_LIBRARY_FORK: str = "off"
+    # The library mode: ``on`` lets library items fit their declared parameters to each request's examples
+    # (``memory.learned(id).fit(examples)``) and consolidates the fits after each episode behind the items' fixtures
+    # (unify/memory/learned_store.py); ``off`` (default): nothing happens.
+    UNIFY_MEMORY_LEARNED_SKILLS: str = "off"
     # The fork lane's route: the key proxy's /fork/v1 base URL and the inherited
     # descriptor carrying its token, read once at start-up and then removed from the environment (empty: no fork lane).
     UNIFY_MEMORY_LIBRARY_FORK_BASE_URL: str = ""
@@ -758,6 +762,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_LIBRARY_MAX_READS",
         "UNIFY_MEMORY_LIBRARY_WAIT_SLOT",
         "UNIFY_MEMORY_LIBRARY_FORK",
+        "UNIFY_MEMORY_LEARNED_SKILLS",
         "UNIFY_MEMORY_LIBRARY_FORK_BASE_URL",
         "UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD",
         "UNIFY_MEMORY_LIBRARY_ANALYSTS",

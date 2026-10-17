@@ -680,6 +680,9 @@ LIBRARY_WAIT_SLOT = "UNIFY_MEMORY_LIBRARY_WAIT_SLOT"
 #: At each episode's end the actor's own conversation is forked once, in a confined
 #: process that writes only to the episode's staging dir (integration/fork.py); off: nothing happens, as built.
 LIBRARY_FORK = "UNIFY_MEMORY_LIBRARY_FORK"
+#: ``on``: library items that fit their parameters to each request's examples, consolidated after each episode behind
+#: their fixtures (unify/memory/learned.py, unify/memory/learned_store.py); ``off`` (default): nothing changes.
+LEARNED_SKILLS = "UNIFY_MEMORY_LEARNED_SKILLS"
 #: Retired: helpers are launched by the writer itself with the ``delegate`` tool (helpers.py), never by the harness.
 #: Empty or ``off`` is accepted as a no-op; any other value is refused, so a configuration that still asks for
 #: harness-launched helpers fails loudly instead of running without them.
@@ -843,6 +846,19 @@ def parse_library_fork(v: Any) -> str:
 
 def library_fork(settings: Any) -> bool:
     return parse_library_fork(getattr(settings, LIBRARY_FORK, "") or "") == "on"
+
+
+def parse_learned_skills(v: Any) -> str:
+    """``UNIFY_MEMORY_LEARNED_SKILLS``: ``off`` (also for empty) or ``on``."""
+    return _on_off(LEARNED_SKILLS, v)
+
+
+def learned_skills(settings: Any) -> bool:
+    """Learned skills are on: the switch, in library mode."""
+    return (
+        parse_learned_skills(getattr(settings, LEARNED_SKILLS, "") or "") == "on"
+        and parse_memory_library_mode(getattr(settings, LIBRARY_MODE, "") or "") == "on"
+    )
 
 
 # --- the fork lane's route (docs/design/fork-lane-design.md) ----------------------------------------------------
@@ -1363,6 +1379,7 @@ PARSERS = {
     LIBRARY_MAX_READS: parse_library_max_reads,
     LIBRARY_WAIT_SLOT: parse_library_wait_slot,
     LIBRARY_FORK: parse_library_fork,
+    LEARNED_SKILLS: parse_learned_skills,
     LIBRARY_FORK_BASE_URL: parse_library_fork_base_url,
     LIBRARY_FORK_TOKEN_FD: parse_library_fork_token_fd,
     LIBRARY_ANALYSTS: parse_library_analysts,

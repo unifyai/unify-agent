@@ -215,6 +215,16 @@ def memory_library_on() -> bool:
     return parse_memory_library_mode(getattr(SETTINGS, LIBRARY_MODE, "") or "") == "on"
 
 
+def learned_skills_on() -> bool:
+    """``UNIFY_MEMORY_LEARNED_SKILLS=on``: library items that fit their parameters to each request's examples
+    (:mod:`..learned`, :mod:`..learned_store`)."""
+    from unify.settings import SETTINGS
+
+    from .switch import learned_skills
+
+    return learned_skills(SETTINGS)
+
+
 def librarian_on() -> bool:
     """Whether ``UNIFY_MEMORY_LIBRARIAN=on`` (the actor asks a librarian which stored items fit)."""
     from unify.settings import SETTINGS
@@ -974,6 +984,9 @@ class RequestRun:
         self.cell_errors: dict[str, int] = {"name": 0, "import": 0}
         # Library mode: the failed library calls and library cell errors, listed (library_failure_list).
         self.failures: dict = library_failures_empty()
+        # UNIFY_MEMORY_LEARNED_SKILLS=on: the learned-skill fits the cells made (learned_store.take_fits), each with
+        # its fitted state; harness-only, consolidated after the episode is recorded (_consolidate_learned)
+        self.learned_fits: list[dict] = []
         # UNIFY_MEMORY_LIBRARIAN=on: the request's librarian sessions (librarian.opener registers each), whose
         # totals the use record reads
         self.librarian_sessions: list = []
@@ -1294,6 +1307,7 @@ class RequestRun:
             librarian=librarian,
             summary_of=summary_of,
             search=search,
+            learned=learned_skills_on(),
         )
         self.item_ids = pinned_items(paths.checkout, library_mode=True)
         # the worker binds ``memory`` in every cell when the copy holds the package (hooks.worker_globals)
@@ -1403,6 +1417,10 @@ class RequestRun:
         )
         if self.library_mode:
             add_library_failures(self.failures, drained)
+            if learned_skills_on():
+                from ..learned_store import take_fits
+
+                take_fits(self.learned_fits, drained)
 
     def note_failure(self, call_id: Any, exc: BaseException) -> None:
         """Keep that a code cell's tool call raised instead of returning (``hooks.tool_result``): its
@@ -1577,6 +1595,7 @@ class RequestRun:
                 if reservation is not None:
                     reservation.abandon("refused: the episode was not recorded")
                 return
+            self._consolidate_learned(eid, progress)
             # the recorded episode's part list, read before the similar index takes the recorded episode
             parts = self._fork_parts(reservation, progress)
             self._index_similar(progress)
@@ -1605,6 +1624,29 @@ class RequestRun:
 
             # after the reply and the lock: hand over the request, and wait where the host needs it
             await asyncio.to_thread(_fork.finish, fork, SETTINGS, progress)
+
+    def _consolidate_learned(self, eid: str, progress: Callable[[str], None]) -> None:
+        """``UNIFY_MEMORY_LEARNED_SKILLS=on`` (library mode): the fixture-gated consolidation of each learned skill the
+        actor fitted in this episode (:func:`..learned_store.consolidate_episode`), before the next request can pin
+        the state; no model call. Not with ``UNIFY_MEMORY_PASSES=off`` (no memory work then). Never raises."""
+        if not (self.library_mode and learned_skills_on()) or self.memory_passes == "off" or not self.learned_fits:
+            return
+        try:
+            from ..learned_store import consolidate_episode
+
+            rows = consolidate_episode(
+                self.paths.memory,
+                self.paths.state_dir,
+                eid,
+                list(self.learned_fits),
+                getattr(self, "solved", None),
+            )
+            progress(
+                "memory: learned skills consolidated: "
+                + ", ".join(f"{r['module']} {'accepted' if r['accepted'] else r.get('reason')}" for r in rows),
+            )
+        except Exception as exc:  # noqa: BLE001 - a consolidation never stops a request
+            self._error("learned skills", exc, progress)
 
     async def _wait_for_pass_worker(self, progress: Callable[[str], None]) -> dict | None:
         """``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on``: wait for the pass worker in flight, whichever request spawned it,

@@ -114,6 +114,22 @@ An ``open`` record made by the import system, by traceback formatting or by
 the library package itself carries ``via`` (``import``, ``traceback`` or
 ``library``), so a reader can tell the cell's own file reads from them.
 
+A learned skill's fit (``memory.learned(id).fit(examples)``, :mod:`unify.memory.learned`) raises
+``sys.audit("memory.learned_fit", item_id, state_text, reproduced, steps)``:
+the fitted state as JSON text ("" when it was over the package's bound),
+whether it gave back every example's output, and the optimiser steps. It is
+kept apart, under ``calls``, only when a cell raised one::
+
+    "learned": [{"item", "state", "reproduced", "steps"}, ...]
+                                       # at most MAX_LEARNED_FITS, and
+                                       # MAX_LEARNED_BYTES of state text
+    "learned_dropped": int
+
+The state is the one value this hook keeps: it is the fitted parameters of a
+library item, read only harness-side by the consolidation after the episode
+(:mod:`unify.memory.learned_store`), which gates it on the item's own stored
+fixtures before anything is stored; a forged one is refused there.
+
 A call that raised (an item's or a helper's) also raises
 ``sys.audit("memory.call_failed", id, exception_type, message_line,
 args_shape)``: the exception's type name, the first line of its message and,
@@ -224,6 +240,8 @@ RUN_EVENT = "memory.run_result"
 #: nothing fits, and the recognisers' outcomes as ``(id, read, applies)`` labels, with a fixed short reason after
 #: them when the reader gave no outcome (``not-started``, ``failed``); never text or values.
 ASK_EVENT = "memory.ask_result"
+#: A learned skill's fit: (item id, fitted state as JSON text, reproduced, steps).
+LEARNED_EVENT = "memory.learned_fit"
 ASK_READ = ("parsed", "did-not-parse", "not-started", "failed")
 ASK_NO_OUTCOME = ("not-started", "failed")
 ASK_APPLIES = ("held", "did-not-hold", "raised", "not-run", "none")
@@ -239,6 +257,7 @@ AUDITED = PATH_EVENTS | SPAWN_EVENTS | {
     MATCH_EVENT,
     RUN_EVENT,
     ASK_EVENT,
+    LEARNED_EVENT,
 }
 #: The callers whose opens are marked ``via``: the import system, traceback formatting, the library package.
 _VIA_IMPORT = ("importlib", "_frozen_importlib", "zipimport")
@@ -264,6 +283,9 @@ MAX_FAILURE_TEXT = 300
 MAX_MATCH_RECORDS = 200
 MAX_RUN_RECORDS = 1000
 MAX_MATCH_IDS = 500
+#: learned-skill fits kept per cell, and the state text they may hold in all.
+MAX_LEARNED_FITS = 20
+MAX_LEARNED_BYTES = 1 << 20
 CLIP_MARK = "<clipped>"
 
 #: The process-global sentinel: the one installed hook, whatever module
@@ -279,6 +301,7 @@ _KEY_SHAPED = re.compile(
 )
 _KEY_MASK = "<redacted:key-shaped>"
 _ITEM_ID = re.compile(r"memory(?:\.[A-Za-z_][A-Za-z0-9_]*)+:[A-Za-z_][A-Za-z0-9_]*")
+_ITEM_ID_OR_MODULE = re.compile(r"memory(?:\.[A-Za-z_][A-Za-z0-9_]*)+(?::[A-Za-z_][A-Za-z0-9_]*)?")
 _EXCEPTION_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,99}")
 _HEX_DIGEST = re.compile(r"[0-9a-f]{1,64}")
 _CAPTURE_ID = re.compile(r"capture:[0-9a-f]{16}")
@@ -401,6 +424,9 @@ class CellAudit:
         self.match_records: list = []
         self.run_records: list = []
         self.ask_records: list = []
+        self.learned_records: list = []
+        self.learned_dropped = 0
+        self.learned_bytes = 0
 
     @staticmethod
     def prefixes(roots: Iterable[str]) -> tuple:
@@ -438,6 +464,9 @@ class CellAudit:
                 return
             if event == ASK_EVENT:
                 self._ask_result(args)
+                return
+            if event == LEARNED_EVENT:
+                self._learned_fit(args)
                 return
             if len(self.records) >= MAX_RECORDS:
                 self.dropped += 1
@@ -723,9 +752,36 @@ class CellAudit:
             },
         )
 
+    def _learned_fit(self, args: tuple) -> None:
+        """Keep one ``memory.learned_fit`` event: only exact ``str``, ``bool`` and ``int`` arguments of the
+        expected shapes, within the per-cell count and byte bounds."""
+        if type(args) is not tuple or len(args) != 4:
+            self.calls_malformed += 1
+            return
+        item, state, reproduced, steps = args
+        if (
+            type(item) is not str
+            or type(state) is not str
+            or type(reproduced) is not bool
+            or type(steps) is not int
+            or len(item) > MAX_ITEM_ID
+            or _ITEM_ID_OR_MODULE.fullmatch(item) is None
+        ):
+            self.calls_malformed += 1
+            return
+        if len(self.learned_records) >= MAX_LEARNED_FITS or self.learned_bytes + len(state) > MAX_LEARNED_BYTES:
+            self.learned_dropped += 1
+            return
+        self.learned_bytes += len(state)
+        self.learned_records.append(
+            {"item": item, "state": state, "reproduced": reproduced, "steps": steps},
+        )
+
     def _calls_seen(self) -> bool:
         return bool(
-            self.call_counts
+            self.learned_records
+            or self.learned_dropped
+            or self.call_counts
             or self.calls_dropped
             or self.calls_malformed
             or self.helper_counts
@@ -912,6 +968,9 @@ class CellAudit:
                 out["calls"]["runs"] = self.run_records
             if self.ask_records:
                 out["calls"]["asks"] = self.ask_records
+            if self.learned_records or self.learned_dropped:
+                out["calls"]["learned"] = self.learned_records
+                out["calls"]["learned_dropped"] = self.learned_dropped
         self.records, self.dropped, self.failed, self.bytes = [], 0, 0, 0
         self._reset_calls()
         return out

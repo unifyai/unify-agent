@@ -155,7 +155,43 @@ def _actor_index_setting() -> str:
     return library_actor_index(SETTINGS)
 
 
+#: The line the actor's memory section ends with under ``UNIFY_MEMORY_LEARNED_SKILLS=on`` (when it shows anything):
+#: constant for the run, naming no item.
+LEARNED_GUIDE_LINE = (
+    "Some library functions are learned skills (their docstrings say so): `fitted = memory.learned(\"<id>\")"
+    ".fit(pairs)` fits one to the (input, output) pairs you have (from the request, from your tool calls and "
+    "their results, or values you computed) and returns a function, `fitted(x)`; `fitted.reproduced` says whether "
+    "every pair came back.\n"
+)
+
+
 def render_memory_library_mode(
+    checkout: Path,
+    budget_tokens: int | None = None,
+    actor_index: str | None = None,
+    librarian: bool | None = None,
+) -> tuple[str, dict]:
+    """The actor's memory section (:func:`_render_memory_library_mode`), ending with :data:`LEARNED_GUIDE_LINE` under
+    ``UNIFY_MEMORY_LEARNED_SKILLS=on`` when it shows anything."""
+    text, shown = _render_memory_library_mode(checkout, budget_tokens, actor_index, librarian)
+    from unify.settings import SETTINGS
+
+    from .switch import learned_skills
+
+    if not text or not learned_skills(SETTINGS):
+        return text, shown
+    from ..analysis.use import record_shown
+
+    text = text + ("" if text.endswith("\n") else "\n") + LEARNED_GUIDE_LINE
+    return text, record_shown(
+        text,
+        channels=shown.get("channels") or (),
+        items=shown.get("items") or (),
+        renderer=str(shown.get("renderer") or ""),
+    )
+
+
+def _render_memory_library_mode(
     checkout: Path,
     budget_tokens: int | None = None,
     actor_index: str | None = None,
