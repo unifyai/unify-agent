@@ -1435,6 +1435,7 @@ class Gate:
                 self._g3(run)
                 if v is not None:
                     v.g3()
+                    self._learned(run)
                     v.g4()
                     v.curate()
                 else:
@@ -1489,6 +1490,55 @@ class Gate:
             rec = run.verification.setdefault(it.item, {})
             rec["level"] = level
             rec["level_reasons"] = found
+
+    def _learned(self, run: _Run) -> None:
+        """``UNIFY_MEMORY_LEARNED_SKILLS=on`` (library mode), under G3: each learned module the candidate adds or changes
+        (its module or its fixture file, :mod:`.learned_store`) must carry fixture cases that its skill, from its
+        initial state, reproduces after the fit (examples and queries), checked in a confined run. A failure belongs
+        to the module's items in the manifest (else the pass)."""
+        from unify.settings import SETTINGS
+
+        from .integration.switch import learned_skills
+
+        if not learned_skills(SETTINGS):
+            return
+        from . import learned_store
+
+        mods: dict[str, bytes] = {}
+        for p in run.c_files:
+            parts = p.split("/")
+            if len(parts) == 3 and parts[0] == "memory" and p.endswith(".py"):
+                try:
+                    mods[p] = (run.c_tree / p).read_bytes()
+                except OSError:
+                    continue
+        changed = set(run.changed)
+        ids = {it.item for it in run.man.items}
+        declared = learned_store.learned_modules(mods)
+        for p, data in sorted(mods.items()):
+            module = p[:-3].replace("/", ".")
+            if p in changed and b"LEARNED_FAMILY" in data and module not in declared:
+                owners = sorted(i for i in ids if i.startswith(module + ":"))
+                run.fail(
+                    "G3",
+                    f"learned skill {module}: LEARNED_FAMILY, LEARNED_OPTIONS and LEARNED_INITIAL must be literals "
+                    "naming a known family with options it accepts",
+                    owners or None,
+                )
+        for module, decl in declared.items():
+            if (
+                learned_store.module_path(module) not in changed
+                and learned_store.fixture_path(module) not in changed
+            ):
+                continue
+            ok, reason = learned_store.check_landing(run.c_tree, module, decl)
+            if ok:
+                run.note(
+                    f"learned skill {module}: every fixture case is reproduced after the fit",
+                )
+                continue
+            owners = sorted(i for i in ids if i.startswith(module + ":"))
+            run.fail("G3", f"learned skill {module}: {reason}", owners or None)
 
     def _reduce(self, run: _Run, pass_id: str) -> _Reduced | None:
         """The candidate without the items its failures belong to, committed on the parent; None if none.

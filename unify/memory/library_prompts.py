@@ -1458,6 +1458,46 @@ def tool_flags(
     )
 
 
+#: The WRITE brief's section on learned skills (``UNIFY_MEMORY_LEARNED_SKILLS=on``), before its ``# Done``.
+LEARNED_SECTION = (
+    "# Learned skills\n"
+    "- Prefer a function whose settings are derived from the request's own examples over constants copied from "
+    "one episode: a stored procedure that hard-codes the values one episode used (which value marks what, which "
+    "maps to which, a scale or an offset) gives a different answer on the next request that uses other values.\n"
+    "- When those settings are a table (each input value to an output value), real numbers (a linear map of "
+    "numbers the code extracts), or a per-cell rule over a 2D array (each cell's neighbourhood to its new value), "
+    'you may land a learned skill: an ordinary module that declares `LEARNED_FAMILY` (`"lookup"`, '
+    '`"affine"` or `"neighbourhood"`), `LEARNED_OPTIONS` and optionally `LEARNED_INITIAL` as literals, and '
+    "one public function `name(x, model, config)`, the skeleton, that computes the answer with `model` (the "
+    "fitted family: `model(v)`). Optional private hooks: `_infer_config(examples, stored)` returns a dict of "
+    "discrete settings derived from the examples (for instance which value is the background), and "
+    "`_training_pairs(x, y, config)` returns the family's own (input, output) pairs of one example. Options: "
+    "lookup `elementwise` (nested lists mapped value by value) and initial `identity` (a bonus for mapping a value "
+    "to itself) or `table` (pairs); affine `inputs`, `outputs` (sizes) and initial `identity`, `weights`, `bias`; "
+    "neighbourhood `values` (the categories) or `classes`, and `radius`, initial `identity`. The module imports "
+    "nothing from the harness.\n"
+    "- Its fixture cases go in `memory/<package>/tests/data/<module>.learned.json`: "
+    '`{"cases": [{"examples": [[input, output], ...], "queries": [[input, output], ...]}]}`, from '
+    "recorded values. The gate fits the skill on each case's examples from its initial values and requires every "
+    "example and query to come back; write ordinary tests for the skeleton and the hooks too.\n"
+    '- The working model calls `memory.learned("<id>").fit(examples)` with the pairs it has (demonstrations, '
+    "tool calls and their results, values it computed) and calls the returned function. Say so in the "
+    "skeleton's docstring, with the call. After each request the harness moves the stored parameters toward that "
+    "request's fit, and keeps the move only when every fixture case still passes; you never edit stored "
+    "parameters.\n"
+)
+
+
+def with_learned_section(brief: str) -> str:
+    """*brief* with :data:`LEARNED_SECTION` before its last ``# Done`` heading (at its end when it has none)."""
+    at = brief.rfind("# Done\n")
+    return (
+        brief + "\n" + LEARNED_SECTION
+        if at < 0
+        else brief[:at] + LEARNED_SECTION + "\n" + brief[at:]
+    )
+
+
 def write_brief_now(
     staging: bool = False,
     pool: bool = False,
@@ -1474,7 +1514,7 @@ def write_brief_now(
     from .tool_spec import tools_section
 
     flags = tool_flags(staging, pool, helper, similar, edit_tools)
-    return write_brief(
+    brief = write_brief(
         limits=limits_now(cell_s, compact=compact, finish_capped=finish_capped),
         mutation_min=qa.MUTATION_MIN,
         sample_k=qa.SAMPLE_K,
@@ -1487,6 +1527,11 @@ def write_brief_now(
         pool_kinds=_pool_kinds() if pool else "",
         flags=flags,
     )
+    from unify.settings import SETTINGS
+
+    from .integration.switch import learned_skills
+
+    return with_learned_section(brief) if learned_skills(SETTINGS) else brief
 
 
 def curate_brief_now(
