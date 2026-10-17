@@ -60,7 +60,7 @@ from .dependency_analysis import (
 from .types.function import Function
 from .source_labels import StoredSource, compile_function_source
 from .base import BaseFunctionManager
-from . import session_source, task_origin
+from . import session_source
 from ..common.stale_reason import (
     StaleReason,
     coerce_stale_reasons,
@@ -1068,8 +1068,6 @@ class FunctionManager(BaseFunctionManager):
             compact = {
                 key: value for key, value in row.items() if key != "implementation"
             }
-            # Origin fields a removed research switch recorded are never shown.
-            compact = task_origin.strip(compact)
             if compact.get("is_primitive"):
                 # Primitive docstrings are full manual pages; discovery
                 # results must not re-import what the actor prompt
@@ -2845,8 +2843,6 @@ class FunctionManager(BaseFunctionManager):
             ):
                 if key in ent:
                     data[key] = ent.get(key)
-            # Origin fields a removed research switch recorded are never shown.
-            data = task_origin.strip(data)
             if include_implementations:
                 data["implementation"] = ent.get("implementation")
             metadata[name] = data
@@ -3181,8 +3177,6 @@ class FunctionManager(BaseFunctionManager):
             )
         except sqlite3.Error as exc:
             return invalid_filter_error(exc, filter, db.FUNCTION_COLUMNS).payload
-        # Origin fields a removed research switch recorded are never shown.
-        rows = [task_origin.strip(row) for row in rows]
 
         from . import store_cases
 
