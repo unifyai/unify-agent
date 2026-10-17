@@ -13,13 +13,18 @@ Three rules. None of them reads a name, a docstring, a description or any other 
   :data:`ANTIUNIFY_MIN_SHARE`. The generalisation, holes as parameters, is the proposed merged body.
 * ``same_uses``: notes whose ``uses:`` lists name the same set of functions.
 
+With ``rules="behaviour"`` (``UNIFY_MEMORY_LIBRARY_OVERLAP=behaviour``) the two function rules above give way to
+:mod:`.behaviour_overlap`'s: two functions are a candidate (rule ``behaviour``) only when each, run on the other's
+recorded inputs in a confined box, returns the same wherever both return. ``same_uses`` stays.
+
 Each candidate carries a fingerprint: a hash of its rule, its items and their current content (each function's
 unparsed definition, each note's bytes), so formatting and comments in code never change it. CURATE's trigger
 (:mod:`.curate`) counts a candidate once per fingerprint.
 
 Bounds are explicit, never silent: the shape and fixture graphs keep :mod:`.analysis.library_graph`'s bounds, and at
 most *max_pairs* function pairs are anti-unified, in sorted order. What stopped early is named in the result's
-``truncated``. Pure: it reads files and never imports or runs library code.
+``truncated``. With the structural rules it is pure: it reads files and never imports or runs library code; the
+behaviour rule runs library code only in its confined box.
 """
 
 from __future__ import annotations
@@ -40,7 +45,9 @@ OVERLAP_VERSION = 2
 ANTIUNIFY_MIN_SHARE = 0.7
 #: Function pairs anti-unified per call, in sorted order (77 functions, the largest v2 library, make 2,926).
 MAX_ANTIUNIFY_PAIRS = 5000
-RULES = ("shapes_and_fixtures", "antiunify", "same_uses")
+RULES = ("shapes_and_fixtures", "antiunify", "behaviour", "same_uses")
+#: The rule sets :func:`overlap_candidates` takes (``UNIFY_MEMORY_LIBRARY_OVERLAP``).
+RULE_SETS = ("structure", "behaviour")
 
 
 def _canon(obj: object) -> str:
@@ -237,6 +244,9 @@ def overlap_candidates(
     fixtures: Mapping[str, Iterable[str]] | None = None,
     min_share: float = ANTIUNIFY_MIN_SHARE,
     max_pairs: int = MAX_ANTIUNIFY_PAIRS,
+    rules: str = "structure",
+    inputs: Mapping[str, list] | None = None,
+    python: Path | None = None,
 ) -> dict:
     """Every overlap candidate of the library at *tree*.
 
@@ -244,17 +254,38 @@ def overlap_candidates(
     fixtures (:func:`fixture_signatures` of the commit's item records). Rows of items the tree no longer holds
     are left out: a deleted item is no candidate. Returns ``{"version", "candidates", "truncated"}``, the candidates in
     rule order, then by items.
+
+    *rules* ``behaviour`` replaces the two function rules by :func:`.behaviour_overlap.candidates` over *inputs*
+    (each function's recorded argument lists; *python*: the box's interpreter); *fixtures* are then not read.
     """
+    if rules not in RULE_SETS:
+        raise ValueError(f"unknown overlap rules {rules!r}")
     tree = Path(tree)
     lib = layout.discover(tree)
     functions = {f.item_id for f in lib.functions}
     bodies = layout.function_bodies(tree)
-    found, cut = by_shapes_and_fixtures(
-        shape_signatures(shapes or {}),
-        {item: set(paths) for item, paths in (fixtures or {}).items()},
-        functions,
-    )
-    merged, cut_au = by_antiunify(tree, lib, min_share=min_share, max_pairs=max_pairs)
+    if rules == "behaviour":
+        from . import behaviour_overlap
+
+        found, cut = behaviour_overlap.candidates(
+            tree,
+            {item: row for item, row in (shapes or {}).items() if item in functions},
+            inputs or {},
+            python=python,
+        )
+        merged, cut_au = [], []
+    else:
+        found, cut = by_shapes_and_fixtures(
+            shape_signatures(shapes or {}),
+            {item: set(paths) for item, paths in (fixtures or {}).items()},
+            functions,
+        )
+        merged, cut_au = by_antiunify(
+            tree,
+            lib,
+            min_share=min_share,
+            max_pairs=max_pairs,
+        )
     candidates = [
         {**c, "fingerprint": fingerprint(c["rule"], c["items"], tree, bodies)}
         for c in found + merged + by_same_uses(lib)

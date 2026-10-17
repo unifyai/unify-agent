@@ -179,6 +179,13 @@ The three long-horizon switches share the step-limit reply path.
 - **What it does:** When on, and tools are called from code, the library writer's and the curator's brief ends with a reference of the tools the pass has: one line per tool, its call and what it does, generated from the tool registry (the lines `tools.list()` prints), so it cannot drift from the tools themselves. `tools.list()` and `tools.help(name)` stay. Off, the brief is as before, byte for byte.
 - **Evidence:** in recorded writer passes about a tenth of the tool-result text the writer read was the tool manual, printed again in most passes (`tools.list()`, `tools.help(...)`); the brief is the cached prefix of every call, so a reference there is read at the cached price. Keyless tests only so far (`tests/memory/test_writer_tool_reference.py`).
 
+## UNIFY_MEMORY_LIBRARY_OVERLAP
+
+- **Values:** `structure` or `behaviour` (empty is `structure`).
+- **Default:** `structure`.
+- **What it does:** It decides what makes two library functions an overlap candidate, one of the reasons a CURATE pass runs. `structure` pairs functions that share an argument shape and an input fixture, or whose bodies anti-unify. `behaviour` pairs them only when each, run in a confined box on its own and the other's recorded argument lists (the calls its tests made that returned, which the gate keeps for each landed function), returns the same wherever both return (`unify/memory/behaviour_overlap.py`). Notes that use the same functions stay candidates, and the other reasons (items retired by their outcomes, an index over its view) are unchanged. A pass that keeps a pair settles it until either function's definition changes. The curate brief says which kind of candidate it gets.
+- **Evidence:** replayed offline on six recorded library streams (2114 function-pair reasons over 218 CURATE passes), 2 pairs returned the same on each other's recorded inputs; 344 differed on a shared input, 1525 shared no input both accept and 243 shared no argument shape. 155 of the 218 passes had no reason left once the structural pairs go, and no function the actor called came from a CURATE landing. Keyless tests only so far (`tests/memory/test_behaviour_overlap.py`, `tests/memory/test_behaviour_overlap_trigger.py`).
+
 ## UNIFY_MEMORY_LIBRARIAN
 
 - **Values:** `on` or `off` (empty is `off`).

@@ -697,6 +697,12 @@ LIBRARY_EDIT_TOOLS = "UNIFY_MEMORY_LIBRARY_EDIT_TOOLS"
 #: their tools generated from the tool registry (one line each: signature and summary), so a pass need not print
 #: ``tools.list()`` or ``tools.help(name)`` to learn them; ``off``: the brief is as before. ``tools.help`` stays.
 LIBRARY_TOOL_REFERENCE = "UNIFY_MEMORY_LIBRARY_TOOL_REFERENCE"
+#: What makes two library functions an overlap candidate for CURATE (overlap.py): ``structure`` (also empty) pairs
+#: functions by a shared argument shape and input fixture, or bodies that anti-unify; ``behaviour`` pairs them only
+#: when each, run on the other's recorded inputs, returns the same wherever both return (behaviour_overlap.py).
+#: Notes that use the same functions are candidates either way; the other CURATE reasons are unchanged.
+LIBRARY_OVERLAP = "UNIFY_MEMORY_LIBRARY_OVERLAP"
+LIBRARY_OVERLAP_VALUES = ("structure", "behaviour")
 #: On by default (also when empty): the memory agents (writer, curator, helpers) compact their conversations as the
 #: agent loop compacts its own (writer_pass.compact_by_summary: the same trigger, summary and restart, over each
 #: agent's own route); ``off``: the conversation is never changed.
@@ -960,6 +966,20 @@ def library_edit_tools(settings: Any) -> bool:
 def parse_library_tool_reference(v: Any) -> str:
     """``UNIFY_MEMORY_LIBRARY_TOOL_REFERENCE``: ``off`` (also for empty) or ``on``."""
     return _on_off(LIBRARY_TOOL_REFERENCE, v)
+
+
+def parse_library_overlap(v: Any) -> str:
+    """``UNIFY_MEMORY_LIBRARY_OVERLAP``: ``structure`` (also for empty) or ``behaviour``."""
+    value = _stripped(v).lower() or "structure"
+    if value not in LIBRARY_OVERLAP_VALUES:
+        raise ValueError(
+            f"{LIBRARY_OVERLAP} must be empty, 'structure' or 'behaviour', not {v!r}"[:200],
+        )
+    return value
+
+
+def library_overlap(settings: Any) -> str:
+    return parse_library_overlap(getattr(settings, LIBRARY_OVERLAP, "") or "")
 
 
 def library_tool_reference(settings: Any) -> bool:
@@ -1390,6 +1410,7 @@ PARSERS = {
     LIBRARY_POOL: parse_library_pool,
     LIBRARY_EDIT_TOOLS: parse_library_edit_tools,
     LIBRARY_TOOL_REFERENCE: parse_library_tool_reference,
+    LIBRARY_OVERLAP: parse_library_overlap,
     LIBRARY_COMPACT: parse_library_compact,
     LIBRARY_ACTOR_INDEX: parse_library_actor_index,
     LIBRARY_COVERAGE: parse_library_coverage,

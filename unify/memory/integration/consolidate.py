@@ -134,6 +134,7 @@ from .switch import (
     library_pool,
     library_edit_tools,
     library_tool_reference,
+    library_overlap,
     library_compact,
     library_fork,
     library_coverage,
@@ -1193,11 +1194,14 @@ def _rollback_files(
 def _curate_state(
     stores: Stores,
     lookup: "EpisodeLookup",
+    overlap_rules: str = "structure",
 ) -> _curate.CurateState | None:
     """CURATE's trigger on memory ``main`` now, after WRITE's gate: the state, with the reasons no
     CURATE pass has been shown, or None when CURATE is not due. It reads library state only: the commit, its
     records (with each function's input fixtures) and shapes, and the fingerprints earlier CURATE passes were
-    shown, never the stream.
+    shown, never the stream. *overlap_rules* (``UNIFY_MEMORY_LIBRARY_OVERLAP``): with ``behaviour`` the function
+    overlap candidates are those that return the same on each other's recorded inputs, which the gate kept for each
+    function's current definition (:mod:`..behaviour_overlap`).
     """
     from .. import layout
     from ..library_export import item_history
@@ -1206,6 +1210,7 @@ def _curate_state(
     from ..library_index import build_links, render_index
     from ..overlap import fixture_signatures, overlap_candidates
     from ..shape_rows import shapes_at
+    from .. import behaviour_overlap
 
     sha = stores.memory.head()
     tmp = Path(tempfile.mkdtemp(prefix="memory-curate-"))
@@ -1230,6 +1235,15 @@ def _curate_state(
                 tree,
                 shapes=rows,
                 fixtures=fixture_signatures(records),
+                rules=overlap_rules,
+                inputs=(
+                    behaviour_overlap.inputs_at(
+                        stores.evidence,
+                        behaviour_overlap.body_digests(tree),
+                    )
+                    if overlap_rules == "behaviour"
+                    else None
+                ),
             ),
             suspects=suspects,
             # the index as the actor's copy renders it, with each function's recorded effect
@@ -1500,6 +1514,8 @@ async def run_due_passes(
                 "tools_in_code": getattr(settings, "UNIFY_TOOLS_IN_CODE", "off") == "on",
                 "edit_tools": library_edit_tools(settings),
                 "tool_reference": library_tool_reference(settings),
+                # the curate brief says what its overlap candidates are
+                "overlap": library_overlap(settings),
                 # the writer's brief and rows name staging only when the episode-end fork writes it
                 "fork": library_fork(settings),
                 "compact": library_compact(settings),
@@ -1737,7 +1753,11 @@ async def run_due_passes(
             _records_step(stores, settings, recorded, emit, stopped)
             recorded = []
             try:
-                curate_state = _curate_state(stores, lookup)
+                curate_state = _curate_state(
+                    stores,
+                    lookup,
+                    library_overlap(settings),
+                )
             except (
                 Exception
             ) as exc:  # noqa: BLE001 - a measurement never stops consolidation; nothing is due

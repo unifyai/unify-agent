@@ -493,6 +493,10 @@ class ProductionSettings(BaseSettings):
     # their tools, one line each (signature and summary), generated from the tool registry; ``off`` (default): the
     # brief is as before and the tools are described only by ``tools.list()`` and ``tools.help(name)``.
     UNIFY_MEMORY_LIBRARY_TOOL_REFERENCE: str = "off"
+    # What makes two library functions an overlap candidate for CURATE: ``structure`` (default, also empty): a shared
+    # argument shape and input fixture, or bodies that anti-unify; ``behaviour``: each run on the other's recorded
+    # inputs returns the same wherever both return (memory/behaviour_overlap.py).
+    UNIFY_MEMORY_LIBRARY_OVERLAP: str = "structure"
     # On by default (also when empty): the memory agents compact their conversations as the agent loop compacts its
     # own (same trigger, summary and restart; UNIFY_COMPACTION_KEEP_PREFIX applies); ``off``: never.
     UNIFY_MEMORY_LIBRARY_COMPACT: str = "on"
@@ -771,6 +775,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_LIBRARY_POOL",
         "UNIFY_MEMORY_LIBRARY_EDIT_TOOLS",
         "UNIFY_MEMORY_LIBRARY_TOOL_REFERENCE",
+        "UNIFY_MEMORY_LIBRARY_OVERLAP",
         "UNIFY_MEMORY_LIBRARY_COMPACT",
         "UNIFY_MEMORY_LIBRARY_ACTOR_INDEX",
         "UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN",

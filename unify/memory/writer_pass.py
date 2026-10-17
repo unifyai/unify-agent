@@ -850,6 +850,9 @@ class PassConfig:
     # UNIFY_MEMORY_LIBRARY_TOOL_REFERENCE: with tools in code, the brief ends with a reference of the pass's tools
     # (library_prompts.tool_reference); off: the brief is as before
     tool_reference: bool = False
+    # UNIFY_MEMORY_LIBRARY_OVERLAP: what the curate brief says its overlap candidates are ("structure" or
+    # "behaviour"); the trigger itself is the driver's (integration/consolidate.py)
+    overlap: str = "structure"
     # UNIFY_MEMORY_LIBRARY_COVERAGE: only "optional" exists (finish never waits on reading); kept for older callers
     coverage_rule: str = "optional"
     # where the pass's structured records go: <pass_record_root>/<pass id>/tool-events.jsonl (None: kept in memory
@@ -4188,6 +4191,7 @@ class WriterPass:
                 finish_capped=self.cfg.max_usd is not None,
                 edit_tools=bool(self.cfg.edit_tools),
                 reference=reference,
+                overlap=str(self.cfg.overlap),
             )
         return write_brief_now(**self._write_inputs(), reference=reference)
 
