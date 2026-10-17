@@ -263,11 +263,11 @@ def test_each_call_checks_its_argument_types_before_any_work(tmp_path):
     by_number, by_kind, by_topic, missing, fits, page, index = (text for _, text, _ in got)
     assert by_number == (
         "memory.get(3): ref is 3 (int).\n"
-        "Expected ref: str | Item | Callable, e.g. memory.get('notes/grid/stencil.md')."
+        "Expected ref: str | Item | Callable, e.g. memory.get('notes/topic/item.md')."
     )
     assert by_kind == (
         "memory.items(kind='notes'): kind is 'notes' (str).\n"
-        "Expected kind: 'function' | 'note' | None, e.g. memory.items('notes/grid', kind='note')."
+        "Expected kind: 'function' | 'note' | None, e.g. memory.items('notes/topic', kind='note')."
     )
     assert by_topic.startswith("memory.items(3): topic is 3 (int).\nExpected topic: str | None, e.g. memory.items(")
     assert missing.startswith("memory.get(): missing a required argument: 'ref'.")

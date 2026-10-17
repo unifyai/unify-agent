@@ -22,7 +22,7 @@ says almost nothing about what they are. A recorded shape matches when no shared
 keys. ``exact`` means the same signature, list length classes (0, 1, 2–9, 10–99, 100+) and file format;
 ``structure`` means a match with some keys or types differing. A match on a single named key says little
 (``{"status": "error"}`` fits every status envelope), so it is labelled ``weak`` and ranked last, unless a
-typed structure sits under that key in both (``{"grid": [[0, 1]]}``: ``grid[][]`` holds ints). Results are
+typed structure sits under that key in both (``{"values": [[0, 1]]}``: ``values[][]`` holds ints). Results are
 ranked by level (exact, structure, weak), then by the share of named keys matched, then by how many recorded
 shapes match, then by name, at most :data:`MAX_RESULTS`, each with the keys or columns that matched. A
 value of more than :data:`MAX_NODES` nodes is shaped from its first part (its descriptor says

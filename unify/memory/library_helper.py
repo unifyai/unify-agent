@@ -1775,7 +1775,7 @@ LIBRARY_ROOT = "/memory"
 _SUMMARY_CHARS = 100
 _ID_COLUMN = 60
 _GET_EXPECTED = "an item id, a function name, or a note slug"
-_GET_EXAMPLE = "memory.get('notes/grid/stencil.md')"
+_GET_EXAMPLE = "memory.get('notes/topic/item.md')"
 _TOPIC_EXPECTED = "a package or a notes topic"
 _MODULE_PATH = re.compile(r"memory/([a-z][a-z0-9_]*)/([a-z][a-z0-9_]*)\.py")
 #: What reading a malformed generated file can raise inside a call (:func:`_guard`).
@@ -2364,14 +2364,14 @@ class _Catalog:
             self.call,
             f"no topic named {topic!r}.",
             expected=_TOPIC_EXPECTED,
-            example=f"memory.items({(near or topics or ['notes/grid'])[0]!r})",
+            example=f"memory.items({(near or topics or ['notes/topic'])[0]!r})",
             nearest=near,
             hint="Browse every topic with memory.items().",
         )
 
     def _example_id(self) -> str:
         listed = self.listed()
-        return listed[0] if listed else "notes/grid/stencil.md"
+        return listed[0] if listed else "notes/topic/item.md"
 
     # -- building items
 
@@ -2554,7 +2554,7 @@ def get(ref: str | Item | Callable) -> Item:
         WrongCall: the name is a topic, not an item; the error gives the call that lists it.
 
     Example:
-        memory.get('notes/grid/stencil.md')
+        memory.get('notes/topic/item.md')
     """
     call = call_text("memory.get", (ref,))
     return _guard(call, _get, ref, call)
@@ -2569,8 +2569,8 @@ def items(topic: str | None = None, kind: Kind | None = None) -> Items:
     """Browse the library: every item (but the retired), or one topic's, of one kind or both.
 
     Args:
-        topic: a package (``'grid'``, ``'memory.grid'``), a module (``'grid.stencil'``), a notes topic
-            (``'notes/grid'``; a bare ``'grid'`` also takes the notes topic of that name) or ``'captures'``;
+        topic: a package (``'pkg'``, ``'memory.pkg'``), a module (``'pkg.module'``), a notes topic
+            (``'notes/topic'``; a bare ``'topic'`` also takes the notes topic of that name) or ``'captures'``;
             None for the whole library.
         kind: ``'function'`` or ``'note'``; None for both.
 
@@ -2584,7 +2584,7 @@ def items(topic: str | None = None, kind: Kind | None = None) -> Items:
         WrongCall: the name is an item's, not a topic's; the error gives the call that opens it.
 
     Example:
-        memory.items('notes/grid', kind='note')
+        memory.items('notes/topic', kind='note')
     """
     call = call_text(
         "memory.items",
@@ -2758,7 +2758,7 @@ def _index_text(package: str | None, call: str) -> str:
         call,
         f"no section or item named {package!r}.",
         expected=_TOPIC_EXPECTED,
-        example=f"memory.items({(near or topics or ['notes/grid'])[0]!r})",
+        example=f"memory.items({(near or topics or ['notes/topic'])[0]!r})",
         nearest=near,
         hint="Browse every topic with memory.items(); memory.get(ref) opens one item.",
     )
@@ -2782,7 +2782,7 @@ def show(item: Any) -> str:
         WrongCall: the name is a topic, not an item.
 
     Example:
-        memory.show('notes/grid/stencil.md')
+        memory.show('notes/topic/item.md')
     """
     _alias("show")
     call = call_text("memory.show", (item,))

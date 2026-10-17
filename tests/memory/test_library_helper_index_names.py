@@ -103,7 +103,7 @@ def test_an_empty_library_has_no_sections(tmp_path):
     assert grid == [
         "missing",
         "memory.index('grid'): no section or item named 'grid'.\n"
-        "Expected a package or a notes topic, e.g. memory.items('notes/grid').\n"
+        "Expected a package or a notes topic, e.g. memory.items('notes/topic').\n"
         "Browse every topic with memory.items(); memory.get(ref) opens one item.",
     ]
 

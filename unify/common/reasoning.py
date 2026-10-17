@@ -151,7 +151,7 @@ async def query_llm(
         EmailClassification.model_rebuild()
 
         classification = await query_llm(
-            f"Classify this email for inbox triage.\\nSubject: {subject}\\nBody: {body}",
+            f"Classify this message.\\nSubject: {subject}\\nBody: {body}",
             response_format=EmailClassification,
         )
         if classification.needs_reply and classification.confidence >= 0.8:
@@ -214,7 +214,7 @@ async def query_llm(
     -------------
     - Replacing exact deterministic substeps with ``query_llm(...)``.
     - Using substring checks as the whole classifier for semantic tasks, e.g.
-      ``if "urgent" in subject.lower()`` for inbox triage. Exact lexical
+      ``if "urgent" in subject.lower()`` for triage. Exact lexical
       signals can help pre-filter, but they are not semantic judgment.
     - Replacing human-facing drafting, rewriting, or personalization with
       label-specific canned prose or templates unless the user explicitly asked
