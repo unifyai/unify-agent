@@ -850,6 +850,10 @@ class PassConfig:
     # UNIFY_MEMORY_LIBRARY_TOOL_REFERENCE: with tools in code, the brief ends with a reference of the pass's tools
     # (library_prompts.tool_reference); off: the brief is as before
     tool_reference: bool = False
+    # UNIFY_MEMORY_LIBRARY_OVERLAP: "at-write" makes a store pass's check show the existing functions that return the
+    # same as one the pass adds or changes, and finish wait for the writer's decision on each (behaviour_overlap.py);
+    # "structure": neither, as before
+    overlap: str = "structure"
     # UNIFY_MEMORY_LIBRARY_COVERAGE: only "optional" exists (finish never waits on reading); kept for older callers
     coverage_rule: str = "optional"
     # where the pass's structured records go: <pass_record_root>/<pass id>/tool-events.jsonl (None: kept in memory
@@ -2315,6 +2319,9 @@ class WriterPass:
         self._cancel_patch: tuple[str | None, list[str]] = (None, [])
         # CURATE: the library state a "curate" request curates, and the pass's role
         self.curate_state = curate
+        # UNIFY_MEMORY_LIBRARY_OVERLAP=at-write: the pairs the latest check showed as doing the same job (a function
+        # the pass adds or changes, the other, whether that one is added or changed too); finish waits on each
+        self._same_job_pending: list[tuple[str, str, bool]] = []
         self._role = "write"
 
     def transcript(self, pass_id: str) -> list[str]:
@@ -3451,12 +3458,133 @@ class WriterPass:
                 if getattr(self.cfg, "library_mode", False):
                     _drop_unchanged(tree, self._library_generated)
                 reasons = self.gate.preview(base, tree, manifest)
+                full: list[str] = []
+                if self._same_job_on() and isinstance(base, ParentSnapshot):
+                    try:
+                        lines, full, self._same_job_pending = self._same_job(
+                            tree,
+                            base,
+                            manifest,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - the comparison never ends the pass
+                        lines, full = [], [f"same job: not compared ({type(exc).__name__})"]
+                    reasons = reasons + lines
         except Exception as exc:  # a broken check never ends the pass
             detail = _redact(f"check error: {type(exc).__name__}: {exc}")[:300]
             return f"check error: {type(exc).__name__}", detail
         if reasons_out is not None:
             reasons_out.extend(_redact(r) for r in reasons)
+            if reasons:
+                reasons_out.extend(_redact(r) for r in full)
         return _check_reply(reasons), None
+
+    def _same_job_on(self) -> bool:
+        """Whether a store pass's check compares what it adds or changes with the library (``at-write``)."""
+        return (
+            bool(getattr(self.cfg, "library_mode", False))
+            and getattr(self.cfg, "overlap", "structure") == "at-write"
+            and self._role != "curate"
+        )
+
+    def _same_job(
+        self,
+        tree: Path,
+        base: ParentSnapshot,
+        manifest: object,
+    ) -> tuple[list[str], list[str], list[tuple[str, str, bool]]]:
+        """The check's comparison of each function the manifest adds or changes with the library at *tree*
+        (:func:`.behaviour_overlap.neighbours`): ``(decision lines, full-result lines, pending pairs)``. A function's
+        recorded inputs come from its listed tests, run now in the gate's box with the call recorder; every other
+        function's are those the gate kept for its definition. A decision line is given for each pair that returns
+        the same and that the manifest does not decide yet (:func:`.behaviour_overlap.undecided`)."""
+        from . import behaviour_overlap as bo
+        from .catalogue import body_digest
+        from .layout import function_bodies
+        from .shape_rows import arg_descriptors, shapes_at
+
+        rows = manifest.get("items") if isinstance(manifest, dict) else None
+        listed = [
+            it
+            for it in rows or []
+            if isinstance(it, dict)
+            and it.get("kind") == "function"
+            and isinstance(it.get("item"), str)
+        ]
+        now = function_bodies(tree)
+        before = function_bodies(base.tree)
+        changed = sorted(
+            {
+                it["item"]
+                for it in listed
+                if it["item"] in now and before.get(it["item"]) != now[it["item"]]
+            },
+        )
+        if not changed:
+            return [], [], []
+        tests = sorted(
+            {
+                t
+                for it in listed
+                if it["item"] in changed
+                for t in it.get("tests") or []
+                if isinstance(t, str) and (tree / t).is_file()
+            },
+        )
+        calls: dict[str, list] = {item: [] for item in changed}
+        from .gate import _PYTEST_ENV
+
+        for t in tests:
+            # the gate's confined run with the call recorder, on the checked copy; nothing is kept
+            out = self.gate.pytest(
+                t,
+                python=self.gate.python,
+                ro={tree: "/memory"},
+                rw={},
+                cwd="/memory",
+                timeout_s=300.0,
+                env=dict(_PYTEST_ENV),
+                calls=changed,
+            )
+            rec = getattr(out, "calls", None)
+            for c in rec.calls if rec is not None else []:
+                if c.item in calls:
+                    calls[c.item].append(c)
+        inputs = bo.inputs_at(
+            self.ev,
+            {i: body_digest(b) for i, b in now.items() if i not in changed},
+        )
+        shapes = dict(
+            shapes_at(self.gate.mem, self.ev, base.sha, base.tree, library_mode=True),
+        )
+        for item in changed:
+            shapes.pop(item, None)
+            got = bo.recorded_inputs(calls[item])
+            if got:
+                inputs[item] = got
+            found = arg_descriptors(calls[item], tree)
+            if found:
+                shapes[item] = {"shapes": found}
+        near, cut = bo.neighbours(
+            tree,
+            changed,
+            shapes,
+            inputs,
+            python=getattr(self.gate, "python", None),
+        )
+        pending = [
+            (item, row["item"], row["item"] in changed)
+            for item, rows_i in near.items()
+            for row in rows_i
+            if row["verdict"] == bo.SAME
+        ]
+        left = set(bo.undecided(pending, manifest))
+        lines = [
+            bo.decision_line(item, row)
+            for item, rows_i in near.items()
+            for row in rows_i
+            if row["verdict"] == bo.SAME and (item, row["item"]) in left
+        ]
+        return lines, bo.full_result(near, now) + cut, pending
 
     def _finish_manifest_problem(self, box: Path) -> tuple[str | None, bool]:
         """(The G1 refusal ``finish`` would meet, from the gate's own manifest parser; whether the parsed manifest
@@ -3514,6 +3642,20 @@ class WriterPass:
                 return _redact(f"G1: {probs[0]}")[:600], False
             self._pool_manifest = manifest
             self._pool_library_items = library_items
+        if self._same_job_pending:
+            # at-write: each function the latest check showed doing the same job as another is decided in this pass
+            from .behaviour_overlap import undecided
+
+            left = undecided(self._same_job_pending, manifest)
+            if left:
+                return (
+                    _redact(
+                        f"G1: {len(left)} function(s) return the same as another on each other's recorded inputs and "
+                        "are not decided: merge them, or keep yours with why in `kept`: "
+                        + "; ".join(f"{a} and {b}" for a, b in left),
+                    )[:600],
+                    False,
+                )
         if self.curate_state is not None:
             # rule 7 of the curate brief, checked while the pass can still act on it: a reason left without a
             # change to an item it names, or a keep, fires again after a later WRITE pass
@@ -4188,8 +4330,13 @@ class WriterPass:
                 finish_capped=self.cfg.max_usd is not None,
                 edit_tools=bool(self.cfg.edit_tools),
                 reference=reference,
+                overlap=str(self.cfg.overlap),
             )
-        return write_brief_now(**self._write_inputs(), reference=reference)
+        return write_brief_now(
+            **self._write_inputs(),
+            reference=reference,
+            overlap=str(self.cfg.overlap),
+        )
 
     def _in_code_allow(self) -> tuple[str, ...]:
         """The tools this pass's agent calls in code: the registry's allow-list for the writer or the curator, with

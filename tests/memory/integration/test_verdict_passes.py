@@ -109,7 +109,7 @@ class World:
         monkeypatch.setattr(consolidate, "capture_settled_forks", capture)
         monkeypatch.setattr(consolidate, "WriterPass", Writer)
         monkeypatch.setattr(consolidate, "unillm_turn", lambda *a, **k: None)
-        monkeypatch.setattr(consolidate, "_curate_state", lambda stores, lookup: None)
+        monkeypatch.setattr(consolidate, "_curate_state", lambda stores, lookup, *rules: None)
         monkeypatch.setattr(consolidate, "after_passes", lambda *a, **k: None)
         monkeypatch.setattr(memory_writer, "publish", lambda *a, **k: None)
 

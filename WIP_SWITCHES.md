@@ -179,6 +179,13 @@ The three long-horizon switches share the step-limit reply path.
 - **What it does:** When on, and tools are called from code, the library writer's and the curator's brief ends with a reference of the tools the pass has: one line per tool, its call and what it does, generated from the tool registry (the lines `tools.list()` prints), so it cannot drift from the tools themselves. `tools.list()` and `tools.help(name)` stay. Off, the brief is as before, byte for byte.
 - **Evidence:** in recorded writer passes about a tenth of the tool-result text the writer read was the tool manual, printed again in most passes (`tools.list()`, `tools.help(...)`); the brief is the cached prefix of every call, so a reference there is read at the cached price. Keyless tests only so far (`tests/memory/test_writer_tool_reference.py`).
 
+## UNIFY_MEMORY_LIBRARY_OVERLAP
+
+- **Values:** `structure` or `at-write` (empty is `structure`).
+- **Default:** `structure`.
+- **What it does:** It decides where functions that do the same job are found. `structure` makes them CURATE's overlap candidates (a shared argument shape and input fixture, or bodies that anti-unify). `at-write` moves the question into the store pass: when the writer's `check` sees a function the pass adds or changes, it runs that function's listed tests with the call recorder and compares the function, in a confined box, with each library function that shares an argument shape, each run on the other's recorded inputs (`unify/memory/behaviour_overlap.py`). A function that returns the same wherever both return is listed with the difference between the two definitions, and `finish` waits until the manifest decides each one: the pass merges them into one function, or keeps both with a one-line reason in `kept`. CURATE then never runs for overlap; items retired by their outcomes and an index over its view still make it due. The write brief gains one section that says this, and the curate brief says its overlap file is empty.
+- **Evidence:** replayed offline on six recorded library streams, no function the actor called came from a CURATE landing; of the 2114 function-pair reasons that made 218 CURATE passes due, 2 named functions that return the same on each other's recorded inputs, and 156 of the passes had no item retired by its outcomes and no index reason. Keyless tests only so far (`tests/memory/test_behaviour_overlap.py`, `tests/memory/test_same_job_at_write.py`).
+
 ## UNIFY_MEMORY_LIBRARIAN
 
 - **Values:** `on` or `off` (empty is `off`).

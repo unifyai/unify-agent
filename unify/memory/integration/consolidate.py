@@ -134,6 +134,7 @@ from .switch import (
     library_pool,
     library_edit_tools,
     library_tool_reference,
+    library_overlap,
     library_compact,
     library_fork,
     library_coverage,
@@ -1193,18 +1194,21 @@ def _rollback_files(
 def _curate_state(
     stores: Stores,
     lookup: "EpisodeLookup",
+    overlap_rules: str = "structure",
 ) -> _curate.CurateState | None:
     """CURATE's trigger on memory ``main`` now, after WRITE's gate: the state, with the reasons no
     CURATE pass has been shown, or None when CURATE is not due. It reads library state only: the commit, its
     records (with each function's input fixtures) and shapes, and the fingerprints earlier CURATE passes were
-    shown, never the stream.
+    shown, never the stream. *overlap_rules* (``UNIFY_MEMORY_LIBRARY_OVERLAP``): with ``at-write`` the writer settles
+    overlap when it stores a function, so there are no overlap candidates and only the other reasons can make CURATE
+    due.
     """
     from .. import layout
     from ..library_export import item_history
     from ..item_records import effect_of, episodes_of, level_of, records_at
     from ..example_view import example_of, tree_reader
     from ..library_index import build_links, render_index
-    from ..overlap import fixture_signatures, overlap_candidates
+    from ..overlap import OVERLAP_VERSION, fixture_signatures, overlap_candidates
     from ..shape_rows import shapes_at
 
     sha = stores.memory.head()
@@ -1226,10 +1230,14 @@ def _curate_state(
         records = records_at(stores.memory, sha)[0]
         state = _curate.CurateState(
             commit=sha,
-            overlap=overlap_candidates(
-                tree,
-                shapes=rows,
-                fixtures=fixture_signatures(records),
+            overlap=(
+                overlap_candidates(
+                    tree,
+                    shapes=rows,
+                    fixtures=fixture_signatures(records),
+                )
+                if overlap_rules != "at-write"
+                else {"version": OVERLAP_VERSION, "candidates": [], "truncated": []}
             ),
             suspects=suspects,
             # the index as the actor's copy renders it, with each function's recorded effect
@@ -1500,6 +1508,8 @@ async def run_due_passes(
                 "tools_in_code": getattr(settings, "UNIFY_TOOLS_IN_CODE", "off") == "on",
                 "edit_tools": library_edit_tools(settings),
                 "tool_reference": library_tool_reference(settings),
+                # at-write: the store pass's check shows functions that do the same job, and finish waits for a decision
+                "overlap": library_overlap(settings),
                 # the writer's brief and rows name staging only when the episode-end fork writes it
                 "fork": library_fork(settings),
                 "compact": library_compact(settings),
@@ -1737,7 +1747,11 @@ async def run_due_passes(
             _records_step(stores, settings, recorded, emit, stopped)
             recorded = []
             try:
-                curate_state = _curate_state(stores, lookup)
+                curate_state = _curate_state(
+                    stores,
+                    lookup,
+                    library_overlap(settings),
+                )
             except (
                 Exception
             ) as exc:  # noqa: BLE001 - a measurement never stops consolidation; nothing is due

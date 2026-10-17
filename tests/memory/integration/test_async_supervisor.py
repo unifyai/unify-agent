@@ -354,7 +354,7 @@ async def test_a_due_curate_runs_after_write_in_the_same_worker_and_served_is_pu
     monkeypatch.setattr(
         consolidate,
         "_curate_state",
-        lambda stores, lookup: next(due, None),
+        lambda stores, lookup, *rules: next(due, None),
     )
     monkeypatch.setattr(
         consolidate,
@@ -414,7 +414,7 @@ async def test_a_stopped_worker_starts_no_curate(monkeypatch, tmp_path):
     monkeypatch.setattr(
         consolidate,
         "_curate_state",
-        lambda stores, lookup: SimpleNamespace(suspects={}, fired={"index": "x"}),
+        lambda stores, lookup, *rules: SimpleNamespace(suspects={}, fired={"index": "x"}),
     )
     stores = tc._stores(tmp_path)
     sha, _ = tc._record(stores, "e1")

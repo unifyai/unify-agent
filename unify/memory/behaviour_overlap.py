@@ -353,3 +353,147 @@ def body_digests(tree: Path) -> dict[str, str]:
         item: body_digest(body)
         for item, body in layout.function_bodies(Path(tree)).items()
     }
+
+
+# --- the store pass's check: the existing functions that do what an added or changed one does -----------------------
+
+#: Other functions shown per added or changed function, and the lines of each shown difference.
+MAX_NEIGHBOURS = 3
+MAX_DIFF_LINES = 40
+
+
+def neighbours(
+    tree: Path,
+    changed: Iterable[str],
+    shapes: Mapping[str, Mapping],
+    inputs: Mapping[str, list[list]],
+    *,
+    k: int = MAX_NEIGHBOURS,
+    python: Path | None = None,
+    confined: Any = None,
+) -> tuple[dict[str, list[dict]], list[str]]:
+    """For each of *changed* (the functions a store pass adds or changes), at most *k* other functions of the library
+    at *tree* nearest to it in behaviour: those sharing an argument shape whose comparison found at least one input
+    where both return the same, ``same`` ones first, then by agreeing inputs, then by id. Returns ``(item -> rows,
+    truncated)``; each row is :func:`compare`'s, from the changed function's side, with the other's ``item``.
+    """
+    from . import layout
+
+    lib = layout.discover(Path(tree))
+    functions = {f.item_id: (f.module, f.name) for f in lib.functions}
+    focus = sorted(set(changed) & set(functions))
+    have = [f for f in functions if inputs.get(f)]
+    pairs = shape_pairs(shapes, have, within=focus)
+    rows, cut = compare_pairs(
+        tree,
+        pairs,
+        {f: inputs[f] for f in have},
+        functions,
+        python=python,
+        confined=confined,
+    )
+    found: dict[str, list[dict]] = {}
+    for (a, b), row in sorted(rows.items()):
+        if row["agree"] == 0:
+            continue
+        for x, y, flip in ((a, b, False), (b, a, True)):
+            if x not in focus:
+                continue
+            side = dict(row)
+            if flip:
+                side["own_cases"] = list(reversed(row["own_cases"]))
+                side["own_lists"] = list(reversed(row["own_lists"]))
+            found.setdefault(x, []).append({"item": y, **side})
+    out = {
+        x: sorted(rows_x, key=lambda r: (r["verdict"] != SAME, -r["agree"], r["item"]))[
+            :k
+        ]
+        for x, rows_x in sorted(found.items())
+    }
+    return out, cut
+
+
+def _diff(old_id: str, old: str, new_id: str, new: str) -> list[str]:
+    import difflib
+
+    lines = list(
+        difflib.unified_diff(
+            old.splitlines(),
+            new.splitlines(),
+            fromfile=old_id,
+            tofile=new_id,
+            lineterm="",
+            n=1,
+        ),
+    )
+    if len(lines) > MAX_DIFF_LINES:
+        lines = lines[:MAX_DIFF_LINES] + [
+            f"(and {len(lines) - MAX_DIFF_LINES} more lines)"
+        ]
+    return lines
+
+
+def decision_line(item: str, row: Mapping) -> str:
+    """The check's line for a function that returns the same as *item* (one the pass adds or changes)."""
+    return (
+        f"same job: {item} returns the same as {row['item']} on each other's recorded inputs ({row['agree']} agree, "
+        f"none differ): merge them, or keep yours with why in `kept`"
+    )
+
+
+def full_result(
+    found: Mapping[str, list[dict]], bodies: Mapping[str, str]
+) -> list[str]:
+    """The check's full-result lines: per added or changed function, each nearest function with its counts and the
+    difference between the two definitions (*bodies*: item -> definition)."""
+    out: list[str] = []
+    for item, rows in sorted(found.items()):
+        out.append(
+            f"Functions nearest {item} in behaviour (each run on the other's recorded inputs):"
+        )
+        for row in rows:
+            what = (
+                "the same wherever both return: decide (merge, or keep with why in `kept`)"
+                if row["verdict"] == SAME
+                else f"{row['agree']} inputs agree and {row['differ']} differ: no decision needed"
+            )
+            out.append(f"- {row['item']}: {what}")
+            out += [
+                "  " + line
+                for line in _diff(
+                    row["item"], bodies.get(row["item"], ""), item, bodies.get(item, "")
+                )
+            ]
+    return out
+
+
+def undecided(
+    pending: Iterable[tuple[str, str, bool]],
+    manifest: object,
+) -> list[tuple[str, str]]:
+    """The pairs of *pending* (a function the pass adds or changes, a function that returns the same, whether that
+    one was added or changed too) that *manifest* does not decide. Decided: either is kept with a reason in
+    ``kept``; the pass no longer lists its function in ``items``; it lists the other (an existing one) in ``items``,
+    so it changes it; either is deleted or aliased."""
+    from .curate import kept as kept_of
+
+    m = manifest if isinstance(manifest, dict) else {}
+    keeps = kept_of(m)
+    listed = {
+        it["item"]
+        for it in m.get("items") or []
+        if isinstance(it, dict) and isinstance(it.get("item"), str)
+    }
+    gone = {x for x in m.get("deleted") or [] if isinstance(x, str)}
+    aliases = m.get("aliases") if isinstance(m.get("aliases"), dict) else {}
+    gone |= {x for pair in aliases.items() for x in pair if isinstance(x, str)}
+    out = []
+    for item, other, other_changed in pending:
+        if item in keeps or other in keeps or item in gone or other in gone:
+            continue
+        if item not in listed:
+            continue
+        if other in listed and not other_changed:
+            continue
+        out.append((item, other))
+    return sorted(set(out))
