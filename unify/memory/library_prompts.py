@@ -1041,8 +1041,7 @@ def write_brief(
         "part of the evidence: a staged draft by an agent that saw only its own episode, a helper's output by one "
         "that saw only the episodes it was given, and a pool entry carries the evidence it had when it was opened. "
         "Analyse each draft critically, then build the best items you can: use "
-        "it as it is, fix or refactor it, merge drafts (from different episodes, helpers or pool entries, or with an "
-        "item the library already has), parametrise or generalise it, extract a smaller reusable core, rewrite part "
+        "it as it is, fix or refactor it, rewrite part "
         "or all of it, or write something new that it informed. Not using a draft is fine when your summary says "
         "why. Proposals are not the only material: functions and notes can also come from any recorded episode, "
         "with no proposal behind them. The episodes are the evidence: what the working model did and what the "
@@ -1728,7 +1727,7 @@ def _write_brief_in_code(
         "library, `memory`. You build tested functions and linked notes in that library from the recorded episodes "
         "and from proposals. The proposals ("
         + _join(proposals_from)
-        + ") are drafts by agents that each saw part of the evidence. Use, fix, merge, generalise or rewrite them, "
+        + ") are drafts by agents that each saw part of the evidence. Use, fix or rewrite them, "
         "or build something new they informed. Not using a draft is fine when your summary says why. You can also "
         "build from any recorded episode with no proposal behind it. The episodes are the evidence: what the "
         "working model did and what the environment answered. You work in a sandbox with no network and no "
