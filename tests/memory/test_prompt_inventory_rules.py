@@ -412,7 +412,7 @@ def test_the_in_code_texts_that_follow_a_switch(on):
     assert "`tools.list()`" in in_code_texts.unknown_tool_text("x")
     view = library_index.prompt_view_head(library_index.INDEX_HEAD + "\n## memory.a\n")
     assert view == library_index.INDEX_HEAD_IN_CODE + "\n## memory.a\n"
-    assert "examples from one episode" in view and "never edit it" not in view
+    assert "examples from one episode" not in view and "never edit it" not in view
 
 
 def test_the_pointer_files_hold_the_tables_the_brief_points_to(on):

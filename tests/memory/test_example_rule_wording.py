@@ -64,28 +64,6 @@ def test_the_pool_text_gives_no_second_episode_reason_to_defer():
     assert "`retired` closes an entry for good: it is wrong or not reusable" in brief
 
 
-def test_a_function_with_examples_from_one_episode_says_so_in_the_index():
-    from unify.memory.item_records import episodes_of
-    from unify.memory.library_index import _breadth
-
-    records = {
-        "memory.a.b:one": {"verification": {"examples": {"episodes": ["e1"]}}},
-        "memory.a.b:two": {"verification": {"examples": {"episodes": ["e1", "e2"]}}},
-        "memory.a.b:old": {"verification": {}},
-    }
-    got = episodes_of(records)
-    assert [
-        got(i) for i in ("memory.a.b:one", "memory.a.b:two", "memory.a.b:old", "x")
-    ] == [1, 2, None, None]
-    assert _breadth(got, "memory.a.b:one") == ", examples from one episode"
-    assert (
-        _breadth(got, "memory.a.b:two")
-        == _breadth(got, "memory.a.b:old")
-        == _breadth(None, "x")
-        == ""
-    )
-
-
 def test_the_episodes_refusal_ends_with_the_call_that_satisfies_it():
     (reason,), _ = check(
         [call(0, arg("colour", 3))],

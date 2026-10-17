@@ -269,21 +269,6 @@ def is_outcome_retirement(record: Mapping | None) -> bool:
     return rec.get("status") == RETIRED and rec.get("status_rule") != CURATE_RULE
 
 
-def episodes_of(records: Mapping[str, dict]) -> Callable[[str], int | None]:
-    """How many recorded episodes a function's returning example calls ran on (its verification record's
-    ``examples.episodes``), None when none was recorded: evidence shown beside the function, never a gate.
-    """
-
-    def get(item: str) -> int | None:
-        rec = records.get(item)
-        v = rec.get("verification") if isinstance(rec, dict) else None
-        ex = v.get("examples") if isinstance(v, dict) else None
-        eps = ex.get("episodes") if isinstance(ex, dict) else None
-        return len(eps) if isinstance(eps, list) else None
-
-    return get
-
-
 def verification_summary(record: Mapping | None) -> dict | None:
     """What ``memory.show`` prints of the verification record: flat, one value per key."""
     v = record.get("verification") if isinstance(record, Mapping) else None

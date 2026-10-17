@@ -50,7 +50,6 @@ from .library_helper import FIND_FILE, ITEMS_FILE, MATCHER_FILE, SHAPES_FILE
 from .example_view import ReadFile, example_text, examples_of, tree_reader
 from .item_records import (
     effect_of,
-    episodes_of,
     level_of,
     level_reasons_of,
     recipe_ids,
@@ -909,7 +908,6 @@ def generated_library_mode(
             status_of,
             effect_of(records) if records is not None else None,
             example_of if records is not None else None,
-            episodes_of(records) if records is not None else None,
             signature_of if saved_against is not None else None,
             level_of(records) if records is not None else None,
         ).encode("utf-8"),

@@ -32,7 +32,6 @@ EffectOf = Callable[[str], "str | None"]
 LevelOf = Callable[[str], "str | None"]
 #: an item's example call as the index shows it (:func:`.example_view.example_of`), None for none
 ExampleOf = Callable[[str], "str | None"]
-EpisodesOf = Callable[[str], "int | None"]
 #: an item's applicability signature (``input``, ``output``, ``relations``, ``constraints``), None for none
 SignatureOf = Callable[[str], "dict | None"]
 #: What the head says of the ``input:`` line (both heads carry it).
@@ -65,9 +64,8 @@ INDEX_HEAD_IN_CODE = (
     "with its status in brackets and the items it links to either way. A function's brackets also give its effect "
     "once the harness has derived it from the recordings the function reproduces: `effect: write` (calling "
     "it changes state: it makes write calls or changes files), `effect: read`, or `effect: unknown` (the "
-    "recording does not say), its evidence level (`evidence: <level>`), and `examples from one episode` when "
-    "its tests ran on values from one recorded episode. A function's line may be followed by an `e.g.` line: a "
-    "call of it quoted from one "
+    "recording does not say), and its evidence level (`evidence: <level>`). A function's line may be followed by an "
+    "`e.g.` line: a call of it quoted from one "
     "of its tests, on values that test loads from recorded fixtures, with the test it comes from.\n"
     + INPUT_LINE_HEAD
 )
@@ -116,12 +114,6 @@ def _status(status_of: StatusOf | None, item: str) -> str:
     if s not in STATUSES:
         raise ValueError(f"unknown status {s!r} for {item}")
     return s
-
-
-def _breadth(episodes_of: "EpisodesOf | None", item: str) -> str:
-    """A function whose examples ran on one recorded episode says so; wider evidence adds nothing to the line."""
-    n = episodes_of(item) if episodes_of is not None else None
-    return ", examples from one episode" if n == 1 else ""
 
 
 def _effect(effect_of: EffectOf | None, item: str) -> str:
@@ -221,7 +213,6 @@ def render_index(
     status_of: StatusOf | None = None,
     effect_of: EffectOf | None = None,
     example_of: ExampleOf | None = None,
-    episodes_of: "EpisodesOf | None" = None,
     signature_of: "SignatureOf | None" = None,
     level_of: LevelOf | None = None,
 ) -> str:
@@ -229,8 +220,7 @@ def render_index(
     and one per notes topic that lists a note. Each function line gives its id with its signature, its summary,
     its status (with its effect from *effect_of*, the item records' ``effect``, when one is recorded) and its
     notes; when *example_of* gives the function's example call (its record's, re-quoted from the tree), a
-    second line ``  e.g. `<call>` (<test id>)`` follows; a function whose examples ran on one recorded episode
-    (*episodes_of*) says so in its status, and a function's evidence level (*level_of*, the item records'
+    second line ``  e.g. `<call>` (<test id>)`` follows; a function's evidence level (*level_of*, the item records'
     ``level``; None shows nothing) follows its status as ``evidence: <level>``; when *signature_of* gives a
     function's applicability signature, a line ``  input: <shape>`` follows (:func:`signature_text`). Each note
     line gives its path, its description, its status and its functions.
@@ -244,8 +234,7 @@ def render_index(
         line = (
             f"- `{f.module}:{f.signature}`"
             + (f" — {f.summary}" if f.summary else "")
-            + f" [{status[f.item_id]}{_level(level_of, f.item_id)}{_effect(effect_of, f.item_id)}"
-            + f"{_breadth(episodes_of, f.item_id)}]"
+            + f" [{status[f.item_id]}{_level(level_of, f.item_id)}{_effect(effect_of, f.item_id)}]"
         )
         notes = _linked(links, f.item_id, "note", shown)
         if notes:

@@ -11,7 +11,6 @@ actor	evidence: <level>
 actor	evidence: confirmed-by-outcomes
 actor	evidence: reproduces-its-case
 actor	evidence: unchecked
-actor	examples from one episode
 actor	input:
 actor	memory.text.dates:parse_date(s: str) -> str
 actor	memory.text.dates:week(s)
@@ -31,7 +30,6 @@ teammate	evidence: <level>
 teammate	evidence: confirmed-by-outcomes
 teammate	evidence: reproduces-its-case
 teammate	evidence: unchecked
-teammate	examples from one episode
 teammate	input:
 teammate	memory.text.dates:parse_date(s: str) -> str
 teammate	memory.text.dates:week(s)

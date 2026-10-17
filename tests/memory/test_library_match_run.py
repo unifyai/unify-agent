@@ -474,7 +474,7 @@ def test_the_index_line_shows_the_signature_compactly_with_its_keys_as_written(t
     lib = layout.discover(_tree(tmp_path))
     links = build_links(lib)
     sig = _signature([{"price": 3, "3c9b0459": "pen"}])
-    index = render_index(lib, links, None, None, None, None, {DATE: sig}.get)
+    index = render_index(lib, links, None, None, None, {DATE: sig}.get)
     paths = memory_helper.signature(sig["input"])
     line = (
         "  input: {" + ", ".join(f"{k}: {v}" for k, v in sorted(paths.items()))
@@ -482,10 +482,10 @@ def test_the_index_line_shows_the_signature_compactly_with_its_keys_as_written(t
     )
     assert "[].price: int" in line and "[].3c9b0459: str" in line
     assert line in index and index.count("  input: ") == 1
-    assert render_index(lib, links, None, None, None, None, {DATE: sig}.get) == index  # byte-stable
+    assert render_index(lib, links, None, None, None, {DATE: sig}.get) == index  # byte-stable
     assert "`input:` line" in INDEX_HEAD and "`input:` line" in INDEX_HEAD_IN_CODE
     # no signature: no line
-    assert "  input: " not in render_index(lib, links, None, None, None, None, lambda i: None)
+    assert "  input: " not in render_index(lib, links, None, None, None, lambda i: None)
 
 
 def test_the_guides_nudge_to_match_and_try_first_and_never_mention_examples():
