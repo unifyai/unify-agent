@@ -306,10 +306,11 @@ class Lookup(Family):
         )
         L = vec.reshape(shape)
         table = {a: dict(r) for a, r in params.get("logits", {}).items()}
+        seen = set(el)  # an input's own outputs stay in its row (one known output gives a logit of 0)
         for i, a in enumerate(ins):
             r = table.setdefault(a, {})
             for j, o in enumerate(outs):
-                if L[i, j] != 0.0 or o in r:
+                if L[i, j] != 0.0 or o in r or (a, o) in seen:
                     r[o] = float(L[i, j])
         task = {"logits": table, "identity": float(params.get("identity", 0.0))}
         return task, {"steps": steps, "loss": loss, "reproduced": done(vec), "pairs": n}
