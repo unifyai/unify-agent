@@ -126,11 +126,6 @@ class _Fakes:
     def groundings(self, calls, views, derived):
         return {c.key: self.grounding(c, views, derived.get(c.key, {})) for c in calls}
 
-    def lint(self, item, source, calls, ground, *, extra=(), lint_min=3):
-        return [], [
-            f"G2 literal lint: {item} has fewer than 2 recorded inputs, so nothing varies yet",
-        ]
-
     def rule_episodes(self, ground, calls=None):
         return set(self.episodes)
 

@@ -10,9 +10,9 @@ module judges those records:
 - an example call may return or raise ``MemoryInputError``, nothing else (``[examples:raised]``);
 - a record that is incomplete judges nothing (``[examples:record]``, fail closed), and a function the plugin cannot
   observe is refused (``[examples:unobserved]``);
-- the fixtures' provenance, the cross-episode rule, the literal lint and the rule check come from
-  :mod:`.example_evidence`; the check with unseen fixture values from :mod:`.example_perturb`; the quoted example
-  and the docstring's ``Example:`` line from :mod:`.example_view`; argument shapes from :mod:`.shape_rows`. Each is
+- the fixtures' provenance, the cross-episode rule and the rule check come from :mod:`.example_evidence`; the
+  check with unseen fixture values from :mod:`.example_perturb`; the quoted example and the docstring's
+  ``Example:`` line from :mod:`.example_view`; argument shapes from :mod:`.shape_rows`. Each is
   injected (``ExampleChecks(gate, run, evidence=..., perturb=..., view=..., shapes=..., ledger=...)``), so the
   checks are tested with fakes.
 
@@ -475,7 +475,6 @@ class ExampleChecks:
         for r in reasons:
             cap(run, "G2", r, item)
         if self._edited(item):
-            self._lint(it, calls, ground)
             self._rule(item, evidence.rule_episodes(ground, calls))
             self._docstring(it, calls, grounded, ledger)
         view = self.part("example_view")
@@ -595,36 +594,6 @@ class ExampleChecks:
             item in run.c_bodies
             and run.p_bodies.get(item, ("", ""))[:2] != run.c_bodies[item][:2]
         )
-
-    def _lint(self, it: Any, calls: list[ExampleCall], ground: dict) -> None:
-        """The literal lint on an added or changed function, over its grounded arguments' values and its typed
-        ``episode`` covers' parameters."""
-        from .code_lint import LINT_MIN
-        from .fixtures import module_path
-
-        run, item = self.run, it.item
-        try:
-            source = (run.c_tree / module_path(item)).read_bytes()
-        except OSError:
-            return  # an absent module is refused elsewhere
-        extra = [
-            c.params
-            for c in getattr(it, "typed_covers", [])
-            if c.type == "episode" and c.params
-        ]
-        cfg = getattr(self.gate, "library_mode", None)
-        reasons, notes = self.part("example_evidence").lint(
-            item,
-            source,
-            calls,
-            ground,
-            extra=extra,
-            lint_min=getattr(cfg, "lint_min", LINT_MIN),
-        )
-        for r in reasons:
-            cap(run, "G2", r, item)
-        for n in notes:
-            run.note(n)
 
     def _rule(self, item: str, episodes: set[str]) -> None:
         """An added or changed function that replaces a computed value under a condition needs examples from

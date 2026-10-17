@@ -63,7 +63,6 @@ def _write(limits=None, **over):
         limits=limits or _limits(),
         mutation_min=Decimal("0.6"),
         sample_k=8,
-        lint_min=4,
         pytest_env=ENV,
         staging=True,
         pool=True,
@@ -125,7 +124,6 @@ def test_numbers_come_from_the_values_given():
         limits=limits,
         mutation_min=Decimal("0.7"),
         sample_k=11,
-        lint_min=6,
     )
     for s in (
         "at most 1234 bytes",
@@ -134,7 +132,6 @@ def test_numbers_come_from_the_values_given():
         "77 files and directories",
         "at least 70% of small mutations",
         "appends 11 more recorded inputs",
-        "text of 6 or more characters",
     ):
         assert s in text, s
     assert "<<" not in text and ">>" not in text
@@ -355,9 +352,8 @@ def test_no_input_form_is_named_in_library_briefs():
 
 
 def test_rendered_from_the_constants_that_enforce_them():
-    """Needs repair, library_index, code_lint with MUTATION_MIN, and curate: runs once they are integrated."""
+    """Needs repair, library_index, qa with MUTATION_MIN, and curate: runs once they are integrated."""
     repair = pytest.importorskip("unify.memory.repair")
-    code_lint = pytest.importorskip("unify.memory.code_lint")
     INDEX_VIEW_TOKENS = pytest.importorskip(
         "unify.memory.library_index",
     ).INDEX_VIEW_TOKENS
@@ -372,7 +368,6 @@ def test_rendered_from_the_constants_that_enforce_them():
     # the briefs state no check or repair-round counts (the pass enforces none)
     assert "times per pass" not in text and "while the pass" not in text
     assert f"appends {qa.SAMPLE_K} more recorded inputs" in text
-    assert f"text of {code_lint.LINT_MIN} or more characters" in text
     assert f"at least {pv._pct(qa.MUTATION_MIN)}% of small mutations" in text
     assert f"after {writer_pass.STEP_GUARD} model and check calls" in text
     assert pv._env(_PYTEST_ENV) in text

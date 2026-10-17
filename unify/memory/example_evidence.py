@@ -11,8 +11,8 @@ gets one grounding (:func:`grounding`):
 
 The function's examples count as cross-episode evidence when the copied or derived arguments of the calls it
 accepted carry values from at least :data:`MIN_EXAMPLE_EPISODES` episodes, together with the episodes of its
-verified typed ``episode`` covers (:func:`evidence_check`). The literal lint (:func:`lint`) and the rule check
-(:func:`rule_problems`) read the same groundings.
+verified typed ``episode`` covers (:func:`evidence_check`). The rule check (:func:`rule_problems`) reads the same
+groundings.
 
 Pure: no git, no store, no clock. Reasons name items, episode ids, fixture paths, lines and counts, never a
 recorded value.
@@ -21,9 +21,8 @@ recorded value.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Iterable
 
-from .code_lint import LINT_MIN, literal_problems, varying_values
 from .example_calls import CallKey, ExampleCall
 from .fixtures import View
 from .library_prompts import EPISODES_FIX
@@ -129,56 +128,6 @@ def evidence_check(
         f"[examples:episodes] {item}'s calls that return use recorded values from {len(episodes)} episode(s) "
         f"({ids}); {EPISODES_FIX}",
     ], fields
-
-
-def lint_values(
-    calls: list[ExampleCall],
-    ground: dict[CallKey, dict[str, Grounding]],
-) -> list[Any]:
-    """The recorded inputs the literal lint compares: per accepted call with a copied or derived argument, one
-    ``{parameter: value}`` of those arguments (a value cut from the record is left out). Parameters stay apart, so
-    two parameters' values never count as one value varying."""
-    out: list[Any] = []
-    for c in _accepted(calls):
-        g = ground.get(c.key, {})
-        value = {
-            a.name: a.json
-            for a in c.args
-            if _grounded(g.get(a.name, LITERAL)) and not a.cut and a.json is not None
-        }
-        if value:
-            out.append(value)
-    return out
-
-
-def lint(
-    item: str,
-    source: bytes,
-    calls: list[ExampleCall],
-    ground: dict[CallKey, dict[str, Grounding]],
-    *,
-    extra: Iterable[Any] = (),
-    lint_min: int = LINT_MIN,
-) -> tuple[list[str], list[str]]:
-    """The literal lint on *item* (its module's *source*): (reasons, notes). Its recorded inputs are
-    :func:`lint_values` plus *extra* (the parameters of its typed ``episode`` covers).
-    """
-    values = lint_values(calls, ground) + [v for v in extra if v]
-    if len(values) < 2:
-        return [], [
-            f"G2 literal lint: {item} has fewer than 2 recorded inputs, so nothing varies yet",
-        ]
-    name = item.split(":", 1)[1]
-    return [
-        f"{item} line {line}: a {what} literal equals a value that varies across its recorded inputs; "
-        "make it a parameter"
-        for line, what in literal_problems(
-            source,
-            name,
-            varying_values(values),
-            lint_min=lint_min,
-        )[:5]
-    ], []
 
 
 def rule_episodes(

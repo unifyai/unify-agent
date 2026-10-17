@@ -19,8 +19,7 @@ With ``Gate(library_mode=None)`` (the default) nothing here runs and the gate is
     source case (its request with the value it handed back) counts only from an episode that did not fail, and no
     procedure lands from a failed episode. Each failing case refuses the procedure and its recipe with the case and
     the difference report; the counts go to the procedure's verification record (``recipe``);
-  - the cross-episode held-out check, for inputs with nothing to perturb;
-  - the literal lint (:mod:`.code_lint`).
+  - the cross-episode held-out check, for inputs with nothing to perturb.
 * **G3:**
   - plain pytest: no test-kit import;
   - per changed function, at least one exact assertion against a trust 1–3 value on a recorded fixture, and no
@@ -52,7 +51,6 @@ from typing import Any, Callable
 
 from .admission import is_rejection
 from .batch_map import actor_functions
-from .code_lint import LINT_MIN
 from .episodes import Action, Episode
 from .fixtures import DATA_PATH, DRAWN_DIR, HashIndex, module_path, package_dir, verify
 from .gitio import Repo
@@ -209,7 +207,6 @@ class LibraryConfig:
     worktree_files: Callable[[str, Path], Path | None] = _no_snapshot
     index_tokens: int = INDEX_VIEW_TOKENS
     cross_cases: int = CROSS_CASES
-    lint_min: int = LINT_MIN
     runner: Callable[..., SandboxResult] = run_confined
     checker_visible: bool = False
 

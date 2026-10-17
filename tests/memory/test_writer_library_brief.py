@@ -36,10 +36,9 @@ def _finishing_pass(tmp_path, **cfg):
 
 
 def _briefs_integrated():
-    """write_brief_now and curate_brief_now read the repair, lint and index modules' constants: run once integrated."""
+    """write_brief_now and curate_brief_now read the repair and index modules' constants: run once integrated."""
     for name in (
         "unify.memory.repair",
-        "unify.memory.code_lint",
         "unify.memory.library_index",
         "unify.memory.curate",
     ):

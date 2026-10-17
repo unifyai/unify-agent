@@ -1,5 +1,5 @@
 """Cross-episode evidence of a function's examples: argument groundings from fixture views, the two-episode rule, the
-literal lint and the rule check on grounded values, and the kept fixture provenance."""
+rule check on grounded values, and the kept fixture provenance."""
 
 import hashlib
 import json
@@ -179,46 +179,7 @@ def test_a_backfilled_entry_counts():
     assert xe.evidence_check(ITEM, calls, ground, set())[1]["episodes"] == ["e1", "e7"]
 
 
-# --- the literal lint and the rule check: texts and thresholds unchanged ---------------------------------------------
-
-SOURCE = b'''def user_id(response):
-    """Return the id."""
-    if response["user_id"] == "u-1-special":
-        return None
-    return response["user_id"]
-'''
-
-
-def test_the_literal_lint_reads_grounded_arguments_of_accepted_calls():
-    a = {"user_id": "u-1-special"}
-    b = {"user_id": "u-2-other"}
-    views = {
-        A: fx.value_views(A, json.dumps(a).encode(), _entry(A)),
-        B: fx.value_views(B, json.dumps(b).encode(), _entry(B)),
-    }
-    calls = [
-        call(0, arg("response", a), arg("colour", 3)),
-        call(1, arg("response", b)),
-        call(2, arg("response", {"user_id": "u-0-refused"}), outcome="refused"),
-    ]
-    ground = xe.groundings(calls, views, {})
-    assert xe.lint_values(calls, ground) == [{"response": a}, {"response": b}]
-    reasons, notes = xe.lint(ITEM, SOURCE, calls, ground)
-    assert reasons == [
-        f"{ITEM} line 3: a string of 11 characters literal equals a value that varies across its recorded inputs; "
-        "make it a parameter",
-    ]
-    assert notes == []
-    assert xe.lint(ITEM, SOURCE, calls[:1], ground) == (
-        [],
-        [
-            f"G2 literal lint: {ITEM} has fewer than 2 recorded inputs, so nothing varies yet",
-        ],
-    )
-    # a typed episode cover's parameters are recorded inputs too
-    assert (
-        xe.lint(ITEM, SOURCE, calls[:1], ground, extra=[{"response": b}])[0] == reasons
-    )
+# --- the rule check: texts and thresholds unchanged ---------------------------------------------------------------
 
 
 def test_the_rule_check_needs_examples_from_one_episode_in_the_library_layout():

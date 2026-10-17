@@ -144,7 +144,6 @@ RULES: tuple[tuple[str, str, str], ...] = (
     ("B136", "curator", "never assert on the clock"),
     ("B138", "writer", "recorded-inputs file"),
     ("B139", "writer", "more recorded inputs of the same kind to a copy of that file"),
-    ("B140", "writer", "make it a parameter"),
     ("B141", "writer", "Never store credentials, session tokens or the results of calls with side effects"),
     ("B144", "writer", "% of small mutations of each changed function"),
     ("B145", "writer", "a breach of a pass-wide rule (the layout, lost tests, fewer items) refuses the round"),

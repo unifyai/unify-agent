@@ -528,7 +528,7 @@ _CHECK_NAMES = (
     "episode in any form but some evidence check does not hold, `reproduces-its-case` when its structured "
     "arguments come from fixtures or through a stored reader, with those values replaced by unseen values of the "
     "same type a call it accepted neither refuses nor raises, its docstring's `Example:` names one of its tests, "
-    "its typed covers are recorded evidence of their type, and the literal rule holds); G3, tests (plain pytest, "
+    "and its typed covers are recorded evidence of their type); G3, tests (plain pytest, "
     "the tests pass on the candidate, a behaviour change has a test that fails on the parent, and no test is lost "
     "or weakened without a reason; an exact assertion against a trusted value on a recorded fixture for each "
     "changed function, no test that recomputes the function, and passing on the drawn recorded inputs and "
@@ -554,7 +554,7 @@ _GATE = (
     "a recorded episode; its tests on the candidate, and on the parent where behaviour "
     "changed; that a call it accepted neither refuses nor raises when the fixture values its tests load are "
     "replaced by unseen values of the same type; the appended recorded inputs; that its tests catch at least "
-    "<<mutation_min_pct>>% of small mutations of each changed function; the literal rule; and that no test is "
+    "<<mutation_min_pct>>% of small mutations of each changed function; and that no test is "
     "lost or weakened without a reason. An item that breaks a rule is refused together with the items that import it, "
     "and the rest can land; a breach of a pass-wide rule (the layout, lost tests, fewer items) refuses the "
     "round. " + _CHECK_NAMES.replace("<<g5>>", _G5_WRITE)
@@ -736,9 +736,7 @@ _WRITE_RULES = (
     "`memory/<package>/tests/data/<module>.<function>.inputs.jsonl`, with one line per recorded input made with "
     "`fixture(..., append=true)`, and a test parametrised over its lines. The gate appends <<sample_k>> more "
     "recorded inputs of the same kind to a copy of that file, and the function's tests must pass on every one.\n"
-    "7. Code never holds a literal equal to a value that varies across its recorded inputs (text of "
-    "<<lint_min>> or more characters, or a number with 2 or more significant digits): make it a parameter.\n"
-    "8. Never store credentials, session tokens or the results of calls with side effects. "
+    "7. Never store credentials, session tokens or the results of calls with side effects. "
     + _HONESTY
     + "\n"
 )
@@ -1019,7 +1017,6 @@ def write_brief(
     limits: Limits,
     mutation_min: Decimal,
     sample_k: int,
-    lint_min: int,
     pytest_env: Mapping[str, str],
     staging: bool = False,
     pool: bool = False,
@@ -1045,7 +1042,6 @@ def write_brief(
                 limits=limits,
                 mutation_min=mutation_min,
                 sample_k=sample_k,
-                lint_min=lint_min,
                 pytest_env=pytest_env,
                 staging=staging,
                 pool=pool,
@@ -1317,7 +1313,6 @@ def write_brief(
             "replay_rule": replay_rule,
             "mutation_min_pct": _pct(mutation_min),
             "sample_k": sample_k,
-            "lint_min": lint_min,
             "pytest_env": _env(pytest_env),
             "semantic_types": describe_semantic_types(),
         },
@@ -1469,7 +1464,7 @@ def write_brief_now(
     edit_tools: bool = False,
 ) -> str:
     """The WRITE brief from the constants that enforce each number and the tools registered for the role."""
-    from . import code_lint, qa
+    from . import qa
     from .gate import _PYTEST_ENV
     from .tool_spec import tools_section
 
@@ -1478,7 +1473,6 @@ def write_brief_now(
         limits=limits_now(cell_s, compact=compact, finish_capped=finish_capped),
         mutation_min=qa.MUTATION_MIN,
         sample_k=qa.SAMPLE_K,
-        lint_min=code_lint.LINT_MIN,
         pytest_env=_PYTEST_ENV,
         staging=staging,
         pool=pool,
@@ -1565,7 +1559,7 @@ def _check_names_in_code(g5: str, g3_mutations: str) -> str:
         "episode in any form but some evidence check does not hold, `reproduces-its-case` when its structured "
         "arguments come from fixtures or through a stored reader, with those values replaced by unseen values of "
         "the same type a call it accepted neither refuses nor raises, its docstring's `Example:` names one of its "
-        "tests, its typed covers are recorded evidence of their type, and the literal rule holds); G3, tests (plain "
+        "tests, and its typed covers are recorded evidence of their type); G3, tests (plain "
         "pytest, the tests pass on the candidate, a behaviour change has a test that fails on the parent, and no "
         "test is lost or weakened without a reason; an exact assertion against a trusted value on a recorded "
         "fixture for each changed function, no test that recomputes the function, and passing on the drawn "
@@ -1748,9 +1742,7 @@ _WRITE_RULES_IN_CODE = (
     "`memory/<package>/tests/data/<module>.<function>.inputs.jsonl`, with one line per recorded input made with "
     "`tools.fixture(..., append=True)`, and a test parametrised over its lines. The gate appends <<sample_k>> more "
     "recorded inputs of the same kind to a copy of that file, and the function's tests must pass on every one.\n"
-    "7. Code never holds a literal equal to a value that varies across its recorded inputs (text of "
-    "<<lint_min>> or more characters, or a number with 2 or more significant digits): make it a parameter.\n"
-    "8. Never store credentials, session tokens or the results of calls with side effects. "
+    "7. Never store credentials, session tokens or the results of calls with side effects. "
     + _HONESTY
     + "\n"
 )
@@ -1768,7 +1760,6 @@ def _write_brief_in_code(
     limits: Limits,
     mutation_min: Decimal,
     sample_k: int,
-    lint_min: int,
     pytest_env: Mapping[str, str],
     staging: bool,
     pool: bool,
@@ -1984,7 +1975,6 @@ def _write_brief_in_code(
             "manifest_extra_docs": manifest_docs,
             "mutation_min_pct": _pct(mutation_min),
             "sample_k": sample_k,
-            "lint_min": lint_min,
             "pytest_env": _env(pytest_env),
         },
     )
@@ -2281,7 +2271,6 @@ RULES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
         ("write",),
         "more recorded inputs of the same kind to a copy of that file",
     ),
-    ("literal rule", "literals", ("write",), "make it a parameter"),
     (
         "deterministic tests",
         "qa determinism",

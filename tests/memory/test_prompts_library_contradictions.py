@@ -27,7 +27,6 @@ def _integrated():
         "unify.memory.drafts",
         "unify.memory.library_export",
         "unify.memory.library_index",
-        "unify.memory.code_lint",
         "unify.memory.curate",
         "tests.memory.test_layout",
     ):
