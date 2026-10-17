@@ -847,6 +847,9 @@ class PassConfig:
     # UNIFY_MEMORY_LIBRARY_EDIT_TOOLS: the writer and the curator get the ``write`` and ``edit`` file tools on
     # /memory (edit_tools.py); off: neither tool exists and every prompt is as before
     edit_tools: bool = False
+    # UNIFY_MEMORY_LIBRARY_TOOL_REFERENCE: with tools in code, the brief ends with a reference of the pass's tools
+    # (library_prompts.tool_reference); off: the brief is as before
+    tool_reference: bool = False
     # UNIFY_MEMORY_LIBRARY_COVERAGE: only "optional" exists (finish never waits on reading); kept for older callers
     coverage_rule: str = "optional"
     # where the pass's structured records go: <pass_record_root>/<pass id>/tool-events.jsonl (None: kept in memory
@@ -4177,14 +4180,33 @@ class WriterPass:
         """The library-mode system message: the CURATE brief for a curate pass (the request's role), else WRITE."""
         from .library_prompts import curate_brief_now, write_brief_now
 
+        reference = self._in_code_allow() if self.cfg.tool_reference else ()
         if self._role == "curate" or getattr(self.cfg, "role", "write") == "curate":
             return curate_brief_now(
                 cell_s=float(self.cfg.cell_timeout_s),
                 compact=bool(self.cfg.compact),
                 finish_capped=self.cfg.max_usd is not None,
                 edit_tools=bool(self.cfg.edit_tools),
+                reference=reference,
             )
-        return write_brief_now(**self._write_inputs())
+        return write_brief_now(**self._write_inputs(), reference=reference)
+
+    def _in_code_allow(self) -> tuple[str, ...]:
+        """The tools this pass's agent calls in code: the registry's allow-list for the writer or the curator, with
+        the flags its model-API tools are chosen by."""
+        from unify.common import tool_registry as _registry
+
+        from .library_prompts import tool_flags
+
+        return _registry.allow_list(
+            "curator" if self._role == "curate" else "writer",
+            tool_flags(
+                pool=bool(self.cfg.pool),
+                helper=self.helper_turn is not None,
+                similar=bool(self.cfg.similar_index),
+                edit=bool(self.cfg.edit_tools),
+            ),
+        )
 
     def _write_inputs(self) -> dict:
         """The WRITE brief names each input this pass's configuration prepares (constant per run): staging only
@@ -4579,20 +4601,8 @@ class WriterPass:
             if in_code:
                 from . import tool_handlers as _th
 
-                from unify.common import tool_registry as _registry
-
-                from .library_prompts import tool_flags
-
                 # the registry's allow-list for the agent, with the flags its model-API tools were chosen by
-                in_code_allow = _registry.allow_list(
-                    "curator" if self._role == "curate" else "writer",
-                    tool_flags(
-                        pool=bool(self.cfg.pool),
-                        helper=self.helper_turn is not None,
-                        similar=bool(self.cfg.similar_index),
-                        edit=bool(self.cfg.edit_tools),
-                    ),
-                )
+                in_code_allow = self._in_code_allow()
                 tools = _th.in_code_json_tools(
                     "curator" if self._role == "curate" else "writer",
                 )

@@ -172,6 +172,13 @@ The three long-horizon switches share the step-limit reply path.
 - **What they do:** `UNIFY_MEMORY_LIBRARY=on` is the library mode: the writer reads a batch map and bounded views and keeps a function library (off: the earlier memory mode as built). In it, `_E` is the recorded experience at which a pass becomes due; `_FORK=on` forks the actor's conversation once at each episode's end into a confined process that writes only to the episode's staging directory; `_POOL=on` keeps every proposal open across passes in the candidate pool until the writer closes it; `_EDIT_TOOLS=on` gives the writer and the curator the `write` and `edit` file tools; `_COMPACT` (on by default) lets the memory agents compact their conversations as the agent loop does; `_ACTOR_INDEX` chooses whether the actor's prompt ends with the index view (`inline`) or a constant guide (`pointer`); `UNIFY_MEMORY_WRITER_USAGE=on` ends each pass's first message with the table of how requests used each library function. Each switch's comment in `unify/settings.py` gives the full behaviour.
 - **Evidence:** the memory design under evaluation (continual-harness-research: the memory preregistrations and the build ledgers); a run's configuration sets them, and each default is the build's behaviour without the switch.
 
+## UNIFY_MEMORY_LIBRARY_TOOL_REFERENCE
+
+- **Values:** `on` or `off` (empty is `off`).
+- **Default:** `off`.
+- **What it does:** When on, and tools are called from code, the library writer's and the curator's brief ends with a reference of the tools the pass has: one line per tool, its call and what it does, generated from the tool registry (the lines `tools.list()` prints), so it cannot drift from the tools themselves. `tools.list()` and `tools.help(name)` stay. Off, the brief is as before, byte for byte.
+- **Evidence:** in recorded writer passes about a tenth of the tool-result text the writer read was the tool manual, printed again in most passes (`tools.list()`, `tools.help(...)`); the brief is the cached prefix of every call, so a reference there is read at the cached price. Keyless tests only so far (`tests/memory/test_writer_tool_reference.py`).
+
 ## UNIFY_MEMORY_LIBRARIAN
 
 - **Values:** `on` or `off` (empty is `off`).

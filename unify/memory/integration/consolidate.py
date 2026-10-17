@@ -133,6 +133,7 @@ from .switch import (
     library_enabled,
     library_pool,
     library_edit_tools,
+    library_tool_reference,
     library_compact,
     library_fork,
     library_coverage,
@@ -1498,6 +1499,7 @@ async def run_due_passes(
                 # and call every other tool from their cells
                 "tools_in_code": getattr(settings, "UNIFY_TOOLS_IN_CODE", "off") == "on",
                 "edit_tools": library_edit_tools(settings),
+                "tool_reference": library_tool_reference(settings),
                 # the writer's brief and rows name staging only when the episode-end fork writes it
                 "fork": library_fork(settings),
                 "compact": library_compact(settings),

@@ -693,6 +693,10 @@ LIBRARY_POOL = "UNIFY_MEMORY_LIBRARY_POOL"
 #: ``on`` gives the library writer and the curator the ``write`` and ``edit`` file tools on /memory
 #: (edit_tools.py); ``off``: neither tool exists and every prompt is as before.
 LIBRARY_EDIT_TOOLS = "UNIFY_MEMORY_LIBRARY_EDIT_TOOLS"
+#: ``on`` ends the library writer's and the curator's brief, when tools are called from code, with a reference of
+#: their tools generated from the tool registry (one line each: signature and summary), so a pass need not print
+#: ``tools.list()`` or ``tools.help(name)`` to learn them; ``off``: the brief is as before. ``tools.help`` stays.
+LIBRARY_TOOL_REFERENCE = "UNIFY_MEMORY_LIBRARY_TOOL_REFERENCE"
 #: On by default (also when empty): the memory agents (writer, curator, helpers) compact their conversations as the
 #: agent loop compacts its own (writer_pass.compact_by_summary: the same trigger, summary and restart, over each
 #: agent's own route); ``off``: the conversation is never changed.
@@ -949,6 +953,20 @@ def parse_library_edit_tools(v: Any) -> str:
 def library_edit_tools(settings: Any) -> bool:
     return (
         parse_library_edit_tools(getattr(settings, LIBRARY_EDIT_TOOLS, "") or "")
+        == "on"
+    )
+
+
+def parse_library_tool_reference(v: Any) -> str:
+    """``UNIFY_MEMORY_LIBRARY_TOOL_REFERENCE``: ``off`` (also for empty) or ``on``."""
+    return _on_off(LIBRARY_TOOL_REFERENCE, v)
+
+
+def library_tool_reference(settings: Any) -> bool:
+    return (
+        parse_library_tool_reference(
+            getattr(settings, LIBRARY_TOOL_REFERENCE, "") or "",
+        )
         == "on"
     )
 
@@ -1371,6 +1389,7 @@ PARSERS = {
     LIBRARY_HELPER_TOKEN_FD: parse_library_helper_token_fd,
     LIBRARY_POOL: parse_library_pool,
     LIBRARY_EDIT_TOOLS: parse_library_edit_tools,
+    LIBRARY_TOOL_REFERENCE: parse_library_tool_reference,
     LIBRARY_COMPACT: parse_library_compact,
     LIBRARY_ACTOR_INDEX: parse_library_actor_index,
     LIBRARY_COVERAGE: parse_library_coverage,

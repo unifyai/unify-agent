@@ -16,7 +16,7 @@ import json
 import re
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Mapping
+from typing import Iterable, Mapping
 
 # --- the actor's guide -----------------------------------------------------------------------
 
@@ -1458,6 +1458,36 @@ def tool_flags(
     )
 
 
+#: The heading and lead of :func:`tool_reference`.
+TOOL_REFERENCE_HEAD = (
+    "# Tool reference\n"
+    "The tools you call in cells, one line each: the call and what it does. `tools.help(name)` gives a tool's "
+    "arguments, what it returns, its refusals and examples.\n"
+)
+
+
+def tool_reference(agent: str, names: Iterable[str]) -> str:
+    """The brief's reference of the tools *agent* calls in code: :data:`TOOL_REFERENCE_HEAD`, then the registry's
+    ``tools.list()`` line of each of *names* (signature and summary, in registry order), so it cannot drift from the
+    tools the pass has. A tool only the ``memory`` package calls is never listed. Empty when *names* is."""
+    from unify.common import tool_registry
+
+    wanted = [n for n in names if n not in tool_registry.CHANNEL_ONLY]
+    if not wanted:
+        return ""
+    lines = tool_registry.list_text(wanted, agent).splitlines()
+    return TOOL_REFERENCE_HEAD + "".join(f"- tools.{line}\n" for line in lines)
+
+
+def _with_reference(brief: str, agent: str, names: Iterable[str]) -> str:
+    """*brief* ending with :func:`tool_reference` of *names* when tools are called from code and *names* is not
+    empty; otherwise *brief* unchanged, byte for byte."""
+    names = tuple(names)
+    if not names or not _in_code():
+        return brief
+    return brief.rstrip("\n") + "\n\n" + tool_reference(agent, names)
+
+
 def write_brief_now(
     staging: bool = False,
     pool: bool = False,
@@ -1467,14 +1497,17 @@ def write_brief_now(
     compact: bool = False,
     finish_capped: bool = False,
     edit_tools: bool = False,
+    reference: Iterable[str] = (),
 ) -> str:
-    """The WRITE brief from the constants that enforce each number and the tools registered for the role."""
+    """The WRITE brief from the constants that enforce each number and the tools registered for the role.
+    *reference*: the tools the writer calls in code, listed at the brief's end (:func:`tool_reference`,
+    ``UNIFY_MEMORY_LIBRARY_TOOL_REFERENCE``); empty: no reference."""
     from . import code_lint, qa
     from .gate import _PYTEST_ENV
     from .tool_spec import tools_section
 
     flags = tool_flags(staging, pool, helper, similar, edit_tools)
-    return write_brief(
+    brief = write_brief(
         limits=limits_now(cell_s, compact=compact, finish_capped=finish_capped),
         mutation_min=qa.MUTATION_MIN,
         sample_k=qa.SAMPLE_K,
@@ -1487,6 +1520,7 @@ def write_brief_now(
         pool_kinds=_pool_kinds() if pool else "",
         flags=flags,
     )
+    return _with_reference(brief, "writer", reference)
 
 
 def curate_brief_now(
@@ -1494,15 +1528,16 @@ def curate_brief_now(
     compact: bool = False,
     finish_capped: bool = False,
     edit_tools: bool = False,
+    reference: Iterable[str] = (),
 ) -> str:
     """The CURATE brief from the enforcing constants, the curate input paths and the curate tools (with the
-    ``write`` and ``edit`` file tools when *edit_tools*)."""
+    ``write`` and ``edit`` file tools when *edit_tools*); *reference* as :func:`write_brief_now`'s."""
     from . import curate
     from .gate import _PYTEST_ENV
     from .tool_spec import tools_section
 
     flags = tool_flags(edit=edit_tools)
-    return curate_brief(
+    brief = curate_brief(
         limits=limits_now(cell_s, compact=compact, finish_capped=finish_capped),
         pytest_env=_PYTEST_ENV,
         overlaps_path=curate.OVERLAPS_INPUT,
@@ -1511,6 +1546,7 @@ def curate_brief_now(
         tools=tools_section("curate", flags),
         flags=flags,
     )
+    return _with_reference(brief, "curator", reference)
 
 
 # --- the briefs when tools are called from code (UNIFY_TOOLS_IN_CODE=on) ---------------------------------------------

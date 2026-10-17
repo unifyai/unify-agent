@@ -489,6 +489,10 @@ class ProductionSettings(BaseSettings):
     # ``on`` gives the library writer and the curator the ``write`` and ``edit`` file tools on /memory; ``off``
     # (default): neither tool exists.
     UNIFY_MEMORY_LIBRARY_EDIT_TOOLS: str = "off"
+    # ``on`` ends the library writer's and the curator's brief (with tools called from code) with a reference of
+    # their tools, one line each (signature and summary), generated from the tool registry; ``off`` (default): the
+    # brief is as before and the tools are described only by ``tools.list()`` and ``tools.help(name)``.
+    UNIFY_MEMORY_LIBRARY_TOOL_REFERENCE: str = "off"
     # On by default (also when empty): the memory agents compact their conversations as the agent loop compacts its
     # own (same trigger, summary and restart; UNIFY_COMPACTION_KEEP_PREFIX applies); ``off``: never.
     UNIFY_MEMORY_LIBRARY_COMPACT: str = "on"
@@ -766,6 +770,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD",
         "UNIFY_MEMORY_LIBRARY_POOL",
         "UNIFY_MEMORY_LIBRARY_EDIT_TOOLS",
+        "UNIFY_MEMORY_LIBRARY_TOOL_REFERENCE",
         "UNIFY_MEMORY_LIBRARY_COMPACT",
         "UNIFY_MEMORY_LIBRARY_ACTOR_INDEX",
         "UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN",
