@@ -571,7 +571,7 @@ _STORAGE_COMPOSE_DOCTRINE = (
     "reusable is already in the library; say which in your summary.\n\n"
     "- **Small units, composed.** Break the work into the smallest units "
     "that each do one thing, and expose as parameters what varies between "
-    "tasks (inputs, names, thresholds, identifiers). When the trajectory "
+    "tasks (inputs, names, thresholds). When the trajectory "
     "solved a whole procedure, also store a root function that calls the "
     "stored units in order, so the next task runs the procedure in one "
     "call. A unit already in the library is called, not copied.\n"
