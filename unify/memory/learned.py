@@ -182,7 +182,11 @@ class Family:
         raise NotImplementedError
 
     def fit(
-        self, params: dict, pairs: list, max_steps: int, max_seconds: float,
+        self,
+        params: dict,
+        pairs: list,
+        max_steps: int,
+        max_seconds: float,
     ) -> tuple[dict, dict]:
         """(task params, report {steps, loss, reproduced, pairs}) from *params* fitted on *pairs*."""
         raise NotImplementedError
@@ -208,7 +212,8 @@ class Family:
 
 
 class Lookup(Family):
-    """A soft table: logits per (input, output) category pair; softmax and cross-entropy."""
+    """A soft table: logits per (input, output) category pair plus one bias per output shared by every input (what
+    an input not seen before starts from); softmax and cross-entropy."""
 
     name = "lookup"
     lr = 0.5
@@ -219,7 +224,12 @@ class Lookup(Family):
         strength = float(init.get("strength", 4.0))
         for x, y in init.get("table", []) or []:
             table.setdefault(category_key(x), {})[category_key(y)] = strength
-        return {"logits": table, "identity": float(init.get("identity", 0.0))}
+        bias = {category_key(y): float(v) for y, v in init.get("bias", []) or []}
+        return {
+            "logits": table,
+            "bias": bias,
+            "identity": float(init.get("identity", 0.0)),
+        }
 
     def _elements(self, pairs: list) -> list[tuple[str, str]]:
         out: list[tuple[str, str]] = []
@@ -239,7 +249,10 @@ class Lookup(Family):
         return out
 
     def _dense(
-        self, params: dict, ins: list[str], outs: list[str],
+        self,
+        params: dict,
+        ins: list[str],
+        outs: list[str],
     ) -> tuple[np.ndarray, np.ndarray]:
         """The fitted logits (rows ins, columns outs) and the fixed identity bonus matrix."""
         table = params.get("logits", {})
@@ -258,13 +271,22 @@ class Lookup(Family):
         return L, B
 
     def _outputs(self, params: dict, extra: Iterable[str] = ()) -> list[str]:
-        outs = set(extra)
+        outs = set(extra) | set(params.get("bias", {}))
         for row in params.get("logits", {}).values():
             outs.update(row)
         return sorted(outs)
 
+    @staticmethod
+    def _bias(params: dict, outs: list[str]) -> np.ndarray:
+        bias = params.get("bias", {})
+        return np.array([float(bias.get(o, 0.0)) for o in outs])
+
     def fit(
-        self, params: dict, pairs: list, max_steps: int, max_seconds: float,
+        self,
+        params: dict,
+        pairs: list,
+        max_steps: int,
+        max_seconds: float,
     ) -> tuple[dict, dict]:
         el = self._elements(pairs)
         if not el:
@@ -281,38 +303,50 @@ class Lookup(Family):
         yi = np.array([col[b] for _, b in el])
         n = len(el)
         shape = L0.shape
+        size = L0.size
+
+        def split(vec: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+            return vec[:size].reshape(shape), vec[size:]
 
         def lg(vec: np.ndarray) -> tuple[float, np.ndarray]:
-            L = vec.reshape(shape)
-            P = _softmax(L[xi] + B[xi])
+            L, b = split(vec)
+            P = _softmax(L[xi] + b + B[xi])
             loss = -np.log(P[np.arange(n), yi] + 1e-12).mean()
             G = P
             G[np.arange(n), yi] -= 1.0
             grad = np.zeros(shape)
             np.add.at(grad, xi, G / n)
-            return float(loss), grad.ravel()
+            return float(loss), np.concatenate([grad.ravel(), G.sum(axis=0) / n])
 
         def done(vec: np.ndarray) -> bool:
-            P = _softmax(vec.reshape(shape)[xi] + B[xi])
+            L, b = split(vec)
+            P = _softmax(L[xi] + b + B[xi])
             return bool((P[np.arange(n), yi] >= CONFIDENCE).all())
 
         vec, steps, loss = adam(
-            L0.ravel().copy(),
+            np.concatenate([L0.ravel(), self._bias(params, outs)]),
             lg,
             done,
             lr=float(self.options.get("lr", self.lr)),
             max_steps=max_steps,
             max_seconds=max_seconds,
         )
-        L = vec.reshape(shape)
+        L, bvec = split(vec)
         table = {a: dict(r) for a, r in params.get("logits", {}).items()}
-        seen = set(el)  # an input's own outputs stay in its row (one known output gives a logit of 0)
+        seen = set(
+            el,
+        )  # an input's own outputs stay in its row (one known output gives a logit of 0)
         for i, a in enumerate(ins):
             r = table.setdefault(a, {})
             for j, o in enumerate(outs):
                 if L[i, j] != 0.0 or o in r or (a, o) in seen:
                     r[o] = float(L[i, j])
-        task = {"logits": table, "identity": float(params.get("identity", 0.0))}
+        bias = {o: float(v) for o, v in zip(outs, bvec)}
+        task = {
+            "logits": table,
+            "bias": bias,
+            "identity": float(params.get("identity", 0.0)),
+        }
         return task, {"steps": steps, "loss": loss, "reproduced": done(vec), "pairs": n}
 
     def _one(self, params: dict, x: Any) -> Any:
@@ -320,9 +354,15 @@ class Lookup(Family):
         row = params.get("logits", {}).get(a, {})
         ident = float(params.get("identity", 0.0))
         outs = self._outputs(params, [a] if ident else [])
-        if not row and not ident:
+        bias = params.get("bias", {})
+        if not row and not ident and not bias:
             raise LearnedError(f"lookup: no stored output for the input {x!r}")
-        scores = {o: float(row.get(o, 0.0)) + (ident if o == a else 0.0) for o in outs}
+        scores = {
+            o: float(row.get(o, 0.0))
+            + float(bias.get(o, 0.0))
+            + (ident if o == a else 0.0)
+            for o in outs
+        }
         best = max(sorted(scores), key=lambda o: scores[o])
         return category_of(best)
 
@@ -348,7 +388,7 @@ class Lookup(Family):
         col = {o: j for j, o in enumerate(outs)}
         xi = np.array([row[a] for a, _ in el])
         yi = np.array([col[b] for _, b in el])
-        P = _softmax(L[xi] + B[xi])
+        P = _softmax(L[xi] + self._bias(params, outs) + B[xi])
         return float(-np.log(P[np.arange(len(el)), yi] + 1e-12).mean())
 
 
@@ -404,7 +444,11 @@ class Affine(Family):
         return float(self.options.get("tolerance", 0.01)) * np.maximum(1.0, np.abs(Y))
 
     def fit(
-        self, params: dict, pairs: list, max_steps: int, max_seconds: float,
+        self,
+        params: dict,
+        pairs: list,
+        max_steps: int,
+        max_seconds: float,
     ) -> tuple[dict, dict]:
         n, m = self._sizes()
         X, Y = self._data(pairs)
@@ -572,7 +616,11 @@ class Neighbourhood(Family):
         return F, y
 
     def fit(
-        self, params: dict, pairs: list, max_steps: int, max_seconds: float,
+        self,
+        params: dict,
+        pairs: list,
+        max_steps: int,
+        max_seconds: float,
     ) -> tuple[dict, dict]:
         r, V, D = self._dims()
         F, y = self._data(pairs)
@@ -774,7 +822,8 @@ def declaration(source: str) -> dict | None:
                 except ValueError:
                     raise LearnedError(f"{name} must be a literal") from None
         elif isinstance(
-            node, (ast.FunctionDef, ast.AsyncFunctionDef),
+            node,
+            (ast.FunctionDef, ast.AsyncFunctionDef),
         ) and not node.name.startswith("_"):
             public.append(node.name)
     if "LEARNED_FAMILY" not in found:
@@ -996,7 +1045,9 @@ def load_skill(
 
 
 def check_cases(
-    skill: LearnedSkill, cases: list, max_steps: int = MAX_STEPS,
+    skill: LearnedSkill,
+    cases: list,
+    max_steps: int = MAX_STEPS,
 ) -> list[dict]:
     """Per fixture case: fit on its examples, then whether the examples and the queries are reproduced, the loss on
     the queries (the family's, from the fitted parameters; the examples' when there are no queries) and the steps.

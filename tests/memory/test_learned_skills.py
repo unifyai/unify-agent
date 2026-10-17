@@ -21,7 +21,8 @@ from unify.memory.catalogue import write_files
 from unify.memory.gitio import Repo
 
 needs_bwrap = pytest.mark.skipif(
-    shutil.which("bwrap") is None, reason="bubblewrap is not installed",
+    shutil.which("bwrap") is None,
+    reason="bubblewrap is not installed",
 )
 
 
@@ -72,7 +73,10 @@ def test_neighbourhood_gradient_matches_finite_differences(monkeypatch):
 
 
 def _skill(
-    family: str, options: dict, initial: dict | None = None, **kw,
+    family: str,
+    options: dict,
+    initial: dict | None = None,
+    **kw,
 ) -> L.LearnedSkill:
     return L.LearnedSkill(
         "memory.p.m:f",
@@ -88,8 +92,18 @@ def test_lookup_fits_arbitrary_categories_and_is_a_plain_callable():
     assert fitted.reproduced and fitted.steps > 0
     assert [fitted(x) for x, _ in pairs] == [y for _, y in pairs]
     assert callable(fitted) and type(fitted).__name__ == "function"
+    assert fitted("never-seen") in [
+        y for _, y in pairs
+    ]  # an unseen input starts from the shared bias
     with pytest.raises(L.LearnedError):
-        fitted("never-seen")  # no identity bonus: an unseen input has no output
+        _skill("lookup", {}).family.predictor(_skill("lookup", {}).state["params"])(
+            "x",
+        )  # nothing stored
+
+
+def test_lookup_bias_gives_an_unseen_input_the_most_supported_output():
+    fitted = _skill("lookup", {}).fit([("a", "x"), ("b", "x"), ("c", "y"), ("d", "x")])
+    assert fitted.reproduced and fitted("new") == "x"
 
 
 def test_lookup_accepts_a_dict_and_elementwise_nested_lists():
@@ -127,30 +141,34 @@ def test_fit_never_changes_the_stored_state_and_bounds_steps():
 
 def test_infer_config_and_training_pairs_hooks_shape_the_fit():
     def infer(examples, stored):
-        # the most common output value is the background
+        # the most common output value is the background; the inputs with another output are the marked ones
         vals = [y for _, y in examples]
-        return {"background": max(sorted(set(vals)), key=vals.count)}
+        bg = max(sorted(set(vals)), key=vals.count)
+        return {"background": bg, "marked": sorted(x for x, y in examples if y != bg)}
 
     def pairs(x, y, config):
         return [(x, y)] if y != config["background"] else []
 
     def skeleton(x, model, config):
-        try:
-            return model(x)
-        except L.LearnedError:
-            return config["background"]
+        return model(x) if x in config["marked"] else config["background"]
 
     sk = _skill(
-        "lookup", {}, infer_config=infer, training_pairs=pairs, skeleton=skeleton,
+        "lookup",
+        {},
+        infer_config=infer,
+        training_pairs=pairs,
+        skeleton=skeleton,
     )
     fitted = sk.fit([("a", "bg"), ("b", "bg"), ("c", "x")])
-    assert fitted.config == {"background": "bg"}
+    assert fitted.config == {"background": "bg", "marked": ["c"]}
     assert fitted("c") == "x" and fitted("zzz") == "bg" and fitted.reproduced
 
 
 def test_fit_without_examples_uses_the_stored_fixture_cases():
     sk = _skill(
-        "lookup", {}, fixtures=[{"examples": [["a", "b"]], "queries": [["a", "b"]]}],
+        "lookup",
+        {},
+        fixtures=[{"examples": [["a", "b"]], "queries": [["a", "b"]]}],
     )
     assert sk.fit()("a") == "b"
     with pytest.raises(L.LearnedError):
@@ -294,7 +312,11 @@ def test_state_ref_commits_and_reads_back(tmp_path):
     first = LS.write_state(mem, "memory.tables.recode", state, "learned: one", None)
     assert LS.read_states(mem) == {"memory.tables.recode": state}
     second = LS.write_state(
-        mem, "memory.tables.recode", dict(state, config={"k": 1}), "learned: two", first,
+        mem,
+        "memory.tables.recode",
+        dict(state, config={"k": 1}),
+        "learned: two",
+        first,
     )
     assert LS.ref_head(mem) == second and LS.read_states(mem, first) == {
         "memory.tables.recode": state,
@@ -302,7 +324,11 @@ def test_state_ref_commits_and_reads_back(tmp_path):
     assert mem.head() == main  # main never moves
     with pytest.raises(Exception):
         LS.write_state(
-            mem, "memory.tables.recode", state, "stale", first,
+            mem,
+            "memory.tables.recode",
+            state,
+            "stale",
+            first,
         )  # the ref moved past *expected*
 
 
@@ -319,7 +345,8 @@ def _actor_copy(tmp_path: Path, mem: Repo) -> Path:
             wt / LS.fixture_path("memory.tables.recode")
         ).read_bytes()
     write_files(
-        root, {**lx.generated_library_mode(root), **LS.export_files(mem, files)},
+        root,
+        {**lx.generated_library_mode(root), **LS.export_files(mem, files)},
     )
     return root
 
@@ -342,7 +369,8 @@ def test_export_gives_the_families_the_state_and_the_fixtures(tmp_path):
         None,
     )
     assert ".memory/learned/memory/tables/recode.state.json" in LS.export_files(
-        mem, files,
+        mem,
+        files,
     )
     LS.write_state(
         mem,
@@ -352,7 +380,8 @@ def test_export_gives_the_families_the_state_and_the_fixtures(tmp_path):
         LS.ref_head(mem),
     )
     assert ".memory/learned/memory/tables/recode.state.json" not in LS.export_files(
-        mem, files,
+        mem,
+        files,
     )  # incompatible
 
 
@@ -371,7 +400,10 @@ def test_actor_calls_memory_learned_and_the_fit_is_audited(tmp_path):
         " json.loads(seen[0][1])['family'], len(seen)]))\n"
     )
     out = subprocess.run(
-        [sys.executable, "-I", "-c", code], capture_output=True, text=True, timeout=120,
+        [sys.executable, "-I", "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     assert out.returncode == 0, out.stderr
     got = json.loads(out.stdout.strip().splitlines()[-1])
@@ -395,7 +427,10 @@ def test_memory_learned_off_says_so(tmp_path):
     write_files(root, lx.generated_library_mode(root))
     code = f"import sys\nsys.path.insert(0, {str(root)!r})\nimport memory\nmemory.learned('memory.tables.recode')\n"
     out = subprocess.run(
-        [sys.executable, "-I", "-c", code], capture_output=True, text=True, timeout=120,
+        [sys.executable, "-I", "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     assert out.returncode != 0 and "learned skills are off" in out.stderr
 
@@ -575,7 +610,8 @@ def test_request_consolidates_only_when_the_switch_is_on(tmp_path, monkeypatch):
     calls: list = []
     monkeypatch.setattr(LS, "consolidate_episode", lambda *a: calls.append(a) or [])
     run = rq.RequestRun(
-        "r", SimpleNamespace(memory=tmp_path / "m", state_dir=tmp_path / "s"),
+        "r",
+        SimpleNamespace(memory=tmp_path / "m", state_dir=tmp_path / "s"),
     )
     run.library_mode = True
     run.learned_fits = [
