@@ -367,6 +367,9 @@ class GateResult:
     provenance: list[dict] = field(default_factory=list)
     # library mode: the fixture provenance entries G1 verified (path -> (sha256, entry)), persisted on merge
     fixtures_verified: dict[str, tuple[str, dict]] = field(default_factory=dict)
+    # library mode: each checked function's body digest and recorded argument lists (behaviour_overlap), persisted
+    # on merge for the functions that land
+    recorded_inputs: dict[str, tuple[str, list]] = field(default_factory=dict)
     # each refused item's own reason lines, as they stand in ``reasons`` (a failure attributed to items); the
     # writer pass's repair rounds compare them round to round (:func:`.repair.refusals`)
     item_reasons: dict[str, list[str]] = field(default_factory=dict)
@@ -1247,6 +1250,12 @@ class Gate:
             if self.surfacing == "catalogue" or self._library_layout:
                 # library mode: shapes per library id, frozen per commit for the actor's find (library_export)
                 self.ev.write_commit_shapes(landed, shapes)
+            if self._library_checks():
+                # each landed function's recorded argument lists, for the behaviour comparison (behaviour_overlap)
+                for it in landed_items:
+                    got = res.recorded_inputs.get(it.item)
+                    if got is not None:
+                        self.ev.write_function_inputs(it.item, got[0], got[1])
         else:
             try:
                 ids = [it.item for it in self._parse_manifest(manifest).items]

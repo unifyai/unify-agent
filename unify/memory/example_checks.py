@@ -498,6 +498,12 @@ class ExampleChecks:
             )
             if found:
                 run.shapes[item] = (body_digest(body[1]), found)
+            from .behaviour_overlap import recorded_inputs
+
+            run.res.recorded_inputs[item] = (
+                body_digest(body[1]),
+                recorded_inputs(calls),
+            )
         examples = rec.setdefault("examples", {})
         examples.update(
             {

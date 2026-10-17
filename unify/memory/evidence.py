@@ -68,6 +68,12 @@ _FIXTURE_PROVENANCE_SCHEMA = (
 # retirements and dropped aliases each landed CURATE pass made (the item records read them for alias_of and
 # the curator's retirements).
 # Created by the first write, so a store that never runs CURATE keeps the v2 schema (as with _SHAPE_SCHEMA).
+# Library mode: each landed function's recorded argument lists (:mod:`.behaviour_overlap`), by its body digest, so the
+# behaviour comparison reads the lists of a function's current definition; created lazily on the first such merge
+_FUNCTION_INPUTS_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS function_inputs(item TEXT, body TEXT, inputs TEXT, PRIMARY KEY(item, body))"
+)
+
 _CURATE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS curate_seen(fingerprint TEXT PRIMARY KEY, pass_id TEXT);
 CREATE TABLE IF NOT EXISTS curations(seq INTEGER PRIMARY KEY AUTOINCREMENT, pass_id TEXT, commit_sha TEXT,
@@ -927,6 +933,38 @@ class EvidenceStore:
             ).fetchone()
             is not None
         )
+
+    def write_function_inputs(self, item: str, body: str, inputs: list) -> None:
+        """Keep *inputs*, the recorded argument lists of function *item* whose body digest is *body*
+        (:func:`.behaviour_overlap.recorded_inputs`, as canonical JSON); a later landing of the same body replaces
+        them. Empty lists are not kept."""
+        if not inputs:
+            return
+        with self.db:
+            self.db.execute(_FUNCTION_INPUTS_SCHEMA)
+            self.db.execute(
+                "INSERT OR REPLACE INTO function_inputs VALUES(?,?,?)",
+                (item, body, json.dumps(inputs, sort_keys=True, separators=(",", ":"))),
+            )
+
+    def function_inputs(self, items: Iterable[str]) -> dict[str, dict[str, list]]:
+        """item -> body digest -> its recorded argument lists, for each of *items* with any; {} before any merge
+        records one. A row that does not parse as a list is left out."""
+        if not self._has_table("function_inputs"):
+            return {}
+        out: dict[str, dict[str, list]] = {}
+        for item in sorted(set(items)):
+            for body, text in self.db.execute(
+                "SELECT body, inputs FROM function_inputs WHERE item=? ORDER BY body",
+                (item,),
+            ):
+                try:
+                    lists = json.loads(text)
+                except ValueError:
+                    continue
+                if isinstance(lists, list):
+                    out.setdefault(item, {})[body] = lists
+        return out
 
     def add_typed_cover(self, item: str, eid: str, cover_json: str) -> None:
         """Record a typed cover of a landed library-mode item (:func:`.procedures.cover_raw`, as canonical JSON)."""
