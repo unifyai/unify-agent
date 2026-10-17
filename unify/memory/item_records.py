@@ -296,11 +296,8 @@ def verification_summary(record: Mapping | None) -> dict | None:
                 f"{pert.get('judged', 0)} calls judged on {pert.get('fields', 0)} fields"
             )
     m = v.get("mutation")
-    out["mutation"] = (
-        f"{m.get('killed', 0)}/{m.get('total', 0)} killed"
-        if isinstance(m, dict)
-        else "not run"
-    )
+    if isinstance(m, dict):  # recorded only where mutants ran (never in library mode)
+        out["mutation"] = f"{m.get('killed', 0)}/{m.get('total', 0)} killed"
     recipe = recipe_text(record)
     if recipe is not None:
         out["recipe"] = recipe

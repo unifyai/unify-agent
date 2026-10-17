@@ -50,14 +50,9 @@ def test_library_gate_passes_and_records_verification(library_example_world):
     # every evidence check holds: the function lands at the level the gate gives for that
     assert res.levels == {w.ITEM_ID: "reproduces-its-case"} and res.level_reasons == {w.ITEM_ID: []}
     assert rec["level"] == "reproduces-its-case" and rec["level_reasons"] == []
-    assert (
-        rec["mutation"]["total"] > 0
-        and rec["mutation"]["killed"] == rec["mutation"]["total"]
-    )
-    assert rec["guard"] == {"killed": 1, "total": 1}
+    # the library gate draws no inputs and runs no mutants
+    assert "mutation" not in rec and "guard" not in rec and "drawn_inputs" not in rec
     assert rec["exact_assertions"] >= 2 and rec["tests"] == [w.TEST_FILE]
-    # e3's acct.me response is of the fixtures' family and copied by none: stage 5 draws it
-    assert rec["drawn_inputs"] >= 1 and rec["drawn_inputs_read"] == rec["drawn_inputs"]
     examples = rec["examples"]
     assert (
         examples["calls"],

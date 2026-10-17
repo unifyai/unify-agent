@@ -41,16 +41,17 @@ informative row (every input missed the replay or was unbound), the check is "no
 pass. First the tests run on the module re-printed unchanged (the control): if that is not
 green, nothing is judged.
 
-**Library mode** (a library function takes any arguments; its examples are the calls its tests make). The
-covers of the draw are the recorded actions behind the function's whole-source copied input fixtures, and each
-drawn input takes the form its fixture's kind gives (:data:`SOURCE_FORMS`: a tool response or a dialogue
-observation as ``observation``, a work-tree file as ``path``); a sliced fixture, a message or a cell's output
-has no family to draw from, which is noted. No probe runs: the drawn inputs are appended to a copy of the
-recorded-inputs file and the function's listed tests run with its calls recorded (:mod:`.example_calls`). A
-call on an appended line (a call key the run without them did not make) that raises refuses the pass, as one
-that refuses an input whose arguments have the field names of an accepted call's. A surviving mutant is likely
-equivalent when every call of its tests returns, refuses or raises as on the original, with an equal result
-digest; with no recorded call to compare, mutation is not judged, which refuses the pass.
+**Library mode** (a library function takes any arguments; its examples are the calls its tests make). The library
+gate runs neither drawn inputs nor mutants (:func:`library_config`); with ``library_mode`` and either switch set
+explicitly, they run as follows. The covers of the draw are the recorded actions behind the function's whole-source
+copied input fixtures, and each drawn input takes the form its fixture's kind gives (:data:`SOURCE_FORMS`: a tool
+response or a dialogue observation as ``observation``, a work-tree file as ``path``); a sliced fixture, a message or
+a cell's output has no family to draw from, which is noted. No probe runs: the drawn inputs are appended to a copy
+of the recorded-inputs file and the function's listed tests run with its calls recorded (:mod:`.example_calls`). A
+call on an appended line (a call key the run without them did not make) that raises refuses the pass, as one that
+refuses an input whose arguments have the field names of an accepted call's. A surviving mutant is likely equivalent
+when every call of its tests returns, refuses or raises as on the original, with an equal result digest; with no
+recorded call to compare, mutation is not judged, which refuses the pass.
 
 **Determinism** (``UNIFY_MEMORY_QA_DETERMINISM``). Every gate pytest run gets ``PYTHONHASHSEED=0``,
 ``TZ=UTC`` and the plugin :mod:`.pin` (``-p _memory_pin``: a stepping clock from a fixed epoch, ``random`` seeded
@@ -142,11 +143,9 @@ FLOOR_S = 5.0  # no run starts with less of the budget left
 PROBE_CASE_S = 2  # one call in the probe
 FIXTURE_MAX_BYTES = 64 * 1024
 MIN_KILL = Decimal("0.5")
-# library mode (from the test-quality study): the mutation kill share is gated per changed function at
-# MUTATION_MIN (0.7 after the first replay). Guard coverage, the kill rate of dropped-guard (``drop_raise``) mutants,
-# is measured and recorded only; GUARD_MIN_KILL is its planned gate. MAX_GUARD_MUTANTS bounds the
-# extra dropped-guard mutants run to measure it.
-MUTATION_MIN = Decimal("0.6")
+# Guard coverage, the kill rate of dropped-guard (``drop_raise``) mutants, is measured and recorded only, with
+# ``library_mode``; GUARD_MIN_KILL is its planned gate. MAX_GUARD_MUTANTS bounds the extra dropped-guard mutants run
+# to measure it.
 GUARD_MIN_KILL = Decimal("0.5")
 MAX_GUARD_MUTANTS = 8
 # Under the fixture-size switch, an exported response at least 1/RESPONSE_BLOB_SHARE of the fixture bound also
@@ -266,12 +265,12 @@ def pytest_env(cfg: QAConfig, variant: int = 0) -> dict[str, str]:
 
 
 def library_config(base: QAConfig) -> QAConfig:
-    """The stage-5 checks the library mode gates: drawn inputs ``strict``, mutation at MUTATION_MIN."""
+    """The stage-5 checks in library mode: no drawn inputs and no mutants, whatever the settings say (they judged
+    how far an item's evidence reaches beyond its recorded cases); the other checks as the settings give them."""
     return dataclasses.replace(
         base,
-        fixtures="strict",
-        mutation=True,
-        min_kill=MUTATION_MIN,
+        fixtures="",
+        mutation=False,
         library_mode=True,
     )
 

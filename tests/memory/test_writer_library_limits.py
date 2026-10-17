@@ -94,8 +94,6 @@ def test_the_library_briefs_state_no_count_limits_but_numbers_still_render_when_
     )
     numbered = library_prompts.write_brief(
         limits=library_prompts.limits_now(cell_s=45.0),
-        mutation_min=Decimal("0.7"),
-        sample_k=11,
         pytest_env={},
     )
     # the real limits render as information: the cell time, the step guard, no count of checks or rounds

@@ -10,7 +10,6 @@ from unify.memory.example_calls import ArgRecord, CallKey, CallRecord, ExampleCa
 from unify.memory.example_perturb import InputFixture
 from unify.memory.fixtures import canonical, inputs_file
 from unify.memory.qa import (
-    MUTATION_MIN,
     QAChecks,
     QAConfig,
     QAEnv,
@@ -31,6 +30,11 @@ def half(n):
         raise MemoryInputError("an even number is needed")
     return n // 2
 """
+
+
+#: The library-mode stage-5 checks as the library gate ran them before it stopped drawing inputs and running
+#: mutants: drawn inputs ``strict``, mutation gated at 0.6. They stay available to a configuration that sets them.
+GATED = QAConfig(fixtures="strict", mutation=True, min_kill=Decimal("0.6"), library_mode=True)
 
 
 class _Run(SimpleNamespace):
@@ -79,7 +83,7 @@ def _world(tmp_path, pytest_fn, qa=None):
         pass_wide=False,
     )
     gate = SimpleNamespace(
-        qa=qa or library_config(QAConfig()),
+        qa=qa or GATED,
         pytest=pytest_fn,
         python=Path("/usr/bin/python3"),
     )
@@ -90,14 +94,11 @@ def _tree(ro):
     return next(p for p, d in ro.items() if d == "/memory")
 
 
-def test_library_config_gates_strict_drawn_inputs_and_mutation_at_06():
-    cfg = library_config(QAConfig())
-    assert (
-        cfg.fixtures == "strict"
-        and cfg.mutation
-        and cfg.min_kill == MUTATION_MIN == Decimal("0.6")
-        and cfg.library_mode
-    )
+def test_library_config_runs_no_drawn_inputs_and_no_mutants_whatever_the_settings():
+    for base in (QAConfig(), QAConfig(fixtures="strict", mutation=True, determinism=True)):
+        cfg = library_config(base)
+        assert cfg.fixtures == "" and not cfg.mutation and not cfg.draws and cfg.library_mode
+        assert cfg.determinism == base.determinism  # the other checks as the settings give them
     assert QAConfig().library_mode is False and QAConfig().guard_mutants == 8
 
 

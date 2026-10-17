@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from decimal import Decimal
 
 import pytest
 
@@ -61,8 +60,6 @@ def _write(limits=None, **over):
     """The WRITE brief with every optional input and tool, so each write-only phrase is present."""
     values = dict(
         limits=limits or _limits(),
-        mutation_min=Decimal("0.6"),
-        sample_k=8,
         pytest_env=ENV,
         staging=True,
         pool=True,
@@ -120,20 +117,16 @@ def test_the_guide_has_every_part_and_takes_extra_lines_only_before_the_files_li
 
 def test_numbers_come_from_the_values_given():
     limits = _limits(view_bytes=1234, cell_s=45.0, step_guard=321, entries=77)
-    text = _write(
-        limits=limits,
-        mutation_min=Decimal("0.7"),
-        sample_k=11,
-    )
+    text = _write(limits=limits)
     for s in (
         "at most 1234 bytes",
         "at most 45 s",
         "after 321 model and check calls",
         "77 files and directories",
-        "at least 70% of small mutations",
-        "appends 11 more recorded inputs",
     ):
         assert s in text, s
+    # the library gate draws no inputs and runs no mutants, and the brief says nothing of them
+    assert "small mutations" not in text and "more recorded inputs" not in text
     assert "<<" not in text and ">>" not in text
     assert "after 321 model and check calls" in _curate(limits=limits)
     assert '"PYTHONPATH": "/x"' in _write(pytest_env={"PYTHONPATH": "/x"})
@@ -352,13 +345,13 @@ def test_no_input_form_is_named_in_library_briefs():
 
 
 def test_rendered_from_the_constants_that_enforce_them():
-    """Needs repair, library_index, qa with MUTATION_MIN, and curate: runs once they are integrated."""
+    """Needs repair, library_index and curate: runs once they are integrated."""
     repair = pytest.importorskip("unify.memory.repair")
     INDEX_VIEW_TOKENS = pytest.importorskip(
         "unify.memory.library_index",
     ).INDEX_VIEW_TOKENS
     pytest.importorskip("unify.memory.curate")
-    from unify.memory import qa, views
+    from unify.memory import views
     from unify.memory.gate import _PYTEST_ENV
 
     from unify.memory import writer_pass
@@ -367,8 +360,6 @@ def test_rendered_from_the_constants_that_enforce_them():
     assert f"at most {views.VIEW_BYTES} bytes" in text
     # the briefs state no check or repair-round counts (the pass enforces none)
     assert "times per pass" not in text and "while the pass" not in text
-    assert f"appends {qa.SAMPLE_K} more recorded inputs" in text
-    assert f"at least {pv._pct(qa.MUTATION_MIN)}% of small mutations" in text
     assert f"after {writer_pass.STEP_GUARD} model and check calls" in text
     assert pv._env(_PYTEST_ENV) in text
     assert INDEX_VIEW_TOKENS and repair  # imported: the constants exist

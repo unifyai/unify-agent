@@ -70,8 +70,8 @@ The checks:
   ``unchecked`` with the findings as its ``level_reasons``; an item with none lands at ``reproduces-its-case``.
   Those findings are G2's grounding when some call that returns still uses a value from a recorded episode, the
   episodes rule, the rule check, a typed cover that does not validate, the docstring's ``Example:`` line, the
-  example-shape check, G3's exact and oracle checks, and stage 5's drawn recorded inputs and mutation score. What
-  the check with unseen fixture values records is never a finding. Every other check refuses as
+  example-shape check, and G3's exact and oracle checks. What the check with unseen fixture values records is never
+  a finding, and stage 5 draws no inputs and runs no mutants in library mode. Every other check refuses as
   before: layout, provenance (every fixture re-derives from the recording, parsed fixtures by their stored
   reader), the manifest, safety (G6), tests that are not plain or not green, regressions, the behaviour check,
   an edited function without a red test, deleted or weakened tests without a reason, an example call that

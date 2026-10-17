@@ -33,9 +33,9 @@ With ``Gate(library_mode=None)`` (the default) nothing here runs and the gate is
   - for WRITE, no fewer items (removal belongs to CURATE);
   - a deleted function's typed episode covers stay covered by a remaining item.
 
-The stage-5 checks run with drawn inputs ``strict`` and mutation gated at :data:`.qa.MUTATION_MIN`
-(:func:`.qa.library_config`). Measures go to the item verification record (``GateResult.verification``). The merge
-also appends that record to the pass row as one ``library_mode-verification`` line, for the item records.
+Stage 5 runs no drawn inputs and no mutants in library mode (:func:`.qa.library_config`). Measures go to the item
+verification record (``GateResult.verification``). The merge also appends that record to the pass row as one
+``library_mode-verification`` line, for the item records.
 """
 
 from __future__ import annotations

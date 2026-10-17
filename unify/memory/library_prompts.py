@@ -513,8 +513,7 @@ _CHECK_NAMES = (
     "and its typed covers are recorded evidence of their type); G3, tests (plain pytest, "
     "the tests pass on the candidate, a behaviour change has a test that fails on the parent, and no test is lost "
     "or weakened without a reason; an exact assertion against a trusted value on a recorded fixture for each "
-    "changed function, no test that recomputes the function, and passing on the drawn recorded inputs and "
-    "catching enough small mutations also set the evidence level); G4, the index (it never "
+    "changed function and no test that recomputes the function also set the evidence level); G4, the index (it never "
     "refuses: it notes when the index has outgrown the view the working model is shown); G5, items (<<g5>>); "
     "G6, safety (no links, executables, submodules, git, pytest or interpreter configuration files, bytecode or "
     "key-shaped strings).\n"
@@ -534,8 +533,7 @@ _GATE = (
     "After `finish` a deterministic gate checks the candidate: the layout and the links; that every fixture "
     "came through `fixture` unchanged; that the calls of each function that return take fixture values from "
     "a recorded episode; its tests on the candidate, and on the parent where behaviour "
-    "changed; the appended recorded inputs; that its tests catch at least "
-    "<<mutation_min_pct>>% of small mutations of each changed function; and that no test is "
+    "changed; and that no test is "
     "lost or weakened without a reason. An item that breaks a rule is refused together with the items that import it, "
     "and the rest can land; a breach of a pass-wide rule (the layout, lost tests, fewer items) refuses the "
     "round. " + _CHECK_NAMES.replace("<<g5>>", _G5_WRITE)
@@ -713,8 +711,7 @@ _WRITE_RULES = (
     + " For a function you add or change, run each new test and see it fail before your change, then pass.\n"
     "6. Each function has a recorded-inputs file, "
     "`memory/<package>/tests/data/<module>.<function>.inputs.jsonl`, with one line per recorded input made with "
-    "`fixture(..., append=true)`, and a test parametrised over its lines. The gate appends <<sample_k>> more "
-    "recorded inputs of the same kind to a copy of that file, and the function's tests must pass on every one.\n"
+    "`fixture(..., append=true)`, and a test parametrised over its lines.\n"
     "7. Never store credentials, session tokens or the results of calls with side effects. "
     + _HONESTY
     + "\n"
@@ -832,11 +829,6 @@ def _fill(template: str, values: Mapping[str, object]) -> str:
     if left:
         raise ValueError(f"unfilled placeholders: {left}")
     return out
-
-
-def _pct(share: Decimal) -> str:
-    """A share as a whole-or-decimal percentage string: Decimal('0.6') -> '60'."""
-    return format((Decimal(share) * 100).normalize(), "f")
 
 
 def _env(env: Mapping[str, str]) -> str:
@@ -994,8 +986,6 @@ def _related_row_key() -> tuple[str, str]:
 def write_brief(
     *,
     limits: Limits,
-    mutation_min: Decimal,
-    sample_k: int,
     pytest_env: Mapping[str, str],
     staging: bool = False,
     pool: bool = False,
@@ -1019,8 +1009,6 @@ def write_brief(
             limits,
             _write_brief_in_code(
                 limits=limits,
-                mutation_min=mutation_min,
-                sample_k=sample_k,
                 pytest_env=pytest_env,
                 staging=staging,
                 pool=pool,
@@ -1290,8 +1278,6 @@ def write_brief(
             "item_extra": item_extra,
             "manifest_extra_docs": manifest_docs,
             "replay_rule": replay_rule,
-            "mutation_min_pct": _pct(mutation_min),
-            "sample_k": sample_k,
             "pytest_env": _env(pytest_env),
             "semantic_types": describe_semantic_types(),
         },
@@ -1443,15 +1429,12 @@ def write_brief_now(
     edit_tools: bool = False,
 ) -> str:
     """The WRITE brief from the constants that enforce each number and the tools registered for the role."""
-    from . import qa
     from .gate import _PYTEST_ENV
     from .tool_spec import tools_section
 
     flags = tool_flags(staging, pool, helper, similar, edit_tools)
     return write_brief(
         limits=limits_now(cell_s, compact=compact, finish_capped=finish_capped),
-        mutation_min=qa.MUTATION_MIN,
-        sample_k=qa.SAMPLE_K,
         pytest_env=_PYTEST_ENV,
         staging=staging,
         pool=pool,
@@ -1524,9 +1507,8 @@ _REPAIR_IN_CODE = (
 )
 
 
-def _check_names_in_code(g5: str, g3_mutations: str) -> str:
-    """What each check the gate names means, G1 to G6, stated once; *g3_mutations* is how many small mutations the
-    tests must catch, as the role's brief states it."""
+def _check_names_in_code(g5: str) -> str:
+    """What each check the gate names means, G1 to G6, stated once."""
     return (
         "Its results and refusals name the check: G1, layout and provenance (only `memory/` and `notes/` change and "
         "never the generated files, the manifest is well formed, every link names an item that exists, every "
@@ -1540,10 +1522,8 @@ def _check_names_in_code(g5: str, g3_mutations: str) -> str:
         "tests, and its typed covers are recorded evidence of their type); G3, tests (plain "
         "pytest, the tests pass on the candidate, a behaviour change has a test that fails on the parent, and no "
         "test is lost or weakened without a reason; an exact assertion against a trusted value on a recorded "
-        "fixture for each changed function, no test that recomputes the function, and passing on the drawn "
-        "recorded inputs and catching "
-        + g3_mutations
-        + " also set the evidence level); G4, the index (it never refuses: it notes when the index has outgrown the view the working model "
+        "fixture for each changed function and no test that recomputes the function also set the evidence level); "
+        "G4, the index (it never refuses: it notes when the index has outgrown the view the working model "
         "is shown); G5, items (" + g5 + "); G6, safety (no links, executables, submodules, git, pytest or "
         "interpreter configuration files, bytecode or key-shaped strings).\n"
     )
@@ -1554,16 +1534,14 @@ _GATE_IN_CODE = (
     "After `tools.finish(summary)` a deterministic gate checks the candidate. An item that breaks a rule is refused "
     "together with the items that import it, and the rest can land; a breach of a pass-wide rule (the layout, lost "
     "tests, fewer items) refuses the round. "
-    + _check_names_in_code(
-        _G5_WRITE, "at least <<mutation_min_pct>>% of small mutations of each changed function"
-    )
+    + _check_names_in_code(_G5_WRITE)
 )
 
 _CURATE_GATE_IN_CODE = (
     "# The gate\n"
     "After `tools.finish(summary)` a deterministic gate checks the candidate (G1 to G6 below); an item that breaks "
     "a rule is refused with the items that import it, and the rest can land. "
-    + _check_names_in_code(_G5_CURATE, "enough small mutations")
+    + _check_names_in_code(_G5_CURATE)
 )
 
 _LIMITS_IN_CODE = (
@@ -1716,8 +1694,7 @@ _WRITE_RULES_IN_CODE = (
     + " For a function you add or change, run each new test and see it fail before your change, then pass.\n"
     "6. Each function has a recorded-inputs file, "
     "`memory/<package>/tests/data/<module>.<function>.inputs.jsonl`, with one line per recorded input made with "
-    "`tools.fixture(..., append=True)`, and a test parametrised over its lines. The gate appends <<sample_k>> more "
-    "recorded inputs of the same kind to a copy of that file, and the function's tests must pass on every one.\n"
+    "`tools.fixture(..., append=True)`, and a test parametrised over its lines.\n"
     "7. Never store credentials, session tokens or the results of calls with side effects. "
     + _HONESTY
     + "\n"
@@ -1734,8 +1711,6 @@ def record_text() -> str:
 def _write_brief_in_code(
     *,
     limits: Limits,
-    mutation_min: Decimal,
-    sample_k: int,
     pytest_env: Mapping[str, str],
     staging: bool,
     pool: bool,
@@ -1949,8 +1924,6 @@ def _write_brief_in_code(
             "manifest_extra": manifest_extra,
             "item_extra": item_extra,
             "manifest_extra_docs": manifest_docs,
-            "mutation_min_pct": _pct(mutation_min),
-            "sample_k": sample_k,
             "pytest_env": _env(pytest_env),
         },
     )
@@ -2240,12 +2213,6 @@ RULES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
         "test assertions",
         ("write",),
         "Never compute an expected value with the function's own expression",
-    ),
-    (
-        "drawn inputs appended",
-        "drawn test inputs",
-        ("write",),
-        "more recorded inputs of the same kind to a copy of that file",
     ),
     (
         "deterministic tests",
