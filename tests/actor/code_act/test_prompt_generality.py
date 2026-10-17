@@ -231,26 +231,6 @@ def _session_texts(tools: dict) -> dict[str, str]:
             store_cases.PRESERVED,
         )
     ]
-    from unify.function_manager import instance_lint
-
-    tokens = instance_lint.tokens_of(
-        'Task id: case-7a4cf12e, titled "Weekly Sales Summary".',
-    )
-    lint_texts = {
-        "instance refusal (name)": instance_lint.refusal(
-            "mirror_7a4cf12e",
-            instance_lint.name_problem("mirror_7a4cf12e", tokens),
-        ),
-        "instance refusal (task id)": instance_lint.refusal(
-            "task_7a4cf12e_copy",
-            instance_lint.name_problem("task_7a4cf12e_copy", tokens),
-        ),
-        "instance warning": instance_lint.text_warning(
-            "its docstring",
-            "Learned on case-7a4cf12e.",
-            tokens,
-        ),
-    }
     # UNIFY_ESCAPE_DRIFT_CHECK: the refusal, with one and with many literals.
     from unify.function_manager import escape_drift
 
@@ -259,8 +239,10 @@ def _session_texts(tools: dict) -> dict[str, str]:
         escape_drift.cell_literals(["s = '\\n'\nm = r'\\bE\\b'\n"]),
     )
     assert len(hits) == 2, hits
-    lint_texts["escape drift refusal"] = escape_drift.refusal("f", hits[:1])
-    lint_texts["escape drift refusal (many)"] = escape_drift.refusal("f", hits * 4)
+    lint_texts = {
+        "escape drift refusal": escape_drift.refusal("f", hits[:1]),
+        "escape drift refusal (many)": escape_drift.refusal("f", hits * 4),
+    }
     texts = {
         "library snapshot": caa._library_snapshot_line(
             (3, 0),

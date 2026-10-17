@@ -178,12 +178,14 @@ async def test_a_hierarchy_stored_from_code_is_found_from_code_in_another_proces
 @pytest.mark.asyncio
 @pytest.mark.timeout(240)
 @_handle_project
-async def test_store_time_checks_refuse_or_warn_from_code(library, monkeypatch):
+async def test_store_time_checks_refuse_from_code_and_keep_a_task_id_docstring(
+    library,
+    monkeypatch,
+):
     """What ``functions.add`` refuses (a third-party import without a declared
     dependency, a dangerous call, two functions in one source, an invalid
-    requirement) and what it stores with a warning (the instance lint)
-    reaches the cell as it reaches the JSON tool."""
-    from unify.function_manager import instance_lint
+    requirement) reaches the cell as it reaches the JSON tool; a docstring
+    naming a task id is stored as written, with no warning."""
     from unify.function_manager.primitives import (
         EnvironmentMethod,
         EnvironmentNamespace,
@@ -212,7 +214,6 @@ async def test_store_time_checks_refuse_or_warn_from_code(library, monkeypatch):
         ),
         source="tests:shop",
     )
-    token = instance_lint.enter("Total the order task-7a4cf12e for the shop.")
     cells = Cells(new_actor())
     try:
         out = await cells(
@@ -243,9 +244,7 @@ async def test_store_time_checks_refuse_or_warn_from_code(library, monkeypatch):
             "    return len(await primitives.shop.list_items())\\n')",
         )
         assert out.error is None, out.error
-        status = out.result["count_items"]
-        assert status.startswith("added"), status
-        assert "warning" in status and "task-7a4cf12e" in status, status
+        assert out.result["count_items"] == "added", out.result
         # A name that already exists is skipped unless overwritten.
         out = await cells(
             "await functions.add('async def count_items() -> int:\\n    return 0\\n')",
@@ -256,7 +255,6 @@ async def test_store_time_checks_refuse_or_warn_from_code(library, monkeypatch):
         assert out.result == ["count_items"], out
     finally:
         await cells.close()
-        instance_lint.leave(token)
         clear_environment_namespaces()
 
 

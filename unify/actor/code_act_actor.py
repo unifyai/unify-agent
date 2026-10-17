@@ -60,7 +60,6 @@ from unify.common.act_llm_profiles import (
 from unify.common.llm_helpers import methods_to_tool_dict
 from unify.common.tool_spec import ToolSpec, llm_soft_required
 from unify.function_manager import escape_drift as _escape_drift
-from unify.function_manager import instance_lint as _instance_lint
 from unify.function_manager.primitives.registry import get_registry
 from unify.actor.prompt_builders import (
     build_code_act_prompt,
@@ -4300,10 +4299,6 @@ class CodeActActor(BaseCodeActActor):
         logger.debug(f"⏱️ [CodeActActor.act +{_act_ms()}] starting async tool loop")
         run_meter = new_run_meter()
         meter_token = current_run_meter.set(run_meter)
-        # UNIFY_STORE_INSTANCE_LINT: the task loop, its tools and its storage
-        # review inherit the identifiers of this request (set until the handle
-        # is built); a sub-agent keeps those of the task it works for.
-        instance_token = _instance_lint.enter(request)
         core_token = core_session.enter()
         in_code = None
         try:
@@ -4405,7 +4400,6 @@ class CodeActActor(BaseCodeActActor):
                 ),
             )
         except BaseException:
-            _instance_lint.leave(instance_token)
             if in_code is not None:
                 await in_code.close(completed=False)
             raise
@@ -4484,7 +4478,6 @@ class CodeActActor(BaseCodeActActor):
             # be kept alive by this bookkeeping.
             self._live_storage_handles.add(handle)
 
-        _instance_lint.leave(instance_token)
         # The handle the caller holds (the storage wrapper by default).
         handle.agents_pool = _agents.pool  # type: ignore[attr-defined]
         return handle
