@@ -194,7 +194,7 @@ def changed_together(state: CurateState, items: list[str]) -> bool:
     """Whether every one of *items* was last changed by one and the same commit (:attr:`CurateState.history`, newest
     first). Functions a pass wrote or changed side by side were seen together by that pass, which kept them apart:
     a shared argument shape and a shared fixture between them are its own choice, not an overlap found later. Once
-    either changes in another pass, the pair is judged again; anti-unifying bodies are an overlap regardless.
+    either changes in another pass, the pair is judged again; identical bodies are an overlap regardless.
     """
     heads = set()
     for item in items:

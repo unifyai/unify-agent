@@ -9,8 +9,9 @@ Three rules. None of them reads a name, a docstring, a description or any other 
   alias of the wider one. Matching shapes alone are not overlap (two readers of one file can do different jobs),
   nor are shared fixtures without a shared shape.
 * ``antiunify``: two functions whose bodies anti-unify (:mod:`.analysis.fn_antiunify`: the most specific
-  generalisation of their normalised ASTs, locals renamed, docstrings dropped) with a kept share of at least
-  :data:`ANTIUNIFY_MIN_SHARE`. The generalisation, holes as parameters, is the proposed merged body.
+  generalisation of their normalised ASTs, locals renamed, docstrings dropped) with no hole and a kept share of at
+  least :data:`ANTIUNIFY_MIN_SHARE`: the same body up to local names, a duplicate. Two bodies that differ where a
+  hole would make them one parametric function are not a candidate, and no generalised body is proposed.
 * ``same_uses``: notes whose ``uses:`` lists name the same set of functions.
 
 Each candidate carries a fingerprint: a hash of its rule, its items and their current content (each function's
@@ -145,7 +146,8 @@ def by_antiunify(
     min_share: float = ANTIUNIFY_MIN_SHARE,
     max_pairs: int = MAX_ANTIUNIFY_PAIRS,
 ) -> tuple[list[dict], list[str]]:
-    """Pairs of functions whose bodies anti-unify at *min_share* or more, and ``["antiunify"]`` past *max_pairs*.
+    """Pairs of functions whose bodies anti-unify with no hole at *min_share* or more (duplicates up to local names),
+    and ``["antiunify"]`` past *max_pairs*.
 
     Sibling calls are inlined (the *library* of :func:`.analysis.fn_antiunify.antiunify`) only for two functions of
     one module, whose siblings are the same.
@@ -157,7 +159,7 @@ def by_antiunify(
         (fa, siblings), (fb, _) = defs[a], defs[b]
         same_module = a.split(":", 1)[0] == b.split(":", 1)[0]
         g = antiunify([fa, fb], library=siblings if same_module else None)
-        if g is None or g.kept_share < min_share:
+        if g is None or g.holes or g.kept_share < min_share:
             continue
         reasons = [
             f"bodies anti-unify: kept share {g.kept_share:.2f}, {len(g.holes)} hole(s)",
@@ -183,7 +185,6 @@ def by_antiunify(
                 "reasons": reasons,
                 "kept_share": round(g.kept_share, 4),
                 "holes": len(g.holes),
-                "generalisation": g.source,
             },
         )
     return out, (["antiunify"] if len(pairs) > max_pairs else [])

@@ -1,4 +1,5 @@
-"""Overlap candidates: shapes and input fixtures, anti-unified bodies, notes with the same uses."""
+"""Overlap candidates: shapes and input fixtures, bodies that are the same up to local names, notes with the same
+uses."""
 
 from __future__ import annotations
 
@@ -56,7 +57,21 @@ def test_identical_bodies_under_other_names_are_a_candidate(tmp_path):
     assert (c["kept_share"], c["holes"]) == (1.0, 0)
     assert c["reasons"][0] == "bodies anti-unify: kept share 1.00, 0 hole(s)"
     assert "their parameters differ" in c["reasons"]
-    assert "def " in c["generalisation"] and c["fingerprint"].startswith("overlap:")
+    assert "generalisation" not in c and c["fingerprint"].startswith("overlap:")
+
+
+#: two bodies one parametric function would cover: they differ in a constant
+PLUS_ONE = '"""Adds."""\n\n\ndef plus_one(n):\n    """Add one."""\n    return n + 1\n'
+PLUS_TWO = '"""Adds."""\n\n\ndef plus_two(n):\n    """Add two."""\n    return n + 2\n'
+
+
+def test_bodies_that_differ_where_a_parameter_would_go_are_not_a_candidate(tmp_path):
+    res = ov.overlap_candidates(
+        _lib(tmp_path, **{"memory/calc/one.py": PLUS_ONE, "memory/calc/two.py": PLUS_TWO}),
+    )
+    pair = ("memory.calc.one:plus_one", "memory.calc.two:plus_two")
+    assert pair not in _by(res, "antiunify")
+    assert all("generalisation" not in c for c in res["candidates"])
 
 
 def test_names_never_decide(tmp_path):
