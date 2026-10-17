@@ -65,7 +65,7 @@ FAILED = "fedcba9876543210"
 PLANTED_FACTOR = 7919
 REQUEST = "4096 8191 3\n5 7 11"
 PLANTED_VALUE = str(4096 * PLANTED_FACTOR)
-#: Identifiers by their form alone (signatures.strip_identifiers): never in the catalogue.
+#: Identifier-shaped tokens in the episode's summary and in what broke: the catalogue shows them as written.
 IDS = ("run_000123", "0f3a9c7e1b", "123e4567-e89b-12d3-a456-426614174000")
 #: The request the landed procedure's episode answered and the total it handed back: only that episode and the
 #: library's fixtures hold them, never the catalogue.
@@ -237,8 +237,8 @@ def test_the_catalogue_has_one_card_per_function_in_module_order_then_notes_then
     card = text.split(f"### {TOTAL}\n", 1)[1].split("\n### ", 1)[0]
     assert f"`{TOTAL}(value)`" in card
     assert "Sum every number of a table's rows." in card and "It takes the rows" not in card  # first paragraph
-    assert "- Asked: Add up a table of numbers from <id> and report the total (<id>)." in card
-    assert "Approach: - Read the rows" in card and "run <id>" in card
+    assert f"- Asked: Add up a table of numbers from {IDS[0]} and report the total ({IDS[1]})." in card
+    assert "Approach: - Read the rows" in card and f"run {IDS[2]}" in card
     assert f"Evidence: level reproduces-its-case; status on-trial; reader {READ_ROWS}; applies: yes" in card
     sig = _records()[TOTAL]["signature"]
     assert f"Input: {signature_text(sig)}" in card and "Input: {" in card
@@ -246,16 +246,19 @@ def test_the_catalogue_has_one_card_per_function_in_module_order_then_notes_then
     # the recipe the gate ran on the procedure's cases, and how it did
     assert f"Recipe: {RECIPE}; 1 of 1 cases passed (1 source)" in card
     failed = text.split(f"### capture:{FAILED}\n", 1)[1]
-    assert "tried and failed: never offered to run" in failed and "Broke: reading the words raised ValueError <id>" in failed
+    assert "tried and failed: never offered to run" in failed
+    assert f"Broke: reading the words raised ValueError {IDS[1]}" in failed
     assert "level unchecked" in text.split(f"### capture:{CAPTURE}\n", 1)[1]
 
 
 @needs_box
-def test_the_catalogue_holds_no_identifier_answer_or_request_and_is_byte_stable(tmp_path):
+def test_the_catalogue_holds_no_answer_or_request_keeps_identifiers_and_is_byte_stable(tmp_path):
     root = _copy(tmp_path)
     text = (root / lx.CATALOGUE_FILE).read_bytes()
-    for value in (*IDS, RECORDED_TOTAL, RECORDED_REQUEST, REQUEST, PLANTED_VALUE):
+    for value in (RECORDED_TOTAL, RECORDED_REQUEST, REQUEST, PLANTED_VALUE):
         assert value.encode() not in text, value
+    for ident in IDS:  # the summary's and what broke's text, as written
+        assert ident.encode() in text, ident
     again = lx.librarian_files(root, records=_records(), summary_of=_summary, captures=_captures())
     assert again[lx.CATALOGUE_FILE] == text
     assert again[lx.DISPATCH_FILE] == (root / lx.DISPATCH_FILE).read_bytes()

@@ -6,7 +6,7 @@ The episode handed back a result: a text request whose rows of numbers it summed
 1. the episode-end fork's reply (a recorded reply, posted by a scripted proxy through ``fork_worker.run``) stages
    ``summary.md``, ``procedure.py``, ``broke.md`` and ``notes.md`` in the episode's staging dir;
 2. the harness's capture step (``captures.capture``) checks it, runs it confined on the recorded request and
-   writes the capture: ``procedure.py``, ``signature.json`` (an applicability signature with no identifier) and
+   writes the capture: ``procedure.py``, ``signature.json`` (an applicability signature with no request text) and
    ``record.json`` (the capture's own evidence level and status);
 3. a writer pass, tools called from code, in real boxes, sees the capture in the episode's batch-map row and as a
    ``capture`` pool entry, lands it with ``tools.land_capture``, and the gate admits the procedure into the
@@ -234,7 +234,7 @@ def test_the_fork_stages_a_procedure_and_the_capture_step_records_it_confined(tm
     assert record["deterministic"] is True and record["applies"] is True and record["holds"] is True, record
     assert record["outcome"] != "failed", record
     assert (record["level"], record["status"]) == (LEVEL_CAPTURE, STATUS_NEW), record
-    # the applicability signature: computed by the harness, with no identifier and no request text
+    # the applicability signature: computed by the harness, with no request text (the reference is only there)
     signature = _read_json(folder / "signature.json")
     assert SIGNATURE_KEYS <= set(signature), signature
     assert ASKED in json.dumps(signature["goal"]), signature["goal"]

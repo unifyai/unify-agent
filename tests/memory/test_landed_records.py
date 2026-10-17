@@ -28,7 +28,7 @@ PROC = "memory.readings.procedures:row_sums"
 READER = "memory.readings.readers:read_row_sums"
 APPLIES = "memory.readings.procedures:_row_sums_applies"
 OTHER = "memory.readings.totals:column_totals"
-#: The capture's applicability signature as the capture step writes it (identifiers already removed).
+#: The capture's applicability signature as the capture step writes it.
 SIGNATURE = {
     "input": {"kind": "list", "items": {"kind": "list", "items": {"kind": "int"}}},
     "constraints": {"applies": {"stated": True}},

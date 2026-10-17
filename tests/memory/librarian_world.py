@@ -19,12 +19,14 @@ Only :data:`TOTAL`'s status and use are set by hand, as three accepted episodes 
 
 Planted on purpose, so the tests can show that none of them reaches what an agent sees:
 
-* printed identifiers in the summaries' ``## Asked`` and ``## Approach`` sections and in one docstring: a UUID, an
-  alias of the ``TASK-4471`` form and a recorded key of an identifier's form;
 * an answer value, in the summaries' ``## Worked`` and ``## Outcome`` sections and as the value the landed
   procedure's episode handed back (its recorded-result fixture);
 * a raw request text, as a module constant, in the landed procedure's code and a captured procedure's, and in the
   landed episode's request.
+
+Planted too, so the tests can show that they are kept as written where their text is shown: printed identifiers in
+the summaries' ``## Asked`` and ``## Approach`` sections and in one docstring (a UUID, an alias of the ``TASK-4471``
+form and a recorded key of an identifier's form).
 
 No model is called. Building the records runs code confined (:data:`needs_box`), once per process.
 """

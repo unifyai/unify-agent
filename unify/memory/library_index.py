@@ -38,7 +38,7 @@ SignatureOf = Callable[[str], "dict | None"]
 #: What the head says of the ``input:`` line (both heads carry it).
 INPUT_LINE_HEAD = (
     "A procedure's line may be followed by an `input:` line: the structure of the input it was saved against "
-    "(key paths with value types; printed identifiers are left out) and the relations its result had to that "
+    "(key paths with value types) and the relations its result had to that "
     "input.\n"
 )
 #: Key paths an ``input:`` line shows before it says how many more there are.
@@ -131,10 +131,9 @@ def _effect(effect_of: EffectOf | None, item: str) -> str:
 
 def signature_text(signature: "dict | None") -> str:
     """The ``input:`` line's text for an applicability signature: its input's key paths with their value types (a
-    file's format first), at most :data:`INPUT_LINE_PATHS` of them, then the relations it was saved with. The
-    signature arrives with its identifiers already removed (the capture store builds it). ``""`` when it has no
-    readable input shape. Identifiers are stripped from the line with the one rule (``signatures``), so none shows
-    even where one was a key."""
+    file's format first), at most :data:`INPUT_LINE_PATHS` of them, then the relations it was saved with. Keys are
+    shown as written, identifiers included (the capture store keeps them). ``""`` when it has no readable input
+    shape."""
     from .memory_helper import signature as key_paths
 
     if not isinstance(signature, dict) or not isinstance(signature.get("input"), dict):
@@ -156,9 +155,7 @@ def signature_text(signature: "dict | None") -> str:
     rel = signature.get("relations")
     if isinstance(rel, list) and rel:
         text += "; relations: " + ", ".join(str(r) for r in rel)
-    from .signatures import strip_identifiers  # the one rule: no printed identifier, even one that was a key
-
-    return strip_identifiers(text)
+    return text
 
 
 def _level(level_of: LevelOf | None, item: str) -> str:

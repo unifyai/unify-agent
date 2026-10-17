@@ -496,7 +496,8 @@ async def test_no_host_path_planted_secret_or_parsed_value_reaches_the_librarian
     }
     for call in model.calls:
         sent = json.dumps(call.request)
-        for planted in (ENV_SECRET, SSH_SECRET, STATE_SECRET, TOKEN_VALUE, w.PLANTED_VALUE, *w.IDENTIFIERS, w.ANSWER):
+        # printed identifiers are not planted secrets: the catalogue keeps them as written
+        for planted in (ENV_SECRET, SSH_SECRET, STATE_SECRET, TOKEN_VALUE, w.PLANTED_VALUE, w.ANSWER):
             assert planted not in sent, (planted, call.kind)
         for root in roots:
             assert root not in sent, (root, call.kind)

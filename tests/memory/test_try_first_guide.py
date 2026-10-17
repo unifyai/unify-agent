@@ -57,7 +57,7 @@ INDEX_HEAD_INPUT = "`input:`"
 def _export(root: Path) -> str:
     """``INDEX.md`` of a copy at *root* of the library the gate checked, exported with the item records production
     writes for it: a landed procedure's record carries its capture's applicability signature, which the export reads
-    through ``saved_against_of`` (with the one identifier rule applied as the export applies it)."""
+    through ``saved_against_of``, as written."""
     built = _built()
     _tree(root, built.files)
     files = lx.generated_library_mode(root, records=built.records, saved_against=lx.saved_against_of(built.records))
@@ -338,11 +338,12 @@ def test_the_index_with_signatures_is_byte_stable(tmp_path):
 
 
 @needs_box
-def test_no_identifier_or_recorded_value_appears_in_a_signature_line(tmp_path):
-    """A signature is structure: no recorded value, and no printed identifier even where one was a key."""
+def test_a_signature_line_shows_its_keys_as_written_and_no_recorded_value(tmp_path):
+    """A signature is structure: no recorded value; its keys as written, a printed identifier included."""
     root = tmp_path / "lib"
     index = _export(root)
     shown = "\n".join(_input_lines(index, STAMP))
     assert shown
-    assert ALIAS not in index and "case-0093" not in index and "2026-10-09 UTC" not in index
+    assert ALIAS in shown  # a key of the recorded input, as written
+    assert "case-0093" not in index and "2026-10-09 UTC" not in index
     assert str(root) not in index

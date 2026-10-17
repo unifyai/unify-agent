@@ -77,37 +77,8 @@ SavedAgainst = Callable[[str], "dict | None"]
 #: An episode's ``summary.md`` text by episode id, None when it has none (the integration reads
 #: ``<state>/memory-staging/<episode>/summary.md``).
 SummaryOf = Callable[[str], "str | None"]
-#: Text with its printed identifiers removed (the one rule, ``signatures.strip_identifiers``).
-Strip = Callable[[str], str]
 #: What a captured attempt was saved against besides its signature, beside it in the actor's copy.
 CAPTURE_SAVED_FILE = "saved.json"
-
-
-def default_strip() -> Strip:
-    """The one identifier rule: ``signatures.strip_identifiers``, owned by the capture store. Every text ``match``
-    hands its matcher (a docstring, a summary section, what broke) is stripped with it here, on the harness side;
-    the generated helper strips nothing."""
-    from .signatures import strip_identifiers
-
-    return strip_identifiers
-
-
-def strip_signature(value: Any, strip: Strip | None = None, _under: str = "") -> Any:
-    """A signature (or any JSON-like value) with the one identifier rule applied to every mapping key and to the
-    column and header names a file shape lists; other values are kept. A signature the capture store built is
-    already stripped, so this changes nothing there; it keeps a signature from any other source to the rule."""
-    strip = strip or default_strip()
-    if isinstance(value, dict):
-        return {
-            (strip(k) if isinstance(k, str) else k): strip_signature(v, strip, k if isinstance(k, str) else "")
-            for k, v in value.items()
-        }
-    if isinstance(value, list):
-        return [
-            strip(v) if isinstance(v, str) and _under in ("columns", "header") else strip_signature(v, strip)
-            for v in value
-        ]
-    return value
 
 
 def _section(text: str, heading: str) -> str:
@@ -125,12 +96,11 @@ def _section(text: str, heading: str) -> str:
     return "\n".join(out).strip()
 
 
-def summary_sections(text: str, strip: Strip | None = None) -> dict[str, str]:
-    """The ``Asked`` and ``Approach`` sections of a ``summary.md`` text (design H.4), identifiers removed."""
-    strip = strip or default_strip()
+def summary_sections(text: str) -> dict[str, str]:
+    """The ``Asked`` and ``Approach`` sections of a ``summary.md`` text (design H.4), as written."""
     return {
-        "asked": strip(_section(text, "Asked")),
-        "approach": strip(_section(text, "Approach")),
+        "asked": _section(text, "Asked"),
+        "approach": _section(text, "Approach"),
     }
 
 
@@ -150,12 +120,11 @@ def _docstring_of(source: str | None, name: str = "run") -> str:
     return ast.get_docstring(tree) or ""
 
 
-def capture_saved(capture_dir: Path, summary: str | None, strip: Strip | None = None) -> dict:
+def capture_saved(capture_dir: Path, summary: str | None) -> dict:
     """What a captured attempt was saved against besides its signature, as ``memory.match`` reads it from
     ``<copy>/.memory/captures/<id>/saved.json``: ``docstring`` (its ``procedure.py``'s ``run``, else module,
     docstring), ``asked`` and ``approach`` (its episode's ``summary.md``, *summary*) and ``broke`` (the lines of its
-    ``broke.md``, ``none`` left out), every text with identifiers removed."""
-    strip = strip or default_strip()
+    ``broke.md``, ``none`` left out), every text as written."""
     d = Path(capture_dir)
 
     def read(name: str) -> str | None:
@@ -164,23 +133,23 @@ def capture_saved(capture_dir: Path, summary: str | None, strip: Strip | None = 
         except (OSError, UnicodeDecodeError):
             return None
 
-    sections = summary_sections(summary, strip) if summary else {"asked": "", "approach": ""}
+    sections = summary_sections(summary) if summary else {"asked": "", "approach": ""}
     broke = [
-        strip(line.strip().lstrip("-* ").strip())
+        line.strip().lstrip("-* ").strip()
         for line in (read("broke.md") or "").splitlines()
         if line.strip() and line.strip().lower() != "none"
     ]
     return {
-        "docstring": strip(_docstring_of(read("procedure.py"))),
+        "docstring": _docstring_of(read("procedure.py")),
         "asked": sections["asked"],
         "approach": sections["approach"],
         "broke": broke,
     }
 
 
-def capture_saved_bytes(capture_dir: Path, summary: str | None, strip: Strip | None = None) -> bytes:
+def capture_saved_bytes(capture_dir: Path, summary: str | None) -> bytes:
     """:func:`capture_saved` as the bytes of ``saved.json`` (sorted keys, one trailing newline)."""
-    return _json_bytes(capture_saved(capture_dir, summary, strip))
+    return _json_bytes(capture_saved(capture_dir, summary))
 
 
 def matcher_source() -> bytes:
@@ -337,13 +306,12 @@ def items_data(
 def saved_against_of(
     records: Mapping[str, dict] | None,
     summary_of: SummaryOf | None = None,
-    strip: Strip | None = None,
 ) -> SavedAgainst:
     """What each function was saved against, from its item record: ``signature`` (the record's ``signature``, an
-    applicability signature as the capture store writes it, identifiers already removed; a function without one
-    gives None), ``level`` (the record's ``level``), and the ``Asked`` and ``Approach`` sections of the
-    ``summary.md`` of the first of its provenance episodes that *summary_of* has one for, identifiers removed with
-    *strip* (:func:`default_strip` when None)."""
+    applicability signature as the capture store writes it, without its goal; a function without one gives None),
+    ``level`` (the record's ``level``), and the ``Asked`` and ``Approach`` sections of the ``summary.md`` of the
+    first of its provenance episodes that *summary_of* has one for, else the signature's goal as Asked; every text
+    as written."""
 
     def get(item: str) -> dict | None:
         rec = records.get(item) if records else None
@@ -351,7 +319,7 @@ def saved_against_of(
         if not isinstance(sig, dict):
             return None
         out = {
-            "signature": strip_signature({k: v for k, v in sig.items() if k != "goal"}, strip),
+            "signature": {k: v for k, v in sig.items() if k != "goal"},
             "asked": "",
             "approach": "",
             "level": rec.get("level") if isinstance(rec.get("level"), str) else None,
@@ -361,10 +329,10 @@ def saved_against_of(
         for episode in episodes if summary_of is not None else []:
             text = summary_of(str(episode)) if isinstance(episode, str) else None
             if text:
-                out.update(summary_sections(text, strip))
+                out.update(summary_sections(text))
                 break
         if not out["asked"] and isinstance(sig.get("goal"), str):
-            out["asked"] = (strip or default_strip())(sig["goal"])
+            out["asked"] = sig["goal"]
         return out
 
     return get
@@ -416,7 +384,6 @@ def find_data(
     shapes: ShapeLookup | None,
     records: Mapping[str, dict] | None = None,
     saved_against: SavedAgainst | None = None,
-    strip: Strip | None = None,
 ) -> dict:
     """``.memory/find.json``: each listed function with the recorded input shapes of its current body.
 
@@ -425,8 +392,7 @@ def find_data(
     signature and not read: a function's shapes come only from *shapes*.
 
     With *saved_against*, each listed function it gives a signature for is also a row of ``procedures`` (in id
-    order): ``{id, signature, docstring, asked, approach, level, status, summary}``, the docstring and summary with
-    identifiers removed by *strip* (:func:`default_strip` when None), which
+    order): ``{id, signature, docstring, asked, approach, level, status, summary}``, every text as written, which
     ``memory.match`` hands its matcher. A procedure its item record does not list (:func:`.recognition.listed`) is no
     row. The key is left out while no function has one, so the file is then byte for byte what it was.
     """
@@ -456,18 +422,17 @@ def find_data(
         and (s := saved_against(e["id"])) is not None
     }
     if saved:
-        strip = strip or default_strip()
         docs = _docstrings(tree, lib, set(saved))
         data["procedures"] = [
             {
                 "id": e["id"],
                 "signature": saved[e["id"]].get("signature") or {},
-                "docstring": strip(docs.get(e["id"], "")),
+                "docstring": docs.get(e["id"], ""),
                 "asked": saved[e["id"]].get("asked") or "",
                 "approach": saved[e["id"]].get("approach") or "",
                 "level": saved[e["id"]].get("level") or "unknown",
                 "status": _status(status_of, e["id"]),
-                "summary": strip(e.get("summary", "")),
+                "summary": e.get("summary", ""),
             }
             for e in sorted(out, key=lambda e: e["id"])
             if e["id"] in saved
@@ -485,9 +450,8 @@ def _json_bytes(data: dict) -> bytes:
 #
 # Both are harness-generated at each export, with no model call: ``.memory/catalogue.md``, one card per stored
 # function in module-path order (never a score), then the notes, then the captured procedures; and
-# ``.memory/dispatch.json``, each procedure that has a reader or an ``applies``. Neither carries an answer, a raw
-# request text or a printed identifier: every free text (docstrings, summary sections, what broke) goes through the
-# one identifier rule (``signatures.strip_identifiers``).
+# ``.memory/dispatch.json``, each procedure that has a reader or an ``applies``. Neither carries an answer or a raw
+# request text; every free text (docstrings, summary sections, what broke) is shown as written.
 
 CATALOGUE_FILE = ".memory/catalogue.md"
 DISPATCH_FILE = ".memory/dispatch.json"
@@ -512,15 +476,15 @@ def _provenance_episodes(rec: Mapping | None) -> list[str]:
     return [e for e in eps if isinstance(e, str)] if isinstance(eps, list) else []
 
 
-def _saved_lines(rec: Mapping | None, summary_of: SummaryOf | None, strip: Strip) -> list[tuple[str, str]]:
-    """``(asked, approach)`` of each provenance episode of *rec* that has a ``summary.md``, identifiers removed,
-    without repeats, in the record's episode order; else the signature's own goal (already stripped) as Asked."""
+def _saved_lines(rec: Mapping | None, summary_of: SummaryOf | None) -> list[tuple[str, str]]:
+    """``(asked, approach)`` of each provenance episode of *rec* that has a ``summary.md``, as written, without
+    repeats, in the record's episode order; else the signature's own goal as Asked."""
     out: list[tuple[str, str]] = []
     for episode in _provenance_episodes(rec) if summary_of is not None else []:
         text = summary_of(episode)
         if not text:
             continue
-        s = summary_sections(text, strip)
+        s = summary_sections(text)
         pair = (_one_line(s["asked"]), _one_line(s["approach"]))
         if any(pair) and pair not in out:
             out.append(pair)
@@ -631,23 +595,20 @@ def catalogue_text(
     records: Mapping[str, dict] | None = None,
     summary_of: SummaryOf | None = None,
     captures: Mapping[str, bytes] | None = None,
-    strip: Strip | None = None,
 ) -> str:
     """``.memory/catalogue.md``: the library's whole catalogue as the librarian reads it (design J(b).3).
 
     One card per listed function in module-path order (its id, signature and the first paragraph of its docstring;
-    what it was saved against, the identifier-stripped ``## Asked`` and ``## Approach`` lines of each provenance
-    episode's ``summary.md`` from *summary_of*; its evidence level and status, its reader, whether it has
-    ``applies``, its input line and a one-line track record; the notes it links to). Then the notes, then the
-    captured procedures from *captures* (the actor's snapshot, ``.memory/captures/...``), each at level
-    ``unchecked``; a captured attempt that failed is listed with what broke and is never offered to run. Card fields
-    are fixed; the only free text is the docstrings and the summaries, identifiers removed with *strip*. Pure: the
-    same inputs give the same bytes."""
+    what it was saved against, the ``## Asked`` and ``## Approach`` lines of each provenance episode's
+    ``summary.md`` from *summary_of*; its evidence level and status, its reader, whether it has ``applies``, its
+    input line and a one-line track record; the notes it links to). Then the notes, then the captured procedures
+    from *captures* (the actor's snapshot, ``.memory/captures/...``), each at level ``unchecked``; a captured attempt
+    that failed is listed with what broke and is never offered to run. Card fields are fixed; the only free text is
+    the docstrings and the summaries, as written. Pure: the same inputs give the same bytes."""
     from .library_index import signature_text
 
     tree = Path(tree)
     lib = lib if lib is not None else discover(tree)
-    strip = strip or default_strip()
     links = build_links(lib)
     docs = _function_docs(tree, lib)
     status = {
@@ -672,10 +633,10 @@ def catalogue_text(
         reader = _reader_of(rec)
         level = rec.get("level") if rec and isinstance(rec.get("level"), str) else "not recorded"
         lines = [f"\n### {f.item_id}\n", f"`{f.module}:{f.signature}`\n"]
-        doc = _one_line(strip(_first_paragraph(docs.get(f.item_id, ""))))
+        doc = _one_line(_first_paragraph(docs.get(f.item_id, "")))
         if doc:
             lines.append(f"{doc}\n")
-        saved = _saved_lines(rec, summary_of, strip)
+        saved = _saved_lines(rec, summary_of)
         lines.append("Saved against:" + ("" if saved else " no summary recorded") + "\n")
         for asked, approach in saved:
             lines.append(f"- Asked: {asked or 'not recorded'}\n")
@@ -715,8 +676,8 @@ def catalogue_text(
         )
         out.append(
             f"\n### {n.item_id}\n"
-            + (f"{_one_line(strip(n.title))}\n" if n.title else "")
-            + (f"{_one_line(strip(about))}\n" if about else "")
+            + (f"{_one_line(n.title)}\n" if n.title else "")
+            + (f"{_one_line(about)}\n" if about else "")
             + f"Status: {status[n.item_id]}\n"
             + ("Functions: " + ", ".join(fns) + "\n" if fns else ""),
         )
@@ -729,7 +690,7 @@ def catalogue_text(
         rec = doc["record"] if isinstance(doc["record"], dict) else {}
         failed = rec.get("outcome") == "failed"
         lines = [f"\n### {CAPTURE_PREFIX}{cid}\n"]
-        run_doc = _one_line(strip(_first_paragraph(_docstring_of(doc["procedure"]))))
+        run_doc = _one_line(_first_paragraph(_docstring_of(doc["procedure"])))
         if run_doc:
             lines.append(f"{run_doc}\n")
         goal = _one_line(sig.get("goal")) if isinstance(sig.get("goal"), str) else ""
@@ -750,7 +711,7 @@ def catalogue_text(
             lines.append(f"Recognition: {why}\n")
         if failed:
             for line in (doc["broke"] or "").splitlines():
-                line = _one_line(strip(line.strip().lstrip("-* ")))
+                line = _one_line(line.strip().lstrip("-* "))
                 if line and line.lower() != "none":
                     lines.append(f"Broke: {line}\n")
         out.append("".join(lines))
@@ -825,7 +786,6 @@ def librarian_files(
     records: Mapping[str, dict] | None = None,
     summary_of: SummaryOf | None = None,
     captures: Mapping[str, bytes] | None = None,
-    strip: Strip | None = None,
     search: Any = None,
 ) -> dict[str, bytes]:
     """The librarian's generated files of the copy at *tree* (``UNIFY_MEMORY_LIBRARIAN=on``): ``catalogue.md``,
@@ -847,7 +807,6 @@ def librarian_files(
             records=records,
             summary_of=summary_of,
             captures=captures,
-            strip=strip,
         ).encode("utf-8"),
         DISPATCH_FILE: _json_bytes(
             dispatch_data(lib, status_of=status_of, records=records, captures=captures),
@@ -906,7 +865,6 @@ def generated_library_mode(
     records: Mapping[str, dict] | None = None,
     tests: ReadFile | None = None,
     saved_against: SavedAgainst | None = None,
-    strip: Strip | None = None,
     librarian: bool = False,
     summary_of: SummaryOf | None = None,
     captures: Mapping[str, bytes] | None = None,
@@ -935,7 +893,7 @@ def generated_library_mode(
         return example_text(ex) if ex is not None else None
 
     if saved_against is None and records is not None:
-        saved_against = saved_against_of(records, None, strip)
+        saved_against = saved_against_of(records, None)
 
     def signature_of(item: str) -> dict | None:
         got = saved_against(item) if saved_against is not None else None
@@ -960,7 +918,7 @@ def generated_library_mode(
             items_data(lib, status_of, found, complete, records, shown),
         ),
         FIND_FILE: _json_bytes(
-            find_data(tree, lib, status_of, shapes, records, saved_against, strip),
+            find_data(tree, lib, status_of, shapes, records, saved_against),
         ),
         MATCHER_FILE: matcher_source(),
         SHAPES_FILE: (_HERE / "analysis" / "shapes.py").read_bytes(),
@@ -973,7 +931,6 @@ def generated_library_mode(
                 records=records,
                 summary_of=summary_of,
                 captures=captures,
-                strip=strip,
                 search=search,
             ),
         )

@@ -6,8 +6,9 @@ episode handed back, and writes ``procedure.py``, ``signature.json`` and ``recor
 ``<store>/<capture id>/``, where the capture id is the first 16 hex digits of the sha256 of ``procedure.py``. The
 store is not the library: only the writer edits the library, and the writer reads captures as pool entries.
 
-The applicability signature is computed by the harness and holds no identifier and no request text, even when the
-request prints aliases or ids. A failed attempt is captured as negative knowledge (``outcome: "failed"``).
+The applicability signature is computed by the harness and holds no request text; its goal, the episode's Asked
+section, keeps the aliases and ids it names as written. A failed attempt is captured as negative knowledge
+(``outcome: "failed"``).
 
 Every name this file assumes for code that does not exist yet is in the block of constants below, so the code's
 real names can be put in one place.
@@ -93,7 +94,7 @@ needs_bwrap = pytest.mark.skipif(
     reason="bubblewrap required: model-written code runs only confined",
 )
 
-#: Identifiers the request prints; none may reach a signature.
+#: Identifiers the request and its episode's Asked section print; the signature's goal keeps them as written.
 IDS = ("ALPHA-7731", "cobalt-otter", "3f9a2c1e")
 OTHER_IDS = ("BRAVO-0042", "amber-lynx", "7d1e0b44")
 
@@ -388,23 +389,24 @@ def test_a_completed_attempt_is_captured_with_its_procedure_signature_and_record
 
 
 @needs_bwrap
-def test_the_signature_carries_no_identifier_or_request_text(tmp_path):
+def test_the_signature_keeps_the_asked_text_as_written_and_carries_no_request_text(tmp_path):
     store, cid = _captured(tmp_path)
     text = _signature_bytes(store, cid)
-    for ident in IDS:
-        assert ident not in text, ident
+    goal = json.loads(text)["goal"]
+    assert goal == f"Sort the numbers of ticket {IDS[0]} (alias: {IDS[1]}, ref {IDS[2]}) in ascending order."
     assert "5 3 9 1" not in text
     assert "Sort the numbers below" not in text
 
 
 @needs_bwrap
-def test_the_signature_is_the_same_when_only_printed_identifiers_change(tmp_path):
+def test_only_the_goal_differs_when_only_printed_identifiers_change(tmp_path):
     a, cid = _captured(tmp_path / "a", ids=IDS)
     b, cid_b = _captured(tmp_path / "b", ids=OTHER_IDS)
     assert cid == cid_b
-    assert json.loads(_signature_bytes(a, cid)) == json.loads(_signature_bytes(b, cid))
+    sig_a, sig_b = json.loads(_signature_bytes(a, cid)), json.loads(_signature_bytes(b, cid))
+    assert {k: v for k, v in sig_a.items() if k != "goal"} == {k: v for k, v in sig_b.items() if k != "goal"}
     for ident in OTHER_IDS:
-        assert ident not in _signature_bytes(b, cid)
+        assert ident in sig_b["goal"], ident
 
 
 @needs_bwrap

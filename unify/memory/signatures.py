@@ -1,6 +1,6 @@
-"""The one rule for printed identifiers: what counts as an identifier in a request, an applicability signature or any
-content a mechanism compares, and how it is stripped. Identifiers are never keys: every signature and every content
-comparison strips them first, with this rule and no other.
+"""What counts as a printed identifier in a request or any other text, and how it would be marked. Kept for the
+evaluation probes, which read these functions; no harness path calls them. The harness never removes an identifier
+from what it stores or shows: captures, signatures and the library's generated files keep text as written.
 
 A token is an identifier by its form alone (:func:`is_identifier`), never by a word list:
 

@@ -19,8 +19,6 @@ import shutil
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from tests.memory.gate_records import Built, Landing, build, needs_box
 from tests.memory.test_episodes import _ep
 from tests.memory.test_layout import LIB, _tree
@@ -45,13 +43,7 @@ TOKENS = "memory.text.parse:tokens"
 #: The procedure the pass lands from its capture, as ``land_capture`` names it.
 LANDED = "memory.prices.procedures:total_price"
 ROWS = [{"price": 3, "name": "pen"}, {"price": 5, "name": "cup"}]
-PLANTED = "alias-7f3a9c2e"  # a printed identifier the stand-in rule removes
-
-
-def _strip(text: str) -> str:
-    """A stand-in for the one identifier rule (``signatures.strip_identifiers``, the capture store's): it removes
-    the planted identifier only, so these tests check the plumbing, not the rule."""
-    return text.replace(PLANTED, "<id>")
+PLANTED = "alias-7f3a9c2e"  # a printed identifier, kept as written wherever it was recorded
 
 
 def _signature(value, relations=("output_within_input",)) -> dict:
@@ -102,7 +94,7 @@ def _capture(root: Path, cid: str, *, procedure: str, signature: dict, outcome: 
     (d / "record.json").write_text(
         json.dumps({"level": "unchecked", "status": "on-trial", "outcome": outcome}),
     )
-    (d / "saved.json").write_bytes(lx.capture_saved_bytes(d, SUMMARY, _strip))
+    (d / "saved.json").write_bytes(lx.capture_saved_bytes(d, SUMMARY))
     return d
 
 
@@ -143,8 +135,8 @@ def _library(tmp_path: Path, *, effect: str | None = None) -> Path:
     records = copy.deepcopy(built.records)
     if effect is not None:
         records[LANDED]["effect"] = effect
-    saved = lx.saved_against_of(records, lambda e: SUMMARY if e == "ep1" else None, _strip)
-    write_files(root, lx.generated_library_mode(root, records=records, saved_against=saved, strip=_strip))
+    saved = lx.saved_against_of(records, lambda e: SUMMARY if e == "ep1" else None)
+    write_files(root, lx.generated_library_mode(root, records=records, saved_against=saved))
     _capture(root, "a" * 16, procedure=PROCEDURE, signature=_signature(ROWS))
     _capture(root, "b" * 16, procedure=FAILING, signature=_signature(ROWS), outcome="failed",
              broke=f"- read the rows as text, not JSON (`cell:1` \"{PLANTED}\")\n")
@@ -227,20 +219,19 @@ def test_the_matcher_hook_can_be_replaced_and_receives_what_each_item_was_saved_
     lib = by_id[LANDED]
     assert lib["source"] == "library" and lib["signature"]["input"] == _built().records[LANDED]["signature"]["input"]
     assert lib["docstring"].startswith("The total price of the rows.")
-    assert lib["asked"] == "Sum the prices of a list of priced rows for <id>."
+    assert lib["asked"] == f"Sum the prices of a list of priced rows for {PLANTED}."
     assert lib["approach"].startswith("- Added the price column")
     cap = by_id["capture:" + "a" * 16]
     assert cap["docstring"] == "The total price of the rows." and cap["asked"] == lib["asked"]
-    assert by_id["capture:" + "b" * 16]["broke"] == ["read the rows as text, not JSON (`cell:1` \"<id>\")"]
-    # no identifier reaches the matcher or the printed rows
-    assert PLANTED not in json.dumps(seen) and PLANTED not in (root / ".memory" / "find.json").read_text()
+    assert by_id["capture:" + "b" * 16]["broke"] == [f"read the rows as text, not JSON (`cell:1` \"{PLANTED}\")"]
+    # the identifier reaches the matcher and find.json as written
+    assert PLANTED in json.dumps(seen) and PLANTED in (root / ".memory" / "find.json").read_text()
 
 
-def test_the_exported_texts_use_the_one_identifier_rule_when_it_is_built():
-    signatures = pytest.importorskip("unify.memory.signatures")
+def test_the_exported_texts_keep_identifiers_as_written():
     text = "Sum the prices for task_00576224 in 3f2b9c1d-77aa-4b0e-9a1c-0d5e2f6a7b8c"
     out = lx.summary_sections(f"## Asked\n{text}\n## Approach\n- x\n")["asked"]
-    assert out == signatures.strip_identifiers(text)
+    assert out == text
 
 
 # --- run ---------------------------------------------------------------------------------------------------------
@@ -476,20 +467,20 @@ def test_the_audit_hook_marks_opens_by_the_import_system_and_the_library(tmp_pat
 # --- the index line, the guide and the pointer section -----------------------------------------------------------
 
 
-def test_the_index_line_shows_the_signature_compactly_without_identifiers(tmp_path):
+def test_the_index_line_shows_the_signature_compactly_with_its_keys_as_written(tmp_path):
     from unify.memory import layout
     from unify.memory.library_index import INDEX_HEAD, INDEX_HEAD_IN_CODE, build_links, render_index
 
     lib = layout.discover(_tree(tmp_path))
     links = build_links(lib)
-    sig = _signature([{"price": 3, "<id>": "pen"}])
+    sig = _signature([{"price": 3, "3c9b0459": "pen"}])
     index = render_index(lib, links, None, None, None, None, {DATE: sig}.get)
     paths = memory_helper.signature(sig["input"])
     line = (
         "  input: {" + ", ".join(f"{k}: {v}" for k, v in sorted(paths.items()))
         + "}; relations: output_within_input\n"
     )
-    assert "[].price: int" in line and "[].<id>" in line
+    assert "[].price: int" in line and "[].3c9b0459: str" in line
     assert line in index and index.count("  input: ") == 1
     assert render_index(lib, links, None, None, None, None, {DATE: sig}.get) == index  # byte-stable
     assert "`input:` line" in INDEX_HEAD and "`input:` line" in INDEX_HEAD_IN_CODE

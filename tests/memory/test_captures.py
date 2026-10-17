@@ -1,6 +1,6 @@
-"""The capture store: every completed attempt captured at once, by the harness, outside the library; its signature
-holds no identifier; a failure is negative knowledge; outcomes join one record; the writer reads the store and stays
-the only agent that edits the library."""
+"""The capture store: every completed attempt captured at once, by the harness, outside the library; what it stores
+keeps its text and keys as written, identifiers included; a failure is negative knowledge; outcomes join one record;
+the writer reads the store and stays the only agent that edits the library."""
 
 from __future__ import annotations
 
@@ -105,7 +105,7 @@ VALUE = {"ab12cd34ef": [1, 2, 3], "run_000123": [4, 5]}
 # --- capture at once, outside the library ------------------------------------------------------------------------
 
 
-def test_a_completed_attempt_is_captured_with_its_signature_and_holds_no_identifiers(tmp_path):
+def test_a_completed_attempt_is_captured_with_its_signature_and_keeps_its_keys_as_written(tmp_path):
     staging = _staging(tmp_path, "e1", {"procedure.py": PROC, "broke.md": "none\n"})
     store = cp.store_dir(tmp_path)
     runner, calls = _box(VALUE, [6, 9], holds=True)
@@ -133,16 +133,15 @@ def test_a_completed_attempt_is_captured_with_its_signature_and_holds_no_identif
     d = store / cid
     assert sorted(os.listdir(d)) == ["procedure.py", "record.json", "saved.json", "signature.json"]
     assert staging not in d.parents and store.parent == tmp_path
-    saved_text = (d / cp.SAVED_FILE).read_text()  # what the capture was saved against, stripped like the signature
-    for ident in IDS:
-        assert ident not in saved_text, ident
+    saved_text = (d / cp.SAVED_FILE).read_text()  # what the capture was saved against: no request text
     assert REQUEST not in saved_text
     sig_text = (d / "signature.json").read_text()
-    for ident in IDS:
-        assert ident not in sig_text, ident
-    assert REQUEST not in sig_text and "rows" not in json.loads(sig_text)["input"].get("lengths", {})
     sig = json.loads(sig_text)
-    assert sig["input"]["kind"] == "value" and cp.ID_MARK in json.dumps(sig["input"]["tree"])
+    # the read value's keys as written, identifier-shaped ones included; the request's other text never enters
+    assert sig["input"]["kind"] == "value" and set(sig["input"]["tree"]) == set(VALUE)
+    for ident in (i for i in IDS if i not in VALUE):
+        assert ident not in sig_text, ident
+    assert REQUEST not in sig_text and "rows" not in sig["input"].get("lengths", {})
     assert sig["constraints"]["holds"]["stated"] and not sig["constraints"]["applies"]["stated"]
     rec = json.loads((d / "record.json").read_text())
     assert rec["episodes"] == ["e1"] and rec["level"] == tr.UNCHECKED  # a capture starts unchecked (I.2.3)
@@ -170,6 +169,41 @@ def test_an_attempt_that_handed_nothing_back_is_not_captured(tmp_path):
     runner, calls = _box(VALUE, [6, 9])
     row = cp.capture(staging, ep, cp.store_dir(tmp_path), runner=runner)
     assert row["safety"].startswith("not a completed attempt") and calls == []
+
+
+def test_a_capture_and_the_index_keep_an_identifier_as_written(tmp_path):
+    """The harness removes no identifier from what it stores or shows on its own: what a capture was saved against
+    (its docstring, Asked and Approach, as the store writes them and as the export reads them), its signature's goal
+    and keys, and the index's ``input:`` line all keep an id-like token verbatim."""
+    from unify.memory import library_export as lx
+    from unify.memory.library_index import signature_text
+
+    token = "Task id: 3c9b0459"
+    source = PROC.replace('"""Each row\'s total, in name order."""', f'"""Each row\'s total, in name order ({token})."""')
+    summary = f"## Asked\n{token}: total each row.\n## Approach\n- Summed the rows of {token}.\n## Worked\n- the sums\n"
+    saved = cp.saved_against(source, summary)
+    assert saved == {
+        "docstring": f"Each row's total, in name order ({token}).",
+        "asked": f"{token}: total each row.",
+        "approach": f"- Summed the rows of {token}.",
+    }
+    d = tmp_path / "capture"
+    d.mkdir()
+    (d / cp.PROCEDURE_FILE).write_text(source)
+    (d / cp.BROKE_FILE).write_text(f"- the rows of {token} were text\n")
+    exported = lx.capture_saved(d, summary)
+    assert {k: exported[k] for k in saved} == saved and exported["broke"] == [f"the rows of {token} were text"]
+    sig = cp.signature(
+        {"3c9b0459": [1, 2]},
+        [3],
+        returned=True,
+        applies=None,
+        holds=None,
+        digests=cp.function_digests(source),
+        goal=cp.asked(summary),
+    )
+    assert sig["goal"] == f"{token}: total each row." and "3c9b0459" in sig["input"]["tree"]
+    assert "3c9b0459" in signature_text(sig)
 
 
 # --- negative knowledge -------------------------------------------------------------------------------------------
@@ -246,12 +280,12 @@ def test_a_repeat_is_recognised_by_running_stored_captures_on_the_new_request(tm
     first = _staging(tmp_path, "e1", {"procedure.py": PROC})
     runner, _ = _box(VALUE, [6, 9])
     a = cp.capture(first, _ep("e1"), store, runner=runner)
-    # the same work with other identifiers and values: same structure, so the stored capture is run on it
-    other = REQUEST.replace("ab12cd34ef", "cd56ef78ab").replace("lunar-otter", "quiet-heron")
+    # the same work with other printed identifiers (its ticket and case, never read into the value): the read value
+    # has the same keys as written, so the same input signature, and the stored capture is run on it
+    other = REQUEST.replace("0f3a9c7e1b", "9e8d7c6b5a").replace("lunar-otter", "quiet-heron")
     variant = PROC.replace("Each row's total", "Every row's total")
     second = _staging(tmp_path, "e2", {"procedure.py": variant})
-    value2 = {"cd56ef78ab": [1, 2, 3], "run_000123": [4, 5]}
-    runner, calls = _box(value2, [6, 9])
+    runner, calls = _box(VALUE, [6, 9])
     b = cp.capture(second, _ep("e2", request=other), store, runner=runner)
     assert len(calls) == 2  # its own run, then the stored capture's run on this request
     assert b["same_as"] == [a["capture_id"]]
