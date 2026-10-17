@@ -362,9 +362,7 @@ def test_new_or_changed_tests_use_g3s_candidate_run(tmp_path):
     assert gate.runs == []
 
 
-def test_perturbation_verdicts_become_reasons_and_type_changes_reach_the_record(
-    tmp_path,
-):
+def test_perturbation_verdicts_are_recorded_and_never_refuse_or_set_a_level(tmp_path):
     fakes = _Fakes()
     fakes.kinds = {"grid": "copied"}
     calls = [_call(_arg("grid", [[0, 1]]), line=14)]
@@ -382,25 +380,18 @@ def test_perturbation_verdicts_become_reasons_and_type_changes_reach_the_record(
     fakes.verdict.special = [(key, GRID, "[1][0]", "IndexError")]
     fakes.verdict.unjudged = ["budget"]
     fakes.verdict.type_changes = [change]
-    ex, run, _, _ = _checks(tmp_path, calls, fakes=fakes)
-    ex.judge()
-    assert _reasons(run) == [
-        f"[examples:perturbed-refused] {ITEM} refuses fixture values it accepted unchanged: with [0][1] of {GRID} "
-        f"replaced by an unseen value of its type, its call at {TEST}:14 raises MemoryInputError; refuse inputs by "
-        "their shape, not by values the recording happened to hold",
-        f"[examples:special-cased] {ITEM} handles {GRID} only for its recorded values: with [1][0] replaced by an "
-        f"unseen value of its type, its call at {TEST}:14 raises IndexError where it returned before",
-        f"[examples:unjudged] {ITEM}: the check with unseen fixture values did not complete (budget); a function is "
-        "admitted only once it is judged",
-    ]
-    examples = run.verification[ITEM]["examples"]
-    assert (
-        examples["perturbation"]["type_changes"] == [change]
-        and examples["type_changes"] == 1
-    )
-    assert any(GRID in n and "recorded for review" in n for n in run.notes)
-    assert not any("NoneType" in r for r in run.res.reasons + run.notes)
-    assert fakes.check_kw["tests"] == [TEST] and fakes.check_kw["field_types"] == {}
+    for levels in (False, True):
+        ex, run, _, _ = _checks(tmp_path, calls, fakes=fakes)
+        run.levels_on = levels
+        ex.judge()
+        assert _reasons(run) == [] and run.res.passed
+        assert run.level_reasons == {}
+        examples = run.verification[ITEM]["examples"]
+        assert (
+            examples["perturbation"]["type_changes"] == [change]
+            and examples["type_changes"] == 1
+        )
+        assert not any("recorded for review" in n or "NoneType" in n for n in run.notes)
 
 
 def test_docstring_problems_of_a_changed_function_are_g1_reasons(tmp_path):
@@ -651,19 +642,16 @@ def test_an_effect_comes_from_episode_covers_only():
     assert derive_effect([], episodes.get) is None
 
 
-def test_rendered_perturbation_reasons_are_filed_as_they_are_and_input_fixtures_kept_for_stage_5(
-    tmp_path,
-):
+def test_an_unjudged_perturbation_files_nothing_and_input_fixtures_are_kept(tmp_path):
     fakes = _Fakes()
     fakes.kinds = {"grid": "copied"}
     fakes.inputs = [
         SimpleNamespace(path=GRID, data=b"[[0, 1]]", entry={"kind": "copy"}),
     ]
-    fakes.verdict.reasons = ["[examples:unjudged] rendered by the perturbation check"]
     fakes.verdict.unjudged = ["budget"]
     ex, run, _, _ = _checks(tmp_path, [_call(_arg("grid", [[0, 1]]))], fakes=fakes)
     ex.judge()
-    assert _reasons(run) == ["[examples:unjudged] rendered by the perturbation check"]
+    assert _reasons(run) == []
     assert run.input_fixtures == {ITEM: fakes.inputs}
 
 

@@ -1,4 +1,5 @@
-"""The memorisation check: a library function's tests rerun on its input fixtures with unseen values.
+"""The check with unseen values: a library function's tests rerun on its input fixtures with unseen values, and what
+its calls do there recorded, never judged.
 
 No sandbox: the test runner is a fake that plays a test module over the fixture files of the tree it is given and
 records the calls as the gate's plugin would (digests of canonical JSON), so every run is deterministic.
@@ -18,17 +19,6 @@ from unify.memory.example_calls import ArgRecord, CallKey, CallRecord, ExampleCa
 from unify.memory.example_perturb import InputFixture, check, input_fixtures
 from unify.memory.fixtures import canonical
 from unify.memory.sandbox_run import PytestOutcome
-
-
-def _fix(cause: str) -> str:
-    """What the unjudged refusal says lets the check complete, for *cause*."""
-    from unify.memory.example_calls import MAX_CALL_LINES
-    from unify.memory.library_prompts import UNJUDGED_FIX
-
-    return UNJUDGED_FIX[cause].format(
-        budget_s=example_perturb.PERTURB_BUDGET_S,
-        max_calls=MAX_CALL_LINES,
-    )
 
 
 ITEM = "memory.acct.users:pick"
@@ -153,7 +143,7 @@ def _no_blob(sha: str) -> bytes:
     raise KeyError(sha)
 
 
-def test_a_function_that_accepts_only_a_recorded_id_is_refused_naming_the_field_and_fixture(
+def test_a_function_that_accepts_only_a_recorded_id_has_its_refusal_recorded_with_the_field_and_fixture(
     tmp_path,
 ):
     tree, fx = _tree(
@@ -174,18 +164,12 @@ def test_a_function_that_accepts_only_a_recorded_id_is_refused_naming_the_field_
     v = _check(tmp_path, tree, fx, runner)
     assert [(f, name) for _, f, name in v.refused] == [(DATA + "row.json", "id")]
     assert v.special == [] and v.unjudged == []
-    assert v.reasons == [
-        f"[examples:perturbed-refused] {ITEM} refuses fixture values it accepted unchanged: with id of "
-        f"{DATA}row.json replaced by an unseen value of its type, its call at {TEST}:7 raises MemoryInputError; "
-        "refuse inputs by their shape, not by values the recording happened to hold",
-    ]
+    assert not hasattr(v, "reasons")  # what the calls did is recorded, never a refusal text
     assert v.runs <= example_perturb.PERTURB_MAX_RUNS and v.fields == 3
-    assert "E1243" not in " ".join(
-        v.reasons + v.notes,
-    )  # no recorded value in a reason or note
+    assert "E1243" not in " ".join(v.notes)  # no recorded value in a note
 
 
-def test_a_lookup_table_of_recorded_inputs_raises_and_is_special_cased(tmp_path):
+def test_a_lookup_table_of_recorded_inputs_raises_and_the_raise_is_recorded(tmp_path):
     tree, fx = _tree(tmp_path, {"row.json": {"id": "E1243"}})
 
     def pick(row):
@@ -200,10 +184,7 @@ def test_a_lookup_table_of_recorded_inputs_raises_and_is_special_cased(tmp_path)
     assert [(f, name, raised) for _, f, name, raised in v.special] == [
         (DATA + "row.json", "id", "KeyError"),
     ]
-    assert v.reasons == [
-        f"[examples:special-cased] {ITEM} handles {DATA}row.json only for its recorded values: with id replaced "
-        f"by an unseen value of its type, its call at {TEST}:7 raises KeyError where it returned before",
-    ]
+    assert not any("special-cased" in n for n in v.notes)
 
 
 def test_a_join_of_two_fixtures_stays_joined_under_consistent_replacement(tmp_path):
@@ -230,7 +211,7 @@ def test_a_join_of_two_fixtures_stays_joined_under_consistent_replacement(tmp_pa
         ],
     )
     v = _check(tmp_path, tree, fx, runner)
-    assert v.refused == [] and v.special == [] and v.reasons == []
+    assert v.refused == [] and v.special == []
     group = runner.files[1]
     users, orders = json.loads(group["users.json"]), json.loads(group["orders.json"])
     assert users[0]["user_id"] != "U-17" and users[0]["user_id"] == orders[0]["user_id"]
@@ -254,9 +235,7 @@ def test_an_exact_assertion_failing_on_changed_values_is_never_itself_a_refusal(
         failing=True,
     )
     v = _check(tmp_path, tree, fx, runner)
-    assert (
-        v.reasons == [] and v.refused == [] and v.special == [] and v.type_changes == []
-    )
+    assert v.refused == [] and v.special == [] and v.type_changes == []
     assert v.judged == 1 and v.runs == 2
     assert v.derived[next(iter(v.derived))]["row"] == {DATA + "row.json"}
 
@@ -292,7 +271,7 @@ def test_a_nondeterministic_call_is_excluded_as_unstable(tmp_path):
     assert (
         f"1 calls of {ITEM} differ between two unperturbed runs; not judged" in v.notes
     )
-    assert v.reasons == [] and v.judged == 1
+    assert v.refused == [] and v.special == [] and v.judged == 1
 
 
 def test_a_rejection_sourced_fixture_exempts_only_the_field_it_varied(tmp_path):
@@ -344,7 +323,6 @@ def test_a_rejection_sourced_fixture_exempts_only_the_field_it_varied(tmp_path):
         f"refusal of kwargs.amount of {DATA}pay.json by {ITEM} allowed by a recorded rejection"
         in v.notes
     )
-    assert len(v.reasons) == 1 and "with kwargs.to of" in v.reasons[0]
 
 
 def test_a_declared_month_accepts_unseen_months_and_may_refuse_thirteen(tmp_path):
@@ -373,7 +351,7 @@ def test_a_declared_month_accepts_unseen_months_and_may_refuse_thirteen(tmp_path
         runner,
         field_types={DATA + "rows.json#[].month": "month"},
     )
-    assert declared.reasons == [] and declared.refused == []
+    assert declared.refused == []
     months = [json.loads(run["rows.json"])[0]["month"] for run in runner.files]
     assert (
         months[0] == 3 and 1 <= months[1] <= 12 and months[1] not in (3, 11)
@@ -396,23 +374,11 @@ def test_running_out_of_budget_leaves_the_function_unjudged(tmp_path, monkeypatc
 
     late = _check(tmp_path, tree, fx, _Runner(script), deadline=time.monotonic() - 1)
     assert late.runs == 0
-    assert (
-        late.unjudged
-        == late.reasons
-        == [
-            f"[examples:unjudged] {ITEM}: the check with unseen fixture values did not complete (the budget ran out "
-            "before the control run); a function is admitted only once it is judged: "
-            + _fix("budget"),
-        ]
-    )
+    assert late.unjudged == ["the budget ran out before the control run"]
     monkeypatch.setattr(example_perturb, "PERTURB_MAX_RUNS", 1)
     short = _check(tmp_path, tree, fx, _Runner(script))
     assert short.runs == 1
-    assert short.unjudged == [
-        f"[examples:unjudged] {ITEM}: the check with unseen fixture values did not complete (the budget ran out "
-        "before the run with every field changed); a function is admitted only once it is judged: "
-        + _fix("budget"),
-    ]
+    assert short.unjudged == ["the budget ran out before the run with every field changed"]
 
 
 def test_an_incomplete_call_record_of_the_control_leaves_the_function_unjudged(
@@ -449,11 +415,7 @@ def test_an_incomplete_call_record_of_the_control_leaves_the_function_unjudged(
         work=tmp_path / "work",
         deadline=time.monotonic() + 60,
     )
-    assert v.unjudged == [
-        f"[examples:unjudged] {ITEM}: the check with unseen fixture values did not complete (the call record of "
-        "the control run is incomplete); a function is admitted only once it is judged: "
-        + _fix("record"),
-    ]
+    assert v.unjudged == ["the call record of the control run is incomplete"]
 
 
 def test_an_assembled_file_has_only_its_inputs_changed(tmp_path):
@@ -498,7 +460,7 @@ def test_an_assembled_file_has_only_its_inputs_changed(tmp_path):
 
     runner = _Runner(script)
     v = _check(tmp_path, tree, fx, runner)
-    assert v.reasons == []
+    assert v.refused == [] and v.special == []
     changed = [
         json.loads(x)
         for x in runner.files[1]["cases.inputs.jsonl"].decode().splitlines()
@@ -522,7 +484,7 @@ def test_a_lookup_returning_none_on_an_unseen_id_is_recorded_as_a_type_change_no
         ],
     )
     v = _check(tmp_path, tree, fx, runner)
-    assert v.refused == [] and v.special == [] and v.reasons == []
+    assert v.refused == [] and v.special == []
     (entry,) = v.type_changes
     assert (
         entry["item"] == ITEM
@@ -537,8 +499,8 @@ def test_a_lookup_returning_none_on_an_unseen_id_is_recorded_as_a_type_change_no
     assert (
         entry["field_after"]["type"] == "str" and entry["field_after"]["json"] != "E1"
     )
-    (note,) = [n for n in v.notes if n.startswith("special-case suspected")]
-    assert "E1" not in note.replace(DATA, "")
+    # the type change is recorded for review, never shown as a finding
+    assert not any(n.startswith("special-case suspected") for n in v.notes)
 
 
 def test_a_large_result_in_a_type_change_is_kept_as_its_digest(tmp_path):

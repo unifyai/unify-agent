@@ -372,9 +372,9 @@ def test_a_repaired_red_test_lands_and_its_note_says_so(library_example_world):
 def test_an_unchanged_function_whose_tests_alone_change_skips_its_own_code_checks(
     library_example_world,
 ):
-    """A function stored before a newer rule (here: one that only handles its recorded values, which the check
-    with unseen values flags today) does not block a pass that only adds a test for it: the checks that judge a
-    function's own code skip a listed function whose body did not change."""
+    """A function stored before a newer rule (here: one that only handles its recorded values) does not block a
+    pass that only adds a test for it: the checks that judge a function's own code skip a listed function whose body
+    did not change."""
     world = library_example_world
     _land_world(world)
     _bypass(world, {w.MODULE: SPECIAL_CASED})

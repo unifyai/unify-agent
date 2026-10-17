@@ -3,9 +3,9 @@ safety refuse (library mode, writer role, in the jail).
 
 Structured and unstructured recorded inputs are treated alike. A function whose recorded input is text lands
 whether its test parses the text inline (the lowest level, ``unchecked``) or loads a fixture parsed from the
-recorded text by a stored reader (the same level as a structured fixture). An item the check with unseen values
-flags lands at the lowest level, and the flag is shown. G6, a malformed manifest, a regression and the reserved
-paths still refuse.
+recorded text by a stored reader (the same level as a structured fixture). A function that only handles its
+recorded values is never flagged for it. G6, a malformed manifest, a regression and the reserved paths still
+refuse.
 """
 
 from __future__ import annotations
@@ -378,19 +378,15 @@ def test_a_parsed_fixture_that_does_not_re_derive_is_refused(text_world):
     assert any(w.FIXTURE_PATHS[0] in r for r in res.reasons if r.startswith("G1:")), res.reasons
 
 
-def test_an_item_the_unseen_value_check_flags_lands_at_the_lowest_level_with_the_flag_shown(
-    text_world,
-):
+def test_a_function_that_handles_only_its_recorded_values_lands_unflagged(text_world):
     _, _, blobs, _ = text_world
     files, fixtures = w.files_and_fixtures(blobs.get, module=SPECIAL_CASED)
     res = _merge(text_world, files, w.manifest(fixtures))
     assert res.passed and w.ITEM_ID in res.items_merged, res.reasons
-    assert level_of(res, w.ITEM_ID) == LOWEST
     capped = level_reasons_of(res, w.ITEM_ID)
-    assert any("[examples:special-cased]" in r for r in capped), capped
-    # the writer sees the flag in the gate's reply, as a note, never as a refusal
-    shown = [r for r in res.reasons if "[examples:special-cased]" in r]
-    assert shown and all(r.startswith("note:") for r in shown), res.reasons
+    assert not any("[examples:special-cased]" in r for r in capped), capped
+    # the writer sees no such flag in the gate's reply either
+    assert not any("[examples:special-cased]" in r for r in res.reasons), res.reasons
     assert not res.item_reasons.get(w.ITEM_ID), res.item_reasons
 
 

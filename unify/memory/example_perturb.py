@@ -1,26 +1,23 @@
-"""The memorisation check of a library function: its tests rerun on fixtures holding unseen values.
+"""The check of a library function's examples with unseen values: its tests rerun on fixtures holding unseen values.
 
 A library function's examples are the calls its tests make on values loaded from recorded fixtures
-(:mod:`.example_calls`). A function that only handles the values the recording happened to hold (an ``if`` on a
-recorded id, a lookup table keyed by recorded inputs) passes its own tests all the same. This check replaces the
-values of the fixtures the tests load with type-valid values no recording holds (the perturbations of
-:mod:`.held_out`, which keep every structure: keys, columns, list lengths, the header, formats) and reruns the
-function's listed tests, confined, with its calls recorded.
+(:mod:`.example_calls`). This check replaces the values of the fixtures the tests load with type-valid values no
+recording holds (the perturbations of :mod:`.held_out`, which keep every structure: keys, columns, list lengths, the
+header, formats) and reruns the function's listed tests, confined, with its calls recorded.
 
-The tests' own assertions fail legitimately on changed inputs, so pass or fail is not the signal. The check
-judges at the call boundary: each call of the function is matched across runs by its :class:`.CallKey`, and a
-call the function accepted (returned on) in an unperturbed run is judged in a run where one of its arguments
-changed, or where a path argument names a changed fixture:
+Each call of the function is matched across runs by its :class:`.CallKey`. An argument whose digest changed is
+*derived* from the fixture changed in that run, the link the cross-episode evidence reads
+(:attr:`PerturbVerdict.derived`). What a call the function accepted (returned on) in an unperturbed run then does, in
+a run where one of its arguments changed or where a path argument names a changed fixture, is recorded and never
+judged:
 
-* now refused (``MemoryInputError``): the function refuses values, not shapes; allowed only for a field that a
-  recorded rejection behind the fixture varied (:func:`.held_out._exemptions`), and noted;
-* now raising anything else: the function special-cases the recorded values;
-* now returning ``None`` or another top-level type: noted as a suspected special case and recorded in
-  :attr:`PerturbVerdict.type_changes` (values there are for review only and never enter a reason or note);
-* returning the same result under every perturbation of at least three fields: noted as insensitive.
+* refused (``MemoryInputError``): in :attr:`PerturbVerdict.refused`, except for a field that a recorded rejection
+  behind the fixture varied (:func:`.held_out._exemptions`), which is noted;
+* raised anything else: in :attr:`PerturbVerdict.special`;
+* returned ``None`` or another top-level type: in :attr:`PerturbVerdict.type_changes` (values there are for review
+  only and never enter a note).
 
-An argument whose digest changed is *derived* from the fixture changed in that run, the link the cross-episode
-evidence reads (:attr:`PerturbVerdict.derived`).
+None of these refuses the function or sets its evidence level.
 
 **Fields.** Each input fixture is parsed as :func:`.held_out._file_doc` parses a recorded file; an assembled
 ``.jsonl`` file has only the fields under ``[].input`` perturbed. Field values, constancy (identity or format
@@ -36,13 +33,13 @@ input fixture wherever the same leaf value occurs, so a value joining two fixtur
 **Runs** (at most :data:`PERTURB_MAX_RUNS` per function; one deadline for every function of a gate run). The
 candidate tree is copied, the changed bytes written, and the function's listed test files that open an input
 fixture run with its calls recorded. Run 0 is the control (unchanged values): a call whose outcome or result
-digest differs from the gate's own record is unstable and not judged. Run 1 changes every chosen field of every
-input fixture at once. A finding is then narrowed, per fixture and then per field in hashed order, until the
-field is named or the runs are spent (the reason then names the candidates together). Out-of-domain values of
-declared fields run last. Running out before the control and group runs leave the function unjudged, which
-refuses it (fail closed).
+digest differs from the gate's own record is unstable and not compared. Run 1 changes every chosen field of every
+input fixture at once. A difference is then narrowed, per fixture and then per field in hashed order, until the
+field is named or the runs are spent (the record then names the candidates together). Out-of-domain values of
+declared fields run last. Running out before the control and group runs leaves the check incomplete
+(:attr:`PerturbVerdict.unjudged` says why), which is recorded and refuses nothing.
 
-Reasons and notes carry item ids, paths, field names, line numbers and counts, never a recorded value.
+Notes carry item ids, paths, field names, line numbers and counts, never a recorded value.
 """
 
 from __future__ import annotations
@@ -64,9 +61,8 @@ from .sandbox_run import PytestOutcome
 PERTURB_MAX_RUNS = 12  # pytest runs per item (control, group, narrowing)
 PERTURB_BUDGET_S = 240.0  # every item of one gate run
 MAX_INPUT_FIXTURES = 8  # per item, chosen by SHA-256 of (item, path)
-MIN_INSENSITIVE_FIELDS = 3  # a call unchanged under at least this many changed fields is noted as insensitive
 VALUE_RECORD_BYTES = 1024  # a value recorded in a type change past this canonical size is kept as its digest
-_NAMED = 5  # ids named per note or reason; the rest are counted
+_NAMED = 5  # ids named per note; the rest are counted
 
 RunTests = Callable[
     [Path, list[str]],
@@ -101,15 +97,13 @@ class PerturbVerdict:
     notes: list[str] = field(default_factory=list)
     unjudged: list[str] = field(
         default_factory=list,
-    )  # why the check did not complete, as reason text
+    )  # why the check did not complete
     runs: int = 0
     fields: int = 0
     judged: int = 0
     unstable: int = 0
-    # suspected special cases (a call returning None or another type), with the values for review only
+    # calls returning None or another type, with the values for review only
     type_changes: list[dict] = field(default_factory=list)
-    # every refusal text: values replaced and refused or raising, and an unjudged check
-    reasons: list[str] = field(default_factory=list)
 
 
 # --- which fixtures ------------------------------------------------------------------------------------------
@@ -338,11 +332,6 @@ def _call_id(key: CallKey) -> dict:
     return {"test": key.test, "indices": dict(key.indices), "ordinal": key.ordinal}
 
 
-def _key_text(key: CallKey) -> str:
-    idx = ",".join(f"{k}={v}" for k, v in key.indices)
-    return f"{key.test}[{idx}]#{key.ordinal}" if idx else f"{key.test}#{key.ordinal}"
-
-
 def _one_of(names: list[str]) -> str:
     names = sorted(set(names))
     if len(names) == 1:
@@ -350,22 +339,6 @@ def _one_of(names: list[str]) -> str:
     shown = ", ".join(n[:80] for n in names[:_NAMED])
     more = f" and {len(names) - _NAMED} more" if len(names) > _NAMED else ""
     return f"one of {shown}{more}"
-
-
-def _unjudged(item: str, why: str, cause: str) -> str:
-    """The refusal of a function the check could not judge, ending with what lets the check complete (*cause*: a key
-    of :data:`.library_prompts.UNJUDGED_FIX`)."""
-    from .example_calls import MAX_CALL_LINES
-    from .library_prompts import UNJUDGED_FIX
-
-    fix = UNJUDGED_FIX[cause].format(
-        budget_s=PERTURB_BUDGET_S,
-        max_calls=MAX_CALL_LINES,
-    )
-    return (
-        f"[examples:unjudged] {item}: the check with unseen fixture values did not complete ({why}); "
-        f"a function is admitted only once it is judged: {fix}"
-    )
 
 
 def _moved(before: ExampleCall, after: ExampleCall) -> list[str]:
@@ -466,7 +439,7 @@ def check(
     work: Path,
     deadline: float,
 ) -> PerturbVerdict:
-    """Rerun *item*'s listed *tests* on its input *fixtures* with unseen values, judging its calls.
+    """Rerun *item*'s listed *tests* on its input *fixtures* with unseen values, recording what its calls do.
 
     *calls* are the gate's record of the item's example calls on the candidate *tree*; *run_tests* runs test
     files on a tree with the item's calls recorded; *pool* the recorded observations (episode id, action) of the
@@ -654,20 +627,18 @@ def check(
             return "record"
         return outcome.calls
 
-    def fail(why: str, cause: str) -> PerturbVerdict:
-        text = _unjudged(item, why, cause)
-        v.unjudged.append(text)
-        v.reasons.append(text)
+    def fail(why: str) -> PerturbVerdict:
+        v.unjudged.append(why)
         return v
 
     # run 0: the control
     control = run({})
     if control == "budget":
-        return fail("the budget ran out before the control run", "budget")
+        return fail("the budget ran out before the control run")
     if control == "failed":
-        return fail("the control run failed", "failed")
+        return fail("the control run failed")
     if control == "record":
-        return fail("the call record of the control run is incomplete", "record")
+        return fail("the call record of the control run is incomplete")
     assert isinstance(control, CallRecord)
     mine = {c.key: c for c in calls if c.item == item and _test_file(c.key) in files}
     again = {c.key: c for c in control.calls if c.item == item}
@@ -702,18 +673,12 @@ def check(
     if every:
         rec = run(_render(parsed, every))
         if rec == "budget":
-            return fail(
-                "the budget ran out before the run with every field changed",
-                "budget",
-            )
+            return fail("the budget ran out before the run with every field changed")
         if not isinstance(rec, CallRecord):
             return fail(
-                (
-                    "the call record of the run with every field changed is incomplete"
-                    if rec == "record"
-                    else "the run with every field changed did not finish"
-                ),
-                "record" if rec == "record" else "failed",
+                "the call record of the run with every field changed is incomplete"
+                if rec == "record"
+                else "the run with every field changed did not finish",
             )
         group = judge.judge(
             rec,
@@ -728,7 +693,6 @@ def check(
             v.judged = judge.judged
             return fail(
                 f"no call of it could be matched across runs ({judge.unmatched} unmatched)",
-                "unmatched",
             )
 
     # narrowing: per fixture, then per field
@@ -828,7 +792,7 @@ def check(
             break
     if out_of_runs:
         v.notes.append(
-            f"{item}: the runs ran out while narrowing a finding to one field; the reason names the candidates",
+            f"{item}: the runs ran out while narrowing a difference to one field; the record names the candidates",
         )
 
     # verdicts
@@ -889,7 +853,6 @@ def check(
                     ),
                 )
 
-    grouped: dict[tuple[str, str, str, str], list[CallKey]] = {}
     allowed: list[str] = []
     for key, path, fname, after, kind, case, exempted in found:
         if kind == "refused" and exempted:
@@ -899,11 +862,9 @@ def check(
             continue
         if kind == "refused":
             v.refused.append((key, path, fname))
-            grouped.setdefault(("refused", path, fname, ""), []).append(key)
         elif kind == "raised":
             name = after.raised or "another exception"
             v.special.append((key, path, fname, name))
-            grouped.setdefault(("raised", path, fname, name), []).append(key)
         else:
             before = base[key]
             entry: dict[str, Any] = {
@@ -940,32 +901,7 @@ def check(
                     None,
                 )
             v.type_changes.append(entry)
-            grouped.setdefault(("type", path, fname, ""), []).append(key)
     v.notes += allowed
-    for (kind, path, fname, name), keys in grouped.items():
-        c = base[keys[0]]
-        if kind == "refused":
-            text = (
-                f"[examples:perturbed-refused] {item} refuses fixture values it accepted unchanged: with "
-                f"{fname} of {path} replaced by an unseen value of its type, its call at {c.file}:{c.line} "
-                "raises MemoryInputError; refuse inputs by their shape, not by values the recording happened "
-                "to hold"
-            )
-            v.reasons.append(text)
-        elif kind == "raised":
-            text = (
-                f"[examples:special-cased] {item} handles {path} only for its recorded values: with {fname} "
-                f"replaced by an unseen value of its type, its call at {c.file}:{c.line} raises {name} where "
-                "it returned before"
-            )
-            v.reasons.append(text)
-        else:
-            shown = ", ".join(_key_text(k) for k in keys[:_NAMED])
-            more = f" and {len(keys) - _NAMED} more" if len(keys) > _NAMED else ""
-            v.notes.append(
-                f"special-case suspected: {item} returns None or another type with {fname} of {path} replaced "
-                f"by an unseen value ({len(keys)} calls: {shown}{more}, first at {c.file}:{c.line})",
-            )
 
     # out-of-domain values of declared fields: a refusal is expected, so it is never a finding
     outs = [(d, fc) for d in docs for fc in d.outs]
@@ -1004,21 +940,6 @@ def check(
             "refused",
         )
 
-    # insensitive calls
-    flat = [
-        k
-        for k, exposed in judge.exposure.items()
-        if len(exposed) >= MIN_INSENSITIVE_FIELDS
-        and k not in judge.moved
-        and k not in group
-    ]
-    if flat:
-        shown = ", ".join(_key_text(k) for k in sorted(flat)[:_NAMED])
-        more = f" and {len(flat) - _NAMED} more" if len(flat) > _NAMED else ""
-        v.notes.append(
-            f"insensitive: {len(flat)} calls of {item} return the same result under every change of at least "
-            f"{MIN_INSENSITIVE_FIELDS} fields ({shown}{more})",
-        )
     if judge.unmatched:
         v.notes.append(
             f"{judge.unmatched} call matches of {item} were not found in a run with changed values (the test's "

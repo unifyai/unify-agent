@@ -130,7 +130,6 @@ RULES: tuple[tuple[str, str, str], ...] = (
     ("B109", "writer", "`pool` records decisions on pool entries"),
     ("B113", "writer", "A procedure is verified by replaying its episode"),
     ("B115", "writer", 'raises `MemoryInputError("<what was expected>")` on an input it was not built for'),
-    ("B117", "writer", "replaces the fixture values the tests load with unseen values of the same type"),
     ("B127", "writer", "add a test that fails on the old version and passes on yours"),
     ("B128", "writer", "This pass never removes library items and never deletes or weakens a test"),
     ("B129", "writer", "name it in `tests_changed` with the reason"),
@@ -178,10 +177,6 @@ RULES: tuple[tuple[str, str, str], ...] = (
     ("B268", "fork", "at most 200 files and 4 MiB in all are kept"),
     ("B300", "refusals", "add a test call that returns on values loaded from a fixture of a recorded episode"),
     ("B302", "refusals", "make one call that returns take each structured argument"),
-    ("B303", "refusals", "make those tests quicker"),
-    ("B304", "refusals", "must pass, within their time limit, when run on their own"),
-    ("B305", "refusals", "must end normally (no exit, no killed process)"),
-    ("B306", "refusals", "must still be reached when the fixture values change"),
     ("T74a", "refusals", "a link is on the way to"),
     ("A2", "actor", "Your answer is your final reply: a message without a tool call."),
     ("A8", "actor_structured", "answer by calling `tools.answer(answer)`"),
@@ -288,7 +283,6 @@ def _texts() -> dict[str, str]:
             [
                 lp.EPISODES_FIX,
                 lp.GROUNDED_FIX,
-                *lp.UNJUDGED_FIX.values(),
                 _sources(
                     "unify.memory.writer_pass",
                     "unify.common._async_tool.loop",

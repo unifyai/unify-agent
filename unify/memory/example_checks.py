@@ -11,7 +11,8 @@ module judges those records:
 - a record that is incomplete judges nothing (``[examples:record]``, fail closed), and a function the plugin cannot
   observe is refused (``[examples:unobserved]``);
 - the fixtures' provenance, the cross-episode rule and the rule check come from :mod:`.example_evidence`; the
-  check with unseen fixture values from :mod:`.example_perturb`; the quoted example and the docstring's
+  check with unseen fixture values from :mod:`.example_perturb` (its derived links count as grounding; what the
+  calls did there is recorded, never a refusal or a level); the quoted example and the docstring's
   ``Example:`` line from :mod:`.example_view`; argument shapes from :mod:`.shape_rows`. Each is
   injected (``ExampleChecks(gate, run, evidence=..., perturb=..., view=..., shapes=..., ledger=...)``), so the
   checks are tested with fakes.
@@ -372,7 +373,6 @@ class ExampleChecks:
         run, item = self.run, it.item
         evidence, perturb = self.part("example_evidence"), self.part("example_perturb")
         rec = self._verification(item)
-        by_key = {c.key: c for c in calls}
         ledger, views = self._ledger(item)
         notes: list[str] = []
         inputs = perturb.input_fixtures(
@@ -462,7 +462,7 @@ class ExampleChecks:
                 f"{_where(c)}; a function returns or raises MemoryInputError",
                 item,
             )
-        self._perturbation(item, verdict, by_key, rec)
+        self._perturbation(item, verdict, rec)
         typed = {
             p.get("episode")
             for p in rec.get("procedures", [])
@@ -522,49 +522,11 @@ class ExampleChecks:
         self,
         item: str,
         verdict: Any,
-        by_key: dict[CallKey, ExampleCall],
         rec: dict,
     ) -> None:
+        """The check with unseen fixture values: its notes and measures reach the run and the verification record.
+        What a call did with unseen values is recorded, never a refusal or an evidence level."""
         run = self.run
-
-        def where(key: CallKey) -> str:
-            c = by_key.get(key)
-            return _where(c) if c is not None else key_text(key)
-
-        # the perturbation module renders its own refusal texts; tuples are rendered here only without them
-        rendered = getattr(verdict, "reasons", None)
-        for reason in rendered or []:
-            cap(run, "G2", reason, item)
-        own = rendered is None
-        refused = list(getattr(verdict, "refused", []))[:MAX_NAMED] if own else []
-        special = list(getattr(verdict, "special", []))[:MAX_NAMED] if own else []
-        unjudged = list(getattr(verdict, "unjudged", []))[:MAX_NAMED] if own else []
-        for key, fixture, fld in refused:
-            cap(
-                run,
-                "G2",
-                f"[examples:perturbed-refused] {item} refuses fixture values it accepted unchanged: with {fld} of "
-                f"{fixture} replaced by an unseen value of its type, its call at {where(key)} raises "
-                "MemoryInputError; refuse inputs by their shape, not by values the recording happened to hold",
-                item,
-            )
-        for key, fixture, fld, name in special:
-            cap(
-                run,
-                "G2",
-                f"[examples:special-cased] {item} handles {fixture} only for its recorded values: with {fld} "
-                f"replaced by an unseen value of its type, its call at {where(key)} raises {name} where it "
-                "returned before",
-                item,
-            )
-        for why in unjudged:
-            cap(
-                run,
-                "G2",
-                f"[examples:unjudged] {item}: the check with unseen fixture values did not complete ({why}); a "
-                "function is admitted only once it is judged",
-                item,
-            )
         for note in getattr(verdict, "notes", []):
             run.note(f"G2 examples: {item}: {note}")
         changes = list(getattr(verdict, "type_changes", None) or [])
@@ -575,18 +537,6 @@ class ExampleChecks:
         examples = rec.setdefault("examples", {})
         examples["perturbation"] = perturbation
         examples["type_changes"] = len(changes)
-        if changes:
-            fixtures = sorted(
-                {
-                    str(c.get("fixture"))
-                    for c in changes
-                    if isinstance(c, dict) and c.get("fixture")
-                },
-            )
-            run.note(
-                f"G2 examples: {item}: {len(changes)} calls return None or another type with unseen fixture "
-                f"values ({', '.join(fixtures[:MAX_NAMED]) or 'no fixture named'}); recorded for review",
-            )
 
     def _edited(self, item: str) -> bool:
         run = self.run

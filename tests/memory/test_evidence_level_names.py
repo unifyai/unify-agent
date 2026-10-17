@@ -40,8 +40,8 @@ KEPT_LEVEL = "unchecked"
 DATE = "memory.text.dates:parse_date"
 WEEK = "memory.text.dates:week"
 FLAG = (
-    "G2: [examples:special-cased] memory.text.dates:parse_date handles memory/text/tests/data/sample.json only "
-    "for its recorded values"
+    "G3: [library_mode:exact] memory.text.dates:parse_date's tests hold no exact assertion of its result, on a "
+    "recorded fixture, against a trust 1-3 value"
 )
 
 
@@ -185,7 +185,7 @@ def test_the_index_line_shows_the_status_and_the_evidence_level_apart(tmp_path):
 
 
 def test_show_gives_the_status_the_level_and_the_flag_that_set_it(tmp_path):
-    """An item the check with unseen values flagged lands at the lowest level; the flag is shown to the agent
+    """An item an evidence check flagged lands at the lowest level; the flag is shown to the agent
     (``memory.show``) as well as to the writer (the gate's reply)."""
     records = {
         DATE: _record(
@@ -201,7 +201,7 @@ def test_show_gives_the_status_the_level_and_the_flag_that_set_it(tmp_path):
     first = out.splitlines()[0]
     assert first.startswith("memory.text.dates:parse_date(")
     assert ON_TRIAL in first and SHOWN_LEVEL.format(level="unchecked") in first
-    assert "[examples:special-cased]" in out
+    assert "[library_mode:exact]" in out
     assert "experimental" not in out
 
 

@@ -188,19 +188,24 @@ SPECIAL_CASED = w.MODULE_SOURCE.replace(
     '    return response["user_id"]\n',
     '    return {"u-1": "u-1", "u-2": "u-2"}[response["user_id"]]\n',
 )
-SPECIAL = re.compile(
-    rf"G2: \[examples:special-cased\] {re.escape(w.ITEM_ID)} handles (?P<fixture>\S+) only for its recorded "
-    r"values: with (?P<field>\S+) replaced by an unseen value of its type, its call at "
-    r"(?P<file>[^:]+):(?P<line>\d+) raises KeyError where it returned before\Z",
-)
 
 
-def test_a_function_grounded_on_one_episode_passes_and_a_memorising_one_lands_unchecked(
+def _flagged(res, item: str) -> list[str]:
+    """The level reasons and gate reasons that judge how specific *item* is (the check with unseen values)."""
+    return [
+        r
+        for r in list(res.level_reasons.get(item, [])) + list(res.reasons)
+        if "[examples:special-cased]" in r or "[examples:perturbed-refused]" in r or "[examples:unjudged]" in r
+    ]
+
+
+def test_a_function_grounded_on_one_episode_passes_and_a_memorising_one_lands_without_a_flag(
     library_example_world,
 ):
     """One recorded episode is enough evidence for a function: the same request shape gets a reusable function even
-    if no other request is served by it. The check with unseen values still runs, so a function that only handles its
-    recorded values on that same single episode is flagged: it lands at the lowest evidence level with the flag.
+    if no other request is served by it. A function that only handles its recorded values on that same single
+    episode lands too: the check with unseen values still runs for its derived links, but what it records never
+    flags the function or sets its evidence level.
     """
     mem, ev, blobs, gate = library_example_world
     files, fixtures = w.files_and_fixtures(blobs.get, sources=(w.E1, w.E1))
@@ -220,14 +225,8 @@ def test_a_function_grounded_on_one_episode_passes_and_a_memorising_one_lands_un
         w.candidate(mem, files),
         w.manifest(fixtures, w.item(source_episodes=["e1"])),
     )
-    # the check with unseen values flags it: it lands at the lowest level, the flag kept for the agent and writer
     assert res.passed, res.reasons
-    assert res.levels[w.ITEM_ID] == "unchecked"
-    # both fixtures hold the one episode's values, so the reason names the candidates together ("one of ...")
-    assert any(
-        r.startswith(f"G2: [examples:special-cased] {w.ITEM_ID} handles ")
-        for r in res.level_reasons[w.ITEM_ID]
-    ), res.level_reasons
+    assert not _flagged(res, w.ITEM_ID), res.level_reasons
 
 
 #: user_id with a decision rule: a value computed from the input, replaced by a constant under a condition
@@ -242,12 +241,11 @@ RULE_MEMORISED = RULE_MODULE.replace(
 )
 
 
-def test_a_decision_rule_grounded_on_one_episode_passes_and_one_that_memorises_lands_unchecked(
+def test_a_decision_rule_grounded_on_one_episode_passes_and_one_that_memorises_lands_without_a_flag(
     library_example_world,
 ):
-    """A function that encodes a decision rule needs examples from one recorded episode, like every function; the
-    check with unseen values, run for every function, flags one that only reproduces its recorded outputs, which
-    lands at the lowest evidence level.
+    """A function that encodes a decision rule needs examples from one recorded episode, like every function; one
+    that only reproduces its recorded outputs lands too, never flagged by the check with unseen values.
     """
     from unify.memory.analysis.overrides import find_overrides
     import ast
@@ -284,35 +282,22 @@ def test_a_decision_rule_grounded_on_one_episode_passes_and_one_that_memorises_l
         w.manifest(fixtures, w.item(source_episodes=["e1"])),
     )
     assert res.passed, res.reasons
-    assert res.levels[w.ITEM_ID] == "unchecked"
-    assert any(
-        r.startswith(f"G2: [examples:special-cased] {w.ITEM_ID} handles ")
-        for r in res.level_reasons[w.ITEM_ID]
-    ), res.level_reasons
+    assert not _flagged(res, w.ITEM_ID), res.level_reasons
 
 
-def test_a_function_that_handles_only_its_recorded_values_lands_at_the_lowest_level(
+def test_a_function_that_handles_only_its_recorded_values_is_never_flagged_for_it(
     library_example_world,
 ):
-    """Replaces test_cross_episode_text_input_that_crashes_is_refused (with the one-episode test above). The rule
-    that replaces running a function on another episode's input: the gate replaces the fixture values its tests
-    load with unseen values of the same type, and a call that returned before and raises now is flagged
-    (special-cased); the flag sets the lowest evidence level instead of refusing.
+    """The gate still reruns a function's tests with the fixture values they load replaced by unseen values of the
+    same type (for the derived links of its examples), and records what its calls do; a call that returned before
+    and raises now neither refuses the function nor sets its evidence level, and no reason or note names it.
     """
     mem, ev, blobs, gate = library_example_world
     assert SPECIAL_CASED != w.MODULE_SOURCE
     files, fixtures = w.files_and_fixtures(blobs.get, module=SPECIAL_CASED)
     res = gate().check(mem.head(), w.candidate(mem, files), w.manifest(fixtures))
-    # a flag of the check with unseen values sets the lowest evidence level; it refuses nothing
     assert res.passed, res.reasons
-    assert res.levels[w.ITEM_ID] == "unchecked"
-    found = [m for m in map(SPECIAL.match, res.level_reasons[w.ITEM_ID]) if m]
-    assert found, res.level_reasons
-    lines = {c.line for c in w.recorded_calls(blobs.get) if c.outcome == "returned"}
-    for m in found:
-        assert m["fixture"] in {*w.FIXTURE_PATHS, w.INPUTS_PATH}
-        assert m["field"].endswith("user_id")
-        assert m["file"] == w.TEST_FILE and int(m["line"]) in lines
+    assert not _flagged(res, w.ITEM_ID), res.level_reasons
 
 
 def test_a_deleted_package_test_is_refused_unless_a_reason_is_stated(

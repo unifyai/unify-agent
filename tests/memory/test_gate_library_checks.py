@@ -11,9 +11,6 @@ from unify.memory import library_checks
 from unify.memory.episodes import Cell
 from unify.memory.library_checks import LibraryChecks, LibraryConfig
 from unify.memory.evidence import EvidenceStore
-from unify.memory.example_calls import MAX_CALL_LINES
-from unify.memory.example_perturb import PERTURB_BUDGET_S
-from unify.memory.library_prompts import UNJUDGED_FIX
 from unify.memory.manifest import ManifestError, parse_manifest
 from unify.memory.procedures import Cover, Outcome, cover_raw, parse_cover
 from unify.memory.sandbox_run import PYTHON
@@ -434,10 +431,9 @@ def test_an_init_rebinding_that_breaks_a_stored_procedure_is_refused(tmp_path):
     assert v.run.fails[0][1].startswith(f"{job} changes behaviour without a test")
 
 
-def test_a_check_with_unseen_fixture_values_that_cannot_complete_refuses(tmp_path):
-    """Replaces test_cross_episode_runs_that_do_not_complete_refuse. The rule that replaces it: the check with
-    unseen fixture values fails closed when it does not complete; a function is admitted only once it is judged.
-    Here the budget is spent before the control run.
+def test_a_check_with_unseen_fixture_values_that_cannot_complete_records_why(tmp_path):
+    """The check with unseen fixture values that does not complete records why, and refuses nothing. Here the
+    budget is spent before the control run.
     """
     from unify.memory import example_perturb
     from unify.memory.blobs import BlobStore
@@ -475,14 +471,7 @@ def test_a_check_with_unseen_fixture_values_that_cannot_complete_refuses(tmp_pat
         deadline=0.0,  # already past on any clock
     )
     assert runs == [] and verdict.refused == [] and verdict.special == []
-    assert verdict.unjudged == [
-        f"[examples:unjudged] {w.ITEM_ID}: the check with unseen fixture values did not complete (the budget ran "
-        "out before the control run); a function is admitted only once it is judged: "
-        + UNJUDGED_FIX["budget"].format(
-            budget_s=PERTURB_BUDGET_S,
-            max_calls=MAX_CALL_LINES,
-        ),
-    ], verdict.unjudged
+    assert verdict.unjudged == ["the budget ran out before the control run"], verdict.unjudged
 
 
 def test_an_unreadable_stored_procedure_refuses_the_behaviour_check(tmp_path):

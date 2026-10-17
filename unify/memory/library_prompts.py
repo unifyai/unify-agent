@@ -500,23 +500,6 @@ GROUNDED_FIX = (
     '`fixture(..., parser="<that function\'s id>")`; the gate runs the function on the recorded bytes again to '
     "check the fixture"
 )
-#: ``[examples:unjudged]``: why the check with unseen fixture values did not complete -> what lets it complete.
-UNJUDGED_FIX = {
-    "budget": (
-        "the check runs the listed tests that open an input fixture of every function in this gate run within "
-        "{budget_s:.0f} s in all; make those tests quicker"
-    ),
-    "failed": "its listed tests that open an input fixture must pass, within their time limit, when run on their own",
-    "record": (
-        "its tests must end normally (no exit, no killed process) and make at most {max_calls} recorded calls of "
-        "library functions"
-    ),
-    "unmatched": (
-        "each call of it in its tests must still be reached when the fixture values change: what a test computes "
-        "from a fixture before the call (parsing, slicing, checks) must work on any values of the same shape"
-    ),
-}
-
 #: What each check the gate names in its refusals and results means (the same names: G1 to G6).
 _CHECK_NAMES = (
     "Its results and refusals name the check: G1, layout and provenance (only `memory/` and `notes/` change and "
@@ -526,8 +509,7 @@ _CHECK_NAMES = (
     "function's listed tests call it, and the calls they make of it return or raise `MemoryInputError`; what else "
     "those calls show sets its evidence level: `unchecked` when a call that returns uses a value from a recorded "
     "episode in any form but some evidence check does not hold, `reproduces-its-case` when its structured "
-    "arguments come from fixtures or through a stored reader, with those values replaced by unseen values of the "
-    "same type a call it accepted neither refuses nor raises, its docstring's `Example:` names one of its tests, "
+    "arguments come from fixtures or through a stored reader, its docstring's `Example:` names one of its tests, "
     "and its typed covers are recorded evidence of their type); G3, tests (plain pytest, "
     "the tests pass on the candidate, a behaviour change has a test that fails on the parent, and no test is lost "
     "or weakened without a reason; an exact assertion against a trusted value on a recorded fixture for each "
@@ -552,8 +534,7 @@ _GATE = (
     "After `finish` a deterministic gate checks the candidate: the layout and the links; that every fixture "
     "came through `fixture` unchanged; that the calls of each function that return take fixture values from "
     "a recorded episode; its tests on the candidate, and on the parent where behaviour "
-    "changed; that a call it accepted neither refuses nor raises when the fixture values its tests load are "
-    "replaced by unseen values of the same type; the appended recorded inputs; that its tests catch at least "
+    "changed; the appended recorded inputs; that its tests catch at least "
     "<<mutation_min_pct>>% of small mutations of each changed function; and that no test is "
     "lost or weakened without a reason. An item that breaks a rule is refused together with the items that import it, "
     "and the rest can land; a breach of a pass-wide rule (the layout, lost tests, fewer items) refuses the "
@@ -699,9 +680,7 @@ _WRITE_RULES = (
     "2. Start from the working model's own code when it already wrote it (its cells and its work-tree diff). "
     "Generalise it: values that vary become parameters, and the function raises "
     '`MemoryInputError("<what was expected>")` on an input it was not built for. Check shapes, not observed '
-    "values. The gate replaces the fixture values the tests load with unseen values of the same type and reruns "
-    "the tests: the function must not then raise `MemoryInputError` or another exception on a call it accepted "
-    "before. Refuse shapes, not values; a field with a fixed domain is declared in `field_types`."
+    "values. Refuse shapes, not values; a field with a fixed domain is declared in `field_types`."
     "<<replay_rule>>\n"
     "3. Judge outcomes from the records. The harness never reads environment text for a verdict: "
     "`structural_events` lists only cell errors, action errors and retries, and an empty list says nothing about "
@@ -1557,8 +1536,7 @@ def _check_names_in_code(g5: str, g3_mutations: str) -> str:
         "function's listed tests call it, and the calls they make of it return or raise `MemoryInputError`; what "
         "else those calls show sets its evidence level: `unchecked` when a call that returns uses a value from a recorded "
         "episode in any form but some evidence check does not hold, `reproduces-its-case` when its structured "
-        "arguments come from fixtures or through a stored reader, with those values replaced by unseen values of "
-        "the same type a call it accepted neither refuses nor raises, its docstring's `Example:` names one of its "
+        "arguments come from fixtures or through a stored reader, its docstring's `Example:` names one of its "
         "tests, and its typed covers are recorded evidence of their type); G3, tests (plain "
         "pytest, the tests pass on the candidate, a behaviour change has a test that fails on the parent, and no "
         "test is lost or weakened without a reason; an exact assertion against a trusted value on a recorded "
@@ -1709,9 +1687,7 @@ _WRITE_RULES_IN_CODE = (
     "2. Start from the working model's own code when it already wrote it (its cells and its work-tree diff). "
     "Generalise it: values that vary become parameters, and the function raises "
     '`MemoryInputError("<what was expected>")` on an input it was not built for. Check and refuse shapes, not '
-    "observed values. The gate replaces the fixture values the tests load with unseen values of the same type and "
-    "reruns the tests: the function must not then raise `MemoryInputError` or another exception on a call it "
-    "accepted before. A field with a fixed domain is declared in `field_types`.\n"
+    "observed values. A field with a fixed domain is declared in `field_types`.\n"
     "3. Judge outcomes from the records. The harness never reads environment text for a verdict: "
     "`structural_events` lists only cell errors, action errors and retries, and an empty list says nothing about "
     "success. Whether the work succeeded is in the environment's own replies, if anywhere; `end_parts` names "
