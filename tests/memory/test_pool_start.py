@@ -660,10 +660,7 @@ def test_the_brief_frames_proposals_as_material_from_agents_with_a_partial_view(
     brief = lp.write_brief_now(staging=True, pool=True)
     assert "drafts to build from, not submissions awaiting a verdict" in brief
     assert "a staged draft by an agent that saw only its own episode" in brief
-    assert (
-        "generalising it is your work, since you alone commit to the shared library"
-        in brief
-    )
+    assert "generalising it is your work" not in brief
     assert (
         "adopt, edit or leave" not in brief.lower()
         and "decided what to keep" not in brief

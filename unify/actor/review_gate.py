@@ -46,8 +46,8 @@ ORIGIN = "StorageCheckGate"
 GATE_SYSTEM_PROMPT = (
     "You decide whether a finished agent session is worth a library review. "
     "The review turns what the session did into stored functions (code that "
-    "ran and worked, which a later task of the same kind would run again, "
-    "with what varies between tasks as parameters) and short guidance (a "
+    "ran and worked, which a later task of the same kind would run again) "
+    "and short guidance (a "
     "lesson that changes how a later task is done). A review costs several "
     "model calls, so it should run only when the session left something "
     "worth keeping.\n\n"
@@ -59,8 +59,7 @@ GATE_SYSTEM_PROMPT = (
     "non-obvious way, and what worked instead;\n"
     "- a stored function or guidance entry that failed or misled the "
     "session and needs repair.\n\n"
-    "Answer no for one-off work: results worked out in text without "
-    "reusable code, steps a stored function already did successfully, "
+    "Answer no for steps a stored function already did successfully, "
     "transient tool outputs, and hypotheses the session never confirmed.\n\n"
     'Reply with one JSON object on one line: {"review": true or false, '
     '"reason": "<one sentence>"}'

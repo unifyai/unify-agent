@@ -121,7 +121,7 @@ HELPER_BRIEF = (
     "- `stage(path, text)` hands one file to the writer, at one of three kinds of path: `candidates/<name>.py` (a "
     "function with a docstring), `cases/<name>.json` (the inputs that function had in the episodes and "
     "the outputs it should give, each value as the records hold it, so it can be copied from them) and `notes.md` "
-    "(lessons stated in general terms, each naming the episode and part it comes from). "
+    "(lessons, each naming the episode and part it comes from). "
     + CANDIDATE_CONTRACT.replace("recorded here", "recorded in the episodes")
     + f" At most {QUOTA_FILES} files and {QUOTA_BYTES // 1024**2} MiB in all. Staging a path again "
     "replaces it.\n"
@@ -195,7 +195,7 @@ HELPER_BRIEF_IN_CODE = (
     "- `tools.stage(path, text)` hands one file to the writer, at one of three kinds of path: `candidates/<name>.py` "
     "(a function with a docstring), `cases/<name>.json` (the inputs that function had in the episodes and "
     "the outputs it should give, each value as the records hold it, so it can be copied from them) and `notes.md` "
-    "(lessons stated in general terms, each naming the episode and part it comes from). "
+    "(lessons, each naming the episode and part it comes from). "
     + CANDIDATE_CONTRACT_IN_CODE
     + "\n"
     "- `tools.done(summary, claims)` ends your task. The summary and the claims go to the writer.\n\n"

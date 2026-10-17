@@ -193,15 +193,14 @@ def test_no_drafting_or_curating_text_names_an_input_form_and_the_curator_states
             assert f"`{form}`" not in text, (name, form)
     # the curator works on the library itself and is told the contract the gate enforces
     assert "MemoryInputError" in texts["curate"] and "any arguments" in texts["curate"]
-    # drafting agents draft what they saw; generalising and fitting the library is the writer's work
+    # drafting agents draft what they saw; fitting the library is the writer's work
     assert lp.CANDIDATE_CONTRACT in texts["fork"]
     assert "Each value must appear in this conversation as it is" in texts["fork"]
     for name in ("helper", "helper with similar"):
         assert (
             lp.CANDIDATE_CONTRACT.replace("recorded here", "recorded in the episodes")
             in texts[name]
-            and "Where you can, write a reusable function or lesson in general form"
-            in texts[name]
+            and "in general form" not in texts[name]
             and "still write it down as it is" in texts[name]
         )
         assert "each value as the records hold it" in texts[name]

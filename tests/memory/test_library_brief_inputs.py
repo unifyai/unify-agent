@@ -123,7 +123,7 @@ def test_a_deferral_must_name_an_open_entry_or_new(tmp_path, monkeypatch):
 def test_the_write_brief_says_new_items_are_on_trial_and_revised_later():
     text = pv.write_brief_now()
     sentence = (
-        "A new item starts as `on-trial`; later passes and the curate pass revise, generalise or remove it as "
+        "A new item starts as `on-trial`; later passes and the curate pass revise or remove it as "
         "evidence arrives, so storing a rule that worked is not a final commitment."
     )
     assert sentence in text and sentence not in pv.curate_brief_now()
