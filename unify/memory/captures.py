@@ -40,6 +40,17 @@ dir), so no agent edits it, and it is not the library: the writer reads it as in
 the only agent that edits the library. The actor's copy gets a snapshot under ``.memory/captures/`` at each request
 start (:func:`export_files`); captures never enter ``INDEX.md`` or the prompt.
 
+**Its own recorded pairs** (``UNIFY_MEMORY_CAPTURE_CASES=on``; off, nothing here reads or writes them). The fork may
+also write ``procedure_cases.json``: input->output pairs taken from the episode's own record, each ``{"request": the
+text the procedure would be handed, "expected": the value it should return, "from": the recorded part it came
+from}``. Provenance is structural: a case is kept only when ``from`` names a part of the recorded episode the
+episode observed (the request, an observation or an action, :data:`OBSERVED_PARTS`); every other case is dropped
+and counted. Values are never matched against the record's text. The capture step runs the procedure confined on
+each kept case, as on its own request (:func:`check_cases`), and records ``own_pairs``, "fits k of n", in the
+case row, the record and the step's row: a label, never a refusal (the ``failed`` rule is unchanged). When the
+fork had a re-capture turn (:func:`.integration.fork.recapture`), the procedure that fits more of the same cases is
+captured (the re-capture on a tie) and both counts are recorded.
+
 Evidence: ``captures-events.jsonl`` holds one row per capture step (``capture_id``, ``episode``, ``safety``,
 ``reproduces``, ``deterministic``, ``applies``, ``holds``, ``outcome``, ``same_as``, ``seconds``,
 ``published_at``); an episode with a row there is done. A row whose outcome is positive and whose capture reproduced
@@ -105,6 +116,17 @@ FAILED = "failed"
 _ID = re.compile(r"[0-9a-f]{16}\Z")
 _EPISODE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 STATE_FUNCTIONS = ("read_input", "run", "applies", "holds")
+#: The fork's own recorded pairs for its procedure (``UNIFY_MEMORY_CAPTURE_CASES=on``; module docstring).
+CASES_FILE = "procedure_cases.json"
+#: Where a fork's one re-capture turn stages its files, beside ``memory-staging`` (never inside a settled staging
+#: dir, which the writer and the pool read).
+RECAPTURE_DIR = "memory-recapture"
+#: The recorded parts a case may cite: what the episode observed (the request, a later observation, an action and
+#: its response); a cell's output and the work-tree diff are the episode's own work.
+OBSERVED_PARTS = re.compile(r"request\Z|observation:\d+\Z|action:\d+\Z")
+#: Run safety: the cases of one procedure that are run (each is one confined run of :data:`RUN_S`); the rest are
+#: counted as over the bound, reported, never silently dropped.
+MAX_CASES = 24
 
 # --- identifiers (the one rule: :mod:`.signatures`) ---------------------------------------------------------------
 
@@ -756,6 +778,150 @@ def record_use(store: Path | str, cid: str, use: trust.Use) -> dict | None:
     return rec
 
 
+# --- its own recorded pairs (UNIFY_MEMORY_CAPTURE_CASES) ---------------------------------------------------------
+
+
+def read_cases(text: str | None, parts: Iterable[str]) -> tuple[list[dict], dict]:
+    """The cases of a staged ``procedure_cases.json`` *text* that cite a recorded part the episode observed
+    (*parts*: the recorded episode's part names, :func:`.writer_tools.part_names`, of which only
+    :data:`OBSERVED_PARTS` count), and the counts ``{"file", "dropped", "uncited", "malformed", "over_bound"}``.
+    ``file`` is ``none`` (no file), ``unreadable`` (not a JSON list) or ``read``. A case is ``{"request": str,
+    "expected": any JSON value, "from": a part name}``; one without a cited observed part is dropped as ``uncited``,
+    one of another shape as ``malformed``. Structure only: no value is compared with the record's text."""
+    counts = {"file": "none", "dropped": 0, "uncited": 0, "malformed": 0, "over_bound": 0}
+    if text is None:
+        return [], counts
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        doc = None
+    if not isinstance(doc, list):
+        counts["file"] = "unreadable"
+        return [], counts
+    counts["file"] = "read"
+    observed = {p for p in parts if isinstance(p, str) and OBSERVED_PARTS.fullmatch(p)}
+    kept: list[dict] = []
+    for case in doc:
+        if not (isinstance(case, dict) and isinstance(case.get("request"), str) and "expected" in case):
+            counts["malformed"] += 1
+            continue
+        cited = case.get("from")
+        if not isinstance(cited, str) or cited.strip().strip("`") not in observed:
+            counts["uncited"] += 1
+            continue
+        if len(kept) >= MAX_CASES:
+            counts["over_bound"] += 1
+            continue
+        kept.append({"request": case["request"], "expected": case["expected"], "from": cited.strip().strip("`")})
+    counts["dropped"] = counts["uncited"] + counts["malformed"]
+    return kept, counts
+
+
+def check_cases(
+    source: str,
+    cases: list[dict],
+    *,
+    work: Path,
+    runner: Callable[..., SandboxResult] = run_confined,
+    python: Path = PYTHON,
+) -> tuple[list[dict], list[dict]]:
+    """Run *source* confined on each case (:func:`run_box`: read_input -> applies -> run -> holds, as on its own
+    request) and say whether it gave the case's expected value (by the digest of their canonical JSON). Returns the
+    rows a record keeps (``{"from", "fits", "run"}``, with ``error_class`` and ``stage`` when it did not return: no
+    value) and, for each case it missed, what the fork's re-capture turn is told (``{"case", "from", "expected",
+    "got"}`` or ``"raised"``/``"stage"``, values in memory only, never written)."""
+    rows, misses = [], []
+    for i, case in enumerate(cases):
+        run = run_box(source, case["request"], work=work / f"case-{i}", runner=runner, python=python)
+        fits = run.get("outcome") == "returned" and digest(run.get("result")) == digest(case["expected"])
+        row: dict = {"from": case["from"], "fits": fits, "run": run.get("outcome")}
+        if run.get("outcome") not in ("returned", None):
+            row["error_class"] = run.get("error_class") or None
+            row["stage"] = run.get("stage")
+        rows.append(row)
+        if not fits:
+            miss: dict = {"case": i, "from": case["from"], "expected": case["expected"]}
+            if run.get("outcome") == "returned":
+                miss["got"] = run.get("result")
+            elif run.get("outcome") == "not run":
+                miss["raised"] = str(run.get("why") or "it could not be run")
+            else:
+                miss["raised"] = _cls(run.get("error_class"))
+                miss["stage"] = run.get("stage")
+            misses.append(miss)
+    return rows, misses
+
+
+def own_pairs_label(rows: list[dict], counts: Mapping[str, Any]) -> dict:
+    """The ``own_pairs`` label: ``{"fits": k, "of": n, "file", "dropped", "uncited", "malformed", "over_bound",
+    "rows"}``."""
+    return {
+        "fits": sum(1 for r in rows if r.get("fits")),
+        "of": len(rows),
+        **{k: counts.get(k) for k in ("file", "dropped", "uncited", "malformed", "over_bound")},
+        "rows": rows,
+    }
+
+
+def recapture_dir(state_dir: Path | str, eid: str) -> Path:
+    """Where episode *eid*'s re-capture turn stages its files (:data:`RECAPTURE_DIR`)."""
+    return Path(state_dir) / RECAPTURE_DIR / eid
+
+
+def _settled_status(d: Path) -> str | None:
+    """The status a settled re-capture dir records in ``fork.json``; None when it has not settled (or is no dir)."""
+    try:
+        if not stat.S_ISDIR(os.lstat(d).st_mode):
+            return None
+    except OSError:
+        return None
+    doc = _read_json(d / "fork.json")
+    if not isinstance(doc, dict):
+        return None
+    return str(doc.get("status") or "unknown")
+
+
+def _own_pairs_step(
+    staging: Path,
+    source: str,
+    ep: Any,
+    recapture: Path | None,
+    *,
+    runner: Callable[..., SandboxResult],
+    python: Path,
+    work: Path,
+) -> tuple[str, dict]:
+    """The procedure to capture and its ``own_pairs`` label (module docstring). The cases are the first fork turn's
+    (the re-capture turn is shown its misses and writes only ``procedure.py``); a settled re-capture whose
+    procedure is safe and fits at least as many of them is captured instead, and both counts are kept."""
+    from .writer_tools import part_names
+
+    try:
+        parts = part_names(ep)
+    except Exception:  # noqa: BLE001 - an episode whose parts cannot be listed cites nothing
+        parts = []
+    cases, counts = read_cases(_staged(staging, CASES_FILE), parts)
+    rows, _ = check_cases(source, cases, work=work / "first", runner=runner, python=python)
+    label = own_pairs_label(rows, counts)
+    status = _settled_status(recapture) if recapture is not None else None
+    if status is None:
+        return source, label
+    again = _staged(recapture, PROCEDURE_FILE)
+    note: dict = {"status": status, "fits_before": label["fits"], "of": label["of"]}
+    if again is None or safety(again) is not None:
+        note["kept"] = "first"
+        note["why"] = "the re-capture wrote no procedure" if again is None else "the re-capture's procedure is not safe"
+        return source, {**label, "recapture": note}
+    rows2, _ = check_cases(again, cases, work=work / "again", runner=runner, python=python)
+    label2 = own_pairs_label(rows2, counts)
+    note["fits_after"] = label2["fits"]
+    if label2["fits"] >= label["fits"]:
+        note["kept"] = "recapture"
+        return again, {**label2, "recapture": note}
+    note["kept"] = "first"
+    return source, {**label, "recapture": note}
+
+
 # --- the capture step -----------------------------------------------------------------------------------------
 
 
@@ -798,10 +964,14 @@ def capture(
     python: Path = PYTHON,
     work: Path | None = None,
     clock: Callable[[], float] = time.time,
+    own_cases: bool = False,
+    recapture: Path | None = None,
 ) -> dict:
     """Capture episode *ep*'s attempt from its settled staging dir into *store* (module docstring). Returns the
     capture step's row, also appended to ``captures-events.jsonl``. Never
-    raises for what the staging holds; a step that cannot capture says why in ``safety``."""
+    raises for what the staging holds; a step that cannot capture says why in ``safety``. With *own_cases*
+    (``UNIFY_MEMORY_CAPTURE_CASES=on``) the procedure is checked on its own recorded pairs and *recapture* is the
+    episode's re-capture dir (:func:`recapture_dir`); off, neither is read and every row is as without them."""
     t0 = clock()
     staging, store = Path(staging), Path(store)
     eid = str(getattr(ep, "episode_id", ""))
@@ -844,6 +1014,11 @@ def capture(
     request_text = ep.request[0] if getattr(ep, "request", None) else ""
     work_root = Path(work) if work is not None else Path(tempfile.mkdtemp(prefix="capture-"))
     try:
+        own = None
+        if own_cases:
+            source, own = _own_pairs_step(
+                staging, source, ep, recapture, runner=runner, python=python, work=work_root / "own"
+            )
         run = run_box(source, request_text, work=work_root / "self", runner=runner, python=python)
         found, value = handed_back(ep)
         reproduces = compare(run, found, value) if run.get("outcome") != "not run" else UNKNOWN
@@ -888,6 +1063,8 @@ def capture(
             "error_class": run.get("error_class"),
             "outcome": outcome,
         }
+        if own is not None:
+            case["own_pairs"] = own
         use = (
             trust.Use(
                 eid,
@@ -918,6 +1095,8 @@ def capture(
                 if use is not None:
                     rec["uses"].append(use.row())
             rec["same_as"] = sorted(set(rec.get("same_as") or []) | set(same_as))
+            if own is not None:
+                rec["own_pairs"] = {"fits": own["fits"], "of": own["of"]}
             refresh(rec)
             if not (d / PROCEDURE_FILE).exists():
                 _write(d / PROCEDURE_FILE, source.encode("utf-8", "surrogatepass"))
@@ -930,6 +1109,11 @@ def capture(
                 if broke.strip() not in old:
                     _write(d / BROKE_FILE, (old + broke.rstrip() + "\n").encode("utf-8"))
             _write(d / RECORD_FILE, _json(rec))
+        extra: dict = {}
+        if own is not None:
+            extra["own_pairs"] = [own["fits"], own["of"]]
+            if "recapture" in own:
+                extra["recapture"] = own["recapture"].get("kept")
         return finish(
             capture_id=cid,
             reproduces=reproduces,
@@ -940,6 +1124,7 @@ def capture(
             same_as=same_as,
             run=run.get("outcome"),
             published_at=clock(),
+            **extra,
         )
     finally:
         if work is None:
@@ -1022,10 +1207,12 @@ def capture_settled(
     checker_visible: bool,
     runner: Callable[..., SandboxResult] = run_confined,
     python: Path = PYTHON,
+    own_cases: bool = False,
 ) -> list[dict]:
     """Capture each episode of *eids* whose fork has settled and that has no capture row yet. *episode* reads an
     episode by id (raising when it is not recorded), *signals* its signals. Returns the new rows. Never raises: an
-    episode that cannot be read is left for a later call."""
+    episode that cannot be read is left for a later call. With *own_cases* (``UNIFY_MEMORY_CAPTURE_CASES=on``) an
+    episode whose re-capture turn has started and not settled is left for a later call too."""
     from .staging import STATUS_FILES
 
     store = store_dir(state_dir)
@@ -1043,14 +1230,23 @@ def capture_settled(
             continue
         if not any(os.path.lexists(d / name) for name in STATUS_FILES):
             continue  # not settled yet
+        again = recapture_dir(state_dir, eid) if own_cases else None
+        if again is not None and os.path.lexists(again):
+            from .integration.fork import settled as _fork_settled
+
+            if not _fork_settled(again.parent, eid):
+                continue  # its re-capture turn is still running
         try:
             ep = episode(eid)
             sigs = list(signals(eid) or [])
         except Exception:  # noqa: BLE001 - not recorded yet: a later call captures it
             continue
         try:
+            extra = {"own_cases": True, "recapture": again} if own_cases else {}
             out.append(
-                capture(d, ep, store, signals=sigs, checker_visible=checker_visible, runner=runner, python=python),
+                capture(
+                    d, ep, store, signals=sigs, checker_visible=checker_visible, runner=runner, python=python, **extra
+                ),
             )
         except OSError:
             continue

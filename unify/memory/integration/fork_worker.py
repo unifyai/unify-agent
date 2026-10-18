@@ -13,7 +13,8 @@ reader of staged replies applies the same rules, and the offline replay imports 
   :data:`TOOL_REPLY` and the conversation continues. The fork ends at the first reply without tool calls.
 * **Output:** the files the reply's blocks name (:func:`parse_reply`), from the reply text and from every tool
   call's arguments. Only ``summary.md``, ``candidates/<name>.py``, ``cases/<name>.json``, ``notes.md``,
-  ``procedure.py`` and ``broke.md`` are written; every block found is recorded as parsed, refused or dropped
+  ``procedure.py``, ``broke.md`` and ``procedure_cases.json`` (asked for only with ``UNIFY_MEMORY_CAPTURE_CASES=on``)
+  are written; every block found is recorded as parsed, refused or dropped
   with a reason. Written in this order: the staged files, the raw reply (``fork-reply.json``), the block ledger
   (``fork-blocks.json``, with the raw reply's sha256), then ``fork.json``. ``fork.json`` is written last, and
   its existence means the fork has settled.
@@ -52,6 +53,8 @@ ALLOWED = (
     re.compile(r"notes\.md"),
     re.compile(r"procedure\.py"),
     re.compile(r"broke\.md"),
+    # UNIFY_MEMORY_CAPTURE_CASES=on: the procedure's own recorded pairs (the fork is asked for it only then)
+    re.compile(r"procedure_cases\.json"),
 )
 FORK_JSON = "fork.json"
 #: The fork's account of its episode (what was asked, the approach, what worked or failed, the outcome, with pointers
@@ -93,6 +96,7 @@ _KINDS = (
     (re.compile(r"notes\.md"), "notes"),
     (re.compile(r"procedure\.py"), "procedure"),
     (re.compile(r"broke\.md"), "broke"),
+    (re.compile(r"procedure_cases\.json"), "procedure_cases"),
 )
 
 

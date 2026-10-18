@@ -39,6 +39,17 @@ the fork on, an episode enters a pass batch only once it has settled (:class:`Ad
 
 This keys on a per-episode signal only, never on the stream.
 
+**Own recorded pairs** (``UNIFY_MEMORY_CAPTURE_CASES=on``; off, the instruction and every step are as without it).
+The instruction also asks for ``procedure_cases.json`` (:data:`CASES_BULLET`), the input->output pairs the
+episode's own record shows, each citing the part it came from. After the fork has settled, :func:`recapture` runs
+the staged procedure confined on each cited pair (:func:`..captures.check_cases`); when it misses one, the same
+conversation is continued once more, by the same worker in the same kind of box, into its own fresh dir
+(:func:`..captures.recapture_dir`), with the fork's reply and one user message that says only which pairs missed
+and how (:func:`recapture_message`). It writes only ``procedure.py``; the capture step keeps whichever of the two
+procedures fits more of the pairs (:mod:`..captures`). One re-capture turn per episode, never more. It needs the
+CLI to wait for the fork (``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on``): a fork that has not settled when the request ends
+gets none.
+
 **Lifetime.** The fork runs in its own session. With ``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on`` (hosts whose sandbox ends
 every process of the controller with it), :func:`finish` holds the CLI after the reply until the fork ends. That
 wait is bounded by :data:`WAIT_GUARD_S`, an operational guard reported in ``fork.json``, not a design limit.
@@ -146,6 +157,17 @@ CAPTURE_BULLETS = (
     'from the record. Write "none" if nothing broke.\n'
 )
 
+#: With ``UNIFY_MEMORY_CAPTURE_CASES=on``, what the fork also writes beside ``procedure.py`` (after
+#: :data:`CAPTURE_BULLETS`): the pairs its own record shows, each naming the part it was copied from.
+CASES_BULLET = (
+    "- `procedure_cases.json`, when you wrote `procedure.py`: the input->output pairs this episode's record shows for "
+    "the job your procedure does (pairs the request or the environment gave, not values you worked out), as a JSON "
+    'list of objects with "request" (the text `read_input` would be handed for that input: this request\'s text '
+    'with that input in place of its own), "expected" (the value `run` should return for it) and "from" (the name '
+    "of the part of the record it was copied from, as the part list below names it, e.g. `action:2`). Leave out a "
+    "pair the record does not show.\n"
+)
+
 INSTRUCTION = (
     "Your work on this request is finished and your reply has been sent; nothing you write now changes it. "
     "Now write down what would help with similar requests later, as files: write each file as a fenced block in "
@@ -230,10 +252,16 @@ ROLLED_FILE = "pass-admission.json"
 def fork_instruction() -> str:
     """The fixed instruction appended to the actor's conversation for the fork: what to write, its limits, the one
     block format with an example, and that tools are not available (:data:`INSTRUCTION_IN_CODE` when tools are
-    called from code)."""
+    called from code). With ``UNIFY_MEMORY_CAPTURE_CASES=on`` it also asks for :data:`CASES_BULLET`, right after
+    :data:`CAPTURE_BULLETS`; off, it is that text byte for byte."""
     from unify.common import in_code_switch
 
-    return INSTRUCTION_IN_CODE if in_code_switch.tools_in_code() else INSTRUCTION
+    from .switch import capture_cases_on
+
+    text = INSTRUCTION_IN_CODE if in_code_switch.tools_in_code() else INSTRUCTION
+    if capture_cases_on(_settings()):
+        text = text.replace(CAPTURE_BULLETS, CAPTURE_BULLETS + CASES_BULLET, 1)
+    return text
 
 
 def _first_line(text: object) -> str:
@@ -640,10 +668,12 @@ def box_argv(staging: Path, *, die_with_parent: bool) -> list[str]:
 
 
 class Fork:
-    """A started fork: its process, the thread writing its request, and its staging dir."""
+    """A started fork: its process, the thread writing its request, and its staging dir. ``request`` is the request
+    document it was sent (held in this process only, for :func:`recapture`; never written)."""
 
     def __init__(self, proc: Any, writer: threading.Thread, staging: Path, eid: str):
         self.proc, self.writer, self.staging, self.eid = proc, writer, staging, eid
+        self.request: dict | None = None
 
 
 def launch(
@@ -740,6 +770,7 @@ def start(
             Path(paths.state_dir) / "fork-worker.log",
             popen=popen,
         )
+        fork.request = doc
         progress("memory: fork started")
         return fork
     except (
@@ -789,3 +820,177 @@ def finish(
             f"the fork process exited with code {fork.proc.returncode} without writing its record",
         )
     progress("memory: fork ended")
+
+
+# --- one re-capture turn (UNIFY_MEMORY_CAPTURE_CASES=on) --------------------------------------------------------------
+
+#: The characters of one value a re-capture message shows (run safety on the message's size; the cut is marked).
+RECAPTURE_VALUE_CHARS = 6000
+
+
+def _shown_value(value: Any) -> str:
+    text = json.dumps(value, ensure_ascii=False, default=str)
+    if len(text) <= RECAPTURE_VALUE_CHARS:
+        return text
+    return text[:RECAPTURE_VALUE_CHARS] + f" ... ({len(text) - RECAPTURE_VALUE_CHARS} more characters)"
+
+
+def recapture_message(misses: list[dict], fits: int, of: int) -> str:
+    """The one user message of a re-capture turn: how many of its own recorded pairs the staged procedure fits, and
+    for each it missed, which pair (its place in ``procedure_cases.json`` and the part it came from), the expected
+    value and what the procedure returned or raised. Then what to write. Facts only."""
+    lines = [
+        f"Your `procedure.py` was run, confined, on each pair in your `procedure_cases.json`, as it runs on a request "
+        f"(read_input, then run). It gives the expected value for {fits} of the {of} pairs. The pairs it missed:",
+    ]
+    for m in misses:
+        head = f"- pair {m['case']} (from `{m['from']}`): expected {_shown_value(m['expected'])}; "
+        if "got" in m:
+            lines.append(head + f"it returned {_shown_value(m['got'])}")
+        elif m.get("stage"):
+            lines.append(head + f"it raised {m.get('raised')} in {m['stage']}")
+        else:
+            lines.append(head + f"it did not return ({m.get('raised')})")
+    lines.append(
+        "Write `procedure.py` again, as one fenced block in the same format, and nothing else. Tools are not "
+        "available.",
+    )
+    return "\n".join(lines)
+
+
+def recapture_doc(first: dict, reply_text: str, message: str) -> dict:
+    """The re-capture turn's request: the fork's own request (*first*), its reply, then *message*; the same route,
+    headers and session."""
+    body = dict(first["body"])
+    body["messages"] = [
+        *first["body"]["messages"],
+        {"role": "assistant", "content": reply_text},
+        {"role": "user", "content": message},
+    ]
+    return {**first, "body": body}
+
+
+def _reply_text(staging: Path) -> str | None:
+    """The settled fork's reply text (``fork-reply.json``), or None."""
+    from .fork_worker import REPLY_JSON
+
+    try:
+        fd = os.open(staging / REPLY_JSON, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            return None
+        data = fh.read(QUOTA_BYTES * 2 + 1)
+    try:
+        doc = json.loads(data.decode("utf-8", "replace"))
+    except ValueError:
+        return None
+    text = doc.get("reply_text") if isinstance(doc, dict) else None
+    return text if isinstance(text, str) and text.strip() else None
+
+
+def _status(staging: Path) -> str | None:
+    try:
+        doc = json.loads((staging / FORK_JSON).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return str(doc.get("status")) if isinstance(doc, dict) else None
+
+
+def recapture(
+    paths: Any,
+    fork: Fork | None,
+    settings: Any,
+    progress: Callable[[str], None] = lambda _m: None,
+    *,
+    parts: list[str] | None = None,
+    popen: Callable[..., Any] = subprocess.Popen,
+    runner: Any = None,
+    wait_s: float = WAIT_GUARD_S,
+) -> dict | None:
+    """After the fork has settled (``UNIFY_MEMORY_CAPTURE_CASES=on``; module docstring): run the staged procedure on
+    its own cited pairs and, when it misses one, give the fork one re-capture turn and wait for it (bounded by
+    *wait_s*, as :func:`finish` waits). *parts* is the recorded episode's part names. Returns what was done
+    (``{"fits", "of", "recaptured", "status"}``), or None when nothing was checked (the switch off, no fork, a fork
+    that did not settle ``ok``, no procedure or no cited pair). Never raises."""
+    from .. import captures
+    from . import switch
+
+    if fork is None or not switch.capture_cases_on(settings) or getattr(fork, "request", None) is None:
+        return None
+    try:
+        staging = fork.staging
+        if _status(staging) != "ok":
+            return None
+        source = captures._staged(staging, captures.PROCEDURE_FILE)
+        if source is None or captures.safety(source) is not None:
+            return None
+        cases, _counts = captures.read_cases(captures._staged(staging, captures.CASES_FILE), parts or [])
+        if not cases:
+            return None
+        import tempfile
+
+        work = Path(tempfile.mkdtemp(prefix="recapture-check-"))
+        try:
+            extra = {"runner": runner} if runner is not None else {}
+            rows, misses = captures.check_cases(source, cases, work=work, **extra)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        fits = sum(1 for r in rows if r["fits"])
+        out = {"fits": fits, "of": len(rows), "recaptured": False, "status": None}
+        if not misses:
+            return out
+        reply = _reply_text(staging)
+        if reply is None:
+            out["status"] = "refused: the fork's reply cannot be read"
+            return out
+        d = captures.recapture_dir(paths.state_dir, fork.eid)
+        try:
+            d.parent.mkdir(parents=True, exist_ok=True)
+            d.mkdir(exist_ok=False)
+        except OSError as exc:
+            out["status"] = f"refused: re-capture dir: {type(exc).__name__}"
+            return out
+        try:
+            fd = os.open(d / LOCK_FILE, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            _record(d, fork.eid, f"error: lock: {type(exc).__name__}")
+            out["status"] = "error: lock"
+            return out
+        reservation = Reservation(d, fork.eid, fd)
+        doc = recapture_doc(fork.request, reply, recapture_message(misses, fits, len(rows)))
+        try:
+            again = launch(
+                reservation,
+                box_argv(d, die_with_parent=switch.library_wait_slot(settings)),
+                json.dumps(doc, default=str).encode("utf-8"),
+                Path(paths.state_dir) / "fork-worker.log",
+                popen=popen,
+            )
+        except Exception as exc:  # noqa: BLE001 - the episode is captured from its first turn
+            reservation.abandon(f"error: {type(exc).__name__}")
+            out["status"] = f"error: {type(exc).__name__}"
+            return out
+        progress("memory: re-capture started")
+        again.writer.join(WRITE_GUARD_S)
+        try:
+            again.proc.wait(timeout=wait_s)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(again.proc.pid, 9)
+            except OSError:
+                pass
+            again.proc.wait()
+            if not (d / FORK_JSON).exists():
+                _record(d, fork.eid, "timeout", f"the operational wait guard ({wait_s:g} s) stopped the re-capture")
+        if not (d / FORK_JSON).exists():
+            _record(d, fork.eid, "lost", f"the re-capture exited with code {again.proc.returncode} without its record")
+        out["recaptured"], out["status"] = True, _status(d)
+        progress("memory: re-capture ended")
+        return out
+    except Exception as exc:  # noqa: BLE001 - the request is answered and recorded; the first turn stands
+        progress(f"memory: re-capture failed: {type(exc).__name__}")
+        return None
+

@@ -1605,6 +1605,16 @@ class RequestRun:
 
             # after the reply and the lock: hand over the request, and wait where the host needs it
             await asyncio.to_thread(_fork.finish, fork, SETTINGS, progress)
+            # UNIFY_MEMORY_CAPTURE_CASES=on: one re-capture turn when the settled procedure misses one of its own
+            # recorded pairs (off: returns at once and does nothing)
+            await asyncio.to_thread(
+                _fork.recapture,
+                self.paths,
+                fork,
+                SETTINGS,
+                progress,
+                parts=getattr(self, "_fork_part_names", None),
+            )
 
     async def _wait_for_pass_worker(self, progress: Callable[[str], None]) -> dict | None:
         """``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on``: wait for the pass worker in flight, whichever request spawned it,
@@ -1659,8 +1669,10 @@ class RequestRun:
         if reservation is None or recorded is None:
             return None
         try:
+            from ..writer_tools import part_names
             from . import fork as _fork
 
+            self._fork_part_names = part_names(recorded[0])
             return _fork.part_list(recorded[0])
         except Exception as exc:  # noqa: BLE001 - the part list never stops a request
             self._error("fork part list", exc, progress)

@@ -1290,12 +1290,17 @@ def capture_settled_forks(stores: Stores, settings: Any) -> list[dict]:
         root = state / "memory-staging"
         eids = sorted(os.listdir(root)) if root.is_dir() else []
         lookup = EpisodeLookup(stores)
+        from .switch import capture_cases_on
+
+        # UNIFY_MEMORY_CAPTURE_CASES=on: each capture is checked on its own recorded pairs; off, the call is as before
+        own = {"own_cases": True} if capture_cases_on(settings) else {}
         return captures.capture_settled(
             state,
             eids,
             episode=lookup.episode,
             signals=stores.evidence.signals_for,
             checker_visible=checker_visible(settings),
+            **own,
         )
     except Exception as exc:  # noqa: BLE001 - capture never stops a pass; the error is recorded
         _error(stores, f"capture step: {type(exc).__name__}")
