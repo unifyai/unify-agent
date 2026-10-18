@@ -464,6 +464,15 @@ class ProductionSettings(BaseSettings):
     # writer or helper call runs, so the library never changes. Refused without the library mode, the fork, or with
     # UNIFY_MEMORY_PASSES=off.
     UNIFY_MEMORY_WRITER_PASSES: str = ""
+    # Capture quality: empty or ``off`` (default: today's behaviour) or ``on``: the episode-end fork may write the
+    # input->output pairs its own record shows, each citing the recorded part it came from; the capture step runs the
+    # procedure confined on each and records "fits k of n" (a label), and a procedure that misses one gets one
+    # re-capture turn told only the misses. Refused without the library mode or the fork.
+    UNIFY_MEMORY_CAPTURE_CASES: str = ""
+    # Adoption: empty or ``off`` (default: today's behaviour) or ``on``: memory.ask runs each captured procedure the
+    # librarian lists once on the current request, confined, and shows what it gave beside the item. Refused
+    # without the librarian.
+    UNIFY_MEMORY_ASK_PRERUN: str = ""
     # The library mode's E (recorded tokens at which a pass becomes due), one pass's wall-clock bound (s), and the
     # writer route proxy's journal (absolute path; empty: none) used only to reconcile cancelled calls.
     UNIFY_MEMORY_LIBRARY_E: int = 100000
@@ -786,6 +795,8 @@ class ProductionSettings(BaseSettings):
         "UNIFY_PROFILE",
         "UNIFY_MEMORY_PASSES",
         "UNIFY_MEMORY_WRITER_PASSES",
+        "UNIFY_MEMORY_CAPTURE_CASES",
+        "UNIFY_MEMORY_ASK_PRERUN",
         mode="before",
     )
     @classmethod

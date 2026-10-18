@@ -100,6 +100,20 @@ The no-pass memory set:
   verdict makes due) starts, no writer or helper call is made, and the library never changes. Refused unless
   ``UNIFY_MEMORY_LIBRARY`` and ``UNIFY_MEMORY_LIBRARY_FORK`` are on and ``UNIFY_MEMORY_PASSES`` is not off.
 
+Capture quality and adoption (each off by default; off, every prompt, record and generated file is as without it):
+
+- ``UNIFY_MEMORY_CAPTURE_CASES``: empty or ``off`` (today's behaviour) or ``on``. On, the episode-end fork may also
+  write ``procedure_cases.json``: input->output pairs taken from the episode's own record, each citing the recorded
+  part it came from (:mod:`..captures`). A case that cites no recorded part is dropped. The capture step runs the
+  procedure confined on each kept case and records "fits k of n" in the capture's record (a label: nothing is
+  refused for it). When a settled fork's procedure fits fewer than all of its cases, the fork gets one re-capture
+  turn told only which cases missed and how (:func:`.fork.recapture`). Refused unless ``UNIFY_MEMORY_LIBRARY`` and
+  ``UNIFY_MEMORY_LIBRARY_FORK`` are on.
+- ``UNIFY_MEMORY_ASK_PRERUN``: empty or ``off`` (today's behaviour) or ``on``. On, ``memory.ask`` runs each captured
+  procedure the librarian lists once on the current request, confined and bounded in time as a captured procedure's
+  call is, and shows what it gave beside the item, with its "fits k of n" label when it has one. Nothing else
+  changes. Refused unless ``UNIFY_MEMORY_LIBRARIAN`` is on.
+
 Not switched (a declared safety fix in every mode): the gate refuses bytecode, native code, start-up hooks
 and root entries other than ``env/``, ``workflows/`` and the test kit before extraction
 (:func:`unify.memory.manifest.unsafe_path`), and changes to the paths the harness reserves for its
@@ -156,6 +170,8 @@ QA_FIXTURE_SIZE = "UNIFY_MEMORY_QA_FIXTURE_SIZE"
 PROFILE = "UNIFY_PROFILE"
 MEMORY_PASSES = "UNIFY_MEMORY_PASSES"
 WRITER_PASSES = "UNIFY_MEMORY_WRITER_PASSES"
+CAPTURE_CASES = "UNIFY_MEMORY_CAPTURE_CASES"
+ASK_PRERUN = "UNIFY_MEMORY_ASK_PRERUN"
 
 EXPERIENCE_BUDGET_DEFAULT = 150000
 WRITER_MODEL_DEFAULT = "openai/gpt-6-sol"
@@ -1270,12 +1286,53 @@ def writer_passes_refusal(settings: Any) -> str | None:
     )
 
 
+def parse_capture_cases(v: Any) -> str:
+    """``UNIFY_MEMORY_CAPTURE_CASES``: ``off`` (also for empty) or ``on``."""
+    return _on_off(CAPTURE_CASES, v)
+
+
+def capture_cases_on(settings: Any) -> bool:
+    """Whether a capture is checked on the input->output pairs its own episode recorded (missing is off)."""
+    return parse_capture_cases(getattr(settings, CAPTURE_CASES, "") or "") == "on"
+
+
+def parse_ask_prerun(v: Any) -> str:
+    """``UNIFY_MEMORY_ASK_PRERUN``: ``off`` (also for empty) or ``on``."""
+    return _on_off(ASK_PRERUN, v)
+
+
+def ask_prerun_on(settings: Any) -> bool:
+    """Whether ``memory.ask`` runs each captured procedure it lists on the current request (missing is off)."""
+    return parse_ask_prerun(getattr(settings, ASK_PRERUN, "") or "") == "on"
+
+
+def capture_quality_refusal(settings: Any) -> str | None:
+    """Why ``UNIFY_MEMORY_CAPTURE_CASES=on`` or ``UNIFY_MEMORY_ASK_PRERUN=on`` may not run with these settings (the
+    settings named, never a value), or None: the cases live in the fork's capture, and the pre-run in ``memory.ask``."""
+    if capture_cases_on(settings):
+        missing = [
+            name
+            for name, ok in (
+                (LIBRARY_MODE + "=on", library_enabled(settings)),
+                (LIBRARY_FORK + "=on", library_fork(settings)),
+            )
+            if not ok
+        ]
+        if missing:
+            return f"{CAPTURE_CASES}=on checks the fork's capture, so it needs {', '.join(missing)}; nothing runs"
+    librarian = str(getattr(settings, "UNIFY_MEMORY_LIBRARIAN", "off") or "off").strip().lower()
+    if ask_prerun_on(settings) and librarian != "on":
+        return f"{ASK_PRERUN}=on runs what memory.ask lists, so it needs UNIFY_MEMORY_LIBRARIAN=on; nothing runs"
+    return None
+
+
 def profile_refusal(settings: Any) -> str | None:
     """Why this run may not start under its profile, or under UNIFY_MEMORY_WRITER_PASSES=off without what it needs
-    (:func:`writer_passes_refusal`; the settings named, never a value), or None."""
+    (:func:`writer_passes_refusal`), or with a capture-quality switch on without what it needs
+    (:func:`capture_quality_refusal`; the settings named, never a value), or None."""
     bad = profile_conflicts(settings)
     if not bad:
-        return writer_passes_refusal(settings)
+        return writer_passes_refusal(settings) or capture_quality_refusal(settings)
     return (
         f"{PROFILE}={PAPER} fixes {', '.join(bad)} (the writer runs on the actor's model and effort, and no checker "
         "line is taken); unset them, so nothing runs"
@@ -1425,6 +1482,8 @@ PARSERS = {
     PROFILE: parse_profile,
     MEMORY_PASSES: parse_memory_passes,
     WRITER_PASSES: parse_writer_passes,
+    CAPTURE_CASES: parse_capture_cases,
+    ASK_PRERUN: parse_ask_prerun,
 }
 
 
