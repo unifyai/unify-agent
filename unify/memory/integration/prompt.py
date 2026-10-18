@@ -161,7 +161,8 @@ LEARNED_GUIDE_LINE = (
     "Some library functions are learned skills (their docstrings say so): `fitted = memory.learned(\"<id>\")"
     ".fit(pairs)` fits one to the (input, output) pairs you have (from the request, from your tool calls and "
     "their results, or values you computed) and returns a function, `fitted(x)`; `fitted.reproduced` says whether "
-    "every pair came back.\n"
+    "every pair came back. A value for an input outside your pairs comes from an earlier episode: `fitted.where(x)` "
+    "names that episode and its time; treat it as a hint to check, never as ground truth.\n"
 )
 
 

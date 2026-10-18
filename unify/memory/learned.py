@@ -61,12 +61,20 @@ MAX_SECONDS = 5.0
 MAX_PAIRS = 20_000
 #: The most parameters a state may hold (a bound on what is stored and recorded).
 MAX_PARAMS = 200_000
+#: The lookup family's shared output bias learns at this fraction of the table's rate (one request's fit must not
+#: override the stored rows of inputs it did not see).
+BIAS_RATE = 0.1
 #: Cross-entropy fits stop once every training pair's own output has at least this probability.
 CONFIDENCE = 0.6
 #: The audit event a fit raises: (item id, the fitted state as JSON text, reproduced, steps). The harness keeps it,
 #: harness-side only, for the consolidation after the episode; the text is "" when it is over MAX_STATE_CHARS.
 FIT_EVENT = "memory.learned_fit"
 MAX_STATE_CHARS = 200_000
+#: What :meth:`LearnedSkill.fit`'s ``where(x)`` says of a value that comes from an earlier episode, not from the pairs given.
+HINT = (
+    "a stored value from an earlier episode (see episode and at): a hint to check against what you can observe now, "
+    "never ground truth"
+)
 #: The prefix of the confined check's one result line (:func:`main`).
 CHECK_MARK = "LEARNED-CHECK "
 
@@ -135,7 +143,7 @@ def adam(
     loss_and_grad: Callable[[np.ndarray], tuple[float, np.ndarray]],
     done: Callable[[np.ndarray], bool],
     *,
-    lr: float,
+    lr: float | np.ndarray,
     max_steps: int,
     max_seconds: float,
 ) -> tuple[np.ndarray, int, float]:
@@ -327,7 +335,16 @@ class Lookup(Family):
             np.concatenate([L0.ravel(), self._bias(params, outs)]),
             lg,
             done,
-            lr=float(self.options.get("lr", self.lr)),
+            # the shared bias moves at BIAS_RATE of the table's rate, so one request's fit does not override what the
+            # stored rows of other inputs say
+            lr=np.concatenate(
+                [
+                    np.full(size, float(self.options.get("lr", self.lr))),
+                    np.full(
+                        len(outs), BIAS_RATE * float(self.options.get("lr", self.lr)),
+                    ),
+                ],
+            ),
             max_steps=max_steps,
             max_seconds=max_seconds,
         )
@@ -706,6 +723,7 @@ def initial_state(family_name: str, options: dict | None, initial: dict | None) 
         "params": fam.initial(initial),
         "config": {},
         "config_scores": [],
+        "provenance": {},
     }
 
 
@@ -769,11 +787,20 @@ def _merge(base: Any, task: Any, step: float) -> Any:
     return base
 
 
-def consolidated(state: dict, task: dict, weight: float, rate: float) -> dict:
+def consolidated(
+    state: dict,
+    task: dict,
+    weight: float,
+    rate: float,
+    provenance: dict | None = None,
+) -> dict:
     """The Reptile-style step: ``p + rate * weight * (p_task - p)`` for the parameters, and for the discrete config
     the outcome-weighted record (*task*'s config gains *weight*; the stored config becomes the best-scored, the
     current one kept on a tie). *task* is a fitted state (:attr:`Fitted.state`) of the same family and options.
-    """
+
+    *provenance* (``{"episode", "at"}``) is recorded with what this step stored: for a lookup, per input whose row
+    the task changed (so a stored per-entity value always names the episode and time it came from); for the other
+    families, once for the skill (``"*"``)."""
     if not compatible(task, state.get("family", ""), state.get("options")):
         raise LearnedError(
             "the task state does not belong to this skill's family and options",
@@ -791,6 +818,19 @@ def consolidated(state: dict, task: dict, weight: float, rate: float) -> dict:
         if cfg:
             scores.append({"config": cfg, "score": float(weight)})
     out["config_scores"] = scores
+    prov = dict(state.get("provenance", {}) or {})
+    if provenance:
+        mark = {k: provenance[k] for k in ("episode", "at") if k in provenance}
+        if state.get("family") == "lookup":
+            old = (state.get("params") or {}).get("logits", {})
+            for key, row in (
+                (task.get("params") or {}).get("logits", {}) or {}
+            ).items():
+                if row != old.get(key):
+                    prov[key] = dict(mark)
+        else:
+            prov["*"] = dict(mark)
+    out["provenance"] = prov
     current = state.get("config", {}) or {}
     best = max((r["score"] for r in scores), default=None)
     cur_score = next((r["score"] for r in scores if r.get("config") == current), None)
@@ -931,7 +971,9 @@ class LearnedSkill:
     ) -> Callable[[Any], Any]:
         """A plain callable fitted to *examples* ((input, output) pairs; None: the stored fixtures' pairs), built
         from the stored state; the stored state is not changed. The callable has ``reproduced`` (every example's
-        output given back), ``steps``, ``loss``, ``config`` and ``state`` (the fitted state) as attributes.
+        output given back), ``steps``, ``loss``, ``config``, ``state`` (the fitted state) and ``where(x)`` (whether
+        the value for *x* comes from your pairs, or from an earlier episode, named with its time: a hint to check,
+        never ground truth) as attributes.
         """
         pairs = as_pairs(examples) if examples is not None else self.stored_examples()
         if not pairs:
@@ -960,6 +1002,7 @@ class LearnedSkill:
         fitted.config = config  # type: ignore[attr-defined]
         fitted.state = task  # type: ignore[attr-defined]
         fitted.model = model  # type: ignore[attr-defined]
+        fitted.where = self._where(pairs, config)  # type: ignore[attr-defined]
         if self._audit:
             text = state_text(task)
             try:
@@ -973,6 +1016,43 @@ class LearnedSkill:
             except Exception:  # noqa: BLE001 - an audit hook never changes the call
                 pass
         return fitted
+
+    def _where(self, pairs: list, config: dict) -> Callable[[Any], dict]:
+        """``where(x)``: where the fitted value for *x* comes from. ``your examples`` (an input of the pairs given),
+        ``stored`` (an earlier episode's consolidated value, with its episode and time, marked as a hint) or ``prior``
+        (neither: the skill's initial values or its shared bias). For the families other than lookup: the fit to the
+        pairs given, from parameters last consolidated in the named episode."""
+        prov = dict(self.state.get("provenance", {}) or {})
+        if self.state.get("family") != "lookup":
+            last = prov.get("*")
+
+            def where_other(x: Any) -> dict:
+                out = {
+                    "source": "your examples",
+                    "note": "fitted to the pairs you gave",
+                }
+                if last:
+                    out.update(
+                        last_consolidated=dict(last),
+                        note=out["note"] + "; the starting parameters are a " + HINT,
+                    )
+                return out
+
+            return where_other
+        given = {k for k, _ in self.family._elements(self.family_pairs(pairs, config))}
+
+        def where(x: Any) -> dict:
+            key = category_key(x)
+            if key in given:
+                return {"source": "your examples"}
+            if key in prov:
+                return {"source": "stored", **prov[key], "note": HINT}
+            return {
+                "source": "prior",
+                "note": "not in your pairs and never stored: the skill's initial values or its shared bias",
+            }
+
+        return where
 
     def _same(self, fitted: Callable, x: Any, y: Any) -> bool:
         try:

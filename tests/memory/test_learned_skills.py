@@ -221,6 +221,36 @@ def test_discrete_config_is_kept_by_its_outcome_weighted_record():
     assert s["config"] == {"marker": 5}
 
 
+def test_stored_values_carry_their_episode_and_time_and_are_labelled_hints():
+    sk = _skill("lookup", {})
+    first = sk.fit([("res-1", "economy"), ("res-2", "business")])
+    when = {"episode": "ep-1", "at": "2026-10-18T00:00:00Z"}
+    stored = L.consolidated(sk.state, first.state, 1.0, 1.0, when)
+    assert stored["provenance"][L.category_key("res-1")] == when
+    later = L.LearnedSkill("memory.p.m:f", stored, audit=False).fit(
+        [("res-3", "economy")],
+    )
+    assert (
+        later("res-2") == "business"
+    )  # the shared bias does not override a stored row
+    w = later.where("res-2")
+    assert w["source"] == "stored" and w["episode"] == "ep-1" and w["at"] == when["at"]
+    assert "hint" in w["note"] and "never ground truth" in w["note"]
+    assert later.where("res-3") == {"source": "your examples"}
+    assert later.where("res-9")["source"] == "prior"
+    aff = _skill("affine", {"inputs": 1, "outputs": 1})
+    task = aff.fit([([1], [2])], max_steps=500).state
+    s2 = L.consolidated(aff.state, task, 1.0, 0.5, {"episode": "ep-2", "at": "t"})
+    again = L.LearnedSkill("memory.p.m:f", s2, audit=False).fit(
+        [([1], [2])], max_steps=500,
+    )
+    w2 = again.where([3])
+    assert (
+        w2["last_consolidated"] == {"episode": "ep-2", "at": "t"}
+        and "hint" in w2["note"]
+    )
+
+
 def test_gate_rejects_a_regression_and_a_rising_loss_and_no_fixtures():
     ok = {"passed": True, "loss": 0.1, "steps": 2}
     bad = {"passed": False, "loss": 0.5, "steps": 300}
@@ -548,6 +578,10 @@ def test_consolidation_accepts_a_helpful_update_and_rejects_a_harmful_one(tmp_pa
     assert head == rows[0]["ref_after"]
     stored = LS.read_states(mem)["memory.tables.recode"]
     assert stored["params"]["logits"]  # moved toward the fit
+    assert stored["provenance"] and all(
+        v == {"episode": "ep1", "at": rows[0]["at"]}
+        for v in stored["provenance"].values()
+    )
     harmful = json.loads(L.state_text(stored))
     harmful["params"]["logits"].setdefault(L.category_key("a"), {})[
         L.category_key("Q")

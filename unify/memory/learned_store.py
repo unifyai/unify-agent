@@ -126,7 +126,11 @@ def read_states(repo: Repo, at: str | None = None) -> dict[str, dict]:
 
 
 def write_state(
-    repo: Repo, module: str, state: dict, message: str, expected: str | None,
+    repo: Repo,
+    module: str,
+    state: dict,
+    message: str,
+    expected: str | None,
 ) -> str:
     """Commit *state* as the skill's file on the state ref (one commit; the ref moves only from *expected*)."""
     entries: dict[str, str] = {}
@@ -135,7 +139,10 @@ def write_state(
             meta, _, name = line.partition("\t")
             entries[name] = meta.split()[2]
     entries[state_name(module)] = repo.run(
-        "hash-object", "-w", "--stdin", input=L.state_text(state),
+        "hash-object",
+        "-w",
+        "--stdin",
+        input=L.state_text(state),
     ).strip()
     tree = repo.run(
         "mktree",
@@ -178,7 +185,10 @@ def export_files(repo: Repo, files: Mapping[str, bytes]) -> dict[str, bytes]:
 
 
 def run_check(
-    tree: Path, module: str, item: str, states: Mapping[str, dict | None],
+    tree: Path,
+    module: str,
+    item: str,
+    states: Mapping[str, dict | None],
 ) -> dict:
     """Each state's per-case results on the module's fixtures (:func:`.learned.check_cases`), from a confined run on
     the library *tree*; ``{"error": ...}`` when the run fails or gives no result line.
@@ -344,7 +354,9 @@ def consolidate_episode(
                     else None
                 )
                 if decl is None or not L.compatible(
-                    task, decl["family"], decl["options"],
+                    task,
+                    decl["family"],
+                    decl["options"],
                 ):
                     row["reason"] = "module_changed"
                     continue
@@ -354,10 +366,14 @@ def consolidate_episode(
                     stored
                     if L.compatible(stored, decl["family"], decl["options"])
                     else L.initial_state(
-                        decl["family"], decl["options"], decl["initial"],
+                        decl["family"],
+                        decl["options"],
+                        decl["initial"],
                     )
                 )
-                new = L.consolidated(old, task, weight, RATE)
+                new = L.consolidated(
+                    old, task, weight, RATE, {"episode": episode_id, "at": at},
+                )
                 got = run_check(tree, module, f["item"], {"old": old, "new": new})
                 if "error" in got:
                     row["reason"] = "check_error"
