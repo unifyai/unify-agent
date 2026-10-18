@@ -84,7 +84,7 @@ def test_the_nearest_functions_put_the_same_job_first_and_leave_out_what_never_a
     )
     assert "  -def double(g):" in text and "  +def twice(g):" in text
     assert bo.decision_line(_id("twice"), rows[0]).startswith(
-        f"same job: {_id('twice')} returns the same as {_id('double')}"
+        f"same job: {_id('twice')} returns the same as {_id('double')}",
     )
 
 
@@ -92,23 +92,22 @@ def test_a_manifest_decides_by_keep_drop_change_delete_or_alias():
     new, old, other_new = "memory.p.m:new", "memory.p.m:old", "memory.p.m:fresh"
     pending = [(new, old, False), (new, other_new, True), (other_new, new, True)]
     base = {"items": [{"item": new}, {"item": other_new}]}
-    assert bo.undecided(pending, base) == [
-        (new, old),
-        (new, other_new),
-        (other_new, new),
-    ]
+    # the undecided pairs come back sorted, whatever the order of pending
+    assert bo.undecided(pending, base) == sorted(
+        [(new, old), (new, other_new), (other_new, new)],
+    )
     assert bo.undecided(pending, {**base, "kept": {new: "a different job"}}) == []
     assert bo.undecided(pending, {**base, "kept": {new: "  "}}) == bo.undecided(
-        pending, base
+        pending,
+        base,
     )
-    assert bo.undecided(pending, {**base, "kept": {old: "keep the old one"}}) == [
-        (new, other_new),
-        (other_new, new),
-    ]
+    assert bo.undecided(pending, {**base, "kept": {old: "keep the old one"}}) == sorted(
+        [(new, other_new), (other_new, new)],
+    )
     # the pass drops its function, or changes the existing one instead
     assert bo.undecided(pending, {"items": [{"item": other_new}]}) == [(other_new, new)]
     assert bo.undecided(pending, {"items": [{"item": new}, {"item": old}]}) == [
-        (new, other_new)
+        (new, other_new),
     ]
     # two functions the pass adds are not decided by listing both
     assert bo.undecided([(new, other_new, True)], base) == [(new, other_new)]
@@ -127,25 +126,35 @@ TEST_SOURCE = (
 
 @needs_bwrap
 def test_the_store_pass_check_shows_the_same_job_and_finish_waits_for_a_decision(
-    tmp_path, monkeypatch
+    tmp_path,
+    monkeypatch,
 ):
     # the parent has no twice (a private helper has its body): the pass adds twice and its test
     parent_ops = FILES["memory/grid/ops.py"].replace(
-        "def twice(grid):", "def _unused(grid):"
+        "def twice(grid):",
+        "def _unused(grid):",
     )
     parent = _tree(tmp_path / "parent", {**FILES, "memory/grid/ops.py": parent_ops})
     tree = _tree(
-        tmp_path / "tree", {**FILES, "memory/grid/tests/test_ops.py": TEST_SOURCE}
+        tmp_path / "tree",
+        {**FILES, "memory/grid/tests/test_ops.py": TEST_SOURCE},
     )
     _, ev, writer = _writer(
-        tmp_path / "w", Turns([]), library_mode=True, overlap="at-write"
+        tmp_path / "w",
+        Turns([]),
+        library_mode=True,
+        overlap="at-write",
     )
     digests = bo.body_digests(tree)
     ev.write_function_inputs(
-        _id("double"), digests[_id("double")], INPUTS[_id("double")]
+        _id("double"),
+        digests[_id("double")],
+        INPUTS[_id("double")],
     )
     ev.write_function_inputs(
-        _id("triple"), digests[_id("triple")], INPUTS[_id("triple")]
+        _id("triple"),
+        digests[_id("triple")],
+        INPUTS[_id("triple")],
     )
     # the shapes are the catalogue's business; here every function takes the same kind of grid
     monkeypatch.setattr(
@@ -164,16 +173,18 @@ def test_the_store_pass_check_shows_the_same_job_and_finish_waits_for_a_decision
                 "item": _id("twice"),
                 "kind": "function",
                 "tests": ["memory/grid/tests/test_ops.py"],
-            }
-        ]
+            },
+        ],
     }
     assert writer._same_job_on()
     lines, full, pending = writer._same_job(
-        tree, ParentSnapshot("0" * 40, {}, parent), manifest
+        tree,
+        ParentSnapshot("0" * 40, {}, parent),
+        manifest,
     )
     assert pending == [(_id("twice"), _id("double"), False)]
     assert lines == [
-        bo.decision_line(_id("twice"), {"item": _id("double"), "agree": 2})
+        bo.decision_line(_id("twice"), {"item": _id("double"), "agree": 2}),
     ]
     assert any(line.startswith(f"- {_id('double')}: the same") for line in full)
     kept = {**manifest, "kept": {_id("twice"): "kept apart on purpose"}}
