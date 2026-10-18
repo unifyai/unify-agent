@@ -33,6 +33,7 @@ from typing import Any, Mapping
 
 from . import learned as L
 from .gitio import GitError, Repo
+from .redact import KEY_SHAPED
 
 STATE_REF = "refs/learned/state"
 #: Where the export puts each learned module's state and fixtures (under the generated ``.memory/``).
@@ -45,6 +46,8 @@ RATE = 0.5
 MAX_SKILLS_PER_EPISODE = 5
 MAX_FITS_PER_REQUEST = 20
 CHECK_TIMEOUT_S = 120.0
+#: The most learned modules the writer's gate checks in one pass (each check is one confined run).
+MAX_LANDING_CHECKS = 10
 LEARNED_SOURCE = Path(__file__).with_name("learned.py")
 
 
@@ -218,8 +221,11 @@ def run_check(
     if r.timed_out:
         return {"error": "timeout"}
     lines = [ln for ln in (r.stdout or "").splitlines() if ln.startswith(L.CHECK_MARK)]
-    if r.returncode != 0 or not lines:
-        return {"error": f"exit {r.returncode}: {(r.stderr or '')[-300:]}"}
+    if r.returncode != 0 or len(lines) != 1:
+        # exactly one result line: a second one could only come from the module's own code
+        return {
+            "error": f"exit {r.returncode}, {len(lines)} result lines: {(r.stderr or '')[-300:]}",
+        }
     try:
         return json.loads(lines[-1][len(L.CHECK_MARK) :])
     except ValueError:
@@ -272,6 +278,8 @@ def take_fits(acc: list, drained: Any) -> None:
             and isinstance(row.get("state"), str)
             and isinstance(row.get("reproduced"), bool)
             and isinstance(row.get("steps"), int)
+            and KEY_SHAPED.search(row["state"])
+            is None  # never a key-shaped string (the audit hook refuses them too)
         ):
             acc.append(
                 {k: row[k] for k in ("item", "state", "reproduced", "steps")},
@@ -372,7 +380,11 @@ def consolidate_episode(
                     )
                 )
                 new = L.consolidated(
-                    old, task, weight, RATE, {"episode": episode_id, "at": at},
+                    old,
+                    task,
+                    weight,
+                    RATE,
+                    {"episode": episode_id, "at": at},
                 )
                 got = run_check(tree, module, f["item"], {"old": old, "new": new})
                 if "error" in got:

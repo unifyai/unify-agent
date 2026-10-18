@@ -125,7 +125,9 @@ kept apart, under ``calls``, only when a cell raised one::
                                        # MAX_LEARNED_BYTES of state text
     "learned_dropped": int
 
-The state is the one value this hook keeps: it is the fitted parameters of a
+A state holding a key-shaped string (``_KEY_SHAPED``) is refused and counted
+under ``malformed``: refused, not masked, so a kept state is always the
+cell's own JSON. The state is the one value this hook keeps: it is the fitted parameters of a
 library item, read only harness-side by the consolidation after the episode
 (:mod:`unify.memory.learned_store`), which gates it on the item's own stored
 fixtures before anything is stored; a forged one is refused there.
@@ -767,6 +769,11 @@ class CellAudit:
             or len(item) > MAX_ITEM_ID
             or _ITEM_ID_OR_MODULE.fullmatch(item) is None
         ):
+            self.calls_malformed += 1
+            return
+        if _KEY_SHAPED.search(state) is not None:
+            # a key-shaped string in the state (its keys and config are the cell's): refused, never masked, so what is
+            # kept is always the cell's JSON as given; counted as malformed
             self.calls_malformed += 1
             return
         if len(self.learned_records) >= MAX_LEARNED_FITS or self.learned_bytes + len(state) > MAX_LEARNED_BYTES:

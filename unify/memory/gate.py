@@ -1525,12 +1525,19 @@ class Gate:
                     "naming a known family with options it accepts",
                     owners or None,
                 )
-        for module, decl in declared.items():
-            if (
-                learned_store.module_path(module) not in changed
-                and learned_store.fixture_path(module) not in changed
-            ):
-                continue
+        todo = [
+            (module, decl)
+            for module, decl in declared.items()
+            if learned_store.module_path(module) in changed or learned_store.fixture_path(module) in changed
+        ]
+        if len(todo) > learned_store.MAX_LANDING_CHECKS:   # bounded: one confined run per module
+            run.fail(
+                "G3",
+                f"{len(todo)} learned modules added or changed in one pass; at most {learned_store.MAX_LANDING_CHECKS} "
+                "are checked per pass: land the others in a later pass",
+            )
+            return
+        for module, decl in todo:
             ok, reason = learned_store.check_landing(run.c_tree, module, decl)
             if ok:
                 run.note(

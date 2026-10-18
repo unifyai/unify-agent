@@ -242,7 +242,8 @@ def test_stored_values_carry_their_episode_and_time_and_are_labelled_hints():
     task = aff.fit([([1], [2])], max_steps=500).state
     s2 = L.consolidated(aff.state, task, 1.0, 0.5, {"episode": "ep-2", "at": "t"})
     again = L.LearnedSkill("memory.p.m:f", s2, audit=False).fit(
-        [([1], [2])], max_steps=500,
+        [([1], [2])],
+        max_steps=500,
     )
     w2 = again.where([3])
     assert (
@@ -259,6 +260,44 @@ def test_gate_rejects_a_regression_and_a_rising_loss_and_no_fixtures():
     assert L.gate_states([bad], [dict(bad, loss=0.9)]) == (False, "loss_rose")
     assert L.gate_states([bad], [dict(bad, loss=0.2)]) == (True, "ok")
     assert L.gate_states([], []) == (False, "no_fixtures")
+
+
+def test_options_are_bounded_before_any_list_is_built():
+    import time
+
+    t0 = time.monotonic()
+    for opts in (
+        {"classes": 10**12},
+        {"classes": 0},
+        {"classes": 2.0},
+        {"classes": True},
+        {"values": "x" * 10},
+        {"values": []},
+        {"classes": 3, "radius": 1.5},
+    ):
+        with pytest.raises(L.LearnedError):
+            L.family("neighbourhood", opts).initial({})
+    for opts in (
+        {"inputs": 10**12, "outputs": 1},
+        {"inputs": float("inf"), "outputs": 1},
+        {"inputs": "2", "outputs": 1},
+        {"inputs": 1000, "outputs": 1000},
+    ):
+        with pytest.raises(L.LearnedError):
+            L.family("affine", opts).initial({})
+    with pytest.raises(L.LearnedError):
+        L.declaration(
+            'LEARNED_FAMILY = "neighbourhood"\nLEARNED_OPTIONS = {"classes": 10**12}\n',
+        )
+    assert time.monotonic() - t0 < 5.0
+    assert (
+        LS.learned_modules(
+            {
+                "memory/p/m.py": b'LEARNED_FAMILY = "neighbourhood"\nLEARNED_OPTIONS = {"classes": 999999999999}\n',
+            },
+        )
+        == {}
+    )
 
 
 def test_declaration_reads_literals_only():
@@ -498,6 +537,99 @@ def test_audit_hook_keeps_fits_apart_and_bounded():
 
 
 @needs_bwrap
+def test_a_key_shaped_state_is_refused_by_the_hook_and_by_the_store():
+    from unify.memory.integration.adapters.audit import CellAudit
+
+    key = "sk-or-v1-" + "a" * 64
+    audit = CellAudit([])
+    audit.begin()
+    audit(
+        "memory.learned_fit",
+        ("memory.p.m:f", json.dumps({"config": {"k": key}}), True, 1),
+    )
+    audit("memory.learned_fit", ("memory.p.m:f", '{"ok": 1}', True, 1))
+    out = audit.drain()["calls"]
+    assert [r["state"] for r in out["learned"]] == ['{"ok": 1}'] and out[
+        "malformed"
+    ] == 1
+    fits: list = []
+    LS.take_fits(
+        fits,
+        {
+            "calls": {
+                "learned": [
+                    {
+                        "item": "memory.p.m:f",
+                        "state": key,
+                        "reproduced": True,
+                        "steps": 1,
+                    },
+                    {
+                        "item": "memory.p.m:f",
+                        "state": "{}",
+                        "reproduced": True,
+                        "steps": 1,
+                    },
+                ],
+            },
+        },
+    )
+    assert [f["state"] for f in fits] == ["{}"]
+
+
+def test_the_gate_checks_a_bounded_number_of_learned_modules_per_pass(
+    monkeypatch, tmp_path,
+):
+    from unify.memory.gate import Gate
+    from unify.settings import SETTINGS
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LEARNED_SKILLS", "on")
+    called: list = []
+    monkeypatch.setattr(
+        LS, "check_landing", lambda *a: called.append(a) or (True, "ok"),
+    )
+    n = LS.MAX_LANDING_CHECKS + 1
+    for i in range(n):
+        (tmp_path / "memory/p").mkdir(parents=True, exist_ok=True)
+        (tmp_path / f"memory/p/m{i}.py").write_text(MODULE)
+    fails: list = []
+    run = SimpleNamespace(
+        c_files={f"memory/p/m{i}.py": ("100644", str(i)) for i in range(n)},
+        c_tree=tmp_path,
+        changed=[f"memory/p/m{i}.py" for i in range(n)],
+        man=SimpleNamespace(items=[]),
+        fail=lambda check, reason, item=None: fails.append((check, reason, item)),
+        note=lambda reason: None,
+    )
+    Gate._learned(None, run)
+    assert (
+        not called
+        and fails
+        and fails[0][0] == "G3"
+        and "at most" in fails[0][1]
+        and fails[0][2] is None
+    )
+
+
+@needs_bwrap
+def test_a_second_result_line_from_module_code_fails_the_check(tmp_path):
+    mem = _library(tmp_path)
+    with mem.temp_checkout() as wt:
+        p = wt / "memory/tables/recode.py"
+        p.write_text(
+            "import sys\nsys.__stdout__.write('LEARNED-CHECK {\"initial\": []}\\n')\n"
+            + MODULE,
+        )
+        got = LS.run_check(
+            wt,
+            "memory.tables.recode",
+            "memory.tables.recode:map_values",
+            {"initial": None},
+        )
+    assert "error" in got and "2 result lines" in got["error"]
+
+
 def test_landing_check_passes_good_fixtures_and_refuses_bad_ones(tmp_path):
     mem = _library(tmp_path)
     decl = L.declaration(MODULE)

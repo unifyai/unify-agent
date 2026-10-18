@@ -341,7 +341,8 @@ class Lookup(Family):
                 [
                     np.full(size, float(self.options.get("lr", self.lr))),
                     np.full(
-                        len(outs), BIAS_RATE * float(self.options.get("lr", self.lr)),
+                        len(outs),
+                        BIAS_RATE * float(self.options.get("lr", self.lr)),
                     ),
                 ],
             ),
@@ -416,13 +417,10 @@ class Affine(Family):
     lr = 0.05
 
     def _sizes(self) -> tuple[int, int]:
-        try:
-            n, m = int(self.options["inputs"]), int(self.options["outputs"])
-        except (KeyError, TypeError, ValueError):
-            raise LearnedError(
-                "affine: options need integer 'inputs' and 'outputs'",
-            ) from None
-        if n < 1 or m < 1 or n * m > MAX_PARAMS:
+        n, m = self.options.get("inputs"), self.options.get("outputs")
+        if type(n) is not int or type(m) is not int:
+            raise LearnedError("affine: options need integer 'inputs' and 'outputs'")
+        if not 0 < n <= MAX_PARAMS or not 0 < m <= MAX_PARAMS or n * m > MAX_PARAMS:
             raise LearnedError(
                 "affine: 'inputs' and 'outputs' must be at least 1 and bounded",
             )
@@ -542,10 +540,21 @@ class Neighbourhood(Family):
     lr = 0.3
 
     def _values(self) -> list[str]:
+        # bounded BEFORE any list is built: a declaration is read harness-side, outside the sandbox
         if "values" in self.options:
-            vals = [category_key(v) for v in self.options["values"]]
+            given = self.options["values"]
+            if not isinstance(given, (list, tuple)) or not 0 < len(given) <= MAX_PARAMS:
+                raise LearnedError(
+                    "neighbourhood: 'values' must be a non-empty, bounded list of categories",
+                )
+            vals = [category_key(v) for v in given]
         elif "classes" in self.options:
-            vals = [category_key(i) for i in range(int(self.options["classes"]))]
+            classes = self.options["classes"]
+            if type(classes) is not int or not 0 < classes <= MAX_PARAMS:
+                raise LearnedError(
+                    "neighbourhood: 'classes' must be an integer from 1 to a bounded count",
+                )
+            vals = [category_key(i) for i in range(classes)]
         else:
             raise LearnedError(
                 "neighbourhood: options need 'values' (the categories) or 'classes'",
@@ -557,8 +566,8 @@ class Neighbourhood(Family):
         return vals
 
     def _dims(self) -> tuple[int, int, int]:
-        r = int(self.options.get("radius", 1))
-        if r < 0 or r > 3:
+        r = self.options.get("radius", 1)
+        if type(r) is not int or r < 0 or r > 3:
             raise LearnedError("neighbourhood: 'radius' must be 0 to 3")
         V = len(self._values())
         D = (2 * r + 1) ** 2 * (V + 1)
