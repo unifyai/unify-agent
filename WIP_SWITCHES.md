@@ -172,6 +172,13 @@ The three long-horizon switches share the step-limit reply path.
 - **What they do:** `UNIFY_MEMORY_LIBRARY=on` is the library mode: the writer reads a batch map and bounded views and keeps a function library (off: the earlier memory mode as built). In it, `_E` is the recorded experience at which a pass becomes due; `_FORK=on` forks the actor's conversation once at each episode's end into a confined process that writes only to the episode's staging directory; `_POOL=on` keeps every proposal open across passes in the candidate pool until the writer closes it; `_EDIT_TOOLS=on` gives the writer and the curator the `write` and `edit` file tools; `_COMPACT` (on by default) lets the memory agents compact their conversations as the agent loop does; `_ACTOR_INDEX` chooses whether the actor's prompt ends with the index view (`inline`) or a constant guide (`pointer`); `UNIFY_MEMORY_WRITER_USAGE=on` ends each pass's first message with the table of how requests used each library function. Each switch's comment in `unify/settings.py` gives the full behaviour.
 - **Evidence:** the memory design under evaluation (continual-harness-research: the memory preregistrations and the build ledgers); a run's configuration sets them, and each default is the build's behaviour without the switch.
 
+## UNIFY_MEMORY_NOTEBOOK
+
+- **Values:** `on` or `off` (empty is `off`).
+- **Default:** `off`.
+- **What it does:** When on (with the library mode), the world notebook (`unify/memory/notebook.py`) runs: after each episode the harness marks its consequence moments from observable changes only (the end, a shown bounded quantity falling faster than its drift or once an earlier episode ended with it at its lowest, an action that changed nothing it usually changes, a failed call) and lists them in the episode-end fork's message; the writer keeps lessons (situation, action, consequence, alternative) with per-episode counts of occurrences and outcomes, which the harness sums into rates and support/contradiction tallies, and may propose untried remedies as trials; established lessons and open trials are appended to the actor's memory section at every request start. Off, nothing of it runs and every prompt is byte for byte as before.
+- **Evidence:** offline replays of recorded episodes (continual-harness-research, the 18 Oct world-memory study: R-C2 counting, R-C3 moments, R-C5 remedies in the real engine); keyless tests only so far (`tests/memory/test_notebook.py`).
+
 ## UNIFY_MEMORY_LIBRARIAN
 
 - **Values:** `on` or `off` (empty is `off`).

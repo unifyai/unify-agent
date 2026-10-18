@@ -697,6 +697,8 @@ LIBRARY_EDIT_TOOLS = "UNIFY_MEMORY_LIBRARY_EDIT_TOOLS"
 #: agent loop compacts its own (writer_pass.compact_by_summary: the same trigger, summary and restart, over each
 #: agent's own route); ``off``: the conversation is never changed.
 LIBRARY_COMPACT = "UNIFY_MEMORY_LIBRARY_COMPACT"
+#: The world notebook (unify/memory/notebook.py): ``on`` or ``off`` (the default).
+NOTEBOOK = "UNIFY_MEMORY_NOTEBOOK"
 #: The former reading rule. Finish never waits on reading: empty and ``optional`` are accepted and change nothing;
 #: ``required`` (the removed rule) is refused, so a configuration that still asks for it fails loudly at start-up.
 LIBRARY_COVERAGE = "UNIFY_MEMORY_LIBRARY_COVERAGE"
@@ -1213,6 +1215,15 @@ def profile_conflicts(settings: Any) -> list[str]:
     return out
 
 
+def parse_notebook(v: Any) -> str:
+    """``UNIFY_MEMORY_NOTEBOOK``: ``off`` (also for empty) or ``on``."""
+    return _on_off(NOTEBOOK, v)
+
+
+def notebook_enabled(settings: Any) -> bool:
+    return parse_notebook(getattr(settings, NOTEBOOK, "") or "") == "on"
+
+
 def parse_memory_passes(v: Any) -> str:
     """``UNIFY_MEMORY_PASSES``: ``on`` (also for empty: today's behaviour) or ``off`` (no memory work after a
     request; the actor's memory surface unchanged)."""
@@ -1380,6 +1391,7 @@ PARSERS = {
     WRITER_JOURNAL: parse_writer_journal,
     PROFILE: parse_profile,
     MEMORY_PASSES: parse_memory_passes,
+    NOTEBOOK: parse_notebook,
 }
 
 

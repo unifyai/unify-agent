@@ -480,6 +480,11 @@ class ProductionSettings(BaseSettings):
     # The library mode: ``on`` forks the actor's conversation once at each episode's end, in a confined process
     # writing only to the episode's staging dir (integration/fork.py); ``off`` (default): nothing happens.
     UNIFY_MEMORY_LIBRARY_FORK: str = "off"
+    # The world notebook (unify/memory/notebook.py): ``on`` marks each episode's consequence moments for the fork,
+    # lets the writer keep lessons as counted rates and propose untried remedies as trials, and appends the
+    # established lessons and open trials to the actor's memory section; ``off`` (default): nothing of it runs and
+    # every prompt is as before.
+    UNIFY_MEMORY_NOTEBOOK: str = "off"
     # The fork lane's route: the key proxy's /fork/v1 base URL and the inherited
     # descriptor carrying its token, read once at start-up and then removed from the environment (empty: no fork lane).
     UNIFY_MEMORY_LIBRARY_FORK_BASE_URL: str = ""
@@ -790,6 +795,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_QA_FIXTURE_SIZE",
         "UNIFY_PROFILE",
         "UNIFY_MEMORY_PASSES",
+        "UNIFY_MEMORY_NOTEBOOK",
         mode="before",
     )
     @classmethod
