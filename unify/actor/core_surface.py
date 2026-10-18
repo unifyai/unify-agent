@@ -1432,6 +1432,13 @@ class PromptSurface:
     #: A persistent session's trajectory is reviewed after each turn.
     turn_reviews: bool = False
 
+    @property
+    def libraries(self) -> frozenset[str]:
+        """The library objects the session's sandbox binds, by global name:
+        the only ones its prompt may name."""
+        on = ((FUNCTIONS, self.functions), (GUIDANCE, self.guidance))
+        return frozenset(name for name, bound in on if bound)
+
     def tools_section(self) -> str:
         answer = (
             "When the request is addressed, answer by calling "
@@ -1719,6 +1726,26 @@ class Session:
             pass
 
 
+def switched_objects(objects: Dict[str, Any]) -> Dict[str, Any]:
+    """*objects* less what the run's switches take out of a session's sandbox.
+
+    UNIFY_MEMORY=on: no ``functions``/``guidance`` (so no library prompt
+    sections, shortlist or snapshot line either). UNIFY_LIBRARY=off: the
+    same, with no memory either.
+    """
+    from unify.actor import library_switch as _library
+    from unify.memory.integration import hooks as _mv2
+
+    return _library.sandbox_objects(_mv2.sandbox_objects(objects))
+
+
+def bound_libraries() -> frozenset[str]:
+    """The library objects a session's sandbox binds under the run's
+    switches, for an actor with both libraries: what a text written outside
+    a session (:attr:`PromptSurface.libraries` inside one) may name."""
+    return frozenset(switched_objects(dict.fromkeys((FUNCTIONS, GUIDANCE))))
+
+
 def start_session(
     actor: Any,
     *,
@@ -1743,16 +1770,7 @@ def start_session(
     session_tools = core_tools(tools)
     if store_skills and "store_skills" in tools:
         session_tools["store_skills"] = tools["store_skills"]
-    objects = sandbox_objects(actor, policy=policy)
-    # UNIFY_MEMORY=on: no ``functions``/``guidance`` (so no library prompt
-    # sections, shortlist or snapshot line either).
-    from unify.memory.integration import hooks as _mv2
-
-    objects = _mv2.sandbox_objects(objects)
-    # UNIFY_LIBRARY=off: the same, with no memory either.
-    from unify.actor import library_switch as _library
-
-    objects = _library.sandbox_objects(objects)
+    objects = switched_objects(sandbox_objects(actor, policy=policy))
     sandbox.global_state.update(objects)
     sandbox.core_globals = dict(objects)
     clarification = (

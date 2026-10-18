@@ -445,6 +445,16 @@ class BaseEnvironment(ABC):
     def get_prompt_context(self) -> str:
         """Return Markdown-formatted rules/examples for using this environment."""
 
+    def get_prompt_context_for(self, libraries: frozenset[str]) -> str:
+        """The prompt context in a session whose sandbox binds the library
+        objects *libraries* (``core_surface.PromptSurface.libraries``).
+
+        An environment whose text names a library object overrides it, so the
+        prompt never names an object the sandbox does not bind; the others
+        say the same in every session.
+        """
+        return self.get_prompt_context()
+
 
 class _CompositeEnvironment(BaseEnvironment):
     """Merges multiple environments sharing the same namespace.
@@ -526,3 +536,17 @@ class _CompositeEnvironment(BaseEnvironment):
     def get_prompt_context(self) -> str:
         parts = [env.get_prompt_context() for env in self._envs]
         return "\n\n".join(p for p in parts if p and p.strip())
+
+    def get_prompt_context_for(self, libraries: frozenset[str]) -> str:
+        parts = [prompt_context_for(env, libraries) for env in self._envs]
+        return "\n\n".join(p for p in parts if p and p.strip())
+
+
+def prompt_context_for(env: Any, libraries: frozenset[str]) -> str:
+    """*env*'s prompt context for a sandbox that binds the library objects
+    *libraries*; an environment with only ``get_prompt_context`` (one that
+    duck-types the interface) gives that one context."""
+    context_for = getattr(env, "get_prompt_context_for", None)
+    if context_for is None:
+        return env.get_prompt_context()
+    return context_for(libraries)

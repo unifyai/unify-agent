@@ -275,17 +275,21 @@ def _build_filesystem_context() -> str:
 def _build_code_act_rules_and_examples(
     *,
     environments: Mapping[str, "BaseEnvironment"],
+    libraries: frozenset[str],
 ) -> str:
     """
     Builds the reusable environment rules block for CodeAct-style execution.
 
-    Composes the prompt context each environment provides.
+    Composes the prompt context each environment provides, for a sandbox
+    that binds the library objects *libraries*.
     """
+    from unify.actor.environments.base import prompt_context_for
+
     parts: list[str] = []
 
     # Each environment provides its own rules, docs, and examples.
     for _ns, env in environments.items():
-        env_ctx = env.get_prompt_context()
+        env_ctx = prompt_context_for(env, libraries)
         if env_ctx and env_ctx.strip():
             parts.append(env_ctx)
 
@@ -704,7 +708,8 @@ def _build_core_prompt(
     sandbox = _build_sandbox_environment_section(
         has_primitives=_injects_actor_primitives(environments),
     )
-    parts.append(_unified(sandbox, _CORE_SANDBOX_SEARCH, _CORE_SANDBOX_SEARCH_PYTHON))
+    search = _CORE_SANDBOX_SEARCH_PYTHON if core.functions else _CORE_SANDBOX_HELP_ONLY
+    parts.append(_unified(sandbox, _CORE_SANDBOX_SEARCH, search))
     parts.append(core.index())
     parts.append(core.python_first())
     parts.append(
@@ -725,7 +730,10 @@ def _build_core_prompt(
     parts = _rewrite_sections(parts, _section_rewrites(environments, None))
     if session_sections:
         parts.extend(_session_sections())
-    rules_and_examples = _build_code_act_rules_and_examples(environments=environments)
+    rules_and_examples = _build_code_act_rules_and_examples(
+        environments=environments,
+        libraries=core.libraries,
+    )
     if rules_and_examples:
         parts.append(rules_and_examples)
     if guidelines:
@@ -931,7 +939,10 @@ def _build_core_prompt_in_code(
     parts = _rewrite_sections(parts, _section_rewrites(environments, None))
     if session_sections:
         parts.extend(_session_sections_in_code())
-    rules_and_examples = _build_code_act_rules_and_examples(environments=environments)
+    rules_and_examples = _build_code_act_rules_and_examples(
+        environments=environments,
+        libraries=core.libraries,
+    )
     if rules_and_examples:
         parts.append(rules_and_examples)
     if guidelines:

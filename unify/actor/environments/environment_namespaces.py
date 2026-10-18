@@ -77,13 +77,22 @@ class EnvironmentNamespacesEnvironment(BaseEnvironment):
         return tools
 
     def get_prompt_context(self) -> str:
-        from unify.actor import library_switch
+        """The context outside a session: as a session under the run's
+        switches would read it."""
+
+        from unify.actor.core_surface import bound_libraries
+
+        return self.get_prompt_context_for(bound_libraries())
+
+    def get_prompt_context_for(self, libraries: frozenset[str]) -> str:
+        from unify.actor.core_surface import FUNCTIONS
 
         namespaces = environment_namespaces()
-        # The library search is the sandbox's (the core surface). With
-        # UNIFY_LIBRARY=off the sandbox has no `functions` and nothing is
-        # stored, so the docs come from help() alone.
-        library = not library_switch.off()
+        # The library search is the sandbox's ``functions`` (the core
+        # surface). A sandbox without it (a memory run, or UNIFY_LIBRARY=off)
+        # has no stored function to inject them into and no search, so the
+        # docs come from help() alone.
+        library = FUNCTIONS in libraries
         stored = (
             "A stored function that calls them needs no import: they are "
             "recorded and injected when it runs later. "
