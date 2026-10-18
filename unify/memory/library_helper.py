@@ -2532,8 +2532,23 @@ class _Catalog:
             out += [f"  broke: {b}" for b in (broke if isinstance(broke, list) else []) if isinstance(b, str)]
         if asked:
             out.append(f"Asked: {' '.join(asked.split())}")
+        pairs = _own_pairs_line(rec)
+        if pairs:
+            out.append(pairs)
         out += ["", (text or "(its procedure cannot be read)").rstrip("\n")]
         return built, "\n".join(out) + "\n"
+
+
+def _own_pairs_line(rec: dict) -> str:
+    """A captured procedure's label from its record's ``own_pairs`` (the harness ran it on the input->output pairs
+    its own episode recorded): ``Fits k of n ...``; '' when the record has none or none were cited."""
+    own = rec.get("own_pairs") if isinstance(rec, dict) else None
+    if not isinstance(own, dict):
+        return ""
+    fits, of = own.get("fits"), own.get("of")
+    if type(fits) is not int or type(of) is not int or of <= 0 or not 0 <= fits <= of:
+        return ""
+    return f"Fits {fits} of {of} input->output pairs recorded in the episode it was captured from."
 
 
 @checked(name="memory.get")
