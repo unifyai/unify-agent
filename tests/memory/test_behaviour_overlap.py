@@ -92,7 +92,7 @@ def test_recorded_inputs_keep_whole_replayable_lists_of_calls_that_returned():
     many = [_call(a, _arg("grid", [[i]]), ordinal=i) for i in range(20)]
     assert len(bo.recorded_inputs(many)) == bo.MAX_INPUTS
     big = [
-        _call(a, _arg("grid", str(i) * (bo.MAX_INPUT_BYTES // 2 - 20)), ordinal=i)
+        _call(a, _arg("grid", str(i) * (bo.MAX_INPUT_BYTES // 2)), ordinal=i)
         for i in range(3)
     ]
     assert len(bo.recorded_inputs(big)) == 1
@@ -117,7 +117,7 @@ def test_compare_needs_a_shared_case_from_each_side_and_no_difference():
             ("b", "3", "returned", "y"),
             ("a", "2", "returned", "z"),
             ("b", "2", "refused", None),
-        ]
+        ],
     )
     row = bo.compare("a", "b", own, same)
     assert (
@@ -135,7 +135,7 @@ def test_compare_needs_a_shared_case_from_each_side_and_no_difference():
             ("b", "1", "returned", "x"),
             ("a", "3", "unbindable", None),
             ("b", "3", "returned", "y"),
-        ]
+        ],
     )
     assert bo.compare("a", "b", own, one_side)["verdict"] == bo.NO_CASE
     assert bo.compare("a", "b", own, {})["verdict"] == bo.NO_CASE
@@ -248,7 +248,7 @@ def test_the_pairs_past_the_bound_are_named(tmp_path):
         confined=confined,
     )
     assert list(rows) == [("a", "b"), ("a", "c")] and cut == [
-        "behaviour: 1 of 3 pairs not compared"
+        "behaviour: 1 of 3 pairs not compared",
     ]
 
 
@@ -259,10 +259,12 @@ def test_the_evidence_store_keeps_lists_by_body(tmp_path):
     ev.write_function_inputs("x", "b2", [[["grid", [[2]]]]])
     ev.write_function_inputs("y", "b1", [])  # nothing to keep
     ev.write_function_inputs(
-        "x", "b1", [[["grid", [[3]]]]]
+        "x",
+        "b1",
+        [[["grid", [[3]]]]],
     )  # the same body again: the newer lists
     assert ev.function_inputs(["x", "y"]) == {
-        "x": {"b1": [[["grid", [[3]]]]], "b2": [[["grid", [[2]]]]]}
+        "x": {"b1": [[["grid", [[3]]]]], "b2": [[["grid", [[2]]]]]},
     }
     root = _tree(tmp_path / "lib", FILES)
     digests = bo.body_digests(root)
