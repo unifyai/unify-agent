@@ -830,6 +830,10 @@ class PassConfig:
     # where the fork leaves staging (<state>/memory-staging; None: a scratch dir in the pass); writer-launched
     # helpers write beside it (<state>/memory-helpers, helpers.py)
     staging_root: str | None = None
+    # UNIFY_MEMORY_NOTEBOOK: the run's state dir, whose notebook/ a store pass reads (/inputs/notebook.json) and
+    # merges the writer's /memory/.pass/notebook.json into when it ends (notebook.py); None: neither, and the brief
+    # is as before
+    notebook_state: str | None = None
     # the run's worktree repo and the folder its recorded office workspaces are exported to, once each, for
     # replay (workspace_trees.py; None: replays run without a recorded workspace)
     worktree_git: str | None = None
@@ -2019,6 +2023,54 @@ def _read_manifest(box: Path) -> tuple[bool, object, str | None]:
     if _depth(parsed) > _MANIFEST_MAX_DEPTH:  # the gate walks it recursively
         return True, None, f"manifest: nested deeper than {_MANIFEST_MAX_DEPTH} levels"
     return True, parsed, None
+
+
+def _read_pass_json(box: Path, name: str) -> tuple[object, str | None]:
+    """(parsed JSON or None, problem) of ``/memory/.pass/<name>``, read like the manifest (:func:`_read_manifest`):
+    from the box's descriptor one component at a time, never through a link, a regular file of at most
+    :data:`_MANIFEST_MAX_BYTES`. ``(None, None)``: there is no such file."""
+    shown = f"/memory/.pass/{name}"
+    try:
+        root = os.open(box, _safe.DIR_FLAGS)
+    except OSError as exc:
+        return None, f"{shown}: /memory cannot be read ({exc.strerror})"
+    try:
+        try:
+            pfd = _safe.walk_dirs(root, [".pass"])
+        except (_safe.Missing, _safe.LinkFound):
+            return None, None
+        except OSError as exc:
+            return None, f"{shown}: /memory/.pass cannot be read ({exc.strerror})"
+        try:
+            try:
+                fd = _safe.openat(name, _safe.READ_FLAGS, pfd)
+            except FileNotFoundError:
+                return None, None
+            except OSError as exc:
+                return (
+                    None,
+                    f"{shown} is not a regular file that can be read ({exc.strerror})",
+                )
+        finally:
+            os.close(pfd)
+    finally:
+        os.close(root)
+    try:
+        fst = os.fstat(fd)
+        if not stat.S_ISREG(fst.st_mode):
+            return None, f"{shown} is not a regular file"
+        data = os.read(fd, _MANIFEST_MAX_BYTES + 1)
+    finally:
+        os.close(fd)
+    if len(data) > _MANIFEST_MAX_BYTES:
+        return None, f"{shown}: larger than {_MANIFEST_MAX_BYTES} bytes"
+    try:
+        parsed = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        return None, f"{shown}: not valid JSON ({type(exc).__name__}: {exc})"[:300]
+    if _depth(parsed) > _MANIFEST_MAX_DEPTH:
+        return None, f"{shown}: nested deeper than {_MANIFEST_MAX_DEPTH} levels"
+    return parsed, None
 
 
 def _depth(value: object) -> int:
@@ -4173,6 +4225,59 @@ class WriterPass:
             },
         )
 
+    def _notebook_on(self) -> bool:
+        """A store pass with the world notebook on (``PassConfig.notebook_state``)."""
+        return (
+            bool(getattr(self.cfg, "notebook_state", None)) and self._role != "curate"
+        )
+
+    def _stage_notebook(self, req: PassRequest, inputs: Path) -> None:
+        """``/inputs/notebook.json``: the lessons with their counts and the batch episodes' moments. Never raises."""
+        from . import notebook as _notebook
+
+        try:
+            doc = _notebook.writer_input(self.cfg.notebook_state, list(req.episodes))
+        # an unreadable notebook is an empty one
+        except Exception as exc:  # noqa: BLE001
+            logging.getLogger(__name__).warning(
+                "notebook: input not staged (%s)",
+                type(exc).__name__,
+            )
+            doc = {"lessons": [], "moments": {}}
+        (inputs / _notebook.INPUT_FILE).write_text(
+            json.dumps(doc, sort_keys=True, ensure_ascii=False),
+        )
+
+    def _absorb_notebook(self, box: Path, req: PassRequest, pass_id: str) -> None:
+        """Merge the writer's ``/memory/.pass/notebook.json`` into the run's notebook (:func:`.notebook.absorb`),
+        whatever the gate decided, and record what was merged as a ``notebook`` event. Read from the box's
+        descriptor without following a link, like the manifest. Never raises."""
+        from . import notebook as _notebook
+
+        try:
+            doc, problem = _read_pass_json(box, "notebook.json")
+            if doc is None and problem is None:
+                return  # the writer wrote no notebook file
+            report = (
+                _notebook.absorb(
+                    self.cfg.notebook_state,
+                    doc,
+                    list(req.episodes),
+                    origin=pass_id,
+                )
+                if problem is None
+                else {"skipped": [problem]}
+            )
+        except Exception as exc:  # noqa: BLE001 - the notebook never fails a pass
+            report = {"error": type(exc).__name__}
+        try:
+            self._write_event(
+                pass_id,
+                {"event": "notebook", "pass_id": pass_id, **report},
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     def _brief_library_mode(self) -> str:
         """The library-mode system message: the CURATE brief for a curate pass (the request's role), else WRITE."""
         from .library_prompts import curate_brief_now, write_brief_now
@@ -4184,7 +4289,12 @@ class WriterPass:
                 finish_capped=self.cfg.max_usd is not None,
                 edit_tools=bool(self.cfg.edit_tools),
             )
-        return write_brief_now(**self._write_inputs())
+        brief = write_brief_now(**self._write_inputs())
+        if self._notebook_on():
+            from .notebook import WRITER_BRIEF
+
+            brief += WRITER_BRIEF
+        return brief
 
     def _write_inputs(self) -> dict:
         """The WRITE brief names each input this pass's configuration prepares (constant per run): staging only
@@ -4547,6 +4657,10 @@ class WriterPass:
             self._live = (box, wt)
             _mirror(wt, box)
             self._stage_inputs(req, inputs, wt)
+            if self._notebook_on():
+                # before the pass's folders go, on every way out: the writer's notebook judgements are merged
+                self._stage_notebook(req, inputs)
+                scope.callback(self._absorb_notebook, box, req, pass_id)
             if self.cfg.library_mode:
                 bmap_path = inputs / "batch_map.json"
                 bmap = (

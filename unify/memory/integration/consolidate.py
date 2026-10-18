@@ -135,6 +135,7 @@ from .switch import (
     library_edit_tools,
     library_compact,
     library_fork,
+    notebook_enabled,
     library_coverage,
     library_max_reads,
 )
@@ -1493,6 +1494,10 @@ async def run_due_passes(
                 ),
                 # each pass's tool events, box opens and refusal codes, kept after the pass (one folder per pass)
                 "pass_record_root": str(Path(stores.paths.state_dir) / "passes"),
+                # UNIFY_MEMORY_NOTEBOOK=on: store passes read and extend the run's notebook (notebook.py)
+                "notebook_state": (
+                    str(stores.paths.state_dir) if notebook_enabled(settings) else None
+                ),
                 "pool": library_pool(settings),
                 # UNIFY_TOOLS_IN_CODE=on: the writer, the curator and their helpers carry one JSON tool, execute_code,
                 # and call every other tool from their cells
