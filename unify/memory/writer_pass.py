@@ -3467,6 +3467,8 @@ class WriterPass:
                             manifest,
                         )
                     except Exception as exc:  # noqa: BLE001 - the comparison never ends the pass
+                        # nothing compared: no pair from an earlier check is kept for finish
+                        self._same_job_pending = []
                         lines, full = [], [f"same job: not compared ({type(exc).__name__})"]
                     reasons = reasons + lines
         except Exception as exc:  # a broken check never ends the pass

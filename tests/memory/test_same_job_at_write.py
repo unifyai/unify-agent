@@ -216,3 +216,27 @@ def test_the_briefs_with_at_write(monkeypatch, in_code):
         at_write.replace(lp.OVERLAPS_WHAT["at-write"], lp.OVERLAPS_WHAT["structure"])
         == cur
     )
+
+
+def test_a_check_whose_comparison_raises_keeps_no_earlier_pairs(tmp_path, monkeypatch):
+    tree = _tree(tmp_path / "tree", FILES)
+    _, _, writer = _writer(
+        tmp_path / "w",
+        Turns([]),
+        library_mode=True,
+        overlap="at-write",
+    )
+    writer._same_job_pending = [(_id("twice"), _id("double"), False)]
+
+    called = []
+
+    def fails(*a, **k):
+        called.append(1)
+        raise RuntimeError("no box")
+
+    monkeypatch.setattr(writer, "_same_job", fails)
+    monkeypatch.setattr(writer.gate, "preview", lambda *a, **k: [])
+    manifest = {"items": [{"item": _id("twice"), "kind": "function"}]}
+    reasons: list[str] = []
+    writer._check(manifest, tree, ParentSnapshot("0" * 40, {}, tree), reasons)
+    assert called and writer._same_job_pending == []
