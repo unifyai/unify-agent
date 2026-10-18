@@ -10,6 +10,8 @@ No model is called.
 
 from __future__ import annotations
 
+import re
+
 from unify.actor.core_surface import PromptSurface
 import pytest
 
@@ -315,6 +317,88 @@ def test_namespaces_context_names_the_library_only_when_it_is_on(weather, monkey
         "`help(primitives.<namespace>.<method>)`. "
     ) in off
     assert "| `primitives.weather` | 3 (1 / 1 / 1) | A weather service |" in off
+
+
+#: What the namespaces section says only where the sandbox binds ``functions``.
+LIBRARY_SENTENCES = (
+    "A stored function that calls them needs no import: they are recorded and "
+    "injected when it runs later. ",
+    "`await functions.search(...)` (as primitive rows) and from ",
+)
+
+
+def _without_library(text: str) -> str:
+    for sentence in LIBRARY_SENTENCES:
+        text = text.replace(sentence, "")
+    return text
+
+
+def test_namespaces_context_names_functions_only_where_the_sandbox_binds_it(
+    weather,
+    monkeypatch,
+):
+    """A memory run's sandbox has no ``functions``, yet the section told the
+    actor each method's docs come back from ``await functions.search(...)``:
+    on tau2 airline that call raised NameError 96 times in 99. The section now
+    follows the library objects the sandbox binds; the rest is unchanged."""
+    from unify.actor.core_surface import bound_libraries
+    from unify.actor.environments import registered_environments
+    from unify.settings import SETTINGS
+
+    env = registered_environments()[0]
+    library = env.get_prompt_context_for(frozenset({"functions", "guidance"}))
+    assert all(sentence in library for sentence in LIBRARY_SENTENCES)
+    for libraries in (frozenset(), frozenset({"guidance"})):
+        without = env.get_prompt_context_for(libraries)
+        assert "functions" not in without and "stored function" not in without
+        assert (
+            "Each method's signature and documentation come back from "
+            "`help(primitives.<namespace>.<method>)`. "
+        ) in without
+        assert without == _without_library(library)
+
+    # Outside a session: what a session under the run's switches binds.
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "")
+    assert bound_libraries() == {"functions", "guidance"}
+    assert env.get_prompt_context() == library
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
+    assert bound_libraries() == frozenset()
+    assert env.get_prompt_context() == _without_library(library)
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "")
+    monkeypatch.setattr(SETTINGS, "UNIFY_LIBRARY", "off")
+    assert bound_libraries() == frozenset()
+    assert env.get_prompt_context() == _without_library(library)
+
+
+@pytest.mark.parametrize("in_code", ["on", ""], ids=["tools-in-code", "tools-off"])
+def test_the_actor_prompt_names_functions_only_when_its_sandbox_binds_it(
+    weather,
+    monkeypatch,
+    in_code,
+):
+    """The whole system prompt, with the namespaces registered: a session
+    whose sandbox binds no library names no ``functions`` anywhere."""
+    from unify.actor.environments import registered_environments
+    from unify.actor.prompt_builders import build_code_act_prompt
+    from unify.settings import SETTINGS
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", in_code)
+    environments = {"primitives": registered_environments()[0]}
+
+    def prompt(core: PromptSurface) -> str:
+        return build_code_act_prompt(
+            environments=environments,
+            core=core,
+            session_sections=False,
+        )
+
+    bound = prompt(PromptSurface())
+    assert "`await functions.search(...)`" in bound
+    unbound = prompt(PromptSurface(functions=False, guidance=False))
+    assert not re.search(r"\bfunctions\.\w", unbound), unbound
+    assert "`functions`" not in unbound, unbound
+    assert "`help(primitives.<namespace>.<method>)`" in unbound
+    assert "| `primitives.weather` | 3 (1 / 1 / 1) | A weather service |" in unbound
 
 
 @pytest.mark.asyncio
