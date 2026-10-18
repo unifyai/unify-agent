@@ -170,6 +170,8 @@ WRITER_EFFORTS = ("actor", "low", "medium", "high")
 #: measured USD per pass 0.095 (ARC MEDIUM), 0.178 (ARC HIGH), 0.116 (office MEDIUM), 0.30 (office HIGH) and
 #: 10/14/13/23 calls per pass; at scale 1 and 40 calls a HIGH pass merged nothing.
 WRITER_EFFORT_SCALE_DEFAULT = "low:1,medium:2,high:5"
+#: the effort-map key of a run at the provider's default effort (unify.common.llm_client.PROVIDER_EFFORT; optional)
+PROVIDER_EFFORT_KEY = "provider"
 WRITER_MAX_CALLS_DEFAULT = "low:40,medium:80,high:80"
 SURFACING_VALUES = ("index", "catalogue")
 SURFACING_DEFAULT = "index"
@@ -544,7 +546,9 @@ def parse_writer_effort(v: Any) -> str:
 
 
 def _effort_map(name: str, v: Any, default: str, value_ok: Any) -> dict[str, str]:
-    """``low:<v>,medium:<v>,high:<v>``: each fixed effort exactly once, in any order, each value checked."""
+    """``low:<v>,medium:<v>,high:<v>``: each fixed effort exactly once, in any order, each value checked; an optional
+    ``provider:<v>`` (at most once) sets the limits of a run at the provider's default effort
+    (``UNIFY_REASONING_EFFORT=provider``, whose writer effort reads ``provider``)."""
     text = _stripped(v).lower() or default
     refusal = f"{name} must map each of low, medium and high exactly once, as in {default!r}, not {v!r}"[
         :300
@@ -555,15 +559,15 @@ def _effort_map(name: str, v: Any, default: str, value_ok: Any) -> dict[str, str
         key, value = key.strip(), value.strip()
         if (
             not sep
-            or key not in WRITER_EFFORTS[1:]
+            or key not in (*WRITER_EFFORTS[1:], PROVIDER_EFFORT_KEY)
             or key in got
             or not value_ok(value)
         ):
             raise ValueError(refusal)
         got[key] = value
-    if len(got) != len(WRITER_EFFORTS) - 1:
+    if len(got) - (PROVIDER_EFFORT_KEY in got) != len(WRITER_EFFORTS) - 1:
         raise ValueError(refusal)
-    return {k: got[k] for k in WRITER_EFFORTS[1:]}
+    return {k: got[k] for k in (*WRITER_EFFORTS[1:], PROVIDER_EFFORT_KEY) if k in got}
 
 
 def _positive_decimal(text: str) -> bool:

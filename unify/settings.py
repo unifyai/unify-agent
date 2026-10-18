@@ -22,8 +22,10 @@ from unify.function_manager.settings import FunctionSettings
 from unify.guidance_manager.settings import GuidanceSettings
 
 # The reasoning efforts unillm forwards to providers (it maps them per
-# provider, e.g. DeepSeek's high/max), with "" for "as shipped".
-_REASONING_EFFORTS = ("", "none", "minimal", "low", "medium", "high", "xhigh", "max")
+# provider, e.g. DeepSeek's high/max), with "" for "as shipped". "provider" sends
+# no effort at all on any call of the run (the provider's own default), as a
+# published row that set none (unify/common/llm_client.py PROVIDER_EFFORT).
+_REASONING_EFFORTS = ("", "none", "minimal", "low", "medium", "high", "xhigh", "max", "provider")
 
 
 def _parse_bool(v: Any) -> bool:
@@ -110,7 +112,8 @@ class ProductionSettings(BaseSettings):
     # ─────────────────────────────────────────────────────────────────────────
     UNIFY_MODEL: str = "openai/gpt-5.6-sol@openrouter"
     # Reasoning effort paired with UNIFY_MODEL when no per-assistant default is
-    # set. Empty leaves per-call-site effort levels untouched.
+    # set. Empty leaves per-call-site effort levels untouched. ``provider``: no
+    # call of the run sends a reasoning effort (each provider's default applies).
     UNIFY_REASONING_EFFORT: str = "high"
     # The LLM endpoints model-written code may name (the ``query_llm``,
     # ``list_llms`` and ``unillm`` globals of a cell, unify/common/cell_models.py).

@@ -244,6 +244,17 @@ def count_requester_message(client: Any) -> None:
         state.requests += 1
 
 
+#: ``UNIFY_REASONING_EFFORT=provider``: no client of the run sends a reasoning effort, whatever its call site or
+#: its caller asks (the actor, its forks, compaction, model-written ``query_llm`` and the memory writer alike), so
+#: every call runs at the provider's own default. An explicit ``reasoning_effort="provider"`` means the same.
+PROVIDER_EFFORT = "provider"
+
+
+def provider_effort_run() -> bool:
+    """Whether this run sends no reasoning effort at all (``UNIFY_REASONING_EFFORT=provider``)."""
+    return str(getattr(SETTINGS, "UNIFY_REASONING_EFFORT", "") or "").strip().lower() == PROVIDER_EFFORT
+
+
 def _build_llm_client(
     model: str,
     *,
@@ -267,6 +278,8 @@ def _build_llm_client(
     config.update(kwargs)
     if default_effort is not None:
         config["reasoning_effort"] = default_effort
+    if config.get("reasoning_effort") == PROVIDER_EFFORT or provider_effort_run():
+        config["reasoning_effort"] = None  # the provider's default: unillm sends no effort
 
     if async_client:
         client = unillm.AsyncUnify(model, **config)
