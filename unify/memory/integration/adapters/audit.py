@@ -224,6 +224,11 @@ RUN_EVENT = "memory.run_result"
 #: nothing fits, and the recognisers' outcomes as ``(id, read, applies)`` labels, with a fixed short reason after
 #: them when the reader gave no outcome (``not-started``, ``failed``); never text or values.
 ASK_EVENT = "memory.ask_result"
+#: What ``memory.ask`` ran (``UNIFY_MEMORY_ASK_PRERUN=on``): per captured procedure it listed, ``(id, outcome,
+#: digest)``, the 16-hex digest of what it returned ('' when it did not return); kept with the ask it follows.
+PRERUN_EVENT = "memory.ask_prerun"
+PRERUN_OUTCOMES = ("returned", "refused", "error", "timeout", "not-run")
+_DIGEST16 = re.compile(r"[0-9a-f]{16}\Z")
 ASK_READ = ("parsed", "did-not-parse", "not-started", "failed")
 ASK_NO_OUTCOME = ("not-started", "failed")
 ASK_APPLIES = ("held", "did-not-hold", "raised", "not-run", "none")
@@ -239,6 +244,7 @@ AUDITED = PATH_EVENTS | SPAWN_EVENTS | {
     MATCH_EVENT,
     RUN_EVENT,
     ASK_EVENT,
+    PRERUN_EVENT,
 }
 #: The callers whose opens are marked ``via``: the import system, traceback formatting, the library package.
 _VIA_IMPORT = ("importlib", "_frozen_importlib", "zipimport")
@@ -438,6 +444,9 @@ class CellAudit:
                 return
             if event == ASK_EVENT:
                 self._ask_result(args)
+                return
+            if event == PRERUN_EVENT:
+                self._ask_prerun(args)
                 return
             if len(self.records) >= MAX_RECORDS:
                 self.dropped += 1
@@ -712,7 +721,9 @@ class CellAudit:
             return
         if len(self.ask_records) >= MAX_MATCH_RECORDS:
             self.call_records_dropped += 1
+            self._ask_kept = False  # a pre-run that follows has no record of its own to join
             return
+        self._ask_kept = True
         self.ask_records.append(
             {
                 "listed": listed,
@@ -722,6 +733,30 @@ class CellAudit:
                 "runs_before": len(self.run_records),
             },
         )
+
+    def _ask_prerun(self, args: tuple) -> None:
+        """Keep one ``memory.ask_prerun`` event with the ask it follows (its ``preruns``): per listed captured
+        procedure its id, the run's outcome and the digest of what it returned. Ids, labels and digests only."""
+        rows = args[0] if type(args) is tuple and len(args) == 1 else None
+        if not getattr(self, "_ask_kept", False):
+            return  # the ask it follows was not kept (over the bound): nothing to join it to
+        if type(rows) is not tuple or len(rows) > MAX_MATCH_IDS or not self.ask_records:
+            self.calls_malformed += 1
+            return
+        out = []
+        for row in rows:
+            if type(row) is not tuple or len(row) != 3:
+                self.calls_malformed += 1
+                return
+            item, outcome, digest = self._id(row[0]), row[1], row[2]
+            if item is None or outcome not in PRERUN_OUTCOMES or type(digest) is not str:
+                self.calls_malformed += 1
+                return
+            if digest and _DIGEST16.fullmatch(digest) is None:
+                self.calls_malformed += 1
+                return
+            out.append({"id": item, "outcome": outcome, "digest": digest or None})
+        self.ask_records[-1]["preruns"] = out
 
     def _calls_seen(self) -> bool:
         return bool(

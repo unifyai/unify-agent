@@ -693,6 +693,8 @@ def _add_asks(acc: dict, calls: dict, cell: int) -> None:
                     if isinstance(f, dict)
                 ],
                 "called_after": sorted(set(listed) & after),
+                # UNIFY_MEMORY_ASK_PRERUN=on: what memory.ask ran on the request (ids, outcomes, digests); absent off
+                **({"preruns": list(a["preruns"])} if isinstance(a.get("preruns"), list) else {}),
             },
         )
 

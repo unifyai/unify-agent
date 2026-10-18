@@ -838,8 +838,8 @@ def librarian_files(
     lib = discover(tree)
     return {
         **index_files(tree, lib, status_of=status_of, records=records, captures=captures, use=search),
-        RESERVED_INIT: package_source(librarian=True),
-        RESERVED_STUB: stub_source(librarian=True),
+        RESERVED_INIT: package_source(librarian=True, prerun=_ask_prerun()),
+        RESERVED_STUB: stub_source(librarian=True, prerun=_ask_prerun()),
         CATALOGUE_FILE: catalogue_text(
             tree,
             lib,
@@ -863,13 +863,33 @@ ASK_SOURCE = _HERE / "library_ask.py"
 CONTRACT_SOURCE = _HERE.parent / "common" / "contract_runtime.py"
 
 
-def package_source(librarian: bool = False) -> bytes:
+#: The section that follows :data:`ASK_SOURCE` with ``UNIFY_MEMORY_ASK_PRERUN=on``: ``memory.ask`` also runs each
+#: captured procedure it lists once on the current request and shows what it gave beside the item.
+ASK_PRERUN_SOURCE = _HERE / "library_ask_prerun.py"
+
+
+def _ask_prerun() -> bool:
+    """Whether ``UNIFY_MEMORY_ASK_PRERUN=on`` (missing or unreadable settings: off)."""
+    try:
+        from unify.settings import SETTINGS
+
+        from .integration.switch import ask_prerun_on
+
+        return ask_prerun_on(SETTINGS)
+    except Exception:  # noqa: BLE001 - no settings here: the package as without the switch
+        return False
+
+
+def package_source(librarian: bool = False, prerun: bool = False) -> bytes:
     """The generated ``memory/__init__.py``: :mod:`.library_helper` byte for byte, followed, with *librarian*, by
-    the ``memory.ask`` section (:data:`ASK_SOURCE`)."""
+    the ``memory.ask`` section (:data:`ASK_SOURCE`) and, with *prerun* too, by :data:`ASK_PRERUN_SOURCE`."""
     base = (_HERE / "library_helper.py").read_bytes()
     if not librarian:
         return base
-    return base + b"\n\n" + ASK_SOURCE.read_bytes()
+    out = base + b"\n\n" + ASK_SOURCE.read_bytes()
+    if prerun:
+        out += b"\n\n" + ASK_PRERUN_SOURCE.read_bytes()
+    return out
 
 
 #: The stub's opening comment.
@@ -879,7 +899,7 @@ STUB_HEADER = (
 )
 
 
-def stub_source(librarian: bool = False) -> bytes:
+def stub_source(librarian: bool = False, prerun: bool = False) -> bytes:
     """The generated ``memory/__init__.pyi``: the package's public contract as typed Python
     (:func:`unify.common.contract_runtime.render_pyi` over the package's own definitions): the types :class:`Fit`,
     :class:`Item` and :class:`Items`, then ``memory.ask`` (with *librarian*), ``memory.items``, ``memory.get`` and
@@ -893,6 +913,10 @@ def stub_source(librarian: bool = False) -> bytes:
         from . import library_ask
 
         namespace["ask"] = library_ask.ask
+        if prerun:  # UNIFY_MEMORY_ASK_PRERUN=on: the ask that also runs each listed captured procedure
+            from . import library_ask_prerun
+
+            namespace["ask"] = library_ask_prerun.ask
     namespace.update({"items": lh.items, "get": lh.get, "request": lh.request})
     return render_pyi(namespace, header=STUB_HEADER).encode("utf-8")
 
