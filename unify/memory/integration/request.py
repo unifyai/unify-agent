@@ -1307,6 +1307,18 @@ class RequestRun:
             library_mode=True,
         )  # re-exports for the use record
         self.index, self.shown = render_memory_library_mode(paths.checkout)
+        from .. import notebook as _notebook
+
+        if _notebook.notebook_on():
+            # the established lessons and open trials, after the memory section (nothing when there are none)
+            section = _notebook.render_for(paths.state_dir)
+            if section:
+                self.index = f"{self.index}\n{section}" if self.index else section
+                self.shown = use.record_shown(
+                    self.index,
+                    channels=(self.shown or {}).get("channels") or (),
+                    renderer=f"{(self.shown or {}).get('renderer') or 'library'}+notebook",
+                )
 
     def _memory_diff(self) -> str:
         """What the request wrote into its export (v2), or ``""`` in library mode, whose copy is read-only and records
@@ -1579,6 +1591,10 @@ class RequestRun:
                 return
             # the recorded episode's part list, read before the similar index takes the recorded episode
             parts = self._fork_parts(reservation, progress)
+            # UNIFY_MEMORY_NOTEBOOK=on only: the episode's consequence moments end the fork's message ("" otherwise)
+            moments = self._notebook_moments(progress)
+            if moments:
+                parts = f"{parts}\n\n{moments}" if parts else moments
             self._index_similar(progress)
             fork = self._start_fork(handle, eid, progress, reservation, parts)
             if self.memory_passes == "off":
@@ -1665,6 +1681,24 @@ class RequestRun:
         except Exception as exc:  # noqa: BLE001 - the part list never stops a request
             self._error("fork part list", exc, progress)
             return None
+
+    def _notebook_moments(self, progress: Callable[[str], None]) -> str:
+        """``UNIFY_MEMORY_NOTEBOOK=on``: the consequence moments of the episode just recorded
+        (:func:`..notebook.episode_moments`, which also keeps them for the writer and learns from the episode), as the
+        text the fork's message ends with; ``""`` with the switch off, with no recorded episode, or on any error.
+        Never raises."""
+        from .. import notebook as _notebook
+
+        recorded = getattr(self, "_recorded", None)
+        if recorded is None or not _notebook.notebook_on():
+            return ""
+        try:
+            return _notebook.fork_moments_text(
+                _notebook.episode_moments(self.paths.state_dir, recorded[0]),
+            )
+        except Exception as exc:  # noqa: BLE001 - the notebook never stops a request
+            self._error("notebook moments", exc, progress)
+            return ""
 
     def _start_fork(
         self,
