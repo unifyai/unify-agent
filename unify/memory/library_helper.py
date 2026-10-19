@@ -434,6 +434,9 @@ def _find(value: Any) -> list[Found]:
 #: attempt was saved against besides its signature: ``docstring``, ``asked``, ``approach`` and ``broke``).
 CAPTURES_DIR = ".memory/captures"
 CAPTURE_PREFIX = "capture:"
+#: A captured attempt's outcomes that make it negative knowledge: never offered to run (``failed``; ``contrary``, a
+#: signal contradicted the episode of a capture that records what its episode did).
+_NEGATIVE = ("failed", "contrary")
 #: Beside the capture folders, when the harness withdraws closed captures: each capture no longer offered (the
 #: library's writer superseded or retired it), with what is offered in its place (``by``) and what it was saved
 #: against. Written by the harness's ``captures.export_files``, never by this file.
@@ -735,7 +738,7 @@ def _capture_candidates() -> tuple[list[Candidate], int]:
             continue  # a worked example: read, never matched as a procedure that applies
         saved = _read_json(os.path.join(d, "saved.json"))
         saved = saved if isinstance(saved, dict) else {}
-        failed = rec.get("outcome") == "failed"
+        failed = rec.get("outcome") in _NEGATIVE
         broke = saved.get("broke") if isinstance(saved.get("broke"), list) else []
         out.append(
             Candidate(
@@ -1800,7 +1803,7 @@ def _run_capture(capture_id: str, args: tuple, kwargs: dict) -> RunReport:
         return RunReport(target, outcome="error", error="LookupError",
                          detail="this captured procedure is a worked example: it gives the same answer whatever it "
                          "is given, so it is read, never run; print(memory.get(id)) shows it", **base)
-    if rec.get("outcome") == "failed":
+    if rec.get("outcome") in _NEGATIVE:
         return RunReport(target, outcome="error", error="LookupError",
                          detail="this captured attempt failed; it is listed to show what broke, not to run", **base)
     rep = _confined(capture_id, args, kwargs)
@@ -2391,7 +2394,7 @@ class _Catalog:
 
     def _capture_failed(self, cid: str) -> bool:
         rec = _read_json(os.path.join(_capture_dir(cid[len(CAPTURE_PREFIX) :]), "record.json"))
-        return isinstance(rec, dict) and rec.get("outcome") == "failed"
+        return isinstance(rec, dict) and rec.get("outcome") in _NEGATIVE
 
     # -- resolution: every way of naming an item, in one place
 
@@ -2745,7 +2748,7 @@ class _Catalog:
             "A captured procedure: calling it runs it in a separate confined process on text or JSON values.",
         ]
         out += _evidence_lines(_evidence(), iid)
-        if rec.get("outcome") == "failed":
+        if rec.get("outcome") in _NEGATIVE:
             out.append("Tried and failed: it is listed to show what broke, never run.")
             broke = saved.get("broke")
             out += [f"  broke: {b}" for b in (broke if isinstance(broke, list) else []) if isinstance(b, str)]
@@ -2766,7 +2769,7 @@ def _example_text(example: dict, rec: dict, asked: str, source: str | None) -> s
     cases = rec.get("cases") if isinstance(rec.get("cases"), list) else []
     rows = [c for c in cases if isinstance(c, dict)]
     same = sum(1 for c in rows if c.get("reproduces") == "reproduces")
-    failed = sum(1 for c in rows if c.get("outcome") == "failed")
+    failed = sum(1 for c in rows if c.get("outcome") in _NEGATIVE)
     returns = [r for r in example.get("returns") or [] if isinstance(r, str)]
     out = [
         f"A worked example, not a procedure: {_str(example.get('why'), 'its answer is fixed')}, so it gives the "

@@ -273,7 +273,7 @@ def library_items(copy: Path) -> tuple[list[str], set[str], dict[str, str]] | No
             rec = json.loads((Path(copy) / _CAPTURES_DIR / name / "record.json").read_text(encoding="utf-8"))
         except (OSError, ValueError, UnicodeDecodeError):
             rec = None
-        if isinstance(rec, dict) and rec.get("outcome") == "failed":
+        if isinstance(rec, dict) and rec.get("outcome") in ("failed", "contrary"):
             failed.add(CAPTURE_PREFIX + name)
     return ids, failed, recipes
 

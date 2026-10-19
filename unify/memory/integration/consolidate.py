@@ -139,6 +139,7 @@ from .switch import (
     library_coverage,
     library_max_reads,
     captures_per_pass,
+    capture_trace,
 )
 
 __all__ = [
@@ -239,11 +240,18 @@ class EpisodeLookup:
         self._size = cache_size
 
     def episode(self, eid: str) -> Episode:
-        """The episode *eid* (``KeyError`` when it was never indexed)."""
+        """The episode *eid* (``KeyError`` when it was never indexed). A segment of an episode (``<episode>.s<n>``,
+        ``UNIFY_MEMORY_IN_EPISODE``) is read from its own record (:mod:`..segments`) when it has one."""
         hit = self._cache.get(eid)
         if hit is not None:
             self._cache.move_to_end(eid)
             return hit
+        from .. import segments
+
+        if segments.is_segment_name(eid):
+            seg = segments.load_snapshot(self.stores.paths.state_dir, eid)
+            if seg is not None:
+                return seg
         sha, started_at = self.stores.evidence.episode_ref(eid)
         rel = episode_dir(SimpleNamespace(episode_id=eid, started_at=started_at))
         ep = load_episode(self.stores.episodes, sha, rel, self.stores.blobs)
@@ -1328,12 +1336,19 @@ def capture_settled_forks(stores: Stores, settings: Any) -> list[dict]:
         root = state / "memory-staging"
         eids = sorted(os.listdir(root)) if root.is_dir() else []
         lookup = EpisodeLookup(stores)
+        trace = {}
+        if capture_trace(settings):
+            # UNIFY_MEMORY_CAPTURE_TRACE=on: what each episode (or segment) did, its own check as evidence
+            from .. import segments
+
+            trace = {"trace": True, "segment_episode": segments.loader(state)}
         return captures.capture_settled(
             state,
             eids,
             episode=lookup.episode,
             signals=stores.evidence.signals_for,
             checker_visible=checker_visible(settings),
+            **trace,
         )
     except Exception as exc:  # noqa: BLE001 - capture never stops a pass; the error is recorded
         _error(stores, f"capture step: {type(exc).__name__}")

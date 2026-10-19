@@ -627,7 +627,7 @@ def _staged_candidates(entry: dict) -> list[dict]:
 def _capture_lands(store: Path, cid: str) -> bool:
     """Whether capture *cid* of the store can be landed: its record (a regular file, never through a link) says its
     attempt did not fail and it is not retired, the test :func:`.land_capture.read_capture` applies."""
-    from .captures import FAILED, MAX_RESULT_BYTES, RECORD_FILE
+    from .captures import MAX_RESULT_BYTES, RECORD_FILE, negative
 
     p = Path(store) / cid / RECORD_FILE
     try:
@@ -637,7 +637,12 @@ def _capture_lands(store: Path, cid: str) -> bool:
         rec = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return isinstance(rec, dict) and rec.get("outcome") != FAILED and rec.get("status") != "retired"
+    if not isinstance(rec, dict) or negative(rec) or rec.get("status") == "retired":
+        return False
+    # a trace capture lands by this route only in the value form (a procedure of the request's value); the others are
+    # landed by writing them (land_capture refuses them, naming that route)
+    form = rec.get("entry_point", {}).get("form") if isinstance(rec.get("entry_point"), dict) else None
+    return form in (None, "value")
 
 
 def _with_fixtures(manifest: object, made: dict) -> object:
@@ -3784,7 +3789,10 @@ class WriterPass:
             return None
         if eid in self._episodes:
             return self._episodes[eid]
-        if eid not in self._recorded_ids():
+        from . import segments as _segments
+
+        # a segment of an episode (UNIFY_MEMORY_IN_EPISODE) is read from its own record, never indexed
+        if eid not in self._recorded_ids() and not _segments.is_segment_name(eid):
             return None
         try:
             ep = self.load(eid)

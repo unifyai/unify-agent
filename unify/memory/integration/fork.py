@@ -211,6 +211,73 @@ INSTRUCTION_IN_CODE = (
     "a line of three backticks, open and close its block with four. Example:\n\n"
     + FORMAT_EXAMPLE
 )
+#: What the fork writes for the harness to capture under ``UNIFY_MEMORY_CAPTURE_TRACE=on``: the procedure that did the
+#: work, in the form the work needed (``value``, ``state`` or ``state_env``: :mod:`..capture_trace`), returning a result
+#: only when one was handed back; and what broke. It replaces :data:`CAPTURE_BULLETS` in both instruction forms.
+CAPTURE_BULLETS_TRACE = (
+    "- `procedure.py`: the procedure that did this work, from code that ran here, as functions with docstrings, in "
+    "the form that fits what the work needed:\n"
+    "  - `run(state, env)` when the work acted through tools. `env` is this episode's tool namespace: "
+    "`env.<channel>.<method>(...)` makes the call the record lists as an action of that channel and method (the part "
+    "list below shows each action as `<kind> <channel>.<method>`); make every tool call through `env`. `state` is "
+    "the episode so far: `state.request` (the first message), `state.messages` (every message from the user or the "
+    "environment, in order), `state.last` (the latest one) and `state.data` (the JSON objects and arrays those "
+    "messages contain, in order).\n"
+    "  - `run(state)` when the work needed more than the first message and no tool.\n"
+    "  - `read_input(request)` and `run(value)` when the whole job was in the first message: `read_input` takes the "
+    "request (`request` is its text, `request.data` the list of the JSON objects and arrays it contains) and returns "
+    "the value `run` works on.\n"
+    "  `run` returns the result you handed back when you handed one back, and None when the outcome of the work is "
+    "what it did (its tool calls, the files it changed). Where your code used a value you typed into a cell, read it "
+    "from `state` or the request instead. If the work has conditions on its input or its result, write them as "
+    "`applies(x)` and `holds(x, result)`, where `x` is what `run` takes first, each returning True or False. Write it "
+    "whether or not the work was accepted; say which in its docstring, quoting the line of the record that shows it, "
+    'or write "not shown".\n'
+    "- `broke.md`: each thing that broke in this attempt and why, one line each, with the part name and a short quote "
+    'from the record. Write "none" if nothing broke.\n'
+)
+INSTRUCTION_TRACE = INSTRUCTION.replace(CAPTURE_BULLETS, CAPTURE_BULLETS_TRACE)
+INSTRUCTION_IN_CODE_TRACE = INSTRUCTION_IN_CODE.replace(CAPTURE_BULLETS, CAPTURE_BULLETS_TRACE)
+#: A segment fork's instruction (``UNIFY_MEMORY_IN_EPISODE``, at a checkpoint inside the episode): the same summary and
+#: capture contract, in a short form, for the cells since the last checkpoint; the work goes on after it.
+SEGMENT_FORMAT_EXAMPLE = (
+    "```path: summary.md\n"
+    "## Asked\n"
+    "Read a table of numbers from a text file and report its size.\n"
+    "## Approach\n"
+    '- Parsed the first line as the size (`cell:0` "int(lines[0])").\n'
+    "## Worked\n"
+    "- none so far\n"
+    "## Failed\n"
+    '- Reading the size from the first line, which was a header (`cell:0` "ValueError: invalid literal for int()").\n'
+    "## Outcome\n"
+    "Not finished: the work goes on (`cell:0` \"int(lines[0])\").\n"
+    "```\n"
+    "\n"
+    "```path: broke.md\n"
+    '- `cell:0`: the first line is a header, not the size ("ValueError: invalid literal for int()").\n'
+    "```"
+)
+SEGMENT_INSTRUCTION = (
+    "This is a pause in your work on this request, which goes on after it; nothing you write now changes it. Write "
+    "down what would help with similar work later, for the part of the work since the last pause: the cells "
+    "{cells}. Write each file as a fenced block in your reply, in the format below. Do not call tools.\n\n"
+    "What to write:\n"
+    "- `summary.md`: a short account of this part of the episode for a reader who has not seen it, in the format "
+    "below; its Outcome says the work is not finished, and what the record shows so far.\n"
+    + CAPTURE_BULLETS_TRACE
+    + "\n"
+    + SUMMARY_FORMAT
+    + "\n\n"
+    + NUMBERING
+    + "\n\n"
+    f"Limits: at most {QUOTA_FILES} files and {QUOTA_BYTES // 1024**2} MiB in all are kept. A reply that calls a "
+    f"tool gets another turn, up to {TURN_GUARD} turns in all.\n\n"
+    "Format: each file is one fenced block. Its opening line is three backticks followed by `path: ` and the "
+    "file's relative path; then the file's full content; then a line of three backticks. If a file itself contains "
+    "a line of three backticks, open and close its block with four. Example:\n\n"
+    + SEGMENT_FORMAT_EXAMPLE
+)
 WORKER_FILE = Path(__file__).resolve().parent / "fork_worker.py"
 BOX_WORKER = "/s/fork_worker.py"
 #: The live audit's mark for the fork worker in a process's command line (runner token audits).
@@ -230,10 +297,27 @@ ROLLED_FILE = "pass-admission.json"
 def fork_instruction() -> str:
     """The fixed instruction appended to the actor's conversation for the fork: what to write, its limits, the one
     block format with an example, and that tools are not available (:data:`INSTRUCTION_IN_CODE` when tools are
-    called from code)."""
+    called from code). Under ``UNIFY_MEMORY_CAPTURE_TRACE=on`` its capture contract is :data:`CAPTURE_BULLETS_TRACE`
+    (the procedure that did the work, in one of three forms); off, the text is as built."""
     from unify.common import in_code_switch
 
-    return INSTRUCTION_IN_CODE if in_code_switch.tools_in_code() else INSTRUCTION
+    from .switch import capture_trace
+
+    trace = capture_trace(_settings())
+    if in_code_switch.tools_in_code():
+        return INSTRUCTION_IN_CODE_TRACE if trace else INSTRUCTION_IN_CODE
+    return INSTRUCTION_TRACE if trace else INSTRUCTION
+
+
+def segment_instruction(first_cell: int | None, last_cell: int | None) -> str:
+    """A segment fork's instruction (:data:`SEGMENT_INSTRUCTION`) for the cells from *first_cell* to *last_cell*."""
+    if first_cell is None or last_cell is None:
+        cells = "since the last pause (no cell ran in it)"
+    elif first_cell == last_cell:
+        cells = f"`cell:{first_cell}`"
+    else:
+        cells = f"`cell:{first_cell}` to `cell:{last_cell}`"
+    return SEGMENT_INSTRUCTION.replace("{cells}", cells)
 
 
 def _first_line(text: object) -> str:
