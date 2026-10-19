@@ -427,6 +427,10 @@ def _find(value: Any) -> list[Found]:
 #: attempt was saved against besides its signature: ``docstring``, ``asked``, ``approach`` and ``broke``).
 CAPTURES_DIR = ".memory/captures"
 CAPTURE_PREFIX = "capture:"
+#: Beside the capture folders, when the harness withdraws closed captures: each capture no longer offered (the
+#: library's writer superseded or retired it), with what is offered in its place (``by``) and what it was saved
+#: against. Written by the harness's ``captures.export_files``, never by this file.
+WITHDRAWN_FILE = ".memory/captures/withdrawn.json"
 #: The key of an exported capture record that offers the capture as a worked example (its ``run`` gives a fixed
 #: answer): ``{"why", "returns"}``. The harness's ``captures.EXAMPLE_KEY``.
 EXAMPLE_KEY = "worked_example"
@@ -564,6 +568,19 @@ def _str(value: Any, default: str = "") -> str:
     return value if isinstance(value, str) and value else default
 
 
+def _withdrawn() -> dict[str, dict]:
+    """The withdrawn captures (:data:`WITHDRAWN_FILE`) by ``capture:<id>``; {} when the harness withdrew none."""
+    doc = _read_json(os.path.join(_ROOT, WITHDRAWN_FILE))
+    rows = doc.get("captures") if isinstance(doc, dict) else None
+    if not isinstance(rows, dict):
+        return {}
+    return {
+        CAPTURE_PREFIX + k: v
+        for k, v in rows.items()
+        if isinstance(k, str) and _CAPTURE_ID.fullmatch(k) is not None and isinstance(v, dict)
+    }
+
+
 def _example_of(capture_id: str) -> dict | None:
     """A capture's worked-example mark (:data:`EXAMPLE_KEY` in its exported record), or None: such a capture is
     read, never called or matched."""
@@ -657,9 +674,32 @@ def _capture_candidates() -> tuple[list[Candidate], int]:
     return out, unreadable
 
 
+def _in_place(candidates: list[Candidate]) -> list[Candidate]:
+    """For each withdrawn capture (:data:`WITHDRAWN_FILE`) whose replacement is one of *candidates*, that
+    replacement once more, saved against what the withdrawn capture was saved against: it is matched where the
+    capture would have been, and listed, run and recorded as itself."""
+    by_id = {c.id: c for c in candidates}
+    out: list[Candidate] = []
+    for _cid, row in sorted(_withdrawn().items()):
+        own = by_id.get(row.get("by")) if isinstance(row.get("by"), str) else None
+        sig = row.get("signature")
+        if own is None or not isinstance(sig, dict):
+            continue
+        out.append(
+            own._replace(
+                signature={k: v for k, v in sig.items() if k != "goal"},
+                docstring=_str(row.get("docstring")),
+                asked=_str(row.get("asked")) or _str(sig.get("goal")),
+                approach=_str(row.get("approach")),
+            ),
+        )
+    return out
+
+
 def _candidates_all() -> tuple[list[Candidate], int]:
     captures, unreadable = _capture_candidates()
-    return _library_candidates() + captures, unreadable
+    found = _library_candidates() + captures
+    return found + _in_place(found), unreadable
 
 
 def _query(m: Any, request: Any, inputs: Any, candidates: list[Candidate]) -> Query:
@@ -781,7 +821,9 @@ def _matched(request: Any, inputs: Any) -> tuple[list[MatchRow], list[MatchRow],
     m = _matcher()
     candidates, unreadable = _candidates_all()
     query = _query(m, request, inputs, candidates)
-    by_id = {c.id: c for c in candidates}
+    by_id: dict[str, Candidate] = {}
+    for c in candidates:
+        by_id.setdefault(c.id, c)  # an item offered in a withdrawn capture's place is listed as itself
     rows: list[MatchRow] = []
     failed: list[MatchRow] = []
     seen: set[str] = set()
@@ -1652,6 +1694,14 @@ def _run_capture(capture_id: str, args: tuple, kwargs: dict) -> RunReport:
         return RunReport(target, outcome="error", error="LookupError",
                          detail="a captured procedure's id is capture: and 16 hex digits; "
                          "memory.items('captures') lists them")
+    gone = _withdrawn().get(target)
+    if gone is not None:
+        by = gone.get("by")
+        return RunReport(target, outcome="error", error="LookupError",
+                         detail=f"this captured procedure is no longer offered: the library's writer "
+                         f"{_str(gone.get('status'), 'closed')} it"
+                         + (f"; {by} is offered in its place: memory.get({by!r})" if isinstance(by, str) and by
+                            else "; memory.ask() names what applies"))
     rec = _read_json(os.path.join(_capture_dir(capture_id), "record.json"))
     rec = rec if isinstance(rec, dict) else {}
     base = {"level": _str(rec.get("level"), "unchecked"), "status": _str(rec.get("status"), "on-trial")}
@@ -2184,6 +2234,7 @@ class _Catalog:
         self.functions = sorted(k for k, v in self.rows.items() if v["kind"] == "function")
         self.notes = sorted(k for k, v in self.rows.items() if v["kind"] == "note")
         self.captures = _capture_ids()
+        self.withdrawn = _withdrawn()
         self._links: dict | None = None
         self._asked: dict | None = None
         self._modules: dict[str, tuple[str, Any]] = {}
@@ -2334,6 +2385,9 @@ class _Catalog:
                 expected="ref: str | Item | Callable",
                 example=_GET_EXAMPLE,
             )
+        gone = self.withdrawn.get(text.strip()) if not self.matches(text) else None
+        if gone is not None:
+            return self._in_place_of(text.strip(), gone, reason)
         found = self.matches(text)
         if len(found) == 1:
             return self.item(found[0], reason)
@@ -2360,6 +2414,30 @@ class _Catalog:
             example=f"memory.get({(near[0] if near else self._example_id())!r})",
             nearest=near,
             hint=f"Browse with {browse}.",
+        )
+
+    def _in_place_of(self, cid: str, gone: dict, reason: str) -> Item:
+        """The item offered in the place of withdrawn capture *cid* (its card says so), or the error that says it is
+        no longer offered."""
+        by = gone.get("by")
+        status = _str(gone.get("status"), "closed")
+        if isinstance(by, str) and (by in self.rows or by in self.captures):
+            built = self.item(by, reason)
+            card = (
+                f"{cid} is no longer offered: the library's writer {status} it"
+                + (f" ({_one_line(gone.get('reason'))})" if _one_line(gone.get("reason")) else "")
+                + f". {by} is offered in its place.\n\n"
+                + built.__dict__.get("_card", "")
+            )
+            object.__setattr__(built, "_card", card)
+            return built
+        raise NotFound(
+            self.call,
+            f"{cid} is no longer offered: the library's writer {status} it"
+            + (f" ({_one_line(gone.get('reason'))})." if _one_line(gone.get("reason")) else "."),
+            expected=_GET_EXPECTED,
+            example=f"memory.get({self._example_id()!r})",
+            hint="Ask which items apply with memory.ask(), or browse with memory.items().",
         )
 
     def not_a_topic(self, topic: str) -> None:

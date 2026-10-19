@@ -1274,11 +1274,25 @@ class RequestRun:
         from unify.settings import SETTINGS
 
         from ..captures import export_files, store_dir
-        from .switch import library_fixed_answers_as_examples
+        from .switch import library_fixed_answers_as_examples, library_withdraw_closed_captures
 
+        withdrawn = None
+        if library_withdraw_closed_captures(SETTINGS):
+            # the captures the writer superseded or retired, as the pool says now, and what replaces each
+            from ..pool import withdrawn_captures
+
+            try:
+                withdrawn = withdrawn_captures(Repo(paths.memory))
+            except Exception as exc:  # noqa: BLE001 - an unreadable pool withdraws nothing; the request goes on
+                logger.warning(
+                    "memory library mode: the pool's closed captures not read (%s)",
+                    type(exc).__name__,
+                )
+                withdrawn = {}
         try:
             captured = export_files(
                 store_dir(paths.state_dir),
+                withdrawn=withdrawn,
                 examples=library_fixed_answers_as_examples(SETTINGS),
             )
         except OSError as exc:
@@ -1287,7 +1301,7 @@ class RequestRun:
                 type(exc).__name__,
             )
             captured = {}
-        if library_fixed_answers_as_examples(SETTINGS):
+        if withdrawn is not None or library_fixed_answers_as_examples(SETTINGS):
             from ..captures import EXAMPLE_KEY, EXPORT_DIR, RECORD_FILE
 
             examples = 0
@@ -1298,7 +1312,14 @@ class RequestRun:
                     except ValueError:
                         continue
                     examples += isinstance(rec, dict) and EXAMPLE_KEY in rec
-            self.capture_serving = {"worked_examples": examples}
+            gone = withdrawn or {}
+            # counts, and the items offered in a withdrawn capture's place (the pool holds which capture each replaced)
+            self.capture_serving = {
+                "withdrawn": len(gone),
+                "withdrawn_replaced": sum(1 for row in gone.values() if row.get("by")),
+                "offered_in_place": sorted({row["by"] for row in gone.values() if row.get("by")}),
+                "worked_examples": examples,
+            }
         librarian = librarian_on()
         summary_of = None
         search = None

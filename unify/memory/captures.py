@@ -95,6 +95,10 @@ LANDED_FILE = "landed.json"
 CAPTURE_FILES = (PROCEDURE_FILE, SIGNATURE_FILE, RECORD_FILE, BROKE_FILE)
 #: The actor's snapshot of the store, under its library copy.
 EXPORT_DIR = ".memory/captures"
+#: In the snapshot, beside the capture folders, with ``UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES=on``: the
+#: captures no longer offered (the writer superseded or retired them) and what is offered in each one's place
+#: (:func:`export_files`).
+WITHDRAWN_FILE = "withdrawn.json"
 #: The key of an exported record that offers its capture as a worked example
 #: (``UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES=on``): ``{"why", "returns"}`` (:mod:`.fixed_answer`).
 EXAMPLE_KEY = "worked_example"
@@ -1096,6 +1100,7 @@ def export_files(
     store: Path | str,
     *,
     examples: bool = False,
+    withdrawn: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, bytes]:
     """The actor's snapshot of the store, by path under its library copy (``.memory/captures/<id>/<file>``). The
     record of a capture whose landed procedure is not listed says so (:func:`listed_record`).
@@ -1103,13 +1108,22 @@ def export_files(
     With *examples* (``UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES=on``) the record of a capture whose ``run``
     gives a fixed answer (:func:`.fixed_answer.fixed_answer`; a failed attempt is never offered anyway) carries
     :data:`EXAMPLE_KEY`, and the package, the catalogue, the search index and the dispatch file then offer it as a
-    worked example to read, never as a procedure to call."""
+    worked example to read, never as a procedure to call.
+
+    With *withdrawn* (``UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES=on``: :func:`.pool.withdrawn_captures`, capture
+    id -> ``{"status", "by", "reason"}``) those captures are left out of the snapshot, so nothing offers them, and
+    ``.memory/captures/withdrawn.json`` names each with what is offered in its place and what it was saved against
+    (its signature and ``saved.json`` texts, identifiers already stripped), so the item that superseded it is offered
+    where it would have been."""
     from .fixed_answer import fixed_answer
 
     out: dict[str, bytes] = {}
     landed = landings(store)
     docs = load(store)
+    hidden = dict(withdrawn or {})
     for cid, doc in docs.items():
+        if cid in hidden:
+            continue
         for name, key in (
             (PROCEDURE_FILE, "procedure"),
             (BROKE_FILE, "broke"),
@@ -1133,6 +1147,24 @@ def export_files(
                 "broke": [strip_identifiers(line) for line in _broke_lines(broke)] if broke else [],
             },
         )
+    if withdrawn is not None:
+        rows: dict[str, dict] = {}
+        for cid, why in sorted(hidden.items()):
+            if not _ID.fullmatch(str(cid)) or not isinstance(why, Mapping):
+                continue
+            doc = docs.get(cid) or {}
+            saved = doc.get("saved") if isinstance(doc.get("saved"), dict) else {}
+            by = why.get("by")
+            rows[cid] = {
+                "status": str(why.get("status") or ""),
+                "by": by if isinstance(by, str) and by else None,
+                "reason": strip_identifiers(str(why.get("reason") or "")),
+                "signature": doc.get("signature") if isinstance(doc.get("signature"), dict) else None,
+                "docstring": str(saved.get("docstring") or ""),
+                "asked": str(saved.get("asked") or ""),
+                "approach": str(saved.get("approach") or ""),
+            }
+        out[f"{EXPORT_DIR}/{WITHDRAWN_FILE}"] = _json({"version": 1, "captures": rows})
     return out
 
 

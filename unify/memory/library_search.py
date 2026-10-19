@@ -110,8 +110,9 @@ def rows(
 ) -> list[dict]:
     """One row per listed item of the copy at *tree*, in module-path order, then the notes, then the captured
     procedures (*captures*: the snapshot's files): ``{id, kind, path, card, text}``. Retired items have none, nor
-    has a procedure's recipe. A captured procedure the snapshot offers as a worked example is a row of kind
-    ``worked example``."""
+    has a procedure's recipe. An item offered in the place of withdrawn captures (the snapshot's ``withdrawn.json``)
+    also carries what each was asked in its text, so it is found where they were; a captured procedure the snapshot
+    offers as a worked example is a row of kind ``worked example``."""
     from . import when_to_use as wtu
     from .item_records import recipe_call, recipe_of
     from .layout import discover
@@ -121,6 +122,7 @@ def rows(
         _docstring_of,
         _docstrings,
         _status,
+        in_place_of,
         worked_example,
     )
     from .library_index import HIDDEN
@@ -167,6 +169,12 @@ def rows(
                 "text": " ".join(t for t in (goal, run_doc) if t),
             },
         )
+    replaced = in_place_of(captures)
+    for row in out:
+        for _cid, gone in replaced.get(row["id"], []):
+            extra = " ".join(_one_line(gone.get(k)) for k in ("asked", "docstring") if _one_line(gone.get(k)))
+            if extra:
+                row["text"] = f"{row['text']} {extra}".strip()
     return out
 
 

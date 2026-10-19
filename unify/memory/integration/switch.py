@@ -111,6 +111,11 @@ only what one stored item carries, never a task, a stream position or a word):
 - ``UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES``: ``on`` offers a captured procedure whose ``run`` never reads its
   input or only returns literals (:func:`..fixed_answer.fixed_answer`) as a worked example to read, never as a
   procedure that applies or can be called. Needs the library mode and the episode-end fork.
+- ``UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES``: ``on`` stops offering a captured procedure whose pool entry the
+  writer closed as superseded or retired (``memory.items``, ``memory.get``, the structural match, the librarian's
+  catalogue, search index and dispatch file, and so ``memory.ask``); the item that superseded it is offered in its
+  place (:func:`..pool.withdrawn_captures`). A capture merged into an item stays offered. Needs the library mode and
+  the candidate pool.
 
 Not switched (a declared safety fix in every mode): the gate refuses bytecode, native code, start-up hooks
 and root entries other than ``env/``, ``workflows/`` and the test kit before extraction
@@ -876,6 +881,7 @@ LIBRARY_CAPTURES_PER_PASS = "UNIFY_MEMORY_LIBRARY_CAPTURES_PER_PASS"
 #: capture episode it was given.
 LIBRARY_CAPTURES_PER_PASS_DEFAULT = 1
 LIBRARY_FIXED_ANSWERS_AS_EXAMPLES = "UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES"
+LIBRARY_WITHDRAW_CLOSED_CAPTURES = "UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES"
 
 
 def parse_library_review_each_capture(v: Any) -> str:
@@ -908,16 +914,29 @@ def library_fixed_answers_as_examples(settings: Any) -> bool:
     return parse_library_fixed_answers_as_examples(value) == "on"
 
 
+def parse_library_withdraw_closed_captures(v: Any) -> str:
+    """``UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES``: ``off`` (also for empty) or ``on``."""
+    return _on_off(LIBRARY_WITHDRAW_CLOSED_CAPTURES, v)
+
+
+def library_withdraw_closed_captures(settings: Any) -> bool:
+    """Whether a capture the writer superseded or retired stops being offered (its replacement offered instead)."""
+    value = getattr(settings, LIBRARY_WITHDRAW_CLOSED_CAPTURES, "") or ""
+    return parse_library_withdraw_closed_captures(value) == "on"
+
+
 def capture_serving_refusal(settings: Any) -> str | None:
     """Why a capture switch that is on may not run with these settings (the settings named, never a value), or None:
     each needs the library mode and what it acts on. Refused, rather than run as a silent no-op."""
     on = {
         LIBRARY_MODE: library_enabled(settings),
+        LIBRARY_POOL: library_pool(settings),
         LIBRARY_FORK: library_fork(settings),
     }
     for active, name, need in (
         (captures_per_pass(settings) is not None, LIBRARY_REVIEW_EACH_CAPTURE, LIBRARY_FORK),
         (library_fixed_answers_as_examples(settings), LIBRARY_FIXED_ANSWERS_AS_EXAMPLES, LIBRARY_FORK),
+        (library_withdraw_closed_captures(settings), LIBRARY_WITHDRAW_CLOSED_CAPTURES, LIBRARY_POOL),
     ):
         missing = [f"{n}=on" for n in (LIBRARY_MODE, need) if not on[n]]
         if active and missing:
@@ -1513,6 +1532,7 @@ PARSERS = {
     LIBRARY_REVIEW_EACH_CAPTURE: parse_library_review_each_capture,
     LIBRARY_CAPTURES_PER_PASS: parse_library_captures_per_pass,
     LIBRARY_FIXED_ANSWERS_AS_EXAMPLES: parse_library_fixed_answers_as_examples,
+    LIBRARY_WITHDRAW_CLOSED_CAPTURES: parse_library_withdraw_closed_captures,
 }
 
 

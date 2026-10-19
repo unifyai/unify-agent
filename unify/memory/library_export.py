@@ -619,6 +619,32 @@ def _capture_docs(captures: Mapping[str, bytes] | None) -> dict[str, dict]:
     return out
 
 
+def _withdrawn_rows(captures: Mapping[str, bytes] | None) -> dict[str, dict]:
+    """The snapshot's withdrawn captures (``.memory/captures/withdrawn.json``, :func:`.captures.export_files` under
+    ``UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES=on``) by capture id; {} when there is none or it is unreadable."""
+    from .captures import EXPORT_DIR, WITHDRAWN_FILE
+
+    data = (captures or {}).get(f"{EXPORT_DIR}/{WITHDRAWN_FILE}")
+    try:
+        doc = json.loads(bytes(data).decode("utf-8")) if data is not None else None
+    except (UnicodeDecodeError, TypeError, ValueError):
+        return {}
+    rows = doc.get("captures") if isinstance(doc, dict) else None
+    return {str(k): v for k, v in rows.items() if isinstance(v, dict)} if isinstance(rows, dict) else {}
+
+
+def in_place_of(captures: Mapping[str, bytes] | None) -> dict[str, list[tuple[str, dict]]]:
+    """For each item offered in the place of withdrawn captures (their ``by``), those captures in id order, each
+    with its withdrawn row (``asked``, ``docstring``, ``signature``...): the replacement is shown and found where
+    they were."""
+    out: dict[str, list[tuple[str, dict]]] = {}
+    for cid, row in sorted(_withdrawn_rows(captures).items()):
+        by = row.get("by")
+        if isinstance(by, str) and by:
+            out.setdefault(by, []).append((cid, row))
+    return out
+
+
 def worked_example(rec: Mapping | None) -> dict | None:
     """The exported record's worked-example mark (:data:`.captures.EXAMPLE_KEY`, under
     ``UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES=on``), or None: such a capture is read, never called."""
@@ -630,6 +656,16 @@ def worked_example(rec: Mapping | None) -> dict | None:
 
 def _function_docs(tree: Path, lib: Library) -> dict[str, str]:
     return _docstrings(tree, lib, {f.item_id for f in lib.functions})
+
+
+def _in_place_lines(rows: list[tuple[str, dict]] | None, strip: Strip) -> list[str]:
+    """A card's lines for the withdrawn captures it is offered in place of: each one's id and what it was asked."""
+    out = []
+    for cid, row in rows or []:
+        asked = _one_line(strip(str(row.get("asked") or "")))
+        status = row.get("status") or "closed"
+        out.append(f"- In place of {CAPTURE_PREFIX}{cid} ({status}): Asked: {asked or 'not recorded'}\n")
+    return out
 
 
 def catalogue_text(
@@ -664,6 +700,7 @@ def catalogue_text(
         **{n.item_id: _status(status_of, n.item_id) for n in lib.notes},
     }
     shown = {i for i, s in status.items() if s not in HIDDEN}
+    replaced = in_place_of(captures)
     out: list[str] = [
         "# The library's catalogue\n",
         "\nOne card per stored function in module-path order, then the notes, then the captured procedures. "
@@ -690,6 +727,7 @@ def catalogue_text(
             lines.append(f"- Asked: {asked or 'not recorded'}\n")
             if approach:
                 lines.append(f"  Approach: {approach}\n")
+        lines += _in_place_lines(replaced.get(f.item_id), strip)
         input_line = signature_text(sig) if isinstance(sig, dict) else ""
         lines.append(
             f"Evidence: level {level}; status {status[f.item_id]}; reader {reader or _no_reader(rec)}; "
@@ -743,6 +781,7 @@ def catalogue_text(
             lines.append(f"{run_doc}\n")
         goal = _one_line(sig.get("goal")) if isinstance(sig.get("goal"), str) else ""
         lines.append(f"Saved against:\n- Asked: {goal or 'not recorded'}\n")
+        lines += _in_place_lines(replaced.get(CAPTURE_PREFIX + cid), strip)
         input_line = signature_text(sig)
         level = _UNCHECKED  # captured procedures are listed at level unchecked (design J(b).3)
         state = rec.get("status") if isinstance(rec.get("status"), str) else "on-trial"

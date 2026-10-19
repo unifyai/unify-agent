@@ -1068,6 +1068,96 @@ def from_capture(cid: str, doc: dict) -> Entry:
     return e
 
 
+#: The prefix a captured procedure's id carries where it is offered (``memory.get``, the librarian's answers).
+CAPTURE_PREFIX = "capture:"
+#: The closed statuses after which a capture is no longer offered under
+#: ``UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES=on``; a capture merged into an item stays offered.
+WITHDRAWN_STATUSES = ("superseded", "retired")
+
+
+def withdrawn_captures(repo) -> dict[str, dict]:
+    """Capture id -> ``{"status", "by", "reason"}`` for each ``capture`` or ``failure`` entry the writer closed as
+    superseded or retired, read from *repo*'s ``refs/heads/pool`` as it is now ({} with no pool). ``by`` is what is
+    offered in its place: the item or the open captured procedure (``capture:<id>``) that superseded it, followed
+    through entries that were themselves merged into an item or superseded; None when it was retired, when the
+    chain ends at an entry that is not offered (an open candidate, a retired entry) or when it loops. ``reason`` is
+    the closing reason as the pool states it (:func:`closing`). Only the entries' ``entry.json`` are read, never a
+    payload; a malformed entry is left out. The writer's decision is the only input: nothing here reads a task, a
+    position or a word."""
+    try:
+        head = repo.run("rev-parse", "--verify", "-q", f"refs/heads/{POOL_REF}").strip()
+    except Exception:  # noqa: BLE001 - no pool yet
+        return {}
+    if not head:
+        return {}
+    where: dict[str, tuple[str, str]] = {}
+    for rec in repo.run("ls-tree", "-r", "-z", "--name-only", head).split("\0"):
+        parts = rec.split("/")
+        if len(parts) == 4 and parts[0] == "pool" and parts[3] == "entry.json":
+            if parts[1] in KINDS and _ID.fullmatch(parts[2]):
+                where[parts[2]] = (parts[1], rec)
+    metas: dict[str, dict | None] = {}
+
+    def meta(eid: str) -> dict | None:
+        if eid not in metas:
+            kind, path = where[eid]
+            try:
+                m = json.loads(repo.show(head, path).decode("utf-8", "replace"))
+            except Exception:  # noqa: BLE001 - an unreadable entry is left out
+                m = None
+            ok = isinstance(m, dict) and m.get("id") == eid and m.get("kind") == kind
+            metas[eid] = m if ok else None
+        return metas[eid]
+
+    def target_of(m: dict) -> object:
+        d = m.get("status_detail") if isinstance(m.get("status_detail"), dict) else {}
+        return d.get("item") or d.get("by")
+
+    def replacement(m: dict) -> str | None:
+        seen = {m["id"]}
+        target = target_of(m) if m.get("status") == "superseded" else None
+        while isinstance(target, str) and target:
+            ref = target[len("pool:") :] if target.startswith("pool:") else target
+            if ref not in where:
+                return target  # an item of the library
+            t = meta(ref) if ref not in seen else None
+            if t is None:
+                return None
+            seen.add(ref)
+            if t.get("status") == "open":
+                data = t.get("data") if isinstance(t.get("data"), dict) else {}
+                cid = data.get("capture_id")
+                ok = t.get("kind") == "capture" and isinstance(cid, str) and _ID.fullmatch(cid)
+                return CAPTURE_PREFIX + cid if ok else None
+            if t.get("status") == "merged":
+                d = t.get("status_detail") if isinstance(t.get("status_detail"), dict) else {}
+                target = d.get("item")
+            elif t.get("status") == "superseded":
+                target = target_of(t)
+            else:
+                return None
+        return None
+
+    out: dict[str, dict] = {}
+    for eid, (kind, _path) in sorted(where.items()):
+        if kind not in ("capture", "failure"):
+            continue
+        m = meta(eid)
+        if m is None or m.get("status") not in WITHDRAWN_STATUSES:
+            continue
+        data = m.get("data") if isinstance(m.get("data"), dict) else {}
+        cid = data.get("capture_id")
+        if not isinstance(cid, str) or not _ID.fullmatch(cid):
+            continue
+        d = m.get("status_detail") if isinstance(m.get("status_detail"), dict) else {}
+        if m["status"] == "superseded":
+            reason = f"superseded by {target_of(m)}" if target_of(m) else str(d.get("reason") or "superseded")
+        else:
+            reason = str(d.get("reason") or "retired")
+        out[cid] = {"status": m["status"], "by": replacement(m), "reason": reason[:TITLE_CHARS]}
+    return out
+
+
 def from_captures(store) -> list[Entry]:
     """Every capture of *store* (:mod:`.captures`) as a pool entry (:func:`from_capture`), in capture-id order; [] for
     a missing or empty store."""
