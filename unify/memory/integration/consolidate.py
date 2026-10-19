@@ -2057,14 +2057,20 @@ async def run_attention_pass(
         **surfacing_options(settings).gate_kwargs(),
         qa=QAConfig.from_settings(settings),
     )
+    from .switch import impure_items, writer_tests_modes
+
+    impure = impure_items(settings)
     gate = Gate(
         stores.memory,
         stores.evidence,
         stores.blobs,
         **common,
         library_mode=library_checks.config_for(stores, lookup, checker_visible=checker_visible(settings)),
+        # UNIFY_MEMORY_IMPURE_ITEMS=on: quality findings are labels on the item, never refusals
+        **({"labels": True} if impure else {}),
     )
-    # the same configuration as a library-mode pass (run_due_passes), on the run record, held by the service
+    # the same configuration as a library-mode pass (run_due_passes), on the run record, held by the service, over the
+    # attention ledger's entries (the brief, the first message and the writer's ledger tools, attention_tools.py)
     config = PassConfig(
         model=cfg.model,
         effort=effort,
@@ -2088,6 +2094,9 @@ async def run_attention_pass(
         max_reads=library_max_reads(settings),
         run_home=str(home),
         service_held=True,
+        attention_home=str(home),
+        writer_tests=tuple(sorted(writer_tests_modes(settings))),
+        impure_items=impure,
     )
     session = f"writer.{pass_id}"
     if turn_factory is not None:
