@@ -34,7 +34,7 @@ def env_channel(kind: str, channel: str) -> str | None:
     ``worktree:workspace``, ``dialogue:user``) maps to ``<kind>_<key>``, lower-cased, with every run of
     characters other than ``a-z``, ``0-9`` and ``_`` replaced by one ``_`` (``shell:python3.12`` is
     ``shell_python3_12``). A qualifier naming another kind maps to nothing (None). Deterministic and
-    structural: the key is how the harness saw the surface, never a task.
+    structural: the key is how the harness saw the surface, never what the request was.
     """
     if not isinstance(channel, str) or not channel:
         return None

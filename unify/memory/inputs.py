@@ -4,13 +4,13 @@ A test that should hold for every recorded input of its function's family is par
 
     import pytest
     from memlab.inputs import from_action, inputs
-    from env.arc import feedback_state
+    from env.reports import item_ids
 
-    CASES = inputs("env/arc:feedback_state", [from_action(a, form="observation") for a in FIXTURE_ACTIONS])
+    CASES = inputs("env/reports:item_ids", [from_action(a, form="observation") for a in FIXTURE_ACTIONS])
 
     @pytest.mark.parametrize("x", CASES, ids=repr)
-    def test_reads_the_recorded_attempts(x):
-        assert feedback_state(x.value())[0] == x.response["attempts_used"]
+    def test_reads_every_recorded_item(x):
+        assert item_ids(x.value()) == [i["id"] for i in x.response["items"]]
 
 In the consolidation sandbox and in the gate's ordinary runs :func:`inputs` returns the fixtures. In the gate's
 seeded-sample run (``/qa/samples.json`` present) it appends the gate's sampled recorded inputs of that function,

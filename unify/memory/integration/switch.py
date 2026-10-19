@@ -1078,6 +1078,60 @@ def redesign_refusal(settings: Any) -> str | None:
     return None
 
 
+# --- serving on the failure record (C2) and inferred regimes (C3) ---------------------------------------------
+
+SERVING_FAILURE_RECORD = "UNIFY_MEMORY_SERVING_FAILURE_RECORD"
+REGIME = "UNIFY_MEMORY_REGIME"
+#: ``inferred``: each episode's regime is inferred from the signals that arrive (:func:`..signals.infer_regime`);
+#: empty or ``off``: every episode is ``dense``, as built.
+REGIME_INFERRED = "inferred"
+REGIME_VALUES = ("", "off", REGIME_INFERRED)
+
+
+def parse_serving_failure_record(v: Any) -> str:
+    """``UNIFY_MEMORY_SERVING_FAILURE_RECORD``: empty, ``off`` or ``on`` (empty is ``off``, or ``on`` under the
+    redesign profile)."""
+    value = _stripped(v).lower()
+    if value not in ("",) + ON_OFF:
+        raise ValueError(f"{SERVING_FAILURE_RECORD} must be empty, 'off' or 'on', not {v!r}"[:200])
+    return value
+
+
+def serving_failure_record(settings: Any) -> bool:
+    """Whether serving shows each item's failure record and evidence instead of a claim of fit: ``on``, or empty
+    under the redesign profile."""
+    return profile_setting(settings, SERVING_FAILURE_RECORD) == "on"
+
+
+def parse_regime(v: Any) -> str:
+    """``UNIFY_MEMORY_REGIME``: empty, ``off`` or ``inferred`` (empty is ``off``, or ``inferred`` under the redesign
+    profile)."""
+    value = _stripped(v).lower()
+    if value not in REGIME_VALUES:
+        raise ValueError(f"{REGIME} must be empty, 'off' or 'inferred', not {v!r}"[:200])
+    return value
+
+
+def regime_inferred(settings: Any) -> bool:
+    """Whether each episode's regime is inferred from its signals, never defaulted: ``inferred``, or empty under the
+    redesign profile."""
+    return profile_setting(settings, REGIME) == REGIME_INFERRED
+
+
+def serving_refusal(settings: Any) -> str | None:
+    """Why ``UNIFY_MEMORY_SERVING_FAILURE_RECORD`` or ``UNIFY_MEMORY_REGIME`` may not run with these settings (the
+    settings named, never a value), or None: each acts on memory (``UNIFY_MEMORY=on``), and the failure record is
+    served by the library mode (``UNIFY_MEMORY_LIBRARY=on``). Refused, rather than run as a silent no-op."""
+    if serving_failure_record(settings):
+        missing = [f"{n}=on" for n, ok in ((SWITCH, memory_on(settings)), (LIBRARY_MODE, library_enabled(settings)))
+                   if not ok]
+        if missing:
+            return f"{SERVING_FAILURE_RECORD}=on needs {', '.join(missing)}; nothing runs"
+    if regime_inferred(settings) and not memory_on(settings):
+        return f"{REGIME}={REGIME_INFERRED} needs {SWITCH}=on; nothing runs"
+    return None
+
+
 # --- the fork lane's route (docs/design/fork-lane-design.md) ----------------------------------------------------
 #: The key proxy's fork route: its base URL and the descriptor carrying its token, handed by the runner's learner to
 #: this controller's spawn alone. Read once (:func:`settle_fork_route_env`), then both names leave the environment;
@@ -1517,6 +1571,7 @@ def profile_refusal(settings: Any) -> str | None:
         return (
             writer_passes_refusal(settings)
             or capture_serving_refusal(settings)
+            or serving_refusal(settings)
             or redesign_refusal(settings)
             or redesign_a_refusal(settings)
         )
@@ -1675,6 +1730,8 @@ PARSERS = {
     LIBRARY_FIXED_ANSWERS_AS_EXAMPLES: parse_library_fixed_answers_as_examples,
     LIBRARY_WITHDRAW_CLOSED_CAPTURES: parse_library_withdraw_closed_captures,
     MEMORY_PROFILE: parse_memory_profile,
+    SERVING_FAILURE_RECORD: parse_serving_failure_record,
+    REGIME: parse_regime,
 }
 
 

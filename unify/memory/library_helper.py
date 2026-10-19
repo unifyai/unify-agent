@@ -47,6 +47,13 @@ separate confined process that keeps every value (:func:`_facts`); structure onl
 function item) also raises ``memory.run_result`` with its target and outcome. Neither event carries a value or a
 result. A call that raised also raises ``memory.call_failed`` with the id, the exception's type, the first line of
 its message and, for the package's own calls, the arguments' shape (types and sizes, never values).
+
+With the harness's evidence beside the package (``.memory/item_evidence.json``), each card also states what the
+item's status rests on, its recorded failures, what contradicted it and its stated conditions; ``Item.fits`` gives
+a :class:`FitEvidence` (structurally similar or not, with the item's recorded failures: evidence, never a claim that
+it does what is needed) and ``match`` words its rows the same way; and a library item the writer retired or
+superseded (``.memory/withdrawn_items.json``) is withdrawn as a capture is: no listing shows it, and asking for it by
+its id gives what replaced it.
 """
 
 from __future__ import annotations
@@ -158,7 +165,7 @@ def section_key(heading: str) -> str:
 
 
 def wanted_key(name: object) -> str:
-    """The section a name means: ``"office"`` and ``"memory/office"`` both mean ``memory.office``."""
+    """The section a name means: ``"reports"`` and ``"memory/reports"`` both mean ``memory.reports``."""
     n = str(name).strip().strip("/")
     if n.startswith(("memory.", "notes/")):
         return n
@@ -346,7 +353,7 @@ def _param(desc: dict) -> str:
 
 
 def _match(m: Any, mine: dict, recorded: dict) -> Any:
-    """v2's match; else, for two shapes without a named key (a grid, a list of numbers),
+    """v2's match; else, for two shapes without a named key (a list of lists, a list of numbers),
     their exact equality as the weakest match, so such an argument is still found, after every v2 match.
     """
     found = m.match(mine, recorded)
@@ -359,7 +366,7 @@ def _find(value: Any) -> list[Found]:
     """The functions whose tests call them on an argument with the shape of *value*, best match first, each
     with the parameter that argument was passed as. v2's input-shape matcher and ranking, unchanged (level,
     then share of named keys matched, then how many recorded shapes match, then name; at most five). A shape
-    without named keys (a grid) matches only an identical one, ranked weak and below every named match. A
+    without named keys (a list of lists) matches only an identical one, ranked weak and below every named match. A
     function's best-matching shape names the parameter, the first in recorded order on a tie. An empty list
     means that no listed function's tests call it on data of this shape, or that the value has too little
     structure (plain text has none)."""
@@ -431,6 +438,11 @@ CAPTURE_PREFIX = "capture:"
 #: library's writer superseded or retired it), with what is offered in its place (``by``) and what it was saved
 #: against. Written by the harness's ``captures.export_files``, never by this file.
 WITHDRAWN_FILE = ".memory/captures/withdrawn.json"
+#: Beside the package with the harness's evidence serving on (``UNIFY_MEMORY_SERVING_FAILURE_RECORD``): each item's
+#: evidence (its recorded failures, contradictions, what its status rests on, its stated conditions), and the library
+#: items the writer retired or superseded with what replaces each. Without the first file every call is as before.
+EVIDENCE_FILE = ".memory/item_evidence.json"
+WITHDRAWN_ITEMS_FILE = ".memory/withdrawn_items.json"
 #: The key of an exported capture record that offers the capture as a worked example (its ``run`` gives a fixed
 #: answer): ``{"why", "returns"}``. The harness's ``captures.EXAMPLE_KEY``.
 EXAMPLE_KEY = "worked_example"
@@ -497,6 +509,9 @@ def _row_text(row: MatchRow) -> str:
     if row.relations:
         parts.append("relations: " + ", ".join(row.relations))
     parts.append("conditions: " + row.conditions)
+    evidence = _evidence()
+    if evidence is not None:
+        parts.append("recorded failures: " + _failure_text(_failures(evidence, row.id)))
     lines = [f"- {row.id}  [" + "; ".join(parts) + "]"]
     if row.goal:
         lines.append("  goal: " + " ".join(row.goal.split())[:300])
@@ -518,7 +533,16 @@ class Matches(list):
 
     def __repr__(self) -> str:
         out: list[str] = []
-        if self.recognised and self:
+        if self.recognised and self and _evidence() is not None:
+            out.append(
+                f"{len(self)} stored procedure(s) have evidence for the request: each one's reader parsed it and its "
+                "stated applies held on what the reader gave (both ran in a separate confined process; only the "
+                "outcomes are kept). That is evidence about the shape of the input only, not that the procedure does "
+                "what you need; each row shows its recorded failures. memory.get(id) opens one and calling it tries "
+                "it:",
+            )
+            out += [_row_text(r) for r in self]
+        elif self.recognised and self:
             out.append(
                 f"{len(self)} stored procedure(s) recognise the request: each one's reader parsed it and its stated "
                 "applies held on what the reader gave (both ran in a separate confined process; only the outcomes "
@@ -528,6 +552,13 @@ class Matches(list):
         elif self.recognised:
             out.append("No stored procedure recognises the request: none has a reader that parsed it with its "
                        "stated applies holding.")
+        elif self and _evidence() is not None:
+            out.append(
+                f"{len(self)} stored procedure(s) are structurally similar to what you passed: the match compares "
+                "structure only, which says nothing of whether one does what you need; each row shows its recorded "
+                "failures. memory.get(id) opens one and calling it tries it:",
+            )
+            out += [_row_text(r) for r in self]
         elif self:
             out.append(
                 f"{len(self)} stored procedure(s) match what you passed. The match compares structure only, so "
@@ -569,16 +600,65 @@ def _str(value: Any, default: str = "") -> str:
 
 
 def _withdrawn() -> dict[str, dict]:
-    """The withdrawn captures (:data:`WITHDRAWN_FILE`) by ``capture:<id>``; {} when the harness withdrew none."""
+    """The withdrawn captures (:data:`WITHDRAWN_FILE`) by ``capture:<id>``, and the withdrawn library items
+    (:data:`WITHDRAWN_ITEMS_FILE`) by their ids; {} when the harness withdrew none."""
     doc = _read_json(os.path.join(_ROOT, WITHDRAWN_FILE))
     rows = doc.get("captures") if isinstance(doc, dict) else None
-    if not isinstance(rows, dict):
-        return {}
-    return {
+    out = {
         CAPTURE_PREFIX + k: v
-        for k, v in rows.items()
+        for k, v in (rows if isinstance(rows, dict) else {}).items()
         if isinstance(k, str) and _CAPTURE_ID.fullmatch(k) is not None and isinstance(v, dict)
     }
+    doc = _read_json(os.path.join(_ROOT, WITHDRAWN_ITEMS_FILE))
+    rows = doc.get("items") if isinstance(doc, dict) else None
+    for k, v in (rows if isinstance(rows, dict) else {}).items():
+        if isinstance(k, str) and not k.startswith(CAPTURE_PREFIX) and isinstance(v, dict):
+            out[k] = v
+    return out
+
+
+def _evidence() -> dict | None:
+    """Each item's evidence by id (:data:`EVIDENCE_FILE`), or None when the harness serves none (the file is
+    absent): then every card, check and listing is as before."""
+    doc = _read_json(os.path.join(_ROOT, EVIDENCE_FILE))
+    rows = doc.get("items") if isinstance(doc, dict) else None
+    return rows if isinstance(rows, dict) else None
+
+
+def _failures(evidence: dict | None, iid: str) -> list[dict]:
+    row = (evidence or {}).get(iid)
+    rows = row.get("failure_record") if isinstance(row, dict) else None
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
+def _failure_text(rows: list[dict]) -> str:
+    """Recorded failures on one line: ``none``, or the count and each one's why, episode and the library version
+    that was served."""
+    if not rows:
+        return "none"
+    parts = [
+        f"{_str(r.get('why'), 'failed')} in episode {_str(r.get('episode'), '?')[:8]}"
+        + (f" (version {_str(r.get('pin'))[:7]})" if _str(r.get("pin")) else "")
+        for r in rows
+    ]
+    return f"{len(rows)}: " + "; ".join(parts)
+
+
+def _evidence_lines(evidence: dict | None, iid: str) -> list[str]:
+    """A card's evidence lines (with the harness's evidence serving on): what its status rests on, its recorded
+    failures, its contradictions and its stated conditions; [] without it."""
+    if evidence is None:
+        return []
+    row = evidence.get(iid) if isinstance(evidence.get(iid), dict) else {}
+    out = [
+        "Status by evidence: "
+        + _str(row.get("status_text"), "no outcome signal has arrived for any use of this item"),
+        "Recorded failures: " + _failure_text(_failures(evidence, iid)),
+    ]
+    out += ["Contradicted: " + str(c) for c in row.get("contradictions") or [] if isinstance(c, str)]
+    if _str(row.get("conditions")):
+        out.append("States that it applies when: " + _str(row.get("conditions")))
+    return out
 
 
 def _example_of(capture_id: str) -> dict | None:
@@ -1443,6 +1523,17 @@ def _run_item(target: str, args: tuple, kwargs: dict) -> RunReport:
     is never repeated), on a copy of the arguments taken first."""
     import copy
 
+    gone = _withdrawn().get(target) if _evidence() is not None else None
+    if gone is not None:
+        by = gone.get("by")
+        return RunReport(
+            target,
+            outcome="error",
+            error="LookupError",
+            detail=f"this item is no longer offered: the library's writer {_str(gone.get('status'), 'closed')} it"
+            + (f"; {by} is offered in its place: memory.get({by!r})" if isinstance(by, str) and by
+               else "; memory.ask() names what applies"),
+        )
     row = _item_row(target)
     if row is None:
         return RunReport(
@@ -1844,7 +1935,7 @@ LIBRARY_ROOT = "/memory"
 _SUMMARY_CHARS = 100
 _ID_COLUMN = 60
 _GET_EXPECTED = "an item id, a function name, or a note slug"
-_GET_EXAMPLE = "memory.get('notes/grid/stencil.md')"
+_GET_EXAMPLE = "memory.get('notes/reports/summary.md')"
 _TOPIC_EXPECTED = "a package or a notes topic"
 _MODULE_PATH = re.compile(r"memory/([a-z][a-z0-9_]*)/([a-z][a-z0-9_]*)\.py")
 #: What reading a malformed generated file can raise inside a call (:func:`_guard`).
@@ -1973,6 +2064,26 @@ class Fit:
 
     def __str__(self) -> str:
         return ("fits: " if self.ok else "does not fit: ") + self.why
+
+
+@dataclasses.dataclass(frozen=True)
+class FitEvidence(Fit):
+    """A :class:`Fit` given as evidence (with the harness's evidence serving on): ``ok`` says only that the input the
+    item was recorded on is structurally similar to what was passed, never that the item does what you need.
+
+    Members (beside ``ok`` and ``why``):
+        level: how the structures matched (``exact``, ``structure`` or ``weak``; '' when nothing matched).
+        conditions: the item's stated conditions and whether each held on its recorded case.
+        failures: how many failed uses the item's record holds.
+    """
+
+    level: str = ""
+    conditions: str = ""
+    failures: int = 0
+
+    def __str__(self) -> str:
+        head = "structurally similar: " if self.ok else "not structurally similar: "
+        return head + self.why + f"; {self.failures} recorded failure{'s' if self.failures != 1 else ''}"
 
 
 @dataclasses.dataclass(frozen=True, repr=False)
@@ -2247,7 +2358,11 @@ class _Catalog:
     def listed(self) -> list[str]:
         """What ``items()`` lists: every function and note but the retired ones, and every captured procedure but
         those that were tried and failed."""
-        out = [i for i in self.functions + self.notes if _status_of(self.rows[i]) not in _HIDDEN_STATUSES]
+        out = [
+            i
+            for i in self.functions + self.notes
+            if _status_of(self.rows[i]) not in _HIDDEN_STATUSES and i not in self.withdrawn
+        ]
         return out + [c for c in self.captures if not self._capture_failed(c)]
 
     def topics(self) -> list[str]:
@@ -2385,9 +2500,11 @@ class _Catalog:
                 expected="ref: str | Item | Callable",
                 example=_GET_EXAMPLE,
             )
-        gone = self.withdrawn.get(text.strip()) if not self.matches(text) else None
+        key = text.strip()
+        # a withdrawn capture has left the copy; a withdrawn library item is still in it, and is not offered either
+        gone = self.withdrawn.get(key) if (key in self.rows or not self.matches(text)) else None
         if gone is not None:
-            return self._in_place_of(text.strip(), gone, reason)
+            return self._in_place_of(key, gone, reason)
         found = self.matches(text)
         if len(found) == 1:
             return self.item(found[0], reason)
@@ -2461,14 +2578,14 @@ class _Catalog:
             self.call,
             f"no topic named {topic!r}.",
             expected=_TOPIC_EXPECTED,
-            example=f"memory.items({(near or topics or ['notes/grid'])[0]!r})",
+            example=f"memory.items({(near or topics or ['notes/reports'])[0]!r})",
             nearest=near,
             hint="Browse every topic with memory.items().",
         )
 
     def _example_id(self) -> str:
         listed = self.listed()
-        return listed[0] if listed else "notes/grid/stencil.md"
+        return listed[0] if listed else "notes/reports/summary.md"
 
     # -- building items
 
@@ -2576,6 +2693,7 @@ class _Catalog:
             reasons = [str(r) for r in (row.get("level_reasons") or [])]
             out.append(f"Evidence level: {level}" + (", set by:" if reasons else ""))
             out += [f"  {r}" for r in reasons]
+        out += _evidence_lines(_evidence(), wanted)
         out.append("")
         out.append(f"(its {'source' if function else 'text'} cannot be read: {missing})" if missing else body)
         out += [
@@ -2626,6 +2744,7 @@ class _Catalog:
             f"{iid}  [{status}, evidence: {level}]",
             "A captured procedure: calling it runs it in a separate confined process on text or JSON values.",
         ]
+        out += _evidence_lines(_evidence(), iid)
         if rec.get("outcome") == "failed":
             out.append("Tried and failed: it is listed to show what broke, never run.")
             broke = saved.get("broke")
@@ -2683,7 +2802,7 @@ def get(ref: str | Item | Callable) -> Item:
         WrongCall: the name is a topic, not an item; the error gives the call that lists it.
 
     Example:
-        memory.get('notes/grid/stencil.md')
+        memory.get('notes/reports/summary.md')
     """
     call = call_text("memory.get", (ref,))
     return _guard(call, _get, ref, call)
@@ -2698,8 +2817,8 @@ def items(topic: str | None = None, kind: Kind | None = None) -> Items:
     """Browse the library: every item (but the retired), or one topic's, of one kind or both.
 
     Args:
-        topic: a package (``'grid'``, ``'memory.grid'``), a module (``'grid.stencil'``), a notes topic
-            (``'notes/grid'``; a bare ``'grid'`` also takes the notes topic of that name) or ``'captures'``;
+        topic: a package (``'reports'``, ``'memory.reports'``), a module (``'reports.totals'``), a notes topic
+            (``'notes/reports'``; a bare ``'reports'`` also takes the notes topic of that name) or ``'captures'``;
             None for the whole library.
         kind: ``'function'`` or ``'note'``; None for both.
 
@@ -2713,7 +2832,7 @@ def items(topic: str | None = None, kind: Kind | None = None) -> Items:
         WrongCall: the name is an item's, not a topic's; the error gives the call that opens it.
 
     Example:
-        memory.items('notes/grid', kind='note')
+        memory.items('notes/reports', kind='note')
     """
     call = call_text(
         "memory.items",
@@ -2751,7 +2870,26 @@ def _fit(target: str, inputs: Any) -> Fit:
     return _guard(call, _fit_check, target, inputs, call)
 
 
+def _fitted(target: str, ok: bool, why: str, level: str = "", conditions: str = "") -> Fit:
+    """The :class:`Fit` of one check, or with the harness's evidence serving on a :class:`FitEvidence` that also
+    carries how the structures matched, the stated conditions and the item's recorded failures."""
+    evidence = _evidence()
+    if evidence is None:
+        return Fit(ok, why)
+    return FitEvidence(ok, why, level=level, conditions=conditions, failures=len(_failures(evidence, target)))
+
+
 def _fit_check(target: str, inputs: Any, call: str) -> Fit:
+    gone = _withdrawn().get(target) if _evidence() is not None else None
+    if gone is not None:
+        by = gone.get("by")
+        _emit_event(MATCH_EVENT, (), ())
+        return _fitted(
+            target,
+            False,
+            f"it is no longer offered: the library's writer {_str(gone.get('status'), 'closed')} it"
+            + (f"; {by} is offered in its place: memory.get({by!r})" if isinstance(by, str) and by else ""),
+        )
     if target.startswith("notes/"):
         raise WrongCall(
             call,
@@ -2768,7 +2906,8 @@ def _fit_check(target: str, inputs: Any, call: str) -> Fit:
     mine = [c for c in candidates if c.id == target]
     if not mine:
         _emit_event(MATCH_EVENT, (), ())
-        return Fit(
+        return _fitted(
+            target,
             False,
             "no input it was saved against is recorded, so nothing here can say whether it fits; "
             f"print(memory.get({target!r})) shows what it takes",
@@ -2777,7 +2916,8 @@ def _fit_check(target: str, inputs: Any, call: str) -> Fit:
     query = _query(m, None, inputs, mine)
     if not query.shapes:
         _emit_event(MATCH_EVENT, (), ())
-        return Fit(
+        return _fitted(
+            target,
             False,
             "what you passed has no structure to compare (plain text has none); pass the data you were given",
         )
@@ -2785,7 +2925,9 @@ def _fit_check(target: str, inputs: Any, call: str) -> Fit:
         pairs = list(MATCHER(query, list(mine)) or ())
     except Exception as exc:  # noqa: BLE001 - the matcher's failure is reported, not raised
         _emit_event(MATCH_EVENT, (), ())
-        return Fit(False, f"the matcher failed ({type(exc).__name__}), so nothing here says whether it fits")
+        return _fitted(
+            target, False, f"the matcher failed ({type(exc).__name__}), so nothing here says whether it fits"
+        )
     how = None
     for pair in pairs:
         try:
@@ -2797,16 +2939,25 @@ def _fit_check(target: str, inputs: Any, call: str) -> Fit:
             break
     if how is None:
         _emit_event(MATCH_EVENT, (), ())
-        return Fit(False, "the input it was saved against has a different structure from what you passed")
+        return _fitted(target, False, "the input it was saved against has a different structure from what you passed")
     row = _match_row(mine[0], how)
     if mine[0].failed:
         _emit_event(MATCH_EVENT, (), _event_rows([row]))
-        return Fit(False, "it was tried on input like this and failed; it is listed to show what broke, never run")
+        return _fitted(
+            target,
+            False,
+            "it was tried on input like this and failed; it is listed to show what broke, never run",
+            how,
+            row.conditions,
+        )
     _emit_event(MATCH_EVENT, _event_rows([row]), ())
-    return Fit(
+    return _fitted(
+        target,
         True,
         f"the input it was saved against has the structure of what you passed ({how}); stated conditions: "
         f"{row.conditions}. A structural match can be wrong.",
+        how,
+        row.conditions,
     )
 
 
@@ -2906,7 +3057,7 @@ def _index_text(package: str | None, call: str) -> str:
         call,
         f"no section or item named {package!r}.",
         expected=_TOPIC_EXPECTED,
-        example=f"memory.items({(near or topics or ['notes/grid'])[0]!r})",
+        example=f"memory.items({(near or topics or ['notes/reports'])[0]!r})",
         nearest=near,
         hint="Browse every topic with memory.items(); memory.get(ref) opens one item.",
     )
@@ -2930,7 +3081,7 @@ def show(item: Any) -> str:
         WrongCall: the name is a topic, not an item.
 
     Example:
-        memory.show('notes/grid/stencil.md')
+        memory.show('notes/reports/summary.md')
     """
     _alias("show")
     call = call_text("memory.show", (item,))

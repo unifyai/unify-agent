@@ -101,6 +101,7 @@ def export_actor_library_mode(
     librarian: bool = False,
     summary_of=None,
     search=None,
+    serving=None,
 ) -> dict[str, bytes]:
     """``UNIFY_MEMORY_LIBRARY=on``: replace *dest* with the actor's read-only copy of memory commit *sha*. It
     holds:
@@ -116,6 +117,10 @@ def export_actor_library_mode(
 
     Every write bit is then dropped, and the sandbox binds the copy read-only (:func:`.hooks.worker_readonly_mounts`).
     Returns the generated files.
+
+    *serving* (``UNIFY_MEMORY_SERVING_FAILURE_RECORD``): called with the materialised copy before its files are
+    generated, it gives the serving evidence and the withdrawn library items (:mod:`..serving`) the generated files
+    carry (:func:`..library_export.generated_library_mode`); None: as without it.
     """
     from ..catalogue import write_files
     from ..layout import exported
@@ -141,6 +146,7 @@ def export_actor_library_mode(
         except GitError:
             return None
 
+    served = serving(dest) if serving is not None else None
     generated = generated_library_mode(
         dest,
         status_of=status_of,
@@ -152,6 +158,7 @@ def export_actor_library_mode(
         summary_of=summary_of,
         captures=captures if librarian else None,
         search=search,
+        **({"serving": served} if served is not None else {}),
     )
     if captures:
         from ..captures import EXPORT_DIR

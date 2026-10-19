@@ -377,6 +377,58 @@ def status_text(status: str, basis: str | None) -> str:
     return status
 
 
+# --- what a status rests on (UNIFY_MEMORY_REGIME=inferred) ---------------------------------------------------
+
+#: What an item's status rests on, by the signals its uses carry: verdicts after its answered calls, outcomes at the
+#: end of its episodes, implicit signals only (stated conditions, corrections), or no outcome signal at all.
+BASIS_END_OUTCOMES = "end_outcomes"
+BASIS_NO_OUTCOME_SIGNALS = "no_outcome_signals"
+STATUS_BASES = (BASIS_VERDICTS, BASIS_END_OUTCOMES, BASIS_IMPLICIT, BASIS_NO_OUTCOME_SIGNALS)
+
+
+def status_basis(uses: Iterable[Use]) -> str:
+    """What a status decided from *uses* rests on (:data:`STATUS_BASES`): ``verdicts`` when any use carries a
+    verdict, else ``end_outcomes`` when any carries an end outcome, else ``implicit`` when any carries a stated
+    condition's result or a correction, else ``no_outcome_signals`` (no use, or uses that only returned, raised or
+    refused). A contrary signal on a use its record does not attribute (``episode_negative``) counts as its regime
+    observes it: a verdict in ``dense``, an end outcome in ``sparse``, a correction in ``implicit``. An error is
+    counted as a failed use, never as an outcome signal."""
+    us = list(uses)
+    negative = {u.regime for u in us if u.answered is None and u.episode_negative}
+    if any(u.verdict in VERDICTS for u in us) or "dense" in negative:
+        return BASIS_VERDICTS
+    if any(u.end_outcome in END_OUTCOMES for u in us) or "sparse" in negative:
+        return BASIS_END_OUTCOMES
+    if any(u.holds is not None or u.corrected for u in us) or "implicit" in negative:
+        return BASIS_IMPLICIT
+    return BASIS_NO_OUTCOME_SIGNALS
+
+
+def use_counts(uses: Iterable[Use]) -> dict:
+    """How the uses were judged (:func:`judge`): ``{"clean", "failed", "neutral"}`` counts."""
+    out = {CLEAN: 0, FAILED: 0, NEUTRAL: 0}
+    for u in uses:
+        out[judge(u)[0]] += 1
+    return out
+
+
+def basis_text(status: str, basis: str, counts: Mapping[str, int]) -> str:
+    """The status as a card states it, by what it rests on: never a claim of correctness the signals do not give.
+    ``no_outcome_signals`` says no outcome signal has arrived for any use; the others say how many uses were clean and
+    failed and how they were judged."""
+    clean, failed = int(counts.get(CLEAN) or 0), int(counts.get(FAILED) or 0)
+    if basis == BASIS_NO_OUTCOME_SIGNALS:
+        used = clean + failed + int(counts.get(NEUTRAL) or 0)
+        tail = f" ({used} use{'s' if used != 1 else ''} without one)" if used else " (it has not been used)"
+        return f"{status}: no outcome signal has arrived for any use of this item{tail}"
+    how = {
+        BASIS_VERDICTS: "judged by the verdict after each answered call",
+        BASIS_END_OUTCOMES: "all judged at episode end",
+        BASIS_IMPLICIT: "judged by implicit signals only (errors, stated conditions, corrections), never by an outcome",
+    }[basis]
+    return f"{status}: {clean} clean use{'s' if clean != 1 else ''}, {failed} failed, {how}"
+
+
 # --- signals to outcomes --------------------------------------------------------------------------------------
 
 

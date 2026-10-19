@@ -7,7 +7,7 @@ per condition, an AppWorld playlist title from the request (``"R&B
 Recommendation"``) hard-coded in the code, literal example data. No later task
 shares them. With the switch on, a function whose name or code (literals,
 defaults) carries an identifier from the session's request, or whose name has
-the shape of a task id, is refused with the identifier named; a docstring or
+the shape of a UUID, is refused with the identifier named; a docstring or
 a guidance entry that names one is stored with a warning. Domain words (an
 app name, ``grid``, a quoted tool name) are not identifiers. The request's
 tokens reach the task loop, its tools and its storage review through the task
@@ -114,13 +114,36 @@ def test_on_a_name_with_the_task_alias_is_refused(lint):
 
 
 @_handle_project
-def test_on_a_task_id_shaped_name_is_refused_whatever_the_request(lint):
-    for source in (
-        "def solve_task_0badc0de(grid: list) -> list:\n    return grid\n",
-        "def run_3f2b8c1e_9a4d_4c2b_8e1f_0a9b8c7d6e5f() -> int:\n    return 1\n",
-    ):
-        status = _add(source)
-        assert status.startswith("error: ") and "the shape of a task id" in status
+def test_on_a_uuid_shaped_name_is_refused_whatever_the_request(lint):
+    status = _add("def run_3f2b8c1e_9a4d_4c2b_8e1f_0a9b8c7d6e5f() -> int:\n    return 1\n")
+    assert status.startswith("error: ") and "the shape of a generic identifier (a UUID)" in status
+
+
+@_handle_project
+def test_a_name_shaped_like_a_word_and_hex_is_refused_only_for_the_requests_own_tokens(lint):
+    """No benchmark-shaped pattern (a "task" alias) refuses a name on its own: only the request's tokens do."""
+    source = "def solve_task_0badc0de(rows: list) -> list:\n    return rows\n"
+    assert _add(source).startswith("added"), source
+    assert instance_lint.name_problem("solve_task_0badc0de", instance_lint.InstanceTokens()) is None
+    assert instance_lint.text_warning("its docstring", "seen on task-0badc0de", instance_lint.InstanceTokens()) is None
+
+
+@_handle_project
+def test_under_the_redesign_profile_a_finding_labels_and_refuses_nothing(lint, monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_PROFILE", "redesign")
+    assert instance_lint.labels_only()
+    source = "def run_3f2b8c1e_9a4d_4c2b_8e1f_0a9b8c7d6e5f() -> int:\n    return 1\n"
+    status = _add(source)
+    assert status.startswith(
+        "added; warning: 'run_3f2b8c1e_9a4d_4c2b_8e1f_0a9b8c7d6e5f' was stored with a label, not refused: "
+        "its name contains '3f2b8c1e_9a4d_4c2b_8e1f_0a9b8c7d6e5f', the shape of a generic identifier (a UUID)"
+    ), status
+    assert "run_3f2b8c1e_9a4d_4c2b_8e1f_0a9b8c7d6e5f" in FunctionManager().list_functions()
+    named = _in_task(ARC, lambda: _add("def solve_task_7a4cf12e(rows: list) -> list:\n    return rows\n"))
+    assert named.startswith("added; warning: 'solve_task_7a4cf12e' was stored with a label"), named
+    assert "solve_task_7a4cf12e" in FunctionManager().list_functions()
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_PROFILE", "")
+    assert not instance_lint.labels_only()
 
 
 @_handle_project

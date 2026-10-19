@@ -1,23 +1,23 @@
 """Adapter 4, dialogue: the action carried in each reply, paired with the next observation.
 
 A dialogue action is a turn-ending assistant reply (text, no tool calls) followed by the next genuine
-user-role message, which is what the counterpart sent back: a typed environment's observation
-(Crafter, ScienceWorld), ARC's feedback after a JSON ``submit``/``request_demos``, or a person's
-follow-up. The transcript is the only instrument; nothing else is observed.
+user-role message, which is what the counterpart sent back: a text environment's observation after a typed
+command, a structured counterpart's reply to a JSON command, or a person's follow-up. The transcript is the
+only instrument; nothing else is observed.
 
 Everything here is structural:
 
 - the counterpart (the channel key) is supplied by the harness, the source it serves; it is never read
-  from content and never keyed on a task;
+  from content and never keyed on what the request was;
 - the payload is the reply's trailing JSON object when one parses, else its final non-empty line; no
   word in the reply is ever matched. An object payload names its method by structure: the value of its
   first member whose value is an identifier-like string (``[A-Za-z][A-Za-z0-9_]*``, at most 64
   characters) is the method, and the other members are its arguments (none: no arguments; one: its
   value is ``args[0]``; more: they are ``kwargs`` by name). A payload without such a member, and a
-  plain-text payload, is method ``act`` with the payload as ``args[0]``. So ``{"action": "submit",
-  "grid": g}`` is ``submit(g)`` and ``{"action": "request_demos"}`` is ``request_demos()``, the shapes
-  the offline ARC import records, and a typed command ``move_left`` is ``act("move_left")``, as the
-  offline Crafter and ScienceWorld imports record;
+  plain-text payload, is method ``act`` with the payload as ``args[0]``. So ``{"action": "save",
+  "items": x}`` is ``save(x)`` and ``{"action": "list_items"}`` is ``list_items()``, the shapes an offline
+  import of a structured counterpart records, and a typed command ``move_left`` is ``act("move_left")``,
+  as an offline import of a text environment records;
 - the observation (the action's ``response``) is the counterpart's message itself, redacted: the parsed
   value when the whole message is one JSON object or array (a structured counterpart), else its text,
   capped at ``max_observation_chars`` (head and tail kept). The episode writer moves a large response
@@ -50,9 +50,9 @@ from ...fingerprint import shape
 from ...redact import Redactor
 
 METHOD = "act"
-# An observation is kept whole up to this many characters: a Continual-ARC message with a 30x30 demo pair
-# and a 30x30 test input is about 6,000; a longer one keeps its head and tail (the episode writer stores
-# any response over its own inline cap as a blob, so nothing is lost below this bound).
+# An observation is kept whole up to this many characters: a message carrying a few thousand small JSON
+# values is about 6,000; a longer one keeps its head and tail (the episode writer stores any response over
+# its own inline cap as a blob, so nothing is lost below this bound).
 DEFAULT_OBSERVATION_CAP = 65536
 DEFAULT_PAYLOAD_CAP = 16000
 # The memory repo's channel naming: a lowercase identifier with no "." (``Generations`` splits the
@@ -316,6 +316,11 @@ def dialogue_actions(
             ),
         )
     return actions
+
+
+def observation_texts(transcript_lines: Iterable[dict]) -> list[str]:
+    """The text of every observation (a user message the loop did not author), in order: the request first."""
+    return [_text(m.get("content")) for m in _messages(transcript_lines) if _is_observation(m)]
 
 
 def observation_count(transcript_lines: Iterable[dict]) -> int:

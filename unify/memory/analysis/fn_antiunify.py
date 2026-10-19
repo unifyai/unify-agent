@@ -21,7 +21,7 @@ not change behaviour and what only names things locally:
   function that calls ``locals``, ``vars``, ``eval``, ``exec`` or ``dir``. The root function's own parameter
   names are interface too: :attr:`Generalisation.same_signature` compares them;
 * optionally (:func:`antiunify_source` does it by default), an expression-statement call of a sibling library
-  function, ``parse_submit_feedback(observation)``, is inlined first, so a function that validates through a
+  function, ``check_reply(observation)``, is inlined first, so a function that validates through a
   sibling is compared on what it actually checks. The sibling's final ``return <expr>`` is kept as an expression
   statement (its calls and raises still happen) unless it is a bare name or constant. Inlining is refused when
   it could change what a name means (a sibling's global read that the caller binds, a caller name the sibling's

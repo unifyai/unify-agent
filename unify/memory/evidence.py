@@ -42,6 +42,18 @@ CREATE TABLE IF NOT EXISTS commit_shapes(commit_sha TEXT, item TEXT, body TEXT, 
 # The checker signals the bed showed the actor, created by the first such signal, so a store
 # that never records one (every bed without UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE) keeps the schema above.
 _VISIBLE_TABLE = "CREATE TABLE IF NOT EXISTS signal_visible(signal_id TEXT PRIMARY KEY)"
+# UNIFY_MEMORY_REGIME=inferred: each signal's arrival, its episode's end, its timing and what it bears on; each
+# episode's inferred regime with what it rests on; and every change of an episode's regime. Created by the first
+# such write, so a store that never infers a regime keeps the schema above.
+_TIMING_TABLE = (
+    "CREATE TABLE IF NOT EXISTS signal_timing(signal_id TEXT PRIMARY KEY, arrived_at TEXT, episode_ended_at TEXT, "
+    "timing TEXT, about TEXT)"
+)
+_REGIME_SCHEMA = """
+CREATE TABLE IF NOT EXISTS episode_regimes(episode_id TEXT PRIMARY KEY, regime TEXT, basis TEXT, at TEXT);
+CREATE TABLE IF NOT EXISTS regime_changes(seq INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT, at TEXT,
+  before TEXT, after TEXT, basis TEXT, signal_id TEXT)
+"""
 
 # Library mode: one row per library-mode pass (its rounds, the blob ids of each refused round's full
 # gate result and of its final one), created by the first write, so a store that never runs such a pass keeps
@@ -591,6 +603,13 @@ class EvidenceStore:
                     "INSERT OR REPLACE INTO signal_visible VALUES(?)",
                     (sig.signal_id,),
                 )
+            if sig.timing or sig.arrived_at or sig.about:
+                # UNIFY_MEMORY_REGIME=inferred only: a store that never infers a regime keeps its schema
+                self.db.execute(_TIMING_TABLE)
+                self.db.execute(
+                    "INSERT OR REPLACE INTO signal_timing VALUES(?,?,?,?,?)",
+                    (sig.signal_id, sig.arrived_at, sig.episode_ended_at, sig.timing, sig.about),
+                )
 
     def _visible_ids(self, eid: str) -> set[str]:
         """The ids of *eid*'s signals that the bed showed the actor (none when the table was never made)."""
@@ -614,6 +633,7 @@ class EvidenceStore:
             (eid,),
         ).fetchall()
         visible = self._visible_ids(eid)
+        timing = self._timing_rows(eid)
         return [
             Signal(
                 r[0],
@@ -626,9 +646,81 @@ class EvidenceStore:
                 bool(r[7]),
                 r[8],
                 visible_to_actor=r[0] in visible,
+                **timing.get(r[0], {}),
             )
             for r in rows
         ]
+
+    def _has_table(self, name: str) -> bool:
+        return (
+            self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
+            is not None
+        )
+
+    def _timing_rows(self, eid: str) -> dict[str, dict]:
+        """The timing fields of *eid*'s signals, by signal id ({} when the table was never made)."""
+        if not self._has_table("signal_timing"):
+            return {}
+        rows = self.db.execute(
+            "SELECT t.signal_id, t.arrived_at, t.episode_ended_at, t.timing, t.about FROM signal_timing t "
+            "JOIN signals s ON s.signal_id=t.signal_id WHERE s.episode_id=?",
+            (eid,),
+        ).fetchall()
+        return {
+            r[0]: {"arrived_at": r[1] or "", "episode_ended_at": r[2] or "", "timing": r[3] or "", "about": r[4] or ""}
+            for r in rows
+        }
+
+    def record_regime(self, eid: str, regime: str, basis: str, at: str, signal_id: str | None = None) -> str | None:
+        """Set episode *eid*'s regime (``UNIFY_MEMORY_REGIME=inferred``) to *regime*, inferred on *basis*, at *at*;
+        a change from its earlier regime is logged in ``regime_changes`` with the signal that caused it. Returns the
+        regime it had before (None for its first record). KeyError for an episode that was never indexed."""
+        before = self.regime_of(eid)
+        self.db.executescript(_REGIME_SCHEMA)
+        with self.db:
+            row = self.db.execute("SELECT regime FROM episode_regimes WHERE episode_id=?", (eid,)).fetchone()
+            known = row[0] if row is not None else None
+            self.db.execute(
+                "INSERT OR REPLACE INTO episode_regimes VALUES(?,?,?,?)",
+                (eid, regime, basis, at),
+            )
+            self.db.execute("UPDATE episodes SET regime=? WHERE episode_id=?", (regime, eid))
+            if known is None or before != regime:
+                self.db.execute(
+                    "INSERT INTO regime_changes(episode_id, at, before, after, basis, signal_id) VALUES(?,?,?,?,?,?)",
+                    (eid, at, before if known is not None else None, regime, basis, signal_id),
+                )
+        return before if known is not None else None
+
+    def inferred_regimes(self, exclude: str | None = None) -> list[tuple[str, str]]:
+        """``(regime, basis)`` of every episode whose regime was inferred, in recording order (*exclude* left out);
+        [] when none was."""
+        if not self._has_table("episode_regimes"):
+            return []
+        rows = self.db.execute(
+            "SELECT r.episode_id, r.regime, r.basis FROM episode_regimes r JOIN episodes e "
+            "ON e.episode_id=r.episode_id ORDER BY e.seq",
+        ).fetchall()
+        return [(r[1], r[2]) for r in rows if r[0] != exclude]
+
+    def regime_record(self, eid: str) -> tuple[str, str] | None:
+        """``(regime, basis)`` inferred for *eid*, or None when its regime was never inferred."""
+        if not self._has_table("episode_regimes"):
+            return None
+        row = self.db.execute("SELECT regime, basis FROM episode_regimes WHERE episode_id=?", (eid,)).fetchone()
+        return (row[0], row[1]) if row is not None else None
+
+    def regime_changes(self, eid: str | None = None) -> list[dict]:
+        """Every logged regime change (only *eid*'s when given), oldest first."""
+        if not self._has_table("regime_changes"):
+            return []
+        q = "SELECT episode_id, at, before, after, basis, signal_id FROM regime_changes"
+        args: tuple = ()
+        if eid is not None:
+            q, args = q + " WHERE episode_id=?", (eid,)
+        rows = self.db.execute(q + " ORDER BY seq", args).fetchall()
+        keys = ("episode_id", "at", "before", "after", "basis", "signal_id")
+        return [dict(zip(keys, r)) for r in rows]
 
     def add_item_evidence(self, item: str, eid: str, role: str) -> None:
         with self.db:

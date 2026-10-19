@@ -386,8 +386,8 @@ class ProductionSettings(BaseSettings):
     # Memory v2's dialogue capture (applies only with UNIFY_MEMORY on;
     # parsed by unify/memory/integration/switch.py): ``env`` also records
     # each request's dialogue actions (every turn-ending reply's action with
-    # the counterpart's next message) on the channel ``env``, so a benchmark
-    # whose actions are text in the replies (Continual-ARC) leaves coverable
+    # the counterpart's next message) on the channel ``env``, so a counterpart
+    # whose actions are text in the replies leaves coverable
     # actions. Empty (also ``off``): episodes as shipped.
     UNIFY_MEMORY_DIALOGUE: str = ""
     # Memory v2 (continual-harness-research docs/design/memory-redesign-spec.md):
@@ -509,6 +509,15 @@ class ProductionSettings(BaseSettings):
     # left empty takes the profile's value, and one set to another value, or a setting the profile cannot run with, is
     # refused before anything runs; empty (default): each switch as set.
     UNIFY_MEMORY_PROFILE: str = ""
+    # Serving on the situation plus the failure record: ``on`` gives the librarian each item's failure record and
+    # contradictions beside the situation, shows match and applicability results as evidence (never as a claim of
+    # fit), states each status by what it rests on, and withdraws retired and superseded library items as well as
+    # captures; ``off`` (default; empty without the redesign profile): as built.
+    UNIFY_MEMORY_SERVING_FAILURE_RECORD: str = ""
+    # Each episode's feedback regime: ``inferred`` infers it from the signals that arrive (in the episode or after it),
+    # with the run's own history as the prior, and takes late verdicts on earlier episodes; ``off`` (default; empty
+    # without the redesign profile): every episode is ``dense``, as built.
+    UNIFY_MEMORY_REGIME: str = ""
     # The fork lane's route: the key proxy's /fork/v1 base URL and the inherited
     # descriptor carrying its token, read once at start-up and then removed from the environment (empty: no fork lane).
     UNIFY_MEMORY_LIBRARY_FORK_BASE_URL: str = ""
@@ -841,6 +850,8 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_NOTEBOOK",
         "UNIFY_MEMORY_WRITER_PASSES",
         "UNIFY_MEMORY_PROFILE",
+        "UNIFY_MEMORY_SERVING_FAILURE_RECORD",
+        "UNIFY_MEMORY_REGIME",
         mode="before",
     )
     @classmethod

@@ -34,7 +34,7 @@ from unify.memory.integration.state import State
 from unify.memory.qa import QAConfig
 from unify.memory.writer_pass import TRANSCRIPT_REF, WRITER_SYSTEM
 from unify.memory.redact import Redactor
-from unify.memory.signals import Signal
+from unify.memory.signals import TIMING_FIELDS, Signal
 from unify.memory.trigger import BATCHED_CURSOR
 from tests.memory.test_episodes import _ep
 
@@ -162,7 +162,7 @@ def test_checker_posts_pass_or_fail_only(tmp_path):
     (line,) = stores.episodes.notes(sha1)
     note = json.loads(line)
     # visible_to_actor is in a note only when True, so every other note keeps its bytes
-    assert set(note) == {f.name for f in fields(Signal)} - {"visible_to_actor"}
+    assert set(note) == {f.name for f in fields(Signal)} - {"visible_to_actor"} - set(TIMING_FIELDS)
     assert (note["source"], note["label"], note["refers_to"]) == (
         "checker",
         "fail",

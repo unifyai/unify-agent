@@ -32,7 +32,7 @@ from unify.memory.integration import consolidate, switch
 from unify.memory.integration import request as request_mod
 from unify.memory.integration.adapters import dialogue
 from unify.memory.redact import Redactor
-from unify.memory.signals import Signal, note_text
+from unify.memory.signals import TIMING_FIELDS, Signal, note_text
 from unify.settings import SETTINGS
 
 SENTINEL = "SENTINEL-c4e1"
@@ -109,6 +109,8 @@ def test_signal_note_bytes_unchanged_when_not_visible():
     sig = Signal("e.checker", "e", "checker", "pass", "t", refers_to="e")
     row = asdict(sig)
     del row["visible_to_actor"]
+    for key in TIMING_FIELDS:  # set only under UNIFY_MEMORY_REGIME=inferred
+        del row[key]
     assert note_text(sig) == json.dumps(
         row,
         sort_keys=True,

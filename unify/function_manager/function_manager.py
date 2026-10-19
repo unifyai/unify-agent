@@ -1725,17 +1725,25 @@ class FunctionManager(BaseFunctionManager):
 
         Raises ``ValueError`` naming the identifier for the name and the code
         (literals and defaults); returns a warning when only the docstring
-        names one, and ``None`` when nothing does.
+        names one, and ``None`` when nothing does. Under
+        ``UNIFY_MEMORY_PROFILE=redesign`` (:func:`.instance_lint.labels_only`)
+        nothing is refused: the name or code finding comes back as a label,
+        before the docstring's warning.
         """
         from . import instance_lint
 
         problem = instance_lint.name_problem(name) or instance_lint.code_problem(node)
-        if problem:
-            raise ValueError(instance_lint.refusal(name, problem))
-        return instance_lint.text_warning(
+        doc = instance_lint.text_warning(
             "its docstring",
             ast.get_docstring(node) or "",
         )
+        if problem:
+            if instance_lint.labels_only():
+                return instance_lint.join_warnings(
+                    [instance_lint.label(name, problem), doc],
+                )
+            raise ValueError(instance_lint.refusal(name, problem))
+        return doc
 
     # ------------------------------------------------------------------ #
     #  Storage-time check (UNIFY_STORE_CHECK=resolve)                     #

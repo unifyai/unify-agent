@@ -228,6 +228,21 @@ def recover(
     return done
 
 
+def _inferred_regime(ep: Any, stores: Any) -> str | None:
+    """Under ``UNIFY_MEMORY_REGIME=inferred``: set the recovered episode's regime from what it holds (no signal was
+    posted on it; its use record, if any) and the run's other episodes (:func:`.outcomes.infer`), and return its basis;
+    None with the switch off (the regime stays as assembled)."""
+    from unify.settings import SETTINGS
+
+    from . import outcomes
+    from .switch import regime_inferred
+
+    if not regime_inferred(SETTINGS):
+        return None
+    ep.regime, basis = outcomes.infer(stores.evidence, ep.episode_id, [], getattr(ep, "memory_use", None))
+    return basis
+
+
 def _record(path: Path, stores: Any, library_index: Callable[[Any, Any], None] | None) -> str | None:
     from ..episodes import EpisodeWriter
     from . import trajectory
@@ -261,6 +276,7 @@ def _record(path: Path, stores: Any, library_index: Callable[[Any, Any], None] |
         worktree_before=header.get("worktree_before") if isinstance(header.get("worktree_before"), str) else None,
     )
     ep.incomplete = {**_stop_fields(stops[-1] if stops else None), "recovered_at": recovered_at}
+    basis = _inferred_regime(ep, stores)
     writer = EpisodeWriter(
         stores.episodes,
         stores.blobs,
@@ -273,6 +289,8 @@ def _record(path: Path, stores: Any, library_index: Callable[[Any, Any], None] |
         path.unlink()
         return None
     stores.evidence.index_episode(ep, sha)
+    if basis is not None:
+        stores.evidence.record_regime(ep.episode_id, ep.regime, basis, ep.ended_at)
     if library_index is not None:
         try:
             library_index(ep, redactor)

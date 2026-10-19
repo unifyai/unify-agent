@@ -324,6 +324,17 @@ def _checker_lines_on() -> bool:
     return checker_visible_on()
 
 
+def _regime_lines_on() -> bool:
+    """Whether a ``{"checker": ...}`` line may also carry ``episode`` and ``about`` (``UNIFY_MEMORY_REGIME=inferred``,
+    with checker lines on): a verdict on an earlier episode, or what a verdict is about. Off, such a line is handled
+    exactly as before."""
+    try:
+        from unify.memory.integration.request import regime_inferred_on
+    except ImportError:
+        return False
+    return _checker_lines_on() and regime_inferred_on()
+
+
 class Act:
     """One actor driven from the terminal, with no conversation loop above it."""
 
@@ -502,6 +513,19 @@ class Act:
                         # including one that also names message, quit or cancel, is handled exactly as before P9.
                         self._post_checker(item.get("checker"))
                         continue
+                    if (
+                        "checker" in item
+                        and set(item) <= {"checker", "episode", "about"}
+                        and _regime_lines_on()
+                    ):
+                        # UNIFY_MEMORY_REGIME=inferred: a verdict about an action or item, or on an earlier episode
+                        # named by its id (never by position)
+                        self._post_checker(
+                            item.get("checker"),
+                            episode=item.get("episode"),
+                            about=item.get("about"),
+                        )
+                        continue
                     if item.get("quit"):
                         line = "/quit"
                     elif item.get("cancel"):
@@ -623,9 +647,10 @@ class Act:
             self._cancel_answered.set()
             signal.signal(_CANCEL_INTERRUPT_SIGNAL, previous)
 
-    def _post_checker(self, raw: object) -> None:
+    def _post_checker(self, raw: object, **where: object) -> None:
         """Hand a ``{"checker": ...}`` line to the memory run and answer it (memory v2.1 P9: a verdict the
         bed showed the actor, kept as an agent-visible checker signal). Without a memory run it is refused.
+        *where*: the line's ``episode`` and ``about`` (``UNIFY_MEMORY_REGIME=inferred`` only).
         """
         if self._mv2 is None:
             answer = {
@@ -634,7 +659,7 @@ class Act:
                 "reason": "this session records no memory",
             }
         else:
-            answer = self._mv2.take_checker(raw)
+            answer = self._mv2.take_checker(raw, **where)
         if not answer["accepted"]:
             self._progress(f"checker line refused: {answer['reason']}")
         self._emit(**answer)
@@ -686,6 +711,9 @@ class Act:
         # UNIFY_MEMORY=on: export memory and open the request's record
         # before the actor builds its prompt.
         self._mv2 = _mv2.begin_request(request)
+        if args.jsonl and self._mv2 is not None and getattr(self._mv2, "regime_inferred", False):
+            # UNIFY_MEMORY_REGIME=inferred: the episode's id, so a verdict that arrives after it ends can name it
+            self._emit(type="episode", episode_id=self._mv2.episode_id)
         interactive = sys.stdin.isatty()
         # Someone can answer only at a terminal: there the actor's posts to
         # @user are read and answered; otherwise the record says nobody reads
