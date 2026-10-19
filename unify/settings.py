@@ -509,6 +509,21 @@ class ProductionSettings(BaseSettings):
     # left empty takes the profile's value, and one set to another value, or a setting the profile cannot run with, is
     # refused before anything runs; empty (default): each switch as set.
     UNIFY_MEMORY_PROFILE: str = ""
+    # What a capture records, what makes the writer read, what the library holds, and memory during an episode
+    # (unify/memory/integration/switch.py). Each is empty (off) by default; under UNIFY_MEMORY_PROFILE=redesign an empty
+    # value takes the profile's value (on; LEDGER_K 4; WRITER_TESTS value,replay). ``UNIFY_MEMORY_CAPTURE_TRACE``: a capture records what its episode
+    # did (the trace, a value only when one was handed back) in one of three forms, its own check as evidence.
+    # ``UNIFY_MEMORY_ATTENTION_LEDGER``: the attention ledger makes the writer read every entry that needs it, in
+    # passes of ``UNIFY_MEMORY_LEDGER_K`` entries (empty: 4). ``UNIFY_MEMORY_IMPURE_ITEMS``: the library holds
+    # side-effecting items too, and every quality result is a label. ``UNIFY_MEMORY_WRITER_TESTS``: ``value`` or
+    # ``value,replay``, the tests the writer states and runs. ``UNIFY_MEMORY_IN_EPISODE``: memory changes during an
+    # episode (checkpoints, segment forks, a re-pin at the next cell boundary).
+    UNIFY_MEMORY_CAPTURE_TRACE: str = ""
+    UNIFY_MEMORY_ATTENTION_LEDGER: str = ""
+    UNIFY_MEMORY_LEDGER_K: str = ""
+    UNIFY_MEMORY_IMPURE_ITEMS: str = ""
+    UNIFY_MEMORY_WRITER_TESTS: str = ""
+    UNIFY_MEMORY_IN_EPISODE: str = ""
     # Serving on the situation plus the failure record: ``on`` gives the librarian each item's failure record and
     # contradictions beside the situation, shows match and applicability results as evidence (never as a claim of
     # fit), states each status by what it rests on, and withdraws retired and superseded library items as well as
@@ -841,6 +856,21 @@ class ProductionSettings(BaseSettings):
     )
     @classmethod
     def parse_memory(cls, v: Any, info: Any) -> Any:
+        from unify.memory.integration import switch
+
+        return switch.PARSERS[info.field_name](v)
+
+    @field_validator(
+        "UNIFY_MEMORY_CAPTURE_TRACE",
+        "UNIFY_MEMORY_ATTENTION_LEDGER",
+        "UNIFY_MEMORY_LEDGER_K",
+        "UNIFY_MEMORY_IMPURE_ITEMS",
+        "UNIFY_MEMORY_WRITER_TESTS",
+        "UNIFY_MEMORY_IN_EPISODE",
+        mode="before",
+    )
+    @classmethod
+    def parse_memory_learning(cls, v: Any, info: Any) -> Any:
         from unify.memory.integration import switch
 
         return switch.PARSERS[info.field_name](v)
