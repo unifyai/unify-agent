@@ -1,0 +1,55 @@
+# The reviewed allow-list of tests/memory/test_no_world_vocabulary.py: generic English uses of a guarded word.
+# One line per phrase: scope (* for every source, or a source prefix), the phrase as it appears around the word,
+# and why it names no world. Every line must cover at least one hit. The reviewer signs each line (G0).
+*	a reading or drafting task	the helper's assignment from the writer (delegate's own argument)
+*	hand a reading or drafting task	to hand work over (verb)
+*	Hand a reading or drafting task	to hand work over (verb)
+*	/task	the helper box's read-only mount of the episodes its assignment names
+*	"task"	delegate's argument name and the helper box's mount key
+*	task must be a non-empty string	delegate's refusal text
+*	the task is not done	the helper's done refusal: its assignment goes on
+*	End your task and hand your summary and claims	the helper's done: ends its assignment, hands back its claims
+*	the task ended and what was handed back	the helper's done result
+*	the task goes on	the helper's done refusal
+*	the start of its task	the roster line of a helper: its assignment
+*	closed for the rest of this task	execute_code's work quota: the helper's assignment
+*	for the rest of your task	execute_code's work quota: the helper's assignment
+*	every task and session	the persistent venv outlives each piece of work
+*	not run: task done	the pass loop's answer after done
+*	ends your task	the helper's done
+*	Hand one file to the writer	stage (verb)
+*	one task. Do that task and hand back	the helper brief: its one assignment, handed back
+*	your task names	the helper brief: the episodes its assignment names
+*	in this task is the same text	the helper brief: within its assignment
+*	role, state and task	who: each agent's assignment
+*	the ones the task names	the helper brief: the episodes its assignment names
+*	Task from the writer	the helper's first message: its assignment
+*	sub-task	the actor prompt: a part of the work given to a sub-agent
+*	your task seems to need one	the actor prompt: a sub-agent's assignment
+*	persistent sandbox for the task	the actor prompt: the session's work
+*	every later task. When a task genuinely needs a CLI	the actor prompt: later pieces of work
+*	tasks. Write files there	the actor prompt: the workspace persists across pieces of work
+*	never on task text	a docstring: the prompt reads no request text
+*	a task, run `import memory	the actor's memory section: the start of any request
+*	the kind of task, what it was given	the fork's summary format: what the request asked, in general terms
+*	where the task depends on it	the fork's summary format
+*	check a task's examples	a docstring naming what the brief guard refuses
+*	apis|venmo|arc|grids?|office|payroll|crafter	the brief guard's own pattern of words no brief may hold
+*	given|task'?s?|request'?s?	the example-check guard's own pattern
+*	made by hand	English idiom (an Item built directly)
+*	and hand it, identifiers masked	to pass (verb)
+*	hand over the request	to pass (verb)
+*	Hand one cell's drained audit records	to pass (verb)
+*	every task ended	asyncio tasks of the pass's pool
+*	every task has ended	asyncio tasks of the pass's pool
+*	as a task of the pass record's pool	an asyncio task
+*	as the helper's task	an asyncio task
+*	delegate(task, episodes)	delegate's signature
+*	the writer's task and the named episode ids	the helper's first message: its assignment
+*	the task digest	the helper's record: a digest of its assignment
+*	for the task, with no tool channel	the helper's interpreter: its assignment
+*	to hand back	to return (verb)
+*	helper brief and task	the helper profile: its assignment
+*	its task, as the record entry	the helper profile: its assignment
+*	delegate(task)	delegate's signature in its help
+*	task (string, required)	delegate's argument in its help
