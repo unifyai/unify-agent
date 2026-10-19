@@ -716,3 +716,104 @@ def test_an_agent_waiting_on_the_writer_sees_the_service_stopping(svc):
     rec.set_state("writer", "ended")
     found, why = asyncio.run(rec.wait_outcome("actor-3f9a", timeout=30))
     assert found == [] and why == "nothing_can_arrive"
+
+
+# --- deterministic step mode (the offline replay drives the loop in-process) ---------------------------------------------
+
+
+def _step(home, runner, monkeypatch, **kw):
+    from unify.memory.integration import request
+
+    monkeypatch.setattr(request, "actor_effort", lambda: "low")
+    monkeypatch.setattr(
+        ws, "pass_reservation", lambda settings, effort: Decimal("0.01")
+    )
+    return ws.step(home, settings=_settings(**kw.pop("over", {})), runner=runner, **kw)
+
+
+def test_a_step_runs_one_pass_over_the_open_entries_and_then_finds_nothing_open(
+    svc, monkeypatch
+):
+    ids = _open_entry(svc.home, 2)
+    runner = Recording()
+    got = _step(svc.home, runner, monkeypatch)
+    assert len(runner.passes) == 1 and runner.passes[0][2] is False
+    assert got["pass_id"] == runner.passes[0][0] and sorted(got["handed"]) == sorted(ids)
+    assert got["why_idle"] is None and got["stop"] is None and got["ended"] == "landed"
+    assert got["usd"] == "0.001" and got["usd_known"] == "0.001"
+    # nothing was read (the runner reported no reads): both went back, as the service sends them back
+    assert sorted(got["returned"]) == sorted(ids) and got["read"] == [] and got["closed"] == []
+    # the step took the home's lock and released it; no process, no heartbeat thread; the writer's row is idle
+    fd = ws.try_lock(ws.service_dir(svc.home) / ws.LOCK_FILE)
+    assert fd is not None
+    os.close(fd)
+    assert ws.read_state(svc.home)["state"] == "stopped"
+    roster = {r["name"]: r["state"] for r in rr.read_roster(svc.home)["agents"]}
+    assert roster["writer"] == "idle"
+    # the spend is reserved and settled under the service's cap exactly as the service books it
+    assert ws.spend_totals(svc.home) == (Decimal("0.001"), Decimal("0.001"))
+    # the entries that went back are open again: the next step hands them again
+    again = _step(svc.home, runner, monkeypatch)
+    assert sorted(again["handed"]) == sorted(ids) and len(runner.passes) == 2
+
+
+def test_a_step_with_nothing_open_runs_no_pass(svc, monkeypatch):
+    got = _step(svc.home, _no_pass, monkeypatch)
+    assert got["pass_id"] is None and got["why_idle"] == "nothing_open" and got["stop"] is None
+
+
+def test_a_step_does_nothing_while_a_service_holds_the_home(svc, monkeypatch):
+    _open_entry(svc.home)
+    fd = _lock(svc.home)
+    try:
+        got = _step(svc.home, _no_pass, monkeypatch)
+    finally:
+        os.close(fd)
+    assert got["why_idle"] == "busy" and got["pass_id"] is None
+
+
+def test_a_step_at_the_stop_marker_does_what_the_service_does_when_it_stops(
+    svc, monkeypatch
+):
+    ids = _open_entry(svc.home, 2)
+    assert ws.stop_service(svc.home, "operator", "test", grace_s=0.1).verified
+    got = _step(svc.home, _no_pass, monkeypatch)
+    assert got["stop"] == "operator" and got["why_idle"] == "stopping"
+    entries = attention.Ledger(svc.home).entries()
+    assert {entries[i].state for i in ids} == {"not_reached"}
+    assert {entries[i].why for i in ids} == {ws.NOT_REACHED_BY["operator"]}
+    roster = {r["name"]: r["state"] for r in rr.read_roster(svc.home)["agents"]}
+    assert roster["writer"] == "ended"
+
+
+def test_a_step_past_the_lease_margin_starts_no_pass(svc, monkeypatch):
+    _open_entry(svc.home)
+    now = datetime(2026, 10, 21, 5, 45, tzinfo=timezone.utc)
+    got = _step(
+        svc.home,
+        _no_pass,
+        monkeypatch,
+        over={"UNIFY_HOST_LEASE_END": "2026-10-21T06:00:00Z"},
+        now=now,
+    )
+    assert got["stop"] == "lease" and got["pass_id"] is None
+
+
+def test_the_service_loop_and_a_step_run_the_same_turn(svc, monkeypatch):
+    """service_main's loop body is the step's: both go through ws._iteration."""
+    seen: list[str] = []
+    real = ws._iteration
+
+    async def counted(service, *a, **k):
+        seen.append("turn")
+        return await real(service, *a, **k)
+
+    monkeypatch.setattr(ws, "_iteration", counted)
+    _open_entry(svc.home)
+    runner = Recording()
+    assert _in_process(svc.home, runner, monkeypatch) == "idle-exit"
+    looped = len(seen)
+    assert looped >= 2 and len(runner.passes) == 1
+    _open_entry(svc.home)
+    _step(svc.home, runner, monkeypatch)
+    assert len(seen) == looped + 1 and len(runner.passes) == 2

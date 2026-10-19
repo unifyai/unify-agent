@@ -17,7 +17,8 @@ same way: the new service writes ``takeover`` naming the old one.
 **The loop** (:func:`service_main`): sync the ledger; stop at the stop marker; at the cap, every entry still owed is
 ``not_reached: spend_cap`` and the service idles; with entries open, one pass (``hand(k)``, the pass, ``verify_reads``,
 then the unread ones go back); else idle, and after :data:`IDLE_EXIT_S` with nothing open it exits. A heartbeat thread
-rewrites ``service.json`` every :data:`HEARTBEAT_S`.
+rewrites ``service.json`` every :data:`HEARTBEAT_S`. Each turn of the loop is :func:`_iteration`; :func:`step` runs
+exactly one such turn in the calling process (deterministic step mode, for the offline replay).
 
 **Bounds, stated, never steering:** the service's lifetime (:data:`LIFETIME_S`, and never past the host's lease less
 :data:`LEASE_MARGIN_S`), its own spend cap (each pass reserves its worst case, the price per token times the pass's
@@ -1141,6 +1142,214 @@ def _capture_if_new(service: "Service") -> None:
         event(service.home, "error", where="capture", error=type(exc).__name__)
 
 
+#: Why a turn of the loop ran no pass (:func:`_iteration`, :func:`step`).
+IDLE_WHY = (
+    "stopping",
+    "lifetime",
+    "lease",
+    "refused",
+    "nothing_open",
+    "spend_cap",
+    "nothing_handed",
+    "busy",
+)
+
+
+def _turn_result() -> dict:
+    return {
+        "pass_id": None,
+        "resumed": False,
+        "handed": [],
+        "read": [],
+        "closed": [],
+        "returned": [],
+        "ended": None,
+        "usd": None,
+        "usd_known": None,
+        "why_idle": None,
+        "stop": None,
+    }
+
+
+def _passed(out: dict, ledger: Any, pass_id: str, handed: list, report: Any, *, resumed: bool) -> dict:
+    """What one pass of the loop did: its entries (handed, verified read, closed by its decisions, gone back), how
+    it ended, and its USD (booked, the unpriced calls at their worst case; and known)."""
+    ids = [e.entry for e in handed]
+    out.update(pass_id=pass_id, resumed=resumed, handed=ids)
+    if report is not None:
+        out["read"] = list(getattr(report, "read", None) or ())
+        out["returned"] = list(getattr(report, "returned", None) or ())
+        out["ended"] = getattr(report, "ended", None)
+        out["usd"] = getattr(report, "settle_usd", None)
+        out["usd_known"] = getattr(report, "usd_known", None)
+    else:
+        out["ended"] = "error"
+    try:
+        now = ledger.entries()
+        out["closed"] = [i for i in ids if i in now and now[i].state == "closed"]
+    except Exception:  # noqa: BLE001 - a ledger that cannot be read again: nothing said closed
+        out["closed"] = []
+    return out
+
+
+async def _iteration(
+    service: Service,
+    ledger: Any,
+    resumable: list[str],
+    *,
+    runner: Runner,
+    clock: Callable[[], datetime],
+) -> dict:
+    """One turn of the service's loop, shared by :func:`service_main` and :func:`step`: the stop marker (and
+    SIGTERM), the service's end (lifetime, lease), a pass left running to resume, else the capture step, ``sync``,
+    the cap (every entry still owed is ``not_reached: spend_cap``), the lease margin for a new pass, and one pass
+    over up to K handed entries. Returns what it did (:func:`_turn_result`): ``stop`` names why the service must
+    stop (None: go on); ``why_idle`` why no pass ran (:data:`IDLE_WHY`)."""
+    from .integration.request import actor_effort, writer_effort
+    from .integration.switch import ledger_k, library_pass_wall_s
+
+    home, settings = service.home, service.settings
+    out = _turn_result()
+    marker = stopping_marker(home)
+    if marker is not None:
+        out.update(why_idle="stopping", stop=str(marker.get("by") or "operator"))
+        return out
+    if service.stop_flag is not None and service.stop_flag.is_set():
+        out.update(why_idle="stopping", stop="term")
+        return out
+    end, end_why = lifetime_end(service.started, settings)
+    if clock() >= end:
+        why = "lease" if end_why == "lease" else "lifetime"
+        event(home, "lifetime", why=end_why)
+        out.update(why_idle=why, stop=why)
+        return out
+    if resumable:
+        pass_id = resumable.pop(0)
+        handed = ledger.in_pass(pass_id)
+        report = await _run_pass(service, pass_id, handed, resume=True, runner=runner)
+        return _passed(out, ledger, pass_id, handed, report, resumed=True)
+    _capture_if_new(service)
+    ledger.sync()
+    if not any(e.state == "open" for e in ledger.entries().values()):
+        out["why_idle"] = "nothing_open"
+        return out
+    try:
+        reservation = pass_reservation(settings, writer_effort(actor_effort()))
+    except Exception as exc:  # noqa: BLE001 - a refused writer route or setting: no pass can run
+        event(home, "refused", reason=type(exc).__name__)
+        out.update(why_idle="refused", stop="refused")
+        return out
+    committed, _settled = spend_totals(home)
+    if service.capped or (service.cap is not None and committed + reservation > service.cap):
+        if not service.cap_noted:
+            event(
+                home,
+                "cap-reached",
+                by="service",
+                committed_usd=_format(committed),
+                reservation_usd=_format(reservation),
+                cap_usd=_format(service.cap) if service.cap is not None else None,
+            )
+            service.cap_noted = True
+        ledger.mark_not_reached("spend_cap")
+        out["why_idle"] = "spend_cap"
+        return out
+    if clock() + timedelta(seconds=float(library_pass_wall_s(settings))) > end:
+        # a pass started now could run past the service's end (the host's lease less the margin, or its lifetime):
+        # no new pass; the service stops
+        why = "lease" if end_why == "lease" else "lifetime"
+        event(home, "lifetime", why=end_why, refused_pass=True)
+        out.update(why_idle=why, stop=why)
+        return out
+    pass_id = secrets.token_hex(8)
+    handed = ledger.hand(pass_id, ledger_k(settings))
+    if not handed:
+        out["why_idle"] = "nothing_handed"
+        return out
+    report = await _run_pass(service, pass_id, handed, resume=False, runner=runner)
+    return _passed(out, ledger, pass_id, handed, report, resumed=False)
+
+
+async def step_async(
+    home: Path | str,
+    *,
+    settings: Any = None,
+    now: Optional[datetime] = None,
+    runner: Optional[Runner] = None,
+) -> dict:
+    """Deterministic step mode (the offline replay drives the service loop in-process): exactly one turn of
+    :func:`service_main`'s loop (:func:`_iteration`, the same code) in the calling process, returning when it is done.
+    No fork or ``setsid``, no heartbeat thread, no idle sleep, no idle exit, no SIGTERM handler; the model turns are
+    the pass's own (``consolidate.unillm_turn``, which the replay routes), or *runner*'s.
+
+    The step holds the home's lock while it runs: when a service (or another step) holds it, nothing is done and
+    ``why_idle`` is ``busy``. The step is the service for its duration: the writer's roster row is taken back
+    (``rejoin``) and left ``idle``; a pass a crash left running is resumed first; at a stop (the stop marker, the
+    lease) the step does what the service does when it stops for that reason (the entries still owed are marked
+    ``not_reached`` as :data:`NOT_REACHED_BY` says, the writer's row ends). The service's lifetime is a bound on a
+    live process and does not apply to a step; the host's lease does, against *now* (UTC; default the clock).
+
+    Returns ``{"pass_id", "resumed", "handed", "read", "closed", "returned", "ended", "usd", "usd_known",
+    "why_idle", "stop"}``: the entry ids the pass was handed, verified read, closed and sent back; ``usd`` is what
+    the service settled (known plus unpriced calls at their worst case; None when nothing was readable), and
+    ``why_idle`` why no pass ran (:data:`IDLE_WHY`), or None."""
+    from unify.agents.run_record import WRITER, join_run_record
+
+    from .attention import Ledger
+    from .integration.switch import profile_refusal, writer_service_cap_usd
+
+    home = Path(home)
+    settings = settings if settings is not None else _settings()
+    if runner is None:
+        from .integration.consolidate import run_attention_pass as runner  # type: ignore[no-redef]
+    out = _turn_result()
+    refused = profile_refusal(settings)
+    if refused is not None:
+        event(home, "refused", reason=refused)
+        out.update(why_idle="refused", stop="refused")
+        return out
+    lock_fd = try_lock(service_dir(home) / LOCK_FILE)
+    if lock_fd is None:
+        out["why_idle"] = "busy"
+        return out
+    os.set_inheritable(lock_fd, False)
+    at = (lambda: now) if now is not None else _now
+    try:
+        service = Service(home, settings, lock_fd, started=at())
+        service.cap = writer_service_cap_usd(settings)
+        # the cap reached in an earlier step stays reached: the events say so
+        service.cap_noted = any(r.get("event") == "cap-reached" for r in events(home))
+        service.capped = service.cap_noted
+        record = join_run_record(home)
+        record.root = WRITER
+        record.join(WRITER, "writer", state="idle", rejoin=True)
+        ledger = Ledger(home)
+        resumable = pending_passes(home)
+        ledger.return_orphans(live_pass_ids=resumable)
+        service.set("idle")
+        out = await _iteration(service, ledger, resumable[:1], runner=runner, clock=at)
+        if out["stop"] is not None:
+            reached = NOT_REACHED_BY.get(out["stop"])
+            if reached is not None:
+                ledger.mark_not_reached(reached)
+            record.set_state(WRITER, "ended", note=f"service {out['stop']}")
+        service.set("stopped")
+        return out
+    finally:
+        os.close(lock_fd)
+
+
+def step(
+    home: Path | str,
+    *,
+    settings: Any = None,
+    now: Optional[datetime] = None,
+    runner: Optional[Runner] = None,
+) -> dict:
+    """:func:`step_async` from code that is not in an event loop."""
+    return asyncio.run(step_async(home, settings=settings, now=now, runner=runner))
+
+
 async def service_main(
     home: Path | str,
     lock_fd: Optional[int] = None,
@@ -1186,12 +1395,7 @@ async def _serve(
     from unify.agents.run_record import WRITER, join_run_record
 
     from .attention import Ledger
-    from .integration.switch import (
-        library_pass_wall_s,
-        ledger_k,
-        profile_refusal,
-        writer_service_cap_usd,
-    )
+    from .integration.switch import profile_refusal, writer_service_cap_usd
 
     settings = settings if settings is not None else _settings()
     if runner is None:
@@ -1247,78 +1451,14 @@ async def _serve(
     try:
         service.set("idle")
         while True:
-            marker = stopping_marker(home)
-            if marker is not None:
-                why = str(marker.get("by") or "operator")
+            turn = await _iteration(service, ledger, resumable, runner=runner, clock=clock)
+            if turn["stop"] is not None:
+                why = turn["stop"]
                 break
-            if stop_flag.is_set():
-                why = "term"
-                break
-            end, end_why = lifetime_end(service.started, settings)
-            if clock() >= end:
-                why = "lease" if end_why == "lease" else "lifetime"
-                event(home, "lifetime", why=end_why)
-                break
-            if resumable:
-                pass_id = resumable.pop(0)
-                handed = ledger.in_pass(pass_id)
-                await _run_pass(service, pass_id, handed, resume=True, runner=runner)
+            if turn["pass_id"] is not None:
                 idle_since = monotonic()
                 continue
-            _capture_if_new(service)
-            ledger.sync()
-            open_ids = [e for e in ledger.entries().values() if e.state == "open"]
-            if open_ids:
-                from .integration.request import actor_effort, writer_effort
-
-                try:
-                    reservation = pass_reservation(
-                        settings, writer_effort(actor_effort())
-                    )
-                except (
-                    Exception
-                ) as exc:  # noqa: BLE001 - a refused writer route or setting: no pass can run
-                    event(home, "refused", reason=type(exc).__name__)
-                    why = "refused"
-                    break
-                committed, _settled = spend_totals(home)
-                if service.capped or (
-                    service.cap is not None and committed + reservation > service.cap
-                ):
-                    if not service.cap_noted:
-                        event(
-                            home,
-                            "cap-reached",
-                            by="service",
-                            committed_usd=_format(committed),
-                            reservation_usd=_format(reservation),
-                            cap_usd=(
-                                _format(service.cap)
-                                if service.cap is not None
-                                else None
-                            ),
-                        )
-                        service.cap_noted = True
-                    ledger.mark_not_reached("spend_cap")
-                elif (
-                    clock() + timedelta(seconds=float(library_pass_wall_s(settings)))
-                    > end
-                ):
-                    # a pass started now could run past the service's end (the host's lease less the margin, or its
-                    # lifetime): no new pass; the service stops
-                    why = "lease" if end_why == "lease" else "lifetime"
-                    event(home, "lifetime", why=end_why, refused_pass=True)
-                    break
-                else:
-                    pass_id = secrets.token_hex(8)
-                    handed = ledger.hand(pass_id, ledger_k(settings))
-                    if handed:
-                        await _run_pass(
-                            service, pass_id, handed, resume=False, runner=runner
-                        )
-                        idle_since = monotonic()
-                        continue
-            elif monotonic() - idle_since >= idle_exit_s:
+            if turn["why_idle"] == "nothing_open" and monotonic() - idle_since >= idle_exit_s:
                 why = "idle-exit"
                 event(home, "idle-exit", idle_s=round(monotonic() - idle_since, 3))
                 break
