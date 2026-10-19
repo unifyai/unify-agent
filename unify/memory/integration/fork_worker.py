@@ -39,6 +39,20 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 TOOL_REPLY = "Tools are not available in this review; write your findings as fenced blocks in the format above."
+#: The reply a tool call gets on the run record (``--comms``): the comms calls run, nothing else does.
+TOOL_REPLY_COMMS = (
+    "Only the comms calls run in this review: tools.send(text), tools.messages(), tools.messages(all=True), "
+    "tools.wait() and tools.who(), each a statement of its own with literal arguments; nothing else ran. Write your "
+    "findings as fenced blocks in the format above."
+)
+#: The comms calls a fork may make (``--comms``), relayed to the run record by the host side (``fork_relay``).
+COMMS = ("send", "messages", "wait", "who")
+#: The longest a relayed call waits for its answer: a ``wait`` (at most 600 s) and a margin, any other call less.
+COMMS_WAIT_S = 660.0
+COMMS_CALL_S = 60.0
+#: The longest line a relay answer may be.
+COMMS_LINE_BYTES = 1 << 20
+COMMS_DOWN = "the record is not reachable from this review now; nothing was sent or read"
 QUOTA_BYTES = 4 * 1024 * 1024
 QUOTA_FILES = 200
 TURN_GUARD = 16
@@ -737,6 +751,139 @@ def _stop_alarm() -> None:
         pass
 
 
+# --- the comms calls (the run record, ``--comms``) -------------------------------------------------------------------
+
+
+def comms_calls(code) -> list | None:
+    """The comms calls a cell's *code* is made of, as ``[(op, args), ...]``, or None when it is anything else: each
+    statement one call ``tools.<send|messages|wait|who>(...)``, bare, printed, or assigned to a name, with literal
+    arguments only. Nothing is ever run: the code is parsed, never executed."""
+    import ast
+
+    if not isinstance(code, str) or not code.strip():
+        return None
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        return None
+    out = []
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Expr):
+            node = stmt.value
+        elif isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+            node = stmt.value
+        else:
+            return None
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "print"
+            and len(node.args) == 1
+            and not node.keywords
+        ):
+            node = node.args[0]
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "tools"
+            and node.func.attr in COMMS
+        ):
+            return None
+        op = node.func.attr
+        try:
+            pos = [ast.literal_eval(a) for a in node.args]
+            kw = {k.arg: ast.literal_eval(k.value) for k in node.keywords}
+        except (ValueError, TypeError, SyntaxError):
+            return None
+        if any(k is None for k in kw):
+            return None
+        names = {"send": ("text",), "messages": ("all",), "wait": ("timeout",), "who": ()}[op]
+        if len(pos) > len(names) or set(kw) - set(names):
+            return None
+        args = dict(zip(names, pos))
+        for k, v in kw.items():
+            if k in args:
+                return None
+            args[k] = v
+        out.append((op, args))
+    return out
+
+
+class Relay:
+    """The worker's side of the comms channel: one JSON line out on stdout per call, the answer one JSON line in on
+    stdin (the relay process answers from the run record). A silent or closed relay makes every later call answer
+    :data:`COMMS_DOWN`; nothing waits past the call's bound."""
+
+    def __init__(self, rfile, wfile, clock=time.monotonic) -> None:
+        self.rfile, self.wfile, self.clock = rfile, wfile, clock
+        self.n = 0
+        self.down = False
+        self._buf = b""
+
+    def call(self, op: str, args: dict) -> str:
+        if self.down:
+            return COMMS_DOWN
+        self.n += 1
+        ident = self.n
+        try:
+            self.wfile.write((json.dumps({"id": ident, "op": op, "args": args}) + "\n").encode("utf-8"))
+            self.wfile.flush()
+        except (OSError, ValueError):
+            self.down = True
+            return COMMS_DOWN
+        bound = COMMS_WAIT_S if op == "wait" else COMMS_CALL_S
+        end = self.clock() + bound
+        while True:
+            line = self._line(end)
+            if line is None:
+                self.down = True
+                return COMMS_DOWN
+            try:
+                doc = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(doc, dict) and doc.get("id") == ident:
+                text = doc.get("text")
+                return text if isinstance(text, str) else COMMS_DOWN
+
+    def _line(self, end: float):
+        import select
+
+        fd = self.rfile.fileno()
+        while b"\n" not in self._buf:
+            left = end - self.clock()
+            if left <= 0:
+                return None
+            ready, _, _ = select.select([fd], [], [], left)
+            if not ready:
+                return None
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                return None
+            self._buf += chunk
+            if len(self._buf) > COMMS_LINE_BYTES and b"\n" not in self._buf:
+                return None
+        line, _, self._buf = self._buf.partition(b"\n")
+        return line.decode("utf-8", "replace")
+
+
+def comms_reply(call: dict, relay) -> str:
+    """The tool reply to one tool call of the fork on the run record: its comms calls relayed, one answer per call
+    in order; anything else is answered :data:`TOOL_REPLY_COMMS`, and nothing of it runs."""
+    fn = (call or {}).get("function") or {}
+    if fn.get("name") != "execute_code":
+        return TOOL_REPLY_COMMS
+    try:
+        args = json.loads(fn.get("arguments") or "{}")
+    except (TypeError, ValueError):
+        return TOOL_REPLY_COMMS
+    calls = comms_calls(args.get("code")) if isinstance(args, dict) else None
+    if not calls:
+        return TOOL_REPLY_COMMS
+    return "\n".join(relay.call(op, a) for op, a in calls)
+
+
 def run(
     req: dict,
     staging: Path,
@@ -744,6 +891,7 @@ def run(
     *,
     wall_s: float = WALL_GUARD_S,
     clock=time.monotonic,
+    relay=None,
 ) -> dict:
     """The fork's turns and files; returns the ``fork.json`` document (also written to *staging*, last). It records
     ``seconds``, the fork's own wall time, and ``summary_bytes``, the size of the ``summary.md`` it staged (None when
@@ -775,6 +923,11 @@ def run(
                 break
             if clock() - started >= wall_s:
                 raise WallTimeout()
+            if relay is not None and doc["turns"]:
+                # the run record's turn boundary: what is new for this fork, after its turn's tool results
+                block = relay.call("block", {})
+                if block and block != COMMS_DOWN:
+                    messages.append({"role": "user", "content": block})
             headers = dict(req["headers"])
             headers["x-unify-request"] = str(doc["turns"])
             headers["x-unify-msg-count"] = str(len(messages))
@@ -791,7 +944,11 @@ def run(
                 break
             messages.append(kept)
             messages += [
-                {"role": "tool", "tool_call_id": c.get("id"), "content": TOOL_REPLY}
+                {
+                    "role": "tool",
+                    "tool_call_id": c.get("id"),
+                    "content": TOOL_REPLY if relay is None else comms_reply(c, relay),
+                }
                 for c in calls
             ]
     except WallTimeout:
@@ -829,11 +986,27 @@ def _alarm(_signum, _frame):
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--staging", type=Path, required=True)
+    # the run record: the request is the first line of stdin, and the comms calls go out on stdout and their answers
+    # come back on stdin (fork_relay)
+    ap.add_argument("--comms", action="store_true")
     a = ap.parse_args(argv)
-    req = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+    relay = None
+    if a.comms:
+        data = b""
+        while b"\n" not in data:
+            chunk = os.read(0, 1 << 16)
+            if not chunk:
+                break
+            data += chunk
+        first, _, rest = data.partition(b"\n")
+        req = json.loads(first.decode("utf-8"))
+        relay = Relay(sys.stdin.buffer, sys.stdout.buffer)
+        relay._buf = rest  # an answer that came with the request's line is kept for the first call
+    else:
+        req = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     signal.signal(signal.SIGALRM, _alarm)
     signal.setitimer(signal.ITIMER_REAL, WALL_GUARD_S)
-    run(req, a.staging)
+    run(req, a.staging, relay=relay)
     return 0
 
 

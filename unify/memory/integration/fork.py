@@ -57,6 +57,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -211,6 +212,12 @@ INSTRUCTION_IN_CODE = (
     "a line of three backticks, open and close its block with four. Example:\n\n"
     + FORMAT_EXAMPLE
 )
+#: The sentence of :data:`INSTRUCTION_IN_CODE` that forbids tool calls, and what replaces it on the run record.
+NO_TOOLS = "Do not call tools."
+COMMS_ONLY = (
+    "Call no tool except the record's: tools.send, tools.messages, tools.wait and tools.who, each a statement of its "
+    "own in a cell (the record's section below says how they work); nothing else runs here."
+)
 WORKER_FILE = Path(__file__).resolve().parent / "fork_worker.py"
 BOX_WORKER = "/s/fork_worker.py"
 #: The live audit's mark for the fork worker in a process's command line (runner token audits).
@@ -233,7 +240,16 @@ def fork_instruction() -> str:
     called from code)."""
     from unify.common import in_code_switch
 
-    return INSTRUCTION_IN_CODE if in_code_switch.tools_in_code() else INSTRUCTION
+    if not in_code_switch.tools_in_code():
+        return INSTRUCTION
+    from unify.common.tool_registry import run_record_on
+
+    if run_record_on():
+        # the run record: the comms calls run (through the fork's relay); nothing else does
+        if INSTRUCTION_IN_CODE.count(NO_TOOLS) != 1:
+            raise ValueError("the fork's instruction no longer says once that it calls no tools")
+        return INSTRUCTION_IN_CODE.replace(NO_TOOLS, COMMS_ONLY)
+    return INSTRUCTION_IN_CODE
 
 
 def _first_line(text: object) -> str:
@@ -653,9 +669,12 @@ def launch(
     log_path: Path,
     *,
     popen: Callable[..., Any] = subprocess.Popen,
+    env: dict | None = None,
 ) -> Fork:
     """Start *argv* in its own session with *data* on its stdin and the reservation's lock passed to it; this process
     then closes its copy, so the lock is held exactly while the process (or a child that kept the descriptor) lives.
+    *env*: the process's environment (default ``PATH`` alone, the box's; the run record's relay takes this
+    process's, as a pass worker does).
     """
     log = open(log_path, "ab")
     try:
@@ -669,7 +688,7 @@ def launch(
                 start_new_session=True,
                 close_fds=True,
                 pass_fds=(reservation.fd,),
-                env={"PATH": "/usr/bin:/bin"},
+                env=env if env is not None else {"PATH": "/usr/bin:/bin"},
             )
         finally:
             reservation.close()
@@ -726,20 +745,48 @@ def start(
     try:
         r, why = route()
         doc = None
+        # the run record (UNIFY_AGENTS_RUN_RECORD=on): the fork's place on it, named before its message is written
+        on_record = run_record_name(paths, eid, settings)
+        if on_record is not None:
+            from unify.agents.run_record import prompt_lines
+
+            lines = prompt_lines(on_record[1], "fork")
+            parts = f"{parts}\n\n{lines}" if parts else lines
         if r is not None:
             doc, why = request_doc(handle, eid, *r, parts=parts)
         if doc is None:
+            _leave(on_record)
             reservation.abandon(f"refused: {why}")
             progress(f"memory: fork refused: {why}")
             return None
-        data = json.dumps(doc, default=str).encode("utf-8")
-        fork = launch(
-            reservation,
-            box_argv(staging, die_with_parent=switch.library_wait_slot(settings)),
-            data,
-            Path(paths.state_dir) / "fork-worker.log",
-            popen=popen,
-        )
+        box = box_argv(staging, die_with_parent=switch.library_wait_slot(settings))
+        log = Path(paths.state_dir) / "fork-worker.log"
+        if on_record is None:
+            data = json.dumps(doc, default=str).encode("utf-8")
+            fork = launch(reservation, box, data, log, popen=popen)
+        else:
+            # the relay starts the box with --comms and answers its comms calls from the run record
+            spec = {
+                "home": str(paths.home),
+                "name": on_record[1],
+                "argv": [*box, "--comms"],
+                "doc": doc,
+                "lock_fd": reservation.fd,
+                "log": str(log),
+            }
+            data = json.dumps(spec, default=str).encode("utf-8")
+            try:
+                fork = launch(
+                    reservation,
+                    [sys.executable, "-m", RELAY_MODULE],
+                    data,
+                    log,
+                    popen=popen,
+                    env=dict(os.environ),
+                )
+            except BaseException:
+                _leave(on_record)
+                raise
         progress("memory: fork started")
         return fork
     except (
@@ -748,6 +795,40 @@ def start(
         reservation.abandon(f"error: {type(exc).__name__}")
         progress(f"memory: fork failed to start: {type(exc).__name__}")
         return None
+
+
+#: The fork's relay to the run record (``UNIFY_AGENTS_RUN_RECORD=on``).
+RELAY_MODULE = "unify.agents.fork_relay"
+
+
+def run_record_name(paths: Any, eid: str, settings: Any) -> tuple[Any, str] | None:
+    """With the run record on: the fork put on the roster for its relay, as ``fork-<hex of the episode>`` with its
+    episode, and its name; None while off. The relay takes the place over when it starts (``attach``)."""
+    from . import switch
+
+    if not switch.run_record_on(settings):
+        return None
+    from unify.agents.record import PostRefused
+    from unify.agents.run_record import join_run_record
+
+    record = join_run_record(paths.home)
+    for _ in range(20):
+        name = record.unique_name("fork", eid)
+        try:
+            record.join(name, "fork", episode=eid)
+            return record, name
+        except PostRefused:
+            continue
+    raise PostRefused("no free name for the fork on the run record")
+
+
+def _leave(on_record: tuple[Any, str] | None) -> None:
+    """The fork never started: its place on the record ends."""
+    if on_record is not None:
+        try:
+            on_record[0].leave(on_record[1])
+        except Exception:  # noqa: BLE001 - leaving never changes how the episode settles
+            pass
 
 
 def finish(
