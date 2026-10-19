@@ -29,6 +29,14 @@ from unify.settings import SETTINGS
 REPORT = "@writer the served item item:notes/totals gave a wrong sum here: action:0"
 
 
+def _text(message: dict) -> str:
+    """A message's text (a string, or its text blocks joined)."""
+    content = message.get("content")
+    if isinstance(content, list):
+        return "\n".join(b.get("text", "") for b in content if isinstance(b, dict))
+    return content if isinstance(content, str) else ""
+
+
 def _cell(code: str):
     return lambda: h.completion(
         calls=[("execute_code", {"thought": "t", "code": code})]
@@ -81,7 +89,7 @@ async def test_the_actor_reports_to_the_writer_and_reads_the_roster_through_its_
     shown = json.dumps(requests[1]["messages"])
     assert "writer (writer, idle)" in shown and "sent to writer" in shown
     # the first message carried the common section and the actor's roster lines
-    assert R.COMMON_SECTION in json.dumps(requests[0]["messages"])
+    assert any(R.COMMON_SECTION in _text(m) for m in requests[0]["messages"] if m.get("role") == "user")
     # the actor left the record at its request's end
     roster = {r["name"]: r["state"] for r in rr.read_roster(home)["agents"]}
     assert roster[name] == "ended" and roster["writer"] == "idle"
@@ -104,6 +112,5 @@ async def test_the_cached_prefix_is_the_same_across_requests_whatever_the_roster
     assert first[0]["tools"] == second[0]["tools"] == R.json_tools("actor")
     assert first[0]["messages"][0] == second[0]["messages"][0]
     assert first[0]["messages"][0]["role"] == "system"
-    assert "h9" not in json.dumps(
-        second[0]["messages"][0]
-    ) and R.COMMON_SECTION not in json.dumps(first[0]["messages"][0])
+    assert "h9" not in _text(second[0]["messages"][0])
+    assert R.COMMON_SECTION not in _text(first[0]["messages"][0])

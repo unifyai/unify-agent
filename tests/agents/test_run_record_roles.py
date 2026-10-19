@@ -168,6 +168,11 @@ def test_the_writers_first_message_carries_the_common_section_and_its_brief_poin
 
     fake = tc.FakeWriter()
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
+    # the fake writer answers with JSON tools, so this pass runs with the tools in code off; the run record's own need
+    # for them (a refusal tested in tests/memory/integration) is not what this checks
+    from unify.memory.integration import switch
+
+    monkeypatch.setattr(switch, "redesign_a_refusal", lambda settings: None)
     tc._no_records(monkeypatch)
     stores = tc._stores(tmp_path)
     sha, _ = tc._record(stores, "e1")
@@ -257,15 +262,14 @@ def test_prompt_size_report_per_role_before_and_after(
         report.append(
             f"{agent} tool JSON: {size_before} -> {size_after} bytes; tools +{sorted(names_after - names_before)}"
         )
-    print(
-        "\n".join(
-            [
-                "prompt-size report (UNIFY_AGENTS_RUN_RECORD off -> on):",
-                *report,
-                f"excess: {excess}",
-            ]
-        )
+    text = "\n".join(
+        ["prompt-size report (UNIFY_AGENTS_RUN_RECORD off -> on):", *report, f"excess: {excess}"],
     )
+    print(text)
+    # kept beside the run's logs (gitignored) for the build's record
+    out = Path(__file__).resolve().parents[2] / "logs" / "redesign-a-prompt-sizes.txt"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text + "\n")
     # the fork's instruction names the calls it may make in place of "Do not call tools.": listed, by design
     assert set(excess) <= {"fork"}, excess
 
