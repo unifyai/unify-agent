@@ -148,7 +148,7 @@ SHOULD_MENTION: dict[str, tuple[dict[str, str], ...]] = {
         {
             "who": "actor",
             "when": "to ask the running actor a clarifying question about its own episode; never to give it "
-            "instructions mid-task, unless it asked",
+            "instructions while it works, unless it asked",
         },
         {"who": "helpers", "when": "to delegate reading or testing"},
     ),

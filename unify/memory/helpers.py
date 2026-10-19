@@ -1736,7 +1736,7 @@ async def handle(args: dict, ctx: DelegateContext, info: dict | None = None) -> 
 
 
 def _run_lines(call: str, starter: str) -> str:
-    """The common section and this helper's roster lines, after its task (the run record)."""
+    """The common section and this helper's roster lines, after what it was asked to do (the run record)."""
     from unify.agents.run_record import prompt_lines
 
     return "\n\n" + prompt_lines(call, "helper", starter)
