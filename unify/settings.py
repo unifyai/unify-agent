@@ -685,6 +685,21 @@ class ProductionSettings(BaseSettings):
     # (unify/common/llm_client.py).
     UNIFY_REQUEST_METADATA_HEADERS: str = ""
 
+    # The redesign's mesh, writer service and metering (unify/memory/integration/switch.py, builder A). Each is empty
+    # by default: off, unless UNIFY_MEMORY_PROFILE=redesign turns it on; ``off`` keeps it off.
+    # ``UNIFY_AGENTS_RUN_RECORD``: every agent of the run on one run-long record (unify/agents/run_record.py).
+    UNIFY_AGENTS_RUN_RECORD: str = ""
+    # ``UNIFY_MEMORY_WRITER_SERVICE``: the writer as one detached service per memory home
+    # (unify/memory/writer_service.py), with its own spend cap ``UNIFY_MEMORY_WRITER_SERVICE_CAP_USD`` (a plain decimal
+    # string, required with the service on).
+    UNIFY_MEMORY_WRITER_SERVICE: str = ""
+    UNIFY_MEMORY_WRITER_SERVICE_CAP_USD: str = ""
+    # ``UNIFY_MEMORY_METERING``: pass, entry, episode and segment ids on the writer's, helpers' and forks' calls, and
+    # the per-pass, per-entry and per-item views (unify/memory/metering.py).
+    UNIFY_MEMORY_METERING: str = ""
+    # When the host's lease ends (UTC, ``…Z``), set by the kit: the writer service stops 30 minutes before it.
+    UNIFY_HOST_LEASE_END: str = ""
+
     # ─────────────────────────────────────────────────────────────────────────
     # Terminal Logging
     # ─────────────────────────────────────────────────────────────────────────
@@ -830,6 +845,20 @@ class ProductionSettings(BaseSettings):
     )
     @classmethod
     def parse_memory(cls, v: Any, info: Any) -> Any:
+        from unify.memory.integration import switch
+
+        return switch.PARSERS[info.field_name](v)
+
+    @field_validator(
+        "UNIFY_AGENTS_RUN_RECORD",
+        "UNIFY_MEMORY_WRITER_SERVICE",
+        "UNIFY_MEMORY_WRITER_SERVICE_CAP_USD",
+        "UNIFY_MEMORY_METERING",
+        "UNIFY_HOST_LEASE_END",
+        mode="before",
+    )
+    @classmethod
+    def parse_redesign_a(cls, v: Any, info: Any) -> Any:
         from unify.memory.integration import switch
 
         return switch.PARSERS[info.field_name](v)

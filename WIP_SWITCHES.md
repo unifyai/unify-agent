@@ -241,3 +241,24 @@ The three long-horizon switches share the step-limit reply path.
 - **Default:** both empty (no suffix).
 - **What it does:** The text ends the system prompt of every `act()` (the actor's and a teammate's), after one blank line and after everything else the prompt carries. The two are set together and must match, or the run is refused at start-up, naming the settings and never the text. The CLI's `ended` line carries `system_suffix_sha256` when a suffix is set.
 - **Evidence:** the minimal-agent arms' one paragraph (M0, and M1 with the cost sentence); a paired comparison of the two isolates the sentence. No counted readout yet; keyless tests only.
+
+## UNIFY_AGENTS_RUN_RECORD
+
+- **Values:** `on` or `off`; empty is `off`, or `on` under `UNIFY_MEMORY_PROFILE=redesign`.
+- **Default:** empty.
+- **What it does:** Every agent of the run shares one append-only record for the whole run, across processes: the actor of each request (`actor-<hex>`), the fork that reviews each episode (`fork-<hex>`), the librarian (`librarian-<hex>`), the writer (`writer`) and every helper any of them starts (`h<k>`). The record lives at `<UNIFY_HOME>/memory-state/agents/run-record.jsonl`; entries are numbered under a file lock, scrubbed of credentials, and never bound into a box. Every agent gets the same comms tools (`send`, `messages`, `wait`, `who`), the same common prompt section and a roster saying whom it should mention and when; new entries for an agent arrive between its steps. A pair of agents that only message each other for 20 entries with no tool call or file read in between gets one notice. Requires `UNIFY_TOOLS_IN_CODE=on` (refused at start-up otherwise). Off, the actor keeps its session record and each writer pass its own record, as built.
+- **Evidence:** the lead's mesh ruling (20 Oct 2026: every agent on one record, with a roster and a common section); keyless tests only so far (`tests/agents/test_run_record*.py`).
+
+## UNIFY_MEMORY_WRITER_SERVICE and UNIFY_MEMORY_WRITER_SERVICE_CAP_USD
+
+- **Values:** `on` or `off` (empty is `off`, or `on` under `UNIFY_MEMORY_PROFILE=redesign`); the cap is a plain decimal string in USD, required with the service on.
+- **Default:** empty.
+- **What it does:** The writer runs as one detached service per memory home, spawned by the harness at request start, at request end and at a checkpoint, never by a runner: a lock, a heartbeat every 30 s (a stale one is taken over after 90 s), its own spend cap (each pass's worst case reserved before it starts, settled from the writer lane's journal after it), an idle exit after 30 minutes with nothing open, a 36 h lifetime that never runs past the host's lease less 30 minutes (`UNIFY_HOST_LEASE_END`), a stop marker with verified termination, and resumable passes (each model turn checkpointed before its call, so a killed service resumes at the turn it lost). Shutdown (`async_pass drain`) stops it and returns only once no process of it remains, before the key proxy is torn down. Requires the library mode, `UNIFY_MEMORY_ATTENTION_LEDGER=on`, `UNIFY_AGENTS_RUN_RECORD=on` and the cap (refused at start-up otherwise).
+- **Evidence:** the lead's writer-service ruling (R4); the paper adapter's 600 s session kill lost a third to a half of the request-scoped pass workers' writer passes at HIGH and MED; keyless tests only so far (`tests/memory/test_writer_service*.py`).
+
+## UNIFY_MEMORY_METERING
+
+- **Values:** `on` or `off` (empty is `off`, or `on` under `UNIFY_MEMORY_PROFILE=redesign`).
+- **Default:** empty.
+- **What it does:** Every writer, helper and fork model call carries its pass id (or episode and segment for a fork) and the ledger entries it serves as request metadata headers (ids only), and each pass's result row records its entries, items, known USD, unpriced calls booked at the worst case, killed turns, tokens, turns and messages; `memory-state/metering/` holds the per-entry and per-item views derived from them. Requires `UNIFY_REQUEST_METADATA_HEADERS=on` (refused at start-up otherwise).
+- **Evidence:** the lead's attribution ruling (R4, R13: whole-run all-lane USD with the writer included and labelled); keyless tests only so far (`tests/memory/test_metering.py`).

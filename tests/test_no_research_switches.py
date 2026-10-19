@@ -82,6 +82,8 @@ CONFIGURATION = frozenset(
         # Benchmark policy: the comparison profile every reported row runs under (the writer's model, route and
         # effort, and the checker line); it fixes configuration, it is no arm under test.
         "UNIFY_PROFILE",
+        # Deployment policy: when the host's lease ends; the writer service never runs past it less 30 minutes.
+        "UNIFY_HOST_LEASE_END",
         # Retired: only their off values are accepted, so an old configuration fails loudly.
         "UNIFY_MEMORY_LIBRARY_ANALYSTS",
         "UNIFY_MEMORY_LIBRARY_COVERAGE",

@@ -146,6 +146,7 @@ import select
 import stat
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, MutableMapping
 from urllib.parse import urlsplit
@@ -1508,13 +1509,16 @@ def writer_passes_refusal(settings: Any) -> str | None:
 def profile_refusal(settings: Any) -> str | None:
     """Why this run may not start under its profile, or under UNIFY_MEMORY_WRITER_PASSES=off without what it needs
     (:func:`writer_passes_refusal`), or with a capture switch on without what it needs (:func:`capture_serving_refusal`;
-    the settings named, never a value), or under the redesign profile (:func:`redesign_refusal`), or None."""
+    the settings named, never a value), or under the redesign profile (:func:`redesign_refusal`), or with the mesh,
+    the writer service or metering on without what each needs (:func:`redesign_a_refusal`, also for a switch set
+    alone), or None."""
     bad = profile_conflicts(settings)
     if not bad:
         return (
             writer_passes_refusal(settings)
             or capture_serving_refusal(settings)
             or redesign_refusal(settings)
+            or redesign_a_refusal(settings)
         )
     return (
         f"{PROFILE}={PAPER} fixes {', '.join(bad)} (the writer runs on the actor's model and effort, and no checker "
@@ -1690,3 +1694,147 @@ def parse_dialogue(v: Any) -> str:
 
 
 PARSERS[DIALOGUE] = parse_dialogue
+
+
+# --- the agent mesh, the writer service and metering (builder A: the redesign's A1, A2, A3) --------------------------
+#: ``UNIFY_AGENTS_RUN_RECORD``: ``on`` puts every agent of the run (the actor of each request, the fork, the librarian,
+#: the writer's passes and every helper) on one run-long record shared across processes
+#: (:mod:`unify.agents.run_record`); ``off`` (default): the actor's session record and each pass's own record, as built.
+RUN_RECORD = "UNIFY_AGENTS_RUN_RECORD"
+#: ``UNIFY_MEMORY_WRITER_SERVICE``: ``on`` runs the writer as one detached service per memory home, spawned and owned by
+#: the harness (:mod:`unify.memory.writer_service`), in place of a pass worker per request; ``off`` (default): as built.
+WRITER_SERVICE = "UNIFY_MEMORY_WRITER_SERVICE"
+#: The service's own spend cap in USD: a plain decimal string, required with the service on.
+WRITER_SERVICE_CAP = "UNIFY_MEMORY_WRITER_SERVICE_CAP_USD"
+#: ``UNIFY_MEMORY_METERING``: ``on`` tags every writer, helper and fork call with its pass, entries, episode and segment
+#: (ids only) and writes the per-pass, per-entry and per-item views (:mod:`unify.memory.metering`); ``off``: as built.
+METERING = "UNIFY_MEMORY_METERING"
+#: When the host's lease ends (UTC ISO-8601, ``…Z``), set by the kit: the service never runs past the lease less 30
+#: minutes. Empty: the service's own 36 h lifetime alone.
+HOST_LEASE_END = "UNIFY_HOST_LEASE_END"
+
+
+def _redesign_on(name: str, settings: Any) -> bool:
+    """A redesign switch: ``on`` as set, or empty under ``UNIFY_MEMORY_PROFILE=redesign`` (:func:`profile_setting`)."""
+    return _on_off(name, profile_setting(settings, name)) == "on"
+
+
+def parse_run_record(v: Any) -> str:
+    """``UNIFY_AGENTS_RUN_RECORD``: empty, ``off`` or ``on`` (kept as given; empty is decided by the profile)."""
+    value = _stripped(v).lower()
+    return value if not value else _on_off(RUN_RECORD, value)
+
+
+def parse_writer_service(v: Any) -> str:
+    """``UNIFY_MEMORY_WRITER_SERVICE``: empty, ``off`` or ``on``."""
+    value = _stripped(v).lower()
+    return value if not value else _on_off(WRITER_SERVICE, value)
+
+
+def parse_metering(v: Any) -> str:
+    """``UNIFY_MEMORY_METERING``: empty, ``off`` or ``on``."""
+    value = _stripped(v).lower()
+    return value if not value else _on_off(METERING, value)
+
+
+def parse_writer_service_cap(v: Any) -> str:
+    """``UNIFY_MEMORY_WRITER_SERVICE_CAP_USD``: empty or a plain decimal string above 0."""
+    text = _stripped(v)
+    if not text:
+        return ""
+    if not _PLAIN_DECIMAL.fullmatch(text) or Decimal(text) <= 0:
+        raise ValueError(
+            f"{WRITER_SERVICE_CAP} must be a plain decimal above 0 (digits and at most one point), not {v!r}"[:200],
+        )
+    return text
+
+
+def parse_host_lease_end(v: Any) -> str:
+    """``UNIFY_HOST_LEASE_END``: empty or a UTC time ``YYYY-MM-DDTHH:MM:SS[.fff]Z``."""
+    text = _stripped(v)
+    if not text:
+        return ""
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z", text):
+        raise ValueError(f"{HOST_LEASE_END} must be a UTC time such as 2026-10-21T06:00:00Z, not {v!r}"[:200])
+    _lease_time(text)  # a calendar check
+    return text
+
+
+def _lease_time(text: str) -> datetime:
+    stamp = text[:-1]
+    fmt = "%Y-%m-%dT%H:%M:%S.%f" if "." in stamp else "%Y-%m-%dT%H:%M:%S"
+    return datetime.strptime(stamp, fmt).replace(tzinfo=timezone.utc)
+
+
+def run_record_on(settings: Any) -> bool:
+    """Whether every agent of the run shares the run record."""
+    return _redesign_on(RUN_RECORD, settings)
+
+
+def writer_service_on(settings: Any) -> bool:
+    """Whether the writer runs as the detached service."""
+    return _redesign_on(WRITER_SERVICE, settings)
+
+
+def metering_on(settings: Any) -> bool:
+    """Whether calls are tagged and the metering views written."""
+    return _redesign_on(METERING, settings)
+
+
+def writer_service_cap_usd(settings: Any) -> Decimal | None:
+    """The service's own spend cap, or None when it is not set."""
+    text = parse_writer_service_cap(getattr(settings, WRITER_SERVICE_CAP, "") or "")
+    return Decimal(text) if text else None
+
+
+def host_lease_end(settings: Any) -> datetime | None:
+    """When the host's lease ends, or None when the kit set none."""
+    text = parse_host_lease_end(getattr(settings, HOST_LEASE_END, "") or os.environ.get(HOST_LEASE_END, ""))
+    return _lease_time(text) if text else None
+
+
+def redesign_a_refusal(settings: Any) -> str | None:
+    """Why the mesh, the service or metering may not run with these settings (the settings named, never a value), or
+    None. Each needs what it acts on, refused rather than run as a silent no-op:
+
+    * the run record needs ``UNIFY_TOOLS_IN_CODE=on``: every agent reaches the record through its in-code tools, and no
+      box binds the record's folder;
+    * the service needs the library mode, the attention ledger (it hands the ledger's entries), the run record (the
+      service holds the writer's place on it) and its own cap;
+    * metering needs ``UNIFY_REQUEST_METADATA_HEADERS=on`` (its ids travel as request metadata headers).
+    """
+    tools_in_code = _stripped(getattr(settings, "UNIFY_TOOLS_IN_CODE", "") or "").lower() == "on"
+    if run_record_on(settings) and not tools_in_code:
+        return f"{RUN_RECORD}=on needs UNIFY_TOOLS_IN_CODE=on; nothing runs"
+    if writer_service_on(settings):
+        ledger = _redesign_on("UNIFY_MEMORY_ATTENTION_LEDGER", settings)
+        missing = [
+            f"{n}=on"
+            for n, on in (
+                (LIBRARY_MODE, library_enabled(settings)),
+                ("UNIFY_MEMORY_ATTENTION_LEDGER", ledger),
+                (RUN_RECORD, run_record_on(settings)),
+            )
+            if not on
+        ]
+        if writer_service_cap_usd(settings) is None:
+            missing.append(WRITER_SERVICE_CAP)
+        if missing:
+            return f"{WRITER_SERVICE}=on needs {', '.join(missing)}; nothing runs"
+    if metering_on(settings):
+        headers = _stripped(getattr(settings, "UNIFY_REQUEST_METADATA_HEADERS", "") or "").lower() == "on"
+        if not headers:
+            return f"{METERING}=on needs UNIFY_REQUEST_METADATA_HEADERS=on; nothing runs"
+    return None
+
+
+PARSERS.update(
+    {
+        RUN_RECORD: parse_run_record,
+        WRITER_SERVICE: parse_writer_service,
+        WRITER_SERVICE_CAP: parse_writer_service_cap,
+        METERING: parse_metering,
+        HOST_LEASE_END: parse_host_lease_end,
+    },
+)
+REDESIGN_PART_REFUSALS.append(redesign_a_refusal)
