@@ -294,6 +294,8 @@ def items_data(
             "use": use_totals(rec) if rec else None,
             "history": h[:HISTORY_SHOW],
             "history_more": max(0, len(h) - HISTORY_SHOW),
+            # its evidence label (UNIFY_MEMORY_IMPURE_ITEMS: what its effects, tests and uses show; only when recorded)
+            **({"label": rec["label"]} if rec and isinstance(rec.get("label"), dict) else {}),
         }
 
     for f in lib.functions:

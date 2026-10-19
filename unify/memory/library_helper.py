@@ -664,6 +664,60 @@ def _evidence_lines(evidence: dict | None, iid: str) -> list[str]:
     return out
 
 
+def _count_text(counts: Any, names: tuple[str, ...]) -> str:
+    """``3 as stated, 1 not as stated`` from *counts* (name -> int), naming only the non-zero ones; ``none``."""
+    rows = counts if isinstance(counts, dict) else {}
+    parts = [
+        f"{rows[n]} {n.replace('_', ' ')}"
+        for n in names
+        if isinstance(rows.get(n), int) and not isinstance(rows.get(n), bool) and rows[n] > 0
+    ]
+    return ", ".join(parts) or "none"
+
+
+def _label_lines(label: Any, served_evidence: bool) -> list[str]:
+    """A card's lines from the item's evidence label (the harness's record of what it is and what its tests and uses
+    showed; never a filter): its form and declared effects against what its replay tests saw, the episodes it covers,
+    its inputs and constants, its stated tests and its uses since this version; its failure record and what its
+    status rests on only when the harness's evidence lines do not already state them (*served_evidence*). [] without
+    a label."""
+    if not isinstance(label, dict):
+        return []
+    effects = label.get("effects") if isinstance(label.get("effects"), dict) else {}
+    seen = effects.get("seen_in_tests") if isinstance(effects.get("seen_in_tests"), dict) else {}
+    out = [
+        f"Form: {_str(label.get('form'), 'function')}; effects: {_str(effects.get('declares'), 'unknown')}"
+        + ("" if effects.get("declared") else " (not declared)")
+        + f"; its replay tests saw {_count_text(seen, ('read', 'write'))}",
+    ]
+    out += ["Contradicted: " + c for c in effects.get("contradictions") or [] if isinstance(c, str)]
+    covers = label.get("covers") if isinstance(label.get("covers"), dict) else {}
+    episodes = [e for e in covers.get("episodes") or [] if isinstance(e, str)]
+    if episodes:
+        by = "as its writer stated" if covers.get("stated_by") == "writer" else "the episodes it was built from"
+        out.append(f"Covers episodes ({by}): " + ", ".join(e[:16] for e in episodes))
+    ivc = label.get("inputs_vs_constants") if isinstance(label.get("inputs_vs_constants"), dict) else {}
+    inputs = [str(i) for i in ivc.get("inputs") or []]
+    constants = [
+        f"{c.get('value')} (source: {c.get('source')})" if isinstance(c, dict) else str(c)
+        for c in ivc.get("constants") or []
+    ]
+    if inputs or constants:
+        out.append(f"Inputs: {', '.join(inputs) or 'none stated'}; constants: {', '.join(constants) or 'none stated'}")
+    tests = label.get("tests") if isinstance(label.get("tests"), dict) else {}
+    out.append(
+        "Stated tests of this version: "
+        + _count_text(tests, ("as_stated", "not_as_stated", "error", "timeout", "replay_miss", "not_run")),
+    )
+    uses = label.get("uses") if isinstance(label.get("uses"), dict) else {}
+    out.append("Uses of this version: " + _count_text(uses, ("clean", "failed", "neutral")))
+    if not served_evidence:
+        rows = [r for r in label.get("failure_record") or [] if isinstance(r, dict)]
+        out.append("Recorded failures: " + _failure_text(rows))
+        out.append("Status rests on: " + _str(label.get("status_basis"), "no_outcome_signals").replace("_", " "))
+    return out
+
+
 def _example_of(capture_id: str) -> dict | None:
     """A capture's worked-example mark (:data:`EXAMPLE_KEY` in its exported record), or None: such a capture is
     read, never called or matched."""
@@ -2697,6 +2751,7 @@ class _Catalog:
             out.append(f"Evidence level: {level}" + (", set by:" if reasons else ""))
             out += [f"  {r}" for r in reasons]
         out += _evidence_lines(_evidence(), wanted)
+        out += _label_lines(row.get("label"), _evidence() is not None)
         out.append("")
         out.append(f"(its {'source' if function else 'text'} cannot be read: {missing})" if missing else body)
         out += [

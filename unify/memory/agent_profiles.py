@@ -336,6 +336,13 @@ AGENT_PROFILES: tuple[dict, ...] = (
             "finish",
             "sh",
             "check_examples",
+            # an attention pass (UNIFY_MEMORY_ATTENTION_LEDGER=on, registry flag "attention")
+            "open_entries",
+            "take",
+            "decide",
+            "find",
+            # UNIFY_MEMORY_WRITER_TESTS (registry flag "tests")
+            "test",
         ],
         "mounts": list(_BOX_MOUNTS),
         "denied": ["network", "credentials", "/outputs inside cells", ".git"],

@@ -139,6 +139,7 @@ from .switch import (
     library_coverage,
     library_max_reads,
     captures_per_pass,
+    attention_ledger,
     capture_trace,
 )
 
@@ -1142,7 +1143,7 @@ def after_passes(
         return
     from .. import lifecycle
     from ..captures import store_dir as captures_store_dir
-    from .switch import checker_visible
+    from .switch import checker_visible, impure_items
 
     try:
         with tempfile.TemporaryDirectory(prefix="memlib-records-") as work:
@@ -1154,6 +1155,8 @@ def after_passes(
                 stop=stop,  # the worker's SIGTERM, checked between bisect runs
                 # the capture store: a landed procedure's record takes its capture's signature and applies
                 captures=captures_store_dir(stores.paths.state_dir),
+                # UNIFY_MEMORY_IMPURE_ITEMS=on: every record carries its evidence label
+                **({"labels": True} if impure_items(settings) else {}),
             )
     except Exception as exc:  # noqa: BLE001 - the records never stop the request
         _error(stores, redact_error(f"item records: {type(exc).__name__}: {exc}"))
@@ -1410,6 +1413,32 @@ def verdict_candidates(stores: Stores, settings: Any) -> list[str]:
         return []
 
 
+def learning_pass_fields(stores: Stores, settings: Any) -> dict:
+    """The :class:`..writer_pass.PassConfig` fields of the redesign's switches, each only when it is on (so a
+    config without them is as built): ``attention_home`` (``UNIFY_MEMORY_ATTENTION_LEDGER``: the home whose ledger an
+    attention pass decides), ``writer_tests`` (``UNIFY_MEMORY_WRITER_TESTS``: the modes ``tools.test`` offers) and
+    ``impure_items`` (``UNIFY_MEMORY_IMPURE_ITEMS``). The writer service builds its passes' config with it too."""
+    from .switch import impure_items, writer_tests_modes
+
+    out: dict = {}
+    if attention_ledger(settings):
+        out["attention_home"] = str(stores.paths.home)
+    modes = writer_tests_modes(settings)
+    if modes:
+        out["writer_tests"] = tuple(m for m in ("value", "replay") if m in modes)
+    if impure_items(settings):
+        out["impure_items"] = True
+    return out
+
+
+def learning_gate_fields(settings: Any) -> dict:
+    """The :class:`..gate.Gate` field of ``UNIFY_MEMORY_IMPURE_ITEMS``: ``labels`` (every quality finding a label on
+    its item, the hard checks refusing as before), only when on."""
+    from .switch import impure_items
+
+    return {"labels": True} if impure_items(settings) else {}
+
+
 async def run_due_passes(
     stores: Stores,
     eid: str,
@@ -1492,7 +1521,8 @@ async def run_due_passes(
 
     trig = Trigger(
         stores.evidence,
-        mode="batched",
+        # UNIFY_MEMORY_ATTENTION_LEDGER=on: the writer service hands the ledger's entries; nothing is due here
+        mode="attention" if attention_ledger(settings) else "batched",
         experience_budget=cfg.experience_budget,
         usd_per_token=cfg.usd_per_token,
         # with the fork on, an episode joins a batch only once its fork has settled; the rest roll to the next pass
@@ -1527,6 +1557,8 @@ async def run_due_passes(
         stores.evidence,
         stores.blobs,
         **common,
+        # UNIFY_MEMORY_IMPURE_ITEMS=on: every quality finding a label (the hard checks refuse as before)
+        **(learning_gate_fields(settings) if library_enabled(settings) else {}),
         # library mode: the library layout and checks for WRITE; v2 when the switch is off
         library_mode=(
             library_checks.config_for(
@@ -1585,6 +1617,9 @@ async def run_due_passes(
             if cfg.library_mode
             else {}
         ),
+        # the redesign's pass fields: the ledger's home, the stated tests' modes, items of any effect (each only when
+        # its switch is on; off, the config as built)
+        **(learning_pass_fields(stores, settings) if cfg.library_mode else {}),
         show_usage=cfg.show_usage
         or cfg.library_mode,  # library-mode writers always see measured library use
         library_mode=cfg.library_mode,

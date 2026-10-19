@@ -410,6 +410,80 @@ def item_outcome(
     return trust.apply_outcome(level, prior_trust, uses), trust.track(uses)
 
 
+def served(f: EpisodeUse, item: str, versions: set[str], pins: Mapping[tuple[str, str], list] | None) -> bool:
+    """Whether episode *f* used the version of *item* whose commits are *versions*: by the pins its calls were served
+    under when the episode recorded them (``UNIFY_MEMORY_IN_EPISODE``, :func:`use_pins`), else by the episode's first
+    pin."""
+    got = (pins or {}).get((f.episode_id, item))
+    if got:
+        return any(row[0] in versions for row in got)
+    return f.memory_main in versions
+
+
+def version_use(f: EpisodeUse, item: str, versions: set[str], pins: Mapping[tuple[str, str], list] | None) -> EpisodeUse:
+    """*f* with *item*'s use restricted to the calls served under the version whose commits are *versions*, when its
+    calls were served under more than one pin and some of them are another version's (memory changed during the
+    episode, ``UNIFY_MEMORY_IN_EPISODE``): its observed calls (ok, refused, error) are those under that version's pins,
+    and per-call outcomes the use record attributed are left out (they are not kept per pin), so the episode's other
+    version's calls never count for this one. Otherwise *f* unchanged."""
+    rows = (pins or {}).get((f.episode_id, item))
+    u = f.items.get(item)
+    if not rows or u is None or all(r[0] in versions for r in rows):
+        return f
+    ok = sum(r[1] for r in rows if r[0] in versions)
+    refused = sum(r[2] for r in rows if r[0] in versions)
+    error = sum(r[3] for r in rows if r[0] in versions)
+    mine = replace(
+        u,
+        used=ok > 0,
+        refused=refused > 0,
+        errored=error > 0,
+        seen=u.seen or bool(ok + refused + error),
+        basis=RUNTIME,
+        calls=(ok, refused, error),
+        outcomes=(),
+    )
+    return replace(f, items={**f.items, item: mine})
+
+
+def _labels(
+    records: dict[str, dict],
+    items: Mapping[str, str],
+    facts: list[EpisodeUse],
+    since: Mapping[str, set[str]],
+    inputs: Mapping[str, Any],
+    verification: Mapping[str, dict],
+    pins: Mapping[tuple[str, str], list] | None = None,
+) -> None:
+    """Each record's evidence label (:func:`.item_label.build`): its current version's stated tests and uses (a use
+    counted under the version served when it was called, *pins*), and its failure record (every failed use, each
+    with that version)."""
+    from . import item_label
+
+    tests = inputs.get("tests") or {}
+    order = inputs.get("pass_index") or {}
+    failures = inputs.get("failures") or {}
+    basis = inputs.get("basis") or {}
+    for item, rec in records.items():
+        v = rec.get("verification") or verification.get(item) or {}
+        landed_at = order.get(v.get("pass")) if isinstance(v, Mapping) else None
+        mine_tests = [
+            t for t in tests.get(item, []) if landed_at is None or order.get(t.get("pass_id"), -1) >= landed_at
+        ]
+        versions = since.get(item, set())
+        mine = [version_use(f, item, versions, pins) for f in facts if item in f.items and served(f, item, versions, pins)]
+        uses = [x for f in mine for x in trust_uses(f, f.items[item])]
+        rec["label"] = item_label.build(
+            kind=items[item],
+            record=rec,
+            verification=v if isinstance(v, Mapping) else {},
+            tests=mine_tests,
+            uses=uses,
+            failures=failures.get(item, []),
+            basis=basis.get(item),
+        )
+
+
 def aggregate_track(facts: Iterable[EpisodeUse]) -> dict[str, dict]:
     """Each item's track record per kind of signal (:func:`.trust.track`) over *facts*."""
     from . import trust
@@ -777,8 +851,19 @@ def next_records(
     curations: Iterable[Mapping] | None = None,
     unknown_version: Iterable[str] = (),
     landed: Mapping[str, Mapping] | None = None,
+    label_inputs: Mapping[str, Any] | None = None,
+    pins: Mapping[tuple[str, str], list] | None = None,
 ) -> tuple[dict[str, dict], dict[str, str]]:
     """The map of every item of the tree (*items*: id -> kind) and the status changes against *prev*.
+
+    With *pins* (``UNIFY_MEMORY_IN_EPISODE=on``: (episode, item) -> the pins its calls were served under, with their
+    counts, :func:`use_pins`) an item's use counts for its current version when it was served under one of that
+    version's commits, wherever the episode started (:func:`served`), and only its calls under those commits
+    (:func:`version_use`); without them, by the episode's first pin, as built.
+
+    With *label_inputs* (``UNIFY_MEMORY_IMPURE_ITEMS=on``, :func:`label_inputs`: ``tests`` and ``failures`` by item,
+    ``pass_index`` by pass id) every record carries its evidence label (:mod:`.item_label`), built last, from its
+    final status; None: no label, the map as built.
 
     An item's status counts only the episodes pinned to the library commits that ran its current version
     (*since*: from *changed_at*, the commit that last changed it, onward). An item in *unknown_version* (that
@@ -914,9 +999,9 @@ def next_records(
         prior = old.get("status") if (same or kept) else None
         prior_rule = old.get("status_rule") if (same or kept) else None
         mine = [
-            _as_item(f, item, group)
+            version_use(_as_item(f, item, group), item, since.get(item, set()), pins)
             for f in facts
-            if f.memory_main in since.get(item, set())
+            if served(f, item, since.get(item, set()), pins)
         ]
         status, rule, reason, evidence = decide_status(item, prior, mine, prior_rule)
         # the record per kind of signal and what an adoption rests on (trust.py); the level moves only when the
@@ -963,6 +1048,8 @@ def next_records(
             status_reason=reason,
             status_evidence=evidence,
         )
+    if label_inputs is not None:
+        _labels(records, items, facts, since, label_inputs, verification or {}, pins)
     changes = {
         i: r["status"]
         for i, r in records.items()
@@ -984,6 +1071,44 @@ def _json_list(raw: Any) -> list:
     except ValueError:
         return []
     return value if isinstance(value, list) else []
+
+
+def use_pins(ev: EvidenceStore) -> dict[tuple[str, str], list[tuple[str, int, int, int]]]:
+    """(episode, item) -> each pin its calls were served under with their (ok, refused, error) counts, from
+    ``item_use_pins`` (``UNIFY_MEMORY_IN_EPISODE``); {} when the store has none."""
+    out: dict[tuple[str, str], list[tuple[str, int, int, int]]] = {}
+    if not ev.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='item_use_pins'").fetchone():
+        return out
+    for item, eid, pin, ok, refused, error in ev.db.execute(
+        "SELECT item, episode_id, pin, ok, refused, error FROM item_use_pins ORDER BY rowid",
+    ):
+        out.setdefault((eid, item), []).append((pin, int(ok or 0), int(refused or 0), int(error or 0)))
+    return out
+
+
+def label_inputs(stores: Any, *, checker_visible: bool) -> dict[str, Any]:
+    """What the evidence labels are built from (:func:`_labels`): the stated tests by item, the passes' order, and
+    each item's failure record and status basis as serving gives them (:func:`.serving.item_evidence`: one row per
+    failed use with the version served when it was called, why, a late contrary signal told apart, and the actors'
+    reports on the run record), so a label and a card never disagree on them."""
+    from pathlib import Path
+
+    from . import item_label, serving
+
+    ev = stores.evidence
+    order = {pid: i for i, (pid,) in enumerate(ev.db.execute("SELECT pass_id FROM passes ORDER BY rowid"))}
+    try:
+        found = serving.item_evidence(
+            stores, checker_visible=checker_visible, home=stores.paths.home, labels=lambda _item: None,
+        )
+    except Exception:  # noqa: BLE001 - the labels then carry no failure record, never the rest
+        found = {}
+    return {
+        "tests": item_label.tests_by_item(Path(stores.paths.state_dir)),
+        "pass_index": order,
+        "failures": {item: list(e.get("failure_record") or []) for item, e in found.items()},
+        "basis": {item: e["status_basis"] for item, e in found.items() if isinstance(e.get("status_basis"), str)},
+    }
 
 
 def verification_from_passes(ev: EvidenceStore) -> dict[str, dict]:
@@ -1097,8 +1222,10 @@ def consolidate_records(
     budget_s: float | None = None,
     clock: Any = None,
     captures: Any = None,
+    labels: bool = False,
 ) -> dict:
-    """The item records of ``main``'s head, after a consolidation's passes.
+    """The item records of ``main``'s head, after a consolidation's passes. With *labels*
+    (``UNIFY_MEMORY_IMPURE_ITEMS=on``) every record carries its evidence label (:func:`label_inputs`).
 
     The bisects of one call share :data:`.item_bisect.BISECT_BUDGET_S` (*budget_s*), and *stop* (a callable, the
     worker's SIGTERM) is checked between probe runs. An item they do not reach is ``{"skipped": "budget"}`` (or
@@ -1194,6 +1321,10 @@ def consolidate_records(
         unknown_version=unknown_version,
         # a procedure landed from a capture: its capture, reader, signature, applies and recognition (the store's)
         landed=landed_items(captures),
+        # UNIFY_MEMORY_IMPURE_ITEMS=on: each record's evidence label; off, the map as built
+        **({"label_inputs": label_inputs(stores, checker_visible=checker_visible)} if labels else {}),
+        # UNIFY_MEMORY_IN_EPISODE=on: the pin each use was served under (none recorded: as built)
+        **({"pins": pins} if (pins := use_pins(ev)) else {}),
     )
     for (
         item,

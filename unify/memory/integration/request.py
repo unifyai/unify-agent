@@ -809,6 +809,13 @@ def with_runtime_calls(record: dict, runtime: Any) -> dict:
     return record
 
 
+def label_of(records: Mapping[str, dict] | None, item: str) -> dict | None:
+    """*item*'s evidence label in *records* (its item record's ``label``, ``UNIFY_MEMORY_IMPURE_ITEMS``), or None."""
+    rec = (records or {}).get(item)
+    label = rec.get("label") if isinstance(rec, dict) else None
+    return label if isinstance(label, dict) else None
+
+
 def memory_use(
     ep: Any,
     item_ids: list[str],
@@ -1412,6 +1419,9 @@ class RequestRun:
                     checker_visible=checker_visible(SETTINGS),
                     captures=caps,
                     home=self.paths.home,
+                    # the writer's evidence label of each item (UNIFY_MEMORY_IMPURE_ITEMS: its item record's
+                    # ``label``, :mod:`..item_label`), for its contradictions; none without one
+                    labels=lambda item: label_of(records, item),
                 )
             except Exception as exc:  # noqa: BLE001 - served without evidence; logged
                 logger.warning("memory library mode: item evidence not read (%s)", type(exc).__name__)

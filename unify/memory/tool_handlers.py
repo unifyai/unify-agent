@@ -106,7 +106,7 @@ class WriterCalls:
             self.calls += 1  # a check is a call against max_calls
             self.writing()
             return None
-        if tool in ("replay", "fixture", "land_capture"):
+        if tool in ("replay", "fixture", "land_capture", "test"):
             self.calls += 1  # a writer action, against the step guard
             self.writing()
             return None
