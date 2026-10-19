@@ -759,6 +759,9 @@ def start(
             reservation.abandon(f"refused: {why}")
             progress(f"memory: fork refused: {why}")
             return None
+        if switch.metering_on(settings):
+            # metering: the fork's calls carry its episode (ids only) for the proxy's journal
+            doc["headers"]["x-unify-episode"] = eid
         box = box_argv(staging, die_with_parent=switch.library_wait_slot(settings))
         log = Path(paths.state_dir) / "fork-worker.log"
         if on_record is None:

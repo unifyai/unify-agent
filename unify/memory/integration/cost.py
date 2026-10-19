@@ -78,12 +78,30 @@ def _tokens(response: Any) -> tuple[int | None, int | None]:
     return count("prompt_tokens"), count("completion_tokens")
 
 
-def _purpose(origin: str) -> str | None:
+#: The librarian's origin (``unify.memory.librarian.ORIGIN``): with ``UNIFY_MEMORY_METERING=on`` its calls are booked
+#: in the request's own rows labelled ``librarian`` (they are on the actor's route, so the actor's lane), never apart.
+LIBRARIAN_ORIGIN = "memory_librarian"
+
+
+def _purpose(origin: str, label_librarian: bool = False) -> str | None:
     if origin in (WRITER_ORIGIN, HELPER_ORIGIN) or origin.startswith(
         (WRITER_ORIGIN + ".", HELPER_ORIGIN + "."),
     ):
         return None
+    if label_librarian and (origin == LIBRARIAN_ORIGIN or origin.startswith(LIBRARIAN_ORIGIN + ".")):
+        return "librarian"
     return "embedding" if "embed" in origin else "actor"
+
+
+def _metering() -> bool:
+    try:
+        from unify.settings import SETTINGS
+
+        from .switch import metering_on
+
+        return metering_on(SETTINGS)
+    except Exception:  # noqa: BLE001 - no settings: as built
+        return False
 
 
 class CostListener:
@@ -94,11 +112,15 @@ class CostListener:
         self._active = False
         self._lock = threading.Lock()
         self.failed = 0  # events that could not be read (counted, never raised)
+        #: UNIFY_MEMORY_METERING=on: the librarian's rows are labelled ``librarian`` (read at each activation)
+        self._label_librarian = False
 
     def activate(self) -> None:
+        label = _metering()
         with self._lock:
             self.rows = []
             self._active = True
+            self._label_librarian = label
 
     def deactivate(self) -> None:
         with self._lock:
@@ -113,7 +135,7 @@ class CostListener:
             return
         try:
             origin = getattr(event, "origin", None)
-            purpose = _purpose(origin if isinstance(origin, str) else "")
+            purpose = _purpose(origin if isinstance(origin, str) else "", self._label_librarian)
             if purpose is None:
                 return
             request = getattr(event, "request", None)

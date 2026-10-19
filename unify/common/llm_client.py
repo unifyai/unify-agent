@@ -213,6 +213,62 @@ def _install_request_metadata(
     client._generate = _generate
 
 
+# ── UNIFY_MEMORY_METERING: the pass and entries a call serves ─────────────────
+# Ids only, never content: a writer, curator or helper call made inside a writer-service pass carries the pass's
+# id and the attention-ledger entries handed to it, so the proxy's journal can attribute the call (the per-pass,
+# per-entry and per-item views, unify/memory/metering.py). The fork sets its episode (and segment) on its own
+# request headers (unify/memory/integration/fork.py).
+PASS_HEADER = "X-Unify-Pass-Id"
+ENTRIES_HEADER = "X-Unify-Entries"
+EPISODE_HEADER = "X-Unify-Episode"
+SEGMENT_HEADER = "X-Unify-Segment"
+#: A pass id or an entry id: 16 lower-case hex digits; the entries header carries at most this many, joined by ".".
+_ATTRIBUTION_ID = re.compile(r"^[0-9a-f]{16}$")
+MAX_HEADER_ENTRIES = 64
+_ATTRIBUTION: contextvars.ContextVar["Attribution | None"] = contextvars.ContextVar(
+    "unify_call_attribution",
+    default=None,
+)
+
+
+class Attribution:
+    """The pass (and the entries) the calls made in this context serve; the entries list may grow during the pass
+    (an entry the writer takes)."""
+
+    __slots__ = ("pass_id", "entries")
+
+    def __init__(self, pass_id: str, entries: list[str] | None = None) -> None:
+        self.pass_id = pass_id
+        self.entries = list(entries or ())
+
+    def headers(self) -> dict[str, str]:
+        out: dict[str, str] = {}
+        if _ATTRIBUTION_ID.match(self.pass_id or ""):
+            out[PASS_HEADER] = self.pass_id
+        ids = [e for e in self.entries if _ATTRIBUTION_ID.match(e or "")][:MAX_HEADER_ENTRIES]
+        if ids:
+            out[ENTRIES_HEADER] = ".".join(ids)
+        return out
+
+
+@contextlib.contextmanager
+def attribution(pass_id: str, entries: list[str] | None = None):
+    """Model calls made inside the block (this context, and the tasks it starts) carry *pass_id* and *entries* as
+    ``X-Unify-Pass-Id`` and ``X-Unify-Entries`` (with ``UNIFY_REQUEST_METADATA_HEADERS=on``)."""
+    token = _ATTRIBUTION.set(Attribution(pass_id, entries))
+    try:
+        yield _ATTRIBUTION.get()
+    finally:
+        _ATTRIBUTION.reset(token)
+
+
+def add_attributed_entry(entry_id: str) -> None:
+    """An entry the pass in this context took on: its later calls name it too."""
+    current = _ATTRIBUTION.get()
+    if current is not None and entry_id not in current.entries:
+        current.entries.append(entry_id)
+
+
 def _request_metadata_headers(
     client: Any,
     state: _RequestMetadata,
@@ -228,6 +284,9 @@ def _request_metadata_headers(
     }
     if state.parent is not None:
         headers[PARENT_HEADER] = state.parent
+    current = _ATTRIBUTION.get()
+    if current is not None:
+        headers.update(current.headers())
     return headers
 
 
