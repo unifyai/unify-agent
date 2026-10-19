@@ -71,7 +71,7 @@ harness's exact-call replay, :mod:`.replay`), while the function has recorded ca
 
 **Fixture size** (``UNIFY_MEMORY_QA_FIXTURE_SIZE``). A new or changed file under ``env/<channel>/tests/``, the
 test kit or a support file larger than :data:`FIXTURE_MAX_BYTES` is refused: recorded payloads are referenced
-by blob id (:func:`.inputs.blob`). The cause of the 1.1 MB Crafter fixture (offline sweep, 300k) was a brief
+by blob id (:func:`.inputs.blob`). The cause of a 1.1 MB fixture (an offline sweep, 300k) was a brief
 that asked for every recorded observation pair to be copied into a data file under the 1 MiB quota; with this
 switch the export also writes every response over :data:`RESPONSE_BLOB_BYTES` as a blob (``response_blobs`` in
 each exported episode), the gate mounts every blob id a test-side file names at ``/inputs/blobs``, and the

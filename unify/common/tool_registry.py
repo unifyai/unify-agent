@@ -1351,10 +1351,8 @@ CHECK_EXAMPLES = RegisteredTool(
         'print(tools.check_examples(initials, [["Ada Lovelace", "A.L."], ["Alan Mathison Turing", "A.M.T."]]))',
     ),
     when=(
-        "When the request or the environment shows examples of the expected behaviour (inputs with their outputs, "
-        "calls with their results, a sample of the expected form), check your candidate against them before you "
-        "act on it or answer with it; read each failing example's difference, change the candidate and check "
-        "again."
+        "When the request or the environment gives examples, check your candidate against them before you act on "
+        "it or answer with it; read each failing example's difference, change the candidate and check again."
     ),
     kind="local",
 )
@@ -2683,8 +2681,8 @@ def sandbox_paragraph(agent: str, names: Iterable[str], persistent: bool) -> str
 
 #: The one line of the actor's and a teammate's opening about examples (``tools.check_examples``).
 EXAMPLES_LINE = (
-    "When the request or the environment shows examples of the expected behaviour, check a candidate against them "
-    "with `tools.check_examples` before acting on it."
+    "When the request or the environment gives examples, check a candidate against them with "
+    "`tools.check_examples` before acting on it."
 )
 #: Where thinking goes: execute_code's ``thought`` argument. It stays in the conversation and ends nothing (an answer
 #: is a message without a tool call, or ``tools.answer``), and a call with a thought and no code runs nothing, so a

@@ -38,7 +38,7 @@ unknown. Text is read only for its structure: the traceback's header, frame and 
 exception's type token, the diff's file headers, the harness's reply words above and, for legacy
 recordings only, the index's channel headings and item lines. An exception message is never read for
 meaning; a message deliberately written to imitate CPython's chain line, header and frame lines could
-still forge a block. Nothing is keyed on a task.
+still forge a block. Nothing is keyed on what a request was.
 
 Per memory item (``env/<channel>:<name>``, a public function of ``env/<channel>/__init__.py``):
 

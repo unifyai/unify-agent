@@ -158,7 +158,7 @@ def section_key(heading: str) -> str:
 
 
 def wanted_key(name: object) -> str:
-    """The section a name means: ``"office"`` and ``"memory/office"`` both mean ``memory.office``."""
+    """The section a name means: ``"reports"`` and ``"memory/reports"`` both mean ``memory.reports``."""
     n = str(name).strip().strip("/")
     if n.startswith(("memory.", "notes/")):
         return n
@@ -346,7 +346,7 @@ def _param(desc: dict) -> str:
 
 
 def _match(m: Any, mine: dict, recorded: dict) -> Any:
-    """v2's match; else, for two shapes without a named key (a grid, a list of numbers),
+    """v2's match; else, for two shapes without a named key (a list of lists, a list of numbers),
     their exact equality as the weakest match, so such an argument is still found, after every v2 match.
     """
     found = m.match(mine, recorded)
@@ -359,7 +359,7 @@ def _find(value: Any) -> list[Found]:
     """The functions whose tests call them on an argument with the shape of *value*, best match first, each
     with the parameter that argument was passed as. v2's input-shape matcher and ranking, unchanged (level,
     then share of named keys matched, then how many recorded shapes match, then name; at most five). A shape
-    without named keys (a grid) matches only an identical one, ranked weak and below every named match. A
+    without named keys (a list of lists) matches only an identical one, ranked weak and below every named match. A
     function's best-matching shape names the parameter, the first in recorded order on a tie. An empty list
     means that no listed function's tests call it on data of this shape, or that the value has too little
     structure (plain text has none)."""
@@ -1844,7 +1844,7 @@ LIBRARY_ROOT = "/memory"
 _SUMMARY_CHARS = 100
 _ID_COLUMN = 60
 _GET_EXPECTED = "an item id, a function name, or a note slug"
-_GET_EXAMPLE = "memory.get('notes/grid/stencil.md')"
+_GET_EXAMPLE = "memory.get('notes/reports/summary.md')"
 _TOPIC_EXPECTED = "a package or a notes topic"
 _MODULE_PATH = re.compile(r"memory/([a-z][a-z0-9_]*)/([a-z][a-z0-9_]*)\.py")
 #: What reading a malformed generated file can raise inside a call (:func:`_guard`).
@@ -2461,14 +2461,14 @@ class _Catalog:
             self.call,
             f"no topic named {topic!r}.",
             expected=_TOPIC_EXPECTED,
-            example=f"memory.items({(near or topics or ['notes/grid'])[0]!r})",
+            example=f"memory.items({(near or topics or ['notes/reports'])[0]!r})",
             nearest=near,
             hint="Browse every topic with memory.items().",
         )
 
     def _example_id(self) -> str:
         listed = self.listed()
-        return listed[0] if listed else "notes/grid/stencil.md"
+        return listed[0] if listed else "notes/reports/summary.md"
 
     # -- building items
 
@@ -2683,7 +2683,7 @@ def get(ref: str | Item | Callable) -> Item:
         WrongCall: the name is a topic, not an item; the error gives the call that lists it.
 
     Example:
-        memory.get('notes/grid/stencil.md')
+        memory.get('notes/reports/summary.md')
     """
     call = call_text("memory.get", (ref,))
     return _guard(call, _get, ref, call)
@@ -2698,8 +2698,8 @@ def items(topic: str | None = None, kind: Kind | None = None) -> Items:
     """Browse the library: every item (but the retired), or one topic's, of one kind or both.
 
     Args:
-        topic: a package (``'grid'``, ``'memory.grid'``), a module (``'grid.stencil'``), a notes topic
-            (``'notes/grid'``; a bare ``'grid'`` also takes the notes topic of that name) or ``'captures'``;
+        topic: a package (``'reports'``, ``'memory.reports'``), a module (``'reports.totals'``), a notes topic
+            (``'notes/reports'``; a bare ``'reports'`` also takes the notes topic of that name) or ``'captures'``;
             None for the whole library.
         kind: ``'function'`` or ``'note'``; None for both.
 
@@ -2713,7 +2713,7 @@ def items(topic: str | None = None, kind: Kind | None = None) -> Items:
         WrongCall: the name is an item's, not a topic's; the error gives the call that opens it.
 
     Example:
-        memory.items('notes/grid', kind='note')
+        memory.items('notes/reports', kind='note')
     """
     call = call_text(
         "memory.items",
@@ -2906,7 +2906,7 @@ def _index_text(package: str | None, call: str) -> str:
         call,
         f"no section or item named {package!r}.",
         expected=_TOPIC_EXPECTED,
-        example=f"memory.items({(near or topics or ['notes/grid'])[0]!r})",
+        example=f"memory.items({(near or topics or ['notes/reports'])[0]!r})",
         nearest=near,
         hint="Browse every topic with memory.items(); memory.get(ref) opens one item.",
     )
@@ -2930,7 +2930,7 @@ def show(item: Any) -> str:
         WrongCall: the name is a topic, not an item.
 
     Example:
-        memory.show('notes/grid/stencil.md')
+        memory.show('notes/reports/summary.md')
     """
     _alias("show")
     call = call_text("memory.show", (item,))

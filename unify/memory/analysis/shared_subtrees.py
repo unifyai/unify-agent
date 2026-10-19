@@ -2,7 +2,7 @@
 
 A subtree is an expression or statement of at least ``min_size`` nodes; two subtrees are the same when they are
 equal **up to renaming of local names** (each subtree's locals numbered by first appearance within it, so
-``grid`` in one function and ``args[0]``'s binding ``g`` in another match). Free names, attributes, constants
+``rows`` in one function and ``args[0]``'s binding ``r`` in another match). Free names, attributes, constants
 and operators must be equal. Structure only: no words are compared beyond the AST's own labels.
 
 Candidates are subtrees found in at least ``min_functions`` functions:

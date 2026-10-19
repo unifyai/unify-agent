@@ -22,7 +22,7 @@ says almost nothing about what they are. A recorded shape matches when no shared
 keys. ``exact`` means the same signature, list length classes (0, 1, 2–9, 10–99, 100+) and file format;
 ``structure`` means a match with some keys or types differing. A match on a single named key says little
 (``{"status": "error"}`` fits every status envelope), so it is labelled ``weak`` and ranked last, unless a
-typed structure sits under that key in both (``{"grid": [[0, 1]]}``: ``grid[][]`` holds ints). Results are
+typed structure sits under that key in both (``{"values": [1, 2]}``: ``values[]`` holds ints). Results are
 ranked by level (exact, structure, weak), then by the share of named keys matched, then by how many recorded
 shapes match, then by name, at most :data:`MAX_RESULTS`, each with the keys or columns that matched. A
 value of more than :data:`MAX_NODES` nodes is shaped from its first part (its descriptor says
@@ -301,7 +301,7 @@ def _format(desc: dict) -> Any:
 
 def _strong(matched: list[str], a: dict[str, str], b: dict[str, str]) -> bool:
     """Whether a match says something: two or more shared named keys, or one with a typed structure nested
-    under it in both signatures (a list or grid of the same scalar type)."""
+    under it in both signatures (a list, or a list of lists, of the same scalar type)."""
     if len(matched) >= 2:
         return True
     if not matched:
@@ -351,7 +351,7 @@ def compare(mine: dict, recorded: dict) -> tuple[int, float, list[str]] | None:
 def shape_key(desc: dict) -> tuple:
     """A descriptor's exact shape, with no information floor: its kind, its whole :func:`signature` (every
     key path, named or not, with its leaf type, so ``[]`` -> ``int`` for a list of ints and ``[][]`` for a
-    grid) and, for a file, its format, delimiter, header flag, columns and column types. Lengths, counts and
+    list of lists) and, for a file, its format, delimiter, header flag, columns and column types. Lengths, counts and
     encodings are left out: a fixture may be a shorter copy of a recorded input.
     """
     sig = tuple(sorted(signature(desc).items()))
@@ -376,7 +376,7 @@ def shape_key(desc: dict) -> tuple:
 def same_shape(mine: dict, recorded: dict) -> bool:
     """Whether two descriptors have exactly the same shape (:func:`shape_key`). Unlike :func:`compare`,
     which serves :func:`find` and needs a named key to say anything, this has no floor: headerless tables,
-    raw grids and scalar lists match an identical shape. The gate uses it for an example's fixture.
+    raw lists of lists and scalar lists match an identical shape. The gate uses it for an example's fixture.
     """
     return shape_key(mine) == shape_key(recorded)
 

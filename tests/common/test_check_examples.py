@@ -269,6 +269,6 @@ def test_the_actors_and_a_teammates_opening_hold_the_line_once():
     for agent in ("writer", "curator", "helper", "librarian"):
         assert R.EXAMPLES_LINE not in R.preamble(agent, {"flags": FULL}), agent
     assert R.EXAMPLES_LINE == (
-        "When the request or the environment shows examples of the expected behaviour, check a candidate against "
-        "them with `tools.check_examples` before acting on it."
+        "When the request or the environment gives examples, check a candidate against them with "
+        "`tools.check_examples` before acting on it."
     )

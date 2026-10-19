@@ -386,8 +386,8 @@ class ProductionSettings(BaseSettings):
     # Memory v2's dialogue capture (applies only with UNIFY_MEMORY on;
     # parsed by unify/memory/integration/switch.py): ``env`` also records
     # each request's dialogue actions (every turn-ending reply's action with
-    # the counterpart's next message) on the channel ``env``, so a benchmark
-    # whose actions are text in the replies (Continual-ARC) leaves coverable
+    # the counterpart's next message) on the channel ``env``, so a counterpart
+    # whose actions are text in the replies leaves coverable
     # actions. Empty (also ``off``): episodes as shipped.
     UNIFY_MEMORY_DIALOGUE: str = ""
     # Memory v2 (continual-harness-research docs/design/memory-redesign-spec.md):

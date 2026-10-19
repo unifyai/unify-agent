@@ -1,7 +1,7 @@
 """The library's shape graph (memory hygiene, stage 4): functions linked by the input shapes they cover.
 
 Input: a mapping from each library item (a string) to the set of recorded input-shape signatures (strings) it
-covers (the caller builds it from the evidence store; this module never reads evidence, outcomes or task labels).
+covers (the caller builds it from the evidence store; this module never reads evidence, outcomes or labels of requests).
 A cover that is a bare string, or holds anything but strings, is refused (``TypeError``). Output, pure and
 deterministic, in one :class:`ShapeGraph`:
 

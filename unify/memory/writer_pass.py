@@ -181,9 +181,9 @@ What to build, in priority order:
    when you add it, together with every public function of the module in items).
    Scope is shape, not observed values. A check or refusal names only types, columns or fields, required keys, the
    call (channel, method, parameter names) and formats; never the range or the list of values the recordings
-   happened to show. Bad: `if colour not in ("red", "blue"): raise MemoryInputError(...)` because only red and blue
-   were recorded. Good: `if not isinstance(colour, str) or not colour: raise MemoryInputError("colour must be a
-   non-empty string")`. The one exception: a recording in which the environment itself rejected a value (an error
+   happened to show. Bad: `if status not in ("open", "closed"): raise MemoryInputError(...)` because only open and
+   closed were recorded. Good: `if not isinstance(status, str) or not status: raise MemoryInputError("status must be
+   a non-empty string")`. The one exception: a recording in which the environment itself rejected a value (an error
    response or a nonzero exit) may justify refusing such values, and that rejection must then be one of the
    function's covers. The gate reruns each function on its covered inputs with unseen values of the same types
    (new strings, numbers beyond the recorded range, dates outside the recorded span) and refuses it if it raises
@@ -6048,7 +6048,7 @@ def unillm_turn(
     * Credentials: unillm reads the provider key from the controller's environment. It never enters argv,
       logs, the box (whose environment is cleared) or anything this module writes.
 
-    Verifying a real call (Task 13, the first paid pass, under ``PassConfig.max_usd``): with the key in the
+    Verifying a real call (the first paid pass, under ``PassConfig.max_usd``): with the key in the
     environment, run one pass on a recorded episode with a small ``max_calls``; check that the ``passes`` row
     holds a decimal USD string and no ``note: N unpriced calls`` reason, that it matches the provider's billed amount for origin
     ``memory.writer``, and that the unillm log shows ``reasoning_effort`` as configured. No test makes this
