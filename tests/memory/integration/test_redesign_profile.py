@@ -15,6 +15,8 @@ _LIBRARY = dict(
     UNIFY_MEMORY_LIBRARY_FORK="on",
     UNIFY_MEMORY_LIBRARY_POOL="on",
     UNIFY_TOOLS_IN_CODE="on",  # the run record, the writer's tools and tools.checkpoint are called from code
+    UNIFY_MEMORY_WRITER_SERVICE_CAP_USD="10",  # the writer service's own cap, which the kit sets
+    UNIFY_REQUEST_METADATA_HEADERS="on",  # metering's ids travel as request metadata headers
 )
 
 
@@ -84,13 +86,17 @@ def test_an_empty_switch_takes_the_profiles_value_and_a_set_one_keeps_its_own():
 
 def test_with_memory_off_the_profile_gives_the_memory_switches_nothing():
     """The no-memory arm under the profile: the run record stays, no memory switch is on, nothing is refused."""
-    off = SimpleNamespace(UNIFY_MEMORY="", UNIFY_MEMORY_PROFILE="redesign")
+    off = SimpleNamespace(UNIFY_MEMORY="", UNIFY_MEMORY_PROFILE="redesign", UNIFY_TOOLS_IN_CODE="on")
     assert switch.profile_setting(off, "UNIFY_AGENTS_RUN_RECORD") == "on"
     for name in switch.REDESIGN_SWITCHES:
         if name.startswith("UNIFY_MEMORY_"):
             assert switch.profile_setting(off, name) == "", name
     assert not switch.library_withdraw_closed_captures(off)
     assert switch.profile_refusal(off) is None
+    # the run record is on in this arm too, and every agent reaches it from code
+    assert "UNIFY_TOOLS_IN_CODE=on" in switch.profile_refusal(
+        SimpleNamespace(UNIFY_MEMORY="", UNIFY_MEMORY_PROFILE="redesign")
+    )
 
 
 def test_a_switch_set_otherwise_under_the_profile_is_refused_by_name():
