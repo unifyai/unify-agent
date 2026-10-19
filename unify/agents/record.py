@@ -263,7 +263,11 @@ class Record:
                 "write long content to a file and post its path",
             )
         with self._lock:
-            if fit_at is None and len(self.entries) >= self.options.max_entries:
+            if (
+                fit_at is None
+                and self.options.max_entries is not None
+                and len(self.entries) >= self.options.max_entries
+            ):
                 raise PostRefused(
                     f"the record is full ({self.options.max_entries} entries)",
                 )

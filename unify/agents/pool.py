@@ -11,6 +11,8 @@ from unify.agents.record import HARNESS, USER, PostRefused, Record
 from unify.transcripts import scrub
 
 StartHelper = Callable[[str, str, str, int], Awaitable[str]]
+#: How many free names a pool on the run record tries when other processes keep taking the one it picked.
+_NAME_TRIES = 20
 _PLACEHOLDER = re.compile(
     r"^\s*(no-?op|n/?a|not applicable|none|nothing|todo|tbd)\s*[.!]?\s*$",
     re.I,
@@ -33,9 +35,21 @@ class Pool:
             spawn_refusal or "starting helpers is not allowed in this run"
         )
         self._tasks: dict[str, asyncio.Task] = {}
+        #: every helper this pool started or tried to start, in order (the run record's limits count these)
+        self._started: list[str] = []
 
     def _helpers(self) -> list[str]:
+        if getattr(self.record, "run_wide", False):
+            # the run record (unify/agents/run_record.py) holds the whole run's agents: this pool's limits count only
+            # the helpers it started
+            return list(self._started)
         return [n for n, p in self.record.participants.items() if p.spawner is not None]
+
+    def _live(self) -> list[str]:
+        rec = self.record
+        if getattr(rec, "run_wide", False):
+            return [n for n in self._started if rec.participants.get(n) is not None and rec.participants[n].state == "running"]
+        return [n for n in rec.live_agents() if n != rec.root]
 
     async def spawn(
         self,
@@ -55,16 +69,21 @@ class Pool:
             raise ValueError(
                 "the request must say what to do (at least 16 characters)",
             )
-        live = [n for n in rec.live_agents() if n != rec.root]
+        live = self._live()
         if len(live) >= opts.max_live:
             raise RuntimeError(
                 f"{len(live)} helpers are running ({', '.join(live)}); "
                 "wait for a reply or stop one first",
             )
         if len(self._helpers()) >= opts.max_total:
+            scope = "this request or pass" if getattr(rec, "run_wide", False) else "this run"
             raise RuntimeError(
-                f"this run has started its limit of {opts.max_total} helpers",
+                f"{scope} has started its limit of {opts.max_total} helpers",
             )
+        picked = name is None and getattr(rec, "run_wide", False)
+        if picked:
+            # a name no agent of the whole run has had (other processes name theirs too)
+            name = rec.next_name("h")
         if name is None:
             k = 1
             while f"h{k}" in rec.participants:
@@ -83,9 +102,21 @@ class Pool:
                 f"the request is {size} bytes with its mention and the limit is "
                 f"{MAX_TEXT_BYTES}; write it to a file and give the helper its path",
             )
-        if len(rec.entries) >= opts.max_entries:
+        if opts.max_entries is not None and len(rec.entries) >= opts.max_entries:
             raise PostRefused(f"the record is full ({opts.max_entries} entries)")
-        participant = rec.add_agent(name, spawner=spawner)
+        for _ in range(_NAME_TRIES):
+            try:
+                participant = rec.add_agent(name, spawner=spawner)
+                break
+            except PostRefused:
+                if not picked:
+                    raise
+                # another process took the name between the look and the join: the next free one
+                name = rec.next_name("h")
+                text = f"@{name} {request}"
+        else:
+            raise PostRefused("no free helper name could be taken; try again")
+        self._started.append(name)
         try:
             entry, _ = rec.append(spawner, text)
         except Exception:

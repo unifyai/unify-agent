@@ -33,8 +33,19 @@ class CliBridge:
             self._emit({"type": "record", **entry.to_dict()})
 
     async def user_message(self, text: str) -> None:
-        """A line from the driver: a ``user`` post (mentions resolved from the text)."""
-        self.pool.record.append_harness(USER, text, full_text_at="the driver's input")
+        """A line from the driver: a ``user`` post (mentions resolved from the text). On the run record, which every
+        agent of the run shares, the line is addressed to this session's main agent as well."""
+        record = self.pool.record
+        if getattr(record, "run_wide", False):
+            resolved, _unresolved, _ended = record.resolve_for(USER, text)
+            record.append_harness(
+                USER,
+                text,
+                full_text_at="the driver's input",
+                mentions=list(dict.fromkeys([record.root, *resolved])),
+            )
+        else:
+            record.append_harness(USER, text, full_text_at="the driver's input")
         if not self._root_busy:
             await self._wake_if_waiting()
 

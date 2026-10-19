@@ -649,6 +649,8 @@ class Channel:
         self._task: asyncio.Task | None = None
         self._last_id: int | None = None
         self._cell: int | None = None
+        #: the tools the running cell called (the run record's evidence count)
+        self._cell_tools: list[str] = []
         self._in_flight: str | None = None
         self._box_gone = False
         #: why the channel closed (one of :data:`CLOSE_REASONS`, or the owner's reason), None while it is open
@@ -699,11 +701,29 @@ class Channel:
     def cell_started(self, cell: int) -> None:
         """Frames are accepted from now until :meth:`cell_ended`; *cell* is the cell row's ``call`` number."""
         self._cell = cell
+        self._cell_tools = []
         self.host_seconds.setdefault(cell, 0.0)
 
     def cell_ended(self, cell: int) -> None:
         if self._cell == cell:
             self._cell = None
+        self._note_act()
+
+    def _note_act(self) -> None:
+        """On the run record: a cell that did more than move messages (a tool call other than the comms tools, or no
+        tool call at all) is evidence work, counted for the record's storm notice."""
+        tools, self._cell_tools = self._cell_tools, []
+        note = getattr(self.binding.record, "note_act", None)
+        if note is None:
+            return
+        from unify.agents.run_record_tools import MESSAGE_TOOLS
+
+        if tools and all(t in MESSAGE_TOOLS for t in tools):
+            return
+        try:
+            note()
+        except Exception:  # noqa: BLE001 - a count never stops a cell
+            pass
 
     async def settled(self, timeout: float) -> bool:
         """Wait up to *timeout* seconds until no call is being answered (a cell whose box was stopped by its own call,
@@ -784,6 +804,7 @@ class Channel:
         cell = self._row_cell() if self._row_cell is not None else self._cell
         started = time.monotonic()
         tool, args = env["tool"], env["args"]
+        self._cell_tools.append(tool)
         self._in_flight = tool
         self._box_gone = False
         scope = _CallScope(self, {})
