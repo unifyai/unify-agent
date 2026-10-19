@@ -34,6 +34,8 @@ DRIVER = str(Path(__file__).with_name("service_driver.py"))
 SWITCHES = {
     "UNIFY_MEMORY": "on",
     "UNIFY_MEMORY_LIBRARY": "on",
+    "UNIFY_MEMORY_LIBRARY_FORK": "on",
+    "UNIFY_MEMORY_CAPTURE_TRACE": "on",
     "UNIFY_TOOLS_IN_CODE": "on",
     "UNIFY_AGENTS_RUN_RECORD": "on",
     "UNIFY_MEMORY_ATTENTION_LEDGER": "on",
@@ -219,6 +221,57 @@ def test_a_reused_pid_is_never_taken_for_the_service(svc, tmp_path):
     )
     assert sent == [] and done == ws.Terminated(True, "clean", ())
     assert os.getpid() in ws.group_pids(os.getpgid(0))  # alive, untouched
+
+
+STRANGER = r"""
+import os, sys, time
+os.setsid()
+child = os.fork()
+if child == 0:
+    while True:
+        time.sleep(0.1)
+print(child, flush=True)
+while True:
+    time.sleep(0.1)
+"""
+
+
+def test_a_group_number_given_to_someone_elses_group_is_never_signalled(svc):
+    """§10 pid-reuse mis-kill: the recorded service led its group and is gone; the number now leads a stranger's group
+    (a leader and its child, both started after the service). Neither the stop nor a takeover touches it."""
+    stranger = subprocess.Popen([sys.executable, "-c", STRANGER], stdout=subprocess.PIPE, text=True)  # fmt: skip
+    child = int(stranger.stdout.readline())
+    try:
+        doc = {"v": 1, "pid": stranger.pid, "pgid": stranger.pid, "proc_start": "1", "state": "running",
+               "heartbeat_at": ws.stamp(datetime.now(timezone.utc) - timedelta(seconds=ws.STALE_S + 5)),
+               "started_at": ws.stamp(datetime.now(timezone.utc))}  # fmt: skip
+        folder = ws.service_dir(svc.home)
+        folder.mkdir(parents=True)
+        (folder / ws.STATE_FILE).write_text(json.dumps(doc))
+        assert ws.group_pids(stranger.pid, since="1") == sorted([stranger.pid, child])
+        assert ws.service_group(doc) == []
+        assert ws._take_over(svc.home, doc) is False
+        sent = []
+        done = ws.stop_service(svc.home, "operator", "test", kill=lambda *a: sent.append(a), grace_s=0.1, term_s=0.1)
+        assert sent == [] and done == ws.Terminated(True, "clean", ())
+        assert stranger.poll() is None and ws.proc_start(child) is not None
+    finally:
+        os.killpg(stranger.pid, signal.SIGKILL)
+        stranger.wait()
+
+
+def test_a_stopped_service_doc_naming_a_live_caller_is_never_signalled(svc):
+    """A step (or a test) ran the loop in its own process and left service.json ``stopped`` naming it: a later stop
+    has nothing to stop and signals nothing."""
+    folder = ws.service_dir(svc.home)
+    folder.mkdir(parents=True)
+    me = {"v": 1, "pid": os.getpid(), "pgid": os.getpgid(0), "proc_start": ws.proc_start(os.getpid()),
+          "pgid_start": ws.proc_start(os.getpgid(0)) or "", "state": "stopped"}  # fmt: skip
+    (folder / ws.STATE_FILE).write_text(json.dumps(me))
+    assert ws.owns(me)
+    sent = []
+    done = ws.stop_service(svc.home, "drain", "test", kill=lambda *a: sent.append(a), grace_s=0.1, term_s=0.1)
+    assert sent == [] and done == ws.Terminated(True, "clean", ())
 
 
 # --- 4: idle exit -------------------------------------------------------------------------------------------------------

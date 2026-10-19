@@ -352,6 +352,27 @@ def lock_holders(path: Path) -> list[int]:
     return sorted(out)
 
 
+def service_group(doc: Optional[dict]) -> list[int]:
+    """The live processes left of the service *doc* (``service.json``) records: the members of its process group
+    started at or after it, and only while the group's number still names the service's group. While any member is
+    alive the kernel never gives the group's number to a new process; so a group leader alive with another start time
+    than the one recorded (``pgid_start``, or the service's own when it leads its group) means the number now names
+    someone else's group, and nothing in it is the service's. A doc that records neither start time is never acted on
+    by group."""
+    if not isinstance(doc, dict):
+        return []
+    pid, pgid, since = doc.get("pid"), doc.get("pgid"), doc.get("proc_start")
+    if not isinstance(pgid, int) or isinstance(pgid, bool) or pgid <= 0 or not since:
+        return []
+    leader_start = doc.get("pgid_start") or (since if pid == pgid else None)
+    if not leader_start:
+        return []
+    now = proc_start(pgid)
+    if now is not None and now != str(leader_start):
+        return []  # the group's number was given to someone else's group
+    return group_pids(pgid, since=str(since))
+
+
 def try_lock(path: Path) -> Optional[int]:
     """An exclusive non-blocking ``flock`` on *path*, as an inheritable descriptor; None when it is held."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -617,11 +638,8 @@ def _take_over(home: Path, doc: Optional[dict]) -> bool:
     lock = service_dir(home) / LOCK_FILE
     if not isinstance(doc, dict):
         return False
-    pgid, since = doc.get("pgid"), doc.get("proc_start")
-    if not isinstance(pgid, int) or isinstance(pgid, bool) or pgid <= 0 or not since:
-        return False
     holders = lock_holders(lock)
-    ours = set(group_pids(pgid, since=str(since)))
+    ours = set(service_group(doc))
     if not holders or not set(holders) <= ours:
         return (
             False  # held by someone that is not the old service's group: never touched
@@ -633,11 +651,11 @@ def _take_over(home: Path, doc: Optional[dict]) -> bool:
             except ProcessLookupError:
                 pass
         end = time.monotonic() + (TERM_S if sig == signal.SIGTERM else SETTLE_S)
-        while time.monotonic() < end and group_pids(pgid, since=str(since)):
+        while time.monotonic() < end and service_group(doc):
             time.sleep(0.05)
-        if not group_pids(pgid, since=str(since)):
+        if not service_group(doc):
             break
-    return not group_pids(pgid, since=str(since))
+    return not service_group(doc)
 
 
 def ensure_service(
@@ -799,17 +817,14 @@ def stop_service(
     doc = read_state(home)
     if not isinstance(doc, dict):
         return Terminated(True, "clean")
-    pgid, since = doc.get("pgid"), doc.get("proc_start")
+    if doc.get("state") == "stopped" and not lock_holders(service_dir(home) / LOCK_FILE):
+        # the service wrote its last state and nothing holds the home: nothing is left to stop (a step, or a test,
+        # that ran the loop in its own process is never signalled)
+        return Terminated(True, "clean")
+    pgid = doc.get("pgid")
 
     def left() -> list[int]:
-        if (
-            not isinstance(pgid, int)
-            or isinstance(pgid, bool)
-            or pgid <= 0
-            or not since
-        ):
-            return []
-        return group_pids(pgid, since=str(since))
+        return service_group(doc)
 
     def alive() -> bool:
         return owns(doc) or bool(left())
@@ -924,6 +939,7 @@ class Service:
             "v": 1,
             "pid": os.getpid(),
             "pgid": os.getpgid(0),
+            "pgid_start": proc_start(os.getpgid(0)) or "",
             "proc_start": proc_start(os.getpid()) or "",
             "heartbeat_at": stamp(_now()),
             "started_at": stamp(self.started),
@@ -1127,6 +1143,9 @@ def _capture_if_new(service: "Service") -> None:
             return
         sig = _staging_signature(service.home)
         if sig == service.staging_seen:
+            return
+        if not sig:  # nothing staged: nothing to capture
+            service.staging_seen = sig
             return
         from .integration.consolidate import capture_settled_forks, open_stores
         from .integration.paths import Paths
