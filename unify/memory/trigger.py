@@ -26,6 +26,15 @@ Two modes:
   ``verdicts``. It gets the batched pass's budget and moves the same cursor, so what it covered never enters a later
   batch; the batched trigger is otherwise unchanged (a batch that reaches E stays ``"batched"`` and lists the verdicts
   it covers). Nothing caps verdict passes; each is keyed on its episode's own capture.
+
+  **Per capture** (optional, ``per_pass``: ``UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE=on``, with ``verdict`` then
+  reading every stored capture, :func:`.captures.stored_episodes`): an admitted pending episode with a stored capture
+  makes a pass due at once, whatever the capture's outcome or whether it reproduced its value, and the experience
+  budget alone makes nothing due. The pass (kind ``"capture"``) covers the pending episodes in order up to and
+  including the ``per_pass``-th capture episode (the episodes an earlier pass rolled over always ride with it); the
+  episodes after it stay pending, so the next pass is due at once while a capture waits. It gets the batched pass's
+  budget and moves the same cursor. What makes a pass due is the capture's existence alone, the same rule wherever
+  the episode came from.
 * ``"d6"`` (the earlier per-channel cadence, kept for offline comparison): after each episode, an incremental pass per
   channel the episode touched (or a drift channel queued), plus a maintenance pass every
   ``maintenance_every`` requests.
@@ -112,11 +121,14 @@ class Trigger:
         idle_min: int = 3,
         admission: Admission | None = None,
         verdict: Callable[[str], bool] | None = None,
+        per_pass: int | None = None,
     ) -> None:
         if mode not in MODES:
             raise ValueError(f"trigger mode must be one of {MODES}, got {mode!r}")
         if int(experience_budget) <= 0:
             raise ValueError("experience_budget must be a positive number of tokens")
+        if per_pass is not None and (isinstance(per_pass, bool) or int(per_pass) <= 0):
+            raise ValueError("per_pass must be a positive number of capture episodes")
         self.ev, self.every, self.lift_min = evidence, maintenance_every, lift_min
         self.mode = mode
         self.budget = int(experience_budget)
@@ -127,6 +139,8 @@ class Trigger:
         self.admission = admission
         # whether an episode's capture is a verdict (module docstring); None: no verdict passes
         self.verdict = verdict
+        # per capture (module docstring): the capture episodes one pass covers at most; None: as built
+        self.per_pass = None if per_pass is None else int(per_pass)
 
     def queue_drift(self, channel: str) -> None:
         self._drift.add(channel)
@@ -139,9 +153,14 @@ class Trigger:
     def pending(self) -> list[tuple[str, int]]:
         """(episode id, experience tokens) recorded since the last batched pass, after the episodes earlier passes
         rolled over (under admission)."""
+        carried, rows = self._pending_parts()
+        return carried + rows
+
+    def _pending_parts(self) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
+        """:meth:`pending` as the episodes earlier passes rolled over and the episodes recorded since the cursor."""
         rows = self.ev.experience_since(self.ev.cursor(BATCHED_CURSOR))
         if self.admission is None:
-            return rows
+            return [], rows
         seen = {e for e, _ in rows}
         carried = []
         for eid in self.admission.rolled():
@@ -153,7 +172,7 @@ class Trigger:
                 tokens = 0
             carried.append((eid, tokens))
             seen.add(eid)
-        return carried + rows
+        return carried, rows
 
     def _batched(self) -> PassRequest:
         rows, held = self.pending(), []
@@ -171,6 +190,31 @@ class Trigger:
             held,
         )
 
+    def _per_capture(self) -> PassRequest | None:
+        """The pass due per capture (module docstring), or None when no admitted pending episode has a capture."""
+        carried, rows = self._pending_parts()
+        settled = self.admission.settled if self.admission is not None else (lambda _eid: True)
+        taken: list[tuple[str, int, bool]] = []
+        due = 0
+        for i, (eid, tokens) in enumerate(carried + rows):
+            if i >= len(carried) and due >= self.per_pass:
+                break  # the rest stay pending: the cursor moves only past what this pass covers
+            ok = settled(eid)
+            taken.append((eid, tokens, ok))
+            due += bool(ok and self.verdict is not None and self.verdict(eid))
+        if not due:
+            return None
+        eids = [e for e, _, ok in taken if ok]
+        return PassRequest(
+            "capture",
+            None,
+            eids,
+            len(eids) >= self.lift_min,
+            sum(t for _, t, ok in taken if ok),
+            [e for e, _, ok in taken if not ok],
+            [e for e in eids if self.verdict(e)],
+        )
+
     def after_episode(
         self,
         episode_id: str,
@@ -178,12 +222,15 @@ class Trigger:
     ) -> list[PassRequest]:
         """The passes due once *episode_id* is indexed; *at* (seconds, any clock) feeds the idle trigger. A batch
         that reaches E is due; before it does, a batch with a verdict among its episodes is due as kind
-        ``"verdict"``."""
+        ``"verdict"``. With ``per_pass`` only a stored capture makes a pass due (kind ``"capture"``)."""
         if at is not None:
             self._last_at = float(at)
         if self.mode == "d6":
             return self._d6(episode_id)
         self.ev.seq_of(episode_id)  # KeyError for an episode that was never indexed
+        if self.per_pass is not None:
+            found = self._per_capture()
+            return [found] if found is not None else []
         req = self._batched()
         if self.verdict is not None:
             req.verdicts = [e for e in req.episodes if self.verdict(e)]
@@ -224,7 +271,7 @@ class Trigger:
         return reqs
 
     def mark_done(self, req: PassRequest) -> None:
-        if req.kind in ("batched", "verdict"):
+        if req.kind in ("batched", "verdict", "capture"):
             covered = [*req.episodes, *req.held]
             if covered:
                 cursor = self.ev.cursor(BATCHED_CURSOR)

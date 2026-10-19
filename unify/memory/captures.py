@@ -738,6 +738,19 @@ def verdict_episodes(store: Path | str) -> set[str]:
     return {eid for eid, row in episode_rows(store).items() if verdict(row)}
 
 
+def stored(row: Any) -> bool:
+    """Whether a capture step's row stored a capture (it names one), whatever its outcome or whether it reproduced
+    its value: under ``UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE=on`` each such row makes a writer pass due at once
+    (:class:`.trigger.Trigger`'s ``per_pass``). A step that refused the staged procedure stored nothing."""
+    cid = row.get("capture_id") if isinstance(row, Mapping) else None
+    return isinstance(cid, str) and _ID.fullmatch(cid) is not None
+
+
+def stored_episodes(store: Path | str) -> set[str]:
+    """The episodes whose capture step's row stored a capture (:func:`stored`)."""
+    return {eid for eid, row in episode_rows(store).items() if stored(row)}
+
+
 def episode_row(store: Path | str, eid: str) -> dict | None:
     """The capture step's row for episode *eid*, or None when it has none."""
     if not _EPISODE_ID.fullmatch(eid or ""):

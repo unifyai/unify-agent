@@ -15,7 +15,9 @@ spawner) for its whole life. ``pass-inflight.json`` names it: pid, process group
 ownership check) and deadline.
 
 **Verdict passes.** A capture that is a verdict (it reproduces its handed-back value and nothing contradicted its
-attempt: positive, or no signal at all) makes a pass due at once (:class:`..trigger.Trigger`'s ``verdict``). A
+attempt: positive, or no signal at all) makes a pass due at once (:class:`..trigger.Trigger`'s ``verdict``); under
+``UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE=on`` every stored capture does, a bounded number per pass, and the
+experience budget alone makes no pass due (:class:`..trigger.Trigger`'s ``per_pass``). A
 request's end also starts a worker when a settled fork has no capture yet (:func:`.consolidate.verdict_candidates`,
 positive ones first): the worker captures it first. A verdict that comes due while a worker runs waits for it: the worker, still holding the lock, runs the pass
 in a slot of its own once the slot before it ended (:func:`.consolidate.run_slots`), and every slot rewrites
@@ -435,6 +437,8 @@ def maybe_spawn(
     from .consolidate import _deliver, _error, verdict_candidates, verdict_check
     from .fork import admission
     from .switch import (
+        captures_per_pass,
+        library_enabled,
         library_experience_budget,
         library_pass_wall_s,
         memory_passes_on,
@@ -459,7 +463,8 @@ def maybe_spawn(
         budget = library_experience_budget(settings)
         # with the fork on, only episodes whose fork has settled count toward a pass (the worker's pass admits
         # the same way); the others roll to a later pass. UNIFY_MEMORY_WRITER_PASSES=off: no pass is ever due, and
-        # a worker starts only to capture the settled forks
+        # a worker starts only to capture the settled forks (UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE then makes
+        # nothing due either: it changes when a pass is due, never whether passes run)
         due = (
             Trigger(
                 stores.evidence,
@@ -467,6 +472,7 @@ def maybe_spawn(
                 experience_budget=budget,
                 admission=admission(paths, settings),
                 verdict=verdict_check(paths, settings),
+                per_pass=captures_per_pass(settings) if library_enabled(settings) else None,
             ).after_episode(eid)
             if writer_passes_on(settings)
             else []

@@ -493,6 +493,11 @@ class ProductionSettings(BaseSettings):
     # established lessons and open trials to the actor's memory section; ``off`` (default): nothing of it runs and
     # every prompt is as before.
     UNIFY_MEMORY_NOTEBOOK: str = "off"
+    # The library mode with the fork on: ``on`` makes every stored capture make a writer pass due at once, at most
+    # UNIFY_MEMORY_LIBRARY_CAPTURES_PER_PASS capture episodes per pass (default 1), and the experience budget alone
+    # makes no pass due; ``off`` (default): a pass is due at E or on a verdict, as built.
+    UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE: str = "off"
+    UNIFY_MEMORY_LIBRARY_CAPTURES_PER_PASS: int = 1
     # The fork lane's route: the key proxy's /fork/v1 base URL and the inherited
     # descriptor carrying its token, read once at start-up and then removed from the environment (empty: no fork lane).
     UNIFY_MEMORY_LIBRARY_FORK_BASE_URL: str = ""
@@ -781,6 +786,8 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_LIBRARY_MAX_READS",
         "UNIFY_MEMORY_LIBRARY_WAIT_SLOT",
         "UNIFY_MEMORY_LIBRARY_FORK",
+        "UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE",
+        "UNIFY_MEMORY_LIBRARY_CAPTURES_PER_PASS",
         "UNIFY_MEMORY_LIBRARY_FORK_BASE_URL",
         "UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD",
         "UNIFY_MEMORY_LIBRARY_ANALYSTS",

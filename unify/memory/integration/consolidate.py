@@ -138,6 +138,7 @@ from .switch import (
     notebook_enabled,
     library_coverage,
     library_max_reads,
+    captures_per_pass,
 )
 
 __all__ = [
@@ -1305,21 +1306,26 @@ def capture_settled_forks(stores: Stores, settings: Any) -> list[dict]:
 
 def verdict_check(paths: Any, settings: Any) -> Callable[[str], bool] | None:
     """In the library mode, whether an episode's capture is a verdict (:func:`..captures.verdict`), read from the
-    capture store now; None with the library mode off (no verdict passes)."""
+    capture store now; None with the library mode off (no verdict passes). Under
+    ``UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE=on`` every stored capture counts (:func:`..captures.stored`), whatever
+    its outcome or whether it reproduced its value, and the trigger then runs per capture (:func:`captures_per_pass`).
+    """
     from .. import captures
 
     if not library_enabled(settings):
         return None
-    found = captures.verdict_episodes(captures.store_dir(Path(paths.state_dir)))
-    return found.__contains__
+    store = captures.store_dir(Path(paths.state_dir))
+    if captures_per_pass(settings) is not None:
+        return captures.stored_episodes(store).__contains__
+    return captures.verdict_episodes(store).__contains__
 
 
 def verdict_candidates(stores: Stores, settings: Any) -> list[str]:
     """The settled forks not captured yet, so that capturing one may make a verdict (:func:`..captures.verdict`): a
     worker starts to capture them and to run the pass a verdict makes due. Every such fork is a candidate, with or
     without a signal (an environment may give none); a positive one comes first, then one with no signal, then a
-    contradicted one (it is captured as failed and makes no pass). Files and the evidence store only, nothing is run;
-    [] with the fork off. Never raises."""
+    contradicted one (it is captured as failed and makes no pass, unless every stored capture does:
+    :func:`verdict_check`). Files and the evidence store only, nothing is run; [] with the fork off. Never raises."""
     from .. import captures, trust
     from ..staging import STATUS_FILES
 
@@ -1442,6 +1448,8 @@ async def run_due_passes(
         admission=_fork.admission(stores.paths, settings),
         # the library mode: a capture that is a verdict makes a pass due at once
         verdict=verdict_check(stores.paths, settings),
+        # UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE=on: every stored capture does, a bounded number per pass
+        per_pass=captures_per_pass(settings) if library_enabled(settings) else None,
     )
     drift = sorted(getattr(state, "drift", set()) or set())
     for ch in drift:

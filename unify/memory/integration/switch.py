@@ -100,6 +100,15 @@ The no-pass memory set:
   verdict makes due) starts, no writer or helper call is made, and the library never changes. Refused unless
   ``UNIFY_MEMORY_LIBRARY`` and ``UNIFY_MEMORY_LIBRARY_FORK`` are on and ``UNIFY_MEMORY_PASSES`` is not off.
 
+What the actor is offered from the capture store, and when the writer reviews it (each off by default; each reads
+only what one stored item carries, never a task, a stream position or a word):
+
+- ``UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE``: ``on`` makes every stored capture make a writer pass due at once,
+  whatever its outcome or whether it reproduced its value, and no pass is due on the experience budget alone; one
+  pass covers at most ``UNIFY_MEMORY_LIBRARY_CAPTURES_PER_PASS`` capture episodes (default 1), the rest staying due
+  for the passes after it (:class:`..trigger.Trigger`'s ``per_pass``). Needs the library mode and the episode-end
+  fork. Under ``UNIFY_MEMORY_WRITER_PASSES=off`` no pass runs at all, so it changes nothing there.
+
 Not switched (a declared safety fix in every mode): the gate refuses bytecode, native code, start-up hooks
 and root entries other than ``env/``, ``workflows/`` and the test kit before extraction
 (:func:`unify.memory.manifest.unsafe_path`), and changes to the paths the harness reserves for its
@@ -857,6 +866,49 @@ def library_fork(settings: Any) -> bool:
     return parse_library_fork(getattr(settings, LIBRARY_FORK, "") or "") == "on"
 
 
+# --- what the capture store offers, and when the writer reviews it (module docstring) --------------------------
+LIBRARY_REVIEW_EACH_CAPTURE = "UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE"
+LIBRARY_CAPTURES_PER_PASS = "UNIFY_MEMORY_LIBRARY_CAPTURES_PER_PASS"
+#: One capture episode per pass: where the writer already ran about one pass per capture, it opened nearly every
+#: capture episode it was given.
+LIBRARY_CAPTURES_PER_PASS_DEFAULT = 1
+
+
+def parse_library_review_each_capture(v: Any) -> str:
+    """``UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE``: ``off`` (also for empty) or ``on``."""
+    return _on_off(LIBRARY_REVIEW_EACH_CAPTURE, v)
+
+
+def parse_library_captures_per_pass(v: Any) -> int:
+    """``UNIFY_MEMORY_LIBRARY_CAPTURES_PER_PASS``: the capture episodes one pass covers at most under
+    ``UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE=on``, positive digits (empty: 1)."""
+    return _positive_whole(LIBRARY_CAPTURES_PER_PASS, LIBRARY_CAPTURES_PER_PASS_DEFAULT, v)
+
+
+def captures_per_pass(settings: Any) -> int | None:
+    """Under ``UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE=on``, the capture episodes one pass covers at most; None when
+    it is off (a pass is due on the experience budget or a verdict, as built)."""
+    if parse_library_review_each_capture(getattr(settings, LIBRARY_REVIEW_EACH_CAPTURE, "") or "") != "on":
+        return None
+    return parse_library_captures_per_pass(getattr(settings, LIBRARY_CAPTURES_PER_PASS, "") or "")
+
+
+def capture_serving_refusal(settings: Any) -> str | None:
+    """Why a capture switch that is on may not run with these settings (the settings named, never a value), or None:
+    each needs the library mode and what it acts on. Refused, rather than run as a silent no-op."""
+    on = {
+        LIBRARY_MODE: library_enabled(settings),
+        LIBRARY_FORK: library_fork(settings),
+    }
+    for active, name, need in (
+        (captures_per_pass(settings) is not None, LIBRARY_REVIEW_EACH_CAPTURE, LIBRARY_FORK),
+    ):
+        missing = [f"{n}=on" for n in (LIBRARY_MODE, need) if not on[n]]
+        if active and missing:
+            return f"{name}=on needs {', '.join(missing)}; nothing runs"
+    return None
+
+
 # --- the fork lane's route (docs/design/fork-lane-design.md) ----------------------------------------------------
 #: The key proxy's fork route: its base URL and the descriptor carrying its token, handed by the runner's learner to
 #: this controller's spawn alone. Read once (:func:`settle_fork_route_env`), then both names leave the environment;
@@ -1287,10 +1339,11 @@ def writer_passes_refusal(settings: Any) -> str | None:
 
 def profile_refusal(settings: Any) -> str | None:
     """Why this run may not start under its profile, or under UNIFY_MEMORY_WRITER_PASSES=off without what it needs
-    (:func:`writer_passes_refusal`; the settings named, never a value), or None."""
+    (:func:`writer_passes_refusal`), or with a capture switch on without what it needs (:func:`capture_serving_refusal`;
+    the settings named, never a value), or None."""
     bad = profile_conflicts(settings)
     if not bad:
-        return writer_passes_refusal(settings)
+        return writer_passes_refusal(settings) or capture_serving_refusal(settings)
     return (
         f"{PROFILE}={PAPER} fixes {', '.join(bad)} (the writer runs on the actor's model and effort, and no checker "
         "line is taken); unset them, so nothing runs"
@@ -1441,6 +1494,8 @@ PARSERS = {
     MEMORY_PASSES: parse_memory_passes,
     NOTEBOOK: parse_notebook,
     WRITER_PASSES: parse_writer_passes,
+    LIBRARY_REVIEW_EACH_CAPTURE: parse_library_review_each_capture,
+    LIBRARY_CAPTURES_PER_PASS: parse_library_captures_per_pass,
 }
 
 
