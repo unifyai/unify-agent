@@ -422,6 +422,26 @@ def aggregate_track(facts: Iterable[EpisodeUse]) -> dict[str, dict]:
     }
 
 
+def evidence_basis(item: str, facts: Iterable[EpisodeUse]) -> tuple[str, dict]:
+    """What *item*'s status rests on (:data:`.trust.STATUS_BASES`) and how its uses were judged (``{"clean",
+    "failed", "neutral"}``), over the episodes of *facts* that used it: its uses' own signals
+    (:func:`.trust.status_basis`), and an episode-level signal its regime observes on an episode that used it (a
+    verdict in ``dense``, an end outcome in ``sparse``, a correction in ``implicit``), positive or negative."""
+    from . import trust
+
+    facts = [f for f in facts if item in f.items]
+    uses = [x for f in facts for x in trust_uses(f, f.items[item])]
+    basis = trust.status_basis(uses)
+    signalled = {f.regime for f in facts if (f.positive or f.negative) and f.items[item].used}
+    order = (trust.BASIS_VERDICTS, trust.BASIS_END_OUTCOMES, trust.BASIS_IMPLICIT, trust.BASIS_NO_OUTCOME_SIGNALS)
+    by_regime = {"dense": trust.BASIS_VERDICTS, "sparse": trust.BASIS_END_OUTCOMES, "implicit": trust.BASIS_IMPLICIT}
+    for regime in signalled:
+        other = by_regime.get(regime)
+        if other is not None and order.index(other) < order.index(basis):
+            basis = other
+    return basis, trust.use_counts(uses)
+
+
 def status_basis(item: str, facts: Iterable[EpisodeUse]) -> str | None:
     """What *item*'s adoption rests on (``verdicts`` or ``implicit``), or None when it is not adopted."""
     from . import trust

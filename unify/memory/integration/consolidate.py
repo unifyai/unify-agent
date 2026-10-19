@@ -154,6 +154,8 @@ __all__ = [
     "open_stores",
     "post_checker",
     "post_visible_checkers",
+    "checker_signal",
+    "visible_checker_signals",
     "run_due_passes",
     "writer_settings",
 ]
@@ -296,9 +298,22 @@ def post_checker(
     ``None`` (no checker, or the outcome left it open) posts nothing. A regime in which checker signals
     are not observable posts nothing. Returns whether a signal was posted.
     """
-    if not isinstance(solved, bool):
+    sig = checker_signal(stores, eid, solved, ts)
+    if sig is None:
         return False
-    sig = Signal(
+    try:
+        post_signal(sig, stores.episodes, sha, stores.evidence)
+    except SignalMasked:
+        return False
+    return True
+
+
+def checker_signal(stores: Stores, eid: str, solved: bool | None, ts: str) -> Signal | None:
+    """The checker's verdict on episode *eid* as the signal :func:`post_checker` posts (None for no verdict),
+    in the episode's regime; not posted."""
+    if not isinstance(solved, bool):
+        return None
+    return Signal(
         f"{eid}.checker",
         eid,
         "checker",
@@ -307,11 +322,6 @@ def post_checker(
         refers_to=eid,
         regime=stores.evidence.regime_of(eid),
     )
-    try:
-        post_signal(sig, stores.episodes, sha, stores.evidence)
-    except SignalMasked:
-        return False
-    return True
 
 
 def post_visible_checkers(
@@ -321,6 +331,8 @@ def post_visible_checkers(
     entries: list[dict],
     lines: list[dict],
     counterpart: str,
+    *,
+    signals: list[Signal] | None = None,
 ) -> int:
     """Post the verdicts the bed showed the actor on episode *ep* as agent-visible checker
     signals, one per entry, in order: ``<eid>.checker.<n>``, ``pass`` or ``fail``.
@@ -333,8 +345,35 @@ def post_visible_checkers(
     disagree in number, or when the entries' counts do not strictly increase, it refers to the episode as a
     whole, never to a guessed action. An entry whose verdict message never reached the actor (its
     count unreadable, or at or past the transcript's final observation count) is dropped and logged.
-    A regime in which checker signals are not observable posts nothing. Returns how many were posted.
+    A regime in which checker signals are not observable posts nothing. Returns how many were posted. *signals*:
+    the signals :func:`visible_checker_signals` made for these entries already (each is posted as it is).
     """
+    sigs = (
+        signals
+        if signals is not None
+        else visible_checker_signals(stores, ep, entries, lines, counterpart, stores.evidence.regime_of(ep.episode_id))
+    )
+    posted = 0
+    for sig in sigs:
+        try:
+            post_signal(sig, stores.episodes, sha, stores.evidence)
+        except SignalMasked:
+            continue
+        posted += 1
+    return posted
+
+
+def visible_checker_signals(
+    stores: Stores,
+    ep: Episode,
+    entries: list[dict],
+    lines: list[dict],
+    counterpart: str,
+    regime: str,
+) -> list[Signal]:
+    """The agent-visible checker signals :func:`post_visible_checkers` posts for *entries*, in *regime*, each
+    referring to the action it judged where the pairing is certain; not posted. An entry whose verdict never
+    reached the actor is dropped and logged (once, here)."""
     from .adapters import dialogue
 
     eid = ep.episode_id
@@ -367,28 +406,25 @@ def post_visible_checkers(
         if len(answered) != len(positions) or not increasing:
             # the pairing is not certain for every entry: no entry names an action
             answered, positions = [], []
-    posted = 0
+    out: list[Signal] = []
     for n, entry in delivered:
         refers_to = eid
         obs = entry["obs"]
         if obs in answered:
             refers_to = f"{eid}/actions/{positions[answered.index(obs)]}"
-        sig = Signal(
-            f"{eid}.checker.{n}",
-            eid,
-            "checker",
-            entry["label"],
-            entry["at"],
-            refers_to=refers_to,
-            regime=stores.evidence.regime_of(eid),
-            visible_to_actor=True,
+        out.append(
+            Signal(
+                f"{eid}.checker.{n}",
+                eid,
+                "checker",
+                entry["label"],
+                entry["at"],
+                refers_to=refers_to,
+                regime=regime,
+                visible_to_actor=True,
+            ),
         )
-        try:
-            post_signal(sig, stores.episodes, sha, stores.evidence)
-        except SignalMasked:
-            continue
-        posted += 1
-    return posted
+    return out
 
 
 # --- settings --------------------------------------------------------------------------------------------

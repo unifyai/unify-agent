@@ -671,6 +671,75 @@ def refresh(record: dict) -> dict:
     return record
 
 
+def judged_outcome(signals: Iterable[Any], ep: Any, regime: str, *, checker_visible: bool) -> dict:
+    """What the episode's signals say of the value it handed back, as the capture step reads them: the signals that
+    judge that value (:func:`final_value_signals`) under the episode's *regime*, ``{"regime", "verdict",
+    "end_outcome", "corrected"}`` (:func:`.trust.signal_outcome`), with ``contrary`` (a rejected verdict, a contrary
+    end, or a correction after the answer that the regime observes) and ``positive``."""
+    regime = regime if regime in trust.REGIMES else "none"
+    judged = final_value_signals(signals, ep)
+    sig_out = trust.signal_outcome(judged, regime, checker_visible=checker_visible)
+    corrected = any(
+        (getattr(s, "source", None), getattr(s, "label", None)) in IMPLICIT_CORRECTIONS
+        and getattr(s, "source", None) in REGIME_SOURCES.get(regime, frozenset())
+        for s in judged
+    )
+    contrary = sig_out["verdict"] == "rejected" or sig_out["end_outcome"] == "contrary" or corrected
+    positive = sig_out["verdict"] == "accepted" or sig_out["end_outcome"] == "positive"
+    return {"regime": regime, **sig_out, "contrary": contrary, "positive": positive}
+
+
+def rejudge_episode(
+    store: Path | str,
+    eid: str,
+    signals: Iterable[Any],
+    ep: Any,
+    regime: str,
+    *,
+    checker_visible: bool,
+) -> list[str]:
+    """Every stored capture with a case or a use in episode *eid*, judged again on the episode's signals now (one
+    arrived after the capture, or the episode's regime changed: ``UNIFY_MEMORY_REGIME=inferred``): each case of that
+    episode gets its outcome as the capture step gives it (:func:`judged_outcome`; a case that differs from what was
+    handed back stays failed), each use row of that episode its regime, verdict, end outcome and correction, then the
+    record's derived fields (:func:`refresh`). Returns the ids whose record changed, in id order."""
+    root = Path(store)
+    out = judged_outcome(signals, ep, regime, checker_visible=checker_visible)
+    changed: list[str] = []
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return changed
+    with _locked(root):
+        for name in names:
+            d = root / name
+            if not _ID.fullmatch(name) or not d.is_dir() or d.is_symlink():
+                continue
+            rec = _read_json(d / RECORD_FILE)
+            if not isinstance(rec, dict):
+                continue
+            cases = [c for c in rec.get("cases") or [] if isinstance(c, dict) and c.get("episode") == eid]
+            uses = [u for u in rec.get("uses") or [] if isinstance(u, dict) and u.get("episode") == eid]
+            if not cases and not uses:
+                continue
+            before = _json(rec)
+            for case in cases:
+                differs = case.get("reproduces") == DIFFERS
+                case["outcome"] = FAILED if (out["contrary"] or differs) else ("positive" if out["positive"] else "none")
+            for use in uses:
+                use.update(
+                    regime=out["regime"],
+                    verdict=out["verdict"],
+                    end_outcome=out["end_outcome"],
+                    corrected=bool(out["corrected"]),
+                )
+            refresh(rec)
+            if _json(rec) != before:
+                _write(d / RECORD_FILE, _json(rec))
+                changed.append(name)
+    return changed
+
+
 def load(store: Path | str) -> dict[str, dict]:
     """Every capture in *store*, by id: ``{"record", "signature", "procedure", "broke"}`` (absent files are None)."""
     root = Path(store)

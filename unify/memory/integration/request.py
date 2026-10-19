@@ -222,6 +222,16 @@ def librarian_on() -> bool:
     return getattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "off") == "on"
 
 
+def regime_inferred_on() -> bool:
+    """Whether ``UNIFY_MEMORY_REGIME=inferred`` (or empty under the redesign profile): each episode's regime is
+    inferred from its signals, and late verdicts on earlier episodes are taken (:mod:`.outcomes`)."""
+    from unify.settings import SETTINGS
+
+    from .switch import regime_inferred
+
+    return regime_inferred(SETTINGS)
+
+
 def checker_visible_on() -> bool:
     """Whether the CLI takes ``{"checker": ...}`` lines: ``UNIFY_MEMORY_LIBRARY`` and
     ``UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE`` both on, and not the paper profile."""
@@ -1008,6 +1018,12 @@ class RequestRun:
         # The verdicts the bed showed the actor, one per ``{"checker": ...}`` line, in order:
         # {"label": "pass"|"fail", "obs": observations in the transcript when it came (or None), "at": time}.
         self.checker_seen: list[dict] = []
+        # UNIFY_MEMORY_REGIME=inferred (read at begin): the regime is inferred, never defaulted; the verdicts on
+        # earlier episodes this session took, posted when this request is recorded (outcomes.post_late); and the
+        # callables told of each verdict taken within this episode, with its arrival row's fields.
+        self.regime_inferred = False
+        self.late_checkers: list[dict] = []
+        self.signal_listeners: list[Callable[[dict], None]] = []
         self._lock: int | None = None
         self._scope = contextlib.ExitStack()
         self._closed = False
@@ -1035,6 +1051,7 @@ class RequestRun:
         # The sandboxed worker, the core surface and transcripts are the only mode at this base (the
         # code freeze removed their switches), so nothing else needs checking before the lock.
         run = cls(request, Paths.under(store_home()))
+        run.regime_inferred = regime_inferred_on()
         run._lock = acquire_lock(run.paths.lock, timeout_s=LOCK_TIMEOUT_S)
         try:
             run._open(sandbox, transcripts)
@@ -1499,18 +1516,29 @@ class RequestRun:
             "checks": checks,
         }
 
-    def take_checker(self, raw: Any) -> dict:
+    def take_checker(self, raw: Any, episode: Any = None, about: Any = None) -> dict:
         """Keep one verdict the bed showed the actor; the answer the CLI writes for a
         ``{"checker": {"label": "pass"|"fail"}}`` line. The bed sends it just before the message that shows the
         actor the same verdict, so the transcript's observation count now is that message's ordinal. Refused,
         with nothing kept, unless ``UNIFY_MEMORY_LIBRARY`` and ``UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE`` are on, or when
         the line is anything but exactly ``{"label": "pass"}`` or ``{"label": "fail"}``. The answer never quotes
-        the line."""
+        the line.
+
+        Under ``UNIFY_MEMORY_REGIME=inferred`` the line may also say what the verdict is about (*about*:
+        ``action:<n>``, ``item:<id>`` or ``capture:<id>``) and name an earlier episode by its id (*episode*): a
+        verdict that arrived after that episode ended, kept to be posted on it when this request is recorded
+        (:func:`.outcomes.post_late`). Without the switch either is refused."""
         if not checker_visible_on():
             return {
                 "type": "checker",
                 "accepted": False,
                 "reason": "this session takes no checker lines (UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE is off)",
+            }
+        if (episode is not None or about is not None) and not self.regime_inferred:
+            return {
+                "type": "checker",
+                "accepted": False,
+                "reason": "this session takes no episode or about on a checker line (UNIFY_MEMORY_REGIME is off)",
             }
         if (
             not isinstance(raw, dict)
@@ -1522,15 +1550,66 @@ class RequestRun:
                 "accepted": False,
                 "reason": 'a checker line is exactly {"label": "pass"} or {"label": "fail"}',
             }
-        self.checker_seen.append(
-            {"label": raw["label"], "obs": self._observations_now(), "at": _now()},
-        )
+        if episode is not None and episode != self.episode_id:
+            from . import outcomes
+
+            entry, why = outcomes.late_entry(
+                raw["label"],
+                episode,
+                about,
+                current=self.episode_id,
+                exists=self.stores.evidence.episode_exists,
+            )
+            if entry is None:
+                return {"type": "checker", "accepted": False, "reason": why}
+            self.late_checkers.append(entry)
+            return {
+                "type": "checker",
+                "accepted": True,
+                "label": raw["label"],
+                "episode": episode,
+                "count": len(self.late_checkers),
+            }
+        if self.regime_inferred:
+            from ..signals import valid_about
+
+            about = "" if about is None else about
+            if not valid_about(about):
+                return {
+                    "type": "checker",
+                    "accepted": False,
+                    "reason": "about must be action:<n>, item:<id> or capture:<16 hex digits>",
+                }
+            entry = {"label": raw["label"], "obs": self._observations_now(), "at": _now(), "about": about}
+            self.checker_seen.append(entry)
+            self._tell_listeners(entry)
+        else:
+            self.checker_seen.append(
+                {"label": raw["label"], "obs": self._observations_now(), "at": _now()},
+            )
         return {
             "type": "checker",
             "accepted": True,
             "label": raw["label"],
             "count": len(self.checker_seen),
         }
+
+    def _tell_listeners(self, entry: dict) -> None:
+        """Under ``UNIFY_MEMORY_REGIME=inferred``: tell each of :attr:`signal_listeners` of a verdict taken within this
+        episode (``{"episode_id", "label", "about", "arrived_at", "timing": "in_episode"}``); a listener that raises
+        is logged and never stops the line."""
+        row = {
+            "episode_id": self.episode_id,
+            "label": entry["label"],
+            "about": entry.get("about") or "",
+            "arrived_at": entry["at"],
+            "timing": "in_episode",
+        }
+        for listen in list(self.signal_listeners):
+            try:
+                listen(dict(row))
+            except Exception as exc:  # noqa: BLE001 - a listener never stops the session
+                logger.warning("memory: a signal listener failed (%s)", type(exc).__name__)
 
     def _observations_now(self) -> int | None:
         """How many observations this request's transcript holds now, or None when it cannot be read."""
@@ -1836,6 +1915,11 @@ class RequestRun:
             failures=self.failures,
             librarian=self.librarian_sessions if librarian_on() else None,
         )
+        inferred: tuple[str, list] | None = None
+        if self.regime_inferred:
+            # UNIFY_MEMORY_REGIME=inferred: the regime from this episode's own signals and use record, before it is
+            # written, so the meta, the index and every signal posted below carry it (never a default)
+            inferred = self._infer_regime(ep, lines, counterpart)
         sha = EpisodeWriter(
             stores.episodes,
             stores.blobs,
@@ -1849,28 +1933,95 @@ class RequestRun:
         self._drop_journal()
         # the episode and the redactor it was stored with, for the similar index (:meth:`_index_similar`)
         self._recorded = (ep, redactor)
-        consolidate.post_checker(
-            stores,
-            ep.episode_id,
-            sha,
-            self.solved,
-            self.outcome_at or ended_at,
-        )
-        if self.checker_seen:
-            # The verdicts the actor saw, as agent-visible checker signals
-            consolidate.post_visible_checkers(
+        if inferred is not None:
+            self._post_inferred(ep, sha, ended_at, *inferred)
+        else:
+            consolidate.post_checker(
                 stores,
-                ep,
+                ep.episode_id,
                 sha,
-                list(self.checker_seen),
-                lines,
-                counterpart,
+                self.solved,
+                self.outcome_at or ended_at,
             )
+            if self.checker_seen:
+                # The verdicts the actor saw, as agent-visible checker signals
+                consolidate.post_visible_checkers(
+                    stores,
+                    ep,
+                    sha,
+                    list(self.checker_seen),
+                    lines,
+                    counterpart,
+                )
         bumped = self.state.generations.observe(ep.fingerprints or {})
         self.state.drift |= bumped
         self.state.suspect |= bumped
         self.state.save()
         return ep.episode_id, sha
+
+    def _infer_regime(self, ep: Any, lines: list[dict], counterpart: str) -> tuple[str, list]:
+        """``UNIFY_MEMORY_REGIME=inferred``: set *ep*'s regime from the verdicts the actor saw in this episode (each
+        referring to the action it judged where the pairing is certain) and its use record, with the run's other
+        episodes as the prior (:func:`.outcomes.infer`); a hidden grader's verdict decides nothing. Returns the
+        basis and the visible verdicts' signals, to be posted once the episode is indexed."""
+        from . import consolidate, outcomes
+
+        visible = (
+            consolidate.visible_checker_signals(
+                self.stores,
+                ep,
+                list(self.checker_seen),
+                lines,
+                counterpart,
+                "none",
+            )
+            if self.checker_seen
+            else []
+        )
+        for sig in visible:
+            entry = self.checker_seen[int(sig.signal_id.rsplit(".", 1)[1]) - 1]
+            outcomes.timed(sig, entry["at"], ep.ended_at, entry.get("about") or "")
+        regime, basis = outcomes.infer(self.stores.evidence, ep.episode_id, visible, ep.memory_use)
+        ep.regime = regime
+        for sig in visible:
+            sig.regime = regime
+        return basis, visible
+
+    def _post_inferred(self, ep: Any, sha: str, ended_at: str, basis: str, visible: list) -> None:
+        """``UNIFY_MEMORY_REGIME=inferred``: record the episode's inferred regime with its basis, post its signals with
+        their timing (a regime that cannot observe one masks it, as always) and write their arrival rows, then post
+        the verdicts this session took on earlier episodes (:func:`.outcomes.post_late`), each in turn; a late
+        verdict that cannot be posted is logged and never stops the request."""
+        from ..signals import SignalMasked, post_signal
+        from . import consolidate, outcomes
+
+        stores, eid = self.stores, ep.episode_id
+        stores.evidence.record_regime(eid, ep.regime, basis, ended_at)
+        hidden = consolidate.checker_signal(stores, eid, self.solved, self.outcome_at or ended_at)
+        if hidden is not None:
+            outcomes.timed(hidden, self.outcome_at or ended_at, ended_at)
+        for sig in ([hidden] if hidden is not None else []) + list(visible):
+            try:
+                post_signal(sig, stores.episodes, sha, stores.evidence)
+            except SignalMasked:
+                continue
+            outcomes.log_arrival(self.paths.state_dir, sig, regime_before=None, regime_after=ep.regime)
+        if not self.late_checkers:
+            return
+        lookup = consolidate.EpisodeLookup(stores)
+        for n, entry in enumerate(self.late_checkers, 1):
+            try:
+                outcomes.post_late(
+                    stores,
+                    self.paths.state_dir,
+                    entry,
+                    n,
+                    eid,
+                    checker_visible=checker_visible_on(),
+                    lookup=lookup,
+                )
+            except Exception as exc:  # noqa: BLE001 - logged, value-free; the request goes on
+                consolidate._error(stores, f"late verdict {n} on {entry.get('episode')}: {type(exc).__name__}")
 
     def _report_landed(
         self,

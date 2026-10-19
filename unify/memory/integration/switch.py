@@ -1077,6 +1077,38 @@ def redesign_refusal(settings: Any) -> str | None:
     return None
 
 
+# --- serving on the failure record (C2) and inferred regimes (C3) ---------------------------------------------
+
+REGIME = "UNIFY_MEMORY_REGIME"
+#: ``inferred``: each episode's regime is inferred from the signals that arrive (:func:`..signals.infer_regime`);
+#: empty or ``off``: every episode is ``dense``, as built.
+REGIME_INFERRED = "inferred"
+REGIME_VALUES = ("", "off", REGIME_INFERRED)
+
+
+def parse_regime(v: Any) -> str:
+    """``UNIFY_MEMORY_REGIME``: empty, ``off`` or ``inferred`` (empty is ``off``, or ``inferred`` under the redesign
+    profile)."""
+    value = _stripped(v).lower()
+    if value not in REGIME_VALUES:
+        raise ValueError(f"{REGIME} must be empty, 'off' or 'inferred', not {v!r}"[:200])
+    return value
+
+
+def regime_inferred(settings: Any) -> bool:
+    """Whether each episode's regime is inferred from its signals, never defaulted: ``inferred``, or empty under the
+    redesign profile."""
+    return profile_setting(settings, REGIME) == REGIME_INFERRED
+
+
+def serving_refusal(settings: Any) -> str | None:
+    """Why ``UNIFY_MEMORY_REGIME`` may not run with these settings (the settings named, never a value), or None: it
+    acts on memory (``UNIFY_MEMORY=on``). Refused, rather than run as a silent no-op."""
+    if regime_inferred(settings) and not memory_on(settings):
+        return f"{REGIME}={REGIME_INFERRED} needs {SWITCH}=on; nothing runs"
+    return None
+
+
 # --- the fork lane's route (docs/design/fork-lane-design.md) ----------------------------------------------------
 #: The key proxy's fork route: its base URL and the descriptor carrying its token, handed by the runner's learner to
 #: this controller's spawn alone. Read once (:func:`settle_fork_route_env`), then both names leave the environment;
@@ -1514,6 +1546,7 @@ def profile_refusal(settings: Any) -> str | None:
         return (
             writer_passes_refusal(settings)
             or capture_serving_refusal(settings)
+            or serving_refusal(settings)
             or redesign_refusal(settings)
         )
     return (
@@ -1671,6 +1704,7 @@ PARSERS = {
     LIBRARY_FIXED_ANSWERS_AS_EXAMPLES: parse_library_fixed_answers_as_examples,
     LIBRARY_WITHDRAW_CLOSED_CAPTURES: parse_library_withdraw_closed_captures,
     MEMORY_PROFILE: parse_memory_profile,
+    REGIME: parse_regime,
 }
 
 

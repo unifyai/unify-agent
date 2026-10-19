@@ -509,6 +509,10 @@ class ProductionSettings(BaseSettings):
     # left empty takes the profile's value, and one set to another value, or a setting the profile cannot run with, is
     # refused before anything runs; empty (default): each switch as set.
     UNIFY_MEMORY_PROFILE: str = ""
+    # Each episode's feedback regime: ``inferred`` infers it from the signals that arrive (in the episode or after it),
+    # with the run's own history as the prior, and takes late verdicts on earlier episodes; ``off`` (default; empty
+    # without the redesign profile): every episode is ``dense``, as built.
+    UNIFY_MEMORY_REGIME: str = ""
     # The fork lane's route: the key proxy's /fork/v1 base URL and the inherited
     # descriptor carrying its token, read once at start-up and then removed from the environment (empty: no fork lane).
     UNIFY_MEMORY_LIBRARY_FORK_BASE_URL: str = ""
@@ -826,6 +830,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_NOTEBOOK",
         "UNIFY_MEMORY_WRITER_PASSES",
         "UNIFY_MEMORY_PROFILE",
+        "UNIFY_MEMORY_REGIME",
         mode="before",
     )
     @classmethod
