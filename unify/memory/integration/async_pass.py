@@ -449,6 +449,24 @@ def maybe_spawn(
         # UNIFY_MEMORY_PASSES=off: no worker starts, for a pass or a capture; nothing is delivered
         return {"type": "consolidation", "phase": "passes_off", "episode_id": eid}
     paths = stores.paths
+    from .switch import writer_service_on
+
+    if writer_service_on(settings):
+        # the writer service (unify/memory/writer_service.py) hands the attention ledger's entries: no pass worker
+        # starts; the request only makes sure the service is up
+        from ..writer_service import ensure_service
+
+        state = ensure_service(paths.home, settings=settings, wait_s=0.0)
+        event = {
+            "type": "consolidation",
+            "phase": "service",
+            "episode_id": eid,
+            "status": state.status,
+            "pid": state.pid,
+            **({"detail": state.detail} if state.detail else {}),
+        }
+        _deliver_service(stores, emit, event)
+        return event
     try:
         rec = read_inflight(paths)
         if rec is not None and owns(rec):
@@ -528,6 +546,15 @@ def maybe_spawn(
     ) as exc:  # noqa: BLE001 - a request's end never fails on consolidation
         _error(stores, f"spawn: {type(exc).__name__}: {exc}")
         return {"phase": "error"}
+
+
+def _deliver_service(stores: Any, emit: Callable[[dict], None] | None, event: dict) -> None:
+    from .consolidate import _deliver
+
+    try:
+        _deliver(stores, emit, event)
+    except Exception:  # noqa: BLE001 - reporting never fails a request's end
+        pass
 
 
 def _route_token(settings: Any) -> str | None:
@@ -765,6 +792,7 @@ def drain(
     (pid, start time, group) in this call; the end is verified when the leader is gone and no live process is
     left in its group. A stale record (its worker already gone) is cleared without any signal.
     """
+    service = _drain_service(paths)
     report: dict = {
         "type": "consolidation",
         "phase": "shutdown",
@@ -828,6 +856,14 @@ def drain(
             report.update(ended=(row or {}).get("ended", "killed"), terminated=True)
             clear_inflight(paths, rec.pass_id)
         report["sigkill"] = killed
+    if service is not None:
+        # the writer service: stopped before anything else is reported, and its end verified
+        report["service"] = service
+        if not service["verified"]:
+            report["terminated"] = False
+            report["ended"] = "not_terminated"
+        elif report["terminated"] is None:
+            report["terminated"] = True
     report["after_last_request"] = [
         {
             "pass_id": r.get("pass_id"),
@@ -848,6 +884,33 @@ def drain(
             report["archive"] = {"error": type(exc).__name__}
     _event(paths, report)
     return report
+
+
+def _drain_service(paths: Any) -> dict | None:
+    """With the writer service on: stop it (the stop marker, its pass's deadline and the grace, SIGTERM, SIGKILL) and
+    verify that no process of it is left; every attention entry still owed is then ``not_reached: run_ended``. None
+    with the service off. Called before the key proxy is torn down (the kit's teardown waits for the drain)."""
+    try:
+        from unify.settings import SETTINGS
+
+        from .switch import writer_service_on
+
+        if not writer_service_on(SETTINGS):
+            return None
+    except Exception:  # noqa: BLE001 - no settings here: no service either
+        return None
+    from ..writer_service import stop_service
+
+    done = stop_service(paths.home, "drain", "the run ended")
+    out = {"verified": done.verified, "how": done.how, "leftover_pids": list(done.leftover_pids)}
+    if done.verified:
+        try:
+            from ..attention import Ledger
+
+            out["not_reached"] = len(Ledger(paths.home).mark_not_reached("run_ended"))
+        except Exception as exc:  # noqa: BLE001 - reported, never raised: shutdown must finish
+            out["not_reached_error"] = type(exc).__name__
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:

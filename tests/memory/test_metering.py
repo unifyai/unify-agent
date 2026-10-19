@@ -348,3 +348,42 @@ def test_a_pass_row_names_its_entries_items_usd_and_a_killed_turn_once(tmp_path)
     assert M.pass_row(home, report, metering=False).keys() == {
         "pass_id", "kind", "ended", "commit", "drift_cleared", "suspect_cleared", "seconds", "reconciled", "ended_at",
     }  # fmt: skip
+
+
+@pytest.mark.timeout(300)
+def test_through_the_service_a_killed_turn_is_counted_once_and_the_shares_sum_to_the_pass(
+    tmp_path, monkeypatch
+):
+    """A3 tests 1 and 4 through the writer service: a pass killed mid-turn and resumed has one killed turn on its
+    row and one killed-turn event, and the views sum to the pass's known USD."""
+    from tests.memory import test_writer_service as T
+    from unify.memory import writer_service as ws
+
+    for k, v in {
+        **T.SWITCHES,
+        "UNIFY_MEMORY_METERING": "on",
+        "UNIFY_REQUEST_METADATA_HEADERS": "on",
+    }.items():
+        monkeypatch.setenv(k, v)
+    home, out = tmp_path / "home", tmp_path / "out"
+    monkeypatch.setenv("DRIVER_OUT", str(out))
+    monkeypatch.setenv("DRIVER_BLOCK_AT", "2")
+    T._open_entry(home, 2)
+    over = {"UNIFY_MEMORY_METERING": "on", "UNIFY_REQUEST_METADATA_HEADERS": "on"}
+    assert T._ensure(home, over=over).status == "started"
+    T._until(lambda: (out / "blocked").exists())
+    doc = ws.read_state(home)
+    os.killpg(doc["pgid"], signal.SIGKILL)
+    T._until(lambda: not ws.owns(doc))
+    assert T._ensure(home, over=over).status == "started"
+    row = T._until(lambda: next((r for r in M.metered_passes(home)), None))
+    try:
+        assert (
+            row["usd"]["killed_turns"] == 1 and len(T._events(home, "killed-turn")) == 1
+        )
+        entries = _rows(M.metering_dir(home) / M.ENTRIES_FILE)
+        assert sum(Decimal(r["share_usd"]) for r in entries) == Decimal(
+            row["usd"]["known"]
+        )
+    finally:
+        ws.stop_service(home, "operator", "done", grace_s=0.5, term_s=2)

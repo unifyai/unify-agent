@@ -1,0 +1,702 @@
+"""The writer service (UNIFY_MEMORY_WRITER_SERVICE): exactly one per memory home, a stale holder taken over, a reused pid
+never taken for it, the idle exit, the stop marker with verified termination, its own cap, resumable passes, the PID
+namespace case, the host's lease, and shutdown that returns only once the service is gone (the redesign's A2 tests
+1-10).
+
+The service's process tests run :mod:`tests.memory.service_driver`: the real service loop with a scripted pass, started
+through ``ensure_service`` exactly as the real service is. No model, network or key.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import fcntl
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from unify.agents import run_record as rr
+from unify.memory import attention
+from unify.memory import writer_service as ws
+
+DRIVER = str(Path(__file__).with_name("service_driver.py"))
+SWITCHES = {
+    "UNIFY_MEMORY": "on",
+    "UNIFY_MEMORY_LIBRARY": "on",
+    "UNIFY_TOOLS_IN_CODE": "on",
+    "UNIFY_AGENTS_RUN_RECORD": "on",
+    "UNIFY_MEMORY_ATTENTION_LEDGER": "on",
+    "UNIFY_MEMORY_WRITER_SERVICE": "on",
+    "UNIFY_MEMORY_WRITER_SERVICE_CAP_USD": "10",
+    "UNIFY_MEMORY_LIBRARY_PASS_WALL_S": "60",
+}
+
+
+def _settings(**over) -> SimpleNamespace:
+    return SimpleNamespace(**{**SWITCHES, **over})
+
+
+@pytest.fixture
+def svc(tmp_path, monkeypatch):
+    """A memory home, the switches in the environment (the service's process reads them), the driver's output folder,
+    and every service started here stopped (verified) at the end."""
+    home = tmp_path / "home"
+    out = tmp_path / "out"
+    for k, v in SWITCHES.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("DRIVER_OUT", str(out))
+    started: list[Path] = [home]
+    yield SimpleNamespace(home=home, out=out, homes=started)
+    for h in started:
+        doc = ws.read_state(h)
+        if doc and ws.owns(doc):
+            ws.stop_service(h, "operator", "the test ended", grace_s=0.5, term_s=2)
+
+
+def _ensure(home: Path, **kw) -> ws.ServiceState:
+    return ws.ensure_service(
+        home,
+        settings=_settings(**kw.pop("over", {})),
+        argv_prefix=[sys.executable, DRIVER],
+        wait_s=60,
+        **kw,
+    )
+
+
+def _until(check, timeout=60.0, step=0.05):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        got = check()
+        if got:
+            return got
+        time.sleep(step)
+    raise AssertionError("timed out")
+
+
+def _open_entry(home: Path, n: int = 1) -> list[str]:
+    ledger = attention.Ledger(home)
+    return [
+        ledger.create("message", attention.Refs(record_seq=1000 + i), 1000 + i)
+        for i in range(n)
+    ]
+
+
+def _events(home: Path, kind: str) -> list[dict]:
+    return [r for r in ws.events(home) if r.get("event") == kind]
+
+
+# --- 1: exactly one ----------------------------------------------------------------------------------------------------
+
+
+def test_two_ensure_service_calls_at_once_leave_exactly_one_service(svc):
+    got: list[ws.ServiceState] = []
+    threads = [
+        threading.Thread(target=lambda: got.append(_ensure(svc.home))) for _ in range(2)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(120)
+    assert sorted(s.status for s in got) in (
+        ["busy", "started"],
+        ["running", "started"],
+    ), got
+    doc = _until(
+        lambda: ws.read_state(svc.home) if ws.owns(ws.read_state(svc.home)) else None
+    )
+    holders = ws.lock_holders(ws.service_dir(svc.home) / ws.LOCK_FILE)
+    assert holders == [doc["pid"]]
+    assert ws.group_pids(doc["pgid"], since=doc["proc_start"]) == [doc["pid"]]
+    # a third call finds it running
+    assert _ensure(svc.home).status == "running"
+    assert len(_events(svc.home, "start")) == 1
+
+
+# --- 2 and 3: a stale holder is taken over; a reused pid is never taken for the service ----------------------------------
+
+HOLDER = r"""
+import fcntl, json, os, sys, time
+home, lock = sys.argv[1], sys.argv[2]
+os.setsid()
+fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+stat = open(f"/proc/{os.getpid()}/stat").read().rsplit(")", 1)[-1].split()
+child = os.fork()
+if child == 0:  # a leftover child that kept the lock's descriptor
+    while True:
+        time.sleep(0.1)
+doc = {"v": 1, "pid": os.getpid(), "pgid": os.getpgid(0), "proc_start": stat[19], "state": "running",
+       "heartbeat_at": sys.argv[3], "started_at": sys.argv[3]}
+path = os.path.join(home, "memory-state", "memory-service", "service.json")
+open(path + ".tmp", "w").write(json.dumps(doc)); os.replace(path + ".tmp", path)
+print(child, flush=True)
+while True:
+    time.sleep(0.1)
+"""
+
+
+def test_a_stale_holder_whose_service_died_is_taken_over_and_a_new_service_starts(svc):
+    """A2 test 2: the service is killed -9 but a leftover child still holds its lock; its heartbeat is 90 s old, so the
+    next ensure_service kills the leftover group (verified), writes takeover and starts a new service.
+    """
+    folder = ws.service_dir(svc.home)
+    folder.mkdir(parents=True)
+    old = ws.stamp(datetime.now(timezone.utc) - timedelta(seconds=ws.STALE_S + 5))
+    holder = subprocess.Popen([sys.executable, "-c", HOLDER, str(svc.home), str(folder / ws.LOCK_FILE), old],
+                              stdout=subprocess.PIPE, text=True)  # fmt: skip
+    child = int(holder.stdout.readline())
+    leader_pgid = os.getpgid(holder.pid)
+    os.kill(holder.pid, signal.SIGKILL)
+    holder.wait()
+    assert ws.lock_holders(folder / ws.LOCK_FILE) == [child]
+    got = _ensure(svc.home)
+    assert got.status == "started" and got.took_over
+    assert _events(svc.home, "takeover")
+    assert not ws.group_pids(leader_pgid)  # the leftover was killed
+    doc = ws.read_state(svc.home)
+    assert ws.owns(doc) and doc["pid"] not in (holder.pid, child)
+
+
+def test_a_fresh_heartbeat_is_left_alone_even_if_the_owner_check_fails(svc):
+    """Under 90 s the holder is not stale: nothing is killed and no second service starts."""
+    folder = ws.service_dir(svc.home)
+    folder.mkdir(parents=True)
+    now = ws.stamp(datetime.now(timezone.utc))
+    holder = subprocess.Popen([sys.executable, "-c", HOLDER, str(svc.home), str(folder / ws.LOCK_FILE), now],
+                              stdout=subprocess.PIPE, text=True)  # fmt: skip
+    child = int(holder.stdout.readline())
+    try:
+        os.kill(holder.pid, signal.SIGKILL)
+        holder.wait()
+        assert _ensure(svc.home).status == "running"
+        assert ws.lock_holders(folder / ws.LOCK_FILE) == [child]
+    finally:
+        os.kill(child, signal.SIGKILL)
+
+
+def test_a_service_killed_with_its_lock_is_taken_over_by_the_next_start(svc):
+    """kill -9 frees the lock at once: the next ensure_service starts a service that writes takeover."""
+    assert _ensure(svc.home).status == "started"
+    doc = _until(
+        lambda: ws.read_state(svc.home) if ws.owns(ws.read_state(svc.home)) else None
+    )
+    os.killpg(doc["pgid"], signal.SIGKILL)
+    _until(lambda: not ws.owns(doc))
+    got = _ensure(svc.home)
+    assert got.status == "started"
+    take = _events(svc.home, "takeover")
+    assert take and take[-1]["previous_pid"] == doc["pid"]
+
+
+def test_a_reused_pid_is_never_taken_for_the_service(svc, tmp_path):
+    """A2 test 3: service.json names a live process of someone else (this test's own pid) with another start time:
+    it is not the service, so nothing is signalled and the stop is verified at once."""
+    folder = ws.service_dir(svc.home)
+    folder.mkdir(parents=True)
+    doc = {"v": 1, "pid": os.getpid(), "pgid": os.getpgid(0), "proc_start": "1", "state": "running",
+           "heartbeat_at": ws.stamp(datetime.now(timezone.utc)), "started_at": ws.stamp(datetime.now(timezone.utc))}  # fmt: skip
+    (folder / ws.STATE_FILE).write_text(json.dumps(doc))
+    assert not ws.owns(doc)
+    sent = []
+    done = ws.stop_service(
+        svc.home,
+        "operator",
+        "test",
+        kill=lambda *a: sent.append(a),
+        grace_s=0.1,
+        term_s=0.1,
+    )
+    assert sent == [] and done == ws.Terminated(True, "clean", ())
+    assert os.getpid() in ws.group_pids(os.getpgid(0))  # alive, untouched
+
+
+# --- 4: idle exit -------------------------------------------------------------------------------------------------------
+
+
+def _lock(home: Path) -> int:
+    path = ws.service_dir(home) / ws.LOCK_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return fd
+
+
+class Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        self.t += 1.0
+        return self.t
+
+
+async def _no_pass(*a, **k):  # pragma: no cover - a pass would fail the test
+    raise AssertionError("a pass ran")
+
+
+def test_the_service_exits_after_its_idle_window_with_nothing_open(svc, monkeypatch):
+    """A2 test 4, the idle clock injected: every look advances it a second; the window is 30 looks."""
+    fd = _lock(svc.home)
+    try:
+        why = asyncio.run(
+            ws.service_main(
+                svc.home,
+                fd,
+                runner=_no_pass,
+                settings=_settings(),
+                poll_s=0.0,
+                idle_exit_s=30,
+                monotonic=Clock(),
+            ),
+        )
+    finally:
+        os.close(fd)
+    assert why == "idle-exit"
+    assert (
+        _events(svc.home, "idle-exit")
+        and _events(svc.home, "stop")[-1]["why"] == "idle-exit"
+    )
+    assert ws.read_state(svc.home)["state"] == "stopped"
+    roster = {r["name"]: r for r in rr.read_roster(svc.home)["agents"]}
+    assert roster["writer"]["state"] == "ended"
+
+
+# --- 5 and 10: the stop marker during a pass; shutdown returns only once the service is gone ------------------------------
+
+
+def test_the_stop_marker_during_a_pass_lets_it_run_to_its_deadline_then_kills_verified(
+    svc, monkeypatch
+):
+    """A2 test 5: a pass in flight runs to its deadline (plus the grace); then SIGTERM, and the end is verified."""
+    monkeypatch.setenv("DRIVER_TURNS", "1")
+    monkeypatch.setenv("DRIVER_TURN_SLEEP", "3600")
+    monkeypatch.setenv("UNIFY_MEMORY_LIBRARY_PASS_WALL_S", "3")
+    _open_entry(svc.home)
+    assert _ensure(svc.home).status == "started"
+    doc = _until(
+        lambda: (d := ws.read_state(svc.home)) and d.get("state") == "running" and d
+    )
+    deadline = ws.parse_stamp(doc["pass_deadline"])
+    started = datetime.now(timezone.utc)
+    done = ws.stop_service(svc.home, "operator", "test", grace_s=1.0, term_s=10)
+    assert done.verified and done.leftover_pids == ()
+    assert datetime.now(timezone.utc) >= deadline  # the pass had its deadline
+    assert (
+        done.how in ("term", "kill")
+        and (datetime.now(timezone.utc) - started).total_seconds() < 30
+    )
+    assert not ws.owns(doc) and not ws.group_pids(doc["pgid"], since=doc["proc_start"])
+    # the pass was cancelled through its abort path: its row says so
+    pass_doc = json.loads(
+        (
+            ws.service_dir(svc.home) / ws.TURNS_DIR / doc["pass_id"] / ws.PASS_FILE
+        ).read_text()
+    )
+    assert pass_doc["state"] == "ended"
+
+
+def test_drain_returns_only_once_the_service_is_verified_gone(svc, monkeypatch):
+    """A2 test 10, through the shutdown the kit runs before it stops the key proxy."""
+    from unify.memory.integration import async_pass
+    from unify.memory.integration.paths import Paths
+    from unify.settings import SETTINGS
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_WRITER_SERVICE", "on")
+    monkeypatch.setenv("DRIVER_TURNS", "1")
+    monkeypatch.setenv("DRIVER_TURN_SLEEP", "3600")
+    monkeypatch.setenv("UNIFY_MEMORY_LIBRARY_PASS_WALL_S", "2")
+    _open_entry(svc.home, 2)
+    assert _ensure(svc.home).status == "started"
+    doc = _until(
+        lambda: (d := ws.read_state(svc.home)) and d.get("state") == "running" and d
+    )
+    report = async_pass.drain(Paths.under(svc.home))
+    assert report["service"]["verified"] is True and report["terminated"] is True
+    assert not ws.owns(doc) and not ws.group_pids(doc["pgid"], since=doc["proc_start"])
+    # nothing is left owed: what the run could not reach is marked so
+    states = {e.state for e in attention.Ledger(svc.home).entries().values()}
+    assert states <= {"not_reached", "closed", "unreadable"}
+    # a request that comes after the drain does not start it again
+    assert _ensure(svc.home).status == "refused"
+
+
+# --- 6: the cap ---------------------------------------------------------------------------------------------------------
+
+
+def test_a_cap_below_one_pass_starts_no_pass_and_reports_the_entries_not_reached(
+    svc, monkeypatch
+):
+    """A2 test 6."""
+    monkeypatch.setattr(ws, "pass_reservation", lambda settings, effort: Decimal("1"))
+    from unify.memory.integration import request
+
+    monkeypatch.setattr(request, "actor_effort", lambda: "low")
+    ids = _open_entry(svc.home, 3)
+    fd = _lock(svc.home)
+    try:
+        why = asyncio.run(
+            ws.service_main(
+                svc.home,
+                fd,
+                runner=_no_pass,
+                settings=_settings(UNIFY_MEMORY_WRITER_SERVICE_CAP_USD="0.5"),
+                poll_s=0.0,
+                idle_exit_s=5,
+                monotonic=Clock(),
+            ),
+        )
+    finally:
+        os.close(fd)
+    assert why == "idle-exit"
+    entries = attention.Ledger(svc.home).entries()
+    assert {entries[i].state for i in ids} == {"not_reached"} and {
+        entries[i].why for i in ids
+    } == {"spend_cap"}
+    capped = _events(svc.home, "cap-reached")
+    assert (
+        len(capped) == 1
+        and capped[0]["by"] == "service"
+        and capped[0]["reservation_usd"] == "1"
+    )
+    assert ws.spend_totals(svc.home) == (
+        Decimal(0),
+        Decimal(0),
+    )  # nothing reserved, nothing spent
+
+
+def test_the_cap_counts_every_pass_reserved_and_settled(svc):
+    folder = ws.service_dir(svc.home)
+    folder.mkdir(parents=True)
+    rows = [
+        {"op": "reserve", "pass_id": "a", "usd": "1.5"},
+        {"op": "settle", "pass_id": "a", "usd": "0.25"},
+        {
+            "op": "reserve",
+            "pass_id": "b",
+            "usd": "1.5",
+        },  # killed: its whole reservation stays committed
+    ]
+    (folder / ws.SPEND_FILE).write_text("".join(json.dumps(r) + "\n" for r in rows))
+    assert ws.spend_totals(svc.home) == (Decimal("1.75"), Decimal("0.25"))
+
+
+# --- 7 and 8: resume, and the PID namespace -------------------------------------------------------------------------------
+
+
+def _result(out: Path) -> list:
+    (path,) = list(out.glob("result-*.json"))
+    return json.loads(path.read_text())
+
+
+def _calls(out: Path) -> list[dict]:
+    return [
+        json.loads(line)
+        for line in (out / "model-calls.jsonl").read_text().splitlines()
+    ]
+
+
+def _uninterrupted(tmp_path: Path, monkeypatch) -> list:
+    home, out = tmp_path / "plain-home", tmp_path / "plain-out"
+    monkeypatch.setenv("DRIVER_OUT", str(out))
+    monkeypatch.setenv("DRIVER_BLOCK_AT", "-1")
+    _open_entry(home)
+    assert _ensure(home).status == "started"
+    _until(lambda: list(out.glob("result-*.json")))
+    ws.stop_service(home, "operator", "done", grace_s=0.5, term_s=2)
+    return _result(out)
+
+
+def test_a_pass_killed_at_turn_3_resumes_at_turn_3_with_one_killed_turn_and_the_same_result(
+    svc, tmp_path, monkeypatch
+):
+    """A2 test 7."""
+    want = _uninterrupted(tmp_path, monkeypatch)
+    monkeypatch.setenv("DRIVER_OUT", str(svc.out))
+    monkeypatch.setenv("DRIVER_BLOCK_AT", "3")
+    _open_entry(svc.home)
+    assert _ensure(svc.home).status == "started"
+    _until(lambda: (svc.out / "blocked").exists())
+    doc = ws.read_state(svc.home)
+    pass_id = doc["pass_id"]
+    os.killpg(doc["pgid"], signal.SIGKILL)
+    _until(lambda: not ws.owns(doc))
+    assert ws.pending_passes(svc.home) == [pass_id]
+    assert (
+        json.loads(
+            (ws.service_dir(svc.home) / ws.TURNS_DIR / pass_id / "3.json").read_text()
+        )["state"]
+        == "pending"
+    )
+    assert _ensure(svc.home).status == "started"
+    _until(lambda: list(svc.out.glob("result-*.json")))
+    assert _result(svc.out) == want
+    calls = _calls(svc.out)
+    first, second = [c for c in calls if not c["resume"]], [
+        c for c in calls if c["resume"]
+    ]
+    assert [c["turn"] for c in first] == [0, 1, 2, 3] and [
+        c["turn"] for c in second
+    ] == [3, 4]
+    killed = _until(lambda: _events(svc.home, "killed-turn"))
+    assert [k["turn_id"] for k in killed] == [f"{pass_id}/3"]
+    assert _events(svc.home, "resume")[0]["pass_id"] == pass_id
+    row = next(
+        r
+        for r in (
+            json.loads(x)
+            for x in (svc.home / "memory-state" / "pass-results.jsonl")
+            .read_text()
+            .splitlines()
+        )
+    )
+    assert row["pass_id"] == pass_id and row["ended"] == "landed"
+
+
+@pytest.mark.skipif(
+    shutil.which("bwrap") is None, reason="bubblewrap makes the PID namespace"
+)
+def test_a_service_started_in_a_pid_namespace_that_dies_is_resumed_by_the_next_request(
+    svc, monkeypatch
+):
+    """A2 test 8, the paper adapter's case: a request in its own PID namespace starts the service; killing the
+    namespace takes the service with it (its init ends every process in it), and the next request's ensure_service
+    starts one that takes over and resumes the pass, losing at most one turn."""
+    monkeypatch.setenv("DRIVER_BLOCK_AT", "2")
+    _open_entry(svc.home)
+    request = (
+        "import sys; from types import SimpleNamespace; from unify.memory import writer_service as ws; "
+        f"s = SimpleNamespace(**{SWITCHES!r}); "
+        f"print(ws.ensure_service({str(svc.home)!r}, settings=s, argv_prefix=[sys.executable, {DRIVER!r}], wait_s=60).status, flush=True); "
+        "import time; time.sleep(3600)"
+    )
+    ns = subprocess.Popen(
+        ["bwrap", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", "--proc", "/proc", "--",
+         sys.executable, "-c", request],
+        cwd=str(Path(__file__).resolve().parents[2]),
+        stdout=subprocess.PIPE,
+        text=True,
+    )  # fmt: skip
+    try:
+        assert ns.stdout.readline().strip() == "started"
+        _until(lambda: (svc.out / "blocked").exists())
+        ns.kill()  # the namespace's init ends, and every process in the namespace with it
+        ns.wait()
+    finally:
+        if ns.poll() is None:
+            ns.kill()
+    _until(
+        lambda: not ws.lock_holders(ws.service_dir(svc.home) / ws.LOCK_FILE), timeout=30
+    )
+    got = _ensure(svc.home)
+    assert got.status == "started"
+    _until(lambda: list(svc.out.glob("result-*.json")))
+    assert len(_events(svc.home, "killed-turn")) <= 1
+    assert _events(svc.home, "takeover")
+
+
+# --- 9: the lease --------------------------------------------------------------------------------------------------------
+
+
+def test_with_the_lease_31_minutes_away_the_service_refuses_a_new_pass_and_stops(
+    svc, monkeypatch
+):
+    """A2 test 9: the service never runs past the lease less 30 minutes, so a pass (60 s wall clock) that would is
+    not started; the entries are not reached (lifetime)."""
+    from unify.memory.integration import request
+
+    monkeypatch.setattr(request, "actor_effort", lambda: "low")
+    monkeypatch.setattr(
+        ws, "pass_reservation", lambda settings, effort: Decimal("0.01")
+    )
+    lease = ws.stamp(datetime.now(timezone.utc) + timedelta(minutes=31))
+    lease = lease[:-5] + "Z"  # whole seconds
+    ids = _open_entry(svc.home)
+    fd = _lock(svc.home)
+    try:
+        why = asyncio.run(
+            ws.service_main(
+                svc.home,
+                fd,
+                runner=_no_pass,
+                settings=_settings(UNIFY_HOST_LEASE_END=lease),
+                poll_s=0.0,
+            ),
+        )
+    finally:
+        os.close(fd)
+    assert why == "lease"
+    assert _events(svc.home, "lifetime")[-1]["why"] == "lease"
+    entries = attention.Ledger(svc.home).entries()
+    assert entries[ids[0]].state == "not_reached" and entries[ids[0]].why == "lifetime"
+    # 29 minutes away, no service starts at all
+    near = ws.stamp(datetime.now(timezone.utc) + timedelta(minutes=29))[:-5] + "Z"
+    got = ws.ensure_service(svc.home, settings=_settings(UNIFY_HOST_LEASE_END=near))
+    assert got.status == "refused" and "lease" in got.detail
+
+
+def test_the_lifetime_is_36_hours_and_never_past_the_lease_less_30_minutes():
+    start = datetime(2026, 10, 20, 0, 0, tzinfo=timezone.utc)
+    end, why = ws.lifetime_end(start, _settings())
+    assert end - start == timedelta(hours=36) and why == "lifetime"
+    end, why = ws.lifetime_end(
+        start, _settings(UNIFY_HOST_LEASE_END="2026-10-20T10:00:00Z")
+    )
+    assert end == datetime(2026, 10, 20, 9, 30, tzinfo=timezone.utc) and why == "lease"
+
+
+# --- resumable turns, directly ---------------------------------------------------------------------------------------------
+
+
+def test_resumable_turns_replay_what_was_done_and_count_a_lost_turn_once(tmp_path):
+    made = []
+
+    async def model(messages, tools):
+        made.append(len(messages))
+        return {"role": "assistant", "content": f"r{len(messages)}"}, "0.002"
+
+    async def run(turn, n):
+        msgs = [{"role": "user", "content": "go"}]
+        for _ in range(n):
+            reply, _ = await turn(msgs, [])
+            msgs += [reply, {"role": "user", "content": "more"}]
+        return msgs
+
+    folder = tmp_path / "turns" / "p1"
+    first = ws.ResumableTurn(model, folder)
+    full = asyncio.run(run(first, 3))
+    # the third turn's file left pending, as a kill during its call leaves it
+    doc = json.loads((folder / "2.json").read_text())
+    doc["state"] = "pending"
+    (folder / "2.json").write_text(json.dumps(doc))
+    made.clear()
+    again = ws.ResumableTurn(model, folder)
+    assert asyncio.run(run(again, 3)) == full
+    assert made == [5] and again.replayed == 2 and again.killed == ["p1/2"]
+    # a conversation that differs from the recorded one is made again from there, never answered from a file
+    made.clear()
+    other = ws.ResumableTurn(model, folder)
+
+    async def differ():
+        reply, _ = await other([{"role": "user", "content": "something else"}], [])
+        return reply
+
+    asyncio.run(differ())
+    assert made == [1] and other.diverged and other.killed == []
+
+
+# --- §10.1 and §10.5: the proxy's own cap, and entries a crash left handed -----------------------------------------------
+
+
+class Recording:
+    """A runner that records each pass's entries and returns its report (*reasons* as the pass's outcome's)."""
+
+    def __init__(self, reasons=()):
+        self.passes: list[tuple[str, list[str], bool]] = []
+        self.reasons = list(reasons)
+
+    async def __call__(
+        self,
+        home,
+        pass_id,
+        handed,
+        *,
+        resume,
+        folder,
+        journal_start,
+        effort,
+        settings,
+        stop=None,
+    ):
+        from unify.memory.integration.consolidate import AttentionPassReport
+
+        self.passes.append((pass_id, [e.entry for e in handed], resume))
+        return AttentionPassReport(
+            pass_id,
+            [e.entry for e in handed],
+            "error" if self.reasons else "landed",
+            outcome=SimpleNamespace(
+                reasons=list(self.reasons), items_merged=[], commit=None, pool=None
+            ),
+            reads=attention.PassReads(),
+            usd_known="0.001",
+            settle_usd="0.001",
+        )
+
+
+def _in_process(home, runner, monkeypatch, **over):
+    from unify.memory.integration import request
+
+    monkeypatch.setattr(request, "actor_effort", lambda: "low")
+    monkeypatch.setattr(
+        ws, "pass_reservation", lambda settings, effort: Decimal("0.01")
+    )
+    fd = _lock(home)
+    try:
+        return asyncio.run(
+            ws.service_main(
+                home,
+                fd,
+                runner=runner,
+                settings=_settings(**over),
+                poll_s=0.0,
+                idle_exit_s=3,
+                monotonic=Clock(),
+            ),
+        )
+    finally:
+        os.close(fd)
+
+
+def test_a_writer_call_the_proxy_refuses_for_its_cap_is_the_cap_reached(
+    svc, monkeypatch
+):
+    """The two caps disagree (§10.1): the service reserved under its own, the proxy refused for its lane's cap. The
+    service reads that as the cap reached: the entries still owed are not reached (spend_cap) and no pass follows.
+    """
+    ids = _open_entry(svc.home, 6)
+    runner = Recording(
+        reasons=[
+            "model call failed: WriterCallError: writer call failed: HTTPStatusError (http_403)"
+        ]
+    )
+    assert _in_process(svc.home, runner, monkeypatch) == "idle-exit"
+    assert len(runner.passes) == 1
+    capped = _events(svc.home, "cap-reached")
+    assert [c["by"] for c in capped] == ["proxy"]
+    entries = attention.Ledger(svc.home).entries()
+    left = [entries[i] for i in ids if i not in runner.passes[0][1]]
+    assert (
+        left
+        and {e.state for e in left} == {"not_reached"}
+        and {e.why for e in left} == {"spend_cap"}
+    )
+
+
+def test_entries_a_crash_left_handed_go_back_and_are_handed_again(svc, monkeypatch):
+    """§10.5: on start, every entry handed to a pass that is not live and has no resumable turns goes back
+    (``service_restart``) and is handed to the next pass."""
+    (eid,) = _open_entry(svc.home)
+    attention.Ledger(svc.home).hand("dead" * 4, 4)
+    runner = Recording()
+    assert _in_process(svc.home, runner, monkeypatch) == "idle-exit"
+    rows = attention.Ledger(svc.home).rows()
+    assert any(
+        r.get("op") == "return"
+        and r.get("why") == "service_restart"
+        and r.get("entry") == eid
+        for r in rows
+    )
+    assert (
+        runner.passes and runner.passes[0][1] == [eid] and runner.passes[0][2] is False
+    )

@@ -1016,6 +1016,8 @@ class RequestRun:
         self._landed: list[dict] = (
             []
         )  # library mode: worker results applied at open, reported at finish
+        #: UNIFY_MEMORY_WRITER_SERVICE=on: what ensure_service found at the request's start
+        self.service: Any = None
 
     @property
     def memory_main(self) -> str:
@@ -1080,6 +1082,13 @@ class RequestRun:
             self.pin = served_head(self.stores.memory)
             self.surfacing = surfacing_options(SETTINGS)
             self._open_library_mode(consolidate)
+            from .switch import writer_service_on
+
+            if writer_service_on(SETTINGS):
+                # the writer service: up at every request's start (never waited for; it never fails the request)
+                from ..writer_service import ensure_service
+
+                self.service = ensure_service(paths.home, settings=SETTINGS, wait_s=0.0)
         else:
             self.pin = self.stores.memory.head()
             # the library test kit beside it when the library's tests use it (library mode, stage 5 checks)

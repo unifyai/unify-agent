@@ -1918,3 +1918,317 @@ def _served_lag(stores: Stores) -> int | None:
 
 #: Pass end codes after which a model call may still be in flight at the writer's proxy.
 _CALL_MAY_BE_IN_FLIGHT = frozenset({"deadline", "writer_error", "route_not_in_effect"})
+
+
+# --- the writer service's pass over the attention ledger's entries (UNIFY_MEMORY_WRITER_SERVICE=on) -------------------
+
+
+@dataclass
+class AttentionPassReport:
+    """What one writer-service pass did, for the service (its settle, read checks and returns) and the metering row
+    (:func:`..metering.write_pass_row`). Money is a decimal string or ``unknown``."""
+
+    pass_id: str
+    #: the entries handed to the pass (ids), and the PassRequest the writer got
+    entries: list[str]
+    ended: str
+    outcome: PassOutcome | None = None
+    reconciled: dict | None = None
+    #: the pass's known USD (the writer lane's journal window when it was read, else the pass's own turns)
+    usd_known: str = UNKNOWN
+    #: calls with no price (booked at the worst case of one writer call), and that booking
+    unknown_calls: int = 0
+    worst_case_booked: str = "0"
+    #: model turns lost to a killed service and made again (each once, by turn id)
+    killed_turns: list[str] = field(default_factory=list)
+    #: what the service settles against its cap (None: nothing readable, so the reservation stays committed)
+    settle_usd: str | None = None
+    reads: Any = None
+    delivered: list[int] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    turns: int = 0
+    replayed_turns: int = 0
+    seconds: float = 0.0
+    #: set by the service: the entries verified read, and those that went back
+    read: list[str] = field(default_factory=list)
+    returned: list[str] = field(default_factory=list)
+
+
+def _pass_reads(stores: Stores, pass_id: str, writer: Any) -> Any:
+    """The pass's read evidence: ``read-log.json`` beside its records when the pass wrote it, else gathered now from
+    its agents' read logs, its tool rows and its boxes' open rows, and kept there."""
+    from .. import attention
+
+    folder = Path(stores.paths.state_dir) / "passes" / pass_id
+    path = folder / attention.READ_LOG_FILE
+    if path.is_file():
+        return attention.pass_reads(stores.paths.state_dir, pass_id)
+
+    def rows(name: str) -> list[dict]:
+        out = []
+        try:
+            for line in (folder / name).read_text(encoding="utf-8").splitlines():
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict):
+                    out.append(row)
+        except OSError:
+            pass
+        return out
+
+    reads = attention.PassReads.collect(
+        read_logs=dict(getattr(writer, "_read_logs", {}) or {}),
+        tool_events=rows("tool-events.jsonl"),
+        box_opens=rows("box-opens.jsonl"),
+    )
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        attention.write_pass_reads(path, reads)
+    except OSError:
+        pass
+    return reads
+
+
+async def run_attention_pass(
+    home: Path | str,
+    pass_id: str,
+    handed: list,
+    *,
+    resume: bool,
+    folder: Path,
+    journal_start: int | None,
+    effort: str,
+    settings: Any,
+    stop: asyncio.Event | None = None,
+    emit: Callable[[dict], None] | None = None,
+    turn_factory: Callable[..., Any] | None = None,
+    helper_factory: Callable[..., Any] | None = None,
+) -> AttentionPassReport:
+    """One writer pass over the attention entries *handed* (:class:`..attention.AttentionEntry`), run by the writer
+    service: the pass's agent and its helpers on the run record, the writer's brief given the entries (B3), the gate,
+    the compare-and-swap merge and the item records as any library-mode pass; its model turns checkpointed under
+    *folder* (:class:`..writer_service.ResumableTurn`; with *resume*, the turns already done are answered from there),
+    its calls priced from the writer lane's journal window from the pass's first start (*journal_start*), and the run
+    guard's reserve and settle as before. *turn_factory* and *helper_factory* replace the writer's and the helpers'
+    model turns (tests: scripted turns). Never raises for a pass that failed: the report says how it ended."""
+    from unify.agents.run_record import clean_text
+
+    from .. import attention
+    from ..writer_service import ResumableTurn
+    from .async_pass import Supervisor
+    from .switch import library_pass_wall_s, writer_journal
+
+    home = Path(home)
+    paths = Paths.under(home)
+    stores = open_stores(paths, busy_timeout_s=60.0)
+    cfg = writer_settings(settings)
+    level = effort.strip().lower()
+    if level not in cfg.effort_scale or level not in cfg.max_calls:
+        return AttentionPassReport(
+            pass_id,
+            [e.entry for e in handed],
+            "error",
+            notes=["no pass limits for the effort"],
+            reads=attention.PassReads(),
+        )
+    scale = cfg.effort_scale[level]
+    cap = cfg.cap_usd * scale
+    reserve = cap / cfg.max_calls[level]
+    report = AttentionPassReport(pass_id, [e.entry for e in handed], "nothing")
+    if cfg.run_guard_usd is not None and committed_writer_usd(stores) + cap > cfg.run_guard_usd and not resume:
+        _deliver(stores, emit, _end_event(stores, pass_id, None, [], 0.0, "run_guard"))
+        report.ended = "run_guard"
+        report.reads = attention.PassReads()
+        return report
+    if library_fork(settings):
+        capture_settled_forks(stores, settings)
+    wall_s = float(library_pass_wall_s(settings))
+    supervise = Supervisor(
+        wall_s,
+        stop if stop is not None else asyncio.Event(),
+        journal=writer_journal(settings),
+        models=(cfg.model.split("@", 1)[0],),
+    )
+    lookup = EpisodeLookup(stores)
+    common = dict(
+        action_lookup=lookup.action,
+        **surfacing_options(settings).gate_kwargs(),
+        qa=QAConfig.from_settings(settings),
+    )
+    gate = Gate(
+        stores.memory,
+        stores.evidence,
+        stores.blobs,
+        **common,
+        library_mode=library_checks.config_for(stores, lookup, checker_visible=checker_visible(settings)),
+    )
+    # the same configuration as a library-mode pass (run_due_passes), on the run record, held by the service
+    config = PassConfig(
+        model=cfg.model,
+        effort=effort,
+        max_calls=STEP_GUARD if cfg.route is not None else cfg.max_calls[level],
+        deadline_s=supervise.pass_deadline_s,
+        max_usd=None if cfg.route is not None else cap,
+        staging_root=str(Path(paths.state_dir) / "memory-staging") if library_fork(settings) else None,
+        pass_record_root=str(Path(paths.state_dir) / "passes"),
+        notebook_state=str(paths.state_dir) if notebook_enabled(settings) else None,
+        pool=library_pool(settings),
+        tools_in_code=getattr(settings, "UNIFY_TOOLS_IN_CODE", "off") == "on",
+        edit_tools=library_edit_tools(settings),
+        fork=library_fork(settings),
+        compact=library_compact(settings),
+        coverage_rule=library_coverage(settings),
+        trees_cache=str(Path(paths.state_dir) / "memory-workspace-trees"),
+        similar_index=str(_similar.index_dir(paths.state_dir)),
+        worktree_git=str(paths.worktree_git) if Path(paths.worktree_git).is_dir() else None,
+        show_usage=True,
+        library_mode=True,
+        max_reads=library_max_reads(settings),
+        run_home=str(home),
+        service_held=True,
+    )
+    session = f"writer.{pass_id}"
+    if turn_factory is not None:
+        base_turn = turn_factory()
+    elif cfg.route is not None:
+        base_turn = unillm_turn(cfg.model, effort, route=cfg.route, session=session)
+    else:
+        base_turn = unillm_turn(cfg.model, effort)
+    inputs = {"pass_id": pass_id, "entries": report.entries}
+    turn = ResumableTurn(base_turn, folder, inputs=inputs, scrub=clean_text)
+    helper_turns: list[ResumableTurn] = []
+    helpers = _helper_turns(settings, effort, True) if helper_factory is None else {
+        "helper_turn": helper_factory,
+        "helper_refusal": None,
+    }
+    if helpers.get("helper_turn") is not None:
+        made = helpers["helper_turn"]
+        import inspect
+
+        takes_session = bool(inspect.signature(made).parameters)
+
+        def resumable_helper(session_label: str | None = None) -> Any:
+            # the k-th helper of the pass checkpoints under h<k>: a resumed pass starts its helpers in the same order
+            inner = made(session_label) if takes_session else made()
+            rt = ResumableTurn(inner, folder / f"h{len(helper_turns)}", inputs=inputs, scrub=clean_text)
+            helper_turns.append(rt)
+            return rt
+
+        helpers = {"helper_turn": resumable_helper, "helper_refusal": None}
+    rows: list[CostRow] = []
+    began: list[float | None] = [None]
+
+    def progress(phase: str, **fields: Any) -> None:
+        seconds = round(max(0.0, time.monotonic() - began[0]), 3) if began[0] is not None else 0.0
+        _deliver(stores, emit, {"type": "consolidation", "phase": phase, "pass_id": pass_id, "seconds": seconds, **fields})
+
+    writer = WriterPass(
+        stores.memory,
+        _ReportingGate(gate, progress),
+        stores.evidence,
+        lookup.episode,
+        recording_turn(_reporting_turn(turn, progress), rows, cfg.model),
+        config,
+        redactor=Redactor.from_environ(os.environ),
+        **helpers,
+    )
+    req = PassRequest("attention", None, attention.pass_episodes(handed), False, None, attention=list(handed))
+    if not resume:
+        try:
+            _reserve(stores, pass_id, cap, reserve, cfg.max_calls[level], scale)
+        except OSError as exc:
+            _error(stores, f"{pass_id}: ledger: {type(exc).__name__}: {exc}")
+            report.ended = "error"
+            report.reads = attention.PassReads()
+            return report
+    start = _start_event(req, pass_id, cfg.model, effort, cap, cfg.max_calls[level], scale)
+    start.update(pass_kind="attention", attention_entries=list(report.entries), resumed=bool(resume))
+    _deliver(stores, emit, start)
+    started = time.monotonic()
+    began[0] = started
+    outcome: PassOutcome | None = None
+    failure_code: str | None = None
+    recon: dict | None = None
+    try:
+        supervised = await supervise(lambda: writer.run(req, pass_id))
+        outcome = supervised.outcome
+        report.ended = supervised.ended
+        if outcome is None:
+            failure_code = "deadline" if supervised.ended == "deadline" else "writer_error"
+    except Exception as exc:  # noqa: BLE001 - the pass recorded itself
+        report.ended = "error"
+        failure_code = "writer_error"
+        report.notes.append(redact_error(f"pass error: {type(exc).__name__}: {exc}")[:300])
+        _error(stores, f"{pass_id}: pass error: {type(exc).__name__}")
+    finally:
+        start_at, end_at = supervise.window
+        if resume and journal_start is not None:
+            # the window from the pass's first start: the killed turn's call is in it once
+            supervise.window = (journal_start, end_at)
+        try:
+            recon = await supervise.reconcile(prices=writer_prices(settings))
+        except Exception as exc:  # noqa: BLE001
+            _error(stores, f"{pass_id}: reconcile: {type(exc).__name__}")
+            recon = unavailable_reconcile()
+        # the pass's cost rows and transcript go on the episodes repo's head (an attention pass has no one episode
+        # that made it due); its episodes are in its end event
+        try:
+            head = stores.episodes.head()
+        except Exception:  # noqa: BLE001 - no episode recorded yet: nothing to attach the notes to
+            head = ""
+        if head:
+            _note_costs(stores, head, (req.episodes or [""])[0], pass_id, rows, effort)
+            _note_transcript(stores, head, pass_id, writer)
+        killed = list(turn.killed) + [k for h in helper_turns for k in h.killed]
+        report.killed_turns = killed
+        report.turns = turn.n + sum(h.n for h in helper_turns)
+        report.replayed_turns = turn.replayed + sum(h.replayed for h in helper_turns)
+        known, unknown, _calls = _spend(outcome, rows)
+        if recon is not None and recon.get("journal") == "read":
+            report.usd_known = recon["usd"]
+            report.unknown_calls = int(recon["unknown"])
+            worst = Decimal(recon["worst_case_usd"])
+            report.worst_case_booked = _usd(Decimal(report.unknown_calls) * worst)
+            report.settle_usd = recon["booked_usd"]
+            try:
+                _settle(stores, pass_id, recon["usd"], recon["unknown"], worst)
+            except OSError as exc:
+                _error(stores, f"{pass_id}: ledger: {type(exc).__name__}: {exc}")
+        else:
+            # no readable journal: the pass's own figures; the killed turns and the unpriced calls at the worst case
+            from ..reconcile import WRITER_CALL_WORST_CASE_USD
+
+            report.usd_known = known
+            report.unknown_calls = int(unknown) + len(killed)
+            report.worst_case_booked = _usd(Decimal(report.unknown_calls) * WRITER_CALL_WORST_CASE_USD)
+            report.settle_usd = None
+        report.reconciled = recon
+        report.outcome = outcome
+        report.seconds = round(time.monotonic() - started, 3)
+        event = _end_event(stores, pass_id, outcome, rows, time.monotonic() - started, failure_code)
+        event.update(
+            episodes=list(req.episodes),
+            result=_result(outcome),
+            pass_kind="attention",
+            ended=report.ended,
+            reconciled=recon,
+            killed_turns=len(killed),
+        )
+        if recon is not None and recon.get("journal") == "read":
+            event["usd"], event["unknown_cost_calls"] = recon["usd"], recon["unknown"]
+        _deliver(stores, emit, event)
+        report.reads = _pass_reads(stores, pass_id, writer)
+        report.delivered = sorted(attention.delivered_seqs(home, pass_id))
+    if outcome is not None:
+        report.notes.extend(str(r) for r in (outcome.reasons or ()))
+    _records_step(stores, settings, [pass_id] if stores.evidence.pass_exists(pass_id) else [], emit, supervise.stop.is_set)
+    from ..memory_writer import publish
+
+    try:
+        served = publish(stores.memory)
+        _deliver(stores, emit, {"type": "consolidation", "phase": "published", "served": served, "served_lag_commits": _served_lag(stores)})
+    except Exception as exc:  # noqa: BLE001 - served stays where it was
+        _error(stores, f"publish: {type(exc).__name__}")
+    return report

@@ -1,0 +1,1366 @@
+"""The writer service (``UNIFY_MEMORY_WRITER_SERVICE=on``): one detached writer per memory home, spawned and owned by
+the harness, that hands the attention ledger's entries to writer passes until nothing is open.
+
+**Why a service.** A pass worker started at a request's end lives inside that request's process tree: in the paper
+adapter's PID namespace the session's 600 s kill took it down with the request, and a third to a half of the writer's
+passes were lost at HIGH and MED. The service outlives requests: :func:`ensure_service` starts it (at a request's start
+and end, and at a checkpoint) by a double fork and ``setsid`` into its own session, so no request owns it; it is never
+started by a runner or an adapter.
+
+**Exactly one.** The service holds ``flock(service.lock)`` for its whole life (on a descriptor no child inherits). A
+second :func:`ensure_service` finds the lock held and leaves it alone. A holder whose heartbeat is older than
+:data:`STALE_S` and whose ``owns`` check fails (pid, process group, ``/proc`` start time: a reused pid is never taken
+for the service) is a leftover of a dead service: its process group is killed (verified), a ``takeover`` row is
+written and a new service starts. A service that died with its lock (``kill -9``) is taken over by the next start the
+same way: the new service writes ``takeover`` naming the old one.
+
+**The loop** (:func:`service_main`): sync the ledger; stop at the stop marker; at the cap, every entry still owed is
+``not_reached: spend_cap`` and the service idles; with entries open, one pass (``hand(k)``, the pass, ``verify_reads``,
+then the unread ones go back); else idle, and after :data:`IDLE_EXIT_S` with nothing open it exits. A heartbeat thread
+rewrites ``service.json`` every :data:`HEARTBEAT_S`.
+
+**Bounds, stated, never steering:** the service's lifetime (:data:`LIFETIME_S`, and never past the host's lease less
+:data:`LEASE_MARGIN_S`), its own spend cap (each pass reserves its worst case, the price per token times the pass's
+token allowance, before it starts, and settles from the writer lane's journal after it; an unpriced call is booked at
+its worst case), and each pass's wall clock. The key proxy's writer-lane cap applies independently: a call the proxy
+refuses for its cap (HTTP 402 or 403) is the cap reached.
+
+**Resumable passes.** Before each model call of a pass (the writer's and each helper's), ``turns/<pass>/<n>.json`` is
+written ``pending`` with the conversation so far and the pass's inputs; after it, ``done`` with the reply and its
+usage. A service that restarts with a pass whose last turn is ``pending`` runs that pass again under the same pass id
+with its entries still handed to it: the turns already done are answered from their files (no model call), and the
+lost turn is made again and counted once as ``killed`` (billed but lost: its cost is in the writer lane's journal
+window, which the pass's settle reads from the pass's first start, so it is never counted twice).
+
+**Stopping.** :func:`stop_service` writes ``service.stop``, lets a pass in flight run to its deadline plus
+:data:`STOP_GRACE_S`, then ``SIGTERM`` to the service's process group, :data:`TERM_S`, ``SIGKILL``, and checks in
+``/proc`` that no process of the group is left; :class:`Terminated` says how it ended and whether that was verified.
+Shutdown (:func:`.integration.async_pass.drain`) stops the service and returns only once it is verified gone, before
+the kit stops the key proxy.
+
+Files, under ``<home>/memory-state/memory-service/`` (harness-only; no box binds them): ``service.lock``,
+``service.json``, ``service.stop``, ``service-events.jsonl``, ``spend.jsonl`` (reserve and settle rows), and
+``turns/<pass_id>/`` (``pass.json`` and one file per model turn).
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import fcntl
+import hashlib
+import json
+import os
+import secrets
+import signal
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Literal, Optional
+
+#: Where the service keeps its state, under the memory state directory.
+SERVICE_DIR = "memory-service"
+LOCK_FILE = "service.lock"
+STATE_FILE = "service.json"
+STOP_FILE = "service.stop"
+EVENTS_FILE = "service-events.jsonl"
+SPEND_FILE = "spend.jsonl"
+TURNS_DIR = "turns"
+PASS_FILE = "pass.json"
+
+#: The heartbeat interval, and the age after which a holder that is not the recorded service is taken over.
+HEARTBEAT_S = 30.0
+STALE_S = 90.0
+#: The service exits after this long idle with nothing open.
+IDLE_EXIT_S = 1800.0
+#: Its lifetime, and how long before the host's lease it stops.
+LIFETIME_S = 36 * 3600.0
+LEASE_MARGIN_S = 1800.0
+#: :func:`stop_service`: the grace after a pass's deadline, then SIGTERM, this long, then SIGKILL.
+STOP_GRACE_S = 30.0
+TERM_S = 10.0
+SETTLE_S = 5.0
+#: How often the idle loop looks at the ledger (a new entry makes a pass due within this).
+POLL_S = 2.0
+#: How long :func:`ensure_service` waits for a service it started to say it is up.
+START_WAIT_S = 10.0
+
+STATES = ("starting", "running", "idle", "stopping", "stopped")
+StopBy = Literal["drain", "operator", "cap", "lease"]
+STOP_BY = ("drain", "operator", "cap", "lease")
+#: What the entries the service could not reach are marked with, by why it stopped.
+NOT_REACHED_BY = {
+    "drain": "run_ended",
+    "operator": "service_stopped",
+    "cap": "spend_cap",
+    "lease": "lifetime",
+}
+EVENTS = (
+    "start",
+    "stop",
+    "idle-exit",
+    "takeover",
+    "resume",
+    "killed-turn",
+    "cap-reached",
+    "lifetime",
+    "pass",
+    "refused",
+    "error",
+)
+MODULE = "unify.memory.writer_service"
+
+
+def service_dir(home: Path | str) -> Path:
+    return Path(home) / "memory-state" / SERVICE_DIR
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def stamp(at: datetime) -> str:
+    return (
+        at.astimezone(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def parse_stamp(text: Any) -> Optional[datetime]:
+    if not isinstance(text, str) or not text.endswith("Z"):
+        return None
+    try:
+        return datetime.fromisoformat(text[:-1]).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+# --- results --------------------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ServiceState:
+    """What :func:`ensure_service` found or did: ``off`` (the switch is off), ``refused`` (settings, or the lease),
+    ``started``, ``running`` (one is up), ``busy`` (the lock is held by a live process that is not the recorded
+    service: left alone), ``error`` (never raised: why is in *detail*)."""
+
+    status: Literal["off", "refused", "started", "running", "busy", "error"]
+    pid: Optional[int] = None
+    detail: str = ""
+    took_over: bool = False
+
+
+@dataclass(frozen=True)
+class Terminated:
+    """How :func:`stop_service` ended the service: ``clean`` (it stopped at the marker), ``term`` or ``kill``; and
+    whether no process of its group is left (*verified*), with any that is."""
+
+    verified: bool
+    how: Literal["clean", "term", "kill"]
+    leftover_pids: tuple[int, ...] = ()
+
+
+# --- files ----------------------------------------------------------------------------------------------------------
+
+
+def _atomic_json(path: Path, doc: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(doc, sort_keys=True, default=str) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _append(path: Path, row: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    try:
+        data = (json.dumps(row, sort_keys=True, default=str) + "\n").encode("utf-8")
+        while data:
+            data = data[os.write(fd, data) :]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _rows(path: Path) -> list[dict]:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return []
+    out = []
+    for line in data[: data.rfind(b"\n") + 1].split(b"\n"):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            out.append(row)
+    return out
+
+
+def read_state(home: Path | str) -> Optional[dict]:
+    """``service.json``, or None."""
+    try:
+        doc = json.loads((service_dir(home) / STATE_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def events(home: Path | str) -> list[dict]:
+    """Every ``service-events.jsonl`` row, in order."""
+    return _rows(service_dir(home) / EVENTS_FILE)
+
+
+def event(home: Path | str, kind: str, **fields: Any) -> dict:
+    if kind not in EVENTS:
+        raise ValueError(f"unknown service event {kind!r}")
+    row = {"v": 1, "event": kind, "at": stamp(_now()), "pid": os.getpid(), **fields}
+    _append(service_dir(home) / EVENTS_FILE, row)
+    return row
+
+
+# --- process identity -----------------------------------------------------------------------------------------------
+
+
+def proc_start(pid: int) -> Optional[str]:
+    """The start time of a live, non-zombie process *pid* (``/proc/<pid>/stat`` field 22), else None."""
+    try:
+        stat = Path(f"/proc/{int(pid)}/stat").read_text()
+    except (OSError, ValueError):
+        return None
+    rest = stat.rsplit(")", 1)[-1].split()
+    if len(rest) < 20 or rest[0] in ("Z", "X"):
+        return None
+    return rest[19]
+
+
+def owns(doc: Optional[dict]) -> bool:
+    """Whether *doc* (``service.json``) names a live process: the same pid, ``/proc`` start time and process group.
+    A doc without a start time owns nothing: no signal on a pid alone."""
+    if not isinstance(doc, dict):
+        return False
+    pid, pgid, start = doc.get("pid"), doc.get("pgid"), doc.get("proc_start")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0 or not start:
+        return False
+    if proc_start(pid) != start:
+        return False
+    try:
+        return os.getpgid(pid) == pgid
+    except OSError:
+        return False
+
+
+def _stat_fields(pid: int) -> Optional[list[str]]:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    return stat.rsplit(")", 1)[-1].split()
+
+
+def group_pids(pgid: int, *, since: Optional[str] = None) -> list[int]:
+    """The live, non-zombie processes in process group *pgid* owned by this user; with *since* (a ``/proc`` start time
+    in clock ticks), only those started at or after it (a group id a stranger took over is never ours).
+    """
+    out = []
+    uid = os.getuid()
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return out
+    for name in names:
+        if not name.isdigit():
+            continue
+        fields_ = _stat_fields(int(name))
+        if (
+            fields_ is None
+            or len(fields_) < 20
+            or fields_[0] in ("Z", "X")
+            or fields_[2] != str(int(pgid))
+        ):
+            continue
+        try:
+            if os.stat(f"/proc/{name}").st_uid != uid:
+                continue
+        except OSError:
+            continue
+        if since is not None:
+            try:
+                if int(fields_[19]) < int(since):
+                    continue
+            except ValueError:
+                continue
+        out.append(int(name))
+    return sorted(out)
+
+
+def lock_holders(path: Path) -> list[int]:
+    """The live processes of this user that hold a descriptor open on *path* (the lock file): the service, and any
+    leftover child of it that kept its descriptor (a lock held through an inherited descriptor shows its first
+    owner's pid in ``/proc/locks``, so the descriptors themselves are read). [] when none, or when unknown.
+    """
+    try:
+        st = os.stat(path)
+        names = os.listdir("/proc")
+    except OSError:
+        return []
+    want = (st.st_dev, st.st_ino)
+    uid = os.getuid()
+    out = []
+    for name in names:
+        if not name.isdigit():
+            continue
+        fds = f"/proc/{name}/fd"
+        try:
+            if os.stat(f"/proc/{name}").st_uid != uid:
+                continue
+            entries = os.listdir(fds)
+        except OSError:
+            continue
+        for fd in entries:
+            try:
+                target = os.stat(f"{fds}/{fd}")
+            except OSError:
+                continue
+            if (target.st_dev, target.st_ino) == want:
+                fields_ = _stat_fields(int(name))
+                if fields_ is not None and fields_[0] not in ("Z", "X"):
+                    out.append(int(name))
+                break
+    return sorted(out)
+
+
+def try_lock(path: Path) -> Optional[int]:
+    """An exclusive non-blocking ``flock`` on *path*, as an inheritable descriptor; None when it is held."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    os.set_inheritable(fd, True)
+    return fd
+
+
+# --- settings -------------------------------------------------------------------------------------------------------
+
+
+def _settings() -> Any:
+    from unify.settings import SETTINGS
+
+    return SETTINGS
+
+
+def lifetime_end(started: datetime, settings: Any) -> tuple[datetime, str]:
+    """When the service must stop, and why: its own lifetime, or the host's lease less the margin, whichever first."""
+    from .integration.switch import host_lease_end
+
+    own = started + timedelta(seconds=LIFETIME_S)
+    lease = host_lease_end(settings)
+    if lease is not None and lease - timedelta(seconds=LEASE_MARGIN_S) < own:
+        return lease - timedelta(seconds=LEASE_MARGIN_S), "lease"
+    return own, "lifetime"
+
+
+def lease_reached(settings: Any, now: Optional[datetime] = None) -> bool:
+    from .integration.switch import host_lease_end
+
+    lease = host_lease_end(settings)
+    return lease is not None and (now or _now()) >= lease - timedelta(
+        seconds=LEASE_MARGIN_S
+    )
+
+
+# --- the spend under the service's own cap --------------------------------------------------------------------------
+
+
+def _decimal(value: Any) -> Optional[Decimal]:
+    try:
+        d = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    return d if d.is_finite() and d >= 0 else None
+
+
+def spend_totals(home: Path | str) -> tuple[Decimal, Decimal]:
+    """``(committed, settled)`` USD from ``spend.jsonl``: a settled pass counts its settled amount, a pass only reserved
+    (it never settled: running, or killed) its whole reservation. Decimal throughout."""
+    reserved: dict[str, Decimal] = {}
+    settled: dict[str, Decimal] = {}
+    for row in _rows(service_dir(home) / SPEND_FILE):
+        pid = row.get("pass_id")
+        amount = _decimal(row.get("usd"))
+        if not isinstance(pid, str) or amount is None:
+            continue
+        if row.get("op") == "reserve":
+            reserved[pid] = amount
+        elif row.get("op") == "settle":
+            settled[pid] = amount
+    committed = sum((settled.get(p, r) for p, r in reserved.items()), Decimal(0))
+    committed += sum((v for p, v in settled.items() if p not in reserved), Decimal(0))
+    return committed, sum(settled.values(), Decimal(0))
+
+
+def _format(d: Decimal) -> str:
+    return format(abs(d) if d.is_zero() else d, "f")
+
+
+# --- resumable turns ------------------------------------------------------------------------------------------------
+
+
+def _digest(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+
+class ResumableTurn:
+    """A model turn whose calls are checkpointed under *folder* (``turns/<pass>`` or a helper's subfolder): each call
+    writes ``<n>.json`` ``pending`` (the conversation so far, the pass's inputs) before it is made and ``done`` (the
+    reply, its USD and usage) after. Over a folder a killed pass left, the calls whose conversation is the same as
+    recorded are answered from their files with no model call; a call recorded ``pending`` is made again and counted
+    in :attr:`killed` once (by its turn id); from the first call whose conversation differs, every call is made.
+    """
+
+    def __init__(
+        self,
+        turn: Any,
+        folder: Path,
+        *,
+        inputs: Optional[dict] = None,
+        scrub: Callable[[str], str] = str,
+    ):
+        self.turn, self.folder, self.inputs = turn, Path(folder), dict(inputs or {})
+        self._scrub = scrub
+        self.n = 0
+        self.replayed = 0
+        self.killed: list[str] = []
+        self.diverged = False
+        self.folder.mkdir(parents=True, exist_ok=True)
+        self.__dict__.update(
+            {
+                k: v
+                for k, v in getattr(turn, "__dict__", {}).items()
+                if k not in self.__dict__
+            }
+        )
+
+    def _file(self, n: int) -> Path:
+        return self.folder / f"{n}.json"
+
+    def _load(self, n: int) -> Optional[dict]:
+        try:
+            doc = json.loads(self._file(n).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return doc if isinstance(doc, dict) else None
+
+    def _write(self, n: int, doc: dict) -> None:
+        text = self._scrub(json.dumps(doc, sort_keys=True, default=str))
+        path = self._file(n)
+        fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(text + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    async def __call__(
+        self, messages: list[dict], tools: list[dict]
+    ) -> tuple[dict, Any]:
+        n = self.n
+        self.n += 1
+        digest = _digest({"messages": messages, "tools": tools})
+        saved = self._load(n)
+        if saved is not None and not self.diverged:
+            if saved.get("digest") != digest:
+                self.diverged = True
+            elif saved.get("state") == "done" and isinstance(saved.get("reply"), dict):
+                self.replayed += 1
+                return dict(saved["reply"]), saved.get("usd")
+            elif saved.get("state") == "pending":
+                self.killed.append(f"{self.folder.name}/{n}")
+        self._write(
+            n,
+            {
+                "v": 1,
+                "state": "pending",
+                "turn": n,
+                "digest": digest,
+                "messages": messages,
+                "inputs": self.inputs,
+                "at": stamp(_now()),
+            },
+        )
+        msg, usd = await self.turn(messages, tools)
+        self._write(
+            n,
+            {
+                "v": 1,
+                "state": "done",
+                "turn": n,
+                "digest": digest,
+                "reply": msg,
+                "usd": usd,
+                "usage": msg.get("usage") if isinstance(msg, dict) else None,
+                "at": stamp(_now()),
+            },
+        )
+        return msg, usd
+
+
+def pending_passes(home: Path | str) -> list[str]:
+    """The passes a stopped service left running (``pass.json`` not ended), oldest first: the next service resumes
+    them."""
+    root = service_dir(home) / TURNS_DIR
+    out = []
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return out
+    for name in names:
+        try:
+            doc = json.loads((root / name / PASS_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict) and doc.get("state") == "running":
+            out.append((str(doc.get("started_at") or ""), name))
+    return [name for _, name in sorted(out)]
+
+
+# --- ensure ---------------------------------------------------------------------------------------------------------
+
+
+def _token_pipes() -> tuple[dict, list[int]]:
+    """The writer's and the helpers' route tokens as this process holds them, each on a fresh pipe named in the
+    child's environment, exactly as the pass worker gets the writer's (never argv, the environment or a file); and
+    the read ends to pass. Without a route, nothing."""
+    from .integration import switch
+    from .integration.async_pass import _route_token
+
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k.upper()
+        not in (
+            switch.WRITER_TOKEN,
+            switch.WRITER_TOKEN_FD,
+            switch.LIBRARY_HELPER_TOKEN_FD,
+            switch.LIBRARY_HELPER_BASE_URL,
+        )
+    }
+    fds: list[int] = []
+
+    def pipe(value: str) -> int:
+        r, w = os.pipe()
+        try:
+            os.write(w, (value + "\n").encode("latin-1"))
+        finally:
+            os.close(w)
+        os.set_inheritable(r, True)
+        fds.append(r)
+        return r
+
+    settings = _settings()
+    token = _route_token(settings)
+    if token:
+        env[switch.WRITER_TOKEN_FD] = str(pipe(token))
+    switch.settle_helper_route_env(os.environ, settings)
+    pair, _why = switch.helper_lane_route()
+    if pair is not None:
+        base, secret = pair
+        value = (
+            secret.get_secret_value()
+            if hasattr(secret, "get_secret_value")
+            else str(secret)
+        )
+        if value:
+            env[switch.LIBRARY_HELPER_BASE_URL] = base
+            env[switch.LIBRARY_HELPER_TOKEN_FD] = str(pipe(value))
+    return env, fds
+
+
+def _take_over(home: Path, doc: Optional[dict]) -> bool:
+    """The lock is held, the recorded service is not alive and its heartbeat is stale: kill the process group of the
+    recorded service that still holds the lock (its leftover children), verified. True when the lock's holders are
+    gone."""
+    lock = service_dir(home) / LOCK_FILE
+    if not isinstance(doc, dict):
+        return False
+    pgid, since = doc.get("pgid"), doc.get("proc_start")
+    if not isinstance(pgid, int) or isinstance(pgid, bool) or pgid <= 0 or not since:
+        return False
+    holders = lock_holders(lock)
+    ours = set(group_pids(pgid, since=str(since)))
+    if not holders or not set(holders) <= ours:
+        return (
+            False  # held by someone that is not the old service's group: never touched
+        )
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for pid in sorted(ours):
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                pass
+        end = time.monotonic() + (TERM_S if sig == signal.SIGTERM else SETTLE_S)
+        while time.monotonic() < end and group_pids(pgid, since=str(since)):
+            time.sleep(0.05)
+        if not group_pids(pgid, since=str(since)):
+            break
+    return not group_pids(pgid, since=str(since))
+
+
+def ensure_service(
+    home: Path | str,
+    *,
+    settings: Any = None,
+    popen: Callable[..., Any] = subprocess.Popen,
+    wait_s: float = START_WAIT_S,
+    argv_prefix: Optional[list[str]] = None,
+) -> ServiceState:
+    """Start the memory home's writer service unless one is up (module docstring); never raises."""
+    home = Path(home)
+    try:
+        settings = settings if settings is not None else _settings()
+        from .integration.switch import profile_refusal, writer_service_on
+
+        if not writer_service_on(settings):
+            return ServiceState("off")
+        refused = profile_refusal(settings)
+        if refused is not None:
+            return ServiceState("refused", detail=refused)
+        if lease_reached(settings):
+            return ServiceState(
+                "refused", detail="the host's lease ends within 30 minutes"
+            )
+        marker = stopping_marker(home)
+        if marker is not None:
+            # stopped on purpose (shutdown or an operator): no request starts it again
+            return ServiceState(
+                "refused", detail=f"the service was stopped ({marker.get('by')})"
+            )
+        folder = service_dir(home)
+        folder.mkdir(parents=True, exist_ok=True)
+        lock = folder / LOCK_FILE
+        fd = try_lock(lock)
+        took_over = False
+        if fd is None:
+            doc = read_state(home)
+            beat = parse_stamp((doc or {}).get("heartbeat_at"))
+            stale = beat is None or (_now() - beat).total_seconds() > STALE_S
+            if owns(doc) or not stale:
+                return ServiceState("running", pid=(doc or {}).get("pid"))
+            if not _take_over(home, doc):
+                return ServiceState(
+                    "busy",
+                    detail="the service lock is held by a process that is not the service",
+                )
+            event(
+                home,
+                "takeover",
+                previous_pid=(doc or {}).get("pid"),
+                by="ensure_service",
+                reason="stale heartbeat",
+            )
+            took_over = True
+            fd = try_lock(lock)
+            if fd is None:
+                return ServiceState("busy", detail="the service lock was taken again")
+        # the lock was free: released at once, and the service takes it in its own process (a second service started
+        # meanwhile finds it held and exits without a trace)
+        os.close(fd)
+        return _spawn(
+            home,
+            popen=popen,
+            wait_s=wait_s,
+            argv_prefix=argv_prefix,
+            took_over=took_over,
+        )
+    except Exception as exc:  # noqa: BLE001 - a request never fails on the service
+        return ServiceState("error", detail=type(exc).__name__)
+
+
+def _spawn(
+    home: Path,
+    *,
+    popen: Callable[..., Any],
+    wait_s: float,
+    argv_prefix: Optional[list[str]],
+    took_over: bool,
+) -> ServiceState:
+    """Double fork: the child forks the service and exits, the service ``setsid``s and takes the lock in its own
+    process; the route tokens go on their own pipes."""
+    asked = _now()
+    log = None
+    fds: list[int] = []
+    try:
+        env, fds = _token_pipes()
+        log = open(service_dir(home) / "service.log", "ab")
+        argv = [
+            *(argv_prefix or [sys.executable, "-m", MODULE]),
+            "--home",
+            str(home),
+            "--daemon",
+        ]
+        proc = popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+            close_fds=True,
+            pass_fds=tuple(fds),
+            env=env,
+        )
+        try:
+            proc.wait(timeout=30)  # the first child exits at once, leaving the service
+        except subprocess.TimeoutExpired:
+            pass
+    finally:
+        for r in fds:
+            try:
+                os.close(r)
+            except OSError:
+                pass
+        if log is not None:
+            log.close()
+    end = time.monotonic() + wait_s
+    while time.monotonic() < end:
+        doc = read_state(home)
+        started = parse_stamp((doc or {}).get("started_at"))
+        if (
+            doc
+            and started is not None
+            and started >= asked - timedelta(seconds=1)
+            and owns(doc)
+        ):
+            return ServiceState("started", pid=doc.get("pid"), took_over=took_over)
+        time.sleep(0.05)
+    return ServiceState(
+        "started", took_over=took_over, detail="the service has not reported yet"
+    )
+
+
+# --- stop -----------------------------------------------------------------------------------------------------------
+
+
+def stop_service(
+    home: Path | str,
+    by: StopBy,
+    reason: str,
+    *,
+    grace_s: float = STOP_GRACE_S,
+    term_s: float = TERM_S,
+    settle_s: float = SETTLE_S,
+    kill: Callable[[int, int], None] = os.killpg,
+    sleep: Callable[[float], Any] = time.sleep,
+) -> Terminated:
+    """Write the stop marker; give a pass in flight its deadline plus *grace_s* (the service stops at the marker once
+    the pass ends); then SIGTERM to the service's group, *term_s*, SIGKILL; then check in ``/proc`` that no process of
+    the group is left (module docstring)."""
+    if by not in STOP_BY:
+        raise ValueError(f"by is one of {', '.join(STOP_BY)}, not {by!r}")
+    home = Path(home)
+    _atomic_json(
+        service_dir(home) / STOP_FILE,
+        {"v": 1, "by": by, "at": stamp(_now()), "reason": str(reason)[:500]},
+    )
+    doc = read_state(home)
+    if not isinstance(doc, dict):
+        return Terminated(True, "clean")
+    pgid, since = doc.get("pgid"), doc.get("proc_start")
+
+    def left() -> list[int]:
+        if (
+            not isinstance(pgid, int)
+            or isinstance(pgid, bool)
+            or pgid <= 0
+            or not since
+        ):
+            return []
+        return group_pids(pgid, since=str(since))
+
+    def alive() -> bool:
+        return owns(doc) or bool(left())
+
+    if not alive():
+        return Terminated(True, "clean")
+    pass_end = parse_stamp(doc.get("pass_deadline"))
+    limit = (
+        time.monotonic()
+        + max(0.0, ((pass_end - _now()).total_seconds() if pass_end else 0.0))
+        + grace_s
+    )
+    while owns(doc) and time.monotonic() < limit:
+        sleep(0.1)
+        fresh = read_state(home)
+        if isinstance(fresh, dict) and fresh.get("pid") == doc.get("pid"):
+            new_end = parse_stamp(fresh.get("pass_deadline"))
+            if new_end is not None and new_end != pass_end:
+                pass_end = new_end
+                limit = (
+                    time.monotonic()
+                    + max(0.0, (new_end - _now()).total_seconds())
+                    + grace_s
+                )
+    how: Literal["clean", "term", "kill"] = "clean"
+    if alive():
+        how = "term"
+        try:
+            kill(pgid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+        end = time.monotonic() + term_s
+        while alive() and time.monotonic() < end:
+            sleep(0.1)
+    if alive():
+        how = "kill"
+        try:
+            kill(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        end = time.monotonic() + settle_s
+        while alive() and time.monotonic() < end:
+            sleep(0.05)
+    leftover = tuple(left())
+    verified = not owns(doc) and not leftover
+    return Terminated(verified, how, leftover)
+
+
+def stopping_marker(home: Path | str) -> Optional[dict]:
+    try:
+        doc = json.loads((service_dir(home) / STOP_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def clear_stop(home: Path | str) -> None:
+    """A stop marker a previous run's stop left: removed when a new service is asked to start (by a request)."""
+    try:
+        (service_dir(home) / STOP_FILE).unlink()
+    except FileNotFoundError:
+        pass
+
+
+# --- the service ----------------------------------------------------------------------------------------------------
+
+#: ``runner(home, pass_id, handed, resume, ctx) -> PassReport`` (default :func:`.integration.consolidate.run_attention_pass`)
+Runner = Callable[..., Awaitable[Any]]
+
+
+@dataclass
+class Service:
+    """The running service's own state (one per process)."""
+
+    home: Path
+    settings: Any
+    lock_fd: int
+    started: datetime = field(default_factory=_now)
+    state: str = "starting"
+    pass_id: Optional[str] = None
+    pass_deadline: Optional[datetime] = None
+    cap: Optional[Decimal] = None
+    capped: bool = False
+    stop_reason: Optional[str] = None
+    #: set by SIGTERM: a pass in flight is cancelled through its abort path
+    stop_flag: Optional[asyncio.Event] = None
+    #: the staging folder as the capture step last saw it
+    staging_seen: Optional[tuple] = None
+    #: the cap's event was written (once per service)
+    cap_noted: bool = False
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def doc(self) -> dict:
+        committed, settled = spend_totals(self.home)
+        end, _why = lifetime_end(self.started, self.settings)
+        return {
+            "v": 1,
+            "pid": os.getpid(),
+            "pgid": os.getpgid(0),
+            "proc_start": proc_start(os.getpid()) or "",
+            "heartbeat_at": stamp(_now()),
+            "started_at": stamp(self.started),
+            "deadline": stamp(end),
+            "state": self.state,
+            "pass_id": self.pass_id,
+            "pass_deadline": stamp(self.pass_deadline) if self.pass_deadline else None,
+            "cap_usd": _format(self.cap) if self.cap is not None else None,
+            "committed_usd": _format(committed),
+            "settled_usd": _format(settled),
+        }
+
+    def beat(self) -> None:
+        with self._lock:
+            _atomic_json(service_dir(self.home) / STATE_FILE, self.doc())
+
+    def set(self, state: str, **fields: Any) -> None:
+        if state not in STATES:
+            raise ValueError(state)
+        with self._lock:
+            self.state = state
+            for k, v in fields.items():
+                setattr(self, k, v)
+            _atomic_json(service_dir(self.home) / STATE_FILE, self.doc())
+
+
+def pass_reservation(settings: Any, effort: str) -> Decimal:
+    """A pass's worst case, reserved against the service's cap before it starts: the writer's price per token times
+    the pass's token allowance (E), at the writer's effort scale, as the run guard books a pass.
+    """
+    from .integration.consolidate import writer_settings
+
+    cfg = writer_settings(settings)
+    level = (effort or "").strip().lower()
+    scale = cfg.effort_scale.get(level, Decimal(1))
+    return cfg.cap_usd * scale
+
+
+def _proxy_refused(report: Any) -> bool:
+    """Whether a pass ended because the key proxy refused a writer call for its cap (HTTP 402 or 403)."""
+    outcome = getattr(report, "outcome", None)
+    text = " ".join(str(r) for r in (getattr(outcome, "reasons", None) or ()))
+    text += " " + " ".join(str(n) for n in (getattr(report, "notes", None) or ()))
+    return "(http_402)" in text or "(http_403)" in text
+
+
+async def _run_pass(
+    service: Service, pass_id: str, handed: list, *, resume: bool, runner: Runner
+) -> Any:
+    """One pass under the service: the reservation, the pass (under its attribution), the settle, the read checks and
+    the returns; returns the runner's report."""
+    from unify.common.llm_client import attribution
+
+    from .attention import Ledger
+    from .integration.request import actor_effort, writer_effort
+
+    home, settings = service.home, service.settings
+    effort = writer_effort(actor_effort())
+    folder = service_dir(home) / TURNS_DIR / pass_id
+    folder.mkdir(parents=True, exist_ok=True)
+    pass_doc_path = folder / PASS_FILE
+    try:
+        pass_doc = (
+            json.loads(pass_doc_path.read_text(encoding="utf-8")) if resume else None
+        )
+    except (OSError, ValueError):
+        pass_doc = None
+    if not resume or not isinstance(pass_doc, dict):
+        from .integration.switch import writer_journal
+        from .reconcile import journal_offset
+
+        reservation = pass_reservation(settings, effort)
+        _append(
+            service_dir(home) / SPEND_FILE,
+            {
+                "v": 1,
+                "op": "reserve",
+                "pass_id": pass_id,
+                "usd": _format(reservation),
+                "at": stamp(_now()),
+            },
+        )
+        pass_doc = {
+            "v": 1,
+            "pass_id": pass_id,
+            "entries": [e.entry for e in handed],
+            "started_at": stamp(_now()),
+            "journal_start": journal_offset(writer_journal(settings)),
+            "effort": effort,
+            "state": "running",
+        }
+        _atomic_json(pass_doc_path, pass_doc)
+    else:
+        event(home, "resume", pass_id=pass_id, entries=pass_doc.get("entries"))
+    from .integration.switch import library_pass_wall_s
+
+    wall = float(library_pass_wall_s(settings))
+    service.set(
+        "running", pass_id=pass_id, pass_deadline=_now() + timedelta(seconds=wall)
+    )
+    ledger = Ledger(home)
+    try:
+        with attribution(pass_id, [e.entry for e in handed]):
+            report = await runner(
+                home,
+                pass_id,
+                handed,
+                resume=resume,
+                folder=folder,
+                journal_start=pass_doc.get("journal_start"),
+                effort=pass_doc.get("effort") or effort,
+                settings=settings,
+                stop=service.stop_flag,
+            )
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 - a pass that broke: its entries go back, the service goes on
+        event(home, "error", pass_id=pass_id, error=type(exc).__name__)
+        ledger.return_unread(pass_id)
+        pass_doc.update(state="ended", ended_at=stamp(_now()), error=type(exc).__name__)
+        _atomic_json(pass_doc_path, pass_doc)
+        return None
+    finally:
+        service.set("idle", pass_id=None, pass_deadline=None)
+    for turn_id in getattr(report, "killed_turns", ()) or ():
+        if not any(
+            r.get("event") == "killed-turn" and r.get("turn_id") == turn_id
+            for r in events(home)
+        ):
+            event(home, "killed-turn", pass_id=pass_id, turn_id=turn_id)
+    settle = getattr(report, "settle_usd", None)
+    if settle is not None:
+        _append(
+            service_dir(home) / SPEND_FILE,
+            {
+                "v": 1,
+                "op": "settle",
+                "pass_id": pass_id,
+                "usd": settle,
+                "at": stamp(_now()),
+            },
+        )
+    if getattr(report, "ended", None) == "run_guard":
+        # the run guard held the pass back: nothing ran; the run's writer budget is spent, so every entry still
+        # owed (these included) is not reached
+        service.capped = True
+        if not service.cap_noted:
+            event(home, "cap-reached", by="run_guard", pass_id=pass_id)
+            service.cap_noted = True
+        ledger.mark_not_reached("spend_cap")
+        pass_doc.update(state="ended", ended_at=stamp(_now()), ended="run_guard")
+        _atomic_json(pass_doc_path, pass_doc)
+        return report
+    from .attention import PassReads
+
+    reads = report.reads if report.reads is not None else PassReads()
+    read = ledger.verify_reads(pass_id, reads, list(report.delivered or ()))
+    returned = ledger.return_unread(pass_id)
+    report.read, report.returned = sorted(read), sorted(returned)
+    pass_doc.update(state="ended", ended_at=stamp(_now()))
+    _atomic_json(pass_doc_path, pass_doc)
+    from .metering import write_pass_row
+
+    write_pass_row(home, report, settings=settings)
+    event(
+        home,
+        "pass",
+        pass_id=pass_id,
+        ended=getattr(report, "ended", None),
+        read=len(read),
+        returned=len(returned),
+    )
+    if _proxy_refused(report):
+        service.capped = True
+        if not service.cap_noted:
+            event(home, "cap-reached", by="proxy", pass_id=pass_id)
+            service.cap_noted = True
+        ledger.mark_not_reached("spend_cap")
+    return report
+
+
+def _staging_signature(home: Path) -> tuple:
+    """The fork staging folder's settled episodes, cheaply (names and whether each has its status file)."""
+    root = Path(home) / "memory-state" / "memory-staging"
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return ()
+    from .integration.fork_worker import FORK_JSON
+
+    return tuple((n, os.path.lexists(root / n / FORK_JSON)) for n in names)
+
+
+def _capture_if_new(service: "Service") -> None:
+    """Capture the forks that settled since the last look (the capture store feeds the ledger's entries); never
+    raises."""
+    try:
+        from .integration.switch import library_fork
+
+        if not library_fork(service.settings):
+            return
+        sig = _staging_signature(service.home)
+        if sig == service.staging_seen:
+            return
+        from .integration.consolidate import capture_settled_forks, open_stores
+        from .integration.paths import Paths
+
+        capture_settled_forks(
+            open_stores(Paths.under(service.home), busy_timeout_s=60.0),
+            service.settings,
+        )
+        service.staging_seen = sig
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 - capture never stops the service; the next look tries again
+        event(service.home, "error", where="capture", error=type(exc).__name__)
+
+
+async def service_main(
+    home: Path | str,
+    lock_fd: Optional[int] = None,
+    *,
+    runner: Optional[Runner] = None,
+    settings: Any = None,
+    poll_s: float = POLL_S,
+    idle_exit_s: float = IDLE_EXIT_S,
+    heartbeat_s: float = HEARTBEAT_S,
+    clock: Callable[[], datetime] = _now,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> str:
+    """The service's life (module docstring); returns why it stopped. It takes the home's lock itself (*lock_fd*: one
+    already taken, for tests), and returns ``busy`` at once, leaving no trace, when another service holds it. *clock*
+    (UTC now) and *monotonic* (the idle clock) are injected by tests."""
+    home = Path(home)
+    own_lock = lock_fd is None
+    if own_lock:
+        lock_fd = try_lock(service_dir(home) / LOCK_FILE)
+        if lock_fd is None:
+            return "busy"  # another service holds the home: this one leaves no trace
+    os.set_inheritable(lock_fd, False)
+    try:
+        return await _serve(home, lock_fd, runner=runner, settings=settings, poll_s=poll_s, idle_exit_s=idle_exit_s,
+                            heartbeat_s=heartbeat_s, clock=clock, monotonic=monotonic)  # fmt: skip
+    finally:
+        if own_lock:
+            os.close(lock_fd)
+
+
+async def _serve(
+    home: Path,
+    lock_fd: int,
+    *,
+    runner: Optional[Runner],
+    settings: Any,
+    poll_s: float,
+    idle_exit_s: float,
+    heartbeat_s: float,
+    clock: Callable[[], datetime],
+    monotonic: Callable[[], float],
+) -> str:
+    from unify.agents.run_record import WRITER, join_run_record
+
+    from .attention import Ledger
+    from .integration.switch import (
+        library_pass_wall_s,
+        ledger_k,
+        profile_refusal,
+        writer_service_cap_usd,
+    )
+
+    settings = settings if settings is not None else _settings()
+    if runner is None:
+        from .integration.consolidate import run_attention_pass as runner  # type: ignore[no-redef]
+    refused = profile_refusal(settings)
+    if refused is not None:
+        event(home, "refused", reason=refused)
+        return "refused"
+    previous = read_state(home)
+    service = Service(home, settings, lock_fd, started=clock())
+    service.cap = writer_service_cap_usd(settings)
+    stop_flag = asyncio.Event()
+    service.stop_flag = stop_flag
+    loop = asyncio.get_running_loop()
+    loop.add_signal_handler(signal.SIGTERM, stop_flag.set)
+    if (
+        isinstance(previous, dict)
+        and previous.get("state") not in ("stopped", None)
+        and previous.get("pid") != os.getpid()
+    ):
+        event(
+            home,
+            "takeover",
+            previous_pid=previous.get("pid"),
+            by="start",
+            reason="the previous service ended without stopping",
+        )
+    service.set("starting")
+    record = join_run_record(home)
+    record.root = WRITER
+    record.join(WRITER, "writer", state="idle", rejoin=True)
+    beating = threading.Event()
+
+    def heart() -> None:
+        while not beating.wait(heartbeat_s):
+            try:
+                service.beat()
+            except OSError:
+                pass
+
+    beat_thread = threading.Thread(
+        target=heart, name="writer-service-heartbeat", daemon=True
+    )
+    beat_thread.start()
+    event(
+        home, "start", cap_usd=_format(service.cap) if service.cap is not None else None
+    )
+    ledger = Ledger(home)
+    resumable = pending_passes(home)
+    ledger.return_orphans(live_pass_ids=resumable)
+    why = "stopped"
+    idle_since = monotonic()
+    try:
+        service.set("idle")
+        while True:
+            marker = stopping_marker(home)
+            if marker is not None:
+                why = str(marker.get("by") or "operator")
+                break
+            if stop_flag.is_set():
+                why = "term"
+                break
+            end, end_why = lifetime_end(service.started, settings)
+            if clock() >= end:
+                why = "lease" if end_why == "lease" else "lifetime"
+                event(home, "lifetime", why=end_why)
+                break
+            if resumable:
+                pass_id = resumable.pop(0)
+                handed = ledger.in_pass(pass_id)
+                await _run_pass(service, pass_id, handed, resume=True, runner=runner)
+                idle_since = monotonic()
+                continue
+            _capture_if_new(service)
+            ledger.sync()
+            open_ids = [e for e in ledger.entries().values() if e.state == "open"]
+            if open_ids:
+                from .integration.request import actor_effort, writer_effort
+
+                try:
+                    reservation = pass_reservation(
+                        settings, writer_effort(actor_effort())
+                    )
+                except (
+                    Exception
+                ) as exc:  # noqa: BLE001 - a refused writer route or setting: no pass can run
+                    event(home, "refused", reason=type(exc).__name__)
+                    why = "refused"
+                    break
+                committed, _settled = spend_totals(home)
+                if service.capped or (
+                    service.cap is not None and committed + reservation > service.cap
+                ):
+                    if not service.cap_noted:
+                        event(
+                            home,
+                            "cap-reached",
+                            by="service",
+                            committed_usd=_format(committed),
+                            reservation_usd=_format(reservation),
+                            cap_usd=(
+                                _format(service.cap)
+                                if service.cap is not None
+                                else None
+                            ),
+                        )
+                        service.cap_noted = True
+                    ledger.mark_not_reached("spend_cap")
+                elif (
+                    clock() + timedelta(seconds=float(library_pass_wall_s(settings)))
+                    > end
+                ):
+                    # a pass started now could run past the service's end (the host's lease less the margin, or its
+                    # lifetime): no new pass; the service stops
+                    why = "lease" if end_why == "lease" else "lifetime"
+                    event(home, "lifetime", why=end_why, refused_pass=True)
+                    break
+                else:
+                    pass_id = secrets.token_hex(8)
+                    handed = ledger.hand(pass_id, ledger_k(settings))
+                    if handed:
+                        await _run_pass(
+                            service, pass_id, handed, resume=False, runner=runner
+                        )
+                        idle_since = monotonic()
+                        continue
+            elif monotonic() - idle_since >= idle_exit_s:
+                why = "idle-exit"
+                event(home, "idle-exit", idle_s=round(monotonic() - idle_since, 3))
+                break
+            try:
+                await asyncio.wait_for(stop_flag.wait(), timeout=poll_s)
+            except asyncio.TimeoutError:
+                pass
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 - the class only: a message could carry recorded text
+        event(home, "error", error=type(exc).__name__)
+        why = "error"
+        raise
+    finally:
+        beating.set()
+        reached = NOT_REACHED_BY.get(why)
+        if reached is not None:
+            try:
+                Ledger(home).mark_not_reached(reached)
+            except Exception:  # noqa: BLE001 - the stop is still recorded
+                pass
+        try:
+            record.set_state(WRITER, "ended", note=f"service {why}")
+        except Exception:  # noqa: BLE001
+            pass
+        service.set("stopped")
+        event(home, "stop", why=why)
+    return why
+
+
+# --- the process --------------------------------------------------------------------------------------------------
+
+
+def _parse(argv: Optional[list[str]]) -> argparse.Namespace:
+    p = argparse.ArgumentParser(prog="writer_service")
+    p.add_argument("--home", required=True)
+    p.add_argument("--daemon", action="store_true")
+    return p.parse_args(argv)
+
+
+def daemonize() -> None:
+    """The second fork: the first child exits at once; the service is nobody's child, in a session of its own."""
+    if os.fork() != 0:
+        os._exit(0)
+    os.setsid()
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    args = _parse(argv)
+    if args.daemon:
+        daemonize()
+    try:
+        asyncio.run(service_main(args.home))
+        return 0
+    except Exception as exc:  # noqa: BLE001 - the class only
+        print(f"writer service: {type(exc).__name__}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
