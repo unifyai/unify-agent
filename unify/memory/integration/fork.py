@@ -54,6 +54,7 @@ import errno
 import fcntl
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -760,8 +761,12 @@ def start(
             progress(f"memory: fork refused: {why}")
             return None
         if switch.metering_on(settings):
-            # metering: the fork's calls carry its episode (ids only) for the proxy's journal
-            doc["headers"]["x-unify-episode"] = eid
+            # metering: the fork's calls carry its episode, and a segment fork its segment (ids only), for the
+            # proxy's journal
+            episode, segment = split_segment(eid)
+            doc["headers"]["x-unify-episode"] = episode
+            if segment is not None:
+                doc["headers"]["x-unify-segment"] = str(segment)
         box = box_argv(staging, die_with_parent=switch.library_wait_slot(settings))
         log = Path(paths.state_dir) / "fork-worker.log"
         if on_record is None:
@@ -815,14 +820,25 @@ def run_record_name(paths: Any, eid: str, settings: Any) -> tuple[Any, str] | No
     from unify.agents.run_record import join_run_record
 
     record = join_run_record(paths.home)
+    episode, segment = split_segment(eid)
     for _ in range(20):
-        name = record.unique_name("fork", eid)
+        name = record.unique_name("fork", episode, "" if segment is None else f"-s{segment}")
         try:
-            record.join(name, "fork", episode=eid)
+            record.join(name, "fork", episode=episode)
             return record, name
         except PostRefused:
             continue
     raise PostRefused("no free name for the fork on the run record")
+
+
+#: A segment's staging name (in-episode memory): ``<episode>.s<n>``.
+_SEGMENT = re.compile(r"(.+)\.s([0-9]+)")
+
+
+def split_segment(eid: str) -> tuple[str, int | None]:
+    """``(episode, segment)`` of a staging name: a segment fork's ``<episode>.s<n>``, else ``(eid, None)``."""
+    m = _SEGMENT.fullmatch(eid or "")
+    return (m.group(1), int(m.group(2))) if m else (eid, None)
 
 
 def _leave(on_record: tuple[Any, str] | None) -> None:

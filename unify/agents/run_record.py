@@ -836,8 +836,9 @@ class RunRecord(Record):
             k += 1
         return f"{prefix}{k}"
 
-    def unique_name(self, prefix: str, hexid: str) -> str:
-        """``<prefix>-<4 hex of hexid>``, with more of its hex digits only when a clash in this run needs them."""
+    def unique_name(self, prefix: str, hexid: str, suffix: str = "") -> str:
+        """``<prefix>-<4 hex of hexid><suffix>``, with more of its hex digits only when a clash in this run needs them
+        (a segment's fork is ``fork-<hex>-s<n>``: *suffix* ``-s<n>``)."""
         # an episode id ``<stamp>-<hex>`` is named by its hex part; a bare hex id by itself
         digits = re.sub(
             r"[^0-9a-f]", "", (hexid or "").lower().rsplit("-", 1)[-1]
@@ -849,11 +850,11 @@ class RunRecord(Record):
             | set(self.participants)
         )
         for n in range(4, min(len(digits), _MAX_HEX) + 1, 2):
-            name = f"{prefix}-{digits[:n]}"
+            name = f"{prefix}-{digits[:n]}{suffix}"
             if name not in taken:
                 return name
         while True:
-            name = f"{prefix}-{secrets.token_hex(4)}"
+            name = f"{prefix}-{secrets.token_hex(4)}{suffix}"
             if name not in taken:
                 return name
 
