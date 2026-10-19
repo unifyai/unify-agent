@@ -658,6 +658,67 @@ def _function_docs(tree: Path, lib: Library) -> dict[str, str]:
     return _docstrings(tree, lib, {f.item_id for f in lib.functions})
 
 
+def _evidence_row(serving: Mapping[str, Any] | None, iid: str) -> dict | None:
+    """Item *iid*'s row of the serving evidence (``UNIFY_MEMORY_SERVING_FAILURE_RECORD``), or None."""
+    if not serving:
+        return None
+    rows = (serving.get("evidence") or {}).get("items") or {}
+    row = rows.get(iid)
+    return row if isinstance(row, dict) else None
+
+
+def failure_line(row: Mapping[str, Any] | None) -> str:
+    """An item's failure record on one line: ``none``, or the count and each failure's why, episode and the library
+    version that was served (ids shortened)."""
+    rows = [r for r in (row or {}).get("failure_record") or [] if isinstance(r, dict)]
+    if not rows:
+        return "none"
+    parts = [
+        f"{r.get('why')} in episode {str(r.get('episode') or '?')[:8]}"
+        + (f" (version {str(r['pin'])[:7]})" if r.get("pin") else "")
+        for r in rows
+    ]
+    return f"{len(rows)}: " + "; ".join(parts)
+
+
+def _serving_lines(serving: Mapping[str, Any] | None, iid: str) -> list[str]:
+    """A card's evidence lines under ``UNIFY_MEMORY_SERVING_FAILURE_RECORD``: what its status rests on, its recorded
+    failures, its contradictions and its stated conditions; [] with the switch off."""
+    if not serving:
+        return []
+    row = _evidence_row(serving, iid) or {}
+    from .trust import basis_text
+
+    status = row.get("status_text") or basis_text("on-trial", "no_outcome_signals", {})
+    out = [f"Status by evidence: {status}\n", f"Recorded failures: {failure_line(row)}\n"]
+    for c in row.get("contradictions") or []:
+        out.append(f"Contradicted: {c}\n")
+    if row.get("conditions"):
+        out.append(f"States that it applies when: {row['conditions']}\n")
+    return out
+
+
+def items_in_place_of(serving: Mapping[str, Any] | None) -> dict[str, list[tuple[str, dict]]]:
+    """For each library item offered in the place of withdrawn library items (their ``by``), those items in id order
+    with their withdrawn rows (``UNIFY_MEMORY_SERVING_FAILURE_RECORD`` and the withdrawal switch on)."""
+    out: dict[str, list[tuple[str, dict]]] = {}
+    for iid, row in sorted(((serving or {}).get("withdrawn_items") or {}).items()):
+        by = row.get("by") if isinstance(row, dict) else None
+        if isinstance(by, str) and by:
+            out.setdefault(by, []).append((iid, row))
+    return out
+
+
+def _item_in_place_lines(rows: list[tuple[str, dict]] | None, docs: Mapping[str, str], strip: Strip) -> list[str]:
+    """A card's lines for the withdrawn library items it is offered in place of: each one's id and what it said it
+    was for."""
+    out = []
+    for iid, row in rows or []:
+        doc = _one_line(strip(_first_paragraph(docs.get(iid, ""))))
+        out.append(f"- In place of {iid} ({row.get('status') or 'withdrawn'}): {doc or 'no docstring recorded'}\n")
+    return out
+
+
 def _in_place_lines(rows: list[tuple[str, dict]] | None, strip: Strip) -> list[str]:
     """A card's lines for the withdrawn captures it is offered in place of: each one's id and what it was asked."""
     out = []
@@ -677,6 +738,7 @@ def catalogue_text(
     summary_of: SummaryOf | None = None,
     captures: Mapping[str, bytes] | None = None,
     strip: Strip | None = None,
+    serving: Mapping[str, Any] | None = None,
 ) -> str:
     """``.memory/catalogue.md``: the library's whole catalogue as the librarian reads it (design J(b).3).
 
@@ -687,7 +749,10 @@ def catalogue_text(
     captured procedures from *captures* (the actor's snapshot, ``.memory/captures/...``), each at level
     ``unchecked``; a captured attempt that failed is listed with what broke and is never offered to run. Card fields
     are fixed; the only free text is the docstrings and the summaries, identifiers removed with *strip*. Pure: the
-    same inputs give the same bytes."""
+    same inputs give the same bytes. With *serving* (``UNIFY_MEMORY_SERVING_FAILURE_RECORD``: the evidence and the
+    withdrawn library items), each card also says what its status rests on, its recorded failures, its
+    contradictions and its stated conditions, and a library item offered in the place of withdrawn ones names them;
+    a withdrawn item has no card."""
     from .library_index import signature_text
 
     tree = Path(tree)
@@ -695,11 +760,13 @@ def catalogue_text(
     strip = strip or default_strip()
     links = build_links(lib)
     docs = _function_docs(tree, lib)
+    gone_items = set(((serving or {}).get("withdrawn_items") or {}))
+    replaced_items = items_in_place_of(serving)
     status = {
         **{f.item_id: _status(status_of, f.item_id) for f in lib.functions},
         **{n.item_id: _status(status_of, n.item_id) for n in lib.notes},
     }
-    shown = {i for i, s in status.items() if s not in HIDDEN}
+    shown = {i for i, s in status.items() if s not in HIDDEN and i not in gone_items}
     replaced = in_place_of(captures)
     out: list[str] = [
         "# The library's catalogue\n",
@@ -728,11 +795,13 @@ def catalogue_text(
             if approach:
                 lines.append(f"  Approach: {approach}\n")
         lines += _in_place_lines(replaced.get(f.item_id), strip)
+        lines += _item_in_place_lines(replaced_items.get(f.item_id), docs, strip)
         input_line = signature_text(sig) if isinstance(sig, dict) else ""
         lines.append(
             f"Evidence: level {level}; status {status[f.item_id]}; reader {reader or _no_reader(rec)}; "
             f"applies: {'yes' if _applies_stated(sig) else 'no'}\n",
         )
+        lines += _serving_lines(serving, f.item_id)
         if input_line:
             lines.append(f"Input: {input_line}\n")
         if recipe_text(rec):
@@ -765,6 +834,7 @@ def catalogue_text(
             + (f"{_one_line(strip(n.title))}\n" if n.title else "")
             + (f"{_one_line(strip(about))}\n" if about else "")
             + f"Status: {status[n.item_id]}\n"
+            + "".join(_serving_lines(serving, n.item_id))
             + ("Functions: " + ", ".join(fns) + "\n" if fns else ""),
         )
     out.append("\n## Captured procedures\n")
@@ -794,6 +864,7 @@ def catalogue_text(
             + (f"; a worked example, never called: {example.get('why')}" if example else "")
             + "\n",
         )
+        lines += _serving_lines(serving, CAPTURE_PREFIX + cid)
         if input_line:
             lines.append(f"Input: {input_line}\n")
         why = _capture_unlisted(rec)
@@ -880,6 +951,7 @@ def librarian_files(
     captures: Mapping[str, bytes] | None = None,
     strip: Strip | None = None,
     search: Any = None,
+    serving: Mapping[str, Any] | None = None,
 ) -> dict[str, bytes]:
     """The librarian's generated files of the copy at *tree* (``UNIFY_MEMORY_LIBRARIAN=on``): ``catalogue.md``,
     ``dispatch.json``, ``search.json`` (:func:`.library_search.index_files`, its vectors made with *search*, a
@@ -890,7 +962,15 @@ def librarian_files(
     tree = Path(tree)
     lib = discover(tree)
     return {
-        **index_files(tree, lib, status_of=status_of, records=records, captures=captures, use=search),
+        **index_files(
+            tree,
+            lib,
+            status_of=status_of,
+            records=records,
+            captures=captures,
+            use=search,
+            **({"serving": serving} if serving else {}),
+        ),
         RESERVED_INIT: package_source(librarian=True),
         RESERVED_STUB: stub_source(librarian=True),
         CATALOGUE_FILE: catalogue_text(
@@ -901,6 +981,7 @@ def librarian_files(
             summary_of=summary_of,
             captures=captures,
             strip=strip,
+            serving=serving,
         ).encode("utf-8"),
         DISPATCH_FILE: _json_bytes(
             dispatch_data(lib, status_of=status_of, records=records, captures=captures),
@@ -964,6 +1045,7 @@ def generated_library_mode(
     summary_of: SummaryOf | None = None,
     captures: Mapping[str, bytes] | None = None,
     search: Any = None,
+    serving: Mapping[str, Any] | None = None,
 ) -> dict[str, bytes]:
     """Every generated file of the copy of the library at *tree*, by relative path (module docstring).
 
@@ -976,9 +1058,19 @@ def generated_library_mode(
     re-check each recorded example call before it is shown; None reads them from *tree* (a copy without its
     tests, as the actor's export is, then shows no example). *saved_against* gives what each function was saved
     against (:func:`saved_against_of`); None reads only the item records' ``signature`` (no summaries). A function
-    with a signature gets an ``input:`` line in the index and a ``procedures`` row in ``find.json``."""
+    with a signature gets an ``input:`` line in the index and a ``procedures`` row in ``find.json``.
+
+    *serving* (``UNIFY_MEMORY_SERVING_FAILURE_RECORD``: ``{"evidence", "withdrawn_items"}``, :mod:`.serving`) adds
+    the evidence file and the withdrawn library items' file, and every file then treats a withdrawn item as hidden
+    (it leaves the index, ``find.json``, the catalogue, the search index and the dispatch file); None gives every
+    byte as without it."""
     tree = Path(tree)
     lib = discover(tree)
+    if serving:
+        gone = set(serving.get("withdrawn_items") or {})
+        if gone:
+            base_status = status_of
+            status_of = lambda item: "retired" if item in gone else _status(base_status, item)  # noqa: E731
     links = build_links(lib)
     found, complete = history if history is not None else ({}, True)
     shown = examples_of(records, tests if tests is not None else tree_reader(tree))
@@ -1018,6 +1110,11 @@ def generated_library_mode(
         MATCHER_FILE: matcher_source(),
         SHAPES_FILE: (_HERE / "analysis" / "shapes.py").read_bytes(),
     }
+    if serving:
+        from .serving import EVIDENCE_FILE, WITHDRAWN_ITEMS_FILE, file_bytes
+
+        out[EVIDENCE_FILE] = file_bytes(serving.get("evidence") or {"v": 1, "items": {}})
+        out[WITHDRAWN_ITEMS_FILE] = file_bytes({"v": 1, "items": dict(serving.get("withdrawn_items") or {})})
     if librarian:
         out.update(
             librarian_files(
@@ -1028,6 +1125,7 @@ def generated_library_mode(
                 captures=captures,
                 strip=strip,
                 search=search,
+                **({"serving": serving} if serving else {}),
             ),
         )
     return out

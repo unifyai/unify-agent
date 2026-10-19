@@ -498,7 +498,16 @@ async def ask_library(ctx: Any, args: dict) -> Any:
     if not isinstance(request, str) or not request:
         request = _memory_run_request() if getattr(ctx, "agent", None) == "actor" else None
     try:
-        text = await session.ask(question, args.get("facts") or [], request=request)
+        if getattr(session, "evidence", None) is not None:
+            # the harness's evidence serving on: the situation's latest message goes with the question
+            text = await session.ask(
+                question,
+                args.get("facts") or [],
+                request=request,
+                last_message=_memory_run_last_message() if getattr(ctx, "agent", None) == "actor" else None,
+            )
+        else:
+            text = await session.ask(question, args.get("facts") or [], request=request)
     except _librarian.NoAnswer as exc:
         return _refused(refusal("ask_library", "no_answer", why=str(exc)[:300]))
     return _reply(text)
@@ -540,6 +549,19 @@ def _memory_run_request() -> Optional[str]:
 
         text = getattr(_request.current(), "request", None)
     except Exception:  # noqa: BLE001 - no memory run here
+        return None
+    return text if isinstance(text, str) and text else None
+
+
+def _memory_run_last_message() -> Optional[str]:
+    """The latest message the memory run's request received after its first, from its transcript
+    (``RequestRun.last_message``); None when there is none or no run is open."""
+    try:
+        from unify.memory.integration import request as _request
+
+        run = _request.current()
+        text = run.last_message() if run is not None else None
+    except Exception:  # noqa: BLE001 - no memory run here, or its transcript cannot be read
         return None
     return text if isinstance(text, str) and text else None
 

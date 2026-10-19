@@ -1348,6 +1348,8 @@ class RequestRun:
             # the search index's vectors: each request the embedder sends is booked once the request's cost
             # record opens (_open)
             search = backend(on_call=self.export_embedding_calls.append)
+        from .switch import serving_failure_record
+
         self.generated = export_actor_library_mode(
             paths.memory,
             self.pin,
@@ -1359,6 +1361,11 @@ class RequestRun:
             librarian=librarian,
             summary_of=summary_of,
             search=search,
+            **(
+                {"serving": self._serving(records, status_of(records))}
+                if serving_failure_record(SETTINGS)
+                else {}
+            ),
         )
         self.item_ids = pinned_items(paths.checkout, library_mode=True)
         # the worker binds ``memory`` in every cell when the copy holds the package (hooks.worker_globals)
@@ -1384,6 +1391,44 @@ class RequestRun:
                     channels=(self.shown or {}).get("channels") or (),
                     renderer=f"{(self.shown or {}).get('renderer') or 'library'}+notebook",
                 )
+
+    def _serving(self, records: Mapping[str, dict], status_of: Callable[[str], str]) -> Callable[[Path], dict]:
+        """``UNIFY_MEMORY_SERVING_FAILURE_RECORD=on``: what the export computes from the copy it materialised: each
+        item's evidence (its failure record, contradictions, status basis and stated conditions,
+        :func:`..serving.item_evidence`) and, with the withdrawal switch on, the library items the writer retired or
+        superseded (:func:`..serving.withdrawn_items`). An evidence store that cannot be read gives no evidence, and
+        the request goes on."""
+        from unify.settings import SETTINGS
+
+        from .. import serving as sv
+        from ..captures import load, store_dir
+        from .switch import checker_visible, library_withdraw_closed_captures
+
+        def compute(tree: Path) -> dict:
+            caps = load(store_dir(self.paths.state_dir))
+            try:
+                found = sv.item_evidence(
+                    self.stores,
+                    checker_visible=checker_visible(SETTINGS),
+                    captures=caps,
+                    home=self.paths.home,
+                )
+            except Exception as exc:  # noqa: BLE001 - served without evidence; logged
+                logger.warning("memory library mode: item evidence not read (%s)", type(exc).__name__)
+                found = {}
+            statuses = {i: status_of(i) for i in records}
+            for cid, doc in caps.items():
+                rec = doc.get("record") if isinstance(doc, dict) else None
+                if isinstance(rec, dict) and isinstance(rec.get("status"), str):
+                    statuses["capture:" + cid] = rec["status"]
+            return {
+                "evidence": sv.evidence_doc(found, sv.conditions(tree, records, caps), statuses),
+                "withdrawn_items": (
+                    sv.withdrawn_items(records) if library_withdraw_closed_captures(SETTINGS) else {}
+                ),
+            }
+
+        return compute
 
     def _memory_diff(self) -> str:
         """What the request wrote into its export (v2), or ``""`` in library mode, whose copy is read-only and records
@@ -1610,6 +1655,23 @@ class RequestRun:
                 listen(dict(row))
             except Exception as exc:  # noqa: BLE001 - a listener never stops the session
                 logger.warning("memory: a signal listener failed (%s)", type(exc).__name__)
+
+    def last_message(self) -> str | None:
+        """The latest user or environment message this request received after its first (an observation: a user
+        message the loop did not author, :func:`.adapters.dialogue.observation_texts`), from its transcript, or None
+        when none came after the request or the transcript cannot be read. The situation the librarian is given with
+        the harness's evidence serving on."""
+        from unify import transcripts
+
+        from . import trajectory
+        from .adapters import dialogue
+
+        try:
+            lines = trajectory.read_jsonl(transcripts.transcripts_dir() / f"{self.episode_id}.jsonl")
+            texts = [t for t in dialogue.observation_texts(trajectory.fold(lines)) if t.strip()]
+        except Exception:  # noqa: BLE001 - nothing to give: the question goes without it
+            return None
+        return texts[-1] if len(texts) > 1 else None
 
     def _observations_now(self) -> int | None:
         """How many observations this request's transcript holds now, or None when it cannot be read."""

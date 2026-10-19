@@ -107,12 +107,15 @@ def rows(
     status_of: Callable[[str], str] | None = None,
     records: Mapping[str, dict] | None = None,
     captures: Mapping[str, bytes] | None = None,
+    serving: Mapping[str, Any] | None = None,
 ) -> list[dict]:
     """One row per listed item of the copy at *tree*, in module-path order, then the notes, then the captured
     procedures (*captures*: the snapshot's files): ``{id, kind, path, card, text}``. Retired items have none, nor
     has a procedure's recipe. An item offered in the place of withdrawn captures (the snapshot's ``withdrawn.json``)
     also carries what each was asked in its text, so it is found where they were; a captured procedure the snapshot
-    offers as a worked example is a row of kind ``worked example``."""
+    offers as a worked example is a row of kind ``worked example``. With *serving*
+    (``UNIFY_MEMORY_SERVING_FAILURE_RECORD``), each card also ends with what its status rests on and its recorded
+    failures, and an item offered in the place of withdrawn library items carries their docstrings in its text."""
     from . import when_to_use as wtu
     from .item_records import recipe_call, recipe_of
     from .layout import discover
@@ -175,6 +178,19 @@ def rows(
             extra = " ".join(_one_line(gone.get(k)) for k in ("asked", "docstring") if _one_line(gone.get(k)))
             if extra:
                 row["text"] = f"{row['text']} {extra}".strip()
+    if serving:
+        from .library_export import _evidence_row, failure_line, items_in_place_of
+
+        replaced_items = items_in_place_of(serving)
+        for row in out:
+            ev = _evidence_row(serving, row["id"]) or {}
+            if ev.get("status_text"):
+                row["card"] = f"{row['card']} | status by evidence: {ev['status_text']}"
+            row["card"] = f"{row['card']} | recorded failures: {failure_line(ev)}"
+            for old, _gone in replaced_items.get(row["id"], []):
+                extra = _first_paragraph(docs.get(old, ""))
+                if extra:
+                    row["text"] = f"{row['text']} {extra}".strip()
     return out
 
 
@@ -217,9 +233,17 @@ def index_files(
     records: Mapping[str, dict] | None = None,
     captures: Mapping[str, bytes] | None = None,
     use: Backend | None = None,
+    serving: Mapping[str, Any] | None = None,
 ) -> dict[str, bytes]:
     """The index file of the copy at *tree* (:func:`rows`, :func:`index_data`), by its path in the copy."""
-    found = rows(tree, lib, status_of=status_of, records=records, captures=captures)
+    found = rows(
+        tree,
+        lib,
+        status_of=status_of,
+        records=records,
+        captures=captures,
+        **({"serving": serving} if serving else {}),
+    )
     return {INDEX_FILE: index_bytes(index_data(found, use or LEXICAL))}
 
 

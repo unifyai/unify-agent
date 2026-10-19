@@ -55,6 +55,11 @@ GUARD_MODULES = (
     "unify/memory/integration/hooks.py",
     "unify/actor/prompt_builders.py",
     "unify/actor/library_switch.py",
+    # the cards, catalogue and search rows an agent reads about each item, and the status texts they carry
+    "unify/memory/library_export.py",
+    "unify/memory/library_search.py",
+    "unify/memory/serving.py",
+    "unify/memory/trust.py",
 )
 
 
@@ -231,6 +236,27 @@ def _rendered(monkeypatch) -> dict[str, str]:
         kw = dict(zip(("docstrings", "catalogue", "soft_budget"), values))
         out[f"rendered:writer_system:{values}"] = writer_pass.writer_system(**kw)
     out["rendered:librarian"] = librarian.system_prompt() + "\n" + lp.GUIDE_LIBRARIAN
+    out["rendered:librarian_evidence"] = (
+        librarian.system_prompt(evidence=True)
+        + "\n"
+        + (
+            librarian.evidence_question_message(
+                "q",
+                [{"id": "i", "reader": "r", "read": "parsed", "applies": "held"}],
+                1,
+                {
+                    "i": {
+                        "failure_record": [
+                            {"why": "error", "episode": "e", "pin": "p"}
+                        ],
+                        "conditions": "c",
+                        "contradictions": ["x"],
+                    }
+                },
+                "m",
+            )
+        )
+    )
     out["rendered:curate_system"] = curate.curate_system()
     out["rendered:guide"] = lp.GUIDE_LIBRARY
     return out

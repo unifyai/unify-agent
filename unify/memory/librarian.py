@@ -139,6 +139,41 @@ BRIEF = (
 )
 
 
+#: The brief's paragraph on what each question brings, as built.
+_BRINGS = (
+    "## What each question brings\n"
+    "Each question comes with facts: for each stored procedure that has a reader, whether that reader parsed the "
+    "text of the agent's current request, and, where the procedure states conditions, whether its `applies` held on "
+    "what the reader gave. A reader that parsed the text, or an `applies` that held, is evidence that the item's "
+    "input fits, and evidence only: it does not show that the item does what the question needs. A reader that did "
+    "not parse the text is evidence that the input differs; one that could not be started or failed to run is "
+    "evidence of nothing. Many requests carry no structured data, and then there are no such facts: the When to use "
+    "text decides.\n"
+)
+#: The same paragraph with the harness's evidence serving on (``UNIFY_MEMORY_SERVING_FAILURE_RECORD``): the situation,
+#: the evidence lines and each item's failure record.
+_BRINGS_EVIDENCE = (
+    "## What each question brings\n"
+    "Each question comes with the situation: the agent's question (its own words, or its request's text) and, when "
+    "a message has come after its request, the latest message it received. Then the evidence: for each stored "
+    "procedure that has a reader, whether that reader parsed the text of the agent's current request, and, where the "
+    "procedure states conditions, whether its `applies` held on what the reader gave, with the conditions it "
+    "states; and for each, its recorded failures (a use that raised, whose stated result condition was false, that a "
+    "contrary signal followed, or that an agent reported) and what contradicted it. A reader that parsed the text, "
+    "or an `applies` that held, is evidence about the shape of the input only: it never shows that the item does "
+    "what the question needs. A reader that did not parse the text is evidence that the input differs; one that "
+    "could not be started or failed to run is evidence of nothing. Recorded failures are evidence against an item "
+    "in situations like the ones it failed in: weigh them before you name it, and say how in why. Every card in a "
+    "search result and in the catalogue states what its status rests on and its recorded failures too. Many "
+    "requests carry no structured data, and then there are no reader facts: the When to use text and the records "
+    "decide.\n"
+)
+if BRIEF.count(_BRINGS) != 1:
+    raise RuntimeError("the librarian brief no longer holds the paragraph its evidence form replaces")
+#: The brief with the harness's evidence serving on.
+BRIEF_EVIDENCE = BRIEF.replace(_BRINGS, _BRINGS_EVIDENCE)
+
+
 def environment_text(cell_s: float = CELL_TIMEOUT_S) -> str:
     """The librarian's box and limits, box paths only."""
     return (
@@ -166,10 +201,23 @@ def opening(cell_s: float = CELL_TIMEOUT_S) -> str:
     )
 
 
-def system_prompt(cell_s: float = CELL_TIMEOUT_S) -> str:
-    """The librarian's system message: the shared opening and the brief, in that order. It holds nothing of the
-    library itself, so it is the same bytes for every library."""
-    return opening(cell_s) + "\n\n" + BRIEF
+def system_prompt(cell_s: float = CELL_TIMEOUT_S, evidence: bool = False) -> str:
+    """The librarian's system message: the shared opening and the brief, in that order (with *evidence*, the
+    harness's evidence serving on, :data:`BRIEF_EVIDENCE`). It holds nothing of the library itself, so it is the
+    same bytes for every library."""
+    return opening(cell_s) + "\n\n" + (BRIEF_EVIDENCE if evidence else BRIEF)
+
+
+def read_evidence(copy: Path) -> dict | None:
+    """The copy's item evidence (:data:`..serving.EVIDENCE_FILE`) by item id, or None when the harness serves none."""
+    from .serving import EVIDENCE_FILE
+
+    try:
+        data = json.loads((Path(copy) / EVIDENCE_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    rows = data.get("items") if isinstance(data, dict) else None
+    return rows if isinstance(rows, dict) else None
 
 
 def catalogue_ids(catalogue: str) -> list[str]:
@@ -302,13 +350,79 @@ def facts_text(facts: list[dict], dropped: int = 0) -> str:
     return "\n".join(lines)
 
 
-def sent_to_librarian(question: str, facts: list[dict], dropped: int, library: Mapping[str, Any]) -> dict:
+def evidence_facts_text(facts: list[dict], dropped: int, evidence: Mapping[str, Any]) -> str:
+    """The facts as evidence lines (the harness's evidence serving on): per procedure its reader's outcome, its
+    `applies` outcome, the conditions it states, its recorded failures and what contradicted it."""
+    from .library_export import failure_line
+
+    if not facts:
+        lines = ["- no stored reader ran (no stored procedure has one, or the request was not available)"]
+    else:
+        lines = []
+        for f in facts:
+            row = evidence.get(f["id"]) if isinstance(evidence.get(f["id"]), dict) else {}
+            reader = f"its stored reader `{f['reader']}`" if f.get("reader") else "it has no reader, which"
+            parts = [f"{reader} {_READ_TEXT[f['read']]}", _APPLIES_TEXT[f["applies"]]]
+            if row.get("conditions"):
+                parts.append(f"it states that it applies when: {row['conditions']}")
+            parts.append(f"recorded failures: {failure_line(row)}")
+            parts += [f"contradicted: {c}" for c in row.get("contradictions") or [] if isinstance(c, str)]
+            lines.append(f"- `{f['id']}`: " + "; ".join(parts) + ".")
+    if dropped:
+        lines.append(f"- ({dropped} fact(s) could not be read and are left out.)")
+    return "\n".join(lines)
+
+
+def evidence_question_message(
+    question: str,
+    facts: list[dict],
+    dropped: int,
+    evidence: Mapping[str, Any],
+    last_message: str | None,
+) -> str:
+    """The user message that carries one question with the harness's evidence serving on: the question, the
+    situation (the latest message the agent received after its request, when there is one) and the evidence about
+    the stored procedures the facts name (:func:`evidence_facts_text`)."""
+    last = last_message.strip() if isinstance(last_message, str) else ""
+    situation = (
+        f"- The latest message the agent received after its request:\n{last}"
+        if last
+        else "- No message has come after the agent's request."
+    )
+    return (
+        "Question from the agent:\n"
+        f"{question}\n\n"
+        "The situation:\n"
+        f"{situation}\n\n"
+        "Evidence about the stored procedures with a reader, run on the text of the agent's current request in its "
+        "own sandbox (outcomes only), with their recorded failures. A reader that parsed the text or an `applies` "
+        "that held says the input has the shape the item was built for, never that it does what the question "
+        "needs:\n"
+        f"{evidence_facts_text(facts, dropped, evidence)}\n\n"
+        "Answer with tools.finish(answer)."
+    )
+
+
+def sent_to_librarian(
+    question: str,
+    facts: list[dict],
+    dropped: int,
+    library: Mapping[str, Any],
+    evidence: Mapping[str, Any] | None = None,
+    last_message: str | None = None,
+) -> dict:
     """Exactly what one ask sends the librarian beyond its fixed opening (the shared opening and the brief, the same
     for every ask and every library): the user message (:func:`question_message`: the question and its checked
     facts) and the library it reads in its box with its tools (*library*: the copy's commit and its dispatch file as
     the ask read it). :func:`answer_key` is this structure's digest, and the message the session sends is its
-    ``message``, so nothing the librarian reads can be missing from the key."""
-    return {"message": question_message(question, facts, dropped), "library": dict(library)}
+    ``message``, so nothing the librarian reads can be missing from the key. With *evidence* (the copy's item
+    evidence: the harness's evidence serving on) the message is :func:`evidence_question_message`, with
+    *last_message* as the situation's latest message."""
+    if evidence is not None:
+        message = evidence_question_message(question, facts, dropped, evidence, last_message)
+    else:
+        message = question_message(question, facts, dropped)
+    return {"message": message, "library": dict(library)}
 
 
 def answer_key(sent: Mapping[str, Any]) -> str:
@@ -602,6 +716,8 @@ class LibrarianSession:
         self.copy = Path(copy)
         self.library = library if isinstance(library, str) and library else None
         self.dispatch = read_dispatch(self.copy)
+        #: the copy's item evidence (the harness's evidence serving on), read again at each ask; None: as built
+        self.evidence = read_evidence(self.copy)
         ids, failed, recipes = library_items(self.copy) or ([], set(), {})
         self.state = LibrarianCalls(ids=ids, failed=failed, copy=self.copy, recipes=recipes)
         self.turn = turn
@@ -619,7 +735,9 @@ class LibrarianSession:
         self._lock = asyncio.Lock()
         self._cell = 0
         self._on_event = on_event
-        self.messages: list[dict] = [{"role": "system", "content": system_prompt(self.cell_limit_s)}]
+        self.messages: list[dict] = [
+            {"role": "system", "content": system_prompt(self.cell_limit_s, evidence=self.evidence is not None)},
+        ]
         from unify.common import tool_registry
 
         self.tools = tool_registry.json_tools(AGENT)
@@ -662,7 +780,13 @@ class LibrarianSession:
         except Exception:  # noqa: BLE001 - a measurement never stops the librarian
             pass
 
-    async def ask(self, question: str, facts: Any, request: str | None = None) -> str:
+    async def ask(
+        self,
+        question: str,
+        facts: Any,
+        request: str | None = None,
+        last_message: str | None = None,
+    ) -> str:
         """One question about the current request (*request* is not sent to the librarian, so it is not in the key):
         its facts checked against the dispatch file. When the librarian was already sent the same
         (:func:`answer_key` of :func:`sent_to_librarian`), that answer as it gave
@@ -679,7 +803,12 @@ class LibrarianSession:
             kept, dropped = checked_facts(facts, self.dispatch)
             self.questions += 1
             library = {"commit": self.library, "dispatch": _digest_of(self.dispatch)}
-            sent = sent_to_librarian(question, kept, dropped, library)
+            if self.evidence is not None:
+                # the evidence as the ask finds it, and the situation's latest message: what the answer answered
+                self.evidence = read_evidence(self.copy) or {}
+                sent = sent_to_librarian(question, kept, dropped, library, self.evidence, last_message)
+            else:
+                sent = sent_to_librarian(question, kept, dropped, library)
             key = answer_key(sent)
             given = self.answers.get(key)
             if given is not None:

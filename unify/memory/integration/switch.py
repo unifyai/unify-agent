@@ -1079,11 +1079,27 @@ def redesign_refusal(settings: Any) -> str | None:
 
 # --- serving on the failure record (C2) and inferred regimes (C3) ---------------------------------------------
 
+SERVING_FAILURE_RECORD = "UNIFY_MEMORY_SERVING_FAILURE_RECORD"
 REGIME = "UNIFY_MEMORY_REGIME"
 #: ``inferred``: each episode's regime is inferred from the signals that arrive (:func:`..signals.infer_regime`);
 #: empty or ``off``: every episode is ``dense``, as built.
 REGIME_INFERRED = "inferred"
 REGIME_VALUES = ("", "off", REGIME_INFERRED)
+
+
+def parse_serving_failure_record(v: Any) -> str:
+    """``UNIFY_MEMORY_SERVING_FAILURE_RECORD``: empty, ``off`` or ``on`` (empty is ``off``, or ``on`` under the
+    redesign profile)."""
+    value = _stripped(v).lower()
+    if value not in ("",) + ON_OFF:
+        raise ValueError(f"{SERVING_FAILURE_RECORD} must be empty, 'off' or 'on', not {v!r}"[:200])
+    return value
+
+
+def serving_failure_record(settings: Any) -> bool:
+    """Whether serving shows each item's failure record and evidence instead of a claim of fit: ``on``, or empty
+    under the redesign profile."""
+    return profile_setting(settings, SERVING_FAILURE_RECORD) == "on"
 
 
 def parse_regime(v: Any) -> str:
@@ -1102,8 +1118,14 @@ def regime_inferred(settings: Any) -> bool:
 
 
 def serving_refusal(settings: Any) -> str | None:
-    """Why ``UNIFY_MEMORY_REGIME`` may not run with these settings (the settings named, never a value), or None: it
-    acts on memory (``UNIFY_MEMORY=on``). Refused, rather than run as a silent no-op."""
+    """Why ``UNIFY_MEMORY_SERVING_FAILURE_RECORD`` or ``UNIFY_MEMORY_REGIME`` may not run with these settings (the
+    settings named, never a value), or None: each acts on memory (``UNIFY_MEMORY=on``), and the failure record is
+    served by the library mode (``UNIFY_MEMORY_LIBRARY=on``). Refused, rather than run as a silent no-op."""
+    if serving_failure_record(settings):
+        missing = [f"{n}=on" for n, ok in ((SWITCH, memory_on(settings)), (LIBRARY_MODE, library_enabled(settings)))
+                   if not ok]
+        if missing:
+            return f"{SERVING_FAILURE_RECORD}=on needs {', '.join(missing)}; nothing runs"
     if regime_inferred(settings) and not memory_on(settings):
         return f"{REGIME}={REGIME_INFERRED} needs {SWITCH}=on; nothing runs"
     return None
@@ -1704,6 +1726,7 @@ PARSERS = {
     LIBRARY_FIXED_ANSWERS_AS_EXAMPLES: parse_library_fixed_answers_as_examples,
     LIBRARY_WITHDRAW_CLOSED_CAPTURES: parse_library_withdraw_closed_captures,
     MEMORY_PROFILE: parse_memory_profile,
+    SERVING_FAILURE_RECORD: parse_serving_failure_record,
     REGIME: parse_regime,
 }
 

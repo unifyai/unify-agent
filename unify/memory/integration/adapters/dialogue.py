@@ -318,6 +318,11 @@ def dialogue_actions(
     return actions
 
 
+def observation_texts(transcript_lines: Iterable[dict]) -> list[str]:
+    """The text of every observation (a user message the loop did not author), in order: the request first."""
+    return [_text(m.get("content")) for m in _messages(transcript_lines) if _is_observation(m)]
+
+
 def observation_count(transcript_lines: Iterable[dict]) -> int:
     """How many observations (non-loop-authored user messages) the transcript holds so far."""
     return sum(1 for m in _messages(transcript_lines) if _is_observation(m))
