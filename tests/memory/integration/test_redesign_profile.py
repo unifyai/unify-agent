@@ -14,6 +14,7 @@ _LIBRARY = dict(
     UNIFY_MEMORY_LIBRARY="on",
     UNIFY_MEMORY_LIBRARY_FORK="on",
     UNIFY_MEMORY_LIBRARY_POOL="on",
+    UNIFY_TOOLS_IN_CODE="on",  # the run record, the writer's tools and tools.checkpoint are called from code
 )
 
 
