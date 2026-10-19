@@ -71,9 +71,11 @@ class Entry:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Entry":
-        """Readers ignore fields they do not know (later phases add some)."""
-        reply_to = data.get("reply_to")
-        acts = data.get("acts")
+        """Readers ignore fields they do not know (later phases add some). The run record's fields are read only from
+        a run record's row (it always carries ``role``); a session record's line keeps them unset."""
+        run = data.get("role") is not None
+        reply_to = data.get("reply_to") if run else None
+        acts = data.get("acts") if run else None
         return cls(
             seq=int(data["seq"]),
             ts=str(data["ts"]),
@@ -81,10 +83,10 @@ class Entry:
             kind=str(data["kind"]),
             text=str(data["text"]),
             mentions=tuple(str(m) for m in data.get("mentions") or ()),
-            role=str(data["role"]) if data.get("role") is not None else None,
-            episode=str(data["episode"]) if data.get("episode") is not None else None,
-            pass_id=str(data["pass_id"]) if data.get("pass_id") is not None else None,
+            role=str(data["role"]) if run else None,
+            episode=str(data["episode"]) if run and data.get("episode") is not None else None,
+            pass_id=str(data["pass_id"]) if run and data.get("pass_id") is not None else None,
             reply_to=int(reply_to) if isinstance(reply_to, int) and not isinstance(reply_to, bool) else None,
-            refs=tuple(str(r) for r in data.get("refs") or ()),
+            refs=tuple(str(r) for r in data.get("refs") or ()) if run else (),
             acts=int(acts) if isinstance(acts, int) and not isinstance(acts, bool) else None,
         )
