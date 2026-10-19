@@ -700,3 +700,19 @@ def test_entries_a_crash_left_handed_go_back_and_are_handed_again(svc, monkeypat
     assert (
         runner.passes and runner.passes[0][1] == [eid] and runner.passes[0][2] is False
     )
+
+
+def test_an_agent_waiting_on_the_writer_sees_the_service_stopping(svc):
+    """§10.5: the stop marker also marks the writer's roster row ``stopping``, so ``who`` says the service is going
+    away, and once it has ended a wait on it returns at once (nobody who could answer is running)."""
+    from unify.agents import run_record_tools as T
+
+    rec = rr.join_run_record(svc.home)
+    rec.join("writer", "writer", state="idle")
+    rec.join("actor-3f9a", "actor")
+    assert ws.stop_service(svc.home, "operator", "test", grace_s=0.1).verified
+    assert "writer (writer, idle): " in T.who_text(rr.RunRecordView(rec, "actor-3f9a", "actor"))
+    assert "; stopping" in T.who_text(rr.RunRecordView(rec, "actor-3f9a", "actor"))
+    rec.set_state("writer", "ended")
+    found, why = asyncio.run(rec.wait_outcome("actor-3f9a", timeout=30))
+    assert found == [] and why == "nothing_can_arrive"

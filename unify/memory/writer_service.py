@@ -794,6 +794,7 @@ def stop_service(
         service_dir(home) / STOP_FILE,
         {"v": 1, "by": by, "at": stamp(_now()), "reason": str(reason)[:500]},
     )
+    _note_writer(home, "stopping")
     doc = read_state(home)
     if not isinstance(doc, dict):
         return Terminated(True, "clean")
@@ -854,6 +855,21 @@ def stop_service(
     leftover = tuple(left())
     verified = not owns(doc) and not leftover
     return Terminated(verified, how, leftover)
+
+
+def _note_writer(home: Path, note: str) -> None:
+    """The writer's roster row says *note* (``stopping``: an agent waiting on it sees the service is going away)."""
+    try:
+        from unify.agents.run_record import WRITER, agents_dir, join_run_record
+
+        if not (agents_dir(home) / "run-record.jsonl").exists():
+            return
+        record = join_run_record(home)
+        row = next((r for r in record.roster_rows(include_ended=True) if r["name"] == WRITER), None)
+        if row is not None and row["state"] != "ended":
+            record.set_state(WRITER, row["state"], note=note)
+    except Exception:  # noqa: BLE001 - a note never stops the stop
+        pass
 
 
 def stopping_marker(home: Path | str) -> Optional[dict]:
