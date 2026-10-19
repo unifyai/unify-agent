@@ -624,7 +624,8 @@ def test_the_switch_parses_and_needs_memory_and_the_library_mode():
 
 
 def test_the_request_serves_evidence_only_under_its_switch(tmp_path, monkeypatch):
-    opening = inspect.getsource(RequestRun._open_library_mode)
+    # the copy is written by _export_copy (at the request's open, and at a re-pin under UNIFY_MEMORY_IN_EPISODE)
+    opening = inspect.getsource(RequestRun._export_copy)
     assert "if serving_failure_record(SETTINGS)" in opening
     stores = open_stores(Paths.under(tmp_path / "home"))
     _record(stores, "e1", 0, errored=1)

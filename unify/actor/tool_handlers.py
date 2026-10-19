@@ -107,15 +107,27 @@ def actor_flags(agent: str, can_store: bool, librarian: Optional[bool] = None) -
     """The configuration flags the actor's or a teammate's allow-list is built with: teammates are offered
     (``helper``), storing only where the actor may store (*can_store*), and asking the librarian only for the actor
     with ``UNIFY_MEMORY_LIBRARIAN=on`` (*librarian*; None reads the setting)."""
-    if librarian is None:
-        from unify.settings import SETTINGS
+    from unify.settings import SETTINGS
 
+    if librarian is None:
         librarian = getattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "off") == "on"
     return frozenset(
         {"helper"}
         | ({_registry.STORE_FLAG} if can_store and agent == "actor" else set())
-        | ({_registry.LIBRARIAN_FLAG} if librarian and agent == "actor" else set()),
+        | ({_registry.LIBRARIAN_FLAG} if librarian and agent == "actor" else set())
+        # UNIFY_MEMORY_IN_EPISODE=on: the actor marks the pauses of its work (tools.checkpoint)
+        | ({_registry.CHECKPOINT_FLAG} if agent == "actor" and _in_episode(SETTINGS) else set()),
     )
+
+
+def _in_episode(settings: Any) -> bool:
+    """Whether ``UNIFY_MEMORY_IN_EPISODE`` is on for this run (with memory on); False when it cannot be read."""
+    try:
+        from unify.memory.integration.switch import in_episode, memory_on
+
+        return memory_on(settings) and in_episode(settings)
+    except Exception:  # noqa: BLE001 - a setting that cannot be read offers nothing new
+        return False
 
 
 def actor_binding(

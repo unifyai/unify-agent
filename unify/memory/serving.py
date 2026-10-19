@@ -93,6 +93,31 @@ def _pins(evidence: Any) -> dict[str, str]:
     }
 
 
+def _use_pins(evidence: Any) -> dict[tuple[str, str], list[tuple[str, int]]]:
+    """(episode, item) -> each pin its calls were served under with its error count, in the order recorded
+    (``item_use_pins``, ``UNIFY_MEMORY_IN_EPISODE``: memory can change during an episode); {} when none is."""
+    out: dict[tuple[str, str], list[tuple[str, int]]] = {}
+    db = evidence.db
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='item_use_pins'").fetchone():
+        return out
+    for item, eid, pin, error in db.execute("SELECT item, episode_id, pin, error FROM item_use_pins ORDER BY rowid"):
+        out.setdefault((str(eid), str(item)), []).append((str(pin), int(error or 0)))
+    return out
+
+
+def served_pin(rows: list[tuple[str, int]] | None, why: str, default: str) -> str:
+    """The version a failed use was served under: of the pins its episode's calls were served under (*rows*,
+    :func:`_use_pins`), the last whose calls raised for an error, else the last; *default* (the episode's
+    ``memory_main``) when none is recorded."""
+    if not rows:
+        return default
+    if why == "error":
+        raised = [p for p, n in rows if n > 0]
+        if raised:
+            return raised[-1]
+    return rows[-1][0]
+
+
 def _regimes(evidence: Any) -> dict[str, str]:
     return {str(eid): str(r or "") for eid, r in evidence.db.execute("SELECT episode_id, regime FROM episodes")}
 
@@ -171,7 +196,7 @@ def item_evidence(
     from . import lifecycle, trust
 
     ev = stores.evidence
-    pins, regimes = _pins(ev), _regimes(ev)
+    pins, regimes, use_pins = _pins(ev), _regimes(ev), _use_pins(ev)
     out: dict[str, dict] = {}
     facts = lifecycle.facts_from_evidence(ev, checker_visible=checker_visible)
     for item in sorted({i for f in facts for i in f.items}):
@@ -186,7 +211,8 @@ def item_evidence(
                 if kind != trust.FAILED or (f.episode_id, why) in seen:
                     continue
                 seen.add((f.episode_id, why))
-                rows.append(_failure_row(ev, f.episode_id, f.memory_main, f.regime, why or "", checker_visible))
+                served = served_pin(use_pins.get((f.episode_id, item)), why or "", f.memory_main)
+                rows.append(_failure_row(ev, f.episode_id, served, f.regime, why or "", checker_visible))
         basis, counts = lifecycle.evidence_basis(item, facts)
         out[item] = {"failure_record": rows, "status_basis": basis, "counts": counts}
     for cid, doc in sorted((captures or {}).items()):
@@ -211,8 +237,8 @@ def item_evidence(
         }
     for r in actor_reports(home):
         item = r["item"]
-        row = {"episode": r["episode"], "pin": pins.get(r["episode"], ""), "why": "actor_reported",
-               "ref": f"entry:{r['seq']}"}
+        pin = served_pin(use_pins.get((r["episode"], item)), "", pins.get(r["episode"], ""))
+        row = {"episode": r["episode"], "pin": pin, "why": "actor_reported", "ref": f"entry:{r['seq']}"}
         entry = out.setdefault(
             item,
             {"failure_record": [], "status_basis": trust.BASIS_NO_OUTCOME_SIGNALS,

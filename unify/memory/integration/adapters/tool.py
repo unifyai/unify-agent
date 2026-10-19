@@ -278,6 +278,15 @@ class RecordingObserver:
             out, self._pending = self._pending, ToolDrain()
         return out
 
+    def peek(self) -> ToolDrain:
+        """A copy of what :meth:`drain` would hand over now, with nothing reset (an episode read as it stands before it
+        ends, ``UNIFY_MEMORY_IN_EPISODE``). The actions are copies: a later stamp of the originals never reaches them."""
+        import copy
+
+        with self._lock:
+            p = self._pending
+            return ToolDrain([copy.copy(a) for a in p.actions], p.dropped, p.intercepted, p.failed)
+
     # -- EnvObserver --------------------------------------------------------------------------------
 
     def before(self, call: Any) -> None:

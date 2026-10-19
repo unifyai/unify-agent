@@ -1364,6 +1364,8 @@ CHECK_EXAMPLES = RegisteredTool(
 ATTENTION_FLAG = "attention"
 #: the flag ``test`` needs: ``UNIFY_MEMORY_WRITER_TESTS`` offers at least one mode
 TESTS_FLAG = "tests"
+#: the flag ``checkpoint`` needs: ``UNIFY_MEMORY_IN_EPISODE=on``
+CHECKPOINT_FLAG = "checkpoint"
 _ATT = "unify.memory.attention_tools:"
 _REFUSED_REASON = {"refused": "{reason}"}
 
@@ -1527,6 +1529,32 @@ TEST = RegisteredTool(
     handler=_ATT + "test",
     deadline_s=120.0,
     blocking=True,
+)
+
+CHECKPOINT = RegisteredTool(
+    name="checkpoint",
+    summary="mark a pause in your work: what you did since the last pause is written down for memory.",
+    description=(
+        "Mark a natural pause in your work on this request. The harness writes down what your cells since the last "
+        "pause did, as memory can use it later, while you go on; what memory learns may reach you before this "
+        "request ends, at the start of a later cell. The note says what the pause is (optional)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {"note": {"type": "string", "description": "What this pause is, in a few words (optional)."}},
+        "required": [],
+        "additionalProperties": False,
+    },
+    refusals=_REFUSED_REASON,
+    requires=CHECKPOINT_FLAG,
+    roles=(_A,),
+    returns="a line saying the pause is marked.",
+    examples=('tools.checkpoint("the input is read; the report comes next")',),
+    when="At a natural pause in a long piece of work: a part is done and the next has not started.",
+    kind="action",
+    handler="unify.memory.integration.in_episode:checkpoint_tool",
+    deadline_s=60.0,
+    blocking=False,
 )
 
 
@@ -2020,6 +2048,7 @@ _REGISTRY: tuple[RegisteredTool, ...] = (
     DECIDE,
     FIND,
     TEST,
+    CHECKPOINT,
 )
 
 

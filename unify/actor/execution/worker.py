@@ -293,6 +293,11 @@ class PythonWorker:
         self._binds: list = []
         # UNIFY_VARIABLE_INVENTORY=on: the line the last cell's run returned.
         self.inventory: Optional[str] = None
+        # UNIFY_MEMORY_IN_EPISODE=on: the library copy's pin generation this worker's modules were loaded at (None:
+        # nothing loaded yet), and a re-pin's notice not yet shown (its cell ended before it could be)
+        self._memory_gen: Optional[int] = None
+        self._memory_notice: Optional[str] = None
+        self._memory_paths: List[str] = []
         # The persistent interpreter (unify/common/box_interpreter.py) sets these before each start: the tool
         # channel's two box ends (pipes, inherited under the same numbers), the box environment entry naming them,
         # and a callback run once the sandbox has started (the channel closes the host's copies of the box ends).
@@ -337,6 +342,8 @@ class PythonWorker:
         if policy is not None:
             mounts = sandbox.neutral_mounts(policy, self._binds)
             paths = [sandbox.box_path(p, policy, mounts=mounts) for p in paths]
+        # UNIFY_MEMORY_IN_EPISODE=on: the memory paths as sent, which a re-pin replaces (Worker.repin_modules)
+        self._memory_paths = paths[: len(memory_paths)]
         msg = {
             "op": "init",
             "sys_path": paths,
@@ -357,6 +364,10 @@ class PythonWorker:
 
     async def _start(self) -> None:
         from unify import environment
+
+        # a fresh process loads the library copy as it is now (UNIFY_MEMORY_IN_EPISODE)
+        self._memory_gen = None
+        self._memory_paths = []
 
         # The workspace venv is mounted (read-only) only if it exists when the
         # sandbox starts, and the harness creates it on the first install --
@@ -1008,7 +1019,13 @@ class PythonWorker:
                 )
         cid = next(self._ids)
         self.inventory = None
+        from unify.memory.integration import hooks as _mv2
+
+        # UNIFY_MEMORY_IN_EPISODE=on: at this cell boundary the library copy may be re-pinned to a commit the writer
+        # landed while the episode runs; this worker then drops the library's modules before the cell (None: off)
+        step = await asyncio.to_thread(_mv2.before_cell) if _mv2.in_episode_active() else None
         try:
+            repin = self._memory_step(step)
             await self._send(
                 {
                     "op": "exec",
@@ -1017,6 +1034,7 @@ class PythonWorker:
                     "sync": self._manifest(shadow),
                     "scratch": scratch,
                     **({"inventory": True} if inventory else {}),
+                    **({"repin": repin} if repin is not None else {}),
                 },
             )
             if timeout is None:
@@ -1045,8 +1063,9 @@ class PythonWorker:
                 f"status {code}). The next cell starts a fresh worker: "
                 "variables, imports and definitions are reset.",
             ) from None
-
-        from unify.memory.integration import hooks as _mv2
+        finally:
+            if step is not None:
+                _mv2.after_cell()
 
         # UNIFY_MEMORY=on: the cell's audit records, stamped on this clock.
         _mv2.worker_cell_done(done.get("audit"))
@@ -1054,6 +1073,11 @@ class PythonWorker:
         self.inventory = listed if isinstance(listed, str) else None
         self._collect_parts(done.get("stdout") or [], stdout, display, TextPart)
         self._collect_parts(done.get("stderr") or [], stderr, None, TextPart)
+        if self._memory_notice:
+            # UNIFY_MEMORY_IN_EPISODE=on: the cell's result ends with what the re-pin changed (one line)
+            notice, self._memory_notice = self._memory_notice, None
+            ends_open = bool(stdout) and isinstance(stdout[-1], TextPart) and not stdout[-1].text.endswith("\n")
+            _append_text(stdout, ("\n" if ends_open else "") + notice + "\n", TextPart)
         replied = done.get("reply")
         if isinstance(replied, dict):
             # UNIFY_REPLY_CHANNEL=code+text: the cell called reply(); the
@@ -1080,6 +1104,32 @@ class PythonWorker:
             # UNIFY_MEMORY_SURFACING=catalogue: a suspect channel's refusal says so.
             raise WorkerCellError(_mv2.cell_error(error))
         return self.decode(done.get("result"), shadow)
+
+    def _memory_step(self, step: Optional[dict]) -> Optional[dict]:
+        """This worker's part of a cell boundary under ``UNIFY_MEMORY_IN_EPISODE=on`` (*step*: ``hooks.before_cell``):
+        when the copy was re-pinned since this worker loaded it, what the child does before the cell
+        (``repin_modules``: the copy's roots as the sandbox shows them, under which every loaded module is dropped,
+        the import paths of the old pin to remove and the new pin's to put first); None otherwise. The notice is kept
+        for this cell's result."""
+        if not isinstance(step, dict):
+            return None
+        gen = step.get("generation")
+        stale = self._memory_gen is not None and gen != self._memory_gen
+        self._memory_gen = gen
+        if isinstance(step.get("notice"), str) and step["notice"]:
+            self._memory_notice = step["notice"]
+        if not stale:
+            return None
+        from unify.memory.integration import hooks as _mv2
+
+        roots, paths = _mv2.repin_roots(), _mv2.worker_paths()
+        policy = self._policy
+        if policy is not None:
+            mounts = sandbox.neutral_mounts(policy, self._binds)
+            roots = [sandbox.box_path(r, policy, mounts=mounts) for r in roots]
+            paths = [sandbox.box_path(p, policy, mounts=mounts) for p in paths]
+        old, self._memory_paths = self._memory_paths, list(paths)
+        return {"roots": roots, "drop_paths": old, "paths": list(paths)}
 
     @staticmethod
     def _collect_parts(

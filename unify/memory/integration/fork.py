@@ -353,10 +353,10 @@ def part_list(ep: Any) -> str:
     return "\n".join(lines)
 
 
-def fork_message(parts: str | None = None) -> str:
-    """The user message the fork's request ends with: :func:`fork_instruction`, then the episode's part list when
-    there is one. Both follow the cached prefix."""
-    text = fork_instruction()
+def fork_message(parts: str | None = None, instruction: str | None = None) -> str:
+    """The user message the fork's request ends with: :func:`fork_instruction` (or *instruction*: a segment fork's,
+    :func:`segment_instruction`), then the episode's part list when there is one. Both follow the cached prefix."""
+    text = fork_instruction() if instruction is None else instruction
     return f"{text}\n\n{parts}" if parts else text
 
 
@@ -403,15 +403,17 @@ def request_doc(
     url: str,
     key: str,
     parts: str | None = None,
+    instruction: str | None = None,
 ) -> tuple[dict | None, str | None]:
-    """The fork's request, from the session's last request as sent, or why the session cannot be forked."""
+    """The fork's request, from the session's last request as sent, or why the session cannot be forked; *instruction*
+    replaces :func:`fork_instruction` (a segment fork's, :func:`segment_instruction`)."""
     from unify.actor.code_act_actor import _session_fork_source
 
     inner = getattr(handle, "_inner", None) or handle
     source, why = _session_fork_source(inner, getattr(handle, "_actor", None))
     if source is None:
         return None, why
-    return request_from_source(eid, source, url, key, parts=parts)
+    return request_from_source(eid, source, url, key, parts=parts, instruction=instruction)
 
 
 def as_sent(message: Any) -> Any:
@@ -440,11 +442,13 @@ def request_from_source(
     token: str,
     *,
     parts: str | None = None,
+    instruction: str | None = None,
 ) -> tuple[dict | None, str | None]:
     """``(request document, None)`` for the fork from a conversation *source* (``client``, ``sent_messages``,
     ``tools`` and optionally ``tool_choice``, as the actor's session reader gives them), or ``(None, why)`` when it
     cannot be forked: the messages as the actor sent them (:func:`as_sent`) and the tool schemas unchanged, then
-    :func:`fork_message` (the instruction, and *parts*, the episode's part list from :func:`part_list`, when given).
+    :func:`fork_message` (the instruction, or *instruction* in its place, and *parts*, the episode's part list from
+    :func:`part_list`, when given).
     *base_url* is the fork lane's URL (``/chat/completions`` is added when it is not already there); *token* goes only
     into the headers, which reach the worker on its stdin."""
     eid = episode_id
@@ -462,7 +466,7 @@ def request_from_source(
         "model": model,
         "messages": [
             *(as_sent(m) for m in source["sent_messages"]),
-            {"role": "user", "content": fork_message(parts)},
+            {"role": "user", "content": fork_message(parts, instruction)},
         ],
         "tools": source["tools"],
     }
@@ -790,11 +794,13 @@ def start(
     progress: Callable[[str], None] = lambda _m: None,
     reservation: Reservation | None = None,
     parts: str | None = None,
+    instruction: str | None = None,
 ) -> Fork | None:
     """Start the episode's fork, or record why not; never raises. Off: returns None and touches nothing. Without a
     *reservation* (made before the episode was recorded), one is made here. *parts* is the recorded episode's part
     list (:func:`part_list`), which follows the instruction; without it the fork names parts by
-    :data:`NUMBERING` alone."""
+    :data:`NUMBERING` alone. *instruction* replaces the episode fork's (a segment fork's, :func:`segment_instruction`;
+    ``UNIFY_MEMORY_IN_EPISODE``)."""
     from . import switch
 
     if not (switch.library_enabled(settings) and switch.library_fork(settings)):
@@ -811,7 +817,7 @@ def start(
         r, why = route()
         doc = None
         if r is not None:
-            doc, why = request_doc(handle, eid, *r, parts=parts)
+            doc, why = request_doc(handle, eid, *r, parts=parts, instruction=instruction)
         if doc is None:
             reservation.abandon(f"refused: {why}")
             progress(f"memory: fork refused: {why}")
