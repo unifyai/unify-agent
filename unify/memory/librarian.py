@@ -593,11 +593,24 @@ class LibrarianSession:
         step_guard: int | None = None,
         compact: bool | None = None,
         library: str | None = None,
+        run_record: Any = None,
+        name: str = AGENT,
     ) -> None:
         from unify.common.tool_channel import HandlerThreads
 
         from . import tool_handlers as _th
         from .writer_pass import STEP_GUARD
+
+        #: UNIFY_AGENTS_RUN_RECORD=on: the run record this librarian joined (as ``librarian-<hex>``), else None
+        self.run_record = run_record
+        self.name = name
+        self.view: Any = None
+        if run_record is not None:
+            from unify.agents.run_record import RunRecordView
+
+            self.view = RunRecordView(run_record, name, AGENT)
+        #: whether the first question (which carries the common section and the roster lines) was sent
+        self._introduced = False
 
         self.copy = Path(copy)
         self.library = library if isinstance(library, str) and library else None
@@ -652,6 +665,7 @@ class LibrarianSession:
             on_event=self._event,
             threads=HandlerThreads(),
             start=start,
+            record=self.view,
         )
 
     def _event(self, row: dict) -> None:
@@ -686,7 +700,14 @@ class LibrarianSession:
                 self.from_cache += 1
                 return json.dumps({**given, ALREADY_GIVEN: True}, ensure_ascii=False, sort_keys=True)
             self.state.answer, self.state.finished, self.state.finish_text = None, False, None
-            self.messages.append({"role": "user", "content": sent["message"]})
+            content = sent["message"]
+            if self.view is not None and not self._introduced:
+                # the run record: the common section and this agent's roster lines, once, after the constant brief
+                from unify.agents.run_record import prompt_lines
+
+                content = f"{content}\n\n{prompt_lines(self.name, AGENT)}"
+                self._introduced = True
+            self.messages.append({"role": "user", "content": content})
             answer = await self._turns()
             self.answers[key] = answer
             return json.dumps(answer, ensure_ascii=False, sort_keys=True)
@@ -694,6 +715,14 @@ class LibrarianSession:
     async def _model_call(self) -> tuple[dict, Any]:
         from unify.common.llm_client import call_kind
 
+        if self.view is not None:
+            # the run record's turn boundary: what is new for the librarian, after its turn's tool results
+            try:
+                block = self.view.take_block()
+            except Exception:  # noqa: BLE001 - delivery never stops an answer
+                block = None
+            if block:
+                self.messages.append({"role": "user", "content": block})
         with call_kind(CALL_KIND):
             return await self.turn(self.messages, self.tools)
 
@@ -800,8 +829,16 @@ class LibrarianSession:
         if self.closed:
             return
         self.closed = True
-        async with self._lock:
-            await self.interp.close()
+        try:
+            async with self._lock:
+                await self.interp.close()
+        finally:
+            if self.run_record is not None:
+                # it leaves the run record with the request (its name stays taken)
+                try:
+                    self.run_record.leave(self.name)
+                except Exception:  # noqa: BLE001 - leaving never fails the request's end
+                    pass
 
 
 def _compact_on() -> bool:
@@ -851,6 +888,7 @@ def opener(
             raise Unavailable("no library is mounted in this request")
         if library_items(Path(copy)) is None:
             raise Unavailable("the library's items cannot be read")
+        record, name = _join_run_record(run)
         session = LibrarianSession(
             copy=Path(copy),
             turn=(turn_factory or actor_turn)(),
@@ -858,6 +896,8 @@ def opener(
             on_event=on_event,
             request_id=request_id,
             library=getattr(run, "pin", None),
+            run_record=record,
+            name=name,
         )
         sessions = getattr(run, "librarian_sessions", None)
         if isinstance(sessions, list):
@@ -865,6 +905,33 @@ def opener(
         return session
 
     return open_session
+
+
+def _join_run_record(run: Any) -> tuple[Any, str]:
+    """``UNIFY_AGENTS_RUN_RECORD=on``: the run record this request's librarian joins at its first question, as
+    ``librarian-<hex of the episode>`` with the request's episode, and its name; ``(None, "librarian")`` while off."""
+    from unify.common.tool_registry import run_record_on
+
+    if not run_record_on():
+        return None, AGENT
+    from unify.agents.run_record import join_run_record
+
+    home = getattr(getattr(run, "paths", None), "home", None)
+    if home is None:
+        raise Unavailable("no memory home for the run record")
+    episode = getattr(run, "episode_id", None) or None
+    record = join_run_record(home)
+    import uuid
+
+    naming = episode or uuid.uuid4().hex[:16]
+    for _ in range(20):
+        name = record.unique_name(AGENT, naming)
+        try:
+            record.join(name, AGENT, episode=episode)
+            return record, name
+        except Exception:  # noqa: BLE001 - a name another process took: the next one
+            continue
+    raise Unavailable("no free name for the librarian on the run record")
 
 
 def usage_fields(sessions: Any) -> dict:

@@ -860,6 +860,12 @@ class PassConfig:
     # tools are Python calls from the agent's cells through the tool channel (tool_channel.py, tool_handlers.py);
     # off: the JSON tools as before
     tools_in_code: bool = False
+    # UNIFY_AGENTS_RUN_RECORD=on (library mode): the memory home whose run record the pass's agent and its helpers
+    # join (unify/agents/run_record.py); None: the pass keeps its own record, as built
+    run_home: str | None = None
+    # the writer service holds the writer's place on the run record between passes (the writer is idle, not ended,
+    # when a pass ends)
+    service_held: bool = False
 
 
 @dataclass
@@ -2835,11 +2841,15 @@ class WriterPass:
 
     async def _end_record(self) -> None:
         """Every way out of the pass: end its helpers, then write the ``pass_end`` event with ``helpers_closed``
-        (each helper: ended or still running) and where the record is."""
+        (each helper: ended or still running) and where the record is. On the run record the pass's agent then
+        leaves it (the writer service's writer goes idle)."""
         pr = self._pass_record
         if pr is None:
             return
-        await self._close_record()
+        try:
+            await self._close_record()
+        finally:
+            pr.end_root()
         # each helper's transcript beside the pass's events (record_transcript), named in the end event
         transcripts: list[dict] = []
         ctx = self._delegate_ctx
@@ -2869,7 +2879,7 @@ class WriterPass:
                 "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "helpers_closed": dict(pr.closed),
                 "helpers": pr.agents()[1:],
-                "record": str(pr.log.path) if pr.log is not None else None,
+                "record": str(pr.log.path) if pr.log is not None else (str(pr.record.path) if pr.run else None),
                 "record_error": getattr(self, "_record_error", None),
                 "record_entries": len(pr.record.entries),
                 "helper_transcripts": transcripts,
@@ -2888,6 +2898,11 @@ class WriterPass:
                 ),
             },
         )
+
+    def _no_record_log(self) -> None:
+        """On the run record the pass keeps no record file of its own (the run record holds its entries)."""
+        self._record_error = None
+        return None
 
     def _record_log(self, pass_id: str) -> Any:
         """``<pass_record_root>/<pass id>/record.jsonl`` (created new) for the pass's record, or None when the pass
@@ -3982,6 +3997,7 @@ class WriterPass:
         )
 
         binds, profile = self._interpreter_box(agent, pass_id, box, inputs)
+        pr = self._pass_record
         session = _th.InterpreterSession(
             agent=agent,
             name=agent,
@@ -3998,6 +4014,8 @@ class WriterPass:
             threads=ic.threads,
             profile=profile,
             start=self.interpreter_start,
+            # the run record: the comms tools' record is the pass agent's view of it
+            record=pr.view(pr.root) if pr is not None and pr.run else None,
         )
         ic.kill_box = session.kill
         ic.measure_quota = session.measure_quota
@@ -4478,11 +4496,15 @@ class WriterPass:
         if self.cfg.library_mode:
             # one record per pass for its agent and every helper it starts (messaging.py), kept beside the pass's
             # events when the pass has a record folder
+            run_home = getattr(self.cfg, "run_home", None)
             self._pass_record = _messaging.PassRecord(
                 root="curator" if self._role == "curate" else "writer",
                 deadline=deadline,
-                log=self._record_log(pass_id),
+                # on the run record the entries live in the run's record file, not a file per pass
+                log=self._no_record_log() if run_home else self._record_log(pass_id),
                 pass_id=pass_id,
+                run_home=run_home,
+                held_by_service=bool(getattr(self.cfg, "service_held", False)),
             )
         calls, checks, summary = 0, 0, ""
         # repair rounds (repair.py states the budget rule)
@@ -4759,6 +4781,12 @@ class WriterPass:
                             f"stage: {type(exc).__name__}: {str(exc)[:200]}"
                         )
                 first = self._first_message_library_mode(req, pass_id)
+                pr = self._pass_record
+                if pr is not None and pr.run:
+                    # the run record: the common section and this agent's roster lines, after the constant brief
+                    from unify.agents.run_record import prompt_lines
+
+                    first += "\n\n" + prompt_lines(pr.root, "writer")
             else:
                 _channel_dirs(box, channels)
                 # the writer tends the library on its channels, so library.json gives each function's recorded
@@ -5142,6 +5170,16 @@ class WriterPass:
                     ):
                         continue  # the summary call took the last call the pass had
                     calls += 1
+                pr_run = self._pass_record
+                if pr_run is not None and pr_run.run:
+                    # the run record's turn boundary: what is new for this agent, after the turn's tool results
+                    try:
+                        block = pr_run.record.take_block(pr_run.root)
+                    except Exception as exc:  # noqa: BLE001 - delivery never stops a pass
+                        block = None
+                        notes.append(_redact(f"record block not delivered: {type(exc).__name__}")[:300])
+                    if block:
+                        messages.append({"role": "user", "content": block})
                 try:
                     msg, usd = await asyncio.wait_for(
                         self.turn(messages, tools),

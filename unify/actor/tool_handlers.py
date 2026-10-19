@@ -304,7 +304,8 @@ def _rec(ctx: Any):
 
 
 def _running(ctx: Any) -> list:
-    return [r["name"] for r in _rec(ctx).roster() if r.get("state") == "running"]
+    # an agent waiting for a message on the run record is running too: it reads what it is sent
+    return [r["name"] for r in _rec(ctx).roster() if r.get("state") in ("running", "waiting")]
 
 
 _TAGS = {"reply": " (done)", "cancel": " (stop)", "system": " (notice)"}
@@ -323,8 +324,16 @@ def _left(ctx: Any) -> float:
 def _post(ctx: Any, tool: str, text: Any, to: Optional[list] = None) -> tuple[Any, dict]:
     if not isinstance(text, str) or not text.strip():
         return _refused(refusal(tool, "no_text")), {}
+    rec = _rec(ctx)
     try:
-        out = _rec(ctx).post(ctx.name, text, to=to)
+        if hasattr(rec, "last_from"):
+            # the run record: a reply names the entry it answers, and a question goes where it says (or to the
+            # agent that started this one)
+            reply_to = rec.last_from(to[0]) if tool == "reply" and to else None
+            default_to = getattr(ctx.state, "spawner", None) if tool == "ask" else None
+            out = rec.post(ctx.name, text, to=to, reply_to=reply_to, default_to=default_to)
+        else:
+            out = rec.post(ctx.name, text, to=to)
     except RecordRefused as exc:
         return _from_record(tool, exc), {}
     sent = f"sent to {', '.join(out.get('to') or []) or 'no one by name'} (#{out.get('seq')})"

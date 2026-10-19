@@ -759,9 +759,11 @@ class InterpreterSession:
         start: Callable[..., Awaitable[Any]] | None = None,
         specs: dict | None = None,
         tools: bool = True,
+        record: Any = None,
     ) -> None:
         """*specs*: tool specs by name for the channel (None: the shared registry's, as in a pass). *tools*: the
-        box gets a tool channel and the ``tools`` stub (False: neither)."""
+        box gets a tool channel and the ``tools`` stub (False: neither). *record*: the agent's view of the run record
+        (``UNIFY_AGENTS_RUN_RECORD=on``: its comms tools' record), else None."""
         from unify.common.tool_channel import CallContext
 
         self.tools = bool(tools)
@@ -783,7 +785,7 @@ class InterpreterSession:
             roots=dict(self._root_fds),
             limits=None,
             counters=state,
-            record=None,
+            record=record,
             episodes=None,
             deadline=deadline,
             state=state,

@@ -139,6 +139,7 @@ from .switch import (
     library_coverage,
     library_max_reads,
     captures_per_pass,
+    run_record_on,
 )
 
 __all__ = [
@@ -1530,6 +1531,9 @@ async def run_due_passes(
                     if Path(stores.paths.worktree_git).is_dir()
                     else None
                 ),
+                # UNIFY_AGENTS_RUN_RECORD=on: the pass's agent and its helpers join the run record (a pass worker's
+                # writer is not the service's: it leaves the record when its pass ends)
+                **({"run_home": str(stores.paths.home)} if run_record_on(settings) else {}),
             }
             if cfg.library_mode
             else {}

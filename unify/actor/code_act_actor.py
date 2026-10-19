@@ -2828,7 +2828,11 @@ async def _end_agents_request(
     without one, the helpers are stopped with ``reason``. Only the main agent
     ends a request, and a failure here never costs the caller its result.
     """
-    if agents_binding is None or agents_binding.name != "root":
+    if agents_binding is None or not getattr(
+        agents_binding,
+        "is_main",
+        agents_binding.name == "root",
+    ):
         return
     try:
         if reply is not None:
@@ -2837,6 +2841,11 @@ async def _end_agents_request(
             await agents_binding.pool.close(reason)
     except Exception:
         logger.warning("could not end the request in the agent record", exc_info=True)
+    finally:
+        # on the run record (UNIFY_AGENTS_RUN_RECORD=on) the main agent leaves at its request's end
+        leave = getattr(agents_binding, "leave", None)
+        if callable(leave):
+            leave()
 
 
 class CodeActActor(BaseCodeActActor):

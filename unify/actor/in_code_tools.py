@@ -632,10 +632,12 @@ def open_for_act(
     root = pool.record.root
     participant = pool.record.participants.get(agents.name)
     policy = _sandbox.build_policy()
+    # UNIFY_AGENTS_RUN_RECORD=on: the run record's view of this agent; else the agent record
+    view = agents.comms_view() if hasattr(agents, "comms_view") else None
     return InCodeTools(
         agent="actor" if agents.name == root else "teammate",
         name=agents.name,
-        record=AgentRecordAdapter(pool),
+        record=view if view is not None else AgentRecordAdapter(pool),
         workspace_root=str(policy.workspace),
         shadow=sandbox.global_state,
         cell_limit_s=cell_limit_s,
