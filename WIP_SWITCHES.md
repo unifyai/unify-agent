@@ -193,6 +193,13 @@ The three long-horizon switches share the step-limit reply path.
 - **What it does:** When off, the actor's memory surface is exactly as with it on (its tools, the library pointer or index, the librarian when that is on), and no memory work runs after a request: no consolidation pass of any kind starts (a batch's WRITE, the CURATE it makes due, a pass a verdict makes due), no writer call is made, the episode-end fork does not start, and the library never changes. Every other memory setting keeps its value. The episode is still recorded, its meta saying `"memory_passes": "off"`.
 - **Evidence:** the no-pass twin of the memory arm: the same surface with no learning, so a paired comparison separates what the library adds from what the surface alone does. No counted readout yet; keyless tests only.
 
+## UNIFY_MEMORY_WRITER_PASSES
+
+- **Values:** `on` or `off` (empty is `on`).
+- **Default:** empty (`on`).
+- **What it does:** When off (in the library mode with the episode-end fork on), the settled forks are still captured and the actor still runs the captures, and nothing after the capture step runs: no WRITE, CURATE or verdict pass starts and no writer or helper call is made, so the library never changes. It is refused without the library mode, without the fork, or with `UNIFY_MEMORY_PASSES=off`. On, every pass runs as before.
+- **Evidence:** the captures-only arm of the cross-world memory screen (captures and librarian without the writer), against the full memory arm on one build; keyless tests only so far (`tests/memory/integration/test_writer_passes_off.py`).
+
 ## UNIFY_LIBRARY
 
 - **Values:** `on` or `off` (empty is `on`).
