@@ -590,6 +590,52 @@ def lane_total(lane: str, journal: Path | str, worst_case_usd: Decimal) -> LaneT
     return LaneTotal(lane, len(last), known, unknown, worst_case_usd)
 
 
+def fork_by_episode(journal: Path | str, worst_case_usd: Decimal) -> dict[str, dict]:
+    """The fork lane's spend per episode (its segment forks included), from the journal's request metadata: the
+    episode a fork call names (``episode``), else its session (``fork.<episode>``, segments ``<episode>.s<n>``).
+    Each episode's known USD, its unpriced calls, and its booking at the worst case; calls that name none are under
+    ``unknown``."""
+    last: dict[str, Optional[Decimal]] = {}
+    owner: dict[str, str] = {}
+    for row in _rows(Path(journal)):
+        rid = row.get("request_attempt_id") or row.get("call_id")
+        if not isinstance(rid, str) or not rid:
+            continue
+        meta = row.get("unify_meta") if isinstance(row.get("unify_meta"), dict) else {}
+        episode = meta.get("episode")
+        if not isinstance(episode, str) or not episode:
+            session = meta.get("session")
+            episode = session[len("fork.") :] if isinstance(session, str) and session.startswith("fork.") else None
+        if isinstance(episode, str) and ".s" in episode:
+            base, _, seg = episode.rpartition(".s")
+            episode = base if seg.isdigit() else episode
+        if episode:
+            owner.setdefault(rid, episode)
+        charge = _dec(row.get("account_charge"))
+        if rid not in last:
+            last[rid] = None
+        if charge is not None:
+            last[rid] = charge
+    out: dict[str, dict] = {}
+    for rid, charge in last.items():
+        ep = owner.get(rid, "unknown")
+        cur = out.setdefault(ep, {"requests": 0, "known": Decimal(0), "unknown": 0})
+        cur["requests"] += 1
+        if charge is None:
+            cur["unknown"] += 1
+        else:
+            cur["known"] += charge
+    return {
+        ep: {
+            "requests": v["requests"],
+            "known_usd": usd(v["known"]),
+            "unknown": v["unknown"],
+            "booked_usd": usd(v["known"] + v["unknown"] * worst_case_usd),
+        }
+        for ep, v in sorted(out.items())
+    }
+
+
 def run_report(
     home: Path | str,
     journals: Mapping[str, Path | str],
@@ -647,6 +693,12 @@ def run_report(
         },
         "writer_post_stream_usd": usd(post),
         "writer_post_stream_passes": post_passes,
+        # segment forks multiply the fork's calls on long episodes: the fork lane's spend per episode
+        "fork_by_episode": (
+            fork_by_episode(journals["fork"], Decimal((worst_case_usd or {}).get("fork", WRITER_CALL_WORST_CASE_USD)))
+            if "fork" in journals
+            else {}
+        ),
         "labels": {
             "post_stream": "writer spend after the last instance: in the USD, not in stream-position curves",
             "librarian": "booked in the actor's lane",
@@ -722,6 +774,7 @@ __all__ = [
     "LaneTotal",
     "PAPER_NOTE",
     "entries_view",
+    "fork_by_episode",
     "items_view",
     "lane_total",
     "metered_passes",

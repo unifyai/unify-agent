@@ -225,9 +225,17 @@ def test_the_headline_is_the_sum_over_the_lane_journals_with_post_stream_writer_
     ):
         (turns / pid).mkdir(parents=True)
         (turns / pid / "pass.json").write_text(json.dumps({"started_at": started}))
+    # the fork lane's calls name their episode (the proxy journals the metadata): one episode, its segment fork too
+    fork_rows = _rows(lanes["fork"])
+    fork_rows[0]["unify_meta"] = {"session": "fork.ep-1"}
+    fork_rows[3]["unify_meta"] = {"session": "fork.ep-1.s2", "episode": "ep-1"}
+    _journal(lanes["fork"], fork_rows)
     report = M.run_report(
         home, lanes, 4, last_instance_ended_at="2026-10-20T22:00:00.000Z", paper=True
     )
+    assert report["headline"]["fork_by_episode"] == {
+        "ep-1": {"requests": 2, "known_usd": "0.02", "unknown": 0, "booked_usd": "0.02"},
+    }
     h = report["headline"]
     assert Decimal(h["usd"]) == want and h["bound"] == "="
     assert Decimal(h["usd_per_instance"]) == want / 4
