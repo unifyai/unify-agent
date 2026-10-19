@@ -20,9 +20,15 @@ task it works for. Two kinds are taken:
   or dotted path (``request_demonstration``, ``primitives.x.y``) and plain
   lowercase prose are domain vocabulary and are not taken.
 
-Words of the domain (an app name, ``grid``) are never tokens: only values of
-this instance are. The checks are regular expressions over the request and an
-``ast`` walk of the function; nothing is called.
+Words of the domain (an app name, a field name) are never tokens: only values
+of this instance are. Whatever the request, a name or text holding a UUID (a
+generic identifier shape) is also taken; no other shape is. The checks are
+regular expressions over the request and an ``ast`` walk of the function;
+nothing is called.
+
+Under ``UNIFY_MEMORY_PROFILE=redesign`` (:func:`labels_only`) a finding labels
+what is stored and refuses nothing (:func:`label`): which values are inputs and
+which are constants is the writer's stated label on each item, not a refusal.
 """
 
 from __future__ import annotations
@@ -52,13 +58,10 @@ _WS = re.compile(r"\s+")
 _ROUND = re.compile(r"[0-9]{1,2}0+")
 _NON_ALNUM = re.compile(r"[^0-9a-z]+")
 
-# Shapes that name a task instance in any function name, whatever the request.
-_NAME_ALIAS = re.compile(r"(?:^|_)(task_?[0-9a-f]{6,})(?:_|$)")
+# The one identifier shape taken in any function name, whatever the request: a UUID (in free text, :data:`_UUID`).
 _NAME_UUID = re.compile(
     r"[0-9a-f]{8}_?[0-9a-f]{4}_?[0-9a-f]{4}_?[0-9a-f]{4}_?[0-9a-f]{12}",
 )
-# The same shapes in free text (docstrings, guidance).
-_TEXT_ALIAS = re.compile(r"(?<![0-9a-z])task[-_][0-9a-f]{6,}(?![0-9a-z])")
 
 
 @dataclass(frozen=True)
@@ -167,7 +170,7 @@ def _id_in(token: str, text: str) -> bool:
 
 
 def _found_in_text(text: str, tokens: InstanceTokens) -> Optional[str]:
-    """The first instance token *text* contains, or a task-alias/UUID shape."""
+    """The first instance token *text* contains, or a UUID."""
     lowered = _WS.sub(" ", text.lower())
     for token in tokens.ids:
         if _id_in(token, lowered):
@@ -175,10 +178,9 @@ def _found_in_text(text: str, tokens: InstanceTokens) -> Optional[str]:
     for value in tokens.quoted:
         if value in lowered:
             return value
-    for pattern in (_TEXT_ALIAS, _UUID):
-        match = pattern.search(lowered)
-        if match:
-            return match.group(0)
+    match = _UUID.search(lowered)
+    if match:
+        return match.group(0)
     return None
 
 
@@ -201,10 +203,9 @@ def name_problem(name: str, tokens: Optional[InstanceTokens] = None) -> Optional
         slug = _slug(value)
         if len(slug) >= 12 and slug in lowered:
             return f"its name spells {value!r}, a value quoted in this task's request"
-    for pattern in (_NAME_ALIAS, _NAME_UUID):
-        match = pattern.search(lowered)
-        if match:
-            return f"its name contains {match.group(0).strip('_')!r}, the shape of a task id"
+    match = _NAME_UUID.search(lowered)
+    if match:
+        return f"its name contains {match.group(0).strip('_')!r}, the shape of a generic identifier (a UUID)"
     return None
 
 
@@ -285,6 +286,24 @@ def refusal(name: str, problem: str) -> str:
         f"'{name}' was not stored, because {problem}, and no later task will "
         f"share it. Take the value as a parameter (or drop it) and name the "
         f"function for what it does, then add it again."
+    )
+
+
+def labels_only() -> bool:
+    """Whether a finding labels what is stored instead of refusing it: under ``UNIFY_MEMORY_PROFILE=redesign``,
+    where only confinement, credentials and security refuse."""
+    from unify.memory.integration.switch import redesign_profile
+    from unify.settings import SETTINGS
+
+    return redesign_profile(SETTINGS)
+
+
+def label(name: str, problem: str) -> str:
+    """The label a function gets in place of :func:`refusal` under :func:`labels_only`."""
+    return (
+        f"'{name}' was stored with a label, not refused: {problem}. If the value differs "
+        f"between requests, take it as a parameter (or drop it) and name the function for "
+        f"what it does."
     )
 
 
