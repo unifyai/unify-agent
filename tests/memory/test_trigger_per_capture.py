@@ -143,9 +143,13 @@ def test_the_switches_are_off_by_default_and_parse_their_values():
         switch.parse_library_fixed_answers_as_examples,
         switch.parse_library_review_each_capture,
     ):
-        assert parse("") == "off" and parse("ON") == "on" and parse("off") == "off"
+        assert parse("ON") == "on" and parse("off") == "off"
         with pytest.raises(ValueError):
             parse("maybe")
+    assert switch.parse_library_fixed_answers_as_examples("") == "off"
+    assert switch.parse_library_review_each_capture("") == "off"
+    # empty stays empty, so the redesign profile can give it (off without the profile)
+    assert switch.parse_library_withdraw_closed_captures("") == ""
     assert switch.parse_library_captures_per_pass("") == 1
     assert switch.parse_library_captures_per_pass("3") == 3
     for bad in ("0", "-2", "x", True):

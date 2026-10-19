@@ -502,8 +502,13 @@ class ProductionSettings(BaseSettings):
     # literals as a worked example to read, never as a procedure to call; ``off`` (default): as built.
     UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES: str = "off"
     # The library mode with the pool on: ``on`` stops offering a capture whose pool entry the writer superseded or
-    # retired, and offers the item that superseded it in its place; ``off`` (default): as built.
-    UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES: str = "off"
+    # retired, and offers the item that superseded it in its place; ``off`` (default; also empty without the redesign
+    # profile): as built. Empty stays empty so that UNIFY_MEMORY_PROFILE=redesign can give it ``on``.
+    UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES: str = ""
+    # ``redesign`` turns on every switch of the general harness redesign together (switch.REDESIGN_SWITCHES): a switch
+    # left empty takes the profile's value, and one set to another value, or a setting the profile cannot run with, is
+    # refused before anything runs; empty (default): each switch as set.
+    UNIFY_MEMORY_PROFILE: str = ""
     # The fork lane's route: the key proxy's /fork/v1 base URL and the inherited
     # descriptor carrying its token, read once at start-up and then removed from the environment (empty: no fork lane).
     UNIFY_MEMORY_LIBRARY_FORK_BASE_URL: str = ""
@@ -820,6 +825,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_PASSES",
         "UNIFY_MEMORY_NOTEBOOK",
         "UNIFY_MEMORY_WRITER_PASSES",
+        "UNIFY_MEMORY_PROFILE",
         mode="before",
     )
     @classmethod

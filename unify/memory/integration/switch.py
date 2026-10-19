@@ -115,7 +115,18 @@ only what one stored item carries, never a task, a stream position or a word):
   writer closed as superseded or retired (``memory.items``, ``memory.get``, the structural match, the librarian's
   catalogue, search index and dispatch file, and so ``memory.ask``); the item that superseded it is offered in its
   place (:func:`..pool.withdrawn_captures`). A capture merged into an item stays offered. Needs the library mode and
-  the candidate pool.
+  the candidate pool. Empty is ``off``, or ``on`` under the redesign profile.
+
+The redesign profile:
+
+- ``UNIFY_MEMORY_PROFILE``: empty (each switch as set) or ``redesign``. ``redesign`` turns on every switch of the
+  general harness redesign together (:data:`REDESIGN_SWITCHES`): a switch left empty takes the profile's value
+  (:func:`profile_setting`, which each switch's accessor reads), and a run that sets one to another value, or sets
+  one of :data:`REDESIGN_CONFLICTS` (the per-capture trigger the attention ledger supersedes, fixed answers as worked
+  examples, the world notebook, no memory passes, no writer passes), is refused before anything runs, naming the
+  settings, never a value (:func:`redesign_refusal`, chained into :func:`profile_refusal`); each element's own
+  refusals follow (:data:`REDESIGN_PART_REFUSALS`). With ``UNIFY_MEMORY`` off the profile gives the memory switches
+  nothing (the no-memory arm keeps the run record).
 
 Not switched (a declared safety fix in every mode): the gate refuses bytecode, native code, start-up hooks
 and root entries other than ``env/``, ``workflows/`` and the test kit before extraction
@@ -915,14 +926,19 @@ def library_fixed_answers_as_examples(settings: Any) -> bool:
 
 
 def parse_library_withdraw_closed_captures(v: Any) -> str:
-    """``UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES``: ``off`` (also for empty) or ``on``."""
-    return _on_off(LIBRARY_WITHDRAW_CLOSED_CAPTURES, v)
+    """``UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES``: empty, ``off`` or ``on``. Empty stays empty, so that the
+    redesign profile can tell a setting it gives (empty) from one set to ``off`` (:func:`profile_setting`); without
+    the profile, empty is ``off``."""
+    value = _stripped(v).lower()
+    if value not in ("",) + ON_OFF:
+        raise ValueError(f"{LIBRARY_WITHDRAW_CLOSED_CAPTURES} must be empty, 'off' or 'on', not {v!r}"[:200])
+    return value
 
 
 def library_withdraw_closed_captures(settings: Any) -> bool:
-    """Whether a capture the writer superseded or retired stops being offered (its replacement offered instead)."""
-    value = getattr(settings, LIBRARY_WITHDRAW_CLOSED_CAPTURES, "") or ""
-    return parse_library_withdraw_closed_captures(value) == "on"
+    """Whether what the writer superseded or retired stops being offered, its replacement offered in its place:
+    ``on``, or empty under the redesign profile."""
+    return profile_setting(settings, LIBRARY_WITHDRAW_CLOSED_CAPTURES) == "on"
 
 
 def capture_serving_refusal(settings: Any) -> str | None:
@@ -941,6 +957,123 @@ def capture_serving_refusal(settings: Any) -> str | None:
         missing = [f"{n}=on" for n in (LIBRARY_MODE, need) if not on[n]]
         if active and missing:
             return f"{name}=on needs {', '.join(missing)}; nothing runs"
+    return None
+
+
+# --- the redesign profile ----------------------------------------------------------------------------------------
+
+MEMORY_PROFILE = "UNIFY_MEMORY_PROFILE"
+#: The one memory profile: every switch of the general harness redesign on together.
+REDESIGN = "redesign"
+MEMORY_PROFILES = ("", REDESIGN)
+#: Every switch the redesign profile turns on, with the value it gives. A switch left empty takes this value under
+#: the profile; a switch set to any other value is refused (:func:`redesign_refusal`). Off the profile, an empty
+#: switch keeps its own default (off).
+REDESIGN_SWITCHES: dict[str, str] = {
+    "UNIFY_AGENTS_RUN_RECORD": "on",
+    "UNIFY_MEMORY_WRITER_SERVICE": "on",
+    "UNIFY_MEMORY_METERING": "on",
+    "UNIFY_MEMORY_CAPTURE_TRACE": "on",
+    "UNIFY_MEMORY_ATTENTION_LEDGER": "on",
+    "UNIFY_MEMORY_LEDGER_K": "4",
+    "UNIFY_MEMORY_IMPURE_ITEMS": "on",
+    "UNIFY_MEMORY_WRITER_TESTS": "value,replay",
+    "UNIFY_MEMORY_IN_EPISODE": "on",
+    "UNIFY_MEMORY_SERVING_FAILURE_RECORD": "on",
+    LIBRARY_WITHDRAW_CLOSED_CAPTURES: "on",
+    "UNIFY_MEMORY_REGIME": "inferred",
+}
+#: Settings the redesign profile refuses at these values: a mechanism it replaces (the per-capture trigger, which
+#: the attention ledger supersedes), one it leaves off (fixed answers as worked examples, the world notebook), or
+#: one that stops the work its switches do (no memory work after a request, no writer pass).
+REDESIGN_CONFLICTS: dict[str, str] = {
+    LIBRARY_REVIEW_EACH_CAPTURE: "on",
+    LIBRARY_FIXED_ANSWERS_AS_EXAMPLES: "on",
+    NOTEBOOK: "on",
+    MEMORY_PASSES: "off",
+    WRITER_PASSES: "off",
+}
+
+
+def parse_memory_profile(v: Any) -> str:
+    """``UNIFY_MEMORY_PROFILE``: empty (each switch as set) or ``redesign``."""
+    value = _stripped(v).lower()
+    if value not in MEMORY_PROFILES:
+        raise ValueError(f"{MEMORY_PROFILE} must be empty or {REDESIGN!r}, not {v!r}"[:200])
+    return value
+
+
+def redesign_profile(settings: Any) -> bool:
+    """Whether the run is under ``UNIFY_MEMORY_PROFILE=redesign`` (missing is no profile)."""
+    return parse_memory_profile(getattr(settings, MEMORY_PROFILE, "") or "") == REDESIGN
+
+
+def _setting_text(value: Any) -> str:
+    """A setting's value as the profile compares it: lower case, comma-separated parts sorted, booleans and numbers
+    as written; None and empty are empty."""
+    if value is None or isinstance(value, bool):
+        return "" if value is None else ("on" if value else "off")
+    parts = [p.strip() for p in str(value).strip().lower().split(",")]
+    return ",".join(sorted(p for p in parts if p))
+
+
+def memory_on(settings: Any) -> bool:
+    """Whether ``UNIFY_MEMORY`` is on in *settings* (missing is off)."""
+    return parse_switch(getattr(settings, SWITCH, "") or "") == "on"
+
+
+def profile_setting(settings: Any, name: str) -> str:
+    """The value a redesign switch has in this run, as text (:func:`_setting_text`): the setting itself when it is
+    set, else, under the redesign profile, the value the profile gives it (:data:`REDESIGN_SWITCHES`), else empty.
+    With memory off (``UNIFY_MEMORY`` not on: the no-memory arm under the profile) the profile gives the memory
+    switches (``UNIFY_MEMORY_*``) nothing, as there is no memory for them to act on; the others (the run record) it
+    still gives. Each switch's own accessor reads it through here and parses it as usual, so an empty result means
+    its default."""
+    own = _setting_text(getattr(settings, name, ""))
+    if own or not redesign_profile(settings):
+        return own
+    if name.startswith(SWITCH + "_") and not memory_on(settings):
+        return ""
+    return _setting_text(REDESIGN_SWITCHES.get(name, ""))
+
+
+def _conflict_on(settings: Any, name: str, value: str) -> bool:
+    if name == WRITER_PASSES:
+        return not writer_passes_on(settings)
+    if name == MEMORY_PASSES:
+        return not memory_passes_on(settings)
+    return _setting_text(getattr(settings, name, "")) == value
+
+
+#: Each element's own refusals under the profile (what one of its switches needs from the others), called in order
+#: by :func:`redesign_refusal`; each takes the settings and returns a reason naming settings only, or None.
+REDESIGN_PART_REFUSALS: list = []
+
+
+def redesign_refusal(settings: Any) -> str | None:
+    """Why this run may not start under ``UNIFY_MEMORY_PROFILE=redesign`` (the settings named, never a value), or
+    None (also when the profile is not set): a switch of :data:`REDESIGN_SWITCHES` set to another value than the
+    profile gives it, a setting of :data:`REDESIGN_CONFLICTS` at its conflicting value, then each element's own
+    refusal (:data:`REDESIGN_PART_REFUSALS`)."""
+    if not redesign_profile(settings):
+        return None
+    wrong = [
+        name
+        for name, want in REDESIGN_SWITCHES.items()
+        if (own := _setting_text(getattr(settings, name, ""))) and own != _setting_text(want)
+    ]
+    if wrong:
+        return (
+            f"{MEMORY_PROFILE}={REDESIGN} turns on every switch of the redesign together; "
+            f"{', '.join(wrong)} set to another value (leave them empty or set the profile's value), so nothing runs"
+        )
+    clash = [f"{name}={value}" for name, value in REDESIGN_CONFLICTS.items() if _conflict_on(settings, name, value)]
+    if clash:
+        return f"{MEMORY_PROFILE}={REDESIGN} cannot run with {', '.join(clash)}; unset them, so nothing runs"
+    for part in REDESIGN_PART_REFUSALS:
+        reason = part(settings)
+        if reason:
+            return reason
     return None
 
 
@@ -1375,10 +1508,14 @@ def writer_passes_refusal(settings: Any) -> str | None:
 def profile_refusal(settings: Any) -> str | None:
     """Why this run may not start under its profile, or under UNIFY_MEMORY_WRITER_PASSES=off without what it needs
     (:func:`writer_passes_refusal`), or with a capture switch on without what it needs (:func:`capture_serving_refusal`;
-    the settings named, never a value), or None."""
+    the settings named, never a value), or under the redesign profile (:func:`redesign_refusal`), or None."""
     bad = profile_conflicts(settings)
     if not bad:
-        return writer_passes_refusal(settings) or capture_serving_refusal(settings)
+        return (
+            writer_passes_refusal(settings)
+            or capture_serving_refusal(settings)
+            or redesign_refusal(settings)
+        )
     return (
         f"{PROFILE}={PAPER} fixes {', '.join(bad)} (the writer runs on the actor's model and effort, and no checker "
         "line is taken); unset them, so nothing runs"
@@ -1533,6 +1670,7 @@ PARSERS = {
     LIBRARY_CAPTURES_PER_PASS: parse_library_captures_per_pass,
     LIBRARY_FIXED_ANSWERS_AS_EXAMPLES: parse_library_fixed_answers_as_examples,
     LIBRARY_WITHDRAW_CLOSED_CAPTURES: parse_library_withdraw_closed_captures,
+    MEMORY_PROFILE: parse_memory_profile,
 }
 
 

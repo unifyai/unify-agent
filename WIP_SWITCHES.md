@@ -195,10 +195,17 @@ The three long-horizon switches share the step-limit reply path.
 
 ## UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES
 
-- **Values:** `on` or `off` (empty is `off`).
-- **Default:** `off`.
+- **Values:** `on` or `off` (empty is `off`, or `on` under `UNIFY_MEMORY_PROFILE=redesign`).
+- **Default:** empty (`off`).
 - **What it does:** With the library mode and the candidate pool on, a captured procedure whose pool entry the writer closed as superseded or retired is no longer offered to the actor: it leaves the copy's capture snapshot, so `memory.items`, `memory.get`, the structural match, the librarian's catalogue, search index and dispatch file, and so `memory.ask`, no longer offer it. The item that superseded it (a library item, or an open captured procedure, followed through entries that were merged or superseded in turn) is offered in its place: `memory.get` of the withdrawn id gives it with a line saying so, the structural match lists it where the withdrawn capture would have matched, and its catalogue card and search text carry what the withdrawn capture was asked. A capture merged into an item stays offered. Each request records in a `capture_serving` event how many captures it withdrew and which items it offered in their place. Refused at start-up without `UNIFY_MEMORY_LIBRARY=on` and `UNIFY_MEMORY_LIBRARY_POOL=on`.
 - **Evidence:** a read-only replay of finished runs found captures the writer had already superseded or retired still listed in 26-37% of later visits and called in some of them; the superseding item, called on the same kind of request after the decision, gave the accepted answer in 85-86% of calls (continual-harness-research: the safe-serving replay). Keyless tests only so far (`tests/memory/test_capture_withdrawal.py`).
+
+## UNIFY_MEMORY_PROFILE
+
+- **Values:** empty or `redesign`.
+- **Default:** empty (each switch as set).
+- **What it does:** `redesign` turns on every switch of the general harness redesign together: `UNIFY_AGENTS_RUN_RECORD`, `UNIFY_MEMORY_WRITER_SERVICE`, `UNIFY_MEMORY_METERING`, `UNIFY_MEMORY_CAPTURE_TRACE`, `UNIFY_MEMORY_ATTENTION_LEDGER`, `UNIFY_MEMORY_LEDGER_K=4`, `UNIFY_MEMORY_IMPURE_ITEMS`, `UNIFY_MEMORY_WRITER_TESTS=value,replay`, `UNIFY_MEMORY_IN_EPISODE`, `UNIFY_MEMORY_SERVING_FAILURE_RECORD`, `UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES` and `UNIFY_MEMORY_REGIME=inferred`. A switch left empty takes the profile's value; a run that sets one of them to another value, or sets `UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE=on`, `UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES=on`, `UNIFY_MEMORY_NOTEBOOK=on`, `UNIFY_MEMORY_PASSES=off` or `UNIFY_MEMORY_WRITER_PASSES=off`, is refused at start-up, naming the settings and never a value, and so is a run that lacks what one of its switches needs. With `UNIFY_MEMORY` off the profile gives the memory switches nothing, so the no-memory arm keeps only the run record. Empty, nothing changes.
+- **Evidence:** the redesign build plan (continual-harness-research: REDESIGN-BUILD-PLAN-20261020) puts every change of the redesign in one bundle for the offline replay and the live screen; keyless tests only so far (`tests/memory/integration/test_redesign_profile.py`).
 
 ## UNIFY_MEMORY_LIBRARIAN
 
