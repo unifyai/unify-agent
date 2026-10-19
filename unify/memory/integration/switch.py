@@ -108,6 +108,9 @@ only what one stored item carries, never a task, a stream position or a word):
   pass covers at most ``UNIFY_MEMORY_LIBRARY_CAPTURES_PER_PASS`` capture episodes (default 1), the rest staying due
   for the passes after it (:class:`..trigger.Trigger`'s ``per_pass``). Needs the library mode and the episode-end
   fork. Under ``UNIFY_MEMORY_WRITER_PASSES=off`` no pass runs at all, so it changes nothing there.
+- ``UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES``: ``on`` offers a captured procedure whose ``run`` never reads its
+  input or only returns literals (:func:`..fixed_answer.fixed_answer`) as a worked example to read, never as a
+  procedure that applies or can be called. Needs the library mode and the episode-end fork.
 
 Not switched (a declared safety fix in every mode): the gate refuses bytecode, native code, start-up hooks
 and root entries other than ``env/``, ``workflows/`` and the test kit before extraction
@@ -872,6 +875,7 @@ LIBRARY_CAPTURES_PER_PASS = "UNIFY_MEMORY_LIBRARY_CAPTURES_PER_PASS"
 #: One capture episode per pass: where the writer already ran about one pass per capture, it opened nearly every
 #: capture episode it was given.
 LIBRARY_CAPTURES_PER_PASS_DEFAULT = 1
+LIBRARY_FIXED_ANSWERS_AS_EXAMPLES = "UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES"
 
 
 def parse_library_review_each_capture(v: Any) -> str:
@@ -893,6 +897,17 @@ def captures_per_pass(settings: Any) -> int | None:
     return parse_library_captures_per_pass(getattr(settings, LIBRARY_CAPTURES_PER_PASS, "") or "")
 
 
+def parse_library_fixed_answers_as_examples(v: Any) -> str:
+    """``UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES``: ``off`` (also for empty) or ``on``."""
+    return _on_off(LIBRARY_FIXED_ANSWERS_AS_EXAMPLES, v)
+
+
+def library_fixed_answers_as_examples(settings: Any) -> bool:
+    """Whether a capture that gives a fixed answer is offered as a worked example, never as a procedure."""
+    value = getattr(settings, LIBRARY_FIXED_ANSWERS_AS_EXAMPLES, "") or ""
+    return parse_library_fixed_answers_as_examples(value) == "on"
+
+
 def capture_serving_refusal(settings: Any) -> str | None:
     """Why a capture switch that is on may not run with these settings (the settings named, never a value), or None:
     each needs the library mode and what it acts on. Refused, rather than run as a silent no-op."""
@@ -902,6 +917,7 @@ def capture_serving_refusal(settings: Any) -> str | None:
     }
     for active, name, need in (
         (captures_per_pass(settings) is not None, LIBRARY_REVIEW_EACH_CAPTURE, LIBRARY_FORK),
+        (library_fixed_answers_as_examples(settings), LIBRARY_FIXED_ANSWERS_AS_EXAMPLES, LIBRARY_FORK),
     ):
         missing = [f"{n}=on" for n in (LIBRARY_MODE, need) if not on[n]]
         if active and missing:
@@ -1496,6 +1512,7 @@ PARSERS = {
     WRITER_PASSES: parse_writer_passes,
     LIBRARY_REVIEW_EACH_CAPTURE: parse_library_review_each_capture,
     LIBRARY_CAPTURES_PER_PASS: parse_library_captures_per_pass,
+    LIBRARY_FIXED_ANSWERS_AS_EXAMPLES: parse_library_fixed_answers_as_examples,
 }
 
 

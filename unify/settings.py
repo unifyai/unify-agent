@@ -498,6 +498,9 @@ class ProductionSettings(BaseSettings):
     # makes no pass due; ``off`` (default): a pass is due at E or on a verdict, as built.
     UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE: str = "off"
     UNIFY_MEMORY_LIBRARY_CAPTURES_PER_PASS: int = 1
+    # The library mode with the fork on: ``on`` offers a capture whose run() never reads its input or only returns
+    # literals as a worked example to read, never as a procedure to call; ``off`` (default): as built.
+    UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES: str = "off"
     # The fork lane's route: the key proxy's /fork/v1 base URL and the inherited
     # descriptor carrying its token, read once at start-up and then removed from the environment (empty: no fork lane).
     UNIFY_MEMORY_LIBRARY_FORK_BASE_URL: str = ""
@@ -788,6 +791,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_LIBRARY_FORK",
         "UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE",
         "UNIFY_MEMORY_LIBRARY_CAPTURES_PER_PASS",
+        "UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES",
         "UNIFY_MEMORY_LIBRARY_FORK_BASE_URL",
         "UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD",
         "UNIFY_MEMORY_LIBRARY_ANALYSTS",

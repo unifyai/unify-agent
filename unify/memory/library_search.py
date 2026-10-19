@@ -110,11 +110,19 @@ def rows(
 ) -> list[dict]:
     """One row per listed item of the copy at *tree*, in module-path order, then the notes, then the captured
     procedures (*captures*: the snapshot's files): ``{id, kind, path, card, text}``. Retired items have none, nor
-    has a procedure's recipe."""
+    has a procedure's recipe. A captured procedure the snapshot offers as a worked example is a row of kind
+    ``worked example``."""
     from . import when_to_use as wtu
     from .item_records import recipe_call, recipe_of
     from .layout import discover
-    from .library_export import CAPTURE_PREFIX, _capture_docs, _docstring_of, _docstrings, _status
+    from .library_export import (
+        CAPTURE_PREFIX,
+        _capture_docs,
+        _docstring_of,
+        _docstrings,
+        _status,
+        worked_example,
+    )
     from .library_index import HIDDEN
 
     tree = Path(tree)
@@ -147,10 +155,13 @@ def rows(
         goal = _one_line(sig.get("goal")) if isinstance(sig.get("goal"), str) else ""
         run_doc = _first_paragraph(_docstring_of(doc["procedure"])) if isinstance(doc["procedure"], str) else ""
         card = (run_doc or goal) + (" | tried and failed: never offered to run" if rec.get("outcome") == "failed" else "")
+        example = worked_example(rec)
+        if example:
+            card += f" | a worked example to read, never called: {example.get('why')}"
         out.append(
             {
                 "id": CAPTURE_PREFIX + cid,
-                "kind": "captured procedure",
+                "kind": "worked example" if example else "captured procedure",
                 "path": f".memory/captures/{cid}/procedure.py",
                 "card": card,
                 "text": " ".join(t for t in (goal, run_doc) if t),

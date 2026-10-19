@@ -991,6 +991,8 @@ class RequestRun:
         self.profile = ""
         # UNIFY_MEMORY_PASSES: "off" (no memory work after the request), recorded in the episode's meta; else empty
         self.memory_passes = ""
+        #: under the capture switches (switch.py), what they changed in this request's copy (counts and item ids)
+        self.capture_serving: dict | None = None
         self.stores: Any = None
         self.state: Any = None
         # The tool adapter is not wired in this build (deferred): ``assemble`` records no tool calls.
@@ -1102,6 +1104,13 @@ class RequestRun:
         self._recover_journals()
         self.episode_id = new_episode_id(transcripts.transcripts_dir())
         self.started_at = _now()
+        if self.capture_serving is not None:
+            # what the capture switches changed in this request's copy: the evidence of each switch's effect
+            consolidate._deliver(
+                self.stores,
+                None,
+                {"type": "capture_serving", "episode_id": self.episode_id, **self.capture_serving},
+            )
         self.model, self.effort, self.build = actor_model(), actor_effort(), build_id()
         # Before the actor starts, so the before snapshot precedes the first cell and the worker's
         # audit hook is installed while the capture is active (hooks.worker_audit).
@@ -1262,16 +1271,34 @@ class RequestRun:
         records, _ = records_at(Repo(paths.memory), self.pin)
         # the capture store as this request starts (captures.py; empty unless the episode-end fork captured
         # attempts): read only through memory helpers, never in the index or the prompt
+        from unify.settings import SETTINGS
+
         from ..captures import export_files, store_dir
+        from .switch import library_fixed_answers_as_examples
 
         try:
-            captured = export_files(store_dir(paths.state_dir))
+            captured = export_files(
+                store_dir(paths.state_dir),
+                examples=library_fixed_answers_as_examples(SETTINGS),
+            )
         except OSError as exc:
             logger.warning(
                 "memory library mode: captures not exported (%s)",
                 type(exc).__name__,
             )
             captured = {}
+        if library_fixed_answers_as_examples(SETTINGS):
+            from ..captures import EXAMPLE_KEY, EXPORT_DIR, RECORD_FILE
+
+            examples = 0
+            for path, data in captured.items():
+                if path.startswith(EXPORT_DIR + "/") and path.endswith("/" + RECORD_FILE):
+                    try:
+                        rec = json.loads(data)
+                    except ValueError:
+                        continue
+                    examples += isinstance(rec, dict) and EXAMPLE_KEY in rec
+            self.capture_serving = {"worked_examples": examples}
         librarian = librarian_on()
         summary_of = None
         search = None

@@ -139,6 +139,7 @@ def _s(**kw):
 
 def test_the_switches_are_off_by_default_and_parse_their_values():
     for parse in (
+        switch.parse_library_fixed_answers_as_examples,
         switch.parse_library_review_each_capture,
     ):
         assert parse("") == "off" and parse("ON") == "on" and parse("off") == "off"
@@ -150,11 +151,13 @@ def test_the_switches_are_off_by_default_and_parse_their_values():
         with pytest.raises(ValueError):
             switch.parse_library_captures_per_pass(bad)
     blank = SimpleNamespace()
+    assert not switch.library_fixed_answers_as_examples(blank)
     assert switch.captures_per_pass(blank) is None
     assert switch.captures_per_pass(_s(UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE="on")) == 1
     on = _s(UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE="on", UNIFY_MEMORY_LIBRARY_CAPTURES_PER_PASS="2")
     assert switch.captures_per_pass(on) == 2
     for name in (
+        switch.LIBRARY_FIXED_ANSWERS_AS_EXAMPLES,
         switch.LIBRARY_REVIEW_EACH_CAPTURE,
         switch.LIBRARY_CAPTURES_PER_PASS,
     ):
@@ -164,6 +167,7 @@ def test_the_switches_are_off_by_default_and_parse_their_values():
 @pytest.mark.parametrize(
     "name, needs",
     [
+        ("UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES", "UNIFY_MEMORY_LIBRARY_FORK"),
         ("UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE", "UNIFY_MEMORY_LIBRARY_FORK"),
     ],
 )

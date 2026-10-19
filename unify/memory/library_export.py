@@ -619,6 +619,15 @@ def _capture_docs(captures: Mapping[str, bytes] | None) -> dict[str, dict]:
     return out
 
 
+def worked_example(rec: Mapping | None) -> dict | None:
+    """The exported record's worked-example mark (:data:`.captures.EXAMPLE_KEY`, under
+    ``UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES=on``), or None: such a capture is read, never called."""
+    from .captures import EXAMPLE_KEY
+
+    mark = rec.get(EXAMPLE_KEY) if isinstance(rec, Mapping) else None
+    return mark if isinstance(mark, dict) else None
+
+
 def _function_docs(tree: Path, lib: Library) -> dict[str, str]:
     return _docstrings(tree, lib, {f.item_id for f in lib.functions})
 
@@ -737,10 +746,13 @@ def catalogue_text(
         input_line = signature_text(sig)
         level = _UNCHECKED  # captured procedures are listed at level unchecked (design J(b).3)
         state = rec.get("status") if isinstance(rec.get("status"), str) else "on-trial"
+        example = worked_example(rec)
         lines.append(
-            f"Evidence: level {level}; status {state}; reader read_input; "
-            f"applies: {'yes' if _applies_stated(sig) else 'no'}"
+            f"Evidence: level {level}; status {state}; "
+            + ("reader none (a worked example)" if example else "reader read_input")
+            + f"; applies: {'yes' if _applies_stated(sig) and not example else 'no'}"
             + ("; tried and failed: never offered to run" if failed else "")
+            + (f"; a worked example, never called: {example.get('why')}" if example else "")
             + "\n",
         )
         if input_line:
@@ -805,6 +817,8 @@ def dispatch_data(
         rec = doc["record"] if isinstance(doc["record"], dict) else {}
         if rec.get("outcome") == "failed" or not isinstance(doc["procedure"], str) or _capture_unlisted(rec):
             continue
+        if worked_example(rec):
+            continue  # a worked example is read, never recognised as applying
         sig = doc["signature"] if isinstance(doc["signature"], dict) else {}
         target = CAPTURE_PREFIX + cid
         rows.append(

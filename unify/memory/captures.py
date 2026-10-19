@@ -95,6 +95,9 @@ LANDED_FILE = "landed.json"
 CAPTURE_FILES = (PROCEDURE_FILE, SIGNATURE_FILE, RECORD_FILE, BROKE_FILE)
 #: The actor's snapshot of the store, under its library copy.
 EXPORT_DIR = ".memory/captures"
+#: The key of an exported record that offers its capture as a worked example
+#: (``UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES=on``): ``{"why", "returns"}`` (:mod:`.fixed_answer`).
+EXAMPLE_KEY = "worked_example"
 #: Each confined run's wall bound (the procedure runners' own, :data:`.procedures.PROCEDURE_S`).
 RUN_S = 60.0
 MAX_RESULT_BYTES = 8 * 1024 * 1024
@@ -1089,19 +1092,35 @@ def listed_record(record: dict, landing: Mapping[str, Any] | None) -> dict:
     return record if listed else {**record, "listing": {"listed": False, "why": why}}
 
 
-def export_files(store: Path | str) -> dict[str, bytes]:
+def export_files(
+    store: Path | str,
+    *,
+    examples: bool = False,
+) -> dict[str, bytes]:
     """The actor's snapshot of the store, by path under its library copy (``.memory/captures/<id>/<file>``). The
-    record of a capture whose landed procedure is not listed says so (:func:`listed_record`)."""
+    record of a capture whose landed procedure is not listed says so (:func:`listed_record`).
+
+    With *examples* (``UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES=on``) the record of a capture whose ``run``
+    gives a fixed answer (:func:`.fixed_answer.fixed_answer`; a failed attempt is never offered anyway) carries
+    :data:`EXAMPLE_KEY`, and the package, the catalogue, the search index and the dispatch file then offer it as a
+    worked example to read, never as a procedure to call."""
+    from .fixed_answer import fixed_answer
+
     out: dict[str, bytes] = {}
     landed = landings(store)
-    for cid, doc in load(store).items():
+    docs = load(store)
+    for cid, doc in docs.items():
         for name, key in (
             (PROCEDURE_FILE, "procedure"),
             (BROKE_FILE, "broke"),
         ):
             if isinstance(doc.get(key), str):
                 out[f"{EXPORT_DIR}/{cid}/{name}"] = doc[key].encode("utf-8", "surrogatepass")
-        out[f"{EXPORT_DIR}/{cid}/{RECORD_FILE}"] = _json(listed_record(doc["record"], landed.get(cid)))
+        record = listed_record(doc["record"], landed.get(cid))
+        fixed = fixed_answer(doc.get("procedure")) if examples and record.get("outcome") != FAILED else None
+        if fixed is not None:
+            record = {**record, EXAMPLE_KEY: fixed}
+        out[f"{EXPORT_DIR}/{cid}/{RECORD_FILE}"] = _json(record)
         if isinstance(doc.get("signature"), dict):
             out[f"{EXPORT_DIR}/{cid}/{SIGNATURE_FILE}"] = _json(doc["signature"])
         saved = doc.get("saved") if isinstance(doc.get("saved"), dict) else {}

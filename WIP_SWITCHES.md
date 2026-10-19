@@ -186,6 +186,13 @@ The three long-horizon switches share the step-limit reply path.
 - **What they do:** With the library mode and the fork on, every stored capture makes a writer pass due at once, whatever its outcome and whether it reproduced the value its attempt handed back; the experience budget alone no longer makes a pass due. One pass covers the pending episodes up to its `UNIFY_MEMORY_LIBRARY_CAPTURES_PER_PASS`-th capture episode; the rest stay due, so the worker runs the next pass right after it (kind `capture` in the pass events). Off, a pass is due when the recorded experience reaches E or when a capture reproduced its value with no contrary signal, which depends on whether the environment hands back a value the capture can reproduce. Refused at start-up without `UNIFY_MEMORY_LIBRARY=on` and `UNIFY_MEMORY_LIBRARY_FORK=on`. With `UNIFY_MEMORY_WRITER_PASSES=off` no pass runs at all, so these settings change nothing: they decide when a pass is due, never whether passes run.
 - **Evidence:** where captures rarely reproduce a handed-back value, passes fell back to the experience budget and the writer never opened most capture episodes, while where they do it ran about one pass per capture and opened nearly all of them (continual-harness-research: the writer generalisation audit and the safe-serving replay). Keyless tests only so far (`tests/memory/test_trigger_per_capture.py`).
 
+## UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES
+
+- **Values:** `on` or `off` (empty is `off`).
+- **Default:** `off`.
+- **What it does:** With the library mode and the fork on, a captured procedure whose `run` never reads its input, or whose every return is a literal (`unify/memory/fixed_answer.py`: a rule on the code's syntax only), is offered as a worked example: an item of kind note whose text says why, what it handed back, its evidence and its source. It is never matched as applying, has no reader in the dispatch file, and calling it or checking `fits` refuses with what to do instead. Each request records in a `capture_serving` event how many captures it offered this way. Refused at start-up without `UNIFY_MEMORY_LIBRARY=on` and `UNIFY_MEMORY_LIBRARY_FORK=on`.
+- **Evidence:** on some worlds nearly every capture stored one attempt's answer rather than a procedure (99-100% of captures on a card-game world), and in a replay of finished runs no call of such a capture solved its task where solving is checked, and none beat the memory-off baseline where one exists (continual-harness-research: the writer generalisation audit and the safe-serving replay). Keyless tests only so far (`tests/memory/test_capture_examples.py`).
+
 ## UNIFY_MEMORY_LIBRARIAN
 
 - **Values:** `on` or `off` (empty is `off`).
