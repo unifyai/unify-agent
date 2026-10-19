@@ -40,8 +40,9 @@ from ..signals import (
 
 #: Every signal's arrival, one JSON object per line, under the harness-only state directory.
 ARRIVALS_FILE = "signal-arrivals.jsonl"
-#: An episode id: 16 lower-case hex digits.
-EPISODE_ID = re.compile(r"[0-9a-f]{16}")
+#: An episode id, in the build's one grammar for episode ids (a request names its episode
+#: ``%Y%m%dT%H%M%S-<8 hex>``; a segment ``<episode>.s<n>``).
+EPISODE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 #: The checker labels a late verdict may carry.
 LABELS = ("pass", "fail")
 
@@ -147,7 +148,7 @@ def late_entry(raw_label: Any, episode: Any, about: Any, *, current: str, exists
     if raw_label not in LABELS:
         return None, 'a checker line is exactly {"label": "pass"} or {"label": "fail"}'
     if not isinstance(episode, str) or not EPISODE_ID.fullmatch(episode):
-        return None, "episode must be a recorded episode's id: 16 lower-case hex digits"
+        return None, "episode must be a recorded episode's id"
     if episode == current:
         return None, "that is this request's own episode: send the line without episode"
     about = "" if about is None else about

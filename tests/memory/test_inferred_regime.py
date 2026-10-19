@@ -428,9 +428,11 @@ def test_a_late_verdict_is_attached_by_episode_id_only(tmp_path):
     _record(stores, "e1", regime="none", minute=0)
     exists = stores.evidence.episode_exists
     for episode, why in (
-        ("0123456789abcdef", "no recorded episode has that id"),
-        ("e1x", "episode must be a recorded episode's id: 16 lower-case hex digits"),
-        (3, "episode must be a recorded episode's id: 16 lower-case hex digits"),
+        ("20261020T010203-0a1b2c3d", "no recorded episode has that id"),
+        ("e1x", "no recorded episode has that id"),
+        ("../e1", "episode must be a recorded episode's id"),
+        ("", "episode must be a recorded episode's id"),
+        (3, "episode must be a recorded episode's id"),
     ):
         assert (
             outcomes.late_entry("fail", episode, None, current="e9", exists=exists)[1]
@@ -445,6 +447,12 @@ def test_a_late_verdict_is_attached_by_episode_id_only(tmp_path):
     assert outcomes.late_entry("fail", "e1", "task:1", current="e9", exists=exists)[
         1
     ].startswith("about must be")
+    # an id as a request names its episode (the one the CLI announces) is taken
+    (tmp_path / "transcripts").mkdir()
+    real = request_mod.new_episode_id(tmp_path / "transcripts")
+    _record(stores, real, regime="none", minute=1)
+    entry, why = outcomes.late_entry("pass", real, None, current="e9", exists=exists)
+    assert why == "" and entry["episode"] == real and entry["label"] == "pass"
 
 
 # --- the request: inferred before the episode is written, late verdicts posted when it is recorded ----------------
