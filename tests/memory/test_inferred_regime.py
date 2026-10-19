@@ -740,3 +740,22 @@ def test_a_recovered_episodes_regime_is_inferred_too(tmp_path, monkeypatch):
     assert (
         journal._inferred_regime(ep, stores) == "prior" and ep.regime == "sparse"
     )  # nothing of its own arrived
+
+
+def test_a_hidden_graders_verdict_never_judges_a_capture_under_the_switch():
+    """The capture step's outcome (captures.judged_outcome): under the switch (signals carry their timing) the last
+    verdict the actor saw stands for the episode, a later hidden one is left out; without it, as built, the last
+    verdict given stands, whichever it is."""
+    ep = _ep(episode_id="e1", regime="sparse")
+    shown = _sig("e1", 1, "pass", visible=True, timing=IN_EPISODE)
+    hidden = _sig("e1", 2, "fail", visible=False, timing=IN_EPISODE)
+    got = captures.judged_outcome([shown, hidden], ep, "sparse", checker_visible=True)
+    assert got["positive"] and not got["contrary"]
+    alone = captures.judged_outcome([hidden], ep, "sparse", checker_visible=True)
+    assert not alone["positive"] and not alone["contrary"]
+    built = captures.judged_outcome(
+        [_sig("e1", 1, "pass", visible=True), _sig("e1", 2, "fail", visible=False)], ep, "dense", checker_visible=True
+    )
+    assert built == captures.judged_outcome(
+        [_sig("e1", 2, "fail", visible=False)], ep, "dense", checker_visible=True
+    )
