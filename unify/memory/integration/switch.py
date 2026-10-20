@@ -978,7 +978,9 @@ REDESIGN_SWITCHES: dict[str, str] = {
     "UNIFY_MEMORY_ATTENTION_LEDGER": "on",
     "UNIFY_MEMORY_LEDGER_K": "4",
     "UNIFY_MEMORY_IMPURE_ITEMS": "on",
-    "UNIFY_MEMORY_WRITER_TESTS": "value,replay",
+    # value only: the replay mode is refused until its stand-in's confinement review (G2) is recorded
+    # (``writer_tests.REPLAY_REVIEWED``; :func:`redesign_b_refusal`)
+    "UNIFY_MEMORY_WRITER_TESTS": "value",
     "UNIFY_MEMORY_IN_EPISODE": "on",
     "UNIFY_MEMORY_SERVING_FAILURE_RECORD": "on",
     LIBRARY_WITHDRAW_CLOSED_CAPTURES: "on",
@@ -1012,11 +1014,12 @@ _LEDGER_PARTS = {
 #:
 #: * ``captures_only``: the writer runs nowhere (no service, no writer pass); captures, ledger and the rest as the
 #:   main arm;
-#: * ``ledger_off``: the attention ledger off, G1's per-capture trigger in its place (§7), and the service and
-#:   in-episode memory with it (each needs the ledger), so the writer runs as the pass worker;
+#: * ``ledger_off`` (a bundle, labelled as one; the lead decides whether it stays): the attention ledger off, G1's
+#:   per-capture trigger in its place (§7), and the service and in-episode memory with it (each needs the ledger), so
+#:   the writer runs as the pass worker;
 #: * ``in_episode_off`` and ``failure_record_off``: that one switch off;
-#: * ``mesh_off`` (informational): the run record off, and the service with it (the service holds the writer's place
-#:   on the record), so the ledger and in-episode memory too;
+#: * ``mesh_off`` (informational): the run record off, the mesh alone (the service runs without it, each pass keeping
+#:   its own record);
 #: * ``no_memory``: memory off, the run record on (A1 is kept regardless).
 REDESIGN_ARMS: dict[str, dict[str, str]] = {
     "redesign": {MEMORY_PROFILE: REDESIGN},
@@ -1029,7 +1032,7 @@ REDESIGN_ARMS: dict[str, dict[str, str]] = {
     },
     "in_episode_off": {**REDESIGN_SWITCHES, "UNIFY_MEMORY_IN_EPISODE": "off"},
     "failure_record_off": {**REDESIGN_SWITCHES, "UNIFY_MEMORY_SERVING_FAILURE_RECORD": "off"},
-    "mesh_off": {**REDESIGN_SWITCHES, **_LEDGER_PARTS, "UNIFY_AGENTS_RUN_RECORD": "off"},
+    "mesh_off": {**REDESIGN_SWITCHES, "UNIFY_AGENTS_RUN_RECORD": "off"},
     "no_memory": {"UNIFY_MEMORY": "off", "UNIFY_AGENTS_RUN_RECORD": "on"},
 }
 
@@ -1118,7 +1121,8 @@ def redesign_refusal(settings: Any) -> str | None:
 
 # --- what a capture records, what makes the writer read, what the library holds, memory during an episode -------------
 # Each is off by default, so a run that sets none of them is as built. Under ``UNIFY_MEMORY_PROFILE=redesign`` an empty
-# value takes the profile's value (:func:`profile_setting`: on; ``LEDGER_K`` 4; ``WRITER_TESTS`` value and replay).
+# value takes the profile's value (:func:`profile_setting`: on; ``LEDGER_K`` 4; ``WRITER_TESTS`` value, replay refused
+# until G2).
 CAPTURE_TRACE = "UNIFY_MEMORY_CAPTURE_TRACE"
 ATTENTION_LEDGER = "UNIFY_MEMORY_ATTENTION_LEDGER"
 LEDGER_K = "UNIFY_MEMORY_LEDGER_K"
@@ -1268,6 +1272,11 @@ def redesign_b_refusal(settings: Any) -> str | None:
         checks.append(needs(IMPURE_ITEMS, ((f"{LIBRARY_MODE}=on", lib), (f"{TOOLS_IN_CODE}=on", code))))
     if writer_tests_modes(settings):
         checks.append(needs(WRITER_TESTS, ((f"{LIBRARY_MODE}=on", lib), (f"{TOOLS_IN_CODE}=on", code))))
+    if "replay" in writer_tests_modes(settings) and not _replay_reviewed():
+        checks.append(
+            f"{WRITER_TESTS}=value,replay is refused until the replay stand-in's confinement review (G2) is recorded; "
+            f"set {WRITER_TESTS}=value, so nothing runs",
+        )
     if in_episode(settings):
         checks.append(
             needs(
@@ -1281,6 +1290,13 @@ def redesign_b_refusal(settings: Any) -> str | None:
             ),
         )
     return next((c for c in checks if c), None)
+
+
+def _replay_reviewed() -> bool:
+    """Whether the writer's replay tests may run: their stand-in's confinement review (G2) is recorded OK."""
+    from .. import writer_tests
+
+    return bool(getattr(writer_tests, "REPLAY_REVIEWED", False))
 
 
 REDESIGN_PART_REFUSALS.append(redesign_b_refusal)

@@ -511,7 +511,7 @@ class ProductionSettings(BaseSettings):
     UNIFY_MEMORY_PROFILE: str = ""
     # What a capture records, what makes the writer read, what the library holds, and memory during an episode
     # (unify/memory/integration/switch.py). Each is empty (off) by default; under UNIFY_MEMORY_PROFILE=redesign an empty
-    # value takes the profile's value (on; LEDGER_K 4; WRITER_TESTS value,replay). ``UNIFY_MEMORY_CAPTURE_TRACE``: a capture records what its episode
+    # value takes the profile's value (on; LEDGER_K 4; WRITER_TESTS value; replay refused until G2). ``UNIFY_MEMORY_CAPTURE_TRACE``: a capture records what its episode
     # did (the trace, a value only when one was handed back) in one of three forms, its own check as evidence.
     # ``UNIFY_MEMORY_ATTENTION_LEDGER``: the attention ledger makes the writer read every entry that needs it, in
     # passes of ``UNIFY_MEMORY_LEDGER_K`` entries (empty: 4). ``UNIFY_MEMORY_IMPURE_ITEMS``: the library holds
