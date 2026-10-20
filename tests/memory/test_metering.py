@@ -318,7 +318,7 @@ def test_per_visit_rows_never_take_writer_cost_and_label_the_librarian(monkeypat
 
 
 def test_a_pass_row_names_its_entries_items_usd_and_a_killed_turn_once(tmp_path):
-    """A3 test 4 (the row's side): a killed turn is one count on its pass's row; the per-pass row carries the §2.10
+    """The row's side: a killed turn is one count on its pass's row; the per-pass row carries the metering
     fields."""
     home = _home(tmp_path, passes=[], ledger=[
         {"op": "hand", "entry": "e1", "pass_id": "p9"},

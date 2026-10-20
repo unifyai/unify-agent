@@ -210,6 +210,15 @@ REPLACES = [
         "can still merge; a pass that breaks a pass-wide rule (layout, undeclared changes, lost or regressed tests, the\n"
         "library's size and growth, deleted functions' covers, secrets) is refused whole.\n",
     ),
+    # the scope example names no world (the shared examples' neutral wording, the same in every arm)
+    (
+        "   happened to show. Bad: `if colour not in (\"red\", \"blue\"): raise MemoryInputError(...)` because only red and blue\n"
+        "   were recorded. Good: `if not isinstance(colour, str) or not colour: raise MemoryInputError(\"colour must be a\n"
+        "   non-empty string\")`.",
+        "   happened to show. Bad: `if status not in (\"open\", \"closed\"): raise MemoryInputError(...)` because only open and\n"
+        "   closed were recorded. Good: `if not isinstance(status, str) or not status: raise MemoryInputError(\"status must be\n"
+        "   a non-empty string\")`.",
+    ),
 ]
 # The override rule (memory-override-rule) adds one sentence to the brief's covers paragraph. Each entry is
 # (anchor, text inserted after it).

@@ -30,7 +30,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-#: The guard grep (the redesign plan's C1 test 1), case-insensitive, whole words.
+#: The guard grep, case-insensitive, whole words.
 GUARD = re.compile(
     r"\b(grid|grids|puzzle|demo|demos|task|tasks|airline|booking|crafter|arc|poker|hand|game|colleague|office|"
     r"stencil|colour|color)\b",
@@ -61,9 +61,9 @@ GUARD_MODULES = (
     "unify/memory/serving.py",
     "unify/memory/trust.py",
     # the redesign's agent-facing texts (REDESIGN-BUILD-PLAN-20261020): the run record, its tools and the fork's relay
-    # (A1), the writer service's notices (A2), metering's labels (A3), the capture trace (B1), the attention ledger's
-    # refusals and tools (B2), the writer's stated tests and item labels (B3), in-episode memory's notices and the
-    # segment records (B4)
+    # (the run record), the writer service's notices, metering's labels, the capture trace, the attention ledger's
+    # refusals and tools, the writer's stated tests and item labels, in-episode memory's notices and the
+    # segment records
     "unify/agents/run_record.py",
     "unify/agents/run_record_tools.py",
     "unify/agents/fork_relay.py",

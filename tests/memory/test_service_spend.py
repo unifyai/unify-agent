@@ -1,4 +1,4 @@
-"""The writer service's spend (review C1): a service pass is bounded by the service's room (its cap less what its other
+"""The writer service's spend: a service pass is bounded by the service's room (its cap less what its other
 passes committed), for the writer's calls and every helper's, so a pass never takes the service past its cap; and the
 helpers' lane, which the writer journal does not hold, is settled toward the service's committed total.
 
@@ -21,7 +21,7 @@ from unify.memory import writer_service as ws
 from unify.memory.call_bounds import call_worst_case_usd
 
 
-#: Sol's bound (the default writer model's) in the pinned catalogue
+#: The default writer model's bound in the pinned catalogue
 W = call_worst_case_usd("openai/gpt-6-sol")
 
 
@@ -45,7 +45,7 @@ def test_the_room_counts_known_spend_and_each_unpriced_in_flight_and_new_call_at
     assert spend.in_flight == 1
     # a limit with no worst case to count with lets no call start (fail closed)
     assert not writer_pass.usd_room(SimpleNamespace(usd_limit="1000", usd_call_worst=None), spend)
-    # with Luna's worst case (0.65625) the same room holds far more
+    # with a cheaper model's worst case (0.65625) the same room holds far more
     spend.unknown, spend.in_flight = 0, 0
     assert writer_pass.usd_room(_cfg(Decimal("0.70") + Decimal("0.65625"), Decimal("0.65625")), spend)
 
@@ -235,7 +235,7 @@ def _attention_pass(tmp_path, monkeypatch, *, recon, resume=False, pending=0, he
 
 
 def test_a_resumed_pass_has_its_lost_calls_taken_from_its_room(tmp_path, monkeypatch):
-    """Review C1: on resume, what the killed run already spent comes off the room: its done calls replay with their
+    """On resume, what the killed run already spent comes off the room: its done calls replay with their
     USD (so they count in the pass's spend again), and each call it lost is taken off at the worst case."""
     read = {"journal": "read", "usd": "0", "unknown": 0, "worst_case_usd": "13.125", "booked_usd": "0"}
     cfg, _ = _attention_pass(tmp_path, monkeypatch, recon=read, resume=True, pending=1)
@@ -243,7 +243,7 @@ def test_a_resumed_pass_has_its_lost_calls_taken_from_its_room(tmp_path, monkeyp
 
 
 def test_with_no_journal_a_pass_settles_its_own_figures_at_the_worst_case(tmp_path, monkeypatch):
-    """Review C1: with no readable journal the pass is not left unsettled (its whole room booked for good): it
+    """With no readable journal the pass is not left unsettled (its whole room booked for good): it
     settles its own priced calls (the writer's and its helpers', 0.01 here) and each unpriced or lost call at the
     worst case."""
     from unify.memory.reconcile import unavailable
@@ -261,7 +261,7 @@ def _step(home, runner, monkeypatch, **over):
 
 
 def test_the_service_books_the_whole_room_until_the_pass_settles(tmp_path, monkeypatch):
-    """Review C1: the pass may spend the whole room, so the whole room is booked: cap 100 with 40 settled by an
+    """The pass may spend the whole room, so the whole room is booked: cap 100 with 40 settled by an
     earlier pass books 60 for the new pass, and its settle then counts instead."""
     from tests.memory import test_writer_service as T
 
@@ -288,7 +288,7 @@ def test_a_cap_whose_room_holds_no_worst_case_call_starts_no_pass(tmp_path, monk
 
 
 def test_a_pass_that_raises_settles_from_its_turn_files(tmp_path, monkeypatch):
-    """Review C1: a pass that ended with no report is settled from its own turn files (each done call's USD, each
+    """A pass that ended with no report is settled from its own turn files (each done call's USD, each
     pending or unpriced call at the worst case), never left at a reservation a later room would ignore."""
     from tests.memory import test_writer_service as T
 
@@ -365,13 +365,13 @@ def test_a_service_pass_counts_calls_at_its_lanes_models_worst_case(monkeypatch)
     from tests.memory import test_writer_service as T
     from unify.memory.integration import switch
 
-    luna = T._settings(UNIFY_MEMORY_WRITER_MODEL="openai/gpt-6-luna", UNIFY_MODEL="openai/gpt-6-sol")
+    cheap = T._settings(UNIFY_MEMORY_WRITER_MODEL="openai/gpt-6-luna", UNIFY_MODEL="openai/gpt-6-sol")
     monkeypatch.setattr(switch, "helper_lane_route", lambda: (None, "no helper lane"))
-    assert ws.pass_call_worst_case(luna) == Decimal("0.65625")
+    assert ws.pass_call_worst_case(cheap) == Decimal("0.65625")
     monkeypatch.setattr(
         switch, "helper_lane_route", lambda: (("http://127.0.0.1:9/helper/v1", SecretStr("t-for-a-test")), None)
     )
-    assert ws.pass_call_worst_case(luna) == Decimal("13.125")  # the helpers run on the actor's Sol
+    assert ws.pass_call_worst_case(cheap) == Decimal("13.125")  # the helpers run on the actor's model
     unknown = T._settings(UNIFY_MEMORY_WRITER_MODEL="vendor/no-such-model")
     monkeypatch.setattr(switch, "helper_lane_route", lambda: (None, "no helper lane"))
     try:
@@ -382,8 +382,9 @@ def test_a_service_pass_counts_calls_at_its_lanes_models_worst_case(monkeypatch)
         raise AssertionError("an unbounded model was given a worst case")
 
 
-def test_a_luna_cell_runs_passes_under_a_cap_below_sols_worst_case(tmp_path, monkeypatch):
-    """With a Luna writer a cap of 5 USD holds a pass (0.65625 a call), where Sol's 13.125 would hold none."""
+def test_a_cheaper_writer_runs_passes_under_a_cap_below_the_default_models_worst_case(tmp_path, monkeypatch):
+    """With the cheaper writer model a cap of 5 USD holds a pass (0.65625 a call), where the default's 13.125 would hold
+    none."""
     from tests.memory import test_writer_service as T
     from unify.memory.integration import switch
 
@@ -394,9 +395,9 @@ def test_a_luna_cell_runs_passes_under_a_cap_below_sols_worst_case(tmp_path, mon
     got = _step(home, runner, monkeypatch, UNIFY_MEMORY_WRITER_MODEL="openai/gpt-6-luna",
                 UNIFY_MEMORY_WRITER_SERVICE_CAP_USD="5")  # fmt: skip
     assert got["pass_id"] is not None and len(runner.passes) == 1
-    sol = tmp_path / "sol"
-    T._open_entry(sol)
-    got = _step(sol, T._no_pass, monkeypatch, UNIFY_MEMORY_WRITER_SERVICE_CAP_USD="5")
+    dear = tmp_path / "default-model"
+    T._open_entry(dear)
+    got = _step(dear, T._no_pass, monkeypatch, UNIFY_MEMORY_WRITER_SERVICE_CAP_USD="5")
     assert got["why_idle"] == "spend_cap"
 
 
@@ -495,7 +496,7 @@ def _read(kw):
     return {"journal": "read", "usd": "0", "unknown": 1, "worst_case_usd": money(worst), "booked_usd": money(worst)}
 
 
-def test_an_unpriced_writer_call_of_a_model_bounded_above_sol_settles_at_its_own_bound(tmp_path, monkeypatch):
+def test_an_unpriced_writer_call_of_a_model_bounded_above_the_default_settles_at_its_own_bound(tmp_path, monkeypatch):
     pro = call_worst_case_usd("openai/gpt-5.5-pro")
     assert pro == Decimal("220.5") > W
     cfg, report = _attention_pass(tmp_path, monkeypatch, recon=_read, cap="1000", model="openai/gpt-5.5-pro")
@@ -504,7 +505,7 @@ def test_an_unpriced_writer_call_of_a_model_bounded_above_sol_settles_at_its_own
 
 
 def test_the_request_scoped_pass_reconciles_at_the_writer_models_bound(tmp_path, monkeypatch):
-    """consolidate.run_due_passes (a pass worker's slot) passes the writer's model's bound to the reconciliation too."""
+    """``consolidate.run_due_passes`` (a pass worker's slot) passes the writer's model's bound to the reconciliation too."""
     from tests.memory.integration import test_consolidate as tc
     from unify.memory.integration import async_pass as ap
     from unify.memory.integration import consolidate

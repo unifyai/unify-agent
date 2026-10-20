@@ -98,12 +98,13 @@ def test_a_name_that_is_neither_names_the_nearest_sections_and_the_new_call(tmp_
 
 
 def test_an_empty_library_has_no_sections(tmp_path):
-    (whole, grid) = _cell(_copy(tmp_path, HEAD), [None, "grid"])
+    (whole, absent) = _cell(_copy(tmp_path, HEAD), [None, "absent"])
     assert whole == ["ok", HEAD]
-    assert grid == [
+    # the example names a neutral topic, never the name asked for (the same text in every arm)
+    assert absent == [
         "missing",
-        "memory.index('grid'): no section or item named 'grid'.\n"
-        "Expected a package or a notes topic, e.g. memory.items('notes/grid').\n"
+        "memory.index('absent'): no section or item named 'absent'.\n"
+        "Expected a package or a notes topic, e.g. memory.items('notes/reports').\n"
         "Browse every topic with memory.items(); memory.get(ref) opens one item.",
     ]
 

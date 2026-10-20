@@ -1,4 +1,4 @@
-"""``UNIFY_MEMORY_FROZEN`` (held-out evaluation, REDESIGN-BUILD-PLAN-20261020 §4 C4): memory is served as the home holds
+"""``UNIFY_MEMORY_FROZEN`` (held-out evaluation): memory is served as the home holds
 it and nothing changes it. Each part is checked here on its own; the conformance suite runs it end to end through the
 CLI (``tests/memory/conformance/test_surfaces.py::test_frozen_memory_serves_what_it_holds_and_changes_nothing``)."""
 

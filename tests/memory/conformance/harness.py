@@ -8,9 +8,9 @@ tokens are fixed test strings, never a credential.
 
 The checks every surface runs at its end (:func:`check_run`):
 
-* **no world vocabulary** in anything a memory agent was sent (the C1 guard's pattern and allow-list, over every
+* **no world vocabulary** in anything a memory agent was sent (the world-vocabulary guard's pattern and allow-list, over every
   memory lane's request: the fork's, the writer's, the helpers');
-* **the coverage guarantee** (B2): every attention entry is closed, unreadable or not reached, with a reason;
+* **the coverage guarantee** (the attention ledger): every attention entry is closed, unreadable or not reached, with a reason;
 * **metering sums** (A3): the entries' shares plus the handed-but-unread zeros equal the passes' known USD, exactly,
   in Decimal; the items' shares do not exceed the passes'; the lanes' booked USD equals what the fake lanes charged;
 * **verified termination** (A2): the drain's report says terminated, and no process of the service's group is left.
@@ -334,8 +334,8 @@ def check_run(home: Path, lanes: FL.Lanes, *, actor_model: Any = None, own_texts
     test asserts more about."""
     report = drain(home)
     check_terminated(report, home)
-    # the memory agents' inputs (fork, writer, helpers): the actor's own harness texts are outside C1's scope, and
-    # what memory adds to the actor's prompt is in C1's guard test (tests/memory/test_no_world_vocabulary.py)
+    # the memory agents' inputs (fork, writer, helpers): the actor's own harness texts are outside the guard's scope, and
+    # what memory adds to the actor's prompt is in the guard's test (tests/memory/test_no_world_vocabulary.py)
     words = world_words(model_inputs(lanes), own=own_texts)
     assert not words, words[:10]
     coverage = check_coverage(home)

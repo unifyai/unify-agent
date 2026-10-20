@@ -1,6 +1,6 @@
 """The runner-owned writer service (UNIFY_MEMORY_WRITER_SERVICE_OWNER=runner): the runner starts one service per cell in
 a sandbox of its own that outlives every session, a request never starts it, and the runner stops it (verified) at the
-cell's end before the key proxy (MAIN's option 3).
+cell's end before the key proxy (the runner-owned service).
 
 A "session" here is a request process in a pid namespace of its own that dies with its parent (``bwrap --unshare-pid
 --die-with-parent``), as the controller's sandbox is: ending it ends everything inside it. The service is the real

@@ -1,4 +1,4 @@
-"""The redesign's conformance suite (REDESIGN-BUILD-PLAN-20261020 §4 C4): four synthetic surfaces that name no world,
+"""The redesign's conformance suite: four synthetic surfaces that name no world,
 each run end to end through the CLI with ``UNIFY_MEMORY_PROFILE=redesign``, the writer service in its own process and
 every memory lane scripted (:mod:`.fake_lanes`, :mod:`.scripts`):
 
@@ -8,7 +8,7 @@ every memory lane scripted (:mod:`.fake_lanes`, :mod:`.scripts`):
 4. a request whose outcome arrives two requests later.
 
 Every surface ends as a kit ends a cell (the drain, verified) and is checked (:func:`.harness.check_run`): no world
-vocabulary in what the memory agents were sent, the coverage guarantee (B2), metering sums (A3), verified termination
+vocabulary in what the memory agents were sent, the coverage guarantee, metering sums (A3), verified termination
 (A2). Each asserts the acceptance lines of the elements its surface exercises:
 
 * A1 (surface 2): a fork -> writer message, a writer -> fork question answered, an actor -> writer report, a writer ->
@@ -16,13 +16,13 @@ vocabulary in what the memory agents were sent, the coverage guarantee (B2), met
 * A2 (all): one service, its passes, ``Terminated.verified`` and no process left in its group;
 * A3 (all): the entries' shares plus the unread zeros equal the passes' known USD exactly; ids on every memory call
   (``X-Unify-Pass-Id`` and ``-Entries`` on the writer's, ``-Episode`` / ``-Segment`` on the fork's);
-* B1 (surface 2): the capture record's form, trace, value, own check and outcome from signals;
-* B2 (all): every entry closed, unreadable or not reached; a late signal makes ``late_evidence`` (surface 4);
-* B3 (surface 2): a landed item is served;
-* B4 (surfaces 1, 3): every pause (a new message, an actor call, a compaction) starts a segment fork and makes an
+* traced captures (surface 2): the capture record's form, trace, value, own check and outcome from signals;
+* the attention ledger (all): every entry closed, unreadable or not reached; a late signal makes ``late_evidence`` (surface 4);
+* labelled items (surface 2): a landed item is served;
+* in-episode memory (surfaces 1, 3): every pause (a new message, an actor call, a compaction) starts a segment fork and makes an
   entry; a commit landed while the episode runs is served from the next cell with one notice;
-* C2 (surfaces 2, 4): served items carry their evidence; an item the writer retires leaves every listing;
-* C3 (surfaces 1, 2, 4): each episode's regime is inferred from its own signals (``none`` with none, ``sparse`` with
+* serving on evidence (surfaces 2, 4): served items carry their evidence; an item the writer retires leaves every listing;
+* inferred regimes (surfaces 1, 2, 4): each episode's regime is inferred from its own signals (``none`` with none, ``sparse`` with
   a verdict on the whole episode, changed and logged by a late one), never defaulted; a hidden grader decides nothing.
 """
 
@@ -78,7 +78,7 @@ def _served(home: Path, seen: list, text: str = "Noted."):
         from unify.memory.integration.paths import Paths
 
         copy = Paths.under(home).checkout
-        copy = copy / "current" if (copy / "current").exists() else copy  # B4: the pinned copy
+        copy = copy / "current" if (copy / "current").exists() else copy  # in-episode memory: the pinned copy
         meta = copy / ".memory"
         seen.append({
             "items": sorted(json.loads((meta / "items.json").read_text())["items"]),
@@ -153,9 +153,9 @@ async def test_surface_1_a_conversation_with_follow_ups_and_no_reward(core_world
     H.wait_until_settled(home)
     facts = H.check_run(home, lanes, actor_model=model, own_texts=[first, *follow])
     print("CONFORMANCE", json.dumps(H.run_facts(home, lanes, facts), default=str, sort_keys=True)[:3000])
-    # C3: nothing arrived for the episode, so its regime is none, by that rule (never a default)
+    # nothing arrived for the episode, so its regime is none, by that rule (never a default)
     assert _stores(home).evidence.regime_record(s.episode_id) == ("none", "nothing")
-    # B4: the follow-up message after a cell is a pause: a segment fork and its entry; the episode's end, another
+    # the follow-up message after a cell is a pause: a segment fork and its entry; the episode's end, another
     entries = _entries(home)
     segs = sorted(e.refs.segment for e in entries if e.kind == "new_experience" and e.refs.segment)
     ends = [e for e in entries if e.kind == "new_experience" and not e.refs.segment]
@@ -207,13 +207,13 @@ async def test_surface_2_a_tool_api_with_reads_and_writes_and_an_outcome_at_the_
     facts = H.check_run(home, lanes, actor_model=model, own_texts=[first, shown, "Anything new in the inbox?"])
     print("CONFORMANCE", json.dumps(H.run_facts(home, lanes, facts), default=str, sort_keys=True)[:3000])
     stores = _stores(home)
-    # C3: one verdict the actor saw, on the episode as a whole: sparse, from its signals; the hidden one is posted
+    # one verdict the actor saw, on the episode as a whole: sparse, from its signals; the hidden one is posted
     # unseen and decides nothing
     assert stores.evidence.regime_record(s.episode_id) == ("sparse", "signals")
     sigs = stores.evidence.signals_for(s.episode_id)
     assert {(x.visible_to_actor, x.label, x.timing) for x in sigs} == {(True, "pass", "in_episode"),
                                                                      (False, "pass", "in_episode")}
-    # B1: the capture records what the episode did, with no value (none was handed back), its own check replaying
+    # the capture records what the episode did, with no value (none was handed back), its own check replaying
     # the episode's two recorded calls, and its outcome from the signals only
     caps = [d.get("record") or {} for d in C.load(C.store_dir(paths.state_dir)).values()]
     case = next(c for r in caps for c in r.get("cases") or [] if c.get("episode") == s.episode_id)
@@ -222,7 +222,7 @@ async def test_surface_2_a_tool_api_with_reads_and_writes_and_an_outcome_at_the_
     assert case["own_check"]["value_match"] == "not_applicable"
     assert case["effects_seen"] == {"read": 1, "write": 1, "unknown": 0}
     assert case["outcome"] == "positive" and "action:0..1" in case["trace"]["parts"]
-    # B3 / C2: the note the writer landed from the episode is served to the next request, with evidence served
+    # the note the writer landed from the episode is served to the next request, with evidence served
     assert seen and SX.NOTE_ID in seen[0]["items"] and seen[0]["evidence"] is not None
     landed = [p for p in H._jsonl(paths.state_dir / "pass-results.jsonl") if (p.get("items") or {}).get("landed")]
     assert landed and SX.NOTE_ID in landed[0]["items"]["landed"]
@@ -306,11 +306,11 @@ async def test_surface_3_a_long_episode_with_checkpoints(core_world, monkeypatch
     facts = H.check_run(home, lanes, actor_model=model, own_texts=[first, SX.SUMMARY])
     print("CONFORMANCE", json.dumps(H.run_facts(home, lanes, facts), default=str, sort_keys=True)[:3000])
     assert "compression_fork" in model.kinds()
-    # B4: the actor's call and the compaction each started a segment fork with its own entry
+    # the actor's call and the compaction each started a segment fork with its own entry
     entries = _entries(home)
     segs = sorted(e.refs.segment for e in entries if e.kind == "new_experience" and e.refs.segment)
     assert segs[:2] == [1, 2], [(e.kind, e.refs.row()) for e in entries]
-    # B4: what the service landed from the first segment while the episode ran is served from the next cell, with
+    # what the service landed from the first segment while the episode ran is served from the next cell, with
     # one notice naming exactly what changed
     assert start.get("landed") and start["landed"] != start["head"], "the note was not served while the episode ran"
     notices = [m for c in model.of("actor") for m in c.messages
@@ -374,18 +374,18 @@ async def test_surface_4_an_outcome_that_arrives_two_requests_later(core_world, 
     facts = H.check_run(home, lanes, own_texts=texts)
     print("CONFORMANCE", json.dumps(H.run_facts(home, lanes, facts), default=str, sort_keys=True)[:3000])
     stores = _stores(home)
-    # C3: the arrival, after the episode, and the regime change it caused, logged with the signal's id
+    # the arrival, after the episode, and the regime change it caused, logged with the signal's id
     (arrival,) = [r for r in outcomes.read_arrivals(paths.state_dir) if r["episode_id"] == a.episode_id]
     assert arrival["timing"] == "after_episode" and arrival["label"] == "fail" and arrival["visible_to_actor"] is True
     assert (arrival["regime_before"], arrival["regime_after"]) == ("none", "sparse")
     changes = stores.evidence.regime_changes(a.episode_id)
     assert [(x["before"], x["after"]) for x in changes] == [(None, "none"), ("none", "sparse")]
     assert changes[-1]["signal_id"] == arrival["signal_id"]
-    # B2: the late signal reopened what the episode used or produced, as one late_evidence entry, decided
+    # the late signal reopened what the episode used or produced, as one late_evidence entry, decided
     (le,) = [e for e in _entries(home) if e.kind == "late_evidence"]
     assert a.episode_id in le.refs.episodes and SX.NOTE_ID in le.refs.items and arrival["signal_id"] in le.refs.signals
     assert le.state == "closed" and le.decision == "retire"
-    # C2: the item the writer retired is withdrawn: retired in the copy's records, named in its withdrawn file with
+    # the item the writer retired is withdrawn: retired in the copy's records, named in its withdrawn file with
     # the decision, and gone from the actor's listing
     assert seen and SX.NOTE_ID in (seen[0]["withdrawn"] or {}).get("items", {}), seen
     assert seen[0]["withdrawn"]["items"][SX.NOTE_ID]["status"] == "retired", seen
@@ -430,7 +430,7 @@ def _memory_fingerprint(home: Path) -> dict:
 @pytest.mark.timeout(1200)
 @_handle_project
 async def test_frozen_memory_serves_what_it_holds_and_changes_nothing(core_world, monkeypatch, lanes):  # noqa: F811
-    """C4's held-out mode (``UNIFY_MEMORY_FROZEN=on``): after a request that lands a note, the kit stops the service
+    """The held-out mode (``UNIFY_MEMORY_FROZEN=on``): after a request that lands a note, the kit stops the service
     (the drain) and freezes memory. Two frozen requests are served the same library and evidence, start no writer,
     fork or service, record nothing (their uses and verdicts reach no store), and a message to the writer is
     answered "not available: memory is frozen"."""

@@ -1008,14 +1008,14 @@ _LEDGER_PARTS = {
     "UNIFY_MEMORY_WRITER_SERVICE": "off",  # the service hands the ledger's entries: no ledger, no service
     "UNIFY_MEMORY_IN_EPISODE": "off",  # a pause's segment fork becomes a ledger entry: no ledger, no pauses
 }
-#: The evaluation's arms (REDESIGN-BUILD-PLAN-20261020 §8.1), each as the settings a kit pins. The main arm is the
+#: The evaluation's arms, each as the settings a kit pins. The main arm is the
 #: profile; the profile refuses any of its switches set otherwise, so every other arm is the profile's switches written
 #: out with its change, and with what that change takes with it, by the parts' own refusals:
 #:
 #: * ``captures_only``: the writer runs nowhere (no service, no writer pass); captures, ledger and the rest as the
 #:   main arm;
-#: * ``ledger_off`` (a bundle, labelled as one; the lead decides whether it stays): the attention ledger off, G1's
-#:   per-capture trigger in its place (§7), and the service and in-episode memory with it (each needs the ledger), so
+#: * ``ledger_off`` (a bundle, labelled as one): the attention ledger off, G1's
+#:   per-capture trigger in its place, and the service and in-episode memory with it (each needs the ledger), so
 #:   the writer runs as the pass worker;
 #: * ``in_episode_off`` and ``failure_record_off``: that one switch off;
 #: * ``mesh_off`` (informational): the run record off, the mesh alone (the service runs without it, each pass keeping
@@ -1302,7 +1302,7 @@ def _replay_reviewed() -> bool:
 REDESIGN_PART_REFUSALS.append(redesign_b_refusal)
 
 
-# --- serving on the failure record (C2) and inferred regimes (C3) ---------------------------------------------
+# --- serving on the failure record and inferred regimes ---------------------------------------------------------
 
 SERVING_FAILURE_RECORD = "UNIFY_MEMORY_SERVING_FAILURE_RECORD"
 REGIME = "UNIFY_MEMORY_REGIME"
@@ -1342,7 +1342,7 @@ def regime_inferred(settings: Any) -> bool:
     return profile_setting(settings, REGIME) == REGIME_INFERRED
 
 
-# --- frozen memory (held-out evaluation, C4) --------------------------------------------------------------------
+# --- frozen memory (held-out evaluation) ------------------------------------------------------------------------
 
 FROZEN = "UNIFY_MEMORY_FROZEN"
 #: The answer to a message addressed to the writer while memory is frozen.

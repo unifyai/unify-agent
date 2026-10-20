@@ -233,7 +233,7 @@ def test_every_arm_is_a_settings_set_the_build_runs():
 
 
 def test_the_writer_tests_replay_mode_is_refused_until_its_review_is_recorded(monkeypatch):
-    """MAIN's ruling: the profile gives ``value`` only, and ``value,replay`` is refused at start-up (with or without the
+    """The profile gives ``value`` only, and ``value,replay`` is refused at start-up (with or without the
     profile) while the replay stand-in's confinement review (G2) is not recorded; once it is, replay is allowed."""
     from unify.memory import writer_tests
 

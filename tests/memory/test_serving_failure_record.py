@@ -488,7 +488,7 @@ def test_contradictions_come_from_the_evidence_label():
 
 # --- 5. the NW E4 replay: an instance capture served as fitting now reaches the librarian with its failures --------
 
-#: The office LOW capture of NW E4 (continual-harness-research NONARC-WRITER-GENERALISATION-20261019 §2 E4), cut to
+#: The office LOW capture of NW E4 (a recorded writer capture), cut to
 #: its reader, its applies and the hard-coded year that made it fail on the repeats.
 E4 = '''"""Investigate the requested alert date and file its report."""
 

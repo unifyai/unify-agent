@@ -260,7 +260,7 @@ def _episode_seq_now(home: Path | str) -> Optional[int]:
 
 def pass_row(home: Path | str, report: Any, *, metering: bool) -> dict:
     """The pass's ``pass-results.jsonl`` row: today's fields, and with *metering* the pass's entries, items, USD,
-    tokens, turns and messages (§2.10)."""
+    tokens, turns and messages."""
     outcome = getattr(report, "outcome", None)
     row = {
         "pass_id": report.pass_id,

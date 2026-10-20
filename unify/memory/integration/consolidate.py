@@ -2137,7 +2137,7 @@ async def run_attention_pass(
     helper_factory: Callable[..., Any] | None = None,
 ) -> AttentionPassReport:
     """One writer pass over the attention entries *handed* (:class:`..attention.AttentionEntry`), run by the writer
-    service: the pass's agent and its helpers on the run record, the writer's brief given the entries (B3), the gate,
+    service: the pass's agent and its helpers on the run record, the writer's brief given the entries, the gate,
     the compare-and-swap merge and the item records as any library-mode pass; its model turns checkpointed under
     *folder* (:class:`..writer_service.ResumableTurn`; with *resume*, the turns already done are answered from there),
     its calls priced from the writer lane's journal window from the pass's first start (*journal_start*), and the run

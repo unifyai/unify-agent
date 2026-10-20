@@ -261,7 +261,7 @@ while True:
 
 
 def test_a_group_number_given_to_someone_elses_group_is_never_signalled(svc):
-    """§10 pid-reuse mis-kill: the recorded service led its group and is gone; the number now leads a stranger's group
+    """A pid-reuse mis-kill: the recorded service led its group and is gone; the number now leads a stranger's group
     (a leader and its child, both started after the service). Neither the stop nor a takeover touches it."""
     stranger = subprocess.Popen([sys.executable, "-c", STRANGER], stdout=subprocess.PIPE, text=True)  # fmt: skip
     child = int(stranger.stdout.readline())
@@ -736,7 +736,7 @@ def test_resumable_turns_replay_what_was_done_and_count_a_lost_turn_once(tmp_pat
     assert made == [1] and other.diverged and other.killed == []
 
 
-# --- §10.1 and §10.5: the proxy's own cap, and entries a crash left handed -----------------------------------------------
+# --- the proxy's own cap, and entries a crash left handed -----------------------------------------------
 
 
 class Recording:
@@ -816,7 +816,7 @@ def _in_process(home, runner, monkeypatch, **over):
 def test_a_writer_call_the_proxy_refuses_for_its_cap_is_the_cap_reached(
     svc, monkeypatch
 ):
-    """The two caps disagree (§10.1): the service reserved under its own, the proxy refused for its lane's cap. The
+    """The two caps disagree: the service reserved under its own, the proxy refused for its lane's cap. The
     service reads that as the cap reached: the entries still owed are not reached (spend_cap) and no pass follows.
     """
     ids = _open_entry(svc.home, 6)
@@ -839,7 +839,7 @@ def test_a_writer_call_the_proxy_refuses_for_its_cap_is_the_cap_reached(
 
 
 def test_entries_a_crash_left_handed_go_back_and_are_handed_again(svc, monkeypatch):
-    """§10.5: on start, every entry handed to a pass that is not live and has no resumable turns goes back
+    """On start, every entry handed to a pass that is not live and has no resumable turns goes back
     (``service_restart``) and is handed to the next pass."""
     (eid,) = _open_entry(svc.home)
     attention.Ledger(svc.home).hand("dead" * 4, 4)
@@ -858,7 +858,7 @@ def test_entries_a_crash_left_handed_go_back_and_are_handed_again(svc, monkeypat
 
 
 def test_an_agent_waiting_on_the_writer_sees_the_service_stopping(svc):
-    """§10.5: the stop marker also marks the writer's roster row ``stopping``, so ``who`` says the service is going
+    """The stop marker also marks the writer's roster row ``stopping``, so ``who`` says the service is going
     away, and once it has ended a wait on it returns at once (nobody who could answer is running)."""
     from unify.agents import run_record_tools as T
 
@@ -977,7 +977,7 @@ def test_the_service_loop_and_a_step_run_the_same_turn(svc, monkeypatch):
 def test_with_the_run_record_off_the_service_runs_its_passes_without_it(
     svc, monkeypatch
 ):
-    """The mesh-off arm (plan §8.1: the mesh alone off): the service still hands the ledger's entries to its passes;
+    """The mesh-off arm (the mesh alone off): the service still hands the ledger's entries to its passes;
     it holds no row on a run record and writes none."""
     ids = _open_entry(svc.home, 2)
     runner = Recording()

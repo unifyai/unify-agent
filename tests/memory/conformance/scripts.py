@@ -61,7 +61,7 @@ def _all_text(body: dict) -> str:
 
 
 def is_segment(body: dict) -> bool:
-    """A segment fork's request (B4: a pause in the episode's work), not the episode-end fork's."""
+    """A segment fork's request (a pause in the episode's work), not the episode-end fork's."""
     return "This is a pause in your work" in _all_text(body)
 
 
