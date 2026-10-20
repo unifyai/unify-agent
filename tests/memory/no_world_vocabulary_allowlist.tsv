@@ -53,3 +53,16 @@
 *	its task, as the record entry	the helper profile: its assignment
 *	delegate(task)	delegate's signature in its help
 *	task (string, required)	delegate's argument in its help
+module:unify/memory/writer_service.py	``hand(k)``	the service handing a pass its entries (Ledger.hand, a method name)
+module:unify/memory/metering.py	their booking	a cost booked at the worst case (accounting)
+module:unify/memory/metering.py	its booking	a cost booked at the worst case (accounting)
+module:unify/memory/metering.py	"hand"	the ledger row op for handing an entry to a pass
+module:unify/memory/capture_trace.py	keys on a task id	the code states it never reads a benchmark's task id
+module:unify/memory/attention.py	task id	the ledger states it never reads a benchmark's task id
+module:unify/memory/attention.py	Ledger.hand	the ledger's method that hands entries to a pass
+module:unify/memory/attention.py	**Hand order**	the order entries are handed to a pass
+module:unify/memory/attention.py	age-at-hand	how old an entry is when it is handed to a pass
+module:unify/memory/attention.py	age at hand	how old an entry is when it is handed to a pass
+module:unify/memory/attention.py	"hand"	the ledger row op for handing an entry to a pass
+module:unify/memory/attention.py	Hand up to	the ledger's method that hands entries to a pass
+module:unify/memory/attention.py	in hand order	the order entries are handed to a pass

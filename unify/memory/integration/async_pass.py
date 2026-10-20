@@ -448,6 +448,11 @@ def maybe_spawn(
     if not memory_passes_on(settings):
         # UNIFY_MEMORY_PASSES=off: no worker starts, for a pass or a capture; nothing is delivered
         return {"type": "consolidation", "phase": "passes_off", "episode_id": eid}
+    from .switch import memory_frozen
+
+    if memory_frozen(settings):
+        # UNIFY_MEMORY_FROZEN=on: no worker starts (a frozen request records nothing, so this is a second guard)
+        return {"type": "consolidation", "phase": "frozen", "episode_id": eid}
     paths = stores.paths
     from .switch import writer_service_on
 

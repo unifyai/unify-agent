@@ -187,12 +187,15 @@ def item_evidence(
     captures: Mapping[str, dict] | None = None,
     home: Path | str | None = None,
     labels: Any = None,
+    recorded_only: bool = False,
 ) -> dict[str, dict]:
     """Each stored item's evidence, by id: library items from the evidence store's use index
     (:func:`.lifecycle.facts_from_evidence`), captured procedures (``capture:<id>``) from their records' uses
     (*captures*: :func:`.captures.load`). Each is ``{"failure_record": [...], "status_basis", "counts",
     "contradictions": [...]}``; an item with no use and no report is left out. *labels* (an item id -> its evidence
-    label, or None) gives the contradictions; by default the writer's labels where they exist."""
+    label, or None) gives the contradictions; by default the writer's labels where they exist. With *recorded_only*
+    (frozen memory) an actor's report counts only when its episode is recorded in the evidence store, so a frozen
+    request's own reports never change what the next one is served."""
     from . import lifecycle, trust
 
     ev = stores.evidence
@@ -236,6 +239,8 @@ def item_evidence(
             "counts": trust.use_counts(uses),
         }
     for r in actor_reports(home):
+        if recorded_only and r["episode"] not in pins:
+            continue
         item = r["item"]
         pin = served_pin(use_pins.get((r["episode"], item)), "", pins.get(r["episode"], ""))
         row = {"episode": r["episode"], "pin": pin, "why": "actor_reported", "ref": f"entry:{r['seq']}"}

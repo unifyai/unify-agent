@@ -501,7 +501,8 @@ def checkpoint_tool(ctx: Any, args: dict) -> Any:
     run = current()
     ie = getattr(run, "in_episode", None) if run is not None else None
     if ie is None:
-        return _refused(refusal("checkpoint", "refused", reason="memory during an episode is off in this run"))
+        why = "memory is frozen in this run" if getattr(run, "frozen", False) else "memory during an episode is off in this run"
+        return _refused(refusal("checkpoint", "refused", reason=why))
     note = args.get("note", "")
     if note is not None and not isinstance(note, str):
         return _refused(refusal("checkpoint", "refused", reason="note is a few words of text, or left out"))

@@ -1139,7 +1139,7 @@ class RequestRun:
         from . import consolidate, cost, worktree_capture
         from .checkout import export_checkout
         from .state import State
-        from .switch import library_enabled, memory_passes_on, profile, surfacing_options
+        from .switch import library_enabled, memory_frozen, memory_passes_on, profile, surfacing_options
 
         paths = self.paths
         policy = sandbox.build_policy(fresh=True)
@@ -1147,6 +1147,8 @@ class RequestRun:
         check_profile(SETTINGS)
         self.profile = profile(SETTINGS)
         self.memory_passes = "" if memory_passes_on(SETTINGS) else "off"
+        # UNIFY_MEMORY_FROZEN=on (held-out evaluation): served from what the home holds; nothing here changes it
+        self.frozen = memory_frozen(SETTINGS)
         self.library_mode = library_enabled(SETTINGS)
         if (
             self.library_mode
@@ -1161,15 +1163,16 @@ class RequestRun:
             from ..memory_writer import served_head
             from .async_pass import apply_results
 
-            # under the request lock, before _open_library_mode copies the pin
-            self._landed = apply_results(self.state, paths)
+            # under the request lock, before _open_library_mode copies the pin (frozen: results stay unapplied, so
+            # every frozen request is served the same state)
+            self._landed = [] if self.frozen else apply_results(self.state, paths)
             # the served head, whose item records are already written
             self.pin = served_head(self.stores.memory)
             self.surfacing = surfacing_options(SETTINGS)
             self._open_library_mode(consolidate)
             from .switch import writer_service_on
 
-            if writer_service_on(SETTINGS):
+            if writer_service_on(SETTINGS) and not self.frozen:
                 # the writer service: up at every request's start (never waited for; it never fails the request)
                 from ..writer_service import ensure_service
 
@@ -1194,8 +1197,10 @@ class RequestRun:
                     self.state.suspect,
                     sys.maxsize if self.surfacing.soft_budget else None,
                 )
-        # under the request lock, before this request's own journal exists
-        self._recover_journals()
+        # under the request lock, before this request's own journal exists (frozen: a dead process's journal stays
+        # unrecorded, as this request's own episode does)
+        if not self.frozen:
+            self._recover_journals()
         self.episode_id = new_episode_id(transcripts.transcripts_dir())
         self.started_at = _now()
         if self.capture_serving is not None:
@@ -1355,7 +1360,8 @@ class RequestRun:
 
         from .switch import in_episode, memory_on
 
-        if memory_on(SETTINGS) and in_episode(SETTINGS):
+        if memory_on(SETTINGS) and in_episode(SETTINGS) and not getattr(self, "frozen", False):
+            # (frozen: one pin for the episode, never re-pinned, and no pause starts a segment fork)
             from .in_episode import InEpisode
 
             self.in_episode = InEpisode(self, self._export_copy)
@@ -1537,6 +1543,8 @@ class RequestRun:
                     checker_visible=checker_visible(SETTINGS),
                     captures=caps,
                     home=self.paths.home,
+                    # frozen: an actor's report counts only from a recorded episode (a frozen request records none)
+                    recorded_only=getattr(self, "frozen", False),
                     # the writer's evidence label of each item (UNIFY_MEMORY_IMPURE_ITEMS: its item record's
                     # ``label``, :mod:`..item_label`), for its contradictions; none without one
                     labels=lambda item: label_of(records, item),
@@ -1932,6 +1940,9 @@ class RequestRun:
         due, and one ``held`` event says so."""
         if self._closed:
             return
+        if getattr(self, "frozen", False):
+            await self._finish_frozen(progress, emit)
+            return
         fork = reservation = None
         try:
             self._close_scope()
@@ -1982,6 +1993,28 @@ class RequestRun:
 
             # UNIFY_MEMORY_IN_EPISODE=on: the segment forks still running are handed over (and waited for) the same way
             await asyncio.to_thread(self.in_episode.finish, SETTINGS, progress)
+
+    async def _finish_frozen(self, progress: Callable[[str], None], emit: Callable[[dict], None] | None) -> None:
+        """``UNIFY_MEMORY_FROZEN=on``: the request ends without changing memory: its episode is not recorded (so its
+        uses, signals and late verdicts reach no store), no fork, pass or service starts, and the journal is dropped.
+        One ``frozen`` event says so. Never raises."""
+        try:
+            self._close_scope()
+            self._drop_journal()
+            from . import consolidate
+
+            consolidate._deliver(
+                self.stores,
+                self._emitter(emit),
+                {"type": "consolidation", "phase": "frozen", "episode_id": self.episode_id,
+                 "not_recorded": True},  # fmt: skip
+            )
+        except BaseException as exc:
+            self._error("finish", exc, progress)
+            if not isinstance(exc, Exception):
+                raise
+        finally:
+            self._cleanup()
 
     async def _wait_for_pass_worker(self, progress: Callable[[str], None]) -> dict | None:
         """``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on``: wait for the pass worker in flight, whichever request spawned it,
@@ -2380,8 +2413,10 @@ class RequestRun:
         """End the run with nothing recorded now (the process is closing without a finished request). Its journal
         stays, with why it stopped (*stopped*: ``{"reason": "timeout"}`` or ``{"reason": "error", "error": <class
         name>}``), so the next start records the turns that ran as an incomplete episode. After ``finish`` it changes
-        nothing."""
-        if not self._closed and self.journal is not None and stopped:
+        nothing. Frozen (``UNIFY_MEMORY_FROZEN=on``): the journal is dropped, so no later start records it."""
+        if not self._closed and getattr(self, "frozen", False):
+            self._drop_journal()
+        elif not self._closed and self.journal is not None and stopped:
             self.journal.stopped(stopped)
         self._cleanup()
 

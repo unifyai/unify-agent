@@ -46,7 +46,7 @@ def test_the_profile_lists_exactly_the_planned_switches_and_values():
         "UNIFY_MEMORY_ATTENTION_LEDGER": "on",
         "UNIFY_MEMORY_LEDGER_K": "4",
         "UNIFY_MEMORY_IMPURE_ITEMS": "on",
-        "UNIFY_MEMORY_WRITER_TESTS": "value,replay",
+        "UNIFY_MEMORY_WRITER_TESTS": "value",
         "UNIFY_MEMORY_IN_EPISODE": "on",
         "UNIFY_MEMORY_SERVING_FAILURE_RECORD": "on",
         "UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES": "on",
@@ -68,7 +68,7 @@ def test_an_empty_switch_takes_the_profiles_value_and_a_set_one_keeps_its_own():
     for name, value in switch.REDESIGN_SWITCHES.items():
         assert switch.profile_setting(on, name) == switch._setting_text(value), name
         assert switch.profile_setting(SimpleNamespace(**_LIBRARY), name) == "", name
-    assert switch.profile_setting(on, "UNIFY_MEMORY_WRITER_TESTS") == "replay,value"
+    assert switch.profile_setting(on, "UNIFY_MEMORY_WRITER_TESTS") == "value"
     assert switch.profile_setting(on, "UNIFY_MEMORY_NOT_A_PROFILE_SWITCH") == ""
     # an explicit value wins, with or without the profile
     assert (
@@ -116,7 +116,7 @@ def test_a_switch_set_otherwise_under_the_profile_is_refused_by_name():
     # the profile's own value, set explicitly (in any order or case), is no conflict
     same = _s(
         UNIFY_MEMORY_PROFILE="redesign",
-        UNIFY_MEMORY_WRITER_TESTS="Replay, value",
+        UNIFY_MEMORY_WRITER_TESTS=" Value",
         UNIFY_MEMORY_LEDGER_K=4,
         UNIFY_MEMORY_REGIME="inferred",
         UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES="on",
@@ -224,15 +224,29 @@ def test_every_arm_is_a_settings_set_the_build_runs():
         ],
         "in_episode_off": ["UNIFY_MEMORY_IN_EPISODE"],
         "failure_record_off": ["UNIFY_MEMORY_SERVING_FAILURE_RECORD"],
-        "mesh_off": [
-            "UNIFY_AGENTS_RUN_RECORD",
-            "UNIFY_MEMORY_ATTENTION_LEDGER",
-            "UNIFY_MEMORY_IN_EPISODE",
-            "UNIFY_MEMORY_LEDGER_K",
-            "UNIFY_MEMORY_WRITER_SERVICE",
-        ],
+        "mesh_off": ["UNIFY_AGENTS_RUN_RECORD"],
     }
-    # the part a ledger_off or mesh_off arm turns off with its change is itself refused when left on
-    for arm, part in (("ledger_off", "UNIFY_MEMORY_WRITER_SERVICE"), ("mesh_off", "UNIFY_MEMORY_WRITER_SERVICE")):
+    # the part the ledger_off arm turns off with its change is itself refused when left on
+    for arm, part in (("ledger_off", "UNIFY_MEMORY_WRITER_SERVICE"),):
         kept = SimpleNamespace(**{**kit, **switch.REDESIGN_ARMS[arm], part: "on"})
         assert switch.profile_refusal(kept) is not None, arm
+
+
+def test_the_writer_tests_replay_mode_is_refused_until_its_review_is_recorded(monkeypatch):
+    """MAIN's ruling: the profile gives ``value`` only, and ``value,replay`` is refused at start-up (with or without the
+    profile) while the replay stand-in's confinement review (G2) is not recorded; once it is, replay is allowed."""
+    from unify.memory import writer_tests
+
+    kit = {**_LIBRARY, **switch.REDESIGN_COMPANIONS, "UNIFY_HOST_LEASE_END": "2026-10-21T06:00:00Z"}
+    assert switch.REDESIGN_SWITCHES["UNIFY_MEMORY_WRITER_TESTS"] == "value"
+    monkeypatch.setattr(writer_tests, "REPLAY_REVIEWED", False)
+    for extra in ({"UNIFY_MEMORY_PROFILE": "redesign"}, {**switch.REDESIGN_ARMS["in_episode_off"]}):
+        replay = SimpleNamespace(**{**kit, **extra, "UNIFY_MEMORY_WRITER_TESTS": "value,replay"})
+        why = switch.profile_refusal(replay)
+        assert why is not None and "UNIFY_MEMORY_WRITER_TESTS" in why, why
+        assert switch.profile_refusal(SimpleNamespace(**{**kit, **extra, "UNIFY_MEMORY_WRITER_TESTS": "value"})) is None
+    alone = SimpleNamespace(**{**kit, **switch.REDESIGN_ARMS["in_episode_off"], "UNIFY_MEMORY_WRITER_TESTS": "replay,value"})
+    assert "replay stand-in's confinement review" in (switch.profile_refusal(alone) or "")
+    monkeypatch.setattr(writer_tests, "REPLAY_REVIEWED", True)
+    off_profile = SimpleNamespace(**{**kit, **switch.REDESIGN_ARMS["in_episode_off"], "UNIFY_MEMORY_WRITER_TESTS": "value,replay"})
+    assert switch.profile_refusal(off_profile) is None

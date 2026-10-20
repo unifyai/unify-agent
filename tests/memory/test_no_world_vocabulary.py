@@ -60,6 +60,23 @@ GUARD_MODULES = (
     "unify/memory/library_search.py",
     "unify/memory/serving.py",
     "unify/memory/trust.py",
+    # the redesign's agent-facing texts (REDESIGN-BUILD-PLAN-20261020): the run record, its tools and the fork's relay
+    # (A1), the writer service's notices (A2), metering's labels (A3), the capture trace (B1), the attention ledger's
+    # refusals and tools (B2), the writer's stated tests and item labels (B3), in-episode memory's notices and the
+    # segment records (B4)
+    "unify/agents/run_record.py",
+    "unify/agents/run_record_tools.py",
+    "unify/agents/fork_relay.py",
+    "unify/memory/integration/fork_worker.py",
+    "unify/memory/writer_service.py",
+    "unify/memory/metering.py",
+    "unify/memory/capture_trace.py",
+    "unify/memory/attention.py",
+    "unify/memory/attention_tools.py",
+    "unify/memory/writer_tests.py",
+    "unify/memory/item_label.py",
+    "unify/memory/integration/in_episode.py",
+    "unify/memory/segments.py",
 )
 
 
@@ -259,6 +276,51 @@ def _rendered(monkeypatch) -> dict[str, str]:
     )
     out["rendered:curate_system"] = curate.curate_system()
     out["rendered:guide"] = lp.GUIDE_LIBRARY
+    out.update(_rendered_redesign(monkeypatch))
+    return out
+
+
+def _rendered_redesign(monkeypatch) -> dict[str, str]:
+    """The redesign's texts as composed at run time: the WRITE brief under every combination of the attention pass,
+    items of any effect and stated tests (with the other brief switches), an attention pass's first message, every
+    role's lines on the run record, the fork's instruction with and without the run record and the capture trace, a
+    segment's instruction, the re-pin notice and the frozen writer's answer."""
+    from types import SimpleNamespace
+
+    from unify.agents import run_record as rr
+    from unify.common import in_code_switch
+    from unify.memory import attention_tools as at
+    from unify.memory import library_prompts as lp
+    from unify.memory.integration import fork, in_episode, switch
+    from unify.settings import SETTINGS
+
+    out: dict[str, str] = {}
+    for in_code in (False, True):
+        monkeypatch.setattr(in_code_switch, "tools_in_code", lambda v=in_code: v)
+        tag = "code" if in_code else "json"
+        for sw in itertools.product((False, True), repeat=3):
+            switches = lp.WriterSwitches(attention=sw[0], impure=sw[1], tests=sw[2])
+            for staging, pool, helper in itertools.product((False, True), repeat=3):
+                out[f"rendered:write_redesign:{tag}:{sw}:{(staging, pool, helper)}"] = lp.write_brief_now(
+                    staging=staging, pool=pool, helper=helper, switches=switches,
+                )
+    handed = [SimpleNamespace(entry=f"e{i}", kind=k) for i, k in enumerate(
+        ("new_experience", "own_check_failed", "use_went_badly", "late_evidence", "repeated_use", "deferred", "message"))]
+    for n in (1, len(handed)):
+        out[f"rendered:attention_first:{n}"] = at.first_message(
+            SimpleNamespace(pass_id="p1"), SimpleNamespace(attention=handed[:n]), "2700")
+    for role in rr.AGENT_ROLES:
+        out[f"rendered:record_lines:{role}"] = rr.prompt_lines(f"{role}-1", role, spawner="actor-1")
+    for record in ("", "on"):
+        for trace in ("", "on"):
+            for in_code in ("off", "on"):
+                monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS_RUN_RECORD", record)
+                monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_CAPTURE_TRACE", trace)
+                monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", in_code)
+                out[f"rendered:fork_instruction:{record}:{trace}:{in_code}"] = fork.fork_instruction()
+    out["rendered:segment_instruction"] = fork.segment_instruction(2, 5) + "\n" + fork.segment_instruction(None, None)
+    out["rendered:repin_notice"] = in_episode.notice("a" * 40, ["notes/a.md"], ["notes/b.md"], [("notes/c.md", "retired")], True)
+    out["rendered:frozen"] = switch.FROZEN_WRITER_REPLY
     return out
 
 

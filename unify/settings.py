@@ -511,7 +511,7 @@ class ProductionSettings(BaseSettings):
     UNIFY_MEMORY_PROFILE: str = ""
     # What a capture records, what makes the writer read, what the library holds, and memory during an episode
     # (unify/memory/integration/switch.py). Each is empty (off) by default; under UNIFY_MEMORY_PROFILE=redesign an empty
-    # value takes the profile's value (on; LEDGER_K 4; WRITER_TESTS value,replay). ``UNIFY_MEMORY_CAPTURE_TRACE``: a capture records what its episode
+    # value takes the profile's value (on; LEDGER_K 4; WRITER_TESTS value; replay refused until G2). ``UNIFY_MEMORY_CAPTURE_TRACE``: a capture records what its episode
     # did (the trace, a value only when one was handed back) in one of three forms, its own check as evidence.
     # ``UNIFY_MEMORY_ATTENTION_LEDGER``: the attention ledger makes the writer read every entry that needs it, in
     # passes of ``UNIFY_MEMORY_LEDGER_K`` entries (empty: 4). ``UNIFY_MEMORY_IMPURE_ITEMS``: the library holds
@@ -533,6 +533,10 @@ class ProductionSettings(BaseSettings):
     # with the run's own history as the prior, and takes late verdicts on earlier episodes; ``off`` (default; empty
     # without the redesign profile): every episode is ``dense``, as built.
     UNIFY_MEMORY_REGIME: str = ""
+    # Held-out evaluation: ``on`` freezes memory as the home holds it. The request is served from what is stored and
+    # changes nothing: no episode is recorded, no writer runs (service, pass, fork, segment fork), the copy is never
+    # re-pinned, and a message to the writer is answered "not available: memory is frozen". ``off`` (default): as built.
+    UNIFY_MEMORY_FROZEN: str = ""
     # The fork lane's route: the key proxy's /fork/v1 base URL and the inherited
     # descriptor carrying its token, read once at start-up and then removed from the environment (empty: no fork lane).
     UNIFY_MEMORY_LIBRARY_FORK_BASE_URL: str = ""
@@ -867,6 +871,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_PROFILE",
         "UNIFY_MEMORY_SERVING_FAILURE_RECORD",
         "UNIFY_MEMORY_REGIME",
+        "UNIFY_MEMORY_FROZEN",
         mode="before",
     )
     @classmethod
