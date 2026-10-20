@@ -115,8 +115,22 @@ def take(ctx: Any, args: dict) -> "_wt.Reply":
     entry = att.ledger.get(got.entry)
     if entry is not None:
         export_entries(writer, att, [entry])
+    _attribute(got.entry)
     return _wt.Reply(_json({"entry": got.entry, "kind": got.kind, "taken": True, "detail": got.detail,
                             "material": list(got.material)}))  # fmt: skip
+
+
+def _attribute(entry_id: str) -> None:
+    """The pass's later model calls name a taken entry too (``UNIFY_MEMORY_METERING``: the request metadata headers,
+    ids only); nothing where the attribution is not built. Never raises."""
+    try:
+        from unify.common.llm_client import add_attributed_entry
+    except ImportError:
+        return
+    try:
+        add_attributed_entry(entry_id)
+    except Exception:  # noqa: BLE001 - metering never stops a take
+        pass
 
 
 def decide(ctx: Any, args: dict) -> "_wt.Reply":
