@@ -2016,6 +2016,20 @@ _CALL_MAY_BE_IN_FLIGHT = frozenset({"deadline", "writer_error", "route_not_in_ef
 # --- the writer service's pass over the attention ledger's entries (UNIFY_MEMORY_WRITER_SERVICE=on) -------------------
 
 
+def _helper_spend(writer: Any, helper_turns: list) -> tuple[Decimal, int]:
+    """(known USD, unpriced calls) of a pass's helpers: each helper's own record of its priced and unpriced calls,
+    plus every helper turn a killed service lost (made again on resume; the lost call was billed and is unpriced)."""
+    known, unknown = Decimal(0), 0
+    for row in getattr(writer, "_helper_rows", None) or ():
+        try:
+            known += Decimal(str(row.get("usd_known") or "0"))
+        except (InvalidOperation, ValueError):
+            unknown += 1
+        unknown += int(row.get("unknown_cost_calls") or 0)
+    unknown += sum(len(h.killed) for h in helper_turns)
+    return known, unknown
+
+
 @dataclass
 class AttentionPassReport:
     """What one writer-service pass did, for the service (its settle, read checks and returns) and the metering row
@@ -2034,8 +2048,12 @@ class AttentionPassReport:
     worst_case_booked: str = "0"
     #: model turns lost to a killed service and made again (each once, by turn id)
     killed_turns: list[str] = field(default_factory=list)
-    #: what the service settles against its cap (None: nothing readable, so the reservation stays committed)
+    #: what the service settles against its cap (None: nothing readable, so the reservation stays committed): the
+    #: writer lane's booking plus the helpers'
     settle_usd: str | None = None
+    #: the helpers' share of the above (their lane is not in the writer journal): priced USD, and unpriced calls
+    helper_usd_known: str = "0"
+    helper_unknown_calls: int = 0
     reads: Any = None
     delivered: list[int] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
@@ -2137,6 +2155,9 @@ async def run_attention_pass(
         return report
     if library_fork(settings):
         capture_settled_forks(stores, settings)
+    from ..writer_service import pass_room
+
+    room = pass_room(home, pass_id, settings)
     wall_s = float(library_pass_wall_s(settings))
     supervise = Supervisor(
         wall_s,
@@ -2171,6 +2192,10 @@ async def run_attention_pass(
         max_calls=STEP_GUARD if cfg.route is not None else cfg.max_calls[level],
         deadline_s=supervise.pass_deadline_s,
         max_usd=None if cfg.route is not None else cap,
+        # the service's room for this pass (its cap less what its other passes committed): no writer or helper call
+        # starts past it, whatever the pass's own limits
+        usd_limit=None if room is None else _usd(room),
+        usd_call_reserve=_usd(reserve),
         staging_root=str(Path(paths.state_dir) / "memory-staging") if library_fork(settings) else None,
         pass_record_root=str(Path(paths.state_dir) / "passes"),
         notebook_state=str(paths.state_dir) if notebook_enabled(settings) else None,
@@ -2291,12 +2316,16 @@ async def run_attention_pass(
         report.turns = turn.n + sum(h.n for h in helper_turns)
         report.replayed_turns = turn.replayed + sum(h.replayed for h in helper_turns)
         known, unknown, _calls = _spend(outcome, rows)
+        # the helpers' lane: its calls are not in the writer lane's journal; each helper's priced calls, its unpriced
+        # ones, and its turns a killed service lost (billed, never priced here), at one call's worst case
+        helper_known, helper_unknown = _helper_spend(writer, helper_turns)
+        report.helper_usd_known, report.helper_unknown_calls = _usd(helper_known), helper_unknown
         if recon is not None and recon.get("journal") == "read":
-            report.usd_known = recon["usd"]
-            report.unknown_calls = int(recon["unknown"])
             worst = Decimal(recon["worst_case_usd"])
+            report.usd_known = _usd(Decimal(recon["usd"]) + helper_known)
+            report.unknown_calls = int(recon["unknown"]) + helper_unknown
             report.worst_case_booked = _usd(Decimal(report.unknown_calls) * worst)
-            report.settle_usd = recon["booked_usd"]
+            report.settle_usd = _usd(Decimal(recon["booked_usd"]) + helper_known + Decimal(helper_unknown) * worst)
             try:
                 _settle(stores, pass_id, recon["usd"], recon["unknown"], worst)
             except OSError as exc:

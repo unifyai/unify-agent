@@ -288,6 +288,9 @@ def pass_row(home: Path | str, report: Any, *, metering: bool) -> dict:
         "unknown_calls": int(report.unknown_calls),
         "worst_case_booked": report.worst_case_booked,
         "killed_turns": len(report.killed_turns or ()),
+        # the helpers' lane's part of the above (known and unpriced count): its calls are not in the writer journal
+        "helper_known": getattr(report, "helper_usd_known", "0"),
+        "helper_unknown_calls": int(getattr(report, "helper_unknown_calls", 0) or 0),
     }
     row["tokens"] = _tokens(outcome)
     row["turns"] = int(getattr(report, "turns", 0) or 0)

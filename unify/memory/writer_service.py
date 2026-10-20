@@ -466,13 +466,15 @@ def _decimal(value: Any) -> Optional[Decimal]:
     return d if d.is_finite() and d >= 0 else None
 
 
-def spend_totals(home: Path | str) -> tuple[Decimal, Decimal]:
+def spend_totals(home: Path | str, *, without: Optional[str] = None) -> tuple[Decimal, Decimal]:
     """``(committed, settled)`` USD from ``spend.jsonl``: a settled pass counts its settled amount, a pass only reserved
-    (it never settled: running, or killed) its whole reservation. Decimal throughout."""
+    (it never settled: running, or killed) its whole reservation; *without* leaves one pass out. Decimal throughout."""
     reserved: dict[str, Decimal] = {}
     settled: dict[str, Decimal] = {}
     for row in _rows(service_dir(home) / SPEND_FILE):
         pid = row.get("pass_id")
+        if pid == without:
+            continue
         amount = _decimal(row.get("usd"))
         if not isinstance(pid, str) or amount is None:
             continue
@@ -483,6 +485,18 @@ def spend_totals(home: Path | str) -> tuple[Decimal, Decimal]:
     committed = sum((settled.get(p, r) for p, r in reserved.items()), Decimal(0))
     committed += sum((v for p, v in settled.items() if p not in reserved), Decimal(0))
     return committed, sum(settled.values(), Decimal(0))
+
+
+def pass_room(home: Path | str, pass_id: str, settings: Any) -> Optional[Decimal]:
+    """What pass *pass_id* may spend: the service's cap less what every other pass committed (never below 0); None
+    when the service has no cap (it never runs then)."""
+    from .integration.switch import writer_service_cap_usd
+
+    cap = writer_service_cap_usd(settings)
+    if cap is None:
+        return None
+    committed, _settled = spend_totals(home, without=pass_id)
+    return max(Decimal(0), cap - committed)
 
 
 def _format(d: Decimal) -> str:

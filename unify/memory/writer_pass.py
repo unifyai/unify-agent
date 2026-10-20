@@ -879,6 +879,25 @@ class PassConfig:
     # the writer service holds the writer's place on the run record between passes (the writer is idle, not ended,
     # when a pass ends)
     service_held: bool = False
+    # the writer service's room for this pass (its cap less what its other passes committed), a decimal string: a
+    # hard USD stop that leaves the pass's other limits as they are (an uncapped library pass stays uncapped). No
+    # model call, the writer's or a helper's, starts unless the pass's spend so far (its unpriced calls at one writer
+    # call's worst case) plus usd_call_reserve stays within it. None: no such stop, as built
+    usd_limit: str | None = None
+    usd_call_reserve: str = "0"
+
+
+def usd_room(cfg: Any, spend: Any) -> bool:
+    """Whether one more model call fits under ``cfg.usd_limit`` (always, without one): the pass's known spend, its
+    unpriced calls each at :data:`..reconcile.WRITER_CALL_WORST_CASE_USD`, and ``cfg.usd_call_reserve`` for the
+    call itself."""
+    limit = getattr(cfg, "usd_limit", None)
+    if limit is None:
+        return True
+    from .reconcile import WRITER_CALL_WORST_CASE_USD
+
+    booked = Decimal(spend.usd) + Decimal(int(spend.unknown)) * WRITER_CALL_WORST_CASE_USD
+    return booked + Decimal(getattr(cfg, "usd_call_reserve", "0") or "0") <= Decimal(limit)
 
 
 @dataclass
@@ -5210,6 +5229,10 @@ class WriterPass:
                 if remaining() <= 0:
                     stop = f"pass deadline of {self.cfg.deadline_s} s reached"
                     cause(CODE_DEADLINE)
+                    break
+                if not usd_room(self.cfg, spend):
+                    stop = f"the writer service's room of {self.cfg.usd_limit} USD for this pass reached"
+                    cause(CODE_PASS_CAP)
                     break
                 calls += 1
                 if (

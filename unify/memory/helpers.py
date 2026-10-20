@@ -366,6 +366,8 @@ class DelegateContext:
     blob: Callable[[str], bytes] | None = None
     similar: Callable[[dict], Awaitable[str]] | None = None
     step_guard: int = 500
+    #: whether one more model call fits under the pass's USD stop (:func:`.writer_pass.usd_room`); None: no stop
+    usd_room: Callable[[], bool] | None = None
     cell_timeout_s: float = CELL_TIMEOUT_S
     records: list[dict] = field(default_factory=list)
     pool: Any = None
@@ -418,7 +420,7 @@ def context_for(
     pass_record: _messaging.PassRecord | None = None,
 ) -> DelegateContext:
     """The delegate context of *writer*'s current pass (a :class:`.writer_pass.WriterPass`)."""
-    from .writer_pass import STEP_GUARD
+    from .writer_pass import STEP_GUARD, usd_room
 
     cfg = writer.cfg
     root = (
@@ -448,6 +450,7 @@ def context_for(
         shared=dict(getattr(writer, "_shared", {}) or {}),
         events=events,
         step_guard=STEP_GUARD,
+        usd_room=(lambda: usd_room(cfg, spend)) if getattr(cfg, "usd_limit", None) is not None else None,
         cell_timeout_s=float(getattr(cfg, "cell_timeout_s", 60.0)),
         records=writer._helper_rows,
         blob=getattr(getattr(writer, "gate", None), "_blob", None),
@@ -1376,6 +1379,9 @@ async def _run_helper_turns(
             return
         if ctx.deadline - time.monotonic() <= 0:
             doc["status"] = "pass wall clock reached"
+            return
+        if ctx.usd_room is not None and not ctx.usd_room():
+            doc["status"] = "stopped: the writer service's room for this pass reached"
             return
         if ctx.compact:
             from .writer_pass import compaction_due
