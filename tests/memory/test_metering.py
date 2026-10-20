@@ -327,7 +327,8 @@ def test_a_pass_row_names_its_entries_items_usd_and_a_killed_turn_once(tmp_path)
     # the attributes the service's pass report (consolidate.AttentionPassReport) carries
     report = SimpleNamespace(pass_id="p9", ended="landed", outcome=outcome, usd_known="0.02", unknown_calls=1,
                              worst_case_booked="13.125", killed_turns=["p9/3"], turns=6, seconds=1.5,
-                             reconciled=None, read=[], returned=[])  # fmt: skip
+                             reconciled=None, read=[], returned=[], helper_usd_known="0.005",
+                             helper_unknown_calls=0)  # fmt: skip
     row = M.pass_row(home, report, metering=True)
     assert row["entries"] == {
         "handed": ["e1"],
@@ -347,6 +348,9 @@ def test_a_pass_row_names_its_entries_items_usd_and_a_killed_turn_once(tmp_path)
         "unknown_calls": 1,
         "worst_case_booked": "13.125",
         "killed_turns": 1,
+        # the helpers' lane's part of the known USD and the unpriced calls
+        "helper_known": "0.005",
+        "helper_unknown_calls": 0,
     }
     assert (
         row["tokens"] == {"prompt": 100, "cached": 40, "completion": 7}
