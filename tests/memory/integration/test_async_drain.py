@@ -204,3 +204,57 @@ def test_the_cli_prints_the_report(tmp_path):
         timeout=120,
     )
     assert out.returncode == 0 and json.loads(out.stdout)["phase"] == "shutdown"
+
+
+UNSEEN = r"""
+import fcntl, json, os, sys, time
+lock, results, hold_s = sys.argv[1], sys.argv[2], float(sys.argv[3])
+fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+print("held", flush=True)
+time.sleep(hold_s)
+with open(results, "a") as fh:
+    fh.write(json.dumps({"pass_id": "e1.p0", "ended": "landed", "commit": None}) + "\n")
+"""
+
+
+def _unseen_worker(tmp_path, hold_s):
+    """A pass worker the drain cannot see (its record names a pid of another pid namespace) that holds the pass lock
+    for *hold_s*, then writes its result and ends."""
+    paths = Paths.under(tmp_path / "home")
+    paths.state_dir.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.Popen(
+        [sys.executable, "-c", UNSEEN, str(ap.lock_path(paths)), str(ap.results_path(paths)), str(hold_s)],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert proc.stdout.readline().strip() == "held"
+    now = time.time()
+    ap.write_inflight(paths, ap.InFlight("e1.p0", 4_000_000, 4_000_000, "123", now, now + 120, "e1"))
+    return paths, proc
+
+
+def test_a_pass_worker_in_another_pid_namespace_is_waited_for_by_its_lock(tmp_path):
+    """C's w289 finding: the drain ran in a sandbox of its own, could not see the spawned worker, took its record for
+    stale and returned, and the session's end then killed the worker before its pass started. A worker that holds the
+    pass lock is in flight wherever it runs: the drain waits for the lock to free (never signalling what it cannot
+    see) and reports the worker's own result."""
+    paths, proc = _unseen_worker(tmp_path, 2.0)
+    sent = []
+    report = ap.drain(paths, kill=lambda *a: sent.append(a))
+    proc.wait(timeout=30)
+    assert report["in_flight"] is True and report["unseen"] is True and report["pass_id"] == "e1.p0"
+    assert report["terminated"] is True and report["ended"] == "landed" and report["waited_s"] >= 1.0
+    assert sent == [] and ap.read_inflight(paths) is None
+
+
+def test_an_unseen_worker_still_running_at_the_bound_is_reported_not_terminated_and_never_signalled(tmp_path):
+    paths, proc = _unseen_worker(tmp_path, 30.0)
+    try:
+        sent = []
+        report = ap.drain(paths, wait_s=1.0, kill=lambda *a: sent.append(a))
+        assert report["terminated"] is False and report["ended"] == "not_terminated" and sent == []
+        assert ap.read_inflight(paths) is not None  # still in flight: its record stays
+    finally:
+        proc.kill()
+        proc.wait()

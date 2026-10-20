@@ -312,6 +312,23 @@ def try_lock(path: Path) -> int | None:
     return fd
 
 
+def pass_lock_held(paths: Any) -> bool:
+    """Whether a process holds the pass lock (a worker holds it from its start to its end, through the descriptor it
+    inherited; a flock is seen across pid namespaces). A lock taken here to look is let go at once."""
+    path = lock_path(paths)
+    try:
+        fd = os.open(path, os.O_RDWR)
+    except FileNotFoundError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(fd)
+    return False
+
+
 def record_result(paths: Any, row: dict) -> None:
     """Append one worker result row (``pass_id``, ``ended``, ``commit``, the drift and suspect clears, …)."""
     path = results_path(paths)
@@ -811,7 +828,24 @@ def drain(
         "sigkill": False,  # whether the worker's group had to be killed
     }
     rec = read_inflight(paths)
-    if rec is not None and not owns(
+    if rec is not None and not owns(rec) and pass_lock_held(paths):
+        # a worker this process cannot see (it runs in another pid namespace: the drain may run in a sandbox of its own)
+        # still holds the pass lock: the pass is in flight. Wait for the lock to free, bounded as for a pass in flight;
+        # never signal a process this namespace does not show (its owner's sandbox ending is the backstop)
+        report.update(in_flight=True, pass_id=rec.pass_id, unseen=True)
+        start = clock()
+        limit = rec.deadline_at if wait_s is None else min(rec.deadline_at, start + float(wait_s))
+        while pass_lock_held(paths) and clock() < limit:
+            sleep(0.1)
+        report["waited_s"] = round(clock() - start, 3)
+        if pass_lock_held(paths):
+            report.update(ended="not_terminated", terminated=False)
+        else:
+            row = _result_for(paths, rec.pass_id)
+            report.update(ended=(row or {}).get("ended", "killed"), terminated=True)
+            clear_inflight(paths, rec.pass_id)
+        rec = None
+    elif rec is not None and not owns(
         rec,
     ):  # the worker ended (or a stale record): nothing to wait for
         row = _result_for(paths, rec.pass_id)
