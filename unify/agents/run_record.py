@@ -92,9 +92,16 @@ ROLE_ADDRESSES = ("writer", "actor", "librarian", "fork", "helpers")
 WRITER = "writer"
 
 
+#: Set by a process that must not read the settings (the fork's relay, from its spec): whether memory is frozen.
+#: None: read the setting.
+FROZEN: Optional[bool] = None
+
+
 def _memory_frozen() -> bool:
     """``UNIFY_MEMORY_FROZEN=on`` (held-out evaluation): the writer is not available on the record. False when the
     setting cannot be read."""
+    if FROZEN is not None:
+        return FROZEN
     try:
         from unify.memory.integration.switch import memory_frozen
         from unify.settings import SETTINGS

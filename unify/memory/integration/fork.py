@@ -772,6 +772,7 @@ def launch(
     *,
     popen: Callable[..., Any] = subprocess.Popen,
     env: dict | None = None,
+    cwd: Path | str | None = None,
 ) -> Fork:
     """Start *argv* in its own session with *data* on its stdin and the reservation's lock passed to it; this process
     then closes its copy, so the lock is held exactly while the process (or a child that kept the descriptor) lives.
@@ -791,6 +792,7 @@ def launch(
                 close_fds=True,
                 pass_fds=(reservation.fd,),
                 env=env if env is not None else {"PATH": "/usr/bin:/bin"},
+                **({"cwd": str(cwd)} if cwd is not None else {}),
             )
         finally:
             reservation.close()
@@ -884,16 +886,21 @@ def start(
                 "doc": doc,
                 "lock_fd": reservation.fd,
                 "log": str(log),
+                "frozen": switch.memory_frozen(settings),
             }
             data = json.dumps(spec, default=str).encode("utf-8")
             try:
+                # least privilege: by path through relay_boot (never the unify package's __init__), in a folder of its
+                # own with an empty HOME, and the minimal environment
+                folder = relay_folder(paths, on_record[1])
                 fork = launch(
                     reservation,
-                    [sys.executable, "-m", RELAY_MODULE],
+                    relay_argv(),
                     data,
                     log,
                     popen=popen,
-                    env=relay_env(),
+                    env=relay_env(folder / RELAY_HOME),
+                    cwd=folder,
                 )
             except BaseException:
                 _leave(on_record)
@@ -910,26 +917,34 @@ def start(
 
 #: The fork's relay to the run record (``UNIFY_AGENTS_RUN_RECORD=on``).
 RELAY_MODULE = "unify.agents.fork_relay"
-#: The only names the relay's environment takes from this process's (least privilege): the basics a Python process
-#: needs and the one setting the relay reads (whether memory is frozen). No route base URL, token or key name ever
-#: reaches it; the fork's request, its auth header included, goes on the relay's stdin.
-RELAY_ENV_NAMES = (
-    "PATH",
-    "HOME",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "TZ",
-    "TMPDIR",
-    "PYTHONPATH",
-    "UNIFY_MEMORY_FROZEN",
-)
+#: The relay's start file: run by path with ``-I`` (no ``PYTHONPATH``, no current folder on the path), it never runs
+#: the ``unify`` package's ``__init__`` and refuses every module that reads provider settings or keys.
+RELAY_BOOT = Path(__file__).resolve().parents[2] / "agents" / "relay_boot.py"
+#: The only names the relay's environment takes from this process's (least privilege): the locale and the time zone.
+#: ``PATH`` is fixed, ``HOME`` is the relay's own empty folder; no route base URL, token or key name ever reaches it,
+#: nor ``PYTHONPATH``. The fork's request, its auth header included, goes on the relay's stdin, and whether memory is
+#: frozen with it.
+RELAY_ENV_NAMES = ("LANG", "LC_ALL", "LC_CTYPE", "TZ")
+#: The relay's HOME, an empty folder inside its own folder (removed when it ends).
+RELAY_HOME = "relay-home"
 
 
-def relay_env() -> dict[str, str]:
-    """The relay's environment: :data:`RELAY_ENV_NAMES` as this process has them, nothing else."""
+def relay_argv() -> list[str]:
+    return [sys.executable, "-I", str(RELAY_BOOT)]
+
+
+def relay_folder(paths: Any, name: str) -> Path:
+    """The relay's own folder (its current folder: no ``.env`` there), under the state directory."""
+    folder = Path(paths.state_dir) / "fork-relays" / name
+    (folder / RELAY_HOME).mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def relay_env(home: Path | str) -> dict[str, str]:
+    """The relay's environment: a fixed ``PATH``, *home* as ``HOME``, and :data:`RELAY_ENV_NAMES` as this process
+    has them; nothing else."""
     env = {k: os.environ[k] for k in RELAY_ENV_NAMES if os.environ.get(k)}
-    env.setdefault("PATH", "/usr/bin:/bin")
+    env.update(PATH="/usr/bin:/bin", HOME=str(home))
     return env
 
 

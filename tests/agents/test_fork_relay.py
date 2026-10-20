@@ -97,6 +97,56 @@ def _plant(monkeypatch):
         monkeypatch.setenv(k, v)
 
 
+def _plant_key_files(tmp_path, monkeypatch):
+    """A parent whose HOME holds a cloud automation config and whose current folder holds a .env with key names: the
+    files the model client's settings read and fetch provider keys with."""
+    home, cwd = tmp_path / "parent-home", tmp_path / "parent-cwd"
+    (home / ".config" / "gcloud").mkdir(parents=True)
+    (home / ".config" / "gcloud" / "automation.json").write_text('{"project": "planted"}')
+    (home / ".env").write_text("OPENROUTER_API_KEY=planted\n")  # pragma: allowlist secret
+    cwd.mkdir()
+    (cwd / ".env").write_text("OPENAI_API_KEY=planted\n")  # pragma: allowlist secret
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(cwd)
+    return home, cwd
+
+
+def test_the_relay_imports_no_module_that_reads_provider_settings_or_keys(tmp_path, monkeypatch):
+    """The relay's start file, run as fork.start runs it, imports everything the relay's code paths use and nothing
+    that reads settings, .env files or keys (the model client, the settings, the logger, dotenv, provider SDKs); the
+    guard refuses each of those."""
+    from unify.agents import fork_relay, relay_boot
+
+    _plant(monkeypatch)
+    _plant_key_files(tmp_path, monkeypatch)
+    folder = fork.relay_folder(SimpleNamespace(state_dir=tmp_path / "state"), "fork-3f9a")
+    out = subprocess.run(
+        [*fork.relay_argv(), "--modules"],
+        cwd=str(folder),
+        env=fork.relay_env(folder / fork.RELAY_HOME),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert out.returncode == 0, out.stderr[-2000:]
+    loaded = set(out.stdout.split())
+    assert {"unify.agents.run_record", "unify.agents.run_record_tools", "unify.common.tool_registry"} <= loaded
+    bad = [m for m in loaded if any(m == f or m.startswith(f + ".") for f in relay_boot.FORBIDDEN)]
+    assert not bad and "refused import" not in out.stderr, (bad, out.stderr[-2000:])
+    assert fork_relay.RELAY_HOME == fork.RELAY_HOME
+    # the guard refuses such an import outright
+    probe = subprocess.run(
+        [sys.executable, "-I", "-c",
+         "import runpy; runpy.run_path(%r, run_name='boot')['boot'](); import unillm" % str(fork.RELAY_BOOT)],  # fmt: skip
+        cwd=str(folder),
+        env=fork.relay_env(folder / fork.RELAY_HOME),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert probe.returncode != 0 and "refused import unillm" in probe.stderr
+
+
 def _until(check, timeout=60.0):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
@@ -180,26 +230,34 @@ def test_a_fork_tells_the_writer_where_its_summary_is_and_answers_its_question(
         "log": str(tmp_path / "fork-worker.log"),
     }
     _plant(monkeypatch)  # the parent's environment carries route URLs and key names; the relay's must not
-    relay = subprocess.Popen(
-        [sys.executable, "-m", fork.RELAY_MODULE],
-        stdin=subprocess.PIPE,
-        cwd=str(Path(__file__).resolve().parents[2]),
-        pass_fds=(lock,),
-        start_new_session=True,
-        env=fork.relay_env(),  # exactly what fork.start gives it
-    )
+    parent_home, parent_cwd = _plant_key_files(tmp_path, monkeypatch)
+    folder = fork.relay_folder(SimpleNamespace(state_dir=tmp_path / "state"), name)
+    relay_log = tmp_path / "relay.log"
+    with open(relay_log, "ab") as err:
+        relay = subprocess.Popen(  # exactly as fork.start launches it
+            fork.relay_argv(),
+            stdin=subprocess.PIPE,
+            stderr=err,
+            cwd=str(folder),
+            pass_fds=(lock,),
+            start_new_session=True,
+            env=fork.relay_env(folder / fork.RELAY_HOME),
+        )
     relay.stdin.write(json.dumps(spec).encode())
     relay.stdin.close()
     os.close(lock)
     try:
-        # the running relay's own environment, by name, as the live audit reads it
-        names = [
-            e.split(b"=", 1)[0].decode()
+        # the running relay's own environment, as the live audit reads it, and its folder
+        env = dict(
+            e.split(b"=", 1)
             for e in Path(f"/proc/{relay.pid}/environ").read_bytes().split(b"\0")
             if e
-        ]
+        )
+        names = [k.decode() for k in env]
         assert names and not [n for n in names if SECRET_NAMES.search(n)], names
-        assert set(names) <= set(fork.RELAY_ENV_NAMES), names
+        assert set(names) <= {"PATH", "HOME", *fork.RELAY_ENV_NAMES}, names
+        assert env[b"HOME"].decode() == str(folder / fork.RELAY_HOME) != str(parent_home)
+        assert os.readlink(f"/proc/{relay.pid}/cwd") == str(folder) != str(parent_cwd)
         told = _until(lambda: [r for r in rr.read_entries(home) if r["author"] == name])
         assert (
             told[0]["mentions"] == ["writer"]
@@ -232,6 +290,10 @@ def test_a_fork_tells_the_writer_where_its_summary_is_and_answers_its_question(
         and "sent to writer" in tool_result["content"]
     )
     assert json.loads((staging / fork_worker.FORK_JSON).read_text())["status"] == "ok"
+    # it never imported a module that reads provider settings or keys (each would be refused and logged), and its
+    # empty HOME went with it
+    assert "refused import" not in relay_log.read_text(), relay_log.read_text()
+    assert not (folder / fork.RELAY_HOME).exists()
     # the fork left the record when it settled; the route token never reached it
     roster = {r["name"]: r["state"] for r in rr.read_roster(home)["agents"]}
     assert roster[name] == "ended"
@@ -345,10 +407,14 @@ def test_with_the_run_record_on_the_fork_starts_through_its_relay_with_the_commo
     assert got is not None
     got.writer.join(5)
     (argv, kw), data = started[0], started[1]
-    assert argv[1:] == ["-m", fork.RELAY_MODULE] and kw["start_new_session"] is True
-    # least privilege: the relay's environment is the short allow-list, with no route, token or key name
-    assert set(kw["env"]) <= set(fork.RELAY_ENV_NAMES) and "PATH" in kw["env"]
+    assert argv == fork.relay_argv() and argv[1] == "-I" and kw["start_new_session"] is True
+    # least privilege: the relay's environment is the short allow-list, with no route, token or key name, its HOME
+    # an empty folder of its own and its current folder that folder's parent (no .env there)
+    assert set(kw["env"]) <= {"PATH", "HOME", *fork.RELAY_ENV_NAMES} and "PYTHONPATH" not in kw["env"]
     assert not [n for n in kw["env"] if SECRET_NAMES.search(n)] and not set(PLANTED) & set(kw["env"])
+    folder = Path(paths.state_dir) / "fork-relays" / "fork-3f9a"
+    assert kw["cwd"] == str(folder) and kw["env"]["HOME"] == str(folder / fork.RELAY_HOME)
+    assert not any((folder / fork.RELAY_HOME).iterdir()) and not (folder / ".env").exists()
     spec = json.loads(data)
     assert spec["argv"][-1] == "--comms" and spec["home"] == str(paths.home)
     assert spec["name"] == "fork-3f9a" and spec["lock_fd"] in kw["pass_fds"]

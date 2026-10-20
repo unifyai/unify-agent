@@ -11,8 +11,13 @@ each way over the worker's stdout and stdin, with the same texts every agent's c
 
 Input: one JSON document on stdin (never argv, the environment or a file): ``home``, ``name``, ``argv`` (the box),
 ``doc`` (the fork's request, its route token in the headers), ``lock_fd`` (the episode's staging lock, inherited and
-handed on to the box) and ``log`` (the worker's log). The route token is registered as a secret of this process, so
-nothing it writes to the record can carry it.
+handed on to the box), ``log`` (the worker's log) and ``frozen`` (whether memory is frozen: the writer is then not
+available on the record). The route token is registered as a secret of this process, so nothing it writes to the
+record can carry it.
+
+Least privilege: the request starts it through :mod:`unify.agents.relay_boot` (by path, ``-I``), in a folder of its
+own with an empty ``HOME`` and a minimal environment (:func:`unify.memory.integration.fork.relay_env`), so it never
+imports the settings, the logger or the model client, which read ``.env`` files and fetch provider keys.
 """
 
 from __future__ import annotations
@@ -30,6 +35,8 @@ LINE_LIMIT = 1 << 20
 _MARGIN_S = 120.0
 #: After the box's SIGTERM (its wall clock, or the relay's own stop), this long before SIGKILL.
 KILL_AFTER_S = 10.0
+#: The name of the empty folder the request gives the relay as its HOME (inside the relay's own folder).
+RELAY_HOME = "relay-home"
 
 
 def _register_token(doc: dict) -> None:
@@ -75,8 +82,12 @@ async def relay(spec: dict) -> int:
     from unify.agents.run_record import RunRecordView, join_run_record
     from unify.memory.integration.fork_worker import WALL_GUARD_S
 
+    from unify.agents import run_record as _rr
+
     doc = spec["doc"]
     _register_token(doc)
+    # whether memory is frozen comes with the spec: the relay never reads the settings
+    _rr.FROZEN = bool(spec.get("frozen"))
     name = str(spec["name"])
     record = join_run_record(spec["home"])
     record.attach(name)
@@ -184,6 +195,23 @@ def _kill(proc: Any) -> None:
         pass
 
 
+def load_all() -> None:
+    """Import every module the relay's code paths import (tests: :mod:`unify.agents.relay_boot` ``--modules`` lists
+    what that loads)."""
+    import unify.agents.record  # noqa: F401
+    import unify.agents.run_record  # noqa: F401
+    import unify.agents.run_record_tools  # noqa: F401
+    import unify.common.record_adapters  # noqa: F401
+    import unify.common.tool_channel  # noqa: F401
+    import unify.common.tool_registry  # noqa: F401
+    import unify.memory.integration.fork_worker  # noqa: F401
+    import unify.memory.integration.switch  # noqa: F401
+    import unify.memory.redact  # noqa: F401
+    import unify.memory.writer_tools  # noqa: F401
+    import unify.process_secrets  # noqa: F401
+    import unify.transcripts  # noqa: F401
+
+
 def main() -> int:
     spec = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     os.dup2(os.open(os.devnull, os.O_RDONLY), 0)
@@ -194,6 +222,13 @@ def main() -> int:
     ) as exc:  # noqa: BLE001 - the class only: a message could carry recorded text
         print(f"fork relay: {type(exc).__name__}", file=sys.stderr)
         return 1
+    finally:
+        # the empty HOME the request made for this relay goes with it
+        home = os.environ.get("HOME", "")
+        if os.path.basename(home) == RELAY_HOME and os.path.isdir(home):
+            import shutil
+
+            shutil.rmtree(home, ignore_errors=True)
 
 
 if __name__ == "__main__":
