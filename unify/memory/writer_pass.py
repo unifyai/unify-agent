@@ -5276,7 +5276,7 @@ class WriterPass:
                         break
                     except (
                         Exception
-                    ) as exc:  # the call may still have cost money (not one the route refused unsent); the conversation stays
+                    ) as exc:  # it may still have cost money (unless the route refused it unsent); the conversation stays
                         if unbooked_cost(exc):
                             spend.unknown += 1
                         notes.append(
@@ -5991,8 +5991,8 @@ class WriterCallError(RuntimeError):
 #: A 403 whose body is the route's refusal for its cap (``reason`` ``*_cap_reached``, or a ``*_budget_exhausted``
 #: refusal that is not about a call in flight): the route's spend cap, as HTTP 402 is.
 REFUSED_CAP = "http_403_cap"
-#: A 403 whose body is the route's refusal because another call is in flight (``reason`` ``*_in_flight``, or a
-#: ``*_budget_exhausted`` refusal for a call in flight or a reserve not yet released): it holds only for now.
+#: A 403 whose body is the route's refusal because another call is in flight (``reason`` ``*_in_flight`` or
+#: ``*_race``, or a ``*_budget_exhausted`` refusal for a call in flight or a reserve not yet released): for now only.
 REFUSED_BUSY = "http_403_busy"
 #: The categories a later attempt may not get: the route busy, a rate limit, a server error.
 TRANSIENT_CATEGORIES = frozenset({REFUSED_BUSY, "http_429"} | {f"http_{s}" for s in range(500, 600)})
@@ -6063,9 +6063,10 @@ def _objects_in_text(text: str) -> Iterator[dict]:
 def _route_refusal(exc: BaseException) -> str | None:
     """``"busy"`` or ``"cap"`` when *exc*, or an exception it was raised from or during, carries the route's refusal
     body (``{"error": {"type", "message", "reason"?}}``, from the client's parsed body, its response, or its text);
-    else None. Read from the body, never from the status code: an explicit ``reason`` first (``*_in_flight`` busy,
-    ``*_cap_reached`` cap), then a ``*_budget_exhausted`` type, busy when its message is about a call in flight or a
-    reserve not yet released, else the cap. Only the kind is returned; no text of the body is kept."""
+    else None. Read from the body, never from the status code: its ``reason`` first (``*_in_flight`` or ``*_race``
+    busy, ``*_cap_reached`` the cap), then, for a body without one of those, a ``*_budget_exhausted`` type, busy when
+    its message is about a call in flight or a reserve not yet released, else the cap. Only the kind is returned; no
+    text of the body is kept."""
     seen: set[int] = set()
     e: BaseException | None = exc
     while e is not None and id(e) not in seen:
@@ -6097,7 +6098,7 @@ def _route_refusal(exc: BaseException) -> str | None:
 def _refusal_kind(obj: dict) -> str | None:
     reason = obj.get("reason")
     if isinstance(reason, str):
-        if reason.endswith("_in_flight"):
+        if reason.endswith(("_in_flight", "_race")):
             return "busy"
         if reason.endswith("_cap_reached"):
             return "cap"

@@ -1993,6 +1993,11 @@ def _category(exc: BaseException) -> str:
         # an explicit reason field wins over the message
         (_status_error(403, json.dumps({"error": {**_CAP, "reason": "lane_in_flight"}})), "http_403_busy"),
         (_status_error(403, json.dumps({"error": {**_IN_FLIGHT, "reason": "lane_cap_reached"}})), "http_403_cap"),
+        # the reason alone, as the key proxy now sends it on every refusal, whatever its type and message
+        (_status_error(403, json.dumps({"error": {"code": 403, "type": "x", "reason": "helper_release_race"}})), "http_403_busy"),
+        (_status_error(403, json.dumps({"error": {"code": 403, "type": "x", "reason": "embed_cap_reached"}})), "http_403_cap"),
+        (_status_error(403, json.dumps({"error": {"code": 403, "type": "x", "reason": "fork_in_flight"}})), "http_403_busy"),
+        (_status_error(403, json.dumps({"error": {"code": 403, "type": "x", "reason": "route_refused"}})), "http_403"),
         # the helper lane's release race is for now too
         (_status_error(403, json.dumps({"error": _RACE})), "http_403_busy"),
         # no refusal body: the status code alone says neither
@@ -2004,7 +2009,7 @@ def _category(exc: BaseException) -> str:
     ],
     ids=[
         "json-text-busy", "json-text-cap", "literal-text-busy", "body-cap", "response-busy", "reason-busy",
-        "reason-cap", "release-race", "no-body", "body-without-refusal-type", "unreadable-response", "402", "429",
+        "reason-cap", "reason-only-race", "reason-only-cap", "reason-only-in-flight", "reason-other", "release-race", "no-body", "body-without-refusal-type", "unreadable-response", "402", "429",
     ],
 )
 def test_a_403_is_busy_or_the_cap_only_by_its_refusal_body(exc, want):
