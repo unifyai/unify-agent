@@ -995,6 +995,44 @@ REDESIGN_CONFLICTS: dict[str, str] = {
     WRITER_PASSES: "off",
 }
 
+#: The settings every redesign arm's kit sets beside its arm (each refused by name when missing, where the arm needs
+#: it): tools called from code (the run record, the writer's tools, ``tools.checkpoint``) and the request metadata
+#: headers (metering's ids). The service's own cap (``UNIFY_MEMORY_WRITER_SERVICE_CAP_USD``) and the host's lease
+#: (``UNIFY_HOST_LEASE_END``) are the kit's per cell and host.
+REDESIGN_COMPANIONS: dict[str, str] = {"UNIFY_TOOLS_IN_CODE": "on", "UNIFY_REQUEST_METADATA_HEADERS": "on"}
+_LEDGER_PARTS = {
+    "UNIFY_MEMORY_ATTENTION_LEDGER": "off",
+    "UNIFY_MEMORY_LEDGER_K": "",
+    "UNIFY_MEMORY_WRITER_SERVICE": "off",  # the service hands the ledger's entries: no ledger, no service
+    "UNIFY_MEMORY_IN_EPISODE": "off",  # a pause's segment fork becomes a ledger entry: no ledger, no pauses
+}
+#: The evaluation's arms (REDESIGN-BUILD-PLAN-20261020 §8.1), each as the settings a kit pins. The main arm is the
+#: profile; the profile refuses any of its switches set otherwise, so every other arm is the profile's switches written
+#: out with its change, and with what that change takes with it, by the parts' own refusals:
+#:
+#: * ``captures_only``: the writer runs nowhere (no service, no writer pass); captures, ledger and the rest as the
+#:   main arm;
+#: * ``ledger_off``: the attention ledger off, G1's per-capture trigger in its place (§7), and the service and
+#:   in-episode memory with it (each needs the ledger), so the writer runs as the pass worker;
+#: * ``in_episode_off`` and ``failure_record_off``: that one switch off;
+#: * ``mesh_off`` (informational): the run record off, and the service with it (the service holds the writer's place
+#:   on the record), so the ledger and in-episode memory too;
+#: * ``no_memory``: memory off, the run record on (A1 is kept regardless).
+REDESIGN_ARMS: dict[str, dict[str, str]] = {
+    "redesign": {MEMORY_PROFILE: REDESIGN},
+    "captures_only": {**REDESIGN_SWITCHES, "UNIFY_MEMORY_WRITER_SERVICE": "off", WRITER_PASSES: "off"},
+    "ledger_off": {
+        **REDESIGN_SWITCHES,
+        **_LEDGER_PARTS,
+        LIBRARY_REVIEW_EACH_CAPTURE: "on",
+        "UNIFY_MEMORY_LIBRARY_CAPTURES_PER_PASS": "1",
+    },
+    "in_episode_off": {**REDESIGN_SWITCHES, "UNIFY_MEMORY_IN_EPISODE": "off"},
+    "failure_record_off": {**REDESIGN_SWITCHES, "UNIFY_MEMORY_SERVING_FAILURE_RECORD": "off"},
+    "mesh_off": {**REDESIGN_SWITCHES, **_LEDGER_PARTS, "UNIFY_AGENTS_RUN_RECORD": "off"},
+    "no_memory": {"UNIFY_MEMORY": "off", "UNIFY_AGENTS_RUN_RECORD": "on"},
+}
+
 
 def parse_memory_profile(v: Any) -> str:
     """``UNIFY_MEMORY_PROFILE``: empty (each switch as set) or ``redesign``."""

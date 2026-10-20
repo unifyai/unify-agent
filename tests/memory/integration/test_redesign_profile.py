@@ -194,3 +194,44 @@ def test_the_settings_parse_the_profile_and_keep_an_empty_withdrawal_empty(monke
         Exception, match="UNIFY_MEMORY_PROFILE must be empty or 'redesign'"
     ):
         ProductionSettings()
+
+
+def test_every_arm_is_a_settings_set_the_build_runs():
+    """The evaluation's arms (switch.REDESIGN_ARMS) as kits pin them: each with its companions, the library settings,
+    the service's cap and the host's lease is refused by nothing (holds once every element is merged); and each
+    differs from the profile's switches only where its change and that change's own dependencies say."""
+    kit = {**_LIBRARY, **switch.REDESIGN_COMPANIONS, "UNIFY_HOST_LEASE_END": "2026-10-21T06:00:00Z"}
+    for arm, values in switch.REDESIGN_ARMS.items():
+        settings = SimpleNamespace(**({**kit, **values} if arm != "no_memory" else {**switch.REDESIGN_COMPANIONS,
+                                                                                     **values}))
+        assert switch.profile_refusal(settings) is None, (arm, switch.profile_refusal(settings))
+    assert switch.REDESIGN_ARMS["redesign"] == {"UNIFY_MEMORY_PROFILE": "redesign"}
+    changed = {
+        arm: sorted(k for k, v in values.items() if switch.REDESIGN_SWITCHES.get(k) != v)
+        for arm, values in switch.REDESIGN_ARMS.items()
+        if arm not in ("redesign", "no_memory")
+    }
+    assert changed == {
+        "captures_only": ["UNIFY_MEMORY_WRITER_PASSES", "UNIFY_MEMORY_WRITER_SERVICE"],
+        "ledger_off": [
+            "UNIFY_MEMORY_ATTENTION_LEDGER",
+            "UNIFY_MEMORY_IN_EPISODE",
+            "UNIFY_MEMORY_LEDGER_K",
+            "UNIFY_MEMORY_LIBRARY_CAPTURES_PER_PASS",
+            "UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE",
+            "UNIFY_MEMORY_WRITER_SERVICE",
+        ],
+        "in_episode_off": ["UNIFY_MEMORY_IN_EPISODE"],
+        "failure_record_off": ["UNIFY_MEMORY_SERVING_FAILURE_RECORD"],
+        "mesh_off": [
+            "UNIFY_AGENTS_RUN_RECORD",
+            "UNIFY_MEMORY_ATTENTION_LEDGER",
+            "UNIFY_MEMORY_IN_EPISODE",
+            "UNIFY_MEMORY_LEDGER_K",
+            "UNIFY_MEMORY_WRITER_SERVICE",
+        ],
+    }
+    # the part a ledger_off or mesh_off arm turns off with its change is itself refused when left on
+    for arm, part in (("ledger_off", "UNIFY_MEMORY_WRITER_SERVICE"), ("mesh_off", "UNIFY_MEMORY_WRITER_SERVICE")):
+        kept = SimpleNamespace(**{**kit, **switch.REDESIGN_ARMS[arm], part: "on"})
+        assert switch.profile_refusal(kept) is not None, arm

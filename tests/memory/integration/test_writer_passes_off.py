@@ -104,11 +104,12 @@ def test_a_verdict_is_captured_and_no_pass_runs(world):  # noqa: F811
     assert not consolidate.events_path(
         world.stores.paths
     ).exists()  # no pass event of any kind
-    # the same verdict with the writer on: its pass runs at once
+    # the same verdict with the writer on: its pass runs at once, and covers e1 too, whose verdict stayed due while
+    # the writer passes were off (a verdict is never dropped until a pass covers its episode: async_pass)
     sha2 = _record(world.stores, "e2")
     world.settled["e2"] = POSITIVE
     world.worker("e2", sha2, _settings())
-    assert [(p["kind"], p["verdicts"]) for p in world.passes] == [("verdict", ["e2"])]
+    assert [(p["kind"], p["verdicts"]) for p in world.passes] == [("verdict", ["e1", "e2"])]
 
 
 def test_a_due_batch_never_runs_and_no_writer_setting_is_read(

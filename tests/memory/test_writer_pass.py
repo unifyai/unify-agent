@@ -409,8 +409,8 @@ def test_writer_system_states_that_scope_is_shape_not_observed_values():
     assert "Scope is shape, not observed values" in WRITER_SYSTEM
     assert "value domains" not in WRITER_SYSTEM
     assert "outside the function's scope" not in WRITER_SYSTEM
-    assert "Bad: `if colour not in" in WRITER_SYSTEM
-    assert "Good: `if not isinstance(colour" in WRITER_SYSTEM
+    assert "Bad: `if status not in" in WRITER_SYSTEM
+    assert "Good: `if not isinstance(status" in WRITER_SYSTEM
     assert "rejection must then be one of the" in WRITER_SYSTEM
 
 
