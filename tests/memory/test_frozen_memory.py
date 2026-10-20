@@ -149,7 +149,7 @@ def test_the_checkpoint_tool_says_memory_is_frozen(monkeypatch):
     from unify.memory.integration import in_episode, request
 
     monkeypatch.setattr(request, "current", lambda: SimpleNamespace(in_episode=None, frozen=True))
-    out = in_episode.checkpoint_tool(SimpleNamespace(), {"note": "x"})
+    out = in_episode.checkpoint(SimpleNamespace(), {"note": "x"})
     assert "memory is frozen in this run" in str(out)
     monkeypatch.setattr(request, "current", lambda: SimpleNamespace(in_episode=None, frozen=False))
-    assert "memory during an episode is off in this run" in str(in_episode.checkpoint_tool(SimpleNamespace(), {}))
+    assert "memory during an episode is off in this run" in str(in_episode.checkpoint(SimpleNamespace(), {}))

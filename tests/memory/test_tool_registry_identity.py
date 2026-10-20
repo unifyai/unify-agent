@@ -393,6 +393,14 @@ ADDED_TOOLS = (
     "current_request",
     "search",
     "check_examples",
+    # the attention ledger's writer tools and the writer's stated tests (UNIFY_MEMORY_ATTENTION_LEDGER, _WRITER_TESTS)
+    "open_entries",
+    "take",
+    "decide",
+    "find",
+    "test",
+    # the actor's pause (UNIFY_MEMORY_IN_EPISODE)
+    "checkpoint",
 )
 #: Tools added to the writer's JSON tools (tools not in code) since the base commit: left out of the base hashes.
 ADDED_JSON_TOOLS = ("land_capture",)

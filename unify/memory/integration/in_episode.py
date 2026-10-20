@@ -491,7 +491,7 @@ def _ensure_service(home: Path) -> None:
 # --- the actor's tool ------------------------------------------------------------------------------------------------
 
 
-def checkpoint_tool(ctx: Any, args: dict) -> Any:
+def checkpoint(ctx: Any, args: dict) -> Any:
     """``tools.checkpoint(note="")``: the actor marks a pause; its segment fork starts at the end of this turn."""
     from unify.actor.tool_handlers import _refused, _reply
     from unify.common.tool_registry import refusal
