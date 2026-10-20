@@ -966,6 +966,33 @@ class Service:
             _atomic_json(service_dir(self.home) / STATE_FILE, self.doc())
 
 
+def _hold_writer_row(home: Path, settings: Any) -> Any:
+    """With the run record on, take back the writer's row on it (``rejoin``: the service holds ``writer`` across
+    passes and restarts) and return the record; with it off (the mesh-off arm), None: the service runs without it
+    and each pass keeps its own pass record."""
+    from unify.agents.run_record import WRITER, join_run_record
+
+    from .integration.switch import run_record_on
+
+    if not run_record_on(settings):
+        return None
+    record = join_run_record(home)
+    record.root = WRITER
+    record.join(WRITER, "writer", state="idle", rejoin=True)
+    return record
+
+
+def _end_writer_row(record: Any, why: str) -> None:
+    from unify.agents.run_record import WRITER
+
+    if record is None:
+        return
+    try:
+        record.set_state(WRITER, "ended", note=f"service {why}")
+    except Exception:  # noqa: BLE001 - the stop is still recorded
+        pass
+
+
 def pass_reservation(settings: Any, effort: str) -> Decimal:
     """A pass's worst case, reserved against the service's cap before it starts: the writer's price per token times
     the pass's token allowance (E), at the writer's effort scale, as the run guard books a pass.
@@ -1302,7 +1329,7 @@ async def step_async(
     the pass's own (``consolidate.unillm_turn``, which the replay routes), or *runner*'s.
 
     The step holds the home's lock while it runs: when a service (or another step) holds it, nothing is done and
-    ``why_idle`` is ``busy``. The step is the service for its duration: the writer's roster row is taken back
+    ``why_idle`` is ``busy``. The step is the service for its duration: the writer's roster row (run record on) is taken back
     (``rejoin``) and left ``idle``; a pass a crash left running is resumed first; at a stop (the stop marker, the
     lease) the step does what the service does when it stops for that reason (the entries still owed are marked
     ``not_reached`` as :data:`NOT_REACHED_BY` says, the writer's row ends). The service's lifetime is a bound on a
@@ -1312,8 +1339,6 @@ async def step_async(
     "why_idle", "stop"}``: the entry ids the pass was handed, verified read, closed and sent back; ``usd`` is what
     the service settled (known plus unpriced calls at their worst case; None when nothing was readable), and
     ``why_idle`` why no pass ran (:data:`IDLE_WHY`), or None."""
-    from unify.agents.run_record import WRITER, join_run_record
-
     from .attention import Ledger
     from .integration.switch import profile_refusal, writer_service_cap_usd
 
@@ -1339,9 +1364,7 @@ async def step_async(
         # the cap reached in an earlier step stays reached: the events say so
         service.cap_noted = any(r.get("event") == "cap-reached" for r in events(home))
         service.capped = service.cap_noted
-        record = join_run_record(home)
-        record.root = WRITER
-        record.join(WRITER, "writer", state="idle", rejoin=True)
+        record = _hold_writer_row(home, settings)
         ledger = Ledger(home)
         resumable = pending_passes(home)
         ledger.return_orphans(live_pass_ids=resumable)
@@ -1351,7 +1374,7 @@ async def step_async(
             reached = NOT_REACHED_BY.get(out["stop"])
             if reached is not None:
                 ledger.mark_not_reached(reached)
-            record.set_state(WRITER, "ended", note=f"service {out['stop']}")
+            _end_writer_row(record, out["stop"])
         service.set("stopped")
         return out
     finally:
@@ -1411,8 +1434,6 @@ async def _serve(
     clock: Callable[[], datetime],
     monotonic: Callable[[], float],
 ) -> str:
-    from unify.agents.run_record import WRITER, join_run_record
-
     from .attention import Ledger
     from .integration.switch import profile_refusal, writer_service_cap_usd
 
@@ -1443,9 +1464,7 @@ async def _serve(
             reason="the previous service ended without stopping",
         )
     service.set("starting")
-    record = join_run_record(home)
-    record.root = WRITER
-    record.join(WRITER, "writer", state="idle", rejoin=True)
+    record = _hold_writer_row(home, settings)
     beating = threading.Event()
 
     def heart() -> None:
@@ -1499,10 +1518,7 @@ async def _serve(
                 Ledger(home).mark_not_reached(reached)
             except Exception:  # noqa: BLE001 - the stop is still recorded
                 pass
-        try:
-            record.set_state(WRITER, "ended", note=f"service {why}")
-        except Exception:  # noqa: BLE001
-            pass
+        _end_writer_row(record, why)
         service.set("stopped")
         event(home, "stop", why=why)
     return why

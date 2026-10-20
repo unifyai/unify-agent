@@ -33,12 +33,11 @@ def test_the_run_record_needs_the_tools_in_code():
     assert "UNIFY_TOOLS_IN_CODE=on" in S.profile_refusal(_s(UNIFY_AGENTS_RUN_RECORD="on"))
 
 
-def test_the_service_needs_the_library_the_ledger_the_record_and_its_cap():
+def test_the_service_needs_the_library_the_ledger_and_its_cap_and_not_the_record():
     got = S.redesign_a_refusal(_s(UNIFY_MEMORY_WRITER_SERVICE="on"))
     for name in (
         "UNIFY_MEMORY_LIBRARY=on",
         "UNIFY_MEMORY_ATTENTION_LEDGER=on",
-        "UNIFY_AGENTS_RUN_RECORD=on",
         "UNIFY_MEMORY_WRITER_SERVICE_CAP_USD",
     ):
         assert name in got, name
@@ -52,6 +51,9 @@ def test_the_service_needs_the_library_the_ledger_the_record_and_its_cap():
     )
     assert S.redesign_a_refusal(full) is None
     assert S.writer_service_cap_usd(full) == Decimal("12.5")
+    # the mesh-off arm: the service runs without the run record (its passes keep their own records)
+    mesh_off = _s(**{**vars(full), "UNIFY_AGENTS_RUN_RECORD": "off"})
+    assert "UNIFY_AGENTS_RUN_RECORD" not in got and S.redesign_a_refusal(mesh_off) is None
 
 
 def test_metering_needs_the_request_metadata_headers():

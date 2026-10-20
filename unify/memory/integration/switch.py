@@ -1856,8 +1856,8 @@ def redesign_a_refusal(settings: Any) -> str | None:
 
     * the run record needs ``UNIFY_TOOLS_IN_CODE=on``: every agent reaches the record through its in-code tools, and no
       box binds the record's folder;
-    * the service needs the library mode, the attention ledger (it hands the ledger's entries), the run record (the
-      service holds the writer's place on it) and its own cap;
+    * the service needs the library mode, the attention ledger (it hands the ledger's entries) and its own cap; with the
+      run record on it holds the writer's place there, with it off (the mesh-off arm) each pass keeps its own record;
     * metering needs ``UNIFY_REQUEST_METADATA_HEADERS=on`` (its ids travel as request metadata headers).
     """
     tools_in_code = _stripped(getattr(settings, "UNIFY_TOOLS_IN_CODE", "") or "").lower() == "on"
@@ -1870,7 +1870,6 @@ def redesign_a_refusal(settings: Any) -> str | None:
             for n, on in (
                 (LIBRARY_MODE, library_enabled(settings)),
                 ("UNIFY_MEMORY_ATTENTION_LEDGER", ledger),
-                (RUN_RECORD, run_record_on(settings)),
             )
             if not on
         ]

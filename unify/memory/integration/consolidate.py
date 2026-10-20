@@ -2128,8 +2128,10 @@ async def run_attention_pass(
         show_usage=True,
         library_mode=True,
         max_reads=library_max_reads(settings),
-        run_home=str(home),
-        service_held=True,
+        # on the run record the pass's agents join the run's record, the writer's row held by the service; with the
+        # record off (the mesh-off arm) the pass keeps its own record, as a pass worker's
+        run_home=str(home) if run_record_on(settings) else None,
+        service_held=run_record_on(settings),
         attention_home=str(home),
         writer_tests=tuple(sorted(writer_tests_modes(settings))),
         impure_items=impure,

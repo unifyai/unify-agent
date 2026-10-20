@@ -870,3 +870,19 @@ def test_the_service_loop_and_a_step_run_the_same_turn(svc, monkeypatch):
     _open_entry(svc.home)
     _step(svc.home, runner, monkeypatch)
     assert len(seen) == looped + 1 and len(runner.passes) == 2
+
+
+def test_with_the_run_record_off_the_service_runs_its_passes_without_it(
+    svc, monkeypatch
+):
+    """The mesh-off arm (plan §8.1: the mesh alone off): the service still hands the ledger's entries to its passes;
+    it holds no row on a run record and writes none."""
+    ids = _open_entry(svc.home, 2)
+    runner = Recording()
+    got = _step(svc.home, runner, monkeypatch, over={"UNIFY_AGENTS_RUN_RECORD": "off"})
+    assert got["pass_id"] is not None and sorted(got["handed"]) == sorted(ids)
+    assert not rr.roster_path(svc.home).exists() and not rr.record_path(svc.home).exists()
+    # and a stop leaves no record behind either
+    assert ws.stop_service(svc.home, "operator", "test", grace_s=0.1).verified
+    stopped = _step(svc.home, _no_pass, monkeypatch, over={"UNIFY_AGENTS_RUN_RECORD": "off"})
+    assert stopped["stop"] == "operator" and not rr.roster_path(svc.home).exists()
