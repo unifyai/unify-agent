@@ -45,6 +45,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -79,9 +80,10 @@ def cell_state() -> str:
     environment. Any other value is refused."""
     value: Any = None
     try:
-        from unify.settings import SETTINGS
-
-        value = getattr(SETTINGS, CELL_STATE_SETTING, None)
+        # the settings when this process loaded them (every process that imports the unify package does); a process
+        # that never did (the fork's relay) reads the environment, the same source, and never imports them here
+        loaded = sys.modules.get("unify.settings")
+        value = getattr(loaded.SETTINGS, CELL_STATE_SETTING, None) if loaded is not None else None
     except Exception:  # noqa: BLE001 - the environment below is the same source the settings read
         value = None
     if value is None:

@@ -45,6 +45,7 @@ import logging
 import os
 import re
 import secrets
+import sys
 import threading
 import weakref
 from contextlib import contextmanager
@@ -158,7 +159,11 @@ def _secret_values() -> list[tuple[str, str]]:
         if _is_secret_name(name) and value and len(value) >= _MIN_SECRET_LEN:
             found.setdefault(value, name)
     try:
-        import unillm
+        # the model client's credentials, when this process loaded them: a process that never imported the client
+        # (the fork's relay) holds none of them, and importing it here would read .env files and fetch every key
+        unillm = sys.modules.get("unillm")
+        if unillm is None:
+            raise LookupError("the model client is not loaded")
         from pydantic import SecretStr
 
         settings = unillm.SETTINGS
