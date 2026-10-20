@@ -96,6 +96,5 @@ For PRs that touch a specific subsystem, the table below is a rough guide to who
 
 ## Questions?
 
-- **Architectural questions** — [GitHub Discussions](https://github.com/unifyai/unify/discussions)
-- **Quick questions / chat** — [Discord](https://discord.com/invite/sXyFF8tDtm)
+- **Questions** — [GitHub Issues](https://github.com/unifyai/unify-agent/issues)
 - **Security** — see [`SECURITY.md`](SECURITY.md); do not open public issues for security vulnerabilities.

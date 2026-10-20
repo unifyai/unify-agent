@@ -1,14 +1,11 @@
 blank_issues_enabled: true
 contact_links:
-- name: 💬 Discord
-  url: https://discord.com/invite/sXyFF8tDtm
-  about: For quick questions, install help, and community discussion.
 - name: 📖 Architecture overview
-  url: https://github.com/unifyai/unify/blob/main/ARCHITECTURE.md
-  about: How Unity is designed — read this before opening a design-question issue.
+  url: https://github.com/unifyai/unify-agent/blob/main/ARCHITECTURE.md
+  about: How unify is designed — read this before opening a design-question issue.
 - name: 🤝 Contributing guide
-  url: https://github.com/unifyai/unify/blob/main/CONTRIBUTING.md
+  url: https://github.com/unifyai/unify-agent/blob/main/CONTRIBUTING.md
   about: How to set up the dev environment and submit a PR.
 - name: 🧠 Agent conventions (AGENTS.md)
-  url: https://github.com/unifyai/unify/blob/main/AGENTS.md
+  url: https://github.com/unifyai/unify-agent/blob/main/AGENTS.md
   about: Coding standards, test philosophy, and git workflow.

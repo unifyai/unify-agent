@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <a href="https://unify.ai">unify.ai</a> · <a href="https://discord.com/invite/sXyFF8tDtm">Discord</a> · <a href="LICENSE">MIT license</a>
+  <a href="https://unify.ai">unify.ai</a> · <a href="LICENSE">MIT license</a>
 </p>
 
 # unify

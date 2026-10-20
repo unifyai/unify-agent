@@ -9,7 +9,7 @@ body:
       Thanks for taking the time to file a bug report.
 
       Before submitting:
-      - Search [existing issues](https://github.com/unifyai/unify/issues) to avoid duplicates.
+      - Search [existing issues](https://github.com/unifyai/unify-agent/issues) to avoid duplicates.
       - Try `unify update` and confirm the bug still reproduces.
       - If this is install-related, run `unify doctor` and include its output below.
 
