@@ -700,3 +700,39 @@ def test_a_message_the_writer_was_already_delivered_is_read_in_that_pass(tmp_pat
     assert first.decision == "nothing_to_keep" and first.parts_read == ("entry",)
     assert second.state == "open"  # never delivered: handed as before
     assert [e.entry for e in led.hand("p1", 4)] == [second.entry]
+
+
+def test_an_entry_read_but_never_decided_goes_alone_then_ends_unreadable(tmp_path):
+    clock = Clock()
+    led = _ledger(tmp_path, clock)
+    src = Fake(forks=[_fork("e1", procedure=False)])
+    [one] = led.sync(src)
+    for k in (1, 2, 3):
+        clock.tick(60)
+        if k == 3:
+            src.forks.append(_fork("e2", procedure=False))
+            [other] = led.sync(src)
+        handed = led.hand(f"p{k}", 4)
+        # read and not decided in two passes: handed alone in the third, whatever else is open
+        assert [e.entry for e in handed] == [one.entry]
+        assert led.verify_reads(f"p{k}", _read_all(handed)) == {one.entry}
+        assert led.return_unread(f"p{k}") == [one.entry]
+    e = led.get(one.entry)
+    assert e.state == "unreadable" and e.undecided == 2 and "read and not decided in 3 passes, the last pass:p3" in e.why
+    assert [x.entry for x in led.hand("p4", 4)] == [other.entry]
+    # a reopen starts the count again
+    assert led.reopen(one.entry, "late_evidence:x") and led.get(one.entry).undecided == 0
+
+
+def test_a_grouped_decision_refused_names_every_unread_entry(tmp_path):
+    led = _ledger(tmp_path)
+    src = Fake(forks=[_fork(n, procedure=False) for n in ("e1", "e2", "e3")])
+    made = sorted(led.sync(src), key=lambda e: e.refs.episodes)
+    led.hand("p1", 4)
+    reads = _read_all([made[0]])
+    with pytest.raises(LedgerError) as err:
+        led.decide("p1", [e.entry for e in made], "nothing_to_keep", [], "why", reads=reads,
+                   decisions_path=tmp_path / "d.jsonl")  # fmt: skip
+    text = str(err.value)
+    assert f"2 of the 3 entries are unread: {made[1].entry}, {made[2].entry}" in text
+    assert f"the read ones, {made[0].entry}, may be decided on their own" in text and "nothing was decided" in text
