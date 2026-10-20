@@ -236,19 +236,23 @@ async def test_surface_2_a_tool_api_with_reads_and_writes_and_an_outcome_at_the_
 # --- surface 3 -------------------------------------------------------------------------------------------------------
 
 
-async def _wait_for_main_to_move(home: Path, start: str, timeout_s: float = 120.0) -> str | None:
-    """Wait (without blocking the request's event loop) until the memory's main moved past *start*; None when
-    nothing landed in time."""
+async def _wait_for_item_served(home: Path, item: str, timeout_s: float = 300.0) -> str | None:
+    """Wait (without blocking the request's event loop) until the commit requests now pin (``served_head``: what the
+    next cell re-pins to) holds *item* (its path in the memory); that commit, or None when it was not served in time.
+    The service lands on main and publishes ``served`` after it, and under load it can group the segment entries into
+    fewer passes, so neither main moving nor the item on main is enough: the wait is for the item where cells read it."""
     import asyncio
     import time
 
     from unify.memory.gitio import Repo
     from unify.memory.integration.paths import Paths
+    from unify.memory.memory_writer import served_head
 
+    repo = Repo(Paths.under(home).memory)
     end = time.monotonic() + timeout_s
     while time.monotonic() < end:
-        head = Repo(Paths.under(home).memory).run("rev-parse", "main").strip()
-        if head != start:
+        head = served_head(repo)
+        if repo.run("ls-tree", "--name-only", head, "--", item).strip() == item:
             return head
         await asyncio.sleep(0.25)
     return None
@@ -279,7 +283,7 @@ async def test_surface_3_a_long_episode_with_checkpoints(core_world, monkeypatch
 
     async def after_pause(call):
         # the pause's segment fork runs now; the service lands from it while the episode goes on
-        start["landed"] = await _wait_for_main_to_move(home, start["head"])
+        start["landed"] = await _wait_for_item_served(home, SX.NOTE_ID)
         return reply(calls=[cell("total = sum(float(r['amount']) for r in rows)\nprint(total)")])
 
     model = ScriptedModel(
@@ -308,7 +312,7 @@ async def test_surface_3_a_long_episode_with_checkpoints(core_world, monkeypatch
     assert segs[:2] == [1, 2], [(e.kind, e.refs.row()) for e in entries]
     # B4: what the service landed from the first segment while the episode ran is served from the next cell, with
     # one notice naming exactly what changed
-    assert start.get("landed"), "no commit landed while the episode ran"
+    assert start.get("landed") and start["landed"] != start["head"], "the note was not served while the episode ran"
     notices = [m for c in model.of("actor") for m in c.messages
                if m.get("role") == "tool" and "memory changed" in json.dumps(m.get("content"))]
     assert notices and SX.NOTE_ID in json.dumps(notices[0].get("content")), notices[:1]
