@@ -775,8 +775,8 @@ def launch(
 ) -> Fork:
     """Start *argv* in its own session with *data* on its stdin and the reservation's lock passed to it; this process
     then closes its copy, so the lock is held exactly while the process (or a child that kept the descriptor) lives.
-    *env*: the process's environment (default ``PATH`` alone, the box's; the run record's relay takes this
-    process's, as a pass worker does).
+    *env*: the process's environment (default ``PATH`` alone, the box's; the run record's relay gets
+    :func:`relay_env`, never this process's whole environment).
     """
     log = open(log_path, "ab")
     try:
@@ -893,7 +893,7 @@ def start(
                     data,
                     log,
                     popen=popen,
-                    env=dict(os.environ),
+                    env=relay_env(),
                 )
             except BaseException:
                 _leave(on_record)
@@ -910,6 +910,27 @@ def start(
 
 #: The fork's relay to the run record (``UNIFY_AGENTS_RUN_RECORD=on``).
 RELAY_MODULE = "unify.agents.fork_relay"
+#: The only names the relay's environment takes from this process's (least privilege): the basics a Python process
+#: needs and the one setting the relay reads (whether memory is frozen). No route base URL, token or key name ever
+#: reaches it; the fork's request, its auth header included, goes on the relay's stdin.
+RELAY_ENV_NAMES = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+    "TMPDIR",
+    "PYTHONPATH",
+    "UNIFY_MEMORY_FROZEN",
+)
+
+
+def relay_env() -> dict[str, str]:
+    """The relay's environment: :data:`RELAY_ENV_NAMES` as this process has them, nothing else."""
+    env = {k: os.environ[k] for k in RELAY_ENV_NAMES if os.environ.get(k)}
+    env.setdefault("PATH", "/usr/bin:/bin")
+    return env
 
 
 def run_record_name(paths: Any, eid: str, settings: Any) -> tuple[Any, str] | None:

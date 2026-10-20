@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -78,6 +79,24 @@ class Model:
         self.server.shutdown()
 
 
+#: Names that carry a route, a token or a key (the live audit's names-only check, mirrored): none may be in the
+#: relay's environment.
+SECRET_NAMES = re.compile(r"BASE_URL|TOKEN|KEY|SECRET|PASSWORD|PASSWD|AUTH|CREDENTIAL|COOKIE", re.IGNORECASE)
+PLANTED = {
+    "UNIFY_MEMORY_WRITER_BASE_URL": "http://127.0.0.1:1/writer/v1",
+    "UNIFY_MEMORY_LIBRARY_FORK_BASE_URL": "http://127.0.0.1:1/fork/v1",
+    "UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD": "7",
+    "OPENROUTER_API_KEY": "not-a-real-key",  # pragma: allowlist secret
+    "UNIFY_SOME_SECRET": "x",  # pragma: allowlist secret
+}
+
+
+def _plant(monkeypatch):
+    """The controller's environment as the relay's parent has it: route URLs, token and key names."""
+    for k, v in PLANTED.items():
+        monkeypatch.setenv(k, v)
+
+
 def _until(check, timeout=60.0):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
@@ -90,6 +109,7 @@ def _until(check, timeout=60.0):
 
 def test_a_fork_tells_the_writer_where_its_summary_is_and_answers_its_question(
     tmp_path,
+    monkeypatch,
 ):
     home = tmp_path / "home"
     eid = "20261020T210311-3f9a0c1d"
@@ -159,17 +179,27 @@ def test_a_fork_tells_the_writer_where_its_summary_is_and_answers_its_question(
         "lock_fd": lock,
         "log": str(tmp_path / "fork-worker.log"),
     }
+    _plant(monkeypatch)  # the parent's environment carries route URLs and key names; the relay's must not
     relay = subprocess.Popen(
         [sys.executable, "-m", fork.RELAY_MODULE],
         stdin=subprocess.PIPE,
         cwd=str(Path(__file__).resolve().parents[2]),
         pass_fds=(lock,),
         start_new_session=True,
+        env=fork.relay_env(),  # exactly what fork.start gives it
     )
     relay.stdin.write(json.dumps(spec).encode())
     relay.stdin.close()
     os.close(lock)
     try:
+        # the running relay's own environment, by name, as the live audit reads it
+        names = [
+            e.split(b"=", 1)[0].decode()
+            for e in Path(f"/proc/{relay.pid}/environ").read_bytes().split(b"\0")
+            if e
+        ]
+        assert names and not [n for n in names if SECRET_NAMES.search(n)], names
+        assert set(names) <= set(fork.RELAY_ENV_NAMES), names
         told = _until(lambda: [r for r in rr.read_entries(home) if r["author"] == name])
         assert (
             told[0]["mentions"] == ["writer"]
@@ -260,6 +290,7 @@ def test_with_the_run_record_on_the_fork_starts_through_its_relay_with_the_commo
     )
     paths = Paths.under(tmp_path / "home")
     eid = "20261020T210311-3f9a0c1d"
+    _plant(monkeypatch)
     monkeypatch.setattr(
         fork, "route", lambda: (("http://127.0.0.1:9/fork/v1", TOKEN), None)
     )
@@ -315,6 +346,9 @@ def test_with_the_run_record_on_the_fork_starts_through_its_relay_with_the_commo
     got.writer.join(5)
     (argv, kw), data = started[0], started[1]
     assert argv[1:] == ["-m", fork.RELAY_MODULE] and kw["start_new_session"] is True
+    # least privilege: the relay's environment is the short allow-list, with no route, token or key name
+    assert set(kw["env"]) <= set(fork.RELAY_ENV_NAMES) and "PATH" in kw["env"]
+    assert not [n for n in kw["env"] if SECRET_NAMES.search(n)] and not set(PLANTED) & set(kw["env"])
     spec = json.loads(data)
     assert spec["argv"][-1] == "--comms" and spec["home"] == str(paths.home)
     assert spec["name"] == "fork-3f9a" and spec["lock_fd"] in kw["pass_fds"]
