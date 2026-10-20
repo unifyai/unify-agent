@@ -23,6 +23,34 @@ from pathlib import Path
 TURNS = int(os.environ.get("DRIVER_TURNS", "5"))
 
 
+async def _children_in_flight(out: Path) -> None:
+    """``DRIVER_CHILDREN``: a pass with a confined box (the service's own box builder: bubblewrap with its own pid
+    namespace) and a git call in flight, as a pass's cells and store writes leave them; their pids go to
+    ``$DRIVER_OUT/children.json`` once the service has recorded them, then the pass waits (to be killed)."""
+    import subprocess
+
+    from unify.memory.sandbox_run import _spawn_box
+
+    box = _spawn_box(["/bin/sh", "-c", "sleep 600"], ro=None, rw=None, cwd="/tmp", env=None, late_ro=None,
+                     pass_fds=(), stdin=subprocess.DEVNULL)  # fmt: skip
+    git = subprocess.Popen(["git", "cat-file", "--batch"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                           cwd="/tmp")  # fmt: skip
+    inside = None
+    for _ in range(200):  # the box's own process (its pid namespace's), once bubblewrap has started it
+        kids = [int(c) for t in os.listdir(f"/proc/{box.pid}/task")
+                for c in open(f"/proc/{box.pid}/task/{t}/children").read().split()]  # fmt: skip
+        if kids:
+            inside = kids[0]
+            break
+        await asyncio.sleep(0.05)
+    await asyncio.sleep(2.5)  # past MEMBERS_S: the service has recorded them
+    (out / "children.json").write_text(json.dumps({
+        "service": os.getpid(), "box": box.pid, "inside": inside, "git": git.pid,
+        "box_ns": os.readlink(f"/proc/{inside}/ns/pid") if inside else None,
+    }))  # fmt: skip
+    await asyncio.sleep(3600)
+
+
 async def runner(
     home, pass_id, handed, *, resume, folder, journal_start, effort, settings, stop=None
 ):
@@ -32,6 +60,8 @@ async def runner(
 
     out = Path(os.environ["DRIVER_OUT"])
     out.mkdir(parents=True, exist_ok=True)
+    if os.environ.get("DRIVER_CHILDREN"):
+        await _children_in_flight(out)
     block_at = int(os.environ.get("DRIVER_BLOCK_AT", "-1"))
     turn_sleep = float(os.environ.get("DRIVER_TURN_SLEEP", "0"))
 

@@ -60,6 +60,12 @@ def svc(tmp_path, monkeypatch):
     for k, v in SWITCHES.items():
         monkeypatch.setenv(k, v)
     monkeypatch.setenv("DRIVER_OUT", str(out))
+    # the home's stores made here, as a request makes them before any service runs: the service's first look at the
+    # home then writes nothing (no git process of its own to find in its group)
+    from unify.memory.integration.consolidate import open_stores
+    from unify.memory.integration.paths import Paths
+
+    open_stores(Paths.under(home))
     started: list[Path] = [home]
     yield SimpleNamespace(home=home, out=out, homes=started)
     for h in started:
@@ -129,9 +135,8 @@ def test_two_ensure_service_calls_at_once_leave_exactly_one_service(svc):
     )
     holders = ws.lock_holders(ws.service_dir(svc.home) / ws.LOCK_FILE)
     assert holders == [doc["pid"]]
-    # the service's group holds the service alone once the short-lived children of its idle loop (a ledger read's
-    # subprocess, say) have ended; a second service would never leave it
-    _until(lambda: ws.group_pids(doc["pgid"], since=doc["proc_start"]) == [doc["pid"]], timeout=30)
+    # the stores exist (the fixture made them), so the service's first look at the home starts no git process
+    assert ws.group_pids(doc["pgid"], since=doc["proc_start"]) == [doc["pid"]]
     # a third call finds it running
     assert _ensure(svc.home).status == "running"
     assert len(_events(svc.home, "start")) == 1
@@ -169,7 +174,7 @@ def test_a_stale_holder_whose_service_died_is_taken_over_and_a_new_service_start
     """
     monkeypatch.setattr(ws, "STALE_S", 1.0)
     folder = ws.service_dir(svc.home)
-    folder.mkdir(parents=True)
+    folder.mkdir(parents=True, exist_ok=True)
     beat = ws.stamp(datetime.now(timezone.utc))
     holder = subprocess.Popen([sys.executable, "-c", HOLDER, str(svc.home), str(folder / ws.LOCK_FILE), beat],
                               stdout=subprocess.PIPE, text=True)  # fmt: skip
@@ -190,7 +195,7 @@ def test_a_stale_holder_whose_service_died_is_taken_over_and_a_new_service_start
 def test_a_fresh_heartbeat_is_left_alone_even_if_the_owner_check_fails(svc):
     """Under 90 s the holder is not stale: nothing is killed and no second service starts."""
     folder = ws.service_dir(svc.home)
-    folder.mkdir(parents=True)
+    folder.mkdir(parents=True, exist_ok=True)
     now = ws.stamp(datetime.now(timezone.utc))
     holder = subprocess.Popen([sys.executable, "-c", HOLDER, str(svc.home), str(folder / ws.LOCK_FILE), now],
                               stdout=subprocess.PIPE, text=True)  # fmt: skip
@@ -222,7 +227,7 @@ def test_a_reused_pid_is_never_taken_for_the_service(svc, tmp_path):
     """A2 test 3: service.json names a live process of someone else (this test's own pid) with another start time:
     it is not the service, so nothing is signalled and the stop is verified at once."""
     folder = ws.service_dir(svc.home)
-    folder.mkdir(parents=True)
+    folder.mkdir(parents=True, exist_ok=True)
     doc = {"v": 1, "pid": os.getpid(), "pgid": os.getpgid(0), "proc_start": "1", "state": "running",
            "heartbeat_at": ws.stamp(datetime.now(timezone.utc)), "started_at": ws.stamp(datetime.now(timezone.utc))}  # fmt: skip
     (folder / ws.STATE_FILE).write_text(json.dumps(doc))
@@ -264,7 +269,7 @@ def test_a_group_number_given_to_someone_elses_group_is_never_signalled(svc):
                "heartbeat_at": ws.stamp(datetime.now(timezone.utc) - timedelta(seconds=ws.STALE_S + 5)),
                "started_at": ws.stamp(datetime.now(timezone.utc)), "members": [[stranger.pid, "1"]]}  # fmt: skip
         folder = ws.service_dir(svc.home)
-        folder.mkdir(parents=True)
+        folder.mkdir(parents=True, exist_ok=True)
         (folder / ws.STATE_FILE).write_text(json.dumps(doc))
         assert ws.group_pids(stranger.pid, since="1") == sorted([stranger.pid, child])
         assert ws.service_group(doc) == []
@@ -308,7 +313,7 @@ def test_a_reused_group_whose_new_leader_exited_leaving_members_is_never_signall
                # even a member row naming the stranger's pid and true start time: it started after the last heartbeat
                "members": [[n, "1"], [child, child_start]]}  # fmt: skip
         folder = ws.service_dir(svc.home)
-        folder.mkdir(parents=True)
+        folder.mkdir(parents=True, exist_ok=True)
         (folder / ws.STATE_FILE).write_text(json.dumps(doc))
         assert ws.service_group(doc) == [] and ws.recorded_members(doc) == []
         assert ws._take_over(svc.home, doc) is False
@@ -325,7 +330,7 @@ def test_a_dead_services_recorded_leftover_is_signalled_by_pid_and_verified(svc)
     """H2: once the service is not alive, its recorded processes (started before its last heartbeat) are signalled
     one by one and checked gone; its group is never signalled."""
     folder = ws.service_dir(svc.home)
-    folder.mkdir(parents=True)
+    folder.mkdir(parents=True, exist_ok=True)
     beat = ws.stamp(datetime.now(timezone.utc))
     holder = subprocess.Popen([sys.executable, "-c", HOLDER, str(svc.home), str(folder / ws.LOCK_FILE), beat],
                               stdout=subprocess.PIPE, text=True)  # fmt: skip
@@ -350,7 +355,7 @@ def test_a_stopped_service_doc_naming_a_live_caller_is_never_signalled(svc):
     """A step (or a test) ran the loop in its own process and left service.json ``stopped`` naming it: a later stop
     has nothing to stop and signals nothing."""
     folder = ws.service_dir(svc.home)
-    folder.mkdir(parents=True)
+    folder.mkdir(parents=True, exist_ok=True)
     me = {"v": 1, "pid": os.getpid(), "pgid": os.getpgid(0), "proc_start": ws.proc_start(os.getpid()),
           "pgid_start": ws.proc_start(os.getpgid(0)) or "", "state": "stopped"}  # fmt: skip
     (folder / ws.STATE_FILE).write_text(json.dumps(me))
@@ -516,7 +521,7 @@ def test_a_cap_below_one_pass_starts_no_pass_and_reports_the_entries_not_reached
 
 def test_the_cap_counts_every_pass_reserved_and_settled(svc):
     folder = ws.service_dir(svc.home)
-    folder.mkdir(parents=True)
+    folder.mkdir(parents=True, exist_ok=True)
     rows = [
         {"op": "reserve", "pass_id": "a", "usd": "1.5"},
         {"op": "settle", "pass_id": "a", "usd": "0.25"},
@@ -1037,3 +1042,41 @@ def test_no_process_of_the_service_holds_a_route_token_pipe(svc, monkeypatch):
     assert _pipe_holders(inodes) == [] and ws.owns(doc)
     (routes,) = [json.loads(p.read_text()) for p in svc.out.glob("routes-*.json")]
     assert routes == {"writer": True, "helper": True}
+
+
+
+def _in_ns(ns: str) -> list[int]:
+    out = []
+    for name in os.listdir("/proc"):
+        if name.isdigit():
+            try:
+                if os.readlink(f"/proc/{name}/ns/pid") == ns:
+                    out.append(int(name))
+            except OSError:
+                pass
+    return out
+
+
+@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap required")
+def test_a_service_killed_mid_pass_leaves_nothing_once_stopped(svc, monkeypatch):
+    """Review: a pass with a confined box and a git call in flight; the service is killed with SIGKILL (its own pid
+    only). The box dies with it (its bubblewrap dies with its parent); the git call is left an orphan in the
+    service's group, and the stop kills it by pid (the service recorded it). Then nothing is left in the box's pid
+    namespace or the service's group, and the stop is verified."""
+    monkeypatch.setenv("DRIVER_CHILDREN", "1")
+    _open_entry(svc.home)
+    assert _ensure(svc.home).status == "started"
+    kids = _until(lambda: json.loads((svc.out / "children.json").read_text()) if (svc.out / "children.json").exists() else None)
+    doc = ws.read_state(svc.home)
+    assert kids["service"] == doc["pid"] == doc["pgid"] and kids["box_ns"]
+    group = ws.group_pids(doc["pgid"], since=doc["proc_start"])
+    assert {kids["service"], kids["box"], kids["git"]} <= set(group), group
+    os.kill(doc["pid"], signal.SIGKILL)
+    _until(lambda: not ws.owns(doc))
+    # the stop signals only what the service recorded or what joined its group while it lived, never the group
+    groups = []
+    done = ws.stop_service(svc.home, "operator", "test", kill=lambda *a: groups.append(a), grace_s=0.1, term_s=5)
+    assert groups == [] and done.verified, done
+    _until(lambda: not _in_ns(kids["box_ns"]), timeout=15)
+    assert ws.group_pids(doc["pgid"]) == [] and ws.proc_start(kids["git"]) is None
+    assert ws.proc_start(kids["box"]) is None and ws.proc_start(kids["inside"]) is None

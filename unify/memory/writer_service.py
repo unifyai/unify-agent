@@ -79,6 +79,10 @@ PASS_FILE = "pass.json"
 
 #: The heartbeat interval, and the age after which a holder that is not the recorded service is taken over.
 HEARTBEAT_S = 30.0
+#: How often the service records its processes (``service-members.json``): a stop or takeover after a kill finds
+#: every process it started up to this long before it died.
+MEMBERS_S = 1.0
+MEMBERS_FILE = "service-members.json"
 STALE_S = 90.0
 #: The service exits after this long idle with nothing open.
 IDLE_EXIT_S = 1800.0
@@ -375,19 +379,49 @@ def started_at(ticks: Any) -> Optional[datetime]:
         return None
 
 
-def recorded_members(doc: Optional[dict]) -> list[int]:
-    """The processes *doc* (``service.json``) records as the service's (``members``: pid and ``/proc`` start time, as
-    of its last heartbeat) that are still those processes, and that started no later than its last heartbeat plus
-    :data:`HEARTBEAT_S` (a process that started after the service could last have recorded it is never the service's).
-    """
+def read_members(home: Path | str) -> Optional[dict]:
+    """``service-members.json``: the service's processes as it last recorded them (every :data:`MEMBERS_S`)."""
+    try:
+        doc = json.loads((service_dir(home) / MEMBERS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _same_service(doc: dict, members: Optional[dict]) -> bool:
+    return (
+        isinstance(members, dict)
+        and members.get("pid") == doc.get("pid")
+        and members.get("proc_start") == doc.get("proc_start")
+    )
+
+
+def last_alive(doc: Optional[dict], members: Optional[dict] = None) -> Optional[datetime]:
+    """The last time the service *doc* records was known alive: its heartbeat, or its last member record."""
+    if not isinstance(doc, dict):
+        return None
+    times = [parse_stamp(doc.get("heartbeat_at"))]
+    if _same_service(doc, members):
+        times.append(parse_stamp(members.get("at")))
+    times = [t for t in times if t is not None]
+    return max(times) if times else None
+
+
+def recorded_members(doc: Optional[dict], members: Optional[dict] = None) -> list[int]:
+    """The processes the service recorded as its own (``members``, pid and ``/proc`` start time: in ``service.json``
+    at each heartbeat and in ``service-members.json`` every :data:`MEMBERS_S`) that are still those processes, and
+    that started no later than it was last known alive plus :data:`HEARTBEAT_S`."""
     if not isinstance(doc, dict):
         return []
-    beat = parse_stamp(doc.get("heartbeat_at"))
-    if beat is None:
+    alive = last_alive(doc, members)
+    if alive is None:
         return []
-    limit = beat + timedelta(seconds=HEARTBEAT_S)
+    limit = alive + timedelta(seconds=HEARTBEAT_S)
+    rows = list(doc.get("members") or ())
+    if _same_service(doc, members):
+        rows += list(members.get("members") or ())
     out = []
-    for row in doc.get("members") or ():
+    for row in rows:
         if not (isinstance(row, (list, tuple)) and len(row) == 2):
             continue
         pid, start = row
@@ -402,16 +436,43 @@ def recorded_members(doc: Optional[dict]) -> list[int]:
     return sorted(set(out))
 
 
-def service_group(doc: Optional[dict]) -> list[int]:
+def orphaned_members(doc: Optional[dict], members: Optional[dict] = None) -> list[int]:
+    """Processes of the dead service's group that it had no time to record: the members of its process group that
+    started at or after the service and no later than it was last known alive. While the service was alive its group
+    was its own, so a process that joined it then is the service's; a group the number names later (once every
+    process of the service's has gone) starts after that. Only for a service that led its group (as every service
+    does: ``setsid``), and only while that leader is gone or is still the recorded process (a leader with another
+    start time means the number is someone else's)."""
+    if not isinstance(doc, dict):
+        return []
+    pid, pgid, since = doc.get("pid"), doc.get("pgid"), doc.get("proc_start")
+    if not isinstance(pgid, int) or isinstance(pgid, bool) or pgid <= 0 or not since or pid != pgid:
+        return []
+    now = proc_start(pgid)
+    if now is not None and now != str(since):
+        return []
+    alive = last_alive(doc, members)
+    if alive is None:
+        return []
+    out = []
+    for p in group_pids(pgid, since=str(since)):
+        at = started_at(proc_start(p) or "")
+        if at is not None and at <= alive:
+            out.append(p)
+    return out
+
+
+def service_group(doc: Optional[dict], members: Optional[dict] = None) -> list[int]:
     """The live processes left of the service *doc* (``service.json``) records. While the service itself is alive
     (:func:`owns`: its pid, start time and group), the members of its process group started at or after it. Once it is
-    not, only the processes it recorded (:func:`recorded_members`), each checked by its start time: a group number is
-    never trusted on its own, since another group may hold it now."""
+    not, the processes it recorded (:func:`recorded_members`, each checked by its start time) and the members of its
+    group it had no time to record (:func:`orphaned_members`): a group number is never trusted on its own, since
+    another group may hold it now."""
     if not isinstance(doc, dict):
         return []
     if owns(doc):
         return group_pids(int(doc["pgid"]), since=str(doc["proc_start"]))
-    return recorded_members(doc)
+    return sorted(set(recorded_members(doc, members)) | set(orphaned_members(doc, members)))
 
 
 def try_lock(path: Path) -> Optional[int]:
@@ -752,7 +813,7 @@ def _take_over(home: Path, doc: Optional[dict]) -> bool:
     if not isinstance(doc, dict):
         return False
     holders = lock_holders(lock)
-    ours = set(service_group(doc))
+    ours = set(service_group(doc, read_members(home)))
     if not holders or not set(holders) <= ours:
         return (
             False  # held by someone that is not the old service's group: never touched
@@ -764,11 +825,11 @@ def _take_over(home: Path, doc: Optional[dict]) -> bool:
             except ProcessLookupError:
                 pass
         end = time.monotonic() + (TERM_S if sig == signal.SIGTERM else SETTLE_S)
-        while time.monotonic() < end and service_group(doc):
+        while time.monotonic() < end and service_group(doc, read_members(home)):
             time.sleep(0.05)
-        if not service_group(doc):
+        if not service_group(doc, read_members(home)):
             break
-    return not service_group(doc)
+    return not service_group(doc, read_members(home))
 
 
 def ensure_service(
@@ -950,7 +1011,7 @@ def stop_service(
     pgid = doc.get("pgid")
 
     def left() -> list[int]:
-        return service_group(doc)
+        return service_group(doc, read_members(home))
 
     def alive() -> bool:
         return owns(doc) or bool(left())
@@ -982,7 +1043,7 @@ def stop_service(
             except (ProcessLookupError, PermissionError):
                 pass
             return
-        for pid in recorded_members(doc):
+        for pid in left():
             try:
                 kill_pid(pid, sig)
             except (ProcessLookupError, PermissionError):
@@ -1598,6 +1659,7 @@ async def service_main(
     heartbeat_s: float = HEARTBEAT_S,
     clock: Callable[[], datetime] = _now,
     monotonic: Callable[[], float] = time.monotonic,
+    members_s: float = MEMBERS_S,
 ) -> str:
     """The service's life (module docstring); returns why it stopped. It takes the home's lock itself (*lock_fd*: one
     already taken, for tests), and returns ``busy`` at once, leaving no trace, when another service holds it. *clock*
@@ -1611,7 +1673,7 @@ async def service_main(
     os.set_inheritable(lock_fd, False)
     try:
         return await _serve(home, lock_fd, runner=runner, settings=settings, poll_s=poll_s, idle_exit_s=idle_exit_s,
-                            heartbeat_s=heartbeat_s, clock=clock, monotonic=monotonic)  # fmt: skip
+                            heartbeat_s=heartbeat_s, clock=clock, monotonic=monotonic, members_s=members_s)  # fmt: skip
     finally:
         if own_lock:
             os.close(lock_fd)
@@ -1628,6 +1690,7 @@ async def _serve(
     heartbeat_s: float,
     clock: Callable[[], datetime],
     monotonic: Callable[[], float],
+    members_s: float = MEMBERS_S,
 ) -> str:
     from .attention import Ledger
     from .integration.switch import profile_refusal, writer_service_cap_usd
@@ -1673,6 +1736,21 @@ async def _serve(
         target=heart, name="writer-service-heartbeat", daemon=True
     )
     beat_thread.start()
+
+    def record() -> None:
+        # the service's processes, often (a stop or takeover after a kill finds what it started up to MEMBERS_S before)
+        while not beating.wait(members_s):
+            try:
+                _atomic_json(
+                    service_dir(home) / MEMBERS_FILE,
+                    {"pid": os.getpid(), "proc_start": proc_start(os.getpid()) or "", "at": stamp(_now()),
+                     "members": _members()},
+                )  # fmt: skip
+            except OSError:
+                pass
+
+    if service.record_members:
+        threading.Thread(target=record, name="writer-service-members", daemon=True).start()
     event(
         home, "start", cap_usd=_format(service.cap) if service.cap is not None else None
     )
