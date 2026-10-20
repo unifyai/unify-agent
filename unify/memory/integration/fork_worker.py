@@ -40,19 +40,19 @@ from pathlib import Path
 
 TOOL_REPLY = "Tools are not available in this review; write your findings as fenced blocks in the format above."
 #: The reply a tool call gets on the run record (``--comms``): the comms calls run, nothing else does.
-TOOL_REPLY_COMMS = (
+TOOL_REPLY_RECORD = (
     "Only the comms calls run in this review: tools.send(text), tools.messages(), tools.messages(all=True), "
     "tools.wait() and tools.who(), each a statement of its own with literal arguments; nothing else ran. Write your "
     "findings as fenced blocks in the format above."
 )
 #: The comms calls a fork may make (``--comms``), relayed to the run record by the host side (``fork_relay``).
-COMMS = ("send", "messages", "wait", "who")
+RECORD_CALLS = ("send", "messages", "wait", "who")
 #: The longest a relayed call waits for its answer: a ``wait`` (at most 600 s) and a margin, any other call less.
-COMMS_WAIT_S = 660.0
-COMMS_CALL_S = 60.0
+RECORD_WAIT_S = 660.0
+RECORD_CALL_S = 60.0
 #: The longest line a relay answer may be.
-COMMS_LINE_BYTES = 1 << 20
-COMMS_DOWN = "the record is not reachable from this review now; nothing was sent or read"
+RECORD_LINE_BYTES = 1 << 20
+RECORD_DOWN = "the record is not reachable from this review now; nothing was sent or read"
 QUOTA_BYTES = 4 * 1024 * 1024
 QUOTA_FILES = 200
 TURN_GUARD = 16
@@ -787,7 +787,7 @@ def comms_calls(code) -> list | None:
             and isinstance(node.func, ast.Attribute)
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id == "tools"
-            and node.func.attr in COMMS
+            and node.func.attr in RECORD_CALLS
         ):
             return None
         op = node.func.attr
@@ -813,7 +813,7 @@ def comms_calls(code) -> list | None:
 class Relay:
     """The worker's side of the comms channel: one JSON line out on stdout per call, the answer one JSON line in on
     stdin (the relay process answers from the run record). A silent or closed relay makes every later call answer
-    :data:`COMMS_DOWN`; nothing waits past the call's bound."""
+    :data:`RECORD_DOWN`; nothing waits past the call's bound."""
 
     def __init__(self, rfile, wfile, clock=time.monotonic) -> None:
         self.rfile, self.wfile, self.clock = rfile, wfile, clock
@@ -823,7 +823,7 @@ class Relay:
 
     def call(self, op: str, args: dict) -> str:
         if self.down:
-            return COMMS_DOWN
+            return RECORD_DOWN
         self.n += 1
         ident = self.n
         try:
@@ -831,21 +831,21 @@ class Relay:
             self.wfile.flush()
         except (OSError, ValueError):
             self.down = True
-            return COMMS_DOWN
-        bound = COMMS_WAIT_S if op == "wait" else COMMS_CALL_S
+            return RECORD_DOWN
+        bound = RECORD_WAIT_S if op == "wait" else RECORD_CALL_S
         end = self.clock() + bound
         while True:
             line = self._line(end)
             if line is None:
                 self.down = True
-                return COMMS_DOWN
+                return RECORD_DOWN
             try:
                 doc = json.loads(line)
             except ValueError:
                 continue
             if isinstance(doc, dict) and doc.get("id") == ident:
                 text = doc.get("text")
-                return text if isinstance(text, str) else COMMS_DOWN
+                return text if isinstance(text, str) else RECORD_DOWN
 
     def _line(self, end: float):
         import select
@@ -862,7 +862,7 @@ class Relay:
             if not chunk:
                 return None
             self._buf += chunk
-            if len(self._buf) > COMMS_LINE_BYTES and b"\n" not in self._buf:
+            if len(self._buf) > RECORD_LINE_BYTES and b"\n" not in self._buf:
                 return None
         line, _, self._buf = self._buf.partition(b"\n")
         return line.decode("utf-8", "replace")
@@ -870,17 +870,17 @@ class Relay:
 
 def comms_reply(call: dict, relay) -> str:
     """The tool reply to one tool call of the fork on the run record: its comms calls relayed, one answer per call
-    in order; anything else is answered :data:`TOOL_REPLY_COMMS`, and nothing of it runs."""
+    in order; anything else is answered :data:`TOOL_REPLY_RECORD`, and nothing of it runs."""
     fn = (call or {}).get("function") or {}
     if fn.get("name") != "execute_code":
-        return TOOL_REPLY_COMMS
+        return TOOL_REPLY_RECORD
     try:
         args = json.loads(fn.get("arguments") or "{}")
     except (TypeError, ValueError):
-        return TOOL_REPLY_COMMS
+        return TOOL_REPLY_RECORD
     calls = comms_calls(args.get("code")) if isinstance(args, dict) else None
     if not calls:
-        return TOOL_REPLY_COMMS
+        return TOOL_REPLY_RECORD
     return "\n".join(relay.call(op, a) for op, a in calls)
 
 
@@ -926,7 +926,7 @@ def run(
             if relay is not None and doc["turns"]:
                 # the run record's turn boundary: what is new for this fork, after its turn's tool results
                 block = relay.call("block", {})
-                if block and block != COMMS_DOWN:
+                if block and block != RECORD_DOWN:
                     messages.append({"role": "user", "content": block})
             headers = dict(req["headers"])
             headers["x-unify-request"] = str(doc["turns"])

@@ -282,7 +282,7 @@ SEGMENT_INSTRUCTION = (
 )
 #: The sentence of :data:`INSTRUCTION_IN_CODE` that forbids tool calls, and what replaces it on the run record.
 NO_TOOLS = "Do not call tools."
-COMMS_ONLY = (
+RECORD_CALLS_ONLY = (
     "Call no tool except the record's: tools.send, tools.messages, tools.wait and tools.who, each a statement of its "
     "own in a cell (the record's section below says how they work); nothing else runs here."
 )
@@ -321,7 +321,7 @@ def fork_instruction() -> str:
         # the run record: the comms calls run (through the fork's relay); nothing else does
         if text.count(NO_TOOLS) != 1:
             raise ValueError("the fork's instruction no longer says once that it calls no tools")
-        return text.replace(NO_TOOLS, COMMS_ONLY)
+        return text.replace(NO_TOOLS, RECORD_CALLS_ONLY)
     return text
 
 
@@ -341,7 +341,7 @@ def segment_instruction(first_cell: int | None, last_cell: int | None) -> str:
     if in_code_switch.tools_in_code() and run_record_on():
         if text.count(NO_TOOLS) != 1:
             raise ValueError("the segment fork's instruction no longer says once that it calls no tools")
-        return text.replace(NO_TOOLS, COMMS_ONLY)
+        return text.replace(NO_TOOLS, RECORD_CALLS_ONLY)
     return text
 
 

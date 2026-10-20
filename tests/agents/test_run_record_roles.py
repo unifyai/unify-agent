@@ -20,7 +20,7 @@ from unify.common import tool_registry as R
 from unify.settings import SETTINGS
 from tests.memory.test_helpers import fake_box  # noqa: F401,F811 (fixture)
 
-COMMS = {"send", "messages", "wait", "who"}
+RECORD_TOOLS = {"send", "messages", "wait", "who"}
 FAST = Options(
     max_live=16,
     max_total=64,
@@ -54,12 +54,12 @@ def test_every_role_has_the_four_comms_tools_on_the_run_record(run_record_on):
     }
     for agent, f in flags.items():
         allowed = set(R.allow_list(agent, f))
-        assert COMMS <= allowed, (agent, sorted(allowed))
+        assert RECORD_TOOLS <= allowed, (agent, sorted(allowed))
         stub = R.render_stub(R.allow_list(agent, f), agent)
-        for name in COMMS:
+        for name in RECORD_TOOLS:
             assert f"def {name}(" in stub, (agent, name)
         # one definition for every agent: the same spec and the same handler
-        for name in COMMS:
+        for name in RECORD_TOOLS:
             assert R.registry()[name] is R._RUN_SPECS[name]
             assert R.handler_for(agent, name) == (
                 f"unify.agents.run_record_tools:{name}",
@@ -81,7 +81,7 @@ def test_every_role_has_the_four_comms_tools_on_the_run_record(run_record_on):
     assert fork_worker.comms_calls("import os\ntools.send('x')") is None
     assert fork_worker.comms_calls("tools.read('/memory')") is None
     assert (
-        fork.COMMS_ONLY in fork.fork_instruction()
+        fork.RECORD_CALLS_ONLY in fork.fork_instruction()
         and fork.NO_TOOLS not in fork.fork_instruction()
     )
 
@@ -89,7 +89,7 @@ def test_every_role_has_the_four_comms_tools_on_the_run_record(run_record_on):
 def test_with_the_switch_off_no_role_gains_or_loses_a_tool(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS_RUN_RECORD", "")
     assert R.registry()["send"] is R.SEND and "librarian" not in R.SEND.roles
-    assert not COMMS & set(R.allow_list("librarian", frozenset()))
+    assert not RECORD_TOOLS & set(R.allow_list("librarian", frozenset()))
     from unify.memory.integration import fork
 
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")

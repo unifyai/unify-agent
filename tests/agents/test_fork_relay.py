@@ -310,13 +310,13 @@ def test_a_call_that_is_not_only_comms_runs_nothing_and_says_so(tmp_path):
 
     assert (
         fork_worker.comms_reply(_call("import os\nos.listdir('/')", "x"), Dead())
-        == fork_worker.TOOL_REPLY_COMMS
+        == fork_worker.TOOL_REPLY_RECORD
     )
     assert (
         fork_worker.comms_reply(
             {"function": {"name": "read", "arguments": "{}"}}, Dead()
         )
-        == fork_worker.TOOL_REPLY_COMMS
+        == fork_worker.TOOL_REPLY_RECORD
     )
 
 
@@ -328,10 +328,10 @@ def test_a_silent_relay_makes_comms_calls_say_the_record_is_not_reachable(
     relay = fork_worker.Relay(
         os.fdopen(r, "rb", buffering=0), os.fdopen(out_w, "wb", buffering=0)
     )
-    monkeypatch.setattr(fork_worker, "COMMS_CALL_S", 0.5)
+    monkeypatch.setattr(fork_worker, "RECORD_CALL_S", 0.5)
     try:
-        assert relay.call("send", {"text": "@writer x"}) == fork_worker.COMMS_DOWN
-        assert relay.down and relay.call("who", {}) == fork_worker.COMMS_DOWN
+        assert relay.call("send", {"text": "@writer x"}) == fork_worker.RECORD_DOWN
+        assert relay.down and relay.call("who", {}) == fork_worker.RECORD_DOWN
     finally:
         os.close(w)
         os.close(out_r)
@@ -420,7 +420,7 @@ def test_with_the_run_record_on_the_fork_starts_through_its_relay_with_the_commo
     assert spec["name"] == "fork-3f9a" and spec["lock_fd"] in kw["pass_fds"]
     last = spec["doc"]["body"]["messages"][-1]["content"]
     assert last.count(R.COMMON_SECTION) == 1 and "you are `fork-3f9a` (fork)" in last
-    assert fork.COMMS_ONLY in last
+    assert fork.RECORD_CALLS_ONLY in last
     # the cached prefix (the actor's messages and tools) is unchanged
     assert (
         spec["doc"]["body"]["messages"][:2] == source["sent_messages"]
