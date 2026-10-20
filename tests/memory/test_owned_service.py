@@ -345,3 +345,29 @@ def test_a_crashed_runner_service_is_taken_over_once_by_a_request_and_counted(ow
     assert take["fallback"] is True and take["previous_pid"] == proc.pid and take["by"] == "ensure_service"
     T._until(lambda: ws.owns(ws.read_state(owned.home)))
     assert ws.stop_service(owned.home, "operator", "test", grace_s=0.5, term_s=2).verified
+
+
+
+def test_the_runners_service_keeps_its_own_temporary_folder_across_sessions(owned):
+    """The runner's environment names a session's temporary folder, gone at that session's end: the service makes its
+    temporary files in a folder of its own, so a pass after the session ended works as the first did (C's w289
+    qualification: every pass after the first ended in FileNotFoundError)."""
+    session_tmp = owned.tmp / "session-tmp"
+    session_tmp.mkdir()
+    env = so.owned_env(owned.home)
+    env.update({"DRIVER_OUT": str(owned.out), "DRIVER_TEMP": "1", "DRIVER_TURNS": "0", "TMPDIR": str(session_tmp)})
+    proc = subprocess.Popen(
+        [sys.executable, T.DRIVER, "--home", str(owned.home), "--foreground", "--owner", "runner"],
+        env=env, cwd=str(owned.tmp), start_new_session=True, stdout=subprocess.DEVNULL,
+        stderr=open(owned.tmp / "service.log", "ab"),
+    )  # fmt: skip
+    owned.procs.append(proc)
+    T._until(lambda: (ws.read_state(owned.home) or {}).get("pid") == proc.pid and ws.owns(ws.read_state(owned.home)))
+    T._open_entry(owned.home, first_seq=1000)
+    first = T._until(lambda: [p.read_text() for p in owned.out.glob("temp-*.txt")] or None)
+    shutil.rmtree(session_tmp)  # the session ended
+    T._open_entry(owned.home, first_seq=2000)
+    both = T._until(lambda: (lambda got: got if len(got) == 2 else None)([p.read_text() for p in owned.out.glob("temp-*.txt")]))
+    own = so.owned_cwd(owned.home) / "tmp"
+    assert all(Path(t).parent == own for t in both), (first, both)
+    assert not [e for e in ws.events(owned.home) if e.get("event") == "error"]

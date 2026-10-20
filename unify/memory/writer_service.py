@@ -1405,7 +1405,7 @@ async def _run_pass(
     except (
         Exception
     ) as exc:  # noqa: BLE001 - a pass that broke: its entries go back, the service goes on
-        event(home, "error", pass_id=pass_id, error=type(exc).__name__)
+        event(home, "error", pass_id=pass_id, error=type(exc).__name__, where=_where(exc))
         ledger.return_unread(pass_id)
         # no report: the pass's own turn files say what it spent (lost and unpriced calls at the worst case)
         _append(
@@ -1526,6 +1526,17 @@ IDLE_WHY = (
     "nothing_handed",
     "busy",
 )
+
+
+def _where(exc: BaseException, frames: int = 8) -> list[str]:
+    """Where *exc* was raised, as ``file:line:function`` for its innermost frames (file names only: no message, no
+    value, so a recorded text never reaches the events)."""
+    import traceback
+
+    out = []
+    for fs in traceback.extract_tb(exc.__traceback__)[-frames:]:
+        out.append(f"{Path(fs.filename).name}:{fs.lineno}:{fs.name}")
+    return out
 
 
 def _turn_result() -> dict:
@@ -1977,7 +1988,12 @@ def _owner_start(home: str) -> Optional[str]:
         return f"the environment holds credential names: {', '.join(bad)}"
     folder = owned_cwd(home)
     (folder / "home").mkdir(parents=True, exist_ok=True)
+    (folder / "tmp").mkdir(parents=True, exist_ok=True)
     os.environ["HOME"] = str(folder / "home")
+    # its own temporary folder too: a temporary folder the runner's environment names may be a session's, gone at
+    # that session's end, and every pass after it would fail at its first temporary file
+    os.environ["TMPDIR"] = str(folder / "tmp")
+    tempfile.tempdir = None  # gettempdir() reads TMPDIR again
     os.chdir(folder)
     os.environ[OWNER_NAME] = "runner"
     try:

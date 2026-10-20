@@ -103,6 +103,12 @@ async def runner(
         await _http_call(out, pass_id, os.environ["DRIVER_HTTP"])
     if os.environ.get("DRIVER_BOX_READ"):
         _box_read(out, os.environ["DRIVER_BOX_READ"].split(":"))
+    if os.environ.get("DRIVER_TEMP"):
+        # a pass's temporary folder, as a writer pass makes one
+        import tempfile
+
+        made = tempfile.mkdtemp(prefix="pass-")
+        (out / f"temp-{pass_id}.txt").write_text(made)
     block_at = int(os.environ.get("DRIVER_BLOCK_AT", "-1"))
     turn_sleep = float(os.environ.get("DRIVER_TURN_SLEEP", "0"))
 
@@ -173,6 +179,12 @@ def main(argv=None) -> int:
     from unify.memory.integration import request
 
     args = ws._parse(argv)
+    if args.owner == "runner":  # as ws.main does
+        refused = ws._owner_start(args.home)
+        if refused is not None:
+            print(json.dumps({"refused": refused}))
+            return 3
+        args.foreground = True
     ws.release_route_fds()  # as ws.main does, before the fork
     out = os.environ.get("DRIVER_OUT")
     if out:

@@ -870,8 +870,9 @@ def _library_after(stores: Stores) -> tuple[int | None, int | None]:
     measured. In the library mode that is before the pass's commit lands, and the landed event counts the library at
     the landed commit; the earlier layout's gate has merged by then.
     """
-    tmp = Path(tempfile.mkdtemp(prefix="memory-after-"))
+    tmp: Path | None = None
     try:
+        tmp = Path(tempfile.mkdtemp(prefix="memory-after-"))
         files, _ = listing(stores.memory, stores.memory.head())
         tree = materialise(stores.memory, files, tmp / "main")
         listed = _count_items(tree)
@@ -885,7 +886,8 @@ def _library_after(stores: Stores) -> tuple[int | None, int | None]:
     except Exception:  # noqa: BLE001 - a measurement, never a failure of the pass
         return None, None
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        if tmp is not None:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 def reason_codes(outcome: PassOutcome | None, failure_code: str | None) -> list[str]:

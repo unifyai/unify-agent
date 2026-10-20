@@ -114,7 +114,8 @@ def owned_env(
     build declares (:func:`setting_names`) and *extra* names the runner adds, each not secret by name (descriptor
     numbers kept: the route tokens come on their pipes), with ``UNIFY_MEMORY_WRITER_SERVICE_OWNER=runner``. It holds
     no key, so the model client reads none, and its HOME holds no ``.env`` or cloud automation config to read one
-    from. Creates the folder; :func:`owned_cwd` is the folder to start it in."""
+    from; its ``TMPDIR`` is its own too (a session's temporary folder may go at that session's end). Creates the
+    folders; :func:`owned_cwd` is the folder to start it in."""
     base = os.environ if base is None else base
     home_dir = owned_cwd(home) / "home"
     home_dir.mkdir(parents=True, exist_ok=True)
@@ -123,7 +124,9 @@ def owned_env(
     for name in sorted(allowed):
         if name in base and _allowed(name):
             env[name] = base[name]
-    env.update({"PATH": "/usr/bin:/bin", "HOME": str(home_dir), OWNER_NAME: "runner"})
+    tmp_dir = owned_cwd(home) / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    env.update({"PATH": "/usr/bin:/bin", "HOME": str(home_dir), "TMPDIR": str(tmp_dir), OWNER_NAME: "runner"})
     return env
 
 
