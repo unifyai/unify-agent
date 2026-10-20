@@ -8,8 +8,8 @@ from decimal import Decimal
 
 import pytest
 
+from unify.memory.call_bounds import call_worst_case_usd
 from unify.memory.reconcile import (
-    WRITER_CALL_WORST_CASE_USD,
     UNKNOWN,
     estimate,
     journal_offset,
@@ -19,6 +19,8 @@ from unify.memory.reconcile import (
 )
 
 WRITER_MODEL, ACTOR_MODEL = "openai/gpt-6-sol", "openai/gpt-6-luna"
+#: one writer request's worst case: the pinned catalogue's bound for the writer's model (no default exists)
+WRITER_CALL_WORST_CASE_USD = call_worst_case_usd(WRITER_MODEL)
 
 
 def _write(path, rows):
@@ -79,7 +81,9 @@ async def test_a_cancelled_pass_prices_two_and_books_the_unpriced_one_at_the_wor
         ],
     )
     j.open("a").write('{"half a line')  # a line still being written is never read
-    out = await reconcile_window(str(j), start, end, models=[WRITER_MODEL], budget_s=0)
+    out = await reconcile_window(str(j), start, end, models=[WRITER_MODEL],
+        worst_case_usd=WRITER_CALL_WORST_CASE_USD, budget_s=0,
+    )
     assert out == {
         "journal": "read",
         "calls": 3,
@@ -125,6 +129,7 @@ async def test_reconcile_waits_for_a_late_terminal_row_within_its_budget(tmp_pat
         start,
         end,
         models=[WRITER_MODEL],
+        worst_case_usd=WRITER_CALL_WORST_CASE_USD,
         budget_s=30,
         clock=lambda: clock[0],
         sleep=sleep,
@@ -144,6 +149,7 @@ async def test_no_journal_prices_nothing_and_never_says_zero(tmp_path):
             start,
             end,
             models=[WRITER_MODEL],
+            worst_case_usd=WRITER_CALL_WORST_CASE_USD,
             budget_s=0,
         )
         assert (
@@ -201,6 +207,7 @@ async def test_a_call_with_tokens_but_no_charge_is_priced_from_the_pinned_prices
         start,
         end,
         models=[WRITER_MODEL],
+        worst_case_usd=WRITER_CALL_WORST_CASE_USD,
         budget_s=0,
         prices=PRICES,
     )
@@ -209,7 +216,9 @@ async def test_a_call_with_tokens_but_no_charge_is_priced_from_the_pinned_prices
     assert out["estimated_usd"] == "0.23" and out["usd"] == "0.33"
     assert out["booked_usd"] == money(Decimal("0.33") + WRITER_CALL_WORST_CASE_USD)
     # without pinned prices the same call stays unknown
-    bare = await reconcile_window(str(j), start, end, models=[WRITER_MODEL], budget_s=0)
+    bare = await reconcile_window(str(j), start, end, models=[WRITER_MODEL],
+        worst_case_usd=WRITER_CALL_WORST_CASE_USD, budget_s=0,
+    )
     assert bare["estimated"] == 0 and bare["unknown"] == 2
 
 
@@ -242,3 +251,16 @@ def test_the_prices_setting_is_parsed_strictly():
         with pytest.raises(ValueError):
             switch.parse_writer_prices(bad)
     assert switch.PARSERS[switch.WRITER_PRICES] is switch.parse_writer_prices
+
+
+@pytest.mark.asyncio
+async def test_there_is_no_default_worst_case(tmp_path):
+    """Review: an unpriced call is booked at the worst case the caller gives for the writer's model; there is no
+    module default to fall back to."""
+    import unify.memory.reconcile as R
+
+    assert not hasattr(R, "WRITER_CALL_WORST_CASE_USD")
+    with pytest.raises(TypeError):
+        await reconcile_window(str(tmp_path / "j.jsonl"), 0, 0, models=[WRITER_MODEL], budget_s=0)
+    with pytest.raises(TypeError):
+        R.unavailable()  # noqa: the worst case is required

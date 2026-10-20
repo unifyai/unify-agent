@@ -18,10 +18,11 @@ from tests.memory.test_helpers import fake_box  # noqa: F401 - the helpers' scri
 from tests.memory.test_writer_pass import Turns, _call, _run, _writer, needs_bwrap
 from unify.memory import attention, writer_pass
 from unify.memory import writer_service as ws
-from unify.memory.reconcile import WRITER_CALL_WORST_CASE_USD
+from unify.memory.call_bounds import call_worst_case_usd
 
 
-W = WRITER_CALL_WORST_CASE_USD
+#: Sol's bound (the default writer model's) in the pinned catalogue
+W = call_worst_case_usd("openai/gpt-6-sol")
 
 
 def _cfg(limit, worst=W):
@@ -174,12 +175,13 @@ def test_a_service_pass_is_bounded_by_the_room_and_settles_the_helpers_lane(tmp_
     )
     (cfg,) = seen
     assert Decimal(cfg.usd_limit) == Decimal(23) and not hasattr(cfg, "usd_call_reserve")
-    assert report.settle_usd == str(Decimal("0.02") + Decimal("0.35") + WRITER_CALL_WORST_CASE_USD)
+    assert Decimal(report.settle_usd) == Decimal("0.02") + Decimal("0.35") + W
     assert report.usd_known == "0.37" and report.unknown_calls == 1
     assert report.helper_usd_known == "0.35" and report.helper_unknown_calls == 1
 
 
-def _attention_pass(tmp_path, monkeypatch, *, recon, resume=False, pending=0, helpers=None, done=None, cap="30"):
+def _attention_pass(tmp_path, monkeypatch, *, recon, resume=False, pending=0, helpers=None, done=None, cap="30",
+                    model=None, journal_start=None):  # fmt: skip
     """One run_attention_pass with a fake writer that finishes at once (0.01 USD), the service's cap 30 with another
     pass's 7 committed; returns (the pass's config, its report)."""
     from tests.memory.integration import test_consolidate as tc
@@ -210,21 +212,25 @@ def _attention_pass(tmp_path, monkeypatch, *, recon, resume=False, pending=0, he
 
     monkeypatch.setattr(consolidate, "WriterPass", Spy)
 
+    asked = []
+
     async def fake_recon(self, **kw):
-        return recon
+        asked.append(kw)
+        return recon(kw) if callable(recon) else recon
 
     monkeypatch.setattr(Supervisor, "reconcile", fake_recon)
     if helpers is not None:
         monkeypatch.setattr(consolidate, "_helper_spend", lambda writer, turns: helpers)
-    settings = tc._settings_library()
+    settings = tc._settings_library(**({"model": model} if model else {}))
     settings.UNIFY_MEMORY_WRITER_SERVICE_CAP_USD = cap
     report = asyncio.run(
         consolidate.run_attention_pass(
-            home, "cd" * 8, handed, resume=resume, folder=folder, journal_start=None, effort="low",
+            home, "cd" * 8, handed, resume=resume, folder=folder, journal_start=journal_start, effort="low",
             settings=settings, turn_factory=lambda: tc.FakeWriter()("m", "low"),
         ),
     )  # fmt: skip
     (cfg,) = seen
+    report.asked = asked
     return cfg, report
 
 
@@ -242,7 +248,7 @@ def test_with_no_journal_a_pass_settles_its_own_figures_at_the_worst_case(tmp_pa
     worst case."""
     from unify.memory.reconcile import unavailable
 
-    _cfg_, report = _attention_pass(tmp_path, monkeypatch, recon=unavailable())
+    _cfg_, report = _attention_pass(tmp_path, monkeypatch, recon=unavailable(W))
     assert Decimal(report.settle_usd) == Decimal("0.01") and report.unknown_calls == 0
 
 
@@ -437,7 +443,7 @@ def test_a_resumed_pass_that_diverges_keeps_its_killed_runs_spend(tmp_path, monk
         "0.json": {"state": "done", "turn": 0, "digest": "not-this-conversation", "reply": reply, "usd": "2.50"},
         "h0/0.json": {"state": "done", "turn": 0, "digest": "x", "reply": reply, "usd": "0.25"},
     }
-    cfg, report = _attention_pass(tmp_path, monkeypatch, recon=unavailable(), resume=True, pending=1, done=done,
+    cfg, report = _attention_pass(tmp_path, monkeypatch, recon=unavailable(W), resume=True, pending=1, done=done,
                                   cap="60")  # fmt: skip
     prior = Decimal("2.50") + Decimal("0.25") + W
     assert Decimal(cfg.usd_limit) == Decimal(53) - prior
@@ -471,8 +477,73 @@ def test_a_resumed_pass_whose_killed_run_used_its_room_makes_no_call(tmp_path, m
     reply = {"role": "assistant", "content": "earlier"}
     done = {"0.json": {"state": "done", "turn": 0, "digest": "x", "reply": reply, "usd": "2.50"},
             "h0/0.json": {"state": "done", "turn": 0, "digest": "x", "reply": reply, "usd": "0.25"}}  # fmt: skip
-    cfg, report = _attention_pass(tmp_path, monkeypatch, recon=unavailable(), resume=True, pending=1, done=done)
+    cfg, report = _attention_pass(tmp_path, monkeypatch, recon=unavailable(W), resume=True, pending=1, done=done)
     prior = Decimal("2.50") + Decimal("0.25") + W
     assert Decimal(cfg.usd_limit) == Decimal(23) - prior < W
     assert Decimal(report.settle_usd) == prior
     assert any("room of" in n for n in report.notes), report.notes
+
+
+# --- the journal books at the writer's model's bound (review: no 13.125 default) ---------------------------------------
+
+
+def _read(kw):
+    """A journal window with one unpriced writer call, booked at the worst case the service passed."""
+    from unify.memory.reconcile import money
+
+    worst = kw["worst_case_usd"]
+    return {"journal": "read", "usd": "0", "unknown": 1, "worst_case_usd": money(worst), "booked_usd": money(worst)}
+
+
+def test_an_unpriced_writer_call_of_a_model_bounded_above_sol_settles_at_its_own_bound(tmp_path, monkeypatch):
+    pro = call_worst_case_usd("openai/gpt-5.5-pro")
+    assert pro == Decimal("220.5") > W
+    cfg, report = _attention_pass(tmp_path, monkeypatch, recon=_read, cap="1000", model="openai/gpt-5.5-pro")
+    assert [kw["worst_case_usd"] for kw in report.asked] == [pro]
+    assert Decimal(report.settle_usd) == pro and Decimal(cfg.usd_call_worst) == pro
+
+
+def test_the_request_scoped_pass_reconciles_at_the_writer_models_bound(tmp_path, monkeypatch):
+    """consolidate.run_due_passes (a pass worker's slot) passes the writer's model's bound to the reconciliation too."""
+    from tests.memory.integration import test_consolidate as tc
+    from unify.memory.integration import async_pass as ap
+    from unify.memory.integration import consolidate
+
+    for model, want in (("openai/gpt-5.5-pro", Decimal("220.5")), ("openai/gpt-6-luna", Decimal("0.65625"))):
+        asked = []
+
+        async def recon(self, **kw):
+            asked.append(kw["worst_case_usd"])
+            return _read(kw)
+
+        monkeypatch.setattr(ap.Supervisor, "reconcile", recon)
+        monkeypatch.setattr(consolidate, "unillm_turn", tc.FakeWriter())
+        tc._no_records(monkeypatch)
+        stores = tc._stores(tmp_path / model.replace("/", "-"))
+        sha, _ = tc._record(stores, "e1")
+        journal = tmp_path / f"{model.replace('/', '-')}.jsonl"
+        journal.write_text("")
+        sup = ap.Supervisor(60, asyncio.Event(), journal=str(journal), models=(model,))
+        asyncio.run(
+            consolidate.run_due_passes(
+                stores, "e1", sha, tc.State(stores.paths.state), effort="low",
+                settings=tc._settings_library(model=model), emit=None, supervise=sup,
+            ),
+        )  # fmt: skip
+        assert asked and set(asked) == {want}, (model, asked)
+
+
+def test_a_resumed_pass_whose_first_start_had_no_journal_counts_the_killed_runs_writer_calls(tmp_path, monkeypatch):
+    """Review: when the journal could not be read at the pass's first start (no window start), the killed run's writer
+    calls are not in the window read at the resume: they are counted from its turn files (priced 1.50, one lost at
+    the worst case), as the helpers' are."""
+    reply = {"role": "assistant", "content": "earlier"}
+    done = {"0.json": {"state": "done", "turn": 0, "digest": "x", "reply": reply, "usd": "1.50"}}
+    read = {"journal": "read", "usd": "0.01", "unknown": 0, "worst_case_usd": str(W), "booked_usd": "0.01"}
+    _cfg_, report = _attention_pass(tmp_path, monkeypatch, recon=read, resume=True, pending=1, done=done, cap="60")
+    assert Decimal(report.settle_usd) == Decimal("0.01") + Decimal("1.50") + W
+    assert Decimal(report.usd_known) == Decimal("1.51") and report.unknown_calls == 1
+    # with a window start from the first start, the journal already holds them: not counted again
+    _cfg2, again = _attention_pass(tmp_path / "b", monkeypatch, recon=read, resume=True, pending=1, done=done,
+                                   cap="60", journal_start=0)  # fmt: skip
+    assert Decimal(again.settle_usd) == Decimal("0.01")

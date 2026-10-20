@@ -84,7 +84,7 @@ async def test_the_window_is_the_journal_range_the_pass_ran_in(tmp_path):
     sup = ap.Supervisor(60, asyncio.Event(), journal=str(j), models=("m",))
     await sup(writes)
     assert sup.window == (before, j.stat().st_size)
-    assert (await sup.reconcile(budget_s=0))[
+    assert (await sup.reconcile(budget_s=0, worst_case_usd=Decimal("13.125")))[
         "calls"
     ] == 0  # no writer-lane request started
 

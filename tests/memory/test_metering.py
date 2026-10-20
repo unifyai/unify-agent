@@ -230,8 +230,10 @@ def test_the_headline_is_the_sum_over_the_lane_journals_with_post_stream_writer_
     fork_rows[0]["unify_meta"] = {"session": "fork.ep-1"}
     fork_rows[3]["unify_meta"] = {"session": "fork.ep-1.s2", "episode": "ep-1"}
     _journal(lanes["fork"], fork_rows)
+    # each lane's unpriced calls at its model's catalogue bound (none unpriced here)
+    worst = {lane: Decimal("0.65625") for lane in lanes}
     report = M.run_report(
-        home, lanes, 4, last_instance_ended_at="2026-10-20T22:00:00.000Z", paper=True
+        home, lanes, 4, worst_case_usd=worst, last_instance_ended_at="2026-10-20T22:00:00.000Z", paper=True
     )
     assert report["headline"]["fork_by_episode"] == {
         "ep-1": {"requests": 2, "known_usd": "0.02", "unknown": 0, "booked_usd": "0.02"},
@@ -253,7 +255,10 @@ def test_the_headline_is_the_sum_over_the_lane_journals_with_post_stream_writer_
         and M.PAPER_NOTE in text
     )
     with pytest.raises(ValueError):
-        M.run_report(home, {"librarian": lanes["actor"]}, 1)  # no lane of its own
+        M.run_report(home, {"librarian": lanes["actor"]}, 1, worst_case_usd={"librarian": Decimal(1)})  # no lane
+    # a lane with no worst case is refused: there is no default to book an unpriced call at
+    with pytest.raises(ValueError, match="no worst case per request for lane"):
+        M.run_report(home, lanes, 4, worst_case_usd={"writer": Decimal("13.125")})
 
 
 def test_calls_in_a_pass_carry_its_ids_only_and_calls_outside_it_carry_none(

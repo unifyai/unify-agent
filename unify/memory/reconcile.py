@@ -11,9 +11,9 @@ at the wall bound, whose terminal row the proxy writes late, is still found.
 A request is priced as the key proxy books a writer call: by its last ``account_charge``; else, when the run pins
 the writer's prices (``UNIFY_MEMORY_WRITER_PRICES_USD_PER_MILLION``) and the journal shows the request's tokens,
 ``input x p_input + output x p_output (+ cache_write x p_cache_write)`` per million (:func:`estimate`, counted as
-``estimated``); else it stays ``unknown``, never zero, and the run guard books it at
-:data:`WRITER_CALL_WORST_CASE_USD` (the guards' tier-1 catalogue maximum for one writer request, so a
-never-priceable request is booked at its worst case). No header is sent and no generation lookup is made: the proxy
+``estimated``); else it stays ``unknown``, never zero, and is booked at the worst case the caller gives for the
+writer's model (``worst_case_usd``, required: the pinned catalogue's tier-1 bound for one request of that model,
+:mod:`.call_bounds`; there is no default, so no model is ever booked at another's bound). No header is sent and no generation lookup is made: the proxy
 mints its own attempt id and the writer lane refuses ``GET /generation``. Money is a decimal string.
 """
 
@@ -31,9 +31,6 @@ UNKNOWN = "unknown"
 #: How long a reconciliation keeps re-reading the journal for terminal rows the proxy has not written yet.
 RECONCILE_S = 120.0
 RETRY_S = 5.0
-#: One writer request's worst case, as the programme guard bounds it (tier 1, catalogue cbb212a9: context x the
-#: highest input-side rate + context x the completion rate, for the writer's model). An unpriced call is booked at this.
-WRITER_CALL_WORST_CASE_USD = Decimal("13.125")
 _TERMINAL = frozenset({"completed", "failed", "cancelled", "error", "ok"})
 
 
@@ -161,8 +158,9 @@ def estimate(tokens: Any, prices: dict[str, Decimal] | None) -> Decimal | None:
     return usd / Decimal(1000000)
 
 
-def unavailable(worst_case_usd: Decimal = WRITER_CALL_WORST_CASE_USD) -> dict:
-    """The summary when the journal cannot be read: nothing priced, nothing known, the whole cap kept."""
+def unavailable(worst_case_usd: Decimal | None) -> dict:
+    """The summary when the journal cannot be read: nothing priced, nothing known, the whole cap kept (*worst_case_usd*
+    as the caller has it for the model, None when it has none)."""
     return {
         "journal": "unavailable",
         "calls": None,
@@ -180,7 +178,7 @@ async def reconcile_window(
     end: int | None,
     *,
     models: Iterable[str],
-    worst_case_usd: Decimal = WRITER_CALL_WORST_CASE_USD,
+    worst_case_usd: Decimal,
     budget_s: float = RECONCILE_S,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,

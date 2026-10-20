@@ -644,25 +644,28 @@ def run_report(
     journals: Mapping[str, Path | str],
     instances: int,
     *,
+    worst_case_usd: Mapping[str, Decimal],
     last_instance_ended_at: Optional[str] = None,
-    worst_case_usd: Optional[Mapping[str, Decimal]] = None,
     solves: Optional[Mapping[str, int]] = None,
     paper: bool = False,
 ) -> dict:
     """The three views of one run: the headline (whole-run all-lane USD from *journals*, lane -> path, over
     *instances*), the per-entry and the per-item views (:func:`rebuild_views`). Writer passes that started after
     *last_instance_ended_at* (UTC ISO-8601) are ``post_stream``: in the USD, never in stream-position curves.
+    *worst_case_usd* gives, for every lane in *journals*, one request's worst case for that lane's model (the pinned
+    catalogue's bound, :func:`.call_bounds.call_worst_case_usd`): an unpriced call is booked at it. There is no
+    default: a lane without one is refused.
     """
-    from .reconcile import WRITER_CALL_WORST_CASE_USD
-
     if isinstance(instances, bool) or not isinstance(instances, int) or instances <= 0:
         raise ValueError(f"instances is a positive whole number, not {instances!r}")
+    missing = sorted(set(journals) - set(worst_case_usd or {}))
+    if missing:
+        raise ValueError(f"no worst case per request for lane(s) {', '.join(missing)}; give each lane its model's bound")
     lanes = []
     for lane, path in journals.items():
         if lane not in LANES:
             raise ValueError(f"unknown lane {lane!r}; one of {', '.join(LANES)}")
-        worst = (worst_case_usd or {}).get(lane, WRITER_CALL_WORST_CASE_USD)
-        lanes.append(lane_total(lane, path, Decimal(worst)))
+        lanes.append(lane_total(lane, path, Decimal(worst_case_usd[lane])))
     known = sum((t.known_usd for t in lanes), Decimal(0))
     booked = sum((t.booked_usd for t in lanes), Decimal(0))
     unknown = sum(t.unknown for t in lanes)
@@ -698,7 +701,7 @@ def run_report(
         "writer_post_stream_passes": post_passes,
         # segment forks multiply the fork's calls on long episodes: the fork lane's spend per episode
         "fork_by_episode": (
-            fork_by_episode(journals["fork"], Decimal((worst_case_usd or {}).get("fork", WRITER_CALL_WORST_CASE_USD)))
+            fork_by_episode(journals["fork"], Decimal(worst_case_usd["fork"]))
             if "fork" in journals
             else {}
         ),

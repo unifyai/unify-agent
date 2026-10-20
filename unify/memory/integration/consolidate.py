@@ -1775,12 +1775,19 @@ async def run_due_passes(
         finally:
             recon = None
             if supervise is not None:
+                # an unpriced writer call is booked at the pinned catalogue's bound for the writer's model; a model
+                # the catalogue does not bound is not reconciled (no settle line: the whole cap stays committed)
+                writer_worst = _model_worst_case(cfg.model)
                 try:
-                    recon = await supervise.reconcile(prices=writer_prices(settings))
+                    recon = (
+                        await supervise.reconcile(prices=writer_prices(settings), worst_case_usd=writer_worst)
+                        if writer_worst is not None
+                        else unavailable_reconcile(None)
+                    )
                 except Exception as exc:  # noqa: BLE001
                     # unreconciled: no settle line, so the whole cap stays committed
                     _error(stores, f"{pass_id}: reconcile: {type(exc).__name__}")
-                    recon = unavailable_reconcile()
+                    recon = unavailable_reconcile(writer_worst)
             _note_costs(stores, sha, eid, pass_id, rows, effort)
             _note_transcript(stores, sha, pass_id, writer)
             try:
@@ -2014,6 +2021,17 @@ _CALL_MAY_BE_IN_FLIGHT = frozenset({"deadline", "writer_error", "route_not_in_ef
 
 
 # --- the writer service's pass over the attention ledger's entries (UNIFY_MEMORY_WRITER_SERVICE=on) -------------------
+
+
+def _model_worst_case(model: str) -> Decimal | None:
+    """One request's worst case for *model* (the pinned catalogue's bound, :mod:`..call_bounds`), or None when the
+    catalogue does not bound it."""
+    from ..call_bounds import NoBound, call_worst_case_usd
+
+    try:
+        return call_worst_case_usd(model)
+    except NoBound:
+        return None
 
 
 def _helper_spend(writer: Any, helper_turns: list) -> tuple[Decimal, int]:
@@ -2313,11 +2331,13 @@ async def run_attention_pass(
         if resume and journal_start is not None:
             # the window from the pass's first start: the killed turn's call is in it once
             supervise.window = (journal_start, end_at)
+        # the writer lane's journal books its unpriced calls at the writer's model's own bound (bounded: checked above)
+        writer_worst = _model_worst_case(cfg.model) or worst
         try:
-            recon = await supervise.reconcile(prices=writer_prices(settings))
+            recon = await supervise.reconcile(prices=writer_prices(settings), worst_case_usd=writer_worst)
         except Exception as exc:  # noqa: BLE001
             _error(stores, f"{pass_id}: reconcile: {type(exc).__name__}")
-            recon = unavailable_reconcile()
+            recon = unavailable_reconcile(writer_worst)
         # the pass's cost rows and transcript go on the episodes repo's head (an attention pass has no one episode
         # that made it due); its episodes are in its end event
         try:
@@ -2339,14 +2359,19 @@ async def run_attention_pass(
         helper_unknown += prior["helpers"][1]
         report.helper_usd_known, report.helper_unknown_calls = _usd(helper_known), helper_unknown
         if recon is not None and recon.get("journal") == "read":
-            # the journal books the writer's unpriced calls at its own worst case; the helpers' at this pass's
+            # the journal books the writer's unpriced calls at its own worst case; the helpers' at this pass's. A
+            # killed run's writer calls are in the window only when the journal could be read at its start (the
+            # window then opens there); else they are counted from its turn files, as the helpers' are
             journal_worst = Decimal(recon["worst_case_usd"])
-            report.usd_known = _usd(Decimal(recon["usd"]) + helper_known)
-            report.unknown_calls = int(recon["unknown"]) + helper_unknown
+            w_known, w_unpriced = prior["writer"] if (resume and journal_start is None) else (Decimal(0), 0)
+            report.usd_known = _usd(Decimal(recon["usd"]) + w_known + helper_known)
+            report.unknown_calls = int(recon["unknown"]) + w_unpriced + helper_unknown
             report.worst_case_booked = _usd(
-                Decimal(int(recon["unknown"])) * journal_worst + Decimal(helper_unknown) * worst
+                Decimal(int(recon["unknown"])) * journal_worst + Decimal(w_unpriced + helper_unknown) * worst
             )
-            report.settle_usd = _usd(Decimal(recon["booked_usd"]) + helper_known + Decimal(helper_unknown) * worst)
+            report.settle_usd = _usd(
+                Decimal(recon["booked_usd"]) + w_known + helper_known + Decimal(w_unpriced + helper_unknown) * worst
+            )
             try:
                 _settle(stores, pass_id, recon["usd"], recon["unknown"], journal_worst)
             except OSError as exc:
