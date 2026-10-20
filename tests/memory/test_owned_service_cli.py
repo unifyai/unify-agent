@@ -12,12 +12,10 @@ import shutil
 import subprocess
 import sys
 import time
-from pathlib import Path
 
 import pytest
 
 from tests.memory import test_owned_service as O
-from tests.memory import test_writer_service as T
 from unify.memory import service_owner as so
 from unify.memory import writer_service as ws
 
