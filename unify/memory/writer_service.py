@@ -1145,7 +1145,7 @@ def _members() -> list[list]:
 def _raised_settle(home: Path, pass_id: str, folder: Path, settings: Any, pass_doc: dict) -> Decimal:
     """The settle of a pass that raised: what a killed run of it spent (``prior_usd``, read at the resume) plus the
     turn files this run wrote, each unpriced or lost call at the lanes' worst case; when that cannot be had, the
-    pass's whole booking stays (it is settled at what it booked)."""
+    pass's whole reservation stays (it is settled at what it reserved)."""
     try:
         prior = pass_doc.get("prior_usd", "0")
         if prior is None:

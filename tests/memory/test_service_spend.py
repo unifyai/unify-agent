@@ -122,8 +122,9 @@ def test_the_helpers_spend_and_their_lost_turns_count(tmp_path):
             {"usd_known": "0.10", "unknown_cost_calls": 2},
         ],
     )
+    # a lost helper call is counted once, from its pending turn file (turns_cost at the resume), never here
     lost = [SimpleNamespace(killed=["h1/3"]), SimpleNamespace(killed=[])]
-    assert consolidate._helper_spend(writer, lost) == (Decimal("0.35"), 3)
+    assert consolidate._helper_spend(writer, lost) == (Decimal("0.35"), 2)
 
 
 def test_a_service_pass_is_bounded_by_the_room_and_settles_the_helpers_lane(tmp_path, monkeypatch):
@@ -172,13 +173,13 @@ def test_a_service_pass_is_bounded_by_the_room_and_settles_the_helpers_lane(tmp_
         ),
     )
     (cfg,) = seen
-    assert cfg.usd_limit == "23" and not hasattr(cfg, "usd_call_reserve")
+    assert Decimal(cfg.usd_limit) == Decimal(23) and not hasattr(cfg, "usd_call_reserve")
     assert report.settle_usd == str(Decimal("0.02") + Decimal("0.35") + WRITER_CALL_WORST_CASE_USD)
     assert report.usd_known == "0.37" and report.unknown_calls == 1
     assert report.helper_usd_known == "0.35" and report.helper_unknown_calls == 1
 
 
-def _attention_pass(tmp_path, monkeypatch, *, recon, resume=False, pending=0, helpers=None, done=None):
+def _attention_pass(tmp_path, monkeypatch, *, recon, resume=False, pending=0, helpers=None, done=None, cap="30"):
     """One run_attention_pass with a fake writer that finishes at once (0.01 USD), the service's cap 30 with another
     pass's 7 committed; returns (the pass's config, its report)."""
     from tests.memory.integration import test_consolidate as tc
@@ -216,7 +217,7 @@ def _attention_pass(tmp_path, monkeypatch, *, recon, resume=False, pending=0, he
     if helpers is not None:
         monkeypatch.setattr(consolidate, "_helper_spend", lambda writer, turns: helpers)
     settings = tc._settings_library()
-    settings.UNIFY_MEMORY_WRITER_SERVICE_CAP_USD = "30"
+    settings.UNIFY_MEMORY_WRITER_SERVICE_CAP_USD = cap
     report = asyncio.run(
         consolidate.run_attention_pass(
             home, "cd" * 8, handed, resume=resume, folder=folder, journal_start=None, effort="low",
@@ -436,9 +437,10 @@ def test_a_resumed_pass_that_diverges_keeps_its_killed_runs_spend(tmp_path, monk
         "0.json": {"state": "done", "turn": 0, "digest": "not-this-conversation", "reply": reply, "usd": "2.50"},
         "h0/0.json": {"state": "done", "turn": 0, "digest": "x", "reply": reply, "usd": "0.25"},
     }
-    cfg, report = _attention_pass(tmp_path, monkeypatch, recon=unavailable(), resume=True, pending=1, done=done)
+    cfg, report = _attention_pass(tmp_path, monkeypatch, recon=unavailable(), resume=True, pending=1, done=done,
+                                  cap="60")  # fmt: skip
     prior = Decimal("2.50") + Decimal("0.25") + W
-    assert Decimal(cfg.usd_limit) == Decimal(23) - prior
+    assert Decimal(cfg.usd_limit) == Decimal(53) - prior
     # this run's own call (0.01, the writer diverged and made it again) plus the killed run's
     assert Decimal(report.settle_usd) == Decimal("0.01") + prior
     assert Decimal(report.usd_known) == Decimal("2.76") and report.unknown_calls == 1
@@ -459,3 +461,18 @@ def test_a_replayed_done_call_costs_nothing_again(tmp_path):
     again = ws.ResumableTurn(model, folder)
     assert asyncio.run(again(msgs, []))[1] == "0" and made == [1] and again.replayed == 1
     assert ws.turns_cost(folder)["writer"] == (Decimal("0.40"), 0)
+
+
+def test_a_resumed_pass_whose_killed_run_used_its_room_makes_no_call(tmp_path, monkeypatch):
+    """The same killed run under cap 30: its 15.875 leaves 7.125, less than one call at the worst case, so this run
+    makes no call and settles the killed run's spend alone."""
+    from unify.memory.reconcile import unavailable
+
+    reply = {"role": "assistant", "content": "earlier"}
+    done = {"0.json": {"state": "done", "turn": 0, "digest": "x", "reply": reply, "usd": "2.50"},
+            "h0/0.json": {"state": "done", "turn": 0, "digest": "x", "reply": reply, "usd": "0.25"}}  # fmt: skip
+    cfg, report = _attention_pass(tmp_path, monkeypatch, recon=unavailable(), resume=True, pending=1, done=done)
+    prior = Decimal("2.50") + Decimal("0.25") + W
+    assert Decimal(cfg.usd_limit) == Decimal(23) - prior < W
+    assert Decimal(report.settle_usd) == prior
+    assert any("room of" in n for n in report.notes), report.notes
