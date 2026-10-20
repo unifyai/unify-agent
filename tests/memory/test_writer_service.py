@@ -86,10 +86,13 @@ def _until(check, timeout=60.0, step=0.05):
     raise AssertionError("timed out")
 
 
-def _open_entry(home: Path, n: int = 1) -> list[str]:
+def _open_entry(home: Path, n: int = 1, first_seq: int = 1000) -> list[str]:
+    """*n* open message entries, for record seqs from *first_seq* (the ledger makes one entry per seq)."""
     ledger = attention.Ledger(home)
     return [
-        ledger.create("message", attention.Refs(record_seq=1000 + i), 1000 + i)
+        ledger.create(
+            "message", attention.Refs(record_seq=first_seq + i), first_seq + i
+        )
         for i in range(n)
     ]
 
@@ -110,10 +113,15 @@ def test_two_ensure_service_calls_at_once_leave_exactly_one_service(svc):
         t.start()
     for t in threads:
         t.join(120)
+    # the second call found the first's service, or started one that found the lock held and left no trace (both
+    # calls then name the one service)
     assert sorted(s.status for s in got) in (
         ["busy", "started"],
         ["running", "started"],
+        ["started", "started"],
     ), got
+    if [s.status for s in got] == ["started", "started"]:
+        assert got[0].pid == got[1].pid, got
     doc = _until(
         lambda: ws.read_state(svc.home) if ws.owns(ws.read_state(svc.home)) else None
     )
@@ -881,7 +889,7 @@ def test_the_service_loop_and_a_step_run_the_same_turn(svc, monkeypatch):
     assert _in_process(svc.home, runner, monkeypatch) == "idle-exit"
     looped = len(seen)
     assert looped >= 2 and len(runner.passes) == 1
-    _open_entry(svc.home)
+    _open_entry(svc.home, first_seq=2000)
     _step(svc.home, runner, monkeypatch)
     assert len(seen) == looped + 1 and len(runner.passes) == 2
 
