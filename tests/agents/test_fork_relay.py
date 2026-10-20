@@ -412,3 +412,37 @@ def test_a_segment_fork_is_named_for_its_segment_and_its_calls_carry_episode_and
         r for r in rr.read_roster(paths.home)["agents"] if r["name"] == "fork-3f9a-s2"
     )
     assert row["episode"] == "20261020T210311-3f9a0c1d" and row["role"] == "fork"
+
+
+IGNORES_TERM = (
+    "import signal, sys, time\n"
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    "sys.stdin.readline()\n"
+    "time.sleep(600)\n"
+)
+
+
+def test_a_box_that_ignores_sigterm_at_the_end_of_its_wait_is_killed(tmp_path, monkeypatch):
+    """Review: when the fork's wall clock (its comms wait included) ends, the relay sends SIGTERM and, if the box is
+    still running after KILL_AFTER_S, SIGKILL; the relay never waits on such a box for good."""
+    import asyncio
+
+    from unify.agents import fork_relay
+
+    monkeypatch.setattr(fork_worker, "WALL_GUARD_S", 0.5)
+    monkeypatch.setattr(fork_relay, "_MARGIN_S", 0.0)
+    monkeypatch.setattr(fork_relay, "KILL_AFTER_S", 0.5)
+    home = tmp_path / "home"
+    rec = rr.join_run_record(home)
+    rec.join("fork-3f9a", "fork", episode="ep-1")
+    spec = {
+        "home": str(home),
+        "name": "fork-3f9a",
+        "argv": [sys.executable, "-I", "-c", IGNORES_TERM],
+        "doc": {"headers": {}},
+    }
+    started = time.monotonic()
+    code = asyncio.run(asyncio.wait_for(fork_relay.relay(spec), 30))
+    assert code == -9 and time.monotonic() - started < 15
+    roster = {r["name"]: r["state"] for r in rr.read_roster(home)["agents"]}
+    assert roster["fork-3f9a"] == "ended"

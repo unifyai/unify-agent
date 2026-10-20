@@ -28,6 +28,8 @@ from typing import Any
 #: The longest line the box may send (a comms call), and the box's own wall bound plus a margin as this relay's.
 LINE_LIMIT = 1 << 20
 _MARGIN_S = 120.0
+#: After the box's SIGTERM (its wall clock, or the relay's own stop), this long before SIGKILL.
+KILL_AFTER_S = 10.0
 
 
 def _register_token(doc: dict) -> None:
@@ -161,8 +163,23 @@ async def relay(spec: dict) -> int:
 
 
 def _stop(proc: Any) -> None:
+    """SIGTERM to the box, then SIGKILL after :data:`KILL_AFTER_S` if it is still running (a box that ignores SIGTERM
+    never keeps the relay, and the fork's lock, waiting)."""
     try:
         proc.terminate()
+    except ProcessLookupError:
+        return
+    try:
+        asyncio.get_running_loop().call_later(KILL_AFTER_S, _kill, proc)
+    except RuntimeError:  # no running loop: kill at once
+        _kill(proc)
+
+
+def _kill(proc: Any) -> None:
+    if getattr(proc, "returncode", None) is not None:
+        return
+    try:
+        proc.kill()
     except ProcessLookupError:
         pass
 
