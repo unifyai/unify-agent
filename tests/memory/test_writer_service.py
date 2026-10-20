@@ -147,8 +147,10 @@ child = os.fork()
 if child == 0:  # a leftover child that kept the lock's descriptor
     while True:
         time.sleep(0.1)
+cstat = open(f"/proc/{child}/stat").read().rsplit(")", 1)[-1].split()
 doc = {"v": 1, "pid": os.getpid(), "pgid": os.getpgid(0), "proc_start": stat[19], "state": "running",
-       "heartbeat_at": sys.argv[3], "started_at": sys.argv[3]}
+       "heartbeat_at": sys.argv[3], "started_at": sys.argv[3],
+       "members": [[os.getpid(), stat[19]], [child, cstat[19]]]}
 path = os.path.join(home, "memory-state", "memory-service", "service.json")
 open(path + ".tmp", "w").write(json.dumps(doc)); os.replace(path + ".tmp", path)
 print(child, flush=True)
@@ -157,16 +159,19 @@ while True:
 """
 
 
-def test_a_stale_holder_whose_service_died_is_taken_over_and_a_new_service_starts(svc):
-    """A2 test 2: the service is killed -9 but a leftover child still holds its lock; its heartbeat is 90 s old, so the
-    next ensure_service kills the leftover group (verified), writes takeover and starts a new service.
+def test_a_stale_holder_whose_service_died_is_taken_over_and_a_new_service_starts(svc, monkeypatch):
+    """A2 test 2: the service is killed -9 but a leftover child it recorded still holds its lock; its heartbeat goes
+    stale (the stale age shortened to 1 s here, so the child can have started before the last heartbeat), so the next
+    ensure_service kills the recorded leftover (verified), writes takeover and starts a new service.
     """
+    monkeypatch.setattr(ws, "STALE_S", 1.0)
     folder = ws.service_dir(svc.home)
     folder.mkdir(parents=True)
-    old = ws.stamp(datetime.now(timezone.utc) - timedelta(seconds=ws.STALE_S + 5))
-    holder = subprocess.Popen([sys.executable, "-c", HOLDER, str(svc.home), str(folder / ws.LOCK_FILE), old],
+    beat = ws.stamp(datetime.now(timezone.utc))
+    holder = subprocess.Popen([sys.executable, "-c", HOLDER, str(svc.home), str(folder / ws.LOCK_FILE), beat],
                               stdout=subprocess.PIPE, text=True)  # fmt: skip
     child = int(holder.stdout.readline())
+    time.sleep(1.5)  # the heartbeat is stale now
     leader_pgid = os.getpgid(holder.pid)
     os.kill(holder.pid, signal.SIGKILL)
     holder.wait()
@@ -225,6 +230,7 @@ def test_a_reused_pid_is_never_taken_for_the_service(svc, tmp_path):
         "operator",
         "test",
         kill=lambda *a: sent.append(a),
+        kill_pid=lambda *a: sent.append(a),
         grace_s=0.1,
         term_s=0.1,
     )
@@ -253,7 +259,7 @@ def test_a_group_number_given_to_someone_elses_group_is_never_signalled(svc):
     try:
         doc = {"v": 1, "pid": stranger.pid, "pgid": stranger.pid, "proc_start": "1", "state": "running",
                "heartbeat_at": ws.stamp(datetime.now(timezone.utc) - timedelta(seconds=ws.STALE_S + 5)),
-               "started_at": ws.stamp(datetime.now(timezone.utc))}  # fmt: skip
+               "started_at": ws.stamp(datetime.now(timezone.utc)), "members": [[stranger.pid, "1"]]}  # fmt: skip
         folder = ws.service_dir(svc.home)
         folder.mkdir(parents=True)
         (folder / ws.STATE_FILE).write_text(json.dumps(doc))
@@ -261,12 +267,80 @@ def test_a_group_number_given_to_someone_elses_group_is_never_signalled(svc):
         assert ws.service_group(doc) == []
         assert ws._take_over(svc.home, doc) is False
         sent = []
-        done = ws.stop_service(svc.home, "operator", "test", kill=lambda *a: sent.append(a), grace_s=0.1, term_s=0.1)
+        done = ws.stop_service(svc.home, "operator", "test", kill=lambda *a: sent.append(a),
+                               kill_pid=lambda *a: sent.append(a), grace_s=0.1, term_s=0.1)  # fmt: skip
         assert sent == [] and done == ws.Terminated(True, "clean", ())
         assert stranger.poll() is None and ws.proc_start(child) is not None
     finally:
         os.killpg(stranger.pid, signal.SIGKILL)
         stranger.wait()
+
+
+ORPHANED = r"""
+import os, sys, time
+os.setsid()
+child = os.fork()
+if child == 0:
+    while True:
+        time.sleep(0.1)
+print(child, flush=True)
+"""
+
+
+def test_a_reused_group_whose_new_leader_exited_leaving_members_is_never_signalled(svc):
+    """H2: the recorded service led group N and died long ago; N now names a stranger's group whose leader exited,
+    leaving a member (so no leader shows a start time to compare). Nothing recorded for the service is that member
+    (it started after the service's last heartbeat), so neither a stop nor a takeover signals it; no group signal is
+    ever sent for a service that is not alive."""
+    stranger = subprocess.Popen([sys.executable, "-c", ORPHANED], stdout=subprocess.PIPE, text=True)  # fmt: skip
+    child = int(stranger.stdout.readline())
+    stranger.wait()  # the new leader exited; its member lives on in group N
+    try:
+        n = stranger.pid
+        assert ws.proc_start(n) is None and ws.group_pids(n) == [child]
+        child_start = ws.proc_start(child)
+        doc = {"v": 1, "pid": n, "pgid": n, "proc_start": "1", "pgid_start": "1", "state": "running",
+               "heartbeat_at": ws.stamp(datetime.now(timezone.utc) - timedelta(seconds=600)),
+               "started_at": ws.stamp(datetime.now(timezone.utc) - timedelta(seconds=900)),
+               # even a member row naming the stranger's pid and true start time: it started after the last heartbeat
+               "members": [[n, "1"], [child, child_start]]}  # fmt: skip
+        folder = ws.service_dir(svc.home)
+        folder.mkdir(parents=True)
+        (folder / ws.STATE_FILE).write_text(json.dumps(doc))
+        assert ws.service_group(doc) == [] and ws.recorded_members(doc) == []
+        assert ws._take_over(svc.home, doc) is False
+        sent = []
+        done = ws.stop_service(svc.home, "operator", "test", kill=lambda *a: sent.append(("group",) + a),
+                               kill_pid=lambda *a: sent.append(("pid",) + a), grace_s=0.1, term_s=0.1)  # fmt: skip
+        assert sent == [] and done == ws.Terminated(True, "clean", ())
+        assert ws.proc_start(child) == child_start
+    finally:
+        os.kill(child, signal.SIGKILL)
+
+
+def test_a_dead_services_recorded_leftover_is_signalled_by_pid_and_verified(svc):
+    """H2: once the service is not alive, its recorded processes (started before its last heartbeat) are signalled
+    one by one and checked gone; its group is never signalled."""
+    folder = ws.service_dir(svc.home)
+    folder.mkdir(parents=True)
+    beat = ws.stamp(datetime.now(timezone.utc))
+    holder = subprocess.Popen([sys.executable, "-c", HOLDER, str(svc.home), str(folder / ws.LOCK_FILE), beat],
+                              stdout=subprocess.PIPE, text=True)  # fmt: skip
+    child = int(holder.stdout.readline())
+    os.kill(holder.pid, signal.SIGKILL)
+    holder.wait()
+    doc = ws.read_state(svc.home)
+    assert not ws.owns(doc) and ws.recorded_members(doc) == [child]
+    groups, pids = [], []
+
+    def by_pid(pid, sig):
+        pids.append((pid, sig))
+        os.kill(pid, sig)
+
+    done = ws.stop_service(svc.home, "operator", "test", kill=lambda *a: groups.append(a), kill_pid=by_pid,
+                           grace_s=0.1, term_s=2)  # fmt: skip
+    assert groups == [] and pids and {p for p, _ in pids} == {child}
+    assert done.verified and done.how in ("term", "kill") and ws.proc_start(child) is None
 
 
 def test_a_stopped_service_doc_naming_a_live_caller_is_never_signalled(svc):

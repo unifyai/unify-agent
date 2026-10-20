@@ -10,8 +10,9 @@ started by a runner or an adapter.
 **Exactly one.** The service holds ``flock(service.lock)`` for its whole life (on a descriptor no child inherits). A
 second :func:`ensure_service` finds the lock held and leaves it alone. A holder whose heartbeat is older than
 :data:`STALE_S` and whose ``owns`` check fails (pid, process group, ``/proc`` start time: a reused pid is never taken
-for the service) is a leftover of a dead service: its process group is killed (verified), a ``takeover`` row is
-written and a new service starts. A service that died with its lock (``kill -9``) is taken over by the next start the
+for the service) is a leftover of a dead service: the processes the service recorded (``members``, each by pid and
+start time, started no later than its last heartbeat) are killed one by one (verified; a group is signalled only while
+the service itself is alive, never by its number alone), a ``takeover`` row is written and a new service starts. A service that died with its lock (``kill -9``) is taken over by the next start the
 same way: the new service writes ``takeover`` naming the old one.
 
 **The loop** (:func:`service_main`): sync the ledger; stop at the stop marker; at the cap, every entry still owed is
@@ -354,25 +355,62 @@ def lock_holders(path: Path) -> list[int]:
     return sorted(out)
 
 
-def service_group(doc: Optional[dict]) -> list[int]:
-    """The live processes left of the service *doc* (``service.json``) records: the members of its process group
-    started at or after it, and only while the group's number still names the service's group. While any member is
-    alive the kernel never gives the group's number to a new process; so a group leader alive with another start time
-    than the one recorded (``pgid_start``, or the service's own when it leads its group) means the number now names
-    someone else's group, and nothing in it is the service's. A doc that records neither start time is never acted on
-    by group."""
+def _boot_time() -> Optional[float]:
+    try:
+        for line in Path("/proc/stat").read_text().splitlines():
+            if line.startswith("btime "):
+                return float(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def started_at(ticks: Any) -> Optional[datetime]:
+    """The wall time a process started, from its ``/proc`` start time in clock ticks since boot; None when unknown."""
+    boot = _boot_time()
+    try:
+        return datetime.fromtimestamp(boot + int(ticks) / os.sysconf("SC_CLK_TCK"), tz=timezone.utc) if boot else None
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+
+
+def recorded_members(doc: Optional[dict]) -> list[int]:
+    """The processes *doc* (``service.json``) records as the service's (``members``: pid and ``/proc`` start time, as
+    of its last heartbeat) that are still those processes, and that started no later than its last heartbeat plus
+    :data:`HEARTBEAT_S` (a process that started after the service could last have recorded it is never the service's).
+    """
     if not isinstance(doc, dict):
         return []
-    pid, pgid, since = doc.get("pid"), doc.get("pgid"), doc.get("proc_start")
-    if not isinstance(pgid, int) or isinstance(pgid, bool) or pgid <= 0 or not since:
+    beat = parse_stamp(doc.get("heartbeat_at"))
+    if beat is None:
         return []
-    leader_start = doc.get("pgid_start") or (since if pid == pgid else None)
-    if not leader_start:
+    limit = beat + timedelta(seconds=HEARTBEAT_S)
+    out = []
+    for row in doc.get("members") or ():
+        if not (isinstance(row, (list, tuple)) and len(row) == 2):
+            continue
+        pid, start = row
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0 or not isinstance(start, str) or not start:
+            continue
+        if proc_start(pid) != start:
+            continue  # gone, or the pid is someone else's now
+        at = started_at(start)
+        if at is None or at > limit:
+            continue
+        out.append(pid)
+    return sorted(set(out))
+
+
+def service_group(doc: Optional[dict]) -> list[int]:
+    """The live processes left of the service *doc* (``service.json``) records. While the service itself is alive
+    (:func:`owns`: its pid, start time and group), the members of its process group started at or after it. Once it is
+    not, only the processes it recorded (:func:`recorded_members`), each checked by its start time: a group number is
+    never trusted on its own, since another group may hold it now."""
+    if not isinstance(doc, dict):
         return []
-    now = proc_start(pgid)
-    if now is not None and now != str(leader_start):
-        return []  # the group's number was given to someone else's group
-    return group_pids(pgid, since=str(since))
+    if owns(doc):
+        return group_pids(int(doc["pgid"]), since=str(doc["proc_start"]))
+    return recorded_members(doc)
 
 
 def try_lock(path: Path) -> Optional[int]:
@@ -810,11 +848,14 @@ def stop_service(
     term_s: float = TERM_S,
     settle_s: float = SETTLE_S,
     kill: Callable[[int, int], None] = os.killpg,
+    kill_pid: Callable[[int, int], None] = os.kill,
     sleep: Callable[[float], Any] = time.sleep,
 ) -> Terminated:
     """Write the stop marker; give a pass in flight its deadline plus *grace_s* (the service stops at the marker once
-    the pass ends); then SIGTERM to the service's group, *term_s*, SIGKILL; then check in ``/proc`` that no process of
-    the group is left (module docstring)."""
+    the pass ends); then SIGTERM, *term_s*, SIGKILL; then check in ``/proc`` that nothing of the service is left
+    (module docstring). A signal goes to the service's process group (*kill*) only while the service itself is alive
+    (:func:`owns`); otherwise only to each process the service recorded, checked by its start time (*kill_pid*,
+    :func:`recorded_members`): a group number alone is never signalled."""
     if by not in STOP_BY:
         raise ValueError(f"by is one of {', '.join(STOP_BY)}, not {by!r}")
     home = Path(home)
@@ -858,22 +899,29 @@ def stop_service(
                     + max(0.0, (new_end - _now()).total_seconds())
                     + grace_s
                 )
+    def signal_all(sig: int) -> None:
+        if owns(doc):
+            try:
+                kill(pgid, sig)
+            except (ProcessLookupError, PermissionError):
+                pass
+            return
+        for pid in recorded_members(doc):
+            try:
+                kill_pid(pid, sig)
+            except (ProcessLookupError, PermissionError):
+                pass
+
     how: Literal["clean", "term", "kill"] = "clean"
     if alive():
         how = "term"
-        try:
-            kill(pgid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
+        signal_all(signal.SIGTERM)
         end = time.monotonic() + term_s
         while alive() and time.monotonic() < end:
             sleep(0.1)
     if alive():
         how = "kill"
-        try:
-            kill(pgid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
+        signal_all(signal.SIGKILL)
         end = time.monotonic() + settle_s
         while alive() and time.monotonic() < end:
             sleep(0.05)
@@ -939,6 +987,9 @@ class Service:
     staging_seen: Optional[tuple] = None
     #: the cap's event was written (once per service)
     cap_noted: bool = False
+    #: record the group's processes (``members``); False for a step, which runs in its caller's process: nothing of
+    #: the caller's is ever recorded as the service's, so nothing of it is ever signalled
+    record_members: bool = True
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def doc(self) -> dict:
@@ -951,6 +1002,9 @@ class Service:
             "pgid_start": proc_start(os.getpgid(0)) or "",
             "proc_start": proc_start(os.getpid()) or "",
             "heartbeat_at": stamp(_now()),
+            # every process of the service's group (itself, its passes' children) by pid and start time: once the
+            # service is gone, only these are ever signalled (recorded_members)
+            "members": _members() if self.record_members else [],
             "started_at": stamp(self.started),
             "deadline": stamp(end),
             "state": self.state,
@@ -1000,6 +1054,16 @@ def _end_writer_row(record: Any, why: str) -> None:
         record.set_state(WRITER, "ended", note=f"service {why}")
     except Exception:  # noqa: BLE001 - the stop is still recorded
         pass
+
+
+def _members() -> list[list]:
+    own = proc_start(os.getpid())
+    out = []
+    for pid in group_pids(os.getpgid(0), since=own) if own else [os.getpid()]:
+        start = proc_start(pid)
+        if start:
+            out.append([pid, start])
+    return out
 
 
 def pass_reservation(settings: Any, effort: str) -> Decimal:
@@ -1368,7 +1432,7 @@ async def step_async(
     os.set_inheritable(lock_fd, False)
     at = (lambda: now) if now is not None else _now
     try:
-        service = Service(home, settings, lock_fd, started=at())
+        service = Service(home, settings, lock_fd, started=at(), record_members=False)
         service.cap = writer_service_cap_usd(settings)
         # the cap reached in an earlier step stays reached: the events say so
         service.cap_noted = any(r.get("event") == "cap-reached" for r in events(home))
