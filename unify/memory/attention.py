@@ -233,6 +233,8 @@ class AttentionEntry:
     hand_count: int = 0
     #: passes that ended with it handed and not read since it was last opened (a reopen starts again at 0)
     misses: int = 0
+    #: passes that ended with it read and not decided since it was last opened (a reopen starts again at 0)
+    undecided: int = 0
     #: the pass it is handed to, while handed or read
     pass_id: str | None = None
     #: the parts of its material the pass's read evidence showed opened, and their share
@@ -355,6 +357,7 @@ def fold(rows: Iterable[Mapping[str, Any]]) -> dict[str, AttentionEntry]:
                 state="open",
                 pass_id=None,
                 misses=e.misses + (1 if why == "handed_not_read" else 0),
+                undecided=e.undecided + (1 if why == "read_not_decided" else 0),
                 why=why,
             )
         elif op == "close":
@@ -378,6 +381,7 @@ def fold(rows: Iterable[Mapping[str, Any]]) -> dict[str, AttentionEntry]:
                 state="open",
                 pass_id=None,
                 misses=0,
+                undecided=0,
                 reopen_count=e.reopen_count + 1,
                 why=row.get("by") if isinstance(row.get("by"), str) else None,
             )
@@ -1144,7 +1148,7 @@ class Ledger:
             pending = [e for e in state.values() if e.state == "open"]
             if not pending:
                 return []
-            alone = [e for e in pending if e.misses >= ALONE_AFTER_MISSES]
+            alone = [e for e in pending if e.misses >= ALONE_AFTER_MISSES or e.undecided >= ALONE_AFTER_MISSES]
             if alone:
                 chosen = self._order(alone)[:1]
             else:
@@ -1339,7 +1343,13 @@ class Ledger:
                 )  # fmt: skip
                 raise LedgerError(
                     f"{i} is not read yet: open its material first ({where}), then decide it; nothing was decided"
-                    + (f" ({len(unread)} of the {len(ids)} entries are unread)" if len(ids) > 1 else ""),
+                    + (
+                        f" ({len(unread)} of the {len(ids)} entries are unread: {', '.join(u for u, _ in unread)}; "
+                        f"the read ones, {', '.join(x for x in ids if x not in {u for u, _ in unread}) or 'none'}, may be "
+                        "decided on their own)"
+                        if len(ids) > 1
+                        else ""
+                    ),
                 )
             dpath = Path(decisions_path)
             dpath.parent.mkdir(parents=True, exist_ok=True)
@@ -1377,8 +1387,9 @@ class Ledger:
 
     def return_unread(self, pass_id: str) -> list[str]:
         """At *pass_id*'s end: each entry still owed something there goes back. Not read: a miss (alone after two,
-        ``unreadable`` with the pass's read evidence named after the third). Read but undecided: back without a miss.
-        Returns the ids returned or made unreadable."""
+        ``unreadable`` with the pass's read evidence named after the third). Read but undecided: the same bound on its
+        own count (alone after two such passes, ``unreadable`` after the third, its evidence saying it was read and never
+        decided), so an entry no pass decides costs at most three passes. Returns the ids returned or made unreadable."""
         with self.locked():
             state = self.entries()
             rows, out = [], []
@@ -1387,7 +1398,11 @@ class Ledger:
                 if not (e.active and e.state != "open" and e.pass_id == pass_id):
                     continue
                 out.append(e.entry)
-                if e.state == "read":
+                if e.state == "read" and e.undecided + 1 >= UNREADABLE_AFTER_MISSES:
+                    rows.append({"op": "unreadable", "entry": e.entry, "pass_id": pass_id,
+                                 "evidence": f"read and not decided in {e.undecided + 1} passes, the last pass:{pass_id}",
+                                 "at": at})  # fmt: skip
+                elif e.state == "read":
                     rows.append({"op": "return", "entry": e.entry, "pass_id": pass_id, "why": "read_not_decided", "at": at})
                 elif e.misses + 1 >= UNREADABLE_AFTER_MISSES:
                     rows.append({"op": "unreadable", "entry": e.entry, "pass_id": pass_id,
