@@ -239,7 +239,7 @@ def test_no_key_is_reachable_from_the_runners_service(owned, monkeypatch):
     monkeypatch.chdir(parent_home)
     for name in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "UNIFY_KEY", "UNIFY_MEMORY_WRITER_TOKEN", "AWS_SECRET_ACCESS_KEY"):
         monkeypatch.setenv(name, "planted-value-for-a-test")  # pragma: allowlist secret
-    proc = _start(owned, DRIVER_KEYS=1)
+    proc = _start(owned, DRIVER_LIST_HELD=1)
     env = dict(
         e.split(b"=", 1) for e in Path(f"/proc/{proc.pid}/environ").read_bytes().split(b"\0") if e
     )
@@ -259,7 +259,8 @@ def test_no_box_of_the_runners_service_can_read_the_run_record(owned):
     roster by their host paths: every attempt fails inside the box."""
     rec = rr.join_run_record(owned.home)
     rec.join("actor-3f9a", "actor")
-    rr.RunRecordView(rec, "actor-3f9a", "actor").post("actor-3f9a", "@writer something about item:x")
+    rec.join("h1", "helper")
+    rr.RunRecordView(rec, "actor-3f9a", "actor").post("actor-3f9a", "@h1 something about item:x")
     targets = [rr.record_path(owned.home), rr.deliveries_path(owned.home), rr.roster_path(owned.home)]
     T._open_entry(owned.home)
     _start(owned, DRIVER_BOX_READ=":".join(str(t) for t in targets), DRIVER_TURNS=0)

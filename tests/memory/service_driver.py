@@ -187,7 +187,7 @@ def main(argv=None) -> int:
                 }
             )
         )
-    if os.environ.get("DRIVER_OUT") and os.environ.get("DRIVER_KEYS"):
+    if os.environ.get("DRIVER_OUT") and os.environ.get("DRIVER_LIST_HELD"):
         # what the model client holds: any provider key it read would be a non-empty secret setting
         import unillm
         from pydantic import SecretStr
