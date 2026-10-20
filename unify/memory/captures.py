@@ -691,8 +691,18 @@ def judged_outcome(signals: Iterable[Any], ep: Any, regime: str, *, checker_visi
     """What the episode's signals say of the value it handed back, as the capture step reads them: the signals that
     judge that value (:func:`final_value_signals`) under the episode's *regime*, ``{"regime", "verdict",
     "end_outcome", "corrected"}`` (:func:`.trust.signal_outcome`), with ``contrary`` (a rejected verdict, a contrary
-    end, or a correction after the answer that the regime observes) and ``positive``."""
+    end, or a correction after the answer that the regime observes) and ``positive``. Under
+    ``UNIFY_MEMORY_REGIME=inferred`` a hidden grader's verdict (never shown to the actor) judges nothing."""
     regime = regime if regime in trust.REGIMES else "none"
+    signals = list(signals)
+    if any(getattr(s, "timing", "") for s in signals):
+        # UNIFY_MEMORY_REGIME=inferred (its signals carry their timing): a verdict the actor never saw (a hidden
+        # grader's) decides nothing, so it never stands for the final value's verdict either
+        signals = [
+            s
+            for s in signals
+            if not (getattr(s, "source", None) == "checker" and getattr(s, "visible_to_actor", None) is False)
+        ]
     judged = final_value_signals(signals, ep)
     sig_out = trust.signal_outcome(judged, regime, checker_visible=checker_visible)
     corrected = any(
