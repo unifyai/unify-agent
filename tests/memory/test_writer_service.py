@@ -813,18 +813,51 @@ def _in_process(home, runner, monkeypatch, **over):
         os.close(fd)
 
 
+#: The key proxy's refusal bodies in the shape it sends them (HTTP 403, one writer-lane call at a time; its lane's cap), as a
+#: model client shows them in its error's text
+_BUSY_BODY = (
+    '{"error": {"code": 403, "type": "benchmark_lane_budget_exhausted", '
+    '"message": "benchmark budget: another writer call is in flight (one at a time)"}}'
+)
+_CAP_BODY = (
+    '{"error": {"code": 403, "type": "benchmark_lane_budget_exhausted", "message": "benchmark budget: the spend plus '
+    "one call's reserve reached this cell's ceiling of USD 210.00\"}}"
+)
+
+
+def _refused_reason(status: int, body: str) -> str:
+    """The pass reason a writer call the route refused leaves, made as the writer's route makes it."""
+    from unify.memory import writer_pass
+
+    class PermissionDeniedError(Exception):
+        status_code = status
+
+    try:
+        raise PermissionDeniedError(f"litellm.PermissionDeniedError: OpenrouterException - {body}")
+    except PermissionDeniedError as exc:
+        name, category, detail = writer_pass._call_failure(exc)
+    return f"model call failed: WriterCallError: writer call failed: {name} ({category}){detail}"
+
+
+class FirstRefused(Recording):
+    """The first pass ends on *reasons*; every later pass reads and decides what it is handed."""
+
+    async def __call__(self, home, pass_id, handed, **kw):
+        if self.passes:
+            self.reasons, self.decide = [], True
+        return await super().__call__(home, pass_id, handed, **kw)
+
+
+@pytest.mark.parametrize("status, body", [(403, _CAP_BODY), (402, "{}")], ids=["refusal-body-cap", "http-402"])
 def test_a_writer_call_the_proxy_refuses_for_its_cap_is_the_cap_reached(
-    svc, monkeypatch
+    svc, monkeypatch, status, body
 ):
-    """The two caps disagree: the service reserved under its own, the proxy refused for its lane's cap. The
-    service reads that as the cap reached: the entries still owed are not reached (spend_cap) and no pass follows.
+    """The two caps disagree: the service reserved under its own, the proxy refused for its lane's cap (its refusal
+    body says so, or HTTP 402). The service reads that as the cap reached: the entries still owed are not reached
+    (spend_cap) and no pass follows.
     """
     ids = _open_entry(svc.home, 6)
-    runner = Recording(
-        reasons=[
-            "model call failed: WriterCallError: writer call failed: HTTPStatusError (http_403)"
-        ]
-    )
+    runner = Recording(reasons=[_refused_reason(status, body)])
     assert _in_process(svc.home, runner, monkeypatch) == "idle-exit"
     assert len(runner.passes) == 1
     capped = _events(svc.home, "cap-reached")
@@ -836,6 +869,31 @@ def test_a_writer_call_the_proxy_refuses_for_its_cap_is_the_cap_reached(
         and {e.state for e in left} == {"not_reached"}
         and {e.why for e in left} == {"spend_cap"}
     )
+
+
+@pytest.mark.parametrize(
+    "status, body",
+    [
+        (403, _BUSY_BODY),  # the proxy's one-call-at-a-time refusal: busy for now, not its cap
+        (403, '{"error": {"code": 403, "message": "forbidden"}}'),  # a 403 whose body names no refusal
+        (403, "forbidden"),  # a 403 with no body to read: never the cap from the status code alone
+        (429, "{}"),
+        (503, "{}"),
+    ],
+    ids=["call-in-flight", "403-other-body", "403-no-body", "429", "503"],
+)
+def test_a_pass_ended_by_a_refusal_that_is_not_the_cap_never_stops_the_service(svc, monkeypatch, status, body):
+    """One writer call refused because another call was in flight (or a 403 that does not say it is the cap, a
+    rate limit, a server error) ends that pass only: no cap is reached, its entries go back, and the next pass reads
+    them. (Before, any 403 was read as the proxy's cap: the service stopped every pass for the rest of the run.)"""
+    ids = _open_entry(svc.home, 6)
+    runner = FirstRefused(reasons=[_refused_reason(status, body)])
+    assert _in_process(svc.home, runner, monkeypatch) == "idle-exit"
+    assert _events(svc.home, "cap-reached") == []
+    later = {e for _pid, handed, _resume in runner.passes[1:] for e in handed}
+    assert len(runner.passes) >= 2 and set(runner.passes[0][1]) <= later
+    entries = attention.Ledger(svc.home).entries()
+    assert {entries[i].state for i in ids} == {"closed"}, {entries[i].state for i in ids}
 
 
 def test_entries_a_crash_left_handed_go_back_and_are_handed_again(svc, monkeypatch):

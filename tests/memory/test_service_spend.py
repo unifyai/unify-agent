@@ -564,3 +564,131 @@ def _ledger_rows(stores):
 
     path = ledger_path(stores.paths)
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
+
+
+# --- a refusal for now is tried again; a refusal the route made before sending the call on costs nothing -------------
+
+
+def _busy() -> writer_pass.WriterCallError:
+    return writer_pass.WriterCallError("writer call failed: APIStatusError (http_403_busy)", writer_pass.REFUSED_BUSY)
+
+
+class RefusedFirst:
+    """A model whose first *n* calls the route refuses with *error*, then *model*'s answers."""
+
+    def __init__(self, model, n=1, error=_busy):
+        self.model, self.n, self.error, self.refused, self.answered = model, n, error, 0, 0
+
+    async def __call__(self, messages, tools):
+        if self.refused < self.n:
+            self.refused += 1
+            raise self.error()
+        self.answered += 1
+        return await self.model(messages, tools)
+
+
+@needs_bwrap
+def test_a_writer_call_refused_while_another_is_in_flight_is_tried_again_and_the_pass_goes_on(tmp_path, monkeypatch):
+    """The key proxy's one-call-at-a-time refusal ends nothing: the call is made again after a short wait and the
+    pass runs to its end; the refused call cost nothing (no unpriced call booked at the worst case)."""
+    monkeypatch.setattr(writer_pass, "TRANSIENT_BACKOFF_S", 0.01)
+    scripted = Turns([_call(f"c{i}", "execute_code", {"code": f"print({i})"}) for i in range(3)], usd="0.30")
+    model = RefusedFirst(scripted)
+    _mem, _ev, writer = _writer(
+        tmp_path, model, library_mode=True, max_usd=None, deadline_s=300.0, usd_limit="100.00", usd_call_worst=str(W)
+    )
+    out = _run(writer)
+    assert model.refused == 1 and model.answered >= 4  # the three scripted calls and the finish, after the refusal
+    assert not any("model call failed" in r for r in out.reasons), out.reasons
+    assert any("refused for now (http_403_busy)" in r for r in out.reasons), out.reasons
+    assert out.unknown_cost_calls == 0, out.unknown_cost_calls
+    assert Decimal(out.usd) == Decimal("0.30") * model.answered, (out.usd, model.answered)
+
+
+def test_transient_failures_are_tried_again_a_bounded_number_of_times_each_booked_by_what_it_may_have_cost():
+    async def scenario(errors, room=None, remaining=1000.0):
+        booked, waits, notes = [], [], []
+        queue = list(errors)
+
+        async def call():
+            if queue:
+                raise queue.pop(0)()
+            return "answer"
+
+        async def sleep(s):
+            waits.append(s)
+
+        try:
+            got = await writer_pass.call_retrying(
+                call,
+                book_unpriced=lambda: booked.append(1),
+                remaining=lambda: remaining,
+                room=room,
+                note=notes.append,
+                sleep=sleep,
+            )
+        except writer_pass.WriterCallError as exc:
+            got = exc
+        return got, len(booked), waits, notes
+
+    def server_error():
+        return writer_pass.WriterCallError("writer call failed: X (http_503)", "http_503")
+
+    def cap():
+        return writer_pass.WriterCallError("writer call failed: X (http_403_cap)", writer_pass.REFUSED_CAP)
+
+    # busy twice, then answered: nothing booked (the route refused it unsent), two waits that double
+    got, booked, waits, notes = asyncio.run(scenario([_busy, _busy]))
+    assert (got, booked, waits, len(notes)) == ("answer", 0, [2.0, 4.0], 2)
+    # a server error may have cost money: each retried attempt is booked as one unpriced call
+    got, booked, waits, _ = asyncio.run(scenario([server_error]))
+    assert (got, booked, waits) == ("answer", 1, [2.0])
+    # never more than TRANSIENT_RETRIES retries in a row: the last error is raised, not yet booked
+    got, booked, waits, _ = asyncio.run(scenario([server_error] * 9))
+    assert isinstance(got, writer_pass.WriterCallError) and not got.counted
+    assert booked == writer_pass.TRANSIENT_RETRIES and waits == [2.0, 4.0, 8.0, 16.0]
+    # the cap is not retried
+    got, booked, waits, _ = asyncio.run(scenario([cap]))
+    assert got.category == writer_pass.REFUSED_CAP and (booked, waits) == (0, [])
+    # no wait past the pass's deadline
+    got, booked, waits, _ = asyncio.run(scenario([_busy], remaining=1.0))
+    assert isinstance(got, writer_pass.WriterCallError) and waits == []
+    # with the failed attempt booked, the room holds no more call: raised, marked as booked already
+    got, booked, waits, _ = asyncio.run(scenario([server_error], room=lambda: False))
+    assert got.counted and booked == 1 and waits == []
+    assert not writer_pass.unbooked_cost(got) and not writer_pass.unbooked_cost(_busy())
+    assert writer_pass.unbooked_cost(server_error())
+
+
+def test_a_refused_attempt_keeps_its_turn_number_and_only_attempts_that_may_have_cost_count(tmp_path):
+    """The resumable turn records a failed attempt ``failed``: a call tried again keeps its number (the attempt that
+    answers is the one a resumed pass compares), and the turn files count each failed attempt that may have cost
+    money as one unpriced call, a refusal the route made unsent as nothing."""
+    from unify.memory.writer_pass import WriterCallError
+
+    errors = [_busy, lambda: WriterCallError("writer call failed: X (http_503)", "http_503")]
+
+    async def model(messages, tools):
+        if errors:
+            raise errors.pop(0)()
+        return {"role": "assistant", "content": "r"}, "0.40"
+
+    folder = tmp_path / "turns" / "p1"
+    turn = ws.ResumableTurn(model, folder)
+    msgs = [{"role": "user", "content": "go"}]
+    for _ in range(2):
+        try:
+            asyncio.run(turn(msgs, []))
+        except WriterCallError:
+            pass
+    assert asyncio.run(turn(msgs, []))[1] == "0.40"
+    assert sorted(p.name for p in folder.glob("*.json")) == ["0.json"]
+    assert ws.turns_cost(folder)["writer"] == (Decimal("0.40"), 1) and ws.lost_calls(folder) == 0
+    # a call that fails for good (not tried again) stays failed, counted by what it may have cost
+    final = ws.ResumableTurn(model, tmp_path / "turns" / "p2")
+    errors.append(lambda: WriterCallError("writer call failed: X (http_403_cap)", writer_pass.REFUSED_CAP))
+    try:
+        asyncio.run(final(msgs, []))
+    except WriterCallError:
+        pass
+    assert final.n == 1 and ws.turns_cost(tmp_path / "turns" / "p2")["writer"] == (Decimal(0), 0)

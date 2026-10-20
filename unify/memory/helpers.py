@@ -1405,14 +1405,27 @@ async def _run_helper_turns(
             return
         # helpers' model calls run at the same time: each helper waits only for its own call
         pr.calls_in_flight.add(call)
-        try:
-            from .writer_pass import call_in_flight
+        from .writer_pass import call_in_flight, call_retrying, unbooked_cost
 
+        async def one_call() -> tuple[dict, str]:
             with call_in_flight(ctx.spend):
-                msg, usd = await asyncio.wait_for(
+                return await asyncio.wait_for(
                     turn(messages, tools),
                     timeout=max(0.1, ctx.deadline - time.monotonic()),
                 )
+
+        def book_unpriced() -> None:
+            doc["unknown_cost_calls"] += 1
+            ctx.spend.unknown += 1
+
+        try:
+            # a transient refusal (the route busy, a rate limit, a server error) is tried again, bounded
+            msg, usd = await call_retrying(
+                one_call,
+                book_unpriced=book_unpriced,
+                remaining=lambda: ctx.deadline - time.monotonic(),
+                room=ctx.usd_room,
+            )
         except asyncio.CancelledError:
             # cut mid-flight (stop, or the wall clock at the end of the pass): it may still have cost money
             doc["calls_cut"] += 1
@@ -1425,9 +1438,10 @@ async def _run_helper_turns(
             ctx.spend.unknown += 1
             doc["status"] = "pass wall clock reached during a model call"
             return
-        except Exception:
-            doc["unknown_cost_calls"] += 1  # a failed call may still have cost money
-            ctx.spend.unknown += 1
+        except Exception as exc:
+            if unbooked_cost(exc):  # a failed call may still have cost money (not one the route refused unsent)
+                doc["unknown_cost_calls"] += 1
+                ctx.spend.unknown += 1
             raise
         finally:
             pr.calls_in_flight.discard(call)

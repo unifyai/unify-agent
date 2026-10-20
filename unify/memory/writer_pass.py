@@ -5276,8 +5276,9 @@ class WriterPass:
                         break
                     except (
                         Exception
-                    ) as exc:  # the call may still have cost money; the conversation stays
-                        spend.unknown += 1
+                    ) as exc:  # the call may still have cost money (not one the route refused unsent); the conversation stays
+                        if unbooked_cost(exc):
+                            spend.unknown += 1
                         notes.append(
                             _redact(f"compaction call failed: {type(exc).__name__}")[
                                 :300
@@ -5313,19 +5314,33 @@ class WriterPass:
                     stop = f"the writer service's room of {self.cfg.usd_limit} USD for this pass reached"
                     cause(CODE_PASS_CAP)
                     break
-                try:
+                async def one_call() -> tuple[dict, str]:
                     with call_in_flight(spend):
-                        msg, usd = await asyncio.wait_for(
+                        return await asyncio.wait_for(
                             self.turn(messages, tools),
                             timeout=remaining(),
                         )
+
+                def book_unpriced() -> None:
+                    spend.unknown += 1
+
+                try:
+                    # a transient refusal (the route busy, a rate limit, a server error) is tried again, bounded
+                    msg, usd = await call_retrying(
+                        one_call,
+                        book_unpriced=book_unpriced,
+                        remaining=remaining,
+                        room=lambda: usd_room(self.cfg, spend),
+                        note=lambda text: notes.append(_redact(text)[:300]),
+                    )
                 except TimeoutError:
                     spend.unknown += 1
                     stop = f"pass deadline of {self.cfg.deadline_s} s reached during a model call"
                     cause(CODE_DEADLINE)
                     break
-                except Exception as exc:  # the call may still have cost money
-                    spend.unknown += 1
+                except Exception as exc:  # the call may still have cost money (not one the route refused unsent)
+                    if unbooked_cost(exc):
+                        spend.unknown += 1
                     errored = True
                     failed_as = (
                         CODE_ROUTE_NOT_IN_EFFECT
@@ -5956,7 +5971,177 @@ class WriterRouteError(RuntimeError):
 class WriterCallError(RuntimeError):
     """A writer call on the declared route failed. Its text is the exception's class and a fixed category only:
     the original text (an echoed request header, say) never reaches pass notes, error rows or logs.
+
+    ``category`` is that category (:func:`_call_failure`). ``transient``: a failure a later attempt may not get
+    (:data:`TRANSIENT_CATEGORIES`: the route's one-call-at-a-time refusal, a rate limit, a server error), tried again
+    by :func:`call_retrying`. ``no_cost``: the route refused the call before sending it on (its refusal body says so,
+    :func:`_route_refusal`), so the call cost nothing. ``counted``: the pass already booked this failed attempt.
     """
+
+    def __init__(self, text: str, category: str = "other") -> None:
+        super().__init__(text)
+        self.category = category
+        self.transient = transient_category(category)
+        self.no_cost = category in (REFUSED_BUSY, REFUSED_CAP)
+        self.counted = False
+
+
+#: A 403 whose body is the route's refusal for its cap (``reason`` ``*_cap_reached``, or a ``*_budget_exhausted``
+#: refusal that is not about a call in flight): the route's spend cap, as HTTP 402 is.
+REFUSED_CAP = "http_403_cap"
+#: A 403 whose body is the route's refusal because another call is in flight (``reason`` ``*_in_flight``, or a
+#: ``*_budget_exhausted`` refusal for a call in flight or a reserve not yet released): it holds only for now.
+REFUSED_BUSY = "http_403_busy"
+#: The categories a later attempt may not get: the route busy, a rate limit, a server error.
+TRANSIENT_CATEGORIES = frozenset({REFUSED_BUSY, "http_429"} | {f"http_{s}" for s in range(500, 600)})
+#: The categories that are the route's spend cap reached: HTTP 402, and a 403 whose body says it is the cap.
+CAP_CATEGORIES = frozenset({"http_402", REFUSED_CAP})
+#: A transient failure is tried again at most this many times in a row, waiting TRANSIENT_BACKOFF_S, then twice
+#: that, and so on (2 + 4 + 8 + 16 s), never past the pass's deadline.
+TRANSIENT_RETRIES = 4
+TRANSIENT_BACKOFF_S = 2.0
+
+
+def transient_category(category: str) -> bool:
+    return category in TRANSIENT_CATEGORIES
+
+
+def unbooked_cost(exc: BaseException) -> bool:
+    """Whether a failed call still has to be booked as one unpriced call: not when the route refused it before
+    sending it on (``no_cost``), nor when :func:`call_retrying` booked it already (``counted``)."""
+    return not (getattr(exc, "no_cost", False) or getattr(exc, "counted", False))
+
+
+def _error_object(value: Any) -> dict | None:
+    """The refusal's error object in a parsed body: ``{"error": {...}}`` or the inner object itself."""
+    if not isinstance(value, dict):
+        return None
+    inner = value.get("error")
+    obj = inner if isinstance(inner, dict) else value
+    if isinstance(obj.get("type"), str) or isinstance(obj.get("reason"), str):
+        return obj
+    return None
+
+
+#: How much of an exception's text is searched for the refusal body, from how many opening braces, and how long
+#: one object may be (a refusal body is a few hundred characters).
+_REFUSAL_SCAN_CHARS = 65536
+_REFUSAL_STARTS = 64
+_REFUSAL_OBJECT_CHARS = 8192
+
+
+def _objects_in_text(text: str) -> Iterator[dict]:
+    """The brace-balanced objects in *text* that parse as JSON or as a Python literal (a client may show the body
+    either way), first to last, within the bounds above; literals only, nothing is run."""
+    text = text[:_REFUSAL_SCAN_CHARS]
+    start = text.find("{")
+    starts = 0
+    while start != -1 and starts < _REFUSAL_STARTS:
+        starts += 1
+        depth = 0
+        for end in range(start, min(len(text), start + _REFUSAL_OBJECT_CHARS)):
+            if text[end] == "{":
+                depth += 1
+            elif text[end] == "}":
+                depth -= 1
+                if depth == 0:
+                    piece = text[start : end + 1]
+                    for parse in (json.loads, ast.literal_eval):
+                        try:
+                            value = parse(piece)
+                        except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+                            continue
+                        if isinstance(value, dict):
+                            yield value
+                        break
+                    break
+        start = text.find("{", start + 1)
+
+
+def _route_refusal(exc: BaseException) -> str | None:
+    """``"busy"`` or ``"cap"`` when *exc*, or an exception it was raised from or during, carries the route's refusal
+    body (``{"error": {"type", "message", "reason"?}}``, from the client's parsed body, its response, or its text);
+    else None. Read from the body, never from the status code: an explicit ``reason`` first (``*_in_flight`` busy,
+    ``*_cap_reached`` cap), then a ``*_budget_exhausted`` type, busy when its message is about a call in flight or a
+    reserve not yet released, else the cap. Only the kind is returned; no text of the body is kept."""
+    seen: set[int] = set()
+    e: BaseException | None = exc
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        found: list[dict] = []
+        body = _error_object(getattr(e, "body", None))
+        if body is not None:
+            found.append(body)
+        response = getattr(e, "response", None)
+        if response is not None and callable(getattr(response, "json", None)):
+            try:
+                parsed = _error_object(response.json())
+            except Exception:  # noqa: BLE001 - a response not read, or not JSON: its text below
+                parsed = None
+            if parsed is not None:
+                found.append(parsed)
+        texts = [getattr(e, "message", None), *getattr(e, "args", ())]
+        for text in texts:
+            if isinstance(text, str):
+                found.extend(o for o in map(_error_object, _objects_in_text(text)) if o is not None)
+        for obj in found:
+            kind = _refusal_kind(obj)
+            if kind is not None:
+                return kind
+        e = e.__cause__ or e.__context__
+    return None
+
+
+def _refusal_kind(obj: dict) -> str | None:
+    reason = obj.get("reason")
+    if isinstance(reason, str):
+        if reason.endswith("_in_flight"):
+            return "busy"
+        if reason.endswith("_cap_reached"):
+            return "cap"
+    kind = obj.get("type")
+    if isinstance(kind, str) and kind.endswith("_budget_exhausted"):
+        message = obj.get("message")
+        text = message.lower() if isinstance(message, str) else ""
+        return "busy" if ("in flight" in text or "release race" in text) else "cap"
+    return None
+
+
+async def call_retrying(
+    call: Callable[[], Any],
+    *,
+    book_unpriced: Callable[[], None],
+    remaining: Callable[[], float],
+    room: Callable[[], bool] | None = None,
+    note: Callable[[str], None] | None = None,
+    sleep: Callable[[float], Any] = asyncio.sleep,
+) -> Any:
+    """``await call()``, tried again after a transient :class:`WriterCallError` (:data:`TRANSIENT_CATEGORIES`) at
+    most :data:`TRANSIENT_RETRIES` times in a row, waiting :data:`TRANSIENT_BACKOFF_S`, doubled each time. Each failed
+    attempt that is tried again is booked first: nothing when the route refused it before sending it on
+    (``no_cost``), else one unpriced call (*book_unpriced*). No new attempt starts past the pass's deadline
+    (*remaining*) or its room (*room*, checked with the failed attempt booked); then, and on any other failure, the
+    error is raised (``counted`` when it was booked here)."""
+    attempt = 0
+    while True:
+        try:
+            return await call()
+        except WriterCallError as exc:
+            wait = TRANSIENT_BACKOFF_S * (2**attempt)
+            if not exc.transient or attempt >= TRANSIENT_RETRIES or remaining() <= wait:
+                raise
+            if not exc.no_cost:
+                book_unpriced()
+            exc.counted = True
+            if room is not None and not room():
+                raise
+            attempt += 1
+            if note is not None:
+                note(
+                    f"model call refused for now ({exc.category}); tried again after {wait:g} s "
+                    f"({attempt} of {TRANSIENT_RETRIES})",
+                )
+            await sleep(wait)
 
 
 _CLASS_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
@@ -6017,6 +6202,10 @@ def _call_failure(exc: BaseException) -> tuple[str, str, str]:
         and 100 <= status <= 599
     ):
         category = f"http_{status}"
+        if status == 403:
+            # the route's own refusal, told apart by its body only (never by the status code): busy for now, or the cap
+            kind = _route_refusal(exc)
+            category = {"busy": REFUSED_BUSY, "cap": REFUSED_CAP}.get(kind or "", category)
     elif "timeout" in lowered:
         category = "timeout"
     elif "connect" in lowered:
@@ -6235,7 +6424,8 @@ def unillm_turn(
     turn (its cost then counts as unknown). Before each call, a pure check of unillm's request preparation
     in this context refuses (no call made) unless it sends to the route; the same preparation serves every
     retry. A failed call on the route raises :class:`WriterCallError` naming only the exception's class and a
-    fixed category (``http_<status>``, ``timeout``, ``connection``, ``rate_limit``, ``auth``, ``other``), so
+    fixed category (``http_<status>``, ``timeout``, ``connection``, ``rate_limit``, ``auth``, ``other``; a 403
+    whose body is the route's own refusal is :data:`REFUSED_BUSY` or :data:`REFUSED_CAP`), so
     no error text (an echoed header, say) reaches pass notes, error rows or logs. unillm's own copies of that
     text are redacted too: its ``unillm.retry`` warnings by a filter on that logger, and the writer's per-call log
     file (``UNILLM_LOG_DIR``) by a rewrite once unillm finalises it; the route refuses to start while unillm
@@ -6330,7 +6520,7 @@ def unillm_turn(
                 timed_out
             ):  # still a timeout to the pass, which treats it as its deadline
                 raise TimeoutError("a writer call timed out")
-            raise WriterCallError(f"writer call failed: {name} ({category}){detail}")
+            raise WriterCallError(f"writer call failed: {name} ({category}){detail}", category)
         if any(misrouted):
             raise WriterRouteError(
                 "a writer call did not take the writer's declared route",

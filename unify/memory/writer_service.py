@@ -26,7 +26,8 @@ exactly one such turn in the calling process (deterministic step mode, for the o
 at its worst case; it books that whole room, no call of its writer or helpers starts past it, counting unpriced and
 in-flight calls at the worst case, and it settles after it from the writer lane's journal plus its helpers' priced
 calls, or its own figures, or, when it ended with no report, its turn files), and each pass's wall clock. The key proxy's writer-lane cap applies independently: a call the proxy
-refuses for its cap (HTTP 402 or 403) is the cap reached.
+refuses for its cap (HTTP 402, or a 403 whose refusal body says it is the cap) is the cap reached; a refusal for now
+(another call in flight, a rate limit, a server error) is tried again, bounded, and never stops the service.
 
 **Resumable passes.** Before each model call of a pass (the writer's and each helper's), ``turns/<pass>/<n>.json`` is
 written ``pending`` with the conversation so far and the pass's inputs; after it, ``done`` with the reply and its
@@ -578,7 +579,7 @@ def _turn_files(folder: Path | str, *, since: Optional[str] = None) -> list[tupl
                 doc = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-            if not isinstance(doc, dict) or doc.get("state") not in ("pending", "done"):
+            if not isinstance(doc, dict) or doc.get("state") not in ("pending", "done", "failed"):
                 continue
             if since is not None and str(doc.get("at") or "") < since:
                 continue
@@ -588,13 +589,27 @@ def _turn_files(folder: Path | str, *, since: Optional[str] = None) -> list[tupl
 
 def turns_cost(folder: Path | str, *, since: Optional[str] = None) -> dict[str, tuple[Decimal, int]]:
     """What a pass's turns cost by their own files, per lane: ``(known USD, unpriced calls)``, a done call with a
-    price counting its USD, a pending (lost) or unpriced one counting as unpriced."""
+    price counting its USD, a pending (lost) or unpriced one counting as unpriced; plus, at each call, its failed
+    attempts that may have cost money (``failed_unpriced``; an attempt the route refused before sending it on cost
+    nothing). A call whose last attempt failed counts only those."""
     out = {"writer": (Decimal(0), 0), "helpers": (Decimal(0), 0)}
     for lane, doc in _turn_files(folder, since=since):
         known, unpriced = out[lane]
-        usd = _decimal(doc.get("usd")) if doc.get("state") == "done" else None
+        unpriced += _failed_unpriced(doc)
+        state = doc.get("state")
+        if state == "failed":
+            out[lane] = (known, unpriced)
+            continue
+        usd = _decimal(doc.get("usd")) if state == "done" else None
         out[lane] = (known + usd, unpriced) if usd is not None else (known, unpriced + 1)
     return out
+
+
+def _failed_unpriced(doc: dict) -> int:
+    try:
+        return max(0, int(doc.get("failed_unpriced") or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def lost_calls(folder: Path | str) -> int:
@@ -709,6 +724,8 @@ class ResumableTurn:
                 return dict(saved["reply"]), "0"
             elif saved.get("state") == "pending":
                 self.killed.append(f"{self.folder.name}/{n}")
+        # the failed attempts at this call that may have cost money, carried to its file whatever it ends as
+        failed = _failed_unpriced(saved) if saved is not None and saved.get("digest") == digest else 0
         self._write(
             n,
             {
@@ -719,9 +736,31 @@ class ResumableTurn:
                 "messages": messages,
                 "inputs": self.inputs,
                 "at": stamp(_now()),
+                **({"failed_unpriced": failed} if failed else {}),
             },
         )
-        msg, usd = await self.turn(messages, tools)
+        try:
+            msg, usd = await self.turn(messages, tools)
+        except Exception as exc:
+            # a failed call (not one cut mid-flight, which stays pending: billed and lost): recorded failed, an
+            # unpriced call unless the route refused it before sending it on; a call that may be tried again keeps
+            # its number, so the attempt that answers is the one a resumed pass compares
+            no_cost = bool(getattr(exc, "no_cost", False))
+            self._write(
+                n,
+                {
+                    "v": 1,
+                    "state": "failed",
+                    "turn": n,
+                    "digest": digest,
+                    "no_cost": no_cost,
+                    "failed_unpriced": failed + (0 if no_cost else 1),
+                    "at": stamp(_now()),
+                },
+            )
+            if getattr(exc, "transient", False):
+                self.n = n
+            raise
         self._write(
             n,
             {
@@ -733,6 +772,7 @@ class ResumableTurn:
                 "usd": usd,
                 "usage": msg.get("usage") if isinstance(msg, dict) else None,
                 "at": stamp(_now()),
+                **({"failed_unpriced": failed} if failed else {}),
             },
         )
         return msg, usd
@@ -1319,11 +1359,15 @@ def pass_reservation(settings: Any, effort: str) -> Decimal:
 
 
 def _proxy_refused(report: Any) -> bool:
-    """Whether a pass ended because the key proxy refused a writer call for its cap (HTTP 402 or 403)."""
+    """Whether a pass ended because the key proxy refused a writer call for its cap: HTTP 402, or a 403 whose refusal
+    body says it is the cap (:data:`.writer_pass.CAP_CATEGORIES`). A 403 for a call in flight, a rate limit or a
+    server error is not the cap (the pass tried it again, bounded), and neither is a 403 whose body says nothing."""
+    from .writer_pass import CAP_CATEGORIES
+
     outcome = getattr(report, "outcome", None)
     text = " ".join(str(r) for r in (getattr(outcome, "reasons", None) or ()))
     text += " " + " ".join(str(n) for n in (getattr(report, "notes", None) or ()))
-    return "(http_402)" in text or "(http_403)" in text
+    return any(f"({category})" in text for category in CAP_CATEGORIES)
 
 
 async def _run_pass(

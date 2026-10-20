@@ -1940,3 +1940,165 @@ def test_a_status_dropped_by_a_client_re_raise_is_found_in_the_chain():
     except Exception as exc:
         name, category, detail = writer_pass._call_failure(exc)
     assert (name, category, detail) == ("Exception", "http_403", "")
+
+
+# --- the route's refusals: busy for now, or its cap, told apart by the refusal body only ----------------------------
+
+#: The key proxy's writer-lane refusals in the shape it sends them (HTTP 403 with this body)
+_IN_FLIGHT = {
+    "code": 403,
+    "type": "benchmark_lane_budget_exhausted",
+    "message": "benchmark budget: another writer call is in flight (one at a time)",
+}
+_CAP = {
+    "code": 403,
+    "type": "benchmark_lane_budget_exhausted",
+    "message": "benchmark budget: the spend plus one call's reserve reached this cell's ceiling of USD 210.00",
+}
+_RACE = {
+    "code": 403,
+    "type": "benchmark_helper_budget_exhausted",
+    "message": "release race: an ended helper call's reserve was not yet released; this cell's cap is USD 210.00",
+}
+
+
+def _status_error(status: int, text: str = "", **attrs):
+    class APIStatusError(Exception):
+        status_code = status
+
+    exc = APIStatusError(text)
+    for k, v in attrs.items():
+        setattr(exc, k, v)
+    return exc
+
+
+def _category(exc: BaseException) -> str:
+    try:
+        raise exc
+    except Exception as raised:
+        return writer_pass._call_failure(raised)[1]
+
+
+@pytest.mark.parametrize(
+    "exc, want",
+    [
+        # the model client's text, the body as JSON (litellm's provider error)
+        (_status_error(403, "litellm.PermissionDeniedError: OpenrouterException - " + json.dumps({"error": _IN_FLIGHT})), "http_403_busy"),
+        (_status_error(403, "litellm.PermissionDeniedError: OpenrouterException - " + json.dumps({"error": _CAP})), "http_403_cap"),
+        # the body as a Python literal (an SDK's "Error code: 403 - {...}")
+        (_status_error(403, f"Error code: 403 - {({'error': _IN_FLIGHT})!r}"), "http_403_busy"),
+        # the client's parsed body (its inner error object) and its response
+        (_status_error(403, "denied", body=dict(_CAP)), "http_403_cap"),
+        (_status_error(403, "denied", response=SimpleNamespace(json=lambda: {"error": _IN_FLIGHT})), "http_403_busy"),
+        # an explicit reason field wins over the message
+        (_status_error(403, json.dumps({"error": {**_CAP, "reason": "lane_in_flight"}})), "http_403_busy"),
+        (_status_error(403, json.dumps({"error": {**_IN_FLIGHT, "reason": "lane_cap_reached"}})), "http_403_cap"),
+        # the helper lane's release race is for now too
+        (_status_error(403, json.dumps({"error": _RACE})), "http_403_busy"),
+        # no refusal body: the status code alone says neither
+        (_status_error(403, "forbidden"), "http_403"),
+        (_status_error(403, json.dumps({"error": {"code": 403, "message": "another call is in flight"}})), "http_403"),
+        (_status_error(403, "denied", response=SimpleNamespace(json=lambda: (_ for _ in ()).throw(ValueError()))), "http_403"),
+        (_status_error(402, json.dumps({"error": _IN_FLIGHT})), "http_402"),
+        (_status_error(429, "slow down"), "http_429"),
+    ],
+    ids=[
+        "json-text-busy", "json-text-cap", "literal-text-busy", "body-cap", "response-busy", "reason-busy",
+        "reason-cap", "release-race", "no-body", "body-without-refusal-type", "unreadable-response", "402", "429",
+    ],
+)
+def test_a_403_is_busy_or_the_cap_only_by_its_refusal_body(exc, want):
+    assert _category(exc) == want
+
+
+def test_a_refusal_body_dropped_with_its_code_by_a_client_re_raise_is_found_in_the_chain():
+    inner = _status_error(403, json.dumps({"error": _IN_FLIGHT}))
+    try:
+        try:
+            raise inner
+        except Exception as e:
+            raise Exception("the model call failed") from e  # a client re-raising without the code or the body
+    except Exception as exc:
+        assert writer_pass._call_failure(exc) == ("Exception", "http_403_busy", "")
+
+
+def test_a_refused_routed_call_says_only_its_kind_and_whether_it_cost_anything(monkeypatch, restore_unillm):
+    """The refusal's text (which a route could make echo anything) never reaches the error: only the category, and
+    the flags the pass books it by: busy is transient and cost nothing; the cap cost nothing and is not retried; a 503
+    is transient and may have cost money."""
+    secretish = f"Bearer {WRITER_TOKEN}"
+    cases = [
+        ({"error": {**_IN_FLIGHT, "echo": secretish}}, 403, "http_403_busy", True, True),
+        ({"error": {**_CAP, "echo": secretish}}, 403, "http_403_cap", False, True),
+        ({"error": {"echo": secretish}}, 503, "http_503", True, False),
+    ]
+    for body, status, category, transient, no_cost in cases:
+
+        def on_generate(kw, body=body, status=status):
+            raise _status_error(status, "OpenrouterException - " + json.dumps(body))
+
+        _fake_client(monkeypatch, on_generate)
+        turn = unillm_turn("openai/gpt-6-sol", "low", route=WriterRoute(WRITER_BASE, SecretStr(WRITER_TOKEN)))
+        with pytest.raises(writer_pass.WriterCallError) as info:
+            _run(turn)
+        err = info.value
+        assert str(err) == f"writer call failed: APIStatusError ({category})"
+        assert (err.category, err.transient, err.no_cost) == (category, transient, no_cost)
+        assert WRITER_TOKEN not in str(err) and err.__context__ is None and err.__cause__ is None
+
+
+@pytest.fixture
+def refusing_route(monkeypatch, actor_gateway, restore_unillm):
+    """A local HTTP server standing in for the key proxy: every POST gets the next scripted (status, body). unillm's
+    and the model client's real path above it, with no network beyond the loopback and no key."""
+    import http.server
+
+    from unillm.settings import SETTINGS as unillm_settings
+
+    monkeypatch.setenv("UNILLM_CACHE", "false")
+    monkeypatch.setattr(unillm_settings, "UNILLM_CACHE", False)
+    script: list[tuple[int, dict]] = []
+    seen: list[str] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 - the stdlib's name
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            seen.append(self.path)
+            status, body = script.pop(0) if script else (500, {"error": {"code": 500}})
+            data = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield SimpleNamespace(
+            base=f"http://127.0.0.1:{server.server_address[1]}/api/v1", script=script, seen=seen
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize(
+    "body, category",
+    [({"error": _IN_FLIGHT}, "http_403_busy"), ({"error": _CAP}, "http_403_cap"), ({"error": {"code": 403}}, "http_403")],
+    ids=["call-in-flight", "cap", "no-refusal-body"],
+)
+def test_the_real_client_path_tells_the_proxys_refusals_apart_by_their_body(refusing_route, body, category):
+    """The key proxy's 403 bodies through unillm and the model client as they are (no fake transport): the refusal
+    body reaches the error chain, so a call in flight is busy for now, the cap is the cap, and a 403 that says
+    neither is only a 403."""
+    refusing_route.script.extend([(403, body)] * 8)  # a client's own retries see the same answer
+    turn = unillm_turn(REAL_MODEL, "low", route=WriterRoute(refusing_route.base, SecretStr(WRITER_TOKEN)))
+    with pytest.raises(writer_pass.WriterCallError) as info:
+        asyncio.run(asyncio.wait_for(turn(_MESSAGES, _TOOLS), 60))
+    assert info.value.category == category, str(info.value)
+    assert refusing_route.seen, "the call never reached the route"
