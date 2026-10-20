@@ -129,7 +129,9 @@ def test_two_ensure_service_calls_at_once_leave_exactly_one_service(svc):
     )
     holders = ws.lock_holders(ws.service_dir(svc.home) / ws.LOCK_FILE)
     assert holders == [doc["pid"]]
-    assert ws.group_pids(doc["pgid"], since=doc["proc_start"]) == [doc["pid"]]
+    # the service's group holds the service alone once the short-lived children of its idle loop (a ledger read's
+    # subprocess, say) have ended; a second service would never leave it
+    _until(lambda: ws.group_pids(doc["pgid"], since=doc["proc_start"]) == [doc["pid"]], timeout=30)
     # a third call finds it running
     assert _ensure(svc.home).status == "running"
     assert len(_events(svc.home, "start")) == 1
