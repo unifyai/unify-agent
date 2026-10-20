@@ -410,7 +410,12 @@ def request_doc(
     from unify.actor.code_act_actor import _session_fork_source
 
     inner = getattr(handle, "_inner", None) or handle
-    source, why = _session_fork_source(inner, getattr(handle, "_actor", None))
+    from .switch import in_episode
+
+    # UNIFY_MEMORY_IN_EPISODE=on: a compaction was a pause (its segment fork covered the cells before it), so the forks
+    # after it continue the compacted conversation; off, a compacted session is not forked, as built
+    kw = {"allow_compressed": True} if in_episode(_settings()) else {}
+    source, why = _session_fork_source(inner, getattr(handle, "_actor", None), **kw)
     if source is None:
         return None, why
     return request_from_source(eid, source, url, key, parts=parts, instruction=instruction)

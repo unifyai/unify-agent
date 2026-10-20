@@ -44,6 +44,9 @@ from .item_states import (
 )
 from .signals import _CONTRARY, _SUPPORT, REGIME_SOURCES, Signal
 
+#: The status rule of an item the writer retired or superseded with a decision (``attention.item_decisions``).
+WRITER_RULE = "writer"
+
 K_STABLE = 3
 MIN_EPISODES = 2  # one episode never decides a status
 NO_SIGNAL_REGIME = "none"
@@ -853,6 +856,7 @@ def next_records(
     landed: Mapping[str, Mapping] | None = None,
     label_inputs: Mapping[str, Any] | None = None,
     pins: Mapping[tuple[str, str], list] | None = None,
+    writer_decisions: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[dict[str, dict], dict[str, str]]:
     """The map of every item of the tree (*items*: id -> kind) and the status changes against *prev*.
 
@@ -860,6 +864,11 @@ def next_records(
     counts, :func:`use_pins`) an item's use counts for its current version when it was served under one of that
     version's commits, wherever the episode started (:func:`served`), and only its calls under those commits
     (:func:`version_use`); without them, by the episode's first pin, as built.
+
+    With *writer_decisions* (``UNIFY_MEMORY_ATTENTION_LEDGER=on``: item -> what the writer's latest decision naming it
+    says, :func:`.attention.item_decisions`) an item the writer retired is ``retired`` (rule ``writer``) and one an
+    entry about it was merged into another item is ``retired`` with ``superseded_by`` that item; a later ``new_item``,
+    ``changed_item`` or ``note`` naming it undoes that. The decisions are read again each time; None: as built.
 
     With *label_inputs* (``UNIFY_MEMORY_IMPURE_ITEMS=on``, :func:`label_inputs`: ``tests`` and ``failures`` by item,
     ``pass_index`` by pass id) every record carries its evidence label (:mod:`.item_label`), built last, from its
@@ -998,6 +1007,10 @@ def next_records(
         kept = old.get("status") == RETIRED and old.get("status_rule") == CURATE_RULE
         prior = old.get("status") if (same or kept) else None
         prior_rule = old.get("status_rule") if (same or kept) else None
+        wd = (writer_decisions or {}).get(item) if writer_decisions is not None else None
+        if writer_decisions is not None and prior_rule == WRITER_RULE:
+            # the writer's decisions are read again each time: a status they gave is never carried over
+            prior, prior_rule = None, None
         mine = [
             version_use(_as_item(f, item, group), item, since.get(item, set()), pins)
             for f in facts
@@ -1020,6 +1033,12 @@ def next_records(
         elif item in retired:
             status, rule, evidence = RETIRED, CURATE_RULE, []
             reason = f"retired: {retired[item].get('reason') or ''}".strip()
+        elif isinstance(wd, Mapping) and wd.get("status") in ("retired", "superseded"):
+            status, rule, evidence = RETIRED, WRITER_RULE, []
+            by = wd.get("by") if wd.get("status") == "superseded" and isinstance(wd.get("by"), str) else None
+            reason = (f"superseded by {by}" if by else "retired") + f" by the writer ({wd.get('ref') or 'a decision'})"
+            if by:
+                rec["superseded_by"] = by
         if (
             status in (ON_TRIAL, ADOPTED)
             and items[item] == "function"
@@ -1071,6 +1090,12 @@ def _json_list(raw: Any) -> list:
     except ValueError:
         return []
     return value if isinstance(value, list) else []
+
+
+def _writer_decisions(stores: Any) -> dict[str, dict]:
+    from . import attention
+
+    return attention.item_decisions(stores.paths.home, state_dir=stores.paths.state_dir)
 
 
 def use_pins(ev: EvidenceStore) -> dict[tuple[str, str], list[tuple[str, int, int, int]]]:
@@ -1223,9 +1248,12 @@ def consolidate_records(
     clock: Any = None,
     captures: Any = None,
     labels: bool = False,
+    writer_decisions: bool = False,
 ) -> dict:
     """The item records of ``main``'s head, after a consolidation's passes. With *labels*
-    (``UNIFY_MEMORY_IMPURE_ITEMS=on``) every record carries its evidence label (:func:`label_inputs`).
+    (``UNIFY_MEMORY_IMPURE_ITEMS=on``) every record carries its evidence label (:func:`label_inputs`). With
+    *writer_decisions* (``UNIFY_MEMORY_ATTENTION_LEDGER=on``) the writer's retire and merge decisions set the records'
+    statuses (:func:`next_records`).
 
     The bisects of one call share :data:`.item_bisect.BISECT_BUDGET_S` (*budget_s*), and *stop* (a callable, the
     worker's SIGTERM) is checked between probe runs. An item they do not reach is ``{"skipped": "budget"}`` (or
@@ -1325,6 +1353,8 @@ def consolidate_records(
         **({"label_inputs": label_inputs(stores, checker_visible=checker_visible)} if labels else {}),
         # UNIFY_MEMORY_IN_EPISODE=on: the pin each use was served under (none recorded: as built)
         **({"pins": pins} if (pins := use_pins(ev)) else {}),
+        # UNIFY_MEMORY_ATTENTION_LEDGER=on: what the writer's decisions retired or superseded
+        **({"writer_decisions": _writer_decisions(stores)} if writer_decisions else {}),
     )
     for (
         item,

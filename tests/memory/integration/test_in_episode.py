@@ -592,3 +592,93 @@ def test_a_segment_fork_still_running_at_the_end_settles_and_its_entry_comes_aft
     assert entry.refs.episodes == (EID,) and entry.refs.segment == 1
     assert entry.created_at > ended.isoformat(timespec="milliseconds").replace("+00:00", "Z")
     own.close()
+
+
+# --- the conformance findings: a segment is a citable source; the forks after a compaction run --------------------------
+
+
+def test_the_gate_takes_a_recorded_segment_as_a_source_only_with_its_dir(tmp_path, monkeypatch):
+    from unify.memory.gate import Gate
+    from unify.memory.integration import consolidate
+
+    run = _Run(tmp_path / "home")
+    run.paths.state_dir.mkdir(parents=True)
+    run.code = ["x = 1"]
+    ep, red = run.partial_episode()
+    segments.write_snapshot(run.paths.state_dir, f"{EID}.s1", ep, red)
+    gate = Gate.__new__(Gate)
+    gate.segments_dir = run.paths.state_dir
+    assert gate._segment_recorded(f"{EID}.s1")
+    assert not gate._segment_recorded(f"{EID}.s2") and not gate._segment_recorded(EID)
+    gate.segments_dir = None
+    assert not gate._segment_recorded(f"{EID}.s1")
+    # the pass's gate gets the dir only under UNIFY_MEMORY_IN_EPISODE
+    stores = SimpleNamespace(paths=run.paths)
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
+    for on in ("on", "off"):
+        monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_IN_EPISODE", on)
+        fields = consolidate.learning_gate_fields(SETTINGS, stores)
+        assert ("segments_dir" in fields) is (on == "on")
+    assert "segments_dir" not in consolidate.learning_gate_fields(SETTINGS)
+
+
+def test_after_a_compaction_the_forks_continue_the_compacted_session_only_in_episode(monkeypatch):
+    from tests import cache_discipline_helpers as h
+    from unify.actor import code_act_actor as caa
+    from unify.common._async_tool import cache_discipline as cd
+
+    client = h.new_client("You are a scripted actor.")
+    client._messages.extend([{"role": "user", "content": "(the compacted summary)"}, {"role": "user", "content": "go"}])
+    cd.record_sent_request(client, list(client.messages), {"tools": [{"type": "function", "function": {"name": "t"}}],
+                                                           "tool_choice": "auto"})  # fmt: skip
+    inner = SimpleNamespace(_client=client, _compression=SimpleNamespace(count=1))
+    actor = SimpleNamespace(_preprocess_msgs=None)
+    assert caa._session_fork_source(inner, actor) == (None, "the session's history was compressed")
+    source, why = caa._session_fork_source(inner, actor, allow_compressed=True)
+    assert why is None and source["sent_messages"][-1]["content"] == "go"
+    # the fork asks for it only under the switch (off: the call as built, which test doubles of two arguments take)
+    seen: list = []
+
+    def fake(i, a, **kw):
+        seen.append(kw)
+        return None, "stop"
+
+    monkeypatch.setattr(caa, "_session_fork_source", fake)
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
+    for on in ("off", "on"):
+        monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_IN_EPISODE", on)
+        fork_mod.request_doc(SimpleNamespace(_inner=inner, _actor=actor), EID, "http://127.0.0.1:1", "t")
+    assert seen == [{}, {"allow_compressed": True}]
+
+
+# --- the replay's recorded pauses -----------------------------------------------------------------------------------------
+
+
+def test_recorded_segments_cut_a_recorded_episode_at_its_pauses(tmp_path):
+    from tests.memory.integration.test_trajectory import FIRST, FOLLOW, _lines
+    from unify.memory.episodes import Action
+    from unify.memory.integration import trajectory
+
+    lines = _lines()
+    cells = [t.cell for t in trajectory.timed_cells(trajectory.fold(lines))]
+    run = _Run(tmp_path / "home")
+    run.paths.state_dir.mkdir(parents=True)
+    ep, red = run.partial_episode()
+    ep.cells, ep.transcript = cells, lines
+    ep.request = [FIRST, FOLLOW]
+    ep.actions = [Action(0, "files", "read", ["a"], {}, "x", "ok", "read"),
+                  Action(1, "files", "write", ["b", "y"], {}, None, "ok", "write")]  # fmt: skip
+    # pauses after cell 0 and after cell 1; a repeated point makes no segment
+    segs = ie_mod.recorded_segments(run.paths, ep, [0, 0, 1], red)
+    assert [(s.name, s.n, s.cells) for s in segs] == [(f"{EID}.s1", 1, (0, 0)), (f"{EID}.s2", 2, (1, 1))]
+    assert segs[0].staging == run.paths.state_dir / "memory-staging" / f"{EID}.s1"
+    assert "`cell:0`" in segs[0].instruction and "`cell:1`" in segs[1].instruction
+    first = segments.load_snapshot(run.paths.state_dir, f"{EID}.s1")
+    assert [c.index for c in first.cells] == [0] and [a.cell for a in first.actions] == [0]
+    assert first.request == [FIRST] and first.replies == []  # the follow-up came after the pause
+    second = segments.load_snapshot(run.paths.state_dir, f"{EID}.s2")
+    assert [c.index for c in second.cells] == [0, 1] and second.request == [FIRST]
+    assert "`cell:0`" in segs[0].parts
+    # again: the records are kept, the same segments come back
+    again = ie_mod.recorded_segments(run.paths, ep, [0, 1], red)
+    assert [(s.name, s.cells) for s in again] == [(s.name, s.cells) for s in segs]

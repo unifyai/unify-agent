@@ -750,6 +750,8 @@ class Sources(Protocol):
 
     def record_entries(self) -> list[dict]: ...
 
+    # optional: seq -> the pass the writer was delivered it in (record_deliveries); a source without it delivers nothing
+
 
 #: The capture-row checks that make ``own_check_failed`` (:mod:`.captures` ``own_check``).
 def own_check_failed(row: Mapping[str, Any]) -> bool:
@@ -937,20 +939,47 @@ class Ledger:
                     out += self._reopen_rows(state, made[0]["entry"], items, s.arrived_at)
             # repeated use since the writer last read the item
             out += self._repeated_use_rows(state, sources.episode_calls())
-            # the gate's refusals of drafts
+            # the gate's refusals of drafts: a landing the gate refused in UNREADABLE_AFTER_MISSES passes is not handed
+            # again (its entry ends unreadable, with the passes as evidence) until new evidence reopens it
+            refused_in: dict[str, list[str]] = {}
             for g in sources.gate_refusals():
                 refs_base = Refs(episodes=g.episodes, passes=(g.pass_id,))
-                if g.whole_pass:
-                    out += self._create_rows(state, "deferred", replace(refs_base, items=g.items), ("gate", g.pass_id, "*"))
                 for item in g.items:
-                    out += self._create_rows(state, "deferred", replace(refs_base, items=(item,)), ("gate", g.pass_id, item))
-            # messages to the writer on the run record
-            out += self._message_rows(state, sources.record_entries())
+                    refused_in.setdefault(item, []).append(g.pass_id)
+                rounds = max((len(refused_in[i]) for i in g.items), default=1)
+                made: list[dict] = []
+                if g.whole_pass:
+                    made += self._create_rows(state, "deferred", replace(refs_base, items=g.items), ("gate", g.pass_id, "*"))
+                for item in g.items:
+                    made += self._create_rows(state, "deferred", replace(refs_base, items=(item,)), ("gate", g.pass_id, item))
+                out += made
+                if rounds >= UNREADABLE_AFTER_MISSES:
+                    passes = sorted({p for i in g.items for p in refused_in[i]})
+                    for row in made:
+                        if row["op"] != "create":
+                            continue
+                        evidence = f"the gate refused this landing in {rounds} passes: {', '.join(passes)}"
+                        out.append({"op": "unreadable", "entry": row["entry"], "pass_id": None, "evidence": evidence,
+                                    "at": row["at"]})  # fmt: skip
+                        state[row["entry"]] = replace(state[row["entry"]], state="unreadable", why=evidence)
+            # messages to the writer on the run record; one the writer was already delivered in a pass is read there
+            delivered = getattr(sources, "record_deliveries", None)
+            out += self._message_rows(state, sources.record_entries(), delivered() if callable(delivered) else {})
             self._write(out)
             new = [state[e] for e in state if e not in before]
         return new
 
-    def _message_rows(self, state: dict[str, AttentionEntry], entries: list[dict]) -> list[dict]:
+    def _message_rows(
+        self,
+        state: dict[str, AttentionEntry],
+        entries: list[dict],
+        delivered: Mapping[int, str] | None = None,
+    ) -> list[dict]:
+        """``message`` entries for the record entries addressed to the writer. One the writer was already delivered in
+        a pass (*delivered*: seq -> that pass's id, from the record's delivery log) is created read in that pass and
+        closed there (``nothing_to_keep``, its reason the delivery): the writer took it as it arrived, and a later pass
+        could not be delivered it again."""
+        delivered = delivered or {}
         out: list[dict] = []
         writer_seqs = {
             r.get("seq")
@@ -977,7 +1006,18 @@ class Ledger:
                 captures=caps,
                 record_seq=seq,
             )
-            out += self._create_rows(state, "message", refs, (seq,), at=r.get("ts") if isinstance(r.get("ts"), str) else None)
+            made = self._create_rows(state, "message", refs, (seq,), at=r.get("ts") if isinstance(r.get("ts"), str) else None)
+            out += made
+            pid = delivered.get(seq)
+            if made and made[0]["op"] == "create" and isinstance(pid, str) and pid:
+                eid, at = made[0]["entry"], self.now()
+                out.append({"op": "read", "entry": eid, "pass_id": pid, "parts_read": ["entry"], "share": "1.00", "at": at})
+                out.append({"op": "close", "entry": eid, "pass_id": pid, "decision": "nothing_to_keep", "items": [],
+                            "reason_ref": f"record:delivered#{seq}", "at": at})  # fmt: skip
+                e = state[eid]
+                state[eid] = replace(e, state="closed", pass_id=pid, parts_read=("entry",), share="1.00",
+                                     first_read_at=at, decision="nothing_to_keep", reason_ref=f"record:delivered#{seq}",
+                                     closed_at=at)  # fmt: skip
         return out
 
     def _last_read_of(self, state: dict[str, AttentionEntry]) -> dict[str, dt.datetime]:
@@ -1572,25 +1612,79 @@ def pass_reads(state_dir: Path | str, pass_id: str) -> PassReads:
         return PassReads()
 
 
-def delivered_seqs(home: Path | str, pass_id: str, agent: str = "writer") -> set[int]:
-    """The run-record seqs delivered to *agent* in *pass_id* (in a block, a ``wait`` or a ``messages`` call), from the
-    record's delivery log."""
-    rows: list[dict] = []
+_KEEPS = ("new_item", "changed_item", "note")
+
+
+def item_decisions(home: Path | str, state_dir: Path | str | None = None) -> dict[str, dict]:
+    """What the writer's decisions say of each library item, the latest decision naming it winning: ``{"status",
+    "by", "ref", "at"}`` with *status* ``retired`` (``retire`` named it), ``superseded`` (an entry about it was decided
+    ``merged_into`` another item, ``by``), or ``kept`` (``new_item``, ``changed_item`` or ``note`` named it, or it was
+    the item merged into: a later decision undoes an earlier retirement). Captures are left to the capture pool. From
+    the ledger's own close rows (each with the entries' refs), in the order they were written."""
+    led = Ledger.at_state(state_dir) if state_dir is not None else Ledger(home)
+    rows = led.rows()
+    state = fold(rows)
+    out: dict[str, dict] = {}
+
+    def put(item: Any, status: str, by: str | None, row: Mapping) -> None:
+        if isinstance(item, str) and item and not item.startswith(CAPTURE_PREFIX):
+            out[item] = {"status": status, "by": by, "ref": row.get("reason_ref"), "at": row.get("at")}
+
+    for row in rows:
+        if row.get("op") != "close" or row.get("decision") not in DECISIONS:
+            continue
+        e = state.get(row.get("entry"))
+        named = [i for i in row.get("items") or [] if isinstance(i, str)]
+        decision = row["decision"]
+        if decision == "retire":
+            for i in named:
+                put(i, "retired", None, row)
+        elif decision == "merged_into" and named:
+            target = named[0]
+            for i in (e.refs.items if e is not None else ()):
+                if i not in named:
+                    put(i, "superseded", target, row)
+            put(target, "kept", None, row)
+        elif decision in _KEEPS:
+            for i in named:
+                put(i, "kept", None, row)
+    return out
+
+
+def _delivery_rows(home: Path | str) -> list:
     try:
         from unify.agents import run_record  # the mesh's reader, where it is built
 
-        rows = list(run_record.read_deliveries(Path(home)))
+        return list(run_record.read_deliveries(Path(home)))
     except Exception:  # noqa: BLE001 - not built, or unreadable: read the rows directly
         from .integration.paths import Paths
 
-        rows = _read_rows(Paths.under(Path(home)).state_dir / "agents" / "run-record.cursors.jsonl")
+        return _read_rows(Paths.under(Path(home)).state_dir / "agents" / "run-record.cursors.jsonl")
+
+
+def delivered_seqs(home: Path | str, pass_id: str, agent: str = "writer") -> set[int]:
+    """The run-record seqs delivered to *agent* in *pass_id* (in a block, a ``wait`` or a ``messages`` call), from the
+    record's delivery log."""
     out: set[int] = set()
-    for r in rows:
+    for r in _delivery_rows(home):
         if not isinstance(r, Mapping) or r.get("agent") != agent or r.get("pass_id") != pass_id:
             continue
         for s in r.get("seqs") or []:
             if isinstance(s, int) and not isinstance(s, bool):
                 out.add(s)
+    return out
+
+
+def writer_deliveries(home: Path | str, agent: str = "writer") -> dict[int, str]:
+    """Each run-record seq delivered to *agent* in a pass, with the first pass it was delivered in (the record's
+    delivery log, run-wide)."""
+    out: dict[int, str] = {}
+    for r in _delivery_rows(home):
+        if not isinstance(r, Mapping) or r.get("agent") != agent or not isinstance(r.get("pass_id"), str):
+            continue
+        for s in r.get("seqs") or []:
+            if isinstance(s, int) and not isinstance(s, bool) and s not in out:
+                out[s] = r["pass_id"]
     return out
 
 
@@ -1820,6 +1914,9 @@ class HomeSources:
                 continue
             out.append(GateRefusal(str(pass_id), tuple(covered.get(str(pass_id), ())), items, whole))
         return out
+
+    def record_deliveries(self) -> dict[int, str]:
+        return writer_deliveries(self.paths.home)
 
     def record_entries(self) -> list[dict]:
         try:

@@ -952,6 +952,7 @@ class Gate:
         qa: QAConfig | None = None,
         library_mode: LibraryConfig | None = None,
         labels: bool = False,
+        segments_dir: Path | str | None = None,
     ) -> None:
         """The library-mode switches (:mod:`.integration.switch`; each default is the v2 behaviour):
         *docstring_standard* turns on the lean docstring standard (G1) and its examples run (G3) for new or
@@ -984,6 +985,9 @@ class Gate:
         self.library_mode = library_mode
         # UNIFY_MEMORY_IMPURE_ITEMS=on: quality findings label their items (library mode only)
         self.labels = bool(labels) and library_mode is not None
+        # UNIFY_MEMORY_IN_EPISODE=on: the state dir whose segment records (<episode>.s<n>) an item may cite as its
+        # source while their episode is still open; None: only recorded episodes
+        self.segments_dir = Path(segments_dir) if segments_dir is not None else None
         if library_mode is not None and library_mode.checks:
             if not library_mode.layout:
                 raise ValueError(
@@ -1821,8 +1825,18 @@ class Gate:
             if not it.source_episodes and not _unchanged(run, it):
                 run.fail("G1", f"{it.item} names no source episode", it.item)
             for eid in it.source_episodes:
-                if not self.ev.episode_exists(eid):
+                if not (self.ev.episode_exists(eid) or self._segment_recorded(eid)):
                     run.fail("G1", f"{it.item} cites unknown episode {eid}", it.item)
+
+    def _segment_recorded(self, eid: str) -> bool:
+        """Whether *eid* is a segment of an open episode (``<episode>.s<n>``) whose record the harness wrote
+        (``UNIFY_MEMORY_IN_EPISODE``: :mod:`.segments`); always False without a segments dir."""
+        root = getattr(self, "segments_dir", None)
+        if root is None:
+            return False
+        from . import segments
+
+        return segments.is_segment_name(eid) and segments.snapshot_path(root, eid).is_file()
 
     @staticmethod
     def _doc_inputs(run: _Run) -> dict[str, str]:

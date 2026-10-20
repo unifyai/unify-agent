@@ -52,6 +52,7 @@ class Fake:
     items_of: dict = field(default_factory=dict)
     refusals: list = field(default_factory=list)
     record: list = field(default_factory=list)
+    deliveries: dict = field(default_factory=dict)
 
     def settled_forks(self):
         return list(self.forks)
@@ -76,6 +77,9 @@ class Fake:
 
     def record_entries(self):
         return list(self.record)
+
+    def record_deliveries(self):
+        return dict(self.deliveries)
 
 
 def _ledger(tmp_path, clock=None):
@@ -606,3 +610,93 @@ def test_sync_over_the_phase0_cells_reproduces_its_per_kind_counts(tmp_path):
         want = {kind_of[k]: n for k, n in cell["expected"].items()}
         assert {k: got[k] for k in want} == want, name
         assert got["message"] == 0  # Phase 0's builds had no run record
+
+
+# --- the conformance findings: decisions reach the records, refused landings end, delivered messages are read --------
+
+
+def _decide(led, tmp_path, pid, entries, decision, items):
+    return led.decide(pid, [e.entry for e in entries], decision, items, "the material shows it",
+                      reads=_read_all(entries), decisions_path=tmp_path / "passes" / pid / "decisions.jsonl")  # fmt: skip
+
+
+def test_the_writers_retire_and_merge_decisions_reach_the_item_records(tmp_path):
+    from unify.memory import lifecycle as lc
+    from unify.memory import serving
+
+    note, old, new = "notes/files/sort-rows.md", "memory.files.sort:rows", "memory.files.sort:rows_by_key"
+    clock = Clock()
+    led = _ledger(tmp_path, clock)
+    src = Fake(failures=[UseFailure("e1", note, "error"), UseFailure("e2", old, "error")])
+    made = {e.refs.items[0]: e for e in led.sync(src)}
+    clock.tick()
+    handed = led.hand("p1", 4)
+    assert {e.entry for e in handed} == {made[note].entry, made[old].entry}
+    _decide(led, tmp_path, "p1", [made[note]], "retire", [note])
+    _decide(led, tmp_path, "p1", [made[old]], "merged_into", [new])
+    decided = at.item_decisions(tmp_path / "home")
+    assert {i: (d["status"], d["by"]) for i, d in decided.items()} == {
+        note: ("retired", None),
+        old: ("superseded", new),
+        new: ("kept", None),
+    }
+    assert decided[note]["ref"] == "pass:p1/decisions.jsonl#0"
+    base = dict(
+        items={note: "note", old: "function", new: "function"},
+        facts=[],
+        since={note: {"A"}, old: {"A"}, new: {"A"}},
+        changed_at={note: "A", old: "A", new: "A"},
+        functions={old: "memory.files.sort", new: "memory.files.sort"},
+        graph={"memory.files.sort": set()},
+        note_uses={note: []},
+    )
+    recs, _ = lc.next_records(**base, prev={}, writer_decisions=decided)
+    assert (recs[note]["status"], recs[note]["status_rule"]) == ("retired", lc.WRITER_RULE)
+    assert (recs[old]["status"], recs[old].get("superseded_by")) == ("retired", new)
+    assert recs[new]["status"] == "on-trial" and recs[new].get("superseded_by") is None
+    # serving withdraws both: the retired note with nothing in its place, the merged function for its replacement
+    assert serving.withdrawn_items(recs) == {
+        note: {"status": "retired", "by": None, "reason": recs[note]["status_reason"][:200]},
+        old: {"status": "superseded", "by": new, "reason": recs[old]["status_reason"][:200]},
+    }
+    # off (no decisions given), the records are as built
+    plain, _ = lc.next_records(**base, prev={})
+    assert plain[note]["status"] == "on-trial" and plain[old]["status"] == "on-trial"
+    # a later decision that changes the note un-retires it: the latest decision naming an item wins
+    src.failures.append(UseFailure("e3", note, "error"))
+    [again] = led.sync(src)
+    clock.tick()
+    led.hand("p2", 4)
+    _decide(led, tmp_path, "p2", [again], "changed_item", [note])
+    later, _ = lc.next_records(**base, prev=recs, writer_decisions=at.item_decisions(tmp_path / "home"))
+    assert later[note]["status"] == "on-trial" and later[old].get("superseded_by") == new
+
+
+def test_a_landing_the_gate_keeps_refusing_ends_unreadable_after_three_passes(tmp_path):
+    item = "notes/files/how.md"
+    led = _ledger(tmp_path)
+    src = Fake()
+    rounds = []
+    for k in (1, 2, 3):
+        src.refusals.append(GateRefusal(f"p{k}", ("e1",), (item,), k == 3))
+        rounds.append(led.sync(src))
+    assert [len(r) for r in rounds] == [1, 1, 2]  # the third pass was refused whole: its own entry and the item's
+    assert all(e.state == "open" for r in rounds[:2] for e in r)
+    states = {e.entry: e for e in led.entries().values()}
+    third = [states[e.entry] for e in rounds[2]]
+    assert all(e.state == "unreadable" for e in third)
+    assert all("refused this landing in 3 passes: p1, p2, p3" in (e.why or "") for e in third)
+    # nothing more is handed for it, and the guarantee holds
+    assert {e.entry for e in led.hand("p4", 10)} == {e.entry for r in rounds[:2] for e in r}
+
+
+def test_a_message_the_writer_was_already_delivered_is_read_in_that_pass(tmp_path):
+    led = _ledger(tmp_path)
+    post = {"seq": 7, "author": "fork-3f9a", "role": "fork", "kind": "post", "mentions": ["writer"], "episode": "e1",
+            "refs": [], "ts": "2026-10-20T00:00:01.000Z"}  # fmt: skip
+    later = {**post, "seq": 9}
+    [first, second] = sorted(led.sync(Fake(record=[post, later], deliveries={7: "p0"})), key=lambda e: e.refs.record_seq)
+    assert first.state == "closed" and first.reason_ref == "record:delivered#7" and first.pass_id == "p0"
+    assert first.decision == "nothing_to_keep" and first.parts_read == ("entry",)
+    assert second.state == "open"  # never delivered: handed as before
+    assert [e.entry for e in led.hand("p1", 4)] == [second.entry]

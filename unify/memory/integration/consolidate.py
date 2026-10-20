@@ -1157,6 +1157,8 @@ def after_passes(
                 captures=captures_store_dir(stores.paths.state_dir),
                 # UNIFY_MEMORY_IMPURE_ITEMS=on: every record carries its evidence label
                 **({"labels": True} if impure_items(settings) else {}),
+                # UNIFY_MEMORY_ATTENTION_LEDGER=on: the writer's retire and merge decisions reach the records
+                **({"writer_decisions": True} if attention_ledger(settings) else {}),
             )
     except Exception as exc:  # noqa: BLE001 - the records never stop the request
         _error(stores, redact_error(f"item records: {type(exc).__name__}: {exc}"))
@@ -1431,12 +1433,17 @@ def learning_pass_fields(stores: Stores, settings: Any) -> dict:
     return out
 
 
-def learning_gate_fields(settings: Any) -> dict:
-    """The :class:`..gate.Gate` field of ``UNIFY_MEMORY_IMPURE_ITEMS``: ``labels`` (every quality finding a label on
-    its item, the hard checks refusing as before), only when on."""
-    from .switch import impure_items
+def learning_gate_fields(settings: Any, stores: Stores | None = None) -> dict:
+    """The :class:`..gate.Gate` fields of the redesign's switches, each only when on: ``labels``
+    (``UNIFY_MEMORY_IMPURE_ITEMS``: every quality finding a label on its item, the hard checks refusing as before) and
+    ``segments_dir`` (``UNIFY_MEMORY_IN_EPISODE``, with *stores*: an item may cite a segment of an open episode,
+    ``<episode>.s<n>``, whose record the harness wrote, as its source)."""
+    from .switch import impure_items, in_episode
 
-    return {"labels": True} if impure_items(settings) else {}
+    out: dict = {"labels": True} if impure_items(settings) else {}
+    if stores is not None and in_episode(settings):
+        out["segments_dir"] = str(stores.paths.state_dir)
+    return out
 
 
 async def run_due_passes(
@@ -1558,7 +1565,7 @@ async def run_due_passes(
         stores.blobs,
         **common,
         # UNIFY_MEMORY_IMPURE_ITEMS=on: every quality finding a label (the hard checks refuse as before)
-        **(learning_gate_fields(settings) if library_enabled(settings) else {}),
+        **(learning_gate_fields(settings, stores) if library_enabled(settings) else {}),
         # library mode: the library layout and checks for WRITE; v2 when the switch is off
         library_mode=(
             library_checks.config_for(
