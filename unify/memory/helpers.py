@@ -1242,15 +1242,16 @@ async def _compact_helper(
     own turn (the helper lane's route and model), counts as one of its turns, and its charge joins the helper's
     and the pass's spend like any call; a ``compaction`` event row carries its usage. On a summary, what it took
     out is kept for the helper's transcript and the conversation restarts in place."""
-    from .writer_pass import _prompt_chars, compact_by_summary, compaction_archive
+    from .writer_pass import _prompt_chars, call_in_flight, compact_by_summary, compaction_archive
 
     pr = ctx.pass_record
     pr.calls_in_flight.add(call)
     try:
-        comp = await asyncio.wait_for(
-            compact_by_summary(messages, turn, tools),
-            timeout=max(0.1, ctx.deadline - time.monotonic()),
-        )
+        with call_in_flight(ctx.spend):
+            comp = await asyncio.wait_for(
+                compact_by_summary(messages, turn, tools),
+                timeout=max(0.1, ctx.deadline - time.monotonic()),
+            )
     except asyncio.CancelledError:
         doc["unknown_cost_calls"] += 1
         ctx.spend.unknown += 1
@@ -1399,13 +1400,19 @@ async def _run_helper_turns(
                 block = None
             if block:
                 messages.append({"role": "user", "content": block})
+        if ctx.usd_room is not None and not ctx.usd_room():  # a compaction call may have used the room
+            doc["status"] = "stopped: the writer service's room for this pass reached"
+            return
         # helpers' model calls run at the same time: each helper waits only for its own call
         pr.calls_in_flight.add(call)
         try:
-            msg, usd = await asyncio.wait_for(
-                turn(messages, tools),
-                timeout=max(0.1, ctx.deadline - time.monotonic()),
-            )
+            from .writer_pass import call_in_flight
+
+            with call_in_flight(ctx.spend):
+                msg, usd = await asyncio.wait_for(
+                    turn(messages, tools),
+                    timeout=max(0.1, ctx.deadline - time.monotonic()),
+                )
         except asyncio.CancelledError:
             # cut mid-flight (stop, or the wall clock at the end of the pass): it may still have cost money
             doc["calls_cut"] += 1

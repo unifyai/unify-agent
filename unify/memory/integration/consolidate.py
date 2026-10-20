@@ -2155,9 +2155,14 @@ async def run_attention_pass(
         return report
     if library_fork(settings):
         capture_settled_forks(stores, settings)
-    from ..writer_service import pass_room
+    from ..writer_service import lost_calls, pass_room
+    from ..reconcile import WRITER_CALL_WORST_CASE_USD
 
     room = pass_room(home, pass_id, settings)
+    if room is not None and resume:
+        # what a killed run of this pass already spent: its done calls come back from their files with their USD
+        # (counted again as they replay); each call it lost (billed, never priced) at the worst case
+        room = max(Decimal(0), room - Decimal(lost_calls(folder)) * WRITER_CALL_WORST_CASE_USD)
     wall_s = float(library_pass_wall_s(settings))
     supervise = Supervisor(
         wall_s,
@@ -2192,10 +2197,9 @@ async def run_attention_pass(
         max_calls=STEP_GUARD if cfg.route is not None else cfg.max_calls[level],
         deadline_s=supervise.pass_deadline_s,
         max_usd=None if cfg.route is not None else cap,
-        # the service's room for this pass (its cap less what its other passes committed): no writer or helper call
-        # starts past it, whatever the pass's own limits
+        # the service's room for this pass (its cap less what its other passes committed, less a resumed pass's lost
+        # calls): no writer or helper call starts past it, whatever the pass's own limits
         usd_limit=None if room is None else _usd(room),
-        usd_call_reserve=_usd(reserve),
         staging_root=str(Path(paths.state_dir) / "memory-staging") if library_fork(settings) else None,
         pass_record_root=str(Path(paths.state_dir) / "passes"),
         notebook_state=str(paths.state_dir) if notebook_enabled(settings) else None,
@@ -2337,7 +2341,13 @@ async def run_attention_pass(
             report.usd_known = known
             report.unknown_calls = int(unknown) + len(killed)
             report.worst_case_booked = _usd(Decimal(report.unknown_calls) * WRITER_CALL_WORST_CASE_USD)
-            report.settle_usd = None
+            # the pass's own priced calls (the writer's and its helpers') and every unpriced or lost call at the worst
+            # case: what the service settles when no journal could be read
+            report.settle_usd = (
+                _usd(Decimal(known) + Decimal(report.unknown_calls) * WRITER_CALL_WORST_CASE_USD)
+                if known != UNKNOWN
+                else None
+            )
         report.reconciled = recon
         report.outcome = outcome
         report.seconds = round(time.monotonic() - started, 3)

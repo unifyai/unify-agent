@@ -22,9 +22,10 @@ rewrites ``service.json`` every :data:`HEARTBEAT_S`. Each turn of the loop is :f
 exactly one such turn in the calling process (deterministic step mode, for the offline replay).
 
 **Bounds, stated, never steering:** the service's lifetime (:data:`LIFETIME_S`, and never past the host's lease less
-:data:`LEASE_MARGIN_S`), its own spend cap (each pass reserves its worst case, the price per token times the pass's
-token allowance, before it starts, and settles from the writer lane's journal after it; an unpriced call is booked at
-its worst case), and each pass's wall clock. The key proxy's writer-lane cap applies independently: a call the proxy
+:data:`LEASE_MARGIN_S`), its own spend cap (a pass starts only when the room left under the cap holds one writer call
+at its worst case; it books that whole room, no call of its writer or helpers starts past it, counting unpriced and
+in-flight calls at the worst case, and it settles after it from the writer lane's journal plus its helpers' priced
+calls, or its own figures, or, when it ended with no report, its turn files), and each pass's wall clock. The key proxy's writer-lane cap applies independently: a call the proxy
 refuses for its cap (HTTP 402 or 403) is the cap reached.
 
 **Resumable passes.** Before each model call of a pass (the writer's and each helper's), ``turns/<pass>/<n>.json`` is
@@ -497,6 +498,39 @@ def pass_room(home: Path | str, pass_id: str, settings: Any) -> Optional[Decimal
         return None
     committed, _settled = spend_totals(home, without=pass_id)
     return max(Decimal(0), cap - committed)
+
+
+def _turn_files(folder: Path | str) -> list[dict]:
+    """Every checkpointed model turn of a pass: the writer's (``<n>.json``) and each helper's (``h<k>/<n>.json``)."""
+    out = []
+    root = Path(folder)
+    for path in sorted(root.glob("*.json")) + sorted(root.glob("h*/*.json")):
+        if path.name == PASS_FILE:
+            continue
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict) and doc.get("state") in ("pending", "done"):
+            out.append(doc)
+    return out
+
+
+def lost_calls(folder: Path | str) -> int:
+    """The calls a killed run of a pass left ``pending``: billed and lost, never priced."""
+    return sum(1 for doc in _turn_files(folder) if doc.get("state") == "pending")
+
+
+def turns_spend(folder: Path | str) -> Decimal:
+    """What a pass's turns cost by their own files: each done call's USD, and each pending or unpriced call at one
+    writer call's worst case (the settle of a pass that ended without a report)."""
+    from .reconcile import WRITER_CALL_WORST_CASE_USD as worst
+
+    total = Decimal(0)
+    for doc in _turn_files(folder):
+        usd = _decimal(doc.get("usd")) if doc.get("state") == "done" else None
+        total += usd if usd is not None else worst
+    return total
 
 
 def _format(d: Decimal) -> str:
@@ -1084,8 +1118,9 @@ def _members() -> list[list]:
 
 
 def pass_reservation(settings: Any, effort: str) -> Decimal:
-    """A pass's worst case, reserved against the service's cap before it starts: the writer's price per token times
-    the pass's token allowance (E), at the writer's effort scale, as the run guard books a pass.
+    """A pass's own allowance (the writer's price per token times its token allowance, E, at the writer's effort
+    scale, as the run guard books a pass); raises when the writer's settings or route refuse. The service books a
+    pass's whole room instead (its USD stop, :func:`pass_room`), and calls this as the check that a pass can run.
     """
     from .integration.consolidate import writer_settings
 
@@ -1128,7 +1163,8 @@ async def _run_pass(
         from .integration.switch import writer_journal
         from .reconcile import journal_offset
 
-        reservation = pass_reservation(settings, effort)
+        # the pass may spend the whole room (its USD stop), so the whole room is booked until it settles
+        reservation = pass_room(home, pass_id, settings) or Decimal(0)
         _append(
             service_dir(home) / SPEND_FILE,
             {
@@ -1176,6 +1212,11 @@ async def _run_pass(
     ) as exc:  # noqa: BLE001 - a pass that broke: its entries go back, the service goes on
         event(home, "error", pass_id=pass_id, error=type(exc).__name__)
         ledger.return_unread(pass_id)
+        # no report: the pass's own turn files say what it spent (lost and unpriced calls at the worst case)
+        _append(
+            service_dir(home) / SPEND_FILE,
+            {"v": 1, "op": "settle", "pass_id": pass_id, "usd": _format(turns_spend(folder)), "at": stamp(_now())},
+        )
         pass_doc.update(state="ended", ended_at=stamp(_now()), error=type(exc).__name__)
         _atomic_json(pass_doc_path, pass_doc)
         return None
@@ -1370,20 +1411,27 @@ async def _iteration(
         out["why_idle"] = "nothing_open"
         return out
     try:
-        reservation = pass_reservation(settings, writer_effort(actor_effort()))
+        # the writer's settings and route as a pass needs them (a refused one: no pass can run)
+        pass_reservation(settings, writer_effort(actor_effort()))
     except Exception as exc:  # noqa: BLE001 - a refused writer route or setting: no pass can run
         event(home, "refused", reason=type(exc).__name__)
         out.update(why_idle="refused", stop="refused")
         return out
+    from .reconcile import WRITER_CALL_WORST_CASE_USD as worst
+
     committed, _settled = spend_totals(home)
-    if service.capped or (service.cap is not None and committed + reservation > service.cap):
+    room = (service.cap - committed) if service.cap is not None else None
+    # a pass starts only when its room holds at least one call at the worst case (its USD stop lets no call start
+    # past the room), and it books the whole room until it settles
+    if service.capped or (room is not None and room < worst):
         if not service.cap_noted:
             event(
                 home,
                 "cap-reached",
                 by="service",
                 committed_usd=_format(committed),
-                reservation_usd=_format(reservation),
+                room_usd=_format(room) if room is not None else None,
+                call_worst_case_usd=_format(worst),
                 cap_usd=_format(service.cap) if service.cap is not None else None,
             )
             service.cap_noted = True
@@ -1448,12 +1496,15 @@ async def step_async(
         return out
     os.set_inheritable(lock_fd, False)
     at = (lambda: now) if now is not None else _now
+    service: Optional[Service] = None
     try:
         service = Service(home, settings, lock_fd, started=at(), record_members=False)
         service.cap = writer_service_cap_usd(settings)
-        # the cap reached in an earlier step stays reached: the events say so
-        service.cap_noted = any(r.get("event") == "cap-reached" for r in events(home))
-        service.capped = service.cap_noted
+        # a cap an earlier step reached stays as the service keeps it: noted once; the proxy's or the run guard's
+        # refusal holds every later pass back (the service's own cap is the room, checked afresh each step)
+        reached = [r for r in events(home) if r.get("event") == "cap-reached"]
+        service.cap_noted = bool(reached)
+        service.capped = any(r.get("by") in ("proxy", "run_guard") for r in reached)
         record = _hold_writer_row(home, settings)
         ledger = Ledger(home)
         resumable = pending_passes(home)
@@ -1465,9 +1516,14 @@ async def step_async(
             if reached is not None:
                 ledger.mark_not_reached(reached)
             _end_writer_row(record, out["stop"])
-        service.set("stopped")
         return out
     finally:
+        # stopped whatever happened: a later stop or start never takes the caller's process for a running service
+        if service is not None:
+            try:
+                service.set("stopped")
+            except OSError:
+                pass
         os.close(lock_fd)
 
 

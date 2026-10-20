@@ -40,7 +40,8 @@ SWITCHES = {
     "UNIFY_AGENTS_RUN_RECORD": "on",
     "UNIFY_MEMORY_ATTENTION_LEDGER": "on",
     "UNIFY_MEMORY_WRITER_SERVICE": "on",
-    "UNIFY_MEMORY_WRITER_SERVICE_CAP_USD": "10",
+    # a pass needs room for one writer call at the worst case (13.125 USD) to start
+    "UNIFY_MEMORY_WRITER_SERVICE_CAP_USD": "100",
     "UNIFY_MEMORY_LIBRARY_PASS_WALL_S": "60",
     "UNIFY_HOST_LEASE_END": "2099-01-01T00:00:00Z",  # required with the service; far off unless a test sets its own
 }
@@ -473,8 +474,7 @@ def test_drain_returns_only_once_the_service_is_verified_gone(svc, monkeypatch):
 def test_a_cap_below_one_pass_starts_no_pass_and_reports_the_entries_not_reached(
     svc, monkeypatch
 ):
-    """A2 test 6."""
-    monkeypatch.setattr(ws, "pass_reservation", lambda settings, effort: Decimal("1"))
+    """A2 test 6: a cap whose room holds not even one writer call at its worst case (13.125 USD) starts no pass."""
     from unify.memory.integration import request
 
     monkeypatch.setattr(request, "actor_effort", lambda: "low")
@@ -486,7 +486,7 @@ def test_a_cap_below_one_pass_starts_no_pass_and_reports_the_entries_not_reached
                 svc.home,
                 fd,
                 runner=_no_pass,
-                settings=_settings(UNIFY_MEMORY_WRITER_SERVICE_CAP_USD="0.5"),
+                settings=_settings(UNIFY_MEMORY_WRITER_SERVICE_CAP_USD="13.12"),
                 poll_s=0.0,
                 idle_exit_s=5,
                 monotonic=Clock(),
@@ -503,7 +503,8 @@ def test_a_cap_below_one_pass_starts_no_pass_and_reports_the_entries_not_reached
     assert (
         len(capped) == 1
         and capped[0]["by"] == "service"
-        and capped[0]["reservation_usd"] == "1"
+        and capped[0]["room_usd"] == "13.12"
+        and capped[0]["call_worst_case_usd"] == "13.125"
     )
     assert ws.spend_totals(svc.home) == (
         Decimal(0),

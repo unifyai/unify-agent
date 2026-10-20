@@ -47,7 +47,7 @@ import time
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Protocol
+from typing import Any, Callable, Iterable, Iterator, Mapping, Protocol
 
 from pydantic import SecretStr
 
@@ -879,25 +879,37 @@ class PassConfig:
     # the writer service holds the writer's place on the run record between passes (the writer is idle, not ended,
     # when a pass ends)
     service_held: bool = False
-    # the writer service's room for this pass (its cap less what its other passes committed), a decimal string: a
-    # hard USD stop that leaves the pass's other limits as they are (an uncapped library pass stays uncapped). No
-    # model call, the writer's or a helper's, starts unless the pass's spend so far (its unpriced calls at one writer
-    # call's worst case) plus usd_call_reserve stays within it. None: no such stop, as built
+    # the writer service's room for this pass (its cap less what its other passes committed, less what a resumed pass
+    # already lost), a decimal string: a hard USD stop that leaves the pass's other limits as they are (an uncapped
+    # library pass stays uncapped). No model call, the writer's or a helper's, starts unless the pass's spend so far,
+    # with its unpriced calls and every call in flight and the new one each at one writer call's worst case, stays
+    # within it (usd_room). None: no such stop, as built
     usd_limit: str | None = None
-    usd_call_reserve: str = "0"
 
 
 def usd_room(cfg: Any, spend: Any) -> bool:
-    """Whether one more model call fits under ``cfg.usd_limit`` (always, without one): the pass's known spend, its
-    unpriced calls each at :data:`..reconcile.WRITER_CALL_WORST_CASE_USD`, and ``cfg.usd_call_reserve`` for the
-    call itself."""
+    """Whether one more model call fits under ``cfg.usd_limit`` (always, without one): the pass's known spend (the
+    writer's and its helpers'), and each of its unpriced calls, its calls in flight (``spend.in_flight``) and the new
+    call at :data:`..reconcile.WRITER_CALL_WORST_CASE_USD`, so the pass never spends past the limit while no single call
+    costs more than that worst case."""
     limit = getattr(cfg, "usd_limit", None)
     if limit is None:
         return True
-    from .reconcile import WRITER_CALL_WORST_CASE_USD
+    from .reconcile import WRITER_CALL_WORST_CASE_USD as worst
 
-    booked = Decimal(spend.usd) + Decimal(int(spend.unknown)) * WRITER_CALL_WORST_CASE_USD
-    return booked + Decimal(getattr(cfg, "usd_call_reserve", "0") or "0") <= Decimal(limit)
+    calls = int(spend.unknown) + int(getattr(spend, "in_flight", 0) or 0) + 1
+    return Decimal(spend.usd) + Decimal(calls) * worst <= Decimal(limit)
+
+
+@contextlib.contextmanager
+def call_in_flight(spend: Any) -> Iterator[None]:
+    """Count a model call as in flight on the pass's *spend* (shared by the writer and its helpers) while it runs."""
+    spend.in_flight = int(getattr(spend, "in_flight", 0) or 0) + 1
+    try:
+        yield
+    finally:
+        spend.in_flight -= 1
+
 
 
 @dataclass
@@ -2212,6 +2224,8 @@ def _unpriced(n: int) -> list[str]:
 class _Spend:
     usd: Decimal = Decimal("0")
     unknown: int = 0
+    #: model calls running now (the writer's and its helpers'), for the USD stop (usd_room)
+    in_flight: int = 0
 
 
 #: The full result a library-mode pass cancelled before its gate leaves in its draft.
@@ -5246,10 +5260,11 @@ class WriterPass:
                     # the agent loop's compaction: a summary call on the writer's own turn, booked as a call
                     last_prompt[0] = None
                     try:
-                        comp = await asyncio.wait_for(
-                            compact_by_summary(messages, self.turn, tools),
-                            timeout=remaining(),
-                        )
+                        with call_in_flight(spend):
+                            comp = await asyncio.wait_for(
+                                compact_by_summary(messages, self.turn, tools),
+                                timeout=remaining(),
+                            )
                     except TimeoutError:
                         spend.unknown += 1
                         stop = f"pass deadline of {self.cfg.deadline_s} s reached during a model call"
@@ -5290,11 +5305,16 @@ class WriterPass:
                         notes.append(_redact(f"record block not delivered: {type(exc).__name__}")[:300])
                     if block:
                         messages.append({"role": "user", "content": block})
+                if not usd_room(self.cfg, spend):  # a compaction call may have used the room just checked
+                    stop = f"the writer service's room of {self.cfg.usd_limit} USD for this pass reached"
+                    cause(CODE_PASS_CAP)
+                    break
                 try:
-                    msg, usd = await asyncio.wait_for(
-                        self.turn(messages, tools),
-                        timeout=remaining(),
-                    )
+                    with call_in_flight(spend):
+                        msg, usd = await asyncio.wait_for(
+                            self.turn(messages, tools),
+                            timeout=remaining(),
+                        )
                 except TimeoutError:
                     spend.unknown += 1
                     stop = f"pass deadline of {self.cfg.deadline_s} s reached during a model call"
