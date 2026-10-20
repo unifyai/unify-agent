@@ -882,23 +882,27 @@ class PassConfig:
     # the writer service's room for this pass (its cap less what its other passes committed, less what a resumed pass
     # already lost), a decimal string: a hard USD stop that leaves the pass's other limits as they are (an uncapped
     # library pass stays uncapped). No model call, the writer's or a helper's, starts unless the pass's spend so far,
-    # with its unpriced calls and every call in flight and the new one each at one writer call's worst case, stays
-    # within it (usd_room). None: no such stop, as built
+    # with its unpriced calls and every call in flight and the new one each at usd_call_worst, stays within it
+    # (usd_room). None: no such stop, as built
     usd_limit: str | None = None
+    # one call's worst case for the pass's lanes (the pinned catalogue's bound for the writer's model and, with a
+    # helper lane, the helpers'; call_bounds.py), a decimal string; required with usd_limit
+    usd_call_worst: str | None = None
 
 
 def usd_room(cfg: Any, spend: Any) -> bool:
     """Whether one more model call fits under ``cfg.usd_limit`` (always, without one): the pass's known spend (the
     writer's and its helpers'), and each of its unpriced calls, its calls in flight (``spend.in_flight``) and the new
-    call at :data:`..reconcile.WRITER_CALL_WORST_CASE_USD`, so the pass never spends past the limit while no single call
-    costs more than that worst case."""
+    call at ``cfg.usd_call_worst``, so the pass never spends past the limit while no single call costs more than
+    that worst case. A limit with no worst case to count with lets no call start (fail closed)."""
     limit = getattr(cfg, "usd_limit", None)
     if limit is None:
         return True
-    from .reconcile import WRITER_CALL_WORST_CASE_USD as worst
-
+    worst = getattr(cfg, "usd_call_worst", None)
+    if worst is None:
+        return False
     calls = int(spend.unknown) + int(getattr(spend, "in_flight", 0) or 0) + 1
-    return Decimal(spend.usd) + Decimal(calls) * worst <= Decimal(limit)
+    return Decimal(spend.usd) + Decimal(calls) * Decimal(worst) <= Decimal(limit)
 
 
 @contextlib.contextmanager

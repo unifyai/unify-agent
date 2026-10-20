@@ -2155,14 +2155,22 @@ async def run_attention_pass(
         return report
     if library_fork(settings):
         capture_settled_forks(stores, settings)
-    from ..writer_service import lost_calls, pass_room
-    from ..reconcile import WRITER_CALL_WORST_CASE_USD
+    from ..call_bounds import NoBound
+    from ..writer_service import lost_calls, pass_call_worst_case, pass_room
 
+    try:
+        # one call's worst case for this pass's models (the pinned catalogue's bound): every unpriced, lost or
+        # in-flight call counts at it
+        worst = pass_call_worst_case(settings)
+    except NoBound as exc:
+        return AttentionPassReport(
+            pass_id, [e.entry for e in handed], "error", notes=[str(exc)[:300]], reads=attention.PassReads()
+        )
     room = pass_room(home, pass_id, settings)
     if room is not None and resume:
         # what a killed run of this pass already spent: its done calls come back from their files with their USD
         # (counted again as they replay); each call it lost (billed, never priced) at the worst case
-        room = max(Decimal(0), room - Decimal(lost_calls(folder)) * WRITER_CALL_WORST_CASE_USD)
+        room = max(Decimal(0), room - Decimal(lost_calls(folder)) * worst)
     wall_s = float(library_pass_wall_s(settings))
     supervise = Supervisor(
         wall_s,
@@ -2200,6 +2208,7 @@ async def run_attention_pass(
         # the service's room for this pass (its cap less what its other passes committed, less a resumed pass's lost
         # calls): no writer or helper call starts past it, whatever the pass's own limits
         usd_limit=None if room is None else _usd(room),
+        usd_call_worst=_usd(worst),
         staging_root=str(Path(paths.state_dir) / "memory-staging") if library_fork(settings) else None,
         pass_record_root=str(Path(paths.state_dir) / "passes"),
         notebook_state=str(paths.state_dir) if notebook_enabled(settings) else None,
@@ -2325,26 +2334,27 @@ async def run_attention_pass(
         helper_known, helper_unknown = _helper_spend(writer, helper_turns)
         report.helper_usd_known, report.helper_unknown_calls = _usd(helper_known), helper_unknown
         if recon is not None and recon.get("journal") == "read":
-            worst = Decimal(recon["worst_case_usd"])
+            # the journal books the writer's unpriced calls at its own worst case; the helpers' at this pass's
+            journal_worst = Decimal(recon["worst_case_usd"])
             report.usd_known = _usd(Decimal(recon["usd"]) + helper_known)
             report.unknown_calls = int(recon["unknown"]) + helper_unknown
-            report.worst_case_booked = _usd(Decimal(report.unknown_calls) * worst)
+            report.worst_case_booked = _usd(
+                Decimal(int(recon["unknown"])) * journal_worst + Decimal(helper_unknown) * worst
+            )
             report.settle_usd = _usd(Decimal(recon["booked_usd"]) + helper_known + Decimal(helper_unknown) * worst)
             try:
-                _settle(stores, pass_id, recon["usd"], recon["unknown"], worst)
+                _settle(stores, pass_id, recon["usd"], recon["unknown"], journal_worst)
             except OSError as exc:
                 _error(stores, f"{pass_id}: ledger: {type(exc).__name__}: {exc}")
         else:
             # no readable journal: the pass's own figures; the killed turns and the unpriced calls at the worst case
-            from ..reconcile import WRITER_CALL_WORST_CASE_USD
-
             report.usd_known = known
             report.unknown_calls = int(unknown) + len(killed)
-            report.worst_case_booked = _usd(Decimal(report.unknown_calls) * WRITER_CALL_WORST_CASE_USD)
+            report.worst_case_booked = _usd(Decimal(report.unknown_calls) * worst)
             # the pass's own priced calls (the writer's and its helpers') and every unpriced or lost call at the worst
             # case: what the service settles when no journal could be read
             report.settle_usd = (
-                _usd(Decimal(known) + Decimal(report.unknown_calls) * WRITER_CALL_WORST_CASE_USD)
+                _usd(Decimal(known) + Decimal(report.unknown_calls) * worst)
                 if known != UNKNOWN
                 else None
             )

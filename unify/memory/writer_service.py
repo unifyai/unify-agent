@@ -521,11 +521,23 @@ def lost_calls(folder: Path | str) -> int:
     return sum(1 for doc in _turn_files(folder) if doc.get("state") == "pending")
 
 
-def turns_spend(folder: Path | str) -> Decimal:
-    """What a pass's turns cost by their own files: each done call's USD, and each pending or unpriced call at one
-    writer call's worst case (the settle of a pass that ended without a report)."""
-    from .reconcile import WRITER_CALL_WORST_CASE_USD as worst
+def pass_call_worst_case(settings: Any) -> Decimal:
+    """One model call's worst case for a service pass: the pinned catalogue's bound (:mod:`.call_bounds`) for the
+    writer's model and, when the helper lane is set, the helpers' model, the larger. Raises
+    :class:`.call_bounds.NoBound` for a model the catalogue does not bound (no pass runs: fail closed)."""
+    from .call_bounds import worst_of
+    from .integration import switch
+    from .integration.consolidate import writer_settings
 
+    models = [writer_settings(settings).model]
+    if switch.helper_lane_route()[0] is not None:
+        models.append(switch.library_helper_model(settings))
+    return worst_of(models)
+
+
+def turns_spend(folder: Path | str, worst: Decimal) -> Decimal:
+    """What a pass's turns cost by their own files: each done call's USD, and each pending or unpriced call at
+    *worst* (one call's worst case; the settle of a pass that ended without a report)."""
     total = Decimal(0)
     for doc in _turn_files(folder):
         usd = _decimal(doc.get("usd")) if doc.get("state") == "done" else None
@@ -1117,6 +1129,17 @@ def _members() -> list[list]:
     return out
 
 
+def _raised_settle(home: Path, pass_id: str, folder: Path, settings: Any) -> Decimal:
+    """The settle of a pass that raised: its turn files at the lanes' worst case; when that cannot be had, the
+    pass's whole booking stays (it is settled at what it booked)."""
+    try:
+        return turns_spend(folder, pass_call_worst_case(settings))
+    except Exception:  # noqa: BLE001 - no worst case: the booking stands
+        rows = [r for r in _rows(service_dir(home) / SPEND_FILE) if r.get("pass_id") == pass_id]
+        booked = [_decimal(r.get("usd")) for r in rows if r.get("op") == "reserve"]
+        return booked[-1] if booked and booked[-1] is not None else Decimal(0)
+
+
 def pass_reservation(settings: Any, effort: str) -> Decimal:
     """A pass's own allowance (the writer's price per token times its token allowance, E, at the writer's effort
     scale, as the run guard books a pass); raises when the writer's settings or route refuse. The service books a
@@ -1215,7 +1238,8 @@ async def _run_pass(
         # no report: the pass's own turn files say what it spent (lost and unpriced calls at the worst case)
         _append(
             service_dir(home) / SPEND_FILE,
-            {"v": 1, "op": "settle", "pass_id": pass_id, "usd": _format(turns_spend(folder)), "at": stamp(_now())},
+            {"v": 1, "op": "settle", "pass_id": pass_id, "usd": _format(_raised_settle(home, pass_id, folder, settings)),
+             "at": stamp(_now())},  # fmt: skip
         )
         pass_doc.update(state="ended", ended_at=stamp(_now()), error=type(exc).__name__)
         _atomic_json(pass_doc_path, pass_doc)
@@ -1411,14 +1435,14 @@ async def _iteration(
         out["why_idle"] = "nothing_open"
         return out
     try:
-        # the writer's settings and route as a pass needs them (a refused one: no pass can run)
+        # the writer's settings and route as a pass needs them, and one call's worst case for its models (a refused
+        # setting or a model the pinned catalogue does not bound: no pass can run)
         pass_reservation(settings, writer_effort(actor_effort()))
+        worst = pass_call_worst_case(settings)
     except Exception as exc:  # noqa: BLE001 - a refused writer route or setting: no pass can run
         event(home, "refused", reason=type(exc).__name__)
         out.update(why_idle="refused", stop="refused")
         return out
-    from .reconcile import WRITER_CALL_WORST_CASE_USD as worst
-
     committed, _settled = spend_totals(home)
     room = (service.cap - committed) if service.cap is not None else None
     # a pass starts only when its room holds at least one call at the worst case (its USD stop lets no call start

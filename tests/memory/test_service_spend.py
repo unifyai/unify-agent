@@ -23,8 +23,8 @@ from unify.memory.reconcile import WRITER_CALL_WORST_CASE_USD
 W = WRITER_CALL_WORST_CASE_USD
 
 
-def _cfg(limit):
-    return SimpleNamespace(usd_limit=None if limit is None else str(limit))
+def _cfg(limit, worst=W):
+    return SimpleNamespace(usd_limit=None if limit is None else str(limit), usd_call_worst=str(worst))
 
 
 def test_the_room_counts_known_spend_and_each_unpriced_in_flight_and_new_call_at_the_worst_case():
@@ -41,6 +41,11 @@ def test_the_room_counts_known_spend_and_each_unpriced_in_flight_and_new_call_at
     with writer_pass.call_in_flight(spend):
         assert spend.in_flight == 2
     assert spend.in_flight == 1
+    # a limit with no worst case to count with lets no call start (fail closed)
+    assert not writer_pass.usd_room(SimpleNamespace(usd_limit="1000", usd_call_worst=None), spend)
+    # with Luna's worst case (0.65625) the same room holds far more
+    spend.unknown, spend.in_flight = 0, 0
+    assert writer_pass.usd_room(_cfg(Decimal("0.70") + Decimal("0.65625"), Decimal("0.65625")), spend)
 
 
 @needs_bwrap
@@ -59,6 +64,7 @@ def test_a_service_pass_stops_before_a_call_that_could_take_it_past_its_room(tmp
         max_usd=None,
         deadline_s=300.0,
         usd_limit="14.00",
+        usd_call_worst=str(W),
     )
     out = _run(writer)
     assert Decimal(out.usd) == Decimal("0.90") <= Decimal("14.00")
@@ -314,3 +320,79 @@ def test_a_step_that_raises_leaves_the_service_stopped_and_the_home_free(tmp_pat
     fd = ws.try_lock(ws.service_dir(home) / ws.LOCK_FILE)
     assert fd is not None
     os.close(fd)
+
+
+# --- one call's worst case by model (the pinned catalogue cbb212a9) ---------------------------------------------------
+
+
+def test_each_models_worst_case_is_the_pinned_catalogues_bound_and_an_unknown_model_is_refused():
+    from unify.memory import call_bounds
+
+    assert call_bounds.call_worst_case_usd("openai/gpt-6-luna") == Decimal("0.65625")
+    assert call_bounds.call_worst_case_usd("openai/gpt-6-sol") == Decimal("13.125")
+    assert call_bounds.call_worst_case_usd("openai/gpt-6-luna@openrouter") == Decimal("0.65625")
+    assert call_bounds.worst_of(["openai/gpt-6-luna", "openai/gpt-6-sol"]) == Decimal("13.125")
+    for model in ("vendor/no-such-model", "", "openai/gpt-6-luna-but-not"):
+        try:
+            call_bounds.call_worst_case_usd(model)
+        except call_bounds.NoBound:
+            continue
+        raise AssertionError(f"{model!r} was bounded")
+    # the table is the one computed from the catalogue the guards pin
+    import json
+
+    assert json.loads(call_bounds.TABLE.read_text())["catalogue_sha256"] == call_bounds.CATALOGUE_SHA256
+
+
+def test_a_service_pass_counts_calls_at_its_lanes_models_worst_case(monkeypatch):
+    """The writer's model's bound, and the helpers' when the helper lane is set (the larger of the two)."""
+    from pydantic import SecretStr
+
+    from tests.memory import test_writer_service as T
+    from unify.memory.integration import switch
+
+    luna = T._settings(UNIFY_MEMORY_WRITER_MODEL="openai/gpt-6-luna", UNIFY_MODEL="openai/gpt-6-sol")
+    monkeypatch.setattr(switch, "helper_lane_route", lambda: (None, "no helper lane"))
+    assert ws.pass_call_worst_case(luna) == Decimal("0.65625")
+    monkeypatch.setattr(
+        switch, "helper_lane_route", lambda: (("http://127.0.0.1:9/helper/v1", SecretStr("t-for-a-test")), None)
+    )
+    assert ws.pass_call_worst_case(luna) == Decimal("13.125")  # the helpers run on the actor's Sol
+    unknown = T._settings(UNIFY_MEMORY_WRITER_MODEL="vendor/no-such-model")
+    monkeypatch.setattr(switch, "helper_lane_route", lambda: (None, "no helper lane"))
+    try:
+        ws.pass_call_worst_case(unknown)
+    except ValueError:
+        pass
+    else:  # pragma: no cover
+        raise AssertionError("an unbounded model was given a worst case")
+
+
+def test_a_luna_cell_runs_passes_under_a_cap_below_sols_worst_case(tmp_path, monkeypatch):
+    """With a Luna writer a cap of 5 USD holds a pass (0.65625 a call), where Sol's 13.125 would hold none."""
+    from tests.memory import test_writer_service as T
+    from unify.memory.integration import switch
+
+    monkeypatch.setattr(switch, "helper_lane_route", lambda: (None, "no helper lane"))
+    home = tmp_path / "home"
+    T._open_entry(home)
+    runner = T.Recording(decide=True)
+    got = _step(home, runner, monkeypatch, UNIFY_MEMORY_WRITER_MODEL="openai/gpt-6-luna",
+                UNIFY_MEMORY_WRITER_SERVICE_CAP_USD="5")  # fmt: skip
+    assert got["pass_id"] is not None and len(runner.passes) == 1
+    sol = tmp_path / "sol"
+    T._open_entry(sol)
+    got = _step(sol, T._no_pass, monkeypatch, UNIFY_MEMORY_WRITER_SERVICE_CAP_USD="5")
+    assert got["why_idle"] == "spend_cap"
+
+
+def test_a_writer_model_with_no_catalogue_bound_runs_no_pass(tmp_path, monkeypatch):
+    from tests.memory import test_writer_service as T
+    from unify.memory.integration import switch
+
+    monkeypatch.setattr(switch, "helper_lane_route", lambda: (None, "no helper lane"))
+    home = tmp_path / "home"
+    T._open_entry(home)
+    got = _step(home, T._no_pass, monkeypatch, UNIFY_MEMORY_WRITER_MODEL="vendor/no-such-model")
+    assert got["why_idle"] == "refused" and got["pass_id"] is None
+    assert [e["reason"] for e in ws.events(home) if e.get("event") == "refused"] == ["NoBound"]
