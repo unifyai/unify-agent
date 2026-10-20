@@ -533,6 +533,10 @@ class ProductionSettings(BaseSettings):
     # with the run's own history as the prior, and takes late verdicts on earlier episodes; ``off`` (default; empty
     # without the redesign profile): every episode is ``dense``, as built.
     UNIFY_MEMORY_REGIME: str = ""
+    # Held-out evaluation: ``on`` freezes memory as the home holds it. The request is served from what is stored and
+    # changes nothing: no episode is recorded, no writer runs (service, pass, fork, segment fork), the copy is never
+    # re-pinned, and a message to the writer is answered "not available: memory is frozen". ``off`` (default): as built.
+    UNIFY_MEMORY_FROZEN: str = ""
     # The fork lane's route: the key proxy's /fork/v1 base URL and the inherited
     # descriptor carrying its token, read once at start-up and then removed from the environment (empty: no fork lane).
     UNIFY_MEMORY_LIBRARY_FORK_BASE_URL: str = ""
@@ -867,6 +871,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_PROFILE",
         "UNIFY_MEMORY_SERVING_FAILURE_RECORD",
         "UNIFY_MEMORY_REGIME",
+        "UNIFY_MEMORY_FROZEN",
         mode="before",
     )
     @classmethod

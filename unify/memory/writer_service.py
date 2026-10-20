@@ -672,10 +672,13 @@ def ensure_service(
     home = Path(home)
     try:
         settings = settings if settings is not None else _settings()
-        from .integration.switch import profile_refusal, writer_service_on
+        from .integration.switch import memory_frozen, profile_refusal, writer_service_on
 
         if not writer_service_on(settings):
             return ServiceState("off")
+        if memory_frozen(settings):
+            # held-out evaluation: memory is frozen, so no writer runs
+            return ServiceState("refused", detail="memory is frozen")
         refused = profile_refusal(settings)
         if refused is not None:
             return ServiceState("refused", detail=refused)

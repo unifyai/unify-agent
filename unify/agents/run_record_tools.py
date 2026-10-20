@@ -90,6 +90,10 @@ def send_text(
     said = f"sent to {', '.join(out['to'])} (#{out['seq']})"
     if out.get("unresolved"):
         said += f"; these names match no agent: {', '.join('@' + n for n in out['unresolved'])}"
+    if out.get("frozen"):
+        from unify.memory.integration.switch import FROZEN_WRITER_REPLY
+
+        said += "; @writer: " + FROZEN_WRITER_REPLY
     if out.get("ended"):
         said += (
             f"; ended, so nobody reads it for them now: {', '.join('@' + n for n in out['ended'])}"

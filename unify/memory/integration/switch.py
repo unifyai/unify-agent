@@ -1326,6 +1326,26 @@ def regime_inferred(settings: Any) -> bool:
     return profile_setting(settings, REGIME) == REGIME_INFERRED
 
 
+# --- frozen memory (held-out evaluation, C4) --------------------------------------------------------------------
+
+FROZEN = "UNIFY_MEMORY_FROZEN"
+#: The answer to a message addressed to the writer while memory is frozen.
+FROZEN_WRITER_REPLY = "not available: memory is frozen"
+
+
+def parse_memory_frozen(v: Any) -> str:
+    """``UNIFY_MEMORY_FROZEN``: ``off`` (also for empty) or ``on``. Not one of the redesign profile's switches: it is
+    allowed beside the profile and every arm, and the profile never sets it."""
+    return _on_off(FROZEN, v)
+
+
+def memory_frozen(settings: Any) -> bool:
+    """Whether memory is frozen for held-out evaluation: the request is served from what the home holds and changes
+    nothing in it (no episode recorded, no writer, fork, service or re-pin; the writer is not available on the run
+    record)."""
+    return parse_memory_frozen(getattr(settings, FROZEN, "") or "") == "on"
+
+
 def serving_refusal(settings: Any) -> str | None:
     """Why ``UNIFY_MEMORY_SERVING_FAILURE_RECORD`` or ``UNIFY_MEMORY_REGIME`` may not run with these settings (the
     settings named, never a value), or None: each acts on memory (``UNIFY_MEMORY=on``), and the failure record is
@@ -1941,6 +1961,7 @@ PARSERS = {
     MEMORY_PROFILE: parse_memory_profile,
     SERVING_FAILURE_RECORD: parse_serving_failure_record,
     REGIME: parse_regime,
+    FROZEN: parse_memory_frozen,
 }
 
 
