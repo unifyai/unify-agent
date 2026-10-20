@@ -5330,7 +5330,9 @@ class WriterPass:
                         one_call,
                         book_unpriced=book_unpriced,
                         remaining=remaining,
-                        room=lambda: usd_room(self.cfg, spend),
+                        # the pass's room and its own cap, as before the first attempt
+                        room=lambda: usd_room(self.cfg, spend)
+                        and (cap is None or spend.usd + spend.unknown * reserve < cap),
                         note=lambda text: notes.append(_redact(text)[:300]),
                     )
                 except TimeoutError:
