@@ -944,6 +944,13 @@ def _spawn(
             pass_fds=tuple(fds),
             env=env,
         )
+        # the child holds its own copies now: this process lets go of the token pipes at once, never while it waits
+        for r in fds:
+            try:
+                os.close(r)
+            except OSError:
+                pass
+        fds = []
         try:
             proc.wait(timeout=30)  # the first child exits at once, leaving the service
         except subprocess.TimeoutExpired:

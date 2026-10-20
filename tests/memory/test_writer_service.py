@@ -1081,3 +1081,120 @@ def test_a_service_killed_mid_pass_leaves_nothing_once_stopped(svc, monkeypatch)
     _until(lambda: not _in_ns(kids["box_ns"]), timeout=15)
     assert ws.group_pids(doc["pgid"]) == [] and ws.proc_start(kids["git"]) is None
     assert ws.proc_start(kids["box"]) is None and ws.proc_start(kids["inside"]) is None
+
+
+
+def test_the_starting_process_lets_go_of_the_token_pipes_before_it_waits(svc, monkeypatch):
+    """Review (C's live audit): the process that starts the service closes its copies of the token pipes as soon as
+    the child has them, not after its wait for the child: while it waits, no process but the child holds either, and
+    the child lets go of both before it forks (no process holds them once it is up)."""
+    from pydantic import SecretStr
+
+    from unify.memory.integration import async_pass, switch
+
+    monkeypatch.setattr(async_pass, "_route_token", lambda settings: "writer-route-token-for-a-test")
+    monkeypatch.setattr(
+        switch,
+        "helper_lane_route",
+        lambda: (("http://127.0.0.1:9/helper/v1", SecretStr("helper-route-token-for-a-test")), None),
+    )
+    inodes: set[int] = set()
+    real_pipes = ws._token_pipes
+
+    def spy():
+        env, fds = real_pipes()
+        inodes.update(os.fstat(fd).st_ino for fd in fds)
+        return env, fds
+
+    monkeypatch.setattr(ws, "_token_pipes", spy)
+    held_while_waiting: list = []
+
+    class Waiting:
+        def __init__(self, proc):
+            self.proc = proc
+
+        def wait(self, timeout=None):
+            # right after the spawn: no process but the started child holds either pipe (this one never)
+            held_while_waiting.append(sorted({p for p, _ in _pipe_holders(inodes)} - {self.proc.pid}))
+            return self.proc.wait(timeout=timeout)
+
+    got = ws.ensure_service(
+        svc.home,
+        settings=_settings(),
+        argv_prefix=[sys.executable, DRIVER],
+        wait_s=60,
+        popen=lambda *a, **k: Waiting(subprocess.Popen(*a, **k)),
+    )
+    assert got.status == "started" and len(inodes) == 2
+    assert held_while_waiting == [[]], held_while_waiting
+    _until(lambda: not _pipe_holders(inodes), timeout=30)
+
+
+
+ORPHAN_GROUP = r"""
+import os, sys, time
+os.setsid()
+child = os.fork()
+if child == 0:
+    while True:
+        time.sleep(0.1)
+print(child, flush=True)
+while True:
+    time.sleep(0.1)
+"""
+
+
+def test_a_member_the_dead_service_never_recorded_is_still_stopped(svc):
+    """Review (a): the service led its group and was killed before it could record a child (no member rows at all);
+    the child started while the service was last known alive, so the stop finds it in the service's group and kills
+    it by pid, verified."""
+    leader = subprocess.Popen([sys.executable, "-c", ORPHAN_GROUP], stdout=subprocess.PIPE, text=True)  # fmt: skip
+    child = int(leader.stdout.readline())
+    start = ws.proc_start(leader.pid)
+    time.sleep(0.05)
+    beat = ws.stamp(datetime.now(timezone.utc))  # last known alive: after the child started
+    doc = {"v": 1, "pid": leader.pid, "pgid": leader.pid, "proc_start": start, "pgid_start": start,
+           "state": "running", "heartbeat_at": beat, "started_at": beat, "members": []}  # fmt: skip
+    folder = ws.service_dir(svc.home)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / ws.STATE_FILE).write_text(json.dumps(doc))
+    os.kill(leader.pid, signal.SIGKILL)
+    leader.wait()
+    try:
+        assert ws.recorded_members(doc) == [] and ws.orphaned_members(doc) == [child]
+        groups = []
+        done = ws.stop_service(svc.home, "operator", "test", kill=lambda *a: groups.append(a), grace_s=0.1, term_s=5)
+        assert groups == [] and done.verified and ws.proc_start(child) is None
+    finally:
+        try:
+            os.kill(child, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def test_a_members_file_from_another_service_is_ignored(svc):
+    """Review (b): service-members.json written by another service (another pid or start time) adds nothing: a live
+    process it lists is never taken for this service's."""
+    bystander = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+    try:
+        now = datetime.now(timezone.utc)
+        doc = {"v": 1, "pid": 4_000_000, "pgid": 4_000_000, "proc_start": "1", "pgid_start": "1", "state": "running",
+               "heartbeat_at": ws.stamp(now), "started_at": ws.stamp(now), "members": []}  # fmt: skip
+        other = {"pid": 4_000_001, "proc_start": "2", "at": ws.stamp(now),
+                 "members": [[bystander.pid, ws.proc_start(bystander.pid)]]}  # fmt: skip
+        folder = ws.service_dir(svc.home)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / ws.STATE_FILE).write_text(json.dumps(doc))
+        (folder / ws.MEMBERS_FILE).write_text(json.dumps(other))
+        assert ws.recorded_members(doc, ws.read_members(svc.home)) == []
+        assert ws.service_group(doc, ws.read_members(svc.home)) == []
+        # the same file, had it been this service's, would have named the bystander
+        mine = dict(other, pid=doc["pid"], proc_start=doc["proc_start"])
+        assert ws.recorded_members(doc, mine) == [bystander.pid]
+        sent = []
+        done = ws.stop_service(svc.home, "operator", "test", kill=lambda *a: sent.append(a),
+                               kill_pid=lambda *a: sent.append(a), grace_s=0.1, term_s=0.1)  # fmt: skip
+        assert sent == [] and done.verified and bystander.poll() is None
+    finally:
+        bystander.kill()
+        bystander.wait()
