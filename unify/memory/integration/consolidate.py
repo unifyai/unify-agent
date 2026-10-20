@@ -2049,7 +2049,7 @@ class AttentionPassReport:
     #: model turns lost to a killed service and made again (each once, by turn id)
     killed_turns: list[str] = field(default_factory=list)
     #: what the service settles against its cap (None: nothing readable, so the reservation stays committed): the
-    #: writer lane's booking plus the helpers'
+    #: writer lane's charge (its unpriced calls at the worst case) plus the helpers'
     settle_usd: str | None = None
     #: the helpers' share of the above (their lane is not in the writer journal): priced USD, and unpriced calls
     helper_usd_known: str = "0"
