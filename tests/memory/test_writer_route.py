@@ -2054,42 +2054,31 @@ def test_a_refused_routed_call_says_only_its_kind_and_whether_it_cost_anything(m
 
 @pytest.fixture
 def refusing_route(monkeypatch, actor_gateway, restore_unillm):
-    """A local HTTP server standing in for the key proxy: every POST gets the next scripted (status, body). unillm's
-    and the model client's real path above it, with no network beyond the loopback and no key."""
-    import http.server
-
+    """unillm's transport (``litellm.acompletion``) replaced, as every scripted test does, by one that answers each
+    call as the model client does when the key proxy refuses it: the model client's own HTTP 403 error class, carrying
+    the proxy's body in its response and its text. Everything above the transport is unillm's own path."""
+    import httpx
+    import litellm
+    import unillm.clients.uni_llm as uni_llm
     from unillm.settings import SETTINGS as unillm_settings
 
     monkeypatch.setenv("UNILLM_CACHE", "false")
     monkeypatch.setattr(unillm_settings, "UNILLM_CACHE", False)
-    script: list[tuple[int, dict]] = []
-    seen: list[str] = []
+    state = SimpleNamespace(body=None, calls=0)
 
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def do_POST(self):  # noqa: N802 - the stdlib's name
-            self.rfile.read(int(self.headers.get("Content-Length") or 0))
-            seen.append(self.path)
-            status, body = script.pop(0) if script else (500, {"error": {"code": 500}})
-            data = json.dumps(body).encode()
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-
-        def log_message(self, *a):
-            pass
-
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield SimpleNamespace(
-            base=f"http://127.0.0.1:{server.server_address[1]}/api/v1", script=script, seen=seen
+    async def refused_acompletion(*, shared_session=None, client=None, **kw):
+        state.calls += 1
+        text = json.dumps(state.body)
+        request = httpx.Request("POST", f"{kw.get('api_base') or WRITER_BASE}/chat/completions")
+        raise litellm.exceptions.PermissionDeniedError(
+            message=f"OpenrouterException - {text}",
+            llm_provider="openrouter",
+            model=str(kw.get("model")),
+            response=httpx.Response(403, request=request, content=text.encode()),
         )
-    finally:
-        server.shutdown()
-        server.server_close()
+
+    monkeypatch.setattr(uni_llm.litellm, "acompletion", refused_acompletion)
+    return state
 
 
 @pytest.mark.parametrize(
@@ -2097,13 +2086,13 @@ def refusing_route(monkeypatch, actor_gateway, restore_unillm):
     [({"error": _IN_FLIGHT}, "http_403_busy"), ({"error": _CAP}, "http_403_cap"), ({"error": {"code": 403}}, "http_403")],
     ids=["call-in-flight", "cap", "no-refusal-body"],
 )
-def test_the_real_client_path_tells_the_proxys_refusals_apart_by_their_body(refusing_route, body, category):
-    """The key proxy's 403 bodies through unillm and the model client as they are (no fake transport): the refusal
-    body reaches the error chain, so a call in flight is busy for now, the cap is the cap, and a 403 that says
-    neither is only a 403."""
-    refusing_route.script.extend([(403, body)] * 8)  # a client's own retries see the same answer
-    turn = unillm_turn(REAL_MODEL, "low", route=WriterRoute(refusing_route.base, SecretStr(WRITER_TOKEN)))
+def test_unillms_path_tells_the_proxys_refusals_apart_by_their_body(refusing_route, body, category):
+    """The key proxy's 403 bodies as the model client raises them, through unillm's own path (its retries and
+    re-raises included): the refusal body reaches the error chain, so a call in flight is busy for now, the cap is the
+    cap, and a 403 that says neither is only a 403."""
+    refusing_route.body = body
+    turn = unillm_turn(REAL_MODEL, "low", route=WriterRoute(WRITER_BASE, SecretStr(WRITER_TOKEN)))
     with pytest.raises(writer_pass.WriterCallError) as info:
         asyncio.run(asyncio.wait_for(turn(_MESSAGES, _TOOLS), 60))
     assert info.value.category == category, str(info.value)
-    assert refusing_route.seen, "the call never reached the route"
+    assert refusing_route.calls >= 1
