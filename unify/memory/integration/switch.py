@@ -2106,6 +2106,31 @@ def host_lease_end(settings: Any) -> datetime | None:
     return _lease_time(text) if text else None
 
 
+def _unbounded_lane_models(settings: Any) -> list[str]:
+    """The settings naming a model of the service's lanes that the pinned price catalogue does not bound
+    (:mod:`..call_bounds`): the writer's (``UNIFY_MEMORY_WRITER_MODEL``, its default, or under the paper profile the
+    actor's ``UNIFY_MODEL``) and, with the helper lane set, the helpers' (``UNIFY_MEMORY_LIBRARY_HELPER_MODEL``, else
+    ``UNIFY_MODEL``)."""
+    from ..call_bounds import NoBound, call_worst_case_usd
+
+    lanes: list[tuple[str, str]] = []
+    if profile(settings) == PAPER:
+        lanes.append(("UNIFY_MODEL", _stripped(getattr(settings, "UNIFY_MODEL", "") or "")))
+    else:
+        own = _stripped(getattr(settings, WRITER_MODEL, "") or "")
+        lanes.append((WRITER_MODEL, own or WRITER_MODEL_DEFAULT))
+    if _stripped(getattr(settings, LIBRARY_HELPER_BASE_URL, "") or ""):
+        own = _stripped(getattr(settings, LIBRARY_HELPER_MODEL, "") or "")
+        lanes.append((LIBRARY_HELPER_MODEL if own else "UNIFY_MODEL", library_helper_model(settings)))
+    out = []
+    for name, model in lanes:
+        try:
+            call_worst_case_usd(model)
+        except NoBound:
+            out.append(name)
+    return sorted(set(out))
+
+
 def redesign_a_refusal(settings: Any) -> str | None:
     """Why the mesh, the service or metering may not run with these settings (the settings named, never a value), or
     None. Each needs what it acts on, refused rather than run as a silent no-op:
@@ -2141,6 +2166,12 @@ def redesign_a_refusal(settings: Any) -> str | None:
             missing.append(HOST_LEASE_END)
         if missing:
             return f"{WRITER_SERVICE}=on needs {', '.join(missing)}; nothing runs"
+        unbounded = _unbounded_lane_models(settings)
+        if unbounded:
+            return (
+                f"{WRITER_SERVICE}=on needs a model the pinned price catalogue bounds for "
+                f"{', '.join(unbounded)} (the service counts every call at its model's worst case); nothing runs"
+            )
     if metering_on(settings):
         headers = _stripped(getattr(settings, "UNIFY_REQUEST_METADATA_HEADERS", "") or "").lower() == "on"
         if not headers:

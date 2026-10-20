@@ -402,7 +402,26 @@ def test_a_writer_model_with_no_catalogue_bound_runs_no_pass(tmp_path, monkeypat
     T._open_entry(home)
     got = _step(home, T._no_pass, monkeypatch, UNIFY_MEMORY_WRITER_MODEL="vendor/no-such-model")
     assert got["why_idle"] == "refused" and got["pass_id"] is None
-    assert [e["reason"] for e in ws.events(home) if e.get("event") == "refused"] == ["NoBound"]
+    (reason,) = [e["reason"] for e in ws.events(home) if e.get("event") == "refused"]
+    assert "pinned price catalogue bounds for UNIFY_MEMORY_WRITER_MODEL" in reason and "no-such-model" not in reason
+
+
+def test_the_service_is_refused_at_start_up_for_a_lane_model_the_catalogue_does_not_bound(monkeypatch):
+    """The writer's model (or, under the paper profile, the actor's) and, with a helper lane, the helpers' model each
+    need a catalogue bound; the refusal names the setting, never the value."""
+    from tests.memory import test_writer_service as T
+    from unify.memory.integration import switch
+
+    monkeypatch.delenv("UNIFY_HOST_LEASE_END", raising=False)
+    ok = T._settings(UNIFY_MEMORY_WRITER_MODEL="openai/gpt-6-luna")
+    assert switch.redesign_a_refusal(ok) is None
+    assert "UNIFY_MEMORY_WRITER_MODEL" in switch.redesign_a_refusal(T._settings(UNIFY_MEMORY_WRITER_MODEL="v/x"))
+    helper = T._settings(UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL="http://127.0.0.1:9/helper/v1", UNIFY_MODEL="v/actor")
+    assert "for UNIFY_MODEL " in switch.redesign_a_refusal(helper)
+    helper.UNIFY_MEMORY_LIBRARY_HELPER_MODEL = "openai/gpt-6-luna"
+    assert switch.redesign_a_refusal(helper) is None
+    helper.UNIFY_MEMORY_LIBRARY_HELPER_MODEL = "v/helper"
+    assert "UNIFY_MEMORY_LIBRARY_HELPER_MODEL" in switch.redesign_a_refusal(helper)
 
 
 def test_a_resumed_pass_that_diverges_keeps_its_killed_runs_spend(tmp_path, monkeypatch):
