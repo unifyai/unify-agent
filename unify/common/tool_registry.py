@@ -1552,7 +1552,7 @@ CHECKPOINT = RegisteredTool(
     examples=('tools.checkpoint("the input is read; the report comes next")',),
     when="At a natural pause in a long piece of work: a part is done and the next has not started.",
     kind="action",
-    handler="unify.memory.integration.in_episode:checkpoint_tool",
+    handler="unify.memory.integration.in_episode:checkpoint",
     deadline_s=60.0,
     blocking=False,
 )

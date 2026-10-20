@@ -251,9 +251,9 @@ def test_the_actor_tool_and_the_hooks(tmp_path, monkeypatch, fork_on):
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
     monkeypatch.setattr(request_mod, "_CURRENT", run)
     # tools.checkpoint marks a pause
-    reply = ie_mod.checkpoint_tool(None, {"note": "read the input"})
+    reply = ie_mod.checkpoint(None, {"note": "read the input"})
     assert reply.status == "ok" and ie.pending == [("actor_call", "read the input")]
-    assert ie_mod.checkpoint_tool(None, {"note": 3}).status == "refused"
+    assert ie_mod.checkpoint(None, {"note": 3}).status == "refused"
     # a code cell's result counts one cell
     run.code.append("x = 0")
     hooks.tool_result("execute_code", "c0", {"error": None})
@@ -269,7 +269,7 @@ def test_the_actor_tool_and_the_hooks(tmp_path, monkeypatch, fork_on):
     assert "checkpoint" in reg.allow_list("actor", frozenset({"checkpoint"}))
     # with no run, the tool says why
     monkeypatch.setattr(request_mod, "_CURRENT", None)
-    refused = ie_mod.checkpoint_tool(None, {})
+    refused = ie_mod.checkpoint(None, {})
     assert refused.status == "refused" and "memory during an episode is off" in refused.text
 
 

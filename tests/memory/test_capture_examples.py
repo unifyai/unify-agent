@@ -269,7 +269,8 @@ def test_a_worked_example_is_read_never_called_or_matched(tmp_path):
 
 
 def test_the_request_marks_worked_examples_only_under_its_switch_and_counts_them():
-    opening = inspect.getsource(RequestRun._open_library_mode)
+    # the copy is written by _export_copy (at the request's open, and at each re-pin under UNIFY_MEMORY_IN_EPISODE)
+    opening = inspect.getsource(RequestRun._export_copy)
     assert "examples=library_fixed_answers_as_examples(SETTINGS)" in opening
     assert '"worked_examples": examples' in opening
     assert '{"type": "capture_serving", "episode_id": self.episode_id, **self.capture_serving}' in inspect.getsource(
