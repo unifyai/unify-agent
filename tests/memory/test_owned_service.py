@@ -59,12 +59,12 @@ def owned(tmp_path, monkeypatch):
             so.stop_owned(home, proc, by="operator", reason="the test ended", grace_s=0.5, term_s=2)
 
 
-def _start(owned, **driver_env) -> subprocess.Popen:
+def _start(owned, *args: str, **driver_env) -> subprocess.Popen:
     """The runner's start: the service in the foreground, with the owned environment, in its own folder."""
     env = so.owned_env(owned.home)
     env.update({"DRIVER_OUT": str(owned.out), **{k: str(v) for k, v in driver_env.items()}})
     proc = subprocess.Popen(
-        [sys.executable, T.DRIVER, "--home", str(owned.home), "--foreground"],
+        [sys.executable, T.DRIVER, "--home", str(owned.home), "--foreground", *args],
         env=env,
         cwd=str(so.owned_cwd(owned.home)),
         start_new_session=True,
@@ -244,7 +244,7 @@ def test_no_key_is_reachable_from_the_runners_service(owned, monkeypatch):
         e.split(b"=", 1) for e in Path(f"/proc/{proc.pid}/environ").read_bytes().split(b"\0") if e
     )
     names = [k.decode() for k in env]
-    secret = [n for n in names if so.SECRET_NAME.search(n) and not n.upper().endswith("_TOKEN_FD")]
+    secret = [n for n in names if so.secret_name(n)]
     assert not secret, secret
     assert b"planted-value-for-a-test" not in b"".join(env.values())
     assert env[b"HOME"].decode() == str(so.owned_cwd(owned.home) / "home") != str(parent_home)
@@ -266,3 +266,81 @@ def test_no_box_of_the_runners_service_can_read_the_run_record(owned):
     _start(owned, DRIVER_BOX_READ=":".join(str(t) for t in targets), DRIVER_TURNS=0)
     seen = T._until(lambda: (owned.out / "box-read.txt").read_text() if (owned.out / "box-read.txt").exists() else None)
     assert seen.count("REFUSED") == 2 * len(targets) and "OPENED" not in seen, seen
+
+
+
+def test_the_service_environment_is_an_allowlist(owned):
+    """Review (C): owned_env takes only the settings the build declares, the route names and the locale from the
+    runner's environment, never a name it holds for anything else (a key under its own name, the name of the audit's
+    redaction list, any *_TOKEN or *_KEY, a UNIFY_ name the build does not declare, the writer's token setting)."""
+    base = {
+        "PATH": "/opt/runner/bin",
+        "LANG": "C.UTF-8",
+        "OPENROUTER_API_KEY": "planted",  # pragma: allowlist secret
+        "WORKBENCH_REDACT_NAMES": "OPENROUTER_API_KEY",
+        "SOME_TOKEN": "planted",  # pragma: allowlist secret
+        "X_KEY": "planted",  # pragma: allowlist secret
+        "UNIFY_NOT_A_SETTING": "1",
+        "UNIFY_MEMORY_WRITER_TOKEN": "planted",  # pragma: allowlist secret
+        "UNIFY_MEMORY_WRITER_BASE_URL": "http://127.0.0.1:9/writer/v1",
+        "UNIFY_MEMORY_WRITER_TOKEN_FD": "7",
+        "UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL": "http://127.0.0.1:9/helper/v1",
+        "UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD": "8",
+        "UNIFY_MEMORY_WRITER_ALLOWANCE_USD_PER_TOKENS": "0.000001",
+        "UNIFY_MEMORY_WRITER_SERVICE_OWNER": "harness",
+        "UNIFY_MEMORY": "on",
+    }
+    env = so.owned_env(owned.home, base)
+    assert set(env) == {
+        "PATH", "HOME", "LANG", "UNIFY_MEMORY", "UNIFY_MEMORY_WRITER_BASE_URL", "UNIFY_MEMORY_WRITER_TOKEN_FD",
+        "UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL", "UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD",
+        "UNIFY_MEMORY_WRITER_ALLOWANCE_USD_PER_TOKENS", "UNIFY_MEMORY_WRITER_SERVICE_OWNER",
+    }, sorted(env)  # fmt: skip
+    assert env["PATH"] == "/usr/bin:/bin" and env["UNIFY_MEMORY_WRITER_SERVICE_OWNER"] == "runner"
+    assert "planted" not in "".join(env.values())
+
+
+def test_a_new_stage_clears_the_previous_stages_stop_marker(owned):
+    """Review (C): stage 1's end left the stop marker; stage 2's runner-owned start sets it aside (recorded) and runs,
+    while a request still never clears it."""
+    so.write_stop(owned.home, "drain", "stage-end")
+    assert ws.ensure_service(owned.home, settings=T._settings(UNIFY_MEMORY_WRITER_SERVICE_OWNER="runner")).status == "refused"
+    assert ws.stopping_marker(owned.home) is not None  # a request left it
+    proc = _start(owned)
+    assert ws.stopping_marker(owned.home) is None and proc.poll() is None
+    (cleared,) = _events(owned.home, "stop-cleared")
+    assert cleared["previous_by"] == "drain" and (ws.service_dir(owned.home) / cleared["kept"]).exists()
+    assert so.owned_ready(owned.home, 10)
+
+
+def test_the_ready_check(owned):
+    assert not so.owned_ready(owned.home, 0.3)
+    proc = _start(owned)
+    assert so.owned_ready(owned.home, 10)
+    assert so.stop_owned(owned.home, proc, by="drain", reason="stage-end", grace_s=5).verified
+    assert not so.owned_ready(owned.home, 0.3)
+
+
+def test_the_owner_gives_the_service_its_end(owned):
+    """Review (C): --until (the stage deadline) bounds the service besides its lifetime and the lease."""
+    until = time.time() + 3
+    proc = _start(owned, "--until", str(until))
+    proc.wait(timeout=60)
+    assert _events(owned.home, "stop")[-1]["why"] == "lifetime" and _events(owned.home, "lifetime")
+    assert so.lock_free(owned.home)
+
+
+def test_a_crashed_runner_service_is_taken_over_once_by_a_request_and_counted(owned):
+    """The crash fallback: the runner's service dies without stopping; the next request starts one (in its session)
+    and writes takeover with fallback, an event the runner can count."""
+    proc = _start(owned)
+    os.kill(proc.pid, signal.SIGKILL)
+    proc.wait()
+    T._until(lambda: so.lock_free(owned.home))
+    got = ws.ensure_service(owned.home, settings=T._settings(UNIFY_MEMORY_WRITER_SERVICE_OWNER="runner"),
+                            argv_prefix=[sys.executable, T.DRIVER], wait_s=60)  # fmt: skip
+    assert got.status == "started" and got.took_over
+    (take,) = _events(owned.home, "takeover")
+    assert take["fallback"] is True and take["previous_pid"] == proc.pid
+    T._until(lambda: ws.owns(ws.read_state(owned.home)))
+    assert ws.stop_service(owned.home, "operator", "test", grace_s=0.5, term_s=2).verified

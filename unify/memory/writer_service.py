@@ -122,6 +122,7 @@ EVENTS = (
     "pass",
     "refused",
     "error",
+    "stop-cleared",
 )
 MODULE = "unify.memory.writer_service"
 
@@ -497,11 +498,14 @@ def _settings() -> Any:
     return SETTINGS
 
 
-def lifetime_end(started: datetime, settings: Any) -> tuple[datetime, str]:
-    """When the service must stop, and why: its own lifetime, or the host's lease less the margin, whichever first."""
+def lifetime_end(started: datetime, settings: Any, until: Optional[datetime] = None) -> tuple[datetime, str]:
+    """When the service must stop, and why: its own lifetime, the host's lease less the margin, or the end its owner
+    gave it (*until*: a runner-owned service's stage deadline; why ``lifetime``), whichever first."""
     from .integration.switch import host_lease_end
 
     own = started + timedelta(seconds=LIFETIME_S)
+    if until is not None and until < own:
+        own = until
     lease = host_lease_end(settings)
     if lease is not None and lease - timedelta(seconds=LEASE_MARGIN_S) < own:
         return lease - timedelta(seconds=LEASE_MARGIN_S), "lease"
@@ -1135,6 +1139,23 @@ def _note_writer(home: Path, note: str) -> None:
 from .service_owner import owned_cwd, owned_env, stop_owned  # noqa: E402,F401 - the runner's side, stdlib only
 
 
+def clear_previous_stop(home: Path | str) -> Optional[dict]:
+    """At a runner-owned service's start (``--foreground``, owner ``runner``): the stop marker a previous stage's end
+    left is renamed aside (``service.stop.<stamp>``) and recorded (``stop-cleared``, with its ``by`` and ``at``), so
+    this stage's service runs. Returns the old marker, or None. A request never clears a marker."""
+    marker = stopping_marker(home)
+    if marker is None:
+        return None
+    path = service_dir(home) / STOP_FILE
+    aside = path.with_name(f"{STOP_FILE}.{stamp(_now()).replace(':', '')}")
+    try:
+        os.replace(path, aside)
+    except FileNotFoundError:
+        return None
+    event(home, "stop-cleared", previous_by=marker.get("by"), previous_at=marker.get("at"), kept=aside.name)
+    return marker
+
+
 def stopping_marker(home: Path | str) -> Optional[dict]:
     try:
         doc = json.loads((service_dir(home) / STOP_FILE).read_text(encoding="utf-8"))
@@ -1180,11 +1201,13 @@ class Service:
     #: record the group's processes (``members``); False for a step, which runs in its caller's process: nothing of
     #: the caller's is ever recorded as the service's, so nothing of it is ever signalled
     record_members: bool = True
+    #: the end its owner gave it (a runner-owned service: the stage's deadline), or None
+    until: Optional[datetime] = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def doc(self) -> dict:
         committed, settled = spend_totals(self.home)
-        end, _why = lifetime_end(self.started, self.settings)
+        end, _why = lifetime_end(self.started, self.settings, self.until)
         return {
             "v": 1,
             "pid": os.getpid(),
@@ -1567,7 +1590,7 @@ async def _iteration(
     if service.stop_flag is not None and service.stop_flag.is_set():
         out.update(why_idle="stopping", stop="term")
         return out
-    end, end_why = lifetime_end(service.started, settings)
+    end, end_why = lifetime_end(service.started, settings, service.until)
     if clock() >= end:
         why = "lease" if end_why == "lease" else "lifetime"
         event(home, "lifetime", why=end_why)
@@ -1723,10 +1746,11 @@ async def service_main(
     clock: Callable[[], datetime] = _now,
     monotonic: Callable[[], float] = time.monotonic,
     members_s: float = MEMBERS_S,
+    until: Optional[datetime] = None,
 ) -> str:
     """The service's life (module docstring); returns why it stopped. It takes the home's lock itself (*lock_fd*: one
     already taken, for tests), and returns ``busy`` at once, leaving no trace, when another service holds it. *clock*
-    (UTC now) and *monotonic* (the idle clock) are injected by tests."""
+    (UTC now) and *monotonic* (the idle clock) are injected by tests; *until* is the end its owner gave it."""
     home = Path(home)
     own_lock = lock_fd is None
     if own_lock:
@@ -1736,7 +1760,8 @@ async def service_main(
     os.set_inheritable(lock_fd, False)
     try:
         return await _serve(home, lock_fd, runner=runner, settings=settings, poll_s=poll_s, idle_exit_s=idle_exit_s,
-                            heartbeat_s=heartbeat_s, clock=clock, monotonic=monotonic, members_s=members_s)  # fmt: skip
+                            heartbeat_s=heartbeat_s, clock=clock, monotonic=monotonic, members_s=members_s,
+                            until=until)  # fmt: skip
     finally:
         if own_lock:
             os.close(lock_fd)
@@ -1754,6 +1779,7 @@ async def _serve(
     clock: Callable[[], datetime],
     monotonic: Callable[[], float],
     members_s: float = MEMBERS_S,
+    until: Optional[datetime] = None,
 ) -> str:
     from .attention import Ledger
     from .integration.switch import profile_refusal, writer_service_cap_usd
@@ -1770,7 +1796,7 @@ async def _serve(
         # started it for the whole cell; a request never starts it again)
         idle_exit_s = float("inf")
     previous = read_state(home)
-    service = Service(home, settings, lock_fd, started=clock())
+    service = Service(home, settings, lock_fd, started=clock(), until=until)
     service.cap = writer_service_cap_usd(settings)
     stop_flag = asyncio.Event()
     service.stop_flag = stop_flag
@@ -1876,6 +1902,12 @@ def _parse(argv: Optional[list[str]]) -> argparse.Namespace:
         action="store_true",
         help="run in this process (the runner's own sandbox starts it so: UNIFY_MEMORY_WRITER_SERVICE_OWNER=runner)",
     )
+    p.add_argument(
+        "--until",
+        type=float,
+        default=None,
+        help="stop by this UTC epoch second at the latest (the owner's stage deadline), besides the lifetime and lease",
+    )
     return p.parse_args(argv)
 
 
@@ -1933,8 +1965,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         daemonize()
     elif args.foreground:
         _lead_own_group()
+        if _owner(_settings()) == "runner":
+            # the runner starts its service once per stage: a stop marker the previous stage's end left is set aside
+            # (recorded), never by a request
+            clear_previous_stop(args.home)
+    until = datetime.fromtimestamp(args.until, tz=timezone.utc) if args.until is not None else None
     try:
-        asyncio.run(service_main(args.home))
+        asyncio.run(service_main(args.home, until=until))
         return 0
     except Exception as exc:  # noqa: BLE001 - the class only
         print(f"writer service: {type(exc).__name__}", file=sys.stderr)

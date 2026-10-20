@@ -200,6 +200,11 @@ def main(argv=None) -> int:
         ws.daemonize()
     elif args.foreground:
         ws._lead_own_group()
+        if ws._owner(ws._settings()) == "runner":
+            ws.clear_previous_stop(args.home)  # as ws.main does
+    from datetime import datetime, timezone
+
+    until = datetime.fromtimestamp(args.until, tz=timezone.utc) if args.until is not None else None
     ws.pass_reservation = lambda settings, effort: Decimal(
         os.environ.get("DRIVER_RESERVE", "0.01")
     )
@@ -211,6 +216,7 @@ def main(argv=None) -> int:
             poll_s=float(os.environ.get("DRIVER_POLL_S", "0.2")),
             idle_exit_s=float(os.environ.get("DRIVER_IDLE_S", "600")),
             heartbeat_s=float(os.environ.get("DRIVER_BEAT_S", "30")),
+            until=until,
         ),
     )
     return 0

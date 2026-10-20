@@ -595,14 +595,10 @@ def test_a_pass_killed_at_turn_3_resumes_at_turn_3_with_one_killed_turn_and_the_
     killed = _until(lambda: _events(svc.home, "killed-turn"))
     assert [k["turn_id"] for k in killed] == [f"{pass_id}/3"]
     assert _events(svc.home, "resume")[0]["pass_id"] == pass_id
-    row = next(
-        r
-        for r in (
-            json.loads(x)
-            for x in (svc.home / "memory-state" / "pass-results.jsonl")
-            .read_text()
-            .splitlines()
-        )
+    # the pass row is written once the pass has returned (after its result file): wait for it
+    results = svc.home / "memory-state" / "pass-results.jsonl"
+    row = _until(
+        lambda: next((json.loads(x) for x in results.read_text().splitlines()), None) if results.exists() else None
     )
     assert row["pass_id"] == pass_id and row["ended"] == "landed"
 

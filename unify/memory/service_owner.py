@@ -41,11 +41,23 @@ STOP_BY = ("drain", "operator", "cap", "lease")
 STOP_GRACE_S = 30.0
 TERM_S = 10.0
 SETTLE_S = 5.0
-#: Names the service's environment takes from the runner's: the locale and time zone, and the build's settings
-#: (``UNIFY_*``, ``UNILLM_*``) that are not secret by name. A route token reaches it only on an inherited pipe (its
-#: descriptor number, ``*_TOKEN_FD``, is a setting); a base URL is a route to the key proxy, never a key.
+#: The service's environment is an allowlist, never the runner's environment stripped: the locale and time zone,
+#: and the names the build's settings module declares (``unify/settings.py``, read as text: no import) that are not
+#: secret by name, the writer's and the helpers' route base URLs and token descriptor numbers among them (a route
+#: token reaches it only on an inherited pipe; a base URL is a route to the key proxy, never a key). A name the
+#: runner's environment holds for anything else (an audit's redaction list, a key) never reaches it.
 BASICS = ("LANG", "LC_ALL", "LC_CTYPE", "TZ")
-SECRET_NAME = re.compile(r"KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|COOKIE|AUTH|TOKEN", re.IGNORECASE)
+SECRET_NAME = re.compile(r"KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|COOKIE|AUTH|_TOKEN$|^TOKEN", re.IGNORECASE)
+ROUTE_NAMES = (
+    "UNIFY_MEMORY_WRITER_BASE_URL",
+    "UNIFY_MEMORY_WRITER_TOKEN_FD",
+    "UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL",
+    "UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD",
+)
+OWNER_NAME = "UNIFY_MEMORY_WRITER_SERVICE_OWNER"
+SETTINGS_FILE = Path(__file__).resolve().parents[1] / "settings.py"
+#: A heartbeat older than this is not a live service (the service's own takeover age).
+STALE_S = 90.0
 
 
 def service_dir(home: Path | str) -> Path:
@@ -68,26 +80,50 @@ def _parse(text: Any) -> Optional[datetime]:
             return None
 
 
+def secret_name(name: str) -> bool:
+    """Whether *name* reads as one that carries a credential (a key, a secret, a password, a token). A token's
+    descriptor number (``*_TOKEN_FD``) and a count or price per token (``*_TOKENS``, ``*_PER_TOKEN``) do not."""
+    up = name.upper()
+    if up.endswith(("_TOKEN_FD", "_TOKENS", "_PER_TOKEN")):
+        return False
+    return bool(SECRET_NAME.search(up))
+
+
 def _allowed(name: str) -> bool:
-    if name.upper().endswith("_TOKEN_FD"):
-        return True  # a descriptor number, never the token
-    return not SECRET_NAME.search(name)
+    return not secret_name(name)
 
 
-def owned_env(home: Path | str, base: Optional[Mapping[str, str]] = None) -> dict[str, str]:
-    """The environment to start the runner-owned service with: a fixed ``PATH``, a fresh empty ``HOME`` under the
-    service's own folder, :data:`BASICS`, and the ``UNIFY_*`` / ``UNILLM_*`` settings of *base* (default this process's)
-    whose names are not secret (``*_TOKEN_FD`` numbers kept: the tokens themselves come on their pipes). It holds no
-    key, so the model client reads none, and its HOME holds no ``.env`` or cloud automation config to read one from.
-    Creates the folder; :func:`owned_cwd` is the folder to start it in."""
+def setting_names(path: Path = SETTINGS_FILE) -> frozenset[str]:
+    """The ``UNIFY_*`` names the build's settings module declares (its class fields), read from its text."""
+    import ast
+
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(Path(path).read_text(encoding="utf-8"))):
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            # a field the module declares a secret (SecretStr) is never passed on, whatever its name
+            if node.target.id.startswith("UNIFY_") and "SecretStr" not in ast.unparse(node.annotation):
+                names.add(node.target.id)
+    return frozenset(names)
+
+
+def owned_env(
+    home: Path | str, base: Optional[Mapping[str, str]] = None, *, extra: tuple[str, ...] = ()
+) -> dict[str, str]:
+    """The environment to start the runner-owned service with, an allowlist: a fixed ``PATH``, a fresh empty ``HOME``
+    under the service's own folder, :data:`BASICS`, and of *base* (default this process's) only the settings the
+    build declares (:func:`setting_names`) and *extra* names the runner adds, each not secret by name (descriptor
+    numbers kept: the route tokens come on their pipes), with ``UNIFY_MEMORY_WRITER_SERVICE_OWNER=runner``. It holds
+    no key, so the model client reads none, and its HOME holds no ``.env`` or cloud automation config to read one
+    from. Creates the folder; :func:`owned_cwd` is the folder to start it in."""
     base = os.environ if base is None else base
     home_dir = owned_cwd(home) / "home"
     home_dir.mkdir(parents=True, exist_ok=True)
+    allowed = (setting_names() | set(ROUTE_NAMES) | set(extra)) - {OWNER_NAME}
     env = {k: base[k] for k in BASICS if base.get(k)}
-    for name, value in base.items():
-        if name.startswith(("UNIFY_", "UNILLM_")) and _allowed(name):
-            env[name] = value
-    env.update(PATH="/usr/bin:/bin", HOME=str(home_dir))
+    for name in sorted(allowed):
+        if name in base and _allowed(name):
+            env[name] = base[name]
+    env.update({"PATH": "/usr/bin:/bin", "HOME": str(home_dir), OWNER_NAME: "runner"})
     return env
 
 
@@ -125,6 +161,37 @@ def lock_free(home: Path | str) -> bool:
     finally:
         os.close(fd)  # closing drops a lock taken just now
     return True
+
+
+def _proc_start(pid: Any) -> Optional[str]:
+    try:
+        rest = Path(f"/proc/{int(pid)}/stat").read_text().rsplit(")", 1)[-1].split()
+    except (OSError, ValueError, TypeError):
+        return None
+    return None if len(rest) < 20 or rest[0] in ("Z", "X") else rest[19]
+
+
+def _live_doc(home: Path | str) -> bool:
+    """Whether ``service.json`` names a live process (its pid with its ``/proc`` start time) in this pid namespace."""
+    doc = _state(home) or {}
+    start = doc.get("proc_start")
+    return bool(start) and doc.get("state") != "stopped" and _proc_start(doc.get("pid")) == str(start)
+
+
+def owned_ready(home: Path | str, wait_s: float = 30.0, *, sleep: Callable[[float], Any] = time.sleep) -> bool:
+    """Whether the runner-owned service is up, within *wait_s*: ``service.json`` names a runner-owned service that is
+    running or idle, its heartbeat is fresh, and its lock is held. The runner calls it before the first session; a
+    stage that finds it not ready refuses (no session runs without the service)."""
+    limit = time.monotonic() + max(0.0, wait_s)
+    while True:
+        doc = _state(home) or {}
+        beat = _parse(doc.get("heartbeat_at"))
+        fresh = beat is not None and (datetime.now(timezone.utc) - beat).total_seconds() <= STALE_S
+        if doc.get("owner") == "runner" and doc.get("state") in ("idle", "running") and fresh and not lock_free(home):
+            return True
+        if time.monotonic() >= limit:
+            return False
+        sleep(0.1)
 
 
 def _state(home: Path | str) -> Optional[dict]:
@@ -182,10 +249,12 @@ def stop_owned(
     settle_s: float = SETTLE_S,
     sleep: Callable[[float], Any] = time.sleep,
 ) -> Stopped:
-    """Stop the runner-owned service whose sandbox *proc* is (a ``Popen``, or a pid): the stop marker; wait for the
-    process to exit until the in-flight pass's deadline (``service.json`` ``pass_deadline``) plus *grace_s*; then
-    SIGTERM, *term_s*; then SIGKILL, *settle_s*. Verified only when the process has exited and the service's lock is
-    free. The runner stops the key proxy only after this returns verified."""
+    """Stop the runner-owned service whose sandbox *proc* is (a ``Popen``, or a pid): the stop marker, and nothing else
+    until the in-flight pass's deadline (``service.json`` ``pass_deadline``) plus *grace_s* (the service stops at the
+    marker once its pass has ended); then SIGTERM, *term_s*; then SIGKILL, *settle_s* (signals reach the sandbox's own
+    process, the service ending with it: in effect a hard stop). Verified only when the process has exited, the
+    service's lock is free and ``service.json`` names no live process. The runner stops the key proxy only after this
+    returns verified."""
     if isinstance(proc, int):
         proc = _Pid(proc)
     write_stop(home, by, reason)
@@ -231,7 +300,9 @@ def stop_owned(
         while not free and time.monotonic() < limit:
             sleep(0.05)
             free = lock_free(home)
-    return Stopped(exited and free, how, () if exited else (int(getattr(proc, "pid", 0) or 0),))
+    # verified: the sandbox exited, the service's lock is free, and service.json names no live process here
+    live = _live_doc(home)
+    return Stopped(exited and free and not live, how, () if exited else (int(getattr(proc, "pid", 0) or 0),))
 
 
 def main(argv: Optional[list[str]] = None) -> int:
