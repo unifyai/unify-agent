@@ -232,7 +232,7 @@ def test_with_no_journal_a_pass_settles_its_own_figures_at_the_worst_case(tmp_pa
     from unify.memory.reconcile import unavailable
 
     _cfg_, report = _attention_pass(tmp_path, monkeypatch, recon=unavailable())
-    assert report.settle_usd == "0.01" and report.unknown_calls == 0
+    assert Decimal(report.settle_usd) == Decimal("0.01") and report.unknown_calls == 0
 
 
 def _step(home, runner, monkeypatch, **over):
