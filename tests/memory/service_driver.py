@@ -33,7 +33,8 @@ async def _children_in_flight(out: Path) -> None:
 
     box = _spawn_box(["/bin/sh", "-c", "sleep 600"], ro=None, rw=None, cwd="/tmp", env=None, late_ro=None,
                      pass_fds=(), stdin=subprocess.DEVNULL)  # fmt: skip
-    git = subprocess.Popen(["git", "cat-file", "--batch"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+    # a git call waiting on its input, in the service's group (hash-object needs no repository)
+    git = subprocess.Popen(["git", "hash-object", "--stdin"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                            cwd="/tmp")  # fmt: skip
     inside = None
     for _ in range(200):  # the box's own process (its pid namespace's), once bubblewrap has started it

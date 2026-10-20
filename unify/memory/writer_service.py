@@ -1737,7 +1737,7 @@ async def _serve(
     )
     beat_thread.start()
 
-    def record() -> None:
+    def write_members() -> None:
         # the service's processes, often (a stop or takeover after a kill finds what it started up to MEMBERS_S before)
         while not beating.wait(members_s):
             try:
@@ -1750,7 +1750,7 @@ async def _serve(
                 pass
 
     if service.record_members:
-        threading.Thread(target=record, name="writer-service-members", daemon=True).start()
+        threading.Thread(target=write_members, name="writer-service-members", daemon=True).start()
     event(
         home, "start", cap_usd=_format(service.cap) if service.cap is not None else None
     )

@@ -1060,9 +1060,9 @@ def _in_ns(ns: str) -> list[int]:
 @pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap required")
 def test_a_service_killed_mid_pass_leaves_nothing_once_stopped(svc, monkeypatch):
     """Review: a pass with a confined box and a git call in flight; the service is killed with SIGKILL (its own pid
-    only). The box dies with it (its bubblewrap dies with its parent); the git call is left an orphan in the
-    service's group, and the stop kills it by pid (the service recorded it). Then nothing is left in the box's pid
-    namespace or the service's group, and the stop is verified."""
+    only). The box (bubblewrap in a session of its own) dies with it (die-with-parent); the git call is left an
+    orphan in the service's group, and the stop kills it by pid (the service recorded it). Then nothing is left in
+    the box's pid namespace or the service's group, and the stop is verified."""
     monkeypatch.setenv("DRIVER_CHILDREN", "1")
     _open_entry(svc.home)
     assert _ensure(svc.home).status == "started"
@@ -1070,7 +1070,8 @@ def test_a_service_killed_mid_pass_leaves_nothing_once_stopped(svc, monkeypatch)
     doc = ws.read_state(svc.home)
     assert kids["service"] == doc["pid"] == doc["pgid"] and kids["box_ns"]
     group = ws.group_pids(doc["pgid"], since=doc["proc_start"])
-    assert {kids["service"], kids["box"], kids["git"]} <= set(group), group
+    assert {kids["service"], kids["git"]} <= set(group), group
+    assert ws.proc_start(kids["box"]) is not None and _in_ns(kids["box_ns"])  # the box runs, in its own namespace
     os.kill(doc["pid"], signal.SIGKILL)
     _until(lambda: not ws.owns(doc))
     # the stop signals only what the service recorded or what joined its group while it lived, never the group
