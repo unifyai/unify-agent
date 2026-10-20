@@ -292,11 +292,12 @@ def test_the_service_environment_is_an_allowlist(owned):
     }
     env = so.owned_env(owned.home, base)
     assert set(env) == {
-        "PATH", "HOME", "LANG", "UNIFY_MEMORY", "UNIFY_MEMORY_WRITER_BASE_URL", "UNIFY_MEMORY_WRITER_TOKEN_FD",
+        "PATH", "HOME", "TMPDIR", "LANG", "UNIFY_MEMORY", "UNIFY_MEMORY_WRITER_BASE_URL", "UNIFY_MEMORY_WRITER_TOKEN_FD",
         "UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL", "UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD",
         "UNIFY_MEMORY_WRITER_ALLOWANCE_USD_PER_TOKENS", "UNIFY_MEMORY_WRITER_SERVICE_OWNER",
     }, sorted(env)  # fmt: skip
     assert env["PATH"] == "/usr/bin:/bin" and env["UNIFY_MEMORY_WRITER_SERVICE_OWNER"] == "runner"
+    assert env["TMPDIR"] == str(so.owned_cwd(owned.home) / "tmp")
     assert "planted" not in "".join(env.values())
 
 
