@@ -139,6 +139,8 @@ from .switch import (
     library_coverage,
     library_max_reads,
     captures_per_pass,
+    attention_ledger,
+    capture_trace,
     run_record_on,
 )
 
@@ -240,11 +242,18 @@ class EpisodeLookup:
         self._size = cache_size
 
     def episode(self, eid: str) -> Episode:
-        """The episode *eid* (``KeyError`` when it was never indexed)."""
+        """The episode *eid* (``KeyError`` when it was never indexed). A segment of an episode (``<episode>.s<n>``,
+        ``UNIFY_MEMORY_IN_EPISODE``) is read from its own record (:mod:`..segments`) when it has one."""
         hit = self._cache.get(eid)
         if hit is not None:
             self._cache.move_to_end(eid)
             return hit
+        from .. import segments
+
+        if segments.is_segment_name(eid):
+            seg = segments.load_snapshot(self.stores.paths.state_dir, eid)
+            if seg is not None:
+                return seg
         sha, started_at = self.stores.evidence.episode_ref(eid)
         rel = episode_dir(SimpleNamespace(episode_id=eid, started_at=started_at))
         ep = load_episode(self.stores.episodes, sha, rel, self.stores.blobs)
@@ -1135,7 +1144,7 @@ def after_passes(
         return
     from .. import lifecycle
     from ..captures import store_dir as captures_store_dir
-    from .switch import checker_visible
+    from .switch import checker_visible, impure_items
 
     try:
         with tempfile.TemporaryDirectory(prefix="memlib-records-") as work:
@@ -1147,6 +1156,10 @@ def after_passes(
                 stop=stop,  # the worker's SIGTERM, checked between bisect runs
                 # the capture store: a landed procedure's record takes its capture's signature and applies
                 captures=captures_store_dir(stores.paths.state_dir),
+                # UNIFY_MEMORY_IMPURE_ITEMS=on: every record carries its evidence label
+                **({"labels": True} if impure_items(settings) else {}),
+                # UNIFY_MEMORY_ATTENTION_LEDGER=on: the writer's retire and merge decisions reach the records
+                **({"writer_decisions": True} if attention_ledger(settings) else {}),
             )
     except Exception as exc:  # noqa: BLE001 - the records never stop the request
         _error(stores, redact_error(f"item records: {type(exc).__name__}: {exc}"))
@@ -1329,12 +1342,19 @@ def capture_settled_forks(stores: Stores, settings: Any) -> list[dict]:
         root = state / "memory-staging"
         eids = sorted(os.listdir(root)) if root.is_dir() else []
         lookup = EpisodeLookup(stores)
+        trace = {}
+        if capture_trace(settings):
+            # UNIFY_MEMORY_CAPTURE_TRACE=on: what each episode (or segment) did, its own check as evidence
+            from .. import segments
+
+            trace = {"trace": True, "segment_episode": segments.loader(state)}
         return captures.capture_settled(
             state,
             eids,
             episode=lookup.episode,
             signals=stores.evidence.signals_for,
             checker_visible=checker_visible(settings),
+            **trace,
         )
     except Exception as exc:  # noqa: BLE001 - capture never stops a pass; the error is recorded
         _error(stores, f"capture step: {type(exc).__name__}")
@@ -1394,6 +1414,37 @@ def verdict_candidates(stores: Stores, settings: Any) -> list[str]:
     except Exception as exc:  # noqa: BLE001 - a worker then starts only when a pass is due
         _error(stores, f"verdict candidates: {type(exc).__name__}")
         return []
+
+
+def learning_pass_fields(stores: Stores, settings: Any) -> dict:
+    """The :class:`..writer_pass.PassConfig` fields of the redesign's switches, each only when it is on (so a
+    config without them is as built): ``attention_home`` (``UNIFY_MEMORY_ATTENTION_LEDGER``: the home whose ledger an
+    attention pass decides), ``writer_tests`` (``UNIFY_MEMORY_WRITER_TESTS``: the modes ``tools.test`` offers) and
+    ``impure_items`` (``UNIFY_MEMORY_IMPURE_ITEMS``). The writer service builds its passes' config with it too."""
+    from .switch import impure_items, writer_tests_modes
+
+    out: dict = {}
+    if attention_ledger(settings):
+        out["attention_home"] = str(stores.paths.home)
+    modes = writer_tests_modes(settings)
+    if modes:
+        out["writer_tests"] = tuple(m for m in ("value", "replay") if m in modes)
+    if impure_items(settings):
+        out["impure_items"] = True
+    return out
+
+
+def learning_gate_fields(settings: Any, stores: Stores | None = None) -> dict:
+    """The :class:`..gate.Gate` fields of the redesign's switches, each only when on: ``labels``
+    (``UNIFY_MEMORY_IMPURE_ITEMS``: every quality finding a label on its item, the hard checks refusing as before) and
+    ``segments_dir`` (``UNIFY_MEMORY_IN_EPISODE``, with *stores*: an item may cite a segment of an open episode,
+    ``<episode>.s<n>``, whose record the harness wrote, as its source)."""
+    from .switch import impure_items, in_episode
+
+    out: dict = {"labels": True} if impure_items(settings) else {}
+    if stores is not None and in_episode(settings):
+        out["segments_dir"] = str(stores.paths.state_dir)
+    return out
 
 
 async def run_due_passes(
@@ -1478,7 +1529,8 @@ async def run_due_passes(
 
     trig = Trigger(
         stores.evidence,
-        mode="batched",
+        # UNIFY_MEMORY_ATTENTION_LEDGER=on: the writer service hands the ledger's entries; nothing is due here
+        mode="attention" if attention_ledger(settings) else "batched",
         experience_budget=cfg.experience_budget,
         usd_per_token=cfg.usd_per_token,
         # with the fork on, an episode joins a batch only once its fork has settled; the rest roll to the next pass
@@ -1513,6 +1565,8 @@ async def run_due_passes(
         stores.evidence,
         stores.blobs,
         **common,
+        # UNIFY_MEMORY_IMPURE_ITEMS=on: every quality finding a label (the hard checks refuse as before)
+        **(learning_gate_fields(settings, stores) if library_enabled(settings) else {}),
         # library mode: the library layout and checks for WRITE; v2 when the switch is off
         library_mode=(
             library_checks.config_for(
@@ -1574,6 +1628,9 @@ async def run_due_passes(
             if cfg.library_mode
             else {}
         ),
+        # the redesign's pass fields: the ledger's home, the stated tests' modes, items of any effect (each only when
+        # its switch is on; off, the config as built)
+        **(learning_pass_fields(stores, settings) if cfg.library_mode else {}),
         show_usage=cfg.show_usage
         or cfg.library_mode,  # library-mode writers always see measured library use
         library_mode=cfg.library_mode,
@@ -2102,8 +2159,9 @@ async def run_attention_pass(
         stores.blobs,
         **common,
         library_mode=library_checks.config_for(stores, lookup, checker_visible=checker_visible(settings)),
-        # UNIFY_MEMORY_IMPURE_ITEMS=on: quality findings are labels on the item, never refusals
-        **({"labels": True} if impure else {}),
+        # UNIFY_MEMORY_IMPURE_ITEMS=on: quality findings are labels on the item, never refusals; UNIFY_MEMORY_IN_EPISODE=on:
+        # an item may cite a recorded segment of an open episode as its source
+        **learning_gate_fields(settings, stores),
     )
     # the same configuration as a library-mode pass (run_due_passes), on the run record, held by the service, over the
     # attention ledger's entries (the brief, the first message and the writer's ledger tools, attention_tools.py)

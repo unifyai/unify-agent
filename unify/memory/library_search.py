@@ -159,7 +159,8 @@ def rows(
         rec = doc["record"] if isinstance(doc["record"], dict) else {}
         goal = _one_line(sig.get("goal")) if isinstance(sig.get("goal"), str) else ""
         run_doc = _first_paragraph(_docstring_of(doc["procedure"])) if isinstance(doc["procedure"], str) else ""
-        card = (run_doc or goal) + (" | tried and failed: never offered to run" if rec.get("outcome") == "failed" else "")
+        negative = rec.get("outcome") in ("failed", "contrary")
+        card = (run_doc or goal) + (" | tried and failed: never offered to run" if negative else "")
         example = worked_example(rec)
         if example:
             card += f" | a worked example to read, never called: {example.get('why')}"

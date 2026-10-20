@@ -294,6 +294,8 @@ def items_data(
             "use": use_totals(rec) if rec else None,
             "history": h[:HISTORY_SHOW],
             "history_more": max(0, len(h) - HISTORY_SHOW),
+            # its evidence label (UNIFY_MEMORY_IMPURE_ITEMS: what its effects, tests and uses show; only when recorded)
+            **({"label": rec["label"]} if rec and isinstance(rec.get("label"), dict) else {}),
         }
 
     for f in lib.functions:
@@ -844,7 +846,7 @@ def catalogue_text(
     for cid, doc in caps.items():
         sig = doc["signature"] if isinstance(doc["signature"], dict) else {}
         rec = doc["record"] if isinstance(doc["record"], dict) else {}
-        failed = rec.get("outcome") == "failed"
+        failed = rec.get("outcome") in ("failed", "contrary")
         lines = [f"\n### {CAPTURE_PREFIX}{cid}\n"]
         run_doc = _one_line(strip(_first_paragraph(_docstring_of(doc["procedure"]))))
         if run_doc:
@@ -925,7 +927,7 @@ def dispatch_data(
         )
     for cid, doc in _capture_docs(captures).items():
         rec = doc["record"] if isinstance(doc["record"], dict) else {}
-        if rec.get("outcome") == "failed" or not isinstance(doc["procedure"], str) or _capture_unlisted(rec):
+        if rec.get("outcome") in ("failed", "contrary") or not isinstance(doc["procedure"], str) or _capture_unlisted(rec):
             continue
         if worked_example(rec):
             continue  # a worked example is read, never recognised as applying

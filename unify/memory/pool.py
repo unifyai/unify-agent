@@ -1032,10 +1032,10 @@ def broke_lines(text: str) -> list[str]:
 def from_capture(cid: str, doc: dict) -> Entry:
     """A capture of the store (:func:`.captures.load`) as an entry: ``failure`` for a captured attempt that failed,
     else ``capture``; keyed by its capture id (a digest of its code), its payload its files."""
-    from .captures import BROKE_FILE, FAILED, PROCEDURE_FILE, RECORD_FILE, SIGNATURE_FILE
+    from .captures import BROKE_FILE, PROCEDURE_FILE, RECORD_FILE, SIGNATURE_FILE, negative
 
     record = doc.get("record") or {}
-    kind = "failure" if record.get("outcome") == FAILED else "capture"
+    kind = "failure" if negative(record) else "capture"
     files = {RECORD_FILE: _canon_json(record)}
     if isinstance(doc.get("signature"), dict):
         files[SIGNATURE_FILE] = _canon_json(doc["signature"])

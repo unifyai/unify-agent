@@ -1116,6 +1116,176 @@ def redesign_refusal(settings: Any) -> str | None:
     return None
 
 
+# --- what a capture records, what makes the writer read, what the library holds, memory during an episode -------------
+# Each is off by default, so a run that sets none of them is as built. Under ``UNIFY_MEMORY_PROFILE=redesign`` an empty
+# value takes the profile's value (:func:`profile_setting`: on; ``LEDGER_K`` 4; ``WRITER_TESTS`` value and replay).
+CAPTURE_TRACE = "UNIFY_MEMORY_CAPTURE_TRACE"
+ATTENTION_LEDGER = "UNIFY_MEMORY_ATTENTION_LEDGER"
+LEDGER_K = "UNIFY_MEMORY_LEDGER_K"
+IMPURE_ITEMS = "UNIFY_MEMORY_IMPURE_ITEMS"
+WRITER_TESTS = "UNIFY_MEMORY_WRITER_TESTS"
+IN_EPISODE = "UNIFY_MEMORY_IN_EPISODE"
+#: The writer service's switch (its own module reads it); the ledger hands entries only to its passes.
+WRITER_SERVICE = "UNIFY_MEMORY_WRITER_SERVICE"
+#: Entries handed to one writer pass (``attention.K``), the same in every world.
+LEDGER_K_DEFAULT = 4
+#: The writer's test modes: ``value`` runs an item on a recorded input; ``replay`` runs it against the recorded tool
+#: responses of an episode (``writer_tests``).
+WRITER_TEST_MODES = ("value", "replay")
+TOOLS_IN_CODE = "UNIFY_TOOLS_IN_CODE"
+
+
+def _on_off_empty(name: str, v: Any) -> str:
+    """``on``, ``off`` or ``""`` (empty: the profile decides)."""
+    value = _stripped(v).lower()
+    if value not in ("", "on", "off"):
+        raise ValueError(f"{name} must be empty, 'off' or 'on', not {v!r}"[:200])
+    return value
+
+
+def parse_capture_trace(v: Any) -> str:
+    """``UNIFY_MEMORY_CAPTURE_TRACE``: empty, ``off`` or ``on``."""
+    return _on_off_empty(CAPTURE_TRACE, v)
+
+
+def parse_attention_ledger(v: Any) -> str:
+    """``UNIFY_MEMORY_ATTENTION_LEDGER``: empty, ``off`` or ``on``."""
+    return _on_off_empty(ATTENTION_LEDGER, v)
+
+
+def parse_impure_items(v: Any) -> str:
+    """``UNIFY_MEMORY_IMPURE_ITEMS``: empty, ``off`` or ``on``."""
+    return _on_off_empty(IMPURE_ITEMS, v)
+
+
+def parse_in_episode(v: Any) -> str:
+    """``UNIFY_MEMORY_IN_EPISODE``: empty, ``off`` or ``on``."""
+    return _on_off_empty(IN_EPISODE, v)
+
+
+def parse_ledger_k(v: Any) -> str:
+    """``UNIFY_MEMORY_LEDGER_K``: empty (4) or a positive whole number of entries, kept as its digits."""
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return ""
+    return str(_positive_whole(LEDGER_K, LEDGER_K_DEFAULT, v))
+
+
+def parse_writer_tests(v: Any) -> str:
+    """``UNIFY_MEMORY_WRITER_TESTS``: empty, ``off``, ``value`` or ``value,replay`` (either order; kept as
+    ``value,replay``)."""
+    text = _stripped(v).lower()
+    if text in ("", "off"):
+        return text
+    modes = [m.strip() for m in text.split(",") if m.strip()]
+    if not modes or any(m not in WRITER_TEST_MODES for m in modes) or "value" not in modes:
+        raise ValueError(
+            f"{WRITER_TESTS} must be empty, 'off', 'value' or 'value,replay', not {v!r}"[:200],
+        )
+    return ",".join(m for m in WRITER_TEST_MODES if m in modes)
+
+
+def capture_trace(settings: Any) -> bool:
+    """Whether a capture records what its episode did, in one of three forms, with its own check as evidence."""
+    return parse_capture_trace(profile_setting(settings, CAPTURE_TRACE)) == "on"
+
+
+def attention_ledger(settings: Any) -> bool:
+    """Whether the attention ledger makes the writer read (trigger mode ``attention``)."""
+    return parse_attention_ledger(profile_setting(settings, ATTENTION_LEDGER)) == "on"
+
+
+def ledger_k(settings: Any) -> int:
+    """The entries handed to one pass (default 4)."""
+    value = parse_ledger_k(profile_setting(settings, LEDGER_K))
+    return int(value) if value else LEDGER_K_DEFAULT
+
+
+def impure_items(settings: Any) -> bool:
+    """Whether the library holds side-effecting items too, every quality result a label."""
+    return parse_impure_items(profile_setting(settings, IMPURE_ITEMS)) == "on"
+
+
+def writer_tests_modes(settings: Any) -> frozenset[str]:
+    """The modes ``tools.test`` offers (empty: no ``tools.test``); ``replay`` is refused per call until the replay
+    stub's review is recorded (``writer_tests.REPLAY_REVIEWED``)."""
+    value = parse_writer_tests(profile_setting(settings, WRITER_TESTS))
+    if value in ("", "off"):
+        return frozenset()
+    return frozenset(value.split(","))
+
+
+def in_episode(settings: Any) -> bool:
+    """Whether memory changes during an episode: checkpoints, segment forks and re-pins at cell boundaries."""
+    return parse_in_episode(profile_setting(settings, IN_EPISODE)) == "on"
+
+
+def _tools_in_code(settings: Any) -> bool:
+    return _stripped(getattr(settings, TOOLS_IN_CODE, "") or "").lower() == "on"
+
+
+def _writer_service(settings: Any) -> bool:
+    return profile_setting(settings, WRITER_SERVICE) == "on"
+
+
+def redesign_b_refusal(settings: Any) -> str | None:
+    """Why one of the switches above may not run with these settings (the settings named, never a value), or None.
+    Each needs what it acts on, rather than running as a silent no-op. Quiet with ``UNIFY_MEMORY`` off: there is no
+    memory for them to act on (the no-memory arm under the profile)."""
+    if not memory_on(settings):
+        return None
+    lib, fork = library_enabled(settings), library_fork(settings)
+    code = _tools_in_code(settings)
+    trace, ledger = capture_trace(settings), attention_ledger(settings)
+
+    def needs(name: str, wanted: tuple[tuple[str, bool], ...]) -> str | None:
+        missing = [n for n, ok in wanted if not ok]
+        return f"{name}=on needs {', '.join(missing)}; nothing runs" if missing else None
+
+    checks: list[str | None] = []
+    if trace:
+        checks.append(needs(CAPTURE_TRACE, ((f"{LIBRARY_MODE}=on", lib), (f"{LIBRARY_FORK}=on", fork))))
+    if ledger:
+        checks.append(
+            needs(
+                ATTENTION_LEDGER,
+                (
+                    (f"{LIBRARY_MODE}=on", lib),
+                    (f"{LIBRARY_FORK}=on", fork),
+                    (f"{TOOLS_IN_CODE}=on", code),
+                    (f"{CAPTURE_TRACE}=on", trace),
+                    # the ledger's entries reach the writer only through the service's passes; with no pass at all
+                    # (UNIFY_MEMORY_WRITER_PASSES=off) nothing is handed and nothing needs the service
+                    (f"{WRITER_SERVICE}=on", _writer_service(settings) or not writer_passes_on(settings)),
+                ),
+            ),
+        )
+        if captures_per_pass(settings) is not None:
+            checks.append(
+                f"{ATTENTION_LEDGER}=on replaces the trigger {LIBRARY_REVIEW_EACH_CAPTURE}=on sets; set only one; "
+                "nothing runs",
+            )
+    if impure_items(settings):
+        checks.append(needs(IMPURE_ITEMS, ((f"{LIBRARY_MODE}=on", lib), (f"{TOOLS_IN_CODE}=on", code))))
+    if writer_tests_modes(settings):
+        checks.append(needs(WRITER_TESTS, ((f"{LIBRARY_MODE}=on", lib), (f"{TOOLS_IN_CODE}=on", code))))
+    if in_episode(settings):
+        checks.append(
+            needs(
+                IN_EPISODE,
+                (
+                    (f"{LIBRARY_MODE}=on", lib),
+                    (f"{LIBRARY_FORK}=on", fork),
+                    (f"{TOOLS_IN_CODE}=on", code),
+                    (f"{ATTENTION_LEDGER}=on", ledger),
+                ),
+            ),
+        )
+    return next((c for c in checks if c), None)
+
+
+REDESIGN_PART_REFUSALS.append(redesign_b_refusal)
+
+
 # --- serving on the failure record (C2) and inferred regimes (C3) ---------------------------------------------
 
 SERVING_FAILURE_RECORD = "UNIFY_MEMORY_SERVING_FAILURE_RECORD"
@@ -1612,6 +1782,7 @@ def profile_refusal(settings: Any) -> str | None:
             or serving_refusal(settings)
             or redesign_refusal(settings)
             or redesign_a_refusal(settings)
+            or redesign_b_refusal(settings)
         )
     return (
         f"{PROFILE}={PAPER} fixes {', '.join(bad)} (the writer runs on the actor's model and effort, and no checker "
@@ -1789,6 +1960,16 @@ def parse_dialogue(v: Any) -> str:
 
 
 PARSERS[DIALOGUE] = parse_dialogue
+PARSERS.update(
+    {
+        CAPTURE_TRACE: parse_capture_trace,
+        ATTENTION_LEDGER: parse_attention_ledger,
+        LEDGER_K: parse_ledger_k,
+        IMPURE_ITEMS: parse_impure_items,
+        WRITER_TESTS: parse_writer_tests,
+        IN_EPISODE: parse_in_episode,
+    },
+)
 
 
 # --- the agent mesh, the writer service and metering (builder A: the redesign's A1, A2, A3) --------------------------

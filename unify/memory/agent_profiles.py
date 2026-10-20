@@ -81,6 +81,8 @@ _ACTOR_IN_CODE = [
     "ask_library",
     "sh",
     "check_examples",
+    # only with UNIFY_MEMORY_IN_EPISODE=on (registry flag "checkpoint")
+    "checkpoint",
 ]
 _TEAMMATE_IN_CODE = [
     "read",
@@ -336,6 +338,13 @@ AGENT_PROFILES: tuple[dict, ...] = (
             "finish",
             "sh",
             "check_examples",
+            # an attention pass (UNIFY_MEMORY_ATTENTION_LEDGER=on, registry flag "attention")
+            "open_entries",
+            "take",
+            "decide",
+            "find",
+            # UNIFY_MEMORY_WRITER_TESTS (registry flag "tests")
+            "test",
         ],
         "mounts": list(_BOX_MOUNTS),
         "denied": ["network", "credentials", "/outputs inside cells", ".git"],

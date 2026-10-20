@@ -1358,6 +1358,206 @@ CHECK_EXAMPLES = RegisteredTool(
 )
 
 
+# --- the attention ledger's tools and the writer's stated tests (unify/memory/attention_tools.py) ---
+
+#: the flag the attention ledger's tools need: an attention pass (``UNIFY_MEMORY_ATTENTION_LEDGER=on``)
+ATTENTION_FLAG = "attention"
+#: the flag ``test`` needs: ``UNIFY_MEMORY_WRITER_TESTS`` offers at least one mode
+TESTS_FLAG = "tests"
+#: the flag ``checkpoint`` needs: ``UNIFY_MEMORY_IN_EPISODE=on``
+CHECKPOINT_FLAG = "checkpoint"
+_ATT = "unify.memory.attention_tools:"
+_REFUSED_REASON = {"refused": "{reason}"}
+
+OPEN_ENTRIES = RegisteredTool(
+    name="open_entries",
+    summary="list every open entry that needs attention: its id, kind, age and a one-line goal.",
+    description=(
+        "List every entry of the attention ledger that is open (not yet handed to a pass): its id, its kind, its age "
+        "in seconds and a one-line goal (the Asked line of its episode's summary, identifiers stripped). Entries "
+        "beside the ones handed to you may share a rule with them; take those that do with take."
+    ),
+    parameters={"type": "object", "properties": {}, "additionalProperties": False},
+    refusals=_REFUSED_REASON,
+    requires=ATTENTION_FLAG,
+    roles=(_W,),
+    returns='JSON text: {"open": [{"entry", "kind", "age_s", "goal", "state"}, ...], "count": n}.',
+    examples=("print(tools.open_entries())",),
+    when="Look over the open entries when an entry handed to you may belong with others.",
+    kind="reader",
+    handler=_ATT + "open_entries",
+    deadline_s=60.0,
+    blocking=True,
+)
+
+TAKE = RegisteredTool(
+    name="take",
+    summary="take an open entry into this pass: it is then owed a read and a decision.",
+    description=(
+        "Take one open entry into this pass. Its material is then under /inputs (its attention files, staging and "
+        "captures), and it is owed a read and a decision like the entries handed to you."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {"entry_id": {"type": "string", "description": "The entry's id, as open_entries lists it."}},
+        "required": ["entry_id"],
+        "additionalProperties": False,
+    },
+    refusals=_REFUSED_REASON,
+    requires=ATTENTION_FLAG,
+    roles=(_W,),
+    returns='JSON text: {"entry", "kind", "taken": true, "detail", "material": [the paths owed a read]}.',
+    examples=('print(tools.take("a1b2c3d4e5f60718"))',),
+    when="Take an open entry that shares a rule with one handed to you, so one decision can cover both.",
+    kind="action",
+    handler=_ATT + "take",
+    deadline_s=120.0,
+    blocking=True,
+)
+
+DECIDE = RegisteredTool(
+    name="decide",
+    summary="decide one or more entries of this pass, each read, with one decision and a reason.",
+    description=(
+        "Decide entries of this pass: one decision for one entry or for several (one decision for several entries "
+        "is how you record that they are one rule). decision is one of new_item, changed_item, merged_into, note, "
+        "retire, nothing_to_keep or defer; merged_into and changed_item name the item in items. Each entry must "
+        "have been read: the harness checks its material was opened, from its own record of your reads, never from "
+        "what you write. A read in a cell counts once that cell has ended. defer leaves the work open as a new "
+        "entry that comes back later. The reason is kept with the pass."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "entry_ids": {
+                "type": ["string", "array"],
+                "items": {"type": "string"},
+                "description": "One entry id, or a list of them.",
+            },
+            "decision": {
+                "type": "string",
+                "enum": ["new_item", "changed_item", "merged_into", "note", "retire", "nothing_to_keep", "defer"],
+            },
+            "items": {"type": "array", "items": {"type": "string"}, "description": "The item ids it rests on."},
+            "reason": {"type": "string", "description": "Why, in a sentence or two."},
+        },
+        "required": ["entry_ids", "decision", "reason"],
+        "additionalProperties": False,
+    },
+    refusals=_REFUSED_REASON,
+    requires=ATTENTION_FLAG,
+    roles=(_W,),
+    returns='JSON text: {"closed": [...], "decision", "items", "reason_ref", "deferred": the new entry id or null}.',
+    examples=(
+        'tools.decide(["a1b2c3d4e5f60718", "0f1e2d3c4b5a6978"], "merged_into", items=["memory.files.report:write"], '
+        'reason="both write the same report; the item covers both")',
+    ),
+    when="Decide every entry handed to you, and every entry you take, before you finish.",
+    kind="action",
+    handler=_ATT + "decide",
+    deadline_s=60.0,
+    blocking=True,
+)
+
+FIND = RegisteredTool(
+    name="find",
+    summary="rank the library's items, the episodes' summaries or the open entries against a situation.",
+    description=(
+        "Rank against a query: the library's items by their When to use text (scope items), the episodes' summaries "
+        "(scope summaries) or the open entries' goals (scope open_entries); the best k, with how they were ranked. "
+        "A hit's path is where you can read it, when you can."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "The situation, in words."},
+            "scope": {"type": "string", "enum": ["items", "summaries", "open_entries"]},
+            "k": {"type": "integer", "description": "How many hits (default 10)."},
+        },
+        "required": ["query"],
+        "additionalProperties": False,
+    },
+    refusals=_REFUSED_REASON,
+    requires=ATTENTION_FLAG,
+    roles=(_W,),
+    returns='JSON text: {"scope", "ranked": how, "hits": [{"id", "kind", "path", "score", "card"}, ...], "of": n}.',
+    examples=('print(tools.find("write a report from a table of totals", scope="summaries", k=5))',),
+    when="Look for items and episodes that share a rule with the entries in front of you.",
+    kind="reader",
+    handler=_ATT + "find",
+    deadline_s=120.0,
+    blocking=True,
+)
+
+TEST = RegisteredTool(
+    name="test",
+    summary="run a test you state first: an item on a recorded input, or against an episode's recorded tools.",
+    description=(
+        "Run a test whose outcome you state first. expect is {'kind': 'returns', 'value': v}, {'kind': "
+        "'issues_calls', 'calls': [{'channel', 'method', 'args', 'kwargs', 'effect'}, ...]}, {'kind': 'raises', "
+        "'exception': 'Name'} or {'kind': 'refuses'}; it is recorded before the test runs and never changed. "
+        "mode='value' runs the item (a function id) on the recorded input on names: '<episode>' (its state), "
+        "'<episode>/request', '<episode>/observation:<n>', '<episode>/action:<n>' (the action's recorded response) "
+        "or '<episode>/cell:<n>' (the cell's output). mode='replay' runs an item taking (state, env) on a whole "
+        "episode: env answers each call only from that episode's identical recorded call; writes are compared, never "
+        "made. The test runs confined, on a copy of /memory as it is now."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "item": {"type": "string", "description": "A function id, memory.<package>.<module>:<name>."},
+            "on": {"type": "string", "description": "The recorded input: '<episode>' or '<episode>/<part>'."},
+            "expect": {"type": "object", "description": "What you expect, stated before the run."},
+            "mode": {"type": "string", "enum": ["value", "replay"]},
+        },
+        "required": ["item", "on", "expect"],
+        "additionalProperties": False,
+    },
+    refusals=_REFUSED_REASON,
+    requires=TESTS_FLAG,
+    roles=(_W,),
+    returns=(
+        'JSON text: {"test_id", "item", "on", "mode", "stated", "outcome": as_stated, not_as_stated, error, timeout, '
+        'replay_miss or not_run, "detail", "seconds"}; every result is kept on the item\'s label.'
+    ),
+    examples=(
+        'print(tools.test("memory.files.report:write", "<episode>", {"kind": "issues_calls", "calls": '
+        '[{"channel": "files", "method": "write", "args": ["out/report.txt", "total 6"]}]}, mode="replay"))',
+    ),
+    when="Run code only as a test you state first: say what you expect, then run it.",
+    kind="action",
+    handler=_ATT + "test",
+    deadline_s=120.0,
+    blocking=True,
+)
+
+CHECKPOINT = RegisteredTool(
+    name="checkpoint",
+    summary="mark a pause in your work: what you did since the last pause is written down for memory.",
+    description=(
+        "Mark a natural pause in your work on this request. The harness writes down what your cells since the last "
+        "pause did, as memory can use it later, while you go on; what memory learns may reach you before this "
+        "request ends, at the start of a later cell. The note says what the pause is (optional)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {"note": {"type": "string", "description": "What this pause is, in a few words (optional)."}},
+        "required": [],
+        "additionalProperties": False,
+    },
+    refusals=_REFUSED_REASON,
+    requires=CHECKPOINT_FLAG,
+    roles=(_A,),
+    returns="a line saying the pause is marked.",
+    examples=('tools.checkpoint("the input is read; the report comes next")',),
+    when="At a natural pause in a long piece of work: a part is done and the next has not started.",
+    kind="action",
+    handler="unify.memory.integration.in_episode:checkpoint_tool",
+    deadline_s=60.0,
+    blocking=False,
+)
+
+
 # --- what the in-code surface adds to each moved tool: help texts, kinds, handlers and the actor's arguments ---
 
 _RECORD_POST_FORMS = {
@@ -1843,6 +2043,12 @@ _REGISTRY: tuple[RegisteredTool, ...] = (
     CURRENT_REQUEST,
     SH,
     CHECK_EXAMPLES,
+    OPEN_ENTRIES,
+    TAKE,
+    DECIDE,
+    FIND,
+    TEST,
+    CHECKPOINT,
 )
 
 

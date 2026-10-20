@@ -1490,6 +1490,8 @@ def _review_fork_source(
 def _session_fork_source(
     inner: Any,
     actor: "CodeActActor",
+    *,
+    allow_compressed: bool = False,
 ) -> tuple[Optional[dict], Optional[str]]:
     """The session's conversation for a fork, or why it cannot be continued.
 
@@ -1505,7 +1507,9 @@ def _session_fork_source(
     client = getattr(inner, "_client", None)
     if client is None:
         return None, "the session has no LLM client"
-    if getattr(getattr(inner, "_compression", None), "count", 0):
+    # a compacted session is forked only where the caller says so (memory during an episode: its compaction was a
+    # pause whose segment fork covered the cells before it, so the fork continues the compacted conversation)
+    if getattr(getattr(inner, "_compression", None), "count", 0) and not allow_compressed:
         return None, "the session's history was compressed"
     last = cache_discipline.last_sent_request(client)
     if last is None or not last.get("messages"):

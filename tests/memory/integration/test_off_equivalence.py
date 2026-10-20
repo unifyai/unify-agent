@@ -145,6 +145,14 @@ def _identity_hooks() -> types.ModuleType:
     hooks.cell_error = (
         lambda text: text
     )  # worker.py: a failed cell's error, unchanged (library-mode surfacing)
+    # memory during an episode (UNIFY_MEMORY_IN_EPISODE): the CLI hands the session over, the loop and the worker ask
+    # whether it is on at each boundary, and nothing else is called while it is off
+    hooks.attach_handle = lambda handle: None
+    hooks.in_episode_active = lambda: False
+    hooks.before_cell = lambda: None
+    hooks.after_cell = lambda: None
+    hooks.repin_roots = lambda: []
+    hooks.turn_boundary = lambda client, *, compacting=False, new_message=False: None
 
     def __getattr__(name: str):  # a new call site must be added here, deliberately
         raise AttributeError(

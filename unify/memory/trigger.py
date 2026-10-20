@@ -38,6 +38,9 @@ Two modes:
 * ``"d6"`` (the earlier per-channel cadence, kept for offline comparison): after each episode, an incremental pass per
   channel the episode touched (or a drift channel queued), plus a maintenance pass every
   ``maintenance_every`` requests.
+* ``"attention"`` (``UNIFY_MEMORY_ATTENTION_LEDGER=on``): no pass is ever due here. The writer service hands the
+  attention ledger's entries to its passes (:mod:`.attention`), so the experience budget, the verdicts and the per-capture
+  rule make nothing due; :meth:`Trigger.after_episode` and :meth:`Trigger.idle` return nothing.
 """
 
 from __future__ import annotations
@@ -50,7 +53,7 @@ from typing import Callable, Protocol
 
 from .evidence import EvidenceStore
 
-MODES = ("batched", "d6")
+MODES = ("batched", "d6", "attention")
 EXPERIENCE_BUDGET = 150_000
 # With the library mode on, E is 100k recorded tokens; the default above stays the earlier mode's.
 EXPERIENCE_BUDGET_LIBRARY = 100_000
@@ -72,6 +75,9 @@ class PassRequest:
     held: list[str] = field(default_factory=list)
     #: the covered episodes whose capture is a verdict (kind ``"verdict"``: the reason the pass is due now)
     verdicts: list[str] = field(default_factory=list)
+    #: kind ``"attention"``: the attention-ledger entries handed to the pass (:class:`.attention.AttentionEntry`); its
+    #: ``episodes`` are theirs (:func:`.attention.pass_episodes`)
+    attention: list = field(default_factory=list)
 
 
 def admit_settled(
@@ -225,6 +231,8 @@ class Trigger:
         ``"verdict"``. With ``per_pass`` only a stored capture makes a pass due (kind ``"capture"``)."""
         if at is not None:
             self._last_at = float(at)
+        if self.mode == "attention":
+            return []  # the writer service hands the attention ledger's entries; nothing is due here
         if self.mode == "d6":
             return self._d6(episode_id)
         self.ev.seq_of(episode_id)  # KeyError for an episode that was never indexed

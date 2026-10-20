@@ -109,6 +109,17 @@ MAX_SOURCE_BYTES = 1024 * 1024
 GOAL_CHARS = 600
 REPRODUCES, DIFFERS, UNKNOWN = "reproduces", "differs", "unknown"
 FAILED = "failed"
+#: A trace capture's outcome when a signal contradicted its episode (``UNIFY_MEMORY_CAPTURE_TRACE``): negative knowledge,
+#: as ``failed`` is for a capture of the earlier contract (:func:`negative`).
+CONTRARY = "contrary"
+#: The record version of a trace capture (:mod:`.capture_trace`).
+TRACE_VERSION = 2
+
+
+def negative(record: Any) -> bool:
+    """Whether a capture's record is negative knowledge: its attempt failed (``failed``), or, for a trace capture,
+    a signal contradicted its episode (``contrary``). Never offered to run, never adopted."""
+    return isinstance(record, Mapping) and record.get("outcome") in (FAILED, CONTRARY)
 _ID = re.compile(r"[0-9a-f]{16}\Z")
 _EPISODE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 STATE_FUNCTIONS = ("read_input", "run", "applies", "holds")
@@ -636,10 +647,12 @@ def refresh(record: dict) -> dict:
     case differs, ``reproduces`` when every case with a value reproduces, else ``unknown``), ``outcome`` (``failed``
     when any case failed), the track record, the status and the evidence level (:mod:`.trust`)."""
     cases = [c for c in record.get("cases") or [] if isinstance(c, dict)]
-    known = [c.get("reproduces") for c in cases if c.get("reproduces") in (REPRODUCES, DIFFERS)]
-    record["reproduces"] = (
-        DIFFERS if DIFFERS in known else REPRODUCES if known else UNKNOWN
-    )
+    if record.get("v") != TRACE_VERSION:
+        # a trace record carries no reproduction: what its own check gave is evidence on each case
+        known = [c.get("reproduces") for c in cases if c.get("reproduces") in (REPRODUCES, DIFFERS)]
+        record["reproduces"] = (
+            DIFFERS if DIFFERS in known else REPRODUCES if known else UNKNOWN
+        )
     dets = [c.get("deterministic") for c in cases if isinstance(c.get("deterministic"), bool)]
     record["deterministic"] = all(dets) if dets else None
     for key in ("applies", "holds"):
@@ -647,6 +660,9 @@ def refresh(record: dict) -> dict:
         record[key] = all(vals) if vals else None
     if any(c.get("outcome") == FAILED for c in cases):
         record["outcome"] = FAILED
+    elif any(c.get("outcome") == CONTRARY for c in cases):
+        # a trace capture (``v`` 2): a contrary signal, never its own check, makes it negative knowledge
+        record["outcome"] = CONTRARY
     else:
         signals = [c.get("outcome") for c in cases if c.get("outcome") not in (None, "none")]
         record["outcome"] = signals[-1] if signals else "none"
@@ -658,7 +674,7 @@ def refresh(record: dict) -> dict:
     # through the one decider
     base = trust.UNCHECKED
     out = trust.apply_outcome(base, prior, uses)
-    if record["outcome"] == FAILED and out.status == trust.ADOPTED:
+    if negative(record) and out.status == trust.ADOPTED:
         # a capture that failed is negative knowledge: it is never adopted, whatever later uses show
         out = trust.Outcome(trust.ON_TRIAL, base, None, None, "its attempt failed", ())
     record["status"] = out.status
@@ -804,7 +820,9 @@ def episode_rows(store: Path | str) -> dict[str, dict]:
                 except ValueError:
                     continue
                 if isinstance(row, dict) and isinstance(row.get("episode"), str):
-                    out[row["episode"]] = row
+                    # a segment's row (``UNIFY_MEMORY_IN_EPISODE``) is kept under its staging name, beside its episode's
+                    staging = row.get("staging")
+                    out[staging if isinstance(staging, str) and staging else row["episode"]] = row
     except OSError:
         pass
     return out
@@ -902,10 +920,29 @@ def capture(
     python: Path = PYTHON,
     work: Path | None = None,
     clock: Callable[[], float] = time.time,
+    trace: bool = False,
+    segment: int | None = None,
 ) -> dict:
     """Capture episode *ep*'s attempt from its settled staging dir into *store* (module docstring). Returns the
     capture step's row, also appended to ``captures-events.jsonl``. Never
-    raises for what the staging holds; a step that cannot capture says why in ``safety``."""
+    raises for what the staging holds; a step that cannot capture says why in ``safety``.
+
+    With *trace* (``UNIFY_MEMORY_CAPTURE_TRACE=on``) the capture records what the episode did instead
+    (:func:`capture_trace_step`, :mod:`.capture_trace`); *segment* names the part of an episode a checkpoint's fork
+    covered (``UNIFY_MEMORY_IN_EPISODE``)."""
+    if trace:
+        return capture_trace_step(
+            staging,
+            ep,
+            store,
+            signals=signals,
+            checker_visible=checker_visible,
+            runner=runner,
+            python=python,
+            work=work,
+            clock=clock,
+            segment=segment,
+        )
     t0 = clock()
     staging, store = Path(staging), Path(store)
     eid = str(getattr(ep, "episode_id", ""))
@@ -1075,7 +1112,7 @@ def _recurrence(
         if other == cid or doc.get("procedure") is None:
             continue
         rec, osig = doc["record"], doc.get("signature")
-        if rec.get("outcome") == FAILED or not isinstance(osig, dict):
+        if negative(rec) or not isinstance(osig, dict):
             continue
         if osig.get("input") != sig.get("input") or eid in (rec.get("episodes") or []):
             continue
@@ -1114,6 +1151,170 @@ def _recurrence(
     return same
 
 
+# --- the trace contract (UNIFY_MEMORY_CAPTURE_TRACE) ----------------------------------------------------------
+
+
+def trace_record(cid: str) -> dict:
+    """An empty trace record (``v`` 2): the record of :func:`empty_record` without what the trace contract removes
+    (``same_as``, ``recurrence`` and ``reproduces``: reproduction is neither a gate nor a verdict here)."""
+    rec = empty_record(cid)
+    for key in ("same_as", "recurrence", "reproduces"):
+        rec.pop(key, None)
+    return {"v": TRACE_VERSION, **rec}
+
+
+def capture_trace_step(
+    staging: Path | str,
+    ep: Any,
+    store: Path | str,
+    *,
+    signals: Iterable[Any] = (),
+    checker_visible: bool = False,
+    runner: Callable[..., SandboxResult] = run_confined,
+    python: Path = PYTHON,
+    work: Path | None = None,
+    clock: Callable[[], float] = time.time,
+    segment: int | None = None,
+) -> dict:
+    """Capture what episode *ep* (or one segment of it) did, under the trace contract (:mod:`.capture_trace`):
+
+    1. the safety checks, as for every capture (a key-shaped string, a refused path, code that does not parse, no
+       ``run``); a file that fails is not captured, and the reason is recorded;
+    2. the procedure's form, read from its code (``value``, ``state`` or ``state_env``);
+    3. its own check, confined: on the recorded request, the recorded state, or the recorded state against a replay
+       of the episode's own actions (nothing executed); recorded as evidence (``own_check``), never as a failure;
+    4. the value the episode handed back, if any (``value.present``), and the outcome from its signals only;
+    5. the capture's files and its record (``v`` 2: ``trace``, ``value``, ``entry_point``, ``own_check``,
+       ``effects_seen``, ``outcome``, and ``constant`` when its ``run`` gives a fixed answer).
+
+    No recurrence step runs and nothing credits a use: the writer reads and groups. Returns the step's row, also
+    appended to ``captures-events.jsonl``; never raises for what the staging holds."""
+    from . import capture_trace as ct
+    from .fixed_answer import fixed_answer
+
+    t0 = clock()
+    staging, store = Path(staging), Path(store)
+    name = staging.name
+    eid = name.rsplit(f".s{segment}", 1)[0] if segment is not None and name.endswith(f".s{segment}") else name
+    row: dict = {
+        "v": TRACE_VERSION,
+        "capture_id": None,
+        "episode": eid,
+        "segment": segment,
+        "staging": name,
+        "safety": "ok",
+        "seconds": None,
+        "published_at": None,
+    }
+
+    def finish(**fields: Any) -> dict:
+        row.update(fields)
+        row["seconds"] = round(clock() - t0, 3)
+        if _EPISODE_ID.fullmatch(name):
+            with _locked(store):
+                _event(store, row)
+        return row
+
+    if not _EPISODE_ID.fullmatch(name):
+        return finish(safety="no episode id")
+    source = _staged(staging, PROCEDURE_FILE)
+    if source is None:
+        return finish(safety="no procedure")
+    why = ct.safety(source)
+    if why is not None:
+        return finish(safety=why)
+    broke = _staged(staging, BROKE_FILE)
+    if broke is not None and (KEY_SHAPED.search(broke) or not _broke_lines(broke)):
+        broke = None  # nothing broke ("none"), or a key-shaped string, which never enters the store
+    summary = _staged(staging, SUMMARY_FILE) or ""
+    request_text = ep.request[0] if getattr(ep, "request", None) else ""
+    entry = ct.entry_point(source) or {"name": "run", "params": [], "form": "state"}
+    form = entry["form"]
+    printed = frozenset(_signatures.printed_ids(request_text))
+    value_doc, _value = ct.value_of(ep, printed)
+    work_root = Path(work) if work is not None else Path(tempfile.mkdtemp(prefix="capture-"))
+    try:
+        case_doc = ct.case_doc(form, ep)
+        run = ct.run_box(source, form, case_doc, work=work_root / "self", runner=runner, python=python)
+    finally:
+        if work is None:
+            shutil.rmtree(work_root, ignore_errors=True)
+    check = ct.own_check(run, value_doc)
+    # the one derivation of an outcome from the episode's signals (judged_outcome), as the value-form capture's
+    judged = judged_outcome(signals, ep, str(getattr(ep, "regime", "") or "none"), checker_visible=checker_visible)
+    outcome = ct.outcome_of(judged)
+    trace = ct.trace_of(ep, episode=name)
+    effects = ct.effects_seen(ep)
+    returned = run.get("outcome") == "returned"
+    sig = signature(
+        ct.signature_input(form, run, case_doc),
+        run.get("result"),
+        returned=returned,
+        applies=run.get("applies"),
+        holds=run.get("holds"),
+        digests=function_digests(source),
+        goal=asked(summary, request_text),
+        request=request_text,
+    )
+    constant = fixed_answer(source)
+    cid = capture_id(source)
+    case = {
+        "episode": eid,
+        "segment": segment,
+        "staging": name,
+        "form": form,
+        "trace": trace,
+        "value": value_doc,
+        "own_check": check,
+        "effects_seen": effects,
+        "outcome": outcome,
+        "deterministic": check["deterministic"],
+        "applies": run.get("applies"),
+        "holds": run.get("holds"),
+        "run": run.get("outcome"),
+        "error_class": run.get("error_class"),
+    }
+    with _locked(store):
+        d = store / cid
+        rec = _read_json(d / RECORD_FILE)
+        rec = rec if isinstance(rec, dict) and rec.get("v") == TRACE_VERSION else trace_record(cid)
+        if name not in rec["episodes"]:
+            rec["episodes"].append(name)
+            rec["cases"].append(case)
+        rec.update(
+            entry_point=entry,
+            trace=trace,
+            value=value_doc,
+            own_check=check,
+            effects_seen=effects,
+            constant=constant,
+        )
+        refresh(rec)
+        if not (d / PROCEDURE_FILE).exists():
+            _write(d / PROCEDURE_FILE, source.encode("utf-8", "surrogatepass"))
+        if not (d / SIGNATURE_FILE).exists():
+            _write(d / SIGNATURE_FILE, _json(sig))
+        if not (d / SAVED_FILE).exists():
+            _write(d / SAVED_FILE, _json(saved_against(source, summary, request_text)))
+        if broke is not None and broke.strip():
+            old = _read_text(d / BROKE_FILE) or ""
+            if broke.strip() not in old:
+                _write(d / BROKE_FILE, (old + broke.rstrip() + "\n").encode("utf-8"))
+        _write(d / RECORD_FILE, _json(rec))
+    return finish(
+        capture_id=cid,
+        trace=trace,
+        value=value_doc,
+        entry_point=entry,
+        own_check=check,
+        effects_seen=effects,
+        outcome=outcome,
+        constant=constant is not None,
+        run=run.get("outcome"),
+        published_at=clock(),
+    )
+
+
 # --- after a fork settles -------------------------------------------------------------------------------------
 
 
@@ -1126,11 +1327,18 @@ def capture_settled(
     checker_visible: bool,
     runner: Callable[..., SandboxResult] = run_confined,
     python: Path = PYTHON,
+    trace: bool = False,
+    segment_episode: Callable[[str], Any] | None = None,
 ) -> list[dict]:
     """Capture each episode of *eids* whose fork has settled and that has no capture row yet. *episode* reads an
     episode by id (raising when it is not recorded), *signals* its signals. Returns the new rows. Never raises: an
-    episode that cannot be read is left for a later call."""
+    episode that cannot be read is left for a later call.
+
+    With *trace* each is captured under the trace contract (:func:`capture_trace_step`). A segment's staging dir
+    (``<episode>.s<n>``, ``UNIFY_MEMORY_IN_EPISODE``) is captured from the segment's own record, read by
+    *segment_episode* (None: segments are left alone), with its episode's signals."""
     from .staging import STATUS_FILES
+    from .segments import split_staging_name
 
     store = store_dir(state_dir)
     root = Path(state_dir) / "memory-staging"
@@ -1147,14 +1355,35 @@ def capture_settled(
             continue
         if not any(os.path.lexists(d / name) for name in STATUS_FILES):
             continue  # not settled yet
+        base, segment = split_staging_name(eid) if trace else (eid, None)
         try:
-            ep = episode(eid)
-            sigs = list(signals(eid) or [])
+            if segment is not None:
+                if segment_episode is None:
+                    continue
+                ep = segment_episode(eid)
+                if ep is None:
+                    continue  # its record is not written yet: a later call captures it
+                try:
+                    sigs = list(signals(base) or [])
+                except Exception:  # noqa: BLE001 - the episode is not recorded yet: no signal judges it so far
+                    sigs = []
+            else:
+                ep = episode(eid)
+                sigs = list(signals(eid) or [])
         except Exception:  # noqa: BLE001 - not recorded yet: a later call captures it
             continue
         try:
             out.append(
-                capture(d, ep, store, signals=sigs, checker_visible=checker_visible, runner=runner, python=python),
+                capture(
+                    d,
+                    ep,
+                    store,
+                    signals=sigs,
+                    checker_visible=checker_visible,
+                    runner=runner,
+                    python=python,
+                    **({"trace": True, "segment": segment} if trace else {}),
+                ),
             )
         except OSError:
             continue
@@ -1210,7 +1439,7 @@ def export_files(
             if isinstance(doc.get(key), str):
                 out[f"{EXPORT_DIR}/{cid}/{name}"] = doc[key].encode("utf-8", "surrogatepass")
         record = listed_record(doc["record"], landed.get(cid))
-        fixed = fixed_answer(doc.get("procedure")) if examples and record.get("outcome") != FAILED else None
+        fixed = fixed_answer(doc.get("procedure")) if examples and not negative(record) else None
         if fixed is not None:
             record = {**record, EXAMPLE_KEY: fixed}
         out[f"{EXPORT_DIR}/{cid}/{RECORD_FILE}"] = _json(record)

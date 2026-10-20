@@ -178,6 +178,25 @@ _CANCEL_GRACE_S = 2.0
 # step limit; at its next limit the limit stops it as without the switch.
 STEP_CAP_COMPACTIONS = 2
 
+async def _memory_pause(client: Any, *, compacting: bool = False, new_message: bool = False) -> None:
+    """UNIFY_MEMORY_IN_EPISODE=on: a turn boundary of the request's actor, where the pauses due start their segment
+    fork (``hooks.turn_boundary``: the marked ones, a compaction's, a new message's). Off, or for another loop, or
+    with no request run: returns at once and nothing runs. Never raises."""
+    try:
+        from unify.memory.integration import hooks as _mv2
+
+        if not _mv2.in_episode_active():
+            return
+        await asyncio.to_thread(
+            _mv2.turn_boundary,
+            client,
+            compacting=compacting,
+            new_message=new_message,
+        )
+    except Exception as exc:  # noqa: BLE001 - a pause never stops the loop
+        LOGGER.warning(f"memory: a pause was not taken ({type(exc).__name__})")
+
+
 # UNIFY_STEP_CAP_COMPACT=continue: ineffective step-limit compactions in a
 # row that end a request (a compaction is ineffective when the context it
 # rebuilds is not smaller than the one it replaces).
@@ -2264,6 +2283,9 @@ async def async_tool_loop_inner(
             if timer.has_exceeded_msgs():
                 # UNIFY_STEP_CAP_COMPACT: compact and go on, or take the
                 # step that ends the turn first; else the limit applies.
+                if _can_compact_at_step_limit():
+                    # UNIFY_MEMORY_IN_EPISODE=on: a compaction is a pause; its segment fork runs before it
+                    await _memory_pause(client, compacting=True)
                 _at_limit = (
                     await _compact_at_step_limit() if _step_cap_compact else "limit"
                 )
@@ -2313,6 +2335,10 @@ async def async_tool_loop_inner(
                 if await _timeout_ends_request():
                     continue
                 return await _timeout_limit()
+
+            # UNIFY_MEMORY_IN_EPISODE=on: every tool call is answered here, so the pauses marked during the turn (a
+            # checkpoint the actor called, an in-episode signal) start their segment fork now
+            await _memory_pause(client)
 
             # ── Turn boundary: drain the queue ──────────────────────────
             # Nothing runs here, so every message the requester sent since
@@ -2386,6 +2412,9 @@ async def async_tool_loop_inner(
                         # this request from here, additions included.
                         if keep_prefix_enabled():
                             _requester_msg[REQUEST_START_KEY] = True
+                    # UNIFY_MEMORY_IN_EPISODE=on: a new message is a pause; its segment fork runs before the message
+                    # joins the conversation
+                    await _memory_pause(client, new_message=True)
                     await _msg_dispatcher.append_msgs([_requester_msg])
 
             # A stop ends the loop here: any further turn would be sent only
@@ -2412,6 +2441,8 @@ async def async_tool_loop_inner(
             # the handle summarises (the last request and what followed it)
             # and restarts, as it does after a compress_context call.
             if _in_code and _over_threshold and enable_compression:
+                # UNIFY_MEMORY_IN_EPISODE=on: a compaction is a pause; its segment fork runs before it
+                await _memory_pause(client, compacting=True)
                 tail_from = runtime_state.in_code_tail_from
                 runtime_state.in_code_tail = (
                     copy.deepcopy(list(client.messages or [])[tail_from:])

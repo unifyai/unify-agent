@@ -627,7 +627,7 @@ def _staged_candidates(entry: dict) -> list[dict]:
 def _capture_lands(store: Path, cid: str) -> bool:
     """Whether capture *cid* of the store can be landed: its record (a regular file, never through a link) says its
     attempt did not fail and it is not retired, the test :func:`.land_capture.read_capture` applies."""
-    from .captures import FAILED, MAX_RESULT_BYTES, RECORD_FILE
+    from .captures import MAX_RESULT_BYTES, RECORD_FILE, negative
 
     p = Path(store) / cid / RECORD_FILE
     try:
@@ -637,7 +637,12 @@ def _capture_lands(store: Path, cid: str) -> bool:
         rec = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return isinstance(rec, dict) and rec.get("outcome") != FAILED and rec.get("status") != "retired"
+    if not isinstance(rec, dict) or negative(rec) or rec.get("status") == "retired":
+        return False
+    # a trace capture lands by this route only in the value form (a procedure of the request's value); the others are
+    # landed by writing them (land_capture refuses them, naming that route)
+    form = rec.get("entry_point", {}).get("form") if isinstance(rec.get("entry_point"), dict) else None
+    return form in (None, "value")
 
 
 def _with_fixtures(manifest: object, made: dict) -> object:
@@ -860,6 +865,14 @@ class PassConfig:
     # tools are Python calls from the agent's cells through the tool channel (tool_channel.py, tool_handlers.py);
     # off: the JSON tools as before
     tools_in_code: bool = False
+    # UNIFY_MEMORY_ATTENTION_LEDGER=on: the memory home whose attention ledger an attention pass reads and decides
+    # (attention.py, attention_tools.py); None: no attention pass, and the brief is as before
+    attention_home: str | None = None
+    # UNIFY_MEMORY_WRITER_TESTS: the modes ``tools.test`` offers ("value", "replay"; writer_tests.py); empty: none
+    writer_tests: tuple = ()
+    # UNIFY_MEMORY_IMPURE_ITEMS=on: items of any effect, every quality finding a label (the brief says so; the gate
+    # is configured apart, Gate(labels=...)); off: the brief as before
+    impure_items: bool = False
     # UNIFY_AGENTS_RUN_RECORD=on (library mode): the memory home whose run record the pass's agent and its helpers
     # join (unify/agents/run_record.py); None: the pass keeps its own record, as built
     run_home: str | None = None
@@ -3790,6 +3803,43 @@ class WriterPass:
                 self._recorded = set()
         return self._recorded
 
+    def _record_dir(self, pass_id: str, inputs: Path) -> Path:
+        """Where the pass keeps its records: ``<pass_record_root>/<pass id>`` (beside the inputs when it has none)."""
+        root = getattr(self.cfg, "pass_record_root", None)
+        return Path(root) / pass_id if root else Path(inputs).parent / "pass-record"
+
+    def _attention_start(self, req: PassRequest, pass_id: str, inputs: Path) -> Any:
+        """An attention pass's state (:class:`.attention_tools.AttentionPass`): the home's ledger, the entries handed
+        to the pass, its record dir, the box's inputs and the home's records the material is read from."""
+        from . import attention as _at
+        from . import attention_tools as _at_tools
+
+        home = Path(self.cfg.attention_home)
+        ledger = _at.Ledger(home)
+        return _at_tools.AttentionPass(
+            ledger=ledger,
+            pass_id=pass_id,
+            record_dir=self._record_dir(pass_id, inputs),
+            inputs=Path(inputs),
+            home=home,
+            handed=list(getattr(req, "attention", None) or []),
+            sources=_at.HomeSources(home, state_dir=ledger.state_dir),
+        )
+
+    def _tests_start(self, pass_id: str, box: Path, tmp: Path, inputs: Path) -> Any:
+        """The stated tests' context (:class:`.writer_tests.TestContext`): ``tests.jsonl`` beside the pass's records,
+        the writer's /memory, the episodes it may read and the modes the run offers."""
+        from . import writer_tests as _tests
+
+        return _tests.TestContext(
+            pass_id=pass_id,
+            tests_path=self._record_dir(pass_id, inputs) / _tests.TESTS_FILE,
+            library=Path(box),
+            episode=self._episode,
+            modes=frozenset(self.cfg.writer_tests),
+            work=Path(tmp) / "tests",
+        )
+
     def _episode(self, eid: object) -> Episode | None:
         """A recorded episode by id (the batch's, or any in the recorded-episode index), loaded once per pass; None
         for an id the index does not hold. Read tools show only the parts the batch export shows (request,
@@ -3799,7 +3849,10 @@ class WriterPass:
             return None
         if eid in self._episodes:
             return self._episodes[eid]
-        if eid not in self._recorded_ids():
+        from . import segments as _segments
+
+        # a segment of an episode (UNIFY_MEMORY_IN_EPISODE) is read from its own record, never indexed
+        if eid not in self._recorded_ids() and not _segments.is_segment_name(eid):
             return None
         try:
             ep = self.load(eid)
@@ -4327,7 +4380,20 @@ class WriterPass:
             "compact": bool(self.cfg.compact),
             "finish_capped": self.cfg.max_usd is not None,
             "edit_tools": bool(self.cfg.edit_tools),
+            # the redesign's switches, only when one is on (off: the call as built)
+            **({"switches": sw} if (sw := self._switches_b()).attention or sw.impure or sw.tests else {}),
         }
+
+    def _switches_b(self) -> Any:
+        """The WRITE brief's switches (:class:`.library_prompts.WriterSwitches`): an attention pass, items of any
+        effect, stated tests; all off as built."""
+        from .library_prompts import WriterSwitches
+
+        return WriterSwitches(
+            attention=getattr(self, "_attention", None) is not None,
+            impure=bool(getattr(self.cfg, "impure_items", False)),
+            tests=bool(getattr(self.cfg, "writer_tests", ())),
+        )
 
     def _keep_cancelled_work(
         self,
@@ -4401,6 +4467,8 @@ class WriterPass:
         self._pool_manifest = None
         self._bmap_rows = []
         self._live, self._cancel_patch = None, (None, [])
+        # an attention pass's state (attention_tools.AttentionPass) and the stated tests' context (writer_tests)
+        self._attention, self._tests = None, None
         self._role = "curate" if req.kind == "curate" else "write"
         if req.kind == "curate" and (
             not self.cfg.library_mode or self.curate_state is None
@@ -4679,6 +4747,16 @@ class WriterPass:
             self._live = (box, wt)
             _mirror(wt, box)
             self._stage_inputs(req, inputs, wt)
+            if self.cfg.library_mode and req.kind == "attention" and self.cfg.attention_home:
+                # UNIFY_MEMORY_ATTENTION_LEDGER=on: the entries handed to this pass, its ledger and its record
+                self._attention = self._attention_start(req, pass_id, Path(inputs))
+                from . import attention_tools as _at_tools
+
+                # on every way out: the pass's read evidence, which the service verifies the entries' reads against
+                scope.callback(_at_tools.write_read_log, self)
+            if self.cfg.library_mode and getattr(self.cfg, "writer_tests", ()) and self._role != "curate":
+                # UNIFY_MEMORY_WRITER_TESTS: the tests the writer states, recorded beside the pass's records
+                self._tests = self._tests_start(pass_id, box, Path(tmp), Path(inputs))
             if self._notebook_on():
                 # before the pass's folders go, on every way out: the writer's notebook judgements are merged
                 self._stage_notebook(req, inputs)
@@ -4727,6 +4805,8 @@ class WriterPass:
                         helper=self.helper_turn is not None,
                         similar=bool(self.cfg.similar_index),
                         edit=bool(self.cfg.edit_tools),
+                        attention=self._attention is not None,
+                        tests=self._tests is not None,
                     ),
                 )
                 tools = _th.in_code_json_tools(
@@ -4781,6 +4861,13 @@ class WriterPass:
                             f"stage: {type(exc).__name__}: {str(exc)[:200]}"
                         )
                 first = self._first_message_library_mode(req, pass_id)
+                if self._attention is not None:
+                    from . import attention_tools as _at_tools
+
+                    # what each handed entry owes a read, under /inputs (its staging, captures and attention files)
+                    _at_tools.export_entries(self, self._attention, list(req.attention))
+                    wall = format(Decimal(str(float(self.cfg.deadline_s))).normalize(), "f")
+                    first = _at_tools.first_message(self._attention, req, wall)
                 pr = self._pass_record
                 if pr is not None and pr.run:
                     # the run record: the common section and this agent's roster lines, after the constant brief

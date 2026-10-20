@@ -273,7 +273,7 @@ def library_items(copy: Path) -> tuple[list[str], set[str], dict[str, str]] | No
             rec = json.loads((Path(copy) / _CAPTURES_DIR / name / "record.json").read_text(encoding="utf-8"))
         except (OSError, ValueError, UnicodeDecodeError):
             rec = None
-        if isinstance(rec, dict) and rec.get("outcome") == "failed":
+        if isinstance(rec, dict) and rec.get("outcome") in ("failed", "contrary"):
             failed.add(CAPTURE_PREFIX + name)
     return ids, failed, recipes
 
@@ -1003,7 +1003,7 @@ def opener(
     start: Callable[..., Awaitable[Any]] | None = None,
 ) -> Callable[[], Awaitable[LibrarianSession]]:
     """What opens this request's session at its first question: the run's library copy
-    (``RequestRun.paths.checkout``; refused while no library copy is mounted or its items cannot be read), a turn on
+    (``RequestRun.copy_root``; refused while no library copy is mounted or its items cannot be read), a turn on
     the actor's model
     (:func:`actor_turn`, or *turn_factory*'s), and the commit the copy was exported at (``RequestRun.pin``). The
     session is registered with the run, whose use record reads its totals."""
@@ -1012,7 +1012,8 @@ def opener(
         from .integration import request as _request
 
         run = _request.current()
-        copy = getattr(getattr(run, "paths", None), "checkout", None)
+        # the copy as cells read it (UNIFY_MEMORY_IN_EPISODE: its link to the current pin), else the export itself
+        copy = getattr(run, "copy_root", None) or getattr(getattr(run, "paths", None), "checkout", None)
         if run is None or copy is None or not getattr(run, "library_mode", False):
             raise Unavailable("no library is mounted in this request")
         if library_items(Path(copy)) is None:
@@ -1024,7 +1025,7 @@ def opener(
             start=start,
             on_event=on_event,
             request_id=request_id,
-            library=getattr(run, "pin", None),
+            library=getattr(getattr(run, "in_episode", None), "current", None) or getattr(run, "pin", None),
             run_record=record,
             name=name,
         )

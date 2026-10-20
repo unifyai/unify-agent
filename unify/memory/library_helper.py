@@ -434,6 +434,9 @@ def _find(value: Any) -> list[Found]:
 #: attempt was saved against besides its signature: ``docstring``, ``asked``, ``approach`` and ``broke``).
 CAPTURES_DIR = ".memory/captures"
 CAPTURE_PREFIX = "capture:"
+#: A captured attempt's outcomes that make it negative knowledge: never offered to run (``failed``; ``contrary``, a
+#: signal contradicted the episode of a capture that records what its episode did).
+_NEGATIVE = ("failed", "contrary")
 #: Beside the capture folders, when the harness withdraws closed captures: each capture no longer offered (the
 #: library's writer superseded or retired it), with what is offered in its place (``by``) and what it was saved
 #: against. Written by the harness's ``captures.export_files``, never by this file.
@@ -661,6 +664,60 @@ def _evidence_lines(evidence: dict | None, iid: str) -> list[str]:
     return out
 
 
+def _count_text(counts: Any, names: tuple[str, ...]) -> str:
+    """``3 as stated, 1 not as stated`` from *counts* (name -> int), naming only the non-zero ones; ``none``."""
+    rows = counts if isinstance(counts, dict) else {}
+    parts = [
+        f"{rows[n]} {n.replace('_', ' ')}"
+        for n in names
+        if isinstance(rows.get(n), int) and not isinstance(rows.get(n), bool) and rows[n] > 0
+    ]
+    return ", ".join(parts) or "none"
+
+
+def _label_lines(label: Any, served_evidence: bool) -> list[str]:
+    """A card's lines from the item's evidence label (the harness's record of what it is and what its tests and uses
+    showed; never a filter): its form and declared effects against what its replay tests saw, the episodes it covers,
+    its inputs and constants, its stated tests and its uses since this version; its failure record and what its
+    status rests on only when the harness's evidence lines do not already state them (*served_evidence*). [] without
+    a label."""
+    if not isinstance(label, dict):
+        return []
+    effects = label.get("effects") if isinstance(label.get("effects"), dict) else {}
+    seen = effects.get("seen_in_tests") if isinstance(effects.get("seen_in_tests"), dict) else {}
+    out = [
+        f"Form: {_str(label.get('form'), 'function')}; effects: {_str(effects.get('declares'), 'unknown')}"
+        + ("" if effects.get("declared") else " (not declared)")
+        + f"; its replay tests saw {_count_text(seen, ('read', 'write'))}",
+    ]
+    out += ["Contradicted: " + c for c in effects.get("contradictions") or [] if isinstance(c, str)]
+    covers = label.get("covers") if isinstance(label.get("covers"), dict) else {}
+    episodes = [e for e in covers.get("episodes") or [] if isinstance(e, str)]
+    if episodes:
+        by = "as its writer stated" if covers.get("stated_by") == "writer" else "the episodes it was built from"
+        out.append(f"Covers episodes ({by}): " + ", ".join(e[:16] for e in episodes))
+    ivc = label.get("inputs_vs_constants") if isinstance(label.get("inputs_vs_constants"), dict) else {}
+    inputs = [str(i) for i in ivc.get("inputs") or []]
+    constants = [
+        f"{c.get('value')} (source: {c.get('source')})" if isinstance(c, dict) else str(c)
+        for c in ivc.get("constants") or []
+    ]
+    if inputs or constants:
+        out.append(f"Inputs: {', '.join(inputs) or 'none stated'}; constants: {', '.join(constants) or 'none stated'}")
+    tests = label.get("tests") if isinstance(label.get("tests"), dict) else {}
+    out.append(
+        "Stated tests of this version: "
+        + _count_text(tests, ("as_stated", "not_as_stated", "error", "timeout", "replay_miss", "not_run")),
+    )
+    uses = label.get("uses") if isinstance(label.get("uses"), dict) else {}
+    out.append("Uses of this version: " + _count_text(uses, ("clean", "failed", "neutral")))
+    if not served_evidence:
+        rows = [r for r in label.get("failure_record") or [] if isinstance(r, dict)]
+        out.append("Recorded failures: " + _failure_text(rows))
+        out.append("Status rests on: " + _str(label.get("status_basis"), "no_outcome_signals").replace("_", " "))
+    return out
+
+
 def _example_of(capture_id: str) -> dict | None:
     """A capture's worked-example mark (:data:`EXAMPLE_KEY` in its exported record), or None: such a capture is
     read, never called or matched."""
@@ -735,7 +792,7 @@ def _capture_candidates() -> tuple[list[Candidate], int]:
             continue  # a worked example: read, never matched as a procedure that applies
         saved = _read_json(os.path.join(d, "saved.json"))
         saved = saved if isinstance(saved, dict) else {}
-        failed = rec.get("outcome") == "failed"
+        failed = rec.get("outcome") in _NEGATIVE
         broke = saved.get("broke") if isinstance(saved.get("broke"), list) else []
         out.append(
             Candidate(
@@ -1800,7 +1857,7 @@ def _run_capture(capture_id: str, args: tuple, kwargs: dict) -> RunReport:
         return RunReport(target, outcome="error", error="LookupError",
                          detail="this captured procedure is a worked example: it gives the same answer whatever it "
                          "is given, so it is read, never run; print(memory.get(id)) shows it", **base)
-    if rec.get("outcome") == "failed":
+    if rec.get("outcome") in _NEGATIVE:
         return RunReport(target, outcome="error", error="LookupError",
                          detail="this captured attempt failed; it is listed to show what broke, not to run", **base)
     rep = _confined(capture_id, args, kwargs)
@@ -2391,7 +2448,7 @@ class _Catalog:
 
     def _capture_failed(self, cid: str) -> bool:
         rec = _read_json(os.path.join(_capture_dir(cid[len(CAPTURE_PREFIX) :]), "record.json"))
-        return isinstance(rec, dict) and rec.get("outcome") == "failed"
+        return isinstance(rec, dict) and rec.get("outcome") in _NEGATIVE
 
     # -- resolution: every way of naming an item, in one place
 
@@ -2694,6 +2751,7 @@ class _Catalog:
             out.append(f"Evidence level: {level}" + (", set by:" if reasons else ""))
             out += [f"  {r}" for r in reasons]
         out += _evidence_lines(_evidence(), wanted)
+        out += _label_lines(row.get("label"), _evidence() is not None)
         out.append("")
         out.append(f"(its {'source' if function else 'text'} cannot be read: {missing})" if missing else body)
         out += [
@@ -2745,7 +2803,7 @@ class _Catalog:
             "A captured procedure: calling it runs it in a separate confined process on text or JSON values.",
         ]
         out += _evidence_lines(_evidence(), iid)
-        if rec.get("outcome") == "failed":
+        if rec.get("outcome") in _NEGATIVE:
             out.append("Tried and failed: it is listed to show what broke, never run.")
             broke = saved.get("broke")
             out += [f"  broke: {b}" for b in (broke if isinstance(broke, list) else []) if isinstance(b, str)]
@@ -2766,7 +2824,7 @@ def _example_text(example: dict, rec: dict, asked: str, source: str | None) -> s
     cases = rec.get("cases") if isinstance(rec.get("cases"), list) else []
     rows = [c for c in cases if isinstance(c, dict)]
     same = sum(1 for c in rows if c.get("reproduces") == "reproduces")
-    failed = sum(1 for c in rows if c.get("outcome") == "failed")
+    failed = sum(1 for c in rows if c.get("outcome") in _NEGATIVE)
     returns = [r for r in example.get("returns") or [] if isinstance(r, str)]
     out = [
         f"A worked example, not a procedure: {_str(example.get('why'), 'its answer is fixed')}, so it gives the "

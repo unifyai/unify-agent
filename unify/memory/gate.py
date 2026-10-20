@@ -735,6 +735,32 @@ class _WithSources:
         return self._ev.signals_for(eid)
 
 
+#: The checks whose findings about an item are quality results (``UNIFY_MEMORY_IMPURE_ITEMS=on``): G2 (evidence: the
+#: recipe's cases, the unseen values, the grounding of its calls, its covers) and G3 (its tests, its red test, its
+#: behaviour, its examples). G1 (layout, provenance, the manifest, links), G5 (items and coverage kept) and G6
+#: (safety) stay hard, as do the library's other tests (a finding no item owns).
+LABELLED_CHECKS = frozenset({"G2", "G3"})
+#: What makes a G2 or G3 finding hard all the same: syntax, an import that fails, a missing path, the gate's own kit.
+_HARD_MARKS = (
+    "does not parse",
+    "SyntaxError",
+    "IndentationError",
+    "ImportError",
+    "ModuleNotFoundError",
+    "cannot be imported",
+    "could not be imported",
+    "is not in the candidate",
+    "[library_mode:plain]",
+    "key-shaped",
+)
+
+
+def labelled(check: str, reason: str) -> bool:
+    """Whether a finding of *check* about an item is a quality result its label carries (``UNIFY_MEMORY_IMPURE_ITEMS``)
+    rather than a refusal: G2 and G3, except syntax, imports that fail, missing paths and the gate's own kit."""
+    return check in LABELLED_CHECKS and not any(m in str(reason) for m in _HARD_MARKS)
+
+
 @dataclass
 class _Run:
     """One check's state: the resolved revisions, both trees and what the checks found."""
@@ -811,6 +837,11 @@ class _Run:
     calls_cand: dict[str, Any] = field(default_factory=dict)
     # library mode: evidence findings set an item's evidence level instead of refusing it (:meth:`cap`)
     levels_on: bool = False
+    # UNIFY_MEMORY_IMPURE_ITEMS=on (Gate(labels=True)): a quality finding about an item is recorded on its label and
+    # refuses nothing (:meth:`fail`, :func:`labelled`); the hard checks refuse as before
+    labels_on: bool = False
+    # item -> the quality findings recorded on its label (in order, each once)
+    label_findings: dict[str, list[str]] = field(default_factory=dict)
     # item -> the evidence findings that set its level (in order, each once)
     level_reasons: dict[str, list[str]] = field(default_factory=dict)
     # library mode: per function listed only to change its tests, the episodes of the stored typed ``episode`` covers
@@ -851,6 +882,16 @@ class _Run:
         Only a failure attributed to items can be resolved by refusing those items alone (per-item
         admission, :meth:`Gate.merge`); an unattributed failure refuses the whole pass.
         """
+        owners = [item] if isinstance(item, str) else list(item or [])
+        if self.labels_on and owners and labelled(check, reason):
+            # a quality finding about these items: their label carries it, and nothing is refused
+            line = KEY_SHAPED.sub(_REDACTED, f"{check}: {reason}")
+            for owner in owners:
+                found = self.label_findings.setdefault(owner, [])
+                if line not in found:
+                    found.append(line)
+            self.note(f"label: {', '.join(owners)}: {line.splitlines()[0][:300]}")
+            return
         # reasons are stored in the evidence store; test output in them is model-controlled
         self.res.checks[check] = False
         self.res.passed = False
@@ -910,6 +951,8 @@ class Gate:
         soft_budget: bool = False,
         qa: QAConfig | None = None,
         library_mode: LibraryConfig | None = None,
+        labels: bool = False,
+        segments_dir: Path | str | None = None,
     ) -> None:
         """The library-mode switches (:mod:`.integration.switch`; each default is the v2 behaviour):
         *docstring_standard* turns on the lean docstring standard (G1) and its examples run (G3) for new or
@@ -940,6 +983,11 @@ class Gate:
         # stage-5 test checks (library mode); the default runs none of them
         self.qa = qa if qa is not None else QAConfig()
         self.library_mode = library_mode
+        # UNIFY_MEMORY_IMPURE_ITEMS=on: quality findings label their items (library mode only)
+        self.labels = bool(labels) and library_mode is not None
+        # UNIFY_MEMORY_IN_EPISODE=on: the state dir whose segment records (<episode>.s<n>) an item may cite as its
+        # source while their episode is still open; None: only recorded episodes
+        self.segments_dir = Path(segments_dir) if segments_dir is not None else None
         if library_mode is not None and library_mode.checks:
             if not library_mode.layout:
                 raise ValueError(
@@ -1007,6 +1055,7 @@ class Gate:
         tmp = Path(tempfile.mkdtemp(prefix="memory-preview-"))
         run = _Run(res, Manifest(), manifest, "", "", tmp)
         run.levels_on = self._library_checks()
+        run.labels_on = bool(getattr(self, "labels", False))
         try:
             try:
                 run.man = self._parse_manifest(manifest)
@@ -1279,6 +1328,8 @@ class Gate:
         return parse_manifest(
             manifest,
             library_mode=self.library_mode is not None and self.library_mode.layout,
+            # UNIFY_MEMORY_IMPURE_ITEMS=on: an item may state its label fields
+            **({"labels": True} if getattr(self, "labels", False) else {}),
         )
 
     def _library_mode(self, run: _Run):
@@ -1416,6 +1467,7 @@ class Gate:
         run = _Run(res, Manifest(), manifest, parent, candidate, tmp)
         run.seed = seed
         run.levels_on = self._library_checks()
+        run.labels_on = bool(getattr(self, "labels", False))
         reduced = None
         try:
             if self._prepare(run):
@@ -1460,6 +1512,8 @@ class Gate:
         res.items_refused = {i: list(c) for i, c in run.item_fail.items()}
         if run.levels_on:
             self._levels(run)
+        if run.labels_on:
+            self._labels(run)
         res.verification = {i: dict(r) for i, r in sorted(run.verification.items())}
         res.curate_due = run.curate_due
         res.curations = [dict(r) for r in run.curations]
@@ -1467,6 +1521,16 @@ class Gate:
         res.fixtures_verified = dict(run.fixtures_verified)
         passed = res.passed
         return res, (run.covers if passed else set()), run.notes, snapshot, reduced
+
+    @staticmethod
+    def _labels(run: _Run) -> None:
+        """``UNIFY_MEMORY_IMPURE_ITEMS=on``: each manifest item's label inputs in its verification record, from which
+        the item records build its label (:mod:`.item_label`): what the writer stated (``stated``) and the quality
+        findings recorded instead of refusals (``label_findings``)."""
+        for it in run.man.items:
+            rec = run.verification.setdefault(it.item, {})
+            rec["stated"] = dict(getattr(it, "stated", {}) or {})
+            rec["label_findings"] = list(run.label_findings.get(it.item, []))
 
     @staticmethod
     def _levels(run: _Run) -> None:
@@ -1761,8 +1825,18 @@ class Gate:
             if not it.source_episodes and not _unchanged(run, it):
                 run.fail("G1", f"{it.item} names no source episode", it.item)
             for eid in it.source_episodes:
-                if not self.ev.episode_exists(eid):
+                if not (self.ev.episode_exists(eid) or self._segment_recorded(eid)):
                     run.fail("G1", f"{it.item} cites unknown episode {eid}", it.item)
+
+    def _segment_recorded(self, eid: str) -> bool:
+        """Whether *eid* is a segment of an open episode (``<episode>.s<n>``) whose record the harness wrote
+        (``UNIFY_MEMORY_IN_EPISODE``: :mod:`.segments`); always False without a segments dir."""
+        root = getattr(self, "segments_dir", None)
+        if root is None:
+            return False
+        from . import segments
+
+        return segments.is_segment_name(eid) and segments.snapshot_path(root, eid).is_file()
 
     @staticmethod
     def _doc_inputs(run: _Run) -> dict[str, str]:

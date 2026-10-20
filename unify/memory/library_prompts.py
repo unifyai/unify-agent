@@ -1028,6 +1028,7 @@ def write_brief(
     pool_kinds: str = "",
     in_code: bool | None = None,
     flags: frozenset[str] = frozenset(),
+    switches: "WriterSwitches | None" = None,
 ) -> str:
     """The WRITE brief. *staging* (the episode-end fork is on) and *pool* (the candidate pool is on) add their input
     bullets, row keys and manifest fields; *tools* is the rendered Tools section and *tool_names* the tools the role
@@ -1050,6 +1051,7 @@ def write_brief(
                 staging=staging,
                 pool=pool,
                 tool_names=tool_names,
+                switches=switches,
             ),
         )
     from .manifest import describe_semantic_types
@@ -1444,17 +1446,22 @@ def tool_flags(
     helper: bool = False,
     similar: bool = False,
     edit: bool = False,
+    attention: bool = False,
+    tests: bool = False,
 ) -> frozenset[str]:
     """The tool spec configuration flags of a pass (``fork``: staging exists; ``pool``: the candidate pool is on;
     ``helper``: a helper lane exists, so ``delegate`` is offered; ``similar``: the similar-code index exists;
-    ``edit``: the ``write`` and ``edit`` file tools are on).
+    ``edit``: the ``write`` and ``edit`` file tools are on; ``attention``: an attention pass, with the ledger's
+    ``open_entries``, ``take``, ``decide`` and ``find``; ``tests``: ``test``, the writer's stated tests).
     """
     return frozenset(
         ({"fork"} if staging else set())
         | ({"pool"} if pool else set())
         | ({"helper"} if helper else set())
         | ({"similar"} if similar else set())
-        | ({"edit"} if edit else set()),
+        | ({"edit"} if edit else set())
+        | ({"attention"} if attention else set())
+        | ({"tests"} if tests else set()),
     )
 
 
@@ -1467,13 +1474,17 @@ def write_brief_now(
     compact: bool = False,
     finish_capped: bool = False,
     edit_tools: bool = False,
+    switches: "WriterSwitches | None" = None,
 ) -> str:
-    """The WRITE brief from the constants that enforce each number and the tools registered for the role."""
+    """The WRITE brief from the constants that enforce each number and the tools registered for the role.
+    *switches* (:class:`WriterSwitches`): the attention pass's entries, items of any effect and stated tests; None or
+    all off gives the brief as built."""
     from . import code_lint, qa
     from .gate import _PYTEST_ENV
     from .tool_spec import tools_section
 
-    flags = tool_flags(staging, pool, helper, similar, edit_tools)
+    sw = switches or WriterSwitches()
+    flags = tool_flags(staging, pool, helper, similar, edit_tools, attention=sw.attention, tests=sw.tests)
     return write_brief(
         limits=limits_now(cell_s, compact=compact, finish_capped=finish_capped),
         mutation_min=qa.MUTATION_MIN,
@@ -1486,6 +1497,7 @@ def write_brief_now(
         tool_names=_tool_names("write", flags),
         pool_kinds=_pool_kinds() if pool else "",
         flags=flags,
+        switches=switches,
     )
 
 
@@ -1756,6 +1768,111 @@ _WRITE_RULES_IN_CODE = (
 )
 
 
+@dataclass(frozen=True)
+class WriterSwitches:
+    """What changes the WRITE brief (each off: as built). *attention*: an attention pass
+    (``UNIFY_MEMORY_ATTENTION_LEDGER=on``): its entries, ``tools.decide``, ``tools.take``, ``tools.open_entries`` and
+    ``tools.find``. *impure*: ``UNIFY_MEMORY_IMPURE_ITEMS=on``: items of any effect, each with its stated inputs,
+    constants, episodes and effects, every quality finding a label. *tests*: ``UNIFY_MEMORY_WRITER_TESTS`` offers
+    ``tools.test``."""
+
+    attention: bool = False
+    impure: bool = False
+    tests: bool = False
+
+
+#: The attention pass's section of the brief.
+ATTENTION_TEXT = (
+    "# Your entries\n"
+    "You are given entries that need your attention; decide each with `tools.decide`. Open entries listed beside "
+    "them may share a rule with yours; look with `tools.open_entries` and `tools.find`, and `tools.take` those that "
+    "do. /inputs/attention/index.json lists your entries, each with the material it owes a read (its summary, its "
+    "procedure, its use, its signal, its note or its message); the harness checks what you opened, never what you "
+    "say you read. One decision can close several entries: that is how you record that they are one rule. A "
+    "decision is one of new_item, changed_item, merged_into (naming the item), note, retire, nothing_to_keep and "
+    "defer (the work stays open as a new entry). An entry you do not decide comes back to a later pass.\n"
+)
+#: What an item is, under ``UNIFY_MEMORY_IMPURE_ITEMS=on`` (the brief's What to write).
+IMPURE_TEXT = (
+    "- An item is written for a kind of situation, with what varies as its inputs. It may take the current state "
+    "and act through the environment's tools. When you land or change one, say which episodes it is meant to cover "
+    "and which of its values are inputs and which are constants, with the source of each constant. Notes and "
+    "checklists are items too.\n"
+)
+#: The manifest fields of an item's stated provenance (``UNIFY_MEMORY_IMPURE_ITEMS=on``).
+IMPURE_MANIFEST_DOCS = (
+    "  - Every item may state, and every item you land or change states: `covers_episodes`, the episodes it is meant "
+    "to cover; `inputs`, what varies (for example `state.data[0].lines`); `constants`, each value it holds fixed "
+    "with its source (`{\"value\": \"tax rate 0.2\", \"source\": \"<episode>/action:3\"}`); and for a function "
+    "`effects`, `none`, `reads`, `writes` or `unknown` (what its calls do to the environment). A note that is a "
+    "checklist says `\"form\": \"checklist\"`. They are kept on the item's label beside its evidence.\n"
+)
+#: The stated tests (``UNIFY_MEMORY_WRITER_TESTS``).
+TESTS_TEXT = "Running code is a test you state first: say what you expect, then run `tools.test`."
+
+
+def _swap(text: str, old: str, new: str) -> str:
+    """*text* with *old*, which it holds exactly once, replaced by *new* (a brief whose wording moved fails loudly)."""
+    if text.count(old) != 1:
+        raise ValueError(f"the WRITE brief holds {text.count(old)} copies of {old[:60]!r}, not one")
+    return text.replace(old, new)
+
+
+def with_switches(body: str, sw: "WriterSwitches") -> str:
+    """The in-code WRITE brief *body* under *sw*: the attention pass's section after the role; items of any effect
+    (the recipe's cases and every other quality finding are labels; rule 7's literal rule becomes the stated inputs
+    and constants; rule 8 keeps credentials and tokens, and no longer bars the results of calls with side effects; a
+    procedure of another kind is labelled, never left a draft); the stated tests. All off: *body* unchanged."""
+    if sw.attention:
+        body = _swap(body, "\n# Inputs\n", "\n" + ATTENTION_TEXT + "\n# Inputs\n")
+        body = _swap(
+            body,
+            "- /inputs/batch_map.json:",
+            "- /inputs/attention/: your entries (index.json) and, per entry, what the harness holds for it outside the "
+            "episodes (use.json, signal.json, note.json). For: what each entry owes a read.\n- /inputs/batch_map.json:",
+        )
+    if sw.impure:
+        body = _swap(
+            body,
+            "The gate runs the recipe, confined, on every case and lands the procedure only if it gives every expected "
+            "output; a failing case comes back with the difference. An episode whose recipe does not pass, or that "
+            "failed, lands no procedure (a note of what was tried may still land). ",
+            "The gate runs the recipe, confined, on every case and records what each case gave on the procedure's "
+            "label; the procedure lands either way. ",
+        )
+        body = _swap(body, "- A function's docstring has a one-line summary;", IMPURE_TEXT + "- A function's docstring has a one-line summary;")
+        body = _swap(
+            body,
+            "A procedure of any other kind cannot be verified, so it stays a draft.",
+            "A procedure of any other kind, or one that acts through the environment's tools, is kept with the "
+            "evidence it has (its tests replay the recorded calls, or it was judged by reading), stated on its label.",
+        )
+        body = _swap(
+            body,
+            "7. Code never holds a literal equal to a value that varies across its recorded inputs (text of "
+            "<<lint_min>> or more characters, or a number with 2 or more significant digits): make it a parameter.\n",
+            "7. Say which of an item's values are inputs and which are constants, each constant with its source "
+            "(`inputs`, `constants`): a value copied from one episode is a constant only where its source says it "
+            "holds for the kind of situation the item is for.\n",
+        )
+        body = _swap(
+            body,
+            "8. Never store credentials, session tokens or the results of calls with side effects. ",
+            "8. Never store credentials or session tokens; your own code holds no key, opens no network and writes "
+            "nothing outside /memory. ",
+        )
+        body = _swap(
+            body,
+            "# Repair\n",
+            "Each quality finding about an item (its recipe's cases, the unseen values, its examples, its tests and "
+            "its behaviour) is recorded on its label and lands with it; safety, paths, syntax and the library's other "
+            "tests still refuse.\n\n# Repair\n",
+        )
+    if sw.tests:
+        body = _swap(body, "\n# What to write\n", "\n" + TESTS_TEXT + "\n\n# What to write\n")
+    return body
+
+
 def record_text() -> str:
     """The pass record's facts as a brief states them (:data:`.messaging.RECORD_TEXT`, or its in-code form)."""
     from . import messaging
@@ -1773,9 +1890,11 @@ def _write_brief_in_code(
     staging: bool,
     pool: bool,
     tool_names: frozenset[str],
+    switches: "WriterSwitches | None" = None,
 ) -> str:
     """The WRITE brief when tools are called from code: the same role, inputs, rules and done, with each tool named
-    as the call the writer makes and no Tools section (``tools.list()`` and ``tools.help(name)`` describe them)."""
+    as the call the writer makes and no Tools section (``tools.list()`` and ``tools.help(name)`` describe them).
+    *switches* change it as :func:`with_switches` says; off, it is as built."""
     has = tool_names.__contains__
     helpers = has("delegate")
     proposals_from = (
@@ -1976,8 +2095,12 @@ def _write_brief_in_code(
         "you wrote has passed the gate or is kept as a draft with its failure. Then call `tools.finish(summary)`. "
         "Writing nothing is a valid decision when your summary says why.\n"
     )
+    sw = switches or WriterSwitches()
+    if sw.impure:
+        item_extra += ', "effects": "<none|reads|writes|unknown>", "covers_episodes": [...], "inputs": [...], "constants": [...]'
+        manifest_docs += IMPURE_MANIFEST_DOCS
     return _fill(
-        body,
+        with_switches(body, sw),
         {
             "manifest_extra": manifest_extra,
             "item_extra": item_extra,

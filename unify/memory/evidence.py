@@ -235,6 +235,34 @@ def _unknown_items(use: dict, items: set[str]) -> set[str]:
     return set() if use.get("outcomes_known") is True else set(items)
 
 
+#: ``UNIFY_MEMORY_IN_EPISODE=on``: per item and episode, each pin it was served under and its observed calls under it.
+#: Created by the first episode that has pins, so a store without them keeps the schema above.
+_PINS_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS item_use_pins(item TEXT, episode_id TEXT, pin TEXT, ok INTEGER, refused INTEGER, "
+    "error INTEGER, PRIMARY KEY(item, episode_id, pin))"
+)
+
+
+def _pin_rows(eid: str, use: dict) -> list[tuple]:
+    """``item_use_pins`` rows from a use record's item rows' ``pins`` (``integration.request.with_pins``)."""
+    rows = use.get("items") if isinstance(use.get("items"), dict) else {}
+    out = []
+    for item, row in sorted(rows.items()):
+        pins = row.get("pins") if isinstance(row, dict) else None
+        if not isinstance(item, str) or not isinstance(pins, dict):
+            continue
+        for pin, counts in sorted(pins.items()):
+            if not isinstance(pin, str) or not isinstance(counts, dict):
+                continue
+
+            def n(key: str) -> int:
+                v = counts.get(key)
+                return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else 0
+
+            out.append((item, eid, pin, n("ok"), n("refused"), n("error")))
+    return out
+
+
 def _use_rows(eid: str, use: dict) -> list[tuple]:
     """One ``item_use`` row per item at the episode's pin (an exposure, zeros included) and per item the
     record counts, in :data:`_USE_COUNTS` order. ``unknown_calls`` is the dynamic calls on the item's
@@ -403,6 +431,15 @@ class EvidenceStore:
                     f"INSERT OR REPLACE INTO item_use({cols}) VALUES({marks})",
                     _use_rows(ep.episode_id, use),
                 )
+                pins = _pin_rows(ep.episode_id, use)
+                if pins:
+                    # UNIFY_MEMORY_IN_EPISODE=on: the pin each use was served under (created by the first such row)
+                    self.db.execute(_PINS_SCHEMA)
+                    self.db.executemany(
+                        "INSERT OR REPLACE INTO item_use_pins(item, episode_id, pin, ok, refused, error) "
+                        "VALUES(?,?,?,?,?,?)",
+                        pins,
+                    )
             return int(cur.lastrowid)
 
     # -- item use (library-mode telemetry) -------------------------------------------------------------

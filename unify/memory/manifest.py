@@ -232,6 +232,9 @@ class ManifestItem:
     reader: str | None = None
     recipe: str | None = None
     cases: list[str] = field(default_factory=list)
+    # UNIFY_MEMORY_IMPURE_ITEMS=on: what the writer states about the item (:data:`LABEL_ITEM_FIELDS`), kept on its
+    # label; empty: nothing stated
+    stated: dict = field(default_factory=dict)
 
     @property
     def channel(self) -> str | None:
@@ -550,6 +553,59 @@ LIBRARY_ITEM_FIELDS: tuple[str, ...] = (
     "recipe",
     "cases",
 )
+#: What the writer may state about an item under ``UNIFY_MEMORY_IMPURE_ITEMS=on`` (its label keeps it): the episodes it
+#: is meant to cover, what varies (its inputs), the values it holds fixed with their sources (its constants), a
+#: function's effects on the environment, and a note's form (a checklist). Refused as unknown fields otherwise.
+LABEL_ITEM_FIELDS: tuple[str, ...] = ("covers_episodes", "inputs", "constants", "effects", "form")
+#: A function's declared effects.
+DECLARED_EFFECTS: tuple[str, ...] = ("none", "reads", "writes", "unknown")
+#: A note's form.
+NOTE_FORMS: tuple[str, ...] = ("note", "checklist")
+_STATED_TEXT_MAX = 400
+
+
+def _stated(raw: dict, item: str, kind: str) -> dict:
+    """The label fields of a manifest item (:data:`LABEL_ITEM_FIELDS`), checked; ``{}`` when it states none."""
+    out: dict = {}
+    if "covers_episodes" in raw:
+        out["covers_episodes"] = _str_list(raw["covers_episodes"], f"{item}: covers_episodes")
+    if "inputs" in raw:
+        got = _str_list(raw["inputs"], f"{item}: inputs")
+        if any(len(x) > _STATED_TEXT_MAX for x in got):
+            raise ManifestError(f"{item}: an input is named in at most {_STATED_TEXT_MAX} characters")
+        out["inputs"] = got
+    if "constants" in raw:
+        consts = raw["constants"]
+        if not isinstance(consts, list):
+            raise ManifestError(f"{item}: constants is a list of {{\"value\", \"source\"}} (or of lines)")
+        lines = []
+        for c in consts:
+            if isinstance(c, str):
+                line = c
+            elif isinstance(c, dict) and isinstance(c.get("value"), str) and isinstance(c.get("source"), str):
+                line = f"{c['value']} (source: {c['source']})"
+            else:
+                raise ManifestError(
+                    f"{item}: a constant is {{\"value\": \"<what it is>\", \"source\": \"<episode>/<part>\"}}, given "
+                    f"{_key_repr(c)}",
+                )
+            if len(line) > _STATED_TEXT_MAX:
+                raise ManifestError(f"{item}: a constant is stated in at most {_STATED_TEXT_MAX} characters")
+            lines.append(line)
+        out["constants"] = lines
+    if "effects" in raw:
+        if kind != "function":
+            raise ManifestError(f"{item}: only a function declares effects")
+        if raw["effects"] not in DECLARED_EFFECTS:
+            raise ManifestError(f"{item}: effects is one of {', '.join(DECLARED_EFFECTS)}, given {_key_repr(raw['effects'])}")
+        out["effects"] = raw["effects"]
+    if "form" in raw:
+        if kind != "note" or raw["form"] not in NOTE_FORMS:
+            raise ManifestError(f"{item}: form is one of {', '.join(NOTE_FORMS)}, on a note")
+        out["form"] = raw["form"]
+    return out
+
+
 #: A library function's ``role``, when it has one: a whole-request procedure, or a reader of request text.
 ITEM_ROLES: tuple[str, ...] = ("procedure", "reader")
 #: The name ending of a case file (:data:`.fixtures.CASE_SUFFIX`).
@@ -654,7 +710,7 @@ def _library_field_types(raw: object, item: str, kind: str) -> dict[str, str]:
     return dict(raw)
 
 
-def _parse_library_mode(manifest: dict) -> Manifest:
+def _parse_library_mode(manifest: dict, labels: bool = False) -> Manifest:
     """The library-mode manifest: ``function`` items ``memory.<package>.<module>:<name>`` and
     ``note`` items ``notes/<topic>/<slug>.md``, tests under ``memory/<package>/tests/``, test helpers as
     ``support``, and typed covers (:mod:`.procedures`: a cell, a diff or an episode). A function takes any
@@ -706,10 +762,11 @@ def _parse_library_mode(manifest: dict) -> Manifest:
                 f"{item}: input is no longer read: a function takes any arguments and its examples are the calls "
                 "its tests make on fixtures; remove input",
             )
+        fields = LIBRARY_ITEM_FIELDS + (LABEL_ITEM_FIELDS if labels else ())
         for key in raw:
-            if key not in LIBRARY_ITEM_FIELDS:
+            if key not in fields:
                 raise ManifestError(
-                    f"{item}: unknown field {_key_repr(key)}; an item takes {', '.join(LIBRARY_ITEM_FIELDS)}",
+                    f"{item}: unknown field {_key_repr(key)}; an item takes {', '.join(fields)}",
                 )
         kind = raw.get("kind")
         if kind not in patterns:
@@ -761,6 +818,7 @@ def _parse_library_mode(manifest: dict) -> Manifest:
                 reader=reader,
                 recipe=recipe,
                 cases=cases,
+                stated=_stated(raw, item, kind) if labels else {},
             ),
         )
     out.support = [safe_rel(p) for p in _str_list(manifest.get("support"), "support")]
@@ -792,15 +850,16 @@ def _parse_library_mode(manifest: dict) -> Manifest:
     return out
 
 
-def parse_manifest(manifest: object, *, library_mode: bool = False) -> Manifest:
+def parse_manifest(manifest: object, *, library_mode: bool = False, labels: bool = False) -> Manifest:
     """Validate the manifest's shape, its ids and its paths against the layout; raise ManifestError.
 
-    *library_mode*: the library layout (:func:`_parse_library_mode`); off, v2's, unchanged.
+    *library_mode*: the library layout (:func:`_parse_library_mode`); off, v2's, unchanged. *labels*
+    (``UNIFY_MEMORY_IMPURE_ITEMS=on``, library layout): an item may state its label fields (:data:`LABEL_ITEM_FIELDS`).
     """
     if not isinstance(manifest, dict):
         raise ManifestError("the manifest must be an object")
     if library_mode:
-        return _parse_library_mode(manifest)
+        return _parse_library_mode(manifest, labels=labels)
     raw_items = manifest.get("items", [])
     if not isinstance(raw_items, list):
         raise ManifestError("items must be a list")

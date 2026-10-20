@@ -213,6 +213,73 @@ INSTRUCTION_IN_CODE = (
     "a line of three backticks, open and close its block with four. Example:\n\n"
     + FORMAT_EXAMPLE
 )
+#: What the fork writes for the harness to capture under ``UNIFY_MEMORY_CAPTURE_TRACE=on``: the procedure that did the
+#: work, in the form the work needed (``value``, ``state`` or ``state_env``: :mod:`..capture_trace`), returning a result
+#: only when one was handed back; and what broke. It replaces :data:`CAPTURE_BULLETS` in both instruction forms.
+CAPTURE_BULLETS_TRACE = (
+    "- `procedure.py`: the procedure that did this work, from code that ran here, as functions with docstrings, in "
+    "the form that fits what the work needed:\n"
+    "  - `run(state, env)` when the work acted through tools. `env` is this episode's tool namespace: "
+    "`env.<channel>.<method>(...)` makes the call the record lists as an action of that channel and method (the part "
+    "list below shows each action as `<kind> <channel>.<method>`); make every tool call through `env`. `state` is "
+    "the episode so far: `state.request` (the first message), `state.messages` (every message from the user or the "
+    "environment, in order), `state.last` (the latest one) and `state.data` (the JSON objects and arrays those "
+    "messages contain, in order).\n"
+    "  - `run(state)` when the work needed more than the first message and no tool.\n"
+    "  - `read_input(request)` and `run(value)` when the whole job was in the first message: `read_input` takes the "
+    "request (`request` is its text, `request.data` the list of the JSON objects and arrays it contains) and returns "
+    "the value `run` works on.\n"
+    "  `run` returns the result you handed back when you handed one back, and None when the outcome of the work is "
+    "what it did (its tool calls, the files it changed). Where your code used a value you typed into a cell, read it "
+    "from `state` or the request instead. If the work has conditions on its input or its result, write them as "
+    "`applies(x)` and `holds(x, result)`, where `x` is what `run` takes first, each returning True or False. Write it "
+    "whether or not the work was accepted; say which in its docstring, quoting the line of the record that shows it, "
+    'or write "not shown".\n'
+    "- `broke.md`: each thing that broke in this attempt and why, one line each, with the part name and a short quote "
+    'from the record. Write "none" if nothing broke.\n'
+)
+INSTRUCTION_TRACE = INSTRUCTION.replace(CAPTURE_BULLETS, CAPTURE_BULLETS_TRACE)
+INSTRUCTION_IN_CODE_TRACE = INSTRUCTION_IN_CODE.replace(CAPTURE_BULLETS, CAPTURE_BULLETS_TRACE)
+#: A segment fork's instruction (``UNIFY_MEMORY_IN_EPISODE``, at a checkpoint inside the episode): the same summary and
+#: capture contract, in a short form, for the cells since the last checkpoint; the work goes on after it.
+SEGMENT_FORMAT_EXAMPLE = (
+    "```path: summary.md\n"
+    "## Asked\n"
+    "Read a table of numbers from a text file and report its size.\n"
+    "## Approach\n"
+    '- Parsed the first line as the size (`cell:0` "int(lines[0])").\n'
+    "## Worked\n"
+    "- none so far\n"
+    "## Failed\n"
+    '- Reading the size from the first line, which was a header (`cell:0` "ValueError: invalid literal for int()").\n'
+    "## Outcome\n"
+    "Not finished: the work goes on (`cell:0` \"int(lines[0])\").\n"
+    "```\n"
+    "\n"
+    "```path: broke.md\n"
+    '- `cell:0`: the first line is a header, not the size ("ValueError: invalid literal for int()").\n'
+    "```"
+)
+SEGMENT_INSTRUCTION = (
+    "This is a pause in your work on this request, which goes on after it; nothing you write now changes it. Write "
+    "down what would help with similar work later, for the part of the work since the last pause: the cells "
+    "{cells}. Write each file as a fenced block in your reply, in the format below. Do not call tools.\n\n"
+    "What to write:\n"
+    "- `summary.md`: a short account of this part of the episode for a reader who has not seen it, in the format "
+    "below; its Outcome says the work is not finished, and what the record shows so far.\n"
+    + CAPTURE_BULLETS_TRACE
+    + "\n"
+    + SUMMARY_FORMAT
+    + "\n\n"
+    + NUMBERING
+    + "\n\n"
+    f"Limits: at most {QUOTA_FILES} files and {QUOTA_BYTES // 1024**2} MiB in all are kept. A reply that calls a "
+    f"tool gets another turn, up to {TURN_GUARD} turns in all.\n\n"
+    "Format: each file is one fenced block. Its opening line is three backticks followed by `path: ` and the "
+    "file's relative path; then the file's full content; then a line of three backticks. If a file itself contains "
+    "a line of three backticks, open and close its block with four. Example:\n\n"
+    + SEGMENT_FORMAT_EXAMPLE
+)
 #: The sentence of :data:`INSTRUCTION_IN_CODE` that forbids tool calls, and what replaces it on the run record.
 NO_TOOLS = "Do not call tools."
 COMMS_ONLY = (
@@ -238,19 +305,44 @@ ROLLED_FILE = "pass-admission.json"
 def fork_instruction() -> str:
     """The fixed instruction appended to the actor's conversation for the fork: what to write, its limits, the one
     block format with an example, and that tools are not available (:data:`INSTRUCTION_IN_CODE` when tools are
-    called from code)."""
+    called from code). Under ``UNIFY_MEMORY_CAPTURE_TRACE=on`` its capture contract is :data:`CAPTURE_BULLETS_TRACE`
+    (the procedure that did the work, in one of three forms); off, the text is as built."""
     from unify.common import in_code_switch
 
+    from .switch import capture_trace
+
+    trace = capture_trace(_settings())
     if not in_code_switch.tools_in_code():
-        return INSTRUCTION
+        return INSTRUCTION_TRACE if trace else INSTRUCTION
     from unify.common.tool_registry import run_record_on
 
+    text = INSTRUCTION_IN_CODE_TRACE if trace else INSTRUCTION_IN_CODE
     if run_record_on():
         # the run record: the comms calls run (through the fork's relay); nothing else does
-        if INSTRUCTION_IN_CODE.count(NO_TOOLS) != 1:
+        if text.count(NO_TOOLS) != 1:
             raise ValueError("the fork's instruction no longer says once that it calls no tools")
-        return INSTRUCTION_IN_CODE.replace(NO_TOOLS, COMMS_ONLY)
-    return INSTRUCTION_IN_CODE
+        return text.replace(NO_TOOLS, COMMS_ONLY)
+    return text
+
+
+def segment_instruction(first_cell: int | None, last_cell: int | None) -> str:
+    """A segment fork's instruction (:data:`SEGMENT_INSTRUCTION`) for the cells from *first_cell* to *last_cell*; on
+    the run record its "no tools" sentence allows the record's comms calls, as the episode fork's does."""
+    if first_cell is None or last_cell is None:
+        cells = "since the last pause (no cell ran in it)"
+    elif first_cell == last_cell:
+        cells = f"`cell:{first_cell}`"
+    else:
+        cells = f"`cell:{first_cell}` to `cell:{last_cell}`"
+    text = SEGMENT_INSTRUCTION.replace("{cells}", cells)
+    from unify.common import in_code_switch
+    from unify.common.tool_registry import run_record_on
+
+    if in_code_switch.tools_in_code() and run_record_on():
+        if text.count(NO_TOOLS) != 1:
+            raise ValueError("the segment fork's instruction no longer says once that it calls no tools")
+        return text.replace(NO_TOOLS, COMMS_ONLY)
+    return text
 
 
 def _first_line(text: object) -> str:
@@ -286,10 +378,10 @@ def part_list(ep: Any) -> str:
     return "\n".join(lines)
 
 
-def fork_message(parts: str | None = None) -> str:
-    """The user message the fork's request ends with: :func:`fork_instruction`, then the episode's part list when
-    there is one. Both follow the cached prefix."""
-    text = fork_instruction()
+def fork_message(parts: str | None = None, instruction: str | None = None) -> str:
+    """The user message the fork's request ends with: :func:`fork_instruction` (or *instruction*: a segment fork's,
+    :func:`segment_instruction`), then the episode's part list when there is one. Both follow the cached prefix."""
+    text = fork_instruction() if instruction is None else instruction
     return f"{text}\n\n{parts}" if parts else text
 
 
@@ -336,15 +428,22 @@ def request_doc(
     url: str,
     key: str,
     parts: str | None = None,
+    instruction: str | None = None,
 ) -> tuple[dict | None, str | None]:
-    """The fork's request, from the session's last request as sent, or why the session cannot be forked."""
+    """The fork's request, from the session's last request as sent, or why the session cannot be forked; *instruction*
+    replaces :func:`fork_instruction` (a segment fork's, :func:`segment_instruction`)."""
     from unify.actor.code_act_actor import _session_fork_source
 
     inner = getattr(handle, "_inner", None) or handle
-    source, why = _session_fork_source(inner, getattr(handle, "_actor", None))
+    from .switch import in_episode
+
+    # UNIFY_MEMORY_IN_EPISODE=on: a compaction was a pause (its segment fork covered the cells before it), so the forks
+    # after it continue the compacted conversation; off, a compacted session is not forked, as built
+    kw = {"allow_compressed": True} if in_episode(_settings()) else {}
+    source, why = _session_fork_source(inner, getattr(handle, "_actor", None), **kw)
     if source is None:
         return None, why
-    return request_from_source(eid, source, url, key, parts=parts)
+    return request_from_source(eid, source, url, key, parts=parts, instruction=instruction)
 
 
 def as_sent(message: Any) -> Any:
@@ -373,11 +472,13 @@ def request_from_source(
     token: str,
     *,
     parts: str | None = None,
+    instruction: str | None = None,
 ) -> tuple[dict | None, str | None]:
     """``(request document, None)`` for the fork from a conversation *source* (``client``, ``sent_messages``,
     ``tools`` and optionally ``tool_choice``, as the actor's session reader gives them), or ``(None, why)`` when it
     cannot be forked: the messages as the actor sent them (:func:`as_sent`) and the tool schemas unchanged, then
-    :func:`fork_message` (the instruction, and *parts*, the episode's part list from :func:`part_list`, when given).
+    :func:`fork_message` (the instruction, or *instruction* in its place, and *parts*, the episode's part list from
+    :func:`part_list`, when given).
     *base_url* is the fork lane's URL (``/chat/completions`` is added when it is not already there); *token* goes only
     into the headers, which reach the worker on its stdin."""
     eid = episode_id
@@ -395,7 +496,7 @@ def request_from_source(
         "model": model,
         "messages": [
             *(as_sent(m) for m in source["sent_messages"]),
-            {"role": "user", "content": fork_message(parts)},
+            {"role": "user", "content": fork_message(parts, instruction)},
         ],
         "tools": source["tools"],
     }
@@ -726,11 +827,13 @@ def start(
     progress: Callable[[str], None] = lambda _m: None,
     reservation: Reservation | None = None,
     parts: str | None = None,
+    instruction: str | None = None,
 ) -> Fork | None:
     """Start the episode's fork, or record why not; never raises. Off: returns None and touches nothing. Without a
     *reservation* (made before the episode was recorded), one is made here. *parts* is the recorded episode's part
     list (:func:`part_list`), which follows the instruction; without it the fork names parts by
-    :data:`NUMBERING` alone."""
+    :data:`NUMBERING` alone. *instruction* replaces the episode fork's (a segment fork's, :func:`segment_instruction`;
+    ``UNIFY_MEMORY_IN_EPISODE``)."""
     from . import switch
 
     if not (switch.library_enabled(settings) and switch.library_fork(settings)):
@@ -754,7 +857,7 @@ def start(
             lines = prompt_lines(on_record[1], "fork")
             parts = f"{parts}\n\n{lines}" if parts else lines
         if r is not None:
-            doc, why = request_doc(handle, eid, *r, parts=parts)
+            doc, why = request_doc(handle, eid, *r, parts=parts, instruction=instruction)
         if doc is None:
             _leave(on_record)
             reservation.abandon(f"refused: {why}")

@@ -20,7 +20,10 @@ Harness -> worker::
      "sweep": [root, ...]}                    (audit, no_bytecode: only under UNIFY_MEMORY; sweep: only
                                               the memory agents' interpreters, :meth:`Worker.sweep_modules`)
     {"op": "exec", "id": n, "source": str, "sync": {...}, "scratch": bool,
-     "inventory": true}                       (only when asked)
+     "inventory": true,                       (only when asked)
+     "repin": {"roots": [...], "drop_paths": [...], "paths": [...]}}
+                                              (only under UNIFY_MEMORY_IN_EPISODE, after a re-pin:
+                                              :meth:`Worker.repin_modules`)
     {"op": "reply", "id": k, "value": ..., "coroutine": bool}
     {"op": "reply", "id": k, "error": {"type", "module", "message", "args"}}
     {"op": "interrupt", "id": n}              (a cancel: cell n stops where it is, the namespace is kept)
@@ -1502,6 +1505,63 @@ class Worker:
         self._cell_started_ns = now
         return dropped
 
+    def repin_modules(self, spec: Any) -> list[str]:
+        """Before a cell, when the memory library copy was re-pinned since this worker loaded it (the exec message's
+        ``repin``, ``UNIFY_MEMORY_IN_EPISODE``): drop every module loaded from under ``roots`` (the copy's paths in
+        the box, every pin's), whatever its file's time, with every module of the same top-level package, and the
+        import finders those modules installed; put the new pin's import ``paths`` where the old pin's
+        (``drop_paths``) were; forget the import system's finders for those paths and invalidate its caches. The next
+        import reads the new pin. A lazily bound name whose module was dropped is bound lazily again; a name a cell
+        bound keeps the code it was bound to (the cell's result says so). Standard library only. Returns the dropped
+        names."""
+        spec = spec if isinstance(spec, dict) else {}
+
+        def strings(key: str) -> list:
+            value = spec.get(key)
+            return [v for v in (value if isinstance(value, list) else ()) if isinstance(v, str) and v.startswith("/")]
+
+        prefixes = tuple(r.rstrip("/") for r in strings("roots") if r.rstrip("/"))
+
+        def under(path: Any) -> bool:
+            return isinstance(path, str) and any(path == r or path.startswith(r + "/") for r in prefixes)
+
+        def loaded_from(module: Any) -> bool:
+            if under(getattr(module, "__file__", None)):
+                return True
+            try:
+                return any(under(p) for p in list(getattr(module, "__path__", None) or ()))
+            except Exception:  # noqa: BLE001 - an odd __path__: not the library's
+                return False
+
+        tops = {name.split(".", 1)[0] for name, module in list(sys.modules.items()) if loaded_from(module)}
+        dropped: list[str] = []
+        for name in list(sys.modules):
+            module = sys.modules.get(name)
+            if name.split(".", 1)[0] in tops and (loaded_from(module) or getattr(module, "__file__", None) is None):
+                sys.modules.pop(name, None)
+                dropped.append(name)
+        gone = set(dropped)
+        # a finder the old package installed (its call wrapper) goes with it; the new package installs its own
+        sys.meta_path[:] = [f for f in sys.meta_path if type(f).__module__ not in gone]
+        old, new = strings("drop_paths"), strings("paths")
+        if new:
+            at = next((i for i, p in enumerate(sys.path) if p in old), 0)
+            kept = [p for p in sys.path if p not in old and p not in new]
+            sys.path[:] = kept[:at] + new + kept[at:]
+        for path in list(sys.path_importer_cache):
+            if under(path) or path in old:
+                sys.path_importer_cache.pop(path, None)
+        for name, target in self._lazy.items():
+            value = self.ns.get(name)
+            if (
+                target.split(".", 1)[0] in tops
+                and isinstance(value, types.ModuleType)
+                and getattr(value, "__name__", None) == target
+            ):
+                self.ns[name] = _LazyModule(target, self.ns)
+        importlib.invalidate_caches()
+        return dropped
+
     def _install_audit(self, spec: dict) -> str:
         """Install the memory audit hook (``unify/memory/integration/
         adapters/audit.py``), loaded by its file path so no ``unify`` package
@@ -1912,6 +1972,9 @@ class Worker:
                     self.sweep_modules()
                 except Exception:  # noqa: BLE001 - never the cell's error; the next cell sweeps again
                     pass
+            if "repin" in msg:
+                # UNIFY_MEMORY_IN_EPISODE=on: the library copy was re-pinned since this worker loaded it
+                self.repin_modules(msg.get("repin"))
             self.apply_sync(msg.get("sync") or {})
             self.renew_requests()
             ns = dict(self.ns) if msg.get("scratch") else self.ns
