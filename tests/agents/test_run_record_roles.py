@@ -316,6 +316,66 @@ def test_no_helper_box_bind_reaches_the_run_record(tmp_path, fake_box):
                 ), (kind, path)
 
 
+@pytest.mark.skipif(__import__("shutil").which("bwrap") is None, reason="bubblewrap required")
+def test_a_helper_box_that_tries_to_open_the_run_record_is_refused(tmp_path):
+    """A1 test 10, in a real box: a helper on the run record runs a cell that opens the record, its delivery log and
+    its roster by their host paths and lists the record's folder; every attempt fails inside the box, and the record
+    is unchanged by the cell."""
+    from tests.memory.test_helpers import Script, _ctx, _msg, _tc
+    from unify.memory import helpers, messaging
+
+    home = tmp_path / "home"
+    pr = messaging.PassRecord(
+        root="writer",
+        deadline=time.monotonic() + 600,
+        pass_id="cd" * 8,
+        run_home=str(home),
+    )
+    targets = [rr.record_path(home), rr.deliveries_path(home), rr.roster_path(home)]
+    code = (
+        "import os\n"
+        f"for p in {[str(t) for t in targets]!r}:\n"
+        "    try:\n"
+        "        open(p).read(1)\n"
+        "        print('OPENED', p)\n"
+        "    except OSError as e:\n"
+        "        print('REFUSED', type(e).__name__)\n"
+        "    try:\n"
+        "        open(p, 'a').write('x')\n"
+        "        print('WROTE', p)\n"
+        "    except OSError as e:\n"
+        "        print('REFUSED', type(e).__name__)\n"
+        "try:\n"
+        f"    print('LISTED', os.listdir({str(rr.agents_dir(home))!r}))\n"
+        "except OSError as e:\n"
+        "    print('REFUSED', type(e).__name__)\n"
+    )
+    script = Script(
+        {
+            "t": [
+                _msg(_tc("x", "execute_code", {"code": code})),
+                _msg(_tc("d", "done", {"summary": "s", "claims": []})),
+            ],
+        },
+    )
+    ctx = _ctx(tmp_path, script, pass_record=pr)
+
+    async def go():
+        out = await helpers.handle({"task": "t", "episodes": ["e1"]}, ctx)
+        await helpers.result(ctx, out.split()[1])
+        await messaging.close(pr, "done")
+
+    before = rr.record_path(home).read_bytes() if rr.record_path(home).exists() else b""
+    asyncio.run(go())
+    assert rr.record_path(home).is_file()
+    out = script.outputs["x"]
+    assert out.count("REFUSED") == 2 * len(targets) + 1, out
+    assert "OPENED" not in out and "WROTE" not in out and "LISTED" not in out, out
+    # the cell wrote nothing to the record (the helper's own entries came through its tools, after the cell)
+    assert rr.record_path(home).read_bytes().startswith(before)
+    assert not any(row.get("text") == "x" for row in rr.read_entries(home))
+
+
 def test_the_actors_sandbox_never_shows_the_run_record(
     run_record_on, tmp_path, monkeypatch
 ):
