@@ -91,6 +91,8 @@ SETTLE_S = 5.0
 POLL_S = 2.0
 #: How long :func:`ensure_service` waits for a service it started to say it is up.
 START_WAIT_S = 10.0
+#: How long :func:`ensure_service` waits for a lock whose holder is exiting (no live process holds it) to free.
+EXITING_WAIT_S = 5.0
 
 STATES = ("starting", "running", "idle", "stopping", "stopped")
 StopBy = Literal["drain", "operator", "cap", "lease"]
@@ -692,6 +694,13 @@ def ensure_service(
         lock = folder / LOCK_FILE
         fd = try_lock(lock)
         took_over = False
+        if fd is None and not owns(read_state(home)) and not lock_holders(lock):
+            # the holder is exiting: a killed service's leader shows as a zombie while its other threads still close
+            # the files they share, so the lock frees within moments; a start never reads that as a live service
+            end = time.monotonic() + EXITING_WAIT_S
+            while fd is None and time.monotonic() < end:
+                time.sleep(0.05)
+                fd = try_lock(lock)
         if fd is None:
             doc = read_state(home)
             beat = parse_stamp((doc or {}).get("heartbeat_at"))
