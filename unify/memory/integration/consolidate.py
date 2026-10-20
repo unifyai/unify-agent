@@ -2373,7 +2373,12 @@ async def run_attention_pass(
                 Decimal(recon["booked_usd"]) + w_known + helper_known + Decimal(w_unpriced + helper_unknown) * worst
             )
             try:
-                _settle(stores, pass_id, recon["usd"], recon["unknown"], journal_worst)
+                # the home's run guard settles the writer lane: the journal window, and a killed run's writer calls
+                # the window could not hold (no window start then), each unpriced one at the writer's bound
+                _settle(
+                    stores, pass_id, _usd(Decimal(recon["usd"]) + w_known), int(recon["unknown"]) + w_unpriced,
+                    journal_worst,
+                )  # fmt: skip
             except OSError as exc:
                 _error(stores, f"{pass_id}: ledger: {type(exc).__name__}: {exc}")
         else:

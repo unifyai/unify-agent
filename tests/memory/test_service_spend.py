@@ -543,7 +543,23 @@ def test_a_resumed_pass_whose_first_start_had_no_journal_counts_the_killed_runs_
     _cfg_, report = _attention_pass(tmp_path, monkeypatch, recon=read, resume=True, pending=1, done=done, cap="60")
     assert Decimal(report.settle_usd) == Decimal("0.01") + Decimal("1.50") + W
     assert Decimal(report.usd_known) == Decimal("1.51") and report.unknown_calls == 1
+    # the home's run guard settles the same writer spend (review: it settled only the window before)
+    from tests.memory.integration import test_consolidate as tc
+    from unify.memory.integration import consolidate
+
+    stores = tc._stores(tmp_path)
+    (row,) = [r for r in _ledger_rows(stores) if r.get("phase") == "settle" and r.get("pass_id") == "cd" * 8]
+    assert Decimal(row["usd"]) == Decimal("1.51") and row["unknown_cost_calls"] == 1
+    assert Decimal(row["unknown_usd_each"]) == W
+    assert consolidate.committed_writer_usd(stores) == Decimal("1.51") + W
     # with a window start from the first start, the journal already holds them: not counted again
     _cfg2, again = _attention_pass(tmp_path / "b", monkeypatch, recon=read, resume=True, pending=1, done=done,
                                    cap="60", journal_start=0)  # fmt: skip
     assert Decimal(again.settle_usd) == Decimal("0.01")
+
+
+def _ledger_rows(stores):
+    from unify.memory.integration.consolidate import ledger_path
+
+    path = ledger_path(stores.paths)
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
