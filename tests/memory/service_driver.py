@@ -102,6 +102,20 @@ def main(argv=None) -> int:
     from unify.memory.integration import request
 
     args = ws._parse(argv)
+    ws.release_route_fds()  # as ws.main does, before the fork
+    out = os.environ.get("DRIVER_OUT")
+    if out:
+        from unify.memory.integration import switch
+
+        Path(out).mkdir(parents=True, exist_ok=True)
+        (Path(out) / f"routes-{os.getpid()}.json").write_text(
+            json.dumps(
+                {
+                    "writer": bool(switch._FD_TOKEN is not None and switch._FD_TOKEN.get_secret_value()),
+                    "helper": switch.helper_lane_route()[0] is not None,
+                }
+            )
+        )
     if args.daemon:
         ws.daemonize()
     ws.pass_reservation = lambda settings, effort: Decimal(

@@ -984,3 +984,54 @@ def test_with_the_run_record_off_the_service_runs_its_passes_without_it(
     assert ws.stop_service(svc.home, "operator", "test", grace_s=0.1).verified
     stopped = _step(svc.home, _no_pass, monkeypatch, over={"UNIFY_AGENTS_RUN_RECORD": "off"})
     assert stopped["stop"] == "operator" and not rr.roster_path(svc.home).exists()
+
+
+def _pipe_holders(inodes: set[int]) -> list[tuple[int, int]]:
+    """(pid, inode) for every process of this user holding a descriptor on one of these pipes."""
+    out = []
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            fds = os.listdir(f"/proc/{name}/fd")
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                st = os.stat(f"/proc/{name}/fd/{fd}")
+            except OSError:
+                continue
+            if st.st_ino in inodes and (os.readlink(f"/proc/{name}/fd/{fd}") or "").startswith("pipe:"):
+                out.append((int(name), st.st_ino))
+    return out
+
+
+def test_no_process_of_the_service_holds_a_route_token_pipe(svc, monkeypatch):
+    """Review (C's live audit): the writer's and the helpers' route tokens reach the service on pipes; it reads both
+    and closes them before it forks, so once it is up no process holds either pipe, and it still has both routes."""
+    from pydantic import SecretStr
+
+    from unify.memory.integration import async_pass, switch
+
+    monkeypatch.setattr(async_pass, "_route_token", lambda settings: "writer-route-token-for-a-test")
+    monkeypatch.setattr(
+        switch,
+        "helper_lane_route",
+        lambda: (("http://127.0.0.1:9/helper/v1", SecretStr("helper-route-token-for-a-test")), None),
+    )
+    inodes: set[int] = set()
+    real = ws._token_pipes
+
+    def spy():
+        env, fds = real()
+        inodes.update(os.fstat(fd).st_ino for fd in fds)
+        return env, fds
+
+    monkeypatch.setattr(ws, "_token_pipes", spy)
+    assert _ensure(svc.home).status == "started"
+    doc = _until(lambda: ws.read_state(svc.home) if ws.owns(ws.read_state(svc.home)) else None)
+    assert len(inodes) == 2
+    _until(lambda: not _pipe_holders(inodes), timeout=30)
+    assert _pipe_holders(inodes) == [] and ws.owns(doc)
+    (routes,) = [json.loads(p.read_text()) for p in svc.out.glob("routes-*.json")]
+    assert routes == {"writer": True, "helper": True}

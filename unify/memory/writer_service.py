@@ -1680,6 +1680,36 @@ def _parse(argv: Optional[list[str]]) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def release_route_fds(settings: Any = None) -> None:
+    """Read the writer's and the helpers' route tokens from the descriptors this process was started with, keep them in
+    memory only (:mod:`.integration.switch`), and close those descriptors, before the service forks: no process of the
+    service ever holds a token pipe. Called by :func:`main` before :func:`daemonize`. A descriptor the reads left open
+    (one the settings did not name) is closed too, when it is still the inherited pipe or file it was started with;
+    a descriptor this process opened itself is never inherited (PEP 446) and is left alone."""
+    import stat as _stat
+
+    from .integration import switch
+
+    settings = settings if settings is not None else _settings()
+    numbers: set[int] = set()
+    for name in (switch.WRITER_TOKEN_FD, switch.LIBRARY_HELPER_TOKEN_FD):
+        values = [v for k, v in os.environ.items() if k.upper() == name]
+        values.append(str(getattr(settings, name, "") or ""))
+        for v in values:
+            v = v.strip()
+            if v.isdigit() and int(v) > 2:
+                numbers.add(int(v))
+    switch.settle_writer_route_env(os.environ, settings)
+    switch.settle_helper_route_env(os.environ, settings)
+    for fd in sorted(numbers):
+        try:
+            mode = os.fstat(fd).st_mode
+            if os.get_inheritable(fd) and (_stat.S_ISFIFO(mode) or _stat.S_ISREG(mode)):
+                os.close(fd)
+        except OSError:
+            pass  # read and closed already
+
+
 def daemonize() -> None:
     """The second fork: the first child exits at once; the service is nobody's child, in a session of its own."""
     if os.fork() != 0:
@@ -1689,6 +1719,8 @@ def daemonize() -> None:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = _parse(argv)
+    # the route tokens into memory and their pipes closed before the fork: no process of the service holds one
+    release_route_fds()
     if args.daemon:
         daemonize()
     try:
