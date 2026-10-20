@@ -5,7 +5,8 @@ real service (the double fork, ``setsid``, the inherited lock).
 
 The pass is a fixed number of scripted model turns through :class:`unify.memory.writer_service.ResumableTurn`; its
 conversation is written to ``$DRIVER_OUT/result-<pass>.json`` and each model call to ``$DRIVER_OUT/model-calls.jsonl``.
-``DRIVER_BLOCK_AT=n`` makes turn n hang (once: the first time, marked by ``$DRIVER_OUT/blocked``), so a test can kill
+Unless stopped, the pass is delivered its entries' messages and decides them ``nothing_to_keep``, so each entry is
+handed once. ``DRIVER_BLOCK_AT=n`` makes turn n hang (once: the first time, marked by ``$DRIVER_OUT/blocked``), so a test can kill
 the service mid-pass; ``DRIVER_TURN_SLEEP`` makes each turn take that long unless the service is asked to stop.
 No model, network or key is involved.
 """
@@ -69,6 +70,19 @@ async def runner(
         messages.append(msg)
         messages.append({"role": "user", "content": f"next {len(messages)}"})
     (out / f"result-{pass_id}.json").write_text(json.dumps(messages))
+    stopped = stop is not None and stop.is_set()
+    seqs = [e.refs.record_seq for e in handed if e.refs.record_seq is not None]
+    if not stopped and handed:
+        # the writer was delivered its entries' messages and decides them, as a pass that read them does
+        attention.Ledger(home).decide(
+            pass_id,
+            [e.entry for e in handed],
+            "nothing_to_keep",
+            reason="the scripted pass keeps nothing",
+            reads=attention.PassReads(),
+            delivered=seqs,
+            decisions_path=Path(folder) / "decisions.jsonl",
+        )
     return AttentionPassReport(
         pass_id,
         [e.entry for e in handed],
@@ -77,6 +91,7 @@ async def runner(
         turns=turn.n,
         replayed_turns=turn.replayed,
         reads=attention.PassReads(),
+        delivered=[] if stopped else seqs,
         usd_known="0.005",
         settle_usd="0.005",
     )

@@ -290,8 +290,9 @@ def test_with_the_run_record_on_the_fork_starts_through_its_relay_with_the_commo
     monkeypatch.setattr(
         fork,
         "request_doc",
-        lambda handle, e, url, key, parts=None: fork.request_from_source(
-            e, source, url, key, parts=parts
+        # extra keywords (a segment fork's instruction) pass through as the real request_doc passes them
+        lambda handle, e, url, key, parts=None, **kw: fork.request_from_source(
+            e, source, url, key, parts=parts, **kw
         ),
     )
     started = []
@@ -382,8 +383,9 @@ def test_a_segment_fork_is_named_for_its_segment_and_its_calls_carry_episode_and
     monkeypatch.setattr(
         fork,
         "request_doc",
-        lambda handle, e, url, key, parts=None: fork.request_from_source(
-            e, source, url, key, parts=parts
+        # extra keywords (a segment fork's instruction) pass through as the real request_doc passes them
+        lambda handle, e, url, key, parts=None, **kw: fork.request_from_source(
+            e, source, url, key, parts=parts, **kw
         ),
     )
     started = []

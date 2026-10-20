@@ -654,9 +654,11 @@ def test_resumable_turns_replay_what_was_done_and_count_a_lost_turn_once(tmp_pat
 class Recording:
     """A runner that records each pass's entries and returns its report (*reasons* as the pass's outcome's)."""
 
-    def __init__(self, reasons=()):
+    def __init__(self, reasons=(), decide=False):
         self.passes: list[tuple[str, list[str], bool]] = []
         self.reasons = list(reasons)
+        #: deliver and decide every handed entry (a pass that reads what it is given); else read nothing
+        self.decide = decide
 
     async def __call__(
         self,
@@ -674,6 +676,17 @@ class Recording:
         from unify.memory.integration.consolidate import AttentionPassReport
 
         self.passes.append((pass_id, [e.entry for e in handed], resume))
+        seqs = [e.refs.record_seq for e in handed] if self.decide else []
+        if self.decide:
+            attention.Ledger(home).decide(
+                pass_id,
+                [e.entry for e in handed],
+                "nothing_to_keep",
+                reason="the recording pass keeps nothing",
+                reads=attention.PassReads(),
+                delivered=seqs,
+                decisions_path=Path(folder) / "decisions.jsonl",
+            )
         return AttentionPassReport(
             pass_id,
             [e.entry for e in handed],
@@ -682,6 +695,7 @@ class Recording:
                 reasons=list(self.reasons), items_merged=[], commit=None, pool=None
             ),
             reads=attention.PassReads(),
+            delivered=seqs,
             usd_known="0.001",
             settle_usd="0.001",
         )
@@ -863,7 +877,7 @@ def test_the_service_loop_and_a_step_run_the_same_turn(svc, monkeypatch):
 
     monkeypatch.setattr(ws, "_iteration", counted)
     _open_entry(svc.home)
-    runner = Recording()
+    runner = Recording(decide=True)
     assert _in_process(svc.home, runner, monkeypatch) == "idle-exit"
     looped = len(seen)
     assert looped >= 2 and len(runner.passes) == 1
