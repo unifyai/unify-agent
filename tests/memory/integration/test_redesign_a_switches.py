@@ -33,12 +33,14 @@ def test_the_run_record_needs_the_tools_in_code():
     assert "UNIFY_TOOLS_IN_CODE=on" in S.profile_refusal(_s(UNIFY_AGENTS_RUN_RECORD="on"))
 
 
-def test_the_service_needs_the_library_the_ledger_and_its_cap_and_not_the_record():
+def test_the_service_needs_the_library_the_ledger_its_cap_and_the_lease_and_not_the_record(monkeypatch):
+    monkeypatch.delenv(S.HOST_LEASE_END, raising=False)
     got = S.redesign_a_refusal(_s(UNIFY_MEMORY_WRITER_SERVICE="on"))
     for name in (
         "UNIFY_MEMORY_LIBRARY=on",
         "UNIFY_MEMORY_ATTENTION_LEDGER=on",
         "UNIFY_MEMORY_WRITER_SERVICE_CAP_USD",
+        "UNIFY_HOST_LEASE_END",
     ):
         assert name in got, name
     full = _s(
@@ -48,8 +50,13 @@ def test_the_service_needs_the_library_the_ledger_and_its_cap_and_not_the_record
         UNIFY_AGENTS_RUN_RECORD="on",
         UNIFY_TOOLS_IN_CODE="on",
         UNIFY_MEMORY_WRITER_SERVICE_CAP_USD="12.5",
+        UNIFY_HOST_LEASE_END="2026-10-21T06:00:00Z",
     )
     assert S.redesign_a_refusal(full) is None
+    # fail closed: no lease (or one that does not parse) refuses the service by name
+    for lease in ("", "tomorrow"):
+        got = S.redesign_a_refusal(_s(**{**vars(full), "UNIFY_HOST_LEASE_END": lease}))
+        assert got == "UNIFY_MEMORY_WRITER_SERVICE=on needs UNIFY_HOST_LEASE_END; nothing runs", got
     assert S.writer_service_cap_usd(full) == Decimal("12.5")
     # the mesh-off arm: the service runs without the run record (its passes keep their own records)
     mesh_off = _s(**{**vars(full), "UNIFY_AGENTS_RUN_RECORD": "off"})

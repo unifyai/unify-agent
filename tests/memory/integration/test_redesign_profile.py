@@ -16,6 +16,7 @@ _LIBRARY = dict(
     UNIFY_MEMORY_LIBRARY_POOL="on",
     UNIFY_TOOLS_IN_CODE="on",  # the run record, the writer's tools and tools.checkpoint are called from code
     UNIFY_MEMORY_WRITER_SERVICE_CAP_USD="10",  # the writer service's own cap, which the kit sets
+    UNIFY_HOST_LEASE_END="2026-10-21T06:00:00Z",  # and the host's lease end, also the kit's
     UNIFY_REQUEST_METADATA_HEADERS="on",  # metering's ids travel as request metadata headers
 )
 

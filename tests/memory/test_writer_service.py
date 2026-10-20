@@ -42,6 +42,7 @@ SWITCHES = {
     "UNIFY_MEMORY_WRITER_SERVICE": "on",
     "UNIFY_MEMORY_WRITER_SERVICE_CAP_USD": "10",
     "UNIFY_MEMORY_LIBRARY_PASS_WALL_S": "60",
+    "UNIFY_HOST_LEASE_END": "2099-01-01T00:00:00Z",  # required with the service; far off unless a test sets its own
 }
 
 

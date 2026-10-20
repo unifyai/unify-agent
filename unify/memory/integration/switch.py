@@ -1986,7 +1986,7 @@ WRITER_SERVICE_CAP = "UNIFY_MEMORY_WRITER_SERVICE_CAP_USD"
 #: (ids only) and writes the per-pass, per-entry and per-item views (:mod:`unify.memory.metering`); ``off``: as built.
 METERING = "UNIFY_MEMORY_METERING"
 #: When the host's lease ends (UTC ISO-8601, ``…Z``), set by the kit: the service never runs past the lease less 30
-#: minutes. Empty: the service's own 36 h lifetime alone.
+#: minutes. Required with the service on (refused by name when missing: no service runs without it).
 HOST_LEASE_END = "UNIFY_HOST_LEASE_END"
 
 
@@ -2075,8 +2075,10 @@ def redesign_a_refusal(settings: Any) -> str | None:
 
     * the run record needs ``UNIFY_TOOLS_IN_CODE=on``: every agent reaches the record through its in-code tools, and no
       box binds the record's folder;
-    * the service needs the library mode, the attention ledger (it hands the ledger's entries) and its own cap; with the
-      run record on it holds the writer's place there, with it off (the mesh-off arm) each pass keeps its own record;
+    * the service needs the library mode, the attention ledger (it hands the ledger's entries), its own cap and the
+      host's lease end (``UNIFY_HOST_LEASE_END``: fail closed, a service never runs without knowing when its host goes
+      away); with the run record on it holds the writer's place there, with it off (the mesh-off arm) each pass keeps
+      its own record;
     * metering needs ``UNIFY_REQUEST_METADATA_HEADERS=on`` (its ids travel as request metadata headers).
     """
     tools_in_code = _stripped(getattr(settings, "UNIFY_TOOLS_IN_CODE", "") or "").lower() == "on"
@@ -2094,6 +2096,12 @@ def redesign_a_refusal(settings: Any) -> str | None:
         ]
         if writer_service_cap_usd(settings) is None:
             missing.append(WRITER_SERVICE_CAP)
+        try:
+            lease = host_lease_end(settings)
+        except ValueError:
+            lease = None
+        if lease is None:
+            missing.append(HOST_LEASE_END)
         if missing:
             return f"{WRITER_SERVICE}=on needs {', '.join(missing)}; nothing runs"
     if metering_on(settings):
