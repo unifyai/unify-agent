@@ -52,6 +52,42 @@ async def _children_in_flight(out: Path) -> None:
     await asyncio.sleep(3600)
 
 
+async def _http_call(out: Path, pass_id: str, url: str) -> None:
+    """``DRIVER_HTTP``: one model call of the pass, a POST to a stand-in endpoint that answers slowly; its outcome to
+    ``$DRIVER_OUT/http-<pass>.json``."""
+    import urllib.request
+
+    def call() -> dict:
+        req = urllib.request.Request(url, data=b'{"messages": []}', headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return {"ok": True, "status": resp.status, "body": resp.read().decode()}
+        except Exception as exc:  # noqa: BLE001 - recorded
+            return {"ok": False, "error": type(exc).__name__}
+
+    got = await asyncio.get_running_loop().run_in_executor(None, call)
+    (out / f"http-{pass_id}.json").write_text(json.dumps(got))
+
+
+def _box_read(out: Path, paths: list[str]) -> None:
+    """``DRIVER_BOX_READ``: a cell in the pass's own confined box tries to open each path (the run record's files) for
+    reading and appending; what it saw to ``$DRIVER_OUT/box-read.txt``."""
+    from unify.memory.sandbox_run import run_confined
+
+    code = (
+        "import sys\n"
+        "for p in sys.argv[1:]:\n"
+        "    for mode in ('r', 'a'):\n"
+        "        try:\n"
+        "            open(p, mode).close()\n"
+        "            print('OPENED', mode, p)\n"
+        "        except OSError as e:\n"
+        "            print('REFUSED', mode, type(e).__name__)\n"
+    )
+    res = run_confined(["/usr/bin/python3", "-I", "-c", code, *paths], timeout_s=60)
+    (out / "box-read.txt").write_text(res.stdout)
+
+
 async def runner(
     home, pass_id, handed, *, resume, folder, journal_start, effort, settings, stop=None
 ):
@@ -63,6 +99,10 @@ async def runner(
     out.mkdir(parents=True, exist_ok=True)
     if os.environ.get("DRIVER_CHILDREN"):
         await _children_in_flight(out)
+    if os.environ.get("DRIVER_HTTP"):
+        await _http_call(out, pass_id, os.environ["DRIVER_HTTP"])
+    if os.environ.get("DRIVER_BOX_READ"):
+        _box_read(out, os.environ["DRIVER_BOX_READ"].split(":"))
     block_at = int(os.environ.get("DRIVER_BLOCK_AT", "-1"))
     turn_sleep = float(os.environ.get("DRIVER_TURN_SLEEP", "0"))
 
@@ -147,8 +187,19 @@ def main(argv=None) -> int:
                 }
             )
         )
+    if os.environ.get("DRIVER_OUT") and os.environ.get("DRIVER_KEYS"):
+        # what the model client holds: any provider key it read would be a non-empty secret setting
+        import unillm
+        from pydantic import SecretStr
+
+        held = [n for n in type(unillm.SETTINGS).model_fields
+                if isinstance(getattr(unillm.SETTINGS, n, None), SecretStr)
+                and getattr(unillm.SETTINGS, n).get_secret_value()]  # fmt: skip
+        (Path(os.environ["DRIVER_OUT"]) / "keys.json").write_text(json.dumps({"held": held}))
     if args.daemon:
         ws.daemonize()
+    elif args.foreground:
+        ws._lead_own_group()
     ws.pass_reservation = lambda settings, effort: Decimal(
         os.environ.get("DRIVER_RESERVE", "0.01")
     )

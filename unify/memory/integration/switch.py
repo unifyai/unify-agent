@@ -2025,6 +2025,11 @@ METERING = "UNIFY_MEMORY_METERING"
 #: When the host's lease ends (UTC ISO-8601, ``…Z``), set by the kit: the service never runs past the lease less 30
 #: minutes. Required with the service on (refused by name when missing: no service runs without it).
 HOST_LEASE_END = "UNIFY_HOST_LEASE_END"
+#: Who starts the writer service: empty or ``harness`` (a request starts it, :func:`..writer_service.ensure_service`)
+#: or ``runner`` (the runner starts one per cell in a sandbox of its own that outlives every session, and stops it at
+#: the cell's end; a request never starts it, save as the fallback after that service crashed).
+WRITER_SERVICE_OWNER = "UNIFY_MEMORY_WRITER_SERVICE_OWNER"
+WRITER_SERVICE_OWNERS = ("", "harness", "runner")
 
 
 def _redesign_on(name: str, settings: Any) -> bool:
@@ -2048,6 +2053,19 @@ def parse_metering(v: Any) -> str:
     """``UNIFY_MEMORY_METERING``: empty, ``off`` or ``on``."""
     value = _stripped(v).lower()
     return value if not value else _on_off(METERING, value)
+
+
+def parse_writer_service_owner(v: Any) -> str:
+    """``UNIFY_MEMORY_WRITER_SERVICE_OWNER``: empty, ``harness`` or ``runner``."""
+    value = _stripped(v).lower()
+    if value not in WRITER_SERVICE_OWNERS:
+        raise ValueError(f"{WRITER_SERVICE_OWNER} must be empty, 'harness' or 'runner', not {v!r}"[:200])
+    return value
+
+
+def writer_service_owner(settings: Any) -> str:
+    """``harness`` (the default: a request starts the service) or ``runner``."""
+    return parse_writer_service_owner(getattr(settings, WRITER_SERVICE_OWNER, "") or "") or "harness"
 
 
 def parse_writer_service_cap(v: Any) -> str:
@@ -2186,6 +2204,7 @@ PARSERS.update(
         WRITER_SERVICE_CAP: parse_writer_service_cap,
         METERING: parse_metering,
         HOST_LEASE_END: parse_host_lease_end,
+        WRITER_SERVICE_OWNER: parse_writer_service_owner,
     },
 )
 REDESIGN_PART_REFUSALS.append(redesign_a_refusal)

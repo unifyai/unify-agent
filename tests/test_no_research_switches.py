@@ -84,6 +84,8 @@ CONFIGURATION = frozenset(
         "UNIFY_PROFILE",
         # Deployment policy: when the host's lease ends; the writer service never runs past it less 30 minutes.
         "UNIFY_HOST_LEASE_END",
+        # Deployment policy: who starts the writer service (a request, or the runner for the whole cell).
+        "UNIFY_MEMORY_WRITER_SERVICE_OWNER",
         # Retired: only their off values are accepted, so an old configuration fails loudly.
         "UNIFY_MEMORY_LIBRARY_ANALYSTS",
         "UNIFY_MEMORY_LIBRARY_COVERAGE",

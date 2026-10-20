@@ -727,6 +727,9 @@ class ProductionSettings(BaseSettings):
     UNIFY_MEMORY_METERING: str = ""
     # When the host's lease ends (UTC, ``…Z``), set by the kit: the writer service stops 30 minutes before it.
     UNIFY_HOST_LEASE_END: str = ""
+    # Who starts the writer service: empty/``harness`` (a request) or ``runner`` (one per cell, in the runner's own
+    # sandbox that outlives every session; a request never starts it but as the fallback after it crashed).
+    UNIFY_MEMORY_WRITER_SERVICE_OWNER: str = ""
 
     # ─────────────────────────────────────────────────────────────────────────
     # Terminal Logging
@@ -901,6 +904,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_WRITER_SERVICE_CAP_USD",
         "UNIFY_MEMORY_METERING",
         "UNIFY_HOST_LEASE_END",
+        "UNIFY_MEMORY_WRITER_SERVICE_OWNER",
         mode="before",
     )
     @classmethod

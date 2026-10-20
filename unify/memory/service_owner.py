@@ -1,0 +1,252 @@
+"""The runner's side of a runner-owned writer service (``UNIFY_MEMORY_WRITER_SERVICE_OWNER=runner``): the
+environment to start it with, and its stop at the cell's end, before the key proxy.
+
+The runner starts one service per cell, ``<venv python> -m unify.memory.writer_service --home H --foreground``, as the
+main process of a sandbox it owns that outlives every session (the controller's sandbox ends with each session and would
+take a service inside it down mid-call). It keeps the ``Popen`` of that sandbox, and at the cell's end calls
+:func:`stop_owned` with it: the stop marker, the in-flight pass's deadline plus a grace, then SIGTERM, then SIGKILL, and
+the stop is verified only when the process has exited and the service's lock is free. Only then does the runner stop
+the key proxy.
+
+Standard library only, and no import of the ``unify`` package: the runner may load this file by path (``python -I
+<this file> stop --home H --pid P``, or ``runpy``) without the settings, the logger or the model client, which read
+``.env`` files and fetch keys.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+import re
+import signal
+import sys
+import tempfile
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Mapping, Optional
+
+SERVICE_DIR = Path("memory-state") / "memory-service"
+LOCK_FILE = "service.lock"
+STATE_FILE = "service.json"
+STOP_FILE = "service.stop"
+#: The runner-owned service's own folder: its empty HOME and its current folder (no ``.env`` there).
+OWNED_DIR = "owned"
+STOP_BY = ("drain", "operator", "cap", "lease")
+#: After the in-flight pass's deadline, this long before SIGTERM; then this long before SIGKILL; then this long for
+#: the process to be gone.
+STOP_GRACE_S = 30.0
+TERM_S = 10.0
+SETTLE_S = 5.0
+#: Names the service's environment takes from the runner's: the locale and time zone, and the build's settings
+#: (``UNIFY_*``, ``UNILLM_*``) that are not secret by name. A route token reaches it only on an inherited pipe (its
+#: descriptor number, ``*_TOKEN_FD``, is a setting); a base URL is a route to the key proxy, never a key.
+BASICS = ("LANG", "LC_ALL", "LC_CTYPE", "TZ")
+SECRET_NAME = re.compile(r"KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|COOKIE|AUTH|TOKEN", re.IGNORECASE)
+
+
+def service_dir(home: Path | str) -> Path:
+    return Path(home) / SERVICE_DIR
+
+
+def _stamp(at: datetime) -> str:
+    return at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def _parse(text: Any) -> Optional[datetime]:
+    if not isinstance(text, str) or not text.endswith("Z"):
+        return None
+    try:
+        return datetime.strptime(text[:-1], "%Y-%m-%dT%H:%M:%S.%f").replace(tzinfo=timezone.utc)
+    except ValueError:
+        try:
+            return datetime.strptime(text[:-1], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+
+
+def _allowed(name: str) -> bool:
+    if name.upper().endswith("_TOKEN_FD"):
+        return True  # a descriptor number, never the token
+    return not SECRET_NAME.search(name)
+
+
+def owned_env(home: Path | str, base: Optional[Mapping[str, str]] = None) -> dict[str, str]:
+    """The environment to start the runner-owned service with: a fixed ``PATH``, a fresh empty ``HOME`` under the
+    service's own folder, :data:`BASICS`, and the ``UNIFY_*`` / ``UNILLM_*`` settings of *base* (default this process's)
+    whose names are not secret (``*_TOKEN_FD`` numbers kept: the tokens themselves come on their pipes). It holds no
+    key, so the model client reads none, and its HOME holds no ``.env`` or cloud automation config to read one from.
+    Creates the folder; :func:`owned_cwd` is the folder to start it in."""
+    base = os.environ if base is None else base
+    home_dir = owned_cwd(home) / "home"
+    home_dir.mkdir(parents=True, exist_ok=True)
+    env = {k: base[k] for k in BASICS if base.get(k)}
+    for name, value in base.items():
+        if name.startswith(("UNIFY_", "UNILLM_")) and _allowed(name):
+            env[name] = value
+    env.update(PATH="/usr/bin:/bin", HOME=str(home_dir))
+    return env
+
+
+def owned_cwd(home: Path | str) -> Path:
+    folder = service_dir(home) / OWNED_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def write_stop(home: Path | str, by: str, reason: str) -> None:
+    """The stop marker: the service stops at it once its pass in flight has ended, and no request starts it again."""
+    if by not in STOP_BY:
+        raise ValueError(f"by is one of {', '.join(STOP_BY)}, not {by!r}")
+    path = service_dir(home) / STOP_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc = {"v": 1, "by": by, "at": _stamp(datetime.now(timezone.utc)), "reason": str(reason)[:500]}
+    fd, tmp = tempfile.mkstemp(prefix=".service.stop.", dir=path.parent)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh)
+    os.replace(tmp, path)
+
+
+def lock_free(home: Path | str) -> bool:
+    """Whether no process holds the service's lock (the service holds it its whole life; a flock is seen across pid
+    namespaces). A missing lock file is free."""
+    path = service_dir(home) / LOCK_FILE
+    try:
+        fd = os.open(path, os.O_RDWR)
+    except FileNotFoundError:
+        return True
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    finally:
+        os.close(fd)  # closing drops a lock taken just now
+    return True
+
+
+def _state(home: Path | str) -> Optional[dict]:
+    try:
+        doc = json.loads((service_dir(home) / STATE_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+@dataclass(frozen=True)
+class Stopped:
+    """How :func:`stop_owned` ended: ``verified`` (the process exited and the lock is free), ``how`` (``clean``: it
+    stopped at the marker; ``term``; ``kill``), the pid still running if not verified."""
+
+    verified: bool
+    how: str
+    leftover: tuple[int, ...] = ()
+
+
+class _Pid:
+    """A process by pid and ``/proc`` start time (for a runner that does not hold its ``Popen``)."""
+
+    def __init__(self, pid: int):
+        self.pid = int(pid)
+        self._start = self._read_start()
+
+    def _read_start(self) -> Optional[str]:
+        try:
+            rest = Path(f"/proc/{self.pid}/stat").read_text().rsplit(")", 1)[-1].split()
+        except OSError:
+            return None
+        return None if len(rest) < 20 or rest[0] in ("Z", "X") else rest[19]
+
+    def poll(self) -> Optional[int]:
+        return None if self._start is not None and self._read_start() == self._start else 0
+
+    def terminate(self) -> None:
+        if self.poll() is None:
+            os.kill(self.pid, signal.SIGTERM)
+
+    def kill(self) -> None:
+        if self.poll() is None:
+            os.kill(self.pid, signal.SIGKILL)
+
+
+def stop_owned(
+    home: Path | str,
+    proc: Any,
+    *,
+    by: str = "drain",
+    reason: str = "the cell ended",
+    grace_s: float = STOP_GRACE_S,
+    term_s: float = TERM_S,
+    settle_s: float = SETTLE_S,
+    sleep: Callable[[float], Any] = time.sleep,
+) -> Stopped:
+    """Stop the runner-owned service whose sandbox *proc* is (a ``Popen``, or a pid): the stop marker; wait for the
+    process to exit until the in-flight pass's deadline (``service.json`` ``pass_deadline``) plus *grace_s*; then
+    SIGTERM, *term_s*; then SIGKILL, *settle_s*. Verified only when the process has exited and the service's lock is
+    free. The runner stops the key proxy only after this returns verified."""
+    if isinstance(proc, int):
+        proc = _Pid(proc)
+    write_stop(home, by, reason)
+
+    def gone() -> bool:
+        return proc.poll() is not None
+
+    def until(limit: float) -> bool:
+        while not gone() and time.monotonic() < limit:
+            sleep(0.1)
+        return gone()
+
+    def pass_end() -> Optional[datetime]:
+        return _parse((_state(home) or {}).get("pass_deadline"))
+
+    end = pass_end()
+    limit = time.monotonic() + max(0.0, (end - datetime.now(timezone.utc)).total_seconds() if end else 0.0) + grace_s
+    while not gone() and time.monotonic() < limit:
+        sleep(0.1)
+        new_end = pass_end()
+        if new_end is not None and new_end != end:  # a pass that started before the marker was seen
+            end = new_end
+            limit = time.monotonic() + max(0.0, (new_end - datetime.now(timezone.utc)).total_seconds()) + grace_s
+    how = "clean"
+    if not gone():
+        how = "term"
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            pass
+        until(time.monotonic() + term_s)
+    if not gone():
+        how = "kill"
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        until(time.monotonic() + settle_s)
+    exited = gone()
+    free = lock_free(home)
+    if exited and not free:  # its last descriptor on the lock closes with it: give it a moment
+        limit = time.monotonic() + settle_s
+        while not free and time.monotonic() < limit:
+            sleep(0.05)
+            free = lock_free(home)
+    return Stopped(exited and free, how, () if exited else (int(getattr(proc, "pid", 0) or 0),))
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    p = argparse.ArgumentParser(prog="service_owner")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    stop = sub.add_parser("stop", help="stop the runner-owned service (by its sandbox's pid) and verify")
+    stop.add_argument("--home", required=True)
+    stop.add_argument("--pid", type=int, required=True)
+    stop.add_argument("--by", default="drain", choices=STOP_BY)
+    stop.add_argument("--reason", default="the cell ended")
+    args = p.parse_args(argv)
+    got = stop_owned(args.home, args.pid, by=args.by, reason=args.reason)
+    print(json.dumps({"verified": got.verified, "how": got.how, "leftover": list(got.leftover)}))
+    return 0 if got.verified else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

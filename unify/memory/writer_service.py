@@ -867,6 +867,10 @@ def ensure_service(
         folder = service_dir(home)
         folder.mkdir(parents=True, exist_ok=True)
         lock = folder / LOCK_FILE
+        from .integration.switch import writer_service_owner
+
+        if writer_service_owner(settings) == "runner":
+            return _runner_owned(home, lock, popen=popen, wait_s=wait_s, argv_prefix=argv_prefix)
         fd = try_lock(lock)
         took_over = False
         if fd is None and not owns(read_state(home)) and not lock_holders(lock):
@@ -910,6 +914,33 @@ def ensure_service(
         )
     except Exception as exc:  # noqa: BLE001 - a request never fails on the service
         return ServiceState("error", detail=type(exc).__name__)
+
+
+def _runner_owned(
+    home: Path, lock: Path, *, popen: Callable[..., Any], wait_s: float, argv_prefix: Optional[list[str]]
+) -> ServiceState:
+    """``UNIFY_MEMORY_WRITER_SERVICE_OWNER=runner``: the runner starts the cell's one service in a sandbox of its own
+    that outlives every session, so a request never starts it. Its lock held (by a process in any pid namespace: a
+    flock is shared) is the service running. No service yet: ``absent`` (nothing started; entries wait in the ledger).
+    The crash fallback alone starts one here: ``service.json`` says a runner-owned service ran and it ended without
+    stopping (its lock free, its state not ``stopped``), so this request starts one as a harness-owned start would,
+    and writes a ``takeover`` row marked ``fallback``."""
+    fd = try_lock(lock)
+    if fd is None:
+        return ServiceState("running", pid=(read_state(home) or {}).get("pid"))
+    os.close(fd)
+    doc = read_state(home)
+    if not (isinstance(doc, dict) and doc.get("owner") == "runner" and doc.get("state") not in ("stopped", None)):
+        return ServiceState("absent", detail="the runner starts the writer service")
+    event(
+        home,
+        "takeover",
+        previous_pid=doc.get("pid"),
+        by="ensure_service",
+        reason="the runner's service ended without stopping",
+        fallback=True,
+    )
+    return _spawn(home, popen=popen, wait_s=wait_s, argv_prefix=argv_prefix, took_over=True)
 
 
 def _spawn(
@@ -1015,6 +1046,18 @@ def stop_service(
         # the service wrote its last state and nothing holds the home: nothing is left to stop (a step, or a test,
         # that ran the loop in its own process is never signalled)
         return Terminated(True, "clean")
+    if doc.get("owner") == "runner" and not owns(doc):
+        # the runner's service, in a sandbox of the runner's (another pid namespace: nothing here can signal it): it
+        # stops at the marker; verified once its lock is free (it holds the lock until it exits). Its runner stops
+        # and verifies the sandbox itself (service_owner.stop_owned).
+        from .service_owner import lock_free
+
+        end = parse_stamp(doc.get("pass_deadline"))
+        limit = time.monotonic() + max(0.0, (end - _now()).total_seconds() if end else 0.0) + grace_s
+        while not lock_free(home) and time.monotonic() < limit:
+            sleep(0.1)
+        free = lock_free(home)
+        return Terminated(free, "clean" if free else "external")
     pgid = doc.get("pgid")
 
     def left() -> list[int]:
@@ -1089,6 +1132,9 @@ def _note_writer(home: Path, note: str) -> None:
         pass
 
 
+from .service_owner import owned_cwd, owned_env, stop_owned  # noqa: E402,F401 - the runner's side, stdlib only
+
+
 def stopping_marker(home: Path | str) -> Optional[dict]:
     try:
         doc = json.loads((service_dir(home) / STOP_FILE).read_text(encoding="utf-8"))
@@ -1152,6 +1198,7 @@ class Service:
             "started_at": stamp(self.started),
             "deadline": stamp(end),
             "state": self.state,
+            "owner": _owner(self.settings),
             "pass_id": self.pass_id,
             "pass_deadline": stamp(self.pass_deadline) if self.pass_deadline else None,
             "cap_usd": _format(self.cap) if self.cap is not None else None,
@@ -1198,6 +1245,15 @@ def _end_writer_row(record: Any, why: str) -> None:
         record.set_state(WRITER, "ended", note=f"service {why}")
     except Exception:  # noqa: BLE001 - the stop is still recorded
         pass
+
+
+def _owner(settings: Any) -> str:
+    from .integration.switch import writer_service_owner
+
+    try:
+        return writer_service_owner(settings)
+    except ValueError:
+        return "harness"
 
 
 def _members() -> list[list]:
@@ -1709,6 +1765,10 @@ async def _serve(
     if refused is not None:
         event(home, "refused", reason=refused)
         return "refused"
+    if _owner(settings) == "runner":
+        # the runner's service lives until its stop marker, its lifetime or the lease: no idle exit (the runner
+        # started it for the whole cell; a request never starts it again)
+        idle_exit_s = float("inf")
     previous = read_state(home)
     service = Service(home, settings, lock_fd, started=clock())
     service.cap = writer_service_cap_usd(settings)
@@ -1811,6 +1871,11 @@ def _parse(argv: Optional[list[str]]) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="writer_service")
     p.add_argument("--home", required=True)
     p.add_argument("--daemon", action="store_true")
+    p.add_argument(
+        "--foreground",
+        action="store_true",
+        help="run in this process (the runner's own sandbox starts it so: UNIFY_MEMORY_WRITER_SERVICE_OWNER=runner)",
+    )
     return p.parse_args(argv)
 
 
@@ -1844,6 +1909,15 @@ def release_route_fds(settings: Any = None) -> None:
             pass  # read and closed already
 
 
+def _lead_own_group() -> None:
+    """In the foreground (the runner's sandbox started it), lead a process group of its own, so its own children
+    are told apart from the runner's (a session leader already leads one)."""
+    try:
+        os.setsid()
+    except OSError:
+        pass
+
+
 def daemonize() -> None:
     """The second fork: the first child exits at once; the service is nobody's child, in a session of its own."""
     if os.fork() != 0:
@@ -1857,6 +1931,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     release_route_fds()
     if args.daemon:
         daemonize()
+    elif args.foreground:
+        _lead_own_group()
     try:
         asyncio.run(service_main(args.home))
         return 0
