@@ -2017,8 +2017,8 @@ _CALL_MAY_BE_IN_FLIGHT = frozenset({"deadline", "writer_error", "route_not_in_ef
 
 
 def _helper_spend(writer: Any, helper_turns: list) -> tuple[Decimal, int]:
-    """(known USD, unpriced calls) of a pass's helpers: each helper's own record of its priced and unpriced calls,
-    plus every helper turn a killed service lost (made again on resume; the lost call was billed and is unpriced)."""
+    """(known USD, unpriced calls) of this run of a pass's helpers: each helper's own record of its priced and
+    unpriced calls (a killed run's, its lost calls included, come from its turn files: turns_cost)."""
     known, unknown = Decimal(0), 0
     for row in getattr(writer, "_helper_rows", None) or ():
         try:
@@ -2026,7 +2026,6 @@ def _helper_spend(writer: Any, helper_turns: list) -> tuple[Decimal, int]:
         except (InvalidOperation, ValueError):
             unknown += 1
         unknown += int(row.get("unknown_cost_calls") or 0)
-    unknown += sum(len(h.killed) for h in helper_turns)
     return known, unknown
 
 
@@ -2156,7 +2155,7 @@ async def run_attention_pass(
     if library_fork(settings):
         capture_settled_forks(stores, settings)
     from ..call_bounds import NoBound
-    from ..writer_service import lost_calls, pass_call_worst_case, pass_room
+    from ..writer_service import pass_call_worst_case, pass_room, turns_cost
 
     try:
         # one call's worst case for this pass's models (the pinned catalogue's bound): every unpriced, lost or
@@ -2166,11 +2165,15 @@ async def run_attention_pass(
         return AttentionPassReport(
             pass_id, [e.entry for e in handed], "error", notes=[str(exc)[:300]], reads=attention.PassReads()
         )
+    # what a killed run of this pass already spent, per lane, as its turn files stand before this run writes any (a
+    # run that diverges from it overwrites them): its priced calls, and its unpriced and lost ones at the worst case.
+    # It comes off the room, and is settled with this run's figures; its done calls replay at no cost
+    # (ResumableTurn), so nothing is counted twice
+    prior = turns_cost(folder) if resume else {"writer": (Decimal(0), 0), "helpers": (Decimal(0), 0)}
+    prior_usd = sum((k + Decimal(n) * worst for k, n in prior.values()), Decimal(0))
     room = pass_room(home, pass_id, settings)
-    if room is not None and resume:
-        # what a killed run of this pass already spent: its done calls come back from their files with their USD
-        # (counted again as they replay); each call it lost (billed, never priced) at the worst case
-        room = max(Decimal(0), room - Decimal(lost_calls(folder)) * worst)
+    if room is not None:
+        room = max(Decimal(0), room - prior_usd)
     wall_s = float(library_pass_wall_s(settings))
     supervise = Supervisor(
         wall_s,
@@ -2332,6 +2335,8 @@ async def run_attention_pass(
         # the helpers' lane: its calls are not in the writer lane's journal; each helper's priced calls, its unpriced
         # ones, and its turns a killed service lost (billed, never priced here), at one call's worst case
         helper_known, helper_unknown = _helper_spend(writer, helper_turns)
+        helper_known += prior["helpers"][0]
+        helper_unknown += prior["helpers"][1]
         report.helper_usd_known, report.helper_unknown_calls = _usd(helper_known), helper_unknown
         if recon is not None and recon.get("journal") == "read":
             # the journal books the writer's unpriced calls at its own worst case; the helpers' at this pass's
@@ -2347,14 +2352,15 @@ async def run_attention_pass(
             except OSError as exc:
                 _error(stores, f"{pass_id}: ledger: {type(exc).__name__}: {exc}")
         else:
-            # no readable journal: the pass's own figures; the killed turns and the unpriced calls at the worst case
-            report.usd_known = known
-            report.unknown_calls = int(unknown) + len(killed)
+            # no readable journal: the pass's own figures (this run's, writer and helpers), with what a killed run of it
+            # spent (its lost calls among the unpriced), each unpriced call at the worst case
+            report.usd_known = _usd(Decimal(known) + prior["writer"][0] + prior["helpers"][0]) if known != UNKNOWN else known
+            report.unknown_calls = int(unknown) + prior["writer"][1] + prior["helpers"][1]
             report.worst_case_booked = _usd(Decimal(report.unknown_calls) * worst)
             # the pass's own priced calls (the writer's and its helpers') and every unpriced or lost call at the worst
             # case: what the service settles when no journal could be read
             report.settle_usd = (
-                _usd(Decimal(known) + Decimal(report.unknown_calls) * worst)
+                _usd(Decimal(report.usd_known) + Decimal(report.unknown_calls) * worst)
                 if known != UNKNOWN
                 else None
             )

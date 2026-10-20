@@ -8,6 +8,7 @@ Keyless: every model is scripted.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from decimal import Decimal
 from types import SimpleNamespace
@@ -177,7 +178,7 @@ def test_a_service_pass_is_bounded_by_the_room_and_settles_the_helpers_lane(tmp_
     assert report.helper_usd_known == "0.35" and report.helper_unknown_calls == 1
 
 
-def _attention_pass(tmp_path, monkeypatch, *, recon, resume=False, pending=0, helpers=None):
+def _attention_pass(tmp_path, monkeypatch, *, recon, resume=False, pending=0, helpers=None, done=None):
     """One run_attention_pass with a fake writer that finishes at once (0.01 USD), the service's cap 30 with another
     pass's 7 committed; returns (the pass's config, its report)."""
     from tests.memory.integration import test_consolidate as tc
@@ -196,6 +197,9 @@ def _attention_pass(tmp_path, monkeypatch, *, recon, resume=False, pending=0, he
     folder.mkdir(parents=True, exist_ok=True)
     for n in range(pending):  # calls a killed run left pending (in another conversation than this one's)
         (folder / f"{50 + n}.json").write_text('{"state": "pending", "turn": %d, "digest": "x"}' % (50 + n))
+    for name, doc in (done or {}).items():  # a killed run's done calls
+        (folder / name).parent.mkdir(parents=True, exist_ok=True)
+        (folder / name).write_text(json.dumps(doc))
     seen = []
 
     class Spy(consolidate.WriterPass):
@@ -285,16 +289,19 @@ def test_a_pass_that_raises_settles_from_its_turn_files(tmp_path, monkeypatch):
     T._open_entry(home)
 
     async def broken(home_, pass_id, handed, *, resume, folder, journal_start, effort, settings, stop=None):
-        (folder / "0.json").write_text('{"state": "done", "usd": "0.5", "turn": 0}')
+        at = ws.stamp(ws._now())
+        (folder / "0.json").write_text(json.dumps({"state": "done", "usd": "0.5", "turn": 0, "at": at}))
         (folder / "h0").mkdir()
-        (folder / "h0" / "0.json").write_text('{"state": "done", "usd": "unknown", "turn": 0}')
-        (folder / "1.json").write_text('{"state": "pending", "turn": 1}')
+        (folder / "h0" / "0.json").write_text(json.dumps({"state": "done", "usd": "unknown", "turn": 0, "at": at}))
+        (folder / "1.json").write_text(json.dumps({"state": "pending", "turn": 1, "at": at}))
         raise RuntimeError("the pass broke")
 
     got = _step(home, broken, monkeypatch)
     settle = [r for r in ws._rows(ws.service_dir(home) / ws.SPEND_FILE) if r["op"] == "settle"]
     assert got["ended"] == "error" and [r["usd"] for r in settle] == [str(Decimal("0.5") + 2 * W)]
-    assert ws.turns_spend(ws.service_dir(home) / ws.TURNS_DIR / got["pass_id"]) == Decimal("0.5") + 2 * W
+    folder = ws.service_dir(home) / ws.TURNS_DIR / got["pass_id"]
+    assert ws.turns_spend(folder, W) == Decimal("0.5") + 2 * W
+    assert ws.turns_cost(folder) == {"writer": (Decimal("0.5"), 1), "helpers": (Decimal(0), 1)}
 
 
 def test_a_step_that_raises_leaves_the_service_stopped_and_the_home_free(tmp_path, monkeypatch):
@@ -396,3 +403,40 @@ def test_a_writer_model_with_no_catalogue_bound_runs_no_pass(tmp_path, monkeypat
     got = _step(home, T._no_pass, monkeypatch, UNIFY_MEMORY_WRITER_MODEL="vendor/no-such-model")
     assert got["why_idle"] == "refused" and got["pass_id"] is None
     assert [e["reason"] for e in ws.events(home) if e.get("event") == "refused"] == ["NoBound"]
+
+
+def test_a_resumed_pass_that_diverges_keeps_its_killed_runs_spend(tmp_path, monkeypatch):
+    """Review: a resumed run whose conversation differs from the killed run's overwrites that run's turn files, so
+    their USD would drop out. The killed run's cost is read at the resume, before any file is written: it comes off
+    the room (2.50 priced by the writer, 0.25 by a helper, one lost call at the worst case) and is settled with this
+    run's figures; a done call replayed from its file costs nothing again."""
+    from unify.memory.reconcile import unavailable
+
+    reply = {"role": "assistant", "content": "earlier"}
+    done = {
+        "0.json": {"state": "done", "turn": 0, "digest": "not-this-conversation", "reply": reply, "usd": "2.50"},
+        "h0/0.json": {"state": "done", "turn": 0, "digest": "x", "reply": reply, "usd": "0.25"},
+    }
+    cfg, report = _attention_pass(tmp_path, monkeypatch, recon=unavailable(), resume=True, pending=1, done=done)
+    prior = Decimal("2.50") + Decimal("0.25") + W
+    assert Decimal(cfg.usd_limit) == Decimal(23) - prior
+    # this run's own call (0.01, the writer diverged and made it again) plus the killed run's
+    assert Decimal(report.settle_usd) == Decimal("0.01") + prior
+    assert Decimal(report.usd_known) == Decimal("2.76") and report.unknown_calls == 1
+    assert report.helper_usd_known == "0.25"
+
+
+def test_a_replayed_done_call_costs_nothing_again(tmp_path):
+    made = []
+
+    async def model(messages, tools):
+        made.append(1)
+        return {"role": "assistant", "content": "r"}, "0.40"
+
+    folder = tmp_path / "turns" / "p1"
+    first = ws.ResumableTurn(model, folder)
+    msgs = [{"role": "user", "content": "go"}]
+    assert asyncio.run(first(msgs, []))[1] == "0.40"
+    again = ws.ResumableTurn(model, folder)
+    assert asyncio.run(again(msgs, []))[1] == "0" and made == [1] and again.replayed == 1
+    assert ws.turns_cost(folder)["writer"] == (Decimal("0.40"), 0)

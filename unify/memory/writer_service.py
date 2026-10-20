@@ -500,25 +500,46 @@ def pass_room(home: Path | str, pass_id: str, settings: Any) -> Optional[Decimal
     return max(Decimal(0), cap - committed)
 
 
-def _turn_files(folder: Path | str) -> list[dict]:
-    """Every checkpointed model turn of a pass: the writer's (``<n>.json``) and each helper's (``h<k>/<n>.json``)."""
+def _turn_files(folder: Path | str, *, since: Optional[str] = None) -> list[tuple[str, dict]]:
+    """Every checkpointed model turn of a pass, with its lane (``writer``: ``<n>.json``; ``helpers``:
+    ``h<k>/<n>.json``); with *since* (a :func:`stamp`), only the turns written at or after it."""
     out = []
     root = Path(folder)
-    for path in sorted(root.glob("*.json")) + sorted(root.glob("h*/*.json")):
-        if path.name == PASS_FILE:
-            continue
-        try:
-            doc = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if isinstance(doc, dict) and doc.get("state") in ("pending", "done"):
-            out.append(doc)
+    for lane, paths in (("writer", sorted(root.glob("*.json"))), ("helpers", sorted(root.glob("h*/*.json")))):
+        for path in paths:
+            if path.name == PASS_FILE:
+                continue
+            try:
+                doc = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(doc, dict) or doc.get("state") not in ("pending", "done"):
+                continue
+            if since is not None and str(doc.get("at") or "") < since:
+                continue
+            out.append((lane, doc))
+    return out
+
+
+def turns_cost(folder: Path | str, *, since: Optional[str] = None) -> dict[str, tuple[Decimal, int]]:
+    """What a pass's turns cost by their own files, per lane: ``(known USD, unpriced calls)``, a done call with a
+    price counting its USD, a pending (lost) or unpriced one counting as unpriced."""
+    out = {"writer": (Decimal(0), 0), "helpers": (Decimal(0), 0)}
+    for lane, doc in _turn_files(folder, since=since):
+        known, unpriced = out[lane]
+        usd = _decimal(doc.get("usd")) if doc.get("state") == "done" else None
+        out[lane] = (known + usd, unpriced) if usd is not None else (known, unpriced + 1)
     return out
 
 
 def lost_calls(folder: Path | str) -> int:
     """The calls a killed run of a pass left ``pending``: billed and lost, never priced."""
-    return sum(1 for doc in _turn_files(folder) if doc.get("state") == "pending")
+    return sum(1 for _lane, doc in _turn_files(folder) if doc.get("state") == "pending")
+
+
+def turns_spend(folder: Path | str, worst: Decimal, *, since: Optional[str] = None) -> Decimal:
+    """:func:`turns_cost` over both lanes, each unpriced or lost call at *worst* (one call's worst case)."""
+    return sum((k + Decimal(n) * worst for k, n in turns_cost(folder, since=since).values()), Decimal(0))
 
 
 def pass_call_worst_case(settings: Any) -> Decimal:
@@ -533,16 +554,6 @@ def pass_call_worst_case(settings: Any) -> Decimal:
     if switch.helper_lane_route()[0] is not None:
         models.append(switch.library_helper_model(settings))
     return worst_of(models)
-
-
-def turns_spend(folder: Path | str, worst: Decimal) -> Decimal:
-    """What a pass's turns cost by their own files: each done call's USD, and each pending or unpriced call at
-    *worst* (one call's worst case; the settle of a pass that ended without a report)."""
-    total = Decimal(0)
-    for doc in _turn_files(folder):
-        usd = _decimal(doc.get("usd")) if doc.get("state") == "done" else None
-        total += usd if usd is not None else worst
-    return total
 
 
 def _format(d: Decimal) -> str:
@@ -627,8 +638,10 @@ class ResumableTurn:
             if saved.get("digest") != digest:
                 self.diverged = True
             elif saved.get("state") == "done" and isinstance(saved.get("reply"), dict):
+                # its USD was spent by the run that made it, which the resumed pass takes off its room and settles
+                # as it stood (turns_cost at the resume): never counted a second time here
                 self.replayed += 1
-                return dict(saved["reply"]), saved.get("usd")
+                return dict(saved["reply"]), "0"
             elif saved.get("state") == "pending":
                 self.killed.append(f"{self.folder.name}/{n}")
         self._write(
@@ -1129,11 +1142,16 @@ def _members() -> list[list]:
     return out
 
 
-def _raised_settle(home: Path, pass_id: str, folder: Path, settings: Any) -> Decimal:
-    """The settle of a pass that raised: its turn files at the lanes' worst case; when that cannot be had, the
+def _raised_settle(home: Path, pass_id: str, folder: Path, settings: Any, pass_doc: dict) -> Decimal:
+    """The settle of a pass that raised: what a killed run of it spent (``prior_usd``, read at the resume) plus the
+    turn files this run wrote, each unpriced or lost call at the lanes' worst case; when that cannot be had, the
     pass's whole booking stays (it is settled at what it booked)."""
     try:
-        return turns_spend(folder, pass_call_worst_case(settings))
+        prior = pass_doc.get("prior_usd", "0")
+        if prior is None:
+            raise ValueError("no prior figure")
+        since = str(pass_doc.get("run_started_at") or "")
+        return Decimal(prior) + turns_spend(folder, pass_call_worst_case(settings), since=since or None)
     except Exception:  # noqa: BLE001 - no worst case: the booking stands
         rows = [r for r in _rows(service_dir(home) / SPEND_FILE) if r.get("pass_id") == pass_id]
         booked = [_decimal(r.get("usd")) for r in rows if r.get("op") == "reserve"]
@@ -1210,6 +1228,13 @@ async def _run_pass(
         _atomic_json(pass_doc_path, pass_doc)
     else:
         event(home, "resume", pass_id=pass_id, entries=pass_doc.get("entries"))
+        # what the killed run spent, as its files stand before this run writes any (a diverging run overwrites them)
+        try:
+            pass_doc["prior_usd"] = _format(turns_spend(folder, pass_call_worst_case(settings)))
+        except Exception:  # noqa: BLE001 - no worst case: settled at the booking if this run raises
+            pass_doc["prior_usd"] = None
+    pass_doc["run_started_at"] = stamp(_now())
+    _atomic_json(pass_doc_path, pass_doc)
     from .integration.switch import library_pass_wall_s
 
     wall = float(library_pass_wall_s(settings))
@@ -1238,8 +1263,8 @@ async def _run_pass(
         # no report: the pass's own turn files say what it spent (lost and unpriced calls at the worst case)
         _append(
             service_dir(home) / SPEND_FILE,
-            {"v": 1, "op": "settle", "pass_id": pass_id, "usd": _format(_raised_settle(home, pass_id, folder, settings)),
-             "at": stamp(_now())},  # fmt: skip
+            {"v": 1, "op": "settle", "pass_id": pass_id,
+             "usd": _format(_raised_settle(home, pass_id, folder, settings, pass_doc)), "at": stamp(_now())},  # fmt: skip
         )
         pass_doc.update(state="ended", ended_at=stamp(_now()), error=type(exc).__name__)
         _atomic_json(pass_doc_path, pass_doc)
