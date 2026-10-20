@@ -340,7 +340,8 @@ def test_a_crashed_runner_service_is_taken_over_once_by_a_request_and_counted(ow
     got = ws.ensure_service(owned.home, settings=T._settings(UNIFY_MEMORY_WRITER_SERVICE_OWNER="runner"),
                             argv_prefix=[sys.executable, T.DRIVER], wait_s=60)  # fmt: skip
     assert got.status == "started" and got.took_over
-    (take,) = _events(owned.home, "takeover")
-    assert take["fallback"] is True and take["previous_pid"] == proc.pid
+    # the request's row (fallback) and the started service's own row for the service it replaces
+    (take,) = [t for t in _events(owned.home, "takeover") if t.get("fallback")]
+    assert take["fallback"] is True and take["previous_pid"] == proc.pid and take["by"] == "ensure_service"
     T._until(lambda: ws.owns(ws.read_state(owned.home)))
     assert ws.stop_service(owned.home, "operator", "test", grace_s=0.5, term_s=2).verified

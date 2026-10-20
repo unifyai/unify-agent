@@ -139,6 +139,7 @@ def test_two_ensure_service_calls_at_once_leave_exactly_one_service(svc):
     assert ws.group_pids(doc["pgid"], since=doc["proc_start"]) == [doc["pid"]]
     # a third call finds it running
     assert _ensure(svc.home).status == "running"
+    _until(lambda: _events(svc.home, "start"))  # written once the service has joined the record
     assert len(_events(svc.home, "start")) == 1
 
 

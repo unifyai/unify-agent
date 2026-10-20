@@ -1908,6 +1908,14 @@ def _parse(argv: Optional[list[str]]) -> argparse.Namespace:
         default=None,
         help="stop by this UTC epoch second at the latest (the owner's stage deadline), besides the lifetime and lease",
     )
+    p.add_argument(
+        "--owner",
+        choices=("runner",),
+        default=None,
+        help="the runner owns this service (with --foreground): check the environment, then run in its own folder",
+    )
+    p.add_argument("--ready", action="store_true", help="report whether the runner-owned service is up, and exit")
+    p.add_argument("--wait", type=float, default=30.0, help="with --ready: how long to wait for it")
     return p.parse_args(argv)
 
 
@@ -1957,8 +1965,43 @@ def daemonize() -> None:
     os.setsid()
 
 
+def _owner_start(home: str) -> Optional[str]:
+    """``--owner runner``: the service's own check of the environment the runner gave it (a credential's name, other
+    than the two route base URLs and token descriptor numbers, refuses the start), then its own empty HOME and its
+    own folder as the current one, and the owner setting. Returns why it refuses, or None."""
+    from .integration import switch
+    from .service_owner import OWNER_NAME, ROUTE_NAMES, secret_name
+
+    bad = sorted(n for n in os.environ if n not in ROUTE_NAMES and secret_name(n))
+    if bad:
+        return f"the environment holds credential names: {', '.join(bad)}"
+    folder = owned_cwd(home)
+    (folder / "home").mkdir(parents=True, exist_ok=True)
+    os.environ["HOME"] = str(folder / "home")
+    os.chdir(folder)
+    os.environ[OWNER_NAME] = "runner"
+    try:
+        setattr(_settings(), switch.WRITER_SERVICE_OWNER, "runner")
+    except Exception:  # noqa: BLE001 - read from the environment then
+        pass
+    return None
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     args = _parse(argv)
+    if args.ready:
+        from .service_owner import _state, owned_ready
+
+        ready = owned_ready(args.home, args.wait)
+        doc = _state(args.home) or {}
+        print(json.dumps({"ready": ready, "pid": doc.get("pid"), "state": doc.get("state"), "owner": doc.get("owner")}))
+        return 0 if ready else 1
+    if args.owner == "runner":
+        refused = _owner_start(args.home)
+        if refused is not None:
+            print(json.dumps({"refused": refused}))
+            return 3
+        args.foreground = True
     # the route tokens into memory and their pipes closed before the fork: no process of the service holds one
     release_route_fds()
     if args.daemon:
