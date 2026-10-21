@@ -118,7 +118,6 @@ REASON_CODES = frozenset(
     },
 )
 _EPISODE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
-_PLAIN_DECIMAL = re.compile(r"^[0-9]+(\.[0-9]+)?\Z")
 _NO_INDEX_BUDGET = 10**9
 
 
@@ -300,20 +299,6 @@ class WriterSettings:
     def cap_usd(self) -> Decimal:
         """One pass's USD cap at effort scale 1: E recorded tokens at the writer's rate per token."""
         return Decimal(PASS_EXPERIENCE) * WRITER_USD_PER_TOKEN
-
-
-def _decimal(name: str, value: Any) -> Decimal:
-    text = str(value).strip()
-    if not _PLAIN_DECIMAL.match(text):
-        raise ValueError(
-            f"{name} must be a plain decimal string (no exponent), not {value!r}"[:200],
-        )
-    try:
-        return Decimal(text)
-    except (
-        InvalidOperation
-    ) as exc:  # pragma: no cover - the pattern admits only valid decimals
-        raise ValueError(f"{name} is not a decimal: {value!r}"[:200]) from exc
 
 
 def writer_settings(settings: Any) -> WriterSettings:

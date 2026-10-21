@@ -69,7 +69,6 @@ from . import signatures as _signatures
 from . import trust
 from .fixtures import canonical
 from .redact import KEY_SHAPED
-from .request_value import REQUEST_CLASS
 from .sandbox_run import PYTHON, SandboxResult, run_confined
 from .signals import REGIME_SOURCES
 
@@ -321,52 +320,6 @@ def safety(source: str, rel: str = PROCEDURE_FILE) -> str | None:
 
 
 # --- the confined run -----------------------------------------------------------------------------------------
-
-_RUN = r"""
-import copy, importlib.util, json, sys
-sys.dont_write_bytecode = True
-""" + REQUEST_CLASS + r"""
-
-def canon(v):
-    return json.dumps(v, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
-
-
-out, stage = {}, "import"
-try:
-    spec = importlib.util.spec_from_file_location("procedure", "/case/procedure.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    with open("/case/request.txt", encoding="utf-8") as f:
-        text = f.read()
-    with open("/case/data.json", encoding="utf-8") as f:
-        data = json.load(f)
-    stage = "read_input"
-    value = mod.read_input(Request(text, data))
-    out["value"] = canon(value)
-    if callable(getattr(mod, "applies", None)):
-        stage = "applies"
-        out["applies"] = bool(mod.applies(copy.deepcopy(value)))
-    stage = "run"
-    first = mod.run(copy.deepcopy(value))
-    out["result"] = canon(first)
-    second = mod.run(copy.deepcopy(value))
-    out["result2"] = canon(second)
-    if callable(getattr(mod, "holds", None)):
-        stage = "holds"
-        out["holds"] = bool(mod.holds(copy.deepcopy(value), copy.deepcopy(first)))
-    out["outcome"] = "returned"
-except BaseException as exc:
-    out["outcome"] = "refused" if any(c.__name__ == "MemoryInputError" for c in type(exc).__mro__) else "error"
-    out["error_class"] = type(exc).__name__
-    out["stage"] = stage
-with open("/out/result.json", "w", encoding="utf-8") as f:
-    json.dump(out, f, default=str)
-"""
-
-
-def _cls(name: Any) -> str:
-    return name if isinstance(name, str) and name.isidentifier() and len(name) <= 64 else "an exception"
-
 
 def _read_result(path: Path) -> dict | None:
     try:

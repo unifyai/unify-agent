@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Any, Literal, get_args
 
 from .fixtures import canonical
-from .request_value import REQUEST_CLASS, request_data
+from .request_value import request_data
 
 Form = Literal["value", "state", "state_env"]
 Outcome = Literal["positive", "contrary", "none"]
@@ -225,92 +225,6 @@ def value_of(ep: Any, printed: frozenset[str] = frozenset()) -> tuple[dict, Any]
 
 
 # --- the confined run ----------------------------------------------------------------------------------------------------
-
-_RUN = r"""
-import copy, importlib.util, json, sys
-sys.dont_write_bytecode = True
-sys.path.insert(0, "/case/lib")
-from replay_box import ReplayEnv, ReplayMiss, State, TooManyCalls
-""" + REQUEST_CLASS + r"""
-
-def canon(v):
-    return json.dumps(v, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
-
-
-def clip(calls, n, chars):
-    out = []
-    for c in calls[:n]:
-        row = dict(c)
-        for k in ("args", "kwargs"):
-            text = canon(row.get(k))
-            row[k] = text if len(text) <= chars else text[:chars] + "..."
-        out.append(row)
-    return out
-
-
-with open("/case/case.json", encoding="utf-8") as f:
-    case = json.load(f)
-form = case["form"]
-out, stage = {"form": form}, "import"
-
-
-def listed(env):
-    return [(c["channel"], c["method"], canon(c["args"]), canon(c["kwargs"]), c["outcome"]) for c in env.calls()]
-
-
-try:
-    spec = importlib.util.spec_from_file_location("procedure", "/case/procedure.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    if form == "value":
-        stage = "read_input"
-        value = mod.read_input(Request(case["request"], case["data"]))
-        out["value"] = canon(value)
-        base = lambda: copy.deepcopy(value)
-    else:
-        state = State(case["messages"], case["data"])
-        base = lambda: copy.deepcopy(state)
-
-    def args():
-        if form == "state_env":
-            return (base(), ReplayEnv(case["actions"], case["max_calls"]))
-        return (base(),)
-
-    if callable(getattr(mod, "applies", None)):
-        stage = "applies"
-        out["applies"] = bool(mod.applies(base()))
-    stage = "run"
-    first_args = args()
-    try:
-        first = mod.run(*first_args)
-    finally:
-        if form == "state_env":
-            env1 = first_args[1]
-            out["calls"] = env1.stats()
-            out["issued"] = clip(env1.calls(), case["listed"], case["chars"])
-            out["calls1"] = listed(env1)
-    out["result"] = canon(first)
-    second_args = args()
-    second = mod.run(*second_args)
-    out["result2"] = canon(second)
-    if form == "state_env":
-        out["calls2"] = listed(second_args[1])
-    if callable(getattr(mod, "holds", None)):
-        stage = "holds"
-        out["holds"] = bool(mod.holds(base(), copy.deepcopy(first)))
-    out["outcome"] = "returned"
-except BaseException as exc:
-    out["outcome"] = "refused" if any(c.__name__ == "MemoryInputError" for c in type(exc).__mro__) else "error"
-    out["error_class"] = type(exc).__name__
-    out["stage"] = stage
-with open("/out/result.json", "w", encoding="utf-8") as f:
-    json.dump(out, f, default=str)
-"""
-
-
-def _cls(name: Any) -> str:
-    return name if isinstance(name, str) and name.isidentifier() and len(name) <= 64 else "an exception"
-
 
 def _read_result(path: Path) -> dict | None:
     import os

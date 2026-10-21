@@ -43,12 +43,6 @@ def guide_library() -> str:
     return GUIDE_LIBRARY_IN_CODE
 
 
-def _in_code() -> bool:
-    from unify.common import in_code_switch
-
-    return in_code_switch.tools_in_code()
-
-
 #: The one line that points the in-code texts to the library's own documentation: each call's arguments, results
 #: and errors are in its help, never in a prompt.
 MEMORY_HELP_LINE = "`help(memory)` shows the library's calls and types."

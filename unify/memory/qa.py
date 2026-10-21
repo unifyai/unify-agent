@@ -297,10 +297,6 @@ def _content(a: Action, form: str | None) -> str:
     return "response:" + _key(a.response)
 
 
-def _rank(seed: bytes, *parts: str) -> bytes:
-    return hashlib.sha256(seed + "\0".join(parts).encode()).digest()
-
-
 # --- the probe -----------------------------------------------------------------------------------------------
 
 _OUTCOMES = frozenset(

@@ -181,12 +181,6 @@ def helper_flags(similar: bool) -> frozenset[str]:
     return frozenset({"helper", "similar"} if similar else {"helper"})
 
 
-def _in_code() -> bool:
-    from unify.common import in_code_switch
-
-    return in_code_switch.tools_in_code()
-
-
 # --- tool specs ----------------------------------------------------------------------------------------------
 
 # The tools' definitions live in the shared registry (unify/common/tool_registry.py): one read, one grep and one

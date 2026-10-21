@@ -82,9 +82,6 @@ SCHEMA_ERROR = "schema_error"
 SCHEMA_REPAIRS = 1
 #: What the summary after a compaction says of the files (the memory agents' restart pointer, for this box).
 RESTART_POINTER = "Nothing under /memory changed: open an item again with memory.get when you need it."
-_HEADING = re.compile(r"^### (\S+)\s*$")
-
-
 def enabled() -> bool:
     """Whether the run has the librarian: whenever it has memory (``UNIFY_MEMORY`` is ``on`` or ``in_episode``)."""
     from unify.memory.integration.switch import memory_on

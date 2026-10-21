@@ -33,7 +33,6 @@ from .fixed_answer import is_literal
 
 SHAPE_VERSION = 1
 
-_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 _DOC_OWNERS = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
 

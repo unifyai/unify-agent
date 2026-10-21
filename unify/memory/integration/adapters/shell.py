@@ -24,94 +24,18 @@ Nothing here is wired into the actor yet.
 
 from __future__ import annotations
 
-import os
 from typing import Any, Iterable, Mapping, Optional
 
 from ...episodes import Action
-from ...redact import Redactor
 
 __all__ = [
-    "MAX_ARG_CHARS",
     "MAX_ARGV",
     "MAX_TAIL_BYTES",
-    "bounded_tail",
     "shell_fingerprint",
 ]
 
 MAX_TAIL_BYTES = 8 * 1024  # each of stdout and stderr
 MAX_ARGV = 64  # argv entries kept per row
-MAX_ARG_CHARS = 4096  # characters kept per argv entry (and per bash command)
-# Audit event names that denote a started process. The audit adapter emits
-# "subprocess"; the raw sys.audit names are accepted too.
-_SPAWN_EVENTS = frozenset(
-    {
-        "subprocess",
-        "subprocess.Popen",
-        "os.system",
-        "os.posix_spawn",
-        "os.exec",
-        "os.spawn",
-    },
-)
-def _text_of(parts: Any) -> str:
-    if parts is None:
-        return ""
-    if isinstance(parts, str):
-        return parts
-    if isinstance(parts, (bytes, bytearray)):
-        return bytes(parts).decode("utf-8", errors="replace")
-    if isinstance(parts, (list, tuple)):
-        out = []
-        for p in parts:
-            if isinstance(p, str):
-                out.append(p)
-            elif isinstance(p, Mapping):
-                out.append(str(p.get("text", "")))
-            else:
-                out.append(str(getattr(p, "text", "")))
-        return "".join(out)
-    return str(parts)
-
-
-def bounded_tail(
-    text: Any,
-    redactor: Redactor,
-    limit: int | None = MAX_TAIL_BYTES,
-) -> str:
-    """The redacted last ``limit`` bytes (UTF-8) of ``text``.
-
-    Redaction runs on the whole text before the cut, so a secret that straddles
-    the cut is never left half-visible. ``None`` keeps the whole text (``UNIFY_MEMORY_LIBRARY``).
-    """
-    if limit is None:
-        return redactor.text(_text_of(text))
-    if limit <= 0:
-        return ""
-    s = redactor.text(_text_of(text))
-    raw = s.encode("utf-8", errors="replace")
-    if len(raw) <= limit:
-        return s
-    return raw[-limit:].decode("utf-8", errors="ignore")  # drop a split leading char
-
-
-def _decode(a: Any) -> str:
-    try:
-        return os.fsdecode(a) if isinstance(a, (bytes, os.PathLike)) else str(a)
-    except TypeError:
-        return str(a)
-
-
-def _arg(a: Any, redactor: Redactor, full: bool = False) -> str:
-    """One argv entry: decoded, redacted in full, and only then capped at
-    ``MAX_ARG_CHARS`` with a marker, so a secret that straddles the cap is
-    never left as a fragment. Redaction is linear in the entry, and the OS
-    bounds an entry by ARG_MAX."""
-    s = redactor.text(_decode(a))
-    if full or len(s) <= MAX_ARG_CHARS:
-        return s
-    return s[:MAX_ARG_CHARS] + f"<truncated: {len(s) - MAX_ARG_CHARS} chars>"
-
-
 def _cell(v: Any) -> int:
     """A cell index; -1 when missing or not an integer."""
     if isinstance(v, bool):
@@ -126,18 +50,6 @@ def _status(exit_code: Optional[int], error: Optional[str]) -> str:
     if exit_code is None:
         return "error" if error else "unrecorded"
     return "ok" if exit_code == 0 else "error"
-
-
-def _error_text(
-    exit_code: Optional[int],
-    error: Optional[str],
-    redactor: Redactor,
-) -> Optional[str]:
-    if error:
-        return bounded_tail(error, redactor, MAX_ARG_CHARS)
-    if exit_code not in (None, 0):
-        return f"exit status {exit_code}"
-    return None
 
 
 # --- fingerprint -------------------------------------------------------------
