@@ -45,12 +45,9 @@ def _cell(code: str):
 
 async def _act(replies) -> tuple[list[dict], object]:
     actor = new_actor()
-    try:
-        with h.scripted(tuple(replies)) as provider:
-            handle = await actor.act("Do the task.", persist=False)
-            assert await asyncio.wait_for(handle.result(), 120) == "done"
-    finally:
-        await actor.close()
+    with h.scripted(tuple(replies)) as provider:
+        handle = await actor.act("Do the task.", persist=False)
+        assert await asyncio.wait_for(handle.result(), 120) == "done"
     return provider.requests, handle
 
 

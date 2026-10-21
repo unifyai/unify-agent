@@ -302,13 +302,16 @@ class ScriptedModel:
         assert not left, f"scripted replies never requested: {left}"
 
 
-def below_retry_transport(model: Callable[..., Any], acompletion: Callable[..., Any]) -> Callable[..., Any]:
+def below_retry_transport(model: Callable[..., Any]) -> Callable[..., Any]:
     """*model* as ``litellm.acompletion``, under unillm's transient-retry policy.
 
     A streamed request (``stream=True``: every call of the harness's client) gets its reply as LiteLLM's own mock
-    stream of it, which unillm reads and reassembles as it does a provider's stream.
+    stream of it, which unillm reads and reassembles as it does a provider's stream. The stream is built by
+    ``litellm.main.acompletion`` with ``mock_response``, which sends nothing (the suite's guard replaces only
+    ``litellm.acompletion``, and its socket guard still holds).
     """
     import litellm
+    import litellm.main
 
     async def transport(**kw: Any) -> Any:
         entry = await model(**kw)
@@ -318,7 +321,7 @@ def below_retry_transport(model: Callable[..., Any], acompletion: Callable[..., 
         for choice in whole["choices"]:
             for i, call in enumerate(choice["message"].get("tool_calls") or []):
                 call["index"] = i
-        return await acompletion(
+        return await litellm.main.acompletion(
             model=kw["model"],
             messages=kw["messages"],
             stream=True,
@@ -349,7 +352,7 @@ def scripted(
     unillm_settings.UNILLM_CACHE = False
     if below_retry:
         original = uni_llm.litellm.acompletion
-        uni_llm.litellm.acompletion = below_retry_transport(model, original)
+        uni_llm.litellm.acompletion = below_retry_transport(model)
     else:
         original = uni_llm._acompletion_with_transient_retry
         uni_llm._acompletion_with_transient_retry = model

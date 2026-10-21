@@ -46,11 +46,6 @@ def test_spawning_is_permitted_with_python_in_the_worker():
     assert binding.spawn_permitted() == (True, "")
 
 
-def test_spawning_needs_the_worker_sandbox(python_in_process):
-    allowed, why = binding.spawn_permitted()
-    assert allowed is False and "sandboxed worker" in why
-
-
 def test_the_prompt_section_states_the_rules():
     text = binding.PROMPT_SECTION
     for words in (

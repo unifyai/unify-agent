@@ -40,14 +40,12 @@ and it ran as a network call at import in every pytest process (on 3 Oct a
 401 from it failed a session at conftest import). Inside the sandbox a key
 comes from the environment or ``.env`` only.
 
-The network is shared: tests call model providers. The sandbox therefore
-bounds what model code can *read and write*; it does not hide the provider
-keys this process holds in its environment and ``.env``, nor stop a request
-to the network. Code a model writes in a Python cell runs in a child
-process without credentials or network (the sandboxed worker); a test of the
-function manager's in-process loaders (the ``python_in_process`` fixture)
-runs stored code in this same process, so anything the process can reach,
-that code can reach.
+The network namespace is shared; the suite's guard (tests/conftest.py)
+refuses every provider call and every connection off this machine. The
+sandbox bounds what a test can *read and write*; it does not hide a provider
+key this process holds in its environment or ``.env``. Code a model writes in
+a Python cell runs in a child process without credentials or network (the
+sandboxed worker).
 
 ``UNIFY_TEST_SANDBOX`` selects the behaviour: ``auto`` (the default) confines
 the run where bubblewrap exists (Linux) and runs as before elsewhere, with a

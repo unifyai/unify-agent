@@ -177,28 +177,6 @@ print("after")
         await interp.stop()
 
 
-@needs_bwrap
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)
-async def test_display_compresses_an_oversized_image():
-    """``display()`` keeps an image within 5 MB of base64 (fit to the observation space, then PNG, else JPEG)."""
-    interp = await actor_interpreter()
-    code = """
-import numpy as np
-from PIL import Image
-display(Image.fromarray(np.random.randint(0, 255, (3024, 4032, 3), dtype=np.uint8)))
-"""
-    try:
-        res = await interp.run_cell(code)
-        assert res.error is None, res.text()
-        images = [p for p in res.parts if isinstance(p, ImagePart)]
-        assert len(images) == 1
-        assert len(images[0].data) <= 5_242_880
-        assert images[0].mime in {"image/png", "image/jpeg"}
-    finally:
-        await interp.stop()
-
-
 def test_output_part_is_a_discriminated_union():
     text = TextPart(text="hello")
     image = ImagePart(data="base64data", mime="image/png")

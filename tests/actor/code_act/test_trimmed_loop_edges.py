@@ -138,7 +138,7 @@ def _scripted(model: _Model, *, below_retry: bool = False):
     unillm_settings.UNILLM_CACHE = False
     if below_retry:
         original = uni_llm.litellm.acompletion
-        uni_llm.litellm.acompletion = below_retry_transport(model, original)
+        uni_llm.litellm.acompletion = below_retry_transport(model)
     else:
         original = uni_llm._acompletion_with_transient_retry
         uni_llm._acompletion_with_transient_retry = model
