@@ -92,11 +92,7 @@ class EpisodeJournal:
         journal = cls(directory / f"{header['episode_id']}.jsonl", redactor)
         fd = os.open(journal.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND | os.O_CLOEXEC, 0o600)
         journal._fd = fd
-        row = {"type": HEADER, **{k: header.get(k) for k in _FIELDS}, "library_mode": bool(header.get("library_mode"))}
-        # UNIFY_PROFILE and UNIFY_MEMORY_PASSES=off, only when set: a default run's header is as before
-        for key in ("profile", "memory_passes"):
-            if header.get(key):
-                row[key] = str(header[key])
+        row = {"type": HEADER, **{k: header.get(k) for k in _FIELDS}}
         try:
             journal._write(json.dumps(redactor().obj(row), ensure_ascii=False, default=str))
         except BaseException:
@@ -207,7 +203,7 @@ def recover(
     first, and remove it; the episode ids recorded. Called with the request lock held, before this request's own
     journal exists. A journal whose episode is already in the episodes repo (its process died after recording it)
     is removed; one that cannot be recorded for another reason stays for the next request. *library_index* is
-    called with each recorded episode and its redactor (the similar index in library mode). Never raises."""
+    called with each recorded episode and its redactor (the similar index). Never raises."""
     directory = Path(paths.journal)
     try:
         found = sorted(p for p in directory.glob("*.jsonl") if p.is_file() and not p.is_symlink())
@@ -228,17 +224,11 @@ def recover(
     return done
 
 
-def _inferred_regime(ep: Any, stores: Any) -> str | None:
-    """Under ``UNIFY_MEMORY_REGIME=inferred``: set the recovered episode's regime from what it holds (no signal was
-    posted on it; its use record, if any) and the run's other episodes (:func:`.outcomes.infer`), and return its basis;
-    None with the switch off (the regime stays as assembled)."""
-    from unify.settings import SETTINGS
-
+def _inferred_regime(ep: Any, stores: Any) -> str:
+    """Set the recovered episode's regime from what it holds (no signal was posted on it; its use record, if any) and
+    the run's other episodes (:func:`.outcomes.infer`), and return its basis."""
     from . import outcomes
-    from .switch import regime_inferred
 
-    if not regime_inferred(SETTINGS):
-        return None
     ep.regime, basis = outcomes.infer(stores.evidence, ep.episode_id, [], getattr(ep, "memory_use", None))
     return basis
 
@@ -263,34 +253,25 @@ def _record(path: Path, stores: Any, library_index: Callable[[Any, Any], None] |
         effort=str(header.get("effort") or ""),
         pin=str(header.get("memory_main") or ""),
         request=str(header.get("request") or ""),
-        profile=str(header.get("profile") or ""),
-        memory_passes=str(header.get("memory_passes") or ""),
         observer=None,
         costs=None,
     )
     ep, redactor = trajectory.assemble(
         run,
         lines,
-        "",
         _last_ts(lines) or run.started_at,
         worktree_before=header.get("worktree_before") if isinstance(header.get("worktree_before"), str) else None,
     )
     ep.incomplete = {**_stop_fields(stops[-1] if stops else None), "recovered_at": recovered_at}
     basis = _inferred_regime(ep, stores)
-    writer = EpisodeWriter(
-        stores.episodes,
-        stores.blobs,
-        redactor,
-        **({"library_mode": True} if header.get("library_mode") else {}),
-    )
+    writer = EpisodeWriter(stores.episodes, stores.blobs, redactor)
     try:
         sha = writer.write(ep)
     except FileExistsError:  # recorded before the process died: nothing is lost by removing the journal
         path.unlink()
         return None
     stores.evidence.index_episode(ep, sha)
-    if basis is not None:
-        stores.evidence.record_regime(ep.episode_id, ep.regime, basis, ep.ended_at)
+    stores.evidence.record_regime(ep.episode_id, ep.regime, basis, ep.ended_at)
     if library_index is not None:
         try:
             library_index(ep, redactor)

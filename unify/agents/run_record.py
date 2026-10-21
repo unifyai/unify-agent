@@ -117,25 +117,6 @@ ROLE_LOCK = "instance.lock"
 CLAIM_STATES = ("claimed", "answered", "failed", "withdrawn", "abandoned")
 
 
-#: Set by a process that must not read the settings (the fork's relay, from its spec): whether memory is frozen.
-#: None: read the setting.
-FROZEN: Optional[bool] = None
-
-
-def _memory_frozen() -> bool:
-    """``UNIFY_MEMORY_FROZEN=on`` (held-out evaluation): the writer is not available on the record. False when the
-    setting cannot be read."""
-    if FROZEN is not None:
-        return FROZEN
-    try:
-        from unify.memory.integration.switch import memory_frozen
-        from unify.settings import SETTINGS
-
-        return memory_frozen(SETTINGS)
-    except Exception:  # noqa: BLE001 - the record never fails on a setting
-        return False
-
-
 #: The byte backstop of a run-long record: past it, model posts are refused and harness entries are cut short.
 MAX_RECORD_BYTES = 512 * 1024 * 1024
 #: A harness entry's text past the byte backstop, at most.
@@ -1694,17 +1675,6 @@ class RunRecordView:
         stale = [n for n in ended if n != WRITER]
         if stale:
             raise RecordRefused("ended", "ended: " + "; ".join(self._ended_pointer(n) for n in stale))
-        frozen = (WRITER in resolved or WRITER in unresolved) and _memory_frozen()
-        if frozen:
-            # UNIFY_MEMORY_FROZEN=on (held-out evaluation): the writer reads nothing (on the roster or not), so nothing
-            # is posted to it
-            resolved = [n for n in resolved if n != WRITER]
-            ended = [n for n in ended if n != WRITER]
-            unresolved = [n for n in unresolved if n != WRITER]
-            if not resolved:
-                from unify.memory.integration.switch import FROZEN_WRITER_REPLY
-
-                raise RecordRefused("frozen", "@writer: " + FROZEN_WRITER_REPLY)
         if not resolved:
             if default_to:
                 resolved = [default_to]
@@ -1732,7 +1702,6 @@ class RunRecordView:
             "to": list(entry.mentions),
             "unresolved": list(unresolved),
             "ended": list(ended),
-            **({"frozen": [WRITER]} if frozen else {}),
         }
 
     def unseen(self, reader: str) -> list:

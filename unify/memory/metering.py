@@ -1,4 +1,4 @@
-"""Metering and attribution (``UNIFY_MEMORY_METERING=on``): what each writer-service pass, each attention entry and each
+"""Metering and attribution: what each writer-service pass, each attention entry and each
 library item cost, and the whole run's spend for reports.
 
 **Per pass.** The service writes each pass's row to ``pass-results.jsonl`` (:func:`write_pass_row`): the entries it was
@@ -258,9 +258,9 @@ def _episode_seq_now(home: Path | str) -> Optional[int]:
         return None
 
 
-def pass_row(home: Path | str, report: Any, *, metering: bool) -> dict:
-    """The pass's ``pass-results.jsonl`` row: today's fields, and with *metering* the pass's entries, items, USD,
-    tokens, turns and messages."""
+def pass_row(home: Path | str, report: Any) -> dict:
+    """The pass's ``pass-results.jsonl`` row: how it ended, its commit, its entries, items, USD, tokens, turns and
+    messages."""
     outcome = getattr(report, "outcome", None)
     row = {
         "pass_id": report.pass_id,
@@ -278,8 +278,6 @@ def pass_row(home: Path | str, report: Any, *, metering: bool) -> dict:
         # neither is named as such, so a missing cause is visible, never silent
         row["error_class"] = getattr(report, "error_class", None) or "unrecorded"
         row["error_where"] = getattr(report, "error_where", None) or "unrecorded"
-    if not metering:
-        return row
     rows = ledger_rows(home)
     row["entries"] = pass_entries(
         rows,
@@ -304,23 +302,17 @@ def pass_row(home: Path | str, report: Any, *, metering: bool) -> dict:
     return row
 
 
-def write_pass_row(home: Path | str, report: Any, *, settings: Any = None) -> dict:
-    """Append the pass's row to ``pass-results.jsonl`` (the next request reports it as landed), and with metering on
-    rebuild the per-entry and per-item views."""
-    from .integration.switch import metering_on
-
-    if settings is None:
-        from unify.settings import SETTINGS as settings  # type: ignore[no-redef]
-    on = metering_on(settings)
-    row = pass_row(home, report, metering=on)
+def write_pass_row(home: Path | str, report: Any) -> dict:
+    """Append the pass's row to ``pass-results.jsonl`` (the next request reports it as landed), and rebuild the
+    per-entry and per-item views."""
+    row = pass_row(home, report)
     path = results_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(row, sort_keys=True, default=str) + "\n")
         fh.flush()
         os.fsync(fh.fileno())
-    if on:
-        rebuild_views(home)
+    rebuild_views(home)
     return row
 
 

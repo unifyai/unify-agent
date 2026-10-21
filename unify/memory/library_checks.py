@@ -222,7 +222,6 @@ def config_for(
     stores: Any,
     lookup: Any,
     role: str = "write",
-    checker_visible: bool = False,
 ) -> LibraryConfig:
     """The library-mode gate configuration of a run's stores (:mod:`.integration.consolidate`), checks on."""
 
@@ -239,7 +238,7 @@ def config_for(
         role=role,
         episodes=episodes,
         worktree_files=reader,
-        checker_visible=checker_visible,
+        checker_visible=True,
     )
 
 
@@ -683,7 +682,7 @@ class LibraryChecks:
         except Exception:  # noqa: BLE001 - no readable signal: nothing contradicts it
             sigs = []
         regime = str(getattr(ep, "regime", "") or "none")
-        out = signal_outcome(final_value_signals(sigs, ep), regime, checker_visible=self.cfg.checker_visible)
+        out = signal_outcome(final_value_signals(sigs, ep), regime)
         return out["verdict"] == "rejected" or out["end_outcome"] == "contrary"
 
     def _recipes(self) -> None:
@@ -830,7 +829,6 @@ class LibraryChecks:
                 worktree_files=self.cfg.worktree_files,
                 signals=self.gate.ev.signals_for,
                 runner=self.cfg.runner,
-                checker_visible=self.cfg.checker_visible,
             )
             self._record(it.item).setdefault("procedures", []).append(
                 {"episode": cover.episode, "runner": cover.runner, "ok": out.ok},
@@ -1376,7 +1374,6 @@ class LibraryChecks:
                         signals=self.gate.ev.signals_for,
                         runner=self.cfg.runner,
                         timeout_s=min(PROCEDURE_S, left),
-                        checker_visible=self.cfg.checker_visible,
                     ),
                 )
                 if side == "parent" and not outcome[0].ok:
@@ -1526,7 +1523,6 @@ class LibraryChecks:
                 signals=self.gate.ev.signals_for,
                 runner=self.cfg.runner,
                 timeout_s=min(PROCEDURE_S, left),
-                checker_visible=self.cfg.checker_visible,
             )
 
         before = outcome(item, run.p_tree, "parent")

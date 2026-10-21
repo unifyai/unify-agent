@@ -1,4 +1,4 @@
-"""The episode-end fork (``UNIFY_MEMORY_LIBRARY_FORK``, off by default).
+"""The episode-end fork.
 
 After the reply has been returned and the episode recorded, the actor's own conversation is continued once more by a
 separate process: its last request's messages and tools unchanged, so the provider serves the prefix from cache,
@@ -12,22 +12,19 @@ else.
     standard library only.
   - The request reaches it on stdin, a fresh pipe, never argv, the environment or a file.
   - Its environment is PATH and PYTHONDONTWRITEBYTECODE, nothing else.
-  - It calls the key proxy's fork lane (``/fork/v1``): its base URL and token come from the descriptor the runner
-    hands this controller (``switch.settle_fork_route_env``), and the token reaches the worker only inside its stdin
-    request. Without the lane there is no fork (``refused: no fork lane``): never the actor's route, never a
+  - It calls the fork lane (``/fork/v1``): its base URL and token come from the descriptor the launcher hands this
+    controller (``switch.settle_fork_route_env``), and the token reaches the worker only inside its stdin request. Without the lane there is no fork (``refused: no fork lane``): never the actor's route, never a
     provider directly, never a provider key.
 * **Mounts:** a bubblewrap box with a read-only root (``/usr``) and a private ``/tmp``. Home, the state dir and the
   library are not mounted. The worker file is read-only at ``/s``. The only writable bind is the episode's fresh
   staging dir.
-  - It keeps only the network of the process that starts it (``--share-net``). Under the runner that is the
-    controller's relay to the proxy.
-* It starts after the episode is recorded, from bytes serialised once. Nothing flows back to the reply, the
-  transcript or the record.
-* With the switch off, :func:`start` returns at once: no import of the actor, no process, no staging dir.
+  - It keeps only the network of the process that starts it (``--share-net``), which reaches the lane's loopback
+    relay.
+* It starts after the episode is recorded, from bytes serialised once. Nothing flows back to the reply or the
+  transcript. Its relay (:mod:`unify.agents.fork_relay`) answers its calls to the run record.
 
-**Settling and admission.** ``fork.json`` is written last and means the fork has settled, whatever its status. With
-the fork on, an episode enters a pass batch only once it has settled (:class:`Admission`, used by
-:class:`..trigger.Trigger`); an unsettled one rolls to the next pass. Settlement is always reached:
+**Settling and admission.** ``fork.json`` is written last and means the fork has settled, whatever its status. An
+episode enters a pass only once it has settled (:class:`Admission`); an unsettled one waits. Settlement is always reached:
 
 * the request reserves the staging dir before the episode is recorded (:func:`reserve`) and holds an exclusive lock
   on its ``fork.lock``; the lock passes to the worker process when it starts, so the lock is held exactly while the
@@ -39,13 +36,13 @@ the fork on, an episode enters a pass batch only once it has settled (:class:`Ad
 
 This keys on a per-episode signal only, never on the stream.
 
-**Lifetime.** The fork runs in its own session. With ``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on`` (hosts whose sandbox ends
-every process of the controller with it), :func:`finish` holds the CLI after the reply until the fork ends. That
-wait is bounded by :data:`WAIT_GUARD_S`, an operational guard reported in ``fork.json``, not a design limit.
+**Lifetime.** The fork runs in its own session, and :func:`finish` holds the CLI after the reply until the fork ends,
+so a host whose sandbox ends every process of the controller with it never cuts a fork short, and the lane outlives
+it. That wait is bounded by :data:`WAIT_GUARD_S`, an operational guard reported in ``fork.json``, not a design limit.
 
-**Spend.** The calls carry ``x-unify-call-kind: actor_fork``, journaled as ``other`` by the proxy. They also carry
-``x-unify-session: fork.<episode>``, which is what separates their spend, and ``x-unify-parent: <episode>``. There is
-no token cap; the run-level proxy guards bound the money.
+**Spend.** The calls carry ``x-unify-call-kind: actor_fork``, ``x-unify-session: fork.<episode>`` (what separates
+their spend), ``x-unify-parent: <episode>`` and ``x-unify-episode`` (and a segment fork's ``x-unify-segment``). There
+is no token cap; the lane's cap bounds the money.
 """
 
 from __future__ import annotations
@@ -64,11 +61,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from ..library_prompts import (
-    CANDIDATE_CONTRACT,
-    CANDIDATE_CONTRACT_IN_CODE,
-    SUMMARY_FORMAT,
-)
+from ..library_prompts import CANDIDATE_CONTRACT_IN_CODE, SUMMARY_FORMAT
 from .fork_worker import (
     FORK_JSON,
     HTTP_TIMEOUT_S,
@@ -131,62 +124,44 @@ PARTS_HEAD = (
 )
 #: The characters of a part's first line the part list shows.
 PART_GIST_CHARS = 80
-#: What the fork writes for the harness to capture the attempt at once (:mod:`..captures`): the procedure that produced
-#: the result handed back, and what broke. One text for both instruction forms.
+#: What the fork writes for the harness to capture (:mod:`..captures`): the procedure that did the work, in the form the
+#: work needed (``value``, ``state`` or ``state_env``: :mod:`..capture_trace`), returning a result only when one was
+#: handed back; and what broke.
 CAPTURE_BULLETS = (
-    "- `procedure.py`, when your reply handed back a result: the procedure that produced it, from code that ran here, "
-    "as functions with docstrings. `read_input(request)` takes the request and returns the value your procedure "
-    "worked on: `request` is the whole request text, and `request.data` is the list of the JSON objects and arrays "
-    "it contains, in order of appearance. Where the request carries the values as JSON, read them from "
-    "`request.data`, not from line positions or the prose around them; where your code used a value you typed into "
-    "a cell, read it from the request instead. "
-    "`run(value)` returns the result you handed back. If the request states conditions on its input or on its "
-    "result, write them as `applies(value)` and `holds(value, result)`, each returning True or False. Write it "
-    "whether or not the result was accepted; say which in its docstring, quoting the line of the record that shows "
-    'it, or write "not shown".\n'
+    "- `procedure.py`: the procedure that did this work, from code that ran here, as functions with docstrings, in "
+    "the form that fits what the work needed:\n"
+    "  - `run(state, env)` when the work acted through tools. `env` is this episode's tool namespace: "
+    "`env.<channel>.<method>(...)` makes the call the record lists as an action of that channel and method (the part "
+    "list below shows each action as `<kind> <channel>.<method>`); make every tool call through `env`. `state` is "
+    "the episode so far: `state.request` (the first message), `state.messages` (every message from the user or the "
+    "environment, in order), `state.last` (the latest one) and `state.data` (the JSON objects and arrays those "
+    "messages contain, in order).\n"
+    "  - `run(state)` when the work needed more than the first message and no tool.\n"
+    "  - `read_input(request)` and `run(value)` when the whole job was in the first message: `read_input` takes the "
+    "request (`request` is its text, `request.data` the list of the JSON objects and arrays it contains) and returns "
+    "the value `run` works on.\n"
+    "  `run` returns the result you handed back when you handed one back, and None when the outcome of the work is "
+    "what it did (its tool calls, the files it changed). Where your code used a value you typed into a cell, read it "
+    "from `state` or the request instead. If the work has conditions on its input or its result, write them as "
+    "`applies(x)` and `holds(x, result)`, where `x` is what `run` takes first, each returning True or False. Write it "
+    "whether or not the work was accepted; say which in its docstring, quoting the line of the record that shows it, "
+    'or write "not shown".\n'
     "- `broke.md`: each thing that broke in this attempt and why, one line each, with the part name and a short quote "
     'from the record. Write "none" if nothing broke.\n'
 )
-
+#: The sentence of the instructions that says which calls run: the record's comms calls only (through the fork's relay,
+#: :mod:`unify.agents.fork_relay`); any other tool call gets the reply saying tools are not available
+#: (``fork_worker.TOOL_REPLY``).
+RECORD_CALLS_ONLY = (
+    "Call no tool except the record's: tools.send, tools.messages, tools.wait and tools.who, each a statement of its "
+    "own in a cell (the record's section below says how they work); nothing else runs here."
+)
+#: The fork's instruction: what to write, its limits, and the one block format with an example. The per-reply time is
+#: not stated, since nothing the fork writes can act on it.
 INSTRUCTION = (
     "Your work on this request is finished and your reply has been sent; nothing you write now changes it. "
     "Now write down what would help with similar requests later, as files: write each file as a fenced block in "
-    "your reply, in the format below. Do not call any tool: tools are not available here, and any call gets only a "
-    "reply saying so.\n\n"
-    "What to write:\n"
-    "- `summary.md`: a short account of this episode for a reader who has not seen it, in the format below.\n"
-    "- `candidates/<name>.py`: for code you wrote here that ran and worked and could be reused, a function "
-    "with a docstring. <name> uses only letters, digits and underscores. Only code that actually ran here; never "
-    "say code worked if it did not. " + CANDIDATE_CONTRACT + "\n"
-    "- `cases/<name>.json`, with the same <name>: the inputs that function had in this conversation and the "
-    'outputs it should give, as a JSON list of objects with "inputs" (the list of arguments) and "expected" '
-    "(the return value). Each value must appear in this conversation as it is (a tool's reply, a file's content "
-    "or a cell's printed output), so it can be copied from the record; leave out a case with a value that does "
-    "not.\n"
-    "- `notes.md`: each thing that failed and why, and any other lesson, in general terms so it applies beyond this "
-    "request, each quoting the short line or error message from this conversation it comes from. If nothing here "
-    "is worth keeping, write `notes.md` saying so.\n"
-    + CAPTURE_BULLETS
-    + "\n"
-    + SUMMARY_FORMAT
-    + "\n\n"
-    + NUMBERING
-    + "\n\n"
-    f"Limits: at most {QUOTA_FILES} files and {QUOTA_BYTES // 1024**2} MiB in all are kept. Each reply has "
-    f"{HTTP_TIMEOUT_S:.0f} s. A reply that calls a tool gets the reply saying tools are not available and another "
-    f"turn, up to {TURN_GUARD} turns in all; then the conversation stops.\n\n"
-    "Format: each file is one fenced block. Its opening line is three backticks followed by `path: ` and the "
-    "file's relative path; then the file's full content; then a line of three backticks. If a file itself contains "
-    "a line of three backticks, open and close its block with four. Example:\n\n"
-    + FORMAT_EXAMPLE
-)
-#: The fork's instruction when tools are called from code (``UNIFY_TOOLS_IN_CODE=on``): "no tools" is said once here
-#: and again by the reply a tool call gets (``fork_worker.TOOL_REPLY``), and the per-reply time is not stated, since
-#: nothing the fork writes can act on it.
-INSTRUCTION_IN_CODE = (
-    "Your work on this request is finished and your reply has been sent; nothing you write now changes it. "
-    "Now write down what would help with similar requests later, as files: write each file as a fenced block in "
-    "your reply, in the format below. Do not call tools.\n\n"
+    "your reply, in the format below. " + RECORD_CALLS_ONLY + "\n\n"
     "What to write:\n"
     "- `summary.md`: a short account of this episode for a reader who has not seen it, in the format below.\n"
     "- `candidates/<name>.py`: for code you wrote here that ran and worked and could be reused, a function "
@@ -213,34 +188,7 @@ INSTRUCTION_IN_CODE = (
     "a line of three backticks, open and close its block with four. Example:\n\n"
     + FORMAT_EXAMPLE
 )
-#: What the fork writes for the harness to capture under ``UNIFY_MEMORY_CAPTURE_TRACE=on``: the procedure that did the
-#: work, in the form the work needed (``value``, ``state`` or ``state_env``: :mod:`..capture_trace`), returning a result
-#: only when one was handed back; and what broke. It replaces :data:`CAPTURE_BULLETS` in both instruction forms.
-CAPTURE_BULLETS_TRACE = (
-    "- `procedure.py`: the procedure that did this work, from code that ran here, as functions with docstrings, in "
-    "the form that fits what the work needed:\n"
-    "  - `run(state, env)` when the work acted through tools. `env` is this episode's tool namespace: "
-    "`env.<channel>.<method>(...)` makes the call the record lists as an action of that channel and method (the part "
-    "list below shows each action as `<kind> <channel>.<method>`); make every tool call through `env`. `state` is "
-    "the episode so far: `state.request` (the first message), `state.messages` (every message from the user or the "
-    "environment, in order), `state.last` (the latest one) and `state.data` (the JSON objects and arrays those "
-    "messages contain, in order).\n"
-    "  - `run(state)` when the work needed more than the first message and no tool.\n"
-    "  - `read_input(request)` and `run(value)` when the whole job was in the first message: `read_input` takes the "
-    "request (`request` is its text, `request.data` the list of the JSON objects and arrays it contains) and returns "
-    "the value `run` works on.\n"
-    "  `run` returns the result you handed back when you handed one back, and None when the outcome of the work is "
-    "what it did (its tool calls, the files it changed). Where your code used a value you typed into a cell, read it "
-    "from `state` or the request instead. If the work has conditions on its input or its result, write them as "
-    "`applies(x)` and `holds(x, result)`, where `x` is what `run` takes first, each returning True or False. Write it "
-    "whether or not the work was accepted; say which in its docstring, quoting the line of the record that shows it, "
-    'or write "not shown".\n'
-    "- `broke.md`: each thing that broke in this attempt and why, one line each, with the part name and a short quote "
-    'from the record. Write "none" if nothing broke.\n'
-)
-INSTRUCTION_TRACE = INSTRUCTION.replace(CAPTURE_BULLETS, CAPTURE_BULLETS_TRACE)
-INSTRUCTION_IN_CODE_TRACE = INSTRUCTION_IN_CODE.replace(CAPTURE_BULLETS, CAPTURE_BULLETS_TRACE)
-#: A segment fork's instruction (``UNIFY_MEMORY_IN_EPISODE``, at a checkpoint inside the episode): the same summary and
+#: A segment fork's instruction (``UNIFY_MEMORY=in_episode``, at a checkpoint inside the episode): the same summary and
 #: capture contract, in a short form, for the cells since the last checkpoint; the work goes on after it.
 SEGMENT_FORMAT_EXAMPLE = (
     "```path: summary.md\n"
@@ -263,11 +211,11 @@ SEGMENT_FORMAT_EXAMPLE = (
 SEGMENT_INSTRUCTION = (
     "This is a pause in your work on this request, which goes on after it; nothing you write now changes it. Write "
     "down what would help with similar work later, for the part of the work since the last pause: the cells "
-    "{cells}. Write each file as a fenced block in your reply, in the format below. Do not call tools.\n\n"
+    "{cells}. Write each file as a fenced block in your reply, in the format below. " + RECORD_CALLS_ONLY + "\n\n"
     "What to write:\n"
     "- `summary.md`: a short account of this part of the episode for a reader who has not seen it, in the format "
     "below; its Outcome says the work is not finished, and what the record shows so far.\n"
-    + CAPTURE_BULLETS_TRACE
+    + CAPTURE_BULLETS
     + "\n"
     + SUMMARY_FORMAT
     + "\n\n"
@@ -279,12 +227,6 @@ SEGMENT_INSTRUCTION = (
     "file's relative path; then the file's full content; then a line of three backticks. If a file itself contains "
     "a line of three backticks, open and close its block with four. Example:\n\n"
     + SEGMENT_FORMAT_EXAMPLE
-)
-#: The sentence of :data:`INSTRUCTION_IN_CODE` that forbids tool calls, and what replaces it on the run record.
-NO_TOOLS = "Do not call tools."
-RECORD_CALLS_ONLY = (
-    "Call no tool except the record's: tools.send, tools.messages, tools.wait and tools.who, each a statement of its "
-    "own in a cell (the record's section below says how they work); nothing else runs here."
 )
 WORKER_FILE = Path(__file__).resolve().parent / "fork_worker.py"
 BOX_WORKER = "/s/fork_worker.py"
@@ -303,46 +245,19 @@ ROLLED_FILE = "pass-admission.json"
 
 
 def fork_instruction() -> str:
-    """The fixed instruction appended to the actor's conversation for the fork: what to write, its limits, the one
-    block format with an example, and that tools are not available (:data:`INSTRUCTION_IN_CODE` when tools are
-    called from code). Under ``UNIFY_MEMORY_CAPTURE_TRACE=on`` its capture contract is :data:`CAPTURE_BULLETS_TRACE`
-    (the procedure that did the work, in one of three forms); off, the text is as built."""
-    from unify.common import in_code_switch
-
-    from .switch import capture_trace
-
-    trace = capture_trace(_settings())
-    if not in_code_switch.tools_in_code():
-        return INSTRUCTION_TRACE if trace else INSTRUCTION
-    from unify.common.tool_registry import run_record_on
-
-    text = INSTRUCTION_IN_CODE_TRACE if trace else INSTRUCTION_IN_CODE
-    if run_record_on():
-        # the run record: the comms calls run (through the fork's relay); nothing else does
-        if text.count(NO_TOOLS) != 1:
-            raise ValueError("the fork's instruction no longer says once that it calls no tools")
-        return text.replace(NO_TOOLS, RECORD_CALLS_ONLY)
-    return text
+    """The fixed instruction appended to the actor's conversation for the fork (:data:`INSTRUCTION`)."""
+    return INSTRUCTION
 
 
 def segment_instruction(first_cell: int | None, last_cell: int | None) -> str:
-    """A segment fork's instruction (:data:`SEGMENT_INSTRUCTION`) for the cells from *first_cell* to *last_cell*; on
-    the run record its "no tools" sentence allows the record's comms calls, as the episode fork's does."""
+    """A segment fork's instruction (:data:`SEGMENT_INSTRUCTION`) for the cells from *first_cell* to *last_cell*."""
     if first_cell is None or last_cell is None:
         cells = "since the last pause (no cell ran in it)"
     elif first_cell == last_cell:
         cells = f"`cell:{first_cell}`"
     else:
         cells = f"`cell:{first_cell}` to `cell:{last_cell}`"
-    text = SEGMENT_INSTRUCTION.replace("{cells}", cells)
-    from unify.common import in_code_switch
-    from unify.common.tool_registry import run_record_on
-
-    if in_code_switch.tools_in_code() and run_record_on():
-        if text.count(NO_TOOLS) != 1:
-            raise ValueError("the segment fork's instruction no longer says once that it calls no tools")
-        return text.replace(NO_TOOLS, RECORD_CALLS_ONLY)
-    return text
+    return SEGMENT_INSTRUCTION.replace("{cells}", cells)
 
 
 def _first_line(text: object) -> str:
@@ -437,7 +352,7 @@ def request_doc(
     inner = getattr(handle, "_inner", None) or handle
     from .switch import in_episode
 
-    # UNIFY_MEMORY_IN_EPISODE=on: a compaction was a pause (its segment fork covered the cells before it), so the forks
+    # UNIFY_MEMORY=in_episode: a compaction was a pause (its segment fork covered the cells before it), so the forks
     # after it continue the compacted conversation; off, a compacted session is not forked, as built
     kw = {"allow_compressed": True} if in_episode(_settings()) else {}
     source, why = _session_fork_source(inner, getattr(handle, "_actor", None), **kw)
@@ -564,16 +479,11 @@ class Reservation:
 def reserve(
     paths: Any,
     eid: str,
-    settings: Any,
     progress: Callable[[str], None] = lambda _m: None,
 ) -> Reservation | None:
-    """With the fork on, make the episode's fresh staging dir and lock it, before the episode is recorded, so that an
-    admission check never sees a recorded episode without its dir. Off, or when the dir exists: None.
+    """Make the episode's fresh staging dir and lock it, before the episode is recorded, so that an admission check
+    never sees a recorded episode without its dir. None when the dir exists.
     """
-    from . import switch
-
-    if not (switch.library_enabled(settings) and switch.library_fork(settings)):
-        return None
     staging = staging_dir(paths, eid)
     try:
         staging.parent.mkdir(parents=True, exist_ok=True)
@@ -711,12 +621,8 @@ class Admission:
         atomic_json(self.file, {"rolled": list(dict.fromkeys(eids))})
 
 
-def admission(paths: Any, settings: Any) -> Admission | None:
-    """The admission rule when the fork is on, else None (every recorded episode is admitted)."""
-    from . import switch
-
-    if not (switch.library_enabled(settings) and switch.library_fork(settings)):
-        return None
+def admission(paths: Any) -> Admission:
+    """The admission rule: an episode enters a pass once its fork has settled."""
     return Admission(paths.state_dir)
 
 
@@ -823,7 +729,6 @@ def start(
     paths: Any,
     handle: Any,
     eid: str,
-    settings: Any,
     *,
     popen: Callable[..., Any] = subprocess.Popen,
     progress: Callable[[str], None] = lambda _m: None,
@@ -831,33 +736,27 @@ def start(
     parts: str | None = None,
     instruction: str | None = None,
 ) -> Fork | None:
-    """Start the episode's fork, or record why not; never raises. Off: returns None and touches nothing. Without a
-    *reservation* (made before the episode was recorded), one is made here. *parts* is the recorded episode's part
-    list (:func:`part_list`), which follows the instruction; without it the fork names parts by
-    :data:`NUMBERING` alone. *instruction* replaces the episode fork's (a segment fork's, :func:`segment_instruction`;
-    ``UNIFY_MEMORY_IN_EPISODE``)."""
-    from . import switch
-
-    if not (switch.library_enabled(settings) and switch.library_fork(settings)):
-        return None
+    """Start the episode's fork, or record why not; never raises. Without a *reservation* (made before the episode was
+    recorded), one is made here. *parts* is the recorded episode's part list (:func:`part_list`), which follows the
+    instruction; without it the fork names parts by :data:`NUMBERING` alone. *instruction* replaces the episode
+    fork's (a segment fork's, :func:`segment_instruction`; ``UNIFY_MEMORY=in_episode``)."""
     if reservation is not None and reservation.eid != eid:
         reservation.abandon("error: reserved for another episode")
         reservation = None
     if reservation is None:
-        reservation = reserve(paths, eid, settings, progress)
+        reservation = reserve(paths, eid, progress)
         if reservation is None:
             return None
     staging = reservation.staging
     try:
         r, why = route()
         doc = None
-        # the run record (UNIFY_AGENTS_RUN_RECORD=on): the fork's place on it, named before its message is written
-        on_record = run_record_name(paths, eid, settings)
-        if on_record is not None:
-            from unify.agents.run_record import prompt_lines
+        # the fork's place on the run record, named before its message is written
+        on_record = run_record_name(paths, eid)
+        from unify.agents.run_record import prompt_lines
 
-            lines = prompt_lines(on_record[1], "fork")
-            parts = f"{parts}\n\n{lines}" if parts else lines
+        lines = prompt_lines(on_record[1], "fork")
+        parts = f"{parts}\n\n{lines}" if parts else lines
         if r is not None:
             doc, why = request_doc(handle, eid, *r, parts=parts, instruction=instruction)
         if doc is None:
@@ -865,46 +764,40 @@ def start(
             reservation.abandon(f"refused: {why}")
             progress(f"memory: fork refused: {why}")
             return None
-        if switch.metering_on(settings):
-            # metering: the fork's calls carry its episode, and a segment fork its segment (ids only), for the
-            # proxy's journal
-            episode, segment = split_segment(eid)
-            doc["headers"]["x-unify-episode"] = episode
-            if segment is not None:
-                doc["headers"]["x-unify-segment"] = str(segment)
-        box = box_argv(staging, die_with_parent=switch.library_wait_slot(settings))
+        # metering: the fork's calls carry its episode, and a segment fork its segment (ids only), for the lane's
+        # journal
+        episode, segment = split_segment(eid)
+        doc["headers"]["x-unify-episode"] = episode
+        if segment is not None:
+            doc["headers"]["x-unify-segment"] = str(segment)
+        box = box_argv(staging, die_with_parent=True)
         log = Path(paths.state_dir) / "fork-worker.log"
-        if on_record is None:
-            data = json.dumps(doc, default=str).encode("utf-8")
-            fork = launch(reservation, box, data, log, popen=popen)
-        else:
-            # the relay starts the box with --comms and answers its comms calls from the run record
-            spec = {
-                "home": str(paths.home),
-                "name": on_record[1],
-                "argv": [*box, "--comms"],
-                "doc": doc,
-                "lock_fd": reservation.fd,
-                "log": str(log),
-                "frozen": switch.memory_frozen(settings),
-            }
-            data = json.dumps(spec, default=str).encode("utf-8")
-            try:
-                # least privilege: by path through relay_boot (never the unify package's __init__), in a folder of its
-                # own with an empty HOME, and the minimal environment
-                folder = relay_folder(paths, on_record[1])
-                fork = launch(
-                    reservation,
-                    relay_argv(),
-                    data,
-                    log,
-                    popen=popen,
-                    env=relay_env(folder / RELAY_HOME),
-                    cwd=folder,
-                )
-            except BaseException:
-                _leave(on_record)
-                raise
+        # the relay starts the box with --comms and answers its comms calls from the run record
+        spec = {
+            "home": str(paths.home),
+            "name": on_record[1],
+            "argv": [*box, "--comms"],
+            "doc": doc,
+            "lock_fd": reservation.fd,
+            "log": str(log),
+        }
+        data = json.dumps(spec, default=str).encode("utf-8")
+        try:
+            # least privilege: by path through relay_boot (never the unify package's __init__), in a folder of its own
+            # with an empty HOME, and the minimal environment
+            folder = relay_folder(paths, on_record[1])
+            fork = launch(
+                reservation,
+                relay_argv(),
+                data,
+                log,
+                popen=popen,
+                env=relay_env(folder / RELAY_HOME),
+                cwd=folder,
+            )
+        except BaseException:
+            _leave(on_record)
+            raise
         progress("memory: fork started")
         return fork
     except (
@@ -915,15 +808,14 @@ def start(
         return None
 
 
-#: The fork's relay to the run record (``UNIFY_AGENTS_RUN_RECORD=on``).
+#: The fork's relay to the run record.
 RELAY_MODULE = "unify.agents.fork_relay"
 #: The relay's start file: run by path with ``-I`` (no ``PYTHONPATH``, no current folder on the path), it never runs
 #: the ``unify`` package's ``__init__`` and refuses every module that reads provider settings or keys.
 RELAY_BOOT = Path(__file__).resolve().parents[2] / "agents" / "relay_boot.py"
 #: The only names the relay's environment takes from this process's (least privilege): the locale and the time zone.
 #: ``PATH`` is fixed, ``HOME`` is the relay's own empty folder; no route base URL, token or key name ever reaches it,
-#: nor ``PYTHONPATH``. The fork's request, its auth header included, goes on the relay's stdin, and whether memory is
-#: frozen with it.
+#: nor ``PYTHONPATH``. The fork's request, its auth header included, goes on the relay's stdin.
 RELAY_ENV_NAMES = ("LANG", "LC_ALL", "LC_CTYPE", "TZ")
 #: The relay's HOME, an empty folder inside its own folder (removed when it ends).
 RELAY_HOME = "relay-home"
@@ -948,13 +840,9 @@ def relay_env(home: Path | str) -> dict[str, str]:
     return env
 
 
-def run_record_name(paths: Any, eid: str, settings: Any) -> tuple[Any, str] | None:
-    """With the run record on: the fork put on the roster for its relay, as ``fork-<hex of the episode>`` with its
-    episode, and its name; None while off. The relay takes the place over when it starts (``attach``)."""
-    from . import switch
-
-    if not switch.run_record_on(settings):
-        return None
+def run_record_name(paths: Any, eid: str) -> tuple[Any, str]:
+    """The fork put on the run record's roster for its relay, as ``fork-<hex of the episode>`` with its episode, and its
+    name. The relay takes the place over when it starts (``attach``)."""
     from unify.agents.record import PostRefused
     from unify.agents.run_record import join_run_record
 
@@ -991,20 +879,15 @@ def _leave(on_record: tuple[Any, str] | None) -> None:
 
 def finish(
     fork: Fork | None,
-    settings: Any,
     progress: Callable[[str], None] = lambda _m: None,
 ) -> None:
-    """After the reply: hand over the request; with ``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on``, wait for the fork (bounded
-    by :data:`WAIT_GUARD_S`, operational). A fork that leaves no ``fork.json`` gets one: ``"timeout"`` when the wait
-    guard stopped it, ``"lost"`` when it ended without one.
+    """After the reply: hand over the request and wait for the fork (bounded by :data:`WAIT_GUARD_S`, operational). A
+    fork that leaves no ``fork.json`` gets one: ``"timeout"`` when the wait guard stopped it, ``"lost"`` when it ended
+    without one.
     """
-    from . import switch
-
     if fork is None:
         return
     fork.writer.join(WRITE_GUARD_S)
-    if not switch.library_wait_slot(settings):
-        return
     try:
         fork.proc.wait(timeout=WAIT_GUARD_S)
     except subprocess.TimeoutExpired:

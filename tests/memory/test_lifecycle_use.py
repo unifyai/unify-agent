@@ -42,24 +42,24 @@ def _visible(source, label, regime):
 
 def test_hidden_checker_and_no_signal_regime_count_nothing():
     fail = [_visible("checker", "fail", "dense")]
-    assert lc.counted_signals(fail, "dense", checker_visible=False) == (False, False)
-    assert lc.counted_signals(fail, "dense", checker_visible=True) == (False, True)
+    assert lc.counted_signals(fail, "dense") == (False, False)
+    assert lc.counted_signals(fail, "dense") == (False, True)
     ok = [_visible("checker", "pass", "sparse")]
-    assert lc.counted_signals(ok, "sparse", checker_visible=True) == (True, False)
+    assert lc.counted_signals(ok, "sparse") == (True, False)
     masked = [
         _visible("checker", "fail", "implicit"),
     ]  # the regime cannot observe a checker
-    assert lc.counted_signals(masked, "implicit", checker_visible=True) == (
+    assert lc.counted_signals(masked, "implicit") == (
         False,
         False,
     )
     re_ask = [Signal("s", "e1", "recurrence", "re_ask", "t", regime="implicit")]
-    assert lc.counted_signals(re_ask, "implicit", checker_visible=False) == (
+    assert lc.counted_signals(re_ask, "implicit") == (
         False,
         True,
     )
     env = [Signal("s", "e1", "environment", "error", "t", regime="none")]
-    assert lc.counted_signals(env, "none", checker_visible=True) == (False, False)
+    assert lc.counted_signals(env, "none") == (False, False)
 
 
 def test_reading_the_use_record_and_the_evidence_index_agree(tmp_path):
@@ -78,8 +78,8 @@ def test_reading_the_use_record_and_the_evidence_index_agree(tmp_path):
     )
     sig = Signal("s1", "e1", "reader", "correct", "t", regime="implicit")
     ev.add_signal(sig)
-    direct = lc.facts_from_use("e1", A, "implicit", rec, [sig], checker_visible=False)
-    (indexed,) = lc.facts_from_evidence(ev, checker_visible=False)
+    direct = lc.facts_from_use("e1", A, "implicit", rec, [sig])
+    (indexed,) = lc.facts_from_evidence(ev)
     assert direct == indexed
     assert direct.items == {
         PD: lc.ItemUse(True, 2, False, False, False),
@@ -162,7 +162,6 @@ def test_a_lookup_alone_is_not_a_use():
         "dense",
         _use_rec({PD: {"referenced": 2}}),
         [],
-        checker_visible=False,
     )
     assert f.items == {} and lc.aggregate_use([f]) == {}
 
@@ -171,14 +170,13 @@ def test_a_checker_verdict_counts_only_when_the_signal_is_marked_visible():
     """A grader ``checker pass`` without ``visible_to_actor`` is ignored even when the run allows
     visible checker signals; a flagged pass counts."""
     unflagged = [Signal("s", "e1", "checker", "pass", "t", regime="dense")]
-    assert lc.counted_signals(unflagged, "dense", checker_visible=True) == (
+    assert lc.counted_signals(unflagged, "dense") == (
         False,
         False,
     )
     assert lc.counted_signals(
         [_visible("checker", "pass", "dense")],
         "dense",
-        checker_visible=True,
     ) == (True, False)
 
 
@@ -194,7 +192,7 @@ def test_a_call_that_returned_is_a_use_and_an_import_alone_is_only_seen():
             TOK: {"called": 1, "errored": 1},  # its only call raised
         },
     )
-    f = lc.facts_from_use("e1", A, "dense", rec, [], checker_visible=False)
+    f = lc.facts_from_use("e1", A, "dense", rec, [])
     assert f.items == {
         PD: lc.ItemUse(False, 0, False, False, False, seen=True),
         WEEK: lc.ItemUse(True, 2, True, False, False),

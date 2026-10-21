@@ -1,4 +1,4 @@
-"""The fork's relay to the run record (``UNIFY_AGENTS_RUN_RECORD=on``): a host-side process between the fork's box and
+"""The fork's relay to the run record: a host-side process between the fork's box and
 the record.
 
 The fork's worker (:mod:`unify.memory.integration.fork_worker`) runs in a box that binds no state directory, so it
@@ -82,12 +82,8 @@ async def relay(spec: dict) -> int:
     from unify.agents.run_record import RunRecordView, join_run_record
     from unify.memory.integration.fork_worker import WALL_GUARD_S
 
-    from unify.agents import run_record as _rr
-
     doc = spec["doc"]
     _register_token(doc)
-    # whether memory is frozen comes with the spec: the relay never reads the settings
-    _rr.FROZEN = bool(spec.get("frozen"))
     name = str(spec["name"])
     record = join_run_record(spec["home"])
     record.attach(name)

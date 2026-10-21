@@ -289,7 +289,7 @@ def test_episodes_with_different_regimes_in_one_run_are_each_judged_in_their_own
             _post(stores, sha, s, regime)
     facts = {
         f.episode_id: f
-        for f in lifecycle.facts_from_evidence(stores.evidence, checker_visible=True)
+        for f in lifecycle.facts_from_evidence(stores.evidence)
     }
     assert {e: f.regime for e, f in facts.items()} == expected
     judged = {
@@ -342,7 +342,7 @@ def test_a_late_contrary_verdict_changes_the_regime_reopens_and_recomputes_the_u
     sha, ep = _record(stores, "e1", regime="none", minute=0, ended=ENDED)
     stores.evidence.record_regime("e1", "none", "nothing", ENDED)
     cid = _capture(captures.store_dir(state), "e1")
-    before = lifecycle.facts_from_evidence(stores.evidence, checker_visible=True)[0]
+    before = lifecycle.facts_from_evidence(stores.evidence)[0]
     assert [
         trust.judge(u)[0] for u in lifecycle.trust_uses(before, before.items[ITEM])
     ] == [trust.CLEAN]
@@ -361,7 +361,6 @@ def test_a_late_contrary_verdict_changes_the_regime_reopens_and_recomputes_the_u
         entry,
         1,
         "e9",
-        checker_visible=True,
         lookup=EpisodeLookup(stores),
     )
     assert got == {
@@ -405,7 +404,7 @@ def test_a_late_contrary_verdict_changes_the_regime_reopens_and_recomputes_the_u
         "sparse",
     )
     # the item's use in that episode is recomputed from the evidence: now failed on the late contrary signal
-    after = lifecycle.facts_from_evidence(stores.evidence, checker_visible=True)[0]
+    after = lifecycle.facts_from_evidence(stores.evidence)[0]
     assert [
         trust.judge(u)[:2] for u in lifecycle.trust_uses(after, after.items[ITEM])
     ] == [(trust.FAILED, "negative")]
@@ -749,13 +748,13 @@ def test_a_hidden_graders_verdict_never_judges_a_capture_under_the_switch():
     ep = _ep(episode_id="e1", regime="sparse")
     shown = _sig("e1", 1, "pass", visible=True, timing=IN_EPISODE)
     hidden = _sig("e1", 2, "fail", visible=False, timing=IN_EPISODE)
-    got = captures.judged_outcome([shown, hidden], ep, "sparse", checker_visible=True)
+    got = captures.judged_outcome([shown, hidden], ep, "sparse")
     assert got["positive"] and not got["contrary"]
-    alone = captures.judged_outcome([hidden], ep, "sparse", checker_visible=True)
+    alone = captures.judged_outcome([hidden], ep, "sparse")
     assert not alone["positive"] and not alone["contrary"]
     built = captures.judged_outcome(
-        [_sig("e1", 1, "pass", visible=True), _sig("e1", 2, "fail", visible=False)], ep, "dense", checker_visible=True
+        [_sig("e1", 1, "pass", visible=True), _sig("e1", 2, "fail", visible=False)], ep, "dense"
     )
     assert built == captures.judged_outcome(
-        [_sig("e1", 2, "fail", visible=False)], ep, "dense", checker_visible=True
+        [_sig("e1", 2, "fail", visible=False)], ep, "dense"
     )

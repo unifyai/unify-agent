@@ -151,7 +151,7 @@ def test_a_completed_attempt_is_captured_with_its_signature_and_holds_no_identif
     assert [e["capture_id"] for e in events] == [cid]
     assert cp.episode_row(store, "e1")["capture_id"] == cid
     # captured once: a second call for the same settled episode does nothing
-    assert cp.capture_settled(tmp_path, ["e1"], episode=lambda e: _ep(e), signals=lambda e: [], checker_visible=True) == []
+    assert cp.capture_settled(tmp_path, ["e1"], episode=lambda e: _ep(e), signals=lambda e: []) == []
 
 
 def test_a_key_shaped_procedure_is_refused_before_anything_runs(tmp_path):

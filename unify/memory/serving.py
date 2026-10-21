@@ -52,7 +52,7 @@ _FROM_JUDGE = {
 WITHDRAWN_STATUSES = ("retired", "superseded")
 
 
-def _contrary_signals(evidence: Any, eid: str, regime: str, checker_visible: bool) -> list[Any]:
+def _contrary_signals(evidence: Any, eid: str, regime: str) -> list[Any]:
     """The contrary signals of episode *eid* that its regime observes (as :func:`.lifecycle.counted_signals` counts
     them)."""
     from .signals import _CONTRARY, REGIME_SOURCES
@@ -64,19 +64,19 @@ def _contrary_signals(evidence: Any, eid: str, regime: str, checker_visible: boo
     for s in evidence.signals_for(eid):
         if s.source not in allowed or (s.source, s.label) not in _CONTRARY:
             continue
-        if s.source == "checker" and not (checker_visible and s.visible_to_actor is True):
+        if s.source == "checker" and not ((s.visible_to_actor is True)):
             continue
         out.append(s)
     return out
 
 
-def _failure_row(evidence: Any, eid: str, pin: str, regime: str, why: str, checker_visible: bool) -> dict:
+def _failure_row(evidence: Any, eid: str, pin: str, regime: str, why: str) -> dict:
     """One failure-record row of a failed use in episode *eid* (pin *pin*), failed on *why* (:func:`.trust.judge`'s
     name)."""
     kind = _FROM_JUDGE.get(why, "contrary_signal")
     ref = f"episode:{eid}"
     if kind == "contrary_signal":
-        contrary = _contrary_signals(evidence, eid, regime, checker_visible)
+        contrary = _contrary_signals(evidence, eid, regime)
         if contrary:
             last = max(contrary, key=lambda s: (s.ts, s.signal_id))
             ref = f"signal:{last.signal_id}"
@@ -183,7 +183,6 @@ def _labels() -> Any:
 def item_evidence(
     stores: Any,
     *,
-    checker_visible: bool,
     captures: Mapping[str, dict] | None = None,
     home: Path | str | None = None,
     labels: Any = None,
@@ -201,7 +200,7 @@ def item_evidence(
     ev = stores.evidence
     pins, regimes, use_pins = _pins(ev), _regimes(ev), _use_pins(ev)
     out: dict[str, dict] = {}
-    facts = lifecycle.facts_from_evidence(ev, checker_visible=checker_visible)
+    facts = lifecycle.facts_from_evidence(ev)
     for item in sorted({i for f in facts for i in f.items}):
         rows: list[dict] = []
         seen: set[tuple] = set()
@@ -214,8 +213,8 @@ def item_evidence(
                 if kind != trust.FAILED or (f.episode_id, why) in seen:
                     continue
                 seen.add((f.episode_id, why))
-                served = served_pin(use_pins.get((f.episode_id, item)), why or "", f.memory_main)
-                rows.append(_failure_row(ev, f.episode_id, served, f.regime, why or "", checker_visible))
+                served = served_pin(use_pins.get((f.episode_id, item)), why, f.memory_main)
+                rows.append(_failure_row(ev, f.episode_id, served, f.regime, why))
         basis, counts = lifecycle.evidence_basis(item, facts)
         out[item] = {"failure_record": rows, "status_basis": basis, "counts": counts}
     for cid, doc in sorted((captures or {}).items()):
@@ -230,8 +229,7 @@ def item_evidence(
                 continue
             seen.add((x.episode, why))
             rows.append(
-                _failure_row(ev, x.episode, pins.get(x.episode, ""), regimes.get(x.episode, x.regime), why or "",
-                             checker_visible),
+                _failure_row(ev, x.episode, pins.get(x.episode, ""), regimes.get(x.episode, x.regime), why),
             )
         out["capture:" + cid] = {
             "failure_record": rows,

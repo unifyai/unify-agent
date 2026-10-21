@@ -1,4 +1,4 @@
-"""The attention ledger: everything that needs the writer's attention, read at least once (``UNIFY_MEMORY_ATTENTION_LEDGER``).
+"""The attention ledger: everything that needs the writer's attention, read at least once.
 
 **What it is.** ``<state>/memory-attention/ledger.jsonl`` is an append-only list of rows, written by the harness only
 (every write holds ``flock(ledger.lock)``, so the writer service and the request processes may both write; no box binds
@@ -103,7 +103,7 @@ HAND_ORDER: tuple[str, ...] = (
     "deferred",
     "repeated_use",
 )
-#: Entries handed to one pass (``UNIFY_MEMORY_LEDGER_K``); a run constant, the same in every world.
+#: Entries handed to one pass; a run constant, the same in every world.
 K = 4
 #: The passes whose hands set the age backstop.
 STARVATION_PASSES = 10
@@ -1819,14 +1819,13 @@ class HomeSources:
     (use facts, signals, refused passes), the episode records (end times) and the run record. Opened lazily; nothing
     is written but the end-time cache (``sync-state.json``)."""
 
-    def __init__(self, home: Path | str, *, state_dir: Path | str | None = None, checker_visible: bool | None = None):
+    def __init__(self, home: Path | str, *, state_dir: Path | str | None = None):
         from .integration.paths import Paths
 
         self.paths = Paths.under(Path(home))
         self.state_dir = Path(state_dir) if state_dir is not None else self.paths.state_dir
         self._stores: Any = None
         self._lookup: Any = None
-        self._checker_visible = checker_visible
         self._facts: list | None = None
 
     # the stores, opened once
@@ -1841,18 +1840,6 @@ class HomeSources:
         """:func:`episode_resolver` for this home: recorded episodes from the evidence index, segment records under
         the state dir."""
         return episode_resolver(self.state_dir, indexed_by(self.stores().evidence))
-
-    def _visible(self) -> bool:
-        if self._checker_visible is None:
-            try:
-                from unify.settings import SETTINGS
-
-                from .integration.switch import checker_visible
-
-                self._checker_visible = checker_visible(SETTINGS)
-            except Exception:  # noqa: BLE001
-                self._checker_visible = False
-        return bool(self._checker_visible)
 
     def settled_forks(self) -> list[SettledFork]:
         from . import staging as _staging
@@ -1895,7 +1882,7 @@ class HomeSources:
         if self._facts is None:
             from .lifecycle import facts_from_evidence
 
-            self._facts = facts_from_evidence(self.stores().evidence, checker_visible=self._visible())
+            self._facts = facts_from_evidence(self.stores().evidence)
         return self._facts
 
     def use_failures(self) -> list[UseFailure]:

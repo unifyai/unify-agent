@@ -156,9 +156,7 @@ class EpisodeUse:
 
 def counted_signals(
     signals: Iterable[Signal],
-    regime: str,
-    *,
-    checker_visible: bool,
+    regime: str
 ) -> tuple[bool, bool]:
     """``(positive, negative)`` for one episode, from the signals the lifecycle may use (module docstring).
 
@@ -174,7 +172,7 @@ def counted_signals(
         if s.source not in allowed:
             continue
         if s.source == "checker" and not (
-            checker_visible and s.visible_to_actor is True
+            (s.visible_to_actor is True)
         ):
             continue
         positive |= (s.source, s.label) in _SUPPORT
@@ -191,9 +189,7 @@ def facts_from_use(
     memory_main: str,
     regime: str,
     memory_use: Any,
-    signals: Iterable[Signal],
-    *,
-    checker_visible: bool,
+    signals: Iterable[Signal]
 ) -> EpisodeUse:
     """One episode's facts from its use record (``memory_use.json``) and its signals. An item with neither a
     use nor an error (a lookup or a bare reference) is left out."""
@@ -220,7 +216,6 @@ def facts_from_use(
     positive, negative = counted_signals(
         signals,
         regime,
-        checker_visible=checker_visible,
     )
     return EpisodeUse(
         eid,
@@ -252,7 +247,6 @@ def _outcome_rows(eid: str, regime: str, rows: Any) -> tuple:
 def facts_from_evidence(
     ev: EvidenceStore,
     *,
-    checker_visible: bool,
     eids: Iterable[str] | None = None,
 ) -> list[EpisodeUse]:
     """Every indexed episode's facts (only *eids* when given), in recording order, from the evidence store's
@@ -277,13 +271,13 @@ def facts_from_evidence(
         "runtime_ok, runtime_refused, runtime_errored FROM item_use ORDER BY episode_id, item",
     ):
         u = _item_use(
-            int(imported or 0),
-            int(called or 0),
-            int(refused or 0),
-            int(errored or 0),
+            int(imported),
+            int(called),
+            int(refused),
+            int(errored),
             bool(unknown),
             (
-                (int(r_ok or 0), int(r_refused or 0), int(r_errored or 0))
+                (int(r_ok), int(r_refused), int(r_errored))
                 if basis
                 else None
             ),
@@ -298,15 +292,14 @@ def facts_from_evidence(
             continue
         positive, negative = counted_signals(
             ev.signals_for(eid),
-            regime or "",
-            checker_visible=checker_visible,
+            regime,
         )
         items = by_episode.get(eid, {})
         out.append(
             EpisodeUse(
                 eid,
-                main or "",
-                regime or "",
+                main,
+                regime,
                 positive,
                 negative,
                 dict(sorted(items.items())),
@@ -1111,7 +1104,7 @@ def use_pins(ev: EvidenceStore) -> dict[tuple[str, str], list[tuple[str, int, in
     return out
 
 
-def label_inputs(stores: Any, *, checker_visible: bool) -> dict[str, Any]:
+def label_inputs(stores: Any) -> dict[str, Any]:
     """What the evidence labels are built from (:func:`_labels`): the stated tests by item, the passes' order, and
     each item's failure record and status basis as serving gives them (:func:`.serving.item_evidence`: one row per
     failed use with the version served when it was called, why, a late contrary signal told apart, and the actors'
@@ -1124,7 +1117,7 @@ def label_inputs(stores: Any, *, checker_visible: bool) -> dict[str, Any]:
     order = {pid: i for i, (pid,) in enumerate(ev.db.execute("SELECT pass_id FROM passes ORDER BY rowid"))}
     try:
         found = serving.item_evidence(
-            stores, checker_visible=checker_visible, home=stores.paths.home, labels=lambda _item: None,
+            stores, home=stores.paths.home, labels=lambda _item: None,
         )
     except Exception:  # noqa: BLE001 - the labels then carry no failure record, never the rest
         found = {}
@@ -1327,7 +1320,7 @@ def consolidate_records(
         i: set(order[pos[c] :]) if c in pos else set(order)
         for i, c in changed_at.items()
     }
-    facts = facts_from_evidence(ev, checker_visible=checker_visible)
+    facts = facts_from_evidence(ev)
     records, changes = next_records(
         items=items,
         prev=prev,
@@ -1353,7 +1346,7 @@ def consolidate_records(
         # a procedure landed from a capture: its capture, reader, signature, applies and recognition (the store's)
         landed=landed_items(captures),
         # UNIFY_MEMORY_IMPURE_ITEMS=on: each record's evidence label; off, the map as built
-        **({"label_inputs": label_inputs(stores, checker_visible=checker_visible)} if labels else {}),
+        **({"label_inputs": label_inputs(stores)} if labels else {}),
         # UNIFY_MEMORY_IN_EPISODE=on: the pin each use was served under (none recorded: as built)
         **({"pins": pins} if (pins := use_pins(ev)) else {}),
         # UNIFY_MEMORY_ATTENTION_LEDGER=on: what the writer's decisions retired or superseded

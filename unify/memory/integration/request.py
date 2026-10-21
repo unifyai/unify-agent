@@ -1,22 +1,17 @@
 """The memory run of the request in progress (one request per CLI process; integration Task 25).
 
-``RequestRun.begin`` opens a run under ``UNIFY_MEMORY=on``: it takes the request lock, exports memory
-``main`` into the scratch export the worker mounts, notes its memory functions (for the use record),
-renders the memory section the system prompt ends with (``index``: under ``UNIFY_MEMORY_SURFACING=index``,
-the default, the v2 per-function index and export line; under ``catalogue``, the constant guide paragraph
-once the library has listed anything in this run, after writing the generated catalogue beside the export:
-README, ``.memory/catalog.json`` with the suspect flags, and the ``memory`` helper, :mod:`..catalogue`) and
-records what it shows in either mode (``shown``: names and a digest, :func:`..analysis.use.record_shown`;
-under ``catalogue`` that is the guide alone), takes the work tree's before snapshot, and opens the scope the
+``RequestRun.begin`` opens a run while memory is on (``UNIFY_MEMORY`` ``on`` or ``in_episode``): it takes the request
+lock, applies the writer's landed passes, writes the read-only copy of memory ``main`` the worker mounts, notes its
+items (for the use record), renders the memory section the system prompt ends with (the librarian's constant
+pointer, :func:`.prompt.render_memory_section`), takes the work tree's before snapshot, and opens the scope the
 actor runs in (its transcript continues the episode id and model costs are recorded). Before that, each episode
 journal a process that died mid-request left is recorded as an incomplete episode, and this request's journal is
 opened: the transcript's lines, kept turn by turn until the episode is recorded (:mod:`.journal`). ``finish`` records
-the request as one episode (with ``UNIFY_MEMORY_DIALOGUE`` set, its transcript's dialogue actions too:
-:mod:`.adapters.dialogue`), with how it used the library (``memory_use.json``, indexed in the evidence
-store's ``item_use`` table), removes the journal, and runs the consolidation passes that are due, blocking; it never
-raises (an episode that could not be recorded keeps its journal, recorded as incomplete at the next start). The
-passes' start and end events go to the CLI's ``--jsonl`` output when it has one; the consolidation driver
-appends them to the state directory's ``events.jsonl`` (``Paths.events``) either way. ``abort`` cleans up
+the request as one episode (with its transcript's dialogue actions: :mod:`.adapters.dialogue`), with how it used the
+library (``memory_use.json``, indexed in the evidence store's ``item_use`` table), removes the journal, starts the
+episode-end fork and makes sure the writer service is up; it never raises (an episode that could not be recorded keeps
+its journal, recorded as incomplete at the next start). The service's events go to the CLI's ``--jsonl`` output when
+it has one, and to the state directory's ``events.jsonl`` (``Paths.events``) either way. ``abort`` cleans up
 and records nothing now: its journal stays, and the next start records it as an incomplete episode. The harness hooks read the current run (``current()``) for ``index``
 and ``paths``.
 
@@ -50,9 +45,8 @@ _CURRENT: Any = None
 #: ``_build_llm_client``'s ``reasoning_effort`` default).
 CLIENT_DEFAULT_EFFORT = "high"
 LOCK_TIMEOUT_S = 60.0
-#: Library mode: the evidence store's busy wait while a pass worker shares it (async_pass.BUSY_TIMEOUT_S; a
-#: constant here keeps the v2 path free of the async module).
-_LIBRARY_BUSY_TIMEOUT_S = 60.0
+#: The evidence store's busy wait while the writer service shares it.
+_BUSY_TIMEOUT_S = 60.0
 #: The most code-cell statuses a run keeps (use telemetry); every cell of a request fits many times over.
 MAX_STATUSES = 10_000
 #: The most distinct items a request's runtime call counts keep; calls of more are counted as dropped.
@@ -70,7 +64,7 @@ _IMPORT_ERROR = re.compile(
     r"(?:ImportError|ModuleNotFoundError): .*'memory(?:\.[A-Za-z0-9_.]*)?'",
 )
 _ERROR_CHARS = 2000
-#: Library mode: the most library failures a request's use record lists (``library_failures``); later ones are
+#: The most library failures a request's use record lists (``library_failures``); later ones are
 #: counted in ``library_failures_dropped``.
 MAX_LIBRARY_FAILURES = 100
 #: What a library failure is: a library item's call, one of the package's helpers, or a cell whose error was a
@@ -86,7 +80,7 @@ _EXCEPTION_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,99}")
 
 
 class MemoryUnavailable(RuntimeError):
-    """``UNIFY_MEMORY=on`` cannot run here; the message names what to change."""
+    """Memory cannot run here; the message names what to change."""
 
 
 def current() -> Any:
@@ -104,51 +98,9 @@ def actor_model() -> str:
     return resolve_default_model()[0]
 
 
-def check_profile(settings: Any) -> None:
-    """Refuse a run that sets a setting its profile fixes to another value (:func:`.switch.profile_refusal`: the
-    settings are named, never a value)."""
-    from .switch import profile_refusal
-
-    refusal = profile_refusal(settings)
-    if refusal is not None:
-        raise MemoryUnavailable(refusal)
-
-
-def check_library_switches(settings: Any) -> None:
-    """Refuse a library-mode run whose v2 settings contradict its prompts or gate (switch.LIBRARY_CONFLICTS)."""
-    from .switch import library_conflicts
-
-    bad = library_conflicts(settings)
-    if bad:
-        raise MemoryUnavailable(
-            "UNIFY_MEMORY_LIBRARY=on cannot run with "
-            + ", ".join(bad)
-            + ": each is a v2 setting that the library mode's prompts and gate contradict; turn it off",
-        )
-
-
-def writer_effort(actor: str) -> str:
-    """The writer's effort for this run: ``UNIFY_MEMORY_WRITER_EFFORT`` when it fixes one (a declared mismatch
-    ablation), else the actor's (*actor*; the default ``actor``). Always the actor's under the paper profile."""
-    from unify.settings import SETTINGS
-
-    from .switch import paper_profile
-
-    if paper_profile(SETTINGS):
-        return actor
-    value = (
-        str(getattr(SETTINGS, "UNIFY_MEMORY_WRITER_EFFORT", "") or "actor")
-        .strip()
-        .lower()
-    )
-    return actor if value == "actor" else value
-
-
 def actor_effort() -> str:
-    """The actor's reasoning effort for this run, read from the setting the actor's client reads.
-
-    Writer passes run at this effort too unless ``UNIFY_MEMORY_WRITER_EFFORT`` fixes another (:func:`writer_effort`).
-    """
+    """The actor's reasoning effort for this run, read from the setting the actor's client reads. The writer's passes
+    run at this effort too."""
     from unify.common.llm_client import resolve_default_model
 
     return resolve_default_model()[1] or CLIENT_DEFAULT_EFFORT
@@ -198,28 +150,9 @@ def new_episode_id(transcripts_dir: Path) -> str:
             return eid
 
 
-def dialogue_counterpart() -> str:
-    """The dialogue counterpart ``UNIFY_MEMORY_DIALOGUE`` names (``env``), or ``""`` when it is off."""
-    from unify.settings import SETTINGS
-
-    return getattr(SETTINGS, "UNIFY_MEMORY_DIALOGUE", "") or ""
-
-
-def memory_library_on() -> bool:
-    """Whether ``UNIFY_MEMORY_LIBRARY`` is on: the recorders keep full values and the episode is
-    written in record format 2."""
-    from unify.settings import SETTINGS
-
-    from .switch import LIBRARY_MODE, parse_memory_library_mode
-
-    return parse_memory_library_mode(getattr(SETTINGS, LIBRARY_MODE, "") or "") == "on"
-
-
-def librarian_on() -> bool:
-    """Whether ``UNIFY_MEMORY_LIBRARIAN=on`` (the actor asks a librarian which stored items fit)."""
-    from unify.settings import SETTINGS
-
-    return getattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "off") == "on"
+#: The dialogue channel every episode records its transcript's dialogue actions on (each answered reply's action,
+#: paired with the counterpart's next message: :mod:`.adapters.dialogue`).
+DIALOGUE_CHANNEL = "env"
 
 
 # --- rev 2 (PLAN-REV2 item 1): the role dispatcher ------------------------------------------------------------------
@@ -231,18 +164,13 @@ ROLE_DONE = ("answered", "failed", "withdrawn")
 
 
 def start_role_dispatcher(run: Any) -> Any:
-    """With the run record, library mode and the librarian on: seed the librarian role once per run
-    (``run_record.seed_role``: from then on ``@librarian`` resolves to the role) and start this request's dispatcher
-    (:func:`role_dispatcher`) on the running loop. None when any of them is off or no loop runs. Never raises.
+    """Seed the librarian role once per run (``run_record.seed_role``: from then on ``@librarian`` resolves to the
+    role) and start this request's dispatcher (:func:`role_dispatcher`) on the running loop. None when no loop runs.
+    Never raises.
     """
     try:
-        from unify.settings import SETTINGS
-
         from .. import librarian as _lib
-        from .switch import run_record_on
 
-        if not (getattr(run, "library_mode", False) and run_record_on(SETTINGS) and _lib.enabled()):
-            return None
         loop = asyncio.get_running_loop()  # first: with no loop to answer on, the role is not seeded either
         from unify.agents import run_record as rr
 
@@ -319,57 +247,19 @@ async def _role_round(record: Any, home: Any, open_session: Callable[..., Any]) 
             return done  # another process's instance runs: the next round
 
 
-def regime_inferred_on() -> bool:
-    """Whether ``UNIFY_MEMORY_REGIME=inferred`` (or empty under the redesign profile): each episode's regime is
-    inferred from its signals, and late verdicts on earlier episodes are taken (:mod:`.outcomes`)."""
-    from unify.settings import SETTINGS
-
-    from .switch import regime_inferred
-
-    return regime_inferred(SETTINGS)
-
-
-def checker_visible_on() -> bool:
-    """Whether the CLI takes ``{"checker": ...}`` lines: ``UNIFY_MEMORY_LIBRARY`` and
-    ``UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE`` both on, and not the paper profile."""
-    from unify.settings import SETTINGS
-
-    from .switch import CHECKER_VISIBLE, paper_profile, parse_checker_visible
-
-    return (
-        memory_library_on()
-        and not paper_profile(SETTINGS)
-        and parse_checker_visible(getattr(SETTINGS, CHECKER_VISIBLE, "") or "") == "on"
-    )
-
-
-def recorded_dialogue(
-    lines: list[dict],
-    counterpart: str,
-    redactor: Any,
-    library_mode: bool = False,
-) -> list:
-    """The dialogue actions a request's episode records under ``UNIFY_MEMORY_DIALOGUE``: answered replies
-    only, so a reply nothing followed (a single-turn request's final reply) adds no action and leaves the
-    episode as it is with the setting off. With *library_mode* the observation and the payload are kept whole.
-    """
+def recorded_dialogue(lines: list[dict], redactor: Any) -> list:
+    """The dialogue actions a request's episode records: answered replies only, so a reply nothing followed (a
+    single-turn request's final reply) adds no action. The observation and the payload are kept whole."""
     from .adapters import dialogue
 
-    caps = (
-        {
-            "max_observation_chars": None,
-            "max_payload_chars": None,
-            "payload_scan_chars": None,
-        }
-        if library_mode
-        else {}
-    )
     return dialogue.dialogue_actions(
         lines,
-        counterpart,
+        DIALOGUE_CHANNEL,
         redactor=redactor,
         answered_only=True,
-        **caps,
+        max_observation_chars=None,
+        max_payload_chars=None,
+        payload_scan_chars=None,
     )
 
 
@@ -380,7 +270,7 @@ def check_hidden(paths: Any, policy: Any) -> None:
     ]
     if readable:
         raise MemoryUnavailable(
-            "UNIFY_MEMORY needs its state hidden from cells, but the sandbox would let a cell "
+            "memory needs its state hidden from cells, but the sandbox would let a cell "
             f"read {readable}; keep UNIFY_HOME outside the workspace and every mount",
         )
 
@@ -395,18 +285,11 @@ def _export_roots(checkout: Path) -> list[str]:
     return use.roots_of(checkout) + [LIBRARY_MOUNT]
 
 
-def pinned_items(checkout: Path, library_mode: bool = False) -> list[str]:
-    """The ids of the memory functions in the export at *checkout* (listed or not), in id order; with *library_mode* the
-    library-mode function items."""
-    if library_mode:
-        from ..layout import discover
+def pinned_items(checkout: Path) -> list[str]:
+    """The ids of the library's function items in the copy at *checkout* (listed or not), in id order."""
+    from ..layout import discover
 
-        return sorted(f.item_id for f in discover(Path(checkout)).functions)
-    from ..memory_repo import items
-
-    return sorted(
-        it.item_id for it in items(Path(checkout)).items if it.kind == "env_function"
-    )
+    return sorted(f.item_id for f in discover(Path(checkout)).functions)
 
 
 def _count(value: Any) -> int:
@@ -435,21 +318,21 @@ def runtime_calls_empty() -> dict:
 #: (``get``, ``items``; and ``index``, ``show``, ``find``, the aliases kept for one build), the applicability checks
 #: (``match``: the alias and ``Item.fits``) and the tracked calls (``run``: the alias and a function item's call).
 LIBRARY_HELPERS = ("get", "items", "index", "show", "find", "match", "run")
-#: ``memory.ask`` (UNIFY_MEMORY_LIBRARIAN=on): counted with the helpers, and listed only when the librarian is on.
+#: ``memory.ask``: counted with the helpers.
 ASK_HELPER = "ask"
 #: ``memory.ask`` results a request's evidence lists; past this they are counted only.
 MAX_ASK_ROWS = 200
 
 
-def library_helper_calls(runtime: Any, librarian: bool = False) -> dict:
-    """The library-mode use record's ``library_helper_calls``: for each of the package's calls
-    (:data:`LIBRARY_HELPERS`: ``memory.get``, ``memory.items``, the aliases ``memory.index``, ``memory.show``,
-    ``memory.find``, ``memory.match`` with ``Item.fits``, and ``memory.run`` with a function item's call), the calls
-    the audit hook saw, by outcome ({ok, refused, error}). Counts only; zeros when none was seen."""
+def library_helper_calls(runtime: Any) -> dict:
+    """The use record's ``library_helper_calls``: for each of the package's calls (:data:`LIBRARY_HELPERS`:
+    ``memory.get``, ``memory.items``, the aliases ``memory.index``, ``memory.show``, ``memory.find``, ``memory.match``
+    with ``Item.fits``, and ``memory.run`` with a function item's call; and ``memory.ask``), the calls the audit hook
+    saw, by outcome ({ok, refused, error}). Counts only; zeros when none was seen."""
     seen = runtime.get("helpers") if isinstance(runtime, dict) else None
     seen = seen if isinstance(seen, dict) else {}
     out = {}
-    for name in (*LIBRARY_HELPERS, ASK_HELPER) if librarian or ASK_HELPER in seen else LIBRARY_HELPERS:
+    for name in (*LIBRARY_HELPERS, ASK_HELPER):
         row = seen.get(name)
         row = row if isinstance(row, dict) else {}
         out[name] = {k: _count(row.get(k)) for k in RUNTIME_OUTCOMES}
@@ -758,7 +641,7 @@ def _log_no_outcome(call: str, facts: Any) -> None:
 
 
 def _add_asks(acc: dict, calls: dict, cell: int) -> None:
-    """Add one cell's ``memory.ask`` results (UNIFY_MEMORY_LIBRARIAN=on) to *acc*: each with the ids it listed as
+    """Add one cell's ``memory.ask`` results to *acc*: each with the ids it listed as
     fitting, whether it said nothing fits and how many rows the copy's structural catalogue held (rev 2: no reader
     runs, so there are no reader facts); and mark which listed ids were called afterwards (a library call or a run in a
     later cell, or later in the same cell). Ids and labels only. Added under ``asks`` and ``listed_by_ask`` only
@@ -918,7 +801,7 @@ class _Peeking:
 
 class _Undrained:
     """A request run as :func:`.trajectory.assemble` reads it, with its tool recorder only peeked (:class:`_Peeking`):
-    an episode read as it stands, before it ends (``UNIFY_MEMORY_IN_EPISODE``), leaves the recorder as it was."""
+    an episode read as it stands, before it ends (``UNIFY_MEMORY=in_episode``), leaves the recorder as it was."""
 
     def __init__(self, run: Any) -> None:
         self._run = run
@@ -930,14 +813,14 @@ class _Undrained:
 
 
 def label_of(records: Mapping[str, dict] | None, item: str) -> dict | None:
-    """*item*'s evidence label in *records* (its item record's ``label``, ``UNIFY_MEMORY_IMPURE_ITEMS``), or None."""
+    """*item*'s evidence label in *records* (its item record's ``label``), or None."""
     rec = (records or {}).get(item)
     label = rec.get("label") if isinstance(rec, dict) else None
     return label if isinstance(label, dict) else None
 
 
 def with_pins(record: Any, pin_counts: Mapping[str, Mapping[str, Mapping[str, int]]], cell_pins: list[str]) -> Any:
-    """*record* (a use record) with the pin each use was served under (``UNIFY_MEMORY_IN_EPISODE``): each item row gains
+    """*record* (a use record) with the pin each use was served under (``UNIFY_MEMORY=in_episode``): each item row gains
     ``pins`` (pin -> its observed calls, {ok, refused, error}), each ``memory.run``, ``memory.match`` and
     ``memory.ask`` row (``run_rows``, ``match_rows``, ``ask_rows``) its cell's ``pin``, and the record the pins it
     served (``pins_served``). Unchanged when it is not a use record."""
@@ -971,7 +854,6 @@ def memory_use(
     shown: dict | None = None,
     shown_text: str = "",
     cell_status: dict | None = None,
-    library_mode: bool = False,
     runtime_calls: dict | None = None,
     cell_errors: dict | None = None,
     memory_bound: bool | None = None,
@@ -981,8 +863,7 @@ def memory_use(
     """The request's use record (:func:`..analysis.use.request_use`), with *runtime_calls*, the calls the
     actor's cells actually made as the worker's audit hook observed them (:func:`with_runtime_calls`).
 
-    With *librarian* (the request's librarian sessions; None while ``UNIFY_MEMORY_LIBRARIAN`` is off) the record
-    also has ``memory.ask``'s fields (:func:`..analysis.use.ask_fields`: ``ask_calls``, ``ask_rows``,
+    With *librarian* (the request's librarian sessions) the record also has ``memory.ask``'s fields (:func:`..analysis.use.ask_fields`: ``ask_calls``, ``ask_rows``,
     ``listed_by_ask``), ``ask`` among ``library_helper_calls``, and ``librarian``: its model calls' tokens, cache
     reads and USD (:func:`..librarian.usage_fields`).
 
@@ -991,14 +872,13 @@ def memory_use(
     the pin, the export's roots and the library's import surface taken before the actor ran, *shown*,
     what the memory-section renderer recorded (its digest is taken again over *shown_text*, the section
     as rendered, through *redactor*, as the transcript's copy of the prompt is), and *cell_status*, each
-    cell's status from the runtime's structured result by tool call id (``RequestRun.note_result``). In
-    library mode the record also counts failures (:func:`library_failures`, from *runtime_calls* and
+    cell's status from the runtime's structured result by tool call id (``RequestRun.note_result``). The record
+    also counts failures (:func:`library_failures`, from *runtime_calls* and
     *cell_errors*, the cells whose error named the library's package) and lists them
     (``library_failures``, at most :data:`MAX_LIBRARY_FAILURES`, the rest counted in
     ``library_failures_dropped``; :func:`library_failure_list`, from *failures*). A failure of this function
     is recorded as its exception type, with the items at the pin; it never stops the episode. *memory_bound*
-    says whether the worker bound ``memory`` in the cells' globals (None: as *library_mode*; see
-    ``use.request_use``).
+    says whether the worker bound ``memory`` in the cells' globals (None: bound; see ``use.request_use``).
     """
     from ..analysis import use
 
@@ -1032,13 +912,12 @@ def memory_use(
             surface=surface,
             shown=shown,
             cell_status=cell_status,
-            library_mode=library_mode,
             memory_bound=memory_bound,
         )
         record = with_runtime_calls(record, runtime_calls)
-        if library_mode and isinstance(record, dict) and "error" not in record:
+        if isinstance(record, dict) and "error" not in record:
             record.update(library_failures(runtime_calls, cell_errors))
-            record["library_helper_calls"] = library_helper_calls(runtime_calls, librarian is not None)
+            record["library_helper_calls"] = library_helper_calls(runtime_calls)
             listed, dropped = library_failure_list(
                 failures,
                 use.transcript_cells(lines) if failures else [],
@@ -1048,7 +927,6 @@ def memory_use(
             record["library_failures_dropped"] = dropped
             record["library_file_lookups"] = library_file_lookups_total(runtime_calls)
             record.update(use.match_run_fields(runtime_calls, clean(list(ep.transcript))))
-        if library_mode and isinstance(record, dict) and "error" not in record:
             record.update(use.ask_fields(runtime_calls))
         if librarian is not None and isinstance(record, dict) and "error" not in record:
             from ..librarian import usage_fields
@@ -1074,55 +952,18 @@ def _plain(value: Any) -> Any:
     return value
 
 
-async def wait_after_finish(
-    paths: Any,
-    settings: Any,
-    progress: Callable[[str], None] | None = None,
-    wait: Callable[..., dict] | None = None,
-    relay: Callable[[dict], None] | None = None,
-    events_from: int = 0,
-) -> dict | None:
-    """``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on``: before the CLI exits, wait for the pass slot in flight, whichever
-    request spawned it (:func:`.async_pass.wait_slot`), so a host whose sandbox ends the controller's processes with
-    it does not kill the worker, and a host that clears the state after the session never clears it under a running
-    worker. Off: returns None at once, as built. Never raises."""
-    import asyncio
-
-    from .switch import library_pass_wall_s, library_wait_slot
-
-    try:
-        if not library_wait_slot(settings):
-            return None
-        if wait is None:
-            from .async_pass import wait_slot as wait
-        return await asyncio.to_thread(
-            wait,
-            paths,
-            float(library_pass_wall_s(settings)),
-            relay=relay,
-            events_from=events_from,
-        )
-    except Exception as exc:  # noqa: BLE001 - the request's end never fails on the wait
-        logger.warning("memory library mode: waiting for the pass slot failed: %s", exc)
-        return None
-
-
 class RequestRun:
     """One request's memory run; create it with :meth:`begin`."""
 
     def __init__(self, request: str, paths: Any) -> None:
         self.request = request
         self.paths = paths
-        self.index = ""  # the memory section of the system prompt (prompt.render_index or render_memory_section)
+        self.index = ""  # the memory section of the system prompt (prompt.render_memory_section)
         # the export's generated files (relative path -> bytes), left out of memory.diff while unchanged
         self.generated: dict[str, bytes] = {}
-        self.surfacing: Any = (
-            None  # the library-mode switches read at open (switch.SurfacingOptions)
-        )
-        self.library_mode = False  # UNIFY_MEMORY_LIBRARY, read at open
         # Whether the library copy holds the package the worker binds as ``memory`` in every cell (set at open).
         self.memory_bound = False
-        # What the memory section shows (``analysis.use.record_shown``), set where it is rendered (both modes).
+        # What the memory section shows (``analysis.use.record_shown``), set where it is rendered.
         self.shown: dict | None = None
         # The memory functions of the export at the pin, taken before the actor runs (use telemetry).
         self.item_ids: list[str] = []
@@ -1134,10 +975,9 @@ class RequestRun:
         self.runtime_calls: dict = runtime_calls_empty()
         # Cells whose error named the library's package: ``name`` and ``import`` (library_cell_error).
         self.cell_errors: dict[str, int] = {"name": 0, "import": 0}
-        # Library mode: the failed library calls and library cell errors, listed (library_failure_list).
+        # The failed library calls and library cell errors, listed (library_failure_list).
         self.failures: dict = library_failures_empty()
-        # UNIFY_MEMORY_LIBRARIAN=on: the request's librarian sessions (librarian.opener registers each), whose
-        # totals the use record reads
+        # The request's librarian sessions (librarian.opener registers each), whose totals the use record reads
         self.librarian_sessions: list = []
         # The episode's journal (journal.EpisodeJournal), fed by the transcript's tap; None while there is none.
         self.journal: Any = None
@@ -1149,11 +989,7 @@ class RequestRun:
         self.model = ""
         self.effort = ""
         self.build = ""
-        # UNIFY_PROFILE (empty: today's behaviour), recorded in the episode's meta when set
-        self.profile = ""
-        # UNIFY_MEMORY_PASSES: "off" (no memory work after the request), recorded in the episode's meta; else empty
-        self.memory_passes = ""
-        #: under the capture switches (switch.py), what they changed in this request's copy (counts and item ids)
+        #: what serving changed in this request's copy (withdrawn captures, fixed answers as worked examples)
         self.capture_serving: dict | None = None
         self.stores: Any = None
         self.state: Any = None
@@ -1170,21 +1006,17 @@ class RequestRun:
         # The verdicts the bed showed the actor, one per ``{"checker": ...}`` line, in order:
         # {"label": "pass"|"fail", "obs": observations in the transcript when it came (or None), "at": time}.
         self.checker_seen: list[dict] = []
-        # UNIFY_MEMORY_REGIME=inferred (read at begin): the regime is inferred, never defaulted; the verdicts on
-        # earlier episodes this session took, posted when this request is recorded (outcomes.post_late); and the
-        # callables told of each verdict taken within this episode, with its arrival row's fields.
-        self.regime_inferred = False
+        # The regime is inferred, never defaulted: the verdicts on earlier episodes this session took, posted when this
+        # request is recorded (outcomes.post_late); and the callables told of each verdict taken within this episode,
+        # with its arrival row's fields.
         self.late_checkers: list[dict] = []
         self.signal_listeners: list[Callable[[dict], None]] = []
-        #: rev 2 (PLAN-REV2 item 1): this request's role dispatcher (:func:`start_role_dispatcher`), running on the loop;
-        #: None when off
+        #: this request's role dispatcher (:func:`start_role_dispatcher`), running on the loop; None when none runs
         self.role_task: Any = None
         self._lock: int | None = None
         self._scope = contextlib.ExitStack()
         self._closed = False
-        # library mode (set at open): passes run in a detached worker and the request pins ``served``
-        self.library_mode = False
-        # UNIFY_MEMORY_IN_EPISODE=on (set at open): the episode's pins, checkpoints and segment forks (in_episode.py)
+        # UNIFY_MEMORY=in_episode (set at open): the episode's pins, checkpoints and segment forks (in_episode.py)
         self.in_episode: Any = None
         # the actor's session handle (hooks.attach_handle), which a segment fork continues
         self.handle: Any = None
@@ -1192,10 +1024,8 @@ class RequestRun:
         self.cell_pins: list[str] = []
         self.pin_counts: dict[str, dict[str, dict[str, int]]] = {}
         self._consolidate_mod: Any = None
-        self._landed: list[dict] = (
-            []
-        )  # library mode: worker results applied at open, reported at finish
-        #: UNIFY_MEMORY_WRITER_SERVICE=on: what ensure_service found at the request's start
+        self._landed: list[dict] = []  # the writer's results applied at open, reported at finish
+        #: what ensure_service found at the request's start
         self.service: Any = None
 
     @property
@@ -1216,7 +1046,6 @@ class RequestRun:
         # The sandboxed worker, the core surface and transcripts are the only mode at this base (the
         # code freeze removed their switches), so nothing else needs checking before the lock.
         run = cls(request, Paths.under(store_home()))
-        run.regime_inferred = regime_inferred_on()
         run._lock = acquire_lock(run.paths.lock, timeout_s=LOCK_TIMEOUT_S)
         try:
             run._open(sandbox, transcripts)
@@ -1230,72 +1059,26 @@ class RequestRun:
     def _open(self, sandbox: Any, transcripts: Any) -> None:
         from unify.settings import SETTINGS
 
-        from ..analysis import use
         from . import consolidate, cost, worktree_capture
-        from .checkout import export_checkout
+        from .async_pass import apply_results
+        from ..memory_writer import served_head
+        from ..writer_service import ensure_service
         from .state import State
-        from .switch import library_enabled, memory_frozen, memory_passes_on, profile, surfacing_options
 
         paths = self.paths
         policy = sandbox.build_policy(fresh=True)
         check_hidden(paths, policy)
-        check_profile(SETTINGS)
-        self.profile = profile(SETTINGS)
-        self.memory_passes = "" if memory_passes_on(SETTINGS) else "off"
-        # UNIFY_MEMORY_FROZEN=on (held-out evaluation): served from what the home holds; nothing here changes it
-        self.frozen = memory_frozen(SETTINGS)
-        self.library_mode = library_enabled(SETTINGS)
-        if (
-            self.library_mode
-        ):  # a refused run records nothing: begin cleans up and re-raises
-            check_library_switches(SETTINGS)
-        self.stores = consolidate.open_stores(
-            paths,
-            busy_timeout_s=_LIBRARY_BUSY_TIMEOUT_S if self.library_mode else None,
-        )
+        self.stores = consolidate.open_stores(paths, busy_timeout_s=_BUSY_TIMEOUT_S)
         self.state = State.load(paths.state)
-        if self.library_mode:  # library mode: the read-only copy and the index view
-            from ..memory_writer import served_head
-            from .async_pass import apply_results
-
-            # under the request lock, before _open_library_mode copies the pin (frozen: results stay unapplied, so
-            # every frozen request is served the same state)
-            self._landed = [] if self.frozen else apply_results(self.state, paths)
-            # the served head, whose item records are already written
-            self.pin = served_head(self.stores.memory)
-            self.surfacing = surfacing_options(SETTINGS)
-            self._open_library_mode(consolidate)
-            from .switch import writer_service_on
-
-            if writer_service_on(SETTINGS) and not self.frozen:
-                # the writer service: up at every request's start (never waited for; it never fails the request)
-                from ..writer_service import ensure_service
-
-                self.service = ensure_service(paths.home, settings=SETTINGS, wait_s=0.0)
-        else:
-            self.pin = self.stores.memory.head()
-            # the library test kit beside it when the library's tests use it (library mode, stage 5 checks)
-            export_checkout(paths.memory, self.pin, paths.checkout, self.stores.blobs)
-            # the use record's view of the pin, taken before anything is generated beside the export and
-            # before the actor can edit the scratch copy
-            self.item_ids = pinned_items(paths.checkout)
-            self.surface = use.library_surface(paths.checkout)
-            self.export_roots = _export_roots(paths.checkout)
-            self.surfacing = surfacing_options(SETTINGS)
-            if self.surfacing.catalogue:
-                self._surface_catalogue(consolidate)
-            else:  # the v2 index and export line, byte for byte; nothing generated in the export
-                from .prompt import render_memory
-
-                self.index, self.shown = render_memory(
-                    paths.checkout,
-                    self.state.suspect,
-                    sys.maxsize if self.surfacing.soft_budget else None,
-                )
-        # under the request lock, before this request's own journal exists (frozen: a dead process's journal stays
-        # unrecorded, as this request's own episode does)
-        if not self.frozen:
-            self._recover_journals()
+        # under the request lock, before _open_library copies the pin
+        self._landed = apply_results(self.state, paths)
+        # the served head, whose item records are already written
+        self.pin = served_head(self.stores.memory)
+        self._open_library(consolidate)
+        # the writer service: up at every request's start (never waited for; it never fails the request)
+        self.service = ensure_service(paths.home, settings=SETTINGS, wait_s=0.0)
+        # under the request lock, before this request's own journal exists
+        self._recover_journals()
         self.episode_id = new_episode_id(transcripts.transcripts_dir())
         self.started_at = _now()
         if self.capture_serving is not None:
@@ -1312,8 +1095,6 @@ class RequestRun:
             paths,
             Path(policy.workspace),
             self.redactor,
-            # UNIFY_MEMORY_LIBRARY: files stored whole (the keyword only when on: off, the call as at 4675a3c45)
-            **({"library_mode": True} if memory_library_on() else {}),
         )
         self.worktree.begin()
         self._open_journal(transcripts)
@@ -1324,12 +1105,12 @@ class RequestRun:
         # the embedding requests the library export sent before the cost record opened
         for call in self.export_embedding_calls:
             self.costs.add_embedding(call)
-        # rev 2 (PLAN-REV2 item 1): the run's roles (the librarian), seeded once per run; this request answers their messages
+        # the run's roles (the librarian), seeded once per run; this request answers their messages
         self.role_task = start_role_dispatcher(self)
 
     def _recover_journals(self) -> None:
         """Record each episode journal a process that died mid-request left, as an incomplete episode
-        (:func:`.journal.recover`; with the similar index in library mode); never raises."""
+        (:func:`.journal.recover`, with the similar index); never raises."""
         from . import journal
 
         def similar_index(ep: Any, redactor: Any) -> None:
@@ -1341,7 +1122,7 @@ class RequestRun:
             self.recovered = journal.recover(
                 self.paths,
                 self.stores,
-                library_index=similar_index if memory_library_on() else None,
+                library_index=similar_index,
             )
         except Exception as exc:  # noqa: BLE001 - a recovery never stops a request
             logger.warning("memory: episode journals not recovered (%s)", type(exc).__name__)
@@ -1362,11 +1143,6 @@ class RequestRun:
             "memory_main": self.pin,
             "worktree_before": getattr(recorder, "before", None),
             "request": self.request,
-            # the record format the episode writer uses (memory_library_on, as at finish)
-            "library_mode": memory_library_on(),
-            # UNIFY_PROFILE and UNIFY_MEMORY_PASSES=off, only when set (a default run's header is as before)
-            **({"profile": self.profile} if self.profile else {}),
-            **({"memory_passes": self.memory_passes} if self.memory_passes else {}),
         }
         try:
             self.journal = journal.EpisodeJournal.open(self.paths.journal, header, self.redactor)
@@ -1399,75 +1175,33 @@ class RequestRun:
             except OSError as exc:
                 logger.warning("memory: the episode journal was not removed (%s)", type(exc).__name__)
 
-    def _surface_catalogue(self, consolidate: Any) -> None:
-        """``UNIFY_MEMORY_SURFACING=catalogue``: the generated catalogue beside the export (the pinned
-        commit's input shapes frozen, the suspect channels flagged) and the constant guide as the prompt's
-        memory section, from the first request whose library lists anything (then kept: ``State.guide``).
-        """
-        from ..catalogue import GENERATED, write_generated
-        from ..shape_rows import lookup_from
-        from .prompt import render_catalogue
+    def _open_library(self, consolidate: Any) -> None:
+        """Writes the read-only copy of the pin: no tests, plus the generated helper, INDEX.md and links.json
+        (:func:`.checkout.export_actor_library_mode`). The memory section is the librarian's constant pointer. No
+        memory.diff is recorded, because the copy cannot be written.
 
-        checkout = self.paths.checkout
-        try:
-            self.generated = write_generated(
-                checkout,
-                shapes=lookup_from(self._shape_rows(consolidate)),
-                suspect=self.state.suspect,
-            )
-        except (
-            Exception
-        ) as exc:  # noqa: BLE001 - the library stays importable without its catalogue
-            logger.warning(
-                "memory v2: the export's catalogue was not written (%s)",
-                type(exc).__name__,
-            )
-            # a partial write must not reach memory.diff as the request's
-            for rel in GENERATED:
-                target = checkout / rel
-                if target.is_file() and not target.is_symlink():
-                    target.unlink()
-        # what the prompt shows is the guide alone (names nothing): recorded as such for the use record
-        self.index, self.shown = render_catalogue(checkout, self.state.guide)
-        if self.index and not self.state.guide:
-            self.state.guide = True
-            try:  # also saved at finish; saved now so an aborted request still fixes the prefix
-                self.state.save()
-            except OSError as exc:
-                logger.warning(
-                    "memory v2: the guide flag was not saved (%s)",
-                    type(exc).__name__,
-                )
-
-    def _open_library_mode(self, consolidate: Any) -> None:
-        """``UNIFY_MEMORY_LIBRARY=on``. Writes the read-only copy of the pin: no tests, plus the
-        generated helper, INDEX.md and links.json (:func:`.checkout.export_actor_library_mode`). The memory section is
-        the guide and the index view. No memory.diff is recorded, because the copy cannot be written.
-
-        Under ``UNIFY_MEMORY_IN_EPISODE=on`` the copy is the first pin of the episode, in a directory of its own behind
+        Under ``UNIFY_MEMORY=in_episode`` the copy is the first pin of the episode, in a directory of its own behind
         the link ``<checkout>/current`` (:mod:`.in_episode`), so a commit landed while the episode runs can be swapped in
         at a cell boundary; every reader of the copy reads it at :attr:`copy_root`.
         """
         from ..analysis import use
-        from .prompt import render_memory_library_mode
+        from .prompt import render_memory_section
 
         paths = self.paths
         self._consolidate_mod = consolidate
         from unify.settings import SETTINGS
 
-        from .switch import in_episode, in_episode_repins, memory_on
+        from .switch import in_episode
 
-        if memory_on(SETTINGS) and in_episode_repins(SETTINGS) and not getattr(self, "frozen", False):
-            # (frozen: one pin for the episode, never re-pinned, and no pause starts a segment fork; ``repin``:
-            # re-pins only, no pause starts a segment fork)
+        if in_episode(SETTINGS):
             from .in_episode import InEpisode
 
-            self.in_episode = InEpisode(self, self._export_copy, segment_forks=in_episode(SETTINGS))
+            self.in_episode = InEpisode(self, self._export_copy)
             self.in_episode.open(self.pin)
         else:
             self._export_copy(self.pin, paths.checkout, at_open=True)
         copy = self.copy_root
-        self.item_ids = pinned_items(copy, library_mode=True)
+        self.item_ids = pinned_items(copy)
         # the worker binds ``memory`` in every cell when the copy holds the package (hooks.worker_globals)
         try:
             self.memory_bound = (copy / "memory" / "__init__.py").is_file()
@@ -1477,11 +1211,8 @@ class RequestRun:
         if self.in_episode is not None:
             # every pin of the episode sits under the export's directory, as the cells' reads of a later pin do
             self.export_roots += [r for r in use.roots_of(paths.checkout) if r not in self.export_roots]
-        self.surface = use.library_surface(
-            copy,
-            library_mode=True,
-        )  # re-exports for the use record
-        self.index, self.shown = render_memory_library_mode(copy)
+        self.surface = use.library_surface(copy)  # re-exports for the use record
+        self.index, self.shown = render_memory_section(copy)
         from .. import notebook as _notebook
 
         if _notebook.notebook_on():
@@ -1496,32 +1227,32 @@ class RequestRun:
                 )
 
     def repinned(self, tree: Path) -> None:
-        """``UNIFY_MEMORY_IN_EPISODE=on``: the copy now serves the pin at *tree*; the use record's items are those of
+        """``UNIFY_MEMORY=in_episode``: the copy now serves the pin at *tree*; the use record's items are those of
         every pin the episode served."""
         try:
-            self.item_ids = sorted(set(self.item_ids or []) | set(pinned_items(tree, library_mode=True)))
+            self.item_ids = sorted(set(self.item_ids or []) | set(pinned_items(tree)))
         except Exception as exc:  # noqa: BLE001 - the record then lists the first pin's items only
             logger.warning("memory: the new pin's items not read (%s)", type(exc).__name__)
 
     @property
     def copy_root(self) -> Path:
         """The actor's library copy as cells and host readers reach it: the checkout itself, or under
-        ``UNIFY_MEMORY_IN_EPISODE=on`` its link to the current pin (``<checkout>/current``)."""
+        ``UNIFY_MEMORY=in_episode`` its link to the current pin (``<checkout>/current``)."""
         ie = getattr(self, "in_episode", None)
         return ie.copy_root if ie is not None else Path(self.paths.checkout)
 
     def _export_copy(self, sha: str, dest: Path, at_open: bool = False) -> None:
         """Write the actor's read-only copy of memory commit *sha* into *dest*: the commit's library, its generated
-        files with the item records at that commit, the capture store's snapshot as it is now (withdrawn captures
-        left out under ``UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES``) and the librarian's files when it is on. At
-        the request's open (*at_open*) it also records what the capture switches changed, and the generated files."""
+        files with the item records at that commit, the capture store's snapshot as it is now (withdrawn captures left
+        out, and captures that give a fixed answer offered as worked examples) and the librarian's files. At the
+        request's open (*at_open*) it also records what serving changed in the copy, and the generated files."""
         from ..shape_rows import lookup_from
         from .checkout import export_actor_library_mode
 
         paths = self.paths
         consolidate = getattr(self, "_consolidate_mod", None)
         try:
-            shapes = lookup_from(self._shape_rows(consolidate, library_mode=True, sha=sha))
+            shapes = lookup_from(self._shape_rows(consolidate, sha=sha))
         except (
             Exception
         ) as exc:  # noqa: BLE001 - find then matches nothing; the library stays usable
@@ -1537,37 +1268,24 @@ class RequestRun:
         records, _ = records_at(Repo(paths.memory), sha)
         # the capture store as this request starts (captures.py; empty unless the episode-end fork captured
         # attempts): read only through memory helpers, never in the index or the prompt
-        from unify.settings import SETTINGS
-
         from ..captures import export_files, store_dir
-        from .switch import constant_captures_as_examples, library_withdraw_closed_captures
+        from ..pool import withdrawn_captures
 
-        withdrawn = None
-        if library_withdraw_closed_captures(SETTINGS):
-            # the captures the writer superseded or retired, as the pool says now, and what replaces each
-            from ..pool import withdrawn_captures
-
-            try:
-                withdrawn = withdrawn_captures(Repo(paths.memory))
-            except Exception as exc:  # noqa: BLE001 - an unreadable pool withdraws nothing; the request goes on
-                logger.warning(
-                    "memory library mode: the pool's closed captures not read (%s)",
-                    type(exc).__name__,
-                )
-                withdrawn = {}
+        # the captures the writer superseded or retired, as the pool says now, and what replaces each
         try:
-            captured = export_files(
-                store_dir(paths.state_dir),
-                withdrawn=withdrawn,
-                examples=constant_captures_as_examples(SETTINGS),
-            )
+            withdrawn = withdrawn_captures(Repo(paths.memory))
+        except Exception as exc:  # noqa: BLE001 - an unreadable pool withdraws nothing; the request goes on
+            logger.warning("memory: the pool's closed captures not read (%s)", type(exc).__name__)
+            withdrawn = {}
+        try:
+            captured = export_files(store_dir(paths.state_dir), withdrawn=withdrawn, examples=True)
         except OSError as exc:
             logger.warning(
                 "memory library mode: captures not exported (%s)",
                 type(exc).__name__,
             )
             captured = {}
-        if at_open and (withdrawn is not None or constant_captures_as_examples(SETTINGS)):
+        if at_open:
             from ..captures import EXAMPLE_KEY, EXPORT_DIR, RECORD_FILE
 
             examples = 0
@@ -1586,21 +1304,14 @@ class RequestRun:
                 "offered_in_place": sorted({row["by"] for row in gone.values() if row.get("by")}),
                 "worked_examples": examples,
             }
-        librarian = librarian_on()
-        summary_of = None
-        search = None
-        if librarian:
-            from ..library_export import staging_summaries
-            from ..library_search import backend
+        from ..library_export import staging_summaries
+        from ..library_search import backend
 
-            summary_of = staging_summaries(Path(paths.state_dir) / "memory-staging")
-            # the search index's vectors: each request the embedder sends is booked once the request's cost
-            # record opens (_open), or at once when it is open (a re-pin)
-            costs = getattr(self, "costs", None)
-            book = costs.add_embedding if (costs is not None and not at_open) else self.export_embedding_calls.append
-            search = backend(on_call=book)
-        from .switch import serving_failure_record
-
+        summary_of = staging_summaries(Path(paths.state_dir) / "memory-staging")
+        # the search index's vectors: each request the embedder sends is booked once the request's cost record opens
+        # (_open), or at once when it is open (a re-pin)
+        costs = getattr(self, "costs", None)
+        book = costs.add_embedding if (costs is not None and not at_open) else self.export_embedding_calls.append
         generated = export_actor_library_mode(
             paths.memory,
             sha,
@@ -1609,46 +1320,34 @@ class RequestRun:
             status_of=status_of(records),
             records=records,
             captures=captured,
-            librarian=librarian,
             summary_of=summary_of,
-            search=search,
-            **(
-                {"serving": self._serving(records, status_of(records))}
-                if serving_failure_record(SETTINGS)
-                else {}
-            ),
+            search=backend(on_call=book),
+            serving=self._serving(records, status_of(records)),
         )
         if at_open or not self.generated:
             self.generated = generated
 
     def _serving(self, records: Mapping[str, dict], status_of: Callable[[str], str]) -> Callable[[Path], dict]:
-        """``UNIFY_MEMORY_SERVING_FAILURE_RECORD=on``: what the export computes from the copy it materialised: each
-        item's evidence (its failure record, contradictions, status basis and stated conditions,
-        :func:`..serving.item_evidence`) and, with the withdrawal switch on, the library items the writer retired or
-        superseded (:func:`..serving.withdrawn_items`). An evidence store that cannot be read gives no evidence, and
-        the request goes on."""
-        from unify.settings import SETTINGS
-
+        """What the export computes from the copy it materialised: each item's evidence (its failure record,
+        contradictions, status basis and stated conditions, :func:`..serving.item_evidence`) and the library items the
+        writer retired or superseded (:func:`..serving.withdrawn_items`). An evidence store that cannot be read gives no
+        evidence, and the request goes on."""
         from .. import serving as sv
         from ..captures import load, store_dir
-        from .switch import checker_visible, library_withdraw_closed_captures
 
         def compute(tree: Path) -> dict:
             caps = load(store_dir(self.paths.state_dir))
             try:
                 found = sv.item_evidence(
                     self.stores,
-                    checker_visible=checker_visible(SETTINGS),
                     captures=caps,
                     home=self.paths.home,
-                    # frozen: an actor's report counts only from a recorded episode (a frozen request records none)
-                    recorded_only=getattr(self, "frozen", False),
-                    # the writer's evidence label of each item (UNIFY_MEMORY_IMPURE_ITEMS: its item record's
-                    # ``label``, :mod:`..item_label`), for its contradictions; none without one
+                    # the writer's evidence label of each item (its item record's ``label``, :mod:`..item_label`),
+                    # for its contradictions; none without one
                     labels=lambda item: label_of(records, item),
                 )
             except Exception as exc:  # noqa: BLE001 - served without evidence; logged
-                logger.warning("memory library mode: item evidence not read (%s)", type(exc).__name__)
+                logger.warning("memory: item evidence not read (%s)", type(exc).__name__)
                 found = {}
             statuses = {i: status_of(i) for i in records}
             for cid, doc in caps.items():
@@ -1657,29 +1356,12 @@ class RequestRun:
                     statuses["capture:" + cid] = rec["status"]
             return {
                 "evidence": sv.evidence_doc(found, sv.conditions(tree, records, caps), statuses),
-                "withdrawn_items": (
-                    sv.withdrawn_items(records) if library_withdraw_closed_captures(SETTINGS) else {}
-                ),
+                "withdrawn_items": sv.withdrawn_items(records),
             }
 
         return compute
 
-    def _memory_diff(self) -> str:
-        """What the request wrote into its export (v2), or ``""`` in library mode, whose copy is read-only and records
-        no memory.diff."""
-        if self.library_mode:
-            return ""
-        from .checkout import checkout_diff
-
-        return checkout_diff(
-            self.paths.memory,
-            self.pin,
-            self.paths.checkout,
-            self.stores.blobs,
-            generated=self.generated,
-        )
-
-    def _shape_rows(self, consolidate: Any, library_mode: bool = False, sha: str | None = None) -> dict:
+    def _shape_rows(self, consolidate: Any, sha: str | None = None) -> dict:
         """The pinned commit's input-shape rows (or *sha*'s: a re-pin), frozen on first export
         (:func:`..shape_rows.shapes_at`); functions without recorded shapes are backfilled from the evidence store's
         covers.
@@ -1695,7 +1377,7 @@ class RequestRun:
             lookup=episodes(self.stores).action if episodes is not None else None,
             blobs=self.stores.blobs,
             freeze=True,
-            library_mode=library_mode,
+            library_mode=True,
         )
 
     def redactor(self) -> Any:
@@ -1711,8 +1393,8 @@ class RequestRun:
     def note_result(self, call_id: Any, result: Any) -> None:
         """Keep a code cell's status from its ``ExecutionResult`` (``hooks.tool_result``), reduced at once
         to names (``analysis.use.runtime_status``): the use record's only source of refusals, errors and
-        sessions. A cell whose error named the library's package is counted (:func:`library_cell_error`);
-        in library mode it and the cell's failed library calls are listed (:func:`settle_library_failures`).
+        sessions. A cell whose error named the library's package is counted (:func:`library_cell_error`); it and the
+        cell's failed library calls are listed (:func:`settle_library_failures`).
         A plain mapping (the code tool's own result for an empty cell, or when its session executor
         raised) is read by ``analysis.use.dict_status``. At most ``MAX_STATUSES`` calls are
         kept; later ones are then unknown.
@@ -1727,8 +1409,7 @@ class RequestRun:
         kind = library_cell_error(error)
         if kind is not None:
             self.cell_errors[kind] = self.cell_errors.get(kind, 0) + 1
-        if self.library_mode:
-            settle_library_failures(self.failures, call_id, error)
+        settle_library_failures(self.failures, call_id, error)
         if call_id is None or len(self.cell_status) >= MAX_STATUSES:
             return
         if isinstance(result, Mapping):
@@ -1736,7 +1417,6 @@ class RequestRun:
                 result,
                 items=self.item_ids,
                 roots=self.export_roots,
-                library_mode=self.library_mode,
             )
         else:
             status = use.runtime_status(
@@ -1745,24 +1425,18 @@ class RequestRun:
                 getattr(result, "session_created", None),
                 items=self.item_ids,
                 roots=self.export_roots,
-                library_mode=self.library_mode,
             )
         self.cell_status[str(call_id)] = status
 
     def note_calls(self, drained: Any) -> None:
         """Add one cell's drained audit records to the request's runtime call evidence
-        (:func:`add_runtime_calls`; ``hooks.worker_cell_done``), and in library mode its failed library calls
-        to the pending failures the cell's result then settles (:func:`add_library_failures`)."""
-        add_runtime_calls(
-            self.runtime_calls,
-            drained,
-            self.export_roots if self.library_mode else (),
-        )
-        if self.library_mode:
-            add_library_failures(self.failures, drained)
+        (:func:`add_runtime_calls`; ``hooks.worker_cell_done``), and its failed library calls to the pending failures
+        the cell's result then settles (:func:`add_library_failures`)."""
+        add_runtime_calls(self.runtime_calls, drained, self.export_roots)
+        add_library_failures(self.failures, drained)
         ie = self.in_episode
         if ie is not None and isinstance(drained, dict):
-            # UNIFY_MEMORY_IN_EPISODE=on: each observed call under the pin whose code it ran (the audit hook's
+            # UNIFY_MEMORY=in_episode: each observed call under the pin whose code it ran (the audit hook's
             # ``pins``: a name bound before a re-pin keeps its old pin's code), the rest under the pin the cell was
             # served (it never changes mid-cell)
             pin = ie.current or self.pin
@@ -1802,8 +1476,7 @@ class RequestRun:
         """
         from ..analysis import use
 
-        if self.library_mode:
-            settle_library_failures(self.failures, call_id)
+        settle_library_failures(self.failures, call_id)
         if call_id is None or len(self.cell_status) >= MAX_STATUSES:
             return
         self.cell_status[str(call_id)] = use.failed_status(type(exc).__name__)
@@ -1834,27 +1507,13 @@ class RequestRun:
     def take_checker(self, raw: Any, episode: Any = None, about: Any = None) -> dict:
         """Keep one verdict the bed showed the actor; the answer the CLI writes for a
         ``{"checker": {"label": "pass"|"fail"}}`` line. The bed sends it just before the message that shows the
-        actor the same verdict, so the transcript's observation count now is that message's ordinal. Refused,
-        with nothing kept, unless ``UNIFY_MEMORY_LIBRARY`` and ``UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE`` are on, or when
-        the line is anything but exactly ``{"label": "pass"}`` or ``{"label": "fail"}``. The answer never quotes
-        the line.
+        actor the same verdict, so the transcript's observation count now is that message's ordinal. Refused, with
+        nothing kept, when the line is anything but exactly ``{"label": "pass"}`` or ``{"label": "fail"}``. The answer
+        never quotes the line.
 
-        Under ``UNIFY_MEMORY_REGIME=inferred`` the line may also say what the verdict is about (*about*:
-        ``action:<n>``, ``item:<id>`` or ``capture:<id>``) and name an earlier episode by its id (*episode*): a
-        verdict that arrived after that episode ended, kept to be posted on it when this request is recorded
-        (:func:`.outcomes.post_late`). Without the switch either is refused."""
-        if not checker_visible_on():
-            return {
-                "type": "checker",
-                "accepted": False,
-                "reason": "this session takes no checker lines (UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE is off)",
-            }
-        if (episode is not None or about is not None) and not self.regime_inferred:
-            return {
-                "type": "checker",
-                "accepted": False,
-                "reason": "this session takes no episode or about on a checker line (UNIFY_MEMORY_REGIME is off)",
-            }
+        The line may also say what the verdict is about (*about*: ``action:<n>``, ``item:<id>`` or ``capture:<id>``)
+        and name an earlier episode by its id (*episode*): a verdict that arrived after that episode ended, kept to be
+        posted on it when this request is recorded (:func:`.outcomes.post_late`)."""
         if (
             not isinstance(raw, dict)
             or set(raw) != {"label"}
@@ -1885,25 +1544,20 @@ class RequestRun:
                 "episode": episode,
                 "count": len(self.late_checkers),
             }
-        if self.regime_inferred:
-            from ..signals import valid_about
+        from ..signals import valid_about
 
-            about = "" if about is None else about
-            if not valid_about(about):
-                return {
-                    "type": "checker",
-                    "accepted": False,
-                    "reason": "about must be action:<n>, item:<id> or capture:<16 hex digits>",
-                }
-            entry = {"label": raw["label"], "obs": self._observations_now(), "at": _now(), "about": about}
-            self.checker_seen.append(entry)
-            self._tell_listeners(entry)
-        else:
-            self.checker_seen.append(
-                {"label": raw["label"], "obs": self._observations_now(), "at": _now()},
-            )
+        about = "" if about is None else about
+        if not valid_about(about):
+            return {
+                "type": "checker",
+                "accepted": False,
+                "reason": "about must be action:<n>, item:<id> or capture:<16 hex digits>",
+            }
+        entry = {"label": raw["label"], "obs": self._observations_now(), "at": _now(), "about": about}
+        self.checker_seen.append(entry)
+        self._tell_listeners(entry)
         if self.in_episode is not None:
-            # UNIFY_MEMORY_IN_EPISODE=on: an in-episode signal is a pause; its segment fork starts at the next turn
+            # UNIFY_MEMORY=in_episode: an in-episode signal is a pause; its segment fork starts at the next turn
             self.in_episode.mark("signal")
         return {
             "type": "checker",
@@ -1913,8 +1567,7 @@ class RequestRun:
         }
 
     def _tell_listeners(self, entry: dict) -> None:
-        """Under ``UNIFY_MEMORY_REGIME=inferred``: tell each of :attr:`signal_listeners` of a verdict taken within this
-        episode (``{"episode_id", "label", "about", "arrived_at", "timing": "in_episode"}``); a listener that raises
+        """Tell each of :attr:`signal_listeners` of a verdict taken within this episode (``{"episode_id", "label", "about", "arrived_at", "timing": "in_episode"}``); a listener that raises
         is logged and never stops the line."""
         row = {
             "episode_id": self.episode_id,
@@ -1932,8 +1585,7 @@ class RequestRun:
     def last_message(self) -> str | None:
         """The latest user or environment message this request received after its first (an observation: a user
         message the loop did not author, :func:`.adapters.dialogue.observation_texts`), from its transcript, or None
-        when none came after the request or the transcript cannot be read. The situation the librarian is given with
-        the harness's evidence serving on."""
+        when none came after the request or the transcript cannot be read. The situation the librarian is given."""
         from unify import transcripts
 
         from . import trajectory
@@ -2030,16 +1682,12 @@ class RequestRun:
         emit: Callable[[dict], None] | None = None,
         consolidate: bool = True,
     ) -> None:
-        """Record the request and run the due passes (blocking; under ``UNIFY_MEMORY_LIBRARY=on`` a due pass starts
-        in a detached worker and the request returns at once); never raises. The transcript is the record;
-        *handle* is read only by the episode-end fork (``UNIFY_MEMORY_LIBRARY_FORK=on``), which starts
-        after the episode is recorded and changes nothing in it. With *consolidate* False (a driver's
-        ``{"quit": true, "consolidate": false}``) the episode is recorded and no pass starts; due passes stay
-        due, and one ``held`` event says so."""
+        """Record the request, start the episode-end fork and make sure the writer service is up; never raises (the
+        request never waits for a pass). The transcript is the record; *handle* is read only by the episode-end fork,
+        which starts after the episode is recorded and changes nothing in it. With *consolidate* False (a driver's
+        ``{"quit": true, "consolidate": false}``) the episode is recorded and the writer is not woken; what needs its
+        attention stays owed, and one ``held`` event says so."""
         if self._closed:
-            return
-        if getattr(self, "frozen", False):
-            await self._finish_frozen(progress, emit)
             return
         fork = reservation = None
         try:
@@ -2056,15 +1704,9 @@ class RequestRun:
                 return
             # the recorded episode's part list, read before the similar index takes the recorded episode
             parts = self._fork_parts(reservation, progress)
-            # UNIFY_MEMORY_NOTEBOOK=on only: the episode's consequence moments end the fork's message ("" otherwise)
-            moments = self._notebook_moments(progress)
-            if moments:
-                parts = f"{parts}\n\n{moments}" if parts else moments
             self._index_similar(progress)
             fork = self._start_fork(handle, eid, progress, reservation, parts)
-            if self.memory_passes == "off":
-                pass  # UNIFY_MEMORY_PASSES=off: recorded, and no memory work runs; the library never changes
-            elif consolidate:
+            if consolidate:
                 await self._consolidate(eid, sha, progress, emit)
             else:
                 self._report_landed(progress, emit)
@@ -2077,63 +1719,20 @@ class RequestRun:
             if reservation is not None:
                 reservation.close()  # a no-op once the fork has started or settled
             self._cleanup()
-        # after the lock is released: the waiting CLI holds nothing a later request needs
-        await self._wait_for_pass_worker(progress)
         if fork is not None:
-            from unify.settings import SETTINGS
-
             from . import fork as _fork
 
-            # after the reply and the lock: hand over the request, and wait where the host needs it
-            await asyncio.to_thread(_fork.finish, fork, SETTINGS, progress)
+            # after the reply and the lock: hand over the request, and wait for the fork
+            await asyncio.to_thread(_fork.finish, fork, progress)
         if self.in_episode is not None:
-            from unify.settings import SETTINGS
-
-            # UNIFY_MEMORY_IN_EPISODE=on: the segment forks still running are handed over (and waited for) the same way
-            await asyncio.to_thread(self.in_episode.finish, SETTINGS, progress)
-
-    async def _finish_frozen(self, progress: Callable[[str], None], emit: Callable[[dict], None] | None) -> None:
-        """``UNIFY_MEMORY_FROZEN=on``: the request ends without changing memory: its episode is not recorded (so its
-        uses, signals and late verdicts reach no store), no fork, pass or service starts, and the journal is dropped.
-        One ``frozen`` event says so. Never raises."""
-        try:
-            self._close_scope()
-            self._drop_journal()
-            from . import consolidate
-
-            consolidate._deliver(
-                self.stores,
-                self._emitter(emit),
-                {"type": "consolidation", "phase": "frozen", "episode_id": self.episode_id,
-                 "not_recorded": True},  # fmt: skip
-            )
-        except BaseException as exc:
-            self._error("finish", exc, progress)
-            if not isinstance(exc, Exception):
-                raise
-        finally:
-            self._cleanup()
-
-    async def _wait_for_pass_worker(self, progress: Callable[[str], None]) -> dict | None:
-        """``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on``: wait for the pass worker in flight, whichever request spawned it,
-        this one, an earlier one, or one of a process that has since ended (a restarted session), so the CLI never
-        ends while a worker it could have waited for still runs (:func:`wait_after_finish`). Nothing in flight, or
-        the switch off: returns at once."""
-        from unify.settings import SETTINGS
-
-        return await wait_after_finish(
-            self.paths,
-            SETTINGS,
-            progress,
-            relay=getattr(self, "_relay", None),
-            events_from=getattr(self, "_events_from", 0),
-        )
+            # UNIFY_MEMORY=in_episode: the segment forks still running are handed over (and waited for) the same way
+            await asyncio.to_thread(self.in_episode.finish, progress)
 
     def _index_similar(self, progress: Callable[[str], None]) -> None:
-        """The ``similar`` tool's index entry for the episode just recorded (library mode only), built here once,
-        under its time limit, so no writer pass spends its time on it; never raises."""
+        """The ``similar`` tool's index entry for the episode just recorded, built here once, under its time limit, so no
+        writer pass spends its time on it; never raises."""
         recorded, self._recorded = getattr(self, "_recorded", None), None
-        if recorded is None or not memory_library_on():
+        if recorded is None:
             return
         try:
             from .. import similar
@@ -2143,18 +1742,13 @@ class RequestRun:
             self._error("similar index", exc, progress)
 
     def _reserve_fork(self, progress: Callable[[str], None]) -> Any:
-        """The episode-end fork's staging dir and lock, only under ``UNIFY_MEMORY_LIBRARY_FORK=on`` (and not
-        ``UNIFY_MEMORY_PASSES=off``); never raises."""
+        """The episode-end fork's staging dir and lock; never raises."""
         from unify.settings import SETTINGS
 
-        from .switch import library_enabled, library_fork, memory_passes_on
-
-        if not (library_enabled(SETTINGS) and library_fork(SETTINGS) and memory_passes_on(SETTINGS)):
-            return None
         try:
             from . import fork as _fork
 
-            return _fork.reserve(self.paths, self.episode_id, SETTINGS, progress)
+            return _fork.reserve(self.paths, self.episode_id, progress)
         except Exception as exc:  # noqa: BLE001
             self._error("fork", exc, progress)
             return None
@@ -2174,24 +1768,6 @@ class RequestRun:
             self._error("fork part list", exc, progress)
             return None
 
-    def _notebook_moments(self, progress: Callable[[str], None]) -> str:
-        """``UNIFY_MEMORY_NOTEBOOK=on``: the consequence moments of the episode just recorded
-        (:func:`..notebook.episode_moments`, which also keeps them for the writer and learns from the episode), as the
-        text the fork's message ends with; ``""`` with the switch off, with no recorded episode, or on any error.
-        Never raises."""
-        from .. import notebook as _notebook
-
-        recorded = getattr(self, "_recorded", None)
-        if recorded is None or not _notebook.notebook_on():
-            return ""
-        try:
-            return _notebook.fork_moments_text(
-                _notebook.episode_moments(self.paths.state_dir, recorded[0]),
-            )
-        except Exception as exc:  # noqa: BLE001 - the notebook never stops a request
-            self._error("notebook moments", exc, progress)
-            return ""
-
     def _start_fork(
         self,
         handle: Any,
@@ -2200,14 +1776,9 @@ class RequestRun:
         reservation: Any = None,
         parts: str | None = None,
     ) -> Any:
-        """The episode-end fork, only under ``UNIFY_MEMORY_LIBRARY_FORK=on`` (and not ``UNIFY_MEMORY_PASSES=off``);
-        never raises."""
+        """The episode-end fork; never raises."""
         from unify.settings import SETTINGS
 
-        from .switch import library_enabled, library_fork, memory_passes_on
-
-        if not (library_enabled(SETTINGS) and library_fork(SETTINGS) and memory_passes_on(SETTINGS)):
-            return None
         try:
             from . import fork as _fork
 
@@ -2215,7 +1786,6 @@ class RequestRun:
                 self.paths,
                 handle,
                 eid,
-                SETTINGS,
                 progress=progress,
                 reservation=reservation,
                 parts=parts,
@@ -2227,9 +1797,8 @@ class RequestRun:
             return None
 
     def partial_episode(self) -> tuple[Any, Any]:
-        """The episode as it stands now (``UNIFY_MEMORY_IN_EPISODE``: a checkpoint's segment record): its transcript so
-        far, folded as at the end (its cells, messages and replies, and its dialogue actions when the dialogue is
-        recorded), with no work-tree change (the capture of the work tree ends only with the episode). Returns
+        """The episode as it stands now (``UNIFY_MEMORY=in_episode``: a checkpoint's segment record): its transcript so
+        far, folded as at the end (its cells, messages and replies, and its dialogue actions), with no work-tree change (the capture of the work tree ends only with the episode). Returns
         ``(episode, redactor)``; nothing is written."""
         from unify import transcripts
 
@@ -2238,13 +1807,8 @@ class RequestRun:
         lines = trajectory.read_jsonl(
             transcripts.transcripts_dir() / f"{self.episode_id}.jsonl",
         )
-        counterpart = dialogue_counterpart()
-        extra = (
-            recorded_dialogue(lines, counterpart, self.redactor(), library_mode=memory_library_on())
-            if counterpart
-            else []
-        )
-        return trajectory.assemble(_Undrained(self), lines, "", _now(), extra_actions=extra)
+        extra = recorded_dialogue(lines, self.redactor())
+        return trajectory.assemble(_Undrained(self), lines, _now(), extra_actions=extra)
 
     def _record_episode(self) -> tuple[str, str]:
         from unify import transcripts
@@ -2259,25 +1823,12 @@ class RequestRun:
         cells = trajectory.timed_cells(trajectory.fold(lines))
         self._worktree_finished = True  # finish ends the capture, whatever it returns
         wt = self.worktree.finish(cells)
-        memory_diff = self._memory_diff()
         ended_at = _now()
-        extra_actions = wt.actions
-        counterpart = dialogue_counterpart()
-        if counterpart:
-            # UNIFY_MEMORY_DIALOGUE: the transcript's dialogue actions follow the work-tree rows
-            extra_actions = [
-                *wt.actions,
-                *recorded_dialogue(
-                    lines,
-                    counterpart,
-                    self.redactor(),
-                    library_mode=memory_library_on(),
-                ),
-            ]
+        # the transcript's dialogue actions follow the work-tree rows
+        extra_actions = [*wt.actions, *recorded_dialogue(lines, self.redactor())]
         ep, redactor = trajectory.assemble(
             self,
             lines,
-            memory_diff,
             ended_at,
             extra_actions=extra_actions,
             worktree_before=wt.before,
@@ -2293,63 +1844,34 @@ class RequestRun:
             shown=self.shown,
             shown_text=self.index,
             cell_status=dict(self.cell_status),
-            library_mode=self.library_mode,
             runtime_calls=self.runtime_calls,
             cell_errors=dict(self.cell_errors),
-            memory_bound=self.library_mode and self.memory_bound,
+            memory_bound=self.memory_bound,
             failures=self.failures,
-            librarian=self.librarian_sessions if librarian_on() else None,
+            librarian=self.librarian_sessions,
         )
         if self.in_episode is not None:
-            # UNIFY_MEMORY_IN_EPISODE=on: the episode's pins, and every use under the pin served when it was called
+            # UNIFY_MEMORY=in_episode: the episode's pins, and every use under the pin served when it was called
             ep.memory_pins = self.in_episode.pin_rows()
             ep.memory_use = with_pins(ep.memory_use, self.pin_counts, self.cell_pins)
-        inferred: tuple[str, list] | None = None
-        if self.regime_inferred:
-            # UNIFY_MEMORY_REGIME=inferred: the regime from this episode's own signals and use record, before it is
-            # written, so the meta, the index and every signal posted below carry it (never a default)
-            inferred = self._infer_regime(ep, lines, counterpart)
-        sha = EpisodeWriter(
-            stores.episodes,
-            stores.blobs,
-            redactor,
-            **(
-                {"library_mode": True} if memory_library_on() else {}
-            ),  # record format 2; off, the call as at 4675a3c45
-        ).write(ep)
+        # the regime from this episode's own signals and use record, before it is written, so the meta, the index and
+        # every signal posted below carry it (never a default)
+        basis, visible = self._infer_regime(ep, lines)
+        sha = EpisodeWriter(stores.episodes, stores.blobs, redactor).write(ep)
         stores.evidence.index_episode(ep, sha)
         # recorded: the journal has served its turn
         self._drop_journal()
         # the episode and the redactor it was stored with, for the similar index (:meth:`_index_similar`)
         self._recorded = (ep, redactor)
-        if inferred is not None:
-            self._post_inferred(ep, sha, ended_at, *inferred)
-        else:
-            consolidate.post_checker(
-                stores,
-                ep.episode_id,
-                sha,
-                self.solved,
-                self.outcome_at or ended_at,
-            )
-            if self.checker_seen:
-                # The verdicts the actor saw, as agent-visible checker signals
-                consolidate.post_visible_checkers(
-                    stores,
-                    ep,
-                    sha,
-                    list(self.checker_seen),
-                    lines,
-                    counterpart,
-                )
+        self._post_inferred(ep, sha, ended_at, basis, visible)
         bumped = self.state.generations.observe(ep.fingerprints or {})
         self.state.drift |= bumped
         self.state.suspect |= bumped
         self.state.save()
         return ep.episode_id, sha
 
-    def _infer_regime(self, ep: Any, lines: list[dict], counterpart: str) -> tuple[str, list]:
-        """``UNIFY_MEMORY_REGIME=inferred``: set *ep*'s regime from the verdicts the actor saw in this episode (each
+    def _infer_regime(self, ep: Any, lines: list[dict]) -> tuple[str, list]:
+        """Set *ep*'s regime from the verdicts the actor saw in this episode (each
         referring to the action it judged where the pairing is certain) and its use record, with the run's other
         episodes as the prior (:func:`.outcomes.infer`); a hidden grader's verdict decides nothing. Returns the
         basis and the visible verdicts' signals, to be posted once the episode is indexed."""
@@ -2361,7 +1883,7 @@ class RequestRun:
                 ep,
                 list(self.checker_seen),
                 lines,
-                counterpart,
+                DIALOGUE_CHANNEL,
                 "none",
             )
             if self.checker_seen
@@ -2377,7 +1899,7 @@ class RequestRun:
         return basis, visible
 
     def _post_inferred(self, ep: Any, sha: str, ended_at: str, basis: str, visible: list) -> None:
-        """``UNIFY_MEMORY_REGIME=inferred``: record the episode's inferred regime with its basis, post its signals with
+        """Record the episode's inferred regime with its basis, post its signals with
         their timing (a regime that cannot observe one masks it, as always) and write their arrival rows, then post
         the verdicts this session took on earlier episodes (:func:`.outcomes.post_late`), each in turn; a late
         verdict that cannot be posted is logged and never stops the request."""
@@ -2406,7 +1928,6 @@ class RequestRun:
                     entry,
                     n,
                     eid,
-                    checker_visible=checker_visible_on(),
                     lookup=lookup,
                 )
             except Exception as exc:  # noqa: BLE001 - logged, value-free; the request goes on
@@ -2417,8 +1938,8 @@ class RequestRun:
         progress: Callable[[str], None],
         emit: Callable[[dict], None] | None,
     ) -> None:
-        """Library mode: one ``landed`` event per worker result applied at open, naming this request (the first
-        that ran after it); once."""
+        """One ``landed`` event per writer result applied at open, naming this request (the first that ran after it);
+        once."""
         rows, self._landed = self._landed, []
         if not rows:
             return
@@ -2447,54 +1968,21 @@ class RequestRun:
         progress: Callable[[str], None],
         emit: Callable[[dict], None] | None,
     ) -> None:
+        """Report the passes that landed since the last request, and make sure the writer service is up (the request
+        never waits for a pass)."""
         from unify.settings import SETTINGS
 
-        from . import consolidate
+        from .async_pass import request_end
 
-        if self.library_mode:  # library mode: never wait for a pass
-            self._report_landed(progress, emit)
-            try:
-                from .async_pass import maybe_spawn
-                from .consolidate import events_path
-
-                # WAIT_SLOT's relay starts at the events written from here on (the slot's own rows)
-                ev_file = events_path(self.paths)
-                self._events_from = ev_file.stat().st_size if ev_file.exists() else 0
-                self._relay = self._emitter(emit)
-                maybe_spawn(
-                    self.stores,
-                    eid,
-                    sha,
-                    effort=writer_effort(self.effort),
-                    settings=SETTINGS,
-                    emit=self._emitter(emit),
-                )
-            except Exception as exc:  # noqa: BLE001
-                self._error("passes", exc, progress)
-            try:
-                self.state.save()
-            except Exception as exc:  # noqa: BLE001
-                self._error("state", exc, progress)
-            return
+        self._report_landed(progress, emit)
         try:
-            await consolidate.run_due_passes(
-                self.stores,
-                eid,
-                sha,
-                self.state,
-                # The writer's effort matches the actor's unless a mismatch ablation fixes it
-                effort=writer_effort(self.effort),
-                settings=SETTINGS,
-                emit=self._emitter(emit),
-                clock=time.monotonic,
-            )
+            request_end(self.stores, eid, settings=SETTINGS, emit=self._emitter(emit))
         except Exception as exc:  # noqa: BLE001
             self._error("passes", exc, progress)
-        finally:
-            try:
-                self.state.save()
-            except Exception as exc:  # noqa: BLE001
-                self._error("state", exc, progress)
+        try:
+            self.state.save()
+        except Exception as exc:  # noqa: BLE001
+            self._error("state", exc, progress)
 
     # -- abort and cleanup ------------------------------------------------------------------------
 
@@ -2511,10 +1999,8 @@ class RequestRun:
         """End the run with nothing recorded now (the process is closing without a finished request). Its journal
         stays, with why it stopped (*stopped*: ``{"reason": "timeout"}`` or ``{"reason": "error", "error": <class
         name>}``), so the next start records the turns that ran as an incomplete episode. After ``finish`` it changes
-        nothing. Frozen (``UNIFY_MEMORY_FROZEN=on``): the journal is dropped, so no later start records it."""
-        if not self._closed and getattr(self, "frozen", False):
-            self._drop_journal()
-        elif not self._closed and self.journal is not None and stopped:
+        nothing."""
+        if not self._closed and self.journal is not None and stopped:
             self.journal.stopped(stopped)
         self._cleanup()
 

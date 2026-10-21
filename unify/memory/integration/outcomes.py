@@ -166,7 +166,6 @@ def post_late(
     n: int,
     from_episode: str,
     *,
-    checker_visible: bool,
     lookup: Any,
 ) -> dict:
     """Post one late verdict (:func:`late_entry`) on its earlier episode: the episode's regime inferred again with
@@ -180,7 +179,7 @@ def post_late(
     eid = entry["episode"]
     ep = lookup.episode(eid)
     sha, _ = stores.evidence.episode_ref(eid)
-    about = entry.get("about") or ""
+    about = entry.get("about")
     refers_to = eid
     if about.startswith("action:"):
         refers_to = f"{eid}/actions/{int(about.split(':', 1)[1])}"
@@ -193,7 +192,7 @@ def post_late(
         refers_to=refers_to,
         visible_to_actor=True,
     )
-    timed(sig, entry["at"], str(getattr(ep, "ended_at", "") or ""), about)
+    timed(sig, entry["at"], str(getattr(ep, "ended_at", "")), about)
     if sig.timing != AFTER_EPISODE:
         raise ValueError("a late verdict arrived before its episode ended")
     known = list(stores.evidence.signals_for(eid))
@@ -208,7 +207,6 @@ def post_late(
         stores.evidence.signals_for(eid),
         ep,
         regime,
-        checker_visible=checker_visible,
     )
     return {
         "signal_id": sig.signal_id,

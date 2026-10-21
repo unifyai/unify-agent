@@ -464,7 +464,6 @@ def run_procedure(
     signals: Callable[[str], list],
     runner: Callable[..., SandboxResult] = run_confined,
     timeout_s: float = PROCEDURE_S,
-    checker_visible: bool = False,
 ) -> Outcome:
     problems = param_problems(cover.params, ep, blob)
     if problems:
@@ -481,7 +480,7 @@ def run_procedure(
         return _worktree(item, cover, ep, worktree_files, kw)
     if cover.runner == "tool":
         return _tool(item, cover, ep, kw)
-    return _dialogue(item, cover, ep, signals, kw, checker_visible)
+    return _dialogue(item, cover, ep, signals, kw)
 
 
 def _worktree(
@@ -674,7 +673,6 @@ def _dialogue(
     ep: Episode,
     signals,
     kw: dict,
-    checker_visible: bool = False,
 ) -> Outcome:
     i = cover.action
     a = ep.actions[i] if i is not None and i < len(ep.actions) else None
@@ -686,7 +684,7 @@ def _dialogue(
         s
         for s in (signals(ep.episode_id) or [])
         if getattr(s, "source", None) != "checker"
-        or (checker_visible and getattr(s, "visible_to_actor", False) is True)
+        or ((getattr(s, "visible_to_actor", False) is True))
     ]
     if any((s.source, s.label) in _CONTRARY for s in sigs):
         return Outcome(False, "the episode carries a contrary signal")

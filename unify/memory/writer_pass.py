@@ -117,7 +117,7 @@ def _thought_only_reply() -> str:
 
 def _manifest_rules() -> str:
     """The consolidator rules of :mod:`.manifest`'s docstring, verbatim, so prompt and gate cannot drift."""
-    doc = _manifest.__doc__ or ""
+    doc = _manifest.__doc__
     start = doc.find(_RULES_HEADING)
     if start < 0:
         raise ImportError(
@@ -483,7 +483,7 @@ def _prompt_chars(m: object) -> int:
     for tc in m.get("tool_calls") or []:
         f = tc.get("function") if isinstance(tc, dict) else None
         if isinstance(f, dict):
-            n += len(str(f.get("name") or "")) + len(str(f.get("arguments") or ""))
+            n += len(str(f.get("name"))) + len(str(f.get("arguments")))
     return n
 
 
@@ -533,12 +533,6 @@ def _usage_of(msg: object, usd: object, reported: object = None) -> dict:
         ),
         "usd": _usd(cost) if cost is not None else "unknown",
     }
-
-
-def _agent_tool_json(agent: str) -> list[dict]:
-    from . import agent_profiles
-
-    return agent_profiles.tool_json(agent)
 
 
 class _PassTemp:
@@ -690,56 +684,6 @@ def _trailers(
     return out
 
 
-def writer_tools(
-    *,
-    docstrings: bool = False,
-    soft_budget: bool = False,
-    library_mode: bool = False,
-    pool: bool = False,
-    role: str = "write",
-    helper: bool = False,
-    similar: bool = False,
-    edit_tools: bool = False,
-    in_code: bool | None = None,
-) -> list[dict]:
-    """The writer's tool JSON. *in_code* (library mode): False gives the tools one by one whatever
-    ``UNIFY_TOOLS_IN_CODE`` says (a pass with tools in code takes its allow-list from them); None follows the
-    setting. With *library_mode* it is rendered from the shared tool spec for the agent of *role*
-    (``write``: the writer, ``curate``: the curator) through :mod:`.agent_profiles`; *pool* turns on the tools that
-    need the candidate pool, *helper* (a helper lane exists) ``delegate``, *similar* (the similar-code index
-    exists) ``similar`` and *edit_tools* the ``write`` and ``edit`` file tools. With *library_mode* off: the original
-    three tools (only ``check``'s text varies).
-    """
-    if library_mode:
-        from . import agent_profiles
-        from .library_prompts import tool_flags
-
-        flags = tool_flags(pool=pool, helper=helper, similar=similar, edit=edit_tools)
-        return agent_profiles.tool_json(
-            "curator" if role == "curate" else "writer",
-            flags,
-            in_code=in_code,
-        )
-    description = (
-        "Check a manifest against your current /memory files with the gate's cheap checks (manifest, "
-        "provenance and scope, "
-        + ("docstrings, " if docstrings else "")
-        + "covers and their channels, "
-        + ("size" if soft_budget else "index")
-        + ", safety; not the tests"
-        + (" or examples" if docstrings else "")
-        + "). Returns 'ok' "
-        f"or the gate's reasons. Changes nothing; at most {MAX_CHECKS} per pass, each counted as a call."
-    )
-    tools = copy.deepcopy(_TOOL_TEMPLATES)
-    for tool in tools:
-        if tool["function"]["name"] == "check":
-            tool["function"]["description"] = description
-    return tools
-
-
-#: The v2 tools (every library-mode switch at its default).
-_TOOLS = writer_tools()
 _OUTPUT_CAP = 8000
 #: parts per read_episode call (one shared page) and reader calls per model turn (stated in the tool descriptions)
 READ_PARTS_PER_CALL = _wt.READ_PARTS_PER_CALL
@@ -819,14 +763,10 @@ class PassConfig:
     model: str = "openai/gpt-6-sol"
     effort: str = "low"
     max_calls: int = 40
-    # None (library mode): no USD cap and no count limits; STEP_GUARD and the deadline end a runaway
+    # None (a pass on the writer's lane): no USD cap and no count limits; STEP_GUARD and the deadline end a runaway
     max_usd: Decimal | None = Decimal("1.00")
     cell_timeout_s: float = 60.0
     deadline_s: float = 900.0
-    # UNIFY_MEMORY_WRITER_USAGE: end the first message with the library-use table (off: as before)
-    show_usage: bool = False
-    # UNIFY_MEMORY_LIBRARY: the writer's batch map, signals, views, coverage (off: as at 4675a3c45)
-    library_mode: bool = False
     # reader calls (read, grep, overview, read_episode, pool) count here, never against max_calls
     max_reads: int = 400
     # a fixed reserve per repair round, once offline replay calibrates it; None: the pass's own median
@@ -835,53 +775,19 @@ class PassConfig:
     # where the fork leaves staging (<state>/memory-staging; None: a scratch dir in the pass); writer-launched
     # helpers write beside it (<state>/memory-helpers, helpers.py)
     staging_root: str | None = None
-    # UNIFY_MEMORY_NOTEBOOK: the run's state dir, whose notebook/ a store pass reads (/inputs/notebook.json) and
-    # merges the writer's /memory/.pass/notebook.json into when it ends (notebook.py); None: neither, and the brief
-    # is as before
-    notebook_state: str | None = None
     # the run's worktree repo and the folder its recorded office workspaces are exported to, once each, for
     # replay (workspace_trees.py; None: replays run without a recorded workspace)
     worktree_git: str | None = None
     trees_cache: str | None = None
     # the ``similar`` tool's index folder (similar.index_dir; None: the tool has no index to search)
     similar_index: str | None = None
-    # the candidate pool (UNIFY_MEMORY_LIBRARY_POOL; pool.py): proposals persist across passes
-    pool: bool = False
-    # UNIFY_MEMORY_LIBRARY_FORK: the episode-end fork stages candidates, so the writer's brief and batch-map rows
-    # describe /inputs/staging; off: neither names staging
-    fork: bool = False
-    # off by default: UNIFY_MEMORY_LIBRARY_COMPACT compacts the memory agents' conversations as the agent loop
-    # does (:func:`compact_by_summary`, at :func:`compaction_due`)
-    compact: bool = False
-    # UNIFY_MEMORY_LIBRARY_EDIT_TOOLS: the writer and the curator get the ``write`` and ``edit`` file tools on
-    # /memory (edit_tools.py); off: neither tool exists and every prompt is as before
-    edit_tools: bool = False
-    # UNIFY_MEMORY_LIBRARY_COVERAGE: only "optional" exists (finish never waits on reading); kept for older callers
-    coverage_rule: str = "optional"
     # where the pass's structured records go: <pass_record_root>/<pass id>/tool-events.jsonl (None: kept in memory
     # only, on WriterPass.tool_events)
     pass_record_root: str | None = None
-    # UNIFY_TOOLS_IN_CODE=on (library mode): every request carries the one JSON tool execute_code, and the other
-    # tools are Python calls from the agent's cells through the tool channel (tool_channel.py, tool_handlers.py);
-    # off: the JSON tools as before
-    tools_in_code: bool = False
-    # UNIFY_MEMORY_ATTENTION_LEDGER=on: the memory home whose attention ledger an attention pass reads and decides
-    # (attention.py, attention_tools.py); None: no attention pass, and the brief is as before
+    # the memory home whose attention ledger the pass reads and decides (attention.py, attention_tools.py)
     attention_home: str | None = None
-    # UNIFY_MEMORY_WRITER_TESTS: the modes ``tools.test`` offers ("value", "replay"; writer_tests.py); empty: none
-    writer_tests: tuple = ()
-    # UNIFY_MEMORY_IMPURE_ITEMS=on: items of any effect, every quality finding a label (the brief says so; the gate
-    # is configured apart, Gate(labels=...)); off: the brief as before
-    impure_items: bool = False
-    # UNIFY_MEMORY_GATE_LABELS_ONLY=on (rev 2): the brief says a finding labels its item and only pure items run (the
-    # gate is configured apart, Gate(labels_only=...)); off: the brief as before
-    gate_labels_only: bool = False
-    # UNIFY_AGENTS_RUN_RECORD=on (library mode): the memory home whose run record the pass's agent and its helpers
-    # join (unify/agents/run_record.py); None: the pass keeps its own record, as built
+    # the memory home whose run record the pass's agent and its helpers join (unify/agents/run_record.py)
     run_home: str | None = None
-    # the writer service holds the writer's place on the run record between passes (the writer is idle, not ended,
-    # when a pass ends)
-    service_held: bool = False
     # the writer service's room for this pass (its cap less what its other passes committed, less what a resumed pass
     # already lost), a decimal string: a hard USD stop that leaves the pass's other limits as they are (an uncapped
     # library pass stays uncapped). No model call, the writer's or a helper's, starts unless the pass's spend so far,
@@ -904,14 +810,14 @@ def usd_room(cfg: Any, spend: Any) -> bool:
     worst = getattr(cfg, "usd_call_worst", None)
     if worst is None:
         return False
-    calls = int(spend.unknown) + int(getattr(spend, "in_flight", 0) or 0) + 1
+    calls = int(spend.unknown) + int(getattr(spend, "in_flight", 0)) + 1
     return Decimal(spend.usd) + Decimal(calls) * Decimal(worst) <= Decimal(limit)
 
 
 @contextlib.contextmanager
 def call_in_flight(spend: Any) -> Iterator[None]:
     """Count a model call as in flight on the pass's *spend* (shared by the writer and its helpers) while it runs."""
-    spend.in_flight = int(getattr(spend, "in_flight", 0) or 0) + 1
+    spend.in_flight = int(getattr(spend, "in_flight", 0)) + 1
     try:
         yield
     finally:
@@ -1104,7 +1010,7 @@ def export_for_writer(
 
             row["regime"] = ep.regime
             row["memory_main"] = ep.memory_main
-            row["worktree_diff"] = ep.worktree_diff or ""
+            row["worktree_diff"] = ep.worktree_diff
             row["structural_events"] = structural_events(ep)
             if usage_dest is not None:
                 from .usage import writer_usage_record
@@ -2292,10 +2198,7 @@ class _KeepOnCancel:
     def __exit__(self, et, ev, tb) -> bool:
         live = getattr(self.writer, "_live", None)
         if (
-            et is not None
-            and issubclass(et, asyncio.CancelledError)
-            and self.writer.cfg.library_mode
-            and live is not None
+            et is not None and issubclass(et, asyncio.CancelledError) and live is not None
         ):
             self.writer._cancel_patch = self.writer._keep_cancelled_work(
                 live[0],
@@ -2468,7 +2371,7 @@ class WriterPass:
         if not self._first_prompt[0]:
             self._first_prompt = (True, inp)
         if inp is not None:
-            self._max_prompt = max(self._max_prompt or 0, inp)
+            self._max_prompt = max(self._max_prompt, inp)
             self._cache_tokens[0] += inp
             self._cache_tokens[2] += 1
         if cached is not None:
@@ -2611,23 +2514,16 @@ class WriterPass:
         from .usage import usage_table
 
         try:
-            if self.cfg.library_mode:
-                # library mode: the whole table is a file the brief names, /inputs/usage/table.md; nothing of it
-                # is inlined in the first message
-                from .layout import discover
+            # library mode: the whole table is a file the brief names, /inputs/usage/table.md; nothing of it
+            # is inlined in the first message
+            from .layout import discover
 
-                ids = [f.item_id for f in discover(Path(tree)).functions]
-                full = usage_table(self.ev, list(req.episodes), ids, max_rows=None)
-                if self._inputs_dir is not None:
-                    (self._inputs_dir / "usage").mkdir(exist_ok=True)
-                    (self._inputs_dir / "usage" / "table.md").write_text(full)
-                return full
-            ids = [
-                it.item_id
-                for it in memory_items(tree).items
-                if it.kind == "env_function"
-            ]
-            return usage_table(self.ev, list(req.episodes), ids)
+            ids = [f.item_id for f in discover(Path(tree)).functions]
+            full = usage_table(self.ev, list(req.episodes), ids, max_rows=None)
+            if self._inputs_dir is not None:
+                (self._inputs_dir / "usage").mkdir(exist_ok=True)
+                (self._inputs_dir / "usage" / "table.md").write_text(full)
+            return full
         except Exception as exc:  # noqa: BLE001 - a measurement never stops a pass
             return f"(library use not available: {type(exc).__name__})\n"
 
@@ -2659,11 +2555,11 @@ class WriterPass:
                 else None
             ),
             blob_min_bytes=self._qa.response_blob_bytes,
-            library_mode=_library_on(self),
+            library_mode=True,
             # the store pass reads each episode's library use as its own file (none for a curate pass, whose use
             # records are /inputs/curate/use.json)
             usage_dest=(
-                inputs / "usage" if _library_on(self) and req.kind != "curate" else None
+                inputs / "usage" if req.kind != "curate" else None
             ),
         )
         exported = export_blobs(
@@ -2671,9 +2567,9 @@ class WriterPass:
             list(req.episodes),
             getattr(self.gate, "blobs", None),
             inputs / "blobs",
-            per_blob_bytes=None if _library_on(self) else EXPORT_BLOB_BYTES,
-            total_bytes=None if _library_on(self) else EXPORT_TOTAL_BYTES,
-            record_bytes=_library_on(self),
+            per_blob_bytes=None,
+            total_bytes=None,
+            record_bytes=True,
         )
         self._exported_bytes = exported.get("exported_bytes")
         (inputs / "request.json").write_text(
@@ -2686,52 +2582,50 @@ class WriterPass:
                 },
             ),
         )
-        if _library_on(self):
-            from . import shared_text as _shared_text
-            from .batch_map import build_batch_map
+        from . import shared_text as _shared_text
+        from .batch_map import build_batch_map
 
-            # count this batch's request blocks once each, then show the shared ones as markers, each
-            # block once under /inputs/shared/
-            if hasattr(
-                self.ev,
-                "db",
-            ):  # an evidence store (test doubles without one show requests as they are)
-                for e in req.episodes:
-                    ep_ = self.load(e)
-                    _shared_text.update_counts(
-                        self.ev,
-                        e,
-                        ep_.request[0] if ep_.request else "",
-                        ep_.request[1:],
-                    )
-                self._shared = _shared_text.shared(self.ev)
-            if self._shared:
-                (inputs / "shared").mkdir(exist_ok=True)
-                for b, text in self._shared.items():
-                    (inputs / "shared" / f"{b}.txt").write_text(text)
-            if (
-                req.kind != "curate"
-            ):  # a curate pass has no batch: its inputs are /inputs/curate/
-                (inputs / "batch_map.json").write_text(
-                    json.dumps(
-                        build_batch_map(self.load, list(req.episodes), self._shared),
-                        sort_keys=True,
-                        default=str,
-                        indent=1,
-                    )
-                    + "\n",
+        # count this batch's request blocks once each, then show the shared ones as markers, each
+        # block once under /inputs/shared/
+        if hasattr(
+            self.ev,
+            "db",
+        ):  # an evidence store (test doubles without one show requests as they are)
+            for e in req.episodes:
+                ep_ = self.load(e)
+                _shared_text.update_counts(
+                    self.ev,
+                    e,
+                    ep_.request[0] if ep_.request else "",
+                    ep_.request[1:],
                 )
-                from unify.common import in_code_switch
+            self._shared = _shared_text.shared(self.ev)
+        if self._shared:
+            (inputs / "shared").mkdir(exist_ok=True)
+            for b, text in self._shared.items():
+                (inputs / "shared" / f"{b}.txt").write_text(text)
+        if (
+            req.kind != "curate"
+        ):  # a curate pass has no batch: its inputs are /inputs/curate/
+            (inputs / "batch_map.json").write_text(
+                json.dumps(
+                    build_batch_map(self.load, list(req.episodes), self._shared),
+                    sort_keys=True,
+                    default=str,
+                    indent=1,
+                )
+                + "\n",
+            )
+            from unify.common import in_code_switch
 
-                if in_code_switch.tools_in_code():
-                    # the reference tables the brief points to instead of carrying them
-                    from .library_prompts import input_pointer_files
+            # the reference tables the brief points to instead of carrying them
+            from .library_prompts import input_pointer_files
 
-                    for name, text in input_pointer_files(
-                        staging=bool(getattr(self.cfg, "fork", False)),
-                        pool=bool(self.cfg.pool),
-                    ).items():
-                        (inputs / name).write_text(text)
+            for name, text in input_pointer_files(
+                staging=True,
+                pool=True,
+            ).items():
+                (inputs / name).write_text(text)
         # the library test kit, as the gate mounts it, when a switch is on or the parent library's tests use
         # it (the blobs those tests name join the pass's blobs); else the toolkit as at the screen build
         staged = tree is not None and isinstance(store, BlobStore)
@@ -2756,11 +2650,11 @@ class WriterPass:
         if not staged:
             _stage_memlab(inputs / "memlab")
         self._drafts = []
-        if _library_on(self) and req.kind == "curate":
+        if req.kind == "curate":
             # CURATE: its own inputs; drafts are WRITE's
             (inputs / "gate").mkdir(exist_ok=True)
             _curate.stage_inputs(inputs, self.curate_state)
-        elif _library_on(self):
+        else:
             from .drafts import stage_drafts
 
             if isinstance(store, BlobStore):
@@ -3302,9 +3196,8 @@ class WriterPass:
                 if eid in (e.provenance.get("episodes") or [])
             ]
             counts[src] = counts.get(src, 0) + 1
-        if self.cfg.fork:
-            # the brief names /inputs/captures whenever the fork is on: it exists even when nothing was captured
-            (Path(inputs) / "captures").mkdir(parents=True, exist_ok=True)
+        # the brief names /inputs/captures whenever the fork is on: it exists even when nothing was captured
+        (Path(inputs) / "captures").mkdir(parents=True, exist_ok=True)
         if captures_root is not None:
             try:
                 _captures.export_for_writer(captures_root, capture_ids, Path(inputs) / "captures")
@@ -3382,7 +3275,7 @@ class WriterPass:
         the fork is off or there is no staging root."""
         from .captures import STORE_DIR
 
-        if not (self.cfg.staging_root and self.cfg.fork):
+        if not (self.cfg.staging_root):
             return None
         return Path(self.cfg.staging_root).parent / STORE_DIR
 
@@ -3508,7 +3401,7 @@ class WriterPass:
                 # library mode: the generated files are read-only binds, so a write fails at once
                 **(
                     {"late_ro": self._generated_binds(box)}
-                    if _library_on(self) and getattr(self, "_library_generated", None)
+                    if getattr(self, "_library_generated", None)
                     else {}
                 ),
             )
@@ -3516,20 +3409,17 @@ class WriterPass:
             self._box_audit = open_log.finish()
             shutil.rmtree(cdir, ignore_errors=True)
         content = (r.stdout + ("\n" + r.stderr if r.stderr else "")) or "(no output)"
-        if _library_on(self):
-            shown, full = _head_marked(content)
-            from unify.common.box_interpreter import keep_traceback_end
+        shown, full = _head_marked(content)
+        from unify.common.box_interpreter import keep_traceback_end
 
-            shown = keep_traceback_end(shown, r.stderr)
-            out_dir = cells.parent / "outputs"
-            out_dir.mkdir(exist_ok=True)
-            n = len(list(out_dir.iterdir()))
-            (out_dir / f"cell-{n}.txt").write_text(full)
-            if len(full.encode("utf-8", errors="replace")) > _OUTPUT_CAP:
-                shown += f"\n(full output: /outputs/cell-{n}.txt)"
-            content = shown
-        else:
-            content = content[-_OUTPUT_CAP:]
+        shown = keep_traceback_end(shown, r.stderr)
+        out_dir = cells.parent / "outputs"
+        out_dir.mkdir(exist_ok=True)
+        n = len(list(out_dir.iterdir()))
+        (out_dir / f"cell-{n}.txt").write_text(full)
+        if len(full.encode("utf-8", errors="replace")) > _OUTPUT_CAP:
+            shown += f"\n(full output: /outputs/cell-{n}.txt)"
+        content = shown
         if r.timed_out:
             content += f"\n(cell timed out after {timeout_s:.0f} s)"
         elif r.returncode != 0:
@@ -3558,15 +3448,13 @@ class WriterPass:
         found = _layout_problems(box)
         if found:
             return _layout_refusal(found), None
-        if _library_on(self):
-            manifest = _with_fixtures(manifest, self._ledger(box))
+        manifest = _with_fixtures(manifest, self._ledger(box))
         try:
             with tempfile.TemporaryDirectory(prefix="memory-check-") as tmp:
                 tree = Path(tmp) / "tree"
                 tree.mkdir()
                 _mirror(box, tree, skip_top=frozenset({".pass"}))
-                if getattr(self.cfg, "library_mode", False):
-                    _drop_unchanged(tree, self._library_generated)
+                _drop_unchanged(tree, self._library_generated)
                 reasons = self.gate.preview(base, tree, manifest)
         except Exception as exc:  # a broken check never ends the pass
             detail = _redact(f"check error: {type(exc).__name__}: {exc}")[:300]
@@ -3681,7 +3569,7 @@ class WriterPass:
                 else None
             ),
             "paths": [dict(p) for p in reply.paths],
-            "args_bytes": len(str(args_text or "").encode("utf-8", errors="replace")),
+            "args_bytes": len(str(args_text).encode("utf-8", errors="replace")),
             "result_bytes": text_bytes,
             "result_truncated": "; next: offset=" in reply.text,
             "usage": usage,
@@ -3876,7 +3764,7 @@ class WriterPass:
             tests_path=self._record_dir(pass_id, inputs) / _tests.TESTS_FILE,
             library=Path(box),
             episode=self._episode,
-            modes=frozenset(self.cfg.writer_tests),
+            modes=frozenset({"value"}),
             work=Path(tmp) / "tests",
         )
 
@@ -4134,7 +4022,7 @@ class WriterPass:
             "rw": {box: "/memory"},
             "late_ro": (
                 self._generated_binds(box)
-                if _library_on(self) and getattr(self, "_library_generated", None)
+                if getattr(self, "_library_generated", None)
                 else {}
             ),
         }
@@ -4313,8 +4201,6 @@ class WriterPass:
     ) -> None:
         """Library mode: the pass's final full gate result into the blob store and its ``pass_rounds`` row;
         nothing with library_mode off."""
-        if not self.cfg.library_mode:
-            return
         text = _repair.render_result(
             pass_id,
             round_no,
@@ -4339,7 +4225,7 @@ class WriterPass:
     def _notebook_on(self) -> bool:
         """A store pass with the world notebook on (``PassConfig.notebook_state``)."""
         return (
-            bool(getattr(self.cfg, "notebook_state", None)) and self._role != "curate"
+            False
         )
 
     def _stage_notebook(self, req: PassRequest, inputs: Path) -> None:
@@ -4347,7 +4233,7 @@ class WriterPass:
         from . import notebook as _notebook
 
         try:
-            doc = _notebook.writer_input(self.cfg.notebook_state, list(req.episodes))
+            doc = _notebook.writer_input(None, list(req.episodes))
         # an unreadable notebook is an empty one
         except Exception as exc:  # noqa: BLE001
             logging.getLogger(__name__).warning(
@@ -4371,7 +4257,7 @@ class WriterPass:
                 return  # the writer wrote no notebook file
             report = (
                 _notebook.absorb(
-                    self.cfg.notebook_state,
+                    None,
                     doc,
                     list(req.episodes),
                     origin=pass_id,
@@ -4396,9 +4282,9 @@ class WriterPass:
         if self._role == "curate" or getattr(self.cfg, "role", "write") == "curate":
             return curate_brief_now(
                 cell_s=float(self.cfg.cell_timeout_s),
-                compact=bool(self.cfg.compact),
+                compact=True,
                 finish_capped=self.cfg.max_usd is not None,
-                edit_tools=bool(self.cfg.edit_tools),
+                edit_tools=False,
             )
         brief = write_brief_now(**self._write_inputs())
         if self._notebook_on():
@@ -4411,15 +4297,15 @@ class WriterPass:
         """The WRITE brief names each input this pass's configuration prepares (constant per run): staging only
         with the episode-end fork on, the pool only with the pool on."""
         return {
-            "staging": bool(getattr(self.cfg, "fork", False)),
-            "pool": bool(self.cfg.pool),
+            "staging": True,
+            "pool": True,
             "cell_s": float(self.cfg.cell_timeout_s),
             "helper": self.helper_turn is not None,
             "similar": bool(self.cfg.similar_index),
             # the limits the brief states: compaction when it is on, finish's refusal cap when the pass is capped
-            "compact": bool(self.cfg.compact),
+            "compact": True,
             "finish_capped": self.cfg.max_usd is not None,
-            "edit_tools": bool(self.cfg.edit_tools),
+            "edit_tools": False,
             # the redesign's switches, only when one is on (off: the call as built)
             **({"switches": sw} if (sw := self._switches_b()).attention or sw.impure or sw.tests or sw.labels_only
                else {}),
@@ -4432,9 +4318,9 @@ class WriterPass:
 
         return WriterSwitches(
             attention=getattr(self, "_attention", None) is not None,
-            impure=bool(getattr(self.cfg, "impure_items", False)),
-            tests=bool(getattr(self.cfg, "writer_tests", ())),
-            labels_only=bool(getattr(self.cfg, "gate_labels_only", False)),
+            impure=True,
+            tests=True,
+            labels_only=True,
         )
 
     def _keep_cancelled_work(
@@ -4513,7 +4399,7 @@ class WriterPass:
         self._attention, self._tests = None, None
         self._role = "curate" if req.kind == "curate" else "write"
         if req.kind == "curate" and (
-            not self.cfg.library_mode or self.curate_state is None
+            (self.curate_state is None)
         ):
             # CURATE runs only in library mode, on the library state its trigger read; nothing is spent
             return PassOutcome(
@@ -4539,17 +4425,16 @@ class WriterPass:
         self._write_refusal_codes(pass_id)
         try:
             out = await self._run(req, pass_id, parent, spend)
-            if self.cfg.library_mode and self.cfg.pool:
-                out.pool = (
-                    self._pool_update(req, pass_id, out)
-                    if self._pool is not None
-                    else {"error": self._pool_error or "not loaded"}
-                )
+            out.pool = (
+                self._pool_update(req, pass_id, out)
+                if self._pool is not None
+                else {"error": self._pool_error or "not loaded"}
+            )
             return out
         except BaseException as exc:  # cancellation and interrupts included
             if not self.ev.pass_exists(pass_id):  # the gate records its own errors
                 reason = _redact(f"pass error: {type(exc).__name__}: {exc}")[:500]
-                cancelled = self.cfg.library_mode and isinstance(
+                cancelled = isinstance(
                     exc,
                     asyncio.CancelledError,
                 )
@@ -4563,28 +4448,25 @@ class WriterPass:
                     patch_blob=patch,
                     refused={i: ["cancelled"] for i in named} if cancelled else None,
                 )
-                if (
-                    self.cfg.library_mode
-                ):  # a WRITE pass all the same (drafts count it); its rounds are unknown
-                    try:
-                        self.ev.record_pass_rounds(
-                            {
-                                "pass_id": pass_id,
-                                "role": self._role,
-                                "rounds": None,
-                                "round_blobs": "[]",
-                                # a cancelled pass's draft points at its fixed gate result
-                                "gate_blob": (
-                                    self._cancelled_result(pass_id, named)
-                                    if cancelled
-                                    else None
-                                ),
-                            },
-                        )
-                    except (
-                        Exception
-                    ):  # noqa: BLE001 - never masks the pass's own exception
-                        pass
+                try:
+                    self.ev.record_pass_rounds(
+                        {
+                            "pass_id": pass_id,
+                            "role": self._role,
+                            "rounds": None,
+                            "round_blobs": "[]",
+                            # a cancelled pass's draft points at its fixed gate result
+                            "gate_blob": (
+                                self._cancelled_result(pass_id, named)
+                                if cancelled
+                                else None
+                            ),
+                        },
+                    )
+                except (
+                    Exception
+                ):  # noqa: BLE001 - never masks the pass's own exception
+                    pass
             raise
 
     async def _run(
@@ -4596,26 +4478,25 @@ class WriterPass:
     ) -> PassOutcome:
         # library mode with max_usd None is uncapped: no USD stop, no unpriced reserve (the run-level guard books those
         # at worst case), no count limits; STEP_GUARD and the deadline end a runaway, labelled operational
-        uncapped = bool(self.cfg.library_mode) and self.cfg.max_usd is None
+        uncapped = self.cfg.max_usd is None
         cap = None if uncapped else Decimal(self.cfg.max_usd)
         max_calls = STEP_GUARD if uncapped else int(self.cfg.max_calls)
         reserve = (
             Decimal(0) if uncapped else (cap / max_calls if max_calls > 0 else cap)
         )
         deadline = time.monotonic() + float(self.cfg.deadline_s)
-        if self.cfg.library_mode:
-            # one record per pass for its agent and every helper it starts (messaging.py), kept beside the pass's
-            # events when the pass has a record folder
-            run_home = getattr(self.cfg, "run_home", None)
-            self._pass_record = _messaging.PassRecord(
-                root="curator" if self._role == "curate" else "writer",
-                deadline=deadline,
-                # on the run record the entries live in the run's record file, not a file per pass
-                log=self._no_record_log() if run_home else self._record_log(pass_id),
-                pass_id=pass_id,
-                run_home=run_home,
-                held_by_service=bool(getattr(self.cfg, "service_held", False)),
-            )
+        # one record per pass for its agent and every helper it starts (messaging.py), kept beside the pass's
+        # events when the pass has a record folder
+        run_home = getattr(self.cfg, "run_home", None)
+        self._pass_record = _messaging.PassRecord(
+            root="curator" if self._role == "curate" else "writer",
+            deadline=deadline,
+            # on the run record the entries live in the run's record file, not a file per pass
+            log=self._no_record_log() if run_home else self._record_log(pass_id),
+            pass_id=pass_id,
+            run_home=run_home,
+            held_by_service=True,
+        )
         calls, checks, summary = 0, 0, ""
         # repair rounds (repair.py states the budget rule)
         round_no = 0  # the round the writer is in: 0 until its first accepted finish
@@ -4662,24 +4543,21 @@ class WriterPass:
         errored = False
         reads = 0  # library_mode reader calls, against cfg.max_reads
         self._exported_bytes = None
-        library = bool(self.cfg.library_mode)
         self._temp_kept = None
-        # tools in code (UNIFY_TOOLS_IN_CODE=on, library mode): one JSON tool, the rest called from cells
-        in_code = library and bool(getattr(self.cfg, "tools_in_code", False))
+        # tools in code: one JSON tool, the rest called from cells
+        self._in_code_pass = True
         # tools in code: the handler threads still running when the gate would start (None: that point was not
         # reached); written on the pass end event
-        self._in_code_pass = in_code
         self._handlers_at_gate = None
         # library mode: the shared no-progress rule (loop_stop.AgentNoProgress), always on; a capped pass without the
         # library is bounded by its call and USD caps as before
         no_progress = None
-        if library:
-            from unify.common._async_tool import loop_stop as _loop_stop
+        from unify.common._async_tool import loop_stop as _loop_stop
 
-            no_progress = _loop_stop.AgentNoProgress(
-                _loop_stop.terminal_tool("curator" if self._role == "curate" else "writer"),
-                in_code=in_code,
-            )
+        no_progress = _loop_stop.AgentNoProgress(
+            _loop_stop.terminal_tool("curator" if self._role == "curate" else "writer"),
+            in_code=True,
+        )
 
         def cause(code: str) -> None:
             if code not in causes:
@@ -4712,67 +4590,64 @@ class WriterPass:
                     (self._read_logs.get("writer") or _wt.ReadLog()).summary(
                         self._batch,
                     )
-                    if library
-                    else None
                 ),
                 reads,
                 self._exported_bytes,
             )
-            if self.cfg.library_mode:
-                o.rounds, o.round_results = round_no + 1, list(round_paths)
-                o.repair_stuck = stuck.report()
-                o.no_progress = no_progress.report() if no_progress is not None else None
-                o.compactions = self._compaction["compactions"]
-                o.chars_moved = self._compaction["chars_moved"]
-                o.messages_moved = self._compaction["messages_moved"]
-                o.max_prompt_tokens = self._max_prompt
-                window = getattr(self.turn, "max_input_tokens", None)
-                o.context_window = (
-                    window
-                    if isinstance(window, int) and not isinstance(window, bool)
-                    else None
-                )
-                if self._cache_tokens[2]:
-                    o.input_tokens = self._cache_tokens[0]
-                if self._cache_tokens[3]:
-                    o.cache_read_tokens = self._cache_tokens[1]
-                o.input_tokens_calls, o.cache_read_calls = self._cache_tokens[2], self._cache_tokens[3]
-                if self._output_tokens[1]:
-                    o.output_tokens = self._output_tokens[0]
-                o.output_tokens_calls = self._output_tokens[1]
-                o.writer_calls = self._cache_tokens[4]
-                o.writer_first_prompt_tokens = self._first_prompt[1]
-                o.finished = bool(phase["finish_accepted"])
-                o.provenance = list(self._provenance)
-                o.levels, o.capped_reasons = self._levels
-                if self._role != "curate":
-                    try:  # measures only: they never fail a pass
-                        o.chain = self._chain_counts()
-                    except Exception as exc:  # noqa: BLE001
-                        o.chain = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
-                o.staging = self._staging_counts
-                o.staging_episodes = self._staging_episodes_out()
-                o.helpers = [
-                    {
-                        k: r.get(k)
-                        for k in (
-                            "call",
-                            "status",
-                            "episodes",
-                            "turns",
-                            "usd",
-                            "usd_known",
-                            "unknown_cost_calls",
-                            "seconds",
-                            "no_progress",
-                        )
-                    }
-                    | {"files": len(r.get("files") or [])}
-                    for r in self._helper_rows
-                ]
-                o.nothing_to_store = bool(
-                    phase["finish_accepted"] and phase["nothing_to_store"],
-                )
+            o.rounds, o.round_results = round_no + 1, list(round_paths)
+            o.repair_stuck = stuck.report()
+            o.no_progress = no_progress.report() if no_progress is not None else None
+            o.compactions = self._compaction["compactions"]
+            o.chars_moved = self._compaction["chars_moved"]
+            o.messages_moved = self._compaction["messages_moved"]
+            o.max_prompt_tokens = self._max_prompt
+            window = getattr(self.turn, "max_input_tokens", None)
+            o.context_window = (
+                window
+                if isinstance(window, int) and not isinstance(window, bool)
+                else None
+            )
+            if self._cache_tokens[2]:
+                o.input_tokens = self._cache_tokens[0]
+            if self._cache_tokens[3]:
+                o.cache_read_tokens = self._cache_tokens[1]
+            o.input_tokens_calls, o.cache_read_calls = self._cache_tokens[2], self._cache_tokens[3]
+            if self._output_tokens[1]:
+                o.output_tokens = self._output_tokens[0]
+            o.output_tokens_calls = self._output_tokens[1]
+            o.writer_calls = self._cache_tokens[4]
+            o.writer_first_prompt_tokens = self._first_prompt[1]
+            o.finished = bool(phase["finish_accepted"])
+            o.provenance = list(self._provenance)
+            o.levels, o.capped_reasons = self._levels
+            if self._role != "curate":
+                try:  # measures only: they never fail a pass
+                    o.chain = self._chain_counts()
+                except Exception as exc:  # noqa: BLE001
+                    o.chain = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+            o.staging = self._staging_counts
+            o.staging_episodes = self._staging_episodes_out()
+            o.helpers = [
+                {
+                    k: r.get(k)
+                    for k in (
+                        "call",
+                        "status",
+                        "episodes",
+                        "turns",
+                        "usd",
+                        "usd_known",
+                        "unknown_cost_calls",
+                        "seconds",
+                        "no_progress",
+                    )
+                }
+                | {"files": len(r.get("files") or [])}
+                for r in self._helper_rows
+            ]
+            o.nothing_to_store = bool(
+                phase["finish_accepted"] and phase["nothing_to_store"],
+            )
             return o
 
         async with contextlib.AsyncExitStack() as scope:
@@ -4789,168 +4664,125 @@ class WriterPass:
             self._live = (box, wt)
             _mirror(wt, box)
             self._stage_inputs(req, inputs, wt)
-            if self.cfg.library_mode and req.kind == "attention" and self.cfg.attention_home:
+            if req.kind == "attention":
                 # UNIFY_MEMORY_ATTENTION_LEDGER=on: the entries handed to this pass, its ledger and its record
                 self._attention = self._attention_start(req, pass_id, Path(inputs))
                 from . import attention_tools as _at_tools
 
                 # on every way out: the pass's read evidence, which the service verifies the entries' reads against
                 scope.callback(_at_tools.write_read_log, self)
-            if self.cfg.library_mode and getattr(self.cfg, "writer_tests", ()) and self._role != "curate":
+            if self._role != "curate":
                 # UNIFY_MEMORY_WRITER_TESTS: the tests the writer states, recorded beside the pass's records
                 self._tests = self._tests_start(pass_id, box, Path(tmp), Path(inputs))
             if self._notebook_on():
                 # before the pass's folders go, on every way out: the writer's notebook judgements are merged
                 self._stage_notebook(req, inputs)
                 scope.callback(self._absorb_notebook, box, req, pass_id)
-            if self.cfg.library_mode:
-                bmap_path = inputs / "batch_map.json"
-                bmap = (
-                    json.loads(bmap_path.read_text())
-                    if bmap_path.is_file()
-                    else {"episodes": []}
-                )  # a curate pass has no batch map
-                self._episodes = {e: self.load(e) for e in req.episodes}
-                self._bmap_rows = list(bmap["episodes"])
-                outputs = Path(tmp) / "outputs"
-                outputs.mkdir()
-                roots = {"/inputs": inputs, "/memory": box, "/outputs": outputs}
+            bmap_path = inputs / "batch_map.json"
+            bmap = (
+                json.loads(bmap_path.read_text())
+                if bmap_path.is_file()
+                else {"episodes": []}
+            )  # a curate pass has no batch map
+            self._episodes = {e: self.load(e) for e in req.episodes}
+            self._bmap_rows = list(bmap["episodes"])
+            outputs = Path(tmp) / "outputs"
+            outputs.mkdir()
+            roots = {"/inputs": inputs, "/memory": box, "/outputs": outputs}
             channels = _exported_channels(inputs / "episodes")
-            switches = self._switches()
-            tools = writer_tools(
-                docstrings=switches["docstrings"],
-                soft_budget=switches["soft_budget"],
-                library_mode=self.cfg.library_mode,
-                pool=bool(self.cfg.library_mode and self.cfg.pool),
-                role=self._role,
-                helper=self.helper_turn is not None,
-                similar=bool(self.cfg.similar_index),
-                edit_tools=bool(self.cfg.library_mode and self.cfg.edit_tools),
-                # the pass's own switch decides (cfg.tools_in_code): these are its JSON tools, or with tools in
-                # code its allow-list, and the request then carries execute_code alone (below)
-                in_code=False,
+            in_code_allow: tuple[str, ...] = ()
+            from . import tool_handlers as _th
+
+            from unify.common import tool_registry as _registry
+
+            from .library_prompts import tool_flags
+
+            # the registry's allow-list for the agent, with the flags its model-API tools were chosen by
+            in_code_allow = _registry.allow_list(
+                "curator" if self._role == "curate" else "writer",
+                tool_flags(
+                    pool=True,
+                    helper=self.helper_turn is not None,
+                    similar=bool(self.cfg.similar_index),
+                    edit=False,
+                    attention=self._attention is not None,
+                    tests=self._tests is not None,
+                ),
+            )
+            tools = _th.in_code_json_tools(
+                "curator" if self._role == "curate" else "writer",
             )
             tool_names = [t["function"]["name"] for t in tools]
-            in_code_allow: tuple[str, ...] = ()
-            if in_code:
-                from . import tool_handlers as _th
+            # the writer-chosen tree with its generated helper and index; no channel
+            # folders and no library.json (the gate inputs replace previous_gate.json)
+            self._library_generated = self._stage_library_library_mode(box, parent)
+            # every open proposal of earlier passes; this pass's staging joins it below, before it is staged
+            from . import pool as _pool_mod
 
-                from unify.common import tool_registry as _registry
-
-                from .library_prompts import tool_flags
-
-                # the registry's allow-list for the agent, with the flags its model-API tools were chosen by
-                in_code_allow = _registry.allow_list(
-                    "curator" if self._role == "curate" else "writer",
-                    tool_flags(
-                        pool=bool(self.cfg.pool),
-                        helper=self.helper_turn is not None,
-                        similar=bool(self.cfg.similar_index),
-                        edit=bool(self.cfg.edit_tools),
-                        attention=self._attention is not None,
-                        tests=self._tests is not None,
-                    ),
+            try:
+                self._pool = _pool_mod.Pool(self.mem).load()
+                # the recurrence miner no longer feeds the pool: its old entries close once
+                self._pool.close_cluster_entries(pass_id)
+            except (
+                Exception
+            ) as exc:  # noqa: BLE001 - the pool never stops a pass
+                self._pool = None
+                self._pool_error = (
+                    f"load: {type(exc).__name__}: {str(exc)[:200]}"
                 )
-                tools = _th.in_code_json_tools(
-                    "curator" if self._role == "curate" else "writer",
+            if req.kind != "curate":
+                # every batch episode's staging, read-only for the writer
+                await self._staging_library_mode(
+                    req,
+                    inputs,
+                    box,
+                    roots,
+                    spend,
+                    pass_id=pass_id,
                 )
-                tool_names = [t["function"]["name"] for t in tools]
-            if self.cfg.library_mode:
-                # the writer-chosen tree with its generated helper and index; no channel
-                # folders and no library.json (the gate inputs replace previous_gate.json)
-                self._library_generated = self._stage_library_library_mode(box, parent)
-                if self.cfg.pool:
-                    # every open proposal of earlier passes; this pass's staging joins it below, before it is staged
-                    from . import pool as _pool_mod
-
-                    try:
-                        self._pool = _pool_mod.Pool(self.mem).load()
-                        # the recurrence miner no longer feeds the pool: its old entries close once
-                        self._pool.close_cluster_entries(pass_id)
-                    except (
-                        Exception
-                    ) as exc:  # noqa: BLE001 - the pool never stops a pass
-                        self._pool = None
-                        self._pool_error = (
-                            f"load: {type(exc).__name__}: {str(exc)[:200]}"
-                        )
-                if req.kind != "curate":
-                    # every batch episode's staging, read-only for the writer
-                    await self._staging_library_mode(
-                        req,
-                        inputs,
-                        box,
-                        roots,
-                        spend,
-                        pass_id=pass_id,
+                # the staging rows were added to the batch map: overview reads them
+                staged_map = inputs / "batch_map.json"
+                if staged_map.is_file():
+                    self._bmap_rows = list(
+                        json.loads(staged_map.read_text()).get("episodes", []),
                     )
-                    # the staging rows were added to the batch map: overview reads them
-                    staged_map = inputs / "batch_map.json"
-                    if staged_map.is_file():
-                        self._bmap_rows = list(
-                            json.loads(staged_map.read_text()).get("episodes", []),
-                        )
-                if (
-                    self._pool is not None and req.kind != "curate"
-                ):  # the curator has no pool
-                    try:
-                        self._pool_open = self._pool.stage(Path(inputs) / "pool")
-                    except (
-                        Exception
-                    ) as exc:  # noqa: BLE001 - the pool never stops a pass
-                        self._pool = None
-                        self._pool_error = (
-                            f"stage: {type(exc).__name__}: {str(exc)[:200]}"
-                        )
-                first = self._first_message_library_mode(req, pass_id)
-                if self._attention is not None:
-                    from . import attention_tools as _at_tools
-
-                    # what each handed entry owes a read, under /inputs (its staging, captures and attention files)
-                    _at_tools.export_entries(self, self._attention, list(req.attention))
-                    wall = format(Decimal(str(float(self.cfg.deadline_s))).normalize(), "f")
-                    first = _at_tools.first_message(self._attention, req, wall)
-                pr = self._pass_record
-                if pr is not None and pr.run:
-                    # the run record: the common section and this agent's roster lines, after the constant brief
-                    from unify.agents.run_record import prompt_lines
-
-                    first += "\n\n" + prompt_lines(pr.root, "writer")
-            else:
-                _channel_dirs(box, channels)
-                # the writer tends the library on its channels, so library.json gives each function's recorded
-                # covers (ids only) beside the last gate's refusals and the summary of its functions
-                covers = library_covers(wt, channels, self.ev.covers())
-                self._stage_context(inputs, wt, parent, covers)
-                tended = "\n".join(
-                    f"- {i}: {len(c)} recorded cover{'' if len(c) == 1 else 's'}"
-                    for i, c in covers.items()
-                )
-                first = (
-                    f"Pass {pass_id}: {json.dumps(req.__dict__)}\n\n"
-                    + self._library_message(
-                        wt,
-                        switches,
+            if (
+                self._pool is not None and req.kind != "curate"
+            ):  # the curator has no pool
+                try:
+                    self._pool_open = self._pool.stage(Path(inputs) / "pool")
+                except (
+                    Exception
+                ) as exc:  # noqa: BLE001 - the pool never stops a pass
+                    self._pool = None
+                    self._pool_error = (
+                        f"stage: {type(exc).__name__}: {str(exc)[:200]}"
                     )
-                    + "\n\nFunctions on this pass's channels:\n"
-                    + (tended or "(none yet)")
-                )
+            first = self._first_message_library_mode(req, pass_id)
+            if self._attention is not None:
+                from . import attention_tools as _at_tools
+
+                # what each handed entry owes a read, under /inputs (its staging, captures and attention files)
+                _at_tools.export_entries(self, self._attention, list(req.attention))
+                wall = format(Decimal(str(float(self.cfg.deadline_s))).normalize(), "f")
+                first = _at_tools.first_message(self._attention, req, wall)
+            pr = self._pass_record
+            if pr is not None and pr.run:
+                # the run record: the common section and this agent's roster lines, after the constant brief
+                from unify.agents.run_record import prompt_lines
+
+                first += "\n\n" + prompt_lines(pr.root, "writer")
             self._inputs_dir = Path(inputs)
-            if self.cfg.library_mode:
-                # point, don't paste: the use table is a file (/inputs/usage/table.md), named by the brief
-                if req.kind != "curate":
-                    self._usage(req, wt)
-            elif self.cfg.show_usage:  # UNIFY_MEMORY_WRITER_USAGE=on
-                first += f"\n\n{self._usage(req, wt)}"
+            # point, don't paste: the use table is a file (/inputs/usage/table.md), named by the brief
+            if req.kind != "curate":
+                self._usage(req, wt)
             messages: list[dict] = [
                 # the library-mode surfacing switches' brief, then the stage-5 rewrites and paragraph (each
                 # unchanged while its switches are off)
                 {
                     "role": "system",
                     "content": (
-                        self._brief_library_mode()  # the role's brief alone
-                        if self.cfg.library_mode
-                        else _qa.system(writer_system(**switches), self._qa)
+                        self._brief_library_mode()
                     ),
                 },
                 {"role": "user", "content": first},
@@ -5091,7 +4923,7 @@ class WriterPass:
                 nonlocal round_no, stop, over_quota
                 round_usd.append(charged() - mark[0])
                 round_s.append(time.monotonic() - mark[1])
-                if round_no == 0 and self.cfg.library_mode:
+                if round_no == 0:
                     # price a repair round on the write phase, not on round 0's reading
                     wm = phase["write_mark"]
                     phase["round0_write"] = (
@@ -5205,41 +5037,29 @@ class WriterPass:
 
             ic: Any = None  # tools in code: the handlers' pass state and the interpreter session
             session: Any = None
-            if in_code:
-                ic, session = self._in_code_start(
-                    pass_id=pass_id,
-                    box=box,
-                    inputs=inputs,
-                    tmp=Path(tmp),
-                    roots=roots,
-                    parent=parent,
-                    uncapped=uncapped,
-                    max_calls=max_calls,
-                    remaining=remaining,
-                    cause=cause,
-                    writing=writing,
-                    check_file=check_file,
-                    phase=phase,
-                    notes=notes,
-                    deadline=deadline,
-                    spend=spend,
-                    allow=in_code_allow,
-                    scope=scope,
-                )
+            ic, session = self._in_code_start(
+                pass_id=pass_id,
+                box=box,
+                inputs=inputs,
+                tmp=Path(tmp),
+                roots=roots,
+                parent=parent,
+                uncapped=uncapped,
+                max_calls=max_calls,
+                remaining=remaining,
+                cause=cause,
+                writing=writing,
+                check_file=check_file,
+                phase=phase,
+                notes=notes,
+                deadline=deadline,
+                spend=spend,
+                allow=in_code_allow,
+                scope=scope,
+            )
             # tools in code off, library mode: the cells' persistent interpreter, no channel (None: a fresh box per
             # cell, UNIFY_CELL_STATE=fresh, or the earlier mode without the library)
             cell_session: Any = None
-            if library and not in_code:
-                from unify.common.box_interpreter import persistent as _persistent
-
-                if _persistent():
-                    cell_session = self._cell_session_start(
-                        pass_id=pass_id,
-                        box=box,
-                        inputs=inputs,
-                        deadline=deadline,
-                        scope=scope,
-                    )
             last_prompt: list = [
                 None,
             ]  # the last model call's prompt tokens (compaction_due)
@@ -5259,9 +5079,7 @@ class WriterPass:
                     break
                 calls += 1
                 if (
-                    self.cfg.library_mode
-                    and self.cfg.compact
-                    and compaction_due(
+                    compaction_due(
                         last_prompt[0],
                         getattr(self.turn, "max_input_tokens", None),
                     )
@@ -5415,243 +5233,11 @@ class WriterPass:
                         reply = _wt.general("bad_arguments", reason=str(content))
                     elif finished:
                         reply = _wt.general("pass_finished")
-                    elif in_code and name != "execute_code":
-                        reply = _wt.general(
-                            "unknown_tool",
-                            name=str(name)[:80],
-                            tools=", ".join(tool_names),
-                        )
-                    elif name == "finish":
-                        if cell_session is not None:
-                            # nothing writes /memory while it is judged; the next cell starts a new interpreter
-                            await cell_session.kill()
-                        g1, empty = (
-                            self._finish_manifest_problem(box)
-                            if self.cfg.library_mode
-                            and (uncapped or phase["g1_refusals"] < FINISH_G1_REFUSALS)
-                            else (None, False)
-                        )
-                        manifest_path = (
-                            {"path": "/memory/.pass/manifest.json", "mode": "read"},
-                        )
-                        if g1 is not None:
-                            phase[
-                                "g1_refusals"
-                            ] += 1  # bounded: past it the final check refuses by name
-                            content = _wt.refusal(
-                                "finish",
-                                "manifest_problem",
-                                reason=g1,
-                            )
-                            reply = _wt.Reply(
-                                content,
-                                "refused",
-                                "manifest_problem",
-                                manifest_path,
-                            )
-                        else:
-                            summary, finished = str(args.get("summary", "")), True
-                            phase.update(finish_accepted=True, nothing_to_store=empty)
-                            self.final_manifest = _accepted_manifest(box)
-                            # finishing ends every helper still running; what each staged is kept
-                            await self._close_record()
-                            content = "ok"
-                            reply = _wt.Reply(
-                                content,
-                                paths=manifest_path if library else (),
-                            )
-                    elif name == "check":
-                        if stop is not None:
-                            reply = _wt.general("stopped", reason=stop)
-                        elif not uncapped and checks >= MAX_CHECKS:
-                            reply = _wt.general("check_limit", limit=MAX_CHECKS)
-                        elif calls >= max_calls:
-                            reply = _wt.general("call_limit")
-                        elif remaining() < CHECK_FLOOR_S:
-                            reply = _wt.refused("check", "too_late")
-                        else:
-                            checks += 1
-                            calls += 1  # a check is a call against max_calls
-                            if self.cfg.library_mode:
-                                writing()
-                            if base is None:
-                                try:
-                                    base = self.gate.parent_snapshot(
-                                        parent,
-                                        Path(tmp) / "check-parent",
-                                    )
-                                except (
-                                    Exception
-                                ):  # GitError, OSError: the preview retries
-                                    base = None
-                                base = base or parent
-                            if library:
-                                reply = check_file(args, base)
-                            else:
-                                content, detail = self._check(
-                                    args.get("manifest"),
-                                    box,
-                                    base,
-                                )
-                                if detail is not None:
-                                    notes.append(detail)
-                                reply = _wt.Reply(
-                                    content,
-                                    "error" if detail is not None else "ok",
-                                )
-                    elif library and name not in tool_names:
-                        reply = _wt.general(
-                            "unknown_tool",
-                            name=str(name)[:80],
-                            tools=", ".join(tool_names),
-                        )
-                    elif library and name == "replay":
-                        calls += 1  # a writer action, against the step guard
-                        writing()
-                        content = await asyncio.to_thread(
-                            self._replay_call,
-                            args,
-                            box,
-                            Path(tmp),
-                        )
-                        reply = _wt.Reply(
-                            content,
-                            (
-                                "error"
-                                if content.startswith("replay error")
-                                else (
-                                    "refused" if content.startswith("not run") else "ok"
-                                )
-                            ),
-                            "not_run" if content.startswith("not run") else None,
-                        )
-                    elif library and name == "similar":
-                        reply = self._similar_call(args)
-                    elif library and name == "delegate":
-                        from . import helpers as _helpers
-
-                        ctx = self._helper_context(
-                            pass_id,
-                            inputs,
-                            box,
-                            Path(tmp),
-                            deadline,
-                            spend,
-                        )
-                        info: dict = {}
-                        reply = _delegate_reply(await _helpers.handle(args, ctx, info))
-                        event_extra = _messaging_extra(info)
-                    elif library and name in _messaging.NAMES:
-                        # the record's tools (send, messages, wait, who, reply, stop): messaging.py
-                        info = {}
-                        reply = _delegate_reply(
-                            await _messaging.call(
-                                self._pass_record,
-                                self._pass_record.root,
-                                name,
-                                args,
-                                info,
-                            ),
-                        )
-                        event_extra = _messaging_extra(info)
-                    elif library and name == "fixture":
-                        calls += 1  # a writer action, against the step guard
-                        writing()
-                        reply = _wt.fixture(
-                            args,
-                            self._episode,
-                            box,
-                            self.gate._blob,
-                            self._batch,
-                            python=getattr(self.gate, "python", None),
-                        )
-                        if cell_session is not None and reply.status == "ok":
-                            # the quota after the call, as in code: a breach stops the interpreter
-                            over_quota = await cell_session.measure_quota()
-                            if over_quota is not None:
-                                stop = over_quota
-                                reply = _wt.Reply(
-                                    f"{reply.text}\n({over_quota}; the pass is refused)",
-                                    reply.status,
-                                    reply.form,
-                                    reply.paths,
-                                )
-                    elif library and name == "land_capture":
-                        from .land_capture import land as _land
-
-                        calls += 1  # a writer action, against the step guard
-                        writing()
-                        reply = await asyncio.to_thread(
-                            _land,
-                            args,
-                            store=self._captures_root(),
-                            box=box,
-                            episode=self._episode,
-                            blob=self.gate._blob,
-                            batch=self._batch,
-                            python=getattr(self.gate, "python", None),
-                            pass_id=pass_id,
-                        )
-                        if cell_session is not None and reply.status == "ok":
-                            # the quota after the call, as after fixture: a breach stops the interpreter
-                            over_quota = await cell_session.measure_quota()
-                            if over_quota is not None:
-                                stop = over_quota
-                                reply = _wt.Reply(
-                                    f"{reply.text}\n({over_quota}; the pass is refused)",
-                                    reply.status,
-                                    reply.form,
-                                    reply.paths,
-                                )
-                    elif library and name in _et.NAMES:
-                        # host-side, never through a link (edit_tools.py); the quotas are measured as after a cell
-                        if stop is not None:
-                            reply = _wt.general("stopped", reason=stop)
-                        elif remaining() <= 0:
-                            stop = f"pass deadline of {self.cfg.deadline_s} s reached"
-                            cause(CODE_DEADLINE)
-                            reply = _wt.general("stopped", reason=stop)
-                        else:
-                            calls += 1  # a writer action, against the step guard
-                            writing()
-                            reply = _et.call(name, args, box)
-                            if reply.status == "ok":
-                                over_quota = (
-                                    # as in code: a breach stops the interpreter
-                                    await cell_session.measure_quota()
-                                    if cell_session is not None
-                                    else _measure(box)
-                                )
-                                if over_quota is not None:
-                                    stop = over_quota
-                                    reply = _wt.Reply(
-                                        f"{reply.text}\n({over_quota}; the pass is refused)",
-                                        reply.status,
-                                        reply.form,
-                                        reply.paths,
-                                    )
-                    elif library and name != "execute_code":
-                        if readers >= READERS_PER_TURN:
-                            reply = _wt.general("readers_per_turn")
-                        elif not uncapped and reads >= int(self.cfg.max_reads):
-                            reply = _wt.general(
-                                "reads_limit",
-                                limit=int(self.cfg.max_reads),
-                            )
-                        else:
-                            readers += 1
-                            reads += 1
-                            reply = await self._library_tool(
-                                name,
-                                args,
-                                roots,
-                                agent="curator" if self._role == "curate" else "writer",
-                            )
                     elif name != "execute_code":
                         reply = _wt.general(
                             "unknown_tool",
                             name=str(name)[:80],
-                            tools="execute_code, check, finish",
+                            tools=", ".join(tool_names),
                         )
                     elif _thought_only(args):
                         # a thought alone: nothing runs and nothing is refused; the thought stays in the conversation
@@ -5666,8 +5252,7 @@ class WriterPass:
                         reply = _wt.general("stopped", reason=stop)
                     else:
                         ran += 1
-                        if self.cfg.library_mode:
-                            writing()
+                        writing()
                         timeout = max(
                             1.0,
                             min(float(self.cfg.cell_timeout_s), remaining()),
@@ -5754,17 +5339,16 @@ class WriterPass:
                             "content": str(content),
                         },
                     )
-                    if in_code:
-                        # the additive fields of every row with tools in code (a model-made call: no cell)
-                        event_extra = {
-                            "via": "model",
-                            "cell": None,
-                            "args_sha256": _args_sha256(
-                                args if args is not None else fn.get("arguments"),
-                            ),
-                            "box_gone": False,
-                            **(event_extra or {}),
-                        }
+                    # the additive fields of every row with tools in code (a model-made call: no cell)
+                    event_extra = {
+                        "via": "model",
+                        "cell": None,
+                        "args_sha256": _args_sha256(
+                            args if args is not None else fn.get("arguments"),
+                        ),
+                        "box_gone": False,
+                        **(event_extra or {}),
+                    }
                     self._event(
                         pass_id,
                         name,
@@ -5780,11 +5364,9 @@ class WriterPass:
                         {
                             "role": "user",
                             "content": (
-                                "Use your tools: "
+                                ("Use your tools: "
                                 + ", ".join(tool_names)
-                                + "; finish ends the pass."
-                                if library
-                                else "Use execute_code, check, or finish."
+                                + "; finish ends the pass.")
                             ),
                         },
                     )
@@ -5802,7 +5384,7 @@ class WriterPass:
                     if acted == "end":
                         cause(CODE_NO_PROGRESS)
                         break
-                if finished and self.cfg.library_mode and stop is None and repair():
+                if finished and stop is None and repair():
                     finished = (
                         False  # a repair round: the loop goes on under the same caps
                     )
@@ -5892,17 +5474,15 @@ class WriterPass:
             if problem is not None:
                 notes.append(problem)
                 cause(CODE_MANIFEST_INVALID)
-            if self.cfg.library_mode:
-                manifest = _with_fixtures(manifest, self._ledger(box))
+            manifest = _with_fixtures(manifest, self._ledger(box))
             _remove(box / ".pass")
             _clear_checkout(wt)
             left_out = _mirror(box, wt, skip_top=frozenset({".pass"}))
-            if self.cfg.library_mode:
-                _drop_unchanged(wt, self._library_generated)
+            _drop_unchanged(wt, self._library_generated)
             if left_out:
                 notes.append(f"special or unreadable entries left out: {left_out[:5]}")
             sources = _sources(manifest)
-            if self.cfg.library_mode and checked["current"]:
+            if checked["current"]:
                 # Amendment A: the box is unchanged since the last check, so the merge lands that very commit
                 candidate = checked["candidate"]
             else:
@@ -5913,7 +5493,7 @@ class WriterPass:
                         pass_id,
                         sources,
                         manifest,
-                        bool(self.cfg.library_mode),
+                        True,
                         self._role == "curate",
                     ),
                 )
@@ -6213,7 +5793,7 @@ def _call_failure(exc: BaseException) -> tuple[str, str, str]:
         if status == 403:
             # the route's own refusal, told apart by its body only (never by the status code): busy for now, or the cap
             kind = _route_refusal(exc)
-            category = {"busy": REFUSED_BUSY, "cap": REFUSED_CAP}.get(kind or "", category)
+            category = {"busy": REFUSED_BUSY, "cap": REFUSED_CAP}.get(kind, category)
     elif "timeout" in lowered:
         category = "timeout"
     elif "connect" in lowered:
@@ -6251,7 +5831,7 @@ def _check_route_in_effect(route: WriterRoute) -> None:
     kw: dict = {"model": "openrouter/memory-writer-route-check", "messages": []}
     uni_llm._prepare_provider_request_kw(kw=kw, provider="openrouter", stream=False)
     ok = (
-        str(kw.get("api_base") or "").rstrip("/") == route.base_url
+        str(kw.get("api_base")).rstrip("/") == route.base_url
         and kw.get("api_key") == route.token.get_secret_value()
     )
     kw.clear()
@@ -6486,7 +6066,7 @@ def unillm_turn(
         def hook(event) -> None:
             if route is not None and isinstance(event.request, dict):
                 event.request.pop("api_key", None)
-                base = str(event.request.get("api_base") or "").rstrip("/")
+                base = str(event.request.get("api_base")).rstrip("/")
                 misrouted.append(base != route.base_url)
             if event.origin == origin:
                 costs.append(event.provider_cost)

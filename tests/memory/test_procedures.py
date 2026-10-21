@@ -357,7 +357,6 @@ def test_dialogue_runner_needs_the_accepted_action_and_a_positive_signal(tmp_pat
         blob=_nofile,
         worktree_files=lambda s, d: None,
         signals=lambda e: sig,
-        checker_visible=visible,
     )
     assert run(DIALOGUE, 1, good).ok
     assert "no positive signal" in run(DIALOGUE, 2, []).reason

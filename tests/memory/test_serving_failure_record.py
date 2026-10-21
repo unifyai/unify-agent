@@ -390,7 +390,7 @@ def test_the_failure_record_comes_from_the_evidence_with_its_pins_and_late_contr
     )
     post_signal(late, stores.episodes, sha3, stores.evidence)
     found = serving.item_evidence(
-        stores, checker_visible=True, captures={}, home=None, labels=lambda _i: None
+        stores, captures={}, home=None, labels=lambda _i: None
     )
     rows = {(r["episode"], r["why"]): r for r in found[ITEM]["failure_record"]}
     assert set(rows) == {
@@ -442,7 +442,7 @@ def test_an_actors_report_on_the_run_record_is_a_failure(tmp_path, monkeypatch):
             sys.modules["unify.agents"], "run_record", fake, raising=False
         )
     found = serving.item_evidence(
-        stores, checker_visible=True, captures={}, home=tmp_path, labels=lambda _i: None
+        stores, captures={}, home=tmp_path, labels=lambda _i: None
     )
     assert {
         "episode": "e1",
@@ -533,7 +533,6 @@ def test_the_e4_replay_the_librarian_input_now_carries_the_failure_record(
     caps = captures.load(store)
     found = serving.item_evidence(
         stores,
-        checker_visible=True,
         captures=caps,
         home=tmp_path,
         labels=lambda _i: None,

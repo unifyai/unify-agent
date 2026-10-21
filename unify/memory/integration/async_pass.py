@@ -1,94 +1,44 @@
-"""Asynchronous consolidation for the library mode.
+"""The writer service at a request's end, the pass supervisor, the landed results and shutdown.
 
-A request never waits for a pass. When a request ends and the experience recorded since the last pass reaches E
-(:func:`.switch.library_experience_budget`), :func:`maybe_spawn` starts one detached worker process
-(:mod:`.pass_worker`) and returns. The worker runs the pass under its wall-clock bound (:class:`Supervisor`).
+A request never waits for a pass. At a request's end :func:`request_end` makes sure the writer service
+(:mod:`..writer_service`) is up: one detached process per memory home that hands the attention ledger's entries to its
+passes, one pass at a time, each under its wall-clock bound (:class:`Supervisor`).
 
-**Isolation.** Each request pins memory ``main`` when it starts (``RequestRun.pin``) and works on a read-only copy
-of that commit. A pass works in its own temporary box and checkout, and its merge moves ``main`` with one
-compare-and-swap (``Repo.fast_forward``, ``git update-ref <new> <old>``). A request therefore sees the old commit
-or the new one, never a half-written library, and a commit takes effect from the next request that starts after
-it lands.
+**Isolation.** Each request pins memory ``main`` when it starts (``RequestRun.pin``) and works on a read-only copy of
+that commit. A pass works in its own temporary box and checkout, and its merge moves ``main`` with one compare-and-swap
+(``Repo.fast_forward``, ``git update-ref <new> <old>``). A request therefore sees the old commit or the new one, never
+a half-written library, and a commit takes effect from the next request that starts after it lands.
 
-**One pass at a time.** The worker holds ``pass.lock`` (an ``flock`` on a descriptor it inherits from the
-spawner) for its whole life. ``pass-inflight.json`` names it: pid, process group, ``/proc`` start time (the
-ownership check) and deadline.
-
-**Verdict passes.** A capture that is a verdict (it reproduces its handed-back value and nothing contradicted its
-attempt: positive, or no signal at all) makes a pass due at once (:class:`..trigger.Trigger`'s ``verdict``); under
-``UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE=on`` every stored capture does, a bounded number per pass, and the
-experience budget alone makes no pass due (:class:`..trigger.Trigger`'s ``per_pass``). A
-request's end also starts a worker when a settled fork has no capture yet (:func:`.consolidate.verdict_candidates`,
-positive ones first): the worker captures it first. A verdict that comes due while a worker runs waits for it: the worker, still holding the lock, runs the pass
-in a slot of its own once the slot before it ended (:func:`.consolidate.run_slots`), and every slot rewrites
-``pass-inflight.json``. Passes never run side by side, and a verdict is never dropped: until a pass covers its
-episode it stays due in the capture store and the cursor.
-
-**Results.** The worker appends one row to ``pass-results.jsonl`` and never writes the request state
-(``state.json``). The next request applies the row under its lock (:func:`apply_results`) and reports the pass as
+**Results.** The service appends one row per pass to ``pass-results.jsonl`` and never writes the request state
+(``state.json``). The next request applies the rows under its lock (:func:`apply_results`) and reports each pass as
 ``landed``, naming itself: the first request that ran on the new commit.
 
-**Shutdown** (:func:`drain`) never starts a pass. A pass in flight gets at most until its own deadline; then it
-is sent SIGTERM, which the worker turns into a cancellation through the pass's abort path (the work becomes a
-draft, the calls are reconciled from the writer lane's journal window). A worker that has not ended after the grace
-period is killed and its termination verified. Every pass that ended after the last request is reported as such and is never
+**Shutdown** (:func:`drain`) never starts a pass: it stops the writer service (its pass in flight gets until its own
+deadline, then SIGTERM cancels it through the abort path, and a process still alive after the grace is killed), and
+verifies that no process of it is left. Every pass that ended after the last request is reported as such and is never
 counted toward the stream.
 """
 
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import json
 import os
-import signal
-import subprocess
-import sys
 import tempfile
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from ..reconcile import RECONCILE_S, journal_offset
+from ..reconcile import journal_offset
 
-#: The evidence store's SQLite busy timeout while a worker and a request share it (v2's default is 5 s).
+#: The evidence store's SQLite busy timeout while the writer service and a request share it.
 BUSY_TIMEOUT_S = 60.0
 #: Seconds of the wall bound kept for the final merge (the whole gate, mutation included) after the writer's deadline.
 MERGE_RESERVE_S = 600.0
-#: Seconds a worker has, after SIGTERM, to cancel its pass (a cell in flight ends within its own 60 s timeout).
-CANCEL_GRACE_S = 30.0
 #: What a drain ends (:func:`drain`): the run itself, or one stage of a run that goes on.
 DRAIN_ENDS = ("final", "suspend")
-#: The worker's SIGALRM failsafe beyond its bound, its grace and its reconciliation.
-FAILSAFE_EXTRA_S = 60.0
-WORKER_MODULE = "unify.memory.integration.pass_worker"
 _ENDED = ("landed", "refused", "deadline", "cancelled", "error")
-
-
-#: The passes one worker slot runs: the WRITE pass, then the CURATE pass it made due.
-WORKER_PASSES = 2
-
-
-def slot_s(wall_s: float, passes: int = WORKER_PASSES) -> float:
-    """A worker slot's deadline: each pass's wall bound and each item-records step's bisect budget."""
-    from ..item_bisect import BISECT_BUDGET_S
-
-    return passes * (float(wall_s) + BISECT_BUDGET_S)
-
-
-def failsafe_s(wall_s: float, passes: int = 1) -> float:
-    """The worker's failsafe: *passes* passes, each with its wall bound, cancel grace and reconcile, plus a margin;
-    a slot of several passes also each item-records step's bisect budget.
-    """
-    from ..item_bisect import BISECT_BUDGET_S
-
-    bisect = passes * BISECT_BUDGET_S if passes > 1 else 0.0
-    return (
-        passes * (float(wall_s) + CANCEL_GRACE_S + RECONCILE_S)
-        + bisect
-        + FAILSAFE_EXTRA_S
-    )
 
 
 # --- the supervisor ----------------------------------------------------------------------------------------
@@ -116,7 +66,7 @@ def error_of(exc: BaseException) -> dict:
 class Supervisor:
     """Runs one pass coroutine under the wall-clock bound *wall_s*; *stop* (set by SIGTERM) cancels it early.
     Cancellation goes through the pass's own abort path: :meth:`..writer_pass.WriterPass.run` records the pass as
-    failed and, in the library mode, keeps its work as a draft."""
+    failed and keeps its work as a draft."""
 
     def __init__(
         self,
@@ -201,49 +151,7 @@ class Supervisor:
         return self.reconciled
 
 
-@dataclass
-class StateView:
-    """The worker's view of the request state. ``run_due_passes`` may clear drift and suspect channels in it; the
-    clears go to the result row, and the next request applies them under its lock. The worker never saves
-    ``state.json``."""
-
-    drift: set
-    suspect: set
-    drift0: frozenset
-    suspect0: frozenset
-
-    @classmethod
-    def load(cls, path: Path) -> "StateView":
-        from .state import State
-
-        s = State.load(path)
-        return cls(
-            set(s.drift),
-            set(s.suspect),
-            frozenset(s.drift),
-            frozenset(s.suspect),
-        )
-
-    def cleared(self) -> tuple[list[str], list[str]]:
-        return sorted(self.drift0 - self.drift), sorted(self.suspect0 - self.suspect)
-
-
 # --- the in-flight record, the lock and the result rows -------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class InFlight:
-    pass_id: str
-    pid: int
-    pgid: int
-    proc_start: str  # /proc/<pid>/stat field 22: with pid and pgid, the ownership check before any signal
-    started_at: float  # wall clock (time.time())
-    deadline_at: float  # started_at + the wall bound
-    after_episode: str
-
-
-def inflight_path(paths: Any) -> Path:
-    return Path(paths.state_dir) / "pass-inflight.json"
 
 
 def results_path(paths: Any) -> Path:
@@ -252,10 +160,6 @@ def results_path(paths: Any) -> Path:
 
 def cursor_path(paths: Any) -> Path:
     return Path(paths.state_dir) / "pass-results.cursor"
-
-
-def lock_path(paths: Any) -> Path:
-    return Path(paths.state_dir) / "pass.lock"
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -270,319 +174,31 @@ def _atomic_write(path: Path, text: str) -> None:
         raise
 
 
-def write_inflight(paths: Any, rec: InFlight) -> None:
-    _atomic_write(inflight_path(paths), json.dumps(asdict(rec), sort_keys=True) + "\n")
-
-
-def read_inflight(paths: Any) -> InFlight | None:
-    try:
-        return InFlight(**json.loads(inflight_path(paths).read_text(encoding="utf-8")))
-    except (OSError, ValueError, TypeError):
-        return None
-
-
-def clear_inflight(paths: Any, pass_id: str) -> None:
-    rec = read_inflight(paths)
-    if rec is not None and rec.pass_id == pass_id:
-        inflight_path(paths).unlink(missing_ok=True)
-
-
-def proc_start(pid: int) -> str | None:
-    """The start time of a live, non-zombie process *pid* (``/proc/<pid>/stat`` field 22), else None."""
-    try:
-        stat = Path(f"/proc/{int(pid)}/stat").read_text()
-    except (OSError, ValueError):
-        return None
-    rest = stat.rsplit(")", 1)[-1].split()
-    if len(rest) < 20 or rest[0] in ("Z", "X"):
-        return None
-    return rest[19]
-
-
-def owns(rec: InFlight) -> bool:
-    """Whether *rec* still names a live process: same pid, same start time, same process group. A record without
-    a start time owns nothing (the worker's SIGALRM failsafe ends it): no signal on a pid alone.
-    """
-    if rec.pid <= 0 or not rec.proc_start:
-        return False
-    start = proc_start(rec.pid)
-    if start is None or start != rec.proc_start:
-        return False
-    try:
-        return os.getpgid(rec.pid) == rec.pgid
-    except OSError:
-        return False
-
-
-def try_lock(path: Path) -> int | None:
-    """An exclusive non-blocking ``flock`` on *path*, as an inheritable descriptor; None when it is held."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        os.close(fd)
-        return None
-    os.set_inheritable(fd, True)
-    return fd
-
-
-def pass_lock_held(paths: Any) -> bool:
-    """Whether a process holds the pass lock (a worker holds it from its start to its end, through the descriptor it
-    inherited; a flock is seen across pid namespaces). A lock taken here to look is let go at once."""
-    path = lock_path(paths)
-    try:
-        fd = os.open(path, os.O_RDWR)
-    except FileNotFoundError:
-        return False
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        return True
-    finally:
-        os.close(fd)
-    return False
-
-
-def record_result(paths: Any, row: dict) -> None:
-    """Append one worker result row (``pass_id``, ``ended``, ``commit``, the drift and suspect clears, …)."""
-    path = results_path(paths)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(row, sort_keys=True, default=str) + "\n")
-        fh.flush()
-
-
 # --- spawning (the request side) ---------------------------------------------------------------------------
 
 
-def spawn(
-    paths: Any,
-    eid: str,
-    sha: str,
-    effort: str,
-    *,
-    wall_s: float,
-    popen: Callable[..., Any] = subprocess.Popen,
-    argv_prefix: list[str] | None = None,
-    clock: Callable[[], float] = time.time,
-    route_token: str | None = None,
-) -> InFlight | None:
-    """Start the worker in its own session, holding the pass lock through an inherited descriptor; None when the
-    lock is held (a worker is running, starting or ending). Credentials never enter argv.
+def request_end(stores: Any, eid: str, *, settings: Any, emit: Callable[[dict], None] | None) -> dict:
+    """At a request's end: make sure the writer service is up (it hands the attention ledger's entries to its passes),
+    and return at once. Delivers one ``service`` event and returns it; never raises."""
+    from ..writer_service import ensure_service
 
-    *route_token* (the writer's own route, which the parent read once and removed from its environment): handed to the
-    worker through a fresh pipe named by ``UNIFY_MEMORY_WRITER_TOKEN_FD``, which the worker's settings read once and
-    close. The worker's environment is the parent's without any writer token name; the token is never in argv, the
-    environment or a file. Without one the worker starts exactly as before.
-    """
-    fd = try_lock(lock_path(paths))
-    if fd is None:
-        return None
-    log = None
-    token_r: int | None = None
-    more: dict = {}
     try:
-        if route_token:
-            from .switch import WRITER_TOKEN, WRITER_TOKEN_FD
+        state = ensure_service(stores.paths.home, settings=settings, wait_s=0.0)
+    except Exception as exc:  # noqa: BLE001 - a request's end never fails on the writer
+        from .consolidate import _error
 
-            token_r, token_w = os.pipe()
-            try:
-                os.write(token_w, (route_token + "\n").encode("latin-1"))
-            finally:
-                os.close(token_w)
-            os.set_inheritable(token_r, True)
-            env = {
-                k: v
-                for k, v in os.environ.items()
-                if k.upper() not in (WRITER_TOKEN, WRITER_TOKEN_FD)
-            }
-            env[WRITER_TOKEN_FD] = str(token_r)
-            more = {"env": env}
-        log = open(Path(paths.state_dir) / "pass-worker.log", "ab")
-        argv = [
-            *(argv_prefix or [sys.executable, "-m", WORKER_MODULE]),
-            "--home",
-            str(paths.home),
-            "--episode",
-            eid,
-            "--sha",
-            sha,
-            "--effort",
-            effort,
-            "--lock-fd",
-            str(fd),
-        ]
-        proc = popen(
-            argv,
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=log,
-            start_new_session=True,
-            pass_fds=(fd,) if token_r is None else (fd, token_r),
-            close_fds=True,
-            **more,
-        )
-        now = clock()
-        rec = InFlight(
-            f"{eid}.p0",
-            proc.pid,
-            proc.pid,
-            proc_start(proc.pid) or "",
-            now,
-            now
-            + slot_s(
-                wall_s,
-            ),  # the slot: WRITE, then the CURATE it made due, each with its records
-            eid,
-        )
-        write_inflight(paths, rec)
-        return rec
-    finally:
-        os.close(fd)  # the worker keeps the lock on the descriptor it inherited
-        if token_r is not None:
-            os.close(
-                token_r,
-            )  # the worker holds its own copy; no later child of this process inherits it
-        if log is not None:
-            log.close()
-
-
-def maybe_spawn(
-    stores: Any,
-    eid: str,
-    sha: str,
-    *,
-    effort: str,
-    settings: Any,
-    emit: Callable[[dict], None] | None,
-    popen: Callable[..., Any] = subprocess.Popen,
-    argv_prefix: list[str] | None = None,
-) -> dict:
-    """At a library-mode request's end: start a pass if one is due (a batch that reached E, or a verdict) and none
-    is in flight, and return at once. With nothing due, a worker still starts to capture the settled forks whose
-    episodes' signals are positive (``spawned_for_capture``: a capture that is a verdict makes its pass due in it).
-    Delivers one event (``spawned``, ``spawned_for_capture`` or ``busy``) and returns it; ``not_due`` and ``error``
-    deliver nothing. Never raises: a failure is recorded in ``errors.jsonl``, and the request stays due.
-    """
-    from ..trigger import Trigger
-    from .consolidate import _deliver, _error, verdict_candidates, verdict_check
-    from .fork import admission
-    from .switch import (
-        captures_per_pass,
-        library_enabled,
-        library_experience_budget,
-        library_pass_wall_s,
-        memory_passes_on,
-        writer_passes_on,
-    )
-
-    if not memory_passes_on(settings):
-        # UNIFY_MEMORY_PASSES=off: no worker starts, for a pass or a capture; nothing is delivered
-        return {"type": "consolidation", "phase": "passes_off", "episode_id": eid}
-    from .switch import memory_frozen
-
-    if memory_frozen(settings):
-        # UNIFY_MEMORY_FROZEN=on: no worker starts (a frozen request records nothing, so this is a second guard)
-        return {"type": "consolidation", "phase": "frozen", "episode_id": eid}
-    paths = stores.paths
-    from .switch import writer_service_on
-
-    if writer_service_on(settings):
-        # the writer service (unify/memory/writer_service.py) hands the attention ledger's entries: no pass worker
-        # starts; the request only makes sure the service is up
-        from ..writer_service import ensure_service
-
-        state = ensure_service(paths.home, settings=settings, wait_s=0.0)
-        event = {
-            "type": "consolidation",
-            "phase": "service",
-            "episode_id": eid,
-            "status": state.status,
-            "pid": state.pid,
-            **({"detail": state.detail} if state.detail else {}),
-        }
-        _deliver_service(stores, emit, event)
-        return event
-    try:
-        rec = read_inflight(paths)
-        if rec is not None and owns(rec):
-            event = {
-                "type": "consolidation",
-                "phase": "busy",
-                "episode_id": eid,
-                "pass_id": rec.pass_id,
-            }
-            _deliver(stores, emit, event)
-            return event
-        budget = library_experience_budget(settings)
-        # with the fork on, only episodes whose fork has settled count toward a pass (the worker's pass admits
-        # the same way); the others roll to a later pass. UNIFY_MEMORY_WRITER_PASSES=off: no pass is ever due, and
-        # a worker starts only to capture the settled forks (UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE then makes
-        # nothing due either: it changes when a pass is due, never whether passes run)
-        due = (
-            Trigger(
-                stores.evidence,
-                mode="batched",
-                experience_budget=budget,
-                admission=admission(paths, settings),
-                verdict=verdict_check(paths, settings),
-                per_pass=captures_per_pass(settings) if library_enabled(settings) else None,
-            ).after_episode(eid)
-            if writer_passes_on(settings)
-            else []
-        )
-        to_capture = [] if due else verdict_candidates(stores, settings)
-        if not due and not to_capture:
-            return {"phase": "not_due"}
-        wall_s = library_pass_wall_s(settings)
-        rec = spawn(
-            paths,
-            eid,
-            sha,
-            effort,
-            wall_s=wall_s,
-            popen=popen,
-            argv_prefix=argv_prefix,
-            route_token=_route_token(settings),
-        )
-        if rec is None:
-            event = {
-                "type": "consolidation",
-                "phase": "busy",
-                "episode_id": eid,
-                "pass_id": None,
-            }
-        elif not due:
-            event = {
-                "type": "consolidation",
-                "phase": "spawned_for_capture",
-                "episode_id": eid,
-                "pass_id": rec.pass_id,
-                "capture_episodes": list(to_capture),
-                "wall_s": wall_s,
-            }
-        else:
-            event = {
-                "type": "consolidation",
-                "phase": "spawned",
-                "episode_id": eid,
-                "pass_id": rec.pass_id,
-                "trigger_tokens": due[0].experience_tokens,
-                "held_episodes": len(due[0].held),
-                "experience_budget": budget,
-                "wall_s": wall_s,
-            }
-            if due[0].verdicts:
-                event["pass_kind"] = due[0].kind
-                event["verdict_episodes"] = list(due[0].verdicts)
-        _deliver(stores, emit, event)
-        return event
-    except (
-        Exception
-    ) as exc:  # noqa: BLE001 - a request's end never fails on consolidation
-        _error(stores, f"spawn: {type(exc).__name__}: {exc}")
+        _error(stores, f"service: {type(exc).__name__}")
         return {"phase": "error"}
+    event = {
+        "type": "consolidation",
+        "phase": "service",
+        "episode_id": eid,
+        "status": state.status,
+        "pid": state.pid,
+        **({"detail": state.detail} if state.detail else {}),
+    }
+    _deliver_service(stores, emit, event)
+    return event
 
 
 def _deliver_service(stores: Any, emit: Callable[[dict], None] | None, event: dict) -> None:
@@ -683,12 +299,6 @@ def landed_event(
 # --- shutdown ------------------------------------------------------------------------------------------------
 
 
-def _result_for(paths: Any, pass_id: str) -> dict | None:
-    rows, _ = _rows_from(paths, 0)
-    found = [r for r in rows if r.get("pass_id") == pass_id]
-    return found[-1] if found else None
-
-
 def _event(paths: Any, row: dict) -> None:
     path = Path(paths.state_dir) / "events.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -696,141 +306,20 @@ def _event(paths: Any, row: dict) -> None:
         fh.write(json.dumps(row, sort_keys=True) + "\n")
 
 
-def _group_alive(pgid: int) -> bool | None:
-    """Whether a live (not zombie) process is in process group *pgid*, from ``/proc``; None when it cannot be
-    read (unknown, so termination is not verified)."""
-    try:
-        names = os.listdir("/proc")
-    except OSError:
-        return None
-    for name in names:
-        if not name.isdigit():
-            continue
-        try:
-            stat = Path(f"/proc/{name}/stat").read_text()
-        except OSError:
-            continue  # ended while we looked
-        rest = stat.rsplit(")", 1)[-1].split()  # state, ppid, pgrp, ...
-        if len(rest) > 2 and rest[0] not in ("Z", "X") and rest[2] == str(int(pgid)):
-            return True
-    return False
-
-
-def wait_slot(
-    paths: Any,
-    wall_s: float,
-    *,
-    budget_s: float | None = None,
-    clock: Callable[[], float] = time.time,
-    sleep: Callable[[float], Any] = time.sleep,
-    drain_fn: Callable[..., dict] | None = None,
-    relay: Callable[[dict], None] | None = None,
-    events_from: int = 0,
-) -> dict:
-    """``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on``: wait for the in-flight worker until it ends, at most its slot's failsafe
-    (:func:`failsafe_s` of :data:`WORKER_PASSES` passes, their bisects and reconciliations) plus a margin from its
-    start (*budget_s* replaces that bound). A worker still alive then goes through :func:`drain` at once: SIGTERM,
-    the grace, a verified end; its late result is reported as not counted. Nothing in flight: returns at once.
-
-    *relay*: the slot's pass events (``start``, the progress rows ``turn`` and ``gate``
-    (:data:`.consolidate.PROGRESS_PHASES`), ``end`` and ``held`` rows of its passes, WRITE and CURATE) appended to ``events.jsonl`` after byte *events_from* are handed to it once each, in order, exactly as
-    the synchronous v2 path emitted them (the same dicts :func:`.consolidate._deliver` wrote).
-    """
-    rec = read_inflight(paths)
-    if rec is None or not owns(rec):
-        return {"waited": False}
-    bound = (
-        failsafe_s(wall_s, passes=WORKER_PASSES) + FAILSAFE_EXTRA_S
-        if budget_s is None
-        else float(budget_s)
-    )
-    deadline = rec.started_at + bound
-    tail = (
-        _EventTail(paths, events_from, f"{rec.after_episode}.p")
-        if relay is not None
-        else None
-    )
-    while owns(rec) and clock() < deadline:
-        if tail is not None:
-            tail.relay(relay)
-        sleep(0.5)
-        now = read_inflight(paths)
-        if now is not None and now.pid == rec.pid and now.pass_id != rec.pass_id and budget_s is None:
-            # the same worker started its next slot (a verdict pass): that slot has its own bound
-            rec, deadline = now, now.started_at + bound
-    out: dict = {"waited": True, "ended": "worker_ended"}
-    if owns(rec) or _group_alive(rec.pgid) is True:
-        out = {
-            "waited": True,
-            "ended": "drained",
-            "drain": (drain_fn or drain)(paths, wait_s=0),
-        }
-    if tail is not None:
-        tail.relay(relay)  # the rows written as the worker ended (or was drained)
-    return out
-
-
-_RELAYED = ("start", "turn", "gate", "end", "held")
-
-
-class _EventTail:
-    """Complete ``events.jsonl`` lines after a byte offset; the slot's pass rows, each relayed once."""
-
-    def __init__(self, paths: Any, offset: int, prefix: str) -> None:
-        from .consolidate import events_path
-
-        self.path, self.offset, self.prefix = events_path(paths), int(offset), prefix
-
-    def relay(self, out: Callable[[dict], None]) -> None:
-        try:
-            with open(self.path, "rb") as fh:
-                fh.seek(self.offset)
-                data = fh.read()
-        except OSError:
-            return
-        end = data.rfind(b"\n") + 1  # a line still being written waits
-        self.offset += end
-        for line in data[:end].splitlines():
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            if (
-                isinstance(row, dict)
-                and row.get("type") == "consolidation"
-                and row.get("phase") in _RELAYED
-                and str(row.get("pass_id") or "").startswith(self.prefix)
-            ):
-                try:
-                    out(row)
-                except Exception:  # noqa: BLE001 - reporting never stops the wait
-                    pass
-
-
 def drain(
     paths: Any,
     *,
-    wait_s: float | None = None,
-    grace_s: float = CANCEL_GRACE_S + RECONCILE_S,
-    settle_s: float = 5.0,
-    clock: Callable[[], float] = time.time,
-    sleep: Callable[[float], Any] = time.sleep,
-    kill: Callable[[int, int], None] = os.killpg,
     archive_to: Path | None = None,
     end: str = "final",
 ) -> dict:
     """Shutdown: never starts a pass. *end* says what ends: ``final`` (the run itself: every attention entry still owed
     is then ``not_reached: run_ended``) or ``suspend`` (one stage of a run that goes on: the service stops the same
-    way, and every entry still owed stays owed for the next start to hand again). A pass in flight may run until its own deadline (or *wait_s*, if
-    sooner); then SIGTERM cancels it through the abort path; a worker still alive after *grace_s* is killed and its
-    end verified within *settle_s*. Every result no request applied is reported under ``after_last_request`` and
-    marked ``counted: false``. With *archive_to*, once no worker can write, the memory repo is archived with every
-    ref, ``refs/notes/items`` and ``served`` included (:func:`..memory_writer.archive`; a plain clone would drop
-    the item records). The report is also appended to ``events.jsonl``.
-
-    Signals go only to the worker's process group, and only after its leader was found alive by :func:`owns`
-    (pid, start time, group) in this call; the end is verified when the leader is gone and no live process is
-    left in its group. A stale record (its worker already gone) is cleared without any signal.
+    way, and every entry still owed stays owed for the next start to hand again). The writer service is stopped and
+    its end verified (:func:`_drain_service`). Every result no request applied is reported under
+    ``after_last_request`` and marked ``counted: false``. With *archive_to*, once the service is verified gone, the
+    memory repo is archived with every ref, ``refs/notes/items`` and ``served`` included
+    (:func:`..memory_writer.archive`; a plain clone would drop the item records). The report is also appended to
+    ``events.jsonl``.
     """
     if end not in DRAIN_ENDS:
         raise ValueError(f"end is one of {', '.join(DRAIN_ENDS)}, not {end!r}")
@@ -839,101 +328,17 @@ def drain(
         "end": end,
         "type": "consolidation",
         "phase": "shutdown",
-        "in_flight": False,
-        "pass_id": None,
-        "ended": "none",
-        "waited_s": 0,
-        "terminated": None,
-        "after_last_request": [],
+        "service": service,
+        "terminated": service["verified"],
+        "ended": "stopped" if service["verified"] else "not_terminated",
         "counted": False,
-        "sigkill": False,  # whether the worker's group had to be killed
+        "after_last_request": [
+            {"pass_id": r.get("pass_id"), "ended": r.get("ended"), "commit": r.get("commit")}
+            for r in unapplied(paths)
+        ],
     }
-    rec = read_inflight(paths)
-    if rec is not None and not owns(rec) and pass_lock_held(paths):
-        # a worker this process cannot see (it runs in another pid namespace: the drain may run in a sandbox of its own)
-        # still holds the pass lock: the pass is in flight. Wait for the lock to free, bounded as for a pass in flight;
-        # never signal a process this namespace does not show (its owner's sandbox ending is the backstop)
-        report.update(in_flight=True, pass_id=rec.pass_id, unseen=True)
-        start = clock()
-        limit = rec.deadline_at if wait_s is None else min(rec.deadline_at, start + float(wait_s))
-        while pass_lock_held(paths) and clock() < limit:
-            sleep(0.1)
-        report["waited_s"] = round(clock() - start, 3)
-        if pass_lock_held(paths):
-            report.update(ended="not_terminated", terminated=False)
-        else:
-            row = _result_for(paths, rec.pass_id)
-            report.update(ended=(row or {}).get("ended", "killed"), terminated=True)
-            clear_inflight(paths, rec.pass_id)
-        rec = None
-    elif rec is not None and not owns(
-        rec,
-    ):  # the worker ended (or a stale record): nothing to wait for
-        row = _result_for(paths, rec.pass_id)
-        report.update(pass_id=rec.pass_id, ended=(row or {}).get("ended", "none"))
-        clear_inflight(paths, rec.pass_id)
-        rec = None
-    if rec is not None:
-        report.update(in_flight=True, pass_id=rec.pass_id)
-
-        def alive() -> bool:
-            return owns(rec) or _group_alive(rec.pgid) is True
-
-        def signal_group(sig: int) -> None:
-            try:
-                kill(rec.pgid, sig)
-            except ProcessLookupError:
-                pass  # the group ended in between
-
-        start = clock()
-        limit = (
-            rec.deadline_at
-            if wait_s is None
-            else min(rec.deadline_at, start + float(wait_s))
-        )
-        while owns(rec) and clock() < limit:
-            sleep(0.1)
-        report["waited_s"] = round(clock() - start, 3)
-        killed = False
-        if alive():
-            signal_group(
-                signal.SIGTERM,
-            )  # the worker cancels through the abort path and reconciles
-            end = clock() + float(grace_s)
-            while alive() and clock() < end:
-                sleep(0.1)
-        if alive():
-            signal_group(signal.SIGKILL)
-            killed = True
-            end = clock() + float(settle_s)
-            while alive() and clock() < end:
-                sleep(0.05)
-        terminated = not owns(rec) and _group_alive(rec.pgid) is False
-        if not terminated:
-            report.update(ended="not_terminated", terminated=False)
-        else:  # the worker's own result row when it wrote one (a straggler killed after it does not change it)
-            row = _result_for(paths, rec.pass_id)
-            report.update(ended=(row or {}).get("ended", "killed"), terminated=True)
-            clear_inflight(paths, rec.pass_id)
-        report["sigkill"] = killed
-    if service is not None:
-        # the writer service: stopped before anything else is reported, and its end verified
-        report["service"] = service
-        if not service["verified"]:
-            report["terminated"] = False
-            report["ended"] = "not_terminated"
-        elif report["terminated"] is None:
-            report["terminated"] = True
-    report["after_last_request"] = [
-        {
-            "pass_id": r.get("pass_id"),
-            "ended": r.get("ended"),
-            "commit": r.get("commit"),
-        }
-        for r in unapplied(paths)
-    ]
-    # never while a worker may still write
-    if archive_to is not None and report["terminated"] is not False:
+    # never while the service may still write
+    if archive_to is not None and report["terminated"]:
         from ..gitio import Repo
         from ..memory_writer import archive
 
@@ -946,21 +351,11 @@ def drain(
     return report
 
 
-def _drain_service(paths: Any, end: str = "final") -> dict | None:
-    """With the writer service on: stop it (the stop marker, its pass's deadline and the grace, SIGTERM, SIGKILL) and
-    verify that no process of it is left. At the ``final`` end every attention entry still owed is then
-    ``not_reached: run_ended``; at a ``suspend`` nothing is marked (the entries stay owed; the next start hands them
-    again, those a stopped pass held going back without a miss). None with the service off. Called before the key
-    proxy is torn down (the kit's teardown waits for the drain)."""
-    try:
-        from unify.settings import SETTINGS
-
-        from .switch import writer_service_on
-
-        if not writer_service_on(SETTINGS):
-            return None
-    except Exception:  # noqa: BLE001 - no settings here: no service either
-        return None
+def _drain_service(paths: Any, end: str = "final") -> dict:
+    """Stop the writer service (the stop marker, its pass's deadline and the grace, SIGTERM, SIGKILL) and verify that
+    no process of it is left. At the ``final`` end every attention entry still owed is then ``not_reached:
+    run_ended``; at a ``suspend`` nothing is marked (the entries stay owed; the next start hands them again, those a
+    stopped pass held going back without a miss). Called before the model-call lanes are torn down."""
     from ..writer_service import stop_service
 
     final = end == "final"
@@ -998,7 +393,6 @@ def main(argv: list[str] | None = None) -> int:
         help="shutdown: bounded wait, cancel, verified termination; never starts a pass",
     )
     d.add_argument("--home", required=True)
-    d.add_argument("--wait-s", type=float, default=None)
     d.add_argument(
         "--archive",
         default=None,
@@ -1015,7 +409,6 @@ def main(argv: list[str] | None = None) -> int:
 
     report = drain(
         Paths.under(Path(args.home)),
-        wait_s=args.wait_s,
         archive_to=Path(args.archive) if args.archive else None,
         end=args.end,
     )

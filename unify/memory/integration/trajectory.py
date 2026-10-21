@@ -362,20 +362,9 @@ def _fingerprints(actions: list[Action]) -> dict:
     return out
 
 
-def _default_regime() -> str:
-    """The regime an episode is assembled with when its run names none: ``dense`` as built, or, under
-    ``UNIFY_MEMORY_REGIME=inferred``, ``none`` (nothing is known of its signals yet; the caller infers it)."""
-    from unify.settings import SETTINGS
-
-    from .switch import regime_inferred
-
-    return "none" if regime_inferred(SETTINGS) else "dense"
-
-
 def assemble(
     run: Any,
     lines: list[dict],
-    memory_diff: str,
     ended_at: str,
     *,
     extra_actions: Iterable[Action] = (),
@@ -388,11 +377,9 @@ def assemble(
     *run* supplies ``episode_id``, ``started_at``, ``build``, ``model``, ``effort``, ``pin`` (memory
     ``main`` at the request's start), ``request`` (used when the transcript holds no user message),
     ``observer`` (the tool recorder, drained here; may be None), ``costs`` (a
-    :class:`.cost.CostListener`) and optionally ``regime`` (default ``"dense"``; under ``UNIFY_MEMORY_REGIME=inferred``
-    never defaulted: ``"none"`` until the caller infers it from the episode's signals, :mod:`.outcomes`), ``profile`` (the run's
-    ``UNIFY_PROFILE``; default empty) and ``memory_passes`` (``"off"`` under ``UNIFY_MEMORY_PASSES=off``; default
-    empty). The tool actions come
-    first, then *extra_actions* in their order; an action's index in the episode is what covers cite.
+    :class:`.cost.CostListener`) and optionally ``regime`` (never defaulted: ``"none"`` until the caller infers it from
+    the episode's signals, :mod:`.outcomes`). The tool actions come first, then *extra_actions* in their order; an
+    action's index in the episode is what covers cite.
     """
     folded = fold(lines)
     cells = timed_cells(folded)
@@ -413,7 +400,7 @@ def assemble(
         build=run.build,
         model=run.model,
         effort=run.effort,
-        regime=getattr(run, "regime", None) or _default_regime(),
+        regime=getattr(run, "regime", None) or "none",
         memory_main=run.pin,
         worktree_before=worktree_before,
         worktree_after=worktree_after,
@@ -421,12 +408,9 @@ def assemble(
         transcript=list(lines),
         cells=[c.cell for c in cells],
         actions=actions,
-        memory_diff=memory_diff,
         worktree_diff=worktree_diff,
         costs=list(getattr(costs, "rows", None) or []),
         fingerprints=_fingerprints(actions),
         replies=replies,
-        profile=str(getattr(run, "profile", "") or ""),
-        memory_passes=str(getattr(run, "memory_passes", "") or ""),
     )
     return ep, Redactor(secrets)

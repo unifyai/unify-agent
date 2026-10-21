@@ -434,9 +434,7 @@ def basis_text(status: str, basis: str, counts: Mapping[str, int]) -> str:
 
 def signal_outcome(
     signals: Iterable[Any],
-    regime: str,
-    *,
-    checker_visible: bool,
+    regime: str
 ) -> dict:
     """``{verdict, end_outcome, corrected}`` from an episode's signals, as the regime may observe them
     (:data:`.signals.REGIME_SOURCES`): a ``checker`` verdict only when the run allows visible verdicts and the
@@ -453,7 +451,7 @@ def signal_outcome(
         if source not in allowed:
             continue
         if source == "checker":
-            if not (checker_visible and getattr(s, "visible_to_actor", False) is True):
+            if not ((getattr(s, "visible_to_actor", False) is True)):
                 continue
             if regime == "dense":
                 verdict = "rejected" if label == "fail" or verdict == "rejected" else (

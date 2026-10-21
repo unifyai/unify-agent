@@ -137,12 +137,12 @@ def test_signal_outcome_reads_only_what_the_regime_and_the_actor_could_see():
     def sig(source, label, visible=True, regime="dense"):
         return Signal("s", "e1", source, label, "t", regime=regime, visible_to_actor=visible)
 
-    assert tr.signal_outcome([sig("checker", "fail")], "dense", checker_visible=True)["verdict"] == "rejected"
-    assert tr.signal_outcome([sig("checker", "fail", False)], "dense", checker_visible=True)["verdict"] is None
-    assert tr.signal_outcome([sig("checker", "pass")], "dense", checker_visible=False)["verdict"] is None
-    assert tr.signal_outcome([sig("checker", "pass")], "sparse", checker_visible=True)["end_outcome"] == "positive"
-    assert tr.signal_outcome([sig("reader", "re_ask")], "implicit", checker_visible=False)["corrected"]
-    assert tr.signal_outcome([sig("reader", "re_ask")], "none", checker_visible=False) == {
+    assert tr.signal_outcome([sig("checker", "fail")], "dense")["verdict"] == "rejected"
+    assert tr.signal_outcome([sig("checker", "fail", False)], "dense")["verdict"] is None
+    assert tr.signal_outcome([sig("checker", "pass")], "dense")["verdict"] is None
+    assert tr.signal_outcome([sig("checker", "pass")], "sparse")["end_outcome"] == "positive"
+    assert tr.signal_outcome([sig("reader", "re_ask")], "implicit")["corrected"]
+    assert tr.signal_outcome([sig("reader", "re_ask")], "none") == {
         "verdict": None,
         "end_outcome": None,
         "corrected": False,
@@ -164,14 +164,14 @@ def test_the_lifecycle_counts_attributed_outcomes_from_the_use_record():
         )
 
     facts = [
-        lc.facts_from_use(f"e{i}", "a" * 40, "dense", record(result_digest([1])), [], checker_visible=True)
+        lc.facts_from_use(f"e{i}", "a" * 40, "dense", record(result_digest([1])), [])
         for i in range(2)
     ]
     assert facts[0].items[ITEM].outcomes[0].verdict == "rejected"
     assert lc.decide_status(ITEM, None, facts)[:2] == ("retired", "rejected")
     # the same calls whose results were never handed back carry no verdict: nothing counts against the item
     unanswered = [
-        lc.facts_from_use(f"e{i}", "a" * 40, "dense", record(result_digest([2])), [], checker_visible=True)
+        lc.facts_from_use(f"e{i}", "a" * 40, "dense", record(result_digest([2])), [])
         for i in range(2)
     ]
     assert lc.decide_status(ITEM, None, unanswered)[0] == "on-trial"

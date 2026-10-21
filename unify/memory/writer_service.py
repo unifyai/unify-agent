@@ -1,5 +1,5 @@
-"""The writer service (``UNIFY_MEMORY_WRITER_SERVICE=on``): one detached writer per memory home, spawned and owned by
-the harness, that hands the attention ledger's entries to writer passes until nothing is open.
+"""The writer service: one detached writer per memory home, spawned and owned by the harness, that hands the attention
+ledger's entries to writer passes until nothing is open.
 
 **Why a service.** A pass worker started at a request's end lives inside that request's process tree: in the paper
 adapter's PID namespace the session's 600 s kill took it down with the request, and a third to a half of the writer's
@@ -21,13 +21,14 @@ then the unread ones go back); else idle, and after :data:`IDLE_EXIT_S` with not
 rewrites ``service.json`` every :data:`HEARTBEAT_S`. Each turn of the loop is :func:`_iteration`; :func:`step` runs
 exactly one such turn in the calling process (deterministic step mode, for the offline replay).
 
-**Bounds, stated, never steering:** the service's lifetime (:data:`LIFETIME_S`, and never past the host's lease less
-:data:`LEASE_MARGIN_S`), its own spend cap (a pass starts only when the room left under the cap holds one writer call
-at its worst case; it books that whole room, no call of its writer or helpers starts past it, counting unpriced and
-in-flight calls at the worst case, and it settles after it from the writer lane's journal plus its helpers' priced
-calls, or its own figures, or, when it ended with no report, its turn files), and each pass's wall clock. The key proxy's writer-lane cap applies independently: a call the proxy
-refuses for its cap (HTTP 402, or a 403 whose refusal body says it is the cap) is the cap reached; a refusal for now
-(another call in flight, a rate limit, a server error) is tried again, bounded, and never stops the service.
+**Bounds, stated, never steering:** the service's lifetime (:data:`LIFETIME_S`), memory's spend cap for the home
+(``UNIFY_MEMORY_CAP_USD``: a pass starts only when the room left under the cap holds one writer call at its worst case;
+it books that whole room, no call of its writer or helpers starts past it, counting unpriced and in-flight calls at the
+worst case, and it settles after it from the writer lane's journal plus its helpers' priced calls, or its own figures,
+or, when it ended with no report, its turn files), and each pass's wall clock. A lane relay's cap applies
+independently: a call the lane refuses for its cap (HTTP 402, or a 403 whose refusal body says it is the cap) is the
+cap reached; a refusal for now (another call in flight, a rate limit, a server error) is tried again, bounded, and
+never stops the service.
 
 **Resumable passes.** Before each model call of a pass (the writer's and each helper's), ``turns/<pass>/<n>.json`` is
 written ``pending`` with the conversation so far and the pass's inputs; after it, ``done`` with the reply and its
@@ -40,7 +41,7 @@ window, which the pass's settle reads from the pass's first start, so it is neve
 :data:`STOP_GRACE_S`, then ``SIGTERM`` to the service's process group, :data:`TERM_S`, ``SIGKILL``, and checks in
 ``/proc`` that no process of the group is left; :class:`Terminated` says how it ended and whether that was verified.
 Shutdown (:func:`.integration.async_pass.drain`) stops the service and returns only once it is verified gone, before
-the kit stops the key proxy.
+the model-call lanes are stopped.
 
 Files, under ``<home>/memory-state/memory-service/`` (harness-only; no box binds them): ``service.lock``,
 ``service.json``, ``service.stop``, ``service-events.jsonl``, ``spend.jsonl`` (reserve and settle rows), and
@@ -87,9 +88,8 @@ MEMBERS_FILE = "service-members.json"
 STALE_S = 90.0
 #: The service exits after this long idle with nothing open.
 IDLE_EXIT_S = 1800.0
-#: Its lifetime, and how long before the host's lease it stops.
+#: Its lifetime.
 LIFETIME_S = 36 * 3600.0
-LEASE_MARGIN_S = 1800.0
 #: :func:`stop_service`: the grace after a pass's deadline, then SIGTERM, this long, then SIGKILL.
 STOP_GRACE_S = 30.0
 TERM_S = 10.0
@@ -102,8 +102,8 @@ START_WAIT_S = 10.0
 EXITING_WAIT_S = 5.0
 
 STATES = ("starting", "running", "idle", "stopping", "stopped")
-StopBy = Literal["drain", "suspend", "operator", "cap", "lease"]
-STOP_BY = ("drain", "suspend", "operator", "cap", "lease")
+StopBy = Literal["drain", "suspend", "operator", "cap"]
+STOP_BY = ("drain", "suspend", "operator", "cap")
 #: What the entries the service could not reach are marked with, by why it stopped. A ``suspend`` (the end of one
 #: stage of a run that goes on) marks nothing: every entry still owed stays owed, and the next start hands it again
 #: (entries a stopped pass held go back with ``service_restart``, no miss).
@@ -111,7 +111,6 @@ NOT_REACHED_BY = {
     "drain": "run_ended",
     "operator": "service_stopped",
     "cap": "spend_cap",
-    "lease": "lifetime",
 }
 EVENTS = (
     "start",
@@ -501,27 +500,9 @@ def _settings() -> Any:
     return SETTINGS
 
 
-def lifetime_end(started: datetime, settings: Any, until: Optional[datetime] = None) -> tuple[datetime, str]:
-    """When the service must stop, and why: its own lifetime, the host's lease less the margin, or the end its owner
-    gave it (*until*: a runner-owned service's stage deadline; why ``lifetime``), whichever first."""
-    from .integration.switch import host_lease_end
-
-    own = started + timedelta(seconds=LIFETIME_S)
-    if until is not None and until < own:
-        own = until
-    lease = host_lease_end(settings)
-    if lease is not None and lease - timedelta(seconds=LEASE_MARGIN_S) < own:
-        return lease - timedelta(seconds=LEASE_MARGIN_S), "lease"
-    return own, "lifetime"
-
-
-def lease_reached(settings: Any, now: Optional[datetime] = None) -> bool:
-    from .integration.switch import host_lease_end
-
-    lease = host_lease_end(settings)
-    return lease is not None and (now or _now()) >= lease - timedelta(
-        seconds=LEASE_MARGIN_S
-    )
+def lifetime_end(started: datetime) -> datetime:
+    """When the service must stop: the end of its own lifetime."""
+    return started + timedelta(seconds=LIFETIME_S)
 
 
 # --- the spend under the service's own cap --------------------------------------------------------------------------
@@ -556,16 +537,12 @@ def spend_totals(home: Path | str, *, without: Optional[str] = None) -> tuple[De
     return committed, sum(settled.values(), Decimal(0))
 
 
-def pass_room(home: Path | str, pass_id: str, settings: Any) -> Optional[Decimal]:
-    """What pass *pass_id* may spend: the service's cap less what every other pass committed (never below 0); None
-    when the service has no cap (it never runs then)."""
-    from .integration.switch import writer_service_cap_usd
+def pass_room(home: Path | str, pass_id: str, settings: Any) -> Decimal:
+    """What pass *pass_id* may spend: memory's spend cap less what every other pass committed (never below 0)."""
+    from .integration.switch import memory_cap_usd
 
-    cap = writer_service_cap_usd(settings)
-    if cap is None:
-        return None
     committed, _settled = spend_totals(home, without=pass_id)
-    return max(Decimal(0), cap - committed)
+    return max(Decimal(0), memory_cap_usd(settings) - committed)
 
 
 def _turn_files(folder: Path | str, *, since: Optional[str] = None) -> list[tuple[str, dict]]:
@@ -626,16 +603,12 @@ def turns_spend(folder: Path | str, worst: Decimal, *, since: Optional[str] = No
 
 def pass_call_worst_case(settings: Any) -> Decimal:
     """One model call's worst case for a service pass: the pinned catalogue's bound (:mod:`.call_bounds`) for the
-    writer's model and, when the helper lane is set, the helpers' model, the larger. Raises
-    :class:`.call_bounds.NoBound` for a model the catalogue does not bound (no pass runs: fail closed)."""
+    writer's model, which its helpers run on too. Raises :class:`.call_bounds.NoBound` for a model the catalogue does
+    not bound (no pass runs: fail closed)."""
     from .call_bounds import worst_of
-    from .integration import switch
     from .integration.consolidate import writer_settings
 
-    models = [writer_settings(settings).model]
-    if switch.helper_lane_route()[0] is not None:
-        models.append(switch.library_helper_model(settings))
-    return worst_of(models)
+    return worst_of([writer_settings(settings).model])
 
 
 def _format(d: Decimal) -> str:
@@ -890,20 +863,11 @@ def ensure_service(
     home = Path(home)
     try:
         settings = settings if settings is not None else _settings()
-        from .integration.switch import memory_frozen, profile_refusal, writer_service_on
+        from .integration.switch import writer_refusal
 
-        if not writer_service_on(settings):
-            return ServiceState("off")
-        if memory_frozen(settings):
-            # held-out evaluation: memory is frozen, so no writer runs
-            return ServiceState("refused", detail="memory is frozen")
-        refused = profile_refusal(settings)
+        refused = writer_refusal(settings)
         if refused is not None:
             return ServiceState("refused", detail=refused)
-        if lease_reached(settings):
-            return ServiceState(
-                "refused", detail="the host's lease ends within 30 minutes"
-            )
         marker = stopping_marker(home)
         if marker is not None:
             # stopped on purpose (shutdown or an operator): no request starts it again
@@ -913,10 +877,6 @@ def ensure_service(
         folder = service_dir(home)
         folder.mkdir(parents=True, exist_ok=True)
         lock = folder / LOCK_FILE
-        from .integration.switch import writer_service_owner
-
-        if writer_service_owner(settings) == "runner":
-            return _runner_owned(home, lock, popen=popen, wait_s=wait_s, argv_prefix=argv_prefix)
         fd = try_lock(lock)
         took_over = False
         if fd is None and not owns(read_state(home)) and not lock_holders(lock):
@@ -960,33 +920,6 @@ def ensure_service(
         )
     except Exception as exc:  # noqa: BLE001 - a request never fails on the service
         return ServiceState("error", detail=type(exc).__name__)
-
-
-def _runner_owned(
-    home: Path, lock: Path, *, popen: Callable[..., Any], wait_s: float, argv_prefix: Optional[list[str]]
-) -> ServiceState:
-    """``UNIFY_MEMORY_WRITER_SERVICE_OWNER=runner``: the runner starts the cell's one service in a sandbox of its own
-    that outlives every session, so a request never starts it. Its lock held (by a process in any pid namespace: a
-    flock is shared) is the service running. No service yet: ``absent`` (nothing started; entries wait in the ledger).
-    The crash fallback alone starts one here: ``service.json`` says a runner-owned service ran and it ended without
-    stopping (its lock free, its state not ``stopped``), so this request starts one as a harness-owned start would,
-    and writes a ``takeover`` row marked ``fallback``."""
-    fd = try_lock(lock)
-    if fd is None:
-        return ServiceState("running", pid=(read_state(home) or {}).get("pid"))
-    os.close(fd)
-    doc = read_state(home)
-    if not (isinstance(doc, dict) and doc.get("owner") == "runner" and doc.get("state") not in ("stopped", None)):
-        return ServiceState("absent", detail="the runner starts the writer service")
-    event(
-        home,
-        "takeover",
-        previous_pid=doc.get("pid"),
-        by="ensure_service",
-        reason="the runner's service ended without stopping",
-        fallback=True,
-    )
-    return _spawn(home, popen=popen, wait_s=wait_s, argv_prefix=argv_prefix, took_over=True)
 
 
 def _spawn(
@@ -1092,18 +1025,6 @@ def stop_service(
         # the service wrote its last state and nothing holds the home: nothing is left to stop (a step, or a test,
         # that ran the loop in its own process is never signalled)
         return Terminated(True, "clean")
-    if doc.get("owner") == "runner" and not owns(doc):
-        # the runner's service, in a sandbox of the runner's (another pid namespace: nothing here can signal it): it
-        # stops at the marker; verified once its lock is free (it holds the lock until it exits). Its runner stops
-        # and verifies the sandbox itself (service_owner.stop_owned).
-        from .service_owner import lock_free
-
-        end = parse_stamp(doc.get("pass_deadline"))
-        limit = time.monotonic() + max(0.0, (end - _now()).total_seconds() if end else 0.0) + grace_s
-        while not lock_free(home) and time.monotonic() < limit:
-            sleep(0.1)
-        free = lock_free(home)
-        return Terminated(free, "clean" if free else "external")
     pgid = doc.get("pgid")
 
     def left() -> list[int]:
@@ -1178,13 +1099,10 @@ def _note_writer(home: Path, note: str) -> None:
         pass
 
 
-from .service_owner import owned_cwd, owned_env, stop_owned  # noqa: E402,F401 - the runner's side, stdlib only
-
-
 def clear_previous_stop(home: Path | str) -> Optional[dict]:
-    """At a runner-owned service's start (``--foreground``, owner ``runner``): the stop marker a previous stage's end
-    left is renamed aside (``service.stop.<stamp>``) and recorded (``stop-cleared``, with its ``by`` and ``at``), so
-    this stage's service runs. Returns the old marker, or None. A request never clears a marker."""
+    """After a ``suspend`` (the end of one stage of a run that goes on, :func:`.integration.async_pass.drain`): the stop
+    marker it left is renamed aside (``service.stop.<stamp>``) and recorded (``stop-cleared``, with its ``by`` and
+    ``at``), so the next stage's service starts. Returns the old marker, or None. A request never clears a marker."""
     marker = stopping_marker(home)
     if marker is None:
         return None
@@ -1204,14 +1122,6 @@ def stopping_marker(home: Path | str) -> Optional[dict]:
     except (OSError, ValueError):
         return None
     return doc if isinstance(doc, dict) else None
-
-
-def clear_stop(home: Path | str) -> None:
-    """A stop marker a previous run's stop left: removed when a new service is asked to start (by a request)."""
-    try:
-        (service_dir(home) / STOP_FILE).unlink()
-    except FileNotFoundError:
-        pass
 
 
 # --- the service ----------------------------------------------------------------------------------------------------
@@ -1243,13 +1153,11 @@ class Service:
     #: record the group's processes (``members``); False for a step, which runs in its caller's process: nothing of
     #: the caller's is ever recorded as the service's, so nothing of it is ever signalled
     record_members: bool = True
-    #: the end its owner gave it (a runner-owned service: the stage's deadline), or None
-    until: Optional[datetime] = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def doc(self) -> dict:
         committed, settled = spend_totals(self.home)
-        end, _why = lifetime_end(self.started, self.settings, self.until)
+        end = lifetime_end(self.started)
         return {
             "v": 1,
             "pid": os.getpid(),
@@ -1263,7 +1171,6 @@ class Service:
             "started_at": stamp(self.started),
             "deadline": stamp(end),
             "state": self.state,
-            "owner": _owner(self.settings),
             "pass_id": self.pass_id,
             "pass_deadline": stamp(self.pass_deadline) if self.pass_deadline else None,
             "cap_usd": _format(self.cap) if self.cap is not None else None,
@@ -1285,16 +1192,11 @@ class Service:
             _atomic_json(service_dir(self.home) / STATE_FILE, self.doc())
 
 
-def _hold_writer_row(home: Path, settings: Any) -> Any:
-    """With the run record on, take back the writer's row on it (``rejoin``: the service holds ``writer`` across
-    passes and restarts) and return the record; with it off (the mesh-off arm), None: the service runs without it
-    and each pass keeps its own pass record."""
+def _hold_writer_row(home: Path) -> Any:
+    """Take back the writer's row on the run record (``rejoin``: the service holds ``writer`` across passes and
+    restarts) and return the record."""
     from unify.agents.run_record import WRITER, join_run_record
 
-    from .integration.switch import run_record_on
-
-    if not run_record_on(settings):
-        return None
     record = join_run_record(home)
     record.root = WRITER
     record.join(WRITER, "writer", state="idle", rejoin=True)
@@ -1310,15 +1212,6 @@ def _end_writer_row(record: Any, why: str) -> None:
         record.set_state(WRITER, "ended", note=f"service {why}")
     except Exception:  # noqa: BLE001 - the stop is still recorded
         pass
-
-
-def _owner(settings: Any) -> str:
-    from .integration.switch import writer_service_owner
-
-    try:
-        return writer_service_owner(settings)
-    except ValueError:
-        return "harness"
 
 
 def _members() -> list[list]:
@@ -1380,10 +1273,10 @@ async def _run_pass(
     from unify.common.llm_client import attribution
 
     from .attention import Ledger
-    from .integration.request import actor_effort, writer_effort
+    from .integration.request import actor_effort
 
     home, settings = service.home, service.settings
-    effort = writer_effort(actor_effort())
+    effort = actor_effort()
     folder = service_dir(home) / TURNS_DIR / pass_id
     folder.mkdir(parents=True, exist_ok=True)
     pass_doc_path = folder / PASS_FILE
@@ -1428,9 +1321,9 @@ async def _run_pass(
             pass_doc["prior_usd"] = None
     pass_doc["run_started_at"] = stamp(_now())
     _atomic_json(pass_doc_path, pass_doc)
-    from .integration.switch import library_pass_wall_s
+    from .integration.switch import PASS_WALL_S
 
-    wall = float(library_pass_wall_s(settings))
+    wall = float(PASS_WALL_S)
     service.set(
         "running", pass_id=pass_id, pass_deadline=_now() + timedelta(seconds=wall)
     )
@@ -1483,17 +1376,6 @@ async def _run_pass(
                 "at": stamp(_now()),
             },
         )
-    if getattr(report, "ended", None) == "run_guard":
-        # the run guard held the pass back: nothing ran; the run's writer budget is spent, so every entry still
-        # owed (these included) is not reached
-        service.capped = True
-        if not service.cap_noted:
-            event(home, "cap-reached", by="run_guard", pass_id=pass_id)
-            service.cap_noted = True
-        ledger.mark_not_reached("spend_cap")
-        pass_doc.update(state="ended", ended_at=stamp(_now()), ended="run_guard")
-        _atomic_json(pass_doc_path, pass_doc)
-        return report
     from .attention import PassReads
 
     reads = report.reads if report.reads is not None else PassReads()
@@ -1505,7 +1387,7 @@ async def _run_pass(
     _atomic_json(pass_doc_path, pass_doc)
     from .metering import write_pass_row
 
-    write_pass_row(home, report, settings=settings)
+    write_pass_row(home, report)
     event(
         home,
         "pass",
@@ -1539,10 +1421,6 @@ def _capture_if_new(service: "Service") -> None:
     """Capture the forks that settled since the last look (the capture store feeds the ledger's entries); never
     raises."""
     try:
-        from .integration.switch import library_fork
-
-        if not library_fork(service.settings):
-            return
         sig = _staging_signature(service.home)
         if sig == service.staging_seen:
             return
@@ -1552,10 +1430,7 @@ def _capture_if_new(service: "Service") -> None:
         from .integration.consolidate import capture_settled_forks, open_stores
         from .integration.paths import Paths
 
-        capture_settled_forks(
-            open_stores(Paths.under(service.home), busy_timeout_s=60.0),
-            service.settings,
-        )
+        capture_settled_forks(open_stores(Paths.under(service.home), busy_timeout_s=60.0))
         service.staging_seen = sig
     except (
         Exception
@@ -1596,7 +1471,7 @@ def _raised_pass_row(
             error_class=type(exc).__name__,
             error_where=innermost[0] if innermost else "unknown",
         )
-        write_pass_row(home, report, settings=settings)
+        write_pass_row(home, report)
     except Exception as row_exc:  # noqa: BLE001 - the row is evidence; the service goes on without it
         event(home, "pass-row-error", pass_id=pass_id, error=type(row_exc).__name__, where=_where(row_exc))
 
@@ -1658,12 +1533,13 @@ async def _iteration(
     clock: Callable[[], datetime],
 ) -> dict:
     """One turn of the service's loop, shared by :func:`service_main` and :func:`step`: the stop marker (and
-    SIGTERM), the service's end (lifetime, lease), a pass left running to resume, else the capture step, ``sync``,
-    the cap (every entry still owed is ``not_reached: spend_cap``), the lease margin for a new pass, and one pass
+    SIGTERM), the service's end (its lifetime), a pass left running to resume, else the capture step, ``sync``, the
+    cap (every entry still owed is ``not_reached: spend_cap``), the lifetime's margin for a new pass, and one pass
     over up to K handed entries. Returns what it did (:func:`_turn_result`): ``stop`` names why the service must
     stop (None: go on); ``why_idle`` why no pass ran (:data:`IDLE_WHY`)."""
-    from .integration.request import actor_effort, writer_effort
-    from .integration.switch import ledger_k, library_pass_wall_s
+    from .attention import K
+    from .integration.request import actor_effort
+    from .integration.switch import PASS_WALL_S
 
     home, settings = service.home, service.settings
     out = _turn_result()
@@ -1674,11 +1550,10 @@ async def _iteration(
     if service.stop_flag is not None and service.stop_flag.is_set():
         out.update(why_idle="stopping", stop="term")
         return out
-    end, end_why = lifetime_end(service.started, settings, service.until)
+    end = lifetime_end(service.started)
     if clock() >= end:
-        why = "lease" if end_why == "lease" else "lifetime"
-        event(home, "lifetime", why=end_why)
-        out.update(why_idle=why, stop=why)
+        event(home, "lifetime", why="lifetime")
+        out.update(why_idle="lifetime", stop="lifetime")
         return out
     if resumable:
         pass_id = resumable.pop(0)
@@ -1693,37 +1568,35 @@ async def _iteration(
     try:
         # the writer's settings and route as a pass needs them, and one call's worst case for its models (a refused
         # setting or a model the pinned catalogue does not bound: no pass can run)
-        pass_reservation(settings, writer_effort(actor_effort()))
+        pass_reservation(settings, actor_effort())
         worst = pass_call_worst_case(settings)
     except Exception as exc:  # noqa: BLE001 - a refused writer route or setting: no pass can run
         event(home, "refused", reason=type(exc).__name__)
         out.update(why_idle="refused", stop="refused")
         return out
     committed, _settled = spend_totals(home)
-    room = (service.cap - committed) if service.cap is not None else None
+    room = service.cap - committed
     # a pass starts only when its room holds at least one call at the worst case (its USD stop lets no call start
     # past the room), and it books the whole room until it settles
-    if service.capped or (room is not None and room < worst):
+    if service.capped or room < worst:
         if not service.cap_noted:
             event(
                 home,
                 "cap-reached",
                 by="service",
                 committed_usd=_format(committed),
-                room_usd=_format(room) if room is not None else None,
+                room_usd=_format(room),
                 call_worst_case_usd=_format(worst),
-                cap_usd=_format(service.cap) if service.cap is not None else None,
+                cap_usd=_format(service.cap),
             )
             service.cap_noted = True
         ledger.mark_not_reached("spend_cap")
         out["why_idle"] = "spend_cap"
         return out
-    if clock() + timedelta(seconds=float(library_pass_wall_s(settings))) > end:
-        # a pass started now could run past the service's end (the host's lease less the margin, or its lifetime):
-        # no new pass; the service stops
-        why = "lease" if end_why == "lease" else "lifetime"
-        event(home, "lifetime", why=end_why, refused_pass=True)
-        out.update(why_idle=why, stop=why)
+    if clock() + timedelta(seconds=float(PASS_WALL_S)) > end:
+        # a pass started now could run past the service's end (its lifetime): no new pass; the service stops
+        event(home, "lifetime", why="lifetime", refused_pass=True)
+        out.update(why_idle="lifetime", stop="lifetime")
         return out
     pass_id = secrets.token_hex(8)
     # an entry is handed only once every episode it names can be read (a running one with no segment record waits,
@@ -1731,7 +1604,7 @@ async def _iteration(
     from .attention import HomeSources, entry_ready
 
     resolve = HomeSources(home, state_dir=ledger.state_dir).resolver()
-    handed = ledger.hand(pass_id, ledger_k(settings), ready=lambda e: entry_ready(e, resolve))
+    handed = ledger.hand(pass_id, K, ready=lambda e: entry_ready(e, resolve))
     if not handed:
         out["why_idle"] = "nothing_handed"
         return out
@@ -1763,14 +1636,14 @@ async def step_async(
     the service settled (known plus unpriced calls at their worst case; None when nothing was readable), and
     ``why_idle`` why no pass ran (:data:`IDLE_WHY`), or None."""
     from .attention import Ledger
-    from .integration.switch import profile_refusal, writer_service_cap_usd
+    from .integration.switch import memory_cap_usd, writer_refusal
 
     home = Path(home)
     settings = settings if settings is not None else _settings()
     if runner is None:
         from .integration.consolidate import run_attention_pass as runner  # type: ignore[no-redef]
     out = _turn_result()
-    refused = profile_refusal(settings)
+    refused = writer_refusal(settings)
     if refused is not None:
         event(home, "refused", reason=refused)
         out.update(why_idle="refused", stop="refused")
@@ -1784,13 +1657,13 @@ async def step_async(
     service: Optional[Service] = None
     try:
         service = Service(home, settings, lock_fd, started=at(), record_members=False)
-        service.cap = writer_service_cap_usd(settings)
-        # a cap an earlier step reached stays as the service keeps it: noted once; the proxy's or the run guard's
-        # refusal holds every later pass back (the service's own cap is the room, checked afresh each step)
+        service.cap = memory_cap_usd(settings)
+        # a cap an earlier step reached stays as the service keeps it: noted once; a lane's refusal holds every later
+        # pass back (the service's own cap is the room, checked afresh each step)
         reached = [r for r in events(home) if r.get("event") == "cap-reached"]
         service.cap_noted = bool(reached)
-        service.capped = any(r.get("by") in ("proxy", "run_guard") for r in reached)
-        record = _hold_writer_row(home, settings)
+        service.capped = any(r.get("by") == "proxy" for r in reached)
+        record = _hold_writer_row(home)
         ledger = Ledger(home)
         resumable = pending_passes(home)
         ledger.return_orphans(live_pass_ids=resumable)
@@ -1835,11 +1708,10 @@ async def service_main(
     clock: Callable[[], datetime] = _now,
     monotonic: Callable[[], float] = time.monotonic,
     members_s: float = MEMBERS_S,
-    until: Optional[datetime] = None,
 ) -> str:
     """The service's life (module docstring); returns why it stopped. It takes the home's lock itself (*lock_fd*: one
     already taken, for tests), and returns ``busy`` at once, leaving no trace, when another service holds it. *clock*
-    (UTC now) and *monotonic* (the idle clock) are injected by tests; *until* is the end its owner gave it."""
+    (UTC now) and *monotonic* (the idle clock) are injected by tests."""
     home = Path(home)
     own_lock = lock_fd is None
     if own_lock:
@@ -1849,8 +1721,7 @@ async def service_main(
     os.set_inheritable(lock_fd, False)
     try:
         return await _serve(home, lock_fd, runner=runner, settings=settings, poll_s=poll_s, idle_exit_s=idle_exit_s,
-                            heartbeat_s=heartbeat_s, clock=clock, monotonic=monotonic, members_s=members_s,
-                            until=until)  # fmt: skip
+                            heartbeat_s=heartbeat_s, clock=clock, monotonic=monotonic, members_s=members_s)
     finally:
         if own_lock:
             os.close(lock_fd)
@@ -1868,25 +1739,20 @@ async def _serve(
     clock: Callable[[], datetime],
     monotonic: Callable[[], float],
     members_s: float = MEMBERS_S,
-    until: Optional[datetime] = None,
 ) -> str:
     from .attention import Ledger
-    from .integration.switch import profile_refusal, writer_service_cap_usd
+    from .integration.switch import memory_cap_usd, writer_refusal
 
     settings = settings if settings is not None else _settings()
     if runner is None:
         from .integration.consolidate import run_attention_pass as runner  # type: ignore[no-redef]
-    refused = profile_refusal(settings)
+    refused = writer_refusal(settings)
     if refused is not None:
         event(home, "refused", reason=refused)
         return "refused"
-    if _owner(settings) == "runner":
-        # the runner's service lives until its stop marker, its lifetime or the lease: no idle exit (the runner
-        # started it for the whole cell; a request never starts it again)
-        idle_exit_s = float("inf")
     previous = read_state(home)
-    service = Service(home, settings, lock_fd, started=clock(), until=until)
-    service.cap = writer_service_cap_usd(settings)
+    service = Service(home, settings, lock_fd, started=clock())
+    service.cap = memory_cap_usd(settings)
     stop_flag = asyncio.Event()
     service.stop_flag = stop_flag
     loop = asyncio.get_running_loop()
@@ -1904,7 +1770,7 @@ async def _serve(
             reason="the previous service ended without stopping",
         )
     service.set("starting")
-    record = _hold_writer_row(home, settings)
+    record = _hold_writer_row(home)
     beating = threading.Event()
 
     def heart() -> None:
@@ -1934,7 +1800,7 @@ async def _serve(
     if service.record_members:
         threading.Thread(target=write_members, name="writer-service-members", daemon=True).start()
     event(
-        home, "start", cap_usd=_format(service.cap) if service.cap is not None else None
+        home, "start", cap_usd=_format(service.cap)
     )
     ledger = Ledger(home)
     resumable = pending_passes(home)
@@ -1986,25 +1852,6 @@ def _parse(argv: Optional[list[str]]) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="writer_service")
     p.add_argument("--home", required=True)
     p.add_argument("--daemon", action="store_true")
-    p.add_argument(
-        "--foreground",
-        action="store_true",
-        help="run in this process (the runner's own sandbox starts it so: UNIFY_MEMORY_WRITER_SERVICE_OWNER=runner)",
-    )
-    p.add_argument(
-        "--until",
-        type=float,
-        default=None,
-        help="stop by this UTC epoch second at the latest (the owner's stage deadline), besides the lifetime and lease",
-    )
-    p.add_argument(
-        "--owner",
-        choices=("runner",),
-        default=None,
-        help="the runner owns this service (with --foreground): check the environment, then run in its own folder",
-    )
-    p.add_argument("--ready", action="store_true", help="report whether the runner-owned service is up, and exit")
-    p.add_argument("--wait", type=float, default=30.0, help="with --ready: how long to wait for it")
     return p.parse_args(argv)
 
 
@@ -2038,15 +1885,6 @@ def release_route_fds(settings: Any = None) -> None:
             pass  # read and closed already
 
 
-def _lead_own_group() -> None:
-    """In the foreground (the runner's sandbox started it), lead a process group of its own, so its own children
-    are told apart from the runner's (a session leader already leads one)."""
-    try:
-        os.setsid()
-    except OSError:
-        pass
-
-
 def daemonize() -> None:
     """The second fork: the first child exits at once; the service is nobody's child, in a session of its own."""
     if os.fork() != 0:
@@ -2054,61 +1892,14 @@ def daemonize() -> None:
     os.setsid()
 
 
-def _owner_start(home: str) -> Optional[str]:
-    """``--owner runner``: the service's own check of the environment the runner gave it (a credential's name, other
-    than the two route base URLs and token descriptor numbers, refuses the start), then its own empty HOME and its
-    own folder as the current one, and the owner setting. Returns why it refuses, or None."""
-    from .integration import switch
-    from .service_owner import OWNER_NAME, ROUTE_NAMES, secret_name
-
-    bad = sorted(n for n in os.environ if n not in ROUTE_NAMES and secret_name(n))
-    if bad:
-        return f"the environment holds credential names: {', '.join(bad)}"
-    folder = owned_cwd(home)
-    (folder / "home").mkdir(parents=True, exist_ok=True)
-    (folder / "tmp").mkdir(parents=True, exist_ok=True)
-    os.environ["HOME"] = str(folder / "home")
-    # its own temporary folder too: a temporary folder the runner's environment names may be a session's, gone at
-    # that session's end, and every pass after it would fail at its first temporary file
-    os.environ["TMPDIR"] = str(folder / "tmp")
-    tempfile.tempdir = None  # gettempdir() reads TMPDIR again
-    os.chdir(folder)
-    os.environ[OWNER_NAME] = "runner"
-    try:
-        setattr(_settings(), switch.WRITER_SERVICE_OWNER, "runner")
-    except Exception:  # noqa: BLE001 - read from the environment then
-        pass
-    return None
-
-
 def main(argv: Optional[list[str]] = None) -> int:
     args = _parse(argv)
-    if args.ready:
-        from .service_owner import _state, owned_ready
-
-        ready = owned_ready(args.home, args.wait)
-        doc = _state(args.home) or {}
-        print(json.dumps({"ready": ready, "pid": doc.get("pid"), "state": doc.get("state"), "owner": doc.get("owner")}))
-        return 0 if ready else 1
-    if args.owner == "runner":
-        refused = _owner_start(args.home)
-        if refused is not None:
-            print(json.dumps({"refused": refused}))
-            return 3
-        args.foreground = True
-    # the route tokens into memory and their pipes closed before the fork: no process of the service holds one
+    # the lane tokens into memory and their pipes closed before the fork: no process of the service holds one
     release_route_fds()
     if args.daemon:
         daemonize()
-    elif args.foreground:
-        _lead_own_group()
-        if _owner(_settings()) == "runner":
-            # the runner starts its service once per stage: a stop marker the previous stage's end left is set aside
-            # (recorded), never by a request
-            clear_previous_stop(args.home)
-    until = datetime.fromtimestamp(args.until, tz=timezone.utc) if args.until is not None else None
     try:
-        asyncio.run(service_main(args.home, until=until))
+        asyncio.run(service_main(args.home))
         return 0
     except Exception as exc:  # noqa: BLE001 - the class only
         print(f"writer service: {type(exc).__name__}", file=sys.stderr)

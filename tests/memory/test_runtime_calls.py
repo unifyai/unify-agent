@@ -174,7 +174,7 @@ def test_lifecycle_prefers_runtime_counts_and_marks_the_basis():
         },
         {WEEK: {"ok": 1, "refused": 2}, TOK: {"error": 1}},
     )
-    f = lc.facts_from_use("e1", A, "implicit", rec, [], checker_visible=False)
+    f = lc.facts_from_use("e1", A, "implicit", rec, [])
     assert f.items == {
         PD: lc.ItemUse(
             False,
@@ -211,7 +211,6 @@ def test_lifecycle_falls_back_to_static_counts_for_records_without_runtime_evide
         "implicit",
         _use_rec({PD: {"called": 2}}),
         [],
-        checker_visible=False,
     )
     assert f.items == {PD: lc.ItemUse(True, 2, False, False, False)}
     assert f.items[PD].basis == "static" and f.items[PD].calls is None
@@ -226,7 +225,6 @@ def test_refusals_alone_never_demote_and_runtime_errors_do():
             "implicit",
             _runtime_rec({}, {PD: {"refused": 3}}),
             [],
-            checker_visible=False,
         )
         for i in range(3)
     ]
@@ -239,7 +237,6 @@ def test_refusals_alone_never_demote_and_runtime_errors_do():
             "implicit",
             _runtime_rec({PD: {"called": 5}}, {PD: {"ok": 4, "error": 1}}),
             [],
-            checker_visible=False,
         )
         for i in range(2)
     ]
@@ -251,7 +248,6 @@ def test_refusals_alone_never_demote_and_runtime_errors_do():
             "implicit",
             _runtime_rec({}, {PD: {"ok": 1}}),
             [],
-            checker_visible=False,
         )
         for i in range(3)
     ]
@@ -274,9 +270,9 @@ def test_the_evidence_index_and_the_record_agree_on_runtime_facts(tmp_path):
         "2" * 40,
     )
     indexed = {
-        f.episode_id: f for f in lc.facts_from_evidence(ev, checker_visible=False)
+        f.episode_id: f for f in lc.facts_from_evidence(ev)
     }
-    direct = lc.facts_from_use("e1", A, "implicit", rec, [], checker_visible=False)
+    direct = lc.facts_from_use("e1", A, "implicit", rec, [])
     assert indexed["e1"].items == direct.items
     assert indexed["e2"].items == {PD: lc.ItemUse(True, 2, False, False, False)}
     row = ev.item_use(["e1"])[WEEK]

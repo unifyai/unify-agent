@@ -128,7 +128,6 @@ from .held_out import (
     _read_results,
     _unfit_reason,
 )
-from .integration import switch
 from .manifest import INPUT_KINDS, TESTKIT, TESTS_DIR, item_path
 from .sandbox_run import SandboxResult, run_confined
 
@@ -222,23 +221,6 @@ class QAConfig:
     def response_blob_bytes(self) -> int:
         """The size from which the writer's export writes a response as a blob (relative to the fixture bound)."""
         return max(1, self.fixture_max_bytes // RESPONSE_BLOB_SHARE)
-
-    @classmethod
-    def from_settings(cls, settings: Any) -> "QAConfig":
-        """The switches as the run's settings hold them (validated again; unset means off)."""
-
-        def get(name: str) -> Any:
-            return getattr(settings, name, "")
-
-        return cls(
-            fixtures=switch.parse_qa_fixtures(get(switch.QA_FIXTURES)),
-            mutation=switch.parse_qa_mutation(get(switch.QA_MUTATION)) == "on",
-            min_kill=Decimal(switch.parse_qa_min_kill(get(switch.QA_MIN_KILL))),
-            determinism=switch.parse_qa_determinism(get(switch.QA_DETERMINISM)) == "on",
-            replay=switch.parse_qa_replay(get(switch.QA_REPLAY)) == "on",
-            fixture_size=switch.parse_qa_fixture_size(get(switch.QA_FIXTURE_SIZE))
-            == "on",
-        )
 
 
 def seed_of(candidate: str) -> bytes:

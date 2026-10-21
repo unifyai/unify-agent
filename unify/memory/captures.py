@@ -694,7 +694,7 @@ def refresh(record: dict) -> dict:
     return record
 
 
-def judged_outcome(signals: Iterable[Any], ep: Any, regime: str, *, checker_visible: bool) -> dict:
+def judged_outcome(signals: Iterable[Any], ep: Any, regime: str) -> dict:
     """What the episode's signals say of the value it handed back, as the capture step reads them: the signals that
     judge that value (:func:`final_value_signals`) under the episode's *regime*, ``{"regime", "verdict",
     "end_outcome", "corrected"}`` (:func:`.trust.signal_outcome`), with ``contrary`` (a rejected verdict, a contrary
@@ -711,7 +711,7 @@ def judged_outcome(signals: Iterable[Any], ep: Any, regime: str, *, checker_visi
             if not (getattr(s, "source", None) == "checker" and getattr(s, "visible_to_actor", None) is False)
         ]
     judged = final_value_signals(signals, ep)
-    sig_out = trust.signal_outcome(judged, regime, checker_visible=checker_visible)
+    sig_out = trust.signal_outcome(judged, regime)
     corrected = any(
         (getattr(s, "source", None), getattr(s, "label", None)) in IMPLICIT_CORRECTIONS
         and getattr(s, "source", None) in REGIME_SOURCES.get(regime, frozenset())
@@ -727,9 +727,7 @@ def rejudge_episode(
     eid: str,
     signals: Iterable[Any],
     ep: Any,
-    regime: str,
-    *,
-    checker_visible: bool,
+    regime: str
 ) -> list[str]:
     """Every stored capture with a case or a use in episode *eid*, judged again on the episode's signals now (one
     arrived after the capture, or the episode's regime changed: ``UNIFY_MEMORY_REGIME=inferred``): each case of that
@@ -737,7 +735,7 @@ def rejudge_episode(
     handed back stays failed), each use row of that episode its regime, verdict, end outcome and correction, then the
     record's derived fields (:func:`refresh`). Returns the ids whose record changed, in id order."""
     root = Path(store)
-    out = judged_outcome(signals, ep, regime, checker_visible=checker_visible)
+    out = judged_outcome(signals, ep, regime)
     changed: list[str] = []
     try:
         names = sorted(os.listdir(root))
@@ -946,7 +944,6 @@ def capture(
             ep,
             store,
             signals=signals,
-            checker_visible=checker_visible,
             runner=runner,
             python=python,
             work=work,
@@ -1002,7 +999,7 @@ def capture(
         regime = regime if regime in trust.REGIMES else "none"
         # judged by the signals on the value it reproduces: a verdict on an earlier, other value never counts
         judged = final_value_signals(signals, ep)
-        sig_out = trust.signal_outcome(judged, regime, checker_visible=checker_visible)
+        sig_out = trust.signal_outcome(judged, regime)
         # a correction after the answer, where the regime observes its source, says the answer was wrong
         corrected = any(
             (getattr(s, "source", None), getattr(s, "label", None)) in IMPLICIT_CORRECTIONS
@@ -1179,7 +1176,6 @@ def capture_trace_step(
     store: Path | str,
     *,
     signals: Iterable[Any] = (),
-    checker_visible: bool = False,
     runner: Callable[..., SandboxResult] = run_confined,
     python: Path = PYTHON,
     work: Path | None = None,
@@ -1243,7 +1239,7 @@ def capture_trace_step(
     broke = _staged(staging, BROKE_FILE)
     if broke is not None and (KEY_SHAPED.search(broke) or not _broke_lines(broke)):
         broke = None  # nothing broke ("none"), or a key-shaped string, which never enters the store
-    summary = _staged(staging, SUMMARY_FILE) or ""
+    summary = _staged(staging, SUMMARY_FILE)
     request_text = ep.request[0] if getattr(ep, "request", None) else ""
     entry = ct.entry_point(source) or {"name": "run", "params": [], "form": "state"}
     form = entry["form"]
@@ -1254,7 +1250,7 @@ def capture_trace_step(
     check = dict(ct.NOT_RUN)
     run: dict = {"outcome": "not run", "why": check["why"]}
     # the one derivation of an outcome from the episode's signals (judged_outcome), as the value-form capture's
-    judged = judged_outcome(signals, ep, str(getattr(ep, "regime", "") or "none"), checker_visible=checker_visible)
+    judged = judged_outcome(signals, ep, str(getattr(ep, "regime", "") or "none"))
     outcome = ct.outcome_of(judged)
     trace = ct.trace_of(ep, episode=name)
     effects = ct.effects_seen(ep)
@@ -1323,7 +1319,7 @@ def capture_trace_step(
         if not (d / SAVED_FILE).exists():
             _write(d / SAVED_FILE, _json(saved_against(source, summary, request_text)))
         if broke is not None and broke.strip():
-            old = _read_text(d / BROKE_FILE) or ""
+            old = _read_text(d / BROKE_FILE)
             if broke.strip() not in old:
                 _write(d / BROKE_FILE, (old + broke.rstrip() + "\n").encode("utf-8"))
         _write(d / RECORD_FILE, _json(rec))
@@ -1439,7 +1435,6 @@ def capture_settled(
     *,
     episode: Callable[[str], Any],
     signals: Callable[[str], Iterable[Any]],
-    checker_visible: bool,
     runner: Callable[..., SandboxResult] = run_confined,
     python: Path = PYTHON,
     trace: bool = False,
@@ -1462,7 +1457,7 @@ def capture_settled(
     done = episode_rows(store)
     out = []
     for eid in eids:
-        if not _EPISODE_ID.fullmatch(eid or "") or eid in done:
+        if not _EPISODE_ID.fullmatch(eid) or eid in done:
             continue
         d = root / eid
         try:
@@ -1493,7 +1488,7 @@ def capture_settled(
                     ep,
                     store,
                     signals=sigs,
-                    checker_visible=checker_visible,
+                    checker_visible=True,
                     runner=runner,
                     python=python,
                     **({"trace": True, "segment": segment} if trace else {}),
@@ -1502,8 +1497,7 @@ def capture_settled(
         except OSError:
             continue
     if trace and segment_episode is not None:
-        out += judge_segments(store, episode=episode, signals=signals, segment_episode=segment_episode,
-                              checker_visible=checker_visible)  # fmt: skip
+        out += judge_segments(store, episode=episode, signals=signals, segment_episode=segment_episode)  # fmt: skip
     return out
 
 
@@ -1511,7 +1505,7 @@ def capture_settled(
 SEGMENT_JUDGED = "episode_recorded"
 
 
-def segment_outcome(signals: Iterable[Any], seg_ep: Any, ep: Any, *, regime: str, checker_visible: bool) -> str:
+def segment_outcome(signals: Iterable[Any], seg_ep: Any, ep: Any, *, regime: str) -> str:
     """The outcome of one segment of the recorded episode *ep* (its record as it stood at the segment's checkpoint is
     *seg_ep*), from the signals about the segment alone, as :func:`.capture_trace.outcome_of` reads them:
 
@@ -1525,14 +1519,14 @@ def segment_outcome(signals: Iterable[Any], seg_ep: Any, ep: Any, *, regime: str
 
     from . import capture_trace as ct
 
-    base = str(getattr(ep, "episode_id", "") or "")
+    base = str(getattr(ep, "episode_id", ""))
     seg_end, ep_end = _instant(getattr(seg_ep, "ended_at", None)), _instant(getattr(ep, "ended_at", None))
     view = dataclasses.replace(seg_ep, episode_id=base)
     i = answered_action(view)
     mine = []
     for s in signals:
         at = _instant(getattr(s, "ts", None))
-        named = str(getattr(s, "refers_to", "") or "")
+        named = str(getattr(s, "refers_to", ""))
         if getattr(s, "source", None) == "checker" and named.startswith(f"{base}/actions/"):
             if i is not None and named == f"{base}/actions/{i}":
                 mine.append(s)
@@ -1541,7 +1535,7 @@ def segment_outcome(signals: Iterable[Any], seg_ep: Any, ep: Any, *, regime: str
                 mine.append(s)
         elif at is not None and seg_end is not None and at <= seg_end:
             mine.append(s)
-    return ct.outcome_of(judged_outcome(mine, view, regime, checker_visible=checker_visible))
+    return ct.outcome_of(judged_outcome(mine, view, regime))
 
 
 def judge_segments(
@@ -1550,7 +1544,6 @@ def judge_segments(
     episode: Callable[[str], Any],
     signals: Callable[[str], Iterable[Any]],
     segment_episode: Callable[[str], Any],
-    checker_visible: bool,
 ) -> list[dict]:
     """Each captured segment whose episode is now recorded and that is not judged yet gets its outcome
     (:func:`segment_outcome`) on its case in its capture's record (the record's derived fields recomputed), and a
@@ -1562,7 +1555,7 @@ def judge_segments(
            and r.get("v") == TRACE_VERSION and name == r.get("staging")]  # fmt: skip
     out: list[dict] = []
     for row in due:
-        base, name = str(row.get("episode") or ""), str(row["staging"])
+        base, name = str(row.get("episode")), str(row["staging"])
         try:
             ep = episode(base)  # raises while the episode is not recorded
             sigs = list(signals(base) or [])
@@ -1571,8 +1564,7 @@ def judge_segments(
             continue
         if seg_ep is None:
             continue
-        outcome = segment_outcome(sigs, seg_ep, ep, regime=str(getattr(ep, "regime", "") or "none"),
-                                  checker_visible=checker_visible)  # fmt: skip
+        outcome = segment_outcome(sigs, seg_ep, ep, regime=str(getattr(ep, "regime", "") or "none"))  # fmt: skip
         with _locked(store):
             d = store / str(row["capture_id"])
             rec = _read_json(d / RECORD_FILE)

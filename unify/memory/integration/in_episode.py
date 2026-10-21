@@ -1,4 +1,4 @@
-"""Memory during an episode (``UNIFY_MEMORY_IN_EPISODE=on``): checkpoints, segment forks, and a re-pin at the next cell.
+"""Memory during an episode (``UNIFY_MEMORY=in_episode``): checkpoints, segment forks, and a re-pin at the next cell.
 
 A long episode can learn and use memory before it ends.
 
@@ -21,9 +21,6 @@ settled segment fork becomes a ``new_experience`` entry with its segment (:mod:`
 actor's conversation, which can be forked only between turns, never with a tool call unanswered and never after a
 compaction: so a checkpoint the actor or a signal marks runs at the next turn boundary (:meth:`InEpisode.at_boundary`),
 a new message's runs before the message joins the conversation, and a compaction's runs before the compaction.
-
-**Re-pins only** (``UNIFY_MEMORY_IN_EPISODE=repin``): the re-pins below, and no pause starts a segment fork, so other
-episodes' items reach a running episode at no fork cost.
 
 **Re-pin.** When the writer service lands a commit while the episode is open, the next cell boundary (never mid-cell,
 :meth:`InEpisode.before_cell`) exports it into a fresh pin directory (``<checkout>/.pins/<k>-<sha12>``), swaps the
@@ -177,13 +174,10 @@ class InEpisode:
         export: Callable[[str, Path], None],
         *,
         clock: Callable[[], float] = time.time,
-        segment_forks: bool = True,
     ) -> None:
         self.run = run
         self.export = export
         self.clock = clock
-        #: False under ``UNIFY_MEMORY_IN_EPISODE=repin``: re-pins at cell boundaries only, no pause starts a fork
-        self.segment_forks = segment_forks
         self.checkout = Path(run.paths.checkout)
         self.pins: list[Pin] = []
         self.cells = 0  # the episode's code cells whose result has come back (the next cell's index)
@@ -295,9 +289,6 @@ class InEpisode:
         """Between turns: run the marked pauses, a new message's (before the message joins the conversation) and a
         compaction's (before it), as one segment fork for the cells since the last checkpoint. None when nothing is
         due or no cell ran since the last checkpoint."""
-        if not self.segment_forks:
-            self.pending.clear()  # re-pins only: a pause starts nothing
-            return None
         sources = [s for s, _ in self.pending]
         notes = [n for _, n in self.pending if n]
         if compacting:
@@ -346,10 +337,10 @@ class InEpisode:
         self._log(event)
         return event
 
-    def finish(self, settings: Any, progress: Callable[[str], None] = lambda _m: None) -> None:
+    def finish(self, progress: Callable[[str], None] = lambda _m: None) -> None:
         """After the reply: a pause marked after the last turn boundary is logged as left to the episode-end fork, and
-        each segment fork is handed over as the episode's own fork is (:func:`.fork.finish`: waited for under
-        ``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on``); never raises."""
+        each segment fork is handed over, and waited for, as the episode's own fork is (:func:`.fork.finish`); never
+        raises."""
         from . import fork as _fork
 
         if self.pending:
@@ -359,7 +350,7 @@ class InEpisode:
             self.pending.clear()
         for fork in self.forks:
             try:
-                _fork.finish(fork, settings, progress)
+                _fork.finish(fork, progress)
             except Exception as exc:  # noqa: BLE001 - the fork settles on its own; the next sweep resolves it
                 logger.warning("memory: segment fork not handed over (%s)", type(exc).__name__)
 
@@ -385,15 +376,13 @@ class InEpisode:
             logger.warning("memory: checkpoint row not kept (%s)", type(exc).__name__)
 
     def _start(self, name: str, ep: Any, redactor: Any, first: int, last: int, notes: list[str], handle: Any) -> dict:
-        from unify.settings import SETTINGS
-
         from .. import segments
         from . import fork as _fork
 
         run = self.run
         ep.episode_id = name
         segments.write_snapshot(run.paths.state_dir, name, ep, redactor)
-        reservation = _fork.reserve(run.paths, name, SETTINGS)
+        reservation = _fork.reserve(run.paths, name)
         if reservation is None:
             return {"fork": "not started: staging dir"}
         parts = _fork.part_list(ep)
@@ -403,7 +392,6 @@ class InEpisode:
             run.paths,
             handle if handle is not None else getattr(run, "handle", None),
             name,
-            SETTINGS,
             reservation=reservation,
             parts=parts,
             instruction=_fork.segment_instruction(first, last),
@@ -526,8 +514,7 @@ def checkpoint(ctx: Any, args: dict) -> Any:
     run = current()
     ie = getattr(run, "in_episode", None) if run is not None else None
     if ie is None:
-        why = "memory is frozen in this run" if getattr(run, "frozen", False) else "memory during an episode is off in this run"
-        return _refused(refusal("checkpoint", "refused", reason=why))
+        return _refused(refusal("checkpoint", "refused", reason="memory during an episode is off in this run"))
     note = args.get("note", "")
     if note is not None and not isinstance(note, str):
         return _refused(refusal("checkpoint", "refused", reason="note is a few words of text, or left out"))

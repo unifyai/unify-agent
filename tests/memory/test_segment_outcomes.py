@@ -43,7 +43,7 @@ def _verdict(n, label, at, action=None):
 
 
 def _outcome(signals):
-    return cp.segment_outcome(signals, _segment(), _episode(), regime="dense", checker_visible=True)
+    return cp.segment_outcome(signals, _segment(), _episode(), regime="dense")
 
 
 def test_a_verdict_on_the_segments_own_action_labels_it():
@@ -76,7 +76,7 @@ def test_a_segment_is_captured_unjudged_and_labelled_once_its_episode_is_recorde
         return sigs
 
     def call():
-        return cp.capture_settled(tmp_path, ["e1.s1"], episode=episode, signals=signals, checker_visible=True,
+        return cp.capture_settled(tmp_path, ["e1.s1"], episode=episode, signals=signals, 
                                   trace=True, segment_episode=lambda name: _segment() if name == "e1.s1" else None)  # fmt: skip
 
     [row] = call()
@@ -95,10 +95,10 @@ def test_a_segment_is_captured_unjudged_and_labelled_once_its_episode_is_recorde
 def test_a_late_rejudge_of_the_episode_leaves_its_segments_alone(tmp_path):
     store = cp.store_dir(tmp_path)
     _staging(tmp_path, "e1.s1", {"procedure.py": PROC})
-    cp.capture_settled(tmp_path, ["e1.s1"], episode=lambda e: _episode(), signals=lambda e: [], checker_visible=True,
+    cp.capture_settled(tmp_path, ["e1.s1"], episode=lambda e: _episode(), signals=lambda e: [], 
                        trace=True, segment_episode=lambda name: _segment())  # fmt: skip
     final = _verdict(1, "pass", "2026-10-20T00:00:59Z", action=1)
-    assert cp.rejudge_episode(store, "e1", [final], _episode(), "dense", checker_visible=True) == []
+    assert cp.rejudge_episode(store, "e1", [final], _episode(), "dense") == []
 
 
 # --- item 10(b): re-pins only ------------------------------------------------------------------------------------------

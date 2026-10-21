@@ -691,7 +691,7 @@ class _Probe:
                         what.format(n=len(chosen), of=of)
                         + f": {[list(c) for c in sorted(chosen)[:5]]}",
                     )
-        return "; ".join(parts) or None
+        return "; ".join(parts)
 
 
 class _Budget:
@@ -973,34 +973,22 @@ class Gate:
         reader_promotes: bool = False,
         action_lookup: Callable[[str, int], Action | None] | None = None,
         pytest_runner: Callable[..., PytestOutcome] = run_pytest,
-        docstring_standard: bool = False,
-        surfacing: str = "index",
-        soft_budget: bool = False,
         qa: QAConfig | None = None,
-        library_mode: LibraryConfig | None = None,
-        labels: bool = False,
+        library_mode: LibraryConfig,
         segments_dir: Path | str | None = None,
-        labels_only: bool = False,
-        recorded_replays: bool = False,
     ) -> None:
-        """The library-mode switches (:mod:`.integration.switch`; each default is the v2 behaviour):
-        *docstring_standard* turns on the lean docstring standard (G1) and its examples run (G3) for new or
-        changed environment functions; *surfacing* ``"catalogue"`` records and freezes input shapes per
-        commit for the export's catalogue; *soft_budget* makes *budget_tokens* G4's soft budget (a note,
-        never a refusal) instead of the index's hard cap. *qa* is the stage-5 test checks' configuration
-        (:class:`.qa.QAConfig`; None runs none of them). The writer's brief follows the gate's switches.
-        *library_mode* (``UNIFY_MEMORY_LIBRARY``, :class:`.library_checks.LibraryConfig`; None is v2): with ``layout``, covers have
-        no channel rule (G2), and G3's behaviour check and per-item reduction are scoped by the import graph.
-        With ``checks``, the library gate checks (:mod:`.library_checks`) and stage 5 run in library mode.
+        """*library_mode* is the library's checks' configuration (:class:`.library_checks.LibraryConfig`): covers have
+        no channel rule (G2), G3's behaviour check and per-item reduction are scoped by the import graph, and the
+        library gate checks (:mod:`.library_checks`) and stage 5's static checks run. Every finding but the hard ones
+        is a label on its item, and code runs only for statically pure items (:mod:`.gate_policy`); no recorded task
+        data is replayed. *budget_tokens* is G4's soft budget (a note, never a refusal). *qa* is the stage-5 test
+        checks' configuration (:class:`.qa.QAConfig`). *segments_dir* (``UNIFY_MEMORY=in_episode``):
+        the state dir whose segment records (``<episode>.s<n>``) an item may cite as its source while their episode
+        is still open; None: only recorded episodes.
         """
-        if surfacing not in ("index", "catalogue"):
-            raise ValueError(
-                f"surfacing must be 'index' or 'catalogue', not {surfacing!r}",
-            )
+        if not (library_mode.checks and library_mode.layout):
+            raise ValueError("the gate needs the library layout and its checks (LibraryConfig.layout and .checks)")
         self.mem, self.ev, self.blobs = memory, evidence, blobs
-        self.docstring_standard = bool(docstring_standard)
-        self.surfacing = surfacing
-        self.soft_budget = bool(soft_budget)
         self.python, self.budget, self.reader_promotes = (
             python,
             budget_tokens,
@@ -1009,33 +997,11 @@ class Gate:
         # Fail closed: without an episodes reader no covered call can be confirmed.
         self.lookup = action_lookup or (lambda eid, i: None)
         self.pytest = pytest_runner
-        # stage-5 test checks (library mode); the default runs none of them
-        self.qa = qa if qa is not None else QAConfig()
+        from .qa import library_config
+
+        self.qa = library_config(qa if qa is not None else QAConfig())
         self.library_mode = library_mode
-        # UNIFY_MEMORY_IMPURE_ITEMS=on: quality findings label their items (library mode only)
-        self.labels = bool(labels) and library_mode is not None
-        # UNIFY_MEMORY_GATE_LABELS_ONLY=on (rev 2, :mod:`.gate_policy`; library mode only): every finding but the hard
-        # ones labels, and only statically pure items run; UNIFY_MEMORY_GATE_RECORDED_REPLAYS=on adds the recorded
-        # replays (episode covers, held-out values, perturbed inputs, stage 5's drawn inputs)
-        self.labels_only = bool(labels_only) and library_mode is not None
-        self.recorded_replays = bool(recorded_replays)
-        # UNIFY_MEMORY_IN_EPISODE=on: the state dir whose segment records (<episode>.s<n>) an item may cite as its
-        # source while their episode is still open; None: only recorded episodes
         self.segments_dir = Path(segments_dir) if segments_dir is not None else None
-        if library_mode is not None and library_mode.checks:
-            if not library_mode.layout:
-                raise ValueError(
-                    "the library gate checks need the library layout (LibraryConfig.layout)",
-                )
-            from .qa import library_config
-
-            self.qa = library_config(self.qa)
-
-    @property
-    def _library_layout(self) -> bool:
-        """The library layout rules are on."""
-        library_mode = getattr(self, "library_mode", None)
-        return library_mode is not None and bool(library_mode.layout)
 
     # -- public API ---------------------------------------------------------------------------------------
     def check(
@@ -1088,8 +1054,8 @@ class Gate:
         res = GateResult(True, {c: True for c in CHECKS})
         tmp = Path(tempfile.mkdtemp(prefix="memory-preview-"))
         run = _Run(res, Manifest(), manifest, "", "", tmp)
-        run.levels_on = self._library_checks()
-        run.labels_on = bool(getattr(self, "labels", False))
+        run.levels_on = True
+        run.labels_on = True
         try:
             try:
                 run.man = self._parse_manifest(manifest)
@@ -1109,7 +1075,7 @@ class Gate:
                 Path(tree),
                 "sha256" if len(base.sha) == 64 else "sha1",
             )
-            early = self._early(run, refused, self._library_layout)
+            early = self._early(run, refused, True)
             if early:
                 for check, reason in early:
                     run.fail(check, reason)
@@ -1159,9 +1125,8 @@ class Gate:
             if v is not None:
                 v.static()
             qa = QAChecks(self, run)
-            if self.qa.on or qa.uses_kit():
-                qa.kit()  # library code never uses the test kit (static)
-            if self.qa.on and bounded:
+            qa.kit()  # library code never uses the test kit (static)
+            if bounded:
                 # stage 5's static checks: fixture size, replay fidelity, cuts (no test runs)
                 qa.static(lookup)
         finally:
@@ -1218,7 +1183,7 @@ class Gate:
             )
             return res
         landed, landed_manifest = c_sha, manifest
-        if seed is None and self._library_checks():
+        if seed is None:
             from .qa import seed_of
 
             seed = seed_of(
@@ -1291,45 +1256,41 @@ class Gate:
             res.merged = landed
             landed_items = self._parse_manifest(landed_manifest).items
             res.items_merged = [it.item for it in landed_items]
-            if self.library_mode is not None and self.library_mode.layout:
-                # a renamed item names its old id, so adoption joins across the rename (the item records' uid)
-                was = {
-                    r["target"]: r["item"]
-                    for r in res.curations
-                    if r.get("action") == "rename"
+            # a renamed item names its old id, so adoption joins across the rename (the item records' uid)
+            was = {
+                r["target"]: r["item"]
+                for r in res.curations
+                if r.get("action") == "rename"
+            }
+            res.provenance = [
+                {
+                    "item": it.item,
+                    "adopts": list(it.adopts),
+                    "how": dict(it.adopt_how),
                 }
-                res.provenance = [
-                    {
-                        "item": it.item,
-                        "adopts": list(it.adopts),
-                        "how": dict(it.adopt_how),
-                    }
-                    | ({"renamed_from": was[it.item]} if it.item in was else {})
-                    for it in landed_items
-                ]
+                | ({"renamed_from": was[it.item]} if it.item in was else {})
+                for it in landed_items
+            ]
             for it in landed_items:
                 for eid in it.source_episodes:
                     self.ev.add_item_evidence(it.item, eid, "source")
             for item, eid, idx in sorted(covers):
                 self.ev.add_cover(item, eid, idx)
-            if self._library_checks():
-                # typed covers persist beside covers, for the behaviour check and deletion (G5)
-                from .procedures import cover_raw
+            # typed covers persist beside covers, for the behaviour check and deletion (G5)
+            from .procedures import cover_raw
 
-                for it in landed_items:
-                    for c in it.typed_covers:
-                        self.ev.add_typed_cover(
-                            it.item,
-                            c.episode,
-                            json.dumps(cover_raw(c), sort_keys=True),
-                        )
-            if self._library_checks():
-                # fixture provenance this pass verified, for later passes (fixtures.ledger_for)
-                for path, (sha, entry) in sorted(res.fixtures_verified.items()):
-                    self.ev.add_fixture_provenance(path, sha, entry, landed)
-            if self.surfacing == "catalogue" or self._library_layout:
-                # library mode: shapes per library id, frozen per commit for the actor's find (library_export)
-                self.ev.write_commit_shapes(landed, shapes)
+            for it in landed_items:
+                for c in it.typed_covers:
+                    self.ev.add_typed_cover(
+                        it.item,
+                        c.episode,
+                        json.dumps(cover_raw(c), sort_keys=True),
+                    )
+            # fixture provenance this pass verified, for later passes (fixtures.ledger_for)
+            for path, (sha, entry) in sorted(res.fixtures_verified.items()):
+                self.ev.add_fixture_provenance(path, sha, entry, landed)
+            # library mode: shapes per library id, frozen per commit for the actor's find (library_export)
+            self.ev.write_commit_shapes(landed, shapes)
         else:
             try:
                 ids = [it.item for it in self._parse_manifest(manifest).items]
@@ -1338,7 +1299,7 @@ class Gate:
             res.items_merged = []
             res.items_refused = {i: res.items_refused.get(i) or ["pass"] for i in ids}
         self._record(p_sha, c_sha, pass_id, kind, channel, usd, res)
-        if self._library_checks() and res.verification:
+        if res.verification:
             # the item verification records, for the item records; measured, never a refusal
             self.ev.add_pass_notes(
                 pass_id,
@@ -1347,29 +1308,20 @@ class Gate:
                     + json.dumps(res.verification, sort_keys=True, default=str),
                 ],
             )
-        if self.library_mode is not None and res.passed and res.curations:
+        if res.passed and res.curations:
             # CURATE's aliases, retirements and dropped aliases, for the item records (alias_of,
             # deprecated), and any pass's renames, which carry an item's uid to its new id
             self.ev.record_curations(pass_id, res.merged, res.curations)
         return res
 
     # -- helpers ------------------------------------------------------------------------------------------
-    def _library_checks(self) -> bool:
-        return self.library_mode is not None and self.library_mode.checks
-
     def _parse_manifest(self, manifest: object) -> Manifest:
-        """The manifest under the gate's layout: the library mode's (:func:`.manifest.parse_manifest` ``library_mode``) or v2's."""
-        return parse_manifest(
-            manifest,
-            library_mode=self.library_mode is not None and self.library_mode.layout,
-            # UNIFY_MEMORY_IMPURE_ITEMS=on: an item may state its label fields
-            **({"labels": True} if getattr(self, "labels", False) else {}),
-        )
+        """The manifest under the library layout (:func:`.manifest.parse_manifest`); an item may state its label
+        fields."""
+        return parse_manifest(manifest, library_mode=True, labels=True)
 
     def _library_mode(self, run: _Run):
-        """The library-mode checks of *run* (:mod:`.library_checks`), or None with them off."""
-        if not self._library_checks():
-            return None
+        """The library checks of *run* (:mod:`.library_checks`)."""
         from .library_checks import LibraryChecks
 
         return LibraryChecks(self, run)
@@ -1399,8 +1351,6 @@ class Gate:
         # library mode: the whole output is spooled and kept as a blob; v2 passes nothing new
         spool = (
             Path(tempfile.mkdtemp(prefix="memlib-out-"))
-            if self._library_checks()
-            else None
         )
         more: dict = {"spool_dir": spool} if spool is not None else {}
         if calls is not None:
@@ -1500,18 +1450,17 @@ class Gate:
         tmp = Path(tempfile.mkdtemp(prefix="memory-gate-"))
         run = _Run(res, Manifest(), manifest, parent, candidate, tmp)
         run.seed = seed
-        run.levels_on = self._library_checks()
-        run.labels_on = bool(getattr(self, "labels", False))
+        run.levels_on = True
+        run.labels_on = True
         reduced = None
         try:
             if self._prepare(run):
-                if getattr(self, "labels_only", False):
-                    from .gate_policy import Policy
+                from .gate_policy import Policy
 
-                    run.policy = Policy(
-                        replays=bool(getattr(self, "recorded_replays", False)),
-                        bodies={i: b[1] for i, b in run.c_bodies.items() if b[0] == "function"},
-                    )
+                run.policy = Policy(
+                    replays=False,
+                    bodies={i: b[1] for i, b in run.c_bodies.items() if b[0] == "function"},
+                )
                 v = self._library_mode(run)
                 self._g1(run)
                 if v is not None:
@@ -1523,8 +1472,7 @@ class Gate:
                 qa = QAChecks(self, run)
                 if qa.prepare():
                     qa.kit()
-                    if self.qa.on:
-                        qa.static(self.lookup)
+                    qa.static(self.lookup)
                 self._g3(run)
                 if v is not None:
                     v.g3()
@@ -1536,28 +1484,16 @@ class Gate:
                 if v is not None:
                     v.g5()
                 self._g6(run)
-                if self.qa.on and run.policy is not None and not run.policy.replays:
-                    # rev 2: stage 5's determinism, drawn-input and mutant runs replay recorded task data
-                    run.note("stage 5 dynamic checks not run: recorded replays are off (rev 2)")
-                elif self.qa.on:
-                    # last: only a candidate the rest of the gate accepts, or, under per-item admission,
-                    # one refused item by item only, so that a stage-5 refusal joins the reduction
-                    qa.dynamic(item_scoped=reduce_as is not None)
+                # rev 2: stage 5's determinism, drawn-input and mutant runs replay recorded task data
+                run.note("stage 5 dynamic checks not run: recorded replays are off (rev 2)")
                 if reduce_as is not None and not res.passed:
                     reduced = self._reduce(run, reduce_as)
-            snapshot = (
-                self._snapshot(run)
-                if res.passed
-                and (self.surfacing == "catalogue" or self._library_layout)
-                else {}
-            )
+            snapshot = self._snapshot(run) if res.passed else {}
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         res.items_refused = {i: list(c) for i, c in run.item_fail.items()}
-        if run.levels_on:
-            self._levels(run)
-        if run.labels_on or run.policy is not None:
-            self._labels(run)
+        self._levels(run)
+        self._labels(run)
         res.verification = {i: dict(r) for i, r in sorted(run.verification.items())}
         res.curate_due = run.curate_due
         res.curations = [dict(r) for r in run.curations]
@@ -1612,7 +1548,7 @@ class Gate:
                 run.man,
                 run.item_fail,
                 run.c_tree,
-                library_mode=self._library_layout,
+                library_mode=True,
             )
             manifest = reduction.build(
                 run.man,
@@ -1696,7 +1632,7 @@ class Gate:
             return False
         run.p_files, _ = listing(self.mem, p_sha)
         run.c_files, refused = listing(self.mem, c_sha)
-        early = self._early(run, refused, self._library_layout)
+        early = self._early(run, refused, True)
         if early:
             run.stop(early)
             return False
@@ -1774,31 +1710,26 @@ class Gate:
         return early
 
     def _read_trees(self, run: _Run) -> None:
-        if self._library_layout:
-            # library mode: items are the layout's function ids and note paths (:mod:`.layout`)
-            from .layout import classify, function_bodies
+        # library mode: items are the layout's function ids and note paths (:mod:`.layout`)
+        from .layout import classify, function_bodies
 
-            def bodies(tree: Path, files: dict) -> dict[str, tuple[str, str, bool]]:
-                out = {
-                    i: ("function", b, True) for i, b in function_bodies(tree).items()
-                }
-                for p in sorted(files):
-                    if classify(p) == "note":
-                        out[p] = (
-                            "note",
-                            (tree / p).read_bytes().decode("utf-8", "replace"),
-                            True,
-                        )
-                return out
+        def bodies(tree: Path, files: dict) -> dict[str, tuple[str, str, bool]]:
+            out = {
+                i: ("function", b, True) for i, b in function_bodies(tree).items()
+            }
+            for p in sorted(files):
+                if classify(p) == "note":
+                    out[p] = (
+                        "note",
+                        (tree / p).read_bytes().decode("utf-8", "replace"),
+                        True,
+                    )
+            return out
 
-            run.p_bodies, run.c_bodies = bodies(run.p_tree, run.p_files), bodies(
-                run.c_tree,
-                run.c_files,
-            )
-        else:
-            run.p_bodies, run.c_bodies = item_bodies(run.p_tree), item_bodies(
-                run.c_tree,
-            )
+        run.p_bodies, run.c_bodies = bodies(run.p_tree, run.p_files), bodies(
+            run.c_tree,
+            run.c_files,
+        )
         try:
             run.c_report = items(run.c_tree)
         except ValueError as exc:  # an undecodable notes file, say
@@ -1811,7 +1742,7 @@ class Gate:
             ch + f for ch in man.skeleton for f in ("/__init__.py", "/NOTES.md")
         }
         raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
-        if self._library_checks() and isinstance(raw.get("fixtures"), dict):
+        if isinstance(raw.get("fixtures"), dict):
             # the fixtures the harness recorded: the only files under tests/data/ a pass may add (library_checks)
             declared |= {p for p in raw["fixtures"] if isinstance(p, str)}
         for it in man.items:
@@ -1831,17 +1762,16 @@ class Gate:
         for t in man.deleted_tests:
             self._retired_ok(run, t)
         self._pins(run)
-        if self._library_layout:
-            # library mode: a package's __init__.py (its one-paragraph docstring) goes with what the pass declares there
-            declared |= {
-                f"memory/{p.split('/')[1]}/__init__.py"
-                for p in list(declared)
-                if p.startswith("memory/") and p.count("/") >= 2
-            }
-            # a folder's README.md is the writer's description of the folder, kept by any pass (library_checks)
-            from .layout import classify as _classify
+        # library mode: a package's __init__.py (its one-paragraph docstring) goes with what the pass declares there
+        declared |= {
+            f"memory/{p.split('/')[1]}/__init__.py"
+            for p in list(declared)
+            if p.startswith("memory/") and p.count("/") >= 2
+        }
+        # a folder's README.md is the writer's description of the folder, kept by any pass (library_checks)
+        from .layout import classify as _classify
 
-            declared |= {p for p in run.changed if _classify(p) == "readme"}
+        declared |= {p for p in run.changed if _classify(p) == "readme"}
         for p in run.changed:
             if p not in declared:
                 run.fail("G1", f"undeclared change {p}")
@@ -1855,8 +1785,6 @@ class Gate:
                 )
                 run.fail("G1", f"undeclared item {iid} ({what})")
         self._inputs(run)
-        if self.docstring_standard:
-            self._standard(run)
         for it in man.items:
             if cb.get(it.item, ("",))[0] != it.kind:
                 run.fail(
@@ -1964,8 +1892,8 @@ class Gate:
             node = self._function_node(run, item)
             if node is None:
                 continue
-            doc = ast.get_docstring(node) or ""
-            form = declared.get(item) or doc_inputs.get(item) or None
+            doc = ast.get_docstring(node)
+            form = declared.get(item) or doc_inputs.get(item)
             name, channel = (
                 item.split(":", 1)[1],
                 item.split("/", 1)[1].split(":", 1)[0],
@@ -2014,11 +1942,9 @@ class Gate:
         return False
 
     def _item_path(self, item: str) -> str:
-        if self._library_layout:
-            from . import layout
+        from . import layout
 
-            return layout.item_path(item)
-        return item_path(item)
+        return layout.item_path(item)
 
     def _retired_ok(self, run: _Run, test: str) -> None:
         """A retired test file is removed and imports only items this manifest deletes.
@@ -2029,20 +1955,7 @@ class Gate:
         if test not in run.p_files or test in run.c_files:
             run.fail("G1", f"deleted test {test} is not removed by the candidate")
             return
-        if self._library_layout:
-            return
-        named = _exercised((run.p_tree / test).read_bytes(), run.p_bodies)
-        if named is None:
-            run.fail("G1", f"deleted test {test} does not parse")
-            return
-        if not named:
-            run.fail("G1", f"deleted test {test} imports no library item")
-        elif not named <= set(run.man.deleted):
-            others = sorted(named - set(run.man.deleted))[:5]
-            run.fail(
-                "G1",
-                f"deleted test {test} also exercises {others}, which are not deleted",
-            )
+        return
 
     def _pins(self, run: _Run) -> None:
         """Module skeletons and notes preambles change only when declared."""
@@ -2112,7 +2025,7 @@ class Gate:
         seen: list[Action] | None = (
             None  # the recorded actions of every episode the manifest names
         )
-        library = self._library_checks()
+        library = True
         for n, it in enumerate(run.man.items):
             if library and it.kind == "function":
                 # library mode: a function's examples are the calls its listed tests make, judged after G3's runs
@@ -2128,7 +2041,7 @@ class Gate:
                         action,
                         it.channel,
                         self.blobs.has,
-                        channel_rule=not self._library_layout,
+                        channel_rule=False,
                     )
                     if problem is not None:
                         run.fail(
@@ -2166,18 +2079,13 @@ class Gate:
                 elif valid:
                     if seen is None:
                         seen = seen_actions(self._named_episodes(run), self.lookup)
-                    if (
-                        self.surfacing == "catalogue"
-                        or self.docstring_standard
-                        or self._library_layout
-                    ):
-                        # the catalogue's shapes and the examples' fixture check
-                        self._record_shapes(
-                            run,
-                            it.item,
-                            valid,
-                            it.input or (declared if declared in INPUT_KINDS else None),
-                        )
+                    # the catalogue's shapes and the examples' fixture check
+                    self._record_shapes(
+                        run,
+                        it.item,
+                        valid,
+                        it.input or (declared if declared in INPUT_KINDS else None),
+                    )
                     self._held_out(
                         run,
                         it.item,
@@ -2229,13 +2137,13 @@ class Gate:
                 run.p_tree,
                 lookup=self.lookup,
                 blobs=self.blobs,
-                library_mode=self._library_layout,
+                library_mode=True,
             )
             return snapshot_rows(
                 run.c_tree,
                 prev,
                 run.shapes,
-                library_mode=self._library_layout,
+                library_mode=True,
             )
         except (
             Exception
@@ -2244,7 +2152,7 @@ class Gate:
                 run.c_tree,
                 {},
                 run.shapes,
-                library_mode=self._library_layout,
+                library_mode=True,
             )
 
     @staticmethod
@@ -2315,28 +2223,10 @@ class Gate:
         A field declared with a semantic type is checked two-sided instead: unseen in-domain values
         accepted, an out-of-domain value refused before any environment call.
         """
-        if run.policy is not None and not run.policy.replays:
-            from .gate_policy import NOT_RUN_REPLAYS
+        from .gate_policy import NOT_RUN_REPLAYS
 
-            run.not_run(item, f"G2 held-out values: {NOT_RUN_REPLAYS}")
-            return
-        p = plan(
-            item,
-            covers,
-            seen=seen,
-            blob=self._blob,
-            field_types=field_types,
-            input_kind=input_kind,
-            pool=None if pool is None else pool[0],
-            pool_capped=pool is not None and pool[1],
-        )
-        verdict = run_plan(item, p, tree=run.c_tree, python=self.python, work=work)
-        for f in verdict.refused[:5]:
-            run.fail("G2", f"{item} held-out value refused: {f[:80]}", item)
-        for text in verdict.failures[:5]:
-            run.fail("G2", f"{item} {text}", item)
-        for note in verdict.notes:
-            run.note(f"G2 held-out values: {item} {note}")
+        run.not_run(item, f"G2 held-out values: {NOT_RUN_REPLAYS}")
+        return
 
     def _g3(self, run: _Run) -> None:
         man, changed = run.man, set(run.changed)
@@ -2386,13 +2276,12 @@ class Gate:
                     shutil.copyfile(run.c_tree / rel, red_tree / rel)
             targets = self._example_targets(run)
             for t in runnable:
-                if run.policy is not None:
-                    ok, why = run.policy.test(run.c_tree, t)
-                    if not ok:
-                        # rev 2: a test of an impure item is never run by the gate
-                        run.not_run(_owners(man, t), f"G3 {t}: {why}")
-                        unran.add(t)
-                        continue
+                ok, why = run.policy.test(run.c_tree, t)
+                if not ok:
+                    # rev 2: a test of an impure item is never run by the gate
+                    run.not_run(_owners(man, t), f"G3 {t}: {why}")
+                    unran.add(t)
+                    continue
                 on_parent = self._pytest(red_tree, t, qa_env=run.qa_env)
                 on_cand = (
                     self._pytest(run.c_tree, t, qa_env=run.qa_env, calls=targets)
@@ -2437,14 +2326,10 @@ class Gate:
                     )
         protected = self._suites(run)
         self._behaviour(run, unseen, declared, refused, protected)
-        if self.docstring_standard:
-            self._examples(run)
 
     def _example_targets(self, run: _Run) -> list[str] | None:
         """Library mode: the manifest's functions present in the candidate, whose calls G3's candidate runs record;
         None otherwise (nothing is recorded)."""
-        if not self._library_checks():
-            return None
         return sorted(
             {
                 it.item
@@ -2510,91 +2395,8 @@ class Gate:
 
         Library mode: :meth:`_behaviour_library`, on the calls the parent's tests make.
         """
-        if self._library_checks():
-            self._behaviour_library(run, unseen, declared, refused, protected)
-            return
-        recorded: dict[str, set[tuple[str, int]]] = {}
-        for it, e, i in self.ev.covers():
-            recorded.setdefault(it, set()).add((e, i))
-        # library-mode CURATE: a declared alias is compared on its own recorded inputs and its
-        # target's, so an alias that answers differently is refused even when its old name has no test
-        aliases = self._declared_aliases(run)
-        for alias, target in aliases.items():
-            recorded.setdefault(alias, set()).update(recorded.get(target, set()))
-        probes: dict[str, _Probe] = {}
-        for item in sorted(unseen):
-            if self._held(run, item, protected):
-                probes[item] = self._probe(run, item, recorded, strict=True)
-            else:
-                run.fail(
-                    "G3",
-                    self._exemption_refused(
-                        item,
-                        "no parent test that passed on the parent calls it",
-                    ),
-                    item,
-                )
-        for item in self._behaviour_targets(run, recorded, self._library_layout):
-            if item in probes or item in unseen or item in declared or item in refused:
-                continue
-            probes[item] = self._probe(run, item, recorded, strict=False)
-        for alias, target in sorted(aliases.items()):
-            n = (
-                len(probes[alias].cases)
-                if alias in probes and probes[alias].why is None
-                else 0
-            )
-            if n < 2:
-                # fail closed: a declared alias the behaviour check cannot compare on two inputs is not landed
-                run.fail(
-                    "G3",
-                    f"alias {alias} -> {target}: the behaviour check compares an alias on at least 2 recorded "
-                    f"inputs (its own and its target's) and found {n}",
-                    target if target in {it.item for it in run.man.items} else None,
-                )
-        total = sum(len(p.cases) for p in probes.values())
-        if total > BEHAVIOUR_MAX_CASES:
-            run.fail(
-                "G3",
-                f"behaviour check not completed: {total} recorded inputs of the changed channels' functions "
-                f"exceed the {BEHAVIOUR_MAX_CASES} compared in one pass; change fewer channels or functions",
-            )
-            run.same = set()
-            return
-        budget = _Budget(BEHAVIOUR_BUDGET_S)
-        same: set[str] = set()
-        for k, item in enumerate(sorted(probes)):
-            pr = probes[item]
-            if pr.why is None and not self._run_probe(
-                run,
-                pr,
-                run.tmp / f"same-{k}",
-                budget,
-            ):
-                run.fail(
-                    "G3",
-                    f"behaviour check not completed: its {BEHAVIOUR_BUDGET_S:g} s budget ran out at {item}",
-                )
-                break
-            why = pr.verdict()
-            if why is None:
-                same.add(item)
-            elif pr.strict:
-                run.fail("G3", self._exemption_refused(item, why), item)
-            else:
-                run.fail(
-                    "G3",
-                    f"{item} changes behaviour without a test: {why}; any change in what a stored function "
-                    "returns on recorded inputs needs a test, listed under it in the manifest, that fails on "
-                    "the parent's library and passes on the candidate's",
-                    self._behaviour_owner(run, item, pr),
-                )
-            if pr.skipped:
-                run.note(
-                    f"G3 behaviour check: {pr.skipped} recorded covers of {item} cannot be read or given "
-                    "and were not compared",
-                )
-        run.same = same
+        self._behaviour_library(run, unseen, declared, refused, protected)
+        return
 
     def _behaviour_library(
         self,
@@ -2648,7 +2450,7 @@ class Gate:
             recorded.setdefault(it, set()).add((e, i))
         probes: dict[str, _Probe] = {}
         for item in sorted(ex.uncalled):
-            if run.policy is not None and not run.policy.item(item)[0]:
+            if not run.policy.item(item)[0]:
                 # rev 2: an impure item is never run on its recorded covers; its label says so
                 run.not_run(item, f"G3 behaviour on its recorded calls: {run.policy.item(item)[1]}")
                 continue
@@ -2695,8 +2497,7 @@ class Gate:
     def _declared_aliases(self, run: _Run) -> dict[str, str]:
         """A library-mode CURATE gate's declared aliases (old id -> target) of the checked manifest; {} otherwise."""
         if not (
-            self._library_checks()
-            and getattr(self.library_mode, "role", "write") == "curate"
+            (getattr(self.library_mode, "role", "write") == "curate")
         ):
             return {}
         raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
@@ -2827,13 +2628,12 @@ class Gate:
         for item in self._edited(run):
             node = self._function_node(run, item)
             if node is not None and docstrings.has_example(
-                docstrings.parse(ast.get_docstring(node) or ""),
+                docstrings.parse(ast.get_docstring(node)),
             ):
                 targets.append(item)
-        if run.policy is not None:
-            for item in [t for t in targets if not run.policy.item(t)[0]]:
-                run.not_run(item, f"G3 docstring examples: {run.policy.item(item)[1]}")
-            targets = [t for t in targets if run.policy.item(t)[0]]
+        for item in [t for t in targets if not run.policy.item(t)[0]]:
+            run.not_run(item, f"G3 docstring examples: {run.policy.item(item)[1]}")
+        targets = [t for t in targets if run.policy.item(t)[0]]
         if not targets:
             return
         for item in targets:
@@ -2883,7 +2683,7 @@ class Gate:
         paths = [
             p
             for p in docstrings.fixture_paths(
-                docstrings.parse(ast.get_docstring(node) or ""),
+                docstrings.parse(ast.get_docstring(node)),
                 channel,
             )
             if p in run.c_files
@@ -2968,16 +2768,10 @@ class Gate:
 
         Library mode: the candidate's library modules, package inits and notes take the place of the parent's.
         """
-        if self._library_layout:
-            from .layout import classify
+        from .layout import classify
 
-            def library(p: str) -> bool:
-                return classify(p) in ("module", "package_init", "note")
-
-        else:
-
-            def library(p: str) -> bool:
-                return bool(MODULE_PATH.match(p) or NOTES_PATH.match(p))
+        def library(p: str) -> bool:
+            return classify(p) in ("module", "package_init", "note")
 
         swapped = sorted(
             p
@@ -3028,7 +2822,7 @@ class Gate:
         protected: set[str] = set()
         if not run.changed:
             return protected
-        library_mode = self._library_checks()
+        library_mode = True
         retired = set(run.man.deleted_tests)
         if library_mode:
             raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
@@ -3047,7 +2841,7 @@ class Gate:
 
         def file_of(t: str, rel: str) -> str:
             return (
-                _test_file(t, rel, self._library_layout)
+                _test_file(t, rel, True)
                 if library_mode
                 else t.split("::", 1)[0]
             )
@@ -3103,12 +2897,11 @@ class Gate:
             return {"calls": targets} if targets and rel.startswith("memory/") else {}
 
         for rel, is_touched, area in suites:
-            if run.policy is not None:
-                ok, why = run.policy.suite(run.c_tree, rel)
-                ok_parent, why_parent = run.policy.suite(run.p_tree, rel) if ok else (ok, why)
-                if not (ok and ok_parent):
-                    run.note(f"suite {rel} not run: {why or why_parent} (rev 2: the gate runs only pure items' tests)")
-                    continue
+            ok, why = run.policy.suite(run.c_tree, rel)
+            ok_parent, why_parent = run.policy.suite(run.p_tree, rel) if ok else (ok, why)
+            if not (ok and ok_parent):
+                run.note(f"suite {rel} not run: {why or why_parent} (rev 2: the gate runs only pure items' tests)")
+                continue
             before: set[str] = set()  # protected: passed on the parent
             known_red: set[str] = set()  # failed on the parent
             broken: str | None = None  # the baseline cannot be read
@@ -3165,7 +2958,7 @@ class Gate:
                     # new failures only in test files the manifest's items list are those items' own
                     # (per-item admission); anything else refuses the whole pass
                     owners = [
-                        _owners(run.man, _test_file(t, rel, self._library_layout))
+                        _owners(run.man, _test_file(t, rel, True))
                         for t in new_red
                     ]
                     run.fail(
@@ -3279,30 +3072,9 @@ class Gate:
         Library mode: each tree's function docstring ``Input:`` line (the manifest's declared input first, for the
         candidate); v2's report reads only environment functions, which left every library-mode form unknown.
         """
-        if self._library_layout:
-            # library mode reads no Input: line, except the parent's for the behaviour check's transition path
-            form = self._parent_input(run, item)
-            return form, form
-        if run.p_inputs is None:
-            try:
-                p_report = items(run.p_tree)
-            except ValueError:
-                run.p_inputs = False
-            else:
-                run.p_inputs = {
-                    i.item_id: i.input
-                    for i in p_report.items
-                    if i.kind == "env_function"
-                }
-        if run.p_inputs is False:
-            return None
-
-        def known(v: str | None) -> str | None:
-            return v if v in INPUT_KINDS else None
-
-        p_form = known(run.p_inputs.get(item, ""))
-        c_docs = self._doc_inputs(run)
-        return p_form, (known(c_docs[item]) if item in c_docs else p_form)
+        # library mode reads no Input: line, except the parent's for the behaviour check's transition path
+        form = self._parent_input(run, item)
+        return form, form
 
     @staticmethod
     def _parent_input(run: _Run, item: str) -> str | None:
@@ -3321,7 +3093,7 @@ class Gate:
             ):
                 m = re.search(
                     r"^\s*Input:\s*([a-z]+)\s*$",
-                    ast.get_docstring(node) or "",
+                    ast.get_docstring(node),
                     re.M,
                 )
                 return m.group(1) if m and m.group(1) in INPUT_KINDS else None
@@ -3401,16 +3173,11 @@ class Gate:
             return pr
         pr.skipped += len(unread)
         given = {(e, i) for e, i, _ in acts}
-        if (
-            self._library_layout
-        ):  # the recorded actions of its covers' channels in this pass's episodes
-            pool = [
-                c
-                for ch in self._source_channels(acts)
-                for c in self._episode_inputs(run, ch)
-            ]
-        else:
-            pool = self._episode_inputs(run, item.split(":", 1)[0])
+        pool = [
+            c
+            for ch in self._source_channels(acts)
+            for c in self._episode_inputs(run, ch)
+        ]
         acts += [c for c in pool if (c[0], c[1]) not in given]
         if any(_form(a, p_form) != _form(a, c_form) for _, _, a in acts):
             pr.why = "its input form changed"
@@ -3470,31 +3237,15 @@ class Gate:
         return True
 
     def _g4(self, run: _Run) -> None:
-        """The size budget: the v2 index's hard cap, or with ``soft_budget`` a note that hygiene is due past
-        it (never a refusal of growth)."""
-        if not self.soft_budget:
-            try:
-                build_index(run.c_tree, budget_tokens=self.budget)
-            except IndexOverBudget as exc:
-                run.fail("G4", str(exc))
-            except ValueError as exc:
-                run.fail("G4", f"index not built: {exc}")
-            return
-        catalogue = self.surfacing == "catalogue"
-        what = "catalogue (README and channel lines)" if catalogue else "index"
+        """The size budget: a note that hygiene is due past it (never a refusal of growth)."""
         try:
-            if catalogue:
-                size = catalogue_tokens(run.c_tree)
-            else:
-                size = estimate_tokens(
-                    build_index(run.c_tree, budget_tokens=sys.maxsize),
-                )
+            size = estimate_tokens(build_index(run.c_tree, budget_tokens=sys.maxsize))
         except ValueError as exc:  # an undecodable notes file, say
-            run.fail("G4", f"{'catalogue' if catalogue else 'index'} not built: {exc}")
+            run.fail("G4", f"index not built: {exc}")
             return
         if size > self.budget:
             run.note(
-                f"G4 hygiene due: the {what} is {size} tokens, over its "
+                f"G4 hygiene due: the index is {size} tokens, over its "
                 f"soft budget of {self.budget}; growth is not refused",
             )
 
@@ -3509,73 +3260,15 @@ class Gate:
                     "G5",
                     "the library grew without covering any new recorded call",
                 )
-        if self._library_checks():
-            # library mode: a deleted function's fixtures stay used by a remaining function's examples
-            from .example_checks import ExampleChecks
+        # library mode: a deleted function's fixtures stay used by a remaining function's examples
+        from .example_checks import ExampleChecks
 
-            parent_calls: dict[str, list] = {}
-            for rec in run.calls_base.values():
-                for c in rec.calls:
-                    parent_calls.setdefault(c.item, []).append(c)
-            ExampleChecks(self, run).retained(parent_calls)
-            return
-        # a deleted function's recorded covers must stay covered by a remaining item
-        deleted = set(run.man.deleted)
-        recorded = self.ev.covers()
-        held = {(e, i) for _, e, i in run.covers}
-
-        changed = self._changed_channels(run)
-        scope: set[str] | None = None
-        if (
-            self.library_mode is not None
-            and self.library_mode.layout
-            and run.same is not None
-        ):
-            # library mode: the modules this pass changed, and every module that imports one of them
-            from . import layout
-
-            graph = getattr(run, "graph", None)
-            if graph is None:
-                graph = layout.merge_graphs(
-                    layout.import_graph(run.p_tree),
-                    layout.import_graph(run.c_tree),
-                )
-            scope = layout.dependants(
-                graph,
-                {m for p in run.changed if (m := layout.module_of(p)) is not None},
-            )
-
-        def keeps(it: str) -> bool:
-            """A kept item still does on its recorded covers what it did: its channel (library mode: its module's
-            import-graph scope) is unchanged and so is its body, or G3's behaviour check showed it doing the same. A
-            function changed under a red test holds only the covers this manifest lists for it (already in
-            ``held``)."""
-            if it in deleted or it not in run.c_bodies:
-                return False
-            if run.same is None:  # a preview runs no G3
-                return True
-            where = it.split(":", 1)[0]
-            if where not in (scope if scope is not None else changed):
-                return run.p_bodies.get(it, ("", ""))[:2] == run.c_bodies[it][:2]
-            return it in run.same
-
-        held |= {(e, i) for it, e, i in recorded if keeps(it)}
-        lost: dict[str, list[tuple[str, int]]] = {}
-        for it, e, i in sorted(recorded):
-            if it not in deleted or (e, i) in held:
-                continue
-            action = self.lookup(e, i)
-            if action is None:
-                run.note(f"G5: {it} covered ({e},{i}), which can no longer be read")
-            elif not is_rejection(action) or getattr(action, "kind", "tool") == "shell":
-                # a recorded rejection need not be taken over (a shell output is no rejection)
-                lost.setdefault(it, []).append((e, i))
-        for it, gone in lost.items():
-            run.fail(
-                "G5",
-                f"deleted item {it} covered {len(gone)} recorded inputs that no remaining item covers "
-                f"(list them in a remaining item's covers): {[list(c) for c in gone[:5]]}",
-            )
+        parent_calls: dict[str, list] = {}
+        for rec in run.calls_base.values():
+            for c in rec.calls:
+                parent_calls.setdefault(c.item, []).append(c)
+        ExampleChecks(self, run).retained(parent_calls)
+        return
 
     def _g6(self, run: _Run) -> None:
         if run.report_error is not None:

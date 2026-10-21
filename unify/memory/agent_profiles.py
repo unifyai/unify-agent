@@ -1,21 +1,17 @@
 """The agents' profiles: one row per agent, binding it to its tools, its box mounts (with the mode the box really
 gives them), what it is denied, and what it consumes and produces.
 
-Rows use role names only; every model is a setting. Each tool-using row names its tools three ways: ``tools``, the
-model-API tools it was given before every agent had one (the memory agents' earlier surface); ``json_tools``, its one
-model-API tool with ``UNIFY_TOOLS_IN_CODE=on`` (``execute_code``); and ``in_code``, the tools it may call from its
-cells then (the allow-list the host enforces, :func:`unify.common.tool_registry.allow_list`). The tools themselves
-come from the shared registry (:mod:`unify.common.tool_registry`), so a profile can only name tools that exist.
+Rows use role names only; every model is a setting. Each tool-using row names its tools two ways: ``json_tools``, its
+one model-API tool (``execute_code``), and ``in_code``, the tools it may call from its cells (the allow-list the host
+enforces, :func:`unify.common.tool_registry.allow_list`). The tools themselves come from the shared registry
+(:mod:`unify.common.tool_registry`), so a profile can only name tools that exist.
 """
 
 from __future__ import annotations
 
-from . import tool_spec as _tool_spec
 from .example_calls import CALLS_DIR, CALLS_OUT
+from .integration.switch import PASS_WALL_S
 from .library_prompts import MEMORY_HELP_LINE
-
-#: Which spec role each tool-using agent draws from.
-SPEC_ROLE = {"writer": "write", "curator": "curate", "helper": "helper"}
 
 #: The real limits of a writer, curator or helper pass, each with its number (the briefs state them as information).
 _PASS_LIMITS = [
@@ -29,11 +25,7 @@ _PASS_LIMITS = [
     {"limit": "entries under /memory", "value": 2000, "unit": "entries"},
     {"limit": "step guard", "value": 500, "unit": "model and check calls"},
     {"limit": "time left for a check", "value": 60, "unit": "s"},
-    {
-        "limit": "pass wall clock",
-        "value": "UNIFY_MEMORY_LIBRARY_PASS_WALL_S",
-        "unit": "s",
-    },
+    {"limit": "pass wall clock", "value": PASS_WALL_S, "unit": "s"},
 ]
 #: A helper's limits: its own /work and cell time, its staging quota, the writer pass's step guard and wall clock.
 _HELPER_LIMITS = [
@@ -44,11 +36,7 @@ _HELPER_LIMITS = [
     {"limit": "staged files", "value": 200, "unit": "files"},
     {"limit": "staged bytes", "value": 4194304, "unit": "bytes"},
     {"limit": "step guard", "value": 500, "unit": "model calls"},
-    {
-        "limit": "pass wall clock",
-        "value": "UNIFY_MEMORY_LIBRARY_PASS_WALL_S",
-        "unit": "s",
-    },
+    {"limit": "pass wall clock", "value": PASS_WALL_S, "unit": "s"},
 ]
 #: What any memory prompt may inline: constant text, ids and numbers; never a list past these bounds.
 _INLINE_BOUND = {"items": 10, "bytes": 1000, "tokens": 250}
@@ -64,9 +52,9 @@ _RECORD = "the pass's record (send, messages, wait, who)"
 _RECORD_TOOLS = ["send", "messages", "wait", "who"]
 #: The actor and its teammates share the run's agent record (unify/agents/record.py).
 _AGENT_RECORD = "the agent record (send, messages, wait, who)"
-#: Every tool-using agent's one model-API tool with UNIFY_TOOLS_IN_CODE=on.
+#: Every tool-using agent's one model-API tool.
 _JSON_TOOLS = ["execute_code"]
-#: The actor's and a teammate's in-code tools (store_skills only where the actor may store).
+#: The actor's and a teammate's in-code tools.
 _ACTOR_IN_CODE = [
     "read",
     "grep",
@@ -76,12 +64,11 @@ _ACTOR_IN_CODE = [
     "stop",
     "delegate",
     "answer",
-    "store_skills",
-    # only with UNIFY_MEMORY_LIBRARIAN=on (registry flag "librarian")
+    # only with memory on (registry flag "librarian")
     "ask_library",
     "sh",
     "check_examples",
-    # only with UNIFY_MEMORY_IN_EPISODE=on (registry flag "checkpoint")
+    # only with UNIFY_MEMORY=in_episode (registry flag "checkpoint")
     "checkpoint",
 ]
 _TEAMMATE_IN_CODE = [
@@ -131,7 +118,6 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "mode": "consumer",
         "instructions": "unify.memory.library_prompts:guide_library_mode",
         # memory.ask / memory.items / memory.get are library functions called in cells, not tools
-        "tools": [],
         "json_tools": list(_JSON_TOOLS),
         "in_code": list(_ACTOR_IN_CODE),
         # what its guide names that it does in its own cells, through no tool
@@ -147,7 +133,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "consumes": [
             {"artifact": "library export", "path": "<library scratch copy>"},
             {"artifact": "agent record", "path": _AGENT_RECORD},
-            # UNIFY_MEMORY_LIBRARIAN=on: what memory.ask returns
+            # what memory.ask returns
             {"artifact": "librarian answer", "path": "memory.ask"},
         ],
         "produces": [
@@ -209,12 +195,11 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "mode": "teammate",
         "instructions": "unify.agents.binding:helper_request",
         # the actor's own loop and box (a teammate is an actor started on the agent record)
-        "tools": [],
         "json_tools": list(_JSON_TOOLS),
         "in_code": list(_TEAMMATE_IN_CODE),
         "in_cells": ["memory.ask", "memory.items", "memory.get"],
         "mounts": [{"path": "<library scratch copy>", "mode": "rw"}],
-        "denied": ["store_skills", "/inputs", "library repository"],
+        "denied": ["/inputs", "library repository"],
         "consumes": [{"artifact": "agent record", "path": _AGENT_RECORD}],
         "produces": [{"artifact": "agent record", "path": _AGENT_RECORD, "consumer": "actor"}],
         "limits": [],
@@ -296,27 +281,6 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "agent": "writer",
         "mode": "write",
         "instructions": "unify.memory.library_prompts:write_brief_now",
-        "tools": [
-            "read",
-            "grep",
-            "overview",
-            "read_episode",
-            "similar",
-            "pool",
-            "fixture",
-            "replay",
-            "land_capture",
-            "delegate",
-            *_RECORD_TOOLS,
-            "reply",
-            "stop",
-            # write and edit exist only with UNIFY_MEMORY_LIBRARY_EDIT_TOOLS=on (spec flag "edit")
-            "write",
-            "edit",
-            "execute_code",
-            "check",
-            "finish",
-        ],
         "json_tools": list(_JSON_TOOLS),
         "in_code": [
             "read",
@@ -332,18 +296,16 @@ AGENT_PROFILES: tuple[dict, ...] = (
             *_RECORD_TOOLS,
             "reply",
             "stop",
-            "write",
-            "edit",
             "check",
             "finish",
             "sh",
             "check_examples",
-            # an attention pass (UNIFY_MEMORY_ATTENTION_LEDGER=on, registry flag "attention")
+            # the attention ledger's tools
             "open_entries",
             "take",
             "decide",
             "find",
-            # UNIFY_MEMORY_WRITER_TESTS (registry flag "tests")
+            # the writer's own tests
             "test",
         ],
         "mounts": list(_BOX_MOUNTS),
@@ -457,22 +419,6 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "agent": "curator",
         "mode": "curate",
         "instructions": "unify.memory.library_prompts:curate_brief_now",
-        "tools": [
-            "read",
-            "grep",
-            "overview",
-            "read_episode",
-            "fixture",
-            *_RECORD_TOOLS,
-            "reply",
-            "stop",
-            # write and edit exist only with UNIFY_MEMORY_LIBRARY_EDIT_TOOLS=on (spec flag "edit")
-            "write",
-            "edit",
-            "execute_code",
-            "check",
-            "finish",
-        ],
         "json_tools": list(_JSON_TOOLS),
         "in_code": [
             "read",
@@ -483,8 +429,6 @@ AGENT_PROFILES: tuple[dict, ...] = (
             *_RECORD_TOOLS,
             "reply",
             "stop",
-            "write",
-            "edit",
             "check",
             "finish",
             "sh",
@@ -588,18 +532,6 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "instructions": "unify.memory.helpers:helper_brief",
         # its own execute_code (in a box with /memory read-only and a private /work) and stage/done come with the
         # helper's own specs
-        "tools": [
-            "read",
-            "grep",
-            "overview",
-            "read_episode",
-            "similar",
-            "execute_code",
-            "stage",
-            *_RECORD_TOOLS,
-            "ask",
-            "done",
-        ],
         "json_tools": list(_JSON_TOOLS),
         "in_code": [
             "read",
@@ -688,13 +620,12 @@ AGENT_PROFILES: tuple[dict, ...] = (
         ],
     },
     {
-        # UNIFY_MEMORY_LIBRARIAN=on: one session per actor request, on the actor's model and effort, answering which
+        # one session per actor request, on the actor's model and effort, answering which
         # stored items fit the actor's questions (memory.ask); its system prompt is constant (a pointer to the
         # library's layout), and it finds items with search, read and grep
         "agent": "librarian",
         "mode": "librarian",
         "instructions": "unify.memory.librarian:system_prompt",
-        "tools": ["search", "read", "grep", "keep_note", "finish"],
         "json_tools": list(_JSON_TOOLS),
         "in_code": ["search", "read", "grep", "keep_note", "finish"],
         "in_cells": ["memory.get"],
@@ -730,7 +661,6 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "agent": "gate",
         "mode": "repair",
         "instructions": "unify.memory.repair:repair_message",
-        "tools": [],
         # it reads the candidate library copy, its manifest and fixture listing under /memory/.pass
         "mounts": [{"path": "/memory", "mode": "ro"}, *_CALL_RECORD_MOUNTS],
         "denied": ["network"],
@@ -782,7 +712,6 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "agent": "harness",
         "mode": "inputs",
         "instructions": "unify.memory.writer_pass:WriterPass._stage_inputs",
-        "tools": [],
         "mounts": [{"path": "/inputs", "mode": "rw"}],
         "denied": ["network"],
         "consumes": [
@@ -823,42 +752,11 @@ def profile(agent: str) -> dict:
     raise KeyError(f"no agent profile {agent!r}")
 
 
-def tool_names(agent: str, flags: frozenset[str] = frozenset()) -> list[str]:
-    """The tools *agent* gets with the configuration *flags* on, in the spec's order: the spec's tools for its role
-    that its profile names (a tool the spec gates on a flag is left out while the flag is off).
-    """
-    row = profile(agent)
-    role = SPEC_ROLE.get(agent)
-    if role is None:
-        return []
-    named = set(row["tools"])
-    return [s.name for s in _tool_spec.tools_for(role, flags) if s.name in named]
+def tool_json(agent: str) -> list[dict]:
+    """*agent*'s model-API tools: ``execute_code`` alone, the same bytes for every agent."""
+    from unify.common import tool_registry
 
-
-def tools_in_code() -> bool:
-    """Whether ``UNIFY_TOOLS_IN_CODE=on``: every agent keeps one model-API tool and calls the rest in code."""
-    from unify.settings import SETTINGS
-
-    return getattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "off") == "on"
-
-
-def tool_json(
-    agent: str,
-    flags: frozenset[str] = frozenset(),
-    in_code: bool | None = None,
-) -> list[dict]:
-    """*agent*'s model-API tools: with the tools in code (*in_code*, by default the setting), ``execute_code``
-    alone, the same bytes for every agent; otherwise the tools it was given before, byte for byte."""
-    if tools_in_code() if in_code is None else in_code:
-        from unify.common import tool_registry
-
-        return tool_registry.json_tools(agent)
-    names = set(tool_names(agent, flags))
-    return [
-        s.as_tool()
-        for s in _tool_spec.tools_for(SPEC_ROLE[agent], flags)
-        if s.name in names
-    ]
+    return tool_registry.json_tools(agent)
 
 
 def in_code_names(agent: str, flags: frozenset[str] = frozenset()) -> tuple[str, ...]:
@@ -904,9 +802,6 @@ def _root_text(mount: dict) -> str:
 
 def _limit_text(row: dict, cell_s: float | None) -> str:
     value = cell_s if row["limit"] == "cell time" and cell_s is not None else row["value"]
-    if isinstance(value, str):
-        # a setting's name: its value for this pass is in the first message
-        return f"{row['limit']}: stated in the first message"
     return f"{row['limit']}: {_number(value)} {row['unit']}"
 
 
@@ -933,12 +828,10 @@ def environment_text(agent: str, cell_s: float | None = None) -> str:
 
 def in_code_opening(agent: str, flags: frozenset[str] = frozenset(), cell_s: float | None = None) -> str:
     """The shared opening (:func:`unify.common.tool_registry.preamble`) of the writer, curator or a helper when tools
-    are called from code: its box and limits, its library line, the tools its allow-list has with *flags* on, whether
-    variables are kept between cells (``UNIFY_CELL_STATE``) and the names bound in its cells (``tools`` and
-    ``memory``: the box holds the library package in library mode, the only mode with tools in code). Constant for a
-    run, so the system message stays a stable prefix."""
+    are called from code: its box and limits, its library line, the tools its allow-list has with *flags* on, that
+    variables are kept between cells, and the names bound in its cells (``tools`` and ``memory``). Constant for a run,
+    so the system message stays a stable prefix."""
     from unify.common import tool_registry
-    from unify.common.box_interpreter import persistent
 
     return tool_registry.preamble(
         agent,
@@ -946,7 +839,7 @@ def in_code_opening(agent: str, flags: frozenset[str] = frozenset(), cell_s: flo
             "environment": environment_text(agent, cell_s),
             "memory": _LIBRARY_LINE[agent],
             "flags": frozenset(flags),
-            "persistent": persistent(),
+            "persistent": True,
             "names": tool_registry.namespace_names(agent, {"tools": True, "memory": True}),
         },
     )
