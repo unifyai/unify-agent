@@ -6,6 +6,8 @@
 *	Hand a reading or drafting task	to hand work over (verb)
 *	/task	the helper box's read-only mount of the episodes its assignment names
 *	"task"	delegate's argument name and the helper box's mount key
+*	_args(task=task	delegate's argument name, as the rendered in-code stub passes it on (rev 2)
+*	delegate(task=	delegate's argument name in its in-code example call (rev 2)
 *	task must be a non-empty string	delegate's refusal text
 *	the task is not done	the helper's done refusal: its assignment goes on
 *	End your task and hand your summary and claims	the helper's done: ends its assignment, hands back its claims
@@ -13,7 +15,6 @@
 *	the task goes on	the helper's done refusal
 *	the start of its task	the roster line of a helper: its assignment
 *	closed for the rest of this task	execute_code's work quota: the helper's assignment
-*	for the rest of your task	execute_code's work quota: the helper's assignment
 *	every task and session	the persistent venv outlives each piece of work
 *	not run: task done	the pass loop's answer after done
 *	ends your task	the helper's done
@@ -21,16 +22,10 @@
 *	one task. Do that task and hand back	the helper brief: its one assignment, handed back
 *	your task names	the helper brief: the episodes its assignment names
 *	in this task is the same text	the helper brief: within its assignment
-*	role, state and task	who: each agent's assignment
 *	the ones the task names	the helper brief: the episodes its assignment names
 *	Task from the writer	the helper's first message: its assignment
-*	sub-task	the actor prompt: a part of the work given to a sub-agent
-*	your task seems to need one	the actor prompt: a sub-agent's assignment
-*	persistent sandbox for the task	the actor prompt: the session's work
 *	every later task. When a task genuinely needs a CLI	the actor prompt: later pieces of work
 *	tasks. Write files there	the actor prompt: the workspace persists across pieces of work
-*	never on task text	a docstring: the prompt reads no request text
-*	a task, run `import memory	the actor's memory section: the start of any request
 *	the kind of task, what it was given	the fork's summary format: what the request asked, in general terms
 *	where the task depends on it	the fork's summary format
 *	check a task's examples	a docstring naming what the brief guard refuses
@@ -46,7 +41,6 @@
 *	delegate(task, episodes)	delegate's signature
 *	the writer's task and the named episode ids	the helper's first message: its assignment
 *	the task digest	the helper's record: a digest of its assignment
-*	for the task, with no tool channel	the helper's interpreter: its assignment
 *	to hand back	to return (verb)
 *	helper brief and task	the helper profile: its assignment
 *	its task, as the record entry	the helper profile: its assignment

@@ -250,7 +250,9 @@ def test_the_dispatch_file_is_the_structural_catalogue(tmp_path):
             "outcomes", "provenance"}  # fmt: skip
     assert all(set(r) == keys for r in rows.values())
     sig = _records()[TOTAL]["signature"]
-    assert rows[TOTAL]["kind"] == "function" and rows[TOTAL]["signature"].startswith("{")
+    # rev 2: a capture is never run, so its signature describes only the structured data its request held; this
+    # world's request is text, so the landed procedure's signature has no input tree, and the row shows the record's
+    assert rows[TOTAL]["kind"] == "function" and sig["input"]["tree"] == []
     assert rows[TOTAL]["signature"] == signature_text(sig)
     assert rows[TOTAL]["applies_text"].startswith("def ")  # its named applies, as text
     assert rows["capture:" + CAPTURE]["kind"] == "capture-shape"
@@ -447,8 +449,9 @@ def test_the_brief_is_complete_general_and_says_nothing_of_ids_answers_or_exampl
     lowered = brief.lower()
     for word in ("task id", "identifier", "example", "store the answer", "expected"):
         assert word not in lowered, word
+    # rev 2: every agent is on the run record, the librarian too, so it has the record's comms tools
     assert set(R.allow_list("librarian", frozenset({"helper", "store", "edit", "pool", "similar"}))) == {
-        "read", "grep", "finish", "search", "keep_note",
+        "read", "grep", "finish", "search", "keep_note", "send", "messages", "wait", "who",
     }
     opening = L.opening()
     assert opening.startswith("## How you work here") and "tools.finish(answer)" in opening
@@ -549,7 +552,8 @@ def test_ask_is_a_helper_call_and_its_rows_and_listed_by_ask_reach_the_use_recor
     add_runtime_calls(acc, second)
     assert library_helper_calls(acc)["ask"] == {"ok": 2, "refused": 0, "error": 0}
     assert library_helper_calls(acc)["ask"] == {"ok": 2, "refused": 0, "error": 0}  # a seen ask is always counted
-    assert "ask" not in library_helper_calls(runtime_calls_empty())  # no librarian and no ask: no ask row
+    # rev 2: the run has the librarian whenever it has memory, so the ask row is always there, zero when none was seen
+    assert library_helper_calls(runtime_calls_empty())["ask"] == {"ok": 0, "refused": 0, "error": 0}
     assert TOTAL in acc["counts"] and "memory:ask" not in acc["counts"]  # asking is never a use
     fields = use.ask_fields(acc)
     assert fields["ask_calls"] == 2
@@ -564,10 +568,11 @@ def test_ask_is_a_helper_call_and_its_rows_and_listed_by_ask_reach_the_use_recor
     assert "asks" not in plain
 
 
-def test_the_librarians_calls_count_as_the_actors_and_its_totals_keep_unknown_usd_unknown():
+def test_the_librarians_calls_are_labelled_in_the_requests_rows_and_its_totals_keep_unknown_usd_unknown():
     from unify.memory.integration import cost
 
-    assert cost._purpose(L.ORIGIN) == "actor"
+    # rev 2 meters every call: the librarian's are booked in the request's own rows (the actor's lane), labelled
+    assert cost._purpose(L.ORIGIN) == "librarian" and cost.LIBRARIAN_ORIGIN == L.ORIGIN
     u = L.Usage()
     u.add({"input": 100, "output": 5, "cache_read": 80}, "0.0012")
     u.add({"input": None}, None)
@@ -763,6 +768,7 @@ async def test_the_request_closes_its_librarian(tmp_path, monkeypatch):
 
     from unify.actor import in_code_tools
 
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")  # the librarian is on whenever memory is
 
     class Session:
         closed = False

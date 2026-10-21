@@ -159,9 +159,12 @@ def test_a_card_shows_its_evidence_level_status_reader_applies_and_input_line(tm
     recs = w.records()
     card = _card(text, w.TOTAL)
     assert EVIDENCE_LABEL in card.lower()
-    # the gate's level for a landed procedure reproduced on its recorded case, and its status
-    assert recs[w.TOTAL]["level"] == "reproduces-its-case"
-    assert f"Evidence: level reproduces-its-case; status adopted; reader {w.READ_TOTAL}; applies: yes" in card
+    # rev 2's gate is labels only: it runs no reader, so the writer's parsed fixture is not re-derived and the
+    # procedure's calls are not grounded on it; the landed procedure stays unchecked with that finding, and its card
+    # shows the record's level and status and the reader it was landed with
+    assert recs[w.TOTAL]["level"] == "unchecked"
+    assert any("[examples:grounded]" in r for r in recs[w.TOTAL]["level_reasons"])
+    assert f"Evidence: level unchecked; status adopted; reader {w.READ_TOTAL}; applies: yes" in card
     # its input line: the capture's applicability signature, which its record carries from the landing
     assert f"Input: {signature_text(recs[w.TOTAL]['signature'])}" in card
     ledger = _card(text, w.RECONCILE)
@@ -274,12 +277,12 @@ def _evidence(card: str) -> str:
 @needs_box
 def test_a_landed_procedure_is_read_by_the_reader_it_was_landed_with(tmp_path):
     """The landed procedure's record names its capture and the reader it was landed with, and carries the capture's
-    signature and its applies; the gate found the reader of the writer's test's parsed fixture (rev 2: the landing
-    writes no parsed fixture of its own), and the dispatch file and its card use the landing's reader, never the
-    gate's."""
+    signature and its applies; the dispatch file and its card use the landing's reader (rev 2's gate derives
+    none)."""
     total = w.records()[w.TOTAL]
     assert total["landed_from"] == {"capture": w.landed_capture(), "reader": w.READ_TOTAL}
-    assert total["reader"] == [w.READ_ORDERS]
+    # rev 2: the gate runs no reader (re-deriving a parsed fixture would), so it records none
+    assert total["reader"] == []
     landed = captures.landed_items(w.built().store)[w.TOTAL]
     assert total["signature"] == landed["signature"] and isinstance(total["signature"], dict)
     assert total["applies"] == landed["applies"] == w.TOTAL_APPLIES
@@ -288,39 +291,6 @@ def test_a_landed_procedure_is_read_by_the_reader_it_was_landed_with(tmp_path):
     assert got["signature"] == signature_text(total["signature"]) and got["applies_text"].startswith("def ")
     card = _card(files[CATALOGUE].decode("utf-8"), w.TOTAL)
     assert _evidence(card).endswith(f"; reader {w.READ_TOTAL}; applies: yes")
-
-
-@needs_box
-def test_an_unlanded_function_the_gate_finds_one_reader_of_is_dispatched_with_it(tmp_path):
-    recs = w.records()
-    count = recs[w.COUNT]
-    assert (count["landed_from"], count["signature"], count["applies"]) == (None, None, None)
-    assert count["reader"] == [w.READ_ORDERS]
-    # the reader's own record says what it read for
-    reader = recs[w.READ_ORDERS]
-    assert reader["role"] == "reader" and reader["reads_for"] == ["memory/orders/tests/data/orders.json"]
-    _, files, _ = _world(tmp_path)
-    row = _dispatched(files)["rows"][w.COUNT]
-    assert (row["kind"], row["applies_text"], row["signature"]) == ("function", "", "")
-    card = _card(files[CATALOGUE].decode("utf-8"), w.COUNT)
-    assert _evidence(card).endswith(f"; reader {w.READ_ORDERS}; applies: no")
-
-
-@needs_box
-def test_an_unlanded_function_the_gate_finds_two_readers_of_is_not_dispatched_and_its_card_says_why(tmp_path):
-    rec = w.records()[w.RECONCILE]
-    assert (rec["landed_from"], rec["signature"], rec["applies"]) == (None, None, None)
-    assert rec["reader"] == [w.READ_LEDGER, w.READ_PAYMENTS]
-    for reader in (w.READ_LEDGER, w.READ_PAYMENTS):
-        assert w.records()[reader]["role"] == "reader"
-    _, files, _ = _world(tmp_path)
-    # rev 2: the catalogue has a row for every listed procedure, readers or not
-    assert _dispatched(files)["rows"][w.RECONCILE]["applies_text"] == ""
-    card = _card(files[CATALOGUE].decode("utf-8"), w.RECONCILE)
-    assert _evidence(card).endswith(
-        f"; reader none of its 2 ({w.READ_LEDGER}, {w.READ_PAYMENTS}): more than one reads its tests' fixtures; "
-        "applies: no",
-    )
 
 
 # --- off ---------------------------------------------------------------------------------------------------------

@@ -43,7 +43,6 @@ GUARD_MODULES = (
     "unify/common/tool_registry.py",
     "unify/memory/library_prompts.py",
     "unify/memory/writer_pass.py",
-    "unify/memory/curate.py",
     "unify/memory/qa.py",
     "unify/memory/helpers.py",
     "unify/memory/librarian.py",
@@ -54,7 +53,6 @@ GUARD_MODULES = (
     "unify/memory/integration/prompt.py",
     "unify/memory/integration/hooks.py",
     "unify/actor/prompt_builders.py",
-    "unify/actor/library_switch.py",
     # the cards, catalogue and search rows an agent reads about each item, and the status texts they carry
     "unify/memory/library_export.py",
     "unify/memory/library_search.py",
@@ -251,7 +249,17 @@ def hits(texts_by_source: dict[str, str]) -> list[Hit]:
 def test_no_text_an_agent_reads_names_a_world(tmp_path, monkeypatch):
     allowed = allow_list()
     by_source = texts(tmp_path, monkeypatch)
-    assert len(by_source) > 300  # every source above was read
+    # every source above was read: each guarded module, each agent's tools, opening and help for each tool it has,
+    # and both memlab trees (rev 2's surface is smaller than the 300 sources this once counted: no curator, no
+    # JSON-tool briefs, fewer modules)
+    from unify.common import tool_registry as R
+
+    every = frozenset({"pool", "similar", "helper"})
+    assert all(by_source.get(f"module:{m}") for m in GUARD_MODULES)
+    for agent in R.AGENTS:
+        assert by_source.get(f"rendered:tools:{agent}") and by_source.get(f"rendered:preamble:{agent}"), agent
+        assert all(by_source.get(f"rendered:help:{agent}:{n}") for n in R.allow_list(agent, every)), agent
+    assert any(k.startswith("memlab:kit/") for k in by_source) and any(k.startswith("memlab:box/") for k in by_source)
     used: set[Allowed] = set()
     leaks = []
     for h in hits(by_source):

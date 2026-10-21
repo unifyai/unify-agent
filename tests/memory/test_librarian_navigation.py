@@ -185,7 +185,10 @@ async def test_the_system_message_is_the_same_bytes_for_a_small_and_a_large_libr
         assert item not in first
     # the librarian's tools: search, read, grep and finish, in its own box and nowhere else
     # rev 2: and keep_note, the role's notes for its later instances
-    assert set(R.allow_list("librarian")) == {"read", "grep", "finish", "search", "keep_note"}
+    # rev 2: the librarian is on the run record too, with its comms tools
+    assert set(R.allow_list("librarian")) == {
+        "read", "grep", "finish", "search", "keep_note", "send", "messages", "wait", "who",
+    }  # fmt: skip
     assert R.registry()["search"].roles == ("librarian",)
     assert R.handler_for("librarian", "search") == ("unify.memory.librarian:search", True)
     assert R.handler_for("librarian", "read") == ("unify.memory.librarian:read", True)

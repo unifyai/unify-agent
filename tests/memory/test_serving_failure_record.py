@@ -461,15 +461,14 @@ def test_contradictions_come_from_the_evidence_label():
         "tests": {"as_stated": 3, "not_as_stated": 2},
         "effects": {"declares": "none", "seen_in_tests": {"read": 1, "write": 2}},
     }
+    # rev 2: the writer's tests run an item on a recorded input only (no replay mode), so no effect is seen in its
+    # tests and only the tests not as stated are a contradiction; an effects entry adds none
     assert serving.contradictions(label) == [
         "2 of its stated tests did not go as stated",
-        "it declares no effects, but its tests saw 1 read(s) and 2 write(s)",
     ]
     assert serving.contradictions(
         {"effects": {"declares": "reads", "seen_in_tests": {"write": 1}}}
-    ) == [
-        "it declares reads only, but its tests saw 1 write(s)",
-    ]
+    ) == []
 
 
 # --- 5. the NW E4 replay: an instance capture served as fitting now reaches the librarian with its failures --------
@@ -558,10 +557,11 @@ def test_the_e4_replay_the_librarian_input_now_carries_the_failure_record(
 # --- the switch and the request's wiring ----------------------------------------------------------------------------
 
 
-def test_the_request_serves_evidence_only_under_its_switch(tmp_path, monkeypatch):
-    # the copy is written by _export_copy (at the request's open, and at a re-pin under UNIFY_MEMORY_IN_EPISODE)
+def test_the_request_always_serves_evidence(tmp_path, monkeypatch):
+    # the copy is written by _export_copy (at the request's open, and at a re-pin under UNIFY_MEMORY=in_episode); rev 2
+    # serves the evidence with every copy (no switch)
     opening = inspect.getsource(RequestRun._export_copy)
-    assert "if serving_failure_record(SETTINGS)" in opening
+    assert "serving=self._serving(records, status_of(records))," in opening and "serving_failure_record" not in opening
     stores = open_stores(Paths.under(tmp_path / "home"))
     _record(stores, "e1", 0, errored=1)
     run = RequestRun("x", stores.paths)
@@ -577,9 +577,4 @@ def test_the_request_serves_evidence_only_under_its_switch(tmp_path, monkeypatch
     assert computed["withdrawn_items"] == {
         ITEM: {"status": "retired", "by": None, "reason": "retired"}
     }
-    monkeypatch.setattr(
-        SETTINGS, "UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES", "off"
-    )
-    assert (
-        run._serving(records, lambda i: "on-trial")(tmp_path)["withdrawn_items"] == {}
-    )
+    # (the switch that turned withdrawal off is gone: a retired record is always withdrawn)
