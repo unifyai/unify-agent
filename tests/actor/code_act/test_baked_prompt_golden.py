@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -30,12 +31,15 @@ def baked_recording(requests: list[dict]) -> dict:
     """The first request of the actor's session, its parts as compared.
 
     ``$UNIFY_HOME`` stands for the test's own home, which the system prompt
-    names in the workspace path.
+    names in the workspace path, and ``actor-<hex>`` for the actor's name on
+    the run record, which is drawn per run (its form is pinned by
+    tests/agents/test_binding.py).
     """
     home = os.environ.get("UNIFY_HOME") or ""
 
     def _norm(text: str) -> str:
-        return text.replace(home, "$UNIFY_HOME") if home else text
+        text = text.replace(home, "$UNIFY_HOME") if home else text
+        return re.sub(r"`actor-[0-9a-f]{4,}`", "`actor-<hex>`", text)
 
     first = h.session_requests(requests)[0]
     messages = first["messages"]
