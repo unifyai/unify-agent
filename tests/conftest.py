@@ -135,67 +135,7 @@ def _patch_every_copy(monkeypatch, original, replacement) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 3. Model-cache keying                                                       #
-# --------------------------------------------------------------------------- #
-
-
-@pytest.fixture(autouse=True)
-def _exact_cache_keying_for_evals(request):
-    """An eval never accepts a canonically-equivalent recording.
-
-    Canonical keying deliberately lets a recording survive mundane prompt
-    churn, and the invariance it buys includes description rewording --
-    which is one of the ordinary ways to change which tool a model picks.
-    For a functional test that trade is right: the assertion is about the
-    code around the call. For an eval it inverts, because the model's
-    behaviour *is* the subject, so a canonical hit would score the
-    trajectory recorded before the change and report it green.
-
-    Scoped per test rather than per shard: a shard is a directory, and
-    directories hold both kinds.
-    """
-    if request.node.get_closest_marker("eval") is None:
-        yield
-        return
-
-    from unillm.settings import SETTINGS as UNILLM_SETTINGS
-
-    previous = UNILLM_SETTINGS.UNILLM_CACHE_KEYING
-    UNILLM_SETTINGS.UNILLM_CACHE_KEYING = "exact"
-    try:
-        yield
-    finally:
-        UNILLM_SETTINGS.UNILLM_CACHE_KEYING = previous
-
-
-@pytest.fixture(autouse=True)
-def _fresh_llm_calls(request, monkeypatch):
-    """A ``fresh_llm_calls`` or ``live_provider`` test reaches the model on
-    every call, never the cache.
-
-    For a test whose subject is the timing between live calls: a recording
-    replays in a fraction of a second and so finishes before a decision the
-    test drives with another call (a pause) can land. For a test whose
-    subject is the live model or provider: a replayed answer says nothing
-    about how the provider behaves now. Clients read the setting when they
-    are built, so this runs before any fixture builds one.
-    """
-    if (
-        request.node.get_closest_marker("fresh_llm_calls") is None
-        and request.node.get_closest_marker("live_provider") is None
-    ):
-        yield
-        return
-
-    from unillm.settings import SETTINGS as UNILLM_SETTINGS
-
-    monkeypatch.setenv("UNILLM_CACHE", "false")
-    monkeypatch.setattr(UNILLM_SETTINGS, "UNILLM_CACHE", False)
-    yield
-
-
-# --------------------------------------------------------------------------- #
-# 4. Command-line options                                                     #
+# 3. Command-line options                                                     #
 # --------------------------------------------------------------------------- #
 
 
@@ -222,7 +162,7 @@ def pytest_addoption(parser):
 
 
 # --------------------------------------------------------------------------- #
-# 5. Custom logging helpers                                                   #
+# 4. Custom logging helpers                                                   #
 # --------------------------------------------------------------------------- #
 
 
@@ -275,7 +215,7 @@ def get_test_log_format(config):
 
 
 # --------------------------------------------------------------------------- #
-# 6. Session lifecycle hooks                                                  #
+# 5. Session lifecycle hooks                                                  #
 # --------------------------------------------------------------------------- #
 
 
@@ -377,7 +317,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
 
 
 # --------------------------------------------------------------------------- #
-# 7. Test run hooks                                                           #
+# 6. Test run hooks                                                           #
 # --------------------------------------------------------------------------- #
 
 from unillm.cost_tracker import capture_costs
@@ -400,17 +340,6 @@ def pytest_configure(config):
     test_home = os.path.join(tempfile.gettempdir(), "unity_test_home")
     os.makedirs(test_home, exist_ok=True)
     os.environ["HOME"] = test_home
-
-    config.addinivalue_line(
-        "markers",
-        "eval: mark a test as a fuzzy evaluation test for English language "
-        "APIs. Selects the eval tier in discover_test_paths.py, and pins cache "
-        "lookups to exact keying so a canonical hit cannot score a trajectory "
-        "recorded before the prompt changed. Distinct from llm_call, which "
-        "says only that a model is reached: eval asks whether the answer was "
-        "good, llm_call whether the call happens at all. The two are applied "
-        "independently and neither implies the other.",
-    )
 
     # Required to disable explicit log level if set from pytest.ini or command line options
     if os.environ.get("UNIFY_TESTS_CLI_LOGGING", "true").lower() == "false":

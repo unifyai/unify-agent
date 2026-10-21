@@ -9,7 +9,7 @@ start and no shared state between sessions.
 
 - [Quick Start](#quick-start)
 - [Tools at a Glance](#tools-at-a-glance)
-- [Test Philosophy](#test-philosophy-symbolic--eval-spectrum)
+- [What a Test Asserts](#what-a-test-asserts)
 - [Parallel Runner Reference](#parallel-runner-reference)
 - [Homes](#homes)
 - [Sandbox and Time Limits](#sandbox-and-time-limits)
@@ -66,53 +66,11 @@ All commands support `--help` for usage details.
 
 ---
 
-## Test Philosophy: Symbolic ↔ Eval Spectrum
+## What a Test Asserts
 
-Tests fall on a spectrum between two paradigms:
-
-**Symbolic Tests** use the LLM purely as a stub—minimal "dummy" instructions trigger specific code paths. Focus is on testing *infrastructure*: async tool loops, steering, state mutations. Failures indicate regressions in symbolic/programmatic logic.
-
-**Eval Tests** exercise the system end-to-end. We ask a high-level question, then verify the outcome—regardless of internal tool calls. Focus is on *capability*: "Did the assistant complete the task?" Failures may indicate prompt issues or capability gaps.
-
-Most tests sit somewhere between these extremes.
-
-### Determinism
-
-A test that involves a model writes the model's replies itself (the scripted
-transport turns unillm's response cache off), so every run of it is the same
-run. No recording is read or written.
-
-### Marking Tests as Eval
-
-```python
-import pytest
-
-pytestmark = pytest.mark.eval  # All tests in file are eval
-
-# Or per-test:
-@pytest.mark.eval
-async def test_natural_language_query():
-    ...
-```
-
-### `eval` vs `llm_call`
-
-Two independent questions, not two levels of one:
-
-| Marker | Asks | Effect |
-|---|---|---|
-| `llm_call` | does this test reach a model? | cost/deselection only |
-| `eval` | is the model's answer the thing under test? | eval tier, plus cache lookups pinned to `exact` keying |
-
-A test can reach a model and still assert something exact — "did it call the
-right tool?" — and that is `llm_call` without `eval`. An eval is scoring the
-answer itself, which is why it refuses a canonically-equivalent recording: a
-reworded tool description is an ordinary way to change what a model picks, so
-a canonical hit would score the trajectory from before the change.
-
-Neither marker implies the other. A test carrying neither is one you are
-asserting never reaches a model; if you find a model-reaching test with
-neither, that is a missing marker rather than a free test.
+A test that involves a model writes the model's replies itself and asserts
+what the harness does with them (the scripted transport turns unillm's
+response cache off), so every run of it is the same run.
 
 ### No test reaches a model provider or the network
 
@@ -127,14 +85,6 @@ the model, and a socket may connect only to this machine. A test that
 still carries `live_provider` or `requires_provider_key` fails. An eval
 whose subject is a live model's answers lives in `model_evals/`, run by
 hand with a key (`model_evals/README.md`); the suite never collects it.
-
-### Running by Category
-
-```bash
-parallel_run --eval-only tests           # Only eval tests
-parallel_run --symbolic-only tests       # Only symbolic tests
-parallel_run --deterministic-only tests  # Only tests carrying neither marker
-```
 
 ---
 
@@ -155,10 +105,7 @@ parallel_run --timeout 300 tests/                # Abort after 5 minutes
 parallel_run --session-timeout 600 tests/        # Kill any one session after 10 minutes
 parallel_run -s tests/                           # Serial (per-file, not per-test)
 parallel_run -j 8 tests/                         # Limit to 8 concurrent
-parallel_run --eval-only tests/                  # Only eval tests
-parallel_run --symbolic-only tests/              # Only symbolic tests
 parallel_run --env KEY=VALUE tests/              # Set environment variable
-parallel_run --no-cache tests/                   # Fresh LLM inference
 parallel_run --repeat 5 tests/                   # Run each test 5 times
 
 # Pass extra args directly to pytest (after --)
@@ -174,12 +121,7 @@ parallel_run tests/ -- -k 'pattern'             # Filter by test name
 | `-s`, `--serial` | One session per file (default: one per test) |
 | `-j N`, `--jobs N` | Limit concurrent sessions (default: CPU cores) |
 | `-m`, `--match PATTERN` | Filter files by glob pattern |
-| `--eval-only` | Only `@pytest.mark.eval` tests |
-| `--symbolic-only` | Only non-eval tests |
-| `--deterministic-only` | Only tests with no model in the loop |
-| `--keyless` | Accepted and ignored: every run refuses model-provider and network calls |
 | `--env K=V` | Set environment variable (repeatable) |
-| `--no-cache` | Shorthand for `--env UNILLM_CACHE=false` |
 | `--repeat N` | Run each test N times |
 | `--` | Pass remaining args to pytest |
 
@@ -226,10 +168,10 @@ anything (`tests/_test_sandbox.py`, called from the root `conftest.py`). Inside:
 - PID, IPC and hostname namespaces are private, and everything a test starts
   dies with the pytest process.
 
-What it does not do: the network is shared (tests call model providers), and
-model code runs in the same process as the harness, so it can read the provider
-keys in the environment and `.env`. A key that is only in Google Secret Manager
-is not available inside: unillm's fallback needs `~/.config/gcloud`.
+What it does not do: the network namespace is shared (the guard in
+`tests/conftest.py` refuses provider calls and connections off this machine),
+and the test process can read a provider key in its environment or `.env`.
+Model-written code runs in the sandboxed worker, without either.
 
 `UNIFY_TEST_SANDBOX=auto` (default) confines where bubblewrap is installed and
 warns elsewhere; `required` refuses to run unconfined; `off` disables it.
@@ -239,8 +181,7 @@ Each test phase (setup, call, teardown) has a time limit: its
 none). At the limit the test fails; `UNIFY_TEST_TIMEOUT_GRACE` seconds later
 (60) the process prints every thread's stack and exits, even if the test's code
 never yields (`tests/_test_timeouts.py`). `UNIFY_TEST_TIMEOUTS=off` or `--pdb`
-disables both. A test marked `@pytest.mark.fresh_llm_calls` never reads the
-UniLLM cache.
+disables both.
 
 ---
 

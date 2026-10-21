@@ -73,7 +73,7 @@ class TestMultipleFiles:
             "-s",  # Serial mode: one session per file
             runner.fixture_path("test_always_pass.py"),
             runner.fixture_path("test_single_test.py"),
-            runner.fixture_path("test_symbolic_only.py"),
+            runner.fixture_path("test_two_passes.py"),
             wait_for_completion=True,
         )
 
@@ -98,8 +98,8 @@ class TestDirectory:
 
         # Should find multiple test files in fixtures dir
         # fixtures/ contains: test_always_pass.py, test_always_fail.py,
-        # test_mixed_results.py, test_eval_marked.py, test_symbolic_only.py,
-        # test_single_test.py, test_docstring_pattern.py, subdir/test_in_subdir.py
+        # test_mixed_results.py, test_two_passes.py, test_single_test.py,
+        # test_docstring_pattern.py, subdir/test_in_subdir.py
         assert (
             len(result.sessions_created) >= 7
         ), f"Expected at least 7 sessions, got {len(result.sessions_created)}"

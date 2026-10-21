@@ -223,27 +223,6 @@ if (( SESSION_TIMEOUT == 0 )); then
   fi
 fi
 
-# Build pytest marker filter based on flags
-MARKER_EXPRS=()
-if (( EVAL_ONLY )); then
-  MARKER_EXPRS+=( "eval" )
-elif (( SYMBOLIC_ONLY )); then
-  MARKER_EXPRS+=( "not eval" )
-elif (( DETERMINISTIC_ONLY )); then
-  # "not eval" still leaves every llm_call test in, and those answer to
-  # whatever the shared cache happens to hold: under UNILLM_CACHE=read-only a
-  # request with no recorded entry raises, so a sweep meant to find broken
-  # tests reports cache gaps instead. Excluding both markers leaves only the
-  # tests whose outcome depends on this repository alone.
-  MARKER_EXPRS+=( "not eval and not llm_call" )
-fi
-MARKER_FILTER=""
-if (( ${#MARKER_EXPRS[@]} == 1 )); then
-  MARKER_FILTER="-m '${MARKER_EXPRS[0]}'"
-elif (( ${#MARKER_EXPRS[@]} > 1 )); then
-  MARKER_FILTER="-m '(${MARKER_EXPRS[0]}) and (${MARKER_EXPRS[1]})'"
-fi
-
 # ---------------------------------------------------------------------------
 # Helper: check if a var name is in the --env overrides
 # Usage: is_var_in_env_overrides VAR_NAME
@@ -443,9 +422,8 @@ fi
 # Build the command to run in each tmux session
 run_cmd() {
   local target="$1"        # pytest target (file path or node id)
-  local marker_arg="$2"    # optional marker filter (e.g., "-m eval")
-  local session_name="$3"  # unique session name
-  local result_path="$4"   # controller-owned occurrence, never derived from a node
+  local session_name="$2"  # unique session name
+  local result_path="$3"   # controller-owned occurrence, never derived from a node
   # Build the inner script first with safe %q for path/target, then quote the whole script with %q
   local inner
   local env_exports
@@ -459,7 +437,7 @@ run_cmd() {
   env_exports="$env_exports $(printf 'UNIFY_TEST_RESULTS_DIR=%q' "$RESULTS_DIR")"
   # Append user-provided --env overrides plus the socket/log-dir/OTEL exports
   env_exports="$env_exports$(build_env_exports)"
-  # Build pytest command with optional marker filter and extra args
+  # Build pytest command with any extra args
   local pytest_cmd
   local extra_args=""
   # Append any extra pytest args passed via --
@@ -468,11 +446,7 @@ run_cmd() {
       extra_args="$extra_args $(printf '%q' "$arg")"
     done
   fi
-  if [[ -n "$marker_arg" ]]; then
-    pytest_cmd=$(printf '%q -m pytest %s %s %q' "$VENV_PY" "$marker_arg" "$extra_args" "$target")
-  else
-    pytest_cmd=$(printf '%q -m pytest %s %q' "$VENV_PY" "$extra_args" "$target")
-  fi
+  pytest_cmd=$(printf '%q -m pytest %s %q' "$VENV_PY" "$extra_args" "$target")
   # Wrap pytest in GNU/coreutils timeout so a hung session fails in minutes
   # instead of holding the whole-run --timeout budget. Prefer timeout(1);
   # fall back to gtimeout on macOS Homebrew. Skip wrapping if neither exists
@@ -759,8 +733,6 @@ build_find_cmd() {
 # This is much faster than calling pytest --collect-only per file, as pytest
 # initialization (~10s) happens only once instead of per file.
 collect_nodes_batch() {
-  local marker_arg="$1"  # optional marker filter (e.g., "-m eval")
-  shift
   local targets=("$@")
 
   if (( ${#targets[@]} == 0 )); then
@@ -784,11 +756,8 @@ collect_nodes_batch() {
     quoted_targets+=" $(printf '%q' "$t")"
   done
 
-  # Build collection filter args (marker filter + any -k/-m from PYTEST_EXTRA_ARGS)
+  # Build collection filter args (any -k/-m from PYTEST_EXTRA_ARGS)
   local collection_filters=""
-  if [[ -n "$marker_arg" ]]; then
-    collection_filters="$marker_arg"
-  fi
   # Append collection-relevant args from PYTEST_EXTRA_ARGS (e.g., -k "pattern")
   if (( ${#PYTEST_COLLECTION_ARGS[@]} > 0 )); then
     for carg in "${PYTEST_COLLECTION_ARGS[@]}"; do
@@ -839,9 +808,9 @@ validate_and_add_direct_nodes() {
     fi
   done
 
-  # Collect all valid nodes from those files (no marker filter — just checking existence)
+  # Collect all valid nodes from those files (just checking existence)
   local collected
-  collected=$(collect_nodes_batch "" "${base_files[@]}")
+  collected=$(collect_nodes_batch "${base_files[@]}")
 
   # Validate each direct_node against collected output
   for node in "${direct_nodes[@]}"; do
@@ -904,40 +873,11 @@ if (( ! SERIAL )); then
   if (( ${#all_targets[@]} )); then
     while IFS= read -r nid; do
       [[ -n "$nid" ]] && printf '%s\0' "$nid" >> "$tmp"
-    done < <(collect_nodes_batch "$MARKER_FILTER" "${all_targets[@]}")
-  fi
-  validate_and_add_direct_nodes
-elif [[ -n "$MARKER_FILTER" ]]; then
-  # Serial mode WITH marker filter: collect nodes first to find which files
-  # have matching tests, then create one session per file (not per-node).
-  # This prevents creating sessions for files with 0 matching tests.
-  all_targets=()
-  if (( ${#direct_files[@]} )); then
-    all_targets+=( "${direct_files[@]}" )
-  fi
-  if (( ${#found_files[@]} )); then
-    all_targets+=( "${found_files[@]}" )
-  fi
-  if (( ${#all_targets[@]} )); then
-    # Collect node ids, extract unique file paths (bash 3.x compatible)
-    # Use a temp file + sort -u to get unique file paths
-    tmp_files="$(mktemp)"
-    while IFS= read -r nid; do
-      if [[ -n "$nid" && "$nid" == *"::"* ]]; then
-        # Extract file path (everything before first ::)
-        file_path="${nid%%::*}"
-        echo "$file_path" >> "$tmp_files"
-      fi
-    done < <(collect_nodes_batch "$MARKER_FILTER" "${all_targets[@]}")
-    # Output unique files that have matching tests
-    while IFS= read -r file_path; do
-      [[ -n "$file_path" ]] && printf '%s\0' "$file_path" >> "$tmp"
-    done < <(sort -u "$tmp_files")
-    rm -f "$tmp_files"
+    done < <(collect_nodes_batch "${all_targets[@]}")
   fi
   validate_and_add_direct_nodes
 else
-  # Serial mode without marker filter: one session per file
+  # Serial mode: one session per file
   if (( ${#direct_files[@]} )); then
     printf '%s\0' "${direct_files[@]}" >> "$tmp"
   fi
@@ -957,7 +897,6 @@ if (( ${#files[@]} == 0 )); then
   echo "This could mean:" >&2
   echo "  - The path doesn't exist or contains no test_*.py files" >&2
   echo "  - pytest --collect-only failed (check for import errors)" >&2
-  echo "  - A marker filter (--eval-only/--symbolic-only) excluded all tests" >&2
   exit 1
 fi
 
@@ -1029,7 +968,7 @@ for target in "${files[@]}"; do
   original_session_name="$session"
   printf '%s\n' "$target" > "$RESULTS_DIR/$occurrence.target"
   printf '%s\n' "$session" > "$RESULTS_DIR/$occurrence.name"
-  cmd="$(run_cmd "$target" "$MARKER_FILTER" "$session" "$result_path")"
+  cmd="$(run_cmd "$target" "$session" "$result_path")"
 
   # Capture session ID to track this specific run robustly
   sid=$(tmux_cmd new-session -d -P -F "#{session_id}" -s "$session" -n "$wname" "$cmd")

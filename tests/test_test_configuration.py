@@ -276,20 +276,6 @@ def test_a_test_that_swallows_the_timeout_is_killed(tmp_path):
     assert elapsed < 60
 
 
-# ── fresh model calls ───────────────────────────────────────────────────────
-
-
-@pytest.mark.fresh_llm_calls
-def test_a_fresh_calls_test_builds_clients_without_the_cache():
-    import unillm
-
-    assert unillm.SETTINGS.UNILLM_CACHE is False
-    assert os.environ["UNILLM_CACHE"] == "false"
-    from unify.common.llm_client import new_llm_client
-
-    assert new_llm_client().cache is False
-
-
 # ── frozen clocks ───────────────────────────────────────────────────────────
 
 

@@ -37,7 +37,7 @@ fi
 # Arrays to collect grid variables and pass-through options
 declare -a GRID_VARS=()      # KEY=val1|val2|val3 entries (grid search)
 declare -a SINGLE_ENV_VARS=()  # KEY=value entries (no pipe, held constant across runs)
-declare -a PASSTHROUGH=()    # All other args (non-env flags like --eval-only)
+declare -a PASSTHROUGH=()    # All other args (non-env flags like -j)
 declare -a TARGETS=()        # Test targets (files/directories)
 
 DRY_RUN=0
@@ -68,18 +68,18 @@ Auto-Tagging:
   other sources appear in the full settings dict but not in tags.
 
 Examples:
-  # Grid search across models and cache settings
-  # (auto-tags: UNIFY_MODEL=gpt-4o,UNILLM_CACHE=true etc.)
-  ./grid_search.sh --env UNIFY_MODEL="gpt-4o|claude-3" --env UNILLM_CACHE="true|false" tests/
+  # Grid search across memory modes and step limits
+  # (auto-tags: UNIFY_MEMORY=off,UNIFY_MAX_TOOL_LOOP_STEPS=50 etc.)
+  ./grid_search.sh --env UNIFY_MEMORY="off|on" --env UNIFY_MAX_TOOL_LOOP_STEPS="50|300" tests/
 
   # With additional pass-through options
-  ./grid_search.sh --env UNIFY_MODEL="gpt-4o|claude-3" --eval-only tests/
+  ./grid_search.sh --env UNIFY_MEMORY="off|on" -j 4 tests/
 
   # Dry run to see what would be executed
-  ./grid_search.sh -n --env UNIFY_MODEL="gpt-4o|claude-3" tests/
+  ./grid_search.sh -n --env UNIFY_MEMORY="off|on" tests/
 
   # Add a constant variable to all runs
-  ./grid_search.sh --env UNIFY_MODEL="gpt-4o|claude-3" --env EXPERIMENT_ID="exp-42" tests/
+  ./grid_search.sh --env UNIFY_MEMORY="off|on" --env EXPERIMENT_ID="exp-42" tests/
 
 Notes:
   - Each combination spawns a separate parallel_run.sh invocation

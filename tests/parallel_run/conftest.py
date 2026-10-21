@@ -28,9 +28,6 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 # Kept outside fixtures/ so directory-discovery meta-tests do not spawn the
 # intentional hang session used only by --session-timeout coverage.
 HANG_FIXTURES_DIR = Path(__file__).parent / "hang_fixtures"
-# Likewise separate: fixtures that open their store and report their
-# environment, used only by the store-plumbing and --no-cache coverage.
-ENV_FIXTURES_DIR = Path(__file__).parent / "env_fixtures"
 # Likewise separate: fixtures whose results the runner reports back, some of
 # which hold their session open, used only by the result-reporting coverage.
 REPORT_FIXTURES_DIR = Path(__file__).parent / "report_fixtures"
@@ -38,7 +35,6 @@ PYTEST_LOGS_DIR = REPO_ROOT / "logs" / "pytest"
 _FIXTURE_TREES = (
     FIXTURES_DIR,
     HANG_FIXTURES_DIR,
-    ENV_FIXTURES_DIR,
     REPORT_FIXTURES_DIR,
 )
 
@@ -365,7 +361,6 @@ class ParallelRunner:
         self.script_path = SCRIPT_PATH
         self.fixtures_dir = FIXTURES_DIR
         self.hang_fixtures_dir = HANG_FIXTURES_DIR
-        self.env_fixtures_dir = ENV_FIXTURES_DIR
         self.report_fixtures_dir = REPORT_FIXTURES_DIR
         self.repo_root = REPO_ROOT
         self._created_sessions: List[tuple[str, str]] = []  # (socket, session_name)
@@ -589,25 +584,10 @@ class ParallelRunner:
         path = self.hang_fixtures_dir.joinpath(*parts)
         return str(path.relative_to(self.repo_root))
 
-    def env_fixture_path(self, *parts: str) -> str:
-        """Get the path to a store-plumbing fixture relative to repo root."""
-        path = self.env_fixtures_dir.joinpath(*parts)
-        return str(path.relative_to(self.repo_root))
-
     def report_fixture_path(self, *parts: str) -> str:
         """Get the path to a result-reporting fixture relative to repo root."""
         path = self.report_fixtures_dir.joinpath(*parts)
         return str(path.relative_to(self.repo_root))
-
-    @staticmethod
-    def session_env_reports(result: RunResult) -> List[dict]:
-        """Read the ``env-reports/*.json`` snapshots the environment fixture writes."""
-        import json
-
-        if result.log_dir is None:
-            return []
-        candidates = sorted((result.log_dir / "env-reports").glob("*.json"))
-        return [json.loads(p.read_text(encoding="utf-8")) for p in candidates]
 
     def cleanup(self):
         """Kill all sessions created by this runner.

@@ -7,8 +7,6 @@ Tests each flag in isolation:
 - --match / -m
 - --env / -e
 - --jobs / -j
-- --eval-only
-- --symbolic-only
 - --repeat
 - --help / -h
 - -- (pytest passthrough)
@@ -365,79 +363,6 @@ class TestEnvFlag:
         assert result.exit_code != 0 or "Error" in result.stderr
 
 
-class TestEvalOnlyFlag:
-    """Tests for --eval-only flag."""
-
-    def test_eval_only_runs_only_eval_tests(self, runner):
-        """--eval-only should only run tests marked with pytest.mark.eval."""
-        # Use specific file to avoid slow collection across entire fixtures dir
-        result = runner.run(
-            "--eval-only",
-            runner.fixture_path("test_eval_marked.py"),
-            wait_for_completion=True,
-        )
-
-        # test_eval_marked.py has 2 eval tests, default is per-test mode
-        assert len(result.sessions_created) == 2
-        assert result.exit_code == 0
-
-    def test_eval_only_with_serial(self, runner, fixtures_dir):
-        """--eval-only with -s should create one session per file with eval tests."""
-        result = runner.run(
-            "--eval-only",
-            "-s",
-            fixtures_dir,
-            wait_for_completion=True,
-        )
-
-        # Should find 1 file with eval tests (test_eval_marked.py)
-        assert len(result.sessions_created) == 1
-
-
-class TestSymbolicOnlyFlag:
-    """Tests for --symbolic-only flag."""
-
-    def test_symbolic_only_excludes_eval_tests(self, runner):
-        """--symbolic-only should exclude tests marked with pytest.mark.eval."""
-        # Use specific file to avoid slow collection across entire fixtures dir
-        result = runner.run(
-            "--symbolic-only",
-            runner.fixture_path("test_symbolic_only.py"),
-            wait_for_completion=True,
-        )
-
-        # test_symbolic_only.py has 2 tests, none marked as eval (default per-test mode)
-        assert len(result.sessions_created) == 2
-        assert result.exit_code == 0
-
-    def test_symbolic_only_with_serial(self, runner):
-        """--symbolic-only with -s should create one session per file."""
-        result = runner.run(
-            "--symbolic-only",
-            "-s",
-            runner.fixture_path("test_symbolic_only.py"),
-            wait_for_completion=True,
-        )
-
-        # Should create 1 session (per-file mode)
-        assert len(result.sessions_created) == 1
-
-
-class TestEvalSymbolicMutualExclusion:
-    """Tests for --eval-only and --symbolic-only mutual exclusion."""
-
-    def test_eval_and_symbolic_mutually_exclusive(self, runner):
-        """--eval-only and --symbolic-only together should error."""
-        result = runner.run(
-            "--eval-only",
-            "--symbolic-only",
-            runner.fixture_path("test_always_pass.py"),
-        )
-
-        assert result.exit_code != 0
-        assert "mutually exclusive" in result.stderr.lower()
-
-
 class TestRepeatFlag:
     """Tests for --repeat flag."""
 
@@ -577,8 +502,6 @@ class TestHelpFlag:
         assert "--match" in result.stdout
         assert "--env" in result.stdout
         assert "--jobs" in result.stdout
-        assert "--eval-only" in result.stdout
-        assert "--symbolic-only" in result.stdout
         assert "--repeat" in result.stdout
 
     def test_help_short_flag(self, runner):
@@ -635,26 +558,3 @@ class TestPytestPassthrough:
         assert result.exit_code == 0
         # Serial mode: 1 session for the file
         assert len(result.sessions_created) == 1
-
-
-class TestNoCacheFlag:
-    """Tests for --no-cache, shorthand for --env UNILLM_CACHE=false."""
-
-    def test_no_cache_reaches_the_session(self, runner):
-        """The session's environment carries UNILLM_CACHE=false."""
-        result = runner.run(
-            "--no-cache",
-            runner.env_fixture_path("test_report_env.py"),
-            wait_for_completion=True,
-        )
-
-        assert result.exit_code == 0
-        reports = runner.session_env_reports(result)
-        assert len(reports) == 1
-        assert reports[0]["UNILLM_CACHE"] == "false"
-
-    def test_help_lists_no_cache(self, runner):
-        result = runner.run("--help")
-
-        assert result.exit_code == 0
-        assert "--no-cache" in result.stdout
