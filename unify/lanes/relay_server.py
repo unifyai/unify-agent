@@ -46,8 +46,10 @@ upstream and one terminal row (``completed``, ``failed`` or ``cancelled``) under
 written before the caller can have the whole reply (so its next call is admitted against what this one cost; a reply
 that then does not reach it adds one more row, ``cancelled``, with the same charge), in the shape
 ``unify/memory/reconcile.py`` and ``unify/memory/metering.py`` read: ``account_charge`` (the provider's charge, a
-decimal string, or null), ``tokens``, ``generation_id``, ``status_code`` and a fixed ``error_type``. A call that
-failed before anything was sent has the charge ``"0"``.
+decimal string, or null), ``tokens``, ``generation_id``, ``status_code`` and a fixed ``error_type``, with what the run
+booked for it (``booked_usd``) and how (``charge_class``, :data:`CHARGE_CLASSES`). A call that failed before anything
+was sent, and one the provider refused before generating (a :data:`REJECTED_STATUSES` reply without usage), have the
+charge ``"0"``.
 
 **Spend.** One cap over all lanes, for this run: this relay, which lives as long as one ``unify act`` and the writer
 service it ran. Each call is booked in this process's memory from its admission, at its model's worst case, to its
@@ -116,6 +118,13 @@ DRAIN_S = 20.0
 CONNECT_ATTEMPTS = 3
 CONNECT_BACKOFF_S = 1.0
 
+#: Statuses at which a JSON reply without usage is the provider refusing the call before it generated anything: such a
+#: call is booked at nothing (``rejected``). A timeout (408), a server error (5xx), a caller gone, and any streamed or
+#: partial output keep the worst case: the call may have been billed.
+REJECTED_STATUSES = frozenset({400, 401, 403, 404, 409, 422, 429})
+#: How a call's booking was decided, as its terminal row's ``charge_class``: the provider's charge, its tokens at the
+#: pinned prices, the worst case, refused before generating, or never sent.
+CHARGE_CLASSES = ("charge", "estimate", "worst_case", "rejected", "not_sent")
 REDACTED = b"[redacted]"
 META_PREFIX = "x-unify-"
 #: ``X-Unify-*`` header -> journal field, and the form each value must have to be journaled (else it is dropped and
@@ -388,6 +397,7 @@ class Ledger:
         self.config = config
         self.booked: dict[str, Decimal] = {}
         self.total = Decimal(0)
+        self.classes: dict[str, str] = {}
         self.lock = threading.Lock()
 
     def _book(self, rid: str, amount: Decimal) -> None:
@@ -406,13 +416,15 @@ class Ledger:
             self._book(rid, worst)
             return True
 
-    def price(self, model: str, charge: Decimal | None, tokens) -> Decimal:
-        """What an ended call books: its charge; else its tokens at the model's pinned prices; else its model's worst
-        case."""
+    def price(self, model: str, charge: Decimal | None, tokens) -> tuple[Decimal, str]:
+        """What an ended call books, and the class of that booking: its charge; else its tokens at the model's pinned
+        prices; else its model's worst case."""
         if charge is not None:
-            return charge
+            return charge, "charge"
         estimate = self._estimate(model, tokens)
-        return estimate if estimate is not None else self.config.worst[model]
+        if estimate is not None:
+            return estimate, "estimate"
+        return self.config.worst[model], "worst_case"
 
     def _estimate(self, model: str, tokens) -> Decimal | None:
         """As ``unify/memory/reconcile.estimate``: input, output and cache-write tokens at the pinned prices."""
@@ -429,9 +441,16 @@ class Ledger:
             usd += prices["cache_write"] * counts["cache_write"]
         return usd / Decimal(1000000)
 
-    def settle(self, rid: str, amount: Decimal) -> None:
+    def settle(self, rid: str, amount: Decimal, kind: str) -> None:
         with self.lock:
             self._book(rid, amount)
+            self.classes[rid] = kind
+
+    def by_class(self) -> str:
+        """How many ended calls were booked in each class (for the relay's log)."""
+        with self.lock:
+            counts = {k: list(self.classes.values()).count(k) for k in CHARGE_CLASSES}
+        return ", ".join(f"{k} {n}" for k, n in counts.items() if n) or "none"
 
     def state(self) -> dict:
         with self.lock:
@@ -635,11 +654,16 @@ class _Ending:
         }
         row.update(end)
         model, rid = self.base["requested_model"], self.base["request_attempt_id"]
-        booked = self.ledger.price(model, _charge(row["account_charge"]), row["tokens"])
-        row["booked_usd"] = _money(booked)
+        booked, kind = self.ledger.price(
+            model, _charge(row["account_charge"]), row["tokens"]
+        )
+        kind = {"not_sent": "not_sent", "rejected_before_generation": "rejected"}.get(
+            row["measurement"], kind
+        )
+        row["booked_usd"], row["charge_class"] = _money(booked), kind
         self.row = row
         self.journal.write(row)
-        self.ledger.settle(rid, booked)
+        self.ledger.settle(rid, booked, kind)
 
     def undelivered(self) -> None:
         """The reply did not reach the caller after the call was journaled: one more row, ``cancelled``, with the same
@@ -1017,7 +1041,15 @@ class Relay:
             info = bill(json.loads(data, parse_float=Decimal))
         except (ValueError, RecursionError):
             info = {}
-        call.end(self._outcome(resp.status, bool(info.pop("error", False))), info)
+        outcome = self._outcome(resp.status, bool(info.pop("error", False)))
+        if (
+            resp.status in REJECTED_STATUSES
+            and "tokens" not in info
+            and "charge" not in info
+        ):
+            # refused before generating: nothing was billed
+            outcome.update(account_charge="0", measurement="rejected_before_generation")
+        call.end(outcome, info)
         out = redact(data, self.secrets)
         try:
             handler.send_response_only(resp.status)
@@ -1366,7 +1398,9 @@ def main() -> int:
         pass
     _log(f"stopping ({why[0] if why else 'stopped'})")
     cut = relay.drain(server)
-    _log(f"stopped; {cut} call(s) cut")
+    _log(
+        f"stopped; {cut} call(s) cut; calls by charge class: {relay.ledger.by_class()}"
+    )
     return 0
 
 

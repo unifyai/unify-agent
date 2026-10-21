@@ -47,7 +47,8 @@ def reply(
 
 
 class Upstream:
-    """``mode``: ``json`` (default), ``stream``, ``error`` (``status``), ``hold`` (wait for :meth:`release`), or a
+    """``mode``: ``json`` (default), ``stream``, ``stream_status`` (a stream at ``status``), ``error`` (``status``, a
+    JSON error without usage), ``hold`` (wait for :meth:`release`), or a
     callable taking the request body and returning ``(status, doc)``. ``echo`` (bytes) is put into every reply, to
     show what the relay redacts. ``delay`` holds each reply that long."""
 
@@ -138,7 +139,7 @@ class Upstream:
                         }
                     },
                 )
-            elif self.mode == "stream" or body.get("stream"):
+            elif self.mode in ("stream", "stream_status") or body.get("stream"):
                 self._stream(h)
             else:
                 self._json(h, 200, reply("ok " + self.echo.decode(), cost=self.cost))
@@ -156,7 +157,7 @@ class Upstream:
         h.wfile.write(data)
 
     def _stream(self, h) -> None:
-        h.send_response(200)
+        h.send_response(self.status if self.mode == "stream_status" else 200)
         h.send_header("Content-Type", "text/event-stream")
         h.send_header("Transfer-Encoding", "chunked")
         h.end_headers()
@@ -165,8 +166,13 @@ class Upstream:
             b'data: {"id":"gen-stream-1","choices":[{"index":0,"delta":{"role":"assistant","content":"hel'
             + self.echo
             + b'"}}]}\n\n',
-            b'data: {"id":"gen-stream-1","choices":[{"index":0,"finish_reason":"stop","delta":{"content":"lo"}}],'
-            b'"usage":{"prompt_tokens":40,"completion_tokens":2,"cost":0.0004}}\n\n',
+            b'data: {"id":"gen-stream-1","choices":[{"index":0,"finish_reason":"stop","delta":{"content":"lo"}}]'
+            + (
+                b',"usage":{"prompt_tokens":40,"completion_tokens":2,"cost":0.0004}'
+                if self.cost is not None
+                else b""
+            )
+            + b"}\n\n",
             b"data: [DONE]\n\n",
         ]
         for event in events:

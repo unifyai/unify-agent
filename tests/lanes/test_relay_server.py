@@ -328,7 +328,7 @@ def test_each_call_is_journaled_in_its_lanes_journal_in_the_shape_the_memory_cod
     assert started["requested_model"] == MODEL and started["account_charge"] is None
     assert done["status"] == "completed" and done["status_code"] == 200
     assert done["account_charge"] == "0.00125" and done["generation_id"] == "gen-stub-1"
-    assert done["booked_usd"] == "0.00125"  # what the run's ledger booked for it
+    assert (done["booked_usd"], done["charge_class"]) == ("0.00125", "charge")
     assert done["tokens"] == {
         "input": 120,
         "output": 7,
@@ -396,20 +396,82 @@ def test_a_stream_is_relayed_as_it_arrives_metered_and_redacted(tmp_path, upstre
     assert done["finish_reason"] == "stop" and done["tokens"]["input"] == 40
 
 
-def test_an_upstream_error_reaches_the_caller_and_is_booked_unknown(tmp_path):
-    up = Upstream("error", status=429, echo=FAKE_KEY.encode())
+@pytest.mark.parametrize("status", sorted(rs.REJECTED_STATUSES))
+def test_a_refusal_before_generating_reaches_the_caller_and_is_booked_at_nothing(
+    tmp_path, status
+):
+    """A 4xx the provider answers without usage (it refused before generating) costs nothing: booked at 0, its class
+    journaled, and the caller gets the provider's own status and body, redacted."""
+    up = Upstream("error", status=status, echo=FAKE_KEY.encode())
+    try:
+        doc, tokens = _doc(tmp_path / "lanes", up.base, cap="1.00")
+        with serving(doc) as relay:
+            got, reply = call(relay.port, "helper", tokens["helper"], BODY)
+            again = call(relay.port, "helper", tokens["helper"], BODY)[0]
+            state = relay.ledger.state()
+    finally:
+        up.close()
+    assert got == again == status and FAKE_KEY not in json.dumps(reply)
+    done = [
+        r
+        for r in _rows(tmp_path / "lanes" / "helper.jsonl")
+        if r["origin"] == "response"
+    ]
+    assert {
+        (r["status"], r["error_type"], r["account_charge"], r["measurement"])
+        for r in done
+    } == {("failed", f"http_{status}", "0", "rejected_before_generation")}
+    assert {(r["charge_class"], r["booked_usd"]) for r in done} == {("rejected", "0")}
+    assert (
+        state["booked_usd"] == "0"
+    )  # under a cap that holds one worst case, both were admitted
+
+
+@pytest.mark.parametrize(
+    "mode, status",
+    [
+        ("error", 408),  # a timeout: the provider may have been generating
+        ("error", 500),
+        ("error", 503),
+        ("stream_status", 429),  # streamed output: billing may have happened
+    ],
+)
+def test_a_failure_that_may_have_been_billed_keeps_the_worst_case(
+    tmp_path, mode, status
+):
+    up = Upstream(mode, status=status, cost=None)
+    try:
+        doc, tokens = _doc(tmp_path / "lanes", up.base, cap="1.00")
+        with serving(doc) as relay:
+            got = call(relay.port, "writer", tokens["writer"], BODY)[0]
+            state = relay.ledger.state()
+    finally:
+        up.close()
+    assert got == status
+    _, done = _rows(tmp_path / "lanes" / "writer.jsonl")
+    assert (done["account_charge"], done["charge_class"], done["booked_usd"]) == (
+        None,
+        "worst_case",
+        "0.65625",
+    )
+    assert state["booked_usd"] == "0.65625"
+
+
+def test_a_refusal_that_reports_usage_is_not_taken_for_one_before_generating(tmp_path):
+    up = Upstream(
+        lambda body: (429, {"error": {"code": 429}, "usage": {"prompt_tokens": 50}})
+    )
     try:
         doc, tokens = _doc(tmp_path / "lanes", up.base)
         with serving(doc) as relay:
-            status, reply = call(relay.port, "helper", tokens["helper"], BODY)
+            assert call(relay.port, "fork", tokens["fork"], BODY)[0] == 429
     finally:
         up.close()
-    assert status == 429 and FAKE_KEY not in json.dumps(reply)
-    _, done = _rows(tmp_path / "lanes" / "helper.jsonl")
-    assert (done["status"], done["error_type"], done["account_charge"]) == (
-        "failed",
-        "http_429",
+    _, done = _rows(tmp_path / "lanes" / "fork.jsonl")
+    assert (done["account_charge"], done["charge_class"], done["booked_usd"]) == (
         None,
+        "worst_case",
+        "0.65625",
     )
 
 
@@ -429,6 +491,7 @@ def test_an_unreachable_upstream_is_a_call_that_cost_nothing(tmp_path):
         "not_sent",
         "0",
     )
+    assert done["charge_class"] == "not_sent"
     assert state["booked_usd"] == "0"
 
 
