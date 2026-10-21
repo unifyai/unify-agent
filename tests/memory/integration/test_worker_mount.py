@@ -60,40 +60,6 @@ def _probe(paths: Paths, hidden: list) -> str:
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(180)
-async def test_the_worker_imports_and_writes_the_export_and_sees_nothing_else(
-    world,  # noqa: F811
-    monkeypatch,
-):
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    paths, hidden = _home(world)
-    monkeypatch.setattr(
-        request_mod,
-        "_CURRENT",
-        SimpleNamespace(index="", paths=paths),
-    )
-    policy = sandbox.build_policy(fresh=True)
-    assert all(policy.readable_violation(p) is not None for p in hidden)
-    ex = Cells()
-    try:
-        out = await _cell(
-            ex,
-            "from env.spotify import hello\n"
-            f"open({LIBRARY!r} + '/env/spotify/scratch.py', 'w').write('x = 1')\n"
-            "hello(None, 'ada')",
-        )
-        assert out == "hi ada"
-        assert list(await _cell(ex, _probe(paths, hidden))) == [
-            True,
-            [False] * (len(hidden) + 1),
-        ]
-    finally:
-        await ex.close()
-    assert (paths.checkout / "env/spotify/scratch.py").read_text() == "x = 1"
-
-
-@needs_bwrap
-@pytest.mark.asyncio
-@pytest.mark.timeout(180)
 async def test_the_worker_writes_no_bytecode_into_the_export(
     world,  # noqa: F811
     monkeypatch,
@@ -183,22 +149,24 @@ async def test_with_the_switch_off_the_export_is_neither_mounted_nor_imported(
 
 
 def test_no_mount_or_import_path_until_the_export_exists(tmp_path, monkeypatch):
-    """A bind source that does not exist would stop the worker: nothing is mounted before the export is made."""
+    """A bind source that does not exist would stop the worker: nothing is mounted before the export is made, and the
+    export is only ever bound read-only."""
     from unify.memory.integration import hooks
 
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
     paths = Paths.under(tmp_path / "state")
     monkeypatch.setattr(request_mod, "_CURRENT", SimpleNamespace(index="", paths=paths))
     assert not paths.checkout.exists()
-    assert hooks.worker_mounts() == [] and hooks.worker_paths() == []
+    assert hooks.worker_readonly_mounts() == [] and hooks.worker_paths() == []
     paths.checkout.mkdir(parents=True)
-    assert hooks.worker_mounts() == [paths.checkout] and hooks.worker_paths() == [
+    assert hooks.worker_mounts() == []
+    assert hooks.worker_readonly_mounts() == [paths.checkout] and hooks.worker_paths() == [
         str(paths.checkout),
     ]
     # the library test kit inside the export (its tests use memlab): after the export on the import path,
     # mounted with it
     (paths.checkout / ".memlab").mkdir()
-    assert hooks.worker_mounts() == [paths.checkout] and hooks.worker_paths() == [
+    assert hooks.worker_readonly_mounts() == [paths.checkout] and hooks.worker_paths() == [
         str(paths.checkout),
         str(paths.checkout / ".memlab"),
     ]

@@ -138,7 +138,7 @@ def call_record(name: str, arguments: Any) -> CallRecord:
     if isinstance(arguments, str):
         try:
             args = json.loads(arguments) if arguments.strip() else {}
-        except ValueError:
+        except (ValueError, RecursionError):  # a model's arguments: malformed, or nested past the decoder's depth
             args = {"_raw": arguments}
     else:
         args = arguments or {}
