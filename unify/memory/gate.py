@@ -2295,16 +2295,12 @@ class Gate:
             elif tests and tests <= unran:
                 continue  # rev 2: none of its tests ran, so whether one is red is not known (its label says why)
             elif it.item in edited and tests:
-                if cleanup:
-                    unseen.add(it.item)
-                else:
-                    refused.add(it.item)
-                    run.fail(
-                        "G3",
-                        f"{it.item} is edited, but none of its tests is red on the parent's library. "
-                        f"{RED_TEST_HINT}",
-                        it.item,
-                    )
+                refused.add(it.item)
+                run.fail(
+                    "G3",
+                    f"{it.item} is edited, but none of its tests is red on the parent's library. {RED_TEST_HINT}",
+                    it.item,
+                )
         protected = self._suites(run)
         self._behaviour(run, unseen, declared, refused, protected)
 
