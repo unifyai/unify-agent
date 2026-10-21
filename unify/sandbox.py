@@ -1,8 +1,8 @@
-"""OS confinement for the shell and file access the actor gets.
+"""OS confinement for the code the actor runs and the files it reads.
 
-Every shell cell, every subprocess a Python cell starts, and the sandboxed
-Python worker run inside bubblewrap (Linux) under one policy (the
-``UNIFY_WORKSPACE=sandboxed`` switch until the code freeze baked it in):
+The sandboxed Python worker that runs every cell, every subprocess a cell
+starts, and the harness's own reads for ``tools.grep`` run inside bubblewrap
+(Linux) under one policy:
 
 * The root is an allowlist, read-only (:data:`_ROOT_ALLOWLIST`): the system
   directories (``/usr``, ``/bin``, ``/lib*``, ``/sbin``), a few files of
@@ -53,8 +53,7 @@ Each rule has a name. A refusal the harness makes itself (a missing
 bubblewrap, a path :func:`check_readable` rejects) raises
 :class:`SandboxRefusal` naming it; a hidden directory contains one file,
 ``UNIFY_SANDBOX_MASKED``, and a hidden file reads as one line, each naming the
-rule that hid it; an OS error in a shell cell's output gets a note naming the
-rule behind it (:func:`annotate_refusals`).
+rule that hid it.
 
 The harness's package installer (unify/environment.py) runs under the same
 policy with two additions it asks for itself: the workspace environment and
@@ -75,7 +74,6 @@ subprocess it starts are confined alike.
 
 from __future__ import annotations
 
-import contextvars
 import hashlib
 import json
 import logging
@@ -84,12 +82,11 @@ import re
 import shutil
 import socket
 import stat
-import subprocess
 import sys
 import tempfile
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Mapping, Optional, Sequence
@@ -101,16 +98,13 @@ __all__ = [
     "EgressProxy",
     "SandboxPolicy",
     "SandboxRefusal",
-    "annotate_refusals",
     "build_policy",
     "box_path",
     "check_readable",
-    "confined_subprocesses",
     "host_path",
     "neutral_text",
     "egress_proxy",
     "scrubbed_env",
-    "unconfined",
     "wrap_argv",
 ]
 
@@ -261,7 +255,7 @@ RLIMIT_NPROC_COUNT = 4096
 RLIMIT_FSIZE_BYTES = 16 * 1024**3
 
 # The host paths every sandboxed command sees besides those derived at start
-# (_derived_roots: the interpreter, the Unify package, editable installs, the
+# (_derived_candidates: the interpreter, the Unify package, editable installs, the
 # trusted LD_PRELOAD) and those the policy mounts (workspace, state views,
 # proxy). Each is mounted read-only where it exists; a symlink whose target
 # is itself visible stays a symlink, any other is mounted from its target
@@ -1790,11 +1784,6 @@ def _derived_candidates(guarded: Optional[Sequence[Path]] = None) -> list[Derive
     return out
 
 
-def _derived_roots() -> list[tuple[Path, str]]:
-    """The accepted read-only roots taken from this process, with reasons."""
-    return [(d.path, d.reason) for d in _derived_candidates() if d.refusal is None]
-
-
 def _is_system(path: Path) -> bool:
     return any(
         _within(path, Path(os.path.realpath(d)))
@@ -1918,7 +1907,7 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
     Cached for five minutes (``fresh=True`` rebuilds it), since every sandboxed
     cell asks for it and finding ``.env`` files walks part of the home
     directory; a ``.env`` file created meanwhile is still refused by name by
-    ``read_file`` and ``grep``, but a shell cell sees it until the rebuild.
+    ``grep``, but a cell sees it until the rebuild.
     """
     global _POLICY_CACHE
     from unify.db import store_home
@@ -2856,7 +2845,7 @@ def sandbox_env(
     variables (:func:`allowed_env`), never from the harness's environment as a
     whole, so a provider key is not in it whatever its name. ``PATH`` starts
     with the cell interpreter's directories (:func:`interpreter_bin_dirs`), so
-    ``python`` and ``python3`` in a cell's subprocess or a bash cell are the
+    ``python`` and ``python3`` in a cell's subprocess are the
     interpreter cells run with, whether or not the host's ``PATH`` has them.
     They are already mounted; no mount changes. ``USER`` and ``LOGNAME`` are
     the account the generated ``/etc/passwd`` lists. An explicit *env* (a
@@ -2895,126 +2884,10 @@ def sandbox_env(
     return out
 
 
-def annotate_refusals(output: str, policy: SandboxPolicy) -> Optional[str]:
-    """A note naming the rule behind an OS error in *output*, if any."""
-    notes = []
-    if "Read-only file system" in output:
-        notes.append(
-            f"`workspace-write`: {RULES['workspace-write']} "
-            f"(workspace: {WORKSPACE_MOUNT})",
-        )
-    network_errors = (
-        "Network is unreachable",
-        "Could not resolve host",
-        "Temporary failure in name resolution",
-        "Name or service not known",
-    )
-    if any(e in output for e in network_errors):
-        rule = "network-proxy-only" if policy.network == "proxy" else "network-off"
-        notes.append(f"`{rule}`: {RULES[rule]}")
-    if not notes:
-        return None
-    return "Refused by workspace sandbox rule " + "; rule ".join(notes)
-
-
-# ---------------------------------------------------------------------------
-# Subprocesses started by Python cells
-# ---------------------------------------------------------------------------
-
-_CONFINE: contextvars.ContextVar[Optional[SandboxPolicy]] = contextvars.ContextVar(
-    "unify_sandbox_confine",
-    default=None,
-)
-_PATCH_LOCK = threading.Lock()
-_PATCHED = False
-
-
-@contextmanager
-def confined_subprocesses(policy: Optional[SandboxPolicy]) -> Iterator[None]:
-    """Run every subprocess started in this context (and its tasks) under *policy*."""
-    if policy is None:
-        yield
-        return
-    _install_popen_patch()
-    token = _CONFINE.set(policy)
-    try:
-        yield
-    finally:
-        _CONFINE.reset(token)
-
-
-@contextmanager
 def unconfined() -> Iterator[None]:
-    """Harness-owned subprocesses (package installs) started inside a cell."""
-    token = _CONFINE.set(None)
-    try:
-        yield
-    finally:
-        _CONFINE.reset(token)
-
-
-def _install_popen_patch() -> None:
-    """Wrap ``Popen.__init__`` and ``os.system`` once; inert outside a confined context.
-
-    Every stdlib route to a child process that takes a command line --
-    ``subprocess.run``/``call``/``check_output``, ``Popen``, ``os.popen`` and
-    asyncio's subprocess transports -- constructs a ``Popen``.
-    """
-    global _PATCHED
-    with _PATCH_LOCK:
-        if _PATCHED:
-            return
-        import inspect
-
-        original_init = subprocess.Popen.__init__
-        signature = inspect.signature(original_init)
-
-        def confined_init(self, *args, **kwargs):
-            policy = _CONFINE.get()
-            if policy is None:
-                return original_init(self, *args, **kwargs)
-            bound = signature.bind(self, *args, **kwargs)
-            bound.apply_defaults()
-            a = bound.arguments
-            command = a["args"]
-            if a.get("shell"):
-                shell = a.get("executable") or "/bin/sh"
-                if isinstance(command, (str, bytes, os.PathLike)):
-                    argv = [shell, "-c", os.fsdecode(command)]
-                else:
-                    argv = [shell, "-c", *map(os.fsdecode, command)]
-            elif isinstance(command, (str, bytes, os.PathLike)):
-                argv = [os.fsdecode(command)]
-            else:
-                argv = [os.fsdecode(c) for c in command]
-            if not a.get("shell") and a.get("executable"):
-                argv[0] = os.fsdecode(a["executable"])
-            cwd = a.get("cwd")
-            env = sandbox_env(policy, a.get("env"))
-            a["args"] = wrap_argv(
-                argv,
-                policy,
-                cwd=os.fsdecode(cwd) if cwd is not None else None,
-                env=env,
-            )
-            a["shell"] = False
-            a["executable"] = None
-            a["env"] = env
-            return original_init(*bound.args, **bound.kwargs)
-
-        original_system = os.system
-
-        def confined_system(command):
-            if _CONFINE.get() is None:
-                return original_system(command)
-            proc = subprocess.Popen(command, shell=True)
-            code = proc.wait()
-            # os.system reports a wait status, not an exit code.
-            return code << 8 if code >= 0 else -code
-
-        subprocess.Popen.__init__ = confined_init  # type: ignore[method-assign]
-        os.system = confined_system
-        _PATCHED = True
+    """Merge-time shim: nothing in the harness's process is confined, so this does nothing. The memory side still
+    wraps its own subprocesses in it; it goes once it no longer does (CLEAN-CORE-LOG.md, merge-time shims)."""
+    return nullcontext()
 
 
 # ---------------------------------------------------------------------------
@@ -3113,10 +2986,11 @@ def _pump(a: socket.socket, b: socket.socket) -> None:
 
 
 _BRIDGES: dict[int, _ProxyBridge] = {}
+_BRIDGES_LOCK = threading.Lock()
 
 
 def _proxy_bridge(port: int) -> _ProxyBridge:
-    with _PATCH_LOCK:
+    with _BRIDGES_LOCK:
         bridge = _BRIDGES.get(port)
         if bridge is None or not bridge.path.exists():
             bridge = _BRIDGES[port] = _ProxyBridge(port)

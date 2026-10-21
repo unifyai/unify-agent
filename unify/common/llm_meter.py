@@ -220,26 +220,11 @@ def new_run_meter() -> RunMeter:
     return RunMeter()
 
 
-def handle_run_stats(handle: Any) -> Dict[str, Any]:
-    """Token accounting a run handle exposes for its execution row.
-
-    Handles that carry ``run_stats`` report it verbatim; a bare loop handle
-    that only carries ``run_meter`` reports the meter's token split.
-    """
-    stats = getattr(handle, "run_stats", None)
-    out: Dict[str, Any] = dict(stats) if isinstance(stats, dict) else {}
-    meter = getattr(handle, "run_meter", None)
-    if isinstance(meter, RunMeter) and not out.get("tokens"):
-        out["tokens"] = meter.snapshot()["tokens"]
-    return out
-
-
 __all__ = [
     "PURPOSES",
     "RunMeter",
     "current_run_meter",
     "decimal_string",
-    "handle_run_stats",
     "install_run_metering",
     "new_run_meter",
     "to_decimal_usd",

@@ -1,4 +1,4 @@
-"""The host handlers of the actor's and its teammates' in-code tools (``UNIFY_TOOLS_IN_CODE=on``).
+"""The host handlers of the actor's and its teammates' in-code tools (``tools.<name>(...)`` in a cell).
 
 Every handler has the registry's one signature, ``handler(ctx, args) -> Reply``: ``ctx`` is the channel's
 ``CallContext`` for the calling agent (built by :func:`actor_binding`, never from the box's frame), ``args`` the

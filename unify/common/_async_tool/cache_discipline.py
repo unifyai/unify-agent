@@ -214,12 +214,6 @@ def cache_usage(completion: Any) -> tuple[Optional[int], Optional[int]]:
     return prompt, cached
 
 
-def cache_stats(client: Any) -> Optional[dict]:
-    """The session's running cache totals, or ``None`` before its first call."""
-    stats = getattr(client, _CACHE_STATS, None)
-    return dict(stats) if isinstance(stats, dict) else None
-
-
 def _share(cached: int, total: int) -> str:
     return f"{100 * cached / total:.1f}%" if total else "n/a"
 

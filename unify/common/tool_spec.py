@@ -1,9 +1,6 @@
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Dict, Union
 
-# Attribute used by `llm_soft_required` to stash per-argument runtime defaults
-# on a tool callable. The async tool loop reads it when dispatching base tools.
-LLM_SOFT_REQUIRED_DEFAULTS_ATTR = "_llm_soft_required_defaults"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 0.  metadata wrapper - lets us attach `max_concurrent` to a tool
@@ -77,24 +74,3 @@ def manager_tool(fn: Callable) -> Callable:
     return fn
 
 
-def llm_soft_required(**defaults: Any) -> Callable[[Callable], Callable]:
-    """Advertise parameters as required in the tool schema while keeping them
-    optional at runtime.
-
-    A parameter declared here stays in the schema's ``required`` array (so the
-    model is strongly nudged to supply it on every call), but if the model
-    omits it the tool loop backfills the configured default instead of letting
-    ``fn(**kwargs)`` raise ``TypeError``.
-
-    Use only for advisory, non-functional arguments — for example
-    ``execute_code``'s ``thought``, a user-facing rationale string that is
-    logged but never read programmatically. Functional required parameters must
-    not be listed here: a genuine omission should surface as an error the model
-    can self-correct against.
-    """
-
-    def _decorator(fn: Callable) -> Callable:
-        setattr(fn, LLM_SOFT_REQUIRED_DEFAULTS_ATTR, dict(defaults))
-        return fn
-
-    return _decorator

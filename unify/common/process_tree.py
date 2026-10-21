@@ -17,7 +17,6 @@ from typing import Optional
 __all__ = [
     "KILL_GRACE_S",
     "alive",
-    "box_namespace",
     "pin_box_namespace",
     "pin_namespace",
     "descendants",
@@ -120,23 +119,6 @@ def pin_box_namespace(pid: int, timeout_s: float = 2.0) -> tuple[str, int] | Non
         time.sleep(0.005)
 
 
-def box_namespace(pid: int, timeout_s: float = 2.0) -> str | None:
-    """The pid namespace of the box that *pid* started (bubblewrap with ``--unshare-pid``): the namespace of the
-    first process below *pid* that is not in this process's own, waiting up to *timeout_s* for the box to make it.
-    None when no process below *pid* has a namespace of its own by then."""
-    own = pid_namespace("self")
-    deadline = time.monotonic() + timeout_s
-    while True:
-        for child, _ in descendants(pid):
-            ns = pid_namespace(child)
-            if ns is not None and ns != own:
-                return ns
-        st = proc_stat(pid)
-        if time.monotonic() >= deadline or st is None or st[1] in _ENDED:
-            return None
-        time.sleep(0.005)
-
-
 def _table() -> dict[int, tuple[int, str, int, str]]:
     """One pass over ``/proc``: pid -> (ppid, state, process group, starttime)."""
     out: dict[int, tuple[int, str, int, str]] = {}
@@ -150,7 +132,6 @@ def _table() -> dict[int, tuple[int, str, int, str]]:
         fields = raw[raw.rfind(")") + 2 :].split()
         out[int(entry)] = (int(fields[1]), fields[0], int(fields[2]), fields[19])
     return out
-
 
 
 def kill_tree(

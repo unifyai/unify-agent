@@ -281,8 +281,8 @@ class ProductionSettings(BaseSettings):
     # ─────────────────────────────────────────────────────────────────────────
     # Workspace Sandbox
     # ─────────────────────────────────────────────────────────────────────────
-    # Bash cells, every subprocess a Python cell starts, and the Python worker
-    # that runs every cell are confined by bubblewrap (unify/sandbox.py,
+    # The Python worker that runs every cell, and every subprocess a cell
+    # starts, are confined by bubblewrap (unify/sandbox.py,
     # unify/actor/execution/worker.py); without bubblewrap they are refused,
     # never run unconfined.
     # ``proxy``: the sandbox's only network is one loopback port forwarded to
@@ -291,7 +291,7 @@ class ProductionSettings(BaseSettings):
     UNIFY_WORKSPACE_NETWORK: str = ""
     UNIFY_WORKSPACE_PROXY_PORT: int = 0
     # Variables of the harness's environment a sandboxed command (the Python
-    # worker that runs every cell, a bash cell) gets besides the built-in
+    # worker that runs every cell, and what it starts) gets besides the built-in
     # allow-list (unify/sandbox.py, CELL_ENV_NAMES and CELL_ENV_PATTERNS): a
     # comma list of names and ``PREFIX_*`` patterns, for a runner's own cell
     # variables. A credential's name or a key-shaped value is never passed.

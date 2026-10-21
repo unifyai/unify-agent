@@ -100,8 +100,6 @@ def _get_memory_tag() -> str:
 
 LOGGER = logging.getLogger("unify")
 
-# Unique identifier for this process lifetime (used for log correlation)
-SESSION_ID = datetime.now(timezone.utc).isoformat()
 
 # File handler state (managed by configure_log_dir)
 _FILE_HANDLER: Optional[logging.FileHandler] = None

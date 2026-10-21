@@ -15,7 +15,6 @@ from .tools_utils import ToolCallMetadata, create_tool_call_message
 from .messages import (
     insert_tool_message_after_assistant,
     _normalise_kwargs_for_bound_method,
-    apply_llm_soft_required_defaults,
     is_mutable,
 )
 from ..tool_spec import normalise_tools
@@ -328,11 +327,6 @@ class ToolsData:
             call_args,
         )
         merged_kwargs = dict(allowed_call_args)
-
-        # Backfill advisory args advertised as required but safe to default
-        # (e.g. execute_code's `thought`): the schema keeps its strong
-        # `required` signal without a model omission raising TypeError.
-        merged_kwargs = apply_llm_soft_required_defaults(fn, merged_kwargs)
 
         tool_schema = method_to_schema(fn, name)
 

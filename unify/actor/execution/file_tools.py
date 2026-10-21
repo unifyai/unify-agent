@@ -1,8 +1,7 @@
-"""``read_file`` and ``grep`` for the actor.
+"""``grep`` for the actor's ``tools.grep``.
 
-Both read only what a sandboxed shell cell could read (unify/sandbox.py):
-``read_file`` checks the resolved path against the sandbox policy before
-opening it, and ``grep`` runs ripgrep inside the sandbox itself, or, without
+It reads only what a sandboxed cell could read (unify/sandbox.py): it runs
+ripgrep inside the sandbox itself, or, without
 ripgrep, a small fixed Python script inside the sandbox (the harness's own
 interpreter, isolated). The model's regular expression is never compiled or
 matched in the harness process, and without bubblewrap ``grep`` is refused.
@@ -21,40 +20,13 @@ from typing import Any, Optional
 from unify import sandbox
 from unify.common.tool_errors import ToolInputError
 
-__all__ = ["grep", "read_file"]
+__all__ = ["grep"]
 
-MAX_READ_LINES = 2000
-MAX_READ_BYTES = 256 * 1024
 MAX_GREP_HITS = 1000
 MAX_GREP_FILE_BYTES = 10 * 1024 * 1024
 GREP_TIMEOUT_S = 60.0
 _MAX_LINE_CHARS = 500
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv"}
-
-
-def _is_binary(path: Path) -> bool:
-    try:
-        with open(path, "rb") as fh:
-            return b"\0" in fh.read(8192)
-    except OSError:
-        return False
-
-
-def _resolve_file(path: str, policy: sandbox.SandboxPolicy) -> Path:
-    resolved = sandbox.check_readable(path, policy)
-    if not resolved.exists():
-        raise ToolInputError(
-            f"No such file: {resolved}",
-            suggestion="Check the path; relative paths start at the workspace.",
-            received={"path": path},
-        )
-    if not resolved.is_file():
-        raise sandbox.SandboxRefusal(
-            "regular-files-only",
-            f"{resolved} is not a regular file",
-            suggestion="List a directory from a shell cell (ls) instead.",
-        )
-    return resolved
 
 
 def _neutral_error(exc: ToolInputError, policy: sandbox.SandboxPolicy) -> ToolInputError:
@@ -70,74 +42,6 @@ def _neutral_error(exc: ToolInputError, policy: sandbox.SandboxPolicy) -> ToolIn
         for k, v in exc.received.items()
     }
     return exc
-
-
-def read_file(
-    path: str,
-    start: int = 1,
-    end: Optional[int] = None,
-    *,
-    policy: sandbox.SandboxPolicy,
-) -> dict[str, Any]:
-    """Lines ``start``..``end`` (1-based, inclusive) of *path*, numbered.
-
-    *path* is as a cell names it (``/workspace/...``, or relative to the
-    workspace); the reply names paths the same way."""
-    try:
-        return _read_file(path, start, end, policy=policy)
-    except ToolInputError as exc:
-        raise _neutral_error(exc, policy) from None
-
-
-def _read_file(
-    path: str,
-    start: int,
-    end: Optional[int],
-    *,
-    policy: sandbox.SandboxPolicy,
-) -> dict[str, Any]:
-    resolved = _resolve_file(sandbox.host_path(path, policy), policy)
-    if _is_binary(resolved):
-        raise ToolInputError(
-            f"{resolved} is a binary file",
-            suggestion="Inspect it from a shell cell (for example with xxd or file).",
-            received={"path": path},
-        )
-    start = max(1, int(start or 1))
-    last = start + MAX_READ_LINES - 1
-    end = last if end is None else min(int(end), last)
-    if end < start:
-        raise ToolInputError(
-            f"end ({end}) is before start ({start})",
-            suggestion="Pass end >= start, or omit end.",
-            received={"path": path, "start": start, "end": end},
-        )
-    lines: list[str] = []
-    size = 0
-    total = 0
-    truncated = False
-    with open(resolved, encoding="utf-8", errors="replace") as fh:
-        for number, line in enumerate(fh, start=1):
-            total = number
-            if number < start or number > end or truncated:
-                continue
-            text = f"{number:>6}\t{line.rstrip(chr(10))}\n"
-            if size + len(text) > MAX_READ_BYTES:
-                truncated = True
-                continue
-            lines.append(text)
-            size += len(text)
-    shown_end = start + len(lines) - 1 if lines else start - 1
-    out: dict[str, Any] = {
-        "path": sandbox.box_path(resolved, policy),
-        "start": start,
-        "end": shown_end,
-        "total_lines": total,
-        "content": "".join(lines),
-    }
-    if shown_end < min(end, total):
-        out["next_start"] = shown_end + 1
-    return out
 
 
 async def grep(

@@ -44,11 +44,5 @@ def init() -> None:  # noqa: D401 – imperative name
     _INITIALISED = True
 
 
-def ensure_initialised() -> None:
-    """Run :func:`init` unless it has already run in this process."""
-    if not _INITIALISED:
-        init()
-
-
 # What the package exports at top-level
 __all__ = ["init", "ensure_initialised"]

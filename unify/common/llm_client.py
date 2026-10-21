@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, Literal
 
 import unillm
-from pydantic import BaseModel
 
 from unify.logger import LOGGER
 from unify.common.hierarchical_logger import ICONS
@@ -103,8 +102,6 @@ REQUEST_HEADER = "X-Unify-Request"
 CALL_KIND_HEADER = "X-Unify-Call-Kind"
 MSG_COUNT_HEADER = "X-Unify-Msg-Count"
 
-#: Every header value matches this.
-HEADER_VALUE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 _OUTSIDE_HEADER_CHARSET = re.compile(r"[^A-Za-z0-9_.:-]")
 
 #: ``X-Unify-Call-Kind`` of every model call a cell's code makes (its
@@ -181,8 +178,6 @@ def _install_request_metadata(
 # request headers (unify/memory/integration/fork.py).
 PASS_HEADER = "X-Unify-Pass-Id"
 ENTRIES_HEADER = "X-Unify-Entries"
-EPISODE_HEADER = "X-Unify-Episode"
-SEGMENT_HEADER = "X-Unify-Segment"
 #: A pass id or an entry id: 16 lower-case hex digits; the entries header carries at most this many, joined by ".".
 _ATTRIBUTION_ID = re.compile(r"^[0-9a-f]{16}$")
 MAX_HEADER_ENTRIES = 64
@@ -410,37 +405,3 @@ def _make_openai_strict_json_schema_compatible(node: Any) -> None:
             _make_openai_strict_json_schema_compatible(v)
 
 
-def pydantic_to_json_schema_response_format(
-    response_model: type[BaseModel],
-    *,
-    name: str | None = None,
-    strict: bool = True,
-) -> dict[str, Any]:
-    """Build an OpenAI-style `response_format` dict from a Pydantic model.
-
-    This returns the JSON-schema response format shape used by OpenAI:
-
-        {"type": "json_schema", "json_schema": {"name": ..., "schema": ..., "strict": ...}}
-
-    When `strict=True`, the schema is post-processed to satisfy OpenAI's strict
-    constraints (see `_make_openai_strict_json_schema_compatible`).
-    """
-    schema = response_model.model_json_schema()
-    if strict:
-        schema = copy.deepcopy(schema)
-        _make_openai_strict_json_schema_compatible(schema)
-    else:
-        # Keep the existing behaviour of forbidding unknown keys where possible.
-        schema.setdefault("additionalProperties", False)
-        for def_schema in schema.get("$defs", {}).values():
-            if isinstance(def_schema, dict):
-                def_schema.setdefault("additionalProperties", False)
-
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "name": name or response_model.__name__,
-            "schema": schema,
-            "strict": strict,
-        },
-    }

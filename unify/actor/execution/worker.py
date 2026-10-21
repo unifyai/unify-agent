@@ -70,11 +70,6 @@ START_TIMEOUT_S = 60.0
 #: two seconds for a cancelled call) before the worker is killed instead.
 INTERRUPT_GRACE_S = 1.5
 
-#: Appended to a timed-out cell's error.
-KILLED_NOTE = (
-    ". The sandboxed Python worker was killed; the next cell starts a fresh one "
-    "(variables, imports and definitions are reset)."
-)
 
 _BOOTSTRAP = (
     "import runpy, sys; runpy.run_path(sys.argv[1], run_name='__unify_worker__')"

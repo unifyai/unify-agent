@@ -683,9 +683,7 @@ class _ActorBackend:
             return {"op": "done", "error": exc.traceback, "value": None}
         except asyncio.CancelledError:
             raise _Died("the cell was cancelled") from None
-        except Exception as exc:  # noqa: BLE001 - a reply or a steering interruption: re-raised after the checks
-            return {"op": "done", "error": None, "value": None, "raise": exc}
-        except BaseException as exc:  # a reply from a cell is a BaseException (worker_child.CellReply)
+        except BaseException as exc:  # noqa: BLE001 - the harness's own failure: re-raised after the checks
             return {"op": "done", "error": None, "value": None, "raise": exc}
         return {"op": "done", "error": None, "value": value}
 
@@ -1058,8 +1056,8 @@ class BoxInterpreter:
         res = await self._after(res, measure=True)
         raised = done.get("raise")
         if raised is not None:
-            # the cell ended by a control exception (a reply, a steering interruption): the caller handles it, and
-            # what the checks found is told with the next cell
+            # the cell ended by the harness's own exception: the caller handles it, and what the checks found is told
+            # with the next cell
             self._pending.extend(res.notes_after)
             raise raised
         return res

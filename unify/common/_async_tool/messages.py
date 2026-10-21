@@ -141,29 +141,6 @@ def _rebaseline_watermark_hash(client) -> None:
         client._sent_watermark_hash = _hash_msgs_slice(client.messages[:watermark])
 
 
-_REASONING_PAYLOAD_KEYS = ("provider_specific_fields", "reasoning_details", "reasoning")
-
-
-def strip_reasoning_payloads(msg: dict) -> int:
-    """Drop provider reasoning machinery from one message, in place.
-
-    Encrypted reasoning blobs and summaries let a provider continue an
-    in-flight chain of thought; once that turn is over they are re-billed
-    bulk, often the largest component of a long-lived transcript. The
-    visible ``content`` is never touched. Returns the serialized
-    characters removed (approximate, for accounting).
-    """
-    saved = 0
-    for key in _REASONING_PAYLOAD_KEYS:
-        if key in msg and msg[key] is not None:
-            try:
-                saved += len(json.dumps(msg[key], default=str))
-            except (TypeError, ValueError):
-                saved += 0
-            msg.pop(key, None)
-    return saved
-
-
 @contextmanager
 def _preserve_canonical_messages(client, canonical_msgs):
     """Make ``client.messages`` return *canonical_msgs* for the duration of the block.
@@ -206,19 +183,12 @@ def _preserve_canonical_messages(client, canonical_msgs):
 def is_non_final_tool_reply(msg: dict) -> bool:
     """Return True when a tool message is a placeholder/progress reply, not a final result.
 
-    - Clarification wrappers (name starts with "clarification_request_") are
-      non-final. Live clarifications are delivered as "[clarification <call_id>]"
-      user-role tail messages by ToolsData.record_clarification; only persisted
-      transcripts still carry the wrapper shape.
-    - Any tool message whose content parses to a dict with the top-level key
-      "_placeholder" is non-final (pending/progress/nested-start placeholders).
+    Any tool message whose content parses to a dict with the top-level key
+    "_placeholder" is non-final (pending/progress placeholders).
     """
     try:
         if msg.get("role") != "tool":
             return False
-        name = str(msg.get("name") or "")
-        if name.startswith("clarification_request_"):
-            return True
         content = msg.get("content")
         if isinstance(content, str):
             try:
@@ -534,32 +504,6 @@ def _normalise_kwargs_for_bound_method(
             pass
 
     return kw, unknown
-
-
-def apply_llm_soft_required_defaults(bound_method, kwargs: dict) -> dict:
-    """Backfill arguments advertised as required but optional at runtime.
-
-    See :func:`unify.common.tool_spec.llm_soft_required`. For each parameter a
-    tool declared as soft-required, if the model omitted it from *kwargs* the
-    configured default is filled in. Parameters not declared soft-required are
-    left untouched, so a genuine omission of a functional argument still raises
-    the usual error the model can self-correct against.
-
-    Mutates and returns *kwargs* for convenience.
-    """
-    from unify.common.tool_spec import LLM_SOFT_REQUIRED_DEFAULTS_ATTR
-
-    defaults = getattr(bound_method, LLM_SOFT_REQUIRED_DEFAULTS_ATTR, None)
-    if not defaults:
-        return kwargs
-
-    import inspect as _inspect
-
-    params = _inspect.signature(bound_method).parameters
-    for name, default in defaults.items():
-        if name in params and name not in kwargs:
-            kwargs[name] = default
-    return kwargs
 
 
 async def insert_tool_message_after_assistant(

@@ -5,9 +5,9 @@ form code), who may call it (``roles``, and the configuration flag it ``requires
 (``summary``, ``returns``, ``examples``, ``when``) and how the host runs it (``kind``, ``handler``, ``deadline_s``,
 ``blocking``). Everything an agent is shown about its tools is rendered from here:
 
-* with ``UNIFY_TOOLS_IN_CODE=on``, every agent's one model-API tool (:data:`EXECUTE_CODE`, :func:`json_tools`), the
-  box module ``tools`` its cells import (:func:`render_stub`), ``tools.list()`` and ``tools.help(name)``
-  (:func:`list_text`, :func:`help_text`) and the opening of its instructions (:func:`preamble`);
+* every agent's one model-API tool (:data:`EXECUTE_CODE`, :func:`json_tools`), the box module ``tools`` its cells
+  import (:func:`render_stub`), ``tools.list()`` and ``tools.help(name)`` (:func:`list_text`, :func:`help_text`) and
+  the opening of its instructions (:func:`preamble`);
 * with it ``off``, the memory agents' JSON tools exactly as before (:func:`tools_for`, :func:`earlier_tool`), and the
   Tools section of their briefs (:func:`tools_section`);
 * every refusal text, with its form code (:func:`refusal`, :func:`refusal_codes`).
@@ -1029,7 +1029,7 @@ _HELPER_GREP = _EarlierJson(
 
 # --- every agent's one model-API tool, and the tools only the actor and its teammates have ---
 
-#: The one model-API tool of every agent with ``UNIFY_TOOLS_IN_CODE=on``: the same object, the same bytes, for all.
+#: The one model-API tool of every agent: the same object, the same bytes, for all.
 EXECUTE_CODE = RegisteredTool(
     name="execute_code",
     summary="run a Python cell in your interpreter, in your box.",
@@ -2473,8 +2473,7 @@ def strict_parameters(agent: str, name: str) -> dict:
 
 
 def json_tools(agent: str) -> list[dict]:
-    """*agent*'s model-API tools with ``UNIFY_TOOLS_IN_CODE=on``: always ``execute_code`` alone, the same bytes for
-    every agent."""
+    """*agent*'s model-API tools: always ``execute_code`` alone, the same bytes for every agent."""
     if agent not in AGENTS:
         raise ValueError(f"unknown agent {agent!r}")
     return [EXECUTE_CODE.as_tool()]
@@ -2991,14 +2990,11 @@ _ACTOR_GLOBALS = ("display", "query_llm", "list_llms", "unillm", "run_coro_sync"
 
 def prebound_names(agent: str, facts: dict) -> tuple[str, ...]:
     """Every name bound in *agent*'s cells before any cell runs, with *facts* (``tools``, ``memory`` as for
-    :func:`prebound`; ``clarification``: the actor's session can ask its requester): the namespaces, ``help``
-    (the worker's own), and for the actor and teammates their other globals and, for the actor where it can ask,
-    ``request_clarification``. A declared set: binding a name never widens what the agent may do."""
+    :func:`prebound`): the namespaces, ``help`` (the worker's own), and for the actor and teammates their other
+    globals. A declared set: binding a name never widens what the agent may do."""
     names = [*namespace_names(agent, facts), "help"]
     if agent in (_A, _T):
         names += _ACTOR_GLOBALS
-        if agent == _A and facts.get("clarification"):
-            names.append("request_clarification")
     return tuple(names)
 
 

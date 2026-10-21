@@ -309,7 +309,7 @@ class AsyncToolLoopHandle(ToolLoopHandle):
 
         Returns ``(messages, tools, first_message)`` for the restart, or
         ``None`` -- and logs why -- when there is no recorded request or the
-        fork yields no summary; the caller then compresses as shipped.
+        fork yields no summary; the caller then rebuilds with the fallback compressor.
         """
         label = getattr(self, "_log_label", None) or self._loop_id
         last = _cache_discipline.last_sent_request(self._client)
@@ -323,7 +323,7 @@ class AsyncToolLoopHandle(ToolLoopHandle):
         if last is None or not last.get("messages"):
             LOGGER.info(
                 f"[{label}] compression fork skipped: no request was recorded; "
-                "compressing as shipped",
+                "compressing with the fallback compressor",
             )
             return None
         request: dict[str, Any] = {
@@ -351,14 +351,14 @@ class AsyncToolLoopHandle(ToolLoopHandle):
         except Exception as exc:
             LOGGER.warning(
                 f"[{label}] compression fork failed ({type(exc).__name__}: "
-                f"{exc}); compressing as shipped",
+                f"{exc}); compressing with the fallback compressor",
             )
             return None
         summary = _cache_discipline.completion_text(content)
         if not summary:
             LOGGER.info(
                 f"[{label}] compression fork returned no summary text; "
-                "compressing as shipped",
+                "compressing with the fallback compressor",
             )
             return None
         self._compression.count += 1
