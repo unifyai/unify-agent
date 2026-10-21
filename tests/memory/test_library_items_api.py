@@ -588,7 +588,7 @@ def test_each_alias_works_and_prints_one_line_naming_its_replacement(tmp_path):
 def test_the_stub_is_generated_valid_python_and_holds_the_contract(tmp_path):
     root = _library(tmp_path)
     off = (root / RESERVED_STUB).read_text()
-    on = lx.stub_source().decode("utf-8")
+    on = lx.stub_source(librarian=True).decode("utf-8")
     assert off == lx.stub_source().decode("utf-8") == lx.stub_source().decode("utf-8")  # same code, same bytes
     for stub in (off, on):
         compile(stub, "memory/__init__.pyi", "exec")

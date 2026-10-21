@@ -72,6 +72,7 @@ def generate(tree: Path, *, records=None, summaries=None, captures=None) -> dict
         saved_against=lx.saved_against_of(records, summary_of) if records else None,
         summary_of=summary_of,
         captures=dict(captures or {}),
+        librarian=True,
     )
 
 

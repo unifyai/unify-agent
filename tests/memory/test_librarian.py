@@ -263,11 +263,11 @@ def test_off_the_export_is_byte_for_byte_as_before(tmp_path):
     assert off == lx.generated_library_mode(root, records=_records(), librarian=False, summary_of=_summary)
     assert lx.CATALOGUE_FILE not in off and lx.DISPATCH_FILE not in off
     assert off[RESERVED_INIT] == (Path(lx.__file__).parent / "library_helper.py").read_bytes()
-    on = lx.generated_library_mode(root, records=_records())
+    on = lx.generated_library_mode(root, records=_records(), librarian=True)
     assert on[RESERVED_INIT].startswith(off[RESERVED_INIT]) and b"def ask(" in on[RESERVED_INIT]
     # the stub gains memory.ask with the package, and nothing else
     assert b"def ask(" in on[RESERVED_STUB] and b"def ask(" not in off[RESERVED_STUB]
-    assert on[RESERVED_STUB] == lx.stub_source()
+    assert on[RESERVED_STUB] == lx.stub_source(librarian=True)
     librarian_only = (RESERVED_INIT, RESERVED_STUB, lx.CATALOGUE_FILE, lx.DISPATCH_FILE, library_search.INDEX_FILE)
     assert {k: v for k, v in on.items() if k not in librarian_only} == {
         k: v for k, v in off.items() if k not in (RESERVED_INIT, RESERVED_STUB)
@@ -504,13 +504,14 @@ def test_the_first_user_message_line_counts_the_copy_and_is_absent_for_an_empty_
 def test_off_the_actor_has_no_ask_tool_and_its_stub_is_unchanged():
     from unify.actor import tool_handlers as H
 
-    off = R.allow_list("actor", H.actor_flags("actor", True))
-    on = R.allow_list("actor", H.actor_flags("actor", True))
+    # rev 2: actor_flags takes the agent and the librarian (None: whenever the run has memory)
+    off = R.allow_list("actor", H.actor_flags("actor", librarian=False))
+    on = R.allow_list("actor", H.actor_flags("actor", librarian=True))
     assert "ask_library" not in off and set(on) - set(off) == {"ask_library"}
-    assert "ask_library" not in R.allow_list("teammate", H.actor_flags("teammate", False))
+    assert "ask_library" not in R.allow_list("teammate", H.actor_flags("teammate", librarian=True))
     assert "ask_library" not in R.render_stub(off, "actor")
-    assert R.preamble("actor", {"flags": H.actor_flags("actor", True)}) == R.preamble(
-        "actor", {"flags": H.actor_flags("actor", True, librarian=False)},
+    assert R.preamble("actor", {"flags": frozenset(H.actor_flags("actor", librarian=False))}) == R.preamble(
+        "actor", {"flags": H.actor_flags("actor", librarian=False)},
     )
     assert R.handler_for("actor", "ask_library") == ("unify.actor.tool_handlers:ask_library", False)
     assert R.handler_for("librarian", "finish") == ("unify.memory.librarian:finish", False)

@@ -137,11 +137,13 @@ def _package() -> dict[str, str]:
 
     return {
         "package:memory/__init__.py": library_export.package_source(
+            librarian=True
         ).decode("utf-8"),
         "package:memory/__init__.py (no librarian)": library_export.package_source().decode(
             "utf-8"
         ),
         "package:memory/__init__.pyi": library_export.stub_source(
+            librarian=True
         ).decode("utf-8"),
         "package:memory/_contract.py": library_export.CONTRACT_SOURCE.read_text(
             encoding="utf-8"

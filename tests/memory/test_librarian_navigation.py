@@ -110,7 +110,7 @@ def _copy(root: Path, files: dict[str, str], search: ls.Backend | None = None) -
     for rel, text in files.items():
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_text(text)
-    write_files(root, lx.generated_library_mode(root, search=search))
+    write_files(root, lx.generated_library_mode(root, librarian=True, search=search))
     return root
 
 

@@ -313,7 +313,7 @@ def test_off_the_copy_is_byte_for_byte_as_built(tmp_path):
         lambda i: (records.get(i) or {}).get("status") or "on-trial"
     )  # noqa: E731
     built = lx.generated_library_mode(
-        tree, status_of=status_of, records=records
+        tree, status_of=status_of, records=records, librarian=True
     )
     assert off == built
     assert serving.EVIDENCE_FILE not in off and serving.WITHDRAWN_ITEMS_FILE not in off
