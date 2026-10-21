@@ -33,7 +33,10 @@ with ``Host: 127.0.0.1:<port>``:
    reports the charge. Connection failures before anything was sent are tried again (:data:`CONNECT_ATTEMPTS`); a call
    that may have been sent never is;
 5. the reply is relayed with every secret (the key, each lane token) replaced by value: a JSON reply whole, a
-   server-sent event stream line by line as it arrives.
+   server-sent event stream line by line as it arrives. A stream's redaction cannot catch a secret a provider split
+   across two events. That is accepted, because no secret is ever in a request body (the key and the token travel only
+   in headers this relay writes or reads, and of a caller's headers only ``Accept`` is passed on), so a provider has
+   none to echo there.
 
 Refusals are ``{"error": {"code", "type", "message", "reason"}}`` with fixed texts that never echo a header, a token or
 the key (``unify/memory/writer_pass.py`` reads ``reason``): ``<lane>_route_refused`` (path, method, host, token),
