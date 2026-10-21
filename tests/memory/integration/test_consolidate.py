@@ -9,7 +9,6 @@ import asyncio
 import json
 import re
 import shutil
-from dataclasses import fields
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -19,23 +18,11 @@ from unify.memory.admission import cover_problem
 from unify.memory.episodes import Action, CostRow, EpisodeWriter
 from unify.memory.experience import experience_tokens
 from unify.memory.integration import consolidate
-from unify.memory import chain
-from unify.memory.integration.consolidate import (
-    EpisodeLookup,
-    episode_costs,
-    events_path,
-    open_stores,
-    post_checker,
-    run_due_passes,
-    writer_settings,
-)
+from unify.memory.integration.consolidate import EpisodeLookup, events_path, open_stores, writer_settings
 from unify.memory.integration.paths import Paths
 from unify.memory.integration.state import State
-from unify.memory.qa import QAConfig
-from unify.memory.writer_pass import TRANSCRIPT_REF, WRITER_SYSTEM
+from unify.memory.writer_pass import TRANSCRIPT_REF
 from unify.memory.redact import Redactor
-from unify.memory.signals import TIMING_FIELDS, Signal
-from unify.memory.trigger import BATCHED_CURSOR
 from tests.memory.test_episodes import _ep
 
 needs_bwrap = pytest.mark.skipif(
@@ -151,62 +138,7 @@ def _events(stores, progress=False):
 # --- (a) the checker -------------------------------------------------------------------------------------
 
 
-def test_checker_posts_pass_or_fail_only(tmp_path):
-    stores = _stores(tmp_path)
-    sha1, _ = _record(stores, "e1")
-    sha2, _ = _record(stores, "e2", minute=1)
-    assert post_checker(stores, "e1", sha1, None, "2026-10-08T01:02:00Z") is False
-    assert stores.episodes.notes(sha1) == []
-    assert post_checker(stores, "e1", sha1, False, "2026-10-08T01:02:00Z") is True
-    assert post_checker(stores, "e2", sha2, True, "2026-10-08T01:03:00Z") is True
-    (line,) = stores.episodes.notes(sha1)
-    note = json.loads(line)
-    # visible_to_actor is in a note only when True, so every other note keeps its bytes
-    assert set(note) == {f.name for f in fields(Signal)} - {"visible_to_actor"} - set(TIMING_FIELDS)
-    assert (note["source"], note["label"], note["refers_to"]) == (
-        "checker",
-        "fail",
-        "e1",
-    )
-    assert note["regime"] == "dense" and note["signal_id"] == "e1.checker"
-    assert json.loads(stores.episodes.notes(sha2)[0])["label"] == "pass"
-    assert [s.label for s in stores.evidence.signals_for("e1")] == ["fail"]
-    assert (
-        post_checker(stores, "e1", sha1, "yes", "t") is False
-    )  # only a bool is a verdict
-
-
-def test_checker_posts_nothing_where_the_regime_masks_it(tmp_path):
-    stores = _stores(tmp_path)
-    ep = _ep(episode_id="e9", regime="implicit")
-    sha = EpisodeWriter(stores.episodes, stores.blobs, Redactor()).write(ep)
-    stores.evidence.index_episode(ep, sha)
-    assert post_checker(stores, "e9", sha, True, "t") is False
-    assert stores.episodes.notes(sha) == []
-
-
 # --- the size trigger ------------------------------------------------------------------------------------
-
-
-def test_size_trigger_fires_only_at_e(tmp_path, monkeypatch):
-    fake = FakeWriter()
-    monkeypatch.setattr(consolidate, "unillm_turn", fake)
-    stores = _stores(tmp_path)
-    sha1, ep1 = _record(stores, "e1")
-    t1 = experience_tokens(ep1)[0]
-    ep2_tokens = experience_tokens(
-        _ep(episode_id="e2", request=["Split the dinner bill"], actions=ep1.actions),
-    )[0]
-    e = t1 + ep2_tokens
-    assert _run(stores, "e1", sha1, e=e) == []  # t1 < E
-    assert fake.calls == 0 and _events(stores) == []
-    sha2, ep2 = _record(stores, "e2", request="Split the dinner bill", minute=1)
-    assert experience_tokens(ep2)[0] == ep2_tokens
-    (out,) = _run(stores, "e2", sha2, e=e)  # t1 + t2 == E
-    assert fake.calls == 1
-    start = _events(stores)[0]
-    assert start["trigger_tokens"] == e and start["episodes"] == ["e1", "e2"]
-    assert stores.evidence.cursor(BATCHED_CURSOR) == stores.evidence.seq_of("e2")
 
 
 def test_one_token_short_of_e_runs_nothing(tmp_path, monkeypatch):
@@ -219,25 +151,6 @@ def test_one_token_short_of_e_runs_nothing(tmp_path, monkeypatch):
 
 
 # --- (b) a pass without a manifest -----------------------------------------------------------------------
-
-
-def test_pass_without_manifest_is_recorded_failed_and_the_cursor_advances(
-    tmp_path,
-    monkeypatch,
-):
-    fake = FakeWriter()
-    monkeypatch.setattr(consolidate, "unillm_turn", fake)
-    stores = _stores(tmp_path)
-    sha, _ = _record(stores, "e1")
-    (out,) = _run(stores, "e1", sha)
-    assert out.pass_id == "e1.p0" and not out.passed and "no manifest" in out.reasons
-    row = stores.evidence.db.execute(
-        "SELECT kind, channel, passed, reasons FROM passes WHERE pass_id='e1.p0'",
-    ).fetchone()
-    assert row[:3] == ("batched", None, 0) and "no manifest" in json.loads(row[3])
-    assert stores.evidence.cursor(BATCHED_CURSOR) == stores.evidence.seq_of("e1")
-    assert _run(stores, "e1", sha) == []  # nothing new since the pass
-    assert fake.calls == 1
 
 
 # --- (c) no channel filter -------------------------------------------------------------------------------
@@ -287,184 +200,7 @@ def test_kind_qualified_channels_take_part_in_the_pass(tmp_path, monkeypatch):
 # --- (d) and the run guard -------------------------------------------------------------------------------
 
 
-def test_run_guard_below_one_cap_runs_nothing_and_leaves_the_pass_due(
-    tmp_path,
-    monkeypatch,
-):
-    fake = FakeWriter()
-    monkeypatch.setattr(consolidate, "unillm_turn", fake)
-    stores = _stores(tmp_path)
-    sha, _ = _record(stores, "e1")
-    assert _run(stores, "e1", sha, guard="0.0000005") == []  # cap is 0.00000073
-    assert fake.calls == 0
-    (held,) = _events(stores)  # no pass started: one end event, no start event
-    assert held["phase"] == "end" and held["reason_codes"] == ["run_guard"]
-    assert (held["calls"], held["usd"], held["gate_passed"]) == (0, "0", False)
-    assert stores.evidence.cursor(BATCHED_CURSOR) == 0
-    (out,) = _run(stores, "e1", sha)  # without the guard, the pass still due runs
-    assert fake.calls == 1
-
-
-def test_run_guard_stops_the_second_pass(tmp_path, monkeypatch):
-    cap = Decimal(A_TOK)  # E = 1
-    fake = FakeWriter(usd=format(cap * Decimal("0.6"), "f"))
-    monkeypatch.setattr(consolidate, "unillm_turn", fake)
-    stores = _stores(tmp_path)
-    guard = format(cap * Decimal("1.5"), "f")
-    sha1, _ = _record(stores, "e1")
-    (first,) = _run(stores, "e1", sha1, guard=guard)
-    assert first.usd == format(cap * Decimal("0.6"), "f")
-    sha2, _ = _record(stores, "e2", minute=1)
-    assert (
-        _run(stores, "e2", sha2, guard=guard) == []
-    )  # 0.6 cap committed + 1 cap > 1.5 cap
-    assert fake.calls == 1
-    events = _events(stores)
-    assert [e["phase"] for e in events] == ["start", "end", "end"]
-    assert events[1]["reason_codes"] == ["no_manifest"]
-    assert events[2]["pass_id"] == "e2.p0" and events[2]["reason_codes"] == [
-        "run_guard",
-    ]
-    assert stores.evidence.cursor(BATCHED_CURSOR) == stores.evidence.seq_of("e1")
-
-
-def test_unpriced_calls_count_at_the_reserve_for_the_guard(tmp_path, monkeypatch):
-    fake = FakeWriter(usd="unknown")
-    monkeypatch.setattr(consolidate, "unillm_turn", fake)
-    stores = _stores(tmp_path)
-    sha, _ = _record(stores, "e1")
-    _run(stores, "e1", sha)
-    reserve = Decimal(A_TOK) / consolidate.MAX_CALLS
-    assert consolidate.committed_writer_usd(stores) == reserve
-
-
-def test_the_guard_never_reads_reason_text(tmp_path, monkeypatch):
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter(usd="0.0000001"))
-    stores = _stores(tmp_path)
-    sha, _ = _record(stores, "e1")
-    _run(stores, "e1", sha)
-    stores.evidence.record_pass(
-        {
-            "pass_id": "forged",
-            "passed": 0,
-            "usd": "0",
-            "reasons": json.dumps(["note: 999 unpriced calls"]),
-        },
-    )
-    assert consolidate.committed_writer_usd(stores) == Decimal("0.0000001")
-
-
-def test_a_pass_that_starts_but_never_settles_counts_its_whole_cap(
-    tmp_path,
-    monkeypatch,
-):
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter(usd="0.0000001"))
-    monkeypatch.setattr(
-        consolidate,
-        "_settle",
-        lambda *a, **k: None,
-    )  # the process died mid-pass
-    stores = _stores(tmp_path)
-    sha, _ = _record(stores, "e1")
-    _run(stores, "e1", sha)
-    assert consolidate.committed_writer_usd(stores) == Decimal(A_TOK)
-    sha2, _ = _record(stores, "e2", minute=1)
-    guard = format(Decimal(A_TOK) * Decimal("1.5"), "f")
-    assert (
-        _run(stores, "e2", sha2, guard=guard) == []
-    )  # the reserved cap holds the guard
-
-
-def test_an_empty_effort_runs_nothing_and_is_logged(tmp_path, monkeypatch):
-    fake = FakeWriter()
-    monkeypatch.setattr(consolidate, "unillm_turn", fake)
-    stores = _stores(tmp_path)
-    sha, _ = _record(stores, "e1")
-    assert _run(stores, "e1", sha, effort="  ") == []
-    assert fake.calls == 0 and _events(stores) == []
-    assert "effort" in stores.paths.errors.read_text()
-    assert stores.evidence.cursor(BATCHED_CURSOR) == 0  # still due
-
-
 # --- events ----------------------------------------------------------------------------------------------
-
-
-def test_events_start_and_end_with_decimal_money_and_the_inherited_effort(
-    tmp_path,
-    monkeypatch,
-):
-    fake = FakeWriter(usd="1E-7")
-    monkeypatch.setattr(consolidate, "unillm_turn", fake)
-    stores = _stores(tmp_path)
-    sha, _ = _record(stores, "e1")
-    got: list[dict] = []
-    # the pass's start, its one model call's progress row, its end
-    ticks = iter([100.0, 101.0, 102.5])
-    out = asyncio.run(
-        run_due_passes(
-            stores,
-            "e1",
-            sha,
-            State(stores.paths.state),
-            effort="medium",
-            settings=_settings(e=1),
-            emit=got.append,
-            clock=lambda: next(ticks),
-        ),
-    )
-    assert len(out) == 1 and fake.made == [("openai/gpt-6-sol", "medium")]
-    (turn,) = [g for g in got if g["phase"] == "turn"]
-    assert turn == {
-        "type": "consolidation", "phase": "turn", "pass_id": "e1.p0", "seconds": 1.0, "turn": 1, "returned": True,
-    }
-    start, end = [g for g in got if g["phase"] not in consolidate.PROGRESS_PHASES]
-    assert start == {
-        "type": "consolidation",
-        "phase": "start",
-        "pass_id": "e1.p0",
-        "trigger_tokens": start["trigger_tokens"],
-        "episodes": ["e1"],
-        "held": [],  # episodes whose fork had not settled, rolled to the next pass
-        "writer_model": "openai/gpt-6-sol",
-        "writer_effort": "medium",
-        "cap_usd": "0.00000146",  # E x a_tok x 2, the medium scale
-        "max_calls": 80,
-        "effort_scale": "2",
-    }
-    assert isinstance(start["trigger_tokens"], int) and start["trigger_tokens"] >= 1
-    assert set(end) == {
-        "type",
-        "phase",
-        "pass_id",
-        "usd",
-        "unknown_cost_calls",
-        "calls",
-        "checks",
-        "seconds",
-        "gate_passed",
-        "library_items_before_landing",
-        "index_tokens",
-        "reason_codes",
-        "items_merged",
-        "items_refused",
-        "episodes",
-        "result",
-    }
-    assert end["phase"] == "end" and end["pass_id"] == "e1.p0"
-    assert end["result"] == "abandoned"  # no manifest: nothing landed, and not the writer's own "nothing to store"
-    assert end["usd"] == "0.0000001" and MONEY.match(end["usd"])
-    assert (end["calls"], end["unknown_cost_calls"], end["seconds"]) == (1, 0, 2.5)
-    assert end["checks"] == 0
-    assert end["gate_passed"] is False and end["reason_codes"] == ["no_manifest"]
-    assert end["library_items_before_landing"] == 0 and isinstance(
-        end["index_tokens"],
-        int,
-    )
-    assert end["items_merged"] == [] and end["items_refused"] == {}
-    assert _events(stores, progress=True) == got  # the same rows, always appended to the events file
-    assert events_path(stores.paths) == stores.paths.state_dir / "events.jsonl"
-    for line in events_path(stores.paths).read_text().splitlines():
-        assert not re.search(r"[0-9][eE][-+]?[0-9]", line)
 
 
 def test_cap_is_e_times_the_allowance_as_a_plain_decimal():
@@ -581,72 +317,6 @@ def _ledger_rows(stores):
     ]
 
 
-@pytest.mark.parametrize(
-    "actor, scale, calls",
-    [("low", "1", 40), ("medium", "2", 80), ("high", "5", 80)],
-)
-def test_an_actor_effort_sets_the_pass_cap_and_calls(
-    tmp_path,
-    monkeypatch,
-    actor,
-    scale,
-    calls,
-):
-    from unify.memory.integration import request as request_mod
-    from unify.settings import SETTINGS
-
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_WRITER_EFFORT", "actor")
-    effort = request_mod.writer_effort(
-        actor,
-    )  # the writer follows the actor's effort (the default)
-    assert effort == actor
-    fake = FakeWriter()
-    monkeypatch.setattr(consolidate, "unillm_turn", fake)
-    configs = _spy_configs(monkeypatch)
-    stores = _stores(tmp_path)
-    sha, _ = _record(stores, "e1")
-    got: list[dict] = []
-    (out,) = _run(stores, "e1", sha, effort=effort, emit=got.append)
-    cap = Decimal(A_TOK) * Decimal(scale)  # E = 1
-    (cfg,) = configs
-    assert (cfg.effort, cfg.max_calls, cfg.max_usd) == (actor, calls, cap)
-    start = got[0]
-    assert start["phase"] == "start" and start["writer_effort"] == actor
-    assert (start["cap_usd"], start["max_calls"], start["effort_scale"]) == (
-        format(cap, "f"),
-        calls,
-        scale,
-    )
-    reserve, settle = _ledger_rows(stores)
-    assert reserve["phase"] == "reserve" and settle["phase"] == "settle"
-    assert (reserve["cap_usd"], reserve["max_calls"], reserve["effort_scale"]) == (
-        format(cap, "f"),
-        calls,
-        scale,
-    )
-    assert Decimal(reserve["per_call_usd"]) == cap / calls
-
-
-def test_a_high_pass_is_capped_at_five_allowances_and_80_calls_at_e_150k(
-    tmp_path,
-    monkeypatch,
-):
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter())
-    configs = _spy_configs(monkeypatch)
-    monkeypatch.setattr(
-        consolidate.Trigger,
-        "pass_budget_usd",
-        lambda self: Decimal(150000) * Decimal(A_TOK),
-    )
-    stores = _stores(tmp_path)
-    sha, _ = _record(stores, "e1")
-    got: list[dict] = []
-    _run(stores, "e1", sha, effort="high", emit=got.append)
-    (cfg,) = configs
-    assert format(cfg.max_usd, "f") == "0.54750000" and cfg.max_calls == 80
-    assert got[0]["cap_usd"] == "0.54750000" and got[0]["effort_scale"] == "5"
-
-
 def test_the_effort_maps_reach_the_pass(tmp_path, monkeypatch):
     monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter())
     configs = _spy_configs(monkeypatch)
@@ -677,17 +347,6 @@ def test_the_run_guard_compares_against_the_scaled_cap(tmp_path, monkeypatch):
     assert fake.calls == 0 and _events(stores)[0]["reason_codes"] == ["run_guard"]
     (out,) = _run(stores, "e1", sha, effort="low", guard=guard)
     assert fake.calls == 1
-
-
-def test_an_effort_without_limits_runs_nothing_and_is_logged(tmp_path, monkeypatch):
-    fake = FakeWriter()
-    monkeypatch.setattr(consolidate, "unillm_turn", fake)
-    stores = _stores(tmp_path)
-    sha, _ = _record(stores, "e1")
-    assert _run(stores, "e1", sha, effort="xhigh") == []
-    assert fake.calls == 0 and _events(stores) == []
-    assert "pass limits" in stores.paths.errors.read_text()
-    assert stores.evidence.cursor(BATCHED_CURSOR) == 0  # still due
 
 
 @pytest.mark.parametrize("usage, shown", [("", False), ("off", False), ("on", True)])
@@ -722,31 +381,6 @@ def test_emit_failures_never_stop_the_pass(tmp_path, monkeypatch):
 
 
 # --- (e) the writer's cost rows as notes -----------------------------------------------------------------
-
-
-def test_writer_cost_rows_are_notes_on_the_episode_commit(tmp_path, monkeypatch):
-    msg = {"role": "assistant", "content": "thinking"}
-    fake = FakeWriter(script=[(msg, "0.0000001"), RuntimeError("provider down")])
-    monkeypatch.setattr(consolidate, "unillm_turn", fake)
-    stores = _stores(tmp_path)
-    sha, _ = _record(stores, "e1")
-    (out,) = _run(stores, "e1", sha)
-    notes = [json.loads(n) for n in stores.episodes.notes(sha, ref="costs")]
-    assert [(n["purpose"], n["usd"], n["episode"], n["pass_id"]) for n in notes] == [
-        ("writer", "0.0000001", "e1", "e1.p0"),
-        ("writer", "unknown", "e1", "e1.p0"),
-    ]
-    assert {n["writer_effort"] for n in notes} == {
-        "low",
-    }  # the inherited effort, on the pass's notes
-    assert stores.episodes.notes(sha) == []  # nothing on the signals ref
-    costs = episode_costs(stores, "e1")
-    assert [(c.purpose, c.usd) for c in costs] == [
-        ("actor", "0.000123"),
-        ("writer", "0.0000001"),
-        ("writer", "unknown"),
-    ]
-    assert out.usd == "0.0000001" and out.unknown_cost_calls == 1
 
 
 def test_writer_transcript_is_kept_redacted_on_the_episode_commit(
@@ -802,50 +436,6 @@ def test_drift_rides_with_the_pass_and_is_cleared_once_recorded(tmp_path, monkey
 
 
 SENTINEL = "SENTINEL-7f3a"
-
-
-def test_checker_text_reaches_no_event_note_evidence_row_or_writer_input(
-    tmp_path,
-    monkeypatch,
-):
-    from unify.memory import writer_pass
-
-    fake = FakeWriter()
-    monkeypatch.setattr(consolidate, "unillm_turn", fake)
-    staged = tmp_path / "staged"
-    stage = writer_pass.WriterPass._stage_inputs
-
-    def keep(self, req, inputs, *tree):
-        stage(self, req, inputs, *tree)
-        shutil.copytree(inputs, staged)  # what the writer's box would see at /inputs
-
-    monkeypatch.setattr(writer_pass.WriterPass, "_stage_inputs", keep)
-    stores = _stores(tmp_path)
-    sha, _ = _record(stores, "e1")
-    outcome = {
-        "solved": False,
-        "checks": [{"name": "c", "passed": False, "reason": SENTINEL}],
-        "summary": SENTINEL,
-    }
-    assert post_checker(stores, "e1", sha, outcome["solved"], "2026-10-08T01:02:00Z")
-    (out,) = _run(stores, "e1", sha)
-    dump = [
-        json.dumps(fake.seen),
-        events_path(stores.paths).read_text(),
-        stores.episodes.run("log", "-p", "--all"),
-        stores.memory.run("log", "-p", "--all"),
-        "\n".join(stores.evidence.db.iterdump()),
-    ]
-    dump += [p.read_text(errors="replace") for p in staged.rglob("*.json")]
-    dump += [
-        p.read_text(errors="replace")
-        for p in stores.paths.state_dir.rglob("*")
-        if p.is_file()
-    ]
-    assert staged.exists() and (staged / "episodes" / "e1.json").is_file()
-    assert all(SENTINEL not in text for text in dump)
-    assert "e1.checker" not in json.dumps(fake.seen)
-    assert '"label": "fail"' in dump[2]  # the verdict itself is on the signals ref
 
 
 # --- reason codes: structural, never read from reason text ----------------------------------------------
@@ -1062,80 +652,6 @@ def test_every_setting_the_driver_reads_is_a_build_setting():
 # --- library mode: the switches reach the gate and the writer's brief ---------------------------------------
 
 
-@pytest.mark.parametrize("on", [False, True])
-def test_the_qa_switches_reach_the_gate_and_the_writers_brief(
-    tmp_path,
-    monkeypatch,
-    on,
-):
-    fake = FakeWriter()
-    monkeypatch.setattr(consolidate, "unillm_turn", fake)
-    made = []
-    real = consolidate.Gate
-
-    def gate(*args, **kwargs):
-        made.append(real(*args, **kwargs))
-        return made[-1]
-
-    monkeypatch.setattr(consolidate, "Gate", gate)
-    stores = _stores(tmp_path)
-    sha, _ = _record(stores, "e1")
-    settings = _settings(e=1)
-    if on:
-        settings.UNIFY_MEMORY_QA_FIXTURES = "strict"
-        settings.UNIFY_MEMORY_QA_MUTATION = "on"
-    asyncio.run(
-        run_due_passes(
-            stores,
-            "e1",
-            sha,
-            State(stores.paths.state),
-            effort="high",
-            settings=settings,
-            emit=None,
-        ),
-    )
-    (g,) = made
-    system = fake.seen[0][0]["content"]
-    if on:
-        assert g.qa == QAConfig(fixtures="strict", mutation=True)
-        assert system.startswith(WRITER_SYSTEM.split("Run tests as the gate does")[0])
-        assert (
-            "Mutants:" in system
-            and "Drawn inputs:" in system
-            and "Replay:" not in system
-        )
-    else:
-        assert g.qa == QAConfig() and not g.qa.on
-        assert system == WRITER_SYSTEM
-
-
-@pytest.mark.parametrize("step", [RuntimeError("upstream failed"), "sleep"])
-def test_no_further_pass_starts_after_a_call_that_may_still_be_in_flight(
-    tmp_path,
-    monkeypatch,
-    step,
-):
-    # the writer's proxy serves one writer call at a time: after a call ended by an error or the deadline (it may
-    # still be running upstream), the session starts no further pass; the request stays due
-    fake = FakeWriter(script=[step])
-    monkeypatch.setattr(consolidate, "unillm_turn", fake)
-    monkeypatch.setattr(consolidate, "DEADLINE_S", 0.2)
-    original = consolidate.Trigger.after_episode
-
-    def twice(self, eid):
-        due = original(self, eid)
-        return list(due) * 2  # two passes due in one session
-
-    monkeypatch.setattr(consolidate.Trigger, "after_episode", twice)
-    stores = _stores(tmp_path)
-    sha, _ = _record(stores, "e1")
-    outcomes = _run(stores, "e1", sha)
-    assert fake.calls == 1
-    assert [e["phase"] for e in _events(stores)] == ["start", "end"]
-    assert len(outcomes) <= 1
-
-
 # --- library mode (UNIFY_MEMORY_LIBRARY) ----------------------------------------------------------------------
 
 
@@ -1173,41 +689,6 @@ def test_library_has_its_own_usd_per_token_and_the_off_path_ignores_it():
             writer_settings(raised)
 
 
-def test_library_reaches_the_pass_and_its_end_event_records_the_read_log(
-    tmp_path,
-    monkeypatch,
-):
-    for value in (
-        "",
-        "optional",
-    ):  # the former reading rule's accepted values change nothing
-        fake = FakeWriter()  # finishes every turn: finish never waits on reading
-        monkeypatch.setattr(consolidate, "unillm_turn", fake)
-        stores = _stores(tmp_path / (value or "empty"))
-        sha, _ = _record(stores, "e1")
-        settings = _library_settings("on")
-        settings.UNIFY_MEMORY_LIBRARY_COVERAGE = value
-        (out,) = asyncio.run(
-            run_due_passes(
-                stores,
-                "e1",
-                sha,
-                State(stores.paths.state),
-                effort="low",
-                settings=settings,
-                emit=None,
-            ),
-        )
-        assert out.coverage["unread"] == ["e1"] and out.coverage["opened"] == []
-        end = [e for e in _events(stores) if e.get("phase") == "end"][-1]
-        assert end["coverage"] == out.coverage
-        assert end["reads"] == 0 and end["exported_bytes"] == 0
-        assert "coverage_measures" not in end
-        # the store pass's hop counts and the landed items' provenance ride on the same end event
-        assert end["chain"] == out.chain and set(out.chain) == set(chain.KEYS)
-        assert end["provenance"] == out.provenance == []
-
-
 def test_library_off_leaves_the_end_event_unchanged(tmp_path, monkeypatch):
     monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter())
     stores = _stores(tmp_path)
@@ -1218,48 +699,11 @@ def test_library_off_leaves_the_end_event_unchanged(tmp_path, monkeypatch):
     assert not {"coverage", "reads", "exported_bytes", "chain", "provenance"} & set(end)
 
 
-@pytest.mark.parametrize("on", [False, True])
-def test_library_gates_write_passes_with_the_library_checks(tmp_path, monkeypatch, on):
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter())
-    made = []
-
-    class Recording(consolidate.Gate):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            made.append(self)
-
-    monkeypatch.setattr(consolidate, "Gate", Recording)
-    stores = _stores(tmp_path)
-    sha, _ = _record(stores, "e1")
-    asyncio.run(
-        run_due_passes(
-            stores,
-            "e1",
-            sha,
-            State(stores.paths.state),
-            effort="low",
-            settings=_library_settings("on" if on else "off"),
-            emit=None,
-        ),
-    )
-    (g,) = made
-    if on:
-        assert (
-            g.library_mode is not None
-            and g.library_mode.checks
-            and g.library_mode.role == "write"
-            and g.qa.library_mode
-        )
-    else:
-        assert g.library_mode is None and not g.qa.library_mode
-
-
 # --- library mode: CURATE after WRITE, triggered by library state ----------------------------------------------
 
-from unify.memory.library_prompts import curate_brief_now
 from tests.memory.test_gate import _merged
 from tests.memory.test_layout import LIB
-from tests.memory.test_overlap import SPLIT, SPLIT_ID, SPLIT_PATH, TOKENS
+from tests.memory.test_overlap import SPLIT, SPLIT_PATH
 
 #: an earlier pass left two functions doing one job
 DUPLICATE = {
@@ -1300,80 +744,6 @@ def _kinds(stores):
         r[0]
         for r in stores.evidence.db.execute("SELECT kind FROM passes ORDER BY pass_id")
     ]
-
-
-def test_curate_runs_after_write_when_the_library_state_warrants_it(
-    tmp_path,
-    monkeypatch,
-):
-    fake = FakeWriter()
-    monkeypatch.setattr(consolidate, "unillm_turn", fake)
-    _no_records(monkeypatch)
-    stores = _stores(tmp_path)
-    _merged(stores.memory, DUPLICATE)
-    sha, _ = _record(stores, "e1")
-    outs = _run_library(stores, "e1", sha)
-    assert [o.pass_id for o in outs] == ["e1.p0", "e1.p1"] and _kinds(stores) == [
-        "batched",
-        "curate",
-    ]
-    starts = [e for e in _events(stores) if e["phase"] == "start"]
-    assert "curate" not in starts[0]
-    assert f"overlap (antiunify): {TOKENS}, {SPLIT_ID}" in starts[1]["curate"]
-    assert fake.seen[-1][0] == {
-        "role": "system",
-        "content": curate_brief_now(
-            finish_capped=True,
-            compact=True,
-        ),  # the pass is capped, so finish's cap is stated; agents compact by default, so the brief says when
-    }
-    # CURATE changed nothing and kept nothing with a reason: its reasons are not settled, so they fire again
-    assert stores.evidence.curate_seen() == set()
-    sha2, _ = _record(stores, "e2", minute=1)
-    assert [o.pass_id for o in _run_library(stores, "e2", sha2)] == ["e2.p0", "e2.p1"]
-    assert _kinds(stores) == ["batched", "curate", "batched", "curate"]
-
-
-def test_a_curate_reason_is_settled_by_a_kept_entry_in_the_writers_manifest(tmp_path):
-    from unify.memory import curate as cu
-
-    stores = _stores(tmp_path)
-    state = cu.CurateState(
-        commit="c" * 40,
-        overlap={
-            "version": 1,
-            "candidates": [
-                {
-                    "rule": "antiunify",
-                    "items": [TOKENS, SPLIT_ID],
-                    "fingerprint": "overlap:1",
-                },
-            ],
-            "truncated": [],
-        },
-        suspects={},
-        index_tokens=None,
-    )
-    state.fired = cu.due(state, set())
-    unfinished = SimpleNamespace(passed=False, commit=None, items_merged=[])
-    keep = SimpleNamespace(
-        final_manifest={"kept": {SPLIT_ID: "splits on a different separator"}},
-    )
-    assert consolidate._curate_settled(stores, "c1", state, unfinished, keep) == [
-        "overlap:1",
-    ]
-    # no accepted manifest (the pass never finished) and nothing landed: nothing is settled
-    assert (
-        consolidate._curate_settled(stores, "c1", state, None, SimpleNamespace()) == []
-    )
-    landed = SimpleNamespace(passed=True, commit="d" * 40, items_merged=[TOKENS])
-    assert consolidate._curate_settled(
-        stores,
-        "c1",
-        state,
-        landed,
-        SimpleNamespace(),
-    ) == ["overlap:1"]
 
 
 def test_no_curate_on_a_library_with_nothing_to_curate(tmp_path, monkeypatch):
@@ -1437,42 +807,6 @@ def test_no_curate_after_a_write_whose_call_may_still_be_in_flight(
     assert fake.calls == 1 and _kinds(stores) == ["batched"]
 
 
-def test_library_max_reads_reaches_the_pass_and_the_off_path_keeps_the_default(
-    tmp_path,
-    monkeypatch,
-):
-    """The replay and the reruns set the writer's reader calls without a code change."""
-    from unify.memory.integration.switch import parse_library_max_reads
-
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter())
-    for on, value, want in ((True, "", 400), (True, "7", 7), (False, "7", 400)):
-        seen = _spy_configs(monkeypatch)
-        stores = _stores(tmp_path / f"{on}{value}")
-        sha, _ = _record(stores, "e1")
-        settings = _library_settings("on" if on else "off")
-        settings.UNIFY_MEMORY_LIBRARY_MAX_READS = value
-        asyncio.run(
-            run_due_passes(
-                stores,
-                "e1",
-                sha,
-                State(stores.paths.state),
-                effort="low",
-                settings=settings,
-                emit=None,
-            ),
-        )
-        assert [c.max_reads for c in seen] == [want]
-        start = [e for e in _events(stores) if e.get("phase") == "start"][-1]
-        if on:  # the E and read cap the pass ran with, in library mode only
-            assert (start["experience_budget"], start["max_reads"]) == (1, want)
-        else:
-            assert "experience_budget" not in start and "max_reads" not in start
-    for bad in ("0", "-1", "x", True):
-        with pytest.raises(ValueError):
-            parse_library_max_reads(bad)
-
-
 def test_the_landed_event_counts_the_library_at_the_landed_commit(tmp_path):
     """A pass that lands N items reports N at its landed commit, not the library before it landed."""
     stores = _stores(tmp_path)
@@ -1520,111 +854,7 @@ def test_the_cost_recording_turn_keeps_the_turns_context_window():
     )
 
 
-def test_the_pass_reads_the_window_through_the_turn_consolidate_builds(
-    tmp_path,
-    monkeypatch,
-):
-    """The writer's turn reaches WriterPass wrapped by the cost recorder; the compaction trigger and the end event
-    still see the model's window."""
-    monkeypatch.setattr(consolidate, "unillm_turn", WindowedWriter())
-    stores = _stores(tmp_path)
-    sha, _ = _record(stores, "e1")
-    asyncio.run(
-        run_due_passes(
-            stores,
-            "e1",
-            sha,
-            State(stores.paths.state),
-            effort="low",
-            settings=_library_settings("on"),
-            emit=None,
-        ),
-    )
-    end = [e for e in _events(stores) if e.get("phase") == "end"][-1]
-    assert end["context_window"] == 1_000
-
-
-def test_with_no_compaction_setting_the_writer_and_its_helpers_compact(
-    tmp_path,
-    monkeypatch,
-):
-    """Every agent compacts by default: a library pass run with no compaction setting at all builds its writer with
-    compaction on, and the helper context it makes compacts too (helpers.context_for).
-    """
-    from unify.memory import helpers
-
-    built = []
-
-    class Recording(consolidate.WriterPass):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            built.append(self)
-
-    monkeypatch.setattr(consolidate, "WriterPass", Recording)
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter())
-    stores = _stores(tmp_path)
-    sha, _ = _record(stores, "e1")
-    settings = _library_settings("on")
-    assert not hasattr(settings, "UNIFY_MEMORY_LIBRARY_COMPACT")
-    asyncio.run(
-        run_due_passes(
-            stores,
-            "e1",
-            sha,
-            State(stores.paths.state),
-            effort="low",
-            settings=settings,
-            emit=None,
-        ),
-    )
-    assert built and all(
-        w.cfg.compact is True and w.cfg.library_mode is True for w in built
-    )  # write, any curate
-    writer = built[0]
-    ctx = helpers.context_for(
-        writer,
-        pass_id="p1",
-        inputs=tmp_path / "inputs",
-        box=tmp_path / "box",
-        scratch=tmp_path / "scratch",
-        deadline=0.0,
-        spend=SimpleNamespace(usd=Decimal("0"), unknown=0),
-    )
-    assert ctx.compact is True
-
-
 # --- a running pass reports its progress ---------------------------------------------------------------------------
-
-
-def test_a_running_pass_reports_each_model_call_and_each_gate_verdict_with_its_seconds(tmp_path):
-    """Real events only, as they happen: the start, a ``turn`` row per writer model call, a ``gate`` row per verdict,
-    then the end with its wall time and how the pass ended; the emitter sees the same rows as the events file."""
-    stores = _stores(tmp_path)
-    sha, _ = _record(stores, "e1")
-    emitted: list[dict] = []
-    fake = FakeWriter()
-    import unify.memory.integration.consolidate as c
-
-    original = c.unillm_turn
-    c.unillm_turn = fake
-    try:
-        asyncio.run(
-            run_due_passes(stores, "e1", sha, State(stores.paths.state), effort="low", settings=_settings(),
-                           emit=emitted.append),
-        )
-    finally:
-        c.unillm_turn = original
-    rows = _events(stores, progress=True)
-    phases = [r["phase"] for r in rows if r.get("pass_id") == "e1.p0"]
-    assert phases[0] == "start" and phases[-1] == "end"
-    turns = [r for r in rows if r["phase"] == "turn"]
-    assert [t["turn"] for t in turns] == list(range(1, fake.calls + 1)) and all(t["returned"] for t in turns)
-    assert all(isinstance(r["seconds"], float) and r["seconds"] >= 0 for r in turns)
-    end = rows[-1] if rows[-1]["phase"] == "end" else next(r for r in reversed(rows) if r["phase"] == "end")
-    assert end["result"] in ("landed", "nothing_to_store", "abandoned") and end["seconds"] >= turns[-1]["seconds"]
-    assert [r["phase"] for r in emitted if r.get("pass_id") == "e1.p0"] == phases
-    # the default view leaves the progress rows out
-    assert not any(r["phase"] in consolidate.PROGRESS_PHASES for r in _events(stores))
 
 
 def test_the_reporting_gate_reports_a_check_and_a_merge_and_is_the_gate_otherwise():

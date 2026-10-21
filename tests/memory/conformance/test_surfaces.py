@@ -45,6 +45,7 @@ from tests.memory.conformance import scripts as SX
 # fixture takes UNILLM_OTEL out of the environment, so the service and the fork worker start with it off too
 from tests.memory.test_writer_route import _otel_off_unless_a_test_turns_it_on  # noqa: F401 - an autouse fixture
 from tests.scripted_model import Always, ScriptedModel, cell, reply
+from tests.memory.arrivals import read_arrivals
 
 ID16 = re.compile(r"[0-9a-f]{16}")
 
@@ -341,7 +342,6 @@ async def test_surface_3_a_long_episode_with_checkpoints(core_world, monkeypatch
 @pytest.mark.timeout(1200)
 @_handle_project
 async def test_surface_4_an_outcome_that_arrives_two_requests_later(core_world, monkeypatch, lanes):  # noqa: F811
-    from unify.memory.integration import outcomes
     from unify.memory.integration.paths import Paths
 
     home = Path(core_world["state"])
@@ -389,7 +389,7 @@ async def test_surface_4_an_outcome_that_arrives_two_requests_later(core_world, 
     print("CONFORMANCE", json.dumps(H.run_facts(home, lanes, facts), default=str, sort_keys=True)[:3000])
     stores = _stores(home)
     # the arrival, after the episode, and the regime change it caused, logged with the signal's id
-    (arrival,) = [r for r in outcomes.read_arrivals(paths.state_dir) if r["episode_id"] == a.episode_id]
+    (arrival,) = [r for r in read_arrivals(paths.state_dir) if r["episode_id"] == a.episode_id]
     assert arrival["timing"] == "after_episode" and arrival["label"] == "fail" and arrival["visible_to_actor"] is True
     assert (arrival["regime_before"], arrival["regime_after"]) == ("none", "sparse")
     changes = stores.evidence.regime_changes(a.episode_id)

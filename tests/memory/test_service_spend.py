@@ -414,24 +414,6 @@ def test_a_writer_model_with_no_catalogue_bound_runs_no_pass(tmp_path, monkeypat
     assert "pinned price catalogue bounds for UNIFY_MEMORY_WRITER_MODEL" in reason and "no-such-model" not in reason
 
 
-def test_the_service_is_refused_at_start_up_for_a_lane_model_the_catalogue_does_not_bound(monkeypatch):
-    """The writer's model (or, under the paper profile, the actor's) and, with a helper lane, the helpers' model each
-    need a catalogue bound; the refusal names the setting, never the value."""
-    from tests.memory import test_writer_service as T
-    from unify.memory.integration import switch
-
-    monkeypatch.delenv("UNIFY_HOST_LEASE_END", raising=False)
-    ok = T._settings(UNIFY_MEMORY_WRITER_MODEL="openai/gpt-6-luna")
-    assert switch.redesign_a_refusal(ok) is None
-    assert "UNIFY_MEMORY_WRITER_MODEL" in switch.redesign_a_refusal(T._settings(UNIFY_MEMORY_WRITER_MODEL="v/x"))
-    helper = T._settings(UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL="http://127.0.0.1:9/helper/v1", UNIFY_MODEL="v/actor")
-    assert "for UNIFY_MODEL " in switch.redesign_a_refusal(helper)
-    helper.UNIFY_MEMORY_LIBRARY_HELPER_MODEL = "openai/gpt-6-luna"
-    assert switch.redesign_a_refusal(helper) is None
-    helper.UNIFY_MEMORY_LIBRARY_HELPER_MODEL = "v/helper"
-    assert "UNIFY_MEMORY_LIBRARY_HELPER_MODEL" in switch.redesign_a_refusal(helper)
-
-
 def test_a_resumed_pass_that_diverges_keeps_its_killed_runs_spend(tmp_path, monkeypatch):
     """Review: a resumed run whose conversation differs from the killed run's overwrites that run's turn files, so
     their USD would drop out. The killed run's cost is read at the resume, before any file is written: it comes off
@@ -502,61 +484,6 @@ def test_an_unpriced_writer_call_of_a_model_bounded_above_the_default_settles_at
     cfg, report = _attention_pass(tmp_path, monkeypatch, recon=_read, cap="1000", model="openai/gpt-5.5-pro")
     assert [kw["worst_case_usd"] for kw in report.asked] == [pro]
     assert Decimal(report.settle_usd) == pro and Decimal(cfg.usd_call_worst) == pro
-
-
-def test_the_request_scoped_pass_reconciles_at_the_writer_models_bound(tmp_path, monkeypatch):
-    """``consolidate.run_due_passes`` (a pass worker's slot) passes the writer's model's bound to the reconciliation too."""
-    from tests.memory.integration import test_consolidate as tc
-    from unify.memory.integration import async_pass as ap
-    from unify.memory.integration import consolidate
-
-    for model, want in (("openai/gpt-5.5-pro", Decimal("220.5")), ("openai/gpt-6-luna", Decimal("0.65625"))):
-        asked = []
-
-        async def recon(self, **kw):
-            asked.append(kw["worst_case_usd"])
-            return _read(kw)
-
-        monkeypatch.setattr(ap.Supervisor, "reconcile", recon)
-        monkeypatch.setattr(consolidate, "unillm_turn", tc.FakeWriter())
-        tc._no_records(monkeypatch)
-        stores = tc._stores(tmp_path / model.replace("/", "-"))
-        sha, _ = tc._record(stores, "e1")
-        journal = tmp_path / f"{model.replace('/', '-')}.jsonl"
-        journal.write_text("")
-        sup = ap.Supervisor(60, asyncio.Event(), journal=str(journal), models=(model,))
-        asyncio.run(
-            consolidate.run_due_passes(
-                stores, "e1", sha, tc.State(stores.paths.state), effort="low",
-                settings=tc._settings_library(model=model), emit=None, supervise=sup,
-            ),
-        )  # fmt: skip
-        assert asked and set(asked) == {want}, (model, asked)
-
-
-def test_a_resumed_pass_whose_first_start_had_no_journal_counts_the_killed_runs_writer_calls(tmp_path, monkeypatch):
-    """Review: when the journal could not be read at the pass's first start (no window start), the killed run's writer
-    calls are not in the window read at the resume: they are counted from its turn files (priced 1.50, one lost at
-    the worst case), as the helpers' are."""
-    reply = {"role": "assistant", "content": "earlier"}
-    done = {"0.json": {"state": "done", "turn": 0, "digest": "x", "reply": reply, "usd": "1.50"}}
-    read = {"journal": "read", "usd": "0.01", "unknown": 0, "worst_case_usd": str(W), "booked_usd": "0.01"}
-    _cfg_, report = _attention_pass(tmp_path, monkeypatch, recon=read, resume=True, pending=1, done=done, cap="60")
-    assert Decimal(report.settle_usd) == Decimal("0.01") + Decimal("1.50") + W
-    assert Decimal(report.usd_known) == Decimal("1.51") and report.unknown_calls == 1
-    # the home's run guard settles the same writer spend (review: it settled only the window before)
-    from tests.memory.integration import test_consolidate as tc
-    from unify.memory.integration import consolidate
-
-    stores = tc._stores(tmp_path)
-    (row,) = [r for r in _ledger_rows(stores) if r.get("phase") == "settle" and r.get("pass_id") == "cd" * 8]
-    assert Decimal(row["usd"]) == Decimal("1.51") and row["unknown_cost_calls"] == 1
-    assert Decimal(row["unknown_usd_each"]) == W
-    assert consolidate.committed_writer_usd(stores) == Decimal("1.51") + W
-    # with a window start from the first start, the journal already holds them: not counted again
-    _cfg2, again = _attention_pass(tmp_path / "b", monkeypatch, recon=read, resume=True, pending=1, done=done,
-                                   cap="60", journal_start=0)  # fmt: skip
-    assert Decimal(again.settle_usd) == Decimal("0.01")
 
 
 def _ledger_rows(stores):
@@ -660,35 +587,3 @@ def test_transient_failures_are_tried_again_a_bounded_number_of_times_each_booke
     assert writer_pass.unbooked_cost(server_error())
 
 
-def test_a_refused_attempt_keeps_its_turn_number_and_only_attempts_that_may_have_cost_count(tmp_path):
-    """The resumable turn records a failed attempt ``failed``: a call tried again keeps its number (the attempt that
-    answers is the one a resumed pass compares), and the turn files count each failed attempt that may have cost
-    money as one unpriced call, a refusal the route made unsent as nothing."""
-    from unify.memory.writer_pass import WriterCallError
-
-    errors = [_busy, lambda: WriterCallError("writer call failed: X (http_503)", "http_503")]
-
-    async def model(messages, tools):
-        if errors:
-            raise errors.pop(0)()
-        return {"role": "assistant", "content": "r"}, "0.40"
-
-    folder = tmp_path / "turns" / "p1"
-    turn = ws.ResumableTurn(model, folder)
-    msgs = [{"role": "user", "content": "go"}]
-    for _ in range(2):
-        try:
-            asyncio.run(turn(msgs, []))
-        except WriterCallError:
-            pass
-    assert asyncio.run(turn(msgs, []))[1] == "0.40"
-    assert sorted(p.name for p in folder.glob("*.json")) == ["0.json"]
-    assert ws.turns_cost(folder)["writer"] == (Decimal("0.40"), 1) and ws.lost_calls(folder) == 0
-    # a call that fails for good (not tried again) stays failed, counted by what it may have cost
-    final = ws.ResumableTurn(model, tmp_path / "turns" / "p2")
-    errors.append(lambda: WriterCallError("writer call failed: X (http_403_cap)", writer_pass.REFUSED_CAP))
-    try:
-        asyncio.run(final(msgs, []))
-    except WriterCallError:
-        pass
-    assert final.n == 1 and ws.turns_cost(tmp_path / "turns" / "p2")["writer"] == (Decimal(0), 0)

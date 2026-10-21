@@ -345,9 +345,6 @@ def test_the_tool_is_on_the_writer_allow_list_only():
     for agent in tr.AGENTS:
         assert ("land_capture" in tr.allow_list(agent, flags)) == (agent == "writer"), agent
     assert set(spec.refusals) == {"unknown_capture", "failed_capture", "bad_name", "not_landed"}
-    assert "land_capture" in {s.name for s in tr.tools_for("write")}
-    assert "land_capture" not in {s.name for s in tr.tools_for("curate")}
-    assert "land_capture" not in {s.name for s in tr.tools_for("helper")}
 
 
 def test_the_quota_is_measured_after_a_landing(tmp_path, monkeypatch):

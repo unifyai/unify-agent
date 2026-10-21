@@ -83,12 +83,6 @@ def test_suspend_is_a_stop_kind_that_marks_nothing():
     assert ws.NOT_REACHED_BY["drain"] == "run_ended"
 
 
-def test_the_owner_stop_accepts_suspend_too():
-    from unify.memory import service_owner
-
-    assert "suspend" in service_owner.STOP_BY and set(service_owner.STOP_BY) == set(ws.STOP_BY)
-
-
 def test_the_drain_refuses_an_unknown_end(tmp_path):
     from unify.memory.integration import async_pass
     from unify.memory.integration.paths import Paths

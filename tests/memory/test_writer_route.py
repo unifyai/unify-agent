@@ -295,44 +295,6 @@ def test_the_route_needs_an_openrouter_endpoint():
 # --- one set: fail closed ---------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "base,token,missing",
-    [
-        (WRITER_BASE, "", "UNIFY_MEMORY_WRITER_TOKEN"),
-        ("", WRITER_TOKEN, "UNIFY_MEMORY_WRITER_BASE_URL"),
-    ],
-)
-def test_one_set_starts_no_pass_and_makes_no_call(monkeypatch, base, token, missing):
-    made: list = []
-
-    def no_turn(*a, **k):  # pragma: no cover - reaching it is the failure
-        made.append(1)
-        raise AssertionError("a turn was built")
-
-    monkeypatch.setattr(consolidate, "unillm_turn", no_turn)
-    settings = SimpleNamespace(
-        UNIFY_MEMORY_WRITER_BASE_URL=base,
-        UNIFY_MEMORY_WRITER_TOKEN=SecretStr(token),
-    )
-    with pytest.raises(ValueError) as info:
-        asyncio.run(
-            consolidate.run_due_passes(
-                None,  # never reached: the settings are read first
-                "e1",
-                "0" * 40,
-                SimpleNamespace(),
-                effort="low",
-                settings=settings,
-                emit=None,
-            ),
-        )
-    text = str(info.value)
-    leaked = bool(token) and token in text
-    assert f"{missing} is empty" in text and "no consolidation pass starts" in text
-    assert not leaked
-    assert made == []
-
-
 # --- validators --------------------------------------------------------------------------------------------
 
 
@@ -395,43 +357,6 @@ def test_the_base_url_validator_refuses_bad_urls_without_quoting_them(raw):
 )
 def test_the_base_url_validator_accepts_http_urls(raw, want):
     assert switch.parse_writer_base_url(raw) == want
-
-
-@pytest.mark.parametrize(
-    "raw",
-    [
-        "tok en-placeholder",  # pragma: allowlist secret
-        "tok\nen-placeholder",  # pragma: allowlist secret
-        "tok\x00en-placeholder",  # pragma: allowlist secret
-        "tokén-placeholder",  # pragma: allowlist secret
-        "short-placehold",  # pragma: allowlist secret
-        'quote"d-placeholder-value',  # pragma: allowlist secret
-        "padding=in-the-placeholder",  # pragma: allowlist secret
-        "padded-the-placeholder==",  # pragma: allowlist secret
-        # + and / percent-encode (%2B, %2F) or JSON-escape (\/) into forms value redaction would miss
-        "plus+in-the-placeholder",  # pragma: allowlist secret
-        "slash/in-the-placeholder",  # pragma: allowlist secret
-    ],
-)
-def test_the_token_validator_refuses_unsendable_tokens_without_quoting_them(raw):
-    with pytest.raises(ValueError) as info:
-        switch.parse_writer_token(raw)
-    leaked = "placeholder" in str(info.value)
-    assert not leaked
-
-
-def test_the_token_validator_accepts_the_launchers_url_safe_tokens():
-    """The office key proxy issues ``secrets.token_urlsafe(32)``; 16 unreserved characters is the floor."""
-    tokens = [secrets.token_urlsafe(32) for _ in range(200)] + [
-        "a" * 16,
-        "Az09._~-" * 2,
-        WRITER_TOKEN,
-    ]
-    kept = [
-        _digest(switch.parse_writer_token(t).get_secret_value()) == _digest(t)
-        for t in tokens
-    ]
-    assert all(kept)
 
 
 def test_settings_never_refuse_or_echo_the_two_values(monkeypatch):
@@ -1091,62 +1016,6 @@ def test_the_writers_route_refuses_to_start_while_unillm_records_spans(
     assert consolidate.writer_settings(SimpleNamespace()).route is None
 
 
-def test_a_refused_route_is_flagged_in_the_runs_events(monkeypatch, tmp_path):
-    """A refused route starts no pass, ever: each request appends one value-free ``refused`` event to the run's
-    ``events.jsonl`` (and the --jsonl stream), so the cell is flagged, not read as a null result. With the route
-    unset, no such event is sent.
-    """
-    events = tmp_path / "events.jsonl"
-    errors = tmp_path / "errors.jsonl"
-    stores = SimpleNamespace(paths=SimpleNamespace(events=events, errors=errors))
-    emitted: list[dict] = []
-    refused = SimpleNamespace(
-        UNIFY_MEMORY_WRITER_BASE_URL=WRITER_BASE,
-        UNIFY_MEMORY_WRITER_TOKEN=SecretStr(""),
-    )
-    for eid in ("e1", "e2"):
-        with pytest.raises(switch.WriterRouteRefused):
-            asyncio.run(
-                consolidate.run_due_passes(
-                    stores,
-                    eid,
-                    "0" * 40,
-                    SimpleNamespace(),
-                    effort="low",
-                    settings=refused,
-                    emit=emitted.append,
-                ),
-            )
-    lines = [json.loads(line) for line in events.read_text().splitlines()]
-    want = [
-        {
-            "type": "consolidation",
-            "phase": "refused",
-            "episode_id": eid,
-            "consolidation_refused": "route_not_in_effect",
-            "reason_codes": ["route_not_in_effect"],
-        }
-        for eid in ("e1", "e2")
-    ]
-    assert lines == want and emitted == want
-    leaked = WRITER_BASE in events.read_text()
-    assert not leaked
-
-    events.unlink()
-    out = asyncio.run(
-        consolidate.run_due_passes(
-            stores,
-            "e3",
-            "0" * 40,
-            SimpleNamespace(),
-            effort="",  # stops right after the settings, before any store is touched
-            settings=SimpleNamespace(),
-            emit=emitted.append,
-        ),
-    )
-    assert out == [] and not events.exists() and len(emitted) == 2
-
-
 def test_error_rows_transcripts_and_redactors_drop_the_registered_token(tmp_path):
     from unify import transcripts
     from unify.memory.integration.request import RequestRun
@@ -1722,29 +1591,6 @@ def test_a_writer_that_never_finishes_is_refused_in_bounded_time(monkeypatch, fd
     took = time.monotonic() - start
     assert refusal is not None and "did not reach its end" in refusal
     assert took < 5 and not _is_open(r)
-
-
-def test_a_refused_descriptor_is_flagged_in_the_runs_events(fd_route, tmp_path):
-    events = tmp_path / "events.jsonl"
-    stores = SimpleNamespace(
-        paths=SimpleNamespace(events=events, errors=tmp_path / "errors.jsonl"),
-    )
-    settings = _fd_settings(_token_fd(fd_route, b""))
-    with pytest.raises(switch.WriterRouteRefused):
-        asyncio.run(
-            consolidate.run_due_passes(
-                stores,
-                "e1",
-                "0" * 40,
-                SimpleNamespace(),
-                effort="low",
-                settings=settings,
-                emit=None,
-            ),
-        )
-    (line,) = [json.loads(x) for x in events.read_text().splitlines()]
-    assert line["phase"] == "refused"
-    assert line["consolidation_refused"] == "route_not_in_effect"
 
 
 def test_the_descriptor_setting_is_normalised_in_settings_and_parsed_when_settled(

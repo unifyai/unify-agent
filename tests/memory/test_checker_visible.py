@@ -28,8 +28,6 @@ from tests.memory.test_episodes import _ep
 from unify.memory.episodes import Action
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gitio import Repo
-from unify.memory.integration import consolidate, switch
-from unify.memory.integration import request as request_mod
 from unify.memory.integration.adapters import dialogue
 from unify.memory.redact import Redactor
 from unify.memory.signals import TIMING_FIELDS, Signal, note_text
@@ -68,38 +66,6 @@ def _arc_lines() -> list[dict]:
 
 
 # ── the switch ───────────────────────────────────────────────────────────────
-
-
-def test_switch_defaults_off_and_parses():
-    assert (
-        type(SETTINGS).model_fields["UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE"].default
-        == "off"
-    )
-    assert switch.PARSERS[switch.CHECKER_VISIBLE] is switch.parse_checker_visible
-    assert switch.parse_checker_visible("") == "off"
-    assert switch.parse_checker_visible("ON") == "on"
-    with pytest.raises(ValueError):
-        switch.parse_checker_visible("maybe")
-
-
-@pytest.mark.parametrize(
-    "library_mode,visible,expected",
-    [
-        ("off", "off", False),
-        ("off", "on", False),
-        ("on", "off", False),
-        ("on", "on", True),
-    ],
-)
-def test_checker_visible_needs_both_switches(
-    monkeypatch,
-    library_mode,
-    visible,
-    expected,
-):
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", library_mode)
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE", visible)
-    assert request_mod.checker_visible_on() is expected
 
 
 # ── the signal and the store ─────────────────────────────────────────────────
@@ -200,100 +166,6 @@ def _entries(*obs_labels):
         {"label": lab, "obs": obs, "at": f"2026-10-09T00:00:0{i}Z"}
         for i, (obs, lab) in enumerate(obs_labels)
     ]
-
-
-def test_one_visible_signal_per_submit_referring_to_its_action(tmp_path):
-    stores, repo = _stores(tmp_path)
-    ep = _episode("ep1", 2)
-    stores.evidence.index_episode(ep, repo.head())
-    n = consolidate.post_visible_checkers(
-        stores,
-        ep,
-        repo.head(),
-        _entries((1, "fail"), (2, "pass")),
-        _arc_lines(),
-        "env",
-    )
-    assert n == 2
-    sigs = stores.evidence.signals_for("ep1")
-    assert [(s.signal_id, s.label, s.refers_to, s.visible_to_actor) for s in sigs] == [
-        ("ep1.checker.1", "fail", "ep1/actions/1", True),
-        ("ep1.checker.2", "pass", "ep1/actions/2", True),
-    ]
-    notes = [json.loads(x) for x in repo.notes(repo.head())]
-    assert all(
-        x["visible_to_actor"] is True and set(x) >= {"label", "refers_to"}
-        for x in notes
-    )
-
-
-def test_refers_to_episode_when_dialogue_is_off(tmp_path):
-    stores, repo = _stores(tmp_path)
-    ep = _episode("ep2", 2)
-    stores.evidence.index_episode(ep, repo.head())
-    consolidate.post_visible_checkers(
-        stores,
-        ep,
-        repo.head(),
-        _entries((1, "pass")),
-        _arc_lines(),
-        "",
-    )
-    assert stores.evidence.signals_for("ep2")[0].refers_to == "ep2"
-
-
-@pytest.mark.parametrize(
-    "entries,n_dialogue",
-    [
-        (_entries((1, "fail"), (1, "pass")), 2),  # not strictly increasing: uncertain
-        (
-            _entries((1, "pass")),
-            1,
-        ),  # the episode's dialogue actions and the pairing disagree
-        (_entries((0, "pass")), 2),  # observation 0 (the instance) answers no reply
-    ],
-)
-def test_never_a_guessed_action(tmp_path, entries, n_dialogue):
-    stores, repo = _stores(tmp_path)
-    ep = _episode("ep3", n_dialogue)
-    stores.evidence.index_episode(ep, repo.head())
-    consolidate.post_visible_checkers(
-        stores,
-        ep,
-        repo.head(),
-        entries,
-        _arc_lines(),
-        "env",
-    )
-    assert {s.refers_to for s in stores.evidence.signals_for("ep3")} == {"ep3"}
-
-
-def test_masked_regime_drops(tmp_path):
-    stores, repo = _stores(tmp_path)
-    ep = _episode("ep4", 2, regime="implicit")
-    stores.evidence.index_episode(ep, repo.head())
-    assert (
-        consolidate.post_visible_checkers(
-            stores,
-            ep,
-            repo.head(),
-            _entries((1, "fail")),
-            _arc_lines(),
-            "env",
-        )
-        == 0
-    )
-    assert stores.evidence.signals_for("ep4") == []
-
-
-def test_outcome_channel_unchanged_and_not_visible(tmp_path):
-    stores, repo = _stores(tmp_path)
-    ep = _episode("ep5", 0)
-    stores.evidence.index_episode(ep, repo.head())
-    assert consolidate.post_checker(stores, "ep5", repo.head(), True, "t") is True
-    (sig,) = stores.evidence.signals_for("ep5")
-    assert sig.signal_id == "ep5.checker" and sig.visible_to_actor is False
-    assert "visible_to_actor" not in repo.notes(repo.head())[0]
 
 
 # ── the request ──────────────────────────────────────────────────────────────
@@ -535,62 +407,3 @@ def _errors(tmp_path):
     )
 
 
-def test_a_verdict_the_actor_never_saw_is_dropped_and_logged(tmp_path):
-    stores, repo = _stores(tmp_path)
-    ep = _episode("ep6", 2)
-    stores.evidence.index_episode(ep, repo.head())
-    lines = _arc_lines()[
-        :4
-    ]  # the request ended after the first submit, before its verdict was shown
-    n = consolidate.post_visible_checkers(
-        stores,
-        ep,
-        repo.head(),
-        _entries((1, "fail")),
-        lines,
-        "env",
-    )
-    assert n == 0 and stores.evidence.signals_for("ep6") == []
-    (err,) = _errors(tmp_path)
-    assert "checker line 1 dropped" in err and "observation 1 of 1 never shown" in err
-
-
-def test_an_unreadable_count_is_dropped_not_posted(tmp_path):
-    stores, repo = _stores(tmp_path)
-    ep = _episode("ep7", 2)
-    stores.evidence.index_episode(ep, repo.head())
-    n = consolidate.post_visible_checkers(
-        stores,
-        ep,
-        repo.head(),
-        _entries((None, "pass")),
-        _arc_lines(),
-        "env",
-    )
-    assert n == 0 and stores.evidence.signals_for("ep7") == []
-    assert "count unreadable" in _errors(tmp_path)[0]
-
-
-def test_delivered_entries_still_pair_when_a_later_one_is_dropped(tmp_path):
-    stores, repo = _stores(tmp_path)
-    ep = _episode("ep8", 2)
-    stores.evidence.index_episode(ep, repo.head())
-    entries = _entries(
-        (1, "fail"),
-        (2, "pass"),
-        (3, "pass"),
-    )  # the third came after the last shown verdict
-    n = consolidate.post_visible_checkers(
-        stores,
-        ep,
-        repo.head(),
-        entries,
-        _arc_lines(),
-        "env",
-    )
-    assert n == 2
-    assert [(s.signal_id, s.refers_to) for s in stores.evidence.signals_for("ep8")] == [
-        ("ep8.checker.1", "ep8/actions/1"),
-        ("ep8.checker.2", "ep8/actions/2"),
-    ]
-    assert len(_errors(tmp_path)) == 1

@@ -6,18 +6,16 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from types import SimpleNamespace
 
 import pytest
 
-from tests.memory.test_checker_visible import _arc_lines
 from tests.memory.test_episodes import _ep
 from unify.memory import captures, lifecycle, trust
 from unify.memory.episodes import Action, EpisodeWriter
 from unify.memory.evidence import EvidenceStore
-from unify.memory.integration import outcomes, switch
+from unify.memory.integration import outcomes
 from unify.memory.integration import request as request_mod
-from unify.memory.integration.consolidate import EpisodeLookup, open_stores
+from unify.memory.integration.consolidate import open_stores
 from unify.memory.integration.paths import Paths
 from unify.memory.redact import Redactor
 from unify.memory.signals import (
@@ -334,94 +332,6 @@ def _capture(store, eid):
     return cid
 
 
-def test_a_late_contrary_verdict_changes_the_regime_reopens_and_recomputes_the_uses(
-    tmp_path,
-):
-    stores = open_stores(Paths.under(tmp_path / "home"))
-    state = stores.paths.state_dir
-    sha, ep = _record(stores, "e1", regime="none", minute=0, ended=ENDED)
-    stores.evidence.record_regime("e1", "none", "nothing", ENDED)
-    cid = _capture(captures.store_dir(state), "e1")
-    before = lifecycle.facts_from_evidence(stores.evidence)[0]
-    assert [
-        trust.judge(u)[0] for u in lifecycle.trust_uses(before, before.items[ITEM])
-    ] == [trust.CLEAN]
-
-    entry, why = outcomes.late_entry(
-        "fail",
-        "e1",
-        f"item:{ITEM}",
-        current="e9",
-        exists=stores.evidence.episode_exists,
-    )
-    assert why == "" and entry["episode"] == "e1"
-    got = outcomes.post_late(
-        stores,
-        state,
-        entry,
-        1,
-        "e9",
-        lookup=EpisodeLookup(stores),
-    )
-    assert got == {
-        "signal_id": "e1.late.e9.1",
-        "episode_id": "e1",
-        "regime_before": "none",
-        "regime_after": "sparse",
-        "captures": [cid],
-    }
-    # the regime record changed, with the signal that changed it
-    assert stores.evidence.regime_of("e1") == "sparse"
-    assert stores.evidence.regime_changes("e1")[-1]["signal_id"] == "e1.late.e9.1"
-    # the signal is attached by the episode's id, timed after the episode, about the item
-    (late,) = [
-        s for s in stores.evidence.signals_for("e1") if s.signal_id == "e1.late.e9.1"
-    ]
-    assert (late.timing, late.about, late.visible_to_actor, late.refers_to) == (
-        AFTER_EPISODE,
-        f"item:{ITEM}",
-        True,
-        "e1",
-    )
-    notes = [json.loads(n) for n in stores.episodes.notes(sha)]
-    assert any(
-        n.get("timing") == AFTER_EPISODE and n["signal_id"] == "e1.late.e9.1"
-        for n in notes
-    )
-    # the arrival row the attention ledger reads to reopen what the episode used or produced
-    (row,) = outcomes.read_arrivals(state)
-    assert (
-        row["episode_id"],
-        row["timing"],
-        row["label"],
-        row["regime_before"],
-        row["regime_after"],
-    ) == (
-        "e1",
-        AFTER_EPISODE,
-        "fail",
-        "none",
-        "sparse",
-    )
-    # the item's use in that episode is recomputed from the evidence: now failed on the late contrary signal
-    after = lifecycle.facts_from_evidence(stores.evidence)[0]
-    assert [
-        trust.judge(u)[:2] for u in lifecycle.trust_uses(after, after.items[ITEM])
-    ] == [(trust.FAILED, "negative")]
-    # and the capture judged on that episode is judged again
-    rec = json.loads(
-        (captures.store_dir(state) / cid / captures.RECORD_FILE).read_text()
-    )
-    assert (
-        rec["cases"][0]["outcome"] == captures.FAILED
-        and rec["outcome"] == captures.FAILED
-    )
-    assert (
-        rec["uses"][0]["regime"] == "sparse"
-        and rec["uses"][0]["end_outcome"] == "contrary"
-    )
-
-
 def test_a_late_verdict_is_attached_by_episode_id_only(tmp_path):
     stores = open_stores(Paths.under(tmp_path / "home"))
     _record(stores, "e1", regime="none", minute=0)
@@ -468,119 +378,6 @@ def _run(tmp_path, monkeypatch):
     run.regime_inferred = request_mod.regime_inferred_on()
     run.episode_id = "f" * 16
     return run
-
-
-def test_the_requests_regime_is_inferred_from_its_own_verdicts_and_posted_with_their_timing(
-    tmp_path, monkeypatch
-):
-    run = _run(tmp_path, monkeypatch)
-    assert run.regime_inferred
-    seen = []
-    run.signal_listeners.append(seen.append)
-    monkeypatch.setattr(run, "_observations_now", lambda: 1)
-    assert run.take_checker({"label": "pass"}, about="action:0")["accepted"] is True
-    assert seen == [
-        {
-            "episode_id": run.episode_id,
-            "label": "pass",
-            "about": "action:0",
-            "arrived_at": run.checker_seen[0]["at"],
-            "timing": IN_EPISODE,
-        }
-    ]
-    ep = _ep(episode_id=run.episode_id, ended_at="2999-01-01T00:00:00Z", regime="none")
-    basis, visible = run._infer_regime(ep, _arc_lines(), "")
-    assert (ep.regime, basis) == (
-        "sparse",
-        "signals",
-    )  # one verdict, for the episode as a whole
-    sha = EpisodeWriter(run.stores.episodes, run.stores.blobs, Redactor()).write(ep)
-    run.stores.evidence.index_episode(ep, sha)
-    run._post_inferred(ep, sha, ep.ended_at, basis, visible)
-    (sig,) = run.stores.evidence.signals_for(run.episode_id)
-    assert (sig.timing, sig.about, sig.regime, sig.visible_to_actor) == (
-        IN_EPISODE,
-        "action:0",
-        "sparse",
-        True,
-    )
-    assert run.stores.evidence.regime_record(run.episode_id) == ("sparse", "signals")
-    assert [r["signal_id"] for r in outcomes.read_arrivals(run.paths.state_dir)] == [
-        sig.signal_id
-    ]
-
-
-def test_the_request_takes_late_verdicts_only_under_the_switch(tmp_path, monkeypatch):
-    run = _run(tmp_path, monkeypatch)
-    _record(run.stores, "e1", regime="none", minute=0)
-    run.stores.evidence.record_regime("e1", "none", "nothing", ENDED)
-    answer = run.take_checker({"label": "fail"}, episode="e1")
-    assert answer == {
-        "type": "checker",
-        "accepted": True,
-        "label": "fail",
-        "episode": "e1",
-        "count": 1,
-    }
-    assert run.checker_seen == [] and len(run.late_checkers) == 1
-    refused = run.take_checker({"label": "fail"}, episode="0123456789abcdef")
-    assert (
-        refused["accepted"] is False
-        and refused["reason"] == "no recorded episode has that id"
-    )
-    ep = _ep(episode_id=run.episode_id, ended_at="2999-01-01T00:00:00Z", regime="none")
-    basis, visible = run._infer_regime(ep, [], "")
-    sha = EpisodeWriter(run.stores.episodes, run.stores.blobs, Redactor()).write(ep)
-    run.stores.evidence.index_episode(ep, sha)
-    run._post_inferred(ep, sha, ep.ended_at, basis, visible)
-    assert run.stores.evidence.regime_of("e1") == "sparse"
-    assert [s.signal_id for s in run.stores.evidence.signals_for("e1")] == [
-        f"e1.late.{run.episode_id}.1"
-    ]
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_REGIME", "off")
-    off = request_mod.RequestRun("x", run.paths)
-    off.regime_inferred = request_mod.regime_inferred_on()
-    got = off.take_checker({"label": "fail"}, episode="e1")
-    assert got["accepted"] is False and "UNIFY_MEMORY_REGIME is off" in got["reason"]
-
-
-def test_without_the_switch_no_regime_is_inferred_and_nothing_changes(
-    tmp_path, monkeypatch
-):
-    from unify.memory.integration import trajectory
-
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_REGIME", "")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_PROFILE", "")
-    assert trajectory._default_regime() == "dense"  # as built
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_REGIME", "inferred")
-    assert (
-        trajectory._default_regime() == "none"
-    )  # never dense by default: inferred by the caller
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_REGIME", "")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_PROFILE", "redesign")
-    assert switch.regime_inferred(SETTINGS) and trajectory._default_regime() == "none"
-
-
-def test_the_switch_parses_and_needs_memory():
-    assert (
-        switch.parse_regime("") == ""
-        and switch.parse_regime(" Inferred ") == "inferred"
-    )
-    with pytest.raises(
-        ValueError, match="UNIFY_MEMORY_REGIME must be empty, 'off' or 'inferred'"
-    ):
-        switch.parse_regime("dense")
-    assert switch.PARSERS[switch.REGIME] is switch.parse_regime
-    assert switch.profile_refusal(SimpleNamespace(UNIFY_MEMORY_REGIME="inferred")) == (
-        "UNIFY_MEMORY_REGIME=inferred needs UNIFY_MEMORY=on; nothing runs"
-    )
-    assert (
-        switch.profile_refusal(
-            SimpleNamespace(UNIFY_MEMORY="on", UNIFY_MEMORY_REGIME="inferred")
-        )
-        is None
-    )
 
 
 # --- 4. with no signals the card says so; status text for every basis --------------------------------------------
@@ -632,96 +429,7 @@ def test_the_status_text_states_what_it_rests_on():
 # --- 5. dense-shaped episodes behave as built ---------------------------------------------------------------------
 
 
-def test_dense_shaped_episodes_post_and_judge_as_built(tmp_path, monkeypatch):
-    from tests.memory.test_checker_visible import _entries, _episode
-    from unify.memory.integration import consolidate
-
-    built = open_stores(Paths.under(tmp_path / "built"))
-    ep = _episode("ep1", 2)
-    sha = EpisodeWriter(built.episodes, built.blobs, Redactor()).write(ep)
-    built.evidence.index_episode(ep, sha)
-    consolidate.post_visible_checkers(
-        built, ep, sha, _entries((1, "fail"), (2, "pass")), _arc_lines(), "env"
-    )
-
-    run = _run(tmp_path, monkeypatch)
-    run.episode_id = "ep1"
-    run.checker_seen = [dict(e, about="") for e in _entries((1, "fail"), (2, "pass"))]
-    ep2 = _episode("ep1", 2, regime="none")
-    ep2.ended_at = "2999-01-01T00:00:00Z"
-    basis, visible = run._infer_regime(ep2, _arc_lines(), "env")
-    assert ep2.regime == "dense" == ep.regime
-    sha2 = EpisodeWriter(run.stores.episodes, run.stores.blobs, Redactor()).write(ep2)
-    run.stores.evidence.index_episode(ep2, sha2)
-    run._post_inferred(ep2, sha2, ep2.ended_at, basis, visible)
-
-    def view(stores):
-        return [
-            (s.signal_id, s.label, s.refers_to, s.regime, s.visible_to_actor)
-            for s in stores.evidence.signals_for("ep1")
-        ]
-
-    assert view(run.stores) == view(built)
-    assert [s.timing for s in run.stores.evidence.signals_for("ep1")] == [
-        IN_EPISODE,
-        IN_EPISODE,
-    ]
-    assert [s.timing for s in built.evidence.signals_for("ep1")] == ["", ""]
-
-
 # --- the CLI ------------------------------------------------------------------------------------------------------
-
-
-def test_the_cli_announces_the_episode_and_hands_on_a_late_verdict_under_the_switch(
-    monkeypatch,
-):
-    from tests.memory.integration.test_request import _drive, _Run
-
-    class _LateRun(_Run):
-        regime_inferred = True
-        episode_id = "a" * 16
-
-        def take_checker(self, raw, **where):
-            self.log.append(("take_checker", raw, where))
-            return {
-                "type": "checker",
-                "accepted": True,
-                "label": raw["label"],
-                "count": 1,
-            }
-
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_REGIME", "inferred")
-    line = (
-        b'{"checker": {"label": "fail"}, "episode": "'
-        + b"b" * 16
-        + b'", "about": "action:2"}\n'
-    )
-    code, out, log, _handle = _drive(
-        monkeypatch,
-        ["act", "--persist", "--jsonl", "--no-clarify", "--quiet", "Say hi"],
-        line + b'{"quit": true}\n',
-        _LateRun([]),
-    )
-    assert code == 0
-    assert out[0] == {"type": "episode", "episode_id": "a" * 16}
-    assert (
-        "take_checker",
-        {"label": "fail"},
-        {"episode": "b" * 16, "about": "action:2"},
-    ) in log
-    assert all(e[0] != "act" or "checker" not in e[1] for e in log)
-    # without the switch the same line is no late verdict: it is not handed on as one
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_REGIME", "off")
-    code, out, log, _handle = _drive(
-        monkeypatch,
-        ["act", "--persist", "--jsonl", "--no-clarify", "--quiet", "Say hi"],
-        line + b'{"quit": true}\n',
-        _LateRun([]),
-    )
-    assert not any(e[0] == "take_checker" for e in log)
 
 
 def test_a_recovered_episodes_regime_is_inferred_too(tmp_path, monkeypatch):

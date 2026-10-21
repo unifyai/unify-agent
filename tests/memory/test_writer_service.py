@@ -26,6 +26,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.agents.roster import read_roster
 from unify.agents import run_record as rr
 from unify.memory import attention
 from unify.memory import writer_service as ws
@@ -45,6 +46,10 @@ SWITCHES = {
     "UNIFY_MEMORY_LIBRARY_PASS_WALL_S": "60",
     "UNIFY_HOST_LEASE_END": "2099-01-01T00:00:00Z",  # required with the service; far off unless a test sets its own
 }
+
+
+def _roster_file(home):
+    return rr.agents_dir(home) / rr.ROSTER_FILE
 
 
 def _settings(**over) -> SimpleNamespace:
@@ -413,7 +418,7 @@ def test_the_service_exits_after_its_idle_window_with_nothing_open(svc, monkeypa
         and _events(svc.home, "stop")[-1]["why"] == "idle-exit"
     )
     assert ws.read_state(svc.home)["state"] == "stopped"
-    roster = {r["name"]: r for r in rr.read_roster(svc.home)["agents"]}
+    roster = {r["name"]: r for r in read_roster(svc.home)["agents"]}
     assert roster["writer"]["state"] == "ended"
 
 
@@ -961,7 +966,7 @@ def test_a_step_runs_one_pass_over_the_open_entries_and_then_finds_nothing_open(
     assert fd is not None
     os.close(fd)
     assert ws.read_state(svc.home)["state"] == "stopped"
-    roster = {r["name"]: r["state"] for r in rr.read_roster(svc.home)["agents"]}
+    roster = {r["name"]: r["state"] for r in read_roster(svc.home)["agents"]}
     assert roster["writer"] == "idle"
     # the spend is reserved and settled under the service's cap exactly as the service books it
     assert ws.spend_totals(svc.home) == (Decimal("0.001"), Decimal("0.001"))
@@ -995,7 +1000,7 @@ def test_a_step_at_the_stop_marker_does_what_the_service_does_when_it_stops(
     entries = attention.Ledger(svc.home).entries()
     assert {entries[i].state for i in ids} == {"not_reached"}
     assert {entries[i].why for i in ids} == {ws.NOT_REACHED_BY["operator"]}
-    roster = {r["name"]: r["state"] for r in rr.read_roster(svc.home)["agents"]}
+    roster = {r["name"]: r["state"] for r in read_roster(svc.home)["agents"]}
     assert roster["writer"] == "ended"
 
 
@@ -1041,11 +1046,11 @@ def test_with_the_run_record_off_the_service_runs_its_passes_without_it(
     runner = Recording()
     got = _step(svc.home, runner, monkeypatch, over={"UNIFY_AGENTS_RUN_RECORD": "off"})
     assert got["pass_id"] is not None and sorted(got["handed"]) == sorted(ids)
-    assert not rr.roster_path(svc.home).exists() and not rr.record_path(svc.home).exists()
+    assert not _roster_file(svc.home).exists() and not rr.record_path(svc.home).exists()
     # and a stop leaves no record behind either
     assert ws.stop_service(svc.home, "operator", "test", grace_s=0.1).verified
     stopped = _step(svc.home, _no_pass, monkeypatch, over={"UNIFY_AGENTS_RUN_RECORD": "off"})
-    assert stopped["stop"] == "operator" and not rr.roster_path(svc.home).exists()
+    assert stopped["stop"] == "operator" and not _roster_file(svc.home).exists()
 
 
 def _pipe_holders(inodes: set[int]) -> list[tuple[int, int]]:

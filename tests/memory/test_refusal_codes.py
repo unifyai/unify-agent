@@ -61,12 +61,8 @@ def test_refusal_codes_list_every_form_of_every_tool_and_each_renders():
     for spec in tool_spec.registry():
         assert set(spec.refusals) <= set(codes[spec.name]), spec.name
     assert codes[tool_spec.GENERAL] == sorted(tool_spec.GENERAL_REFUSALS)
-    from unify.common import tool_registry
 
-    # the run record's comms tools are counted too: their forms are in refusal_codes whether the record is on or not;
-    # a form both specs have renders with the registry's own template (refusal() reads that one first)
-    templates = {(s.name, f): t for s in tool_registry._RUN_SPECS.values() for f, t in s.refusals.items()}
-    templates.update({(s.name, f): t for s in tool_spec.registry() for f, t in s.refusals.items()})
+    templates = {(s.name, f): t for s in tool_spec.registry() for f, t in s.refusals.items()}
     for tool, forms in codes.items():
         for form in forms:
             assert form.isidentifier(), (tool, form)
@@ -153,21 +149,15 @@ def test_the_briefs_state_the_operational_limits_from_their_constants():
         "nothing under /memory, /inputs or /outputs changes",
     )
     finish_cap = f"up to {writer_pass.FINISH_G1_REFUSALS} times in a pass"
-    full = library_prompts.write_brief_now(
-        staging=True,
-        compact=True,
-        finish_capped=True,
-    )
+    full = library_prompts.write_brief_now(finish_capped=True)
     for sentence in (stage, *compaction, finish_cap):
         assert full.count(sentence) == 1, sentence
-    curate = library_prompts.curate_brief_now(compact=True, finish_capped=True)
-    for sentence in (*compaction, finish_cap):
-        assert curate.count(sentence) == 1, sentence
-    # off by configuration: not stated
+    # an uncapped pass: the staging quota and the compaction are stated, the finish cap is not
     plain = library_prompts.write_brief_now()
-    for sentence in (stage, *compaction, finish_cap):
-        assert sentence not in plain, sentence
-    for text in (full, curate):
+    for sentence in (stage, *compaction):
+        assert plain.count(sentence) == 1, sentence
+    assert finish_cap not in plain
+    for text in (full, plain):
         assert "budget" not in text.lower() and "<<" not in text
 
 

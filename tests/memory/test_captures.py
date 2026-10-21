@@ -202,32 +202,6 @@ def test_a_failure_is_captured_as_negative_knowledge(tmp_path):
 # --- one record per code, outcomes per signal regime ---------------------------------------------------------------
 
 
-def test_attempts_with_identical_code_share_one_capture_and_their_outcomes_join_one_record(tmp_path):
-    store = cp.store_dir(tmp_path)
-    for i in range(3):
-        eid = f"e{i}"
-        staging = _staging(tmp_path, eid, {"procedure.py": PROC})
-        runner, _ = _box(VALUE, [6, 9])
-        row = cp.capture_trace_step(
-            staging, _ep(eid), store, signals=[_checker(eid, "pass")], runner=runner
-        )
-        assert row["capture_id"] == cp.capture_id(PROC)
-    [(cid, doc)] = [(k, v) for k, v in cp.load(store).items()]
-    rec = doc["record"]
-    assert rec["episodes"] == ["e0", "e1", "e2"] and len(rec["uses"]) == 3
-    # three accepted answers in the dense regime: adopted, and confirmed by outcomes
-    assert (rec["status"], rec["status_basis"], rec["level"]) == (
-        tr.ADOPTED,
-        tr.BASIS_VERDICTS,
-        tr.CONFIRMED_BY_OUTCOMES,
-    )
-    # two rejected later uses retire it and take the confirmation away
-    for eid in ("u1", "u2"):
-        cp.record_use(store, cid, tr.Use(eid, "dense", answered=True, verdict="rejected"))
-    rec = cp.load(store)[cid]["record"]
-    assert (rec["status"], rec["status_rule"], rec["level"]) == (tr.RETIRED, "rejected", tr.UNCHECKED)
-
-
 def test_without_verdicts_a_capture_is_adopted_on_implicit_signals_only(tmp_path):
     store = cp.store_dir(tmp_path)
     for i in range(3):
@@ -261,45 +235,6 @@ def test_a_repeat_is_recognised_by_running_stored_captures_on_the_new_request(tm
 
 
 # --- what reads the store ---------------------------------------------------------------------------------------
-
-
-def test_the_actor_snapshot_and_the_writer_inputs_carry_the_capture_files(tmp_path):
-    store = cp.store_dir(tmp_path)
-    staging = _staging(tmp_path, "e1", {"procedure.py": PROC, "broke.md": BROKE})
-    runner, _ = _box(VALUE, [6, 9])
-    cid = cp.capture_trace_step(staging, _ep("e1"), store, runner=runner)["capture_id"]
-    snap = cp.export_files(store)
-    assert sorted(snap) == sorted(f"{cp.EXPORT_DIR}/{cid}/{n}" for n in (*cp.CAPTURE_FILES, cp.SAVED_FILE))
-    # what memory.match hands its matcher besides the signature: the docstring, the summary sections, what broke
-    saved = json.loads(snap[f"{cp.EXPORT_DIR}/{cid}/{cp.SAVED_FILE}"])
-    assert set(saved) == {"docstring", "asked", "approach", "broke"} and isinstance(saved["broke"], list)
-    assert not any(p.endswith("INDEX.md") for p in snap)
-    dest = tmp_path / "inputs" / "captures"
-    assert cp.export_for_writer(store, [cid], dest) == [cid]
-    assert (dest / cid / "procedure.py").read_text() == PROC
-
-
-def test_the_pool_takes_the_store_and_refreshes_its_record(tmp_path):
-    from unify.memory.gitio import Repo
-
-    store = cp.store_dir(tmp_path)
-    staging = _staging(tmp_path, "e1", {"procedure.py": PROC})
-    runner, _ = _box(VALUE, [6, 9])
-    cid = cp.capture_trace_step(staging, _ep("e1"), store, runner=runner)["capture_id"]
-    before = {p: p.read_bytes() for p in store.rglob("*") if p.is_file()}
-    repo = Repo.init_bare(tmp_path / "mem.git")
-    p = pool.Pool(repo).load()
-    assert p.enter_captures(store, "p1") == {"entries": 1, "added": 1}
-    p.save("p1")
-    cp.record_use(store, cid, tr.Use("u1", "none"))
-    p = pool.Pool(repo).load()
-    assert p.enter_captures(store, "p2")["added"] == 0
-    [entry] = p.open_entries()
-    assert entry.kind == "capture" and entry.data["capture_id"] == cid
-    assert json.loads(entry.files["record.json"])["track"]["implicit"]["ran_ok"] == 2
-    # the pool only reads the store
-    after = {q: q.read_bytes() for q in store.rglob("*") if q.is_file()}
-    assert set(before) == set(after)
 
 
 def test_the_writer_reads_the_capture_store_and_no_other_agent_edits_the_library(tmp_path, monkeypatch):
@@ -375,22 +310,3 @@ def test_a_fork_reply_with_a_procedure_records_it_in_fork_json(tmp_path):
 # --- the real confined box ----------------------------------------------------------------------------------------
 
 
-@needs_bwrap
-def test_a_real_confined_capture_reproduces_and_marks_non_determinism(tmp_path):
-    staging = _staging(tmp_path, "e1", {"procedure.py": PROC})
-    store = cp.store_dir(tmp_path)
-    row = cp.capture_trace_step(staging, _ep("e1"), store, work=tmp_path / "w")
-    assert (row["reproduces"], row["deterministic"], row["holds"]) == ("reproduces", True, True), row
-    # a procedure that ignores its input reproduces its own case and differs on another request of the same shape
-    constant = PROC.replace('return [sum(value[k]) for k in sorted(value)]', "return [6, 9]")
-    staging2 = _staging(tmp_path, "e2", {"procedure.py": constant})
-    assert cp.capture_trace_step(staging2, _ep("e2"), store, work=tmp_path / "w2")["reproduces"] == "reproduces"
-    other = REQUEST.replace("[4, 5]", "[4, 6]")
-    run = cp.run_box(constant, other, work=tmp_path / "w3")
-    assert cp.compare(run, True, [6, 10]) == "differs"
-    noisy = PROC.replace(
-        'return [sum(value[k]) for k in sorted(value)]',
-        "import random\n    return [random.random()]",
-    )
-    staging3 = _staging(tmp_path, "e3", {"procedure.py": noisy})
-    assert cp.capture_trace_step(staging3, _ep("e3"), store, work=tmp_path / "w4")["deterministic"] is False

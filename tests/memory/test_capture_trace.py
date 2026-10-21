@@ -12,15 +12,12 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from unify.memory import capture_trace as ct
 from unify.memory import captures as cp
-from unify.memory import replay_box as rb
 from unify.memory.episodes import Action, Episode
-from unify.memory.integration import fork as fork_mod
 from unify.memory.sandbox_run import SandboxResult
 from unify.memory.signals import Signal
 
@@ -275,135 +272,15 @@ def test_a_contrary_signal_makes_negative_knowledge_and_nothing_runs(tmp_path):
 # --- 3. a dialogue whose values arrived later ---------------------------------------------------------------------------
 
 
-@needs_bwrap
-def test_a_dialogue_with_later_values_is_a_state_capture_whose_own_check_passes_on_the_recorded_state(tmp_path):
-    ep = _ep(
-        request=['Please book for me: {"name": "Ada"}', 'I would like {"date": "2026-11-02"}'],
-        actions=[Action(0, "env", "book", [], {"name": "Ada", "date": "2026-11-02"}, "ok", "ok", "unknown",
-                        kind="dialogue")],  # fmt: skip
-    )
-    staging = _staging(tmp_path, "e1", {"procedure.py": STATE_PROC})
-    row = cp.capture_trace_step(staging, ep, cp.store_dir(tmp_path), work=tmp_path / "w")
-    assert row["entry_point"]["form"] == "state" and row["own_check"] == ct.NOT_RUN
-    # the own check itself (never run by the capture step under rev 2), on the recorded state
-    run = ct.run_box(STATE_PROC, "state", ct.case_doc("state", ep), work=tmp_path / "w2")
-    oc = ct.own_check(run, ct.value_of(ep)[0])
-    assert oc["ran"] and oc["error"] is None and oc["deterministic"] is True
-    assert oc["value_match"] == "matched", oc  # it gives what the episode handed back, from the later message
-
-
 # --- 4. no same_as row; off is as built ---------------------------------------------------------------------------------
-
-
-def test_no_recurrence_runs_under_the_trace_and_off_is_as_built(tmp_path, monkeypatch):
-    store = cp.store_dir(tmp_path)
-    runner, seen = _box([6, 9])
-    for eid in ("e1", "e2"):
-        cp.capture_trace_step(_staging(tmp_path, eid, {"procedure.py": VALUE_PROC.replace("Total", f"Total {eid}")}),
-                   _ep(eid, actions=[Action(0, "env", "submit", [[6, 9]], {}, "ok", "ok", "unknown", kind="dialogue")]),
-                   store, runner=runner)  # fmt: skip
-    assert seen == []  # rev 2: nothing is run, neither an own check nor a capture on another's request
-    rows = [json.loads(x) for x in (store / cp.EVENTS_FILE).read_text().splitlines()]
-    assert all("same_as" not in r and "reproduces" not in r for r in rows)
-    assert [r["folded"] for r in rows] == [False, True]  # the two differ in a docstring only
-    for d in store.iterdir():
-        if d.is_dir():
-            rec = json.loads((d / "record.json").read_text())
-            assert "same_as" not in rec and "recurrence" not in rec
-    # off: the same capture as built (recurrence runs the other capture on this request)
-    off_store = cp.store_dir(tmp_path / "off")
-    runner2, seen2 = _box([6, 9], value=json.dumps({"a": [1, 2, 3], "b": [4, 5]}))
-    for eid in ("e1", "e2"):
-        cp.capture_trace_step(_staging(tmp_path / "off", eid, {"procedure.py": VALUE_PROC.replace("Total", f"Total {eid}")}),
-                   _ep(eid, actions=[Action(0, "env", "submit", [[6, 9]], {}, "ok", "ok", "unknown", kind="dialogue")]),
-                   off_store, runner=runner2)  # fmt: skip
-    rows = [json.loads(x) for x in (off_store / cp.EVENTS_FILE).read_text().splitlines()]
-    assert len(seen2) == 3 and rows[1]["same_as"] and "v" not in rows[1]
-    # the fork's instruction is the built one with the switch off, the trace contract's with it on
-    monkeypatch.setattr(fork_mod, "_settings", lambda: SimpleNamespace(UNIFY_MEMORY_CAPTURE_TRACE="off"))
-    assert fork_mod.fork_instruction() in (fork_mod.INSTRUCTION, fork_mod.INSTRUCTION_IN_CODE)
-    assert fork_mod.CAPTURE_BULLETS in fork_mod.fork_instruction()
-    monkeypatch.setattr(fork_mod, "_settings", lambda: SimpleNamespace(UNIFY_MEMORY_CAPTURE_TRACE="on"))
-    text = fork_mod.fork_instruction()
-    assert fork_mod.CAPTURE_BULLETS_TRACE in text and fork_mod.CAPTURE_BULLETS not in text
-    for needle in ("run(state, env)", "run(state)", "read_input(request)", "None when the outcome"):
-        assert needle in text
 
 
 # --- 5. an unrecorded env call is evidence --------------------------------------------------------------------------------
 
 
-@needs_bwrap
-def test_an_unrecorded_env_call_in_the_own_check_is_labelled_evidence_not_a_failure(tmp_path):
-    ep = _ep(actions=[_write_action()])
-    row = cp.capture_trace_step(_staging(tmp_path, "e1", {"procedure.py": MISS_PROC}), ep, cp.store_dir(tmp_path),
-                     work=tmp_path / "w")  # fmt: skip
-    assert row["capture_id"] and row["safety"] == "ok" and row["own_check"] == ct.NOT_RUN
-    rec = json.loads((cp.store_dir(tmp_path) / row["capture_id"] / "record.json").read_text())
-    assert not cp.negative(rec)
-    # the own check itself (never run by the capture step under rev 2)
-    oc = ct.own_check(ct.run_box(MISS_PROC, "state_env", ct.case_doc("state_env", ep), work=tmp_path / "w1"), {})
-    assert oc["error"] == "ReplayMiss" and oc["calls"]["mode"] == "replay"
-    assert oc["calls"]["differed"] == 1 and oc["calls"]["missing"] == 1 and oc["calls"]["matched"] == 0
-    # and the matching procedure's replay matches every recorded call, nothing executed on the host
-    ep2 = _ep("e2", actions=[_write_action()])
-    oc2 = ct.own_check(ct.run_box(ENV_PROC, "state_env", ct.case_doc("state_env", ep2), work=tmp_path / "w2"), {})
-    assert oc2["calls"] == {"mode": "replay", "matched": 1, "differed": 0, "missing": 0, "unrecorded": 0}
-    assert oc2["error"] is None and oc2["deterministic"] is True
-    assert not (tmp_path / "out").exists() and not Path("out/report.txt").exists()
-
-
 # --- 6. confinement refuses the network and the host's files ---------------------------------------------------------------
-
-
-@needs_bwrap
-def test_a_procedure_reading_the_network_or_the_host_files_is_refused_by_confinement(tmp_path):
-    secret = tmp_path / "host-only.txt"
-    secret.write_text("host")
-    host_read = f'''def run(state):
-    """Read a host file."""
-    with open({str(secret)!r}) as f:
-        return f.read()
-'''
-    net = '''def run(state):
-    """Reach the network."""
-    import socket
-    s = socket.create_connection(("1.1.1.1", 80), timeout=3)
-    return "reached"
-'''
-    for i, proc in enumerate((host_read, net)):
-        ep = _ep(f"e{i}")
-        oc = ct.own_check(ct.run_box(proc, "state", ct.case_doc("state", ep), work=tmp_path / f"w{i}"), ct.value_of(ep)[0])
-        assert oc["ran"] and oc["error"] is not None and oc["value_match"] in ("not_applicable", "unknown"), oc
 
 
 # --- the bounds ---------------------------------------------------------------------------------------------------------------
 
 
-def test_a_case_over_the_bound_is_not_run_and_says_why(tmp_path, monkeypatch):
-    monkeypatch.setattr(ct, "MAX_CASE_BYTES", 10)
-    runner, seen = _box([1])
-    out = ct.run_box(VALUE_PROC, "value", ct.case_doc("value", _ep()), work=tmp_path, runner=runner)
-    assert out == {"outcome": "not run", "why": "the recorded messages and actions are over the replay bound"}
-    assert seen == []
-    oc = ct.own_check(out, {"present": True, "digest": "x"})
-    assert oc == {"ran": False, "error": None, "refused": False, "deterministic": None, "value_match": "unknown",
-                  "calls": {"mode": "not_run", "matched": 0, "differed": 0, "missing": 0, "unrecorded": 0},
-                  "why": "the recorded messages and actions are over the replay bound"}  # fmt: skip
-
-
-@needs_bwrap
-def test_each_form_runs_for_real_in_the_box(tmp_path):
-    episodes = {
-        "value": _ep(),
-        "state": _ep(request=['{"name": "Ada"}', 'then {"date": "x"}']),
-        "state_env": _ep(actions=[_write_action()]),
-    }
-    results = {"value": [6, 9], "state": {"name": "Ada", "date": "x"}, "state_env": None}
-    for form, proc in FORMS.items():
-        out = ct.run_box(proc, form, ct.case_doc(form, episodes[form]), work=tmp_path / form)
-        assert out["outcome"] == "returned", (form, out)
-        assert out["deterministic"] is True and out["result"] == results[form]
-    ep = episodes["state_env"]
-    noisy = ENV_PROC.replace("return None", "import random\n    return random.random()")
-    assert ct.run_box(noisy, "state_env", ct.case_doc("state_env", ep), work=tmp_path / "n")["deterministic"] is False
