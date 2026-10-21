@@ -1071,15 +1071,23 @@ def stop_service(
     kill: Callable[[int, int], None] = os.killpg,
     kill_pid: Callable[[int, int], None] = os.kill,
     sleep: Callable[[float], Any] = time.sleep,
+    wait_s: Optional[float] = None,
 ) -> Terminated:
     """Write the stop marker; give a pass in flight its deadline plus *grace_s* (the service stops at the marker once
-    the pass ends); then SIGTERM, *term_s*, SIGKILL; then check in ``/proc`` that nothing of the service is left
-    (module docstring). A signal goes to the service's process group (*kill*) only while the service itself is alive
-    (:func:`owns`); otherwise only to each process the service recorded, checked by its start time (*kill_pid*,
-    :func:`recorded_members`): a group number alone is never signalled."""
+    the pass ends), or *wait_s* from now if that is sooner; then SIGTERM, *term_s*, SIGKILL; then check in ``/proc``
+    that nothing of the service is left (module docstring). A pass cut by the SIGTERM ends through its abort path;
+    at a ``suspend`` every entry it held stays owed for the next start. A signal goes to the service's process group
+    (*kill*) only while the service itself is alive (:func:`owns`); otherwise only to each process the service
+    recorded, checked by its start time (*kill_pid*, :func:`recorded_members`): a group number alone is never
+    signalled."""
     if by not in STOP_BY:
         raise ValueError(f"by is one of {', '.join(STOP_BY)}, not {by!r}")
     home = Path(home)
+    cap = None if wait_s is None else time.monotonic() + max(0.0, float(wait_s))
+
+    def bounded(limit: float) -> float:
+        return limit if cap is None else min(limit, cap)
+
     _atomic_json(
         service_dir(home) / STOP_FILE,
         {"v": 1, "by": by, "at": stamp(_now()), "reason": str(reason)[:500]},
@@ -1099,7 +1107,7 @@ def stop_service(
         from .service_owner import lock_free
 
         end = parse_stamp(doc.get("pass_deadline"))
-        limit = time.monotonic() + max(0.0, (end - _now()).total_seconds() if end else 0.0) + grace_s
+        limit = bounded(time.monotonic() + max(0.0, (end - _now()).total_seconds() if end else 0.0) + grace_s)
         while not lock_free(home) and time.monotonic() < limit:
             sleep(0.1)
         free = lock_free(home)
@@ -1115,7 +1123,7 @@ def stop_service(
     if not alive():
         return Terminated(True, "clean")
     pass_end = parse_stamp(doc.get("pass_deadline"))
-    limit = (
+    limit = bounded(
         time.monotonic()
         + max(0.0, ((pass_end - _now()).total_seconds() if pass_end else 0.0))
         + grace_s
@@ -1127,7 +1135,7 @@ def stop_service(
             new_end = parse_stamp(fresh.get("pass_deadline"))
             if new_end is not None and new_end != pass_end:
                 pass_end = new_end
-                limit = (
+                limit = bounded(
                     time.monotonic()
                     + max(0.0, (new_end - _now()).total_seconds())
                     + grace_s

@@ -818,15 +818,18 @@ def drain(
     kill: Callable[[int, int], None] = os.killpg,
     archive_to: Path | None = None,
     end: str = "final",
+    service_wait_s: float | None = None,
 ) -> dict:
     """Shutdown: never starts a pass. *end* says what ends: ``final`` (the run itself: every attention entry still owed
     is then ``not_reached: run_ended``) or ``suspend`` (one stage of a run that goes on: the service stops the same
     way, and every entry still owed stays owed for the next start to hand again). A pass in flight may run until its own deadline (or *wait_s*, if
     sooner); then SIGTERM cancels it through the abort path; a worker still alive after *grace_s* is killed and its
     end verified within *settle_s*. Every result no request applied is reported under ``after_last_request`` and
-    marked ``counted: false``. With *archive_to*, once no worker can write, the memory repo is archived with every
-    ref, ``refs/notes/items`` and ``served`` included (:func:`..memory_writer.archive`; a plain clone would drop
-    the item records). The report is also appended to ``events.jsonl``.
+    marked ``counted: false``. *service_wait_s* bounds the writer service's pass in flight the same way: its deadline
+    plus the stop's grace, or *service_wait_s* from now if that is sooner. With *archive_to*, once no worker can
+    write, the memory repo is archived with every ref, ``refs/notes/items`` and ``served`` included
+    (:func:`..memory_writer.archive`; a plain clone would drop the item records). The report is also appended to
+    ``events.jsonl``.
 
     Signals go only to the worker's process group, and only after its leader was found alive by :func:`owns`
     (pid, start time, group) in this call; the end is verified when the leader is gone and no live process is
@@ -834,7 +837,7 @@ def drain(
     """
     if end not in DRAIN_ENDS:
         raise ValueError(f"end is one of {', '.join(DRAIN_ENDS)}, not {end!r}")
-    service = _drain_service(paths, end)
+    service = _drain_service(paths, end, service_wait_s)
     report: dict = {
         "end": end,
         "type": "consolidation",
@@ -946,7 +949,7 @@ def drain(
     return report
 
 
-def _drain_service(paths: Any, end: str = "final") -> dict | None:
+def _drain_service(paths: Any, end: str = "final", wait_s: float | None = None) -> dict | None:
     """With the writer service on: stop it (the stop marker, its pass's deadline and the grace, SIGTERM, SIGKILL) and
     verify that no process of it is left. At the ``final`` end every attention entry still owed is then
     ``not_reached: run_ended``; at a ``suspend`` nothing is marked (the entries stay owed; the next start hands them
@@ -964,7 +967,12 @@ def _drain_service(paths: Any, end: str = "final") -> dict | None:
     from ..writer_service import stop_service
 
     final = end == "final"
-    done = stop_service(paths.home, "drain" if final else "suspend", "the run ended" if final else "a stage of the run ended")
+    done = stop_service(
+        paths.home,
+        "drain" if final else "suspend",
+        "the run ended" if final else "a stage of the run ended",
+        wait_s=wait_s,
+    )
     out = {"verified": done.verified, "how": done.how, "leftover_pids": list(done.leftover_pids), "end": end}
     if done.verified and not final:
         try:
