@@ -20,9 +20,10 @@ no cap, or no lane left, the command runs as before, in this process, with a one
 records ``refused: no fork lane``).
 
 **The writer service** (one per home, detached) holds the tokens of the run whose controller started it, so it must not
-outlive that run's relay. When the controller ends, the service is stopped as a stage end (``drain(end="suspend")``:
-its pass in flight runs to its deadline, the entries still owed stay owed for the next run); then the relay is stopped
-and its end verified. A Ctrl-C during that wait stops waiting. Every run holds a shared lock on ``runs.lock`` for its
+outlive that run's relay. When the controller ends, the service is stopped as a stage end (``drain(end="suspend")``):
+its pass in flight gets at most :data:`EXIT_WAIT_S` (5 minutes) to finish, and is then suspended (cut through its
+abort path, its turns kept); the entries still owed, the cut pass's included, stay owed and are handed again next run,
+never dropped. Then the relay is stopped and its end verified. A Ctrl-C during that wait stops waiting. Every run holds a shared lock on ``runs.lock`` for its
 whole life; a run that finds no other run on the home (an exclusive lock was free) and a service still running, or a
 stop marker left, stops it the same way before it starts its own (a run that was killed, or whose stop was cut short,
 is tidied up by the next one). If this process dies, the relay's lifeline closes and it ends too.
@@ -76,6 +77,9 @@ OPENROUTER = "@openrouter"
 FORWARDED = (signal.SIGTERM, signal.SIGHUP)
 NOTED = (signal.SIGINT, signal.SIGQUIT)
 POLL_S = 0.2
+#: The most a writer pass in flight gets to finish when a run ends (or when a run tidies what an ended one left)
+#: before it is suspended.
+EXIT_WAIT_S = 300.0
 
 
 @dataclass(frozen=True)
@@ -235,7 +239,9 @@ def _drain_writer(home: Path) -> Any:
     from unify.memory.integration.async_pass import drain
     from unify.memory.integration.paths import Paths
 
-    return drain(Paths.under(home), end="suspend")
+    return drain(
+        Paths.under(home), end="suspend", wait_s=EXIT_WAIT_S, service_wait_s=EXIT_WAIT_S
+    )
 
 
 def _left_behind(home: Path) -> bool:
@@ -433,10 +439,11 @@ def _stop_writer(
     worker.join(2.0)
     if worker.is_alive() and not signals.seen:
         note(
-            "memory: an earlier run's writer is finishing its pass before this run starts (Ctrl-C starts it now, "
-            "without the writer)"
+            "memory: an earlier run's writer is finishing its pass before this run starts, at most 5 minutes "
+            "(Ctrl-C starts it now, without the writer)"
             if at_start
-            else "memory: letting the writer's pass in flight finish (Ctrl-C stops waiting)"
+            else "memory: letting the writer's pass in flight finish, at most 5 minutes; then it is suspended and "
+            "resumes next run (Ctrl-C stops waiting)"
         )
     while worker.is_alive():
         if signals.seen:

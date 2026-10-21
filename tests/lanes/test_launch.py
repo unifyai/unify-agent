@@ -558,3 +558,19 @@ def test_a_service_while_another_run_holds_the_home_is_left_to_that_run(tmp_path
         os.close(other)
         up.close()
     assert calls == [True]  # this run's own end only
+
+
+def test_the_end_of_a_run_gives_the_writers_pass_at_most_five_minutes_then_suspends_it(
+    tmp_path, monkeypatch
+):
+    from unify.memory.integration import async_pass
+
+    seen: list = []
+    monkeypatch.setattr(
+        async_pass, "drain", lambda paths, **kw: seen.append((paths.home, kw))
+    )
+    launch._drain_writer(tmp_path)
+    assert launch.EXIT_WAIT_S == 300.0
+    assert seen == [
+        (tmp_path, {"end": "suspend", "wait_s": 300.0, "service_wait_s": 300.0})
+    ]
