@@ -609,8 +609,12 @@ def _actor_library(world: dict, monkeypatch) -> Any:
 
 
 def _actor_stubs(monkeypatch, names: tuple[str, ...]) -> None:
-    """The actor's host handlers for *names* (calls that would install, wait or start and stop agents): fixed text."""
+    """The actor's host handlers for *names* (calls that would install, wait or start and stop agents): fixed text.
+    ``wait`` is the run record's tool (every agent is on the record), so its stand-in goes there: a real wait would
+    hold its agent until a message arrives or its bound ends, and here the one agent that could answer is the actor,
+    whose scripted turn waits for this agent to finish."""
     from unify.actor import tool_handlers as H
+    from unify.agents import run_record_tools
 
     texts = {
         "install": "installed (stand-in)",
@@ -618,7 +622,6 @@ def _actor_stubs(monkeypatch, names: tuple[str, ...]) -> None:
         "ask": "no answer yet",
         "delegate": "started (stand-in)",
         "stop": "stopped (stand-in)",
-        "store_skills": "stored (stand-in)",
     }
 
     def fixed(text):
@@ -628,7 +631,7 @@ def _actor_stubs(monkeypatch, names: tuple[str, ...]) -> None:
         return handler
 
     for name in names:
-        monkeypatch.setattr(H, name, fixed(texts[name]), raising=False)
+        monkeypatch.setattr(run_record_tools if name == "wait" else H, name, fixed(texts[name]))
 
 
 def _actor_turns(seen: list):
@@ -694,12 +697,12 @@ async def test_every_call_the_actors_prompt_shows_runs_as_written(core_world, mo
     seen: list[str] = []
     turn, state = _actor_turns(seen)
     if agent == "actor":
-        _actor_stubs(monkeypatch, ("install", "wait", "ask", "delegate", "stop", "store_skills"))
+        _actor_stubs(monkeypatch, ("install", "wait", "ask", "delegate", "stop"))
         model = ScriptedModel(actor=[Always(turn)], query_llm=Always(reply("ok")))
     else:
         # the actor's own delegate call starts the teammate for real; the teammate's own shown delegate calls answer
         # fixed text (a second teammate would share the scripted turns); the actor answers once the teammate is done
-        _actor_stubs(monkeypatch, ("install", "wait", "ask", "stop", "store_skills"))
+        _actor_stubs(monkeypatch, ("install", "wait", "ask", "stop"))
         from unify.actor import tool_handlers as H
 
         real_delegate = H.delegate
