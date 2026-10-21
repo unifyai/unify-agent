@@ -22,7 +22,7 @@ from unify.common import tool_registry as R
 from unify.memory import value_diff
 
 FULL = frozenset({"pool", "similar", "helper", "edit", "store"})
-CODE_AGENTS = ("actor", "teammate", "writer", "curator", "helper")
+CODE_AGENTS = ("actor", "teammate", "writer", "helper")  # rev 2 has no curator role
 
 #: A channel client that records every call (a check must make none).
 CLIENT = '''
@@ -83,11 +83,11 @@ def test_every_code_agent_has_it_and_it_never_reaches_the_host(load):
     # never on a channel's table: the stub runs it, as it runs sh
     allow = R.allow_list("actor", FULL)
     assert "check_examples" not in in_code_tools.channel_specs("actor", allow)
-    # the writer's and curator's own check is still the gate's
+    # the writer's own check is still the gate's
     assert "check" in R.allow_list("writer", FULL) and R.registry()["check"].kind == "action"
-    # with tools not in code, the memory agents' model-API tools are as before
-    for role in ("write", "curate", "helper"):
-        assert "check_examples" not in [s.name for s in R.tools_for(role, FULL)], role
+    # rev 2: tools are always in code, so no agent has it as a model-API tool (that is execute_code alone)
+    for agent in ("writer", "helper"):
+        assert "check_examples" not in [t["function"]["name"] for t in R.json_tools(agent)], agent
 
 
 def test_the_comparison_is_the_gates_own_function(load):
@@ -265,8 +265,9 @@ def test_the_actors_and_a_teammates_opening_hold_the_line_once():
     for agent in ("actor", "teammate"):
         opening = R.preamble(agent, {"environment": "Your box: /workspace is writable.", "flags": FULL})
         assert opening.count(R.EXAMPLES_LINE) == 1, agent
-        assert opening.endswith("\n\n" + R.RECORD_POINTER), agent
-    for agent in ("writer", "curator", "helper", "librarian"):
+        # rev 2: the record's rules come in the first message (COMMON_SECTION), never in the opening
+        assert R.COMMON_SECTION not in opening, agent
+    for agent in ("writer", "helper", "librarian"):
         assert R.EXAMPLES_LINE not in R.preamble(agent, {"flags": FULL}), agent
     assert R.EXAMPLES_LINE == (
         "When the request or the environment gives examples, check a candidate against them with "

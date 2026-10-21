@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 from typing import Iterator
 
 import pytest
@@ -31,6 +32,9 @@ FORK_HEADERS = HEADERS | {"X-Unify-Parent"}
 # Never kept from the transport's arguments: the session and HTTP client are
 # objects, and a key is a credential.
 _NOT_KEPT = {"shared_session", "client", "api_key"}
+
+#: Every header value matches this: the header charset, 1 to 64 characters (llm_client._header_value).
+HEADER_VALUE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 
 
 @contextlib.contextmanager
@@ -70,7 +74,7 @@ def _headers(kw: dict, expected: set[str] = HEADERS) -> dict[str, str]:
     headers = kw["extra_headers"]
     assert set(headers) == expected
     for value in headers.values():
-        assert llm_client.HEADER_VALUE.match(value), value
+        assert HEADER_VALUE.match(value), value
     assert headers["X-Unify-Msg-Count"] == str(len(kw["messages"]))
     return headers
 

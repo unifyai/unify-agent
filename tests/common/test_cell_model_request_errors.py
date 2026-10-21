@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 from typing import Any
 
 import litellm
@@ -56,6 +57,9 @@ SCHEMA = {
         },
     },
 }
+
+#: Every header value matches this: the header charset, 1 to 64 characters (llm_client._header_value).
+HEADER_VALUE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 
 
 def bad_schema(body: dict = BODY) -> litellm.BadRequestError:
@@ -443,7 +447,7 @@ async def test_cell_calls_carry_the_cell_call_kind(session) -> None:
     kinds = [h.get(llm_client.CALL_KIND_HEADER) for h in model.headers]
     assert kinds == [llm_client.CELL_CALL_KIND] * 3 == ["cell"] * 3
     for headers in model.headers:
-        assert all(llm_client.HEADER_VALUE.match(v) for v in headers.values())
+        assert all(HEADER_VALUE.match(v) for v in headers.values())
 
 
 @pytest.mark.asyncio

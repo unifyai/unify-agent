@@ -88,7 +88,7 @@ def test_no_clarify_parses_and_turns_clarification_off(monkeypatch):
 
     monkeypatch.setattr(session, "start", _start)
     with pytest.raises(RuntimeError, match="stop here"):
-        asyncio.run(session._run("hi"))
+        asyncio.run(session.run("hi"))  # Act.run starts the actor itself (it was _run)
     assert seen["clarification_enabled"] is False
 
 

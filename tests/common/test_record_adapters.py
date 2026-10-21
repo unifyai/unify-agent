@@ -11,15 +11,14 @@ from types import SimpleNamespace
 import pytest
 
 from unify.actor import tool_handlers as th
-from unify.agents.options import Options
 from unify.agents.pool import Pool
-from unify.agents.record import Record as AgentRecord
+from tests.agents.records import run_record
 from unify.common.record_adapters import AgentRecordAdapter
 from unify.common.tool_registry import Record, RecordRefused
 
 
 def _agent_pool(replies: dict | None = None, **options):
-    record = AgentRecord(None, options=Options(min_post_interval_s=0.0, **options), root="root")
+    record = run_record(**options)
 
     async def start(name, spawner, request, seq):
         await asyncio.sleep(0)

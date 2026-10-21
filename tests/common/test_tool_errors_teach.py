@@ -289,7 +289,8 @@ STUB_CASES = [
     ("writer", lambda t: t.read(file="/inputs/a.md"), "tools.read(file='/inputs/a.md'): got an unexpected keyword"),
     ("writer", lambda t: t.read(), "tools.read(): missing 1 required positional argument: 'path'"),
     ("writer", lambda t: t.read("/inputs/a.md", 0, 1), "tools.read('/inputs/a.md', 0, 1): takes from 1 to 2"),
-    ("actor", lambda t: t.wait(), "tools.wait(): missing 1 required positional argument: 'timeout'"),
+    # rev 2: wait's timeout is optional, so the actor's arity case is one argument too many
+    ("actor", lambda t: t.wait(120, 5), "tools.wait(120, 5): takes from 0 to 1 positional"),
     ("actor", lambda t: t.delegate("Read e3", ["e3"]), "tools.delegate('Read e3', ['e3']): takes 1 positional"),
 ]
 
