@@ -15,7 +15,7 @@
 * ``.memory/matcher.py``: v2's matcher (:mod:`.memory_helper` up to its catalogue section, so none of v2's
   catalogue or its footer ships);
 * ``.memory/shapes.py``: :mod:`.analysis.shapes`, byte for byte;
-* with ``UNIFY_MEMORY_LIBRARIAN=on`` only: ``.memory/catalogue.md`` and ``.memory/dispatch.json``, the librarian's
+* only: ``.memory/catalogue.md`` and ``.memory/dispatch.json``, the librarian's
   catalogue and the procedures' recognisers, and ``.memory/search.json``, the index its ``search`` ranks
   (:mod:`.library_search`) (:func:`librarian_files`), and ``memory.ask`` in the package and its stub.
 
@@ -446,7 +446,7 @@ def _json_bytes(data: dict) -> bytes:
     ).encode("utf-8")
 
 
-# --- the librarian's catalogue and the dispatch file (UNIFY_MEMORY_LIBRARIAN=on) --------------------------------
+# --- the librarian's catalogue and the dispatch file --------------------------------
 #
 # Both are harness-generated at each export, with no model call: ``.memory/catalogue.md``, one card per stored
 # function in module-path order (never a score), then the notes, then the captured procedures; and
@@ -624,7 +624,7 @@ def _function_docs(tree: Path, lib: Library) -> dict[str, str]:
 
 
 def _evidence_row(serving: Mapping[str, Any] | None, iid: str) -> dict | None:
-    """Item *iid*'s row of the serving evidence (``UNIFY_MEMORY_SERVING_FAILURE_RECORD``), or None."""
+    """Item *iid*'s row of the serving evidence, or None."""
     if not serving:
         return None
     rows = (serving.get("evidence") or {}).get("items") or {}
@@ -998,7 +998,7 @@ def librarian_files(
     search: Any = None,
     serving: Mapping[str, Any] | None = None,
 ) -> dict[str, bytes]:
-    """The librarian's generated files of the copy at *tree* (``UNIFY_MEMORY_LIBRARIAN=on``): ``catalogue.md``,
+    """The librarian's generated files of the copy at *tree*: ``catalogue.md``,
     ``dispatch.json``, ``search.json`` (:func:`.library_search.index_files`, its vectors made with *search*, a
     :class:`.library_search.Backend`; None: none, the ranking lexical), and the package with ``memory.ask``
     (:data:`ASK_SOURCE` after :mod:`.library_helper`) and its stub."""
@@ -1095,7 +1095,7 @@ def generated_library_mode(
 ) -> dict[str, bytes]:
     """Every generated file of the copy of the library at *tree*, by relative path (module docstring).
 
-    *librarian* (``UNIFY_MEMORY_LIBRARIAN=on``) adds the librarian's files (:func:`librarian_files`: the catalogue
+    *librarian* adds the librarian's files (:func:`librarian_files`: the catalogue
     with *summary_of*'s summaries and the *captures* snapshot, the dispatch file, the search index with *search*'s
     vectors, and the package with ``memory.ask``); off, every byte is as without it.
 

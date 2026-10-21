@@ -227,7 +227,7 @@ class ManifestItem:
     reader: str | None = None
     recipe: str | None = None
     cases: list[str] = field(default_factory=list)
-    # UNIFY_MEMORY_IMPURE_ITEMS=on: what the writer states about the item (:data:`LABEL_ITEM_FIELDS`), kept on its
+    # what the writer states about the item (:data:`LABEL_ITEM_FIELDS`), kept on its
     # label; empty: nothing stated
     stated: dict = field(default_factory=dict)
 
@@ -548,7 +548,7 @@ LIBRARY_ITEM_FIELDS: tuple[str, ...] = (
     "recipe",
     "cases",
 )
-#: What the writer may state about an item under ``UNIFY_MEMORY_IMPURE_ITEMS=on`` (its label keeps it): the episodes it
+#: What the writer may state about an item (its label keeps it): the episodes it
 #: is meant to cover, what varies (its inputs), the values it holds fixed with their sources (its constants), a
 #: function's effects on the environment, and a note's form (a checklist). Refused as unknown fields otherwise.
 LABEL_ITEM_FIELDS: tuple[str, ...] = ("covers_episodes", "inputs", "constants", "effects", "form")
@@ -849,7 +849,7 @@ def parse_manifest(manifest: object, *, library_mode: bool = False, labels: bool
     """Validate the manifest's shape, its ids and its paths against the layout; raise ManifestError.
 
     *library_mode*: the library layout (:func:`_parse_library_mode`); off, v2's, unchanged. *labels*
-    (``UNIFY_MEMORY_IMPURE_ITEMS=on``, library layout): an item may state its label fields (:data:`LABEL_ITEM_FIELDS`).
+    (library layout): an item may state its label fields (:data:`LABEL_ITEM_FIELDS`).
     """
     if not isinstance(manifest, dict):
         raise ManifestError("the manifest must be an object")

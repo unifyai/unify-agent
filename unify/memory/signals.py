@@ -62,7 +62,7 @@ class Signal:
     # ``{"checker": ...}`` line). Only such checker signals may be used by the writer, the gate and the
     # lifecycle; a grader the actor never sees (``{"outcome": ...}``) stays False.
     visible_to_actor: bool = False
-    # Under UNIFY_MEMORY_REGIME=inferred (empty otherwise): when the harness recorded the signal, when its episode
+    # (empty otherwise): when the harness recorded the signal, when its episode
     # ended, ``in_episode`` or ``after_episode`` (:func:`timing_of`), and what it bears on (:data:`ABOUT`).
     arrived_at: str = ""
     episode_ended_at: str = ""
@@ -157,7 +157,7 @@ def tainted_items(eid: str, evidence: EvidenceStore) -> list[str]:
     return evidence.items_citing(eid)
 
 
-# --- the inferred regime (UNIFY_MEMORY_REGIME=inferred) -------------------------------------------------------
+# --- the inferred regime -------------------------------------------------------
 
 #: The regimes, in the order a tie in the run's history is broken (the one that observes more first).
 REGIMES = ("dense", "sparse", "implicit", "none")

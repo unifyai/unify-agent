@@ -80,7 +80,7 @@ cell raised any::
                                        # only when a call's code came from a
                                        # pin directory (below)
 
-A library copy whose commits change during an episode (``UNIFY_MEMORY_IN_EPISODE``) keeps each commit in its own
+A library copy whose commits change during an episode (``UNIFY_MEMORY=in_episode``) keeps each commit in its own
 directory, ``.../.pins/<k>-<12 hex>/``, and the worker imports each pin from its own directory: a call whose event
 was raised by code loaded from one (the frame that called ``sys.audit``) is also counted under that pin's name, so a
 function bound before a re-pin is counted under the pin its code came from. Like everything here, the file name
@@ -229,7 +229,7 @@ FAILURE_HELPERS = HELPER_ITEMS
 #: went (ids and outcomes only).
 MATCH_EVENT = "memory.match_result"
 RUN_EVENT = "memory.run_result"
-#: What ``memory.ask`` got back (UNIFY_MEMORY_LIBRARIAN=on): the ids the answer listed as fitting, whether it said
+#: What ``memory.ask`` got back: the ids the answer listed as fitting, whether it said
 #: nothing fits, and the recognisers' outcomes as ``(id, read, applies)`` labels, with a fixed short reason after
 #: them when the reader gave no outcome (``not-started``, ``failed``); never text or values.
 ASK_EVENT = "memory.ask_result"

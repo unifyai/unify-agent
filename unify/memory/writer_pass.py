@@ -20,7 +20,7 @@ actions, and the file blobs worktree actions recorded; and, from the harness, :f
 refused gate lines per channel) and :func:`library_summary` (the library's functions on the pass's channels,
 with their recorded covers as item and action ids, so it can tend the library). Its first message adds
 the index (or the README under ``catalogue``), those functions' cover counts and, with
-``PassConfig.show_usage`` (``UNIFY_MEMORY_WRITER_USAGE=on``), a table of how requests used each function
+``PassConfig.show_usage``, a table of how requests used each function
 (:func:`.usage.usage_table`, harness counts). Nothing about outcomes, signals or checkers reaches it. The
 pass's messages are kept (:meth:`WriterPass.transcript`, redacted and bounded) for the driver to store on the
 episode repo.
@@ -125,13 +125,13 @@ class Repo:
 FINISH_G1_REFUSALS = 2
 
 
-#: UNIFY_MEMORY_LIBRARY_COMPACT: the memory agents (the writer, the curator, each helper) compact their conversation
+#: the memory agents (the writer, the curator, each helper) compact their conversation
 #: as the agent loop does (unify/common/_async_tool): once a model call's prompt reaches
 #: ``context_compression.COMPACTION_THRESHOLD`` of the model's context window (the window unillm gives for the
 #: agent's endpoint, ``unillm.get_max_input_tokens``, the agent loop's own source), the agent writes a summary
 #: (``FORK_SUMMARY``: its last request, unchanged, plus ``cache_discipline.COMPRESSION_FORK_INSTRUCTION``), sent by
 #: the agent's own model turn over its own route, and the conversation restarts from the system message and that
-#: summary (``restart_text``); with ``UNIFY_COMPACTION_KEEP_PREFIX=on`` the request messages are kept before it
+#: summary (``restart_text``); the request messages are kept before it
 #: (``kept_prefix``). A model with no known window is never compacted, as in the agent loop.
 #: The files an agent works with stay where they were; the summary message says so.
 RESTART_POINTER = (
@@ -614,7 +614,7 @@ class PassOutcome:
     chain: dict | None = None
     # library layout: the gate's {"item", "adopts"} row per landed item
     provenance: list[dict] = field(default_factory=list)
-    # UNIFY_MEMORY_LIBRARY_COMPACT: the writer's (or curator's) compactions, the messages they took out of its
+    # the writer's (or curator's) compactions, the messages they took out of its
     # conversation and those messages' prompt characters (summary calls are counted in calls and usd)
     compactions: int = 0
     chars_moved: int = 0
@@ -3334,7 +3334,7 @@ class WriterPass:
             return self._episodes[eid]
         from . import segments as _segments
 
-        # a segment of an episode (UNIFY_MEMORY_IN_EPISODE) is read from its own record, never indexed
+        # a segment of an episode (UNIFY_MEMORY=in_episode) is read from its own record, never indexed
         if eid not in self._recorded_ids() and not _segments.is_segment_name(eid):
             return None
         try:
@@ -4117,13 +4117,13 @@ class WriterPass:
             _mirror(wt, box)
             self._stage_inputs(req, inputs, wt)
             if req.kind == "attention":
-                # UNIFY_MEMORY_ATTENTION_LEDGER=on: the entries handed to this pass, its ledger and its record
+                # the entries handed to this pass, its ledger and its record
                 self._attention = self._attention_start(req, pass_id, Path(inputs))
                 from . import attention_tools as _at_tools
 
                 # on every way out: the pass's read evidence, which the service verifies the entries' reads against
                 scope.callback(_at_tools.write_read_log, self)
-            # UNIFY_MEMORY_WRITER_TESTS: the tests the writer states, recorded beside the pass's records
+            # the tests the writer states, recorded beside the pass's records
             self._tests = self._tests_start(pass_id, box, Path(tmp), Path(inputs))
             bmap_path = inputs / "batch_map.json"
             bmap = (

@@ -404,7 +404,7 @@ def item_outcome(
 
 def served(f: EpisodeUse, item: str, versions: set[str], pins: Mapping[tuple[str, str], list] | None) -> bool:
     """Whether episode *f* used the version of *item* whose commits are *versions*: by the pins its calls were served
-    under when the episode recorded them (``UNIFY_MEMORY_IN_EPISODE``, :func:`use_pins`), else by the episode's first
+    under when the episode recorded them (``UNIFY_MEMORY=in_episode``, :func:`use_pins`), else by the episode's first
     pin."""
     got = (pins or {}).get((f.episode_id, item))
     if got:
@@ -415,7 +415,7 @@ def served(f: EpisodeUse, item: str, versions: set[str], pins: Mapping[tuple[str
 def version_use(f: EpisodeUse, item: str, versions: set[str], pins: Mapping[tuple[str, str], list] | None) -> EpisodeUse:
     """*f* with *item*'s use restricted to the calls served under the version whose commits are *versions*, when its
     calls were served under more than one pin and some of them are another version's (memory changed during the
-    episode, ``UNIFY_MEMORY_IN_EPISODE``): its observed calls (ok, refused, error) are those under that version's pins,
+    episode, ``UNIFY_MEMORY=in_episode``): its observed calls (ok, refused, error) are those under that version's pins,
     and per-call outcomes the use record attributed are left out (they are not kept per pin), so the episode's other
     version's calls never count for this one. Otherwise *f* unchanged."""
     rows = (pins or {}).get((f.episode_id, item))
@@ -837,7 +837,7 @@ def next_records(
 ) -> tuple[dict[str, dict], dict[str, str]]:
     """The map of every item of the tree (*items*: id -> kind) and the status changes against *prev*.
 
-    With *pins* (``UNIFY_MEMORY_IN_EPISODE=on``: (episode, item) -> the pins its calls were served under, with their
+    With *pins* (``UNIFY_MEMORY=in_episode``: (episode, item) -> the pins its calls were served under, with their
     counts, :func:`use_pins`) an item's use counts for its current version when it was served under one of that
     version's commits, wherever the episode started (:func:`served`), and only its calls under those commits
     (:func:`version_use`); without them, by the episode's first pin, as built.
@@ -847,7 +847,7 @@ def next_records(
     entry about it was merged into another item is ``retired`` with ``superseded_by`` that item; a later ``new_item``,
     ``changed_item`` or ``note`` naming it undoes that. The decisions are read again each time; None: as built.
 
-    With *label_inputs* (``UNIFY_MEMORY_IMPURE_ITEMS=on``, :func:`label_inputs`: ``tests`` and ``failures`` by item,
+    With *label_inputs* (:func:`label_inputs`: ``tests`` and ``failures`` by item,
     ``pass_index`` by pass id) every record carries its evidence label (:mod:`.item_label`), built last, from its
     final status; None: no label, the map as built.
 
@@ -1077,7 +1077,7 @@ def _writer_decisions(stores: Any) -> dict[str, dict]:
 
 def use_pins(ev: EvidenceStore) -> dict[tuple[str, str], list[tuple[str, int, int, int]]]:
     """(episode, item) -> each pin its calls were served under with their (ok, refused, error) counts, from
-    ``item_use_pins`` (``UNIFY_MEMORY_IN_EPISODE``); {} when the store has none."""
+    ``item_use_pins`` (``UNIFY_MEMORY=in_episode``); {} when the store has none."""
     out: dict[tuple[str, str], list[tuple[str, int, int, int]]] = {}
     if not ev.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='item_use_pins'").fetchone():
         return out

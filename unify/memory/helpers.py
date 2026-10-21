@@ -97,7 +97,7 @@ OUTPUT_BYTES = 8000
 _EPISODE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _UNKNOWN = "unknown"
 
-#: The helper's brief when tools are called from code (``UNIFY_TOOLS_IN_CODE=on``): its role, what it can reach and
+#: The helper's brief when tools are called from code: its role, what it can reach and
 #: its rules, with each tool named as the call the helper makes; how each call works is its ``tools.help`` text.
 HELPER_BRIEF_IN_CODE = (
     "You are a helper of a memory writer. The writer keeps a library of tested functions and notes that an agent "
@@ -141,7 +141,7 @@ HELPER_BRIEF_IN_CODE = (
     "kept in every case."
 )
 
-#: The brief's record rule on the run record (``UNIFY_AGENTS_RUN_RECORD=on``): how the record works is the common
+#: The brief's record rule on the run record: how the record works is the common
 #: section in the first message; the helper's own rules stay here.
 HELPER_RECORD_RUN = (
     "- The record: the run's record, described in your first message with your name. A message that names no one "
@@ -1487,7 +1487,7 @@ async def _spawn_named(
     episodes: list[str],
     request: str,
 ) -> tuple[str, Exception | None]:
-    """Start the helper under its name: ``call-<n>`` of this pass, or on the run record (``UNIFY_AGENTS_RUN_RECORD=on``)
+    """Start the helper under its name: ``call-<n>`` of this pass, or on the run record
     the first ``call-<k>`` no agent of the whole run has had, trying the next one when another process takes it
     first. Returns ``(name, None)``, or the name tried last and why none started."""
     tries = _RUN_NAME_TRIES

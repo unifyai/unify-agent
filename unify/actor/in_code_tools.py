@@ -185,7 +185,7 @@ class InCodeTools:
         )
         # the request the memory package reads through current_request (its text, and the JSON values it carries)
         self.state.request_text, self.state.request_data = H.request_of(request)
-        # UNIFY_MEMORY_LIBRARIAN=on: the actor asks the request's librarian (tools.ask_library, from memory.ask)
+        # the actor asks the request's librarian (tools.ask_library, from memory.ask)
         asks = agent == "actor" and _librarian_on()
         if asks:
             from unify.memory import librarian as _librarian
@@ -589,7 +589,7 @@ def open_for_act(
     root = pool.record.root
     participant = pool.record.participants.get(agents.name)
     policy = _sandbox.build_policy()
-    # UNIFY_AGENTS_RUN_RECORD=on: the run record's view of this agent; else the agent record
+    # the run record's view of this agent; else the agent record
     view = agents.comms_view() if hasattr(agents, "comms_view") else None
     return InCodeTools(
         agent="actor" if agents.name == root else "teammate",

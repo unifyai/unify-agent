@@ -132,7 +132,7 @@ async def _end_agents_request(
     except Exception:
         logger.warning("could not end the request in the agent record", exc_info=True)
     finally:
-        # on the run record (UNIFY_AGENTS_RUN_RECORD=on) the main agent leaves at its request's end
+        # on the run record the main agent leaves at its request's end
         leave = getattr(agents_binding, "leave", None)
         if callable(leave):
             leave()

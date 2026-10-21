@@ -1,4 +1,4 @@
-"""The run record (``UNIFY_AGENTS_RUN_RECORD=on``): one append-only record per memory home for the whole run, shared by
+"""The run record: one append-only record per memory home for the whole run, shared by
 every agent of the run across processes: the actor of each request, the fork that reviews each episode, the
 librarian, the writer service's passes and every helper any of them starts.
 

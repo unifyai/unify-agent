@@ -705,7 +705,7 @@ def match_run_fields(runtime: Any, lines: Iterable[Any] = ()) -> dict:
 
 
 def ask_fields(runtime: Any) -> dict:
-    """The use record's fields for ``memory.ask`` (UNIFY_MEMORY_LIBRARIAN=on, design J(b).4), from the request's
+    """The use record's fields for ``memory.ask`` (design J(b).4), from the request's
     runtime call evidence (``integration.request.add_runtime_calls``):
 
     * ``ask_calls``: the answers the audit hook saw;
@@ -2392,7 +2392,7 @@ def use_from_episode_dir(
     ``memory_use.json`` recorded.
 
     *items* default to the ``items_at_pin`` recorded there (empty without one). A record in format 2
-    (``UNIFY_MEMORY_LIBRARY``; ``record_format`` in ``meta.json``) stores large values as blob references, so its
+    (``record_format`` in ``meta.json``) stores large values as blob references, so its
     actions are resolved through *blobs* (a :class:`..blobs.BlobStore`); without it the call is refused rather
     than count references as values.
     """

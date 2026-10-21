@@ -38,7 +38,7 @@ class Entry:
     kind: str
     text: str
     mentions: tuple[str, ...] = ()
-    # The run record's fields (UNIFY_AGENTS_RUN_RECORD=on, unify/agents/run_record.py): the author's role, where it
+    # The run record's fields (unify/agents/run_record.py): the author's role, where it
     # works (its episode and pass), the entry it answers, typed pointers, and how many tool calls or cells other than
     # messages it had made when it posted (the storm notice's evidence count). A session record leaves them unset, and
     # :meth:`to_dict` writes them only when set, so its lines are as before.

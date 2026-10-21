@@ -1,4 +1,4 @@
-"""The librarian: an agent the actor asks which stored items fit (``UNIFY_MEMORY_LIBRARIAN=on``; design J(b)).
+"""The librarian: an agent the actor asks which stored items fit (design J(b)).
 
 ``memory.ask()`` in an actor cell computes the recognisers' outcomes on the current request in the actor's own box
 (:mod:`.library_helper`'s ``_facts``, used by the ``memory.ask`` section of the generated package, :mod:`.library_ask`)
@@ -29,7 +29,7 @@ and search the library's files, inside the library only.
 
 Its model calls go through the actor's route on the actor's model and effort (:func:`.writer_pass.unillm_turn` with
 the origin :data:`ORIGIN`): the request's cost listener counts them as the actor's own (``integration.cost``), and
-under ``UNIFY_REQUEST_METADATA_HEADERS=on`` each carries ``X-Unify-Call-Kind: librarian`` (:data:`CALL_KIND`). The
+each carries ``X-Unify-Call-Kind: librarian`` (:data:`CALL_KIND`). The
 session also keeps its own totals (calls, tokens, cache reads, USD) for the use record; an unpriced call keeps the
 USD unknown.
 
@@ -160,7 +160,7 @@ _BRINGS = (
     "with your read tools. Nothing has run on the agent's request: a row is evidence only of what an item's code "
     "does, never that the item fits the request.\n"
 )
-#: The same paragraph with the harness's evidence serving on (``UNIFY_MEMORY_SERVING_FAILURE_RECORD``): the situation
+#: The same paragraph with the harness's evidence serving on: the situation
 #: and each item's failure record.
 _BRINGS_EVIDENCE = (
     "## What each question brings\n"
@@ -765,7 +765,7 @@ class LibrarianSession:
         from . import tool_handlers as _th
         from .writer_pass import STEP_GUARD
 
-        #: UNIFY_AGENTS_RUN_RECORD=on: the run record this librarian joined (as ``librarian-<hex>``), else None
+        #: the run record this librarian joined (as ``librarian-<hex>``), else None
         self.run_record = run_record
         self.name = name
         self.view: Any = None
@@ -1172,7 +1172,7 @@ def opener(
         if mode not in MODES:
             raise ValueError(f"mode is one of {', '.join(MODES)}")
         run = _request.current()
-        # the copy as cells read it (UNIFY_MEMORY_IN_EPISODE: its link to the current pin), else the export itself
+        # the copy as cells read it (UNIFY_MEMORY=in_episode: its link to the current pin), else the export itself
         copy = getattr(run, "copy_root", None) or getattr(getattr(run, "paths", None), "checkout", None)
         if run is None or copy is None:
             raise Unavailable("no library is mounted in this request")

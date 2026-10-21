@@ -223,7 +223,7 @@ class PythonWorker:
         # paths sent to the child are those it shows (sandbox.box_path).
         self._policy: Optional[sandbox.SandboxPolicy] = None
         self._binds: list = []
-        # UNIFY_MEMORY_IN_EPISODE=on: the library copy's pin generation this worker's modules were loaded at (None:
+        # UNIFY_MEMORY=in_episode: the library copy's pin generation this worker's modules were loaded at (None:
         # nothing loaded yet), and a re-pin's notice not yet shown (its cell ended before it could be)
         self._memory_gen: Optional[int] = None
         self._memory_notice: Optional[str] = None
@@ -259,7 +259,7 @@ class PythonWorker:
         # UNIFY_MEMORY=on: the request's memory export is imported first.
         memory_paths = _mv2.worker_paths()
         if memory_paths:
-            # UNIFY_MEMORY_LIBRARY=on: the library as ``memory`` in every cell, imported on first use
+            # the library as ``memory`` in every cell, imported on first use
             specs.update(_mv2.worker_globals())
         paths = [*memory_paths, *(p for p in sys.path if p)]
         # Packages the harness installs later land here; visible once it exists.
@@ -272,7 +272,7 @@ class PythonWorker:
         if policy is not None:
             mounts = sandbox.neutral_mounts(policy, self._binds)
             paths = [sandbox.box_path(p, policy, mounts=mounts) for p in paths]
-        # UNIFY_MEMORY_IN_EPISODE=on: the memory paths as sent, which a re-pin replaces (Worker.repin_modules)
+        # UNIFY_MEMORY=in_episode: the memory paths as sent, which a re-pin replaces (Worker.repin_modules)
         self._memory_paths = paths[: len(memory_paths)]
         msg = {
             "op": "init",
@@ -295,7 +295,7 @@ class PythonWorker:
     async def _start(self) -> None:
         from unify import environment
 
-        # a fresh process loads the library copy as it is now (UNIFY_MEMORY_IN_EPISODE)
+        # a fresh process loads the library copy as it is now (UNIFY_MEMORY=in_episode)
         self._memory_gen = None
         self._memory_paths = []
 
@@ -317,7 +317,7 @@ class PythonWorker:
 
         # UNIFY_MEMORY=on: the request's memory export, read-write (v2) ...
         mounts = _mv2.worker_mounts()
-        # ... or read-only (UNIFY_MEMORY_LIBRARY=on, spec v2.1 §6)
+        # ... or read-only (spec v2.1 §6)
         late_ro = _mv2.worker_readonly_mounts()
         env = {**env, **self.box_env}
         wrapped = sandbox.wrap_argv(
@@ -811,7 +811,7 @@ class PythonWorker:
         cid = next(self._ids)
         from unify.memory.integration import hooks as _mv2
 
-        # UNIFY_MEMORY_IN_EPISODE=on: at this cell boundary the library copy may be re-pinned to a commit the writer
+        # UNIFY_MEMORY=in_episode: at this cell boundary the library copy may be re-pinned to a commit the writer
         # landed while the episode runs; this worker then drops the library's modules before the cell (None: off)
         step = await asyncio.to_thread(_mv2.before_cell) if _mv2.in_episode_active() else None
         try:
@@ -860,7 +860,7 @@ class PythonWorker:
         self._collect_parts(done.get("stdout") or [], stdout, TextPart)
         self._collect_parts(done.get("stderr") or [], stderr, TextPart)
         if self._memory_notice:
-            # UNIFY_MEMORY_IN_EPISODE=on: the cell's result ends with what the re-pin changed (one line)
+            # UNIFY_MEMORY=in_episode: the cell's result ends with what the re-pin changed (one line)
             notice, self._memory_notice = self._memory_notice, None
             ends_open = bool(stdout) and isinstance(stdout[-1], TextPart) and not stdout[-1].text.endswith("\n")
             _append_text(stdout, ("\n" if ends_open else "") + notice + "\n", TextPart)
@@ -878,7 +878,7 @@ class PythonWorker:
         return self.decode(done.get("result"), shadow)
 
     def _memory_step(self, step: Optional[dict]) -> Optional[dict]:
-        """This worker's part of a cell boundary under ``UNIFY_MEMORY_IN_EPISODE=on`` (*step*: ``hooks.before_cell``):
+        """This worker's part of a cell boundary under ``UNIFY_MEMORY=in_episode`` (*step*: ``hooks.before_cell``):
         when the copy was re-pinned since this worker loaded it, what the child does before the cell
         (``repin_modules``: the copy's roots as the sandbox shows them, under which every loaded module is dropped,
         the import paths of the old pin to remove and the new pin's to put first); None otherwise. The notice is kept

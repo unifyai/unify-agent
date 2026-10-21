@@ -70,7 +70,7 @@ class ActorRequestState:
     policy: Any = None
     #: who started this agent (a teammate's question that names no one goes to it); None for the actor
     spawner: Optional[str] = None
-    #: UNIFY_MEMORY_LIBRARIAN=on: what opens the request's librarian at its first question
+    #: what opens the request's librarian at its first question
     #: (``unify.memory.librarian.opener``); None: the librarian is not available
     open_librarian: Optional[Callable[[], Awaitable[Any]]] = None
     #: the request's librarian session, once a question opened it; it ends with the request (``InCodeTools.close``)
@@ -97,7 +97,7 @@ def response_validator(rf_norm: Any) -> Callable[[Any], str]:
 
 def actor_flags(agent: str, *, librarian: Optional[bool] = None) -> frozenset:
     """The configuration flags the actor's or a teammate's allow-list is built with: teammates are offered
-    (``helper``), and asking the librarian only for the actor with ``UNIFY_MEMORY_LIBRARIAN=on`` (*librarian*; None
+    (``helper``), and asking the librarian only for the actor (*librarian*; None
     reads the setting)."""
     from unify.settings import SETTINGS
 
@@ -106,13 +106,13 @@ def actor_flags(agent: str, *, librarian: Optional[bool] = None) -> frozenset:
     return frozenset(
         {"helper"}
         | ({_registry.LIBRARIAN_FLAG} if librarian and agent == "actor" else set())
-        # UNIFY_MEMORY_IN_EPISODE=on: the actor marks the pauses of its work (tools.checkpoint)
+        # UNIFY_MEMORY=in_episode: the actor marks the pauses of its work (tools.checkpoint)
         | ({_registry.CHECKPOINT_FLAG} if agent == "actor" and _in_episode(SETTINGS) else set()),
     )
 
 
 def _in_episode(settings: Any) -> bool:
-    """Whether ``UNIFY_MEMORY_IN_EPISODE`` is on for this run (with memory on); False when it cannot be read."""
+    """Whether ``UNIFY_MEMORY=in_episode`` is on for this run (with memory on); False when it cannot be read."""
     try:
         from unify.memory.integration.switch import in_episode, memory_on
 
@@ -456,7 +456,7 @@ async def answer(ctx: Any, args: dict) -> Any:
     return _reply("answered: the answer is recorded; the request ends when this cell returns")
 
 
-# --- asking the librarian (UNIFY_MEMORY_LIBRARIAN=on) ---
+# --- asking the librarian ---
 
 
 async def ask_library(ctx: Any, args: dict) -> Any:

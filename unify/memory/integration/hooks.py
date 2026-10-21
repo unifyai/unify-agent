@@ -53,7 +53,7 @@ def can_store(value: T) -> T | bool:
 
 def system_prompt(text: str) -> str:
     """*text* with the run's memory section appended, last in the cached prefix: the v2 index,
-    or under ``UNIFY_MEMORY_SURFACING=catalogue`` the constant guide (the same bytes for the whole run).
+    or the constant guide (the same bytes for the whole run).
 
     Under memory v2 the sandbox has no ``functions`` object, so the core prompt's pointer to
     ``functions.search`` is dropped too, and the role and the sandbox section no longer name stored
@@ -83,7 +83,7 @@ def _checkout() -> Path | None:
 
 
 def _copy() -> Path | None:
-    """The run's library copy as cells read it: the export itself, or under ``UNIFY_MEMORY_IN_EPISODE=on`` its link
+    """The run's library copy as cells read it: the export itself, or under ``UNIFY_MEMORY=in_episode`` its link
     to the current pin (``RequestRun.copy_root``); only once the export exists."""
     path = _checkout()
     if path is None:
@@ -94,7 +94,7 @@ def _copy() -> Path | None:
 
 def worker_paths() -> list[str]:
     """Import paths the worker puts first: the run's memory export, then the library test kit beside it when
-    the export holds one (:mod:`..testkit`; ``memlab`` for the library's tests). Under ``UNIFY_MEMORY_IN_EPISODE=on``
+    the export holds one (:mod:`..testkit`; ``memlab`` for the library's tests). Under ``UNIFY_MEMORY=in_episode``
     the current pin's own directory (the link's target): a re-pin gives the worker the new one."""
     from ..testkit import EXPORT_DIR
 
@@ -280,7 +280,7 @@ def tool_result(
         return
     ie = getattr(run, "in_episode", None)
     if ie is not None and name == "execute_code":
-        # UNIFY_MEMORY_IN_EPISODE=on: the episode's cells are numbered in the order their results come back
+        # UNIFY_MEMORY=in_episode: the episode's cells are numbered in the order their results come back
         ie.cell_done()
     try:
         from unify.actor.execution.types import ExecutionResult
@@ -363,7 +363,7 @@ def _host_paths(events: Any, workspace: Path) -> Any:
     return {**events, "records": records}
 
 
-# --- memory during an episode (UNIFY_MEMORY_IN_EPISODE=on; in_episode.py) ---------------------------------------------
+# --- memory during an episode (UNIFY_MEMORY=in_episode; in_episode.py) ---------------------------------------------
 
 
 def attach_handle(handle: Any) -> None:
@@ -374,7 +374,7 @@ def attach_handle(handle: Any) -> None:
 
 
 def in_episode_active() -> bool:
-    """Whether this request's memory changes during its episode (``UNIFY_MEMORY_IN_EPISODE=on``); never raises."""
+    """Whether this request's memory changes during its episode (``UNIFY_MEMORY=in_episode``); never raises."""
     try:
         return getattr(_run(), "in_episode", None) is not None
     except Exception:  # noqa: BLE001 - off
@@ -382,7 +382,7 @@ def in_episode_active() -> bool:
 
 
 def before_cell() -> dict | None:
-    """Before a worker runs a cell: under ``UNIFY_MEMORY_IN_EPISODE=on``, a re-pin to the commit requests now pin when
+    """Before a worker runs a cell: under ``UNIFY_MEMORY=in_episode``, a re-pin to the commit requests now pin when
     the writer landed one (:meth:`.in_episode.InEpisode.before_cell`): ``{"generation": n, "notice": <line or None>}``,
     and :func:`after_cell` once the cell ends. None while off or with no run (then no :func:`after_cell`); never
     raises."""
@@ -427,7 +427,7 @@ def repin_roots() -> list[str]:
 
 def turn_boundary(client: Any, *, compacting: bool = False, new_message: bool = False) -> None:
     """Between the actor's turns (the loop, before its next model call; before a compaction; before a new message joins
-    the conversation): under ``UNIFY_MEMORY_IN_EPISODE=on`` the pauses due start their segment fork
+    the conversation): under ``UNIFY_MEMORY=in_episode`` the pauses due start their segment fork
     (:meth:`.in_episode.InEpisode.at_boundary`). Only the request's own actor (its session's client); inert while off,
     for another loop, or with no run; never raises."""
     run = _run()

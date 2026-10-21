@@ -1,4 +1,4 @@
-"""The comms tools on the run record (``UNIFY_AGENTS_RUN_RECORD=on``): ``send``, ``messages``, ``wait`` and ``who``,
+"""The comms tools on the run record: ``send``, ``messages``, ``wait`` and ``who``,
 one definition for every agent: the actor, a teammate, the librarian, the writer, the curator and every helper call
 them from their cells (``tools.send(...)``), and the fork through its relay (:mod:`unify.agents.fork_relay`).
 

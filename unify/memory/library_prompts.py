@@ -29,7 +29,7 @@ FILES_LINE_IN_CODE = (
 
 def guide_library_mode(extra_lines: tuple[str, ...] = ()) -> str:
     """The guide, with *extra_lines* (optional pull helpers, constant per run) before :data:`FILES_LINE`; with tools
-    called from code (``UNIFY_TOOLS_IN_CODE=on``), :data:`GUIDE_LIBRARY_IN_CODE`."""
+    called from code, :data:`GUIDE_LIBRARY_IN_CODE`."""
     guide = guide_library()
     if not extra_lines:
         return guide
@@ -100,7 +100,7 @@ GUIDE_LIBRARY_IN_CODE = (
     + STATUS_LINES_IN_CODE
 )
 
-#: The constant pointer to the librarian (``UNIFY_MEMORY_LIBRARIAN=on``): the same bytes for every library, in place
+#: The constant pointer to the librarian: the same bytes for every library, in place
 #: of the index. It says who answers ``memory.ask``; the answer's form is in the call's help.
 LIBRARIAN_POINTER = (
     "Your library of procedures and notes from earlier work is the `memory` package in your cells. A librarian, "
@@ -544,7 +544,7 @@ def write_brief_now(
     )
 
 
-# --- the briefs when tools are called from code (UNIFY_TOOLS_IN_CODE=on) ---------------------------------------------
+# --- the briefs when tools are called from code ---------------------------------------------
 #
 # Every agent then has one model-API tool, `execute_code`, and calls every other tool in its cells as
 # `tools.<name>(...)`; `tools.list()` and `tools.help(name)` describe them, so a brief names a tool where the role uses
@@ -786,14 +786,14 @@ ATTENTION_TEXT = (
     "decision is one of new_item, changed_item, merged_into (naming the item), note, retire, nothing_to_keep and "
     "defer (the work stays open as a new entry). An entry you do not decide comes back to a later pass.\n"
 )
-#: What an item is, under ``UNIFY_MEMORY_IMPURE_ITEMS=on`` (the brief's What to write).
+#: What an item is, (the brief's What to write).
 IMPURE_TEXT = (
     "- An item is written for a kind of situation, with what varies as its inputs. It may take the current state "
     "and act through the environment's tools. When you land or change one, say which episodes it is meant to cover "
     "and which of its values are inputs and which are constants, with the source of each constant. Notes and "
     "checklists are items too.\n"
 )
-#: The manifest fields of an item's stated provenance (``UNIFY_MEMORY_IMPURE_ITEMS=on``).
+#: The manifest fields of an item's stated provenance.
 IMPURE_MANIFEST_DOCS = (
     "  - Every item may state, and every item you land or change states: `covers_episodes`, the episodes it is meant "
     "to cover; `inputs`, what varies (for example `state.data[0].lines`); `constants`, each value it holds fixed "
@@ -801,10 +801,10 @@ IMPURE_MANIFEST_DOCS = (
     "`effects`, `none`, `reads`, `writes` or `unknown` (what its calls do to the environment). A note that is a "
     "checklist says `\"form\": \"checklist\"`. They are kept on the item's label beside its evidence.\n"
 )
-#: The stated tests (``UNIFY_MEMORY_WRITER_TESTS``).
+#: The stated tests.
 TESTS_TEXT = "Running code is a test you state first: say what you expect, then run `tools.test`."
 
-#: Rev 2's gate (``UNIFY_MEMORY_GATE_LABELS_ONLY``, :mod:`.gate_policy`): what a finding does and what the gate runs.
+#: Rev 2's gate (:mod:`.gate_policy`): what a finding does and what the gate runs.
 LABELS_ONLY_GATE = (
     "# The gate\n"
     "After `tools.finish(summary)` a deterministic gate checks the candidate. A finding about an item is recorded on "

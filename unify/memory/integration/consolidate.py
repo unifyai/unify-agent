@@ -167,7 +167,7 @@ class EpisodeLookup:
 
     def episode(self, eid: str) -> Episode:
         """The episode *eid* (``KeyError`` when it was never indexed). A segment of an episode (``<episode>.s<n>``,
-        ``UNIFY_MEMORY_IN_EPISODE``) is read from its own record (:mod:`..segments`) when it has one."""
+        ``UNIFY_MEMORY=in_episode``) is read from its own record (:mod:`..segments`) when it has one."""
         hit = self._cache.get(eid)
         if hit is not None:
             self._cache.move_to_end(eid)
@@ -664,7 +664,7 @@ def _end_event(
             if outcome is not None
             else {}
         ),
-        # library mode only (absent with UNIFY_MEMORY_LIBRARY off): the writer's coverage, its reader calls and the
+        # library mode only (absent off): the writer's coverage, its reader calls and the
         # blob bytes its /inputs held (uncapped in the library mode, so a disk-full stage leaves its size here)
         **(
             {
@@ -707,7 +707,7 @@ def _end_event(
                     else {}
                 ),
                 **({"pool": outcome.pool} if outcome.pool is not None else {}),
-                # UNIFY_MEMORY_LIBRARY_COMPACT: the writer's compactions, the messages they took out and those
+                # the writer's compactions, the messages they took out and those
                 # messages' prompt characters (all 0 with it off); its calls' prompt and cache-read tokens
                 "compactions": int(getattr(outcome, "compactions", 0)),
                 "chars_moved": int(getattr(outcome, "chars_moved", 0)),

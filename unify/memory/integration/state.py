@@ -20,7 +20,7 @@ class State:
     generations: Generations = field(default_factory=Generations)
     drift: set[str] = field(default_factory=set)
     suspect: set[str] = field(default_factory=set)
-    # UNIFY_MEMORY_SURFACING=catalogue: the prompt's guide was shown in this run, so every later request
+    # the prompt's guide was shown in this run, so every later request
     # keeps it (the prompt never changes after it first appears). Saved only once true.
     guide: bool = False
 

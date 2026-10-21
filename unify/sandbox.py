@@ -1247,7 +1247,7 @@ def _current_run_records() -> Optional[Path]:
 
     pool = current_root_pool()
     if pool is not None and getattr(pool.record, "is_run_record", False):
-        # the run record (UNIFY_AGENTS_RUN_RECORD=on) is in the harness-only state directory: no box binds it, and
+        # the run record is in the harness-only state directory: no box binds it, and
         # agents read it through their comms tools only
         return None
     path = pool.record.path if pool is not None else None

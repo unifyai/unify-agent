@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS commit_shapes(commit_sha TEXT, item TEXT, body TEXT, 
 # The checker signals the bed showed the actor, created by the first such signal, so a store
 # that never records one (every bed without UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE) keeps the schema above.
 _VISIBLE_TABLE = "CREATE TABLE IF NOT EXISTS signal_visible(signal_id TEXT PRIMARY KEY)"
-# UNIFY_MEMORY_REGIME=inferred: each signal's arrival, its episode's end, its timing and what it bears on; each
+# each signal's arrival, its episode's end, its timing and what it bears on; each
 # episode's inferred regime with what it rests on; and every change of an episode's regime. Created by the first
 # such write, so a store that never infers a regime keeps the schema above.
 _TIMING_TABLE = (
@@ -231,7 +231,7 @@ def _unknown_items(use: dict, items: set[str]) -> set[str]:
     return set() if use.get("outcomes_known") is True else set(items)
 
 
-#: ``UNIFY_MEMORY_IN_EPISODE=on``: per item and episode, each pin it was served under and its observed calls under it.
+#: ``UNIFY_MEMORY=in_episode``: per item and episode, each pin it was served under and its observed calls under it.
 #: Created by the first episode that has pins, so a store without them keeps the schema above.
 _PINS_SCHEMA = (
     "CREATE TABLE IF NOT EXISTS item_use_pins(item TEXT, episode_id TEXT, pin TEXT, ok INTEGER, refused INTEGER, "
@@ -429,7 +429,7 @@ class EvidenceStore:
                 )
                 pins = _pin_rows(ep.episode_id, use)
                 if pins:
-                    # UNIFY_MEMORY_IN_EPISODE=on: the pin each use was served under (created by the first such row)
+                    # UNIFY_MEMORY=in_episode: the pin each use was served under (created by the first such row)
                     self.db.execute(_PINS_SCHEMA)
                     self.db.executemany(
                         "INSERT OR REPLACE INTO item_use_pins(item, episode_id, pin, ok, refused, error) "
@@ -705,7 +705,7 @@ class EvidenceStore:
         }
 
     def record_regime(self, eid: str, regime: str, basis: str, at: str, signal_id: str | None = None) -> str | None:
-        """Set episode *eid*'s regime (``UNIFY_MEMORY_REGIME=inferred``) to *regime*, inferred on *basis*, at *at*;
+        """Set episode *eid*'s regime to *regime*, inferred on *basis*, at *at*;
         a change from its earlier regime is logged in ``regime_changes`` with the signal that caused it. Returns the
         regime it had before (None for its first record). KeyError for an episode that was never indexed."""
         before = self.regime_of(eid)

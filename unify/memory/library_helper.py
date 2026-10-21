@@ -439,7 +439,7 @@ _NEGATIVE = ("failed", "contrary")
 #: library's writer superseded or retired it), with what is offered in its place (``by``) and what it was saved
 #: against. Written by the harness's ``captures.export_files``, never by this file.
 WITHDRAWN_FILE = ".memory/captures/withdrawn.json"
-#: Beside the package with the harness's evidence serving on (``UNIFY_MEMORY_SERVING_FAILURE_RECORD``): each item's
+#: Beside the package with the harness's evidence serving on: each item's
 #: evidence (its recorded failures, contradictions, what its status rests on, its stated conditions), and the library
 #: items the writer retired or superseded with what replaces each. Without the first file every call is as before.
 EVIDENCE_FILE = ".memory/item_evidence.json"
@@ -977,7 +977,7 @@ def _matched(request: Any, inputs: Any) -> tuple[list[MatchRow], list[MatchRow],
 
 # --- the current request, and the harness's catalogue ---------------------------------------------------------------
 #
-# With ``UNIFY_MEMORY_LIBRARIAN=on`` the harness writes ``.memory/dispatch.json``: the structural catalogue, one row
+# the harness writes ``.memory/dispatch.json``: the structural catalogue, one row
 # per stored procedure from its syntax and records (rev 2). Nothing here runs a reader or an ``applies`` on it.
 #
 # The current request reaches this file from the host tool :data:`REQUEST_TOOL`, called through the channel client

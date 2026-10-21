@@ -1,7 +1,7 @@
 """Pinned clock and randomness for the gate's confined runs (the library mode's stage 5, determinism).
 
 Shipped into the gate's box as ``/inputs/_memory_pin.py`` and loaded by pytest as a plugin (``-p _memory_pin`` in
-``PYTEST_ADDOPTS``) when ``UNIFY_MEMORY_QA_DETERMINISM`` is on, and by the gate's probe whenever a stage-5
+``PYTEST_ADDOPTS``), and by the gate's probe whenever a stage-5
 check runs. The box also gets ``PYTHONHASHSEED`` and ``TZ`` from the gate (per variant). Importing it installs:
 
 * a clock that starts at the variant's epoch (:data:`EPOCHS_NS`) and advances the variant's step

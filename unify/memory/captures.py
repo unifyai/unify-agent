@@ -102,7 +102,7 @@ SHAPES_FILE = "shapes.jsonl"
 OCCURRENCES_FILE = "occurrences.jsonl"
 OCCURRENCES_DIR = "occurrences"
 #: The key of an exported record that offers its capture as a worked example
-#: (``UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES=on``): ``{"why", "returns"}`` (:mod:`.fixed_answer`).
+#:: ``{"why", "returns"}`` (:mod:`.fixed_answer`).
 EXAMPLE_KEY = "worked_example"
 #: Each confined run's wall bound (the procedure runners' own, :data:`.procedures.PROCEDURE_S`).
 RUN_S = 60.0
@@ -111,7 +111,7 @@ MAX_SOURCE_BYTES = 1024 * 1024
 GOAL_CHARS = 600
 REPRODUCES, DIFFERS, UNKNOWN = "reproduces", "differs", "unknown"
 FAILED = "failed"
-#: A trace capture's outcome when a signal contradicted its episode (``UNIFY_MEMORY_CAPTURE_TRACE``): negative knowledge,
+#: A trace capture's outcome when a signal contradicted its episode: negative knowledge,
 #: as ``failed`` is for a capture of the earlier contract (:func:`negative`).
 CONTRARY = "contrary"
 #: The record version of a trace capture (:mod:`.capture_trace`).
@@ -718,7 +718,7 @@ def episode_rows(store: Path | str) -> dict[str, dict]:
                 except ValueError:
                     continue
                 if isinstance(row, dict) and isinstance(row.get("episode"), str):
-                    # a segment's row (``UNIFY_MEMORY_IN_EPISODE``) is kept under its staging name, beside its episode's
+                    # a segment's row (``UNIFY_MEMORY=in_episode``) is kept under its staging name, beside its episode's
                     staging = row.get("staging")
                     out[staging if isinstance(staging, str) and staging else row["episode"]] = row
     except OSError:
@@ -737,7 +737,7 @@ def verdict(row: Any) -> bool:
 
 def stored(row: Any) -> bool:
     """Whether a capture step's row stored a capture (it names one), whatever its outcome or whether it reproduced
-    its value: under ``UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE=on`` each such row makes a writer pass due at once
+    its value: each such row makes a writer pass due at once
     (:class:`.trigger.Trigger`'s ``per_pass``). A step that refused the staged procedure stored nothing."""
     cid = row.get("capture_id") if isinstance(row, Mapping) else None
     return isinstance(cid, str) and _ID.fullmatch(cid) is not None
@@ -781,7 +781,7 @@ def _broke_lines(text: str) -> list[str]:
     return broke_lines(text)
 
 
-# --- the trace contract (UNIFY_MEMORY_CAPTURE_TRACE) ----------------------------------------------------------
+# --- the trace contract ----------------------------------------------------------
 
 
 def trace_record(cid: str) -> dict:
@@ -1212,7 +1212,7 @@ def export_files(
     """The actor's snapshot of the store, by path under its library copy (``.memory/captures/<id>/<file>``). The
     record of a capture whose landed procedure is not listed says so (:func:`listed_record`).
 
-    With *examples* (``UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES=on``) the record of a capture whose ``run``
+    With *examples* the record of a capture whose ``run``
     gives a fixed answer (:func:`.fixed_answer.fixed_answer`; a failed attempt is never offered anyway) carries
     :data:`EXAMPLE_KEY`, and the package, the catalogue, the search index and the dispatch file then offer it as a
     worked example to read, never as a procedure to call.

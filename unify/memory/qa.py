@@ -29,7 +29,7 @@ consolidator cannot know it before the harness commits. Then:
   assertions on every drawn input, and must stay green. :mod:`.inputs` records which drawn input each test case
   read; a drawn input no test of the function read is a note, and with ``strict`` a refusal.
 
-**Mutation testing** (``UNIFY_MEMORY_QA_MUTATION``; ``UNIFY_MEMORY_QA_MUTATION_MIN_KILL``, default 0.5).
+**Mutation testing** (default 0.5).
 Up to :data:`MAX_MUTANTS` mutants per function (:mod:`.mutation`, chosen by the seed) each run the function's
 new or changed tests, confined, at most :data:`MUTANT_S` each. A mutant is killed when a test is not green. A
 surviving mutant whose probe outputs equal the original's on every informative row (the function returned,
@@ -52,7 +52,7 @@ that refuses an input whose arguments have the field names of an accepted call's
 equivalent when every call of its tests returns, refuses or raises as on the original, with an equal result
 digest; with no recorded call to compare, mutation is not judged, which refuses the pass.
 
-**Determinism** (``UNIFY_MEMORY_QA_DETERMINISM``). Every gate pytest run gets ``PYTHONHASHSEED=0``,
+**Determinism**. Every gate pytest run gets ``PYTHONHASHSEED=0``,
 ``TZ=UTC`` and the plugin :mod:`.pin` (``-p _memory_pin``: a stepping clock from a fixed epoch, ``random`` seeded
 before each test). Each new or changed test file green in G3 runs once more under the other pin variant
 (another epoch, clock step, random seed, hash seed and time zone); different outcomes refuse it, so a test can
@@ -64,12 +64,12 @@ stored library never depends on a switch setting; the same kit is in the writer'
 or changed library code that uses it, and tests importing what it does not provide or naming ``/inputs``,
 are refused (``[qa:kit]``).
 
-**Replay fidelity** (``UNIFY_MEMORY_QA_REPLAY``). A new or changed test that passes an environment-taking
+**Replay fidelity**. A new or changed test that passes an environment-taking
 function a stand-in of its own instead of the kit's replay (``memlab.replay.env_from`` or ``RecordedEnv``, the
 harness's exact-call replay, :mod:`.replay`), while the function has recorded calls, is refused
 (:func:`.qa_static.stand_ins`, structural).
 
-**Fixture size** (``UNIFY_MEMORY_QA_FIXTURE_SIZE``). A new or changed file under ``env/<channel>/tests/``, the
+**Fixture size**. A new or changed file under ``env/<channel>/tests/``, the
 test kit or a support file larger than :data:`FIXTURE_MAX_BYTES` is refused: recorded payloads are referenced
 by blob id (:func:`.inputs.blob`). The cause of a 1.1 MB fixture (an offline sweep, 300k) was a brief
 that asked for every recorded observation pair to be copied into a data file under the 1 MiB quota; with this

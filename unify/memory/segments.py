@@ -1,4 +1,4 @@
-"""The record of one segment of an episode (``UNIFY_MEMORY_IN_EPISODE``): what the episode had done at a checkpoint.
+"""The record of one segment of an episode (``UNIFY_MEMORY=in_episode``): what the episode had done at a checkpoint.
 
 A checkpoint inside an episode (:mod:`.integration.in_episode`) starts a segment fork for the cells since the last
 checkpoint. Its staging dir is ``<state>/memory-staging/<episode>.s<n>/``, and the harness keeps, under its own state

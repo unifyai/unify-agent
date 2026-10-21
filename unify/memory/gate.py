@@ -40,7 +40,7 @@ The checks:
   function declares its ``input`` form, and every declared form equals the function's docstring
   ``Input:`` line. No commit writes a path the harness reserves for its generated catalogue
   (``README.md``, ``memory.py``, ``.memory/``; :func:`.catalogue.reserved`), in every mode. With
-  ``docstring_standard`` (library mode; ``UNIFY_MEMORY_DOCSTRINGS=on``), every new or changed environment
+  ``docstring_standard`` (library mode), every new or changed environment
   function's docstring meets the lean standard (:mod:`.docstrings`: summary, ``Args:`` naming each
   parameter and the first one's input form, ``Returns:``, ``Raises:`` naming ``MemoryInputError``, an
   ``Example:`` with a ``>>>`` example), and each ``raise MemoryInputError(...)`` in it carries a message of
@@ -139,7 +139,7 @@ The checks:
   whose channel fixtures (the files its docstring names) include none shaped like an input the function
   was admitted on (its validated covers' shapes: the same shape, or a structural match of keyed shapes; a
   function without recorded shapes is not checked).
-* **G4 size budget.** By default (``UNIFY_MEMORY_SOFT_BUDGET=off``, as in v2) :func:`.index.build_index`
+* **G4 size budget.** By default (as in v2) :func:`.index.build_index`
   of the candidate fits ``budget_tokens``, or the candidate is refused. With ``soft_budget`` the library's
   surface is measured (:func:`.catalogue.catalogue_tokens`, the generated README and the channel lines,
   under ``surfacing="catalogue"``; the index otherwise); over ``budget_tokens`` a ``note: G4 hygiene due``
@@ -178,7 +178,7 @@ determinism), and G6's ``Effect:`` checks.
 :meth:`Gate.preview` runs the cheap, read-only part (the manifest, G1, G2's covers, G4 to G6) on an
 uncommitted tree, for the consolidator's ``check`` tool; it never decides or records a merge.
 
-Under ``surfacing="catalogue"`` (``UNIFY_MEMORY_SURFACING``) a landed merge also freezes the candidate
+Under ``surfacing="catalogue"`` a landed merge also freezes the candidate
 commit's input-shape snapshot (:mod:`.shape_rows`): per
 environment function, the parent's shapes for the same body plus the descriptors of the covers this merge
 validated (each covered file's blob, each covered observation), for the export's catalogue
@@ -730,7 +730,7 @@ class _WithSources:
         return self._ev.signals_for(eid)
 
 
-#: The checks whose findings about an item are quality results (``UNIFY_MEMORY_IMPURE_ITEMS=on``): G2 (evidence: the
+#: The checks whose findings about an item are quality results: G2 (evidence: the
 #: recipe's cases, the unseen values, the grounding of its calls, its covers) and G3 (its tests, its red test, its
 #: behaviour, its examples). G1 (layout, provenance, the manifest, links), G5 (items and coverage kept) and G6
 #: (safety) stay hard, as do the library's other tests (a finding no item owns).
@@ -751,7 +751,7 @@ _HARD_MARKS = (
 
 
 def labelled(check: str, reason: str) -> bool:
-    """Whether a finding of *check* about an item is a quality result its label carries (``UNIFY_MEMORY_IMPURE_ITEMS``)
+    """Whether a finding of *check* about an item is a quality result its label carries
     rather than a refusal: G2 and G3, except syntax, imports that fail, missing paths and the gate's own kit."""
     return check in LABELLED_CHECKS and not any(m in str(reason) for m in _HARD_MARKS)
 
@@ -1792,7 +1792,7 @@ class Gate:
 
     def _segment_recorded(self, eid: str) -> bool:
         """Whether *eid* is a segment of an open episode (``<episode>.s<n>``) whose record the harness wrote
-        (``UNIFY_MEMORY_IN_EPISODE``: :mod:`.segments`); always False without a segments dir."""
+        (``UNIFY_MEMORY=in_episode``: :mod:`.segments`); always False without a segments dir."""
         root = getattr(self, "segments_dir", None)
         if root is None:
             return False

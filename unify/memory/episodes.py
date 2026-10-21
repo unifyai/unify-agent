@@ -113,9 +113,9 @@ class Episode:
     incomplete: dict | None = None
     # The run's ``UNIFY_PROFILE`` (``paper``), in ``meta.json`` only when set; empty (no key) for today's behaviour.
     profile: str = ""
-    # ``"off"`` under ``UNIFY_MEMORY_PASSES=off`` (no memory work ran after the request), in ``meta.json`` only then.
+    # ``"off"`` (no memory work ran after the request), in ``meta.json`` only then.
     memory_passes: str = ""
-    # ``UNIFY_MEMORY_IN_EPISODE=on``: every pin the episode was served, in order (``[{"from_cell", "commit"},
+    # ``UNIFY_MEMORY=in_episode``: every pin the episode was served, in order (``[{"from_cell", "commit"},
     # {"from_cell", "commit", "landed", "retired"}, ...]``; ``memory_main`` stays the first), in ``meta.json`` only
     # then.
     memory_pins: list = field(default_factory=list)
@@ -131,7 +131,7 @@ def _jsonl(rows: list[Any]) -> str:
 
 #: A reference to a value stored as a blob ({"__capped__": {excerpt, blob, bytes}}, BlobStore.cap_text).
 _REF = "__capped__"
-#: Record format 2 (UNIFY_MEMORY_LIBRARY): a recorded value that is itself a dict with a _REF or _LITERAL key is
+#: Record format 2: a recorded value that is itself a dict with a _REF or _LITERAL key is
 #: written as {_LITERAL: value}, so it is never read as a reference.
 _LITERAL = "__literal__"
 #: The record format the writer stamps in meta.json in library mode; a record without the key is format 1.

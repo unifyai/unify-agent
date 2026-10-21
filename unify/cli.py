@@ -501,7 +501,7 @@ class Act:
         # before the actor builds its prompt.
         self._mv2 = _mv2.begin_request(request)
         if args.jsonl and self._mv2 is not None:
-            # UNIFY_MEMORY_REGIME=inferred: the episode's id, so a verdict that arrives after it ends can name it
+            # the episode's id, so a verdict that arrives after it ends can name it
             self._emit(type="episode", episode_id=self._mv2.episode_id)
         interactive = sys.stdin.isatty()
         # Someone can answer only at a terminal: there the actor's posts to
@@ -517,7 +517,7 @@ class Act:
             persist=args.persist,
             clarification_enabled=clarify,
         )
-        # UNIFY_MEMORY_IN_EPISODE=on: a segment fork continues this session at a checkpoint (inert otherwise)
+        # UNIFY_MEMORY=in_episode: a segment fork continues this session at a checkpoint (inert otherwise)
         _mv2.attach_handle(self._handle)
         from unify.agents.cli_bridge import attach_bridge
 

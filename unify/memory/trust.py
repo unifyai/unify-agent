@@ -376,7 +376,7 @@ def status_text(status: str, basis: str | None) -> str:
     return status
 
 
-# --- what a status rests on (UNIFY_MEMORY_REGIME=inferred) ---------------------------------------------------
+# --- what a status rests on ---------------------------------------------------
 
 #: What an item's status rests on, by the signals its uses carry: verdicts after its answered calls, outcomes at the
 #: end of its episodes, implicit signals only (stated conditions, corrections), or no outcome signal at all.

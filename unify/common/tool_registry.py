@@ -1066,7 +1066,7 @@ CHECK_EXAMPLES = RegisteredTool(
 
 # --- the attention ledger's tools and the writer's stated tests (unify/memory/attention_tools.py) ---
 
-#: the flag ``checkpoint`` needs: ``UNIFY_MEMORY_IN_EPISODE=on``
+#: the flag ``checkpoint`` needs: ``UNIFY_MEMORY=in_episode``
 CHECKPOINT_FLAG = "checkpoint"
 _ATT = "unify.memory.attention_tools:"
 _REFUSED_REASON = {"refused": "{reason}"}

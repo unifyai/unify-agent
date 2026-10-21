@@ -15,7 +15,7 @@ checks stay hard; the replay of a pure function's own recorded real calls stays.
   I/O, and it reads its input), and only the writer's own tests of it, its recipe on the cases the writer listed, or
   the replay of its own recorded calls. An impure, state-form or constant item is never run: its label says
   ``not run: <why>``.
-* **Recorded replays** (``UNIFY_MEMORY_GATE_RECORDED_REPLAYS``, off by default): the episode-cover replays, the
+* **Recorded replays** (off by default): the episode-cover replays, the
   held-out value reruns, the memorisation reruns (drawn and perturbed inputs) and the history probe replay recorded
   task data; they run only with that switch on, for comparisons.
 
@@ -37,7 +37,7 @@ _IMPURE_MODULES = frozenset({
 })  # fmt: skip
 #: Parameter names of the state forms (``run(state)``, ``run(state, env)``) and of a tool namespace.
 _STATE_NAMES = frozenset({"state", "env", "tools"})
-NOT_RUN_REPLAYS = "not run: recorded replays are off (rev 2; UNIFY_MEMORY_GATE_RECORDED_REPLAYS)"
+NOT_RUN_REPLAYS = "not run: recorded replays are off (rev 2)"
 
 
 def _function(source: str) -> ast.FunctionDef | ast.AsyncFunctionDef | None:

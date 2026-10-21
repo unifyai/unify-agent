@@ -21,7 +21,7 @@ Harness -> worker::
                                               the memory agents' interpreters, :meth:`Worker.sweep_modules`)
     {"op": "exec", "id": n, "source": str, "sync": {...},
      "repin": {"roots": [...], "drop_paths": [...], "paths": [...]}}
-                                              (only under UNIFY_MEMORY_IN_EPISODE, after a re-pin:
+                                              (only under UNIFY_MEMORY=in_episode, after a re-pin:
                                               :meth:`Worker.repin_modules`)
     {"op": "reply", "id": k, "value": ..., "coroutine": bool}
     {"op": "reply", "id": k, "error": {"type", "module", "message", "args"}}
@@ -1013,7 +1013,7 @@ class Worker:
 
     def repin_modules(self, spec: Any) -> list[str]:
         """Before a cell, when the memory library copy was re-pinned since this worker loaded it (the exec message's
-        ``repin``, ``UNIFY_MEMORY_IN_EPISODE``): drop every module loaded from under ``roots`` (the copy's paths in
+        ``repin``, ``UNIFY_MEMORY=in_episode``): drop every module loaded from under ``roots`` (the copy's paths in
         the box, every pin's), whatever its file's time, with every module of the same top-level package, and the
         import finders those modules installed; put the new pin's import ``paths`` where the old pin's
         (``drop_paths``) were; forget the import system's finders for those paths and invalidate its caches. The next
@@ -1206,7 +1206,7 @@ class Worker:
                 except Exception:  # noqa: BLE001 - never the cell's error; the next cell sweeps again
                     pass
             if "repin" in msg:
-                # UNIFY_MEMORY_IN_EPISODE=on: the library copy was re-pinned since this worker loaded it
+                # UNIFY_MEMORY=in_episode: the library copy was re-pinned since this worker loaded it
                 self.repin_modules(msg.get("repin"))
             self.apply_sync(msg.get("sync") or {})
             ns = self.ns

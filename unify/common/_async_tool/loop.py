@@ -92,7 +92,7 @@ _CANCEL_GRACE_S = 2.0
 MAX_CONSECUTIVE_FAILURES = 3
 
 async def _memory_pause(client: Any, *, compacting: bool = False, new_message: bool = False) -> None:
-    """UNIFY_MEMORY_IN_EPISODE=on: a turn boundary of the request's actor, where the pauses due start their segment
+    """UNIFY_MEMORY=in_episode: a turn boundary of the request's actor, where the pauses due start their segment
     fork (``hooks.turn_boundary``: the marked ones, a compaction's, a new message's). Off, or for another loop, or
     with no request run: returns at once and nothing runs. Never raises."""
     try:
@@ -1137,7 +1137,7 @@ async def async_tool_loop_inner(
             if _repair_status == "timeout":
                 return await _handle_limit_reached(f"timeout ({timeout}s) exceeded")
 
-            # UNIFY_MEMORY_IN_EPISODE=on: every tool call is answered here, so the pauses marked during the turn (a
+            # UNIFY_MEMORY=in_episode: every tool call is answered here, so the pauses marked during the turn (a
             # checkpoint the actor called, an in-episode signal) start their segment fork now
             await _memory_pause(client)
 
@@ -1174,7 +1174,7 @@ async def async_tool_loop_inner(
                     # requester (the request metadata headers count them).
                     if tools_in_code:
                         count_requester_message(client)
-                    # UNIFY_MEMORY_IN_EPISODE=on: a new message is a pause; its segment fork runs before the message
+                    # UNIFY_MEMORY=in_episode: a new message is a pause; its segment fork runs before the message
                     # joins the conversation
                     await _memory_pause(client, new_message=True)
                     await _msg_dispatcher.append_msgs(
@@ -1202,7 +1202,7 @@ async def async_tool_loop_inner(
             # before the next model call, with no forced turn: the handle
             # summarises (the last request and what followed it) and restarts.
             if tools_in_code and _over_threshold:
-                # UNIFY_MEMORY_IN_EPISODE=on: a compaction is a pause; its segment fork runs before it
+                # UNIFY_MEMORY=in_episode: a compaction is a pause; its segment fork runs before it
                 await _memory_pause(client, compacting=True)
                 tail_from = runtime_state.in_code_tail_from
                 runtime_state.in_code_tail = (

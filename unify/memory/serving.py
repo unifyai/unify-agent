@@ -1,4 +1,4 @@
-"""Serving on the situation plus the failure record (``UNIFY_MEMORY_SERVING_FAILURE_RECORD``).
+"""Serving on the situation plus the failure record.
 
 With the switch on, what the actor and the librarian are shown about each stored item is evidence, never a claim
 that it fits:
@@ -95,7 +95,7 @@ def _pins(evidence: Any) -> dict[str, str]:
 
 def _use_pins(evidence: Any) -> dict[tuple[str, str], list[tuple[str, int]]]:
     """(episode, item) -> each pin its calls were served under with its error count, in the order recorded
-    (``item_use_pins``, ``UNIFY_MEMORY_IN_EPISODE``: memory can change during an episode); {} when none is."""
+    (``item_use_pins``, ``UNIFY_MEMORY=in_episode``: memory can change during an episode); {} when none is."""
     out: dict[tuple[str, str], list[tuple[str, int]]] = {}
     db = evidence.db
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='item_use_pins'").fetchone():

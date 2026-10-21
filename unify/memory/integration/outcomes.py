@@ -1,4 +1,4 @@
-"""Outcome timing, inferred regimes and late verdicts (``UNIFY_MEMORY_REGIME=inferred``).
+"""Outcome timing, inferred regimes and late verdicts.
 
 With the switch on, no episode's regime is defaulted. When a request is recorded, its regime is inferred from the
 signals that arrived for it within the request (:func:`..signals.infer_regime`: by source and timing only), from
