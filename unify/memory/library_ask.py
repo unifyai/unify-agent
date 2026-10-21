@@ -390,7 +390,11 @@ def ask(question: Annotated[str, MinLen(1)] | None = None, schema: Any = None) -
             raise AskSchemaError(call, str(failed.get("raw") or ""), list(failed.get("errors") or []), shape)
         if _SCHEMA_VALUE not in data:
             raise NotFound(call, "the librarian's answer could not be read.", hint="Ask again.")
-        return _guard(call, give, data[_SCHEMA_VALUE])
+        try:
+            return give(data[_SCHEMA_VALUE])
+        except Exception as exc:  # noqa: BLE001 - a value the schema passed that the type still refuses
+            raw = json.dumps(data[_SCHEMA_VALUE], ensure_ascii=False, default=str)[:20000]
+            raise AskSchemaError(call, raw, [("", f"{type(exc).__name__}: {str(exc)[:200]}")], shape) from None
     fits, nearest = _named(data.get("fits"), "why"), _named(data.get("nearest"), "differs")
     calls = dict(_named(data.get("fits"), "call"))
     listed = tuple(iid for iid, _ in fits)
