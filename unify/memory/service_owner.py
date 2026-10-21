@@ -35,7 +35,9 @@ STATE_FILE = "service.json"
 STOP_FILE = "service.stop"
 #: The runner-owned service's own folder: its empty HOME and its current folder (no ``.env`` there).
 OWNED_DIR = "owned"
-STOP_BY = ("drain", "operator", "cap", "lease")
+#: Why the service is stopped (the service's own ``STOP_BY``): ``drain`` at the run's end, ``suspend`` at the end of one
+#: stage of a run that goes on (the entries still owed stay owed for the next stage's service).
+STOP_BY = ("drain", "suspend", "operator", "cap", "lease")
 #: After the in-flight pass's deadline, this long before SIGTERM; then this long before SIGKILL; then this long for
 #: the process to be gone.
 STOP_GRACE_S = 30.0

@@ -102,9 +102,11 @@ START_WAIT_S = 10.0
 EXITING_WAIT_S = 5.0
 
 STATES = ("starting", "running", "idle", "stopping", "stopped")
-StopBy = Literal["drain", "operator", "cap", "lease"]
-STOP_BY = ("drain", "operator", "cap", "lease")
-#: What the entries the service could not reach are marked with, by why it stopped.
+StopBy = Literal["drain", "suspend", "operator", "cap", "lease"]
+STOP_BY = ("drain", "suspend", "operator", "cap", "lease")
+#: What the entries the service could not reach are marked with, by why it stopped. A ``suspend`` (the end of one
+#: stage of a run that goes on) marks nothing: every entry still owed stays owed, and the next start hands it again
+#: (entries a stopped pass held go back with ``service_restart``, no miss).
 NOT_REACHED_BY = {
     "drain": "run_ended",
     "operator": "service_stopped",

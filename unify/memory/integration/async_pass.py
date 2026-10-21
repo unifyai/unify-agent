@@ -58,6 +58,8 @@ BUSY_TIMEOUT_S = 60.0
 MERGE_RESERVE_S = 600.0
 #: Seconds a worker has, after SIGTERM, to cancel its pass (a cell in flight ends within its own 60 s timeout).
 CANCEL_GRACE_S = 30.0
+#: What a drain ends (:func:`drain`): the run itself, or one stage of a run that goes on.
+DRAIN_ENDS = ("final", "suspend")
 #: The worker's SIGALRM failsafe beyond its bound, its grace and its reconciliation.
 FAILSAFE_EXTRA_S = 60.0
 WORKER_MODULE = "unify.memory.integration.pass_worker"
@@ -802,8 +804,11 @@ def drain(
     sleep: Callable[[float], Any] = time.sleep,
     kill: Callable[[int, int], None] = os.killpg,
     archive_to: Path | None = None,
+    end: str = "final",
 ) -> dict:
-    """Shutdown: never starts a pass. A pass in flight may run until its own deadline (or *wait_s*, if
+    """Shutdown: never starts a pass. *end* says what ends: ``final`` (the run itself: every attention entry still owed
+    is then ``not_reached: run_ended``) or ``suspend`` (one stage of a run that goes on: the service stops the same
+    way, and every entry still owed stays owed for the next start to hand again). A pass in flight may run until its own deadline (or *wait_s*, if
     sooner); then SIGTERM cancels it through the abort path; a worker still alive after *grace_s* is killed and its
     end verified within *settle_s*. Every result no request applied is reported under ``after_last_request`` and
     marked ``counted: false``. With *archive_to*, once no worker can write, the memory repo is archived with every
@@ -814,8 +819,11 @@ def drain(
     (pid, start time, group) in this call; the end is verified when the leader is gone and no live process is
     left in its group. A stale record (its worker already gone) is cleared without any signal.
     """
-    service = _drain_service(paths)
+    if end not in DRAIN_ENDS:
+        raise ValueError(f"end is one of {', '.join(DRAIN_ENDS)}, not {end!r}")
+    service = _drain_service(paths, end)
     report: dict = {
+        "end": end,
         "type": "consolidation",
         "phase": "shutdown",
         "in_flight": False,
@@ -925,10 +933,12 @@ def drain(
     return report
 
 
-def _drain_service(paths: Any) -> dict | None:
+def _drain_service(paths: Any, end: str = "final") -> dict | None:
     """With the writer service on: stop it (the stop marker, its pass's deadline and the grace, SIGTERM, SIGKILL) and
-    verify that no process of it is left; every attention entry still owed is then ``not_reached: run_ended``. None
-    with the service off. Called before the key proxy is torn down (the kit's teardown waits for the drain)."""
+    verify that no process of it is left. At the ``final`` end every attention entry still owed is then
+    ``not_reached: run_ended``; at a ``suspend`` nothing is marked (the entries stay owed; the next start hands them
+    again, those a stopped pass held going back without a miss). None with the service off. Called before the key
+    proxy is torn down (the kit's teardown waits for the drain)."""
     try:
         from unify.settings import SETTINGS
 
@@ -940,9 +950,22 @@ def _drain_service(paths: Any) -> dict | None:
         return None
     from ..writer_service import stop_service
 
-    done = stop_service(paths.home, "drain", "the run ended")
-    out = {"verified": done.verified, "how": done.how, "leftover_pids": list(done.leftover_pids)}
-    if done.verified:
+    final = end == "final"
+    done = stop_service(paths.home, "drain" if final else "suspend", "the run ended" if final else "a stage of the run ended")
+    out = {"verified": done.verified, "how": done.how, "leftover_pids": list(done.leftover_pids), "end": end}
+    if done.verified and not final:
+        try:
+            from ..attention import Ledger
+
+            out["kept_owed"] = sum(1 for e in Ledger(paths.home).entries().values() if e.active)
+        except Exception as exc:  # noqa: BLE001 - reported, never raised: shutdown must finish
+            out["kept_owed_error"] = type(exc).__name__
+        # the suspend's own stop marker is set aside (recorded ``stop-cleared``), so the next stage's service starts,
+        # whether a request or the runner starts it; a marker of the final end stays and refuses every later start
+        from ..writer_service import clear_previous_stop
+
+        out["marker_cleared"] = clear_previous_stop(paths.home) is not None
+    if done.verified and final:
         try:
             from ..attention import Ledger
 
@@ -968,6 +991,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="a bundle path: every ref, refs/notes/items included",
     )
+    d.add_argument(
+        "--end",
+        choices=DRAIN_ENDS,
+        default="final",
+        help="final: the run ends (entries still owed are not reached); suspend: one stage of a run that goes on",
+    )
     args = p.parse_args(argv)
     from .paths import Paths
 
@@ -975,6 +1004,7 @@ def main(argv: list[str] | None = None) -> int:
         Paths.under(Path(args.home)),
         wait_s=args.wait_s,
         archive_to=Path(args.archive) if args.archive else None,
+        end=args.end,
     )
     print(json.dumps(report, sort_keys=True))
     return 2 if report["terminated"] is False else 0

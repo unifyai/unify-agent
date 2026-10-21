@@ -33,6 +33,8 @@ an entry goes back (``return``); after two such misses it is handed alone; after
 the evidence. Read but undecided, it goes back without a miss. :meth:`Ledger.mark_not_reached` ends what the run could
 not reach (``spend_cap``, ``run_ended``, ``service_stopped``, ``lifetime``). The guarantee: at run end every entry is
 ``closed``, ``unreadable`` or ``not_reached``; :meth:`Ledger.report` says so per kind, with the creation-to-read delay.
+The end of one stage of a run that goes on (a ``suspend``) is not the run's end: nothing is marked then, and the next
+start hands every entry still owed again (those a stopped pass held go back with ``service_restart``, no miss).
 
 **Hand order** (:data:`HAND_ORDER`): bad news first, then the time-sensitive messages, oldest first within each kind.
 The age backstop: when the oldest open entry of any kind is older than the 90th-percentile age-at-hand of the entries
