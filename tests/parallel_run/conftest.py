@@ -30,7 +30,7 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 HANG_FIXTURES_DIR = Path(__file__).parent / "hang_fixtures"
 # Likewise separate: fixtures that open their store and report their
 # environment, used only by the store-plumbing and --no-cache coverage.
-STORE_FIXTURES_DIR = Path(__file__).parent / "store_fixtures"
+ENV_FIXTURES_DIR = Path(__file__).parent / "env_fixtures"
 # Likewise separate: fixtures whose results the runner reports back, some of
 # which hold their session open, used only by the result-reporting coverage.
 REPORT_FIXTURES_DIR = Path(__file__).parent / "report_fixtures"
@@ -38,7 +38,7 @@ PYTEST_LOGS_DIR = REPO_ROOT / "logs" / "pytest"
 _FIXTURE_TREES = (
     FIXTURES_DIR,
     HANG_FIXTURES_DIR,
-    STORE_FIXTURES_DIR,
+    ENV_FIXTURES_DIR,
     REPORT_FIXTURES_DIR,
 )
 
@@ -365,7 +365,7 @@ class ParallelRunner:
         self.script_path = SCRIPT_PATH
         self.fixtures_dir = FIXTURES_DIR
         self.hang_fixtures_dir = HANG_FIXTURES_DIR
-        self.store_fixtures_dir = STORE_FIXTURES_DIR
+        self.env_fixtures_dir = ENV_FIXTURES_DIR
         self.report_fixtures_dir = REPORT_FIXTURES_DIR
         self.repo_root = REPO_ROOT
         self._created_sessions: List[tuple[str, str]] = []  # (socket, session_name)
@@ -407,9 +407,6 @@ class ParallelRunner:
         # Use a consistent socket name for all runs within this runner instance
         # This enables collision detection between sequential runs in the same test
         run_env["UNIFY_TEST_SOCKET"] = self._socket_name
-        # The outer pytest process owns a store of its own; the nested runner
-        # must hand each spawned session a fresh one rather than inherit it.
-        run_env.pop("UNIFY_STORE_PATH", None)
         if env:
             run_env.update(env)
 
@@ -592,9 +589,9 @@ class ParallelRunner:
         path = self.hang_fixtures_dir.joinpath(*parts)
         return str(path.relative_to(self.repo_root))
 
-    def store_fixture_path(self, *parts: str) -> str:
+    def env_fixture_path(self, *parts: str) -> str:
         """Get the path to a store-plumbing fixture relative to repo root."""
-        path = self.store_fixtures_dir.joinpath(*parts)
+        path = self.env_fixtures_dir.joinpath(*parts)
         return str(path.relative_to(self.repo_root))
 
     def report_fixture_path(self, *parts: str) -> str:
@@ -603,27 +600,14 @@ class ParallelRunner:
         return str(path.relative_to(self.repo_root))
 
     @staticmethod
-    def session_env_reports(
-        result: RunResult,
-        store: Optional[Path] = None,
-    ) -> List[dict]:
-        """Read the ``<store>.env.json`` snapshots the store fixtures write.
-
-        With ``store`` given, only that store's snapshot is read (the shared
-        store case); otherwise every snapshot under the run's ``stores/``
-        directory is returned.
-        """
+    def session_env_reports(result: RunResult) -> List[dict]:
+        """Read the ``env-reports/*.json`` snapshots the environment fixture writes."""
         import json
 
-        if store is not None:
-            candidates = [Path(f"{store}.env.json")]
-        elif result.log_dir is not None:
-            candidates = sorted((result.log_dir / "stores").glob("*.env.json"))
-        else:
-            candidates = []
-        return [
-            json.loads(p.read_text(encoding="utf-8")) for p in candidates if p.is_file()
-        ]
+        if result.log_dir is None:
+            return []
+        candidates = sorted((result.log_dir / "env-reports").glob("*.json"))
+        return [json.loads(p.read_text(encoding="utf-8")) for p in candidates]
 
     def cleanup(self):
         """Kill all sessions created by this runner.

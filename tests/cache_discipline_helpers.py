@@ -272,27 +272,7 @@ def hide_affinity_api(monkeypatch) -> None:
 
 
 def make_tools(counter: dict) -> dict[str, Callable]:
-    """Two library searches and a code runner; each call is counted."""
-
-    async def FunctionManager_search_functions(query: str) -> str:
-        """Search stored functions by meaning.
-
-        Args:
-            query: What the function should do.
-        """
-        counter["FunctionManager_search_functions"] = (
-            counter.get("FunctionManager_search_functions", 0) + 1
-        )
-        return "[]"
-
-    async def GuidanceManager_search(k: int) -> str:
-        """Search stored guidance.
-
-        Args:
-            k: How many entries to return.
-        """
-        counter["GuidanceManager_search"] = counter.get("GuidanceManager_search", 0) + 1
-        return "[]"
+    """A code runner; each call is counted."""
 
     async def execute_code(code: str) -> str:
         """Run Python code in the sandbox.
@@ -303,30 +283,7 @@ def make_tools(counter: dict) -> dict[str, Callable]:
         counter["execute_code"] = counter.get("execute_code", 0) + 1
         return f"ran {code}"
 
-    return {
-        "FunctionManager_search_functions": FunctionManager_search_functions,
-        "GuidanceManager_search": GuidanceManager_search,
-        "execute_code": execute_code,
-    }
-
-
-def gate_policy(step, tools, called_tools):
-    """A discovery-first gate like the actor's: both searches before anything else."""
-    fm = any(t.startswith("FunctionManager_") for t in called_tools)
-    gm = any(t.startswith("GuidanceManager_") for t in called_tools)
-    if fm and gm:
-        return "auto", tools
-    gated = {
-        n: f
-        for n, f in tools.items()
-        if (n == "FunctionManager_search_functions" and not fm)
-        or (n == "GuidanceManager_search" and not gm)
-    }
-    return (
-        "required",
-        gated,
-        {"eager": True, "mask_rule": "the libraries are searched first"},
-    )
+    return {"execute_code": execute_code}
 
 
 # ── scenarios ────────────────────────────────────────────────────────────
@@ -347,55 +304,6 @@ async def _run(client, tools, message, **loop_kwargs) -> str:
     return await asyncio.wait_for(handle.result(), timeout=60)
 
 
-GATE_REPLIES = (
-    lambda: completion(calls=[("execute_code", {"code": "early"})]),
-    lambda: completion(
-        calls=[
-            ("FunctionManager_search_functions", {"query": "q"}),
-            ("GuidanceManager_search", {"k": 3}),
-        ],
-    ),
-    lambda: completion(calls=[("execute_code", {"code": "late"})]),
-    lambda: completion(content="done"),
-)
-
-
-async def scenario_gate() -> tuple[str, dict, list[dict]]:
-    """A discovery gate, a call it masks, the searches, then the code call."""
-    counter: dict = {}
-    with scripted(GATE_REPLIES) as provider:
-        result = await _run(
-            new_client(),
-            make_tools(counter),
-            "Do the task.",
-            tool_policy=gate_policy,
-        )
-    return result, counter, provider.requests
-
-
-THRESHOLD_REPLIES = (
-    lambda: completion(
-        calls=[("execute_code", {"code": "big"})],
-        prompt_tokens=900_000,
-    ),
-    lambda: completion(calls=[("execute_code", {"code": "again"})]),
-    lambda: completion(content="stopping"),
-)
-
-
-async def scenario_threshold() -> tuple[str, dict, list[dict]]:
-    """A context-full turn, where only compress_context may run."""
-    counter: dict = {}
-    tools = make_tools(counter)
-    with scripted(THRESHOLD_REPLIES) as provider:
-        result = await _run(
-            new_client(),
-            {"execute_code": tools["execute_code"]},
-            "Do the task.",
-        )
-    return result, counter, provider.requests
-
-
 INTERRUPT_REPLIES = (
     lambda: completion(calls=[("execute_code", {"code": "one"})]),
     lambda: completion(content="done"),
@@ -407,11 +315,7 @@ async def scenario_interrupt() -> tuple[str, dict, list[dict]]:
     counter: dict = {}
     tools = make_tools(counter)
     with scripted(INTERRUPT_REPLIES) as provider:
-        result = await _run(
-            new_client(),
-            {"execute_code": tools["execute_code"]},
-            "Do the task.",
-        )
+        result = await _run(new_client(), tools, "Do the task.")
     return result, counter, provider.requests
 
 
@@ -433,30 +337,21 @@ async def _next_response(handle) -> dict:
 
 
 async def scenario_persist() -> tuple[str, dict, list[dict]]:
-    """A persistent session: a turn, a storage-review compaction note, a turn.
-
-    Between the turns the session parks (where reasoning payloads used to be
-    shed) and receives the ``_compact_transcript`` sentinel a completed turn
-    review sends (which used to compact the reviewed span in place).
-    """
+    """A persistent session: a turn, the session parks, then a second request and its turn."""
     from unify.common.async_tool_loop import start_async_tool_loop
 
     counter: dict = {}
     tools = make_tools(counter)
-    client = new_client()
     with scripted(PERSIST_REPLIES) as provider:
         handle = start_async_tool_loop(
-            client,
+            new_client(),
             "First request.",
-            {"execute_code": tools["execute_code"]},
+            tools,
             log_steps=False,
             timeout=60,
             persist=True,
         )
         first = await _next_response(handle)
-        handle._queue.put_nowait(
-            {"_compact_transcript": {"reviewed_messages": len(client.messages)}},
-        )
         await handle.submit("Second request.")
         second = await _next_response(handle)
         await handle.stop()
@@ -471,126 +366,35 @@ COMPRESS_REPLIES = (
         calls=[("execute_code", {"code": "big"})],
         prompt_tokens=900_000,
     ),
-    lambda: completion(calls=[("compress_context", {})]),
-    # the summary (a fork) or the compactor's closing reply (as shipped)
+    # the summary (a fork of the last request), or the fallback compressor's reply
     lambda: completion(content=SUMMARY),
     lambda: completion(content="done"),
 )
 
 
 async def scenario_compress(replies=COMPRESS_REPLIES) -> tuple[str, dict, list[dict]]:
-    """A context-full turn that compresses, then the answer after the restart."""
+    """A context-full turn of the actor's kind of loop, which compacts, then the answer after the restart."""
     counter: dict = {}
     tools = make_tools(counter)
     with scripted(replies) as provider:
-        result = await _run(
-            new_client(),
-            {"execute_code": tools["execute_code"]},
-            "Do the task.",
-        )
+        result = await _run(new_client(), tools, "Do the task.", tools_in_code=True)
     return result, counter, provider.requests
 
 
-REVIEW_REPLIES = (
-    # the session
-    lambda: completion(calls=[("FunctionManager_list_functions", {})]),
-    lambda: completion(content="Listed the stored functions; there are none."),
-    # its storage review
-    lambda: completion(content="Nothing worth storing."),
-)
-
-
-def session_tools(actor) -> dict[str, Callable]:
-    """The library tools the actor and its review share, and a code runner.
-
-    The library tools are the managers' own methods, named as the actor and
-    the review name them, so the session's tool list carries the exact
-    schemas the review would build.
-    """
-    from unify.common.llm_helpers import methods_to_tool_dict
-
-    fm, gm = actor.function_manager, actor.guidance_manager
-    tools = methods_to_tool_dict(
-        fm.list_functions,
-        fm.add_functions,
-        gm.filter,
-        gm.add_guidance,
-        include_class_name=True,
-    )
-    tools["execute_code"] = make_tools({})["execute_code"]
-    return tools
-
-
-async def scenario_review(replies=REVIEW_REPLIES, *, actor=None, tools=None):
-    """A session on the actor's own tools, then the storage review after it.
-
-    The session runs through ``_StorageCheckHandle`` exactly as ``act``
-    wraps it, so the review starts from the session's real client and
-    transcript. Returns the review's summary as the result.
-    """
-    from unify.actor.code_act_actor import CodeActActor, _StorageCheckHandle
-    from unify.common.async_tool_loop import start_async_tool_loop
-
-    own_actor = actor is None
-    actor = actor or CodeActActor()
-    try:
-        tools = tools if tools is not None else session_tools(actor)
-        with scripted(replies) as provider:
-            inner = start_async_tool_loop(
-                new_client("You are a scripted actor."),
-                "List the stored functions.",
-                tools,
-                loop_id="CodeActActor.act",
-                log_steps=False,
-                timeout=60,
-            )
-            handle = _StorageCheckHandle(inner=inner, actor=actor)
-            summaries = []
-            await asyncio.wait_for(handle.result(), 60)
-            while True:
-                notification = await asyncio.wait_for(handle.next_notification(), 60)
-                if notification.get("type") in (
-                    "storage_review_complete",
-                    "storage_review_skipped",
-                ):
-                    summaries.append(notification.get("message"))
-                    break
-            await asyncio.wait_for(handle._lifecycle_task, 60)
-    finally:
-        if own_actor:
-            await actor.close()
-    return (summaries[0] if summaries else None), {}, provider.requests
-
-
 ACTOR_REPLIES = (
-    lambda: completion(
-        calls=[
-            ("FunctionManager_search_functions", {"query": "list files"}),
-            ("GuidanceManager_search", {"k": 3}),
-        ],
-    ),
-    # the answer, however many turns the searches' results take to arrive,
-    # and the storage review after it
-    *([lambda: completion(content="done")] * 8),
+    lambda: completion(calls=[("execute_code", {"code": "import os\nos.listdir('.')"})]),
+    lambda: completion(content="done"),
 )
 
 
 async def scenario_actor(replies=ACTOR_REPLIES):
-    """``CodeActActor.act`` on a fresh actor, as a caller runs it.
-
-    Its first request carries the discovery gate's tools and the actor's
-    system prompt; the request after the gate carries every tool the actor
-    advertises. The storage review's requests follow the session's.
-    """
+    """``CodeActActor.act`` on a fresh actor, as a caller runs it."""
     from unify.actor.code_act_actor import CodeActActor
 
     actor = CodeActActor()
-    try:
-        with scripted(replies) as provider:
-            handle = await actor.act("List the files in the workspace.", persist=False)
-            result = await asyncio.wait_for(handle.result(), 60)
-    finally:
-        await actor.close()
+    with scripted(replies) as provider:
+        handle = await actor.act("List the files in the workspace.", persist=False)
+        result = await asyncio.wait_for(handle.result(), 60)
     return result, {}, provider.requests
 
 
@@ -601,13 +405,10 @@ def session_requests(requests: list[dict]) -> list[dict]:
 
 
 SCENARIOS = {
-    "gate": scenario_gate,
-    "threshold": scenario_threshold,
     "interrupt": scenario_interrupt,
     "persist": scenario_persist,
     "compress": scenario_compress,
-    "review": scenario_review,
 }
 
 # Scenarios whose requests all belong to one conversation.
-ONE_SESSION = ("gate", "threshold", "interrupt", "persist", "compress")
+ONE_SESSION = ("interrupt", "persist", "compress")

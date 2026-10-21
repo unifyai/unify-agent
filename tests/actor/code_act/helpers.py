@@ -1,12 +1,9 @@
 """Shared helpers for CodeActActor tests.
 
 Transcript readers pull tool-call names and ``execute_code`` snippets out of
-a handle's history.  ``StaticActorRunner`` and ``patch_actor_act`` stand in
-for ``primitives.actor`` so a test can exercise handle adoption, output
-capture and context forwarding without spawning a real inner actor.
-``WORKER_START_BOUND_S`` and the ``worker_starts`` fixture keep a sandboxed
-worker's start out of a test's tight steady-state bound; ``warm_up`` keeps a
-fresh actor's first-request costs out of it.
+a handle's history. ``WORKER_START_BOUND_S`` and the ``worker_starts`` fixture
+keep a sandboxed worker's start out of a test's tight steady-state bound;
+``warm_up`` keeps a fresh actor's first-request costs out of it.
 """
 
 from __future__ import annotations
@@ -15,13 +12,11 @@ import asyncio
 import functools
 import json
 import time
-from typing import Any, Awaitable, Callable, Iterator
+from typing import Any, Iterator
 
 import pytest
 
-from unify.actor.environments.actor import _ActorRunner
 from unify.actor.execution import worker
-from unify.actor.simulated import _StaticAnswerHandle
 
 #: What starting a sandboxed Python worker may take: the worker's own limit
 #: (``worker.START_TIMEOUT_S``). The start builds the sandbox policy (the
@@ -101,7 +96,6 @@ async def warm_up(actor) -> None:
         handle = await actor.act(
             "Warm up.",
             persist=False,
-            can_store=False,
             clarification_enabled=False,
         )
         assert await asyncio.wait_for(handle.result(), WARM_UP_BOUND_S) == "warm"
@@ -127,10 +121,15 @@ def _tool_call_name_and_args(tc: dict) -> tuple[Any, Any]:
     return tc.get("name"), tc.get("arguments")
 
 
+def history(handle: Any) -> list[dict[str, Any]]:
+    """The conversation of a CodeActActor handle's loop (its client's messages)."""
+    return list(getattr(handle._client, "messages", None) or [])
+
+
 def get_code_act_tool_calls(handle: Any) -> list[str]:
     """Tool-call names from a CodeActActor handle's chat history, in order."""
     names: list[str] = []
-    for tc in _iter_tool_calls(list(handle.get_history() or [])):
+    for tc in _iter_tool_calls(history(handle)):
         name, _args = _tool_call_name_and_args(tc)
         if isinstance(name, str):
             names.append(name)
@@ -140,7 +139,7 @@ def get_code_act_tool_calls(handle: Any) -> list[str]:
 def extract_code_act_execute_code_snippets(handle: Any) -> list[str]:
     """The ``code`` argument of every ``execute_code`` call in the handle's history."""
     snippets: list[str] = []
-    for tc in _iter_tool_calls(list(handle.get_history() or [])):
+    for tc in _iter_tool_calls(history(handle)):
         name, args = _tool_call_name_and_args(tc)
         if name != "execute_code":
             continue
@@ -154,47 +153,3 @@ def extract_code_act_execute_code_snippets(handle: Any) -> list[str]:
             if isinstance(code, str) and code.strip():
                 snippets.append(code)
     return snippets
-
-
-class StaticActorRunner:
-    """Stand-in for ``primitives.actor`` whose ``act`` completes immediately.
-
-    Each call is recorded in ``act_calls`` and answered with a completed
-    ``SteerableToolHandle`` carrying ``answer_for(request)``.  Install it on
-    an ``ActorEnvironment`` with ``env.get_instance()._managers["actor"]``
-    for tools invoked directly on the actor (outside ``act()``).
-    """
-
-    _PRIMITIVE_METHODS = ("act",)
-
-    def __init__(
-        self,
-        answer_for: Callable[[str], str] = lambda request: f"done: {request}",
-    ) -> None:
-        self.act_calls: list[dict[str, Any]] = []
-        self._answer_for = answer_for
-
-    async def act(self, request: str, **kwargs: Any) -> _StaticAnswerHandle:
-        """Record the request and return a completed handle."""
-        self.act_calls.append({"request": request, **kwargs})
-        return _StaticAnswerHandle(self._answer_for(request))
-
-
-def patch_actor_act(
-    monkeypatch: pytest.MonkeyPatch,
-    impl: Callable[..., Awaitable[Any]],
-) -> None:
-    """Route every ``primitives.actor.act(...)`` call to *impl* for one test.
-
-    ``CodeActActor.act()`` rebuilds its ``ActorEnvironment`` (and therefore
-    its ``Primitives``) per call, so an instance-level stand-in does not reach
-    code running inside ``act()``.  Patching the class method does, and
-    ``functools.wraps`` keeps the docstring and signature the prompt and the
-    primitives registry read.  *impl* receives ``(request, **kwargs)``.
-    """
-
-    @functools.wraps(_ActorRunner.act)
-    async def _patched(self: _ActorRunner, request: str, **kwargs: Any) -> Any:
-        return await impl(request, **kwargs)
-
-    monkeypatch.setattr(_ActorRunner, "act", _patched)

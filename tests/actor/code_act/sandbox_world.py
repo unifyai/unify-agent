@@ -3,6 +3,11 @@
 Both are placed outside ``/tmp`` on purpose: the sandbox's ``/tmp`` is private,
 so a secret under the host's ``/tmp`` would be invisible whether or not its
 mask worked.
+
+Cells run as the actor's do: in its persistent interpreter
+(unify/common/box_interpreter.py), the sandboxed Python worker
+(:func:`actor_interpreter`); a shell command runs as a cell's subprocess
+(:func:`sh`), confined like the cell.
 """
 
 from __future__ import annotations
@@ -19,7 +24,6 @@ from pathlib import Path
 import pytest
 
 from unify import sandbox
-from unify.actor.execution.types import parts_to_text
 from unify.settings import SETTINGS
 
 needs_bwrap = pytest.mark.skipif(
@@ -66,7 +70,6 @@ def world(unify_home, monkeypatch, request):
 
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("UNIFY_HOME", str(state))
-    monkeypatch.delenv("UNIFY_STORE_PATH", raising=False)
     monkeypatch.setenv("FAKE_SERVICE_TOKEN", TOKEN_VALUE)
     monkeypatch.setenv("DB_PASSWORD", TOKEN_VALUE)
     monkeypatch.setenv("UNIFY_SANDBOX_PROBE", "visible")
@@ -86,14 +89,45 @@ def world(unify_home, monkeypatch, request):
     shutil.rmtree(root, ignore_errors=True)
 
 
-async def bash(executor, code, *, mode="stateful", session_id=0):
-    res = await executor.execute(
-        code=code,
-        state_mode=mode,
-        session_id=session_id if mode != "stateless" else None,
-        language="bash",
+async def actor_interpreter(*, shadow=None, limit: float = 60.0):
+    """The actor's persistent interpreter with no tool channel: the sandboxed worker, its cells' namespace served
+    from *shadow* (the actor's base globals when None). Stop it with ``await interp.stop()``."""
+    from unify.actor.in_code_tools import display
+    from unify.common.box_interpreter import ActorProfile, BoxInterpreter
+    from unify.function_manager.execution_env import create_execution_globals
+
+    shadow = create_execution_globals() if shadow is None else shadow
+    # as the actor's: the name marks the worker's own display
+    shadow.setdefault("display", display)
+    return await BoxInterpreter.start(
+        agent="actor",
+        profile=ActorProfile(
+            shadow=shadow,
+            idle_restart_s=None,
+        ),
+        binds=None,
+        env={},
+        channel=None,
+        stub_source=None,
+        cell_limit_s=limit,
     )
-    return parts_to_text(res["stdout"]), res
+
+
+async def sh(interp, command: str, *, timeout: float | None = None) -> tuple[str, int]:
+    """Run *command* with ``bash -c`` as a subprocess of a cell of *interp*: its output (stdout and stderr in
+    order) and its exit status."""
+    limit = f", timeout={timeout!r}" if timeout is not None else ""
+    code = (
+        "import subprocess as _sp\n"
+        f"_r = _sp.run(['bash', '-c', {command!r}], stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True,"
+        f" stdin=_sp.DEVNULL{limit})\n"
+        "print(_r.stdout, end='')\n"
+        "print('\\n__status__', _r.returncode)\n"
+    )
+    res = await interp.run_cell(code)
+    assert res.error is None, res.text()
+    out, _, status = res.output.rpartition("\n__status__ ")
+    return out, int(status.strip())
 
 
 def serve(reply: bytes) -> tuple[socket.socket, int]:

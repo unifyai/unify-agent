@@ -39,9 +39,14 @@ except Exception:
 # ─────────────────────────────────────────────────────────────────────────────
 # Early Environment Setup (MUST be before any unify/unify imports)
 # ─────────────────────────────────────────────────────────────────────────────
-# Pytest establishes a per-test context root; ``SETTINGS.TEST`` is what makes
-# the runtime honour it instead of the session identity.
-os.environ.setdefault("TEST", "true")
+# Every model call in a test is stubbed or scripted, and no test needs a real
+# provider key. Start-up still refuses to run without one
+# (``unify.settings.ProductionSettings.validate_llm_providers``), so a
+# placeholder that is not a key stands in when none is set; a call that did
+# reach a provider with it would be refused. Memory is off unless a test turns
+# it on (``UNIFY_MEMORY``; tests/memory set their own).
+os.environ.setdefault("OPENROUTER_API_KEY", "ci-placeholder-not-a-key")
+os.environ.setdefault("UNIFY_MEMORY", "off")
 
 # Set UNILLM_CACHE_DIR to use the MAIN repo's cache, not the worktree's.
 # This ensures all worktrees share the same LLM cache (.cache.ndjson) for
@@ -65,35 +70,22 @@ if "UNILLM_CACHE_DIR" not in os.environ:
             pass  # Fall back to current repo root
     os.environ["UNILLM_CACHE_DIR"] = str(repo_root)
 
-# Every pytest process owns its own store, so sessions running side by side
-# (one tmux session per test under parallel_run.sh) never share tables and
+# Every pytest process owns its own home, so sessions running side by side
+# (one tmux session per test under parallel_run.sh) never share state and
 # nothing touches the real ``~/.unify``. The process home only covers what
 # runs outside a test: each test gets a home of its own from ``unify_home``
-# in tests/conftest.py. The embeddings cache is the one file shared across
-# processes: embeddings are keyed by (model, text) and cost real compute, so
-# reusing them between sessions is pure gain. Set before anything imports
-# ``unify.db``, which opens the store lazily on first use.
+# in tests/conftest.py.
 import tempfile
 
-_TEST_TMP = Path(tempfile.gettempdir())
-_TEST_STORE_DIR = _TEST_TMP / "unity_test_stores"
+_TEST_STORE_DIR = Path(tempfile.gettempdir()) / "unity_test_stores"
 _TEST_STORE_DIR.mkdir(parents=True, exist_ok=True)
-_TEST_HOME_DIR = _TEST_TMP / "unity_test_home"
-_TEST_HOME_DIR.mkdir(parents=True, exist_ok=True)
-_OWNS_STORE = "UNIFY_STORE_PATH" not in os.environ
 _OWNS_UNIFY_HOME = "UNIFY_HOME" not in os.environ
-os.environ.setdefault(
-    "UNIFY_STORE_PATH",
-    str(_TEST_STORE_DIR / f"unify_test_{os.getpid()}.sqlite"),
-)
 os.environ.setdefault(
     "UNIFY_HOME",
     str(_TEST_STORE_DIR / f"unify_home_{os.getpid()}"),
 )
 os.makedirs(os.environ["UNIFY_HOME"], exist_ok=True)
-os.environ.setdefault("UNIFY_EMBED_CACHE", str(_TEST_HOME_DIR / "embeddings.sqlite"))
 
-from unify.settings import SETTINGS
 
 _TEE_FILE_HANDLE: Optional[object] = None
 _TEE_ORIG_STREAM: Optional[object] = None
@@ -534,8 +526,6 @@ def pytest_sessionstart(session):
     except ImportError:
         os.environ["UNILLM_LOG_DIR"] = str(unillm_log_dir)
 
-    if not SETTINGS.PYTEST_LOG_TO_FILE:
-        return
     config = session.config
     if getattr(config.option, "collectonly", False):
         # Skip logging for test discovery runs to avoid huge collection trees
@@ -601,28 +591,21 @@ def pytest_sessionstart(session):
     # Test body prints are captured by pytest; we mirror them via pytest_runtest_logreport.
 
 
-def _remove_process_store() -> None:
-    """Delete the store this process created, if it created one.
+def _remove_process_home() -> None:
+    """Delete the home this process created, if it created one.
 
-    A store handed in through ``UNIFY_STORE_PATH`` belongs to whoever set it
-    and is left alone.
+    A home handed in through ``UNIFY_HOME`` belongs to whoever set it and is
+    left alone.
     """
     import shutil
 
-    from unify import db
-
-    db.reset_store()
-    if _OWNS_STORE:
-        Path(os.environ["UNIFY_STORE_PATH"]).unlink(missing_ok=True)
     if _OWNS_UNIFY_HOME:
         shutil.rmtree(os.environ["UNIFY_HOME"], ignore_errors=True)
 
 
 def pytest_unconfigure(config):
     """Print the log file path after pytest's own terminal summary has been emitted."""
-    _remove_process_store()
-    if not SETTINGS.PYTEST_LOG_TO_FILE:
-        return
+    _remove_process_home()
     global _TEE_FILE_HANDLE, _TEE_ORIG_STREAM, _TEE_STREAM_ATTR, _TEE_LOG_PATH
     tr = config.pluginmanager.get_plugin("terminalreporter")
     if tr is not None and _TEE_FILE_HANDLE is not None:
@@ -670,8 +653,6 @@ def pytest_runtest_logreport(report):
     TerminalReporter tee due to capture internals. Here we append the captured
     streams from the test's call phase directly to the file to guarantee inclusion.
     """
-    if not SETTINGS.PYTEST_LOG_TO_FILE:
-        return
     # Only mirror the main call phase where test body runs
     if getattr(report, "when", None) != "call":
         return

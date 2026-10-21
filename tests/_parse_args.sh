@@ -217,12 +217,8 @@ print_help() {
   cat << EOF
 Usage: $script_name [options] [targets...]
 
-Run pytest tests in parallel tmux sessions against the local SQLite store.
-Always blocks until all tests complete (or timeout).
-
-Each session gets its own store under logs/pytest/<run>/stores/ unless
-UNIFY_STORE_PATH is already set (environment, .env or --env), in which
-case every session shares that store.
+Run pytest tests in parallel tmux sessions. Always blocks until all tests
+complete (or timeout). Each session gets its own Unify home (tests/conftest.py).
 
 Options:
   -t, --timeout N      Abort the whole run if any sessions remain after N seconds
@@ -253,7 +249,6 @@ Examples:
   $script_name --no-cache tests/foo.py  # Fresh LLM inference
   $script_name --keyless tests/async_tool_loop    # Without a provider key
   $script_name --live-only tests/async_tool_loop  # The key-needing tests only
-  $script_name -e UNIFY_STORE_PATH=/tmp/shared.sqlite tests/  # One shared store
   $script_name tests/ -- -v --tb=short  # Pass args to pytest
   $script_name tests/ -- -k 'gpt-5'     # Filter by test name pattern
 EOF

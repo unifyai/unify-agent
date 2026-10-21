@@ -644,7 +644,7 @@ class TestNoCacheFlag:
         """The session's environment carries UNILLM_CACHE=false."""
         result = runner.run(
             "--no-cache",
-            runner.store_fixture_path("test_report_env.py"),
+            runner.env_fixture_path("test_report_env.py"),
             wait_for_completion=True,
         )
 

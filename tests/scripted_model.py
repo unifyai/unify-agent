@@ -6,9 +6,8 @@ unillm's request building, so every request is built exactly as in
 production) and answers each request from a script. Nothing leaves the
 process, and no recording is read.
 
-Besides the actor's own turns the harness makes other model calls (the
-storage review's fork and its gate, context compression, ``query_llm`` from
-cells, helpers, ...). A single ordered script breaks whenever one of those
+Besides the actor's own turns the harness makes other model calls (context
+compression, ``query_llm`` from cells, helpers, ...). A single ordered script breaks whenever one of those
 appears, disappears or moves, so each request is classified by
 :func:`kind_of`, from the request alone, and answered from that kind's
 script. A test scripts only the kinds it is about; any other kind that
@@ -20,37 +19,23 @@ Typical use::
         actor=[reply(calls=[cell("x = 41\\nx + 1")]), reply("42")],
     )
     with scripted(model):
-        handle = await actor.act("Compute.", can_store=False)
+        handle = await actor.act("Compute.")
         assert await handle.result() == "42"
     assert model.kinds() == ["actor", "actor"]
 
-Kinds, how each is recognised, and where the request is built
-(``unify/`` paths, at harness-learning f64bfca2c):
+Kinds, how each is recognised, and where the request is built:
 
-* ``review``: the storage review forked from the session; a user message
-  carries the fork's role (``code_act_actor._REVIEW_FORK_ROLE_UNIFIED``).
-  Its tools and system prompt are the actor's own, so nothing else tells it
-  apart.
-* ``gate``: the review gate; no tools, system ``review_gate.GATE_SYSTEM_PROMPT``.
 * ``compression_fork``: the summary turn of a compression; the last message
   is ``cache_discipline.COMPRESSION_FORK_INSTRUCTION``.
-* ``compress_turn``: the forced turn at the context threshold; the loop's
-  notice "Context window is nearly full." is the last message and the only
-  tools are ``compress_context`` (and ``store_skills``). A request that only
-  offers ``compress_context`` (a loop with no tools of its own) is not one.
-* ``compactor``: ``context_compression.compress_messages``; system
-  ``COMPRESSION_PROMPT``.
-* ``standalone_review`` / ``proactive_storage``: the JSON-tool storage
-  sessions (FunctionManager_/GuidanceManager_ tools), told apart by their
-  system prompt.
-* ``last_word``: ``UNIFY_STEP_CAP_REPLY=last_word``'s tool-less call.
+* ``compactor``: ``context_compression.compress_messages`` (the fallback when
+  the fork gives no summary); system ``COMPRESSION_PROMPT``.
 * ``helper``: a helper's turn (``agents.spawn``); its first request names it
   "a helper in a team".
 * ``query_llm``: any other request with no tools (cells' ``query_llm``).
 * ``actor``: everything else.
 
-Embeddings are not chat calls: fake them with
-``tests/actor/code_act/library_world.install_fake_embed``.
+Embeddings are not chat calls: a test fakes ``unify.common.embeddings.embed``
+(tests/common/test_embeddings.py fakes the endpoint it posts to).
 """
 
 from __future__ import annotations
@@ -73,25 +58,10 @@ _IDS = itertools.count()
 # checked against the code that writes it (tests/test_scripted_model.py), so
 # a reworded prompt fails that check instead of misrouting silently.
 HELPER_FRAGMENT = ", a helper in a team. "
-LAST_WORD_FRAGMENT = "The step limit for this request is reached"
-# The notice the loop appends before its forced compress turn. Offering
-# compress_context alone does not make a request one: a loop with no tools of
-# its own offers it on demand.
-COMPRESS_TURN_FRAGMENT = "Context window is nearly full."
-STANDALONE_REVIEW_PREFIX = "You are the agent that just completed the task below."
-PROACTIVE_STORAGE_PREFIX = "You are the agent executing the task below, and you asked"
-COMPRESS_TOOLS = frozenset({"compress_context", "store_skills"})
-STORAGE_TOOL_PREFIXES = ("FunctionManager_", "GuidanceManager_")
 
 KINDS = (
-    "review",
-    "gate",
     "compression_fork",
-    "compress_turn",
     "compactor",
-    "standalone_review",
-    "proactive_storage",
-    "last_word",
     "helper",
     "query_llm",
     "actor",
@@ -160,7 +130,7 @@ def cell(code: str, thought: str = "Running a step.") -> tuple[str, dict]:
 @dataclass(frozen=True)
 class Always:
     """A script entry that answers every request of its kind (it is never
-    used up): ``ScriptedModel(gate=Always(reply("no")))``."""
+    used up): ``ScriptedModel(query_llm=Always(reply("no")))``."""
 
     entry: Any
 
@@ -181,13 +151,9 @@ def _text(content: Any) -> str:
 
 def _markers() -> dict[str, str]:
     """The module constants that mark a kind, read from the code itself."""
-    from unify.actor import code_act_actor, review_gate
     from unify.common._async_tool import cache_discipline, context_compression
 
-    role = code_act_actor._REVIEW_FORK_ROLE_UNIFIED
     return {
-        "review": role.split("\n", 1)[0],
-        "gate": review_gate.GATE_SYSTEM_PROMPT[:80],
         "compression_fork": cache_discipline.COMPRESSION_FORK_INSTRUCTION[:80],
         "compactor": context_compression.COMPRESSION_PROMPT[:60],
     }
@@ -210,23 +176,10 @@ def kind_of(request: dict) -> str:
     users = [_text(m.get("content")) for m in messages if m.get("role") == "user"]
     last = _text(messages[-1].get("content")) if messages else ""
 
-    if any(marks["review"] in u for u in users):
-        return "review"
-    if not names and marks["gate"] in system:
-        return "gate"
     if marks["compression_fork"] in last:
         return "compression_fork"
-    if COMPRESS_TURN_FRAGMENT in last and names and names <= COMPRESS_TOOLS:
-        return "compress_turn"
     if marks["compactor"] in system:
         return "compactor"
-    if any(n and n.startswith(STORAGE_TOOL_PREFIXES) for n in names):
-        if STANDALONE_REVIEW_PREFIX in system:
-            return "standalone_review"
-        if PROACTIVE_STORAGE_PREFIX in system:
-            return "proactive_storage"
-    if not names and LAST_WORD_FRAGMENT in last:
-        return "last_word"
     if users and HELPER_FRAGMENT in users[0]:
         return "helper"
     if not names:
@@ -349,6 +302,32 @@ class ScriptedModel:
         assert not left, f"scripted replies never requested: {left}"
 
 
+def below_retry_transport(model: Callable[..., Any], acompletion: Callable[..., Any]) -> Callable[..., Any]:
+    """*model* as ``litellm.acompletion``, under unillm's transient-retry policy.
+
+    A streamed request (``stream=True``: every call of the harness's client) gets its reply as LiteLLM's own mock
+    stream of it, which unillm reads and reassembles as it does a provider's stream.
+    """
+    import litellm
+
+    async def transport(**kw: Any) -> Any:
+        entry = await model(**kw)
+        if not kw.get("stream"):
+            return entry
+        whole = entry.model_dump()
+        for choice in whole["choices"]:
+            for i, call in enumerate(choice["message"].get("tool_calls") or []):
+                call["index"] = i
+        return await acompletion(
+            model=kw["model"],
+            messages=kw["messages"],
+            stream=True,
+            mock_response=litellm.ModelResponse(**whole),
+        )
+
+    return transport
+
+
 @contextlib.contextmanager
 def scripted(
     model: ScriptedModel,
@@ -370,7 +349,7 @@ def scripted(
     unillm_settings.UNILLM_CACHE = False
     if below_retry:
         original = uni_llm.litellm.acompletion
-        uni_llm.litellm.acompletion = model
+        uni_llm.litellm.acompletion = below_retry_transport(model, original)
     else:
         original = uni_llm._acompletion_with_transient_retry
         uni_llm._acompletion_with_transient_retry = model

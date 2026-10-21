@@ -22,8 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from unify.actor.execution.session import SessionExecutor
-from unify.common._async_tool import time_context
+from tests.actor.code_act.sandbox_world import actor_interpreter
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 # The account's real home: HOME is the test home inside a session.
@@ -70,13 +69,13 @@ def test_a_session_runs_sandboxed_where_bubblewrap_exists():
 @sandboxed
 @pytest.mark.asyncio
 async def test_model_code_cannot_list_the_home_directory_or_the_windows_drives():
-    ex = SessionExecutor()
+    ex = await actor_interpreter()
     try:
-        res = await ex.execute(code=MODEL_CODE, state_mode="stateless", session_id=None)
+        res = await ex.run_cell(MODEL_CODE)
     finally:
-        await ex.close()
-    assert res["error"] is None, res["error"]
-    seen, walked, ls_status, ls_error = res["result"]
+        await ex.stop()
+    assert res.error is None, res.text()
+    seen, walked, ls_status, ls_error = res.result
 
     assert seen["/mnt/c"] == "FileNotFoundError"
     assert seen["/mnt/d"] == "FileNotFoundError"
@@ -134,13 +133,13 @@ async def test_model_code_cannot_write_the_checkout_or_read_the_main_checkouts_f
         out
         """,
     )
-    ex = SessionExecutor()
+    ex = await actor_interpreter()
     try:
-        res = await ex.execute(code=code, state_mode="stateless", session_id=None)
+        res = await ex.run_cell(code)
     finally:
-        await ex.close()
-    assert res["error"] is None, res["error"]
-    out = res["result"]
+        await ex.stop()
+    assert res.error is None, res.text()
+    out = res.result
     assert out["write"] == "OSError"
     assert not (REPO_ROOT / "unify" / "sandbox_probe.py").exists()
     # The main checkout's directories, if this is a worktree, are empty.
@@ -311,46 +310,11 @@ def test_every_by_name_copy_of_the_prompt_clock_is_frozen():
     assert leaks == []
 
 
-@pytest.mark.asyncio
-async def test_execute_code_reports_a_zero_duration_under_the_frozen_clock():
-    ex = SessionExecutor()
-    try:
-        res = await ex.execute(
-            code="import time\ntime.sleep(0.05)\n1",
-            state_mode="stateless",
-            session_id=None,
-        )
-    finally:
-        await ex.close()
-    assert res["error"] is None, res["error"]
-    assert res["duration_ms"] == 0
-
-
-@pytest.mark.asyncio
-async def test_execute_code_measures_its_duration_on_the_real_clock(monkeypatch):
-    """As shipped, the clock seam is ``time.perf_counter``: the duration is
-    whole milliseconds of the time the code took."""
-    monkeypatch.setattr(time_context, "perf_counter", time.perf_counter)
-    ex = SessionExecutor()
-    try:
-        res = await ex.execute(
-            code="import time\ntime.sleep(0.05)\n1",
-            state_mode="stateless",
-            session_id=None,
-        )
-    finally:
-        await ex.close()
-    assert res["error"] is None, res["error"]
-    assert isinstance(res["duration_ms"], int)
-    assert 50 <= res["duration_ms"] < 60_000
-
-
 # ── live provider markers ───────────────────────────────────────────────────
 #
 # Read from the test sources, so these rules run without a model or a key:
 # a mark is ``pytest.mark.<name>`` (called or not, or a module-level name
 # bound to one) on the test, its class, or a ``pytestmark`` of either.
-
 
 
 def _mark_name(node: ast.AST, aliases: dict[str, str]) -> str | None:
