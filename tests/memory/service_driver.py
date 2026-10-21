@@ -179,12 +179,6 @@ def main(argv=None) -> int:
     from unify.memory.integration import request
 
     args = ws._parse(argv)
-    if args.owner == "runner":  # as ws.main does
-        refused = ws._owner_start(args.home)
-        if refused is not None:
-            print(json.dumps({"refused": refused}))
-            return 3
-        args.foreground = True
     ws.release_route_fds()  # as ws.main does, before the fork
     out = os.environ.get("DRIVER_OUT")
     if out:
@@ -210,13 +204,10 @@ def main(argv=None) -> int:
         (Path(os.environ["DRIVER_OUT"]) / "keys.json").write_text(json.dumps({"held": held}))
     if args.daemon:
         ws.daemonize()
-    elif args.foreground:
-        ws._lead_own_group()
-        if ws._owner(ws._settings()) == "runner":
-            ws.clear_previous_stop(args.home)  # as ws.main does
-    from datetime import datetime, timezone
+    if os.environ.get("DRIVER_PASS_WALL_S"):  # a pass's wall clock, short for the test
+        from unify.memory.integration import consolidate, switch
 
-    until = datetime.fromtimestamp(args.until, tz=timezone.utc) if args.until is not None else None
+        switch.PASS_WALL_S = consolidate.PASS_WALL_S = float(os.environ["DRIVER_PASS_WALL_S"])
     ws.pass_reservation = lambda settings, effort: Decimal(
         os.environ.get("DRIVER_RESERVE", "0.01")
     )
@@ -228,7 +219,6 @@ def main(argv=None) -> int:
             poll_s=float(os.environ.get("DRIVER_POLL_S", "0.2")),
             idle_exit_s=float(os.environ.get("DRIVER_IDLE_S", "600")),
             heartbeat_s=float(os.environ.get("DRIVER_BEAT_S", "30")),
-            until=until,
         ),
     )
     return 0

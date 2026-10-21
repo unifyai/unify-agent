@@ -172,28 +172,7 @@ def _entries(*obs_labels):
 
 
 def _on(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE", "on")
-
-
-def test_checker_line_refused_when_switch_off(mv2, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE", "off")
-    run = _begin(mv2, "hi")
-    try:
-        answer = run.take_checker({"label": "pass"})
-        assert answer["type"] == "checker" and answer["accepted"] is False
-        assert run.checker_seen == []
-    finally:
-        _abort(mv2, run)
-
-
-def test_checker_line_refused_without_library_mode(mv2, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "off")
-    run = _begin(mv2, "hi")
-    try:
-        assert run.take_checker({"label": "pass"})["accepted"] is False
-        assert run.checker_seen == []
-    finally:
-        _abort(mv2, run)
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
 
 
 @pytest.mark.parametrize(
@@ -350,11 +329,10 @@ def test_cli_without_a_memory_run_refuses_the_checker_line(monkeypatch):
 
 
 def _off(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "off")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE", "off")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")
 
 
-def test_cli_with_the_switches_off_ignores_a_checker_line_as_before(monkeypatch):
+def test_cli_with_memory_off_ignores_a_checker_line_as_before(monkeypatch):
     _off(monkeypatch)
     log: list = []
     code, out, log, handle = _drive(
@@ -402,5 +380,3 @@ def _errors(tmp_path):
         if path.exists()
         else []
     )
-
-

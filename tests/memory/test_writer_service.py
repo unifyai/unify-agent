@@ -34,17 +34,9 @@ from unify.memory import writer_service as ws
 DRIVER = str(Path(__file__).with_name("service_driver.py"))
 SWITCHES = {
     "UNIFY_MEMORY": "on",
-    "UNIFY_MEMORY_LIBRARY": "on",
-    "UNIFY_MEMORY_LIBRARY_FORK": "on",
-    "UNIFY_MEMORY_CAPTURE_TRACE": "on",
-    "UNIFY_TOOLS_IN_CODE": "on",
-    "UNIFY_AGENTS_RUN_RECORD": "on",
-    "UNIFY_MEMORY_ATTENTION_LEDGER": "on",
-    "UNIFY_MEMORY_WRITER_SERVICE": "on",
     # a pass needs room for one writer call at the worst case (13.125 USD) to start
     "UNIFY_MEMORY_CAP_USD": "100",
-    "UNIFY_MEMORY_LIBRARY_PASS_WALL_S": "60",
-    "UNIFY_HOST_LEASE_END": "2099-01-01T00:00:00Z",  # required with the service; far off unless a test sets its own
+    "DRIVER_PASS_WALL_S": "60",
 }
 
 
@@ -431,7 +423,7 @@ def test_the_stop_marker_during_a_pass_lets_it_run_to_its_deadline_then_kills_ve
     """A2 test 5: a pass in flight runs to its deadline (plus the grace); then SIGTERM, and the end is verified."""
     monkeypatch.setenv("DRIVER_TURNS", "1")
     monkeypatch.setenv("DRIVER_TURN_SLEEP", "3600")
-    monkeypatch.setenv("UNIFY_MEMORY_LIBRARY_PASS_WALL_S", "3")
+    monkeypatch.setenv("DRIVER_PASS_WALL_S", "3")
     _open_entry(svc.home)
     assert _ensure(svc.home).status == "started"
     doc = _until(
@@ -463,7 +455,7 @@ def test_drain_returns_only_once_the_service_is_verified_gone(svc, monkeypatch):
 
     monkeypatch.setenv("DRIVER_TURNS", "1")
     monkeypatch.setenv("DRIVER_TURN_SLEEP", "3600")
-    monkeypatch.setenv("UNIFY_MEMORY_LIBRARY_PASS_WALL_S", "2")
+    monkeypatch.setenv("DRIVER_PASS_WALL_S", "2")
     _open_entry(svc.home, 2)
     assert _ensure(svc.home).status == "started"
     doc = _until(
@@ -650,53 +642,6 @@ def test_a_service_started_in_a_pid_namespace_that_dies_is_resumed_by_the_next_r
 
 
 # --- 9: the lease --------------------------------------------------------------------------------------------------------
-
-
-def test_with_the_lease_31_minutes_away_the_service_refuses_a_new_pass_and_stops(
-    svc, monkeypatch
-):
-    """A2 test 9: the service never runs past the lease less 30 minutes, so a pass (60 s wall clock) that would is
-    not started; the entries are not reached (lifetime)."""
-    from unify.memory.integration import request
-
-    monkeypatch.setattr(request, "actor_effort", lambda: "low")
-    monkeypatch.setattr(
-        ws, "pass_reservation", lambda settings, effort: Decimal("0.01")
-    )
-    lease = ws.stamp(datetime.now(timezone.utc) + timedelta(minutes=31))
-    lease = lease[:-5] + "Z"  # whole seconds
-    ids = _open_entry(svc.home)
-    fd = _lock(svc.home)
-    try:
-        why = asyncio.run(
-            ws.service_main(
-                svc.home,
-                fd,
-                runner=_no_pass,
-                settings=_settings(UNIFY_HOST_LEASE_END=lease),
-                poll_s=0.0,
-            ),
-        )
-    finally:
-        os.close(fd)
-    assert why == "lease"
-    assert _events(svc.home, "lifetime")[-1]["why"] == "lease"
-    entries = attention.Ledger(svc.home).entries()
-    assert entries[ids[0]].state == "not_reached" and entries[ids[0]].why == "lifetime"
-    # 29 minutes away, no service starts at all
-    near = ws.stamp(datetime.now(timezone.utc) + timedelta(minutes=29))[:-5] + "Z"
-    got = ws.ensure_service(svc.home, settings=_settings(UNIFY_HOST_LEASE_END=near))
-    assert got.status == "refused" and "lease" in got.detail
-
-
-def test_the_lifetime_is_36_hours_and_never_past_the_lease_less_30_minutes():
-    start = datetime(2026, 10, 20, 0, 0, tzinfo=timezone.utc)
-    end, why = ws.lifetime_end(start, _settings())
-    assert end - start == timedelta(hours=36) and why == "lifetime"
-    end, why = ws.lifetime_end(
-        start, _settings(UNIFY_HOST_LEASE_END="2026-10-20T10:00:00Z")
-    )
-    assert end == datetime(2026, 10, 20, 9, 30, tzinfo=timezone.utc) and why == "lease"
 
 
 # --- resumable turns, directly ---------------------------------------------------------------------------------------------
@@ -1002,19 +947,6 @@ def test_a_step_at_the_stop_marker_does_what_the_service_does_when_it_stops(
     assert roster["writer"] == "ended"
 
 
-def test_a_step_past_the_lease_margin_starts_no_pass(svc, monkeypatch):
-    _open_entry(svc.home)
-    now = datetime(2026, 10, 21, 5, 45, tzinfo=timezone.utc)
-    got = _step(
-        svc.home,
-        _no_pass,
-        monkeypatch,
-        over={"UNIFY_HOST_LEASE_END": "2026-10-21T06:00:00Z"},
-        now=now,
-    )
-    assert got["stop"] == "lease" and got["pass_id"] is None
-
-
 def test_the_service_loop_and_a_step_run_the_same_turn(svc, monkeypatch):
     """service_main's loop body is the step's: both go through ws._iteration."""
     seen: list[str] = []
@@ -1102,7 +1034,6 @@ def test_no_process_of_the_service_holds_a_route_token_pipe(svc, monkeypatch):
     assert routes == {"writer": True, "helper": True}
 
 
-
 def _in_ns(ns: str) -> list[int]:
     out = []
     for name in os.listdir("/proc"):
@@ -1139,7 +1070,6 @@ def test_a_service_killed_mid_pass_leaves_nothing_once_stopped(svc, monkeypatch)
     _until(lambda: not _in_ns(kids["box_ns"]), timeout=15)
     assert ws.group_pids(doc["pgid"]) == [] and ws.proc_start(kids["git"]) is None
     assert ws.proc_start(kids["box"]) is None and ws.proc_start(kids["inside"]) is None
-
 
 
 def test_the_starting_process_lets_go_of_the_token_pipes_before_it_waits(svc, monkeypatch):
@@ -1186,7 +1116,6 @@ def test_the_starting_process_lets_go_of_the_token_pipes_before_it_waits(svc, mo
     assert got.status == "started" and len(inodes) == 2
     assert held_while_waiting == [[]], held_while_waiting
     _until(lambda: not _pipe_holders(inodes), timeout=30)
-
 
 
 ORPHAN_GROUP = r"""

@@ -22,16 +22,8 @@ from unify.memory import writer_service as ws
 DRIVER = str(Path(__file__).with_name("service_driver.py"))
 SWITCHES = {
     "UNIFY_MEMORY": "on",
-    "UNIFY_MEMORY_LIBRARY": "on",
-    "UNIFY_MEMORY_LIBRARY_FORK": "on",
-    "UNIFY_MEMORY_CAPTURE_TRACE": "on",
-    "UNIFY_TOOLS_IN_CODE": "on",
-    "UNIFY_AGENTS_RUN_RECORD": "on",
-    "UNIFY_MEMORY_ATTENTION_LEDGER": "on",
-    "UNIFY_MEMORY_WRITER_SERVICE": "on",
     "UNIFY_MEMORY_CAP_USD": "100",
-    "UNIFY_MEMORY_LIBRARY_PASS_WALL_S": "60",
-    "UNIFY_HOST_LEASE_END": "2099-01-01T00:00:00Z",
+    "DRIVER_PASS_WALL_S": "60",
 }
 
 
@@ -112,7 +104,7 @@ def test_a_suspend_drain_stops_the_service_verified_and_keeps_every_entry_owed(s
 
     monkeypatch.setenv("DRIVER_TURNS", "1")
     monkeypatch.setenv("DRIVER_TURN_SLEEP", "3600")
-    monkeypatch.setenv("UNIFY_MEMORY_LIBRARY_PASS_WALL_S", "2")
+    monkeypatch.setenv("DRIVER_PASS_WALL_S", "2")
     ids = _open_entries(svc.home, 6)
     assert _ensure(svc.home).status == "started"
     doc = _until(lambda: (d := ws.read_state(svc.home)) and d.get("state") == "running" and d)
@@ -136,7 +128,7 @@ def test_after_a_suspend_the_next_start_hands_the_same_entries_again_without_a_m
 
     monkeypatch.setenv("DRIVER_TURNS", "1")
     monkeypatch.setenv("DRIVER_TURN_SLEEP", "3600")
-    monkeypatch.setenv("UNIFY_MEMORY_LIBRARY_PASS_WALL_S", "2")
+    monkeypatch.setenv("DRIVER_PASS_WALL_S", "2")
     ids = _open_entries(svc.home, 3)
     assert _ensure(svc.home).status == "started"
     _until(lambda: _ops(svc.home, "hand"))
@@ -160,7 +152,7 @@ def test_a_final_drain_still_marks_what_is_owed_not_reached_and_refuses_a_later_
 
     monkeypatch.setenv("DRIVER_TURNS", "1")
     monkeypatch.setenv("DRIVER_TURN_SLEEP", "3600")
-    monkeypatch.setenv("UNIFY_MEMORY_LIBRARY_PASS_WALL_S", "2")
+    monkeypatch.setenv("DRIVER_PASS_WALL_S", "2")
     _open_entries(svc.home, 2)
     assert _ensure(svc.home).status == "started"
     _until(lambda: (d := ws.read_state(svc.home)) and d.get("state") == "running" and d)
@@ -180,7 +172,7 @@ def test_suspend_then_final_marks_only_at_the_final_end(svc, monkeypatch):
 
     monkeypatch.setenv("DRIVER_TURNS", "1")
     monkeypatch.setenv("DRIVER_TURN_SLEEP", "3600")
-    monkeypatch.setenv("UNIFY_MEMORY_LIBRARY_PASS_WALL_S", "2")
+    monkeypatch.setenv("DRIVER_PASS_WALL_S", "2")
     ids = _open_entries(svc.home, 2)
     assert _ensure(svc.home).status == "started"
     _until(lambda: _ops(svc.home, "hand"))
