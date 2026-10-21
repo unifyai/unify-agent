@@ -127,26 +127,30 @@ def test_a_helper_mentions_another_helper_and_its_wait_returns_it(tmp_path, help
     assert entry.mentions == ("call-2",)
 
 
-def test_role_names_resolve_and_an_unknown_name_is_refused(tmp_path):
+def test_role_names_resolve_and_an_unknown_name_is_refused(tmp_path, monkeypatch):
+    import dataclasses
+
+    # the run record's posting interval is not under test here: the addresses are
+    monkeypatch.setattr(messaging, "RUN_PASS_OPTIONS", dataclasses.replace(messaging.RUN_PASS_OPTIONS, min_post_interval_s=0.0))
     pr = messaging.PassRecord(root="writer", deadline=time.monotonic() + 600, run_home=str(tmp_path / "run-home"))
-    for name in ("call-1", "call-2"):
+    for name in ("call-0", "call-1"):
         pr.add_helper(name, "a task")
         pr.record.add_agent(name, spawner="writer")
-    out, to = messaging.post(pr, "call-1", "@writer done reading e1", messaging.SEND_SPEC)
+    out, to = messaging.post(pr, "call-0", "@writer done reading e1", messaging.SEND_SPEC)
     assert to == ["writer"] and out.startswith("sent to writer")
     out, to = messaging.post(pr, "writer", "@helpers stop drafting", messaging.SEND_SPEC)
-    assert to == ["call-1", "call-2"]
-    out, to = messaging.post(pr, "call-1", "@helpers e1 is done", messaging.SEND_SPEC)
-    assert to == ["call-2"]  # never to itself
-    out, to = messaging.post(pr, "call-2", "no address", messaging.SEND_SPEC)
+    assert to == ["call-0", "call-1"]
+    out, to = messaging.post(pr, "call-0", "@helpers e1 is done", messaging.SEND_SPEC)
+    assert to == ["call-1"]  # never to itself
+    out, to = messaging.post(pr, "call-1", "no address", messaging.SEND_SPEC)
     assert to == ["writer"]  # a helper's message that names no one goes to the writer
-    refused, to = messaging.post(pr, "call-1", "@nobody look", messaging.SEND_SPEC)
-    assert to == [] and tool_spec.form_of(refused) == "unknown_name"
-    assert "@nobody" in refused and "@call-2" in refused and "@helpers" in refused
+    # a helper's message to a name no agent has goes to the writer, and the reply says which names matched none
+    out, to = messaging.post(pr, "call-0", "@nobody look", messaging.SEND_SPEC)
+    assert to == ["writer"] and "these names match no agent: @nobody" in out
     refused, _ = messaging.post(pr, "writer", "to whom?", messaging.SEND_SPEC)
     assert tool_spec.form_of(refused) == "no_recipient"
     # nothing refused reached the record
-    assert not any("nobody" in e.text or "whom" in e.text for e in pr.record.entries)
+    assert not any("whom" in e.text for e in pr.record.entries)
 
 
 def test_a_helper_reads_the_writers_inputs_read_only(tmp_path, helper_boxes):
@@ -180,7 +184,7 @@ def test_a_helper_reads_the_writers_inputs_read_only(tmp_path, helper_boxes):
     (call,) = helper_boxes
     # the writer's own /inputs, read-only; nothing writable but /work
     assert call["ro"][ctx.inputs] == "/inputs" and list(call["rw"].values()) == ["/work"]
-    assert sorted(call["ro"].values()) == ["/cell", "/inputs", "/memory", "/task"]
+    assert sorted(call["ro"].values()) == ["/inputs", "/memory", "/task"]  # an interpreter box: no fresh cell folder
 
 
 @needs_bwrap

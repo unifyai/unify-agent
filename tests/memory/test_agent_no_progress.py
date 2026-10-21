@@ -60,7 +60,7 @@ def _start():
 
 
 def test_each_memory_agent_is_told_its_own_terminal_tool():
-    assert terminal_tool("writer") == terminal_tool("curator") == "finish"
+    assert terminal_tool("writer") == "finish"
     assert terminal_tool("helper") == "done"
     assert "call finish and keep the item as a draft" in AgentNoProgress("finish").notice
     assert "call tools.done and keep the item as a draft" in AgentNoProgress("done", in_code=True).notice
@@ -170,7 +170,7 @@ def test_a_writer_repeating_a_no_op_cell_is_told_then_its_round_ends_and_the_mer
     assert out.no_progress == {"k": MEMORY_K, "notices": 1, "ended": True, "at_call": ended_at}
     assert out.finished is False and checked == []
     notices = [m for m in model.seen if m.get("role") == "user" and NOTICE in str(m.get("content"))]
-    assert len(notices) == 1 and "call finish and keep the item as a draft" in notices[0]["content"]
+    assert len(notices) == 1 and "call tools.finish and keep the item as a draft" in notices[0]["content"]
     assert [r for r in out.reasons if r.startswith("no progress: ")] == [
         f"no progress: {MEMORY_K} model calls in a row made no progress; a notice was given at model call "
         f"{MEMORY_K + 2}",
@@ -289,7 +289,7 @@ def test_a_helper_repeating_a_no_op_is_told_then_ends_with_what_it_staged(tmp_pa
     assert ctx.records[0]["no_progress"] == status["no_progress"]
     messages, _ = ctx.transcripts["call-1"]
     notices = [m for m in messages if m.get("role") == "user" and NOTICE in str(m.get("content"))]
-    assert len(notices) == 1 and "call done and keep the item as a draft" in notices[0]["content"]
+    assert len(notices) == 1 and "call tools.done and keep the item as a draft" in notices[0]["content"]
 
 
 def test_a_helper_that_finishes_records_no_notice(tmp_path, helper_boxes):

@@ -212,8 +212,6 @@ def _run_post(
         )
     except RecordRefused as exc:
         form = exc.form if exc.form in spec.refusals else "not_posted"
-        if form == "no_recipient":
-            return refusal(spec.name, "no_recipient", valid=view.addresses(author)), []
         return refusal(spec.name, form, why=str(exc.text)), []
     if info is not None:
         info.update(to=list(out["to"]), seq=out["seq"])
@@ -232,7 +230,8 @@ def post(
     reply_to: Optional[int] = None,
 ) -> tuple[str, list[str]]:
     """Append *text* from *author* for the agents it addresses: (the reply, the names it went to). A helper's
-    message that addresses no one goes to the pass's own agent; an unknown address refuses the whole message.
+    message that addresses no agent (a name no agent has included) goes to the pass's own agent, and the reply names
+    the unknown names; the pass's own agent's message that addresses no agent is refused.
     *info* receives ``to`` and ``seq`` (the entry's record seq) when it is posted."""
     if not isinstance(text, str) or not text.strip():
         return refusal(spec.name, "no_text"), []
