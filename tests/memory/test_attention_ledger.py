@@ -132,7 +132,7 @@ def test_each_kind_fires_from_its_record_and_not_without_one(tmp_path):
         [
             "new_experience",  # e1, its capture row present
             "new_experience",  # e2: no procedure, so no capture to wait for
-            # rev 2 (D1): e1's capture row says its own check errored, and that makes no entry (none runs now)
+            # rev 2: e1's capture row says its own check errored, and that makes no entry (none runs now)
             "use_went_badly",
             "late_evidence",
             "repeated_use",  # two new episodes called the note
@@ -193,13 +193,16 @@ def test_a_byte_identical_capture_appends_to_the_open_entry(tmp_path):
     led.sync(Fake(forks=[_fork("e1"), _fork("e2")], captures={"e1": _cap("e1", cid), "e2": _cap("e2", cid)}))
     rows = [json.loads(x) for x in led.path.read_text().splitlines()]
     assert [r["op"] for r in rows] == ["create", "append_ref"]
-    # once closed, the same capture from a new episode is a new entry
+    # once closed, the same capture from a new episode is counted on the closed entry (an occurrence row), never a new
+    # entry: its outcome is not contrary
     led.hand("p1", 4)
     reads = _reads(["/inputs/staging/e1/summary.md", f"/inputs/captures/{cid}/procedure.py"])
     led.decide("p1", e.entry, "nothing_to_keep", reason="one fixed answer", reads=reads,
                decisions_path=tmp_path / "d.jsonl")  # fmt: skip
-    [n] = led.sync(Fake(forks=[_fork("e3")], captures={"e3": _cap("e3", cid)}))
-    assert n.refs.episodes == ("e3",)
+    assert led.sync(Fake(forks=[_fork("e3")], captures={"e3": _cap("e3", cid)})) == []
+    assert len(led.entries()) == 1
+    rows = [json.loads(x) for x in led.path.read_text().splitlines()]
+    assert rows[-1]["op"] == "occurrence" and rows[-1]["entry"] == e.entry
 
 
 # --- 3. read verification uses the logs only ------------------------------------------------------------------------
@@ -350,7 +353,7 @@ def test_hand_order_is_bad_news_first_oldest_first_and_k_entries(tmp_path):
         led.sync(src)
         clock.tick()
     first = led.hand("p1", 4)
-    # rev 2 (D1): e6's failing own check makes no entry; its fork is a new experience
+    # rev 2: e6's failing own check makes no entry; its fork is a new experience
     assert [e.kind for e in first] == ["late_evidence", "use_went_badly", "message", "new_experience"]
     rest = led.hand("p2", 4)
     # the oldest open entry (the deferred one) is older than every age at hand so far: the backstop hands it first
@@ -608,7 +611,7 @@ def test_sync_over_the_phase0_cells_reproduces_its_per_kind_counts(tmp_path):
                "D": "deferred", "L": "late_evidence"}  # fmt: skip
     for name, cell in sorted(doc["cells"].items()):
         got = _phase0_counts(tmp_path / name, cell)
-        # rev 2 (D1): no capture is run, so no own check fails and Phase 0's own-check entries are not made
+        # rev 2: no capture is run, so no own check fails and Phase 0's own-check entries are not made
         want = {kind_of[k]: (0 if k == "S" else n) for k, n in cell["expected"].items()}
         assert {k: got[k] for k in want} == want, name
         assert got["message"] == 0  # Phase 0's builds had no run record

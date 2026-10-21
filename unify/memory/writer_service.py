@@ -1452,7 +1452,7 @@ async def _run_pass(
         Exception
     ) as exc:  # noqa: BLE001 - a pass that broke: its entries go back, the service goes on
         event(home, "error", pass_id=pass_id, error=type(exc).__name__, where=_where(exc))
-        returned = ledger.return_unread(pass_id)
+        returned = ledger.return_unread(pass_id, stopped=stopping_marker(home) is not None)
         # no report: the pass's own turn files say what it spent (lost and unpriced calls at the worst case)
         settled = _format(_raised_settle(home, pass_id, folder, settings, pass_doc))
         _append(
@@ -1498,7 +1498,8 @@ async def _run_pass(
 
     reads = report.reads if report.reads is not None else PassReads()
     read = ledger.verify_reads(pass_id, reads, list(report.delivered or ()))
-    returned = ledger.return_unread(pass_id)
+    # a pass the service was asked to stop during (a drain or an operator's stop) gives its entries back with no miss
+    returned = ledger.return_unread(pass_id, stopped=stopping_marker(home) is not None)
     report.read, report.returned = sorted(read), sorted(returned)
     pass_doc.update(state="ended", ended_at=stamp(_now()))
     _atomic_json(pass_doc_path, pass_doc)

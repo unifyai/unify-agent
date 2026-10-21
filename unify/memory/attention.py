@@ -24,8 +24,8 @@ kind                   created when
 
 An episode whose capture is the same capture as an entry's (the same id: byte-identical, or folded into it by its
 shape address, :mod:`.capture_shape`) is never made a new entry. Onto an active entry it is appended (``append_ref``);
-onto a closed one it is counted only (an ``occurrence`` row: no new entry, no new hand), unless its outcome is contrary
-(from its signals, never from running it), which reopens the entry (``append_ref``, then ``reopen`` by
+onto a closed one it is counted only (an ``occurrence`` row: no new entry, nothing handed again), unless its outcome
+is contrary (from its signals, never from running it), which reopens the entry (``append_ref``, then ``reopen`` by
 ``contrary_occurrence``).
 
 **Lifecycle** (:data:`STATES`): ``open`` -> ``handed`` (to a pass, :meth:`Ledger.hand`, or pulled in by the writer,
@@ -946,7 +946,7 @@ class Ledger:
                 )
                 contrary = isinstance(cap, Mapping) and cap.get("outcome") in ("contrary", "failed")
                 out += self._create_rows(state, "new_experience", refs, (f.name,), dup_capture=True, contrary=contrary)
-            # rev 2 (D1): no capture is run to classify it, so no own check fails and no ``own_check_failed`` entry
+            # rev 2: no capture is run to classify it, so no own check fails and no ``own_check_failed`` entry
             # is made (the kind stays readable: an older ledger's entries still fold)
             # uses that went badly (an actor's report on the record comes through the same source)
             for u in sources.use_failures():
@@ -1422,11 +1422,13 @@ class Ledger:
 
     # -- the end of a pass, a restart, the end of a run -----------------------------------------------------------------
 
-    def return_unread(self, pass_id: str) -> list[str]:
+    def return_unread(self, pass_id: str, *, stopped: bool = False) -> list[str]:
         """At *pass_id*'s end: each entry still owed something there goes back. Not read: a miss (alone after two,
         ``unreadable`` with the pass's read evidence named after the third). Read but undecided: the same bound on its
         own count (alone after two such passes, ``unreadable`` after the third, its evidence saying it was read and never
-        decided), so an entry no pass decides costs at most three passes. Returns the ids returned or made unreadable."""
+        decided), so an entry no pass decides costs at most three passes. A pass the service was asked to stop during
+        (*stopped*: a stop marker was set while it ran) had no fair turn: its entries go back with ``service_restart``,
+        no miss, as a stopped pass's do at the next start. Returns the ids returned or made unreadable."""
         with self.locked():
             state = self.entries()
             rows, out = [], []
@@ -1435,7 +1437,9 @@ class Ledger:
                 if not (e.active and e.state != "open" and e.pass_id == pass_id):
                     continue
                 out.append(e.entry)
-                if e.state == "read" and e.undecided + 1 >= UNREADABLE_AFTER_MISSES:
+                if stopped:
+                    rows.append({"op": "return", "entry": e.entry, "pass_id": pass_id, "why": "service_restart", "at": at})
+                elif e.state == "read" and e.undecided + 1 >= UNREADABLE_AFTER_MISSES:
                     rows.append({"op": "unreadable", "entry": e.entry, "pass_id": pass_id,
                                  "evidence": f"read and not decided in {e.undecided + 1} passes, the last pass:{pass_id}",
                                  "at": at})  # fmt: skip
@@ -1571,7 +1575,7 @@ def episode_resolver(
     waiting for an episode). *indexed* says whether an episode is recorded (the evidence index). A segment
     (``<episode>.s<n>``) reads from its own record, which its checkpoint wrote; an episode with no segment named reads
     from its record once recorded, and while it runs from its latest segment record, if it has one. Its answers are
-    kept for the resolver's life (one hand or one pass); both only ever become readable."""
+    kept for the resolver's life (one handing or one pass); both only ever become readable."""
     from . import segments
 
     root = Path(state_dir) / segments.SEGMENTS_DIR

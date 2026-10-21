@@ -92,7 +92,8 @@ def test_ready_entries_are_handed_past_a_waiting_one(tmp_path):
     rest = [led.create("message", attention.Refs(record_seq=s), s) for s in (2, 3)]
     rest.append(led.create("message", attention.Refs(episodes=("ep-done",), record_seq=4), 4))
     handed = led.hand("p1", 4, ready=_ready(_resolver(led.state_dir, {"ep-done"})))
-    assert [x.entry for x in handed] == rest
+    # every ready entry, in the ledger's own hand order (entries made in the same second are ordered by their ids)
+    assert sorted(x.entry for x in handed) == sorted(rest)
     assert led.get(waiting).state == "open" and led.get(waiting).misses == 0
 
 
