@@ -28,7 +28,6 @@ from unify.common._async_tool.messages import (
     is_loop_authored_message,
     loop_user_notice,
 )
-from tests.helpers import _handle_project
 from tests.async_helpers import _wait_for_condition
 
 
@@ -50,7 +49,6 @@ def _final_msg(content: str) -> dict:
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
-@_handle_project
 async def test_true_empty_answer_retries_then_fails_loudly(
     llm_config,
     monkeypatch,
@@ -137,7 +135,6 @@ _quick_tool.__qualname__ = "quick_tool"
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
-@_handle_project
 async def test_whitespace_only_terminal_turn_falls_back_to_prior_answer(
     llm_config,
     monkeypatch,
@@ -181,7 +178,6 @@ async def test_whitespace_only_terminal_turn_falls_back_to_prior_answer(
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
-@_handle_project
 async def test_empty_content_block_list_falls_back_to_prior_answer(
     llm_config,
     monkeypatch,
@@ -231,7 +227,6 @@ async def test_empty_content_block_list_falls_back_to_prior_answer(
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
-@_handle_project
 async def test_substantive_content_block_list_returns_extracted_text(
     llm_config,
     monkeypatch,
@@ -278,7 +273,6 @@ async def test_substantive_content_block_list_returns_extracted_text(
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
-@_handle_project
 async def test_lifecycle_announcement_between_answer_and_empty_recovers(
     llm_config,
     monkeypatch,
@@ -344,7 +338,6 @@ async def test_lifecycle_announcement_between_answer_and_empty_recovers(
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
-@_handle_project
 async def test_nudge_message_does_not_become_boundary_on_retry(
     llm_config,
     monkeypatch,
@@ -428,14 +421,13 @@ def test_loop_user_notice_output_is_recognized_as_loop_authored() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
-@_handle_project
-async def test_compression_threshold_notice_between_answer_and_empty_recovers(
+async def test_a_loop_notice_between_answer_and_empty_recovers(
     llm_config,
     monkeypatch,
 ) -> None:
-    """A 'context window nearly full' notice landing between the real
-    answer and a later empty terminal turn must not block the walk-back
-    from recovering the answer."""
+    """A notice the loop wrote, landing between the real answer and a later
+    empty terminal turn, must not block the walk-back from recovering the
+    answer."""
     client = new_llm_client(**llm_config)
     client.set_system_message("This turn is fully scripted by the test.")
 
@@ -475,7 +467,7 @@ async def test_compression_threshold_notice_between_answer_and_empty_recovers(
     await _wait_for_condition(lambda: _dispatched_at_least(2), poll=0.02, timeout=10.0)
     client.messages.append(
         loop_user_notice(
-            "Context window is nearly full. You must call `compress_context` now.",
+            "A note the loop added between turns.",
         ),
     )
     await turn_queue.put(_final_msg(""))
@@ -486,7 +478,6 @@ async def test_compression_threshold_notice_between_answer_and_empty_recovers(
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
-@_handle_project
 async def test_quota_pruning_notice_between_answer_and_empty_recovers(
     llm_config,
     monkeypatch,
@@ -545,7 +536,6 @@ async def test_quota_pruning_notice_between_answer_and_empty_recovers(
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
-@_handle_project
 async def test_persist_empty_turn_still_surfaces_a_response(
     llm_config,
     monkeypatch,

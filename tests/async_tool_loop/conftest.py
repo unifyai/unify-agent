@@ -51,8 +51,7 @@ def llm_config(request) -> dict[str, str]:
 
 
 #: The kinds a loop's own turns are classified as: ``actor`` when the request
-#: offers tools (a loop with no tools of its own still offers
-#: ``compress_context``), ``query_llm`` when it offers none.
+#: offers tools, ``query_llm`` when it offers none.
 LOOP_KINDS = ("actor", "query_llm")
 
 

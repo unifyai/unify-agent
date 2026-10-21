@@ -36,7 +36,6 @@ from unify.common._async_tool.context_compression import (
     compress_messages,
 )
 from unify.memory import sandbox_run
-from tests.helpers import _handle_project
 from tests.scripted_model import reply
 
 needs_bwrap = pytest.mark.skipif(
@@ -475,7 +474,6 @@ def test_printing_does_not_corrupt_the_result():
 
 @needs_bwrap
 @pytest.mark.asyncio
-@_handle_project
 async def test_compress_messages_continues_past_a_hanging_transformation(
     llm_config,
     scripted_model,

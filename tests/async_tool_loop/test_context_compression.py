@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import base64
 import copy
-import inspect
 from pathlib import Path
 
 import pytest
 
 import json
 
-from tests.helpers import _handle_project
 from tests.scripted_model import reply
 import unify.common._async_tool.context_compression as _cc_mod
 from unify.common._async_tool.context_compression import (
@@ -19,7 +17,6 @@ from unify.common._async_tool.context_compression import (
     CompressedMessages,
     CompressionState,
     compress_and_rebuild,
-    compress_context,
     compress_messages,
     tag_images_in_messages,
     _eval_transformation,
@@ -37,20 +34,6 @@ from unify.common._async_tool.context_compression import (
 # good edits is what model_evals/eval_context_compression.py measures.
 with open(Path(__file__).parent / "cat.jpg", "rb") as _f:
     _CAT_IMG = base64.b64encode(_f.read()).decode("utf-8")
-
-
-class TestCompressContextTool:
-    def test_no_parameters(self):
-        sig = inspect.signature(compress_context)
-        assert len(sig.parameters) == 0
-
-    def test_has_docstring(self):
-        assert compress_context.__doc__ is not None
-        assert len(compress_context.__doc__) > 20
-
-    def test_returns_string(self):
-        result = compress_context()
-        assert isinstance(result, str)
 
 
 class TestEvalTransformation:
@@ -226,14 +209,14 @@ class TestMakeArchiveLookupTool:
                 {"role": "assistant", "content": "world"},
             ],
         ]
-        get_raw = _make_archive_lookup_tool(archives, for_compression=True)
+        get_raw = _make_archive_lookup_tool(archives)
         result = json.loads(get_raw(0))
         assert len(result) == 1
         assert result[0]["content"] == "hello"
 
     def test_out_of_range_returns_error(self):
         archives = [[{"role": "user", "content": "only one"}]]
-        get_raw = _make_archive_lookup_tool(archives, for_compression=True)
+        get_raw = _make_archive_lookup_tool(archives)
         result = json.loads(get_raw(5))
         assert "error" in result
         assert "out of range" in result["error"].lower()
@@ -250,7 +233,7 @@ class TestMakeArchiveLookupTool:
                 {"role": "assistant", "content": "second_archive_msg2"},
             ],
         ]
-        get_raw = _make_archive_lookup_tool(archives, for_compression=True)
+        get_raw = _make_archive_lookup_tool(archives)
         r0 = json.loads(get_raw(0))
         assert r0[0]["content"] == "first_archive_msg0"
         r2 = json.loads(get_raw(2))
@@ -267,19 +250,15 @@ class TestMakeArchiveLookupTool:
                 {"role": "assistant", "content": "msg3"},
             ],
         ]
-        get_raw = _make_archive_lookup_tool(archives, for_compression=True)
+        get_raw = _make_archive_lookup_tool(archives)
         result = json.loads(get_raw(1, n=2))
         assert len(result) == 2
         assert result[0]["content"] == "msg1"
         assert result[1]["content"] == "msg2"
 
-    def test_compression_mode_sets_name(self):
-        tool = _make_archive_lookup_tool([[]], for_compression=True)
+    def test_the_tool_is_named_get_raw(self):
+        tool = _make_archive_lookup_tool([[]])
         assert tool.__name__ == "get_raw"
-
-    def test_unpack_mode_sets_name(self):
-        tool = _make_archive_lookup_tool([[]], for_compression=False)
-        assert tool.__name__ == "unpack_messages"
 
 
 # ── compress_and_rebuild tests ────────────────────────────────────────────────
@@ -342,11 +321,8 @@ class TestCompressAndRebuild:
         assert "[1]" in compressed_sys["content"]
         assert "[2]" in compressed_sys["content"]
 
-        assert "my_tool" in result.tools
-        assert "unpack_messages" in result.tools
-
-        unpacked = json.loads(result.tools["unpack_messages"](0))
-        assert unpacked[0]["content"] == "hello"
+        # The session restarts with its own tools, and no other.
+        assert result.tools == original_tools
 
     @pytest.mark.asyncio
     async def test_second_pass_skips_compressed_message_marker(self, monkeypatch):
@@ -530,39 +506,6 @@ class TestCompressAndRebuild:
         assert 0 in state.image_registry and 1 in state.image_registry
         assert state.live_image_ids == {1}
 
-    @pytest.mark.asyncio
-    async def test_unpack_messages_tool_retrieves_archived_content(self, monkeypatch):
-        monkeypatch.setattr(_cc_mod, "compress_messages", _mock_compress_for_rebuild)
-
-        state = CompressionState()
-        messages = [
-            {"role": "user", "content": "msg-zero"},
-            {"role": "assistant", "content": "msg-one"},
-            {"role": "user", "content": "msg-two"},
-        ]
-        result = await compress_and_rebuild(
-            state,
-            messages,
-            "openai/gpt-4o@openrouter",
-            {},
-        )
-
-        unpack = result.tools["unpack_messages"]
-        single = json.loads(unpack(0))
-        assert len(single) == 1
-        assert single[0]["content"] == "msg-zero"
-
-        pair = json.loads(unpack(0, n=2))
-        assert len(pair) == 2
-        assert pair[0]["content"] == "msg-zero"
-        assert pair[1]["content"] == "msg-one"
-
-        last = json.loads(unpack(2))
-        assert last[0]["content"] == "msg-two"
-
-        err = json.loads(unpack(99))
-        assert "error" in err
-
 
 def _system_text(call) -> str:
     """The system messages of a recorded request, as one text."""
@@ -577,7 +520,6 @@ def _system_text(call) -> str:
 
 
 @pytest.mark.asyncio
-@_handle_project
 async def test_compress_returns_compressed_messages(llm_config, scripted_model):
     messages = [
         {
@@ -622,7 +564,6 @@ async def test_compress_returns_compressed_messages(llm_config, scripted_model):
 
 
 @pytest.mark.asyncio
-@_handle_project
 async def test_compress_output_length_matches_input(llm_config, scripted_model):
     messages = [
         {"role": "user", "content": "Hello, how are you doing today?"},
@@ -643,7 +584,6 @@ async def test_compress_output_length_matches_input(llm_config, scripted_model):
 
 
 @pytest.mark.asyncio
-@_handle_project
 async def test_compress_compacts_tool_call_messages(llm_config, scripted_model):
     messages = [
         {"role": "user", "content": "Find John"},
@@ -685,7 +625,6 @@ async def test_compress_compacts_tool_call_messages(llm_config, scripted_model):
 
 
 @pytest.mark.asyncio
-@_handle_project
 async def test_compress_preserves_image_placeholders(llm_config, scripted_model):
     """An image the conversation still depends on keeps its ``[img:N]`` tag.
 
@@ -761,7 +700,6 @@ _VERBOSE_TRACEBACK = (
 
 
 @pytest.mark.asyncio
-@_handle_project
 async def test_compress_compacts_verbose_errors(llm_config, scripted_model):
     error_content = json.dumps({"error": _VERBOSE_TRACEBACK})
     messages = [
@@ -933,7 +871,6 @@ _VERBOSE_PRIOR_TOOL_RESULT = json.dumps(
 
 
 @pytest.mark.asyncio
-@_handle_project
 async def test_compress_multi_pass_recompresses_prior(llm_config, scripted_model):
     """Multi-pass compression can further compress verbose prior entries."""
     prior_entries = [

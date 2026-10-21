@@ -4,8 +4,8 @@ A provider prefix is only reused when the next request reaches the replica
 holding it, so a session asks for one with a cache affinity key -- where the
 installed unillm offers the key (the ``harness-cache`` branch does; ``main``
 does not, and the client is then left alone). Each call logs how much of its
-input came from the cache, which is how the 0% of the storage review's first
-call and the losses at the second and last actor calls were found.
+input came from the cache, which is how losses at the second and last actor
+calls were found.
 
 The key is shared by every session with the same model, system prompt and
 tool list (the prefix scope, baked in at the code freeze), so a new
@@ -84,13 +84,18 @@ async def test_on_a_different_system_prompt_or_tool_list_gets_another_key(
     )
     await _session(base)
     await _session(other_prompt)
-    tools = h.make_tools({})
+
+    async def note(text: str) -> str:
+        """Keep a note.
+
+        Args:
+            text: The note.
+        """
+        return "kept"
+
     await _session(
         other_tools,
-        tools={
-            "execute_code": tools["execute_code"],
-            "GuidanceManager_search": tools["GuidanceManager_search"],
-        },
+        tools={"execute_code": h.make_tools({})["execute_code"], "note": note},
     )
     keys = {
         base.cache_affinity,
@@ -126,7 +131,7 @@ async def test_on_a_key_already_set_is_kept_and_a_fork_shares_it(
     client.set_cache_affinity("parent-key")
     await _session(client)
     assert client.cache_affinity == "parent-key"
-    assert fork_llm_client(client, origin="StorageCheck").cache_affinity == (
+    assert fork_llm_client(client, origin="compress_context").cache_affinity == (
         "parent-key"
     )
 
@@ -159,7 +164,7 @@ async def test_on_each_call_logs_its_cache_share_and_the_sessions(monkeypatch):
     )
     client = h.new_client()
     await _session(client, replies)
-    assert cd.cache_stats(client) == {
+    assert getattr(client, cd._CACHE_STATS) == {
         "calls": 2,
         "input_tokens": 2200,
         "cached_tokens": 960,
@@ -187,7 +192,7 @@ async def test_on_an_unreported_cache_count_stays_unknown(monkeypatch):
     )
     client = h.new_client()
     await _session(client, replies)
-    assert cd.cache_stats(client) == {
+    assert getattr(client, cd._CACHE_STATS) == {
         "calls": 2,
         "input_tokens": 1000,
         "cached_tokens": 900,
