@@ -1170,18 +1170,24 @@ ASK_LIBRARY = RegisteredTool(
         '{"fits": [{"id", "call", "why"}, ...]} with every item that fits, or {"fits": [], "nearest": '
         '[{"id", "differs"}, ...]} when nothing fits. Follow-up questions in the same request go to the same '
         "librarian; a question it already answered in this request gets that answer again, "
-        'with "already_given": true.'
+        'with "already_given": true. With `schema` (a JSON Schema) the answer is {"value": ...} matching it, or '
+        '{"schema_error": {"raw", "errors"}} when it did not match after one repair.'
     ),
     parameters={
         "type": "object",
         "properties": {
             "question": {"type": "string", "description": "A question of your own, or the request's text."},
+            "schema": {
+                "type": ["object", "null"],
+                "description": "The JSON Schema of the answer wanted (memory.ask(..., schema=...) builds it).",
+            },
         },
         "required": ["question"],
         "additionalProperties": False,
     },
     refusals={
         "no_question": "question must be a non-empty string; nothing was asked",
+        "bad_schema": "schema must be a JSON Schema object ({why}); nothing was asked",
         "unavailable": "the librarian is not available here ({why}); nothing was asked",
         "no_answer": "the librarian gave no answer ({why})",
     },

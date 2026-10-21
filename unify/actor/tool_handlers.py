@@ -499,6 +499,14 @@ async def ask_library(ctx: Any, args: dict) -> Any:
     question = args.get("question")
     if not isinstance(question, str) or not question.strip():
         return _refused(refusal("ask_library", "no_question"))
+    schema = args.get("schema")
+    if schema is not None:
+        from unify.memory.librarian import check_schema
+
+        try:
+            check_schema(schema)
+        except ValueError as exc:
+            return _refused(refusal("ask_library", "bad_schema", why=str(exc)[:300]))
     state = ctx.state
     session = getattr(state, "librarian", None)
     if session is None:
@@ -525,9 +533,10 @@ async def ask_library(ctx: Any, args: dict) -> Any:
                 question,
                 request=request,
                 last_message=_memory_run_last_message() if getattr(ctx, "agent", None) == "actor" else None,
+                **({"schema": schema} if schema is not None else {}),
             )
         else:
-            text = await session.ask(question, request=request)
+            text = await session.ask(question, request=request, **({"schema": schema} if schema is not None else {}))
     except _librarian.NoAnswer as exc:
         return _refused(refusal("ask_library", "no_answer", why=str(exc)[:300]))
     return _reply(text)

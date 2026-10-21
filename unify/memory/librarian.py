@@ -67,6 +67,11 @@ CAPTURE_PREFIX = "capture:"
 #: The field a reply carries when it is an answer the librarian already gave in this request (``true``); a first
 #: answer never has it.
 ALREADY_GIVEN = "already_given"
+#: A structured answer (``memory.ask(..., schema=...)``): the reply's value, and its form when the value did not match
+#: the schema after :data:`SCHEMA_REPAIRS` repair turn(s).
+SCHEMA_VALUE = "value"
+SCHEMA_ERROR = "schema_error"
+SCHEMA_REPAIRS = 1
 #: What the summary after a compaction says of the files (the memory agents' restart pointer, for this box).
 RESTART_POINTER = "Nothing under /memory changed: open an item again with memory.get when you need it."
 _HEADING = re.compile(r"^### (\S+)\s*$")
@@ -336,6 +341,7 @@ def sent_to_librarian(
     evidence: Mapping[str, Any] | None = None,
     last_message: str | None = None,
     rows: int = 0,
+    schema: dict | None = None,
 ) -> dict:
     """Exactly what one ask sends the librarian beyond its fixed opening (the shared opening and the brief, the same
     for every ask and every library): the user message (:func:`question_message`: the question and the catalogue
@@ -350,7 +356,21 @@ def sent_to_librarian(
         message = evidence_question_message(q, _stripped(last_message) if last_message else None, rows)
     else:
         message = question_message(q, rows)
-    return {"message": message, "library": dict(library)}
+    if schema is None:
+        return {"message": message, "library": dict(library)}
+    # a structured answer: the schema replaces the answer's form for this question (its digest is in the key)
+    message = message.rsplit("Answer with tools.finish(answer).", 1)[0] + schema_instruction(schema)
+    return {"message": message, "library": dict(library), "schema": _digest_of(schema)}
+
+
+def schema_instruction(schema: dict) -> str:
+    """The closing lines of a question with a schema: the answer is one JSON value matching it, not the fits form."""
+    return (
+        "For this question the answer is not the fits form: answer with tools.finish(answer), where answer is one "
+        "JSON value that matches this JSON Schema. Base it on the library's items, as for any question. A value "
+        "that does not match is refused with where it does not.\n"
+        + json.dumps(schema, ensure_ascii=False, sort_keys=True)
+    )
 
 
 def answer_key(sent: Mapping[str, Any]) -> str:
@@ -394,6 +414,9 @@ class LibrarianCalls:
     answer: dict | None = None
     finish_text: str | None = None
     finished: bool = False
+    #: the JSON Schema of the question in progress (``memory.ask(..., schema=...)``), and its answers that missed it
+    schema: dict | None = None
+    schema_failures: int = 0
 
 
 def _text(value: Any) -> bool:
@@ -452,9 +475,59 @@ def check_answer(
     return {"fits": [], "nearest": [dict(n) for n in nearest]}, ""
 
 
+def check_schema(schema: Any) -> None:
+    """Raise ValueError when *schema* is not a JSON Schema the checker can use (Draft 2020-12)."""
+    from jsonschema import Draft202012Validator
+    from jsonschema.exceptions import SchemaError
+
+    if not isinstance(schema, dict):
+        raise ValueError("a schema is a JSON object")
+    try:
+        Draft202012Validator.check_schema(schema)
+    except SchemaError as exc:
+        raise ValueError(f"not a JSON Schema: {exc.message[:300]}") from None
+
+
+def schema_errors(value: Any, schema: dict) -> list[list[str]]:
+    """Where *value* misses *schema*: ``[path, message]`` pairs, the path a JSON pointer (``""`` for the whole value),
+    in path order; [] when it matches."""
+    from jsonschema import Draft202012Validator
+
+    out = []
+    for err in Draft202012Validator(schema).iter_errors(value):
+        path = "".join(f"/{p}" for p in err.absolute_path)
+        out.append([path, str(err.message)[:300]])
+    return sorted(out)
+
+
+def _finish_schema(state: "LibrarianCalls", answer: Any) -> Any:
+    """``finish`` for a question with a schema: a value that matches it is the answer; one that misses it goes back
+    with the checker's errors (never the request) once, and a second miss ends the question with them."""
+    from unify.common.tool_registry import refusal
+    from unify.memory.writer_tools import Reply
+
+    errors = schema_errors(answer, state.schema or {})
+    if not errors:
+        state.answer, state.finished = {SCHEMA_VALUE: answer, "repairs": state.schema_failures}, True
+        state.finish_text = "finished: your answer goes to the agent that asked"
+        return Reply(state.finish_text)
+    state.schema_failures += 1
+    if state.schema_failures > SCHEMA_REPAIRS:
+        raw = json.dumps(answer, ensure_ascii=False, default=str)[:20000]
+        state.answer = {SCHEMA_ERROR: {"raw": raw, "errors": errors}}
+        state.finished = True
+        state.finish_text = "finished: the answer does not match the schema; the agent is told where"
+        return Reply(state.finish_text)
+    shown = "; ".join(f"{p or '/'}: {m}" for p, m in errors[:20])
+    text = refusal("finish", "bad_answer", reason=f"the answer does not match the schema: {shown}"[:2000])
+    state.finish_text = str(text)
+    return Reply(str(text), "refused", text.form)
+
+
 async def finish(ctx: Any, args: dict) -> Any:
-    """The librarian's ``tools.finish(answer)``: the answer, checked (:func:`check_answer`), is kept for the
-    question in progress; a malformed one is refused with the reason and the question goes on."""
+    """The librarian's ``tools.finish(answer)``: the answer, checked (:func:`check_answer`, or against the question's
+    schema, :func:`_finish_schema`), is kept for the question in progress; a malformed one is refused with the reason
+    and the question goes on."""
     from unify.common.tool_registry import refusal
     from unify.memory.writer_tools import Reply
 
@@ -462,6 +535,8 @@ async def finish(ctx: Any, args: dict) -> Any:
     if state.finished:
         text = refusal("finish", "answered")
         return Reply(str(text), "refused", text.form)
+    if state.schema is not None:
+        return _finish_schema(state, args.get("answer"))
     got, why = check_answer(args.get("answer"), state.ids, state.failed, state.recipes)
     if got is None:
         text = refusal("finish", "bad_answer", reason=why[:2000])
@@ -726,16 +801,26 @@ class LibrarianSession:
         facts: Any = None,
         request: str | None = None,
         last_message: str | None = None,
+        schema: dict | None = None,
     ) -> str:
-        """One question about the current request (*request* is not sent to the librarian, so it is not in the key;
-        *facts*, which an older cell may still send, are not read: rev 2 runs no reader). When the librarian was
-        already sent the same
-        (:func:`answer_key` of :func:`sent_to_librarian`), that answer as it gave
-        it, with :data:`ALREADY_GIVEN`, and no model call; otherwise the question goes as the next user message and
-        the librarian's accepted answer is kept and returned. JSON text either way. Raises :class:`NoAnswer` when it
-        ends without one (nothing is kept, so the next ask asks again)."""
+        """One question about the current request, as JSON text (:meth:`answer`; *request* is not sent to the
+        librarian, so it is not in the key; *facts*, which an older cell may still send, are not read: rev 2 runs no
+        reader)."""
+        got = await self.answer(question, schema=schema, last_message=last_message)
+        return json.dumps(got, ensure_ascii=False, sort_keys=True)
+
+    async def answer(self, question: str, *, schema: dict | None = None, last_message: str | None = None) -> dict:
+        """One question about the current request. When the librarian was already sent the same
+        (:func:`answer_key` of :func:`sent_to_librarian`), that answer as it gave it, with :data:`ALREADY_GIVEN`, and
+        no model call; otherwise the question goes as the next user message and the librarian's accepted answer is
+        kept and returned. With *schema* (a JSON Schema, :func:`check_schema`; ValueError otherwise) the answer is
+        ``{"value": ..., "repairs": n}``, or ``{"schema_error": {"raw", "errors"}}`` when the value missed it after
+        :data:`SCHEMA_REPAIRS` repair (never kept). Raises :class:`NoAnswer` when it ends without one (nothing is
+        kept, so the next ask asks again)."""
         if self.closed:
             raise NoAnswer("the request has ended")
+        if schema is not None:
+            check_schema(schema)
         async with self._lock:
             # the library as the ask finds it: a copy that changed since the session opened is asked about afresh
             self.dispatch = read_dispatch(self.copy)
@@ -747,15 +832,16 @@ class LibrarianSession:
                 # the evidence as the ask finds it, and the situation's latest message: what the answer answered
                 self.evidence = read_evidence(self.copy) or {}
                 sent = sent_to_librarian(question, library, evidence=self.evidence, last_message=last_message,
-                                         rows=len(self.dispatch))  # fmt: skip
+                                         rows=len(self.dispatch), schema=schema)  # fmt: skip
             else:
-                sent = sent_to_librarian(question, library, rows=len(self.dispatch))
+                sent = sent_to_librarian(question, library, rows=len(self.dispatch), schema=schema)
             key = answer_key(sent)
             given = self.answers.get(key)
             if given is not None:
                 self.from_cache += 1
-                return json.dumps({**given, ALREADY_GIVEN: True}, ensure_ascii=False, sort_keys=True)
+                return {**given, ALREADY_GIVEN: True}
             self.state.answer, self.state.finished, self.state.finish_text = None, False, None
+            self.state.schema, self.state.schema_failures = schema, 0
             content = sent["message"]
             if self.view is not None and not self._introduced:
                 # the run record: the common section and this agent's roster lines, once, after the constant brief
@@ -764,9 +850,17 @@ class LibrarianSession:
                 content = f"{content}\n\n{prompt_lines(self.name, AGENT)}"
                 self._introduced = True
             self.messages.append({"role": "user", "content": content})
-            answer = await self._turns()
-            self.answers[key] = answer
-            return json.dumps(answer, ensure_ascii=False, sort_keys=True)
+            try:
+                answer = await self._turns()
+            finally:
+                failures, self.state.schema = self.state.schema_failures, None
+            if schema is not None:
+                # what the run keeps of a schema: its digest only
+                self._event({"event": "ask_schema", "schema": sent.get("schema"), "repairs": failures,
+                             "ok": SCHEMA_ERROR not in answer})  # fmt: skip
+            if SCHEMA_ERROR not in answer:
+                self.answers[key] = answer
+            return answer
 
     async def _model_call(self) -> tuple[dict, Any]:
         from unify.common.llm_client import call_kind
@@ -1016,6 +1110,8 @@ def usage_fields(sessions: Any) -> dict:
 __all__ = [
     "ALREADY_GIVEN",
     "BRIEF",
+    "SCHEMA_ERROR",
+    "SCHEMA_VALUE",
     "CALL_KIND",
     "LibrarianCalls",
     "LibrarianSession",
@@ -1027,6 +1123,8 @@ __all__ = [
     "sent_to_librarian",
     "catalogue_line",
     "check_answer",
+    "check_schema",
+    "schema_errors",
     "enabled",
     "finish",
     "grep",
