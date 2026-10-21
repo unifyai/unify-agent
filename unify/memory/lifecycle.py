@@ -480,18 +480,6 @@ def _labels(
         )
 
 
-def aggregate_track(facts: Iterable[EpisodeUse]) -> dict[str, dict]:
-    """Each item's track record per kind of signal (:func:`.trust.track`) over *facts*."""
-    from . import trust
-
-    facts = list(facts)
-    items = sorted({i for f in facts for i in f.items})
-    return {
-        i: trust.track([x for f in facts if i in f.items for x in trust_uses(f, f.items[i])])
-        for i in items
-    }
-
-
 def evidence_basis(item: str, facts: Iterable[EpisodeUse]) -> tuple[str, dict]:
     """What *item*'s status rests on (:data:`.trust.STATUS_BASES`) and how its uses were judged (``{"clean",
     "failed", "neutral"}``), over the episodes of *facts* that used it: its uses' own signals

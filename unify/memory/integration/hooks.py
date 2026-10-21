@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -19,12 +18,6 @@ logger = logging.getLogger(__name__)
 
 _LIBRARY_OBJECTS = ("functions", "guidance")
 _HELP_ONLY = "Read live docs in-sandbox with\n`help(...)`"
-# A traceback line naming a library function's refusal: ``env.<channel>[.<module>...].MemoryInputError``.
-_REFUSAL = re.compile(
-    r"^env\.([A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z_][A-Za-z0-9_]*)*\.MemoryInputError\b",
-    re.MULTILINE,
-)
-
 T = TypeVar("T")
 
 
@@ -381,18 +374,6 @@ def _host_paths(events: Any, workspace: Path) -> Any:
                     record[key] = host(record[key])
         records.append(record)
     return {**events, "records": records}
-
-
-def cell_error(text: str) -> str:
-    """A failed cell's error as the model reads it; under ``UNIFY_MEMORY_SURFACING=catalogue``, when it
-    is a ``MemoryInputError`` raised by a channel the harness holds suspect (drift), with a line saying so.
-
-    The prompt carries no drift flag (its guide is constant); ``memory.catalog()`` and
-    ``memory.describe()`` show the flag, and so does the refusal itself here. Unchanged while off, under
-    ``index``, with no run or no suspect channel; never raises.
-    """
-    run = _run()
-    return text
 
 
 # --- memory during an episode (UNIFY_MEMORY_IN_EPISODE=on; in_episode.py) ---------------------------------------------

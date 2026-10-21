@@ -22,10 +22,8 @@ import ast
 import json
 import re
 from decimal import Decimal, InvalidOperation
-from typing import Any, Callable
+from typing import Any
 
-from .episodes import Action
-from .held_out import _blob_sha, _form
 
 LINT_MIN = 4
 _TEXT_TOKEN = re.compile(r"[A-Za-z0-9_.:/@+-]+")
@@ -39,21 +37,6 @@ def _parsed(v: Any) -> Any:
         except ValueError:
             return v
     return v
-
-
-def input_value(a: Action, form: str | None, blob: Callable[[str], bytes]) -> Any:
-    """A recorded input as the function receives it (an ``env`` input as its call's keywords and response)."""
-    kind = getattr(a, "kind", "tool")
-    if kind == "worktree":
-        sha = _blob_sha(a)
-        try:
-            data = blob(sha) if sha else b""
-        except (OSError, KeyError):
-            data = b""
-        return _parsed(data.decode("utf-8", "replace"))
-    if kind == "tool" and _form(a, form) == "env":
-        return {"kwargs": dict(a.kwargs or {}), "response": _parsed(a.response)}
-    return _parsed(a.response)
 
 
 def _key(v: Any) -> str | None:

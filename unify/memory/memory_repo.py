@@ -195,37 +195,6 @@ def _drop_from_all(source: str, name: str) -> str:
     return "".join(lines[: node.lineno - 1]) + new + "".join(lines[node.end_lineno :])
 
 
-def unlist_function(source: str, name: str) -> str:
-    tree = ast.parse(source)
-    if _all_node(tree) is not None:
-        return _drop_from_all(source, name)
-    public = [
-        n.name
-        for n in tree.body
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and not n.name.startswith("_")
-        and n.name != name
-    ]
-    after = 0
-    for i, n in enumerate(tree.body):
-        is_doc = (
-            i == 0
-            and isinstance(n, ast.Expr)
-            and isinstance(n.value, ast.Constant)
-            and isinstance(n.value.value, str)
-        )
-        is_future = isinstance(n, ast.ImportFrom) and n.module == "__future__"
-        if is_doc or is_future:
-            after = n.end_lineno
-        else:
-            break
-    lines = source.splitlines(keepends=True)
-    new = f"__all__ = {public!r}\n".replace("'", '"')
-    if after and lines[after - 1] and not lines[after - 1].endswith("\n"):
-        lines[after - 1] += "\n"
-    return "".join(lines[:after]) + new + "".join(lines[after:])
-
-
 def remove_function(source: str, name: str) -> str:
     source = _drop_from_all(source, name)
     tree = ast.parse(source)

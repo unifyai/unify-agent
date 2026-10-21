@@ -25,30 +25,22 @@ Nothing here is wired into the actor yet.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Optional
 
 from ...episodes import Action
 from ...redact import Redactor
 
 __all__ = [
-    "BASH_CHANNEL",
     "MAX_ARG_CHARS",
     "MAX_ARGV",
     "MAX_TAIL_BYTES",
-    "ShellCellResult",
-    "action_from_audit",
-    "action_from_cell",
     "bounded_tail",
-    "program_of",
-    "shell_actions",
     "shell_fingerprint",
 ]
 
 MAX_TAIL_BYTES = 8 * 1024  # each of stdout and stderr
 MAX_ARGV = 64  # argv entries kept per row
 MAX_ARG_CHARS = 4096  # characters kept per argv entry (and per bash command)
-BASH_CHANNEL = "bash"
 # Audit event names that denote a started process. The audit adapter emits
 # "subprocess"; the raw sys.audit names are accepted too.
 _SPAWN_EVENTS = frozenset(
@@ -61,43 +53,6 @@ _SPAWN_EVENTS = frozenset(
         "os.spawn",
     },
 )
-_UNKNOWN_PROGRAM = "unknown"
-
-
-@dataclass
-class ShellCellResult:
-    """One bash cell as the harness ran it."""
-
-    cell: int
-    command: str
-    exit_code: Optional[int]
-    stdout: str = ""
-    stderr: str = ""
-    error: Optional[str] = None  # the runner's error text (timeout, session died, ...)
-
-    @classmethod
-    def from_execute_result(
-        cls,
-        cell: int,
-        command: str,
-        out: Mapping[str, Any],
-    ) -> "ShellCellResult":
-        """From the dict ``SessionExecutor.execute(language="bash")`` returns:
-        ``stdout``/``stderr`` (a str or a list of text parts), ``result`` (the
-        exit code, or None) and ``error``."""
-        code = out.get("result")
-        return cls(
-            cell=cell,
-            command=command,
-            exit_code=(
-                code if isinstance(code, int) and not isinstance(code, bool) else None
-            ),
-            stdout=_text_of(out.get("stdout")),
-            stderr=_text_of(out.get("stderr")),
-            error=out.get("error") or None,
-        )
-
-
 def _text_of(parts: Any) -> str:
     if parts is None:
         return ""
@@ -157,41 +112,6 @@ def _arg(a: Any, redactor: Redactor, full: bool = False) -> str:
     return s[:MAX_ARG_CHARS] + f"<truncated: {len(s) - MAX_ARG_CHARS} chars>"
 
 
-def _argv(raw: Any, redactor: Redactor, full: bool = False) -> list[str]:
-    """argv as a list of redacted, capped strings. A string (``os.system``, or
-    Popen with ``shell=True`` before expansion) runs under ``sh -c``. Entries
-    past ``MAX_ARGV`` are dropped and counted in a final marker entry."""
-    if raw is None:
-        return []
-    if isinstance(raw, (str, bytes, os.PathLike)):
-        return ["sh", "-c", _arg(raw, redactor, full)]
-    if isinstance(raw, (list, tuple)):
-        if full:  # UNIFY_MEMORY_LIBRARY: every entry, whole
-            return [_arg(a, redactor, True) for a in raw]
-        out = [_arg(a, redactor) for a in raw[:MAX_ARGV]]
-        if len(raw) > MAX_ARGV:
-            out.append(f"<truncated: {len(raw) - MAX_ARGV} more args>")
-        return out
-    return [_arg(raw, redactor, full)]
-
-
-def program_of(
-    argv: list[str],
-    exe: Any = None,
-    redactor: Optional[Redactor] = None,
-) -> str:
-    """The channel key: the basename of argv[0] (else of ``exe``). The name is
-    redacted in full before the basename is taken, so a secret in the program
-    path never reaches the channel."""
-    red = redactor or Redactor()
-    for cand in (argv[0] if argv else None, exe):
-        if cand:
-            name = os.path.basename(red.text(_decode(cand)).rstrip("/"))
-            if name:
-                return name[:MAX_ARG_CHARS]
-    return _UNKNOWN_PROGRAM
-
-
 def _cell(v: Any) -> int:
     """A cell index; -1 when missing or not an integer."""
     if isinstance(v, bool):
@@ -218,107 +138,6 @@ def _error_text(
     if exit_code not in (None, 0):
         return f"exit status {exit_code}"
     return None
-
-
-def _is_spawn(record: Mapping[str, Any]) -> bool:
-    return record.get("event", "subprocess") in _SPAWN_EVENTS
-
-
-def action_from_audit(
-    record: Mapping[str, Any],
-    redactor: Optional[Redactor] = None,
-    *,
-    tail_bytes: int | None = MAX_TAIL_BYTES,
-    full: bool = False,
-) -> Action:
-    """One process record from the audit adapter as a shell action (*full*: nothing cut; ``UNIFY_MEMORY_LIBRARY``)."""
-    red = redactor or Redactor()
-    args = _argv(record.get("argv", record.get("args")), red, full)
-    channel = program_of(args, record.get("exe") or record.get("executable"), red)
-    exit_code = record.get("exit_code")
-    if isinstance(exit_code, bool) or not isinstance(exit_code, int):
-        exit_code = None
-    captured = exit_code is not None or any(
-        record.get(k) is not None for k in ("stdout", "stderr")
-    )
-    if not captured:
-        return Action(
-            cell=_cell(record.get("cell")),
-            channel=channel,
-            method="run",
-            args=args,
-            kwargs={},
-            response=None,
-            status="unrecorded",
-            kind="shell",
-        )
-    error = record.get("error") or None
-    return Action(
-        cell=_cell(record.get("cell")),
-        channel=channel,
-        method="run",
-        args=args,
-        kwargs={},
-        response={
-            "exit_code": exit_code,
-            "stdout_tail": bounded_tail(record.get("stdout"), red, tail_bytes),
-            "stderr_tail": bounded_tail(record.get("stderr"), red, tail_bytes),
-        },
-        status=_status(exit_code, error),
-        error=_error_text(exit_code, error, red),
-        kind="shell",
-    )
-
-
-def action_from_cell(
-    result: ShellCellResult,
-    redactor: Optional[Redactor] = None,
-    *,
-    tail_bytes: int | None = MAX_TAIL_BYTES,
-    full: bool = False,
-) -> Action:
-    """One bash cell as a shell action (channel ``"bash"``, args ``[command]``; *full*: nothing cut)."""
-    red = redactor or Redactor()
-    return Action(
-        cell=_cell(result.cell),
-        channel=BASH_CHANNEL,
-        method="run",
-        args=[_arg(result.command, red, full)],
-        kwargs={},
-        response={
-            "exit_code": result.exit_code,
-            "stdout_tail": bounded_tail(result.stdout, red, tail_bytes),
-            "stderr_tail": bounded_tail(result.stderr, red, tail_bytes),
-        },
-        status=_status(result.exit_code, result.error),
-        error=_error_text(result.exit_code, result.error, red),
-        kind="shell",
-    )
-
-
-def shell_actions(
-    audit_records: Iterable[Mapping[str, Any]] = (),
-    cell_results: Iterable[ShellCellResult] = (),
-    *,
-    redactor: Optional[Redactor] = None,
-    tail_bytes: int | None = MAX_TAIL_BYTES,
-    full: bool = False,
-) -> list[Action]:
-    """All shell actions of a request, in cell order (stable within a cell:
-    bash cells first, then process records in the order they were audited).
-    Audit records of other events (file opens, listings) are skipped."""
-    red = redactor or Redactor()
-    if full:  # UNIFY_MEMORY_LIBRARY: whole arguments and whole outputs
-        tail_bytes = None
-    rows = [
-        action_from_cell(r, red, tail_bytes=tail_bytes, full=full) for r in cell_results
-    ]
-    rows += [
-        action_from_audit(r, red, tail_bytes=tail_bytes, full=full)
-        for r in audit_records
-        if _is_spawn(r)
-    ]
-    return sorted(rows, key=lambda a: a.cell)
 
 
 # --- fingerprint -------------------------------------------------------------

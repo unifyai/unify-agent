@@ -30,7 +30,6 @@ from .item_states import (
     CURATE_RULE,
     LEVELS,
     ON_TRIAL,
-    RETIRED,
     STATUSES,
     level_from_stored,
     level_of_record,
@@ -258,15 +257,6 @@ def level_reasons_of(record: Mapping | None) -> list[str]:
     """The findings that set an item's evidence level, as ``memory.show`` prints them (strings only)."""
     reasons = record.get("level_reasons") if isinstance(record, Mapping) else None
     return [str(r) for r in reasons] if isinstance(reasons, list) else []
-
-
-def is_outcome_retirement(record: Mapping | None) -> bool:
-    """Whether *record* is retired by its outcomes (errors, negative signals, failure-only provenance, or a
-    dependency so retired), not by the curator (rule ``curate``)."""
-    if not isinstance(record, Mapping):
-        return False
-    rec = record_from_stored(dict(record))
-    return rec.get("status") == RETIRED and rec.get("status_rule") != CURATE_RULE
 
 
 def episodes_of(records: Mapping[str, dict]) -> Callable[[str], int | None]:

@@ -284,18 +284,12 @@ async def who(ctx: Any, args: dict) -> Any:
     return _reply(text)
 
 
-def reply_to_of(view: RunRecordView, target: str) -> Optional[int]:
-    """The entry a reply from the view's agent to *target* answers: the latest *target* addressed to it."""
-    return view.last_from(target)
-
-
 __all__ = [
     "MESSAGE_TOOLS",
     "NAMES",
     "messages",
     "messages_text",
     "render",
-    "reply_to_of",
     "row_of",
     "send",
     "send_text",

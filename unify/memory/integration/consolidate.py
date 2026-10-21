@@ -52,7 +52,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from .. import curate as _curate
 from .. import library_checks
 from ..blobs import BlobStore
 from ..episodes import Action, CostRow, Episode, episode_dir, load_episode
@@ -61,10 +60,9 @@ from ..gate import CHECKS as GATE_CHECKS, Gate
 from ..gitio import Repo
 from ..index import build_index, estimate_tokens
 from ..memory_repo import items as memory_items
-from ..qa import QAConfig
 from ..reconcile import unavailable as unavailable_reconcile
 from ..redact import Redactor, redact_error
-from ..signals import Signal, SignalMasked, post_signal
+from ..signals import Signal
 from .. import similar as _similar
 from ..snapshot import listing, materialise
 from ..writer_pass import (
@@ -81,7 +79,7 @@ from ..writer_pass import (
     otel_on,
     unillm_turn,
 )
-from ..trigger import EXPERIENCE_BUDGET, USD_PER_TOKEN, PassRequest, Trigger
+from ..trigger import PassRequest
 from .cost import UNKNOWN, money, recording_turn
 from .paths import Paths
 from .switch import (
@@ -1046,12 +1044,7 @@ async def run_attention_pass(
         stores.evidence,
         stores.blobs,
         action_lookup=lookup.action,
-        soft_budget=True,
         library_mode=library_checks.config_for(stores, lookup),
-        # every quality finding a label on its item, and only statically pure items run (:mod:`..gate_policy`)
-        labels=True,
-        labels_only=True,
-        recorded_replays=False,
         # UNIFY_MEMORY=in_episode: an item may cite a recorded segment of an open episode as its source
         **({"segments_dir": str(paths.state_dir)} if in_episode(settings) else {}),
     )

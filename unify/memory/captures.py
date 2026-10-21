@@ -91,8 +91,6 @@ SAVED_FILE = "saved.json"
 #: recognition record (:mod:`.recognition`) and when it was tested. The harness's own: never copied to a box. The item
 #: records take the landed procedure's signature, ``applies`` and recognition from it (:func:`landed_items`).
 LANDED_FILE = "landed.json"
-#: The files of one capture, as the store, the pool and the actor's snapshot hold them.
-CAPTURE_FILES = (PROCEDURE_FILE, SIGNATURE_FILE, RECORD_FILE, BROKE_FILE)
 #: The actor's snapshot of the store, under its library copy.
 EXPORT_DIR = ".memory/captures"
 #: In the snapshot, beside the capture folders, with ``UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES=on``: the
@@ -845,11 +843,6 @@ def verdict(row: Any) -> bool:
     return isinstance(row, Mapping) and row.get("reproduces") == REPRODUCES and row.get("outcome") in ("positive", "none")
 
 
-def verdict_episodes(store: Path | str) -> set[str]:
-    """The episodes whose capture step's row is a verdict (:func:`verdict`)."""
-    return {eid for eid, row in episode_rows(store).items() if verdict(row)}
-
-
 def stored(row: Any) -> bool:
     """Whether a capture step's row stored a capture (it names one), whatever its outcome or whether it reproduced
     its value: under ``UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE=on`` each such row makes a writer pass due at once
@@ -868,22 +861,6 @@ def episode_row(store: Path | str, eid: str) -> dict | None:
     if not _EPISODE_ID.fullmatch(eid or ""):
         return None
     return episode_rows(store).get(eid)
-
-
-def record_use(store: Path | str, cid: str, use: trust.Use) -> dict | None:
-    """Add *use* to capture *cid*'s record and recompute its trust; returns the record, or None when there is no such
-    capture. A use of the same episode and the same kind replaces nothing: each call is one use."""
-    root = Path(store)
-    if not _ID.fullmatch(cid or ""):
-        return None
-    with _locked(root):
-        rec = _read_json(root / cid / RECORD_FILE)
-        if not isinstance(rec, dict):
-            return None
-        rec.setdefault("uses", []).append(use.row())
-        refresh(rec)
-        _write(root / cid / RECORD_FILE, _json(rec))
-    return rec
 
 
 # --- the capture step -----------------------------------------------------------------------------------------

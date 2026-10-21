@@ -30,8 +30,6 @@ import os
 import re
 import secrets
 import subprocess
-import sys
-import time
 from collections.abc import Callable, Mapping
 from decimal import Decimal
 from pathlib import Path
@@ -67,9 +65,6 @@ _ERROR_CHARS = 2000
 #: The most library failures a request's use record lists (``library_failures``); later ones are
 #: counted in ``library_failures_dropped``.
 MAX_LIBRARY_FAILURES = 100
-#: What a library failure is: a library item's call, one of the package's helpers, or a cell whose error was a
-#: failed import of the package or a missing ``memory`` name.
-LIBRARY_FAILURE_KINDS = ("item", "get", "items", "index", "show", "find", "match", "run", "import", "name")
 #: The package's calls whose raised errors are listed: the lookups, the aliases, ``Item.fits`` (``match``), and a
 #: function item's call refused before it ran (``run``: a note called); a tracked call reports its item's own
 #: failure through the item's ``memory.call`` event instead.
@@ -1743,7 +1738,6 @@ class RequestRun:
 
     def _reserve_fork(self, progress: Callable[[str], None]) -> Any:
         """The episode-end fork's staging dir and lock; never raises."""
-        from unify.settings import SETTINGS
 
         try:
             from . import fork as _fork
@@ -1777,7 +1771,6 @@ class RequestRun:
         parts: str | None = None,
     ) -> Any:
         """The episode-end fork; never raises."""
-        from unify.settings import SETTINGS
 
         try:
             from . import fork as _fork
@@ -1798,8 +1791,9 @@ class RequestRun:
 
     def partial_episode(self) -> tuple[Any, Any]:
         """The episode as it stands now (``UNIFY_MEMORY=in_episode``: a checkpoint's segment record): its transcript so
-        far, folded as at the end (its cells, messages and replies, and its dialogue actions), with no work-tree change (the capture of the work tree ends only with the episode). Returns
-        ``(episode, redactor)``; nothing is written."""
+        far, folded as at the end (its cells, messages and replies, and its dialogue actions), with no work-tree change
+        (the capture of the work tree ends only with the episode). Returns ``(episode, redactor)``; nothing is
+        written."""
         from unify import transcripts
 
         from . import trajectory
@@ -1814,9 +1808,9 @@ class RequestRun:
         from unify import transcripts
 
         from ..episodes import EpisodeWriter
-        from . import consolidate, trajectory
+        from . import trajectory
 
-        stores, paths = self.stores, self.paths
+        stores = self.stores
         lines = trajectory.read_jsonl(
             transcripts.transcripts_dir() / f"{self.episode_id}.jsonl",
         )

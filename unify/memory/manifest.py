@@ -148,11 +148,6 @@ def describe_semantic_types() -> str:
     return ", ".join(out)
 
 
-def describe_input_kinds() -> str:
-    """The fixed list of input forms with what each passes, from INPUT_KINDS (for the consolidator's brief)."""
-    return ", ".join(f"{name} ({what})" for name, what in INPUT_KINDS.items())
-
-
 # Job functions (end-to-end code) are not expected in v0 and have no admitted location.
 KINDS = ("env_function", "env_note", "workflow")
 TESTKIT = "unify_memory_testkit.py"

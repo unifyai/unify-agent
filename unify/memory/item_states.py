@@ -34,8 +34,6 @@ REPRODUCES_ITS_CASE = "reproduces-its-case"
 CONFIRMED_BY_OUTCOMES = "confirmed-by-outcomes"
 #: lowest first
 LEVELS = (UNCHECKED, REPRODUCES_ITS_CASE, CONFIRMED_BY_OUTCOMES)
-#: the levels the gate gives; the third comes from outcomes only
-GATE_LEVELS = (UNCHECKED, REPRODUCES_ITS_CASE)
 #: the level of a stored record that has none: the lowest, so a missing level fails closed (:func:`level_of_record`
 #: gives an older record ``reproduces-its-case`` only where its verification shows its examples ran)
 STORED_DEFAULT_LEVEL = UNCHECKED

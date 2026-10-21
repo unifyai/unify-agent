@@ -625,20 +625,6 @@ def profile(agent: str) -> dict:
     raise KeyError(f"no agent profile {agent!r}")
 
 
-def tool_json(agent: str) -> list[dict]:
-    """*agent*'s model-API tools: ``execute_code`` alone, the same bytes for every agent."""
-    from unify.common import tool_registry
-
-    return tool_registry.json_tools(agent)
-
-
-def in_code_names(agent: str, flags: frozenset[str] = frozenset()) -> tuple[str, ...]:
-    """The tools *agent* may call from its cells with the configuration *flags* on (the host's allow-list)."""
-    from unify.common import tool_registry
-
-    return tool_registry.allow_list(agent, flags)
-
-
 # --- the opening a memory agent reads first when tools are called from code ---
 
 _MODE_TEXT = {"ro": "read-only", "rw": "writable"}

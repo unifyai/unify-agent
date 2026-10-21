@@ -101,10 +101,6 @@ def inputs_file(item: str) -> str:
     return f"{package_dir(item)}/tests/data/{module.rsplit('.', 1)[1]}.{name}{INPUTS_SUFFIX}"
 
 
-def is_replay_file(path: str) -> bool:
-    return str(path).endswith(REPLAY_SUFFIX)
-
-
 def replay_source(source: object) -> tuple[int, int, int] | None:
     """``replay:<cell>:<a>-<b>`` as ``(cell, a, b)``; None for any other source."""
     m = _REPLAY_SOURCE.match(str(source))
@@ -704,26 +700,6 @@ def _read_plain(path, limit: int | None = None) -> bytes | None:
         return b"".join(chunks)
     finally:
         os.close(fd)
-
-
-def _no_link_on_the_way(box, rel: str) -> bool:
-    """No directory on the way to *rel* in *box* is a link (checked from *box*'s descriptor, never followed)."""
-    try:
-        parts = _safe.rel_parts(rel)
-        root = os.open(box, _safe.DIR_FLAGS)
-    except OSError:
-        return False
-    try:
-        fd = _safe.walk_dirs(root, parts[:-1])
-    except _safe.Missing:
-        return True
-    except OSError:
-        return False
-    else:
-        os.close(fd)
-        return True
-    finally:
-        os.close(root)
 
 
 def _read_in_box(box, rel: str, limit: int | None = None) -> bytes | None:

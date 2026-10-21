@@ -193,7 +193,6 @@ def repair_message(
         )
         or "none named; the refusal is pass-wide"
     )
-    from unify.common import in_code_switch
 
     # with tools called from code, the two calls are named as the writer makes them
     read, finish = (

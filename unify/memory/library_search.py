@@ -34,7 +34,6 @@ LIBRARY_ROOT = "/memory"
 PAGE_BYTES = 8000
 #: Why a ranking is lexical.
 NOT_CONFIGURED = "no embedding backend is configured"
-PAPER = "the paper profile makes no embedding calls"
 OTHER_MODEL = "the index was built with another embedding model"
 _WORD = re.compile(r"[^\W_]+")
 _ROUND = 6
@@ -357,13 +356,11 @@ __all__ = [
     "LEXICAL",
     "NOT_CONFIGURED",
     "OTHER_MODEL",
-    "PAPER",
     "backend",
     "index_bytes",
     "index_data",
     "index_files",
     "lexical_scores",
-    "paper_profile",
     "ranking",
     "read_index",
     "rows",

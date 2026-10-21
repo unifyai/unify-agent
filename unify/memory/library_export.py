@@ -79,10 +79,6 @@ SavedAgainst = Callable[[str], "dict | None"]
 SummaryOf = Callable[[str], "str | None"]
 #: Text with its printed identifiers removed (the one rule, ``signatures.strip_identifiers``).
 Strip = Callable[[str], str]
-#: What a captured attempt was saved against besides its signature, beside it in the actor's copy.
-CAPTURE_SAVED_FILE = "saved.json"
-
-
 def default_strip() -> Strip:
     """The one identifier rule: ``signatures.strip_identifiers``, owned by the capture store. Every text ``match``
     hands its matcher (a docstring, a summary section, what broke) is stripped with it here, on the harness side;
@@ -148,39 +144,6 @@ def _docstring_of(source: str | None, name: str = "run") -> str:
             if doc:
                 return doc
     return ast.get_docstring(tree) or ""
-
-
-def capture_saved(capture_dir: Path, summary: str | None, strip: Strip | None = None) -> dict:
-    """What a captured attempt was saved against besides its signature, as ``memory.match`` reads it from
-    ``<copy>/.memory/captures/<id>/saved.json``: ``docstring`` (its ``procedure.py``'s ``run``, else module,
-    docstring), ``asked`` and ``approach`` (its episode's ``summary.md``, *summary*) and ``broke`` (the lines of its
-    ``broke.md``, ``none`` left out), every text with identifiers removed."""
-    strip = strip or default_strip()
-    d = Path(capture_dir)
-
-    def read(name: str) -> str | None:
-        try:
-            return (d / name).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            return None
-
-    sections = summary_sections(summary, strip) if summary else {"asked": "", "approach": ""}
-    broke = [
-        strip(line.strip().lstrip("-* ").strip())
-        for line in (read("broke.md") or "").splitlines()
-        if line.strip() and line.strip().lower() != "none"
-    ]
-    return {
-        "docstring": strip(_docstring_of(read("procedure.py"))),
-        "asked": sections["asked"],
-        "approach": sections["approach"],
-        "broke": broke,
-    }
-
-
-def capture_saved_bytes(capture_dir: Path, summary: str | None, strip: Strip | None = None) -> bytes:
-    """:func:`capture_saved` as the bytes of ``saved.json`` (sorted keys, one trailing newline)."""
-    return _json_bytes(capture_saved(capture_dir, summary, strip))
 
 
 def matcher_source() -> bytes:

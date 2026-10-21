@@ -31,8 +31,6 @@ from typing import Any, Iterable
 
 from .fixed_answer import is_literal
 
-#: The functions the capture contract names, in its order (the address covers the whole module).
-CONTRACT_FUNCTIONS = ("read_input", "run", "applies", "holds")
 SHAPE_VERSION = 1
 
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)

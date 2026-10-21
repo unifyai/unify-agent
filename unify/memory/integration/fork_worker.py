@@ -545,22 +545,6 @@ def message_text(message: dict) -> str:
     )
 
 
-def message_blocks(message: dict, offset: int = 0) -> list[dict]:
-    """Every block in *message*'s text and in every tool call's arguments (nothing is executed), with ``source``
-    ``text`` or ``tool_call:<name>``; indexes continue from *offset*. :func:`settle` applies replacement across
-    texts."""
-    out: list[dict] = []
-    text = message_text(message)
-    if text:
-        out += _decide(_scan(text), "text", offset)
-    for call in message.get("tool_calls") or []:
-        fn = (call or {}).get("function") or {}
-        name = str(fn.get("name") or "?")[:64]
-        for s in _strings(fn.get("arguments")):
-            out += _decide(_scan(s), f"tool_call:{name}", offset + len(out))
-    return out
-
-
 def reply_text(turns: list[dict]) -> str:
     """The fork's reply text: every assistant turn's text joined by ``"\\n"``, in order."""
     return "\n".join(message_text(t) for t in turns)

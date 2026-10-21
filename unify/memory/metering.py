@@ -45,8 +45,6 @@ METERING_DIR = "metering"
 ENTRIES_FILE = "entries.jsonl"
 ITEMS_FILE = "items.jsonl"
 SUMMARY_FILE = "summary.json"
-#: The basis of an entry's share.
-BASES = ("read_equal_split", "handed_not_read")
 #: Shares are cut to this quantum before the last one takes the remainder (the split stays exact).
 QUANTUM = Decimal("0.000000000001")
 #: What reports say of the writer's place, as the published harnesses' background memory runs.
@@ -773,7 +771,6 @@ def render_report(report: Mapping[str, Any]) -> str:
 
 
 __all__ = [
-    "BASES",
     "LaneTotal",
     "PAPER_NOTE",
     "entries_view",

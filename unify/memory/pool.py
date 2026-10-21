@@ -1158,14 +1158,6 @@ def withdrawn_captures(repo) -> dict[str, dict]:
     return out
 
 
-def from_captures(store) -> list[Entry]:
-    """Every capture of *store* (:mod:`.captures`) as a pool entry (:func:`from_capture`), in capture-id order; [] for
-    a missing or empty store."""
-    from .captures import load
-
-    return [from_capture(cid, doc) for cid, doc in sorted(load(store).items())]
-
-
 def failure(
     item: str,
     episode: str,

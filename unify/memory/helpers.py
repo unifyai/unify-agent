@@ -73,9 +73,8 @@ from . import safe_paths as _safe
 from . import views as _views
 from . import writer_tools as _wt
 from .integration.fork_worker import QUOTA_BYTES, QUOTA_FILES, allowed
-from .library_prompts import CANDIDATE_CONTRACT, CANDIDATE_CONTRACT_IN_CODE
+from .library_prompts import CANDIDATE_CONTRACT_IN_CODE
 from . import sandbox_run as _sandbox
-from .sandbox_run import PRLIMIT, PYTHON, run_confined
 from .tool_spec import GENERAL, REFUSED, Refusal, ToolSpec, form_of, refusal
 
 #: The directory under the run's state dir that holds every helper's output (``<pass>/<name>/``).

@@ -40,7 +40,6 @@ import os
 import re
 import shutil
 import stat
-import sys
 import tempfile
 import threading
 import time
@@ -56,12 +55,8 @@ from .blobs import BLOB_ID, BlobStore
 from .episodes import Episode, env_channel
 from .evidence import EvidenceStore
 from .gate import Gate, GateResult, ParentSnapshot
-from .catalogue import readme_for_writer
-from .docstrings import describe_standard as describe_docstring_standard
 from .gitio import GitError, Repo
-from .index import build_index
 from .memory_repo import items as memory_items
-from . import curate as _curate
 from . import messaging as _messaging
 from . import qa as _qa
 from . import repair as _repair
@@ -74,7 +69,6 @@ from .qa_static import cuts as _cuts
 from .redact import Redactor, redact_error
 from . import sandbox_run as _sandbox
 from .sandbox_run import PRLIMIT, PYTHON, run_confined
-from .snapshot import item_bodies
 from .trigger import PassRequest
 
 # Write bounds on /memory, checked after every cell and before the commit; a breach refuses the pass.
@@ -193,7 +187,6 @@ async def compact_by_summary(
     loop's own message)."""
     from unify.common._async_tool import cache_discipline as _cd
     from unify.common._async_tool import context_compression as _cc
-    from unify.common._async_tool.messages import loop_user_notice
 
     request = [*messages, {"role": "user", "content": _cd.compression_fork_instruction()}]
     reply, usd = await turn(request, tools)
@@ -2127,7 +2120,6 @@ class WriterPass:
         """The library-use table over the pass's requests (:func:`.usage.usage_table`) for the functions
         of memory ``main`` at *tree*: harness counts only, nothing of a checker.
         """
-        from .memory_repo import items as memory_items
         from .usage import usage_table
 
         try:
@@ -2230,7 +2222,6 @@ class WriterPass:
             )
             + "\n",
         )
-        from unify.common import in_code_switch
 
         # the reference tables the brief points to instead of carrying them
         from .library_prompts import input_pointer_files
@@ -4149,25 +4140,16 @@ class WriterPass:
             outputs = Path(tmp) / "outputs"
             outputs.mkdir()
             roots = {"/inputs": inputs, "/memory": box, "/outputs": outputs}
-            channels = _exported_channels(inputs / "episodes")
-            in_code_allow: tuple[str, ...] = ()
             from . import tool_handlers as _th
 
             from unify.common import tool_registry as _registry
 
             from .library_prompts import tool_flags
 
-            # the registry's allow-list for the agent, with the flags its model-API tools were chosen by
+            # the registry's allow-list for the agent, with the pass's configuration flags
             in_code_allow = _registry.allow_list(
                 "writer",
-                tool_flags(
-                    pool=True,
-                    helper=self.helper_turn is not None,
-                    similar=bool(self.cfg.similar_index),
-                    edit=False,
-                    attention=self._attention is not None,
-                    tests=self._tests is not None,
-                ),
+                tool_flags(helper=self.helper_turn is not None, similar=bool(self.cfg.similar_index)),
             )
             tools = _th.in_code_json_tools(
                 "writer",

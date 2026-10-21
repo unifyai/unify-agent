@@ -456,25 +456,3 @@ def as_catalog(d: Docstring) -> dict:
     return out
 
 
-def describe_standard() -> str:
-    """The standard as the writer's brief states it, from the constants above."""
-    required = ", ".join(f"`{n}:`" for n in REQUIRED_SECTIONS)
-    optional = ", ".join(f"`{n}:`" for n in OPTIONAL_SECTIONS)
-    return (
-        f"the one-line summary, then the sections {required}, each a line `<Name>:` without "
-        "indentation followed by indented text. Args: has one `name: description` line per parameter, "
-        "and the first parameter's line names its input form. Raises: names "
-        f"{ERROR_NAME} and when it is raised. Example: holds `>>>` doctest examples, none skipped, "
-        "that read a recorded input copied as a test fixture under env/<channel>/tests/ (named by its "
-        "path as a string) and at least one of which is a call of the function itself, made once, on "
-        "that fixture (its path, or a name bound to it, in the arguments) whose value, or an item or "
-        "attribute of it, is the shown output (with a letter or digit, not only `...`); the fixture must "
-        "have the shape of an input the function covers. "
-        "The gate runs every example as a doctest, read-only, with /memory as the working directory, "
-        "the module's names in scope and PYTHONHASHSEED=0; a failing example, or one that never calls "
-        "the function, refuses it. Check yours the same way: `python -c 'import doctest, "
-        "env.<channel> as m; doctest.run_docstring_examples(m.<function>, vars(m))'` in /memory "
-        "prints nothing when they pass. Optional sections: "
-        f"{optional}. Each `raise {ERROR_NAME}(...)` passes a message of at least "
-        f"{MIN_REFUSAL_CHARS} characters saying what was expected and what to do instead"
-    )

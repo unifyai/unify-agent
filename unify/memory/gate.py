@@ -214,7 +214,7 @@ from typing import Any, Callable
 from . import docstrings, layout
 from .admission import cover_problem, is_rejection
 from .blobs import BlobStore
-from .catalogue import body_digest, catalogue_tokens, reserved
+from .catalogue import body_digest, reserved
 from .episodes import Action, env_channel
 from .evidence import EvidenceStore
 from .gitio import GitError, Repo
@@ -228,10 +228,8 @@ from .held_out import (
     _form,
     _unfit_reason,
     output_cases,
-    plan,
     pool_actions,
     run_outputs,
-    run_plan,
     seen_actions,
 )
 from . import reduction
@@ -248,7 +246,7 @@ from .manifest import (
     parse_manifest,
     unsafe_path,
 )
-from .index import IndexOverBudget, build_index, estimate_tokens
+from .index import build_index, estimate_tokens
 from .memory_helper import compare, file_shape, same_shape, value_shape
 from .shape_rows import descriptors, shapes_at, snapshot_rows
 from .memory_repo import ItemsReport, items
@@ -263,7 +261,6 @@ from .snapshot import (
     duplicate_public_defs,
     env_references,
     library_references,
-    item_bodies,
     listing,
     materialise,
     module_skeleton,

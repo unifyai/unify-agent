@@ -45,7 +45,6 @@ __all__ = [
     "RECORD_FILES",
     "QUOTA_BYTES",
     "QUOTA_FILES",
-    "STAGING_DIR",
     "STATUS_FILES",
     "StagingView",
     "export",
@@ -54,7 +53,6 @@ __all__ = [
     "write_files",
 ]
 
-STAGING_DIR = "memory-staging"
 #: The batch-map row's status prefix when the reader did not finish: nothing of the episode's staging is handed on.
 NO_OUTPUT = "no reader output"
 #: Why a file an unfinished reader left is not handed on.

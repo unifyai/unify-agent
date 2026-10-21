@@ -140,15 +140,6 @@ GUIDE_LIBRARIAN = (
 # points to. The Tools section is rendered from the tool spec registry (:func:`.tool_spec.tools_section`), so it
 # names exactly the tools the role gets.
 
-#: What a drafting agent (the episode-end fork, a helper) is told about its drafts: draft what it saw; fitting the
-#: drafts to the shared library and generalising them is the writer's work.
-CANDIDATE_CONTRACT = (
-    "Draft from what you saw: code that worked, the cases it ran on (values as they were recorded), and notes. "
-    "Where you can, write a reusable function or lesson in general form, with the values that vary as "
-    "parameters. Where your work is specific to this case, still write it down as it is: the library writer, who "
-    "alone commits to the shared library, builds from these drafts and may generalise them with other episodes."
-)
-
 #: The format of ``summary.md``, the episode-end fork's account of its episode, as the fork's instruction states it.
 #: The writer reads each summary first and opens the episode's record only where it needs more; each line's pointer
 #: (a part name and a quote copied from that part) is checked host-side, as a measure only (:mod:`.summaries`).
@@ -360,11 +351,6 @@ _G5_WRITE = (
     "a store pass never ends with fewer items, and every fixture a function's calls ran on is still used by a "
     "function's calls"
 )
-_G5_CURATE = (
-    "the fixtures a deleted function's calls ran on are used by a remaining function's calls, and each alias and "
-    "retirement names an item"
-)
-
 #: The "when to use" section every stored function and note carries and the README every folder holds, as the writer
 #: and the curator are told them (:mod:`.when_to_use`: the gate checks the shape, never the words).
 WHEN_TO_USE_TEXT = (
@@ -653,13 +639,6 @@ _GATE_IN_CODE = (
     + _check_names_in_code(
         _G5_WRITE, "at least <<mutation_min_pct>>% of small mutations of each changed function"
     )
-)
-
-_CURATE_GATE_IN_CODE = (
-    "# The gate\n"
-    "After `tools.finish(summary)` a deterministic gate checks the candidate (G1 to G6 below); an item that breaks "
-    "a rule is refused with the items that import it, and the rest can land. "
-    + _check_names_in_code(_G5_CURATE, "enough small mutations")
 )
 
 _LIMITS_IN_CODE = (

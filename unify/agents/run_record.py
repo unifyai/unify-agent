@@ -232,10 +232,6 @@ def deliveries_path(home: Path | str) -> Path:
     return agents_dir(home) / CURSORS_FILE
 
 
-def roster_path(home: Path | str) -> Path:
-    return agents_dir(home) / ROSTER_FILE
-
-
 # --- a role's state (rev 2: INSTANCE_ROLES) --------------------------------------------------------------------------
 
 
@@ -409,14 +405,6 @@ def read_deliveries(home: Path | str) -> list[dict]:
         for r in _whole_lines(deliveries_path(home))[0]
         if isinstance(r.get("agent"), str)
     ]
-
-
-def read_roster(home: Path | str) -> dict:
-    """``roster.json`` with each agent's effective state: an agent whose process is gone is ``ended``."""
-    doc = _load_roster(roster_path(home))
-    for row in doc["agents"]:
-        row["state"] = effective_state(row)
-    return doc
 
 
 # --- process identity -------------------------------------------------------------------------------------------
@@ -1828,9 +1816,7 @@ __all__ = [
     "prompt_lines",
     "read_deliveries",
     "read_entries",
-    "read_roster",
     "record_path",
     "refs_in",
-    "roster_path",
     "row_of",
 ]

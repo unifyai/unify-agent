@@ -33,7 +33,6 @@ VERSION = 1
 FORMS = ("function", "note", "checklist")
 DECLARED = ("none", "reads", "writes", "unknown")
 TEST_OUTCOMES = ("as_stated", "not_as_stated", "error", "timeout", "replay_miss", "not_run")
-FAILURE_WHYS = ("error", "holds_false", "contrary_signal", "late_contrary", "actor_reported")
 STATUS_BASES = ("verdicts", "end_outcomes", "implicit", "no_outcome_signals")
 
 

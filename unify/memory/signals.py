@@ -73,7 +73,6 @@ class Signal:
 #: When a signal arrived relative to its episode's end.
 IN_EPISODE = "in_episode"
 AFTER_EPISODE = "after_episode"
-TIMINGS = (IN_EPISODE, AFTER_EPISODE)
 #: What a signal may say it bears on: an action of its episode, a library item or a captured procedure.
 ABOUT = re.compile(r"action:[0-9]{1,9}|item:[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,199}|capture:[0-9a-f]{16}")
 #: The fields only an inferred-regime signal carries; a signal without them is noted as before.

@@ -53,12 +53,8 @@ from .request_value import REQUEST_CLASS, request_data
 from .sandbox_run import PYTHON, SandboxResult, run_confined
 
 Form = Literal["value", "state", "state_env"]
-ValueMatch = Literal["matched", "differed", "not_applicable", "unknown"]
-CallsMode = Literal["value", "replay", "not_run"]
 Outcome = Literal["positive", "contrary", "none"]
 FORMS: tuple[str, ...] = get_args(Form)
-VALUE_MATCHES: tuple[str, ...] = get_args(ValueMatch)
-CALL_MODES: tuple[str, ...] = get_args(CallsMode)
 OUTCOMES: tuple[str, ...] = get_args(Outcome)
 #: The record version a trace capture stamps (``record.json`` and its ``captures-events.jsonl`` row).
 VERSION = 2

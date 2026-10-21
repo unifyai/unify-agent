@@ -123,24 +123,6 @@ def log_arrival(state_dir: Path | str, sig: Signal, *, regime_before: str | None
         os.close(fd)
 
 
-def read_arrivals(state_dir: Path | str) -> list[dict]:
-    """Every arrival row, oldest first; a torn or malformed line is skipped."""
-    path = Path(state_dir) / ARRIVALS_FILE
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return []
-    out = []
-    for line in text.splitlines():
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(row, dict) and row.get("v") == 1:
-            out.append(row)
-    return out
-
-
 def late_entry(raw_label: Any, episode: Any, about: Any, *, current: str, exists: Any) -> tuple[dict | None, str]:
     """A late checker line checked: ``(entry, "")`` with ``{"episode", "label", "about", "at"}``, or ``(None, why)``.
     *episode* must be another recorded episode's id (*exists* tells), *about* empty or one ref of
@@ -227,6 +209,5 @@ __all__ = [
     "log_arrival",
     "now",
     "post_late",
-    "read_arrivals",
     "timed",
 ]

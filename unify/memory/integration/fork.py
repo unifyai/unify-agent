@@ -64,7 +64,6 @@ from typing import Any, Callable
 from ..library_prompts import CANDIDATE_CONTRACT_IN_CODE, SUMMARY_FORMAT
 from .fork_worker import (
     FORK_JSON,
-    HTTP_TIMEOUT_S,
     LOCK_FILE,
     QUOTA_BYTES,
     QUOTA_FILES,
@@ -230,8 +229,6 @@ SEGMENT_INSTRUCTION = (
 )
 WORKER_FILE = Path(__file__).resolve().parent / "fork_worker.py"
 BOX_WORKER = "/s/fork_worker.py"
-#: The live audit's mark for the fork worker in a process's command line (runner token audits).
-FORK_MARK = BOX_WORKER
 STAGING_IN_BOX = "/staging"
 #: Operational guard on the CLI's wait for the fork (run safety, reported; not a design limit).
 WAIT_GUARD_S = 1800.0
@@ -808,8 +805,6 @@ def start(
         return None
 
 
-#: The fork's relay to the run record.
-RELAY_MODULE = "unify.agents.fork_relay"
 #: The relay's start file: run by path with ``-I`` (no ``PYTHONPATH``, no current folder on the path), it never runs
 #: the ``unify`` package's ``__init__`` and refuses every module that reads provider settings or keys.
 RELAY_BOOT = Path(__file__).resolve().parents[2] / "agents" / "relay_boot.py"

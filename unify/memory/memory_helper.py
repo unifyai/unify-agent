@@ -53,7 +53,6 @@ import os
 from typing import Any, NamedTuple
 
 CATALOG_FILE = ".memory/catalog.json"
-README_FILE = "README.md"
 SHAPES_FILE = ".memory/shapes.py"
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _MAX_PATH_CHARS = 4096

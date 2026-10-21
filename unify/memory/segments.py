@@ -30,11 +30,6 @@ _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,120}\.s[0-9]{1,6}\Z")
 TRIMMED = {"__trimmed__": "this response was left out of the segment's record (over its bound)"}
 
 
-def segment_name(episode: str, n: int) -> str:
-    """A segment's id and staging name."""
-    return f"{episode}.s{int(n)}"
-
-
 def split_staging_name(name: str) -> tuple[str, int | None]:
     """``(episode, segment)`` of a staging dir name (``<episode>`` or ``<episode>.s<n>``)."""
     head, sep, tail = name.rpartition(".s")

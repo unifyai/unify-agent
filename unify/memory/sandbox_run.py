@@ -21,14 +21,12 @@ import posixpath
 import pwd
 import select
 import shutil
-import signal
 import stat
 import struct
 import subprocess
 import sys
 import tempfile
 import threading
-import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path

@@ -232,16 +232,6 @@ def read_evidence(copy: Path) -> dict | None:
     return rows if isinstance(rows, dict) else None
 
 
-def catalogue_ids(catalogue: str) -> list[str]:
-    """Every item id the catalogue holds (its ``### <id>`` headings), in the catalogue's order."""
-    out: list[str] = []
-    for line in catalogue.splitlines():
-        m = _HEADING.match(line)
-        if m and m.group(1) not in out:
-            out.append(m.group(1))
-    return out
-
-
 #: The captured procedures of a library copy, as its export holds them.
 _CAPTURES_DIR = ".memory/captures"
 _CAPTURE_DIR = re.compile(r"[0-9a-f]{16}")

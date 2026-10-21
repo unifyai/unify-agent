@@ -591,11 +591,6 @@ def _failed_unpriced(doc: dict) -> int:
         return 0
 
 
-def lost_calls(folder: Path | str) -> int:
-    """The calls a killed run of a pass left ``pending``: billed and lost, never priced."""
-    return sum(1 for _lane, doc in _turn_files(folder) if doc.get("state") == "pending")
-
-
 def turns_spend(folder: Path | str, worst: Decimal, *, since: Optional[str] = None) -> Decimal:
     """:func:`turns_cost` over both lanes, each unpriced or lost call at *worst* (one call's worst case)."""
     return sum((k + Decimal(n) * worst for k, n in turns_cost(folder, since=since).values()), Decimal(0))

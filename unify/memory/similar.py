@@ -223,43 +223,6 @@ def record_episode(
     )
 
 
-def index_missing(
-    root: Path,
-    load: Callable[[str], Any],
-    episodes: Iterable[str],
-    *,
-    time_limit_s: float = INDEX_TIME_LIMIT_S,
-    clock: Callable[[], float] = time.monotonic,
-) -> dict:
-    """Index the *episodes* that have no complete entry (episodes recorded before the index existed), oldest first,
-    until *time_limit_s* passes in all; counts of what was done and what is left."""
-    end = clock() + time_limit_s
-    done, left, failed = 0, 0, 0
-    for eid in episodes:
-        eid = str(eid)
-        have = read_entry(root, eid)
-        if have is not None and have.get("complete"):
-            continue
-        remaining = end - clock()
-        if remaining <= 0:
-            left += 1
-            continue
-        try:
-            index_episode(
-                root,
-                eid,
-                load(eid).cells,
-                time_limit_s=remaining,
-                clock=clock,
-            )
-            done += 1
-        except (
-            Exception
-        ):  # noqa: BLE001 - an unreadable episode stays unindexed and is named by the tool
-            failed += 1
-    return {"indexed": done, "left": left, "failed": failed}
-
-
 def load_index(root: Path | None) -> dict[str, dict]:
     """Every readable entry under *root*, by episode id."""
     out: dict[str, dict] = {}

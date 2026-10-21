@@ -87,7 +87,7 @@ class WriterCalls:
     def admit(self, tool: str, kind: str | None, args: dict) -> "_wt.Reply | None":
         """The counters, checked and incremented on the event loop before the handler runs (today's order and
         texts); a refusal or None."""
-        from .writer_pass import CHECK_FLOOR_S, CODE_DEADLINE, MAX_CHECKS
+        from .writer_pass import CHECK_FLOOR_S, MAX_CHECKS
 
         if self.finished:
             return _wt.general("pass_finished")
@@ -633,8 +633,6 @@ HANDLED = (
     "land_capture",
     "check",
     "finish",
-    "write",
-    "edit",
     "delegate",
     "send",
     "messages",
@@ -646,6 +644,7 @@ HANDLED = (
     "stage",
     "done",
 )
+
 
 __all__ = [
     *HANDLED,
@@ -826,7 +825,6 @@ class InterpreterSession:
     async def cell(self, code: str, cell_no: int) -> Any:
         """Run one cell: the interpreter's cell result, or None when the pass's wall clock ended first. *cell_no*:
         the cell's event row number (in-code calls' rows name it as their ``cell``)."""
-        from unify.common.box_interpreter import persistent
 
         if self.interp is None:
             self.interp = await (self._start or _default_start())(

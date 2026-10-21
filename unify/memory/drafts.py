@@ -116,16 +116,3 @@ def stage_drafts(
     return staged
 
 
-def drafts_message(drafts: list[dict], previous: bool) -> str:
-    """The lines of the writer's first message that name the open drafts and the last full result."""
-    lines = [
-        "Open drafts (work an earlier pass's gate refused; each is /inputs/drafts/<pass>/patch.diff and "
-        "gate.md, and you may finish it):",
-    ]
-    lines += [
-        f"- {d['pass_id']}: {', '.join(d['items']) or '(no item named)'}"
-        for d in drafts
-    ] or ["- none"]
-    if previous:
-        lines.append("The last pass's full gate result: /inputs/gate/previous.md")
-    return "\n".join(lines)

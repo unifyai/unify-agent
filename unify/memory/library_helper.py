@@ -453,7 +453,6 @@ EXAMPLE_KEY = "worked_example"
 MATCH_EVENT = "memory.match_result"
 RUN_EVENT = "memory.run_result"
 RUN_OUTCOMES = ("returned", "refused", "error")
-REPEATABLE = ("yes", "no", "unchecked")
 CONDITIONS = ("none", "held", "not-held", "error")
 #: How long one run of a captured procedure may take, in seconds, before its process group is stopped.
 RUN_TIMEOUT_S = 120.0

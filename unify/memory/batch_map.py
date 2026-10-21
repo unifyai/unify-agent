@@ -53,10 +53,6 @@ def structural_events(ep: Episode) -> list[dict]:
     return out
 
 
-#: The former name, kept for callers outside the writer's inputs.
-structural_signals = structural_events
-
-
 def _defs(tree: ast.AST) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
     return [
         n
@@ -174,16 +170,6 @@ def actor_functions(
 
 def _observations(ep: Episode) -> list[str]:
     return list(ep.request[1:])
-
-
-def canonical_part(ep: Episode, part: str) -> str:
-    """The required part that *part* stands for: a byte-identical observation is required once, as its first
-    copy, and reading any copy credits that one. Every other part is its own."""
-    if not part.startswith("observation:"):
-        return part
-    obs = _observations(ep)
-    text = obs[int(part[12:])]
-    return f"observation:{obs.index(text)}"
 
 
 def observation_copies(ep: Episode) -> dict[str, int]:

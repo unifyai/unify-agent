@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import ast
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -378,7 +378,3 @@ __all__ = [
 ]
 
 
-def iter_failures(evidence: Mapping[str, Any] | None, item: str) -> Iterable[dict]:
-    """The failure-record rows of *item* in an evidence file's content (none when it has none)."""
-    rows = ((evidence or {}).get("items") or {}).get(item, {}).get("failure_record") if evidence else None
-    return [r for r in rows or [] if isinstance(r, dict)]

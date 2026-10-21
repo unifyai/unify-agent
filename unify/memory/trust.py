@@ -52,13 +52,9 @@ from typing import Any
 from .item_states import (  # noqa: E402
     ADOPTED,
     CONFIRMED_BY_OUTCOMES,
-    FROM_LIFECYCLE,
-    LEVELS,
     ON_TRIAL,
     REPRODUCES_ITS_CASE,
     RETIRED,
-    STATUSES,
-    UNCHECKED,
 )
 
 #: What an adoption rests on.
