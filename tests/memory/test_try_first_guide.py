@@ -31,12 +31,11 @@ from unify.memory.catalogue import write_files
 from unify.memory.episodes import Action
 
 # ==== ASSUMED NAMES (the integrator adapts these to the code, here only) ======================================
-#: The guide texts the actor reads (``library_prompts``): with tools in code off, and in code (which name the
-#: library's calls without their arguments).
-OFF_GUIDES = ("GUIDE_LIBRARY", "GUIDE_POINTER")
-IN_CODE_GUIDES = ("GUIDE_LIBRARY_IN_CODE", "GUIDE_POINTER_IN_CODE", "GUIDE_LIBRARIAN")
-GUIDES = OFF_GUIDES + IN_CODE_GUIDES
-#: How the guides with tools in code off name the two helpers.
+#: The guide texts the actor reads (``library_prompts``). Rev 2 has tools in code only, so these are the in-code
+#: guides (which name the library's calls without their arguments); the guides for tools off are gone.
+IN_CODE_GUIDES = ("GUIDE_LIBRARY_IN_CODE", "GUIDE_LIBRARIAN")
+GUIDES = IN_CODE_GUIDES
+#: How the guides for tools off named the two helpers (an in-code guide names neither).
 MATCH_CALL = "memory.match("
 RUN_CALL = "memory.run("
 #: How the in-code guides name the calls that find and open an item: by name, with no arguments. ``memory.ask`` is
@@ -129,12 +128,6 @@ def _sentences(text: str) -> list[str]:
 
 
 # --- the guide's nudge ---------------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("name", OFF_GUIDES)
-def test_the_guide_names_match_and_run(name):
-    text = _guide(name)
-    assert MATCH_CALL in text and RUN_CALL in text
 
 
 @pytest.mark.parametrize("name", IN_CODE_GUIDES)

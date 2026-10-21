@@ -127,7 +127,7 @@ def test_the_actor_and_a_teammate_end_with_answer_and_have_no_finish(stand_ins):
     assert R.help_text("answer", "actor").startswith("answer(answer)\n")
     assert R.refusal("answer", "answered") == "not answered: this request already has its answer"
     assert R.refusal("answer", "bad_answer", reason="x").startswith("not answered: the answer does not match")
-    for agent in ("writer", "curator", "helper", "librarian"):
+    for agent in ("writer", "helper", "librarian"):  # rev 2 has no curator
         assert "answer" not in _allowed(agent), agent
     assert "finish" in _allowed("writer") and "finish" in _allowed("librarian")
 
@@ -137,10 +137,11 @@ def test_the_allow_lists_follow_the_profiles_and_the_design():
     teammate = set(R.allow_list("teammate", FULL))
     assert actor == {
         "read", "grep", "install", "send", "messages", "wait", "who", "reply", "stop", "delegate", "answer",
-        "store_skills", "sh", "check_examples",
+        "sh", "check_examples",
     }  # fmt: skip
-    assert teammate == actor - {"store_skills"} | {"ask"}  # any agent may start agents
-    assert "store_skills" not in R.allow_list("actor", FULL - {"store"})
+    assert teammate == actor | {"ask"}  # any agent may start agents
+    # learned skills are dropped in rev 2: no agent stores skills
+    assert "store_skills" not in R.registry()
     assert "delegate" not in R.allow_list("helper", FULL)
     for agent in R.AGENTS:
         for name in agent_profiles.profile(agent)["in_code"]:
@@ -156,11 +157,15 @@ def test_every_registered_tool_is_documented_for_code():
         assert spec.returns and spec.examples and spec.when, spec.name
         if spec.kind != "local":
             module, _, function = spec.handler.partition(":")
-            assert module.startswith(("unify.memory.", "unify.actor.")) and function == spec.name, spec.name
+            # the run record's comms tools are the agents package's (unify.agents.run_record_tools)
+            assert module.startswith(("unify.memory.", "unify.actor.", "unify.agents.")) and function == spec.name, (
+                spec.name
+            )
     for name in ("read", "grep", "pool", "stage", "install"):
         assert R.registry()[name].blocking, name
     # coroutine handlers run on the event loop and send their own blocking work to the worker pool
-    for name in ("wait", "ask", "delegate", "stop", "overview", "read_episode", "fixture", "check", "write", "edit"):
+    # (rev 2 has no write or edit tool: a cell writes files)
+    for name in ("wait", "ask", "delegate", "stop", "overview", "read_episode", "fixture", "check"):
         assert not R.registry()[name].blocking, name
     assert R.handler_for("actor", "read") == ("unify.actor.tool_handlers:read", True)
     assert R.handler_for("writer", "read") == ("unify.memory.tool_handlers:read", True)
@@ -192,7 +197,8 @@ def test_one_rule_binds_the_namespaces_and_never_widens_the_allow_list():
         assert R.prebound_names(agent, {"memory": True})[:2] == ("memory", "help")
         # the allow-list is the registry's whatever is bound
         assert R.allow_list(agent, FULL) == R.allow_list(agent, FULL)
-    assert "request_clarification" in R.prebound_names("actor", {"clarification": True})
+    # rev 2 binds no request_clarification (the actor asks the user on the run record)
+    assert "request_clarification" not in R.prebound_names("actor", {"clarification": True})
     assert "request_clarification" not in R.prebound_names("teammate", {"clarification": True})
     assert "display" not in R.prebound_names("writer", {"tools": True, "memory": True})
     with pytest.raises(ValueError):
@@ -219,9 +225,9 @@ def test_the_shared_sandbox_paragraph_has_one_text_per_cell_state():
 # --- nothing in a definition outside the registry ---
 
 _SCANNED = ("unify/actor", "unify/common/_async_tool", "unify/memory", "unify/agents")
-#: Hand-written tool definitions that remain where the earlier surface still sends them: the loop's response tool
-#: (UNIFY_TOOLS_IN_CODE off) and the earlier non-library writer's three templates (the memory pass loop's).
-_KNOWN = {"unify/common/_async_tool/loop.py": 1, "unify/memory/writer_pass.py": 3}
+#: Hand-written tool definitions outside the registry: none in rev 2 (the loop's response tool for tools off and the
+#: earlier writer's three templates went with the switches).
+_KNOWN: dict[str, int] = {}
 
 
 def _tool_definitions(tree: ast.AST) -> int:
@@ -364,7 +370,6 @@ ADDED_FORMS = {
 }
 ADDED_TOOLS = (
     "install",
-    "store_skills",
     "sh",
     "ask_library",
     "land_capture",
@@ -383,6 +388,23 @@ ADDED_TOOLS = (
     # the librarian's notes for its later instances
     "keep_note",
 )
+#: Tools and forms of the base commit that rev 2 removed, with their base forms (put back before the hash, so the hash
+#: still proves every other code is the base's): a cell writes files, so the write and edit tools are gone; the run
+#: record lists names that match no agent in the reply, so send no longer refuses an unknown name.
+REMOVED_TOOLS = {
+    "write": ["bad_content", "bad_path", "link", "not_directory", "not_regular", "not_written", "reserved"],
+    "edit": [
+        "bad_old", "bad_path", "link", "match_count", "not_directory", "not_found", "not_regular", "not_text",
+        "not_written", "reserved",
+    ],
+}  # fmt: skip
+REMOVED_FORMS = {"send": ["unknown_name"]}
+#: The base commit's order of the codes' tools (the hash is of ``json.dumps`` in that order).
+BASE_ORDER = (
+    "read", "grep", "overview", "read_episode", "pool", "fixture", "replay", "execute_code", "check", "finish",
+    "similar", "delegate", "stage", "done", "send", "messages", "wait", "who", "reply", "stop", "ask", "write", "edit",
+    "*",
+)  # fmt: skip
 #: Tools added to the writer's JSON tools (tools not in code) since the base commit: left out of the base hashes.
 ADDED_JSON_TOOLS = ("land_capture",)
 FLAGS = ("pool", "similar", "helper", "edit")
@@ -408,6 +430,14 @@ def test_the_refusal_codes_are_the_base_commits_plus_the_listed_additions():
     for tool, forms in ADDED_FORMS.items():
         assert set(forms) <= set(codes[tool]), tool
         codes[tool] = [f for f in codes[tool] if f not in forms]
+    for tool, forms in REMOVED_TOOLS.items():
+        assert tool not in codes, tool
+        codes[tool] = list(forms)
+    for tool, forms in REMOVED_FORMS.items():
+        assert not set(forms) & set(codes[tool]), tool
+        codes[tool] = sorted([*codes[tool], *forms])
+    assert set(codes) == set(BASE_ORDER)
+    codes = {tool: codes[tool] for tool in BASE_ORDER}
     assert _h(codes) == BASE["r"]
 
 
@@ -421,7 +451,8 @@ def test_the_helper_keeps_its_own_refusal_words_for_read_and_grep():
 
 
 def test_the_in_code_help_is_shorter_where_the_prompt_inventory_says_and_the_json_text_is_not():
-    for name in ("read_episode", "fixture", "pool", "delegate", "send", "who", "similar"):
+    # (the run record's send and who have one definition for every agent in rev 2, with no separate in-code text)
+    for name in ("read_episode", "fixture", "pool", "delegate", "similar"):
         spec = R.registry()[name]
         assert spec.help_description and len(spec.help_description) < len(spec.description), name
         assert spec.help_description in R.help_text(name)
@@ -429,10 +460,12 @@ def test_the_in_code_help_is_shorter_where_the_prompt_inventory_says_and_the_jso
     assert "Code is compared after normalising variable names and literals." in R.help_text("similar")
 
 
-def test_the_actor_reads_that_wait_needs_a_timeout_and_install_reads_as_in_the_actors_help():
-    assert "a timeout is required, at most 600" in R.help_text("wait", "actor")
-    assert "you call wait(timeout)" in R.help_text("wait", "teammate")
-    assert R.help_text("wait", "writer") == R.help_text("wait", "helper")
+def test_every_agent_reads_one_wait_and_install_reads_as_in_the_actors_help():
+    # rev 2: the run record's wait is one definition for every agent; its timeout is optional, at most 600
+    texts = {R.help_text("wait", a) for a in ("actor", "teammate", "writer", "helper")}
+    assert len(texts) == 1
+    (text,) = texts
+    assert "at most 600" in text and "(default 600)" in text
     from unify.actor import core_surface
 
     doc = getattr(core_surface, "INSTALL_DOC_IN_CODE", None)
