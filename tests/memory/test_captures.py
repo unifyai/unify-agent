@@ -115,7 +115,6 @@ def test_a_completed_attempt_is_captured_with_its_signature_and_holds_no_identif
         store,
         signals=[_checker("e1", "pass")],
 
-        runner=runner,
     )
     cid = cp.capture_id(PROC)
     assert row["capture_id"] == cid and row["safety"] == "ok"
@@ -158,7 +157,7 @@ def test_a_key_shaped_procedure_is_refused_before_anything_runs(tmp_path):
     planted = PROC + '\nTOKEN = "sk-or-v1-' + "a" * 64 + '"\n'
     staging = _staging(tmp_path, "e1", {"procedure.py": planted})
     runner, calls = _box(VALUE, [6, 9])
-    row = cp.capture_trace_step(staging, _ep("e1"), cp.store_dir(tmp_path), runner=runner)
+    row = cp.capture_trace_step(staging, _ep("e1"), cp.store_dir(tmp_path))
     assert row["safety"] == "key-shaped string" and row["capture_id"] is None and calls == []
     assert not any(cp._ID.fullmatch(n) for n in os.listdir(cp.store_dir(tmp_path)))
 
@@ -168,7 +167,7 @@ def test_an_attempt_that_handed_nothing_back_is_not_captured(tmp_path):
     ep.actions = []
     staging = _staging(tmp_path, "e1", {"procedure.py": PROC})
     runner, calls = _box(VALUE, [6, 9])
-    row = cp.capture_trace_step(staging, ep, cp.store_dir(tmp_path), runner=runner)
+    row = cp.capture_trace_step(staging, ep, cp.store_dir(tmp_path))
     assert row["safety"].startswith("not a completed attempt") and calls == []
 
 
@@ -179,7 +178,7 @@ def test_a_failure_is_captured_as_negative_knowledge(tmp_path):
     staging = _staging(tmp_path, "e1", {"procedure.py": PROC, "broke.md": BROKE})
     store = cp.store_dir(tmp_path)
     runner, _ = _box(VALUE, [6, 10])  # it gives another result than the one handed back
-    row = cp.capture_trace_step(staging, _ep("e1"), store, runner=runner)
+    row = cp.capture_trace_step(staging, _ep("e1"), store)
     assert (row["reproduces"], row["outcome"]) == ("differs", "failed")
     doc = cp.load(store)[row["capture_id"]]
     assert doc["record"]["outcome"] == "failed" and doc["record"]["level"] == tr.UNCHECKED
@@ -189,7 +188,7 @@ def test_a_failure_is_captured_as_negative_knowledge(tmp_path):
     # an attempt that reproduced but whose episode carried a rejected verdict is a failure too
     staging2 = _staging(tmp_path, "e2", {"procedure.py": PROC.replace("Total", "Sum")})
     runner, _ = _box(VALUE, [6, 9])
-    row2 = cp.capture_trace_step(staging2, _ep("e2"), store, signals=[_checker("e2", "fail")], runner=runner)
+    row2 = cp.capture_trace_step(staging2, _ep("e2"), store, signals=[_checker("e2", "fail")])
     assert (row2["reproduces"], row2["outcome"]) == ("reproduces", "failed")
     # a staged broke.md with no procedure enters the pool as a failure entry of its own
     view = type("V", (), {"files": {"broke.md": BROKE.encode()}, "source": "fork"})()
@@ -207,7 +206,7 @@ def test_without_verdicts_a_capture_is_adopted_on_implicit_signals_only(tmp_path
     for i in range(3):
         staging = _staging(tmp_path, f"n{i}", {"procedure.py": PROC})
         runner, _ = _box(VALUE, [6, 9])
-        cp.capture_trace_step(staging, _ep(f"n{i}", regime="none"), store, runner=runner)
+        cp.capture_trace_step(staging, _ep(f"n{i}", regime="none"), store)
     rec = cp.load(store)[cp.capture_id(PROC)]["record"]
     assert (rec["status_text"], rec["level"]) == ("adopted (implicit)", tr.UNCHECKED)
     for text in (rec["record_line"], rec["status_reason"] or "", rec["status_text"]):
@@ -219,14 +218,14 @@ def test_a_repeat_is_recognised_by_running_stored_captures_on_the_new_request(tm
     store = cp.store_dir(tmp_path)
     first = _staging(tmp_path, "e1", {"procedure.py": PROC})
     runner, _ = _box(VALUE, [6, 9])
-    a = cp.capture_trace_step(first, _ep("e1"), store, runner=runner)
+    a = cp.capture_trace_step(first, _ep("e1"), store)
     # the same work with other identifiers and values: same structure, so the stored capture is run on it
     other = REQUEST.replace("ab12cd34ef", "cd56ef78ab").replace("lunar-otter", "quiet-heron")
     variant = PROC.replace("Each row's total", "Every row's total")
     second = _staging(tmp_path, "e2", {"procedure.py": variant})
     value2 = {"cd56ef78ab": [1, 2, 3], "run_000123": [4, 5]}
     runner, calls = _box(value2, [6, 9])
-    b = cp.capture_trace_step(second, _ep("e2", request=other), store, runner=runner)
+    b = cp.capture_trace_step(second, _ep("e2", request=other), store)
     assert len(calls) == 2  # its own run, then the stored capture's run on this request
     assert b["same_as"] == [a["capture_id"]]
     rec = cp.load(store)[a["capture_id"]]["record"]
@@ -245,7 +244,7 @@ def test_the_writer_reads_the_capture_store_and_no_other_agent_edits_the_library
     store = cp.store_dir(state)
     staging = _staging(state, "e2", {"procedure.py": PROC, "broke.md": BROKE})
     runner, _ = _box(VALUE, [6, 9])
-    cid = cp.capture_trace_step(staging, _ep("e2"), store, runner=runner)["capture_id"]
+    cid = cp.capture_trace_step(staging, _ep("e2"), store)["capture_id"]
     store_before = {p: p.read_bytes() for p in store.rglob("*") if p.is_file()}
     st = _Stores(tmp_path)
     _finish_with(monkeypatch, EMPTY)

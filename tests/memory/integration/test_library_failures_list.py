@@ -58,7 +58,7 @@ def _transcript(run: Any) -> list[dict]:
     return lines
 
 
-def use_record(run: Any, *, library_mode: bool = True) -> dict:
+def use_record(run: Any) -> dict:
     """The request's use record built from what the run collected, as ``RequestRun`` builds ``memory_use.json``
     at the end of a request (the integrator adapts this call if the failures reach ``memory_use`` another way)."""
     return memory_use(
@@ -66,7 +66,6 @@ def use_record(run: Any, *, library_mode: bool = True) -> dict:
         list(getattr(run, "item_ids", None) or []),
         runtime_calls=run.runtime_calls,
         cell_errors=dict(run.cell_errors),
-        library_mode=library_mode,
         failures=run.failures,
     )
 
@@ -219,22 +218,6 @@ async def test_the_list_is_capped_and_counts_what_it_dropped(world, monkeypatch)
     assert 0 < len(entries) < total
     assert len(entries) + record[DROPPED_FIELD] == total
     assert len(json.dumps(entries)) < 200_000
-
-
-@needs_bwrap
-@pytest.mark.asyncio
-@pytest.mark.timeout(300)
-async def test_outside_library_mode_there_is_no_list(world, monkeypatch):  # noqa: F811
-    run = _library(world, monkeypatch)
-    ex = SessionExecutor(environments={})
-    try:
-        res = await _run(ex, run, f"from memory.data.checks import explode\nexplode({PLANTED_ARG!r})")
-    finally:
-        await ex.close()
-    assert "ValueError" in res["error"]
-    assert LIST_FIELD in use_record(run)
-    off = use_record(run, library_mode=False)
-    assert LIST_FIELD not in off and DROPPED_FIELD not in off
 
 
 def test_no_failures_give_an_empty_list():

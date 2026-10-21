@@ -112,7 +112,6 @@ def _use_library(root: Path, codes: list[str]) -> dict:
         ITEMS_LIBRARY,
         cell_status=_status_library(cells),
         surface=use.library_surface(root),
-        library_mode=True,
     )
 
 

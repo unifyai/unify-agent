@@ -69,7 +69,6 @@ from . import signatures as _signatures
 from . import trust
 from .fixtures import canonical
 from .redact import KEY_SHAPED
-from .sandbox_run import PYTHON, SandboxResult, run_confined
 from .signals import REGIME_SOURCES
 
 STORE_DIR = "memory-captures"
@@ -800,9 +799,6 @@ def capture_trace_step(
     store: Path | str,
     *,
     signals: Iterable[Any] = (),
-    runner: Callable[..., SandboxResult] = run_confined,
-    python: Path = PYTHON,
-    work: Path | None = None,
     clock: Callable[[], float] = time.time,
     segment: int | None = None,
 ) -> dict:
@@ -1059,8 +1055,6 @@ def capture_settled(
     *,
     episode: Callable[[str], Any],
     signals: Callable[[str], Iterable[Any]],
-    runner: Callable[..., SandboxResult] = run_confined,
-    python: Path = PYTHON,
     segment_episode: Callable[[str], Any] | None = None,
 ) -> list[dict]:
     """Capture each episode of *eids* whose fork has settled and that has no capture row yet. *episode* reads an
@@ -1106,7 +1100,7 @@ def capture_settled(
             continue
         try:
             out.append(
-                capture_trace_step(d, ep, store, signals=sigs, runner=runner, python=python, segment=segment),
+                capture_trace_step(d, ep, store, signals=sigs, segment=segment),
             )
         except OSError:
             continue

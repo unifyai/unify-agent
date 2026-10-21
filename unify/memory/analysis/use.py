@@ -2154,7 +2154,6 @@ def request_use(
     surface: Any = None,
     shown: Any = None,
     cell_status: Any = None,
-    library_mode: bool = False,
     memory_bound: bool | None = None,
 ) -> dict:
     """The request's ``memory_use`` record (see the module docstring); deterministic and bounded.
@@ -2169,26 +2168,24 @@ def request_use(
     ``cell_status`` list. A cell it does not cover is ``unknown`` (cause from the harness's reply, else
     ``other``), and so are the outcomes of the items that cell's code could reach, in this request only.
 
-    With *library_mode* *items* are ``memory.<package>.<module>:<name>`` ids, the helper is ``memory``
-    itself (``get``, ``items``, and the aliases ``show``, ``index`` and ``find``: lookups, never uses), and the
-    record carries ``"layout": "library_mode"``. Its
-    ``refused_then_accepted`` stays 0: a module has no environment channel to compare.
+    *items* are ``memory.<package>.<module>:<name>`` ids, the helper is ``memory`` itself (``get``, ``items``, and
+    the aliases ``show``, ``index`` and ``find``: lookups, never uses), and the record carries
+    ``"layout": "library_mode"``. Its ``refused_then_accepted`` stays 0: a module has no environment channel to
+    compare.
 
     *memory_bound* says whether the worker bound ``memory`` in every cell's globals before any cell ran
-    (``hooks.worker_globals``: library mode with a library copy). Then each session of the analysis starts
-    with ``memory`` bound to the package, as if ``import memory`` had run first, so calls through that name
-    with no import line count like calls after the import; a cell that rebinds the name stops it, as after
-    an import. None takes it from *library_mode*, as the worker decides it (every library-mode copy holds
-    the package). In library mode the record carries it as ``memory_bound``.
+    (``hooks.worker_globals``: a request with a library copy). Then each session of the analysis starts with
+    ``memory`` bound to the package, as if ``import memory`` had run first, so calls through that name with no
+    import line count like calls after the import; a cell that rebinds the name stops it, as after an import. None
+    means bound, as the worker decides it (every library copy holds the package). The record carries it as
+    ``memory_bound``.
     """
     lines = list(lines)
-    if memory_bound is None:
-        memory_bound = library_mode
-    memory_bound = bool(library_mode and memory_bound)
-    its = (_LibraryItems if library_mode else _Items)(items, surface)
+    memory_bound = True if memory_bound is None else bool(memory_bound)
+    its = _LibraryItems(items, surface)
     roots = _roots(export_roots)
     changed, diff_truncated = modified_channels(memory_diff, its)
-    tally = _Tally(HELPER_FUNCTIONS_LIBRARY if library_mode else HELPER_FUNCTIONS)
+    tally = _Tally(HELPER_FUNCTIONS_LIBRARY)
     sessions: dict[Any, dict] = {}
     cells = transcript_cells(lines)
     statuses = _statuses(cells[:MAX_CELLS], cell_status, its, _reply_causes(lines))
@@ -2226,7 +2223,7 @@ def request_use(
                     unparsed += 1
                     opaque = True
             if tree is not None:
-                visitor = (_LibraryCell if library_mode else _Cell)(
+                visitor = _LibraryCell(
                     its,
                     bindings,
                     tally,
@@ -2315,9 +2312,8 @@ def request_use(
         },
         "truncated": truncated,
     }
-    if library_mode:
-        record["layout"] = LAYOUT_LIBRARY
-        record["memory_bound"] = memory_bound
+    record["layout"] = LAYOUT_LIBRARY
+    record["memory_bound"] = memory_bound
     return record
 
 
@@ -2446,7 +2442,6 @@ def use_from_episode_dir(
         surface=recorded.get("surface"),
         shown=recorded.get("shown_record"),
         cell_status=recorded.get("cell_status"),
-        library_mode=recorded.get("layout") == LAYOUT_LIBRARY,
         # a record from before the flag was kept: None takes it from the layout
         memory_bound=(
             recorded["memory_bound"]

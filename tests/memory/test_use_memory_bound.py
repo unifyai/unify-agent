@@ -26,9 +26,9 @@ LOOKUPS = (
 )
 
 
-def _status(cells, metas=None, library_mode=True):
+def _status(cells, metas=None):
     run = RequestRun("r", None)
-    run.library_mode, run.item_ids = library_mode, list(ITEMS_LIBRARY)
+    run.item_ids = list(ITEMS_LIBRARY)
     for i, _ in enumerate(cells):
         run.note_result(f"c{i}", _result(None, metas[i] if metas else None))
     return run.cell_status
@@ -36,13 +36,11 @@ def _status(cells, metas=None, library_mode=True):
 
 def _use(root, codes, metas=None, **kw):
     cells = [(code, None) for code in codes]
-    library_mode = kw.pop("library_mode", True)
     return use.request_use(
         _lines(cells, metas=metas),
         ITEMS_LIBRARY,
-        cell_status=_status(cells, metas, library_mode),
-        surface=use.library_surface(root) if library_mode else None,
-        library_mode=library_mode,
+        cell_status=_status(cells, metas),
+        surface=use.library_surface(root),
         **kw,
     )
 
@@ -97,12 +95,6 @@ def test_a_request_without_the_binding_is_not_seeded(library_root):
         "help": 0,
     }
     assert rec["cell_exposure"]["items"] == []
-    # a request outside library mode is never seeded, whatever is passed
-    for flag in (None, True):
-        v2 = _use(library_root, [LOOKUPS], library_mode=False, memory_bound=flag)
-        assert "memory_bound" not in v2 and "layout" not in v2
-        assert v2["items"] == {} and v2["module_imports"] == {}
-        assert v2["cell_exposure"]["items"] == []
 
 
 def test_a_cell_that_rebinds_the_name_stops_the_counting(library_root):
@@ -126,7 +118,6 @@ def test_the_request_record_passes_the_binding_through(library_root):
     kw = {
         "cell_status": _status(cells),
         "surface": use.library_surface(library_root),
-        "library_mode": True,
     }
     seeded = memory_use(ep, ITEMS_LIBRARY, **kw)
     assert seeded["memory_bound"] is True and seeded["items"][WEEK]["called"] == 1
