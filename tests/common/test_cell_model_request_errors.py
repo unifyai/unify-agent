@@ -28,7 +28,6 @@ import pytest
 
 from tests.scripted_model import ScriptedModel, cell, reply, scripted
 from unify.common import cell_models, llm_client, reasoning
-from unify.session_details import SESSION_DETAILS
 from unify.settings import SETTINGS
 
 LUNA = "openai/gpt-6-luna@openrouter"
@@ -113,7 +112,6 @@ class HeaderModel(ScriptedModel):
 def session(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(SETTINGS, "UNIFY_MODEL", LUNA)
     monkeypatch.setattr(SETTINGS, "UNIFY_CELL_LLM_MODELS", "")
-    monkeypatch.setattr(SESSION_DETAILS.assistant, "default_model", "")
 
 
 @pytest.fixture

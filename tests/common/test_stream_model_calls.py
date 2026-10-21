@@ -39,7 +39,6 @@ def test_new_clients_and_their_forks_carry_the_flag(monkeypatch, value, streamed
         client,
         llm_client.fork_llm_client(client, origin="compress_context"),
         llm_client.new_llm_client(h.MODEL, async_client=False),
-        llm_client.new_slow_brain_llm_client(h.MODEL),
     ]
     assert [c.stream_transport for c in clients] == [streamed] * len(clients)
 

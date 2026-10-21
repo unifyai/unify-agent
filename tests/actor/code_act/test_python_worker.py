@@ -295,11 +295,9 @@ async def test_a_cell_can_call_only_the_sessions_model(worker_world, monkeypatch
     import unify.common.reasoning as reasoning
     from unify.function_manager.function_manager import _LineageTrackedFunction
     from unify.function_manager.source_labels import compile_function_source
-    from unify.session_details import SESSION_DETAILS
-
+    
     monkeypatch.setattr(SETTINGS, "UNIFY_MODEL", LUNA)
     monkeypatch.setattr(SETTINGS, "UNIFY_CELL_LLM_MODELS", "")
-    monkeypatch.setattr(SESSION_DETAILS.assistant, "default_model", "")
     built: list = []
 
     class FakeClient:

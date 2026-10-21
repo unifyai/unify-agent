@@ -5,7 +5,6 @@ from datetime import datetime
 __all__ = [
     "unwrap_tool_callable",
     "now",
-    "get_assistant_timezone",
     "tool_name",
     "PromptParts",
 ]
@@ -28,13 +27,6 @@ def unwrap_tool_callable(fn: Callable) -> Callable:
         return target
 
 
-def get_assistant_timezone() -> str | None:
-    """Return the assistant's configured IANA timezone, or ``None`` when unset."""
-    from unify.session_details import SESSION_DETAILS
-
-    return SESSION_DETAILS.assistant.timezone.strip() or None
-
-
 def _utc_now() -> datetime:
     from datetime import timezone as dt_timezone
 
@@ -42,11 +34,7 @@ def _utc_now() -> datetime:
 
 
 def now(time_only: bool = False, as_string: bool = True) -> "str | datetime":
-    """Return the current timestamp in the assistant's timezone.
-
-    The assistant's session profile carries its ``timezone`` (an IANA
-    identifier like "America/New_York"); UTC is used when it is unset or
-    invalid.
+    """Return the current time in UTC.
 
     Args:
         time_only: If True and as_string=True, return only the time portion.
@@ -59,22 +47,12 @@ def now(time_only: bool = False, as_string: bool = True) -> "str | datetime":
     In tests, this function is monkeypatched by tests/conftest.py to return
     fixed or incrementing datetimes for cache consistency.
     """
-    from zoneinfo import ZoneInfo
-
-    tz_name = get_assistant_timezone() or "UTC"
     utc_now = _utc_now()
-    try:
-        local_dt = utc_now.astimezone(ZoneInfo(tz_name))
-        label = tz_name
-    except Exception:
-        local_dt = utc_now
-        label = "UTC"
-
     if not as_string:
-        return local_dt
+        return utc_now
     if time_only:
-        return local_dt.strftime("%I:%M %p ") + label
-    return local_dt.strftime("%A, %B %d, %Y at %I:%M %p ") + label
+        return utc_now.strftime("%I:%M %p UTC")
+    return utc_now.strftime("%A, %B %d, %Y at %I:%M %p UTC")
 
 
 def tool_name(tools: Dict[str, Callable], needle: str) -> str | None:

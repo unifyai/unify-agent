@@ -14,7 +14,6 @@ from pydantic import BaseModel
 
 from unify.logger import LOGGER
 from unify.common.hierarchical_logger import ICONS
-from unify.session_details import SESSION_DETAILS
 from unify.settings import SETTINGS
 
 _THINKING_ICON = ICONS["llm_thinking"]
@@ -53,44 +52,12 @@ class PendingThinkingLog:
 
 
 def resolve_default_model() -> tuple[str, str | None]:
-    """Resolve the session's default LLM as (model, reasoning_effort).
+    """The run's model and reasoning effort, ``(UNIFY_MODEL, UNIFY_REASONING_EFFORT)``.
 
-    The per-assistant default (from the assistant record, via SESSION_DETAILS) takes
-    priority over the deployment-wide UNIFY_MODEL. A returned effort of None
-    means no effort override and per-call-site effort levels apply.
+    An effort of None means no effort override: each call site's own level applies.
     """
-    session_model = SESSION_DETAILS.assistant.default_model
-    if session_model:
-        return (
-            session_model,
-            SESSION_DETAILS.assistant.default_reasoning_effort or None,
-        )
     effort = SETTINGS.UNIFY_REASONING_EFFORT.strip() or None
     return SETTINGS.UNIFY_MODEL, effort
-
-
-def resolve_slow_brain_model() -> tuple[str, str | None]:
-    """Resolve the ConversationManager slow-brain LLM as (model, effort).
-
-    Priority:
-    1. Per-assistant slow brain (assistant record / SESSION_DETAILS), including effort
-    2. ``UNIFY_CONVERSATION_SLOW_BRAIN_MODEL`` when set (non-empty)
-    3. The global shared model (``UNIFY_MODEL``)
-
-    Independent of the actor ``default_model``. A returned effort of None means
-    per-call-site effort levels apply.
-    """
-    session_model = SESSION_DETAILS.assistant.slow_brain_model
-    if session_model:
-        return (
-            session_model,
-            SESSION_DETAILS.assistant.slow_brain_reasoning_effort or None,
-        )
-    slow_model = SETTINGS.conversation.SLOW_BRAIN_MODEL.strip()
-    if slow_model:
-        effort = SETTINGS.conversation.SLOW_BRAIN_REASONING_EFFORT.strip() or None
-        return slow_model, effort
-    return SETTINGS.UNIFY_MODEL, None
 
 
 LLMPurpose = Literal["planning"]
@@ -460,35 +427,6 @@ def fork_llm_client(
         install_tool_choice_fallback(fork)
     _install_request_metadata(fork, parent)
     return fork
-
-
-def new_slow_brain_llm_client(
-    model: str | None = None,
-    *,
-    async_client: bool = True,
-    stateful: bool = False,
-    origin: str | None = None,
-    **kwargs: Any,
-) -> "unillm.AsyncUnify | unillm.Unify":
-    """Create an LLM client for ConversationManager slow-brain call sites.
-
-    When ``model`` is omitted, resolves via :func:`resolve_slow_brain_model`
-    (assistant slow brain → slow-brain setting → global ``UNIFY_MODEL``).
-    Defaults to high reasoning effort; an assistant- or setting-level effort
-    override pins the client effort the same way as :func:`new_llm_client`.
-    """
-    default_effort: str | None = None
-    if model is None:
-        model, default_effort = resolve_slow_brain_model()
-
-    return _build_llm_client(
-        model,
-        async_client=async_client,
-        stateful=stateful,
-        origin=origin,
-        default_effort=default_effort,
-        kwargs=kwargs,
-    )
 
 
 def _make_openai_strict_json_schema_compatible(node: Any) -> None:

@@ -4,10 +4,7 @@
 subcommand, which runs ``act`` on a request read from stdin): one
 ``CodeActActor`` takes the request, its progress streams to the terminal, a
 post it addresses to ``@user`` is shown and answered from the terminal, and
-the result is printed. This is the unit to compare against single-loop
-harnesses, and the shape a benchmark runner wants.
-
-``unify chat`` is legacy and unsupported: it only says so and exits.
+the result is printed.
 
 Runtime logs go to ``<UNIFY_HOME>/logs`` and stay off the terminal unless
 ``--debug`` is given.
@@ -108,16 +105,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     _add_common_options(parser)
     commands = parser.add_subparsers(dest="command")
-
-    chat = commands.add_parser(
-        "chat",
-        help="legacy, unsupported: the old conversation_manager product; "
-        "use `unify act`",
-        description="Legacy, unsupported: the old conversation_manager product "
-        "(unify/legacy/). It only prints that it is unsupported. Use "
-        "`unify act`.",
-    )
-    _add_common_options(chat, subcommand=True)
 
     act = commands.add_parser(
         "act",
@@ -368,13 +355,10 @@ class Act:
         import unify
         from unify.actor.environments.actor import top_level_environments
         from unify.manager_registry import ManagerRegistry
-        from unify.session_details import SESSION_DETAILS
         from unify.workspace import get_local_root
 
-        SESSION_DETAILS.populate_from_env()
         unify.init()
-        # Relative paths in the actor's code resolve against the workspace,
-        # exactly as they do under the conversation loop.
+        # Relative paths in the actor's code resolve against the workspace.
         local_root = Path(get_local_root())
         local_root.mkdir(parents=True, exist_ok=True)
         os.chdir(local_root)
@@ -830,18 +814,6 @@ def _read_request(args: argparse.Namespace) -> str:
     return text
 
 
-CHAT_UNSUPPORTED = (
-    "unify chat is legacy and unsupported: conversation_manager's steering was "
-    "removed in the harness-learning freeze. Use `unify act`."
-)
-
-
-async def _run_chat(args: argparse.Namespace) -> int:
-    """Say that chat is unsupported; nothing from unify.legacy is imported."""
-    print(CHAT_UNSUPPORTED, file=sys.stderr, flush=True)
-    return 0
-
-
 async def _run_act(args: argparse.Namespace) -> int:
     session = Act(args)
     try:
@@ -869,9 +841,8 @@ def main(argv: list[str] | None = None) -> int:
         # fail closed: nothing starts, no model is called
         print(f"unify: {refusal}", file=sys.stderr)
         return 2
-    runner = _run_act if args.command == "act" else _run_chat
     try:
-        return asyncio.run(runner(args))
+        return asyncio.run(_run_act(args))
     except KeyboardInterrupt:
         return 130
 

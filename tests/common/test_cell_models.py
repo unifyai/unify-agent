@@ -18,7 +18,6 @@ from unify.common.act_llm_profiles import (
     ACT_LLM_PROFILES,
     CURRENT_ACT_LLM_PROFILE,
 )
-from unify.session_details import SESSION_DETAILS
 from unify.settings import SETTINGS, ProductionSettings
 
 LUNA = "openai/gpt-6-luna@openrouter"
@@ -31,7 +30,6 @@ def luna_session(monkeypatch: pytest.MonkeyPatch) -> None:
     """A session configured with gpt-6-luna and the default policy."""
     monkeypatch.setattr(SETTINGS, "UNIFY_MODEL", LUNA)
     monkeypatch.setattr(SETTINGS, "UNIFY_CELL_LLM_MODELS", "")
-    monkeypatch.setattr(SESSION_DETAILS.assistant, "default_model", "")
 
 
 def _fail(*_args: Any, **_kwargs: Any) -> Any:
@@ -151,14 +149,6 @@ def test_the_act_profile_model_is_the_sessions(luna_session) -> None:
             cell_models.check_model(OPUS)
     finally:
         CURRENT_ACT_LLM_PROFILE.reset(token)
-
-
-def test_the_assistants_default_model_is_the_sessions(luna_session, monkeypatch):
-    monkeypatch.setattr(SESSION_DETAILS.assistant, "default_model", MINI)
-    assert cell_models.configured_models() == [MINI]
-    cell_models.check_model(MINI)
-    with pytest.raises(cell_models.CellModelRefused):
-        cell_models.check_model(LUNA)
 
 
 # ── the cell's query_llm ─────────────────────────────────────────────────────

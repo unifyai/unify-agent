@@ -23,8 +23,6 @@ def test_no_command_is_act_reading_stdin():
     assert (args.command, args.request) == ("act", None)
     args = _parse_args(["--debug"])
     assert (args.command, args.debug) == ("act", True)
-    # The legacy conversation product is still reachable by name.
-    assert _parse_args(["chat"]).command == "chat"
 
 
 @pytest.mark.parametrize(
@@ -32,8 +30,6 @@ def test_no_command_is_act_reading_stdin():
     [
         ["--home", "/elsewhere", "--debug", "act", "hi"],
         ["act", "--home", "/elsewhere", "--debug", "hi"],
-        ["--home", "/elsewhere", "--debug", "chat"],
-        ["chat", "--home", "/elsewhere", "--debug"],
     ],
 )
 def test_common_options_parse_before_or_after_the_subcommand(argv):
@@ -41,7 +37,7 @@ def test_common_options_parse_before_or_after_the_subcommand(argv):
     assert (args.home, args.debug) == ("/elsewhere", True)
 
 
-@pytest.mark.parametrize("argv", [["chat"], ["act", "hi"]])
+@pytest.mark.parametrize("argv", [["act"], ["act", "hi"]])
 def test_common_options_default_under_a_subcommand(argv):
     args = _parse_args(argv)
     assert (args.home, args.debug) == (None, False)
@@ -95,24 +91,6 @@ def test_no_clarify_parses_and_turns_clarification_off(monkeypatch):
     with pytest.raises(RuntimeError, match="stop here"):
         asyncio.run(session._run("hi"))
     assert seen["clarification_enabled"] is False
-
-
-def test_chat_says_it_is_unsupported_and_exits_zero(capsys, monkeypatch):
-    """``unify chat`` prints that it is legacy and unsupported, exits 0, and
-    never boots conversation_manager (nothing from unify.legacy is imported)."""
-    import unify.cli as cli
-
-    for name in [
-        m for m in sys.modules if m == "unify.legacy" or m.startswith("unify.legacy.")
-    ]:
-        monkeypatch.delitem(sys.modules, name)
-    assert asyncio.run(cli._run_chat(_parse_args(["chat"]))) == 0
-    err = capsys.readouterr().err
-    assert "unify chat is legacy and unsupported" in err
-    assert "Use `unify act`" in err
-    assert not any(
-        m == "unify.legacy" or m.startswith("unify.legacy.") for m in sys.modules
-    )
 
 
 class _FakeHandle:
