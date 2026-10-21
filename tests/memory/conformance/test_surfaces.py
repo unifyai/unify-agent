@@ -20,8 +20,8 @@ vocabulary in what the memory agents were sent, the coverage guarantee, metering
 * the attention ledger (all): every entry closed, unreadable or not reached; a late signal makes ``late_evidence`` (surface 4);
 * labelled items (surface 2): a landed item is served;
 * in-episode memory (surfaces 1, 3, which set the in-episode arm's switch on): every pause (a new message, an actor call,
-  a compaction) starts a segment fork and makes an entry; a commit landed while the episode runs is served from the
-  next cell with one notice;
+  a compaction) starts a segment fork, whose experience is an entry, or an occurrence of the entry with the same
+  capture; a commit landed while the episode runs is served from the next cell with one notice;
 * serving on evidence (surfaces 2, 4): served items carry their evidence; an item the writer retires leaves every listing;
 * inferred regimes (surfaces 1, 2, 4): each episode's regime is inferred from its own signals (``none`` with none, ``sparse`` with
   a verdict on the whole episode, changed and logged by a late one), never defaulted; a hidden grader decides nothing.
@@ -311,10 +311,19 @@ async def test_surface_3_a_long_episode_with_checkpoints(core_world, monkeypatch
     facts = H.check_run(home, lanes, actor_model=model, own_texts=[first, SX.SUMMARY])
     print("CONFORMANCE", json.dumps(H.run_facts(home, lanes, facts), default=str, sort_keys=True)[:3000])
     assert "compression_fork" in model.kinds()
-    # the actor's call and the compaction each started a segment fork with its own entry
+    # the actor's call and the compaction each started a segment fork; the compaction's fork captured the same
+    # procedure as the actor call's, so its experience joins that entry (one entry per capture: a ref while the
+    # entry is open, an occurrence once it is closed)
+    from unify.memory.segments import SEGMENTS_DIR
+
     entries = _entries(home)
-    segs = sorted(e.refs.segment for e in entries if e.kind == "new_experience" and e.refs.segment)
-    assert segs[:2] == [1, 2], [(e.kind, e.refs.row()) for e in entries]
+    checkpoints = [
+        c for c in H._jsonl(paths.state_dir / SEGMENTS_DIR / "checkpoints.jsonl") if c.get("type") == "checkpoint"
+    ]
+    started = [(c.get("segment"), c.get("sources")) for c in checkpoints if c.get("fork") == "started"]
+    assert started[:2] == [(1, ["actor_call"]), (2, ["compaction"])], checkpoints
+    first = [e for e in entries if e.kind == "new_experience" and e.refs.segment == 1]
+    assert len(first) == 1 and first[0].sources, [(e.kind, e.refs.row(), e.sources) for e in entries]
     # what the service landed from the first segment while the episode ran is served from the next cell, with
     # one notice naming exactly what changed
     assert start.get("landed") and start["landed"] != start["head"], "the note was not served while the episode ran"
