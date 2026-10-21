@@ -30,14 +30,10 @@ Python worker run inside bubblewrap (Linux) under one policy (the
   ``socket-families``).
 * The Unify state directory (``UNIFY_HOME``) is hidden behind an empty tmpfs,
   except read-only views of the transcripts directory (every session's) and
-  the package venv, and the writable workspace; the store file is not mounted
-  (cells reach the library through its API). The harness's internal
-  transcripts (``internal-transcripts``: the storage review, whose prompt
-  carries the environment's checked outcome) stay hidden even when a mount
-  that is seen contains them (a workspace configured as ``UNIFY_HOME``).
+  the package venv, and the writable workspace.
 * The harness's log directories (``UNILLM_LOG_DIR``, which holds every LLM
-  request and reply, ``UNILLM_OTEL_LOG_DIR``, ``UNIFY_LOG_DIR`` and
-  ``UNIFY_OTEL_LOG_DIR``, wherever they are configured) are hidden too.
+  request and reply, ``UNILLM_OTEL_LOG_DIR`` and ``UNIFY_LOG_DIR``, wherever
+  they are configured) are hidden too.
 * Credential locations (``~/.ssh``, ``~/.config``, ``~/.aws``, ``~/.gnupg`` and
   a few other well-known ones) are hidden behind a notice, and so is every
   ``.env`` file found in the working directory and its parents, the home
@@ -123,8 +119,7 @@ RULES: dict[str, str] = {
     "resource-limits": (
         "every process runs under fixed resource limits: no core files, 8,192 "
         "open files, 4,096 processes and threads, 16 GiB per written file and "
-        "the configured address space (UNIFY_SANDBOX_ADDRESS_SPACE_BYTES), each "
-        "at most the host's own hard limit"
+        "16 GiB of address space, each at most the host's own hard limit"
     ),
     "sandbox-required": (
         "shell commands and Python cells run only inside bubblewrap, never "
@@ -257,9 +252,9 @@ _STATE_VIEW_MOUNTS = {
 # files, package installs, thread pools), so the bounds are set well above
 # what normal work needs and only stop runaway use: no core files, at most
 # 8,192 open files, 4,096 processes and threads in the sandbox's own user
-# namespace, 16 GiB per written file. The address space is
-# UNIFY_SANDBOX_ADDRESS_SPACE_BYTES (16 GiB by default).
+# namespace, 16 GiB per written file and 16 GiB of address space.
 PRLIMIT = "/usr/bin/prlimit"
+RLIMIT_AS_BYTES = 16 * 1024**3
 RLIMIT_CORE_BYTES = 0
 RLIMIT_NOFILE_COUNT = 8192
 RLIMIT_NPROC_COUNT = 4096
@@ -1269,7 +1264,6 @@ LOG_DIR_SETTINGS = (
     "UNILLM_LOG_DIR",
     "UNILLM_OTEL_LOG_DIR",
     "UNIFY_LOG_DIR",
-    "UNIFY_OTEL_LOG_DIR",
 )
 
 
@@ -2035,8 +2029,6 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
         # directory) and changes every cell. What inside it is masked or hidden anyway, its views put back
         # read-only, the installer's cache and a state directory inside it
         # (hidden whole, wrap_argv) are not entered.
-        from unify.transcripts import INTERNAL_DIRNAME
-
         ws_skip = [
             d
             for d in (
@@ -2044,7 +2036,6 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
                 *log_dirs,
                 *readonly,
                 state_dir,
-                state_dir / INTERNAL_DIRNAME,
                 Path(os.path.realpath(installer_cache())),
             )
             if d != workspace and _within(d, workspace)
@@ -2078,10 +2069,7 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
             readonly_state=readonly,
             masked_dirs=masked_dirs,
             masked_files=masked_files,
-            hidden=[
-                (state_dir / INTERNAL_DIRNAME, "mask-unify-state"),
-                *((d, "mask-harness-logs") for d in log_dirs),
-            ],
+            hidden=[(d, "mask-harness-logs") for d in log_dirs],
             workspace_masked=workspace_masked,
             workspace_scan=scan,
             scan_note=scan_note,
@@ -2658,8 +2646,6 @@ def wrap_argv(
 def _rlimit_args() -> list[str]:
     """``prlimit`` with the sandbox's resource limits, ending in ``--``: every
     process of the command runs under them (hard and soft alike)."""
-    from unify.settings import SETTINGS
-
     if not os.access(PRLIMIT, os.X_OK):
         raise SandboxRefusal(
             "resource-limits",
@@ -2675,10 +2661,7 @@ def _rlimit_args() -> list[str]:
         hard = resource.getrlimit(which)[1]
         return wanted if hard == resource.RLIM_INFINITY else min(wanted, hard)
 
-    address_space = within_hard(
-        resource.RLIMIT_AS,
-        int(SETTINGS.UNIFY_SANDBOX_ADDRESS_SPACE_BYTES),
-    )
+    address_space = within_hard(resource.RLIMIT_AS, RLIMIT_AS_BYTES)
     fsize = within_hard(resource.RLIMIT_FSIZE, RLIMIT_FSIZE_BYTES)
     nofile = within_hard(resource.RLIMIT_NOFILE, RLIMIT_NOFILE_COUNT)
     nproc = within_hard(resource.RLIMIT_NPROC, RLIMIT_NPROC_COUNT)

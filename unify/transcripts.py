@@ -14,25 +14,19 @@ goes to ``<UNIFY_HOME>/transcripts/index.jsonl`` naming the session, the session
 that spawned it, where it came from, when it started and ended, the tools it
 called and how many results were errors.
 
-The workspace sandbox lets cells read ``transcripts/``. A harness-internal
-session -- the storage review, its fork and the review gate, whose prompts
-carry the environment's checked outcome (unify/outcome.py) -- is marked with
-:func:`mark_internal` and goes, with every session started inside it, to
-``<UNIFY_HOME>/internal-transcripts/`` instead (same format, an index of its
-own), which no cell can reach (unify/sandbox.py).
+The workspace sandbox lets cells read ``transcripts/`` (read-only).
 
 Nothing is redacted from what the model saw, except that the value of any
 environment variable whose name contains KEY, TOKEN, SECRET or PASSWORD, and any
 provider credential unillm holds, is replaced by ``[REDACTED:<name>]`` before
-a line is written, in either directory.
+a line is written.
 
 A session's lines can also be handed, as written, to a tap (:func:`tap`): the
 memory run journals its episode's transcript that way, so the turns survive a
 process that dies before the episode is recorded.
 
-With the switch off nothing here touches the filesystem: :func:`attach`
-returns ``None`` and every other entry point is a no-op for a loop it did not
-attach.
+Without a client nothing here touches the filesystem: :func:`attach` returns
+``None`` and every other entry point is a no-op for a loop it did not attach.
 """
 
 from __future__ import annotations
@@ -56,8 +50,6 @@ __all__ = [
     "TranscriptSession",
     "attach",
     "close",
-    "internal_transcripts_dir",
-    "mark_internal",
     "observe",
     "record_compaction",
     "resume_session",
@@ -105,31 +97,6 @@ def transcripts_dir() -> Path:
     from unify.db import store_home
 
     return store_home() / "transcripts"
-
-
-INTERNAL_DIRNAME = "internal-transcripts"
-
-
-def internal_transcripts_dir() -> Path:
-    """``<UNIFY_HOME>/internal-transcripts``, for harness-internal sessions.
-
-    Hidden from every cell by the workspace sandbox; not created by this call.
-    """
-    from unify.db import store_home
-
-    return store_home() / INTERNAL_DIRNAME
-
-
-def mark_internal(client: Any) -> Any:
-    """Transcribe the session *client* will carry as harness-internal.
-
-    Its file, and those of the sessions started inside it, go to
-    :func:`internal_transcripts_dir`. Call before the client's loop starts.
-    Returns *client*.
-    """
-    with suppress_all():
-        setattr(client, "_unify_transcript_internal", True)
-    return client
 
 
 def _now() -> str:
@@ -255,16 +222,13 @@ class TranscriptSession:
         parent: Optional["TranscriptSession"],
         origin: str,
         label: str,
-        internal: bool = False,
     ) -> None:
         self.id = session_id
         self.parent_id = parent.id if parent is not None else None
         self.origin = origin
         self.label = label
         self.resumed = resumed
-        self.internal = internal
-        directory = internal_transcripts_dir() if internal else transcripts_dir()
-        self.path = directory / f"{session_id}.jsonl"
+        self.path = transcripts_dir() / f"{session_id}.jsonl"
         self.started_at = _now()
         self.ended_at = self.started_at
         self.tools: set[str] = set()
@@ -301,7 +265,7 @@ class TranscriptSession:
             self._seq += 1
             self.ended_at = now
             # under the session's lock, so a tap sees the lines in file order
-            fn = None if self.internal else _TAPS.get(self.id)
+            fn = _TAPS.get(self.id)
             if fn is not None:
                 try:
                     fn(line)
@@ -412,11 +376,6 @@ class TranscriptSession:
         # fixed path), never by the host path, which can name the run.
         from unify.sandbox import TRANSCRIPTS_MOUNT
 
-        if self.internal:
-            return (
-                "The full history of this session is kept in the harness's "
-                "internal transcripts, which cells cannot read."
-            )
         return (
             f"The full history of this session is at "
             f"{TRANSCRIPTS_MOUNT}/{self.path.name}; "
@@ -560,20 +519,14 @@ def _open_session(client: Any, loop_cfg: Any, label: str) -> TranscriptSession:
         if len(lineage) > 1:
             with _REGISTRY_LOCK:
                 parent = _BY_LABEL.get("->".join(lineage[:-1]))
-    # Internal if marked, or started inside an internal session.
-    internal = bool(getattr(client, "_unify_transcript_internal", False)) or bool(
-        parent is not None and parent.internal,
-    )
-    # A requested id names a session cells may read; an internal one never
-    # continues it.
-    requested = _REQUESTED_ID.get() if parent is None and not internal else None
+    requested = _REQUESTED_ID.get() if parent is None else None
     with _REGISTRY_LOCK:
         live_ids = {s.id for s in _LIVE}
     if requested in live_ids:
         # Another live root already continues this id; two writers must never
         # share one file, so this one starts its own.
         requested = None
-    directory = internal_transcripts_dir() if internal else transcripts_dir()
+    directory = transcripts_dir()
     if requested:
         session_id = requested
         resumed = (directory / f"{session_id}.jsonl").exists()
@@ -591,7 +544,6 @@ def _open_session(client: Any, loop_cfg: Any, label: str) -> TranscriptSession:
         parent=parent,
         origin=origin,
         label=label,
-        internal=internal,
     )
     session.start()
     try:

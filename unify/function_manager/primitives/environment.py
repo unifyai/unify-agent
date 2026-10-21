@@ -164,50 +164,16 @@ class EnvironmentNamespaceObject:
 
 def _documented(namespace: str, method: EnvironmentMethod) -> Callable[..., Any]:
     call = method.call
-    # The observer seam (observers.py): with no observer pushed the call takes
-    # the path below unchanged; with one, the same path runs inside its
-    # before/after hooks unless an observer intercepts it.
-    from . import observers
-
-    def env_call(args: tuple, kwargs: Dict[str, Any]) -> "observers.EnvCall":
-        return observers.EnvCall(
-            namespace=namespace,
-            method=method.name,
-            effect=method.effect,
-            args=args,
-            kwargs=kwargs,
-            via="primitives",
-        )
 
     if inspect.iscoroutinefunction(call):
 
-        async def run_async(args: tuple, kwargs: Dict[str, Any]) -> Any:
-            return await call(*args, **kwargs)
-
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            active = observers.current()
-            if active:
-                return await observers.dispatch_async(
-                    active,
-                    env_call(args, kwargs),
-                    lambda: run_async(args, kwargs),
-                )
-            return await run_async(args, kwargs)
+            return await call(*args, **kwargs)
 
     else:
 
-        def run(args: tuple, kwargs: Dict[str, Any]) -> Any:
-            return call(*args, **kwargs)
-
         def wrapper(*args: Any, **kwargs: Any) -> Any:  # type: ignore[misc]
-            active = observers.current()
-            if active:
-                return observers.dispatch(
-                    active,
-                    env_call(args, kwargs),
-                    lambda: run(args, kwargs),
-                )
-            return run(args, kwargs)
+            return call(*args, **kwargs)
 
     wrapper.__name__ = method.name
     wrapper.__qualname__ = f"primitives.{namespace}.{method.name}"
