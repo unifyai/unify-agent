@@ -100,8 +100,10 @@ def pin_namespace(pid: int | str, starttime: str | None = None) -> tuple[str, in
 
 
 def pin_box_namespace(pid: int, timeout_s: float = 2.0) -> tuple[str, int] | None:
-    """:func:`box_namespace`, held open (:func:`pin_namespace`): ``(name, fd)`` of the box's pid namespace, or
-    None."""
+    """The pid namespace of the box that *pid* started (bubblewrap with ``--unshare-pid``), held open
+    (:func:`pin_namespace`): ``(name, fd)`` of the namespace of the first process below *pid* that is not in this
+    process's own, waiting up to *timeout_s* for the box to make it. None when no process below *pid* has a namespace
+    of its own by then."""
     own = pid_namespace("self")
     deadline = time.monotonic() + timeout_s
     while True:

@@ -89,7 +89,7 @@ def test_a_grandchild_its_exiting_parent_left_behind_is_killed_through_the_group
 def test_a_plain_process_has_no_box_namespace():
     leader = subprocess.Popen([sys.executable, "-I", "-c", "import time; time.sleep(30)"])
     try:
-        assert process_tree.box_namespace(leader.pid, timeout_s=0.2) is None
+        assert process_tree.pin_box_namespace(leader.pid, timeout_s=0.2) is None
     finally:
         leader.kill()
         leader.wait()
