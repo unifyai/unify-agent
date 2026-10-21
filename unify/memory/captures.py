@@ -751,7 +751,10 @@ def rejudge_episode(
             rec = _read_json(d / RECORD_FILE)
             if not isinstance(rec, dict):
                 continue
-            cases = [c for c in rec.get("cases") or [] if isinstance(c, dict) and c.get("episode") == eid]
+            # a segment's case is judged by the signals about the segment alone (judge_segments), never by the
+            # episode's verdict on its final value
+            cases = [c for c in rec.get("cases") or []
+                     if isinstance(c, dict) and c.get("episode") == eid and c.get("segment") is None]  # fmt: skip
             uses = [u for u in rec.get("uses") or [] if isinstance(u, dict) and u.get("episode") == eid]
             if not cases and not uses:
                 continue
@@ -1448,7 +1451,9 @@ def capture_settled(
 
     With *trace* each is captured under the trace contract (:func:`capture_trace_step`). A segment's staging dir
     (``<episode>.s<n>``, ``UNIFY_MEMORY_IN_EPISODE``) is captured from the segment's own record, read by
-    *segment_episode* (None: segments are left alone), with its episode's signals."""
+    *segment_episode* (None: segments are left alone), unjudged: its episode is still running, so no signal of it is
+    recorded yet, and the episode's own rules would judge it by the final value, which it did not hand back. Once its
+    episode is recorded, :func:`judge_segments` gives it its outcome from the signals about the segment itself."""
     from .staging import STATUS_FILES
     from .segments import split_staging_name
 
@@ -1475,10 +1480,7 @@ def capture_settled(
                 ep = segment_episode(eid)
                 if ep is None:
                     continue  # its record is not written yet: a later call captures it
-                try:
-                    sigs = list(signals(base) or [])
-                except Exception:  # noqa: BLE001 - the episode is not recorded yet: no signal judges it so far
-                    sigs = []
+                sigs = []  # judged once its episode is recorded (judge_segments), by the signals about it alone
             else:
                 ep = episode(eid)
                 sigs = list(signals(eid) or [])
@@ -1499,6 +1501,91 @@ def capture_settled(
             )
         except OSError:
             continue
+    if trace and segment_episode is not None:
+        out += judge_segments(store, episode=episode, signals=signals, segment_episode=segment_episode,
+                              checker_visible=checker_visible)  # fmt: skip
+    return out
+
+
+#: The mark of a segment row judged once its episode was recorded (:func:`judge_segments`).
+SEGMENT_JUDGED = "episode_recorded"
+
+
+def segment_outcome(signals: Iterable[Any], seg_ep: Any, ep: Any, *, regime: str, checker_visible: bool) -> str:
+    """The outcome of one segment of the recorded episode *ep* (its record as it stood at the segment's checkpoint is
+    *seg_ep*), from the signals about the segment alone, as :func:`.capture_trace.outcome_of` reads them:
+
+    * a verdict naming an action (``<episode>/actions/<i>``) judges the segment only when it names the segment's own
+      answered action (its actions are numbered from the episode's start), whenever it came;
+    * an implicit correction judges it when it came after the segment's checkpoint and before its episode ended;
+    * every other signal judges it only when it came while the segment's cells ran (at or before its checkpoint).
+
+    So a mid-episode segment is never labelled by the verdict on the episode's final value."""
+    import dataclasses
+
+    from . import capture_trace as ct
+
+    base = str(getattr(ep, "episode_id", "") or "")
+    seg_end, ep_end = _instant(getattr(seg_ep, "ended_at", None)), _instant(getattr(ep, "ended_at", None))
+    view = dataclasses.replace(seg_ep, episode_id=base)
+    i = answered_action(view)
+    mine = []
+    for s in signals:
+        at = _instant(getattr(s, "ts", None))
+        named = str(getattr(s, "refers_to", "") or "")
+        if getattr(s, "source", None) == "checker" and named.startswith(f"{base}/actions/"):
+            if i is not None and named == f"{base}/actions/{i}":
+                mine.append(s)
+        elif (getattr(s, "source", None), getattr(s, "label", None)) in IMPLICIT_CORRECTIONS:
+            if at is not None and ep_end is not None and at <= ep_end:
+                mine.append(s)
+        elif at is not None and seg_end is not None and at <= seg_end:
+            mine.append(s)
+    return ct.outcome_of(judged_outcome(mine, view, regime, checker_visible=checker_visible))
+
+
+def judge_segments(
+    store: Path | str,
+    *,
+    episode: Callable[[str], Any],
+    signals: Callable[[str], Iterable[Any]],
+    segment_episode: Callable[[str], Any],
+    checker_visible: bool,
+) -> list[dict]:
+    """Each captured segment whose episode is now recorded and that is not judged yet gets its outcome
+    (:func:`segment_outcome`) on its case in its capture's record (the record's derived fields recomputed), and a
+    new ``captures-events.jsonl`` row (its capture row as before, with ``outcome`` and ``judged``), once. Returns
+    those rows; never raises for an episode or a segment record that cannot be read (a later call tries again)."""
+    store = Path(store)
+    rows = episode_rows(store)
+    due = [r for name, r in rows.items() if r.get("segment") is not None and r.get("capture_id") and not r.get("judged")
+           and r.get("v") == TRACE_VERSION and name == r.get("staging")]  # fmt: skip
+    out: list[dict] = []
+    for row in due:
+        base, name = str(row.get("episode") or ""), str(row["staging"])
+        try:
+            ep = episode(base)  # raises while the episode is not recorded
+            sigs = list(signals(base) or [])
+            seg_ep = segment_episode(name)
+        except Exception:  # noqa: BLE001 - not recorded yet: a later call judges it
+            continue
+        if seg_ep is None:
+            continue
+        outcome = segment_outcome(sigs, seg_ep, ep, regime=str(getattr(ep, "regime", "") or "none"),
+                                  checker_visible=checker_visible)  # fmt: skip
+        with _locked(store):
+            d = store / str(row["capture_id"])
+            rec = _read_json(d / RECORD_FILE)
+            if isinstance(rec, dict):
+                for case in rec.get("cases") or []:
+                    if isinstance(case, dict) and case.get("staging") == name:
+                        case["outcome"] = outcome
+                        case["judged"] = SEGMENT_JUDGED
+                refresh(rec)
+                _write(d / RECORD_FILE, _json(rec))
+            judged = {**row, "outcome": outcome, "judged": SEGMENT_JUDGED}
+            _event(store, judged)
+        out.append(judged)
     return out
 
 

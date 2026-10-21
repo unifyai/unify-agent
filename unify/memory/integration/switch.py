@@ -988,7 +988,9 @@ REDESIGN_SWITCHES: dict[str, str] = {
     # value only: the replay mode is refused until its stand-in's confinement review (G2) is recorded
     # (``writer_tests.REPLAY_REVIEWED``; :func:`redesign_b_refusal`)
     "UNIFY_MEMORY_WRITER_TESTS": "value",
-    "UNIFY_MEMORY_IN_EPISODE": "on",
+    # rev 2 (MAIN, 21 Oct): the main arm runs without in-episode memory; alt-ep (``in_episode_on``) and re-pins only
+    # (``in_episode_repin``) are arms of their own
+    "UNIFY_MEMORY_IN_EPISODE": "off",
     "UNIFY_MEMORY_SERVING_FAILURE_RECORD": "on",
     LIBRARY_WITHDRAW_CLOSED_CAPTURES: "on",
     "UNIFY_MEMORY_REGIME": "inferred",
@@ -1024,7 +1026,8 @@ _LEDGER_PARTS = {
 #: * ``ledger_off`` (a bundle, labelled as one): the attention ledger off, G1's
 #:   per-capture trigger in its place, and the service and in-episode memory with it (each needs the ledger), so
 #:   the writer runs as the pass worker;
-#: * ``in_episode_off`` and ``failure_record_off``: that one switch off;
+#: * ``in_episode_on`` (alt-ep: checkpoints, segment forks and re-pins) and ``in_episode_repin`` (re-pins only), the
+#:   profile's in-episode setting (off, rev 2) changed; ``failure_record_off``: that one switch off;
 #: * ``mesh_off`` (informational): the run record off, the mesh alone (the service runs without it, each pass keeping
 #:   its own record);
 #: * ``no_memory``: memory off, the run record on (A1 is kept regardless).
@@ -1037,7 +1040,8 @@ REDESIGN_ARMS: dict[str, dict[str, str]] = {
         LIBRARY_REVIEW_EACH_CAPTURE: "on",
         "UNIFY_MEMORY_LIBRARY_CAPTURES_PER_PASS": "1",
     },
-    "in_episode_off": {**REDESIGN_SWITCHES, "UNIFY_MEMORY_IN_EPISODE": "off"},
+    "in_episode_on": {**REDESIGN_SWITCHES, "UNIFY_MEMORY_IN_EPISODE": "on"},
+    "in_episode_repin": {**REDESIGN_SWITCHES, "UNIFY_MEMORY_IN_EPISODE": "repin"},  # IN_EPISODE_REPIN
     "failure_record_off": {**REDESIGN_SWITCHES, "UNIFY_MEMORY_SERVING_FAILURE_RECORD": "off"},
     "mesh_off": {**REDESIGN_SWITCHES, "UNIFY_AGENTS_RUN_RECORD": "off"},
     "no_memory": {"UNIFY_MEMORY": "off", "UNIFY_AGENTS_RUN_RECORD": "on"},
@@ -1169,9 +1173,18 @@ def parse_impure_items(v: Any) -> str:
     return _on_off_empty(IMPURE_ITEMS, v)
 
 
+#: ``UNIFY_MEMORY_IN_EPISODE=repin`` (rev 2): the episode's library copy is re-pinned at cell boundaries to what the
+#: writer landed meanwhile (other episodes' items, at no fork cost), and no pause starts a segment fork.
+IN_EPISODE_REPIN = "repin"
+
+
 def parse_in_episode(v: Any) -> str:
-    """``UNIFY_MEMORY_IN_EPISODE``: empty, ``off`` or ``on``."""
-    return _on_off_empty(IN_EPISODE, v)
+    """``UNIFY_MEMORY_IN_EPISODE``: empty, ``off``, ``on`` (checkpoints, segment forks and re-pins) or ``repin``
+    (re-pins only)."""
+    value = _stripped(v).lower()
+    if value not in ("", "on", "off", IN_EPISODE_REPIN):
+        raise ValueError(f"{IN_EPISODE} must be empty, 'off', 'on' or 'repin', not {v!r}"[:200])
+    return value
 
 
 def parse_ledger_k(v: Any) -> str:
@@ -1226,8 +1239,15 @@ def writer_tests_modes(settings: Any) -> frozenset[str]:
 
 
 def in_episode(settings: Any) -> bool:
-    """Whether memory changes during an episode: checkpoints, segment forks and re-pins at cell boundaries."""
+    """Whether memory changes during an episode with its pauses: checkpoints, segment forks and re-pins at cell
+    boundaries (``on``)."""
     return parse_in_episode(profile_setting(settings, IN_EPISODE)) == "on"
+
+
+def in_episode_repins(settings: Any) -> bool:
+    """Whether the episode's library copy is re-pinned at cell boundaries: ``on`` (with its pauses) or ``repin``
+    (re-pins only: no checkpoint, no segment fork)."""
+    return parse_in_episode(profile_setting(settings, IN_EPISODE)) in ("on", IN_EPISODE_REPIN)
 
 
 def _tools_in_code(settings: Any) -> bool:
@@ -1296,6 +1316,9 @@ def redesign_b_refusal(settings: Any) -> str | None:
                 ),
             ),
         )
+    elif in_episode_repins(settings):
+        # re-pins only: the library copy and a writer that lands while the episode runs (the ledger's service)
+        checks.append(needs(IN_EPISODE, ((f"{LIBRARY_MODE}=on", lib), (f"{ATTENTION_LEDGER}=on", ledger))))
     return next((c for c in checks if c), None)
 
 

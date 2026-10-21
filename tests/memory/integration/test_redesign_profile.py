@@ -47,7 +47,7 @@ def test_the_profile_lists_exactly_the_planned_switches_and_values():
         "UNIFY_MEMORY_LEDGER_K": "4",
         "UNIFY_MEMORY_IMPURE_ITEMS": "on",
         "UNIFY_MEMORY_WRITER_TESTS": "value",
-        "UNIFY_MEMORY_IN_EPISODE": "on",
+        "UNIFY_MEMORY_IN_EPISODE": "off",  # rev 2 (MAIN, 21 Oct): the main arm runs without in-episode memory
         "UNIFY_MEMORY_SERVING_FAILURE_RECORD": "on",
         "UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES": "on",
         "UNIFY_MEMORY_REGIME": "inferred",
@@ -215,13 +215,13 @@ def test_every_arm_is_a_settings_set_the_build_runs():
         "captures_only": ["UNIFY_MEMORY_WRITER_PASSES", "UNIFY_MEMORY_WRITER_SERVICE"],
         "ledger_off": [
             "UNIFY_MEMORY_ATTENTION_LEDGER",
-            "UNIFY_MEMORY_IN_EPISODE",
             "UNIFY_MEMORY_LEDGER_K",
             "UNIFY_MEMORY_LIBRARY_CAPTURES_PER_PASS",
             "UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE",
             "UNIFY_MEMORY_WRITER_SERVICE",
         ],
-        "in_episode_off": ["UNIFY_MEMORY_IN_EPISODE"],
+        "in_episode_on": ["UNIFY_MEMORY_IN_EPISODE"],
+        "in_episode_repin": ["UNIFY_MEMORY_IN_EPISODE"],
         "failure_record_off": ["UNIFY_MEMORY_SERVING_FAILURE_RECORD"],
         "mesh_off": ["UNIFY_AGENTS_RUN_RECORD"],
     }
@@ -239,15 +239,15 @@ def test_the_writer_tests_replay_mode_is_refused_until_its_review_is_recorded(mo
     kit = {**_LIBRARY, **switch.REDESIGN_COMPANIONS, "UNIFY_HOST_LEASE_END": "2026-10-21T06:00:00Z"}
     assert switch.REDESIGN_SWITCHES["UNIFY_MEMORY_WRITER_TESTS"] == "value"
     monkeypatch.setattr(writer_tests, "REPLAY_REVIEWED", False)
-    for extra in ({"UNIFY_MEMORY_PROFILE": "redesign"}, {**switch.REDESIGN_ARMS["in_episode_off"]}):
+    for extra in ({"UNIFY_MEMORY_PROFILE": "redesign"}, {**switch.REDESIGN_ARMS["in_episode_on"]}):
         replay = SimpleNamespace(**{**kit, **extra, "UNIFY_MEMORY_WRITER_TESTS": "value,replay"})
         why = switch.profile_refusal(replay)
         assert why is not None and "UNIFY_MEMORY_WRITER_TESTS" in why, why
         assert switch.profile_refusal(SimpleNamespace(**{**kit, **extra, "UNIFY_MEMORY_WRITER_TESTS": "value"})) is None
-    alone = SimpleNamespace(**{**kit, **switch.REDESIGN_ARMS["in_episode_off"], "UNIFY_MEMORY_WRITER_TESTS": "replay,value"})
+    alone = SimpleNamespace(**{**kit, **switch.REDESIGN_ARMS["in_episode_on"], "UNIFY_MEMORY_WRITER_TESTS": "replay,value"})
     assert "replay stand-in's confinement review" in (switch.profile_refusal(alone) or "")
     monkeypatch.setattr(writer_tests, "REPLAY_REVIEWED", True)
-    off_profile = SimpleNamespace(**{**kit, **switch.REDESIGN_ARMS["in_episode_off"], "UNIFY_MEMORY_WRITER_TESTS": "value,replay"})
+    off_profile = SimpleNamespace(**{**kit, **switch.REDESIGN_ARMS["in_episode_on"], "UNIFY_MEMORY_WRITER_TESTS": "value,replay"})
     assert switch.profile_refusal(off_profile) is None
 
 
@@ -259,3 +259,19 @@ def test_fixed_answers_as_examples_is_part_of_the_capture_contract_under_rev2():
     assert "FIXED_ANSWERS" not in (switch.redesign_refusal(on) or "")
     assert switch.constant_captures_as_examples(_s(UNIFY_MEMORY="on", UNIFY_MEMORY_PROFILE="redesign"))
     assert not switch.constant_captures_as_examples(_s())
+
+
+def test_in_episode_takes_repin_for_re_pins_without_segment_forks():
+    """Rev 2, item 10(b): ``repin`` re-pins the episode's copy at cell boundaries and starts no segment fork; it needs
+    the library and the ledger's service, not the episode-end fork or the checkpoint tool."""
+    assert switch.parse_in_episode(" Repin ") == "repin"
+    with pytest.raises(ValueError, match="'repin'"):
+        switch.parse_in_episode("sometimes")
+    repin = _s(UNIFY_MEMORY_IN_EPISODE="repin", UNIFY_MEMORY_ATTENTION_LEDGER="on")
+    assert switch.in_episode_repins(repin) and not switch.in_episode(repin)
+    on = _s(UNIFY_MEMORY_IN_EPISODE="on")
+    assert switch.in_episode_repins(on) and switch.in_episode(on)
+    main = _s(UNIFY_MEMORY_PROFILE="redesign")
+    assert not switch.in_episode_repins(main) and not switch.in_episode(main)
+    no_ledger = _s(UNIFY_MEMORY_IN_EPISODE="repin", UNIFY_MEMORY_ATTENTION_LEDGER="off")
+    assert "UNIFY_MEMORY_ATTENTION_LEDGER=on" in (switch.redesign_b_refusal(no_ledger) or "")

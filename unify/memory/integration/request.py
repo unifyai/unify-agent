@@ -1358,13 +1358,14 @@ class RequestRun:
         self._consolidate_mod = consolidate
         from unify.settings import SETTINGS
 
-        from .switch import in_episode, memory_on
+        from .switch import in_episode, in_episode_repins, memory_on
 
-        if memory_on(SETTINGS) and in_episode(SETTINGS) and not getattr(self, "frozen", False):
-            # (frozen: one pin for the episode, never re-pinned, and no pause starts a segment fork)
+        if memory_on(SETTINGS) and in_episode_repins(SETTINGS) and not getattr(self, "frozen", False):
+            # (frozen: one pin for the episode, never re-pinned, and no pause starts a segment fork; ``repin``:
+            # re-pins only, no pause starts a segment fork)
             from .in_episode import InEpisode
 
-            self.in_episode = InEpisode(self, self._export_copy)
+            self.in_episode = InEpisode(self, self._export_copy, segment_forks=in_episode(SETTINGS))
             self.in_episode.open(self.pin)
         else:
             self._export_copy(self.pin, paths.checkout, at_open=True)

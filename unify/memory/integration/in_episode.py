@@ -22,6 +22,9 @@ actor's conversation, which can be forked only between turns, never with a tool 
 compaction: so a checkpoint the actor or a signal marks runs at the next turn boundary (:meth:`InEpisode.at_boundary`),
 a new message's runs before the message joins the conversation, and a compaction's runs before the compaction.
 
+**Re-pins only** (``UNIFY_MEMORY_IN_EPISODE=repin``): the re-pins below, and no pause starts a segment fork, so other
+episodes' items reach a running episode at no fork cost.
+
 **Re-pin.** When the writer service lands a commit while the episode is open, the next cell boundary (never mid-cell,
 :meth:`InEpisode.before_cell`) exports it into a fresh pin directory (``<checkout>/.pins/<k>-<sha12>``), swaps the
 actor's read-only library path atomically (the symlink ``<checkout>/current``, renamed over), and the worker drops the
@@ -168,10 +171,19 @@ class InEpisode:
     :class:`.request.RequestRun`; *export* writes the actor's copy of a commit into a directory
     (``RequestRun._export_copy``)."""
 
-    def __init__(self, run: Any, export: Callable[[str, Path], None], *, clock: Callable[[], float] = time.time) -> None:
+    def __init__(
+        self,
+        run: Any,
+        export: Callable[[str, Path], None],
+        *,
+        clock: Callable[[], float] = time.time,
+        segment_forks: bool = True,
+    ) -> None:
         self.run = run
         self.export = export
         self.clock = clock
+        #: False under ``UNIFY_MEMORY_IN_EPISODE=repin``: re-pins at cell boundaries only, no pause starts a fork
+        self.segment_forks = segment_forks
         self.checkout = Path(run.paths.checkout)
         self.pins: list[Pin] = []
         self.cells = 0  # the episode's code cells whose result has come back (the next cell's index)
@@ -283,6 +295,9 @@ class InEpisode:
         """Between turns: run the marked pauses, a new message's (before the message joins the conversation) and a
         compaction's (before it), as one segment fork for the cells since the last checkpoint. None when nothing is
         due or no cell ran since the last checkpoint."""
+        if not self.segment_forks:
+            self.pending.clear()  # re-pins only: a pause starts nothing
+            return None
         sources = [s for s, _ in self.pending]
         notes = [n for _, n in self.pending if n]
         if compacting:
