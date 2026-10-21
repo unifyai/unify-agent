@@ -339,10 +339,6 @@ def aggregate_use(facts: Iterable[EpisodeUse]) -> dict[str, dict[str, dict]]:
 
 # --- statuses -----------------------------------------------------------------------------------------------
 
-#: the rules of a retirement by outcomes, which a function's bisect looks into
-OUTCOME_RULES = ("errors", "negative_signals")
-
-
 def _negative(f: EpisodeUse) -> bool:
     return f.negative and f.regime != NO_SIGNAL_REGIME
 
@@ -1174,75 +1170,15 @@ def source_channels(
     return out
 
 
-_BISECTS = (
-    "CREATE TABLE IF NOT EXISTS item_bisects(item TEXT, changed_at TEXT, bisect TEXT, rollback TEXT, "
-    "PRIMARY KEY(item, changed_at))"
-)
-
-
-def bisect_results(ev: EvidenceStore) -> dict[str, tuple[str, Any, Any]]:
-    """The newest stored bisect of each item: item -> (the version it bisected, ``bisect``, ``rollback``)."""
-    import json
-
-    with ev.db:
-        ev.db.execute(_BISECTS)
-    out: dict[str, tuple[str, Any, Any]] = {}
-    for item, changed_at, bisect, rollback in ev.db.execute(
-        "SELECT item, changed_at, bisect, rollback FROM item_bisects ORDER BY rowid",
-    ):
-        out[item] = (changed_at, json.loads(bisect), json.loads(rollback))
-    return out
-
-
-def _store_bisect(
-    ev: EvidenceStore,
-    item: str,
-    changed_at: str | None,
-    bisect: Any,
-    rollback: Any,
-) -> None:
-    import json
-
-    with ev.db:
-        ev.db.execute(_BISECTS)
-        ev.db.execute(
-            "INSERT OR REPLACE INTO item_bisects VALUES(?,?,?,?)",
-            (
-                item,
-                changed_at,
-                json.dumps(bisect, sort_keys=True),
-                json.dumps(rollback, sort_keys=True),
-            ),
-        )
-
-
 def consolidate_records(
     stores: Any,
     *,
-    checker_visible: bool,
-    work: Any,
-    probe: Any = None,
-    refused: Any = None,
     action_lookup: Any = None,
-    stop: Any = None,
-    budget_s: float | None = None,
-    clock: Any = None,
     captures: Any = None,
-    labels: bool = False,
-    writer_decisions: bool = False,
-    bisect: bool = True,
 ) -> dict:
-    """The item records of ``main``'s head, after a consolidation's passes. Without *bisect* (rev 2:
-    ``UNIFY_MEMORY_GATE_RECORDED_REPLAYS`` off) no retired item is bisected: the history probe replays recorded task
-    data. With *labels*
-    (``UNIFY_MEMORY_IMPURE_ITEMS=on``) every record carries its evidence label (:func:`label_inputs`). With
-    *writer_decisions* (``UNIFY_MEMORY_ATTENTION_LEDGER=on``) the writer's retire and merge decisions set the records'
-    statuses (:func:`next_records`).
-
-    The bisects of one call share :data:`.item_bisect.BISECT_BUDGET_S` (*budget_s*), and *stop* (a callable, the
-    worker's SIGTERM) is checked between probe runs. An item they do not reach is ``{"skipped": "budget"}`` (or
-    ``"stopped"``); the records are written all the same. An item bisected, or skipped on budget, at its current
-    retired version (``changed_at``) is not bisected again until that version changes.
+    """The item records of ``main``'s head, after a consolidation's passes: every record carries its evidence label
+    (:func:`label_inputs`), and the writer's retire and merge decisions set the records' statuses (:func:`next_records`).
+    No retired item is bisected: a bisect would replay recorded task data.
 
     - The map is computed from the tree at the head, every indexed episode's use and signals, the verification
       and provenance of the passes, and the map carried to the head.
@@ -1251,23 +1187,16 @@ def consolidate_records(
     - When the head has a map and a status changed, one empty status commit lands on ``main`` and carries the
       new map (:meth:`.memory_repo.MemoryRepo.status_commit`). Otherwise nothing is written, and the use counts
       of this consolidation appear with the next commit's map.
-    - The map is written BEFORE any bisect, so a bisect that is killed or runs long never holds back
-      the records. Then each ``retired`` function (rules ``errors`` and ``negative_signals``) with no bisect of
-      its current version is bisected (:func:`.item_bisect.bisect_item`), and a rollback target is proposed. A
-      commit's map is never rewritten, so the result is stored in the evidence store (:func:`bisect_results`)
-      and reaches the next map written. One killed before it was stored is bisected again next time.
     - An item whose last change is beyond :func:`.library_export.item_history`'s scan gets it from its own
       file's history (:func:`.item_bisect.versions_of`). If that fails too, its version is unknown, and it is
       never promoted to ``adopted`` (:func:`next_records`).
 
-    Returns ``{"head", "noted", "changes", "bisected", "bisects"}``. ``noted`` is the commit whose map was
-    written, or None; ``bisects`` holds this call's results, item -> ``{"bisect", "rollback"}``.
+    Returns ``{"head", "noted", "changes"}``: ``noted`` is the commit whose map was written, or None.
     """
-    from pathlib import Path
 
     from .captures import landed_items
     from .gitio import GitError
-    from .item_bisect import bisect_item, rollback_target, versions_of
+    from .item_bisect import versions_of
     from .item_records import records_at
     from .layout import discover, import_graph
     from .library_export import item_history
@@ -1303,7 +1232,6 @@ def consolidate_records(
             changed_at[i] = own[-1] if own else None
             if changed_at[i] is None:
                 unknown_version.add(i)
-    stored = bisect_results(ev)
     since = {
         i: set(order[pos[c] :]) if c in pos else set(order)
         for i, c in changed_at.items()
@@ -1333,85 +1261,15 @@ def consolidate_records(
         unknown_version=unknown_version,
         # a procedure landed from a capture: its capture, reader, signature, applies and recognition (the store's)
         landed=landed_items(captures),
-        # UNIFY_MEMORY_IMPURE_ITEMS=on: each record's evidence label; off, the map as built
-        **({"label_inputs": label_inputs(stores)} if labels else {}),
-        # UNIFY_MEMORY_IN_EPISODE=on: the pin each use was served under (none recorded: as built)
+        # each record's evidence label
+        label_inputs=label_inputs(stores),
+        # UNIFY_MEMORY=in_episode: the pin each use was served under (none recorded: as built)
         **({"pins": pins} if (pins := use_pins(ev)) else {}),
-        # UNIFY_MEMORY_ATTENTION_LEDGER=on: what the writer's decisions retired or superseded
-        **({"writer_decisions": _writer_decisions(stores)} if writer_decisions else {}),
+        # what the writer's decisions retired or superseded
+        writer_decisions=_writer_decisions(stores),
     )
-    for (
-        item,
-        rec,
-    ) in records.items():  # a stored bisect of the current version reaches this map
-        s = stored.get(item)
-        if rec["bisect"] is None and s is not None and s[0] == rec["changed_at"]:
-            rec["bisect"], rec["rollback"] = s[1], s[2]
-    # the map is published BEFORE any bisect, so a killed or long bisect never holds back the records
     noted = _publish(mem, head, records, changes)
-    import time
-
-    from .item_bisect import BISECT_BUDGET_S
-
-    now = clock or time.monotonic
-    deadline = now() + float(BISECT_BUDGET_S if budget_s is None else budget_s)
-    bisected: list[str] = []
-    bisects: dict[str, dict] = {}
-    for item in sorted(records):
-        rec = records[item]
-        if rec["status"] != RETIRED or rec["status_rule"] not in OUTCOME_RULES:
-            continue
-        if not bisect:
-            continue  # rev 2: no history probe
-        at = rec.get("changed_at")
-        done = rec.get("bisect")
-        if (
-            isinstance(done, dict)
-            and done.get("at") == at
-            and done.get("skipped") != "stopped"
-        ):
-            # once per retired version (from the map carried to the head, or the evidence store): a bisect
-            # cut short by the budget is never retried in a loop; one stopped, or killed before storing, is
-            continue
-        tests = (rec.get("verification") or {}).get("tests") or []
-        if stop is not None and stop():
-            result = {"skipped": "stopped"}
-        elif deadline - now() <= 1:
-            result = {"skipped": "budget"}
-        else:
-            try:
-                result = bisect_item(
-                    mem,
-                    ev,
-                    item,
-                    head,
-                    list(tests),
-                    work=Path(work) / item.replace(":", "__"),
-                    probe=probe,
-                    refused=refused,
-                    deadline=deadline,
-                    stop=stop,
-                )
-            except (GitError, OSError, ValueError) as exc:
-                result = {"error": type(exc).__name__}
-        result = {**result, "at": at}
-        rollback = rollback_target(
-            rec["use"],
-            result.get("versions", []),
-            result.get("introduced"),
-            order,
-        )
-        # the published map is never rewritten: the result is stored and reaches the next map written
-        _store_bisect(ev, item, at, result, rollback)
-        bisects[item] = {"bisect": result, "rollback": rollback}
-        bisected.append(item)
-    return {
-        "head": head,
-        "noted": noted,
-        "changes": changes,
-        "bisected": bisected,
-        "bisects": bisects,
-    }
+    return {"head": head, "noted": noted, "changes": changes}
 
 
 def _publish(

@@ -53,18 +53,8 @@ LEXICAL = Backend(None, NOT_CONFIGURED)
 
 
 def backend(on_call: Callable[[dict], None] | None = None) -> Backend:
-    """The run's embedding backend: none under the paper profile, nor unless one is configured
-    (``UNIFY_LOCAL_EMBEDDINGS``, the local model, or ``UNIFY_EMBED_URL``, an endpoint of the provider's form);
-    otherwise the harness's embedder (:func:`unify.common.embeddings.embedder`), each request it sends told to
-    *on_call*."""
-    try:
-        from unify.settings import SETTINGS
-    except Exception:  # noqa: BLE001 - no settings: no backend
-        return LEXICAL
-    local = bool(getattr(SETTINGS, "UNIFY_LOCAL_EMBEDDINGS", False))
-    url = str(getattr(SETTINGS, "UNIFY_EMBED_URL", "") or "").strip()
-    if not local and not url:
-        return LEXICAL
+    """The run's embedding backend: the harness's embedder (:func:`unify.common.embeddings.embedder`), each request it
+    sends told to *on_call*."""
     from unify.common import embeddings
 
     def embed(texts: list[str]) -> Any:

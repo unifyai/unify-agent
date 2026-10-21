@@ -31,9 +31,13 @@ the three. The rest of memory's configuration is in [CONFIG.md](../CONFIG.md); t
 5. **The next episode is served from the library.** An episode starts with a read-only copy of the library as it is
    then, bound as the Python package `memory` in its cells. The librarian answers questions about it (`memory.ask`).
 
-Spend is bounded by `UNIFY_MEMORY_CAP_USD`, which covers memory's calls over the memory home's life. Every call is
-booked at its worst case until it is priced. Once the cap is reached, the library stops changing and requests are still
-served from it.
+`UNIFY_MEMORY_CAP_USD` bounds what memory spends in one run, meaning one `unify act` including the writer service it
+ran. Every call is booked at its worst case until it is priced. Once the cap is reached, the library stops changing for
+the rest of the run, and requests are still served from it.
+
+When `unify act` ends, the writer's pass in flight gets at most 5 minutes to finish. Then it is suspended: its turns
+are kept, and every entry it held stays owed and is handed again in the next run, never dropped. Ctrl-C stops the
+waiting.
 
 ## `UNIFY_MEMORY=in_episode`
 

@@ -41,7 +41,7 @@ def _use(root, codes, metas=None, **kw):
         _lines(cells, metas=metas),
         ITEMS_LIBRARY,
         cell_status=_status(cells, metas, library_mode),
-        surface=use.library_surface(root, library_mode=True) if library_mode else None,
+        surface=use.library_surface(root) if library_mode else None,
         library_mode=library_mode,
         **kw,
     )
@@ -125,7 +125,7 @@ def test_the_request_record_passes_the_binding_through(library_root):
     ep = _ep(transcript=_lines(cells), actions=[])
     kw = {
         "cell_status": _status(cells),
-        "surface": use.library_surface(library_root, library_mode=True),
+        "surface": use.library_surface(library_root),
         "library_mode": True,
     }
     seeded = memory_use(ep, ITEMS_LIBRARY, **kw)

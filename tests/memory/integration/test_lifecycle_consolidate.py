@@ -63,7 +63,6 @@ def _episode(stores, eid, main, rows, regime="none"):
 def _consolidate(stores, tmp_path, probe=None):
     return lifecycle.consolidate_records(
         stores,
-        checker_visible=False,
         work=tmp_path / "w",
         probe=probe or _Probe(),
         refused=lambda ev, m, i: [],
@@ -314,7 +313,6 @@ def test_the_bisect_budget_is_shared_across_items_and_the_records_are_written(
 
     out = lifecycle.consolidate_records(
         stores,
-        checker_visible=False,
         work=tmp_path / "w",
         probe=slow,
         refused=lambda ev, m, i: [],
@@ -359,7 +357,6 @@ def test_a_stop_between_probe_runs_ends_the_bisect_and_the_records_are_written(
 
     out = lifecycle.consolidate_records(
         stores,
-        checker_visible=False,
         work=tmp_path / "w",
         probe=partial(history_probe.probe, pytest_runner=runner),
         refused=lambda ev, m, i: [],

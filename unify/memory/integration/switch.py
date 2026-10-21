@@ -29,13 +29,14 @@ Essential configuration (not switches)
 * ``UNIFY_MEMORY_WRITER_MODEL``: the model the writer and its helpers run on. Empty means the actor's ``UNIFY_MODEL``.
   The model must be one the pinned price catalogue bounds (:mod:`..call_bounds`), because the writer books every call
   at its worst case until it is priced. Otherwise the writer does not start.
-* ``UNIFY_MEMORY_CAP_USD``: memory's spend cap for the memory home, in USD as a plain decimal string (default
-  :data:`MEMORY_CAP_DEFAULT`). It covers the writer's and its helpers' calls over the home's whole life, as recorded in
-  the home's ``spend.jsonl``; a lane relay holds the episode-end forks' calls to the same cap. It fails closed:
+* ``UNIFY_MEMORY_CAP_USD``: memory's spend cap for one run (one ``unify act``, with the writer service it ran), in USD
+  as a plain decimal string (default :data:`MEMORY_CAP_DEFAULT`). It covers the writer's and its helpers' calls, as
+  recorded in the home's ``spend.jsonl`` since the service started; a lane relay holds the episode-end forks' calls to
+  the same cap. It fails closed:
   - a pass starts only when the room left under the cap holds one call at its worst case;
   - an unpriced call is booked at its worst case;
   - a value that is not a plain decimal above zero refuses the settings.
-  When the cap is reached, the library stops changing and the actor is still served from it.
+  When the cap is reached, the library stops changing for the rest of the run and the actor is still served from it.
 
 Model-call lanes (set by a launcher, not by hand)
 =================================================

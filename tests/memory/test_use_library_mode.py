@@ -111,7 +111,7 @@ def _use_library(root: Path, codes: list[str]) -> dict:
         _lines(cells),
         ITEMS_LIBRARY,
         cell_status=_status_library(cells),
-        surface=use.library_surface(root, library_mode=True),
+        surface=use.library_surface(root),
         library_mode=True,
     )
 
@@ -217,7 +217,6 @@ def test_refusals_and_errors_leave_the_function_by_its_frame(library_root):
         tb,
         ITEMS_LIBRARY,
         roots=[str(library_root)],
-        library_mode=True,
     ) == [
         ("refused", PD),
     ]
@@ -227,7 +226,7 @@ def test_refusals_and_errors_leave_the_function_by_its_frame(library_root):
 
 
 def test_the_library_surface_reads_packages_modules_and_reexports(library_root):
-    s = use.library_surface(library_root, library_mode=True)
+    s = use.library_surface(library_root)
     assert s["star"] == {
         "text": ["tokens"],
         "text.dates": ["MemoryInputError", "parse_date", "tokens", "week"],
@@ -263,7 +262,7 @@ def test_the_request_records_library_use(library_root):
         ep,
         ITEMS_LIBRARY,
         cell_status=_status_library(cells),
-        surface=use.library_surface(library_root, library_mode=True),
+        surface=use.library_surface(library_root),
         library_mode=True,
     )
     assert rec["layout"] == "library_mode" and rec["items"][WEEK]["called"] == 1

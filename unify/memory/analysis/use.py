@@ -299,7 +299,7 @@ def _public_names(tree: ast.Module) -> list[str]:
     return [n for n in names if not n.startswith("_")]
 
 
-def library_surface(root: str | Path, *, library_mode: bool = False) -> dict:
+def library_surface(root: str | Path) -> dict:
     """The import surface of the library at *root* (the export, read before any cell runs):
     ``{"star": {channel: names a star import binds}, "reexports": {"env/a:g": "env/b:g"}}``.
 
@@ -310,40 +310,7 @@ def library_surface(root: str | Path, *, library_mode: bool = False) -> dict:
     ``memory/<package>/(__init__|<module>).py``, and a re-export is any top-level ``from`` import of a library name in
     such a file (:func:`_library_surface_library_mode`).
     """
-    if library_mode:
-        return _library_surface_library_mode(Path(root))
-    star: dict[str, list[str]] = {}
-    reexports: dict[str, str] = {}
-    for mod in sorted(Path(root).glob("env/*/__init__.py")):
-        channel = mod.parent.name
-        if not re.fullmatch(_IDENT, channel) or len(star) >= MAX_CHANNEL_KEYS:
-            continue
-        try:
-            tree = ast.parse(mod.read_text(encoding="utf-8"))
-        except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):
-            continue
-        names = _all_names(tree)
-        if names is None:
-            names = _public_names(tree)
-        star[channel] = sorted({n for n in names if re.fullmatch(_IDENT, n)})[
-            :MAX_STAR_NAMES
-        ]
-        for node in tree.body:
-            if not isinstance(node, ast.ImportFrom):
-                continue
-            parts = (node.module or "").split(".")
-            if node.level == 0 and len(parts) == 2 and parts[0] == "env":
-                source = parts[1]
-            elif node.level == 2 and len(parts) == 1 and parts[0]:
-                source = parts[0]
-            else:
-                continue
-            for a in node.names:
-                if a.name != "*" and len(reexports) < MAX_REEXPORTS:
-                    reexports[f"env/{channel}:{a.asname or a.name}"] = (
-                        f"env/{source}:{a.name}"
-                    )
-    return {"star": star, "reexports": dict(sorted(reexports.items()))}
+    return _library_surface_library_mode(Path(root))
 
 
 def _source_key_library_mode(key: str, node: ast.ImportFrom) -> str | None:
@@ -802,7 +769,6 @@ def runtime_status(
     *,
     items: Iterable[str] | _Items,
     roots: Iterable[str] = (),
-    library_mode: bool = False,
 ) -> dict:
     """One cell's status from the runtime's structured result, as the use record keeps it.
 
@@ -817,7 +783,7 @@ def runtime_status(
     its = (
         items
         if isinstance(items, _Items)
-        else (_LibraryItems if library_mode else _Items)(items)
+        else (_LibraryItems)(items)
     )
     exits: list[list[str]] = []
     if not isinstance(error, str) or not error:
@@ -860,7 +826,6 @@ def dict_status(
     *,
     items: Iterable[str] | _Items,
     roots: Iterable[str] = (),
-    library_mode: bool = False,
 ) -> dict:
     """One cell's status from the code tool's plain ``dict`` result (the legacy projection returns one,
     unwrapped, for an empty cell and when the session executor itself raised).
@@ -880,7 +845,6 @@ def dict_status(
             get("session_created"),
             items=items,
             roots=roots,
-            library_mode=library_mode,
         )
     if error is None:
         return _no_result("empty", "empty")
@@ -2116,7 +2080,6 @@ def attribute_errors(
     *,
     roots: Iterable[str] = (),
     modified: Iterable[str] = (),
-    library_mode: bool = False,
 ) -> list[tuple[str, str]]:
     """``(outcome, item or channel)`` per exception of a cell's traceback that left a memory item.
 
@@ -2131,7 +2094,7 @@ def attribute_errors(
     its = (
         items
         if isinstance(items, _Items)
-        else (_LibraryItems if library_mode else _Items)(items)
+        else (_LibraryItems)(items)
     )
     if not text:
         return []

@@ -773,7 +773,6 @@ def after_passes(
     stores: Stores,
     recorded: list[str],
     emit: Callable[[dict], None] | None,
-    stop: Callable[[], bool] | None = None,
 ) -> None:
     """Once a pass is recorded: the item records of ``main``'s head and the status changes
     (:func:`..lifecycle.consolidate_records`). Nothing runs when no pass was recorded. Never raises: a failure is
@@ -785,15 +784,12 @@ def after_passes(
     from ..captures import store_dir as captures_store_dir
 
     try:
-        with tempfile.TemporaryDirectory(prefix="memlib-records-") as work:
-            summary = lifecycle.consolidate_records(
-                stores,
-                work=Path(work),
-                action_lookup=EpisodeLookup(stores).action,
-                stop=stop,  # the service's stop, checked between steps
-                # the capture store: a landed procedure's record takes its capture's signature and applies
-                captures=captures_store_dir(stores.paths.state_dir),
-            )
+        summary = lifecycle.consolidate_records(
+            stores,
+            action_lookup=EpisodeLookup(stores).action,
+            # the capture store: a landed procedure's record takes its capture's signature and applies
+            captures=captures_store_dir(stores.paths.state_dir),
+        )
     except Exception as exc:  # noqa: BLE001 - the records never stop the request
         _error(stores, redact_error(f"item records: {type(exc).__name__}: {exc}"))
         return
@@ -806,7 +802,6 @@ def after_passes(
             "passes": list(recorded),
             "noted": summary["noted"],
             "status_changes": summary["changes"],
-            "bisected": summary["bisected"],
         },
     )
 
@@ -840,12 +835,11 @@ def _records_step(
     stores: Stores,
     recorded: list[str],
     emit: Callable[[dict], None] | None,
-    stop: Callable[[], bool] | None,
 ) -> None:
     """:func:`after_passes`, never stopping the slot: a failure is logged, and served is still published (its lag
     then shows the commits without records)."""
     try:
-        after_passes(stores, recorded, emit, stop=stop)
+        after_passes(stores, recorded, emit)
     except Exception as exc:  # noqa: BLE001 - the records never stop consolidation
         _error(stores, redact_error(f"item records: {type(exc).__name__}: {exc}"))
 
@@ -1224,7 +1218,7 @@ async def run_attention_pass(
         report.delivered = sorted(attention.delivered_seqs(home, pass_id))
     if outcome is not None:
         report.notes.extend(str(r) for r in (outcome.reasons or ()))
-    _records_step(stores, [pass_id] if stores.evidence.pass_exists(pass_id) else [], emit, supervise.stop.is_set)
+    _records_step(stores, [pass_id] if stores.evidence.pass_exists(pass_id) else [], emit)
     from ..memory_writer import publish
 
     try:

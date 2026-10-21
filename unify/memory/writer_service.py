@@ -44,7 +44,8 @@ Shutdown (:func:`.integration.async_pass.drain`) stops the service and returns o
 the model-call lanes are stopped.
 
 Files, under ``<home>/memory-state/memory-service/`` (harness-only; no box binds them): ``service.lock``,
-``service.json``, ``service.stop``, ``service-events.jsonl``, ``spend.jsonl`` (reserve and settle rows), and
+``service.json``, ``service.stop``, ``service-events.jsonl``, ``spend.jsonl`` (a ``run`` row at each start, then
+reserve and settle rows), and
 ``turns/<pass_id>/`` (``pass.json`` and one file per model turn).
 """
 
@@ -517,11 +518,16 @@ def _decimal(value: Any) -> Optional[Decimal]:
 
 
 def spend_totals(home: Path | str, *, without: Optional[str] = None) -> tuple[Decimal, Decimal]:
-    """``(committed, settled)`` USD from ``spend.jsonl``: a settled pass counts its settled amount, a pass only reserved
-    (it never settled: running, or killed) its whole reservation; *without* leaves one pass out. Decimal throughout."""
+    """``(committed, settled)`` USD of this run (the rows of ``spend.jsonl`` after the last ``run`` row, which the
+    service writes when it starts): a settled pass counts its settled amount, a pass only reserved (it never settled:
+    running, or killed) its whole reservation; *without* leaves one pass out. Decimal throughout."""
     reserved: dict[str, Decimal] = {}
     settled: dict[str, Decimal] = {}
     for row in _rows(service_dir(home) / SPEND_FILE):
+        if row.get("op") == "run":
+            # memory's spend cap is per run: what earlier runs spent is not counted
+            reserved, settled = {}, {}
+            continue
         pid = row.get("pass_id")
         if pid == without:
             continue
@@ -538,7 +544,8 @@ def spend_totals(home: Path | str, *, without: Optional[str] = None) -> tuple[De
 
 
 def pass_room(home: Path | str, pass_id: str, settings: Any) -> Decimal:
-    """What pass *pass_id* may spend: memory's spend cap less what every other pass committed (never below 0)."""
+    """What pass *pass_id* may spend: memory's spend cap less what every other pass of this run committed (never below
+    0)."""
     from .integration.switch import memory_cap_usd
 
     committed, _settled = spend_totals(home, without=pass_id)
@@ -1653,9 +1660,11 @@ async def step_async(
     try:
         service = Service(home, settings, lock_fd, started=at(), record_members=False)
         service.cap = memory_cap_usd(settings)
-        # a cap an earlier step reached stays as the service keeps it: noted once; a lane's refusal holds every later
-        # pass back (the service's own cap is the room, checked afresh each step)
-        reached = [r for r in events(home) if r.get("event") == "cap-reached"]
+        # a cap an earlier step of this run reached stays as the service keeps it: noted once; a lane's refusal holds
+        # every later pass of the run back (the service's own cap is the room, checked afresh each step)
+        rows = events(home)
+        starts = [i for i, r in enumerate(rows) if r.get("event") == "start"]
+        reached = [r for r in rows[(starts[-1] + 1) if starts else 0 :] if r.get("event") == "cap-reached"]
         service.cap_noted = bool(reached)
         service.capped = any(r.get("by") == "proxy" for r in reached)
         record = _hold_writer_row(home)
@@ -1797,6 +1806,8 @@ async def _serve(
     event(
         home, "start", cap_usd=_format(service.cap)
     )
+    # a new run: memory's spend cap counts from here (spend_totals)
+    _append(service_dir(home) / SPEND_FILE, {"v": 1, "op": "run", "pid": os.getpid(), "at": stamp(_now())})
     ledger = Ledger(home)
     resumable = pending_passes(home)
     ledger.return_orphans(live_pass_ids=resumable)

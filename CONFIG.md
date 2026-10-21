@@ -27,7 +27,7 @@ with.
 |---|---|---|
 | `UNIFY_MAX_OUTPUT_TOKENS` | `32768` | One turn's output, so a degenerate turn cannot bill a whole output window. |
 | `UNIFY_MAX_TOOL_LOOP_STEPS` | `300` | The steps of one request. |
-| `UNIFY_MEMORY_CAP_USD` | `20.00` | Memory's spend over the memory home's life: the writer and its helpers, and the episode-end forks when a lane relay holds them. It takes a plain decimal string and fails closed: an unpriced call is booked at its worst case, and once the cap is reached the library stops changing while the actor is still served from it. |
+| `UNIFY_MEMORY_CAP_USD` | `20.00` | The most memory may spend in one run (one `unify act`, including the writer service it ran), across the writer, its helpers and, when a lane relay holds them, the episode-end forks. It takes a plain decimal string and fails closed: a call without a reported charge counts at its model's worst case, and a call the provider refused before generating counts as 0. Once the cap is reached, the library stops changing for the rest of the run while the actor is still served from it. |
 
 ## Paths
 
