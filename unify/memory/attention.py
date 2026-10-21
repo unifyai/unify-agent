@@ -36,6 +36,12 @@ not reach (``spend_cap``, ``run_ended``, ``service_stopped``, ``lifetime``). The
 The end of one stage of a run that goes on (a ``suspend``) is not the run's end: nothing is marked then, and the next
 start hands every entry still owed again (those a stopped pass held go back with ``service_restart``, no miss).
 
+**Waiting for an episode.** An entry is handed only when every episode it names can be read (:func:`episode_resolver`):
+an episode is readable once it is recorded (indexed), and a running one through its latest in-episode segment record
+(``<episode>.s<n>``) when it has one. An entry naming a running episode with no segment record (a message posted
+mid-episode cites its sender's episode) stays ``open``, with one ``wait`` row as its evidence: it is not handed, so no
+pass can miss it, and it is handed once the episode is recorded. What still waits at the run's end is ``not_reached``.
+
 **Hand order** (:data:`HAND_ORDER`): bad news first, then the time-sensitive messages, oldest first within each kind.
 The age backstop: when the oldest open entry of any kind is older than the 90th-percentile age-at-hand of the entries
 handed in the last :data:`STARVATION_PASSES` passes, it is handed first. :data:`K` entries per pass, the same
@@ -1137,9 +1143,12 @@ class Ledger:
         rank = {k: i for i, k in enumerate(HAND_ORDER)}
         return sorted(entries, key=lambda e: (rank.get(e.kind, len(rank)), e.created_at, e.entry))
 
-    def hand(self, pass_id: str, k: int = K) -> list[AttentionEntry]:
+    def hand(
+        self, pass_id: str, k: int = K, *, ready: Callable[[AttentionEntry], bool] | None = None
+    ) -> list[AttentionEntry]:
         """Hand up to *k* open entries to *pass_id* (module docstring: order, the age backstop, alone after two
-        misses); returns them in the order handed."""
+        misses); returns them in the order handed. With *ready* (:func:`entry_ready`), an open entry it refuses waits
+        (module docstring: waiting for an episode): it is not handed, and its first wait is recorded (a ``wait`` row)."""
         if not isinstance(pass_id, str) or not pass_id:
             raise LedgerError("pass_id is the pass's id, a non-empty string")
         if isinstance(k, bool) or not isinstance(k, int) or k < 1:
@@ -1148,6 +1157,15 @@ class Ledger:
             rows = self.rows()
             state = fold(rows)
             pending = [e for e in state.values() if e.state == "open"]
+            if ready is not None:
+                waiting = [e for e in pending if not ready(e)]
+                if waiting:
+                    noted = {r.get("entry") for r in rows if r.get("op") == "wait"}
+                    at = self.now()
+                    self._write([{"op": "wait", "entry": e.entry, "why": "episode_not_recorded",
+                                  "episodes": list(e.refs.episodes), "at": at}
+                                 for e in waiting if e.entry not in noted])  # fmt: skip
+                    pending = [e for e in pending if e not in waiting]
             if not pending:
                 return []
             alone = [e for e in pending if e.misses >= ALONE_AFTER_MISSES or e.undecided >= ALONE_AFTER_MISSES]
@@ -1514,14 +1532,81 @@ def _distance(a: str, b: str) -> int:
 # --- what a pass is given ------------------------------------------------------------------------------------------------
 
 
-def pass_episodes(entries: Iterable[AttentionEntry]) -> list[str]:
+def pass_episodes(
+    entries: Iterable[AttentionEntry], *, resolve: Callable[[str, int | None], str | None] | None = None
+) -> list[str]:
     """The recorded episodes (and segments, as ``<episode>.s<n>``) whose records and staging an attention pass exports
-    for *entries*, in hand order."""
+    for *entries*, in hand order. With *resolve* (:func:`episode_resolver`) each is the name it can be read by now, and
+    one that cannot be read yet is left out (it is never asked for, so no pass breaks on it)."""
     out: list[str] = []
     for e in entries:
         for ep in e.refs.episodes:
-            out.append(staging_name(ep, e.refs.segment))
+            name = resolve(ep, e.refs.segment) if resolve is not None else staging_name(ep, e.refs.segment)
+            if name is not None:
+                out.append(name)
     return list(dict.fromkeys(out))
+
+
+def episode_resolver(
+    state_dir: Path | str, indexed: Callable[[str], bool]
+) -> Callable[[str, int | None], str | None]:
+    """The name an episode (or one of its segments) can be read by now, or None while it cannot (module docstring:
+    waiting for an episode). *indexed* says whether an episode is recorded (the evidence index). A segment
+    (``<episode>.s<n>``) reads from its own record, which its checkpoint wrote; an episode with no segment named reads
+    from its record once recorded, and while it runs from its latest segment record, if it has one. Its answers are
+    kept for the resolver's life (one hand or one pass); both only ever become readable."""
+    from . import segments
+
+    root = Path(state_dir) / segments.SEGMENTS_DIR
+    seen: dict[tuple[str, int | None], str | None] = {}
+
+    def has_record(name: str) -> bool:
+        try:
+            return stat.S_ISREG(os.lstat(segments.snapshot_path(state_dir, name)).st_mode)
+        except OSError:
+            return False
+
+    def latest(episode: str) -> str | None:
+        try:
+            names = os.listdir(root)
+        except OSError:
+            return None
+        best: tuple[int, str] | None = None
+        for name in names:
+            head, n = segments.split_staging_name(name)
+            if head == episode and n is not None and (best is None or n > best[0]) and has_record(name):
+                best = (n, name)
+        return best[1] if best else None
+
+    def resolve(episode: str, segment: int | None) -> str | None:
+        key = (episode, segment)
+        if key not in seen:
+            if segment is not None:
+                name = staging_name(episode, segment)
+                seen[key] = name if has_record(name) or indexed(episode) else None
+            else:
+                seen[key] = episode if indexed(episode) else latest(episode)
+        return seen[key]
+
+    return resolve
+
+
+def entry_ready(entry: AttentionEntry, resolve: Callable[[str, int | None], str | None]) -> bool:
+    """Whether every episode *entry* names can be read now (:func:`episode_resolver`); an entry naming none is ready."""
+    return all(resolve(ep, entry.refs.segment) is not None for ep in entry.refs.episodes)
+
+
+def indexed_by(evidence: Any) -> Callable[[str], bool]:
+    """Whether an episode is recorded, from the evidence index; a read that fails says not yet (the entry waits and
+    is asked about again; a wait costs no miss)."""
+
+    def indexed(episode: str) -> bool:
+        try:
+            return bool(evidence.episode_exists(episode))
+        except Exception:  # noqa: BLE001 - unknown now: wait
+            return False
+
+    return indexed
 
 
 def export_material(
@@ -1730,6 +1815,11 @@ class HomeSources:
 
             self._stores = open_stores(self.paths, busy_timeout_s=60.0)
         return self._stores
+
+    def resolver(self) -> Callable[[str, int | None], str | None]:
+        """:func:`episode_resolver` for this home: recorded episodes from the evidence index, segment records under
+        the state dir."""
+        return episode_resolver(self.state_dir, indexed_by(self.stores().evidence))
 
     def _visible(self) -> bool:
         if self._checker_visible is None:

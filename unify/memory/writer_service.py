@@ -1452,15 +1452,16 @@ async def _run_pass(
         Exception
     ) as exc:  # noqa: BLE001 - a pass that broke: its entries go back, the service goes on
         event(home, "error", pass_id=pass_id, error=type(exc).__name__, where=_where(exc))
-        ledger.return_unread(pass_id)
+        returned = ledger.return_unread(pass_id)
         # no report: the pass's own turn files say what it spent (lost and unpriced calls at the worst case)
+        settled = _format(_raised_settle(home, pass_id, folder, settings, pass_doc))
         _append(
             service_dir(home) / SPEND_FILE,
-            {"v": 1, "op": "settle", "pass_id": pass_id,
-             "usd": _format(_raised_settle(home, pass_id, folder, settings, pass_doc)), "at": stamp(_now())},  # fmt: skip
+            {"v": 1, "op": "settle", "pass_id": pass_id, "usd": settled, "at": stamp(_now())},
         )
         pass_doc.update(state="ended", ended_at=stamp(_now()), error=type(exc).__name__)
         _atomic_json(pass_doc_path, pass_doc)
+        _raised_pass_row(home, pass_id, handed, exc, returned, settled, settings)
         return None
     finally:
         service.set("idle", pass_id=None, pass_deadline=None)
@@ -1572,6 +1573,31 @@ IDLE_WHY = (
     "nothing_handed",
     "busy",
 )
+
+
+def _raised_pass_row(
+    home: Path, pass_id: str, handed: list, exc: BaseException, returned: Any, settled: str, settings: Any
+) -> None:
+    """A pass that raised still gets its ``pass-results.jsonl`` row (rev 2: no failed pass is silent): ``ended`` is
+    ``error``, with the exception's class and innermost frame (never its message); its USD is unknown (the settle above
+    is the spend file's figure). A row that cannot be written is an event, and the service goes on."""
+    try:
+        from .integration.consolidate import AttentionPassReport
+        from .metering import write_pass_row
+
+        innermost = _where(exc, frames=1)
+        report = AttentionPassReport(
+            pass_id,
+            [e.entry for e in handed],
+            "error",
+            settle_usd=settled,
+            returned=sorted(returned or ()),
+            error_class=type(exc).__name__,
+            error_where=innermost[0] if innermost else "unknown",
+        )
+        write_pass_row(home, report, settings=settings)
+    except Exception as row_exc:  # noqa: BLE001 - the row is evidence; the service goes on without it
+        event(home, "pass-row-error", pass_id=pass_id, error=type(row_exc).__name__, where=_where(row_exc))
 
 
 def _where(exc: BaseException, frames: int = 8) -> list[str]:
@@ -1699,7 +1725,12 @@ async def _iteration(
         out.update(why_idle=why, stop=why)
         return out
     pass_id = secrets.token_hex(8)
-    handed = ledger.hand(pass_id, ledger_k(settings))
+    # an entry is handed only once every episode it names can be read (a running one with no segment record waits,
+    # with no miss), so no pass asks for an episode that is not recorded yet
+    from .attention import HomeSources, entry_ready
+
+    resolve = HomeSources(home, state_dir=ledger.state_dir).resolver()
+    handed = ledger.hand(pass_id, ledger_k(settings), ready=lambda e: entry_ready(e, resolve))
     if not handed:
         out["why_idle"] = "nothing_handed"
         return out

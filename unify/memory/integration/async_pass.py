@@ -99,6 +99,18 @@ class Supervised:
     outcome: Any
     ended: str  # landed | refused | deadline | cancelled | error
     seconds: float
+    #: with ``ended == "error"``: what the pass raised, as :func:`error_of` gives it (never a message)
+    error: dict | None = None
+
+
+def error_of(exc: BaseException) -> dict:
+    """What a pass raised, for its pass row: ``{"class", "where"}``, the exception's class name and the innermost frame
+    as ``file:line:function`` (file names only: no message, no value, so no recorded text reaches the row)."""
+    import traceback
+
+    frames = traceback.extract_tb(exc.__traceback__) if exc.__traceback__ is not None else []
+    where = f"{Path(frames[-1].filename).name}:{frames[-1].lineno}:{frames[-1].name}" if frames else "unknown"
+    return {"class": type(exc).__name__, "where": where}
 
 
 class Supervisor:
@@ -146,7 +158,8 @@ class Supervisor:
                 stopper.cancel()
         if task in done:
             if task.exception() is not None:
-                result = Supervised(None, "error", self.clock() - t0)
+                # the pass's exception is kept as its class and frame (rev 2: a failed pass row always says why)
+                result = Supervised(None, "error", self.clock() - t0, error=error_of(task.exception()))
             else:
                 out = task.result()
                 result = Supervised(

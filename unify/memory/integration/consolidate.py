@@ -2082,6 +2082,10 @@ class AttentionPassReport:
     #: set by the service: the entries verified read, and those that went back
     read: list[str] = field(default_factory=list)
     returned: list[str] = field(default_factory=list)
+    #: with ``ended == "error"``: why, as a class name and where (``file:line:function``, or the step that refused);
+    #: never a message (rev 2: every failed pass row carries them)
+    error_class: str | None = None
+    error_where: str | None = None
 
 
 def _pass_reads(stores: Stores, pass_id: str, writer: Any) -> Any:
@@ -2162,6 +2166,8 @@ async def run_attention_pass(
             "error",
             notes=["no pass limits for the effort"],
             reads=attention.PassReads(),
+            error_class="NoPassLimits",
+            error_where="run_attention_pass:limits",
         )
     scale = cfg.effort_scale[level]
     cap = cfg.cap_usd * scale
@@ -2183,7 +2189,8 @@ async def run_attention_pass(
         worst = pass_call_worst_case(settings)
     except NoBound as exc:
         return AttentionPassReport(
-            pass_id, [e.entry for e in handed], "error", notes=[str(exc)[:300]], reads=attention.PassReads()
+            pass_id, [e.entry for e in handed], "error", notes=[str(exc)[:300]], reads=attention.PassReads(),
+            error_class=type(exc).__name__, error_where="run_attention_pass:worst_case",
         )
     # what a killed run of this pass already spent, per lane, as its turn files stand before this run writes any (a
     # run that diverges from it overwrites them): its priced calls, and its unpriced and lost ones at the worst case.
@@ -2300,13 +2307,19 @@ async def run_attention_pass(
         redactor=Redactor.from_environ(os.environ),
         **helpers,
     )
-    req = PassRequest("attention", None, attention.pass_episodes(handed), False, None, attention=list(handed))
+    # each episode by the name it can be read by now (a running one by its latest segment record); one that cannot be
+    # read yet is not asked for (the ledger hands no entry naming one; a resumed pass's may)
+    resolve = attention.episode_resolver(paths.state_dir, attention.indexed_by(stores.evidence))
+    req = PassRequest(
+        "attention", None, attention.pass_episodes(handed, resolve=resolve), False, None, attention=list(handed)
+    )
     if not resume:
         try:
             _reserve(stores, pass_id, cap, reserve, cfg.max_calls[level], scale)
         except OSError as exc:
             _error(stores, f"{pass_id}: ledger: {type(exc).__name__}: {exc}")
             report.ended = "error"
+            report.error_class, report.error_where = type(exc).__name__, "run_attention_pass:reserve"
             report.reads = attention.PassReads()
             return report
     start = _start_event(req, pass_id, cfg.model, effort, cap, cfg.max_calls[level], scale)
@@ -2321,10 +2334,16 @@ async def run_attention_pass(
         supervised = await supervise(lambda: writer.run(req, pass_id))
         outcome = supervised.outcome
         report.ended = supervised.ended
+        if supervised.error is not None:
+            report.error_class, report.error_where = supervised.error["class"], supervised.error["where"]
         if outcome is None:
             failure_code = "deadline" if supervised.ended == "deadline" else "writer_error"
     except Exception as exc:  # noqa: BLE001 - the pass recorded itself
         report.ended = "error"
+        from .async_pass import error_of
+
+        raised = error_of(exc)
+        report.error_class, report.error_where = raised["class"], raised["where"]
         failure_code = "writer_error"
         report.notes.append(redact_error(f"pass error: {type(exc).__name__}: {exc}")[:300])
         _error(stores, f"{pass_id}: pass error: {type(exc).__name__}")
