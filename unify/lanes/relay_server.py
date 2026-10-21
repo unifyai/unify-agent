@@ -101,6 +101,8 @@ MAX_REQUEST_BYTES = 64 << 20
 MAX_RESPONSE_BYTES = 64 << 20
 MAX_EVENT_LINE = 16 << 20
 MAX_CONFIG_BYTES = 4 << 20
+#: The piece a refused request's body is read and dropped in.
+DISCARD_CHUNK = 64 << 10
 #: Calls in flight upstream at once, over all lanes, and how long a call waits for a slot before ``*_in_flight``.
 MAX_IN_FLIGHT = 8
 BUSY_WAIT_S = 30.0
@@ -1146,25 +1148,31 @@ class Relay:
 
     @staticmethod
     def _discard_body(handler: "Handler") -> None:
-        """Read a refused request's body (within the request bound) before answering, so closing the connection never
-        resets it before the caller has read the answer."""
+        """Read and drop a refused request's body (within the request bound) before answering, so closing the
+        connection never resets it before the caller has read the answer. It is read in pieces of
+        :data:`DISCARD_CHUNK` bytes, so a refused body never takes more memory than one piece.
+        """
         if (
             handler.body_read
             or handler.headers is None
             or handler.headers.get_all("Transfer-Encoding")
         ):
             return
-        lengths = handler.headers.get_all("Content-Length") or []
-        if (
-            len(lengths) == 1
-            and lengths[0].strip().isdigit()
-            and int(lengths[0].strip()) <= MAX_REQUEST_BYTES
-        ):
-            try:
-                handler.rfile.read(int(lengths[0].strip()))
-            except OSError:
-                pass
         handler.body_read = True
+        lengths = handler.headers.get_all("Content-Length") or []
+        if not (len(lengths) == 1 and lengths[0].strip().isdigit()):
+            return
+        left = int(lengths[0].strip())
+        if left > MAX_REQUEST_BYTES:
+            return
+        try:
+            while left > 0:
+                piece = handler.rfile.read(min(DISCARD_CHUNK, left))
+                if not piece:
+                    return
+                left -= len(piece)
+        except OSError:
+            pass
 
     @staticmethod
     def _send_json(handler: "Handler", status: int, doc: dict) -> None:

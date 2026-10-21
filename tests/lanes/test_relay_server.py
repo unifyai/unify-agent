@@ -765,3 +765,39 @@ def test_a_body_that_asks_for_exactly_one_completion_is_served(tmp_path, upstrea
     with serving(doc) as relay:
         status, _reply = call(relay.port, "writer", tokens["writer"], {**BODY, "n": 1})
     assert status == 200 and upstream.requests[0]["body"]["n"] == 1
+
+
+def test_a_refused_large_body_is_read_in_pieces_and_the_refusal_still_arrives(
+    tmp_path, upstream, monkeypatch
+):
+    """A refused body is drained in pieces of DISCARD_CHUNK (never one read of the whole bound), and the caller gets
+    the refusal rather than a reset connection."""
+    sizes: list[int] = []
+    real = rs.Relay._discard_body
+
+    def counting(handler):
+        rfile = handler.rfile
+
+        class Counting:
+            def read(self, n=-1):
+                sizes.append(n)
+                return rfile.read(n)
+
+        handler.rfile = Counting()
+        try:
+            real(handler)
+        finally:
+            handler.rfile = rfile
+
+    monkeypatch.setattr(rs.Relay, "_discard_body", staticmethod(counting))
+    doc, tokens = _doc(tmp_path / "lanes", upstream.base)
+    big = json.dumps({**BODY, "padding": "x" * (5 << 20)}).encode()
+    with serving(doc) as relay:
+        status, reply = call(relay.port, "writer", "not-this-lanes-token", raw=big)
+    assert status == 403 and reply["error"]["reason"] == "no_lane_token"
+    assert (
+        sizes
+        and max(sizes) == rs.DISCARD_CHUNK
+        and sum(sizes) >= len(big) - rs.DISCARD_CHUNK
+    )
+    assert upstream.requests == []
