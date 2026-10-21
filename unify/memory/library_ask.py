@@ -28,6 +28,7 @@ if "wrap_call" not in globals():  # imported as a harness module of its own, not
         RUN_TIMEOUT_S,
         Annotated,
         Any,
+        ArgumentError,
         ContractError,
         Item,
         MinLen,
