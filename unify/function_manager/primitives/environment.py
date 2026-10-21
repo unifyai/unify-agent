@@ -1,40 +1,26 @@
 """Environment namespaces: the callable surface of the environment Unify runs in.
 
-Unify's own managers are fixed ``primitives`` namespaces (``primitives.actor``).
 An environment the assistant is deployed into (a benchmark's apps, a company's
-internal services) registers its surface the same way at start-up, from the
-factories named by ``UNIFY_ENV_NAMESPACES`` (``package.module:factory``,
-several separated by commas). A registered namespace is then treated like
-``primitives.actor``:
-
-- it is a valid primitive alias and in the default runtime scope, and a
-  ``Primitives`` object whose scope holds it resolves ``primitives.<name>`` to
-  it. An actor's sandbox holds only the primitives its environments inject,
-  so the actor side adds an environment for the registered namespaces;
-- each method is a primitive row (signature, docstring, effect label) that
-  function search finds and ``execute_function`` runs by its dotted name;
-- ``add_functions`` records ``primitives.<name>.<method>`` calls in
-  ``depends_on``, and a stored function gets the namespace injected when it is
-  loaded later (``construct_sandbox_root("primitives")``);
-- the actor's prompt carries a short listing of it.
+internal services) registers its surface at start-up, from the factories named
+by ``UNIFY_ENV_NAMESPACES`` (``package.module:factory``, several separated by
+commas), or from code with :func:`register_environment`. Each namespace is then
+``primitives.<name>`` in the actor's cells, and the actor's prompt carries a
+short listing of it.
 
 A factory takes no arguments and returns an :class:`EnvironmentSurface`, or a
 mapping with the same fields:
 
 - ``namespaces``: :class:`EnvironmentNamespace` entries, each method with its
   callable, signature, docstring and an effect label (``read``, ``write`` or
-  ``destructive``), the way the legacy integration rows carried an
-  ``action_class``;
-- ``modules``: import names the environment supplies, so a stored function
-  that imports one is not asked for a pip dependency (they join
-  ``ENVIRONMENT_MODULES``);
+  ``destructive``);
+- ``modules``: import names the environment supplies;
 - ``globals``: further sandbox globals the environment binds, such as the name
   its own documentation uses for the same surface.
 
 A factory that fails, or a surface that does not validate, raises at start-up:
 an environment that cannot register would otherwise run with a surface the
 prompts do not describe. With ``UNIFY_ENV_NAMESPACES`` unset nothing is
-registered and every code path is the shipped one.
+registered.
 """
 
 from __future__ import annotations
@@ -42,7 +28,6 @@ from __future__ import annotations
 import importlib
 import inspect
 import keyword
-import sys
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence
@@ -52,11 +37,8 @@ EFFECTS: tuple[str, ...] = ("read", "write", "destructive")
 ``write`` creates or changes state, ``destructive`` deletes or overwrites it."""
 
 CLASS_PATH_PREFIX = "environment:"
-"""``primitive_class`` of an environment namespace's rows: not an importable
-class path, so no row can be confused with a manager class."""
-
-RESERVED_NAMES = frozenset({"actor"})
-"""Namespace names Unify's own managers own."""
+"""The ``__module__`` of a namespace's method wrappers: not an importable module,
+so the sandboxed worker serves each call from the harness."""
 
 
 @dataclass(frozen=True)
@@ -77,11 +59,6 @@ class EnvironmentNamespace:
     name: str
     methods: tuple[EnvironmentMethod, ...]
     description: str = ""
-
-    @property
-    def class_path(self) -> str:
-        """The ``primitive_class`` its rows carry."""
-        return f"{CLASS_PATH_PREFIX}{self.name}"
 
     def method(self, name: str) -> Optional[EnvironmentMethod]:
         for method in self.methods:
@@ -135,11 +112,7 @@ def is_async_method(method: EnvironmentMethod) -> bool:
 
 
 def method_docstring(namespace: str, method: EnvironmentMethod) -> str:
-    """The docstring a method's primitive row and ``help()`` show.
-
-    The summary names the effect, so it survives the compaction that search
-    results apply to primitive rows (summary plus ``Parameters``).
-    """
+    """The docstring ``help(primitives.<namespace>.<method>)`` shows; its summary names the effect."""
     head = f"`primitives.{namespace}.{method.name}{method.signature}` (effect: {method.effect})."
     body = inspect.cleandoc(method.docstring or "")
     if not body:
@@ -191,11 +164,6 @@ class EnvironmentNamespaceObject:
 
 def _documented(namespace: str, method: EnvironmentMethod) -> Callable[..., Any]:
     call = method.call
-    # UNIFY_FUNCTION_CASES: every environment call goes through here, so this
-    # is where a call made inside a stored function joins its recorded case;
-    # nothing is recording while the switch is off.
-    from unify.function_manager import store_cases
-
     # The observer seam (observers.py): with no observer pushed the call takes
     # the path below unchanged; with one, the same path runs inside its
     # before/after hooks unless an observer intercepts it.
@@ -214,14 +182,6 @@ def _documented(namespace: str, method: EnvironmentMethod) -> Callable[..., Any]
     if inspect.iscoroutinefunction(call):
 
         async def run_async(args: tuple, kwargs: Dict[str, Any]) -> Any:
-            if store_cases.recording():
-                return await store_cases.observe_primitive_async(
-                    namespace,
-                    method.name,
-                    call,
-                    args,
-                    kwargs,
-                )
             return await call(*args, **kwargs)
 
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -237,14 +197,6 @@ def _documented(namespace: str, method: EnvironmentMethod) -> Callable[..., Any]
     else:
 
         def run(args: tuple, kwargs: Dict[str, Any]) -> Any:
-            if store_cases.recording():
-                return store_cases.observe_primitive(
-                    namespace,
-                    method.name,
-                    call,
-                    args,
-                    kwargs,
-                )
             return call(*args, **kwargs)
 
         def wrapper(*args: Any, **kwargs: Any) -> Any:  # type: ignore[misc]
@@ -319,10 +271,6 @@ def _coerce_namespace(item: Any) -> EnvironmentNamespace:
             f"a namespace must be an EnvironmentNamespace or a mapping, not {type(item).__name__}",
         )
     _identifier(item.name, "namespace name")
-    if item.name in RESERVED_NAMES:
-        raise EnvironmentNamespaceError(
-            f"primitives.{item.name} belongs to Unify's own managers",
-        )
     methods = tuple(_coerce_method(m, item.name) for m in item.methods)
     if not methods:
         raise EnvironmentNamespaceError(f"primitives.{item.name} has no methods")
@@ -450,11 +398,6 @@ def load_from_spec(spec: str) -> list[EnvironmentSurface]:
 def _rebuild() -> None:
     global _surface
     _surface = _merge(_registered) if _registered else None
-    # Rows are seeded from the registry once per store and process; a surface
-    # registered after that must reach the ``primitives`` table too.
-    fm = sys.modules.get("unify.function_manager.function_manager")
-    if fm is not None:
-        fm._PRIMITIVES_SEEDED_FOR.clear()
 
 
 def load_environment_namespaces() -> Optional[EnvironmentSurface]:
@@ -523,12 +466,6 @@ def environment_namespace(alias: str) -> Optional[EnvironmentNamespace]:
     return environment_namespaces().get(alias)
 
 
-def namespace_for_class_path(class_path: str) -> Optional[EnvironmentNamespace]:
-    if not isinstance(class_path, str) or not class_path.startswith(CLASS_PATH_PREFIX):
-        return None
-    return environment_namespace(class_path[len(CLASS_PATH_PREFIX) :])
-
-
 def environment_modules() -> frozenset[str]:
     surface = environment_surface()
     return surface.modules if surface else frozenset()
@@ -572,7 +509,6 @@ __all__ = [
     "is_async_method",
     "load_environment_namespaces",
     "method_docstring",
-    "namespace_for_class_path",
     "namespace_object",
     "register_environment",
 ]

@@ -18,5 +18,4 @@ pytest -o python_files='eval_*.py' -p no:cacheprovider model_evals/eval_tool_cho
 | `eval_tool_choice.py` | the provider enforces `tool_choice="required"` against a contrary instruction | `tests/async_tool_loop/test_tool_loop_limits.py` |
 | `eval_refused_call_retry.py` | the model reads a refusal and re-issues the call with the parameters named | `tests/async_tool_loop/test_unknown_arguments.py` |
 | `eval_time_awareness.py` | the model's use of the time it is given | `tests/async_tool_loop/test_time_awareness_eval.py` |
-| `eval_store_review_judgement.py` | the storage review judges a function worth storing | `tests/actor/code_act/test_can_compose_and_store.py` |
 

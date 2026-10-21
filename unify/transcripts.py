@@ -1,7 +1,7 @@
 """Append-only session transcripts on disk.
 
-Every agent conversation -- the actor's loop, a sub-agent's, the storage
-review's, the context compressor's -- is one *session*, keyed by the LLM client
+Every agent conversation -- the actor's loop, a helper's, the context
+compressor's -- is one *session*, keyed by the LLM client
 that carries it, so a loop restarted after context compression stays in the
 session it started. Each session appends its messages, tool calls and results,
 in the order the loop publishes them, as JSON lines to
@@ -23,9 +23,8 @@ own), which no cell can reach (unify/sandbox.py).
 
 Nothing is redacted from what the model saw, except that the value of any
 environment variable whose name contains KEY, TOKEN, SECRET or PASSWORD, and any
-provider credential unillm holds, is replaced by ``[REDACTED:<name>]``, and
-every outcome section the harness rendered is replaced by
-``[REDACTED:outcome]``, before a line is written, in either directory.
+provider credential unillm holds, is replaced by ``[REDACTED:<name>]`` before
+a line is written, in either directory.
 
 A session's lines can also be handed, as written, to a tap (:func:`tap`): the
 memory run journals its episode's transcript that way, so the turns survive a
@@ -190,10 +189,7 @@ def _secret_values() -> list[tuple[str, str]]:
 
 
 def scrub(line: str) -> str:
-    """Replace every credential value in *line*, raw or JSON-escaped, and
-    every outcome section the harness rendered (:func:`unify.outcome.redact`)."""
-    from unify import outcome
-
+    """Replace every credential value in *line*, raw or JSON-escaped."""
     for name, value in _secret_values():
         marker = f"[REDACTED:{name}]"
         if value in line:
@@ -201,7 +197,7 @@ def scrub(line: str) -> str:
         escaped = json.dumps(value, ensure_ascii=False)[1:-1]
         if escaped != value and escaped in line:
             line = line.replace(escaped, marker)
-    return outcome.redact(line)
+    return line
 
 
 # ---------------------------------------------------------------------------

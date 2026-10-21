@@ -49,7 +49,6 @@ import functools
 import inspect
 import itertools
 import json
-import linecache
 import logging
 import os
 import sys
@@ -158,27 +157,6 @@ def _importable(name: str, value: Any) -> Optional[list]:
             return ["attr", module, name]
     except Exception:  # noqa: BLE001
         return None
-    return None
-
-
-def _stored_function_code(value: Any) -> Optional[types.CodeType]:
-    """The code of the stored function *value* wraps, if it wraps one.
-
-    Stored functions are compiled under ``<function:NAME>``
-    (unify/function_manager/source_labels.py); the function manager's
-    lineage wrapper keeps the raw function as ``__wrapped__``.
-    """
-    from unify.function_manager.source_labels import function_source_filename
-
-    prefix = function_source_filename("")[:-1]
-    fn = value
-    for _ in range(8):
-        if isinstance(fn, types.FunctionType):
-            code = fn.__code__
-            return code if code.co_filename.startswith(prefix) else None
-        fn = getattr(fn, "__wrapped__", None)
-        if fn is None:
-            return None
     return None
 
 
@@ -602,7 +580,7 @@ class PythonWorker:
         return decode(value, tagged=tagged)
 
     # -- namespace sync --------------------------------------------------------
-    def _describe_global(self, name: str, value: Any, record: bool = False) -> dict:
+    def _describe_global(self, name: str, value: Any) -> dict:
         from unify.common.async_tool_loop import SteerableToolHandle
         from unify.common.asyncio_compat import run_coro_sync
         from unify.common.cell_models import ModelCallFailed, ModelRequestError
@@ -637,36 +615,6 @@ class PythonWorker:
             # imported in the worker would dial it from inside the sandbox,
             # which does not reach it, so it is served from here.
             return self._remote(name, value)
-        from unify.function_manager.source_labels import StoredSource
-
-        if isinstance(value, StoredSource):
-            # Bound by a read from its stored source; never executed here.
-            desc = {
-                "kind": "function",
-                "source": value.source,
-                "filename": value.filename,
-            }
-            if record:
-                desc["record"] = True
-            return desc
-        code = _stored_function_code(value)
-        if code is not None:
-            entry = linecache.cache.get(code.co_filename)
-            if entry is None:
-                return {
-                    "kind": "refused",
-                    "reason": "the stored function's source is not available to "
-                    "define it in the worker",
-                }
-            desc = {
-                "kind": "function",
-                "source": "".join(entry[2]),
-                "filename": code.co_filename,
-            }
-            if record:
-                # The core tool surface: its calls are recorded here.
-                desc["record"] = True
-            return desc
         if _model_written(value):
             # Defined by model code in this namespace; it runs only in the
             # worker, which defines its own copy when it runs that code.
@@ -691,21 +639,16 @@ class PythonWorker:
     def _remote(name: str, value: Any) -> dict:
         from unify.function_manager.steering import RUNTIME_GLOBAL, SteeringRuntime
 
-        desc = {
+        return {
             "kind": "remote",
             "callable": callable(value),
             "async": _async_callable(value),
             "repr": short_repr(value, 200),
             "runtime": name == RUNTIME_GLOBAL and isinstance(value, SteeringRuntime),
         }
-        if _function_library(value) is not None:
-            # The core tool surface: ``functions.run`` runs in the worker.
-            desc["library"] = "functions"
-        return desc
 
     def _manifest(self, shadow: Dict[str, Any]) -> dict:
         want: Dict[str, dict] = {}
-        record = _function_library(shadow.get("functions")) is not None
         for name, value in list(shadow.items()):
             if not isinstance(name, str) or name in _SKIP:
                 continue
@@ -713,7 +656,7 @@ class PythonWorker:
                 continue
             if name in self._base and self._base[name] is value:
                 continue
-            want[name] = self._describe_global(name, value, record=record)
+            want[name] = self._describe_global(name, value)
         changed: Dict[str, dict] = {}
         for name, desc in want.items():
             # A root rebinds every cell (steering wraps ``primitives`` anew);
@@ -825,8 +768,7 @@ class PythonWorker:
         op = msg.get("op")
         reply: Dict[str, Any] = {"op": "reply", "id": msg.get("id")}
         try:
-            with self._recording(msg.get("cases"), shadow):
-                await self._answer(op, msg, shadow, reply)
+            await self._answer(op, msg, shadow, reply)
         except asyncio.CancelledError:
             reply["error"] = {
                 "type": "CancelledError",
@@ -847,30 +789,6 @@ class PythonWorker:
         except WorkerDied:
             pass
 
-    @staticmethod
-    def _recording(cases: Any, shadow: Dict[str, Any]) -> Any:
-        """the core tool surface: the environment calls served inside add
-        to the cases of the stored-function calls the request came from."""
-        import contextlib
-
-        stack = contextlib.ExitStack()
-        library = _function_library(shadow.get("functions"))
-        if not cases or library is None or not isinstance(cases, list):
-            return stack
-        from unify.function_manager import store_cases
-
-        for token in cases:
-            stack.enter_context(store_cases.tracing(library._case_pending(token)))
-        return stack
-
-    def _library(self, shadow: Dict[str, Any]) -> Any:
-        library = _function_library(shadow.get("functions"))
-        if library is None or not self._exposed_remote("functions"):
-            raise BoundaryRefusal(
-                "stored functions are recorded only where the session's "
-                "`functions` library is exposed",
-            )
-        return library
 
     async def _answer(
         self,
@@ -879,32 +797,12 @@ class PythonWorker:
         shadow: Dict[str, Any],
         reply: Dict[str, Any],
     ) -> None:
-        if op == "fn_begin":
-            reply["value"] = self.encode(
-                await self._library(shadow)._begin(
-                    name=str(msg.get("name")),
-                    mode=str(msg.get("mode")),
-                    args=list(self.decode(msg.get("args") or [], shadow)),
-                    kwargs=dict(self.decode(msg.get("kwargs") or {}, shadow)),
-                ),
-            )
-            return
-        if op == "fn_end":
-            reply["value"] = self.encode(
-                await self._library(shadow)._end(
-                    token=msg.get("token"),
-                    result=self.decode(msg.get("result"), shadow),
-                    error=msg.get("error"),
-                    abandoned=bool(msg.get("abandoned")),
-                ),
-            )
-            return
         if op == "doc":
             from unify.actor import core_surface
 
             target = msg.get("target")
             if not target:
-                reply["value"] = core_surface.index_help(shadow)
+                reply["value"] = core_surface.INDEX_HELP
                 return
             reply["value"] = core_surface.help_text(
                 self._resolve(shadow, target),
@@ -948,11 +846,6 @@ class PythonWorker:
                     and method in child.RUNTIME_NOTES
                 ):
                     getattr(runtime, method)(*list(msg.get("args") or [])[:1])
-            elif event == "function_used":
-                fn = shadow.get(str(msg.get("name")))
-                on_call = getattr(fn, "_on_call", None) if fn is not None else None
-                if callable(on_call):
-                    on_call()
         except Exception:  # noqa: BLE001 - notes are best effort by design
             logger.debug("worker note %r failed", event, exc_info=True)
 
@@ -1164,7 +1057,7 @@ class PythonWorker:
 
 
 #: What the worker asks of the harness, each served in a task of its own.
-_SERVED = frozenset({"call", "describe", "dir", "fn_begin", "fn_end", "doc"})
+_SERVED = frozenset({"call", "describe", "dir", "doc"})
 
 
 _PLAIN_TYPES = (
@@ -1230,15 +1123,6 @@ def _environment_global(name: str, value: Any) -> bool:
     except Exception:  # noqa: BLE001 - an environment that fails to load binds nothing
         return False
     return name in bound and bound[name] is proxy_target(value)
-
-
-def _function_library(value: Any) -> Any:
-    """*value* when it is a core-surface ``functions`` library, else None."""
-    if value is None:
-        return None
-    from unify.actor.core_surface import FunctionLibrary
-
-    return value if isinstance(value, FunctionLibrary) else None
 
 
 def _no_refs(value: Any, where: str) -> Any:

@@ -1,26 +1,9 @@
-"""The checked outcome of a session, posted by the environment that ran it.
+"""The checked outcome of a request, posted by the environment that ran it.
 
-The storage review that follows a session decides what the libraries keep,
-and until now it knew only what the agent said about its own work. An
-environment that checks the work (a benchmark's grader, a user's verdict)
-can post the result here, into the harness process: the review of that
-session then reads it in a section of its own, marked as coming from the
-checker and not from the agent.
-
-The outcome is held in memory, on the session's handle. It is never
-written to a file and never put in the environment, so nothing the agent
-runs through the workspace can read it from disk. The section the review
-reads carries the verdict only (:func:`render`): whether the task was solved,
-the score and how many checks passed, never a check's name or reason or the
-checker's summary, which can name the expected answer. Every section
-:func:`render` builds is remembered (in memory) so that the session
-transcripts (unify/transcripts.py) can replace it with :data:`REDACTED` in
-every line they write (:func:`redact`), and a library write that carries one
-is refused (:func:`refuse_carried`): the store is read by every later cell.
-``unify act --jsonl``
-receives it as a control line on the stdin channel the driving program
-already writes (``{"outcome": {...}}``); a program that runs the actor in
-process calls :func:`post` itself.
+An environment that checks the work (a benchmark's grader, a user's verdict) gives it to the harness as a control
+line on the stdin channel ``unify act --jsonl`` already reads (``{"outcome": {...}}``). With memory on, the
+request's memory run keeps the verdict as the episode's checked signal (unify/memory/integration/request.py);
+with memory off, the line is refused.
 
 The schema::
 
@@ -30,21 +13,15 @@ The schema::
      "source": "grader" | "user" | ...,
      "summary": str}
 
-Every key is optional. At most :data:`MAX_CHECKS` checks are kept (failed
-checks first, each group in the order given) and every text is cut to a
-fixed length, so a posted outcome cannot flood the review's prompt.
-Anything else is refused with :class:`OutcomeError`.
+Every key is optional. At most :data:`MAX_CHECKS` checks are kept (failed checks first, each group in the order
+given) and every text is cut to a fixed length. Anything else is refused with :class:`OutcomeError`.
 """
 
 from __future__ import annotations
 
-import json
 import math
 import re
-import threading
-import weakref
-from collections import OrderedDict
-from typing import Any, Iterator, Optional, Protocol
+from typing import Any
 
 MAX_CHECKS = 20
 MAX_NAME = 120
@@ -52,31 +29,9 @@ MAX_REASON = 400
 MAX_SOURCE = 40
 MAX_SUMMARY = 1200
 
-OUTCOME_HEADER = "## Verified outcome (from the environment's checker, not the agent)"
-
-#: What a transcript line holds in place of a rendered outcome section.
-REDACTED = "[REDACTED:outcome]"
-
-# Every outcome section rendered in this process (and each form a prompt
-# builder derived from one), most recent last; bounded, oldest dropped first.
-_RENDERED: "OrderedDict[str, None]" = OrderedDict()
-_RENDERED_MAX = 1024
-_RENDERED_LOCK = threading.Lock()
-
 
 class OutcomeError(ValueError):
-    """A posted outcome that is malformed or has no session to go to."""
-
-
-class OutcomeCarried(PermissionError):
-    """A library write that carries an outcome section the harness rendered."""
-
-
-class OutcomeReceiver(Protocol):
-    def receive_outcome(self, outcome: dict) -> None: ...
-
-
-_RECEIVERS: "weakref.WeakValueDictionary[str, Any]" = weakref.WeakValueDictionary()
+    """A posted outcome that is malformed."""
 
 
 def _text(value: Any, limit: int, what: str) -> str:
@@ -91,7 +46,7 @@ def _text(value: Any, limit: int, what: str) -> str:
 
 
 def normalize(raw: Any) -> dict:
-    """The outcome as the review will read it; :class:`OutcomeError` if malformed."""
+    """The outcome as memory keeps it; :class:`OutcomeError` if malformed."""
     if not isinstance(raw, dict):
         raise OutcomeError("an outcome is a JSON object")
     solved = raw.get("solved")
@@ -140,164 +95,3 @@ def normalize(raw: Any) -> dict:
     if summary:
         out["summary"] = summary
     return out
-
-
-def register(session_id: str, receiver: OutcomeReceiver) -> None:
-    """Name *receiver* as the session an outcome posted to *session_id* goes to.
-
-    Held weakly: a session that has ended and been dropped takes no outcome.
-    """
-    _RECEIVERS[session_id] = receiver
-
-
-def post(session_id: Optional[str], outcome: Any) -> dict:
-    """Give the session *session_id* its checked outcome; returns it normalized.
-
-    Raises :class:`OutcomeError` when the outcome is malformed, no live
-    session has that id, or the session no longer takes one (its review has
-    started).
-    """
-    normalized = normalize(outcome)
-    receiver = _RECEIVERS.get(session_id) if session_id else None
-    if receiver is None:
-        raise OutcomeError(f"no session takes an outcome under id {session_id!r}")
-    receiver.receive_outcome(normalized)
-    return normalized
-
-
-def _verdict_word(value: Optional[bool]) -> str:
-    return {True: "yes", False: "no", None: "not stated"}[value]
-
-
-def remember(section: str) -> None:
-    """Treat *section* as an outcome section: :func:`redact` removes it.
-
-    :func:`render` calls this for every section it builds; a prompt builder
-    that rewrites a section (renaming the tools in it) passes the result too.
-    """
-    if not section:
-        return
-    with _RENDERED_LOCK:
-        _RENDERED.pop(section, None)
-        _RENDERED[section] = None
-        while len(_RENDERED) > _RENDERED_MAX:
-            _RENDERED.popitem(last=False)
-
-
-def _forms(section: str) -> list[str]:
-    """*section* raw, JSON-escaped once and twice (a JSON string inside JSON)."""
-    once = json.dumps(section, ensure_ascii=False)[1:-1]
-    twice = json.dumps(once, ensure_ascii=False)[1:-1]
-    return list(dict.fromkeys((section, once, twice)))
-
-
-def _sections() -> list[str]:
-    with _RENDERED_LOCK:
-        return sorted(_RENDERED, key=len, reverse=True)
-
-
-def carries_section(text: str) -> bool:
-    """Whether *text* holds an outcome section this process rendered.
-
-    Exact match, raw or JSON-escaped (as :func:`redact` matches), never on
-    words: a model's own account of a verdict is not a section.
-    """
-    if not isinstance(text, str) or OUTCOME_HEADER not in text:
-        return False
-    return any(form in text for section in _sections() for form in _forms(section))
-
-
-def _strings(value: Any) -> Iterator[str]:
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for key, item in value.items():
-            yield from _strings(key)
-            yield from _strings(item)
-    elif isinstance(value, (list, tuple, set, frozenset)):
-        for item in value:
-            yield from _strings(item)
-
-
-def refuse_carried(what: str, *values: Any) -> None:
-    """Raise :class:`OutcomeCarried` when any text in *values* carries a section.
-
-    *what* names the write (``functions.add``, ...). Every string inside the
-    values (nested lists and mappings included) is checked with
-    :func:`carries_section`. The libraries are read by every later task's
-    cells, so the checker's outcome, which the storage review alone reads,
-    may not be copied into them.
-    """
-    for text in _strings(values):
-        if carries_section(text):
-            raise OutcomeCarried(
-                f"{what} refused: it carries the outcome section of the review's "
-                "prompt verbatim, and the checker's outcome stays out of the "
-                "libraries every later task reads. Store what the session "
-                "taught in your own words instead.",
-            )
-
-
-def redact(line: str) -> str:
-    """*line* with every outcome section this process rendered replaced.
-
-    Keyed on the exact sections :func:`render` built (raw or JSON-escaped),
-    never on words: text a model wrote about an outcome is left as it is. A
-    line without the section header is returned unchanged at once.
-    """
-    if OUTCOME_HEADER not in line:
-        return line
-    for section in _sections():
-        for form in _forms(section):
-            if form in line:
-                line = line.replace(form, REDACTED)
-        if OUTCOME_HEADER not in line:
-            break
-    return line
-
-
-def render(outcome: Optional[dict]) -> str:
-    """The review's section on the checked outcome; empty without one.
-
-    The verdict only: solved or not, the score, and how many checks passed.
-    A check's name and reason and the checker's summary are left out, since
-    they can name the expected answer and the review's writes outlive the
-    session; the normalized outcome on the session's handle keeps them.
-    The section is remembered, so a transcript line never carries it
-    (:func:`redact`) and a library write that does is refused
-    (:func:`refuse_carried`).
-    """
-    parts: list[str] = []
-    if outcome is not None:
-        lines = [
-            f"{OUTCOME_HEADER}\n",
-            "After the session the environment checked the task itself. This "
-            f"verdict comes from its checker (source: `{outcome['source']}`), "
-            "not from the agent: where the conversation claims a different "
-            "result, the verdict is right and the claim is wrong.\n",
-            f"- Solved: {_verdict_word(outcome['solved'])}",
-        ]
-        if outcome.get("score") is not None:
-            lines.append(f"- Score: {outcome['score']:g}")
-        total = outcome.get("checks_total", len(outcome["checks"]))
-        if total:
-            lines.append(
-                f"- Checks: {outcome.get('checks_passed', 0)} of {total} passed",
-            )
-        if outcome["solved"] is False:
-            lines.append(
-                "\nThe task was not solved, so the procedure the conversation "
-                "followed did not work as a whole, whatever the agent said. Do "
-                "not store it as a working function; keep only a part the "
-                "trajectory shows to be sound, if any.",
-            )
-        elif outcome["solved"] is True:
-            lines.append("\nThe task was solved.")
-        else:
-            lines.append(
-                "\nThe checker gave no overall verdict; weigh the checks above.",
-            )
-        parts.append("\n".join(lines) + "\n\n")
-    section = "".join(parts)
-    remember(section)
-    return section

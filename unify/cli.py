@@ -50,22 +50,22 @@ further line is a follow-up in the same sandbox, /quit ends the session.
 With --jsonl the session speaks newline-delimited JSON instead, for a
 program driving the actor: each stdin line is {"message": "..."} (a
 follow-up, which may span lines), {"cancel": true} or {"quit": true}
-(with UNIFY_MEMORY=on, "consolidate": false on any line, e.g. with the
+(with memory on, "consolidate": false on any line, e.g. with the
 stream's last request or with quit, makes the session record its episode but
 start no due consolidation pass whenever it ends, also at a step or time
 limit: a driver ending its stream uses it, since no pass may be tied to the
 stream's end); each
-stdout line is {"type": "result" | "response" | "record" | "storage" |
-"ended", ...}. With --persist every turn ends in one "response" line as the
+stdout line is {"type": "result" | "response" | "record" | "ended", ...}.
+With --persist every turn ends in one "response" line as the
 actor starts waiting, its content empty when the turn produced no text.
 {"cancel": true} ends the running turn at once and keeps the session: the
 model call and the tool calls still running are cancelled, and the turn's
 "response" line says "cancelled": true, its content the text the turn had
 drafted; with no turn running it is ignored. Without --persist it ends the
-session as {"quit": true} does. Progress still goes to stderr. A
-stdin line {"outcome": {...}} gives the session its checked outcome for the
-storage review (see unify/outcome.py) and is answered with
-{"type": "outcome", "accepted": ...}. A message is posted to the run's shared agent
+session as {"quit": true} does. Progress still goes to stderr. With memory
+on, a stdin line {"outcome": {...}} gives the request its checked outcome
+(see unify/outcome.py) and is answered with {"type": "outcome",
+"accepted": ...}. A message is posted to the run's shared agent
 record and reaches the actor at its next step instead of interrupting it,
 and each record entry that mentions @user is written out as
 {"type": "record", ...} (a "record>" line without --jsonl).
@@ -124,11 +124,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="keep the actor alive after the result; further lines are follow-ups",
     )
     act.add_argument(
-        "--no-store",
-        action="store_true",
-        help="skip the storage review that distils the run into functions and guidance",
-    )
-    act.add_argument(
         "--no-clarify",
         action="store_true",
         help="no one answers questions: the record's @user posts get no reply "
@@ -143,7 +138,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     act.add_argument(
         "--json",
         action="store_true",
-        help="print the result as a JSON object with the run statistics",
+        help="print the result as a JSON object",
     )
     act.add_argument(
         "--quiet",
@@ -353,8 +348,8 @@ class Act:
 
     async def start(self) -> None:
         import unify
-        from unify.actor.environments.actor import top_level_environments
-        from unify.manager_registry import ManagerRegistry
+        from unify.actor.code_act_actor import CodeActActor
+        from unify.actor.environments import registered_environments
         from unify.workspace import get_local_root
 
         unify.init()
@@ -362,21 +357,13 @@ class Act:
         local_root = Path(get_local_root())
         local_root.mkdir(parents=True, exist_ok=True)
         os.chdir(local_root)
-        self._actor = ManagerRegistry.get_actor(
-            description="direct actor session",
-            environments=top_level_environments(),
-        )
+        self._actor = CodeActActor(environments=registered_environments())
 
     async def close(self) -> None:
         self._closing.set()
         if self._handle is not None and not self._handle.done():
             try:
                 await self._handle.stop("session closed")
-            except Exception:
-                pass
-        if self._actor is not None:
-            try:
-                await self._actor.close()
             except Exception:
                 pass
         if self._mv2 is not None:
@@ -427,16 +414,6 @@ class Act:
                     print(f"\n{notif.get('content', '')}\n", flush=True)
                 if self._bridge is not None:
                     await self._bridge.root_replied(str(notif.get("content", "")))
-            elif kind in ("storage_review_complete", "turn_storage_review_complete"):
-                verdict = "stored" if notif.get("success") else "storage review failed"
-                if self._args.jsonl:
-                    self._emit(
-                        type="storage",
-                        success=bool(notif.get("success")),
-                        message=notif.get("message", ""),
-                    )
-                else:
-                    self._progress(f"{verdict}: {notif.get('message', '')}")
             else:
                 text = notif.get("message") or notif.get("result_summary") or kind
                 self._progress(str(text))
@@ -536,7 +513,7 @@ class Act:
                 if line in {"/quit", "/exit", "/q"}:
                     from unify.actor.code_act_actor import SESSION_ENDED
 
-                    self._progress("session ended; reviewing the work for storage")
+                    self._progress("session ended")
                     self._stop_requested = True
                     await self._handle.stop(SESSION_ENDED)
                     return
@@ -649,37 +626,19 @@ class Act:
         self._emit(**answer)
 
     def _post_outcome(self, raw: object) -> None:
-        """Hand an ``{"outcome": ...}`` line to the session and answer it.
-
-        The outcome stays in this process (unify/outcome.py); the answer names
-        whether the session took it and, if not, why.
-        """
-        from unify import outcome as outcome_mod
-
-        if self._mv2 is not None:
-            # UNIFY_MEMORY: only the checker's pass/fail is kept.
+        """Hand an ``{"outcome": ...}`` line to the request's memory run and answer it (unify/outcome.py): the
+        answer names whether it was taken and, if not, why. Without a memory run it is refused."""
+        if self._mv2 is None:
+            answer = {
+                "type": "outcome",
+                "accepted": False,
+                "reason": "this session records no memory",
+            }
+        else:
             answer = self._mv2.take_outcome(raw)
-            if not answer["accepted"]:
-                self._progress(f"outcome refused: {answer['reason']}")
-            self._emit(**answer)
-            return
-        session_id = getattr(self._handle, "outcome_session_id", None)
-        try:
-            if session_id is None:
-                raise outcome_mod.OutcomeError(
-                    "this session takes no outcome (it does not store)",
-                )
-            normalized = outcome_mod.post(session_id, raw)
-        except outcome_mod.OutcomeError as exc:
-            self._progress(f"outcome refused: {exc}")
-            self._emit(type="outcome", accepted=False, reason=str(exc))
-            return
-        self._emit(
-            type="outcome",
-            accepted=True,
-            solved=normalized["solved"],
-            checks=normalized["checks_total"],
-        )
+        if not answer["accepted"]:
+            self._progress(f"outcome refused: {answer['reason']}")
+        self._emit(**answer)
 
     # ── run ──────────────────────────────────────────────────────────────
 
@@ -710,7 +669,6 @@ class Act:
         self._handle = await self._actor.act(
             request,
             persist=args.persist,
-            can_store=not args.no_store,
             clarification_enabled=clarify,
         )
         # UNIFY_MEMORY_IN_EPISODE=on: a segment fork continues this session at a checkpoint (inert otherwise)
@@ -753,10 +711,7 @@ class Act:
         self._print_result(result)
 
         if ended_on_its_own:
-            self._progress(
-                "the actor stopped on its own and takes no follow-ups; "
-                "reviewing the work for storage",
-            )
+            self._progress("the actor stopped on its own and takes no follow-ups")
         elif args.persist:
             self._progress("actor is waiting; type a follow-up, /quit to end")
             if reader is not None:
@@ -774,10 +729,7 @@ class Act:
                 emit=(lambda event: self._emit(**event)) if args.jsonl else None,
             )
         if args.jsonl:
-            # UNIFY_SYSTEM_SUFFIX: the run records which text ended its system prompt (only when one did).
-            from unify.actor import system_suffix
-
-            self._emit(type="ended", **system_suffix.record())
+            self._emit(type="ended")
         return 0
 
     def _print_result(self, result: object) -> None:
@@ -785,7 +737,6 @@ class Act:
             self._emit(
                 type="result",
                 content=result if isinstance(result, str) else str(result),
-                run_stats=getattr(self._handle, "run_stats", {}) or {},
             )
             return
         if self._args.json:
@@ -793,8 +744,6 @@ class Act:
                 "result": (
                     result if isinstance(result, (str, dict, list)) else str(result)
                 ),
-                # The storage-aware handle meters tokens; a bare loop handle does not.
-                "run_stats": getattr(self._handle, "run_stats", {}) or {},
             }
             print(json.dumps(payload, indent=2, default=str), flush=True)
         else:
@@ -823,14 +772,11 @@ async def _run_act(args: argparse.Namespace) -> int:
 
 
 def _profile_refusal() -> str | None:
-    """Why this run may not start under its ``UNIFY_PROFILE`` (the settings it fixes that are set otherwise, by name,
-    never a value), its ``UNIFY_LIBRARY`` (off with memory on) or its system suffix (set without its sha256, or not
-    matching it), or None."""
-    from unify.actor import library_switch, system_suffix
+    """Why this run may not start under its memory settings (named, never a value), or None."""
     from unify.memory.integration.switch import profile_refusal
     from unify.settings import SETTINGS
 
-    return profile_refusal(SETTINGS) or library_switch.refusal(SETTINGS) or system_suffix.refusal(SETTINGS)
+    return profile_refusal(SETTINGS)
 
 
 def main(argv: list[str] | None = None) -> int:

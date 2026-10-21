@@ -130,21 +130,9 @@ def resolve_observation_scaling_policy(model: str) -> ObservationScalingPolicy:
 
 
 def resolve_observation_model() -> str:
-    """Determine the model whose vision limits define the observation space.
-
-    Priority:
-      1. CURRENT_ACT_LLM_PROFILE.model (when inside an act() call)
-      2. SETTINGS.UNIFY_MODEL (global default)
-    """
-    from unify.common.act_llm_profiles import CURRENT_ACT_LLM_PROFILE
+    """The model whose vision limits define the observation space: the run's ``UNIFY_MODEL``."""
     from unify.settings import SETTINGS
 
-    try:
-        profile = CURRENT_ACT_LLM_PROFILE.get()
-        if profile.model:
-            return profile.model
-    except LookupError:
-        pass
     return SETTINGS.UNIFY_MODEL
 
 

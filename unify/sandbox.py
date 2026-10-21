@@ -510,10 +510,6 @@ class SandboxPolicy:
     root_args: list[str] = field(default_factory=list)
     root_visible: list[Path] = field(default_factory=list)
     created: float = field(default_factory=time.monotonic)
-    # The raw store's files (store.sqlite, -wal, -shm) at store_path(), and
-    # by name in the state directory: refused to the harness's file tools
-    # wherever they are, whatever mount would otherwise show them.
-    store_files: list[Path] = field(default_factory=list)
 
     # -- path checks ---------------------------------------------------------
     def readable_violation(self, path: Path) -> Optional[tuple[str, str]]:
@@ -529,8 +525,6 @@ class SandboxPolicy:
                 "root-allowlist",
                 f"the workspace {self.workspace} is the Unify state directory",
             )
-        if resolved in self.store_files:
-            return "mask-unify-state", f"{resolved} is the Unify store"
         seen = (self.workspace, *self.readonly_state)
         for hidden, rule in self.hidden:
             if _within(resolved, hidden) and not any(
@@ -589,18 +583,6 @@ class SandboxPolicy:
                 f"{resolved} is outside every path the sandbox mounts",
             )
         return None
-
-
-def _store_files(store: Path, state_dir: Path) -> list[Path]:
-    """The raw store's files: at *store* (``store_path()``, resolved) and, by
-    their default name, in *state_dir*."""
-    out: list[Path] = []
-    for base in (store, state_dir / "store.sqlite"):
-        for name in (base.name, f"{base.name}-wal", f"{base.name}-shm"):
-            path = Path(os.path.realpath(base.parent / name))
-            if path not in out:
-                out.append(path)
-    return out
 
 
 def _within(path: Path, root: Path) -> bool:
@@ -1945,7 +1927,7 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
     ``read_file`` and ``grep``, but a shell cell sees it until the rebuild.
     """
     global _POLICY_CACHE
-    from unify.db import store_home, store_path
+    from unify.db import store_home
     from unify.settings import SETTINGS
     from unify.workspace import get_local_root
 
@@ -1964,7 +1946,6 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
             tuple(sys.path),
             os.environ.get("LD_PRELOAD", ""),
             os.environ.get("PYTHONPATH", ""),
-            store_path(),
         )
         if (
             not fresh
@@ -1991,9 +1972,6 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
         #   section the harness rendered is redacted, unify/outcome.py), and
         #   the harness-internal sessions (reviews, gates) are written to
         #   internal-transcripts/, which is never mounted (``hidden`` below).
-        # - not the raw store (store.sqlite, -wal, -shm): cells reach the
-        #   library through the functions/guidance API, and the file holds
-        #   what the API does not give (recorded cases, trust, history).
         readonly = [
             p
             for p in (
@@ -2059,7 +2037,6 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
         # (hidden whole, wrap_argv) are not entered.
         from unify.transcripts import INTERNAL_DIRNAME
 
-        state_inside = state_dir != workspace and _within(state_dir, workspace)
         ws_skip = [
             d
             for d in (
@@ -2091,18 +2068,6 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
                 target = workspace_masked if _within(path, workspace) else out
                 if all(path != m for m, _ in target):
                     target.append((path, rule))
-        # The store's files, wherever the workspace bind would show them (a
-        # UNIFY_STORE_PATH inside it; a workspace that is UNIFY_HOME itself is
-        # refused); inside a state directory hidden whole they are hidden
-        # already.
-        store = Path(os.path.realpath(store_path()))
-        for name in (store.name, f"{store.name}-wal", f"{store.name}-shm"):
-            path = store.parent / name
-            if _within(path, workspace) and not (
-                state_inside and _within(path, state_dir)
-            ):
-                workspace_masked.append((path, "mask-unify-state"))
-
         network = str(getattr(SETTINGS, "UNIFY_WORKSPACE_NETWORK", "") or "")
         port = int(getattr(SETTINGS, "UNIFY_WORKSPACE_PROXY_PORT", 0) or 0)
         notices = _notices_dir()
@@ -2125,7 +2090,6 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
             notices_dir=notices,
             root_args=root_args,
             root_visible=root_visible,
-            store_files=_store_files(store, state_dir),
         )
         policy._key = key  # type: ignore[attr-defined]
         _POLICY_CACHE = policy

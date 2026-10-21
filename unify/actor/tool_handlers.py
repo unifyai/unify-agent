@@ -14,17 +14,15 @@ its worker pool); one that waits on the record or the request is a coroutine fun
 * The record tools go through ``ctx.record`` (:class:`unify.common.tool_registry.Record`: the agent record).
 * ``answer(answer)`` records the request's answer, validated against the request's response format as the loop
   validates a response tool's payload; the loop ends the request when the cell returns.
-* ``store_skills(request)`` starts the storage review as host work that outlives the call.
 * ``current_request()`` gives the memory package the request the agent works on (``memory.ask()`` and
   ``memory.match()`` run the stored readers on it); it is on the channel but never in a cell's ``tools``.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
 
 from unify.common import tool_registry as _registry
@@ -65,10 +63,6 @@ class ActorRequestState:
     reply_slot: Any = None
     #: the response format's check: the answer -> its JSON text (raises with the reason); None: any answer
     validate: Optional[Callable[[Any], str]] = None
-    #: today's storage-review starter (the actor's ``store_skills`` tool function); None: not available
-    store_skills: Optional[Callable[[str], Awaitable[Any]]] = None
-    #: why skill storage is not available, when it is not
-    store_refusal: str = "this session does not store skills"
     #: the host directory ``/workspace`` is bound to (a wheel path under /workspace is installed from there)
     workspace_root: Optional[str] = None
     #: the workspace sandbox's policy the request's cells run under (``unify.sandbox.build_policy()``); None: built
@@ -76,8 +70,6 @@ class ActorRequestState:
     policy: Any = None
     #: who started this agent (a teammate's question that names no one goes to it); None for the actor
     spawner: Optional[str] = None
-    #: host work started by a call that outlives it (a storage review)
-    host_tasks: set = field(default_factory=set)
     #: UNIFY_MEMORY_LIBRARIAN=on: what opens the request's librarian at its first question
     #: (``unify.memory.librarian.opener``); None: the librarian is not available
     open_librarian: Optional[Callable[[], Awaitable[Any]]] = None
@@ -103,17 +95,16 @@ def response_validator(rf_norm: Any) -> Callable[[Any], str]:
     return validate
 
 
-def actor_flags(agent: str, can_store: bool, librarian: Optional[bool] = None) -> frozenset:
+def actor_flags(agent: str, *, librarian: Optional[bool] = None) -> frozenset:
     """The configuration flags the actor's or a teammate's allow-list is built with: teammates are offered
-    (``helper``), storing only where the actor may store (*can_store*), and asking the librarian only for the actor
-    with ``UNIFY_MEMORY_LIBRARIAN=on`` (*librarian*; None reads the setting)."""
+    (``helper``), and asking the librarian only for the actor with ``UNIFY_MEMORY_LIBRARIAN=on`` (*librarian*; None
+    reads the setting)."""
     from unify.settings import SETTINGS
 
     if librarian is None:
         librarian = getattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "off") == "on"
     return frozenset(
         {"helper"}
-        | ({_registry.STORE_FLAG} if can_store and agent == "actor" else set())
         | ({_registry.LIBRARIAN_FLAG} if librarian and agent == "actor" else set())
         # UNIFY_MEMORY_IN_EPISODE=on: the actor marks the pauses of its work (tools.checkpoint)
         | ({_registry.CHECKPOINT_FLAG} if agent == "actor" and _in_episode(SETTINGS) else set()),
@@ -139,7 +130,6 @@ def actor_binding(
     record: Any,
     deadline: float,
     state: ActorRequestState,
-    can_store: bool,
     limits: Any = None,
     counters: Any = None,
     context_cls: Any = None,
@@ -148,11 +138,10 @@ def actor_binding(
     """The ``CallContext`` and the allow-list of the actor (``agent="actor"``) or a teammate (``"teammate"``) for
     one request: *roots* maps box roots (``/workspace``) to open directory descriptors, *record* is the agent
     record (:class:`unify.common.record_adapters.AgentRecordAdapter`), *name* the agent's name on it. Starting
-    teammates is offered through ``delegate`` (the pool refuses it where the run does not allow it);
-    ``store_skills`` only where the actor may store (*can_store*)."""
+    teammates is offered through ``delegate`` (the pool refuses it where the run does not allow it)."""
     if agent not in ("actor", "teammate"):
         raise ValueError(f"not the actor or a teammate: {agent!r}")
-    allow = _registry.allow_list(agent, actor_flags(agent, can_store, librarian))
+    allow = _registry.allow_list(agent, actor_flags(agent, librarian=librarian))
     if context_cls is None:
         from unify.common.tool_channel import CallContext as context_cls
     ctx = context_cls(
@@ -467,26 +456,6 @@ async def answer(ctx: Any, args: dict) -> Any:
     return _reply("answered: the answer is recorded; the request ends when this cell returns")
 
 
-async def store_skills(ctx: Any, args: dict) -> Any:
-    """Start today's storage review and keep it running after the call (its handle is not returned to the loop,
-    which stops still-running handles when a call returns)."""
-    request = args.get("request")
-    if not isinstance(request, str) or not request.strip():
-        return _refused(refusal("store_skills", "no_request"))
-    state = ctx.state
-    start = getattr(state, "store_skills", None)
-    if start is None:
-        return _refused(refusal("store_skills", "unavailable", why=getattr(state, "store_refusal", "")))
-    handle = await start(request)
-    if isinstance(handle, str):
-        form = "no_context" if handle.startswith("No active execution context") else "unavailable"
-        return _refused(refusal("store_skills", form, why=handle))
-    task = asyncio.ensure_future(handle.result())
-    state.host_tasks.add(task)
-    task.add_done_callback(state.host_tasks.discard)
-    return _reply("the skill-storage review started; it runs on after this call")
-
-
 # --- asking the librarian (UNIFY_MEMORY_LIBRARIAN=on) ---
 
 
@@ -635,7 +604,6 @@ __all__ = [
     "response_validator",
     "send",
     "stop",
-    "store_skills",
     "wait",
     "who",
 ]

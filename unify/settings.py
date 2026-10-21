@@ -14,12 +14,8 @@ import re
 from typing import Any, Optional
 
 import unillm
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings
-
-from unify.actor.settings import ActorSettings
-from unify.function_manager.settings import FunctionSettings
-from unify.guidance_manager.settings import GuidanceSettings
 
 # The reasoning efforts unillm forwards to providers (it maps them per
 # provider, e.g. DeepSeek's high/max), with "" for "as shipped". "provider" sends
@@ -244,12 +240,6 @@ class ProductionSettings(BaseSettings):
     # unillm's settings, which read them from the environment, ``.env`` and, on
     # a machine with the team's service-account key, Google Secret Manager.
     UNIFY_VALIDATE_LLM_PROVIDERS: bool = True
-    # Storage review of a persistent session: by default it runs once, when the session
-    # ends, over the whole trajectory. Set true to also review at every completed turn
-    # that ran tools (for sessions that live long enough that waiting for the end would
-    # defer distillation indefinitely).
-    UNIFY_TURN_STORAGE_REVIEWS: bool = False
-
     # ─────────────────────────────────────────────────────────────────────────
     # Skill Search
     # ─────────────────────────────────────────────────────────────────────────
@@ -333,24 +323,6 @@ class ProductionSettings(BaseSettings):
     # result, and the prompt and tools are unchanged (unify/actor/execution/worker_child.py
     # ``Inventory``). Empty: results as shipped.
     UNIFY_VARIABLE_INVENTORY: str = ""
-    # Path of a JSON file in which an external check of the session's outcome
-    # admits (``{"admit": true}``) the review that runs when a session ends.
-    # A missing, unreadable or malformed file, or any other ``admit``, skips
-    # that review. While set, the session's own library write tools are
-    # withheld and turn-level reviews are off, so the libraries change only
-    # through an admitted review. ``never`` is a frozen library: writes are
-    # withheld the same way, no review is ever admitted and no file is read.
-    # Empty reviews every session as shipped.
-    UNIFY_STORE_ADMISSION: str = ""
-    # ``package.module:factory``: a verifier for the storage review. A
-    # function is stored only after its exact source has passed a run on a
-    # held-out task of the same kind (FunctionManager_check_function, offered
-    # to the review only while this is set) and static checks against request
-    # details and credentials (unify/function_manager/store_verify.py). Needs
-    # UNIFY_STORE_ADMISSION. The verifier loads and calls candidates in this
-    # process, so with Python in the sandboxed worker it is refused and
-    # start-up stops. Empty stores without the check.
-    UNIFY_STORE_VERIFY: str = ""
     # Memory v2's dialogue capture (applies only with UNIFY_MEMORY on;
     # parsed by unify/memory/integration/switch.py): ``env`` also records
     # each request's dialogue actions (every turn-ending reply's action with
@@ -430,16 +402,6 @@ class ProductionSettings(BaseSettings):
     # surface is unchanged, and no pass, writer call or episode-end fork runs, so the library never changes; the
     # other memory settings keep their values. Recorded in each episode's meta when off.
     UNIFY_MEMORY_PASSES: str = ""
-    # The actor's library: empty or ``on`` (default: today's behaviour) or ``off``, which removes memory and library
-    # surface only: no ``functions`` or ``guidance`` in the sandbox, no ``store_skills``, no storage review, no
-    # shortlist or library line, and no prompt text naming stored functions. Refused with UNIFY_MEMORY on
-    # (unify/actor/library_switch.py).
-    UNIFY_LIBRARY: str = ""
-    # Text appended at the very end of the system prompt (empty: none), with UNIFY_SYSTEM_SUFFIX_SHA256 the lowercase
-    # hex sha256 of its UTF-8 bytes: set together, and a run whose text does not match is refused before anything
-    # runs (unify/actor/system_suffix.py). The sha256 is on the CLI's ``ended`` line.
-    UNIFY_SYSTEM_SUFFIX: str = ""
-    UNIFY_SYSTEM_SUFFIX_SHA256: str = ""
     # Consolidation passes: empty or ``on`` (default: today's behaviour) or ``off``: in the library mode with the
     # episode-end fork on, the settled forks are still captured and the actor still runs the captures, and no pass,
     # writer or helper call runs, so the library never changes. Refused without the library mode, the fork, or with
@@ -574,11 +536,6 @@ class ProductionSettings(BaseSettings):
     # process (unify/common/tool_choice_fallback.py). Off: the error
     # propagates as shipped.
     UNIFY_TOOL_CHOICE_FALLBACK: bool = False
-    # ``stored``: a guidance search without reference text returns the stored
-    # guidance entries, newest first, instead of the built-in catalogue (whose
-    # hash-derived ids otherwise sort ahead of every stored entry). Empty
-    # searches as shipped.
-    UNIFY_GUIDANCE_EMPTY_QUERY: str = ""
     # execute_code takes state_mode (an untyped optional string), session_id
     # and session_name, and four tools manage sessions. An omitted mode runs
     # the cell in session 0, the task's persistent session, but a model that
@@ -652,13 +609,6 @@ class ProductionSettings(BaseSettings):
     UNIFY_CODE_PROJECTION: str = ""
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Builtins Catalogue
-    # ─────────────────────────────────────────────────────────────────────────
-    # Name of the project holding the builtins catalogues (function primitives
-    # and guidance), seeded from the committed snapshots at start-up.
-    UNIFY_BUILTINS_PROJECT: str = "Builtins"
-
-    # ─────────────────────────────────────────────────────────────────────────
     # Logging / Observability
     # ─────────────────────────────────────────────────────────────────────────
     PYTEST_LOG_TO_FILE: bool = True
@@ -711,22 +661,12 @@ class ProductionSettings(BaseSettings):
     UNIFY_TERMINAL_LOG_LEVEL: str = "INFO"
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Composed Manager Settings
-    # ─────────────────────────────────────────────────────────────────────────
-    # Each manager owns its settings in its own settings.py file.
-    # Access via SETTINGS.function.IMPL, SETTINGS.guidance.IMPL, etc.
-    actor: ActorSettings = Field(default_factory=ActorSettings)
-    function: FunctionSettings = Field(default_factory=FunctionSettings)
-    guidance: GuidanceSettings = Field(default_factory=GuidanceSettings)
-
-    # ─────────────────────────────────────────────────────────────────────────
     # Validators
     # ─────────────────────────────────────────────────────────────────────────
     @field_validator(
         "UNIFY_TERMINAL_LOG",
         "PYTEST_LOG_TO_FILE",
         "UNIFY_VALIDATE_LLM_PROVIDERS",
-        "UNIFY_TURN_STORAGE_REVIEWS",
         "UNIFY_LOCAL_EMBEDDINGS",
         "UNIFY_TOOL_CHOICE_FALLBACK",
         "UNIFY_CELL_SCOPE_FIX",
@@ -887,20 +827,6 @@ class ProductionSettings(BaseSettings):
 
         return switch.PARSERS[info.field_name](v)
 
-    @field_validator("UNIFY_LIBRARY", mode="before")
-    @classmethod
-    def parse_library(cls, v: Any) -> str:
-        from unify.actor import library_switch
-
-        return library_switch.parse(v)
-
-    @field_validator("UNIFY_SYSTEM_SUFFIX_SHA256", mode="before")
-    @classmethod
-    def parse_system_suffix_sha256(cls, v: Any) -> str:
-        from unify.actor import system_suffix
-
-        return system_suffix.parse_sha256(v)
-
     @field_validator("UNIFY_COMPACTION_AT_TOKENS", mode="before")
     @classmethod
     def parse_compaction_at_tokens(cls, v: Any) -> int:
@@ -929,16 +855,6 @@ class ProductionSettings(BaseSettings):
         from unify.memory.integration import switch
 
         return switch.parse_dialogue(v)
-
-    @field_validator("UNIFY_GUIDANCE_EMPTY_QUERY", mode="before")
-    @classmethod
-    def parse_guidance_empty_query(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        if value not in ("", "stored"):
-            raise ValueError(
-                f"UNIFY_GUIDANCE_EMPTY_QUERY must be empty or 'stored', not {v!r}",
-            )
-        return value
 
     @field_validator("UNIFY_BIND_REQUEST", mode="before")
     @classmethod

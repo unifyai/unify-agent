@@ -49,8 +49,6 @@ POOL_RELATED_PAGE = 20
 SIMILAR_MIN_NODES = 12
 #: the flag the file tools need (``UNIFY_MEMORY_LIBRARY_EDIT_TOOLS=on``)
 EDIT_FLAG = "edit"
-#: the flag ``store_skills`` needs: the actor may store and storage is not admission-gated
-STORE_FLAG = "store"
 #: the flag ``ask_library`` needs: ``UNIFY_MEMORY_LIBRARIAN=on``
 LIBRARIAN_FLAG = "librarian"
 
@@ -1119,46 +1117,6 @@ INSTALL = RegisteredTool(
     blocking=True,
 )
 
-STORE_SKILLS = RegisteredTool(
-    name="store_skills",
-    summary="start a review that stores reusable skills from your work so far.",
-    description=(
-        "Start a skill-storage review of the work so far: a dedicated reviewer examines the conversation and "
-        "stores any reusable functions and guidance, following your request. It returns at once; the review goes "
-        "on after the call, and its summary is kept with the request's result."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "request": {
-                "type": "string",
-                "description": (
-                    "The skill(s) to store: which part of the work holds the reusable pattern and what makes it "
-                    "valuable."
-                ),
-            },
-        },
-        "required": ["request"],
-        "additionalProperties": False,
-    },
-    refusals={
-        "no_context": "there is no active request to review; nothing was started",
-        "unavailable": "skill storage is not available in this session ({why}); nothing was started",
-        "no_request": "request must be a non-empty string; nothing was started",
-    },
-    requires=STORE_FLAG,
-    roles=(_A,),
-    returns="a line saying the review started; the review itself runs on after the call.",
-    examples=('tools.store_skills("Store the export function with the retry loop around the upload call.")',),
-    when=(
-        "Use it when you have just completed a complex subtask and recognise a reusable pattern worth keeping; say "
-        "which part of the work holds it."
-    ),
-    kind="action",
-    handler="unify.actor.tool_handlers:store_skills",
-    deadline_s=60.0,
-)
-
 ASK_LIBRARY = RegisteredTool(
     name="ask_library",
     summary="ask the librarian which stored items fit a question (memory.ask calls it).",
@@ -2060,7 +2018,6 @@ _REGISTRY: tuple[RegisteredTool, ...] = (
     WRITE,
     EDIT,
     INSTALL,
-    STORE_SKILLS,
     ASK_LIBRARY,
     SEARCH,
     KEEP_NOTE,
@@ -2285,7 +2242,7 @@ def _earlier(key: tuple[str, str]) -> Optional[_EarlierJson]:
 
 #: Registered tools that never were a memory agent's model-API tool.
 _IN_CODE_ONLY = frozenset(
-    {"sh", "install", "store_skills", "ask_library", "answer", "current_request", "check_examples"},
+    {"sh", "install", "ask_library", "answer", "current_request", "check_examples"},
 )
 
 
@@ -2473,7 +2430,6 @@ _ACTOR_HANDLED = {
     "ask": False,
     "delegate": False,
     "answer": False,
-    "store_skills": False,
     "current_request": False,
 }
 

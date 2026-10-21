@@ -448,22 +448,11 @@ def normalize_endpoint(endpoint: str) -> str:
 
 
 def configured_models() -> List[str]:
-    """The session's configured model(s), as written: the act profile's model
-    (when it names one) and what ``model=None`` resolves to."""
-    from unify.common.act_llm_profiles import CURRENT_ACT_LLM_PROFILE
+    """The session's configured model, as written: what ``model=None`` resolves to."""
     from unify.common.llm_client import resolve_default_model
 
-    models: List[str] = []
-    try:
-        profile_model = CURRENT_ACT_LLM_PROFILE.get().model
-    except LookupError:
-        profile_model = None
-    if profile_model:
-        models.append(profile_model)
     default_model, _effort = resolve_default_model()
-    if default_model and default_model not in models:
-        models.append(default_model)
-    return models
+    return [default_model] if default_model else []
 
 
 def allowed_models() -> Optional[List[str]]:

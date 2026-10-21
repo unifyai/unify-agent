@@ -156,20 +156,11 @@ async def _start_helper(
     request: str,
     request_seq: int,
 ) -> str:
-    """Run one helper as a sub-actor bounded by the spawner's grants; return its reply."""
-    from unify.actor.environments.actor import _build_inner_actor
+    """Run one helper as a sub-actor in the same environment as its spawner; return its reply."""
+    from unify.actor.code_act_actor import CodeActActor
+    from unify.actor.environments import registered_environments
 
-    actor, guidelines = _build_inner_actor(
-        guidelines=None,
-        prompt_guidance=None,
-        guidance_scope=None,
-        prompt_functions=None,
-        discovery_scope=None,
-        timeout=None,
-        can_compose=True,
-        can_store=False,
-        can_spawn_sub_agents=False,
-    )
+    actor = CodeActActor(environments=registered_environments(), timeout=1000)
     token = _CURRENT.set((pool, name))
     try:
         handle = await actor.act(
@@ -181,17 +172,12 @@ async def _start_helper(
                 # the run record is never in a box: its file is not named
                 None if getattr(pool.record, "is_run_record", False) else pool.record.path,
             ),
-            guidelines=guidelines,
             persist=False,
-            can_store=False,
             clarification_enabled=False,
         )
     finally:
         _CURRENT.reset(token)
-    try:
-        return str(await handle.result())
-    finally:
-        await actor.close()
+    return str(await handle.result())
 
 
 def _run_record_on() -> bool:
