@@ -237,10 +237,6 @@ WRITE_GUARD_S = 120.0
 UNSTARTED_S = 120.0
 #: A lock still held this long after the reservation: the fork is recorded as timed out and admitted.
 STALE_S = WAIT_GUARD_S + 300.0
-#: The file that keeps which episodes earlier passes rolled over (under the state dir).
-ROLLED_FILE = "pass-admission.json"
-
-
 def fork_instruction() -> str:
     """The fixed instruction appended to the actor's conversation for the fork (:data:`INSTRUCTION`)."""
     return INSTRUCTION
@@ -590,37 +586,6 @@ def _settle_record(d: Path, eid: str, status: str, detail: str) -> None:
         _record(d, eid, status, detail)
     except OSError:
         pass
-
-
-class Admission:
-    """With the fork on: which pending episodes may enter a pass batch (:func:`settled`), and the episodes earlier
-    passes rolled over, kept in ``<state>/pass-admission.json`` so they enter a later batch.
-    """
-
-    def __init__(self, state_dir: Path | str):
-        self.state_dir = Path(state_dir)
-        self.root = self.state_dir / "memory-staging"
-        self.file = self.state_dir / ROLLED_FILE
-
-    def settled(self, eid: str) -> bool:
-        return settled(self.root, eid)
-
-    def rolled(self) -> list[str]:
-        try:
-            doc = json.loads(self.file.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return []
-        rolled = doc.get("rolled") if isinstance(doc, dict) else None
-        return [e for e in rolled or [] if isinstance(e, str)]
-
-    def set_rolled(self, eids: list[str]) -> None:
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        atomic_json(self.file, {"rolled": list(dict.fromkeys(eids))})
-
-
-def admission(paths: Any) -> Admission:
-    """The admission rule: an episode enters a pass once its fork has settled."""
-    return Admission(paths.state_dir)
 
 
 # --- the box and the process ---------------------------------------------------------------------------------------
