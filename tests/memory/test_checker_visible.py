@@ -172,12 +172,10 @@ def _entries(*obs_labels):
 
 
 def _on(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE", "on")
 
 
 def test_checker_line_refused_when_switch_off(mv2, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE", "off")
     run = _begin(mv2, "hi")
     try:
@@ -190,7 +188,6 @@ def test_checker_line_refused_when_switch_off(mv2, monkeypatch):  # noqa: F811
 
 def test_checker_line_refused_without_library_mode(mv2, monkeypatch):  # noqa: F811
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "off")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE", "on")
     run = _begin(mv2, "hi")
     try:
         assert run.take_checker({"label": "pass"})["accepted"] is False

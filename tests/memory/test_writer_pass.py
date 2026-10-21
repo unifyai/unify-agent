@@ -1122,7 +1122,7 @@ def test_check_refuses_a_declared_input_in_library_mode(tmp_path):
         ev,
         load=w.EPISODES.__getitem__,
         model_turn=model,
-        config=PassConfig(library_mode=True, max_calls=10),
+        config=PassConfig(max_calls=10),
     )
     out = asyncio.run(
         writer.run(PassRequest("incremental", "acct", ["e1", "e2"], False), "pl"),

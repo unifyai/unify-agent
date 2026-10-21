@@ -42,7 +42,7 @@ SWITCHES = {
     "UNIFY_MEMORY_ATTENTION_LEDGER": "on",
     "UNIFY_MEMORY_WRITER_SERVICE": "on",
     # a pass needs room for one writer call at the worst case (13.125 USD) to start
-    "UNIFY_MEMORY_WRITER_SERVICE_CAP_USD": "100",
+    "UNIFY_MEMORY_CAP_USD": "100",
     "UNIFY_MEMORY_LIBRARY_PASS_WALL_S": "60",
     "UNIFY_HOST_LEASE_END": "2099-01-01T00:00:00Z",  # required with the service; far off unless a test sets its own
 }
@@ -460,9 +460,7 @@ def test_drain_returns_only_once_the_service_is_verified_gone(svc, monkeypatch):
     """A2 test 10, through the shutdown the kit runs before it stops the key proxy."""
     from unify.memory.integration import async_pass
     from unify.memory.integration.paths import Paths
-    from unify.settings import SETTINGS
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_WRITER_SERVICE", "on")
     monkeypatch.setenv("DRIVER_TURNS", "1")
     monkeypatch.setenv("DRIVER_TURN_SLEEP", "3600")
     monkeypatch.setenv("UNIFY_MEMORY_LIBRARY_PASS_WALL_S", "2")
@@ -499,7 +497,7 @@ def test_a_cap_below_one_pass_starts_no_pass_and_reports_the_entries_not_reached
                 svc.home,
                 fd,
                 runner=_no_pass,
-                settings=_settings(UNIFY_MEMORY_WRITER_SERVICE_CAP_USD="13.12"),
+                settings=_settings(UNIFY_MEMORY_CAP_USD="13.12"),
                 poll_s=0.0,
                 idle_exit_s=5,
                 monotonic=Clock(),

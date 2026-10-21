@@ -92,7 +92,7 @@ def test_the_helper_turn_consolidate_builds_carries_the_registered_window(
         UNIFY_MEMORY_LIBRARY_HELPER_MODEL=HELPER_MODEL,
         UNIFY_MODEL="vendor/actor-model@openrouter",
     )
-    got = consolidate._helper_turns(s, "low", True)
+    got = consolidate._helper_turns(s, "low")
     assert got["helper_refusal"] is None
     turn = got["helper_turn"]("s1")
     assert turn.max_input_tokens == _window(HELPER_MODEL) == WINDOWS[HELPER_MODEL]

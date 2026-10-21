@@ -92,7 +92,6 @@ def test_an_actor_episode_matches_and_runs_a_captured_procedure_with_no_import_l
 ):
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", in_code)
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
     monkeypatch.setattr(in_code_tools, "SESSIONS", _Collect())
     paths = Paths.under(core_world["state"])
     # an earlier episode of the same work, captured at once (no writer pass has run)
@@ -128,7 +127,6 @@ def test_an_actor_episode_matches_and_runs_a_captured_procedure_with_no_import_l
         export_roots=run.export_roots,
         surface=run.surface,
         cell_status=dict(run.cell_status),
-        library_mode=True,
         runtime_calls=run.runtime_calls,
         cell_errors=dict(run.cell_errors),
         memory_bound=run.library_mode and run.memory_bound,

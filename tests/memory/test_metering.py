@@ -306,7 +306,7 @@ def test_a_pass_row_names_its_entries_items_usd_and_a_killed_turn_once(tmp_path)
                              worst_case_booked="13.125", killed_turns=["p9/3"], turns=6, seconds=1.5,
                              reconciled=None, read=[], returned=[], helper_usd_known="0.005",
                              helper_unknown_calls=0)  # fmt: skip
-    row = M.pass_row(home, report, metering=True)
+    row = M.pass_row(home, report)
     assert row["entries"] == {
         "handed": ["e1"],
         "taken": ["e2"],

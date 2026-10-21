@@ -683,7 +683,7 @@ def test_an_empty_or_missing_store_gives_no_entries(tmp_path):
 def test_the_writer_brief_says_captures_exist_and_how_to_land_one():
     from unify.memory import library_prompts as lp
 
-    brief = lp.write_brief_now(staging=True, pool=True)
+    brief = lp.write_brief_now()
     assert LAND_CALL_TEXT in brief
     assert BRIEF_CAPTURE_TEXT in brief
     assert BRIEF_FAILURE_TEXT in brief

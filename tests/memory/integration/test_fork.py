@@ -63,8 +63,6 @@ def lane(monkeypatch):
 
 
 ON = SimpleNamespace(
-    UNIFY_MEMORY_LIBRARY="on",
-    UNIFY_MEMORY_LIBRARY_FORK="on",
     UNIFY_MEMORY_LIBRARY_WAIT_SLOT="on",
 )
 CODE = 'def double(x):\n    """Twice x."""\n    return 2 * x\n'
@@ -227,7 +225,7 @@ def test_the_fork_route_names_never_reach_a_box():
 def test_c5_fork_on_without_a_lane_is_recorded_refused(mv2, monkeypatch):  # noqa: F811
     run, eid, src, seen, made, popen = _started(mv2, monkeypatch, [])
     _fresh_lane_state(monkeypatch)
-    assert fork_mod.start(mv2.paths, SimpleNamespace(), eid, ON, popen=popen) is None
+    assert fork_mod.start(mv2.paths, SimpleNamespace(), eid, popen=popen) is None
     assert made == []
     doc = json.loads((fork_mod.staging_dir(mv2.paths, eid) / "fork.json").read_text())
     assert doc["status"] == "refused: no fork lane"
@@ -406,7 +404,6 @@ def test_the_worker_imports_only_the_standard_library():
 
 
 def _started(mv2, monkeypatch, replies, source=None):  # noqa: F811
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
     run = _begin(mv2, "Double 21.")
     _transcript(run)
     _finish(mv2, run)  # recorded with the fork off
@@ -443,7 +440,6 @@ def test_f1_the_request_goes_through_a_pipe_with_a_bare_environment(
         mv2.paths,
         SimpleNamespace(),
         eid,
-        ON,
         popen=popen,
     )
     fork_mod.finish(f, ON)
@@ -502,7 +498,6 @@ def test_f3_nothing_flows_back_to_the_record_the_transcript_or_the_client(
         mv2.paths,
         SimpleNamespace(),
         eid,
-        ON,
         popen=popen,
     )
     fork_mod.finish(f, ON)
@@ -523,8 +518,6 @@ def test_finish_starts_the_fork_after_the_episode_is_recorded(
     mv2,
     monkeypatch,
 ):  # noqa: F811
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_FORK", "on")
     calls, reserved = [], []
 
     def start(paths, handle, eid, settings, **kw):
@@ -546,8 +539,6 @@ def test_finish_gives_the_fork_the_recorded_episodes_part_list(
     mv2,
     monkeypatch,
 ):  # noqa: F811
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_FORK", "on")
     given = []
     monkeypatch.setattr(
         fork_mod,
@@ -565,7 +556,6 @@ def test_finish_gives_the_fork_the_recorded_episodes_part_list(
 
 
 def test_f6_off_is_off_no_process_no_staging_dir(mv2, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_FORK", "off")
     spawned = []
     real_start = (
@@ -577,7 +567,7 @@ def test_f6_off_is_off_no_process_no_staging_dir(mv2, monkeypatch):  # noqa: F81
     _finish(mv2, run)
     assert spawned == []
     assert not (Path(mv2.paths.state_dir) / "memory-staging").exists()
-    off = SimpleNamespace(UNIFY_MEMORY_LIBRARY="on", UNIFY_MEMORY_LIBRARY_FORK="off")
+    off = SimpleNamespace(UNIFY_MEMORY_LIBRARY_FORK="off")
     assert (
         real_start(
             mv2.paths,
@@ -609,7 +599,6 @@ def test_a_session_that_cannot_be_forked_is_recorded_never_forced(
             mv2.paths,
             SimpleNamespace(),
             eid,
-            ON,
             popen=popen,
         )
         is None

@@ -171,7 +171,7 @@ def test_with_no_known_window_the_fixed_point_compacts(tmp_path):
 def test_the_brief_states_both_compaction_points():
     from unify.memory import library_prompts as lp
 
-    brief = lp.write_brief_now(compact=True)
+    brief = lp.write_brief_now()
     pct = lp._num(context_compression.COMPACTION_THRESHOLD * 100)
     assert (
         f"reaches {pct}% of the model's context window or 150,000 tokens, whichever comes first"
@@ -226,7 +226,6 @@ def test_keep_prefix_keeps_the_request_before_the_summary(monkeypatch):
         "the summary",
         writer_pass.RESTART_POINTER,
     )
-    monkeypatch.setattr(SETTINGS, "UNIFY_COMPACTION_KEEP_PREFIX", "")
     comp = asyncio.run(writer_pass.compact_by_summary(msgs, turn, []))
     assert (
         comp.restart[0] is msgs[0]

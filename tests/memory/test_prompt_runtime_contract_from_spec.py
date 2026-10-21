@@ -297,8 +297,6 @@ def _memory_pass(tmp_path: Path, role: str, model: Steps, helper: Steps | None =
         load=lambda eid: ep,
         model_turn=model,
         config=PassConfig(
-            library_mode=True,
-            tools_in_code=True,
             edit_tools=True,
             pass_record_root=str(tmp_path / "out"),
             max_calls=8,
@@ -359,9 +357,7 @@ def _run_memory_role(tmp_path: Path, role: str, plan_of) -> tuple[dict, Steps, A
 def actor_world(core_world, monkeypatch):  # noqa: F811
     """Tools in code on, a library-mode request over the fixture library (``memory`` bound in the cells), and every
     in-code session the test opens."""
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
     collect = _Collect()
     monkeypatch.setattr(in_code_tools, "SESSIONS", collect)
     paths = Paths.under(core_world["state"])
@@ -503,7 +499,6 @@ def _run_role(role: str, tmp_path, request, monkeypatch, *, contract: bool) -> d
         state["sent"] = [c.request for c in model.calls]
         return state
     # the memory agents' briefs and boxes follow the switch, as in a run (PassConfig.tools_in_code alone is not it)
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     if role == "helper":
         _helper_waits_answer_at_once(monkeypatch)
     if contract:

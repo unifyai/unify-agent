@@ -23,8 +23,8 @@ from tests.memory.integration.test_request import (
 
 def test_recorded_dialogue_keeps_the_full_observation_only_under_library_mode():
     lines = inp.dialogue_lines()
-    (off,) = request_mod.recorded_dialogue(lines, "env", Redactor())
-    (on,) = request_mod.recorded_dialogue(lines, "env", Redactor(), library_mode=True)
+    (off,) = request_mod.recorded_dialogue(lines, Redactor())
+    (on,) = request_mod.recorded_dialogue(lines, Redactor())
     assert len(off.response) <= 65536 and "middle elided" in off.response
     assert on.response == inp.big_text(70000, "OBSERVATION_END")
 
@@ -88,8 +88,8 @@ def test_a_long_multi_line_trailing_object_is_the_payload_under_library_mode():
     assert len(reply) > 65536 and reply.count("\n") > 100
     lines = inp.dialogue_lines()
     lines[1]["message"]["content"] = reply
-    (off,) = request_mod.recorded_dialogue(lines, "env", Redactor())
-    (on,) = request_mod.recorded_dialogue(lines, "env", Redactor(), library_mode=True)
+    (off,) = request_mod.recorded_dialogue(lines, Redactor())
+    (on,) = request_mod.recorded_dialogue(lines, Redactor())
     assert off.method == "act" and off.args == [
         "}",
     ]  # as at 4675a3c45: the reply's last line

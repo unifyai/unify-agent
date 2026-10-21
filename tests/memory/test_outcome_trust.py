@@ -439,5 +439,5 @@ def test_a_repaired_item_starts_again_on_trial():
 def test_the_writer_brief_offers_a_known_failure_test():
     from unify.memory import library_prompts as lp
 
-    brief = lp.write_brief_now(staging=True, pool=True)
+    brief = lp.write_brief_now()
     assert "a test marked as a known failure" in brief

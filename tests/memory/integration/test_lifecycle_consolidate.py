@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 
 import pytest
 
@@ -171,20 +170,17 @@ def test_after_passes_runs_only_under_library_and_after_a_recorded_pass(
     monkeypatch.setattr(lifecycle, "consolidate_records", spy)
     consolidate.after_passes(
         stores,
-        SimpleNamespace(UNIFY_MEMORY_LIBRARY="off"),
         ["p1"],
         None,
     )
     consolidate.after_passes(
         stores,
-        SimpleNamespace(UNIFY_MEMORY_LIBRARY="on"),
         [],
         None,
     )
     assert seen == []
     consolidate.after_passes(
         stores,
-        SimpleNamespace(UNIFY_MEMORY_LIBRARY="on"),
         ["p1"],
         None,
     )

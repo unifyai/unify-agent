@@ -599,7 +599,7 @@ def test_no_helper_lane_means_no_delegate_and_no_fallback(monkeypatch):
         UNIFY_MEMORY_LIBRARY_HELPER_MODEL="",
         UNIFY_MODEL="vendor/actor-model@openrouter",
     )
-    got = consolidate._helper_turns(s, "low", True)
+    got = consolidate._helper_turns(s, "low")
     assert got == {"helper_turn": None, "helper_refusal": "no helper lane"}
     assert consolidate._helper_turns(s, "low", False) == {}
 

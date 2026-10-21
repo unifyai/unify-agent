@@ -42,9 +42,6 @@ def test_a_request_that_uses_the_library_as_the_guide_says_records_it(core_world
     from unify.memory.gitio import Repo
 
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "persistent")
     monkeypatch.setattr(sandbox, "_POLICY_CACHE", None)
     monkeypatch.setattr(request_mod, "_CURRENT", None)
     paths = Paths.under(core_world["state"])

@@ -263,6 +263,5 @@ def test_the_request_records_library_use(library_root):
         ITEMS_LIBRARY,
         cell_status=_status_library(cells),
         surface=use.library_surface(library_root),
-        library_mode=True,
     )
     assert rec["layout"] == "library_mode" and rec["items"][WEEK]["called"] == 1

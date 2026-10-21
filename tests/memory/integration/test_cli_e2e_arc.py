@@ -221,7 +221,6 @@ async def test_arc_visits_capture_dialogue_and_merge_an_env_item(
     paths = Paths.under(home)
     defaults = type(SETTINGS).model_fields
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_DIALOGUE", "env")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_E", HIGH_E)
     for name in (
         "UNIFY_MEMORY_WRITER_MODEL",

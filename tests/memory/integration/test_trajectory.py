@@ -279,7 +279,7 @@ def _run(obs):
 
 def test_a_call_inside_cell_two_is_attributed_to_it(monkeypatch):
     obs = _observer(monkeypatch, T0.timestamp() + 6)
-    ep, _ = assemble(_run(obs), _lines(), "", _ts(10))
+    ep, _ = assemble(_run(obs), _lines(), _ts(10))
     assert [(a.channel, a.method, a.cell) for a in ep.actions] == [
         ("spotify", "login", 1),
     ]
@@ -301,7 +301,6 @@ def test_episode_holds_the_whole_trajectory_and_extra_actions(monkeypatch):
     ep, _ = assemble(
         _run(obs),
         _lines(),
-        "diff --git a/x b/x\n",
         _ts(10),
         extra_actions=[wt],
         worktree_before="1" * 40,
@@ -325,13 +324,13 @@ def test_episode_holds_the_whole_trajectory_and_extra_actions(monkeypatch):
 def test_no_user_message_falls_back_to_the_request_and_no_observer_is_fine():
     run = _run(None)
     lines = [ln for ln in _lines() if ln.get("message", {}).get("role") != "user"]
-    ep, _ = assemble(run, lines, "", _ts(10))
+    ep, _ = assemble(run, lines, _ts(10))
     assert ep.request == [FIRST] and ep.actions == []
 
 
 def test_learned_credential_never_reaches_the_written_episode(tmp_path, monkeypatch):
     obs = _observer(monkeypatch, T0.timestamp() + 3)
-    ep, redactor = assemble(_run(obs), _lines(), "", _ts(10))
+    ep, redactor = assemble(_run(obs), _lines(), _ts(10))
     repo = Repo.init_bare(tmp_path / "episodes.git")
     blobs = BlobStore(tmp_path / "blobs")
     sha = EpisodeWriter(repo, blobs, redactor).write(ep)

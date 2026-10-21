@@ -1,10 +1,8 @@
-"""The capture contract under ``UNIFY_MEMORY_CAPTURE_TRACE=on``: a capture records what its episode did.
+"""The capture contract: a capture records what its episode did.
 
 A procedure takes one of three forms (the request's value, the episode's state, or the state and the episode's tools).
-Rev 2: the capture step runs nothing, so its own check is recorded as not run (``capture_trace.NOT_RUN``); the
-confined own check (``run_box``, ``own_check``) is tested on its own below. The value is recorded only when one was
-handed back; the outcome comes from signals only; no recurrence row is written. With the switch off everything is as
-built.
+The capture step runs nothing, so its own check is recorded as not run (``capture_trace.NOT_RUN``). The value is
+recorded only when one was handed back; the outcome comes from signals only; no recurrence row is written.
 """
 
 from __future__ import annotations
@@ -133,53 +131,6 @@ def test_the_form_is_read_from_the_code():
     assert cp.safety(STATE_PROC) == "defines no read_input"
 
 
-def test_the_replay_answers_only_identical_recorded_calls_and_never_executes():
-    rows = [
-        {"channel": "files", "method": "read", "args": ["a.txt"], "kwargs": {}, "response": "x", "status": "ok",
-         "effect": "read", "kind": "tool"},
-        {"channel": "files", "method": "write", "args": ["b.txt", "y"], "kwargs": {}, "response": {"written": 1},
-         "status": "ok", "effect": "write", "kind": "tool"},
-        {"channel": "worktree:workspace", "method": "write", "args": ["c.txt"], "kwargs": {}, "response": None,
-         "status": "ok", "effect": "write", "kind": "worktree"},
-        {"channel": "env", "method": "say", "args": ["hi"], "kwargs": {}, "response": "ok", "status": "ok",
-         "effect": "unknown", "kind": "dialogue"},
-        {"channel": "files", "method": "delete", "args": ["d"], "kwargs": {}, "response": None, "status": "error",
-         "effect": "write", "error": "no such file", "kind": "tool"},
-    ]  # fmt: skip
-    env = rb.ReplayEnv(rows)
-    assert env.files.read("a.txt") == "x"
-    assert env.files.read("a.txt") == "x"  # a repeated read: answered again
-    assert env.files.write("b.txt", "y") == {"written": 1}
-    env.files.write("b.txt", "y")  # a repeated write: one more effect than the record holds
-    assert env.worktree_workspace.write("c.txt") is None  # by its memory-channel name
-    assert env.env.say("hi") == "ok"  # an unknown effect: answered from the record, never executed
-    with pytest.raises(rb.RecordedError, match="no such file"):
-        env.files.delete("d")
-    with pytest.raises(rb.ReplayMiss):
-        env.files.write("b.txt", "z")  # a recorded method with other arguments
-    with pytest.raises(rb.ReplayMiss):
-        env.mail.send("x")  # never recorded
-    stats = env.stats()
-    assert stats == {"matched": 6, "differed": 2, "missing": 0, "unrecorded": 1, "repeats": 2, "issued": 9}
-    assert [c["outcome"] for c in env.calls()][-2:] == ["differed", "unrecorded"]
-    # the replay holds no handle to anything real: only the recorded rows
-    assert set(vars(env)) == {"_rows", "_table", "_names", "_next", "_used", "max_calls", "issued"}
-    with pytest.raises(rb.TooManyCalls):
-        small = rb.ReplayEnv(rows, max_calls=1)
-        small.files.read("a.txt")
-        small.files.read("a.txt")
-    # missing: a recorded call never issued
-    assert rb.ReplayEnv(rows).stats()["missing"] == 5
-
-
-def test_the_box_s_channel_rule_is_the_episodes():
-    from unify.memory.episodes import env_channel
-
-    for kind, channel in (("tool", "files"), ("worktree", "worktree:workspace"), ("shell", "shell:python3.12"),
-                          ("dialogue", "dialogue:user"), ("shell", "worktree:x"), ("dialogue", "env")):  # fmt: skip
-        assert rb.alias(kind, channel) == env_channel(kind, channel)
-
-
 def test_trace_pointers_value_and_effects():
     ep = _ep(request=["first", "second", "third"], actions=[_write_action(), _write_action("x", "y")])
     ep.cells = []
@@ -267,20 +218,3 @@ def test_a_contrary_signal_makes_negative_knowledge_and_nothing_runs(tmp_path):
     assert row2["folded"] and row2["capture_id"] == row["capture_id"]
     rec2 = json.loads((store / row2["capture_id"] / "record.json").read_text())
     assert rec2["outcome"] == "contrary" and cp.negative(rec2) and rec2["occurrences"] == 2
-
-
-# --- 3. a dialogue whose values arrived later ---------------------------------------------------------------------------
-
-
-# --- 4. no same_as row; off is as built ---------------------------------------------------------------------------------
-
-
-# --- 5. an unrecorded env call is evidence --------------------------------------------------------------------------------
-
-
-# --- 6. confinement refuses the network and the host's files ---------------------------------------------------------------
-
-
-# --- the bounds ---------------------------------------------------------------------------------------------------------------
-
-

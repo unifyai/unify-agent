@@ -77,7 +77,6 @@ def _starter(survives: bool, started: list):
 
 def _pass(tmp_path: Path, monkeypatch, turns: list, *, in_code: bool, survives: bool):
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on" if in_code else "off")
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "persistent")
     mem = Repo.init_bare(tmp_path / "mem.git")
     ev = EvidenceStore(tmp_path / "e.sqlite")
     ep = _e1()
@@ -91,7 +90,6 @@ def _pass(tmp_path: Path, monkeypatch, turns: list, *, in_code: bool, survives: 
         load=lambda eid: ep,
         model_turn=Turns(turns),
         config=PassConfig(
-            library_mode=True,
             tools_in_code=in_code,
             pass_record_root=str(tmp_path / "out"),
             max_calls=len(turns),

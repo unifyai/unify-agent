@@ -202,8 +202,6 @@ def _pass(tmp_path: Path, cells: list[str], *, role: str = "write", helper=None,
         load=lambda eid: ep,
         model_turn=model,
         config=PassConfig(
-            library_mode=True,
-            tools_in_code=True,
             pass_record_root=str(tmp_path / "out"),
             **cfg,
         ),
@@ -267,9 +265,7 @@ def _helper_outputs(seen: list) -> dict[str, str]:
 @needs_box
 @pytest.mark.timeout(600)
 def test_writer_and_helper_have_their_names_bound_and_keep_variables(tmp_path, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     monkeypatch.delenv("UNIFY_CELL_STATE", raising=False)
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "persistent")
     helper_seen: list = []
     writer, model, out = _pass(
         tmp_path,
@@ -293,8 +289,6 @@ def test_writer_and_helper_have_their_names_bound_and_keep_variables(tmp_path, m
 @needs_box
 @pytest.mark.timeout(600)
 def test_the_curator_has_its_names_bound_and_keeps_variables(tmp_path, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "persistent")
     writer, model, out = _pass(tmp_path, [PROBE, NEXT, "print('LAST')"], role="curate")
     assert writer._role == "curate"
     assert "NEXT 42" in out["c2"], out["c2"]
@@ -306,7 +300,6 @@ def test_the_curator_has_its_names_bound_and_keeps_variables(tmp_path, monkeypat
 @needs_box
 @pytest.mark.timeout(600)
 def test_under_fresh_cell_state_every_memory_role_loses_its_variables(tmp_path, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "fresh")
     helper_seen: list = []
     writer, model, out = _pass(
@@ -331,8 +324,6 @@ def test_under_fresh_cell_state_every_memory_role_loses_its_variables(tmp_path, 
 @needs_box
 @pytest.mark.timeout(600)
 def test_the_writer_is_told_each_restart_and_then_has_lost_its_variables(tmp_path, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "persistent")
     cells = [
         "x = 41\nprint('SET')",
         "import time\ntime.sleep(60)",
@@ -354,8 +345,6 @@ def test_the_writer_is_told_each_restart_and_then_has_lost_its_variables(tmp_pat
 @needs_box
 @pytest.mark.timeout(600)
 def test_an_idle_writer_interpreter_is_restarted_and_says_so(tmp_path, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "persistent")
 
     async def start(**kw):
         kw["profile"] = dataclasses.replace(kw["profile"], idle_restart_s=0.5)
@@ -395,8 +384,6 @@ SWEEP_AGAIN = (
 @needs_box
 @pytest.mark.timeout(600)
 def test_a_library_module_edited_after_its_import_is_imported_again_with_the_new_code(tmp_path, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "persistent")
     _, _, out = _pass(tmp_path, [SWEEP_WRITE, SWEEP_EDIT, SWEEP_AGAIN, "print('LAST')"])
     assert "FIRST 1 1" in out["c1"], out["c1"]
     assert "EDITED" in out["c2"], out["c2"]
@@ -408,8 +395,6 @@ def test_a_library_module_edited_after_its_import_is_imported_again_with_the_new
 @needs_box
 @pytest.mark.timeout(600)
 def test_the_first_use_of_memory_is_in_that_cell_s_open_log(tmp_path, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "persistent")
     writer, _, out = _pass(
         tmp_path,
         [

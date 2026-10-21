@@ -154,7 +154,7 @@ def test_the_pointers_that_do_not_resolve_are_counted():
 
 def _brief(monkeypatch, in_code, staging_on, helper=True):
     monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: in_code)
-    return lp.write_brief_now(staging=staging_on, pool=True, helper=helper, similar=True)
+    return lp.write_brief_now(staging=staging_on, helper=helper, similar=True)
 
 
 def _step(brief, n):
@@ -256,7 +256,7 @@ def test_an_unfinished_fork_stages_nothing_and_the_writer_is_told(tmp_path, stat
     assert ep_row["status"].startswith(staging.NO_OUTPUT) and ep_row["withheld"] == 2
     assert ep_row["files"] == 0 and ep_row["summary_bytes"] is None and ep_row["summary_read"] is False
     # the writer is told what such a row means
-    assert lp.STAGING_UNFINISHED in lp.write_brief_now(staging=True)
+    assert lp.STAGING_UNFINISHED in lp.write_brief_now()
 
 
 def test_a_finished_fork_with_the_quota_note_still_hands_its_files_on(tmp_path):

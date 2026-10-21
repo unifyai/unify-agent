@@ -24,7 +24,6 @@ from tests.helpers import _handle_project
 from unify.agents import run_record as rr
 from unify.common import tool_registry as R
 from unify.db import store_home
-from unify.settings import SETTINGS
 from tests.agents.roster import read_roster
 
 REPORT = "@writer the served item item:notes/totals gave a wrong sum here: action:0"
@@ -57,8 +56,6 @@ async def _act(replies) -> tuple[list[dict], object]:
 
 @pytest.fixture
 def on_record(core_world, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS_RUN_RECORD", "on")
     home = store_home()
     rec = rr.join_run_record(home)
     rec.join(

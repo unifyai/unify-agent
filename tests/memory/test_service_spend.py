@@ -100,7 +100,7 @@ def test_a_helper_stops_before_a_call_past_the_passes_room(tmp_path, fake_box):
 
 def test_the_room_is_the_cap_less_the_other_passes_commitments(tmp_path):
     home = tmp_path / "home"
-    settings = SimpleNamespace(UNIFY_MEMORY_WRITER_SERVICE_CAP_USD="10")
+    settings = SimpleNamespace(UNIFY_MEMORY_CAP_USD="10")
     for row in (
         {"op": "reserve", "pass_id": "a", "usd": "4"},
         {"op": "settle", "pass_id": "a", "usd": "1.5"},
@@ -136,7 +136,6 @@ def test_a_service_pass_is_bounded_by_the_room_and_settles_the_helpers_lane(tmp_
     from unify.memory.integration import consolidate
     from unify.memory.integration.async_pass import Supervisor
 
-    tc._no_records(monkeypatch)
     stores = tc._stores(tmp_path)
     tc._record(stores, "e1")
     home = stores.paths.home
@@ -158,8 +157,8 @@ def test_a_service_pass_is_bounded_by_the_room_and_settles_the_helpers_lane(tmp_
 
     monkeypatch.setattr(Supervisor, "reconcile", recon)
     monkeypatch.setattr(consolidate, "_helper_spend", lambda writer, turns: (Decimal("0.35"), 1))
-    settings = tc._settings_library()
-    settings.UNIFY_MEMORY_WRITER_SERVICE_CAP_USD = "30"
+    settings = tc._settings()
+    settings.UNIFY_MEMORY_CAP_USD = "30"
     report = asyncio.run(
         consolidate.run_attention_pass(
             home,
@@ -188,7 +187,6 @@ def _attention_pass(tmp_path, monkeypatch, *, recon, resume=False, pending=0, he
     from unify.memory.integration import consolidate
     from unify.memory.integration.async_pass import Supervisor
 
-    tc._no_records(monkeypatch)
     stores = tc._stores(tmp_path)
     tc._record(stores, "e1")
     home = stores.paths.home
@@ -221,8 +219,8 @@ def _attention_pass(tmp_path, monkeypatch, *, recon, resume=False, pending=0, he
     monkeypatch.setattr(Supervisor, "reconcile", fake_recon)
     if helpers is not None:
         monkeypatch.setattr(consolidate, "_helper_spend", lambda writer, turns: helpers)
-    settings = tc._settings_library(**({"model": model} if model else {}))
-    settings.UNIFY_MEMORY_WRITER_SERVICE_CAP_USD = cap
+    settings = tc._settings(**({"model": model} if model else {}))
+    settings.UNIFY_MEMORY_CAP_USD = cap
     report = asyncio.run(
         consolidate.run_attention_pass(
             home, "cd" * 8, handed, resume=resume, folder=folder, journal_start=journal_start, effort="low",
@@ -393,11 +391,11 @@ def test_a_cheaper_writer_runs_passes_under_a_cap_below_the_default_models_worst
     T._open_entry(home)
     runner = T.Recording(decide=True)
     got = _step(home, runner, monkeypatch, UNIFY_MEMORY_WRITER_MODEL="openai/gpt-6-luna",
-                UNIFY_MEMORY_WRITER_SERVICE_CAP_USD="5")  # fmt: skip
+                UNIFY_MEMORY_CAP_USD="5")  # fmt: skip
     assert got["pass_id"] is not None and len(runner.passes) == 1
     dear = tmp_path / "default-model"
     T._open_entry(dear)
-    got = _step(dear, T._no_pass, monkeypatch, UNIFY_MEMORY_WRITER_SERVICE_CAP_USD="5")
+    got = _step(dear, T._no_pass, monkeypatch, UNIFY_MEMORY_CAP_USD="5")
     assert got["why_idle"] == "spend_cap"
 
 

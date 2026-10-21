@@ -133,7 +133,6 @@ def _pass(tmp_path, monkeypatch, refs, *, writer_run=None, segment_of=None):
     from unify.memory.integration.async_pass import Supervisor
     from unify.memory.reconcile import unavailable
 
-    tc._no_records(monkeypatch)
     stores = tc._stores(tmp_path)
     tc._record(stores, "e1")
     home = stores.paths.home
@@ -161,8 +160,8 @@ def _pass(tmp_path, monkeypatch, refs, *, writer_run=None, segment_of=None):
     monkeypatch.setattr(Supervisor, "reconcile", recon)
     folder = ws.service_dir(home) / ws.TURNS_DIR / pid
     folder.mkdir(parents=True, exist_ok=True)
-    settings = tc._settings_library()
-    settings.UNIFY_MEMORY_WRITER_SERVICE_CAP_USD = "30"
+    settings = tc._settings()
+    settings.UNIFY_MEMORY_CAP_USD = "30"
     report = asyncio.run(
         consolidate.run_attention_pass(
             home, pid, handed, resume=False, folder=folder, journal_start=None, effort="low",

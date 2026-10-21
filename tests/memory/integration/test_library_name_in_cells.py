@@ -38,7 +38,6 @@ PARSE_DATE = "memory.text.dates:parse_date"
 
 def _library_run(monkeypatch, paths: Paths) -> RequestRun:
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
     run = RequestRun("r", paths)
     run.library_mode = True
     monkeypatch.setattr(request_mod, "_CURRENT", run)
@@ -324,7 +323,6 @@ def test_the_library_mode_use_record_carries_the_counts_and_only_there():
         [PARSE_DATE],
         runtime_calls=acc,
         cell_errors={"name": 3, "import": 1},
-        library_mode=True,
     )
     assert "error" not in rec, rec
     assert (

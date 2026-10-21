@@ -86,7 +86,7 @@ def _run(eid: str = EID) -> SimpleNamespace:
 
 def _episode(lines, *, dialogue: bool = True, eid: str = EID):
     acts = dialogue_actions(lines, "env") if dialogue else []
-    return assemble(_run(eid), lines, "", ENDED, extra_actions=acts)
+    return assemble(_run(eid), lines, ENDED, extra_actions=acts)
 
 
 # --- the actions ---------------------------------------------------------------------------------------
@@ -245,7 +245,7 @@ def test_a_30x30_grid_pair_survives_intact(tmp_path):
     assert render_grid(grid(30, 30, seed=2)) in demos  # and its output
     assert render_grid(grid(30, 30, seed=0)) in demos  # the re-rendered test input
     assert acts[1].args == [v["grids"][0]] and len(acts[1].args[0]) == 30
-    ep, redactor = assemble(_run(), v["lines"], "", ENDED, extra_actions=acts)
+    ep, redactor = assemble(_run(), v["lines"], ENDED, extra_actions=acts)
     _, _, _, back = _write_and_load(tmp_path, ep, redactor)
     got = [a for a in back.actions if a.kind == "dialogue"]
     assert [a.response for a in got] == [a.response for a in acts]
@@ -268,7 +268,7 @@ def test_a_message_over_the_writer_cap_is_stored_whole_as_a_blob(tmp_path):
     ]
     (act,) = dialogue_actions(lines, "env")
     assert act.response == big
-    ep, redactor = assemble(_run(), lines, "", ENDED, extra_actions=[act])
+    ep, redactor = assemble(_run(), lines, ENDED, extra_actions=[act])
     repo, sha, rel, back = _write_and_load(tmp_path, ep, redactor)
     assert "__capped__" in repo.show(sha, f"{rel}/actions.jsonl").decode()
     (got,) = [a for a in back.actions if a.kind == "dialogue"]
@@ -301,7 +301,7 @@ def test_dialogue_payloads_are_redacted_before_the_episode(tmp_path, monkeypatch
     assert "<secret:ARC_PROXY_TOKEN>" in acts[0].response
     assert "<redacted:key-shaped>" in acts[0].response
     assert acts[2].kwargs == {"grid": [[1]], "note": "<secret:ARC_PROXY_TOKEN>"}
-    ep, redactor = assemble(_run(), lines, "", ENDED, extra_actions=acts)
+    ep, redactor = assemble(_run(), lines, ENDED, extra_actions=acts)
     repo, sha, rel, _ = _write_and_load(tmp_path, ep, redactor)
     for name in repo.run("ls-tree", "-r", "--name-only", sha).split():
         data = repo.show(sha, name)

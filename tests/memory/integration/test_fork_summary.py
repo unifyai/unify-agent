@@ -27,7 +27,6 @@ import pytest
 from unify.memory import library_prompts, staging
 from unify.memory.integration import fork as fork_mod
 from unify.memory.integration import fork_worker as fw
-from unify.settings import SETTINGS
 from tests.memory.integration.test_fork import (  # noqa: F401
     _reply,
     _source,
@@ -275,9 +274,6 @@ def test_the_fork_request_carries_the_recorded_part_list_after_the_cached_prefix
 
     import unify.actor.code_act_actor as caa
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_FORK", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_WAIT_SLOT", "off")
     src = _source()
     monkeypatch.setattr(caa, "_session_fork_source", lambda inner, actor: (src, None))
     monkeypatch.setattr(fork_mod.shutil, "which", lambda n: f"/usr/bin/{n}")

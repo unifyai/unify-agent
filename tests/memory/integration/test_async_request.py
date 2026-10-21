@@ -17,7 +17,6 @@ from unify.memory.memory_writer import land, publish, served_head
 
 SLEEPER = "import time; time.sleep(30)"
 SETTINGS = SimpleNamespace(
-    UNIFY_MEMORY_LIBRARY="on",
     UNIFY_MEMORY_LIBRARY_E=1,
     UNIFY_MEMORY_LIBRARY_PASS_WALL_S=60,
 )

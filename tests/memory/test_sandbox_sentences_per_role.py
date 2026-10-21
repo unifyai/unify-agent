@@ -102,15 +102,12 @@ def opening_of(text: str, role: str) -> str:
 
 @pytest.fixture
 def in_code(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "persistent")
     return monkeypatch
 
 
 def _library_run(monkeypatch, home: Path) -> Paths:
     """A library-mode request whose read-only copy holds the generated package of an empty library."""
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
     paths = Paths.under(home)
     empty = home / "empty-library"
     empty.mkdir(parents=True)
@@ -341,5 +338,4 @@ def test_the_default_cell_state_is_persistent(monkeypatch):
 
     monkeypatch.delenv(bi.CELL_STATE_SETTING, raising=False)
     assert ProductionSettings.model_fields["UNIFY_CELL_STATE"].default == "persistent"
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "persistent")
     assert bi.cell_state() == "persistent"

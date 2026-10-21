@@ -411,13 +411,6 @@ class Limits:
     #: with no set number of rounds: the consecutive rounds after which a refusal repeated for the same item and
     #: reason gets no further round (repair.STUCK_REPEATS; None: not stated)
     stuck_repeats: int | None = None
-    #: compaction (the agent loop's, writer_pass.compact_by_summary): the share of the model's context window, in
-    #: percent, a call's prompt reaches before the conversation is summarised (None: compaction off), and whether
-    #: the request messages are kept before the summary (UNIFY_COMPACTION_KEEP_PREFIX=on)
-    compact_threshold_percent: str | None = None
-    #: and the fixed prompt size at which it compacts first (context_compression.compaction_at_tokens)
-    compact_at_tokens: int | None = None
-    compact_keep_prefix: bool = False
     #: what the episode-end fork (and each helper call) can stage: files and bytes
     stage_files: int | None = None
     stage_bytes: int | None = None
@@ -499,18 +492,12 @@ def _opened(agent: str, flags: frozenset[str], limits: Limits, brief: str) -> st
     return in_code_opening(agent, frozenset(flags), cell_s=limits.cell_s) + "\n\n" + brief
 
 
-def limits_now(
-    cell_s: float | None = None,
-    compact: bool = False,
-    finish_capped: bool = False,
-) -> Limits:
+def limits_now(cell_s: float | None = None, finish_capped: bool = False) -> Limits:
     """The limits from the constants that enforce them (imported here: they import this module's callers).
-    *compact*: the pass compacts its conversation; *finish_capped*: finish's manifest refusals are capped.
-    """
+    *finish_capped*: finish's manifest refusals are capped."""
     from . import repair as _repair
     from . import views, writer_pass
     from .integration import fork_worker
-    from unify.common._async_tool import context_compression as _cc
 
     return Limits(
         view_bytes=views.VIEW_BYTES,
@@ -527,11 +514,6 @@ def limits_now(
         repair_rounds=_repair.REPAIR_ROUNDS if finish_capped else None,
         # an uncapped pass stops offering rounds for a refusal repeated this many rounds in a row
         stuck_repeats=None if finish_capped else _repair.STUCK_REPEATS,
-        compact_threshold_percent=(
-            _num(_cc.COMPACTION_THRESHOLD * 100) if compact else None
-        ),
-        compact_at_tokens=_cc.compaction_at_tokens() if compact else None,
-        compact_keep_prefix=bool(compact and False),
         stage_files=fork_worker.QUOTA_FILES,
         stage_bytes=fork_worker.QUOTA_BYTES,
     )
@@ -556,7 +538,7 @@ def write_brief_now(
 
     flags = tool_flags(helper, similar)
     return write_brief(
-        limits=limits_now(cell_s, compact=True, finish_capped=finish_capped),
+        limits=limits_now(cell_s, finish_capped=finish_capped),
         mutation_min=qa.MUTATION_MIN,
         sample_k=qa.SAMPLE_K,
         lint_min=code_lint.LINT_MIN,

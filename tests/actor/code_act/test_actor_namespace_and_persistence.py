@@ -218,7 +218,6 @@ async def test_under_fresh_cell_state_the_actor_and_a_teammate_lose_variables_an
 def _library_run(monkeypatch, home: Path) -> Paths:
     """A library-mode request whose read-only copy is the generated package of an empty library."""
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
     paths = Paths.under(home)
     empty = home / "empty-library"
     empty.mkdir(parents=True)

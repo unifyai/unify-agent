@@ -35,7 +35,6 @@ from unify.memory.gitio import Repo
 from unify.memory.library_checks import LibraryConfig
 from unify.memory.trigger import PassRequest
 from unify.memory.writer_pass import PassConfig, WriterPass
-from unify.settings import SETTINGS
 
 # ── assumed names: the integrator adapts these to the build in this one block ─────────────────────────────────
 #: Design I.11 decision 3: the evidence levels, lowest first. I.3.1's ``experimental`` is ``unchecked`` (I.11: it
@@ -315,8 +314,6 @@ def _pass(tmp_path: Path, cells: list[str], eids: list[str]):
         load=EPISODES.__getitem__,
         model_turn=model,
         config=PassConfig(
-            library_mode=True,
-            tools_in_code=True,
             pass_record_root=str(tmp_path / "out"),
             # each fixture and check call made from code counts against the cap as a model call does: the
             # reader script alone makes 15 or more of them
@@ -336,7 +333,6 @@ def _why(model: _Cells) -> str:
 @needs_box
 @pytest.mark.timeout(1200)
 def test_a_structured_fixture_lands_at_the_top_level_through_a_writer_pass(tmp_path, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     cells = [_structured_cell(), _manifest_cell([w.item()]), FINISH]
     out, model, results = _pass(tmp_path, cells, ["e1", "e2"])
     assert out.finished and out.passed, (out.reasons, _why(model))
@@ -347,7 +343,6 @@ def test_a_structured_fixture_lands_at_the_top_level_through_a_writer_pass(tmp_p
 @needs_box
 @pytest.mark.timeout(1200)
 def test_text_grounded_through_a_stored_reader_lands_alike_with_a_structured_fixture(tmp_path, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     cells = [
         _structured_cell(),
         _text_cell(parsed=True),
@@ -379,7 +374,6 @@ def test_text_grounded_through_a_stored_reader_lands_alike_with_a_structured_fix
 @needs_box
 @pytest.mark.timeout(1200)
 def test_text_parsed_inline_by_the_test_lands_at_a_lower_level_with_its_finding(tmp_path, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     cells = [_text_cell(parsed=False), _manifest_cell([ITEM_READER, ITEM_ACCOUNT]), FINISH]
     out, model, results = _pass(tmp_path, cells, ["e4", "e5"])
     assert out.finished and out.passed, (out.reasons, _why(model))

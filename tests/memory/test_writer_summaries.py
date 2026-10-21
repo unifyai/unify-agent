@@ -137,7 +137,7 @@ def _pass(tmp_path, model, *, helper=False, eids=("e1", "e2")):
         ev,
         load=EPS.__getitem__,
         model_turn=model,
-        config=PassConfig(library_mode=True, max_calls=6, staging_root=str(root), fork=True),
+        config=PassConfig(max_calls=6, staging_root=str(root)),
         **({"helper_turn": lambda session=None: model} if helper else {}),
     )
     out = asyncio.run(writer.run(PassRequest("incremental", "svc", list(eids), False), "p1"))
@@ -166,7 +166,7 @@ def _section(text: str, heading: str) -> str:
 
 
 def test_the_brief_points_to_the_summaries_first(in_code):
-    text = lp.write_brief_now(staging=True)
+    text = lp.write_brief_now()
     inputs = _section(text, "# Inputs")
     assert SUMMARY_PATH in inputs and WITHHELD_SENTENCE in inputs
     how = _section(text, "# How to work")
@@ -185,7 +185,7 @@ def test_the_brief_points_to_the_summaries_first(in_code):
 
 
 def test_the_brief_stays_complete_with_summaries(in_code):
-    text = lp.write_brief_now(staging=True, helper=True)
+    text = lp.write_brief_now(helper=True)
     assert SUMMARY_PATH in text
     for heading in ("# Role", "# Inputs", "# How to work", "# Done"):
         assert heading in text, heading
@@ -200,9 +200,9 @@ def test_the_brief_stays_complete_with_summaries(in_code):
 
 
 def test_delegate_is_still_offered_beside_the_summaries(in_code):
-    text = lp.write_brief_now(staging=True, helper=True)
+    text = lp.write_brief_now(helper=True)
     assert "delegate" in text
-    assert "delegate" in lp._tool_names("write", lp.tool_flags(staging=True, helper=True))
+    assert "delegate" in lp._tool_names("write", lp.tool_flags(helper=True))
     assert SUMMARY_PATH in text
 
 

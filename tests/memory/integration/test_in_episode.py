@@ -135,8 +135,6 @@ class _ForksOnly(HomeSources):
 
 @pytest.fixture
 def fork_on(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_FORK", "on")
     services: list = []
     monkeypatch.setattr(ie_mod, "_ensure_service", lambda home: services.append(Path(home)))
     return services
@@ -292,8 +290,6 @@ def test_the_actor_gets_checkpoint_only_with_in_episode(monkeypatch, flagged):
 
 def test_an_in_episode_verdict_marks_a_signal_pause(tmp_path, monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE", "on")
     run = RequestRun("r", Paths.under(tmp_path / "home"))
     marks: list = []
     run.in_episode = SimpleNamespace(mark=lambda source, note="": marks.append(source))
@@ -307,7 +303,6 @@ def test_an_in_episode_verdict_marks_a_signal_pause(tmp_path, monkeypatch):
 
 def _library_run(monkeypatch, paths: Paths, mem: Repo, first: str) -> RequestRun:
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
     run = RequestRun("r", paths)
     run.library_mode = True
     run.pin = first

@@ -46,8 +46,8 @@ def _briefs() -> dict[str, tuple[str, str, frozenset]]:
         "writer base": ("writer", lp.write_brief_now(), lp.tool_flags()),
         "writer full": (
             "writer",
-            lp.write_brief_now(**full, compact=True, finish_capped=True),
-            lp.tool_flags(staging=True, pool=True, helper=True, similar=True, edit=True),
+            lp.write_brief_now(**full, finish_capped=True),
+            lp.tool_flags(helper=True, similar=True, edit=True),
         ),
         "curator": ("curator", lp.curate_brief_now(edit_tools=True), lp.tool_flags(edit=True)),
         "helper": ("helper", helpers.helper_brief(True), helpers.helper_flags(True)),

@@ -30,7 +30,7 @@ def _fix(cause: str) -> str:
 
 
 def test_the_pool_text_gives_no_second_episode_reason_to_defer():
-    brief = lp.write_brief_now(pool=True)
+    brief = lp.write_brief_now()
     assert "lacks only another episode" not in brief
     assert "`retired` closes an entry for good: it is wrong or not reusable" in brief
 

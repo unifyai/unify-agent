@@ -8,7 +8,6 @@ Keyless: every model is scripted; nothing here opens a socket off this machine.
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from pathlib import Path
 
@@ -33,8 +32,6 @@ FAST = Options(
 
 @pytest.fixture
 def run_record_on(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS_RUN_RECORD", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     return SETTINGS
 
 
@@ -108,77 +105,6 @@ def _tokens(text: str) -> int:
     from unify.memory.index import estimate_tokens
 
     return int(estimate_tokens(text))
-
-
-def test_prompt_size_report_per_role_before_and_after(
-    run_record_on, monkeypatch, capsys
-):
-    """A1 test 7: per role, the tokens the record adds to its prompt and its tool JSON, before (switch off) and after
-    (on). No role loses a tool, the tool JSON is the same, and no role grows by more than the common section and its
-    roster lines; what does is listed."""
-    from unify.memory import helpers, messaging
-    from unify.memory.integration import fork
-
-    def texts(on: bool) -> dict:
-        monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS_RUN_RECORD", "on" if on else "")
-        lines = lambda name, role, spawner=None: (
-            rr.prompt_lines(name, role, spawner) if on else ""
-        )  # noqa: E731
-        return {
-            # the actor's opening (system) and its first message's record section
-            "actor": R.preamble("actor", {"flags": frozenset({"helper"})})
-            + lines("actor-3f9a", "actor"),
-            "writer": messaging.record_text() + lines("writer", "writer"),
-            "curator": messaging.record_text() + lines("curator", "writer"),
-            "helper": helpers.helper_brief(True)
-            + lines("call-1", "helper", "writer"),
-            "librarian": R.preamble("librarian", {})
-            + lines("librarian-3f9a", "librarian"),
-            "fork": fork.fork_instruction() + lines("fork-3f9a", "fork"),
-        }
-
-    def tools(on: bool) -> dict:
-        monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS_RUN_RECORD", "on" if on else "")
-        return {a: (len(json.dumps(R.json_tools(a))), set(R.allow_list(a, frozenset({"helper", "pool", "similar", "edit"}))))
-                for a in ("actor", "teammate", "writer", "curator", "helper", "librarian")}  # fmt: skip
-
-    before, after = texts(False), texts(True)
-    t_before, t_after = tools(False), tools(True)
-    report, excess = [], {}
-    for role in before:
-        # compared exactly, in characters; reported in tokens too
-        grown = len(after[role]) - len(before[role])
-        allowed = len(R.COMMON_SECTION) + len(
-            after[role].split(R.COMMON_SECTION, 1)[-1]
-        )
-        report.append(
-            f"{role}: {_tokens(before[role])} -> {_tokens(after[role])} tokens "
-            f"({len(before[role])} -> {len(after[role])} chars; +{grown}, allowed +{allowed})",
-        )
-        if grown > allowed:
-            excess[role] = grown - allowed
-    for agent, (size_before, names_before) in t_before.items():
-        size_after, names_after = t_after[agent]
-        assert (
-            size_after == size_before
-        ), agent  # one model-API tool, execute_code, for every agent
-        assert names_before <= names_after, (
-            agent,
-            names_before - names_after,
-        )  # no role loses a tool
-        report.append(
-            f"{agent} tool JSON: {size_before} -> {size_after} bytes; tools +{sorted(names_after - names_before)}"
-        )
-    text = "\n".join(
-        ["prompt-size report (UNIFY_AGENTS_RUN_RECORD off -> on):", *report, f"excess: {excess}"],
-    )
-    print(text)
-    # kept beside the run's logs (gitignored) for the build's record
-    out = Path(__file__).resolve().parents[2] / "logs" / "redesign-a-prompt-sizes.txt"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(text + "\n")
-    # the fork's instruction names the calls it may make in place of "Do not call tools.": listed, by design
-    assert set(excess) <= {"fork"}, excess
 
 
 # --- test 10: no box binds the record --------------------------------------------------------------------------------

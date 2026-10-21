@@ -40,7 +40,6 @@ from unify.memory.integration import fork_worker as fw
 from unify.memory.library_checks import LibraryConfig
 from unify.memory.trigger import PassRequest
 from unify.memory.writer_pass import PassConfig, WriterPass
-from unify.settings import SETTINGS
 
 # ── assumed names: the integrator adapts these to the build in this one block ─────────────────────────────────
 #: Design I.2.3: ``captures.capture_trace_step(staging_dir, episode, store)`` runs at once when a fork settles.
@@ -350,7 +349,6 @@ def _line(text: str, mark: str) -> str:
 @needs_box
 @pytest.mark.timeout(1200)
 def test_a_writer_pass_lands_the_capture_as_a_library_item(tmp_path, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     state = tmp_path / "memory-state"
     ep = recorded_episode()
     cid, store = capture_episode(state, ep)
@@ -387,10 +385,6 @@ def test_a_writer_pass_lands_the_capture_as_a_library_item(tmp_path, monkeypatch
         load=episodes.__getitem__,
         model_turn=model,
         config=PassConfig(
-            library_mode=True,
-            tools_in_code=True,
-            fork=True,
-            pool=True,
             staging_root=str(state / "memory-staging"),
             pass_record_root=str(tmp_path / "out"),
             max_calls=6,

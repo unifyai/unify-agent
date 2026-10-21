@@ -179,7 +179,7 @@ def test_the_write_brief_names_each_input_the_pass_prepares(tmp_path):
 
 
 def test_the_end_condition_is_a_decision_not_a_count():
-    for text in (pv.write_brief_now(), pv.write_brief_now(staging=True, pool=True)):
+    for text in (pv.write_brief_now(), pv.write_brief_now()):
         assert "every episode in the batch" not in text and "dismiss" not in text
         assert (
             "you have built the best library items you can from this batch, with the proposals as material and the episodes as evidence"

@@ -465,7 +465,6 @@ def _library_pass(tmp_path: Path, model: Any, *, in_code: bool, **cfg: Any):
         load=lambda eid: ep,
         model_turn=model,
         config=PassConfig(
-            library_mode=True,
             tools_in_code=in_code,
             pass_record_root=str(tmp_path / "out"),
             **cfg,
@@ -490,7 +489,6 @@ def no_waiting(monkeypatch):
 
 def _switch(monkeypatch, in_code: bool) -> None:
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on" if in_code else "off")
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "persistent")
 
 
 NOTE = "/memory/notes/text/dates.md"
@@ -597,7 +595,6 @@ def _actor_library(world: dict, monkeypatch) -> Any:
     from unify.memory.integration.request import RequestRun
 
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
     paths = Paths.under(world["state"])
     mem, sha = _library_repo(paths.memory)
     export_actor_library_mode(mem.git_dir, sha, paths.checkout)
@@ -690,8 +687,6 @@ async def test_every_call_the_actors_prompt_shows_runs_as_written(core_world, mo
     from unify.actor import in_code_tools
     from unify.actor.code_act_actor import CodeActActor
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "persistent")
     monkeypatch.setattr(in_code_tools, "SESSIONS", _Collect())
     _actor_library(core_world, monkeypatch)
     seen: list[str] = []

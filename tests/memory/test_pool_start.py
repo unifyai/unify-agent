@@ -297,7 +297,7 @@ def test_adopt_refs_parse_to_one_form_and_bad_ones_name_the_forms():
 def test_the_brief_puts_adopts_on_each_item():
     from unify.memory import library_prompts as lp
 
-    brief = lp.write_brief_now(staging=True, pool=True)
+    brief = lp.write_brief_now()
     template = next(
         line for line in brief.splitlines() if line.lstrip().startswith('{"items": [')
     )
@@ -654,7 +654,7 @@ def test_adopts_entries_record_how_each_draft_was_used_and_bad_ones_are_refused(
 def test_the_brief_frames_proposals_as_material_from_agents_with_a_partial_view():
     from unify.memory import library_prompts as lp
 
-    brief = lp.write_brief_now(staging=True, pool=True)
+    brief = lp.write_brief_now()
     assert "drafts to build from, not submissions awaiting a verdict" in brief
     assert "a staged draft by an agent that saw only its own episode" in brief
     assert (

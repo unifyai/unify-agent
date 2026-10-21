@@ -245,7 +245,6 @@ def test_no_failures_give_an_empty_list():
         [],
         runtime_calls=runtime_calls_empty(),
         cell_errors={"name": 0, "import": 0},
-        library_mode=True,
     )
     assert record[LIST_FIELD] == []
     assert record.get(DROPPED_FIELD, 0) == 0

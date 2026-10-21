@@ -29,7 +29,6 @@ from unify.memory.integration import request as request_mod
 from unify.memory.integration.adapters import dialogue
 from unify.memory.integration.trajectory import assemble
 from unify.memory.redact import Redactor
-from unify.settings import SETTINGS
 
 
 def _write_transcript(run, lines) -> None:
@@ -39,7 +38,6 @@ def _write_transcript(run, lines) -> None:
 
 
 def test_env_appends_the_dialogue_actions_after_the_worktree_rows(mv2, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_DIALOGUE", "env")
     v = visit()
     run = _begin(mv2, "an ARC visit")
     _write_transcript(run, v["lines"])
@@ -60,7 +58,6 @@ def test_env_appends_the_dialogue_actions_after_the_worktree_rows(mv2, monkeypat
 
 def test_env_redacts_with_the_runs_redactor(mv2, monkeypatch):
     secret = "arc-proxy-secret-0123456789abcdef"  # pragma: allowlist secret
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_DIALOGUE", "env")
     monkeypatch.setenv("ARC_PROXY_TOKEN", secret)
     v = visit()
     lines = list(v["lines"])
@@ -103,8 +100,7 @@ def test_env_records_no_dialogue_for_a_single_turn_request(mv2, monkeypatch, fin
     # the adapter's own semantics keep the reply as unrecorded; the online recorder drops it
     (kept,) = dialogue.dialogue_actions(lines, "env")
     assert kept.status == "unrecorded"
-    assert request_mod.recorded_dialogue(lines, "env", Redactor()) == []
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_DIALOGUE", "env")
+    assert request_mod.recorded_dialogue(lines, Redactor()) == []
     run = _begin(mv2, "Summarise sales.csv by region into report.md.")
     _write_transcript(run, lines)
     _finish(mv2, run)
@@ -131,7 +127,6 @@ def _written(tmp_path, name: str, lines: list[dict], extra: list):
     ep, redactor = assemble(
         _office_run(),
         lines,
-        "",
         "2026-10-08T13:05:00+00:00",
         extra_actions=extra,
     )
@@ -151,7 +146,7 @@ def test_a_single_turn_episode_is_byte_identical_with_dialogue_off(tmp_path, fin
     lines = _office(final)
     on_extra = [
         fake_tracks.WT_ACTION,
-        *request_mod.recorded_dialogue(lines, "env", Redactor()),
+        *request_mod.recorded_dialogue(lines, Redactor()),
     ]
     on, on_tree, on_blobs = _written(tmp_path, "on", lines, on_extra)
     off, off_tree, off_blobs = _written(tmp_path, "off", lines, [fake_tracks.WT_ACTION])

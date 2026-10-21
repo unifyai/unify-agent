@@ -348,7 +348,6 @@ async def test_ask_returns_the_librarians_answers_reuses_the_session_and_is_acco
         _ep(transcript=[], actions=[]),
         run.item_ids,
         runtime_calls=run.runtime_calls,
-        library_mode=True,
     )
     assert "error" not in record, record
     assert record[ASK_CALLS] == 2

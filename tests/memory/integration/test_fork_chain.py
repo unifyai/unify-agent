@@ -22,8 +22,8 @@ from tests.memory.test_episodes import _ep
 CORPUS = Path(__file__).resolve().parents[1] / "data" / "fork_replies" / "corpus.json"
 PY = "/usr/bin/python3"
 CODE = 'def double(x):\n    """Twice x."""\n    return 2 * x\n'
-ON = SimpleNamespace(UNIFY_MEMORY_LIBRARY="on", UNIFY_MEMORY_LIBRARY_FORK="on")
-OFF = SimpleNamespace(UNIFY_MEMORY_LIBRARY="on", UNIFY_MEMORY_LIBRARY_FORK="off")
+ON = SimpleNamespace()
+OFF = SimpleNamespace(UNIFY_MEMORY_LIBRARY_FORK="off")
 
 
 def _paths(tmp_path):

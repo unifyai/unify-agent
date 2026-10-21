@@ -78,7 +78,6 @@ def set_switch(monkeypatch, value: str) -> None:
 
 @pytest.fixture(autouse=True)
 def librarian_on(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     set_switch(monkeypatch, "on")
 
 

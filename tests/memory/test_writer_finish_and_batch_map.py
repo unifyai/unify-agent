@@ -133,7 +133,7 @@ def test_finish_is_refused_only_for_its_manifest(tmp_path):
 
 
 def test_the_brief_names_every_batch_map_key_and_its_shape():
-    text = pv.write_brief_now(staging=True, pool=True)
+    text = pv.write_brief_now()
     bmap = build_batch_map(EPS.__getitem__, ["e1"])
     keys = (
         set(bmap) | set(bmap["episodes"][0]) | {"staging", "pool_entries", "candidates"}

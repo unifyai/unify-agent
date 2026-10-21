@@ -48,7 +48,7 @@ MAX_LISTED_CALLS = 200
 LISTED_ARGS_CHARS = 400
 PROCEDURE_FILE = "procedure.py"
 #: What a capture's ``own_check`` records under rev 2: it was not run, and why.
-NOT_RUN: dict = {"ran": False, "why": "rev2: captures are never executed to classify"}
+NOT_RUN: dict = {"ran": False, "why": "a capture is never run to classify it"}
 
 
 # --- the procedure's form -----------------------------------------------------------------------------------------------

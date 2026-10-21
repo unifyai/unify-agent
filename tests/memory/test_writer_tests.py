@@ -101,7 +101,6 @@ def _ctx(tmp_path, modes=("value", "replay"), runner=None) -> wt.TestContext:
         tests_path=tmp_path / "passes" / "p1" / "tests.jsonl",
         library=lib,
         episode=lambda eid: _ep() if eid == "e1" else None,
-        modes=frozenset(modes),
         work=tmp_path / "work",
         **kw,
     )

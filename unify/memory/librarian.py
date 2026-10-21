@@ -195,7 +195,6 @@ def environment_text(cell_s: float = CELL_TIMEOUT_S) -> str:
 def opening(cell_s: float = CELL_TIMEOUT_S) -> str:
     """The shared opening of the librarian (:func:`unify.common.tool_registry.preamble`)."""
     from unify.common import tool_registry
-    from unify.common.box_interpreter import persistent
 
     from .agent_profiles import _LIBRARY_LINE
 
@@ -205,7 +204,6 @@ def opening(cell_s: float = CELL_TIMEOUT_S) -> str:
             "environment": environment_text(cell_s),
             "memory": _LIBRARY_LINE[AGENT],
             "flags": frozenset(),
-            "persistent": persistent(),
         },
     )
 

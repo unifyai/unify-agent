@@ -39,7 +39,6 @@ from unify.memory.catalogue import write_files
 from unify.memory.integration import request as request_mod
 from unify.memory.integration.adapters.audit import CellAudit
 from unify.memory.integration.request import add_runtime_calls, runtime_calls_empty
-from unify.settings import SETTINGS
 
 #: The current request's data, as the host gives a structured request; TOTAL was saved against input of this shape.
 DATA = {"rows": [[1, 2, 3]], "unit": "kg"}
@@ -320,7 +319,6 @@ async def test_the_host_gives_the_acts_request_and_refuses_when_none_is_known(tm
     from unify.actor import in_code_tools
     from unify.actor import tool_handlers as H
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     monkeypatch.setattr(request_mod, "_CURRENT", None)
 
     def session(request: object, name: str) -> in_code_tools.InCodeTools:

@@ -20,6 +20,8 @@ with.
 | `UNIFY_MODEL` | `openai/gpt-5.6-sol@openrouter` | The model every request runs on. |
 | `UNIFY_REASONING_EFFORT` | `high` | The reasoning effort that goes with it. |
 | `UNIFY_MEMORY_WRITER_MODEL` | empty, which means `UNIFY_MODEL` | The model the memory writer and its helpers run on. It must be a model the pinned price catalogue bounds, or the writer does not start. |
+| `UNIFY_EMBED_URL` | empty | The loopback lane (`http://127.0.0.1:<port>/<path>`) that provider embeddings go through. Empty means a new embedding is refused, and nothing is posted to a provider directly. |
+| `UNIFY_LOCAL_EMBEDDINGS` | off | Compute embeddings in process with `BAAI/bge-small-en-v1.5` (the `local-embeddings` extra) instead of through that lane. |
 
 ## Bounds and spend
 

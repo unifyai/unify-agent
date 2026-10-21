@@ -211,7 +211,7 @@ def test_the_gate_section_defines_every_check_it_names(registry):
 
 
 def test_trust_and_field_contradictions_are_gone(registry):
-    write = lp.write_brief_now(staging=True, pool=True)
+    write = lp.write_brief_now()
     # the manifest parser reads field_types per fixture field in library mode, so the brief documents that form
     assert '`{"<fixture path>#<field>": "<type>"}`' in write
     assert (

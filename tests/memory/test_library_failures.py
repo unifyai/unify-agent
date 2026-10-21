@@ -142,7 +142,6 @@ def test_the_run_settles_its_cells_and_the_use_record_lists_them_in_library_mode
         [PARSE_DATE],
         runtime_calls=run.runtime_calls,
         cell_errors=dict(run.cell_errors),
-        library_mode=True,
         failures=run.failures,
         redactor=Redactor({"SERVICE_TOKEN": PLANTED_SECRET}),
     )

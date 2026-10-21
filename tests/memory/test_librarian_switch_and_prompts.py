@@ -106,9 +106,7 @@ def _export(tmp_path, name: str, files: dict | None):
 
 @pytest.fixture
 def librarian_on(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
     _set(monkeypatch, SWITCH, "on")
 
 
@@ -116,7 +114,6 @@ def librarian_on(monkeypatch):
 
 
 def test_the_ask_tool_is_on_the_actors_allow_list_only_when_on(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     _set(monkeypatch, SWITCH, "off")
     assert ASK_TOOL not in actor_allow()
     _set(monkeypatch, SWITCH, "on")
@@ -161,7 +158,7 @@ def test_ask_is_counted_among_the_helper_calls_and_never_as_a_use():
     got = library_helper_calls(acc)
     assert got[ASK_HELPER] == {"ok": 2, "refused": 0, "error": 1}
     rec = memory_use(_ep(transcript=[], actions=[]), ["memory.orders.sums:total_amount"], runtime_calls=acc,
-                     library_mode=True)
+                     )
     assert "error" not in rec, rec
     assert rec["library_helper_calls"][ASK_HELPER] == {"ok": 2, "refused": 0, "error": 1}
     assert ASK_ID not in (rec.get("items") or {})
@@ -170,7 +167,7 @@ def test_ask_is_counted_among_the_helper_calls_and_never_as_a_use():
 def test_the_library_mode_use_record_carries_the_ask_fields():
     acc = runtime_calls_empty()
     add_runtime_calls(acc, {"calls": {"helpers": {"memory:index": {"ok": 1}}}})
-    rec = memory_use(_ep(transcript=[], actions=[]), [], runtime_calls=acc, library_mode=True)
+    rec = memory_use(_ep(transcript=[], actions=[]), [], runtime_calls=acc)
     assert "error" not in rec, rec
     assert rec[ASK_CALLS] == 0 and rec[ASK_ROWS] == []
     off = memory_use(_ep(transcript=[], actions=[]), [], runtime_calls=acc)

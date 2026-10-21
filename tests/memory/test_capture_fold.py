@@ -213,7 +213,7 @@ def test_d1_no_own_check_runs_and_no_entry_comes_from_one(tmp_path, nothing_runs
     store = cp.store_dir(tmp_path)
     row = cp.capture_trace_step(_staging(tmp_path, "e1", {"procedure.py": WORLDS["shell"][0]}), _episode("shell", "e1"), store,
                      runner=nothing_runs)  # fmt: skip
-    assert row["own_check"] == {"ran": False, "why": "rev2: captures are never executed to classify"}
+    assert row["own_check"] == {"ran": False, "why": "a capture is never run to classify it"}
     assert not at.own_check_failed(row)
     # even a row from before rev 2 whose own check failed makes no entry now
     old = {"capture_id": "c" * 16, "episode": "e2", "segment": None, "outcome": "none",
@@ -277,10 +277,7 @@ def test_a_pause_with_no_computation_starts_no_fork_and_its_cells_wait_for_the_n
     from tests.memory.integration import test_in_episode as TIE
     from unify.memory.integration import fork as fork_mod
     from unify.memory.integration import in_episode as ie_mod
-    from unify.settings import SETTINGS
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_FORK", "on")
     monkeypatch.setattr(ie_mod, "_ensure_service", lambda home: None)
     forks = TIE._Forks()
     monkeypatch.setattr(fork_mod, "start", forks.start)

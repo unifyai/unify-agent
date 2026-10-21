@@ -229,7 +229,7 @@ def _writer_briefs() -> dict[str, tuple[str, frozenset[str]]]:
     return {
         "writer base": (lp.write_brief_now(), frozenset()),
         "writer full": (
-            lp.write_brief_now(**full, compact=True, finish_capped=True),
+            lp.write_brief_now(**full, finish_capped=True),
             frozenset({"pool", "helper", "similar", "edit"}),
         ),
     }

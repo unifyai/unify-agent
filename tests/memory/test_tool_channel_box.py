@@ -74,8 +74,6 @@ def _writer(tmp_path: Path, turns: list, **cfg) -> tuple[WriterPass, Turns, Evid
         load=lambda eid: ep,
         model_turn=model,
         config=PassConfig(
-            library_mode=True,
-            tools_in_code=True,
             pass_record_root=str(tmp_path / "out"),
             **cfg,
         ),

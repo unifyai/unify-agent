@@ -130,7 +130,6 @@ def test_a_name_shaped_like_a_word_and_hex_is_refused_only_for_the_requests_own_
 
 @_handle_project
 def test_under_the_redesign_profile_a_finding_labels_and_refuses_nothing(lint, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_PROFILE", "redesign")
     assert instance_lint.labels_only()
     source = "def run_3f2b8c1e_9a4d_4c2b_8e1f_0a9b8c7d6e5f() -> int:\n    return 1\n"
     status = _add(source)

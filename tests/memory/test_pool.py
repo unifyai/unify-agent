@@ -46,7 +46,7 @@ class _Stores:
             self.ev,
             load=load,
             model_turn=model,
-            config=PassConfig(library_mode=True, **cfg),
+            config=PassConfig(**cfg),
         )
         out = asyncio.run(
             writer.run(PassRequest("incremental", "svc", list(eids), False), pass_id),

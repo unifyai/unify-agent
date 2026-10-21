@@ -568,7 +568,6 @@ def test_the_request_serves_evidence_only_under_its_switch(tmp_path, monkeypatch
     run.stores = stores
     from unify.settings import SETTINGS
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES", "on")
     records = {ITEM: dict(empty_record(ITEM, "function"), status="retired")}
     computed = run._serving(
         records, lambda i: records.get(i, {}).get("status") or "on-trial"

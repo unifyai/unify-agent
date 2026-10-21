@@ -29,7 +29,7 @@ SWITCHES = {
     "UNIFY_AGENTS_RUN_RECORD": "on",
     "UNIFY_MEMORY_ATTENTION_LEDGER": "on",
     "UNIFY_MEMORY_WRITER_SERVICE": "on",
-    "UNIFY_MEMORY_WRITER_SERVICE_CAP_USD": "100",
+    "UNIFY_MEMORY_CAP_USD": "100",
     "UNIFY_MEMORY_LIBRARY_PASS_WALL_S": "60",
     "UNIFY_HOST_LEASE_END": "2099-01-01T00:00:00Z",
 }
@@ -109,9 +109,7 @@ def test_the_drain_cli_defaults_to_final_and_takes_suspend(monkeypatch, tmp_path
 def test_a_suspend_drain_stops_the_service_verified_and_keeps_every_entry_owed(svc, monkeypatch):
     from unify.memory.integration import async_pass
     from unify.memory.integration.paths import Paths
-    from unify.settings import SETTINGS
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_WRITER_SERVICE", "on")
     monkeypatch.setenv("DRIVER_TURNS", "1")
     monkeypatch.setenv("DRIVER_TURN_SLEEP", "3600")
     monkeypatch.setenv("UNIFY_MEMORY_LIBRARY_PASS_WALL_S", "2")
@@ -135,9 +133,7 @@ def test_a_suspend_drain_stops_the_service_verified_and_keeps_every_entry_owed(s
 def test_after_a_suspend_the_next_start_hands_the_same_entries_again_without_a_miss(svc, monkeypatch):
     from unify.memory.integration import async_pass
     from unify.memory.integration.paths import Paths
-    from unify.settings import SETTINGS
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_WRITER_SERVICE", "on")
     monkeypatch.setenv("DRIVER_TURNS", "1")
     monkeypatch.setenv("DRIVER_TURN_SLEEP", "3600")
     monkeypatch.setenv("UNIFY_MEMORY_LIBRARY_PASS_WALL_S", "2")
@@ -161,9 +157,7 @@ def test_after_a_suspend_the_next_start_hands_the_same_entries_again_without_a_m
 def test_a_final_drain_still_marks_what_is_owed_not_reached_and_refuses_a_later_start(svc, monkeypatch):
     from unify.memory.integration import async_pass
     from unify.memory.integration.paths import Paths
-    from unify.settings import SETTINGS
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_WRITER_SERVICE", "on")
     monkeypatch.setenv("DRIVER_TURNS", "1")
     monkeypatch.setenv("DRIVER_TURN_SLEEP", "3600")
     monkeypatch.setenv("UNIFY_MEMORY_LIBRARY_PASS_WALL_S", "2")
@@ -183,9 +177,7 @@ def test_suspend_then_final_marks_only_at_the_final_end(svc, monkeypatch):
     marks what is still owed."""
     from unify.memory.integration import async_pass
     from unify.memory.integration.paths import Paths
-    from unify.settings import SETTINGS
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_WRITER_SERVICE", "on")
     monkeypatch.setenv("DRIVER_TURNS", "1")
     monkeypatch.setenv("DRIVER_TURN_SLEEP", "3600")
     monkeypatch.setenv("UNIFY_MEMORY_LIBRARY_PASS_WALL_S", "2")

@@ -199,7 +199,7 @@ def test_a_long_read_still_leaves_a_repair_round(tmp_path, monkeypatch):
         ev,
         load=lambda eid: ep,
         model_turn=model,
-        config=PassConfig(max_calls=40, max_usd=Decimal("1.00"), library_mode=True),
+        config=PassConfig(max_calls=40, max_usd=Decimal("1.00")),
     )
     out = asyncio.run(
         writer.run(PassRequest("incremental", "venmo", ["e1"], False), "p1"),

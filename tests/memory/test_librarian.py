@@ -507,7 +507,7 @@ def test_the_first_user_message_line_counts_the_copy_and_is_absent_for_an_empty_
 
 def test_the_switch_is_off_by_default_and_on_needs_the_tools_in_code():
     assert ProductionSettings().UNIFY_MEMORY_LIBRARIAN == "off"
-    assert ProductionSettings(UNIFY_MEMORY_LIBRARIAN=" On ", UNIFY_TOOLS_IN_CODE="on").UNIFY_MEMORY_LIBRARIAN == "on"
+    assert ProductionSettings(UNIFY_MEMORY_LIBRARIAN=" On ").UNIFY_MEMORY_LIBRARIAN == "on"
     with pytest.raises(ValueError, match="requires UNIFY_TOOLS_IN_CODE=on"):
         ProductionSettings(UNIFY_MEMORY_LIBRARIAN="on", UNIFY_TOOLS_IN_CODE="off")
     with pytest.raises(ValueError, match="must be 'on' or 'off'"):
@@ -559,7 +559,7 @@ def test_ask_is_a_helper_call_and_its_rows_and_listed_by_ask_reach_the_use_recor
     acc = runtime_calls_empty()
     add_runtime_calls(acc, first)
     add_runtime_calls(acc, second)
-    assert library_helper_calls(acc, librarian=True)["ask"] == {"ok": 2, "refused": 0, "error": 0}
+    assert library_helper_calls(acc)["ask"] == {"ok": 2, "refused": 0, "error": 0}
     assert library_helper_calls(acc)["ask"] == {"ok": 2, "refused": 0, "error": 0}  # a seen ask is always counted
     assert "ask" not in library_helper_calls(runtime_calls_empty())  # no librarian and no ask: no ask row
     assert TOTAL in acc["counts"] and "memory:ask" not in acc["counts"]  # asking is never a use
@@ -658,7 +658,6 @@ async def test_ask_end_to_end_facts_in_the_box_one_session_per_request_and_the_c
     from unify.memory import tool_handlers as th
     from unify.memory.writer_pass import unillm_turn
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_REQUEST_METADATA_HEADERS", "on")
     monkeypatch.setenv("PLANTED_LIBRARIAN_SECRET", "planted-librarian-secret-value")
     copy = _copy(tmp_path)
     events: list[dict] = []
@@ -776,7 +775,6 @@ async def test_the_request_closes_its_librarian(tmp_path, monkeypatch):
 
     from unify.actor import in_code_tools
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "on")
 
     class Session:

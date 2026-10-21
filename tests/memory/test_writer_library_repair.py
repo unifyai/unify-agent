@@ -91,7 +91,7 @@ def test_repair_round_lands_one_commit_on_the_parent(tmp_path):
         ev,
         load=lambda eid: ep,
         model_turn=model,
-        config=PassConfig(max_calls=20, library_mode=True),
+        config=PassConfig(max_calls=20),
     )
     parent = mem.head()
     out = asyncio.run(
@@ -261,7 +261,7 @@ def test_check_runs_the_items_own_tests_under_library_mode(tmp_path):
         ev,
         load=lambda eid: ep,
         model_turn=model,
-        config=PassConfig(max_calls=20, library_mode=True),
+        config=PassConfig(max_calls=20),
     )
     out = asyncio.run(
         writer.run(PassRequest("incremental", "venmo", ["e1"], False), "p1"),
@@ -314,7 +314,7 @@ def test_a_long_check_result_is_a_file_read_can_page(tmp_path):
         ev,
         load=lambda eid: ep,
         model_turn=model,
-        config=PassConfig(max_calls=20, library_mode=True),
+        config=PassConfig(max_calls=20),
     )
     asyncio.run(writer.run(PassRequest("incremental", "venmo", ["e1"], False), "p1"))
     reply = model.outputs["c0"]
@@ -360,7 +360,7 @@ def test_next_pass_sees_open_drafts_and_the_last_full_result(tmp_path):
         ev,
         load=_never,
         model_turn=second,
-        config=PassConfig(max_calls=10, library_mode=True),
+        config=PassConfig(max_calls=10),
     )
     _run(sol2, "p2")
     top, draft, is_patch = json.loads(second.outputs["ls"])

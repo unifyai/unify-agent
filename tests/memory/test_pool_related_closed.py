@@ -312,13 +312,13 @@ def test_a_draft_retired_in_one_pass_is_named_when_similar_code_is_staged_later(
 
 
 def test_the_brief_states_closed_entries_and_the_row_key():
-    text = lp.write_brief_now(staging=True, pool=True)
+    text = lp.write_brief_now()
     assert (
         "`related_closed` (" in text
         and "Closed entries (merged, superseded or retired) are kept" in text
     )
     assert '`"reopened": {"<id>": "<reason>"}` opens a closed entry again' in text
-    assert "`related_closed`" not in lp.write_brief_now(staging=True, pool=False)
+    assert "`related_closed`" not in lp.write_brief_now(pool=False)
     assert f"the first {pool.RELATED_PAGE} as" in text
 
 

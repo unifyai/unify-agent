@@ -23,7 +23,6 @@ from unify.agents import run_record as rr
 from unify.common import tool_registry as R
 from unify.memory.integration import fork, fork_worker
 from unify.memory.integration.paths import Paths
-from unify.settings import SETTINGS
 from tests.agents.roster import read_roster
 
 TOKEN = "fork-lane-token-for-a-test-0042"  # pragma: allowlist secret
@@ -342,14 +341,8 @@ def test_with_the_run_record_on_the_fork_starts_through_its_relay_with_the_commo
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS_RUN_RECORD", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     settings = SimpleNamespace(
         UNIFY_MEMORY="on",
-        UNIFY_MEMORY_LIBRARY="on",
-        UNIFY_MEMORY_LIBRARY_FORK="on",
-        UNIFY_AGENTS_RUN_RECORD="on",
-        UNIFY_TOOLS_IN_CODE="on",
     )
     paths = Paths.under(tmp_path / "home")
     eid = "20261020T210311-3f9a0c1d"
@@ -403,7 +396,7 @@ def test_with_the_run_record_on_the_fork_starts_through_its_relay_with_the_commo
         return p
 
     got = fork.start(
-        paths, object(), eid, settings, popen=popen, parts="- `request`: the request"
+        paths, object(), eid, popen=popen, parts="- `request`: the request"
     )
     assert got is not None
     got.writer.join(5)
@@ -439,8 +432,6 @@ def test_a_segment_fork_is_named_for_its_segment_and_its_calls_carry_episode_and
 ):
     """A segment's fork (in-episode memory) is ``fork-<hex>-s<n>`` on the roster with its episode, and under metering its
     calls carry ``X-Unify-Episode`` and ``X-Unify-Segment`` (ids only)."""
-    monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS_RUN_RECORD", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     assert fork.split_segment("20261020T210311-3f9a0c1d.s2") == (
         "20261020T210311-3f9a0c1d",
         2,
@@ -451,12 +442,6 @@ def test_a_segment_fork_is_named_for_its_segment_and_its_calls_carry_episode_and
     )
     settings = SimpleNamespace(
         UNIFY_MEMORY="on",
-        UNIFY_MEMORY_LIBRARY="on",
-        UNIFY_MEMORY_LIBRARY_FORK="on",
-        UNIFY_AGENTS_RUN_RECORD="on",
-        UNIFY_TOOLS_IN_CODE="on",
-        UNIFY_MEMORY_METERING="on",
-        UNIFY_REQUEST_METADATA_HEADERS="on",
     )
     paths = Paths.under(tmp_path / "home")
     sid = "20261020T210311-3f9a0c1d.s2"
@@ -502,7 +487,7 @@ def test_a_segment_fork_is_named_for_its_segment_and_its_calls_carry_episode_and
         )
         return p
 
-    got = fork.start(paths, object(), sid, settings, popen=popen)
+    got = fork.start(paths, object(), sid, popen=popen)
     assert got is not None
     got.writer.join(5)
     spec = json.loads(started[1])

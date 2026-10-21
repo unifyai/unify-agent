@@ -83,7 +83,7 @@ def test_match_and_run_are_counted_among_the_helper_calls_by_outcome():
 def test_the_library_mode_use_record_carries_match_and_run_counts():
     acc = runtime_calls_empty()
     add_runtime_calls(acc, {"calls": {"helpers": {"memory:match": {"ok": 1}, "memory:run": {"error": 1}}}})
-    rec = memory_use(_ep(transcript=[], actions=[]), [PARSE_DATE], runtime_calls=acc, library_mode=True)
+    rec = memory_use(_ep(transcript=[], actions=[]), [PARSE_DATE], runtime_calls=acc)
     assert "error" not in rec, rec
     assert rec["library_helper_calls"]["match"] == {"ok": 1, "refused": 0, "error": 0}
     assert rec["library_helper_calls"]["run"] == {"ok": 0, "refused": 0, "error": 1}
@@ -204,7 +204,6 @@ async def test_lookups_made_in_the_real_worker_reach_the_use_record(world, monke
     mem, sha = _library_repo(paths.memory)
     export_actor_library_mode(mem.git_dir, sha, paths.checkout)
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
     run = RequestRun("r", paths)
     run.library_mode = True
     monkeypatch.setattr(request_mod, "_CURRENT", run)
@@ -231,7 +230,6 @@ async def test_lookups_made_in_the_real_worker_reach_the_use_record(world, monke
         run.item_ids,
         export_roots=run.export_roots or [LIBRARY],
         cell_status=dict(run.cell_status),
-        library_mode=True,
         runtime_calls=run.runtime_calls,
         cell_errors=dict(run.cell_errors),
     )

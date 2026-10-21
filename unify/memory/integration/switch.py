@@ -180,14 +180,8 @@ PASS_EXPERIENCE = 100000
 #: USD per recorded token of a pass's cap.
 WRITER_USD_PER_TOKEN = Decimal("0.00000073")
 #: A pass's USD cap is multiplied, and its calls bounded, by the pass's writer effort (the actor's for the run).
-#: ``provider`` is a run at the provider's default effort (``UNIFY_REASONING_EFFORT=provider``), sized as medium.
-WRITER_EFFORT_SCALE: dict[str, Decimal] = {
-    "low": Decimal(1),
-    "medium": Decimal(2),
-    "high": Decimal(4),
-    "provider": Decimal(2),
-}
-WRITER_MAX_CALLS: dict[str, int] = {"low": 40, "medium": 80, "high": 80, "provider": 80}
+WRITER_EFFORT_SCALE: dict[str, Decimal] = {"low": Decimal(1), "medium": Decimal(2), "high": Decimal(4)}
+WRITER_MAX_CALLS: dict[str, int] = {"low": 40, "medium": 80, "high": 80}
 #: The writer's reader calls per pass.
 PASS_MAX_READS = 1000
 #: One pass's wall-clock bound, in seconds.

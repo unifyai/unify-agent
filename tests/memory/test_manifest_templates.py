@@ -48,7 +48,7 @@ def _levels(template: str) -> tuple[set[str], set[str]]:
 
 def _briefs() -> dict[str, str]:
     return {
-        "write": lp.write_brief_now(staging=True, pool=True, helper=True, similar=True),
+        "write": lp.write_brief_now(helper=True, similar=True),
         "write plain": lp.write_brief_now(),
         "curate": lp.curate_brief_now(),
     }
@@ -155,7 +155,7 @@ def test_the_write_brief_states_the_material_and_the_reach_as_facts():
     from unify.memory import writer_pass
 
     for brief in (
-        lp.write_brief_now(staging=True, pool=True, helper=True, similar=True),
+        lp.write_brief_now(helper=True, similar=True),
         lp.write_brief_now(),
     ):
         assert (
