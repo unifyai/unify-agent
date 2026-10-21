@@ -970,6 +970,7 @@ def dispatch_data(
     strip = strip or default_strip()
     rows: list[dict] = []
     recipes = recipe_ids(records)
+    docs = _capture_docs(captures)
     for f in sorted(lib.functions, key=lambda f: (f.module, f.name)):
         if _status(status_of, f.item_id) in HIDDEN or f.item_id in recipes:
             continue
@@ -980,6 +981,10 @@ def dispatch_data(
         sig = rec.get("signature")
         source = (bodies or {}).get(f.item_id)
         applies_source = (bodies or {}).get(named) if named else None
+        # a procedure landed from a capture: that capture's occurrences and their outcomes, from signals
+        landed = rec.get("landed_from") if isinstance(rec.get("landed_from"), Mapping) else {}
+        cap = docs.get(landed.get("capture")) if isinstance(landed.get("capture"), str) else None
+        cap_rec = cap["record"] if cap is not None and isinstance(cap["record"], dict) else None
         rows.append(
             {
                 "id": f.item_id,
@@ -987,12 +992,13 @@ def dispatch_data(
                 "form": "function",
                 "signature": strip(signature_text(sig)) if isinstance(sig, dict) else "",
                 **_code_facts(source, applies_source, strip),
-                "occurrences": None,
-                "outcomes": None,
+                "occurrences": (cap_rec.get("occurrences") if isinstance(cap_rec.get("occurrences"), int)
+                                else len(cap_rec.get("episodes") or [])) if cap_rec is not None else None,
+                "outcomes": _outcome_counts(cap_rec) if cap_rec is not None else None,
                 "provenance": None,
             },
         )
-    for cid, doc in _capture_docs(captures).items():
+    for cid, doc in docs.items():
         rec = doc["record"] if isinstance(doc["record"], dict) else {}
         if rec.get("outcome") in ("failed", "contrary") or not isinstance(doc["procedure"], str) or _capture_unlisted(rec):
             continue

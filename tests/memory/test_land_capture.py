@@ -170,16 +170,26 @@ def test_landing_writes_the_reader_procedure_fixtures_test_and_manifest_entries(
 
 @needs_box
 @pytest.mark.timeout(600)
-def test_a_landed_reader_that_gives_the_same_value_is_reused(tmp_path):
+def test_a_landed_reader_that_is_the_same_code_is_reused(tmp_path):
+    """Rev 2: a reader is reused when it is the capture's reader code (its shape: names, prose and local names aside),
+    read from the syntax; no reader runs to find one that gives the same value."""
     ep = recorded_episode("e7", rows=ROWS)
     cid = _store(tmp_path / "store")
     text_pkg = tmp_path / "box" / "memory" / "text"
     text_pkg.mkdir(parents=True)
     (text_pkg / "__init__.py").write_text('"""Readers of text."""\n')
     (text_pkg / "readers.py").write_text(
-        "def labelled_rows(text):\n"
+        "def other_rows(text):\n"
+        '    """Every line that starts with row: as a list of integers, another way: never reused."""\n'
+        "    return [[int(x) for x in line[4:].split()] for line in text.splitlines() if line.startswith('row:')]\n"
+        "\n\n"
+        "def labelled_rows(source):\n"
         '    """Every line that starts with row: as a list of integers."""\n'
-        "    return [[int(x) for x in line[4:].split()] for line in text.splitlines() if line.startswith('row:')]\n",
+        "    found = []\n"
+        "    for each in source.splitlines():\n"
+        '        if each.startswith("row:"):\n'
+        '            found.append([int(n) for n in each[len("row:"):].split()])\n'
+        "    return found\n",
     )
     reply = _land(tmp_path, {"e7": ep}, capture_id=cid)
     assert reply.status == "ok", reply.text

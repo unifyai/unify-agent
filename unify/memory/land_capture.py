@@ -5,8 +5,8 @@ writer reads it under ``/inputs/captures/<id>/``; this tool reads it again from 
 a path the box names), checks it, and writes into the writer's ``/memory``:
 
 - the reader, ``memory/<package>/readers.py``: the capture's ``read_input`` as ``read_<name>``, unless a reader the
-  library already holds gives the same value on this request (each candidate is run confined, as the gate runs a
-  reader: :func:`.procedures.run_reader`), which is then reused;
+  library already holds has the same shape (:func:`.capture_shape.function_shape`: the same code whatever its name,
+  prose and local names; read from the syntax, never run), which is then reused;
 - the procedure, ``memory/<package>/procedures.py``: the capture's ``run`` as ``<name>``, with its ``applies`` and
   ``holds`` (when present) and every other top-level name of the capture kept private under ``_<name>_``;
 - the recipe, ``apply_<name>(request)`` in the same module (:func:`recipe_block`): the capture's
@@ -33,10 +33,9 @@ When the capture's ``same_as`` names a capture already landed (its marker line i
 library), this request becomes a new case of that procedure instead: its fixtures, its source case and its test
 functions (the procedure's recipe is written then if the earlier landing has none).
 
-Once written, the landed reader, ``applies``, procedure and ``holds`` run, confined, on the other requests the capture
-store records, and the reader on recorded variants of its own request (:func:`.recognition.recognise_landing`): the
-counts of true and false holds and of the variants the reader read and failed on, and whether ``memory.match`` and
-the librarian list the procedure, are recorded with the landing and told in the reply.
+Rev 2: nothing landed is run to decide whether it is listed. The landing records ``recognition`` as
+:data:`.recognition.NOT_RUN` (an explicit absence), and the procedure is listed by its structure: the librarian judges
+fit from its catalogue row.
 
 Checks, each a fixed refusal: the id is 16 hex digits (optionally ``capture:``-prefixed) and in the store; the store's
 files are read without following a link, only as regular files, size-bounded; ``procedure.py``'s sha256 starts with
@@ -661,12 +660,8 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
         _write_recipe(box, package, name, reader_id, _stated(box, proc_id, "applies") is not None, written)
     else:
         proc_id = f"memory.{package}.procedures:{name}"
-        reader_id = ""
-        for n, cand in enumerate(_readers(box)):
-            values, problem = _run_reader(cand, request_text, box, python, runner, work / f"reader-{n}")
-            if problem is None and values and values[0] is not None and json.loads(values[0]) == run.get("value"):
-                reader_id = cand
-                break
+        # a reader the library holds is reused when it is the same code (its shape, from its syntax; nothing runs)
+        reader_id = _same_reader(box, source)
         reused, new_reader = bool(reader_id), not reader_id
         reader_id = reader_id or f"memory.{package}.readers:read_{name}"
         _write_procedure(box, source, cid, package, name, reader_id, new_reader, written)
@@ -738,9 +733,10 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
             {"item": reader_id, "kind": "function", "source_episodes": [eid], "tests": [test_rel], "role": "reader"},
         )
     _manifest_add(box, entries)
-    # the landed items on the other recorded requests, confined: whether its applies holds only where it is right,
-    # and whether its reader reads the recorded variants of its own request
-    recognition = _recognition(store, cid, eid, request_text, box, proc_id, reader_id, episode, python, runner, work)
+    # rev 2: nothing landed is run to decide its listing; the landing says so explicitly
+    from .recognition import not_run
+
+    recognition = not_run()
     # the landing, in the harness's own store: the item records take the capture's signature, applies and recognition
     # from it, and the pass closes the capture's pool entry once the procedure lands
     _captures.record_landing(
@@ -761,7 +757,7 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
         lines.append(f"- a new case of {proc_id}, which an earlier capture of the same work landed")
     else:
         lines.append(f"- procedure {proc_id}")
-        lines.append(f"- reader {reader_id}" + (" (reused: it gives the same value on this request)" if reused else ""))
+        lines.append(f"- reader {reader_id}" + (" (reused: the library holds the same reader code)" if reused else ""))
     lines.append(
         f"- recipe {recipe_id}: the whole job on a request; the gate runs it, confined, on each of the "
         f"procedure's cases ({', '.join(cases)}) and lands the procedure only if it gives every expected output. "
@@ -769,7 +765,9 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
         "expected=...), listed in the procedure's cases); derive every value the job needs from the request",
     )
     lines += [f"- wrote /memory/{p}" for p in written]
-    lines.append(f"- recognition on the recorded requests: {recognition['why']}")
+    from .recognition import LISTED_BY_STRUCTURE
+
+    lines.append(f"- {LISTED_BY_STRUCTURE}")
     lines.append("- the manifest entries of " + ", ".join(e["item"] for e in entries) + " in /memory/.pass/manifest.json")
     if refuses is False:
         lines.append(
@@ -809,27 +807,20 @@ def _stated(box: Path, proc_id: str, fn: str) -> str | None:
     return f"{module}:{private}" if private in names else None
 
 
-def _recognition(store, cid, eid, request_text, box, proc_id, reader_id, episode, python, runner, work) -> dict:
-    """The landed procedure's recognition record (:func:`.recognition.recognise_landing`); a test that cannot be made
-    is recorded as such (the procedure is then listed, untested), never refusing the landing."""
-    from .recognition import listing, recognise_landing
+def _same_reader(box: Path, source: str) -> str:
+    """The id of a reader the library at *box* holds whose code is the capture's ``read_input`` (the same shape:
+    :func:`.capture_shape.function_shape`, read from the syntax, never run); ``""`` when none is."""
+    from .capture_shape import function_shape
 
-    items = {
-        "reader": reader_id,
-        "applies": _stated(box, proc_id, "applies"),
-        "procedure": proc_id,
-        "holds": _stated(box, proc_id, "holds"),
-    }
-    try:
-        return recognise_landing(
-            Path(store), cid, eid, request_text, items, tree=box, episode=episode, python=python, runner=runner,
-            work=work / "recognition",
-        )
-    except (OSError, ValueError, TypeError) as exc:
-        rec: dict = {"requests": 0, "tested": 0, "true_holds": 0, "false_holds": 0, "unknown": 0}
-        rec["error"] = f"the test could not be made ({type(exc).__name__})"
-        rec["listed"], rec["why"] = listing(rec)
-        return rec
+    want = function_shape(source, "read_input")
+    if want is None:
+        return ""
+    for cand in _readers(box):
+        module, _, fn = cand.partition(":")
+        text = _box_text(box, module.replace(".", "/") + ".py") or ""
+        if function_shape(text, fn) == want:
+            return cand
+    return ""
 
 
 def _run_reader(item, text, box, python, runner, work):

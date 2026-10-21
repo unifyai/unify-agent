@@ -225,6 +225,30 @@ def shape_of(source: Any) -> dict | None:
     return {"v": SHAPE_VERSION, "shape": digest, "form": doc["form"], "params": doc["params"], "env_calls": env_calls}
 
 
+def function_shape(source: Any, name: str) -> str | None:
+    """The shape of the one module-level function *name* of *source* (:func:`shape_of`'s rules on that function alone,
+    its own name not counted): two functions with the same shape compute the same, whatever their names, prose and
+    local names. None when *source* does not parse or has no such function. Nothing is run."""
+    import copy
+
+    if not isinstance(source, str):
+        return None
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return None
+    fn = next((n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name), None)
+    if fn is None:
+        return None
+    fn = copy.deepcopy(fn)
+    fn.name = "_"
+    module = ast.Module(body=[fn], type_ignores=[])
+    _strip_docstrings(module)
+    module = _Nested(module).visit(module)
+    dumped = ast.dump(module, annotate_fields=True, include_attributes=False)
+    return hashlib.sha256(dumped.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+
+
 # --- whether a pause's cells computed anything ---------------------------------------------------------------------------
 
 _COMPUTES = (

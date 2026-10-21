@@ -1,22 +1,14 @@
-"""A landed procedure's ``applies`` is tested, when it lands, on the other requests the capture store records.
+"""A landed procedure is listed by its structure (rev 2): its landing runs nothing to decide that.
 
 Each world is built by the code that builds it in production: the capture step (``captures.capture``) on each
-recorded episode's staged ``procedure.py``, with the episode's signals; ``land_capture`` in the writer's box, which
-runs the landed reader, ``applies``, procedure and ``holds`` confined on the other recorded requests and records the
-counts with the landing; ``lifecycle.next_records`` with the store's landings; and the exports that ``memory.match``
-and the librarian read (``dispatch.json``, ``find.json``, the catalogue). Nothing here sets a field of a record.
+recorded episode's staged ``procedure.py``, with the episode's signals; ``land_capture`` in the writer's box;
+``lifecycle.next_records`` with the store's landings; and the exports that ``memory.match`` and the librarian read
+(``dispatch.json``, ``find.json``, the catalogue). Nothing here sets a field of a record.
 
-* a loose ``applies`` that holds on a recorded request of other work, where the procedure's own ``holds`` fails, is a
-  false hold, and the procedure is not listed;
-* an ``applies`` that holds where the procedure reproduces the value a successful episode handed back is a true hold,
-  and the procedure is listed;
-* reproducing the value of an episode recorded as failed is unknown, never a true hold;
-* a landing with no other recorded request is listed, untested;
-* a reader that fails on a recorded variant of its own request (a request of the same work recognised by content, or
-  its own request with blank lines around it or a line of prose after it) is brittle, and its procedure is not listed;
-  a reader that reads the request's data (``request.data``, the JSON values it carries) survives the same variants;
-* the request every reader is handed carries that data, as the host's ``current_request`` gives it: the JSON values
-  the text contains, in order.
+* a landing records ``recognition`` as ``{"ran": false, "why"}``, and the procedure is listed, however loose its
+  ``applies`` (before rev 2 its applies ran on the other recorded requests to decide that);
+* the request every reader is handed carries the JSON values the text contains, in order, as the host's
+  ``current_request`` gives it.
 
 Keyless; the capture step and the landing run code confined, so they need bubblewrap and prlimit.
 """
@@ -223,123 +215,19 @@ def _listed_by_match(box: Path, records: dict, store: Path) -> tuple[list[str], 
 
 @needs_box
 @pytest.mark.timeout(900)
-def test_a_loose_applies_that_holds_where_its_holds_fails_is_a_false_hold_and_not_listed(tmp_path):
-    # other work recorded beside it: the product of each row, accepted; its worked case says 2 3 -> 6
+def test_a_loose_applies_is_listed_by_its_structure_and_its_landing_records_that_nothing_ran(tmp_path):
+    # other work recorded beside it, where the loose applies would hold and its holds fail: never run now
     other = _product_work("e2", [[2, 2], [1, 5, 1]])
     got, records, box = _world(tmp_path, LOOSE, [(other, PRODUCT, "pass")])
-    rec = got["landing"]["recognition"]
-    assert (rec["requests"], rec["tested"], rec["true_holds"], rec["false_holds"], rec["unknown"]) == (1, 1, 0, 1, 0)
-    assert rec["listed"] is False and rec["why"].startswith("not listed: its applies held on 1 of 1")
-    assert records[PROC]["recognition"] == rec
-    assert "recognition on the recorded requests: not listed" in got["reply"]
+    assert got["landing"]["recognition"] == recognition.NOT_RUN
+    assert records[PROC]["recognition"] == recognition.NOT_RUN
+    assert recognition.LISTED_BY_STRUCTURE in got["reply"]
     dispatched, found = _listed_by_match(box, records, tmp_path / "store")
-    assert PROC not in dispatched and PROC not in found
-    # the captured procedure is the same code: it is not listed either, and its exported record says why
-    assert f"capture:{got['cid']}" not in dispatched
+    assert PROC in dispatched and PROC in found and f"capture:{got['cid']}" in dispatched
     exported = json.loads(captures.export_files(tmp_path / "store")[f".memory/captures/{got['cid']}/record.json"])
-    assert exported["listing"] == {"listed": False, "why": rec["why"]}
-    # the card and memory.get say why, so the writer sees it at its next pass
-    card = lx.catalogue_text(box, records=records, captures=captures.export_files(tmp_path / "store"))
-    assert f"Recognition: {rec['why']}" in card
-    items = lx.items_data(discover(box), None, {}, True, records)
-    assert items["items"][PROC]["recognition"] == rec["why"]
+    assert "listing" not in exported
 
 
-@needs_box
-@pytest.mark.timeout(900)
-def test_an_applies_that_holds_where_the_procedure_reproduces_a_successful_episode_is_a_true_hold_and_listed(
-    tmp_path,
-):
-    # the same work, visited again with other rows and accepted: the procedure states no holds, so whether it is
-    # right there rests on reproducing the value that episode handed back
-    later = _sum_work("e2", [[9, 1], [0, 5], [7, 7]])
-    got, records, box = _world(tmp_path, NO_HOLDS, [(later, PRODUCT, "pass")])
-    rec = got["landing"]["recognition"]
-    assert (rec["requests"], rec["tested"], rec["true_holds"], rec["false_holds"], rec["unknown"]) == (1, 1, 1, 0, 0)
-    assert rec["listed"] is True and rec["why"].startswith("tested on 1 recorded request(s): 1 true hold(s)")
-    # its reader reads every recorded variant of its own request: the three mechanical ones
-    assert (rec["variants"], rec["reads"], rec["fails"], rec["failed_on"]) == (3, 3, 0, [])
-    dispatched, found = _listed_by_match(box, records, tmp_path / "store")
-    assert PROC in dispatched and PROC in found
-    assert f"capture:{got['cid']}" in dispatched
-
-
-@needs_box
-@pytest.mark.timeout(900)
-def test_reproducing_the_value_of_an_episode_recorded_as_failed_is_unknown_never_a_true_hold(tmp_path):
-    # the same work visited again, but the checker rejected what that episode handed back
-    rejected = _sum_work("e2", [[9, 1], [0, 5], [7, 7]])
-    got, records, box = _world(tmp_path, NO_HOLDS, [(rejected, PRODUCT, "fail")])
-    assert recognition.episode_outcomes(tmp_path / "store")["e2"] == "failure"
-    rec = got["landing"]["recognition"]
-    assert (rec["tested"], rec["true_holds"], rec["false_holds"], rec["unknown"]) == (1, 0, 0, 1)
-    # and an episode the store records no outcome for is unknown too
-    silent = _sum_work("e3", [[4, 4]])
-    got2, _, _ = _world(tmp_path / "silent", NO_HOLDS, [(silent, PRODUCT, None)])
-    assert "e3" not in recognition.episode_outcomes(tmp_path / "silent" / "store")
-    rec2 = got2["landing"]["recognition"]
-    assert (rec2["tested"], rec2["true_holds"], rec2["unknown"]) == (1, 0, 1)
-    assert rec["listed"] is True and rec2["listed"] is True
-
-
-@needs_box
-@pytest.mark.timeout(900)
-def test_a_landing_with_no_other_recorded_request_is_listed_untested(tmp_path):
-    got, records, box = _world(tmp_path, LOOSE, [])
-    rec = got["landing"]["recognition"]
-    assert (rec["requests"], rec["tested"], rec["false_holds"]) == (0, 0, 0)
-    assert rec["listed"] is True
-    assert rec["why"] == "untested: no other recorded request to test its applies on"
-    dispatched, found = _listed_by_match(box, records, tmp_path / "store")
-    assert PROC in dispatched and PROC in found
-    card = lx.catalogue_text(box, records=records)
-    assert "Recognition: untested: no other recorded request to test its applies on" in card
-
-
-@needs_box
-@pytest.mark.timeout(900)
-def test_a_request_the_reader_does_not_parse_is_not_tested_and_applies_that_does_not_hold_is_no_hold(tmp_path):
-    # a request with no rows: the reader raises, so it is not tested
-    norows = _ep(
-        episode_id="e2",
-        request=["Nothing to read here."],
-        actions=[Action(-1, "dialogue:user", "answer", [], {"sums": []}, "Noted.", "ok", "unknown", kind="dialogue")],
-    )
-    got, _, _ = _world(tmp_path, LOOSE, [(norows, PRODUCT, "pass")])
-    rec = got["landing"]["recognition"]
-    assert (rec["requests"], rec["tested"], rec["false_holds"], rec["true_holds"], rec["unknown"]) == (1, 0, 0, 0, 0)
-    assert rec["listed"] is True and rec["why"] == "untested: its reader parsed none of the 1 other recorded request(s)"
-
-
-@needs_box
-@pytest.mark.timeout(900)
-def test_a_reader_that_fails_on_a_recorded_variant_of_its_own_request_is_brittle_and_not_listed(tmp_path):
-    # the same work visited with a line after the request, captured first with a reader that reads by line prefix;
-    # e1's capture is recognised as the same work when it is captured (its run on e2's request gives e2's value)
-    later = _sum_work("e2", [[9, 1], [0, 5], [7, 7]], tail="\nThanks for checking.")
-    got, records, box = _world(tmp_path, BRITTLE, [], before=[(later, LOOSE, "pass")])
-    store = tmp_path / "store"
-    same = captures.load(store)[got["cid"]]["record"]["same_as"]
-    assert len(same) == 1 and "e2" in captures.load(store)[same[0]]["record"]["episodes"]
-    rec = got["landing"]["recognition"]
-    # e2's request and the three mechanical variants of its own: it reads none of them
-    assert (rec["variants"], rec["reads"], rec["fails"]) == (4, 0, 4)
-    assert rec["failed_on"] == [
-        recognition.RECORDED_VARIANT,
-        recognition.LEADING_BLANK,
-        recognition.TRAILING_BLANK,
-        recognition.TRAILING_PROSE,
-    ]
-    assert rec["false_holds"] == 0 and rec["listed"] is False
-    assert rec["why"].startswith("not listed: its reader failed on 4 of 4 recorded variant(s) of its own request")
-    assert records[PROC]["recognition"] == rec
-    dispatched, found = _listed_by_match(box, records, store)
-    assert PROC not in dispatched and PROC not in found
-    card = lx.catalogue_text(box, records=records, captures=captures.export_files(store))
-    assert f"Recognition: {rec['why']}" in card
-
-
-#: A procedure whose reader reads the request's data: the rows of the first JSON value it carries.
 DATA_READER = '''"""Sum each row of numbers the request carries as JSON."""
 
 import json
@@ -390,35 +278,6 @@ LATER_JSON = _json_work(
     '{"rows": [[9, 1], [0, 5], [7, 7]]}\n```\nReply with the sum of each row. Thanks.',
     [[9, 1], [0, 5], [7, 7]],
 )
-
-
-@needs_box
-@pytest.mark.timeout(900)
-@pytest.mark.parametrize("reader", ["data", "layout"])
-def test_a_reader_of_the_requests_data_survives_its_recorded_variants_and_a_reader_of_its_layout_does_not(
-    tmp_path, reader,
-):
-    # e2 is captured first by another attempt's code that reads the data; e1's capture is recognised as the same work
-    other = DATA_READER + "\n\n# written again in another attempt\n"
-    source = DATA_READER if reader == "data" else LAYOUT_READER
-    got, records, box = _world(tmp_path, source, [], before=[(LATER_JSON, other, "pass")], own=OWN_JSON)
-    store = tmp_path / "store"
-    assert len(captures.load(store)[got["cid"]]["record"]["same_as"]) == 1
-    rec = got["landing"]["recognition"]
-    assert rec["variants"] == 4
-    dispatched, _ = _listed_by_match(box, records, store)
-    if reader == "data":
-        # the capture step, the landing's fixtures and its recognition test all handed the reader the request's data
-        assert (rec["reads"], rec["fails"], rec["failed_on"]) == (4, 0, [])
-        # e2: it parsed, its applies held, and it reproduced the value e2 handed back, which was accepted
-        assert (rec["tested"], rec["true_holds"], rec["false_holds"]) == (1, 1, 0)
-        assert rec["listed"] is True and PROC in dispatched
-        test = (box / "memory" / "readings" / "tests" / "test_row_sums.py").read_text()
-        assert "read_row_sums(request(text))" in test and "\ndef request(text):" in test
-    else:
-        assert (rec["reads"], rec["fails"]) == (2, 2)
-        assert rec["failed_on"] == [recognition.RECORDED_VARIANT, recognition.LEADING_BLANK]
-        assert rec["listed"] is False and "(request.data)" in rec["why"] and PROC not in dispatched
 
 
 @needs_box
@@ -479,19 +338,9 @@ def test_the_actor_side_runners_hand_readers_the_same_request():
         assert lh._json_values(text) == worker_child.json_values(text)
 
 
-def test_the_listing_rule_reads_the_counts():
+def test_the_listing_rule_lists_every_procedure():
     assert recognition.listing(None) == (True, "")
-    assert recognition.listing({"tested": 3, "false_holds": 1})[0] is False
-    assert recognition.listing({"tested": 0, "false_holds": 0}) == (
-        True,
-        "untested: no other recorded request to test its applies on",
-    )
-    listed, why = recognition.listing({"tested": 2, "true_holds": 1, "unknown": 1, "false_holds": 0})
-    assert listed and why == "tested on 2 recorded request(s): 1 true hold(s), 0 false holds, 1 unknown"
-    assert recognition.listing({"error": "load: ImportError"})[1].startswith("untested: its test could not be run")
-    brittle = recognition.listing({"tested": 2, "reads": 1, "fails": 2, "failed_on": [recognition.TRAILING_PROSE]})
-    assert brittle == (
-        False,
-        "not listed: its reader failed on 2 of 3 recorded variant(s) of its own request (a line of prose after it); "
-        "make it read the values the request carries (request.data), not the layout around them",
-    )
+    assert recognition.listing(recognition.NOT_RUN) == (True, recognition.LISTED_BY_STRUCTURE)
+    # counts an earlier landing test recorded are not used
+    for old in ({"tested": 3, "false_holds": 1}, {"tested": 2, "reads": 1, "fails": 2}, {"error": "load: ImportError"}):
+        assert recognition.listing(old) == (True, recognition.EARLIER_TEST_UNUSED)
