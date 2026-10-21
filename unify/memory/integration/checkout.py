@@ -98,28 +98,25 @@ def export_actor_library_mode(
     shapes=None,
     records=None,
     captures=None,
-    librarian: bool = False,
     summary_of=None,
     search=None,
     serving=None,
 ) -> dict[str, bytes]:
-    """``UNIFY_MEMORY_LIBRARY=on``: replace *dest* with the actor's read-only copy of memory commit *sha*. It
-    holds:
+    """Replace *dest* with the actor's read-only copy of memory commit *sha*. It holds:
 
     - the commit's library modules, package docstrings and notes only (:func:`..layout.exported`): never a
       tests directory, a fixture, compiled code or a path outside the layout;
     - the generated files (:func:`..library_export.generated_library_mode`), which replace any committed copy;
     - with *captures* (:func:`..captures.export_files`: paths under ``.memory/captures/``), a snapshot of the capture
       store as this request starts. Captures never enter ``INDEX.md`` or the prompt;
-    - with *librarian* (``UNIFY_MEMORY_LIBRARIAN=on``), the librarian's catalogue (with *summary_of*'s episode
-      summaries and the captures' cards last), the dispatch file and the search index (its vectors made with
-      *search*, a :class:`..library_search.Backend`; None: a lexical index), and ``memory.ask`` in the package.
+    - the librarian's catalogue (with *summary_of*'s episode summaries and the captures' cards last), the dispatch
+      file and the search index (its vectors made with *search*, a :class:`..library_search.Backend`; None: a
+      lexical index), and ``memory.ask`` in the package.
 
     Every write bit is then dropped, and the sandbox binds the copy read-only (:func:`.hooks.worker_readonly_mounts`).
     Returns the generated files.
 
-    *serving* (``UNIFY_MEMORY_SERVING_FAILURE_RECORD``): called with the materialised copy before its files are
-    generated, it gives the serving evidence and the withdrawn library items (:mod:`..serving`) the generated files
+    *serving*: called with the materialised copy before its files are generated, it gives the serving evidence and the withdrawn library items (:mod:`..serving`) the generated files
     carry (:func:`..library_export.generated_library_mode`); None: as without it.
     """
     from ..catalogue import write_files
@@ -154,9 +151,9 @@ def export_actor_library_mode(
         history=item_history(repo, sha),
         records=records,
         tests=committed_test,
-        librarian=librarian,
+        librarian=True,
         summary_of=summary_of,
-        captures=captures if librarian else None,
+        captures=captures,
         search=search,
         **({"serving": served} if served is not None else {}),
     )

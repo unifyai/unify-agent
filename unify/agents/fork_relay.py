@@ -11,8 +11,7 @@ each way over the worker's stdout and stdin, with the same texts every agent's c
 
 Input: one JSON document on stdin (never argv, the environment or a file): ``home``, ``name``, ``argv`` (the box),
 ``doc`` (the fork's request, its route token in the headers), ``lock_fd`` (the episode's staging lock, inherited and
-handed on to the box), ``log`` (the worker's log) and ``frozen`` (whether memory is frozen: the writer is then not
-available on the record). The route token is registered as a secret of this process, so nothing it writes to the
+handed on to the box) and ``log`` (the worker's log). The route token is registered as a secret of this process, so nothing it writes to the
 record can carry it.
 
 Least privilege: the request starts it through :mod:`unify.agents.relay_boot` (by path, ``-I``), in a folder of its

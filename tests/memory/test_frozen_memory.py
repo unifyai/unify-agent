@@ -140,7 +140,7 @@ def test_serving_counts_an_actors_report_only_from_a_recorded_episode_when_froze
                {"item": "notes/a.md", "episode": "ep-frozen-request", "seq": 9}]
     monkeypatch.setattr(sv, "actor_reports", lambda home: reports)
     live = sv.item_evidence(stores, home=tmp_path, labels=lambda i: None)
-    held = sv.item_evidence(stores, home=tmp_path, labels=lambda i: None, recorded_only=True)
+    held = sv.item_evidence(stores, home=tmp_path, labels=lambda i: None)
     assert [(r["ref"], r["pin"]) for r in live["notes/a.md"]["failure_record"]] == [("entry:3", "a" * 40), ("entry:9", "")]
     assert [r["ref"] for r in held["notes/a.md"]["failure_record"]] == ["entry:3"]
 

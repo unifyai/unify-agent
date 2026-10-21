@@ -204,7 +204,7 @@ def _memory_library(world: dict, monkeypatch) -> None:
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "on")
     paths = Paths.under(world["state"])
     mem, sha = _library_repo(paths.memory)
-    export_actor_library_mode(mem.git_dir, sha, paths.checkout, librarian=True)
+    export_actor_library_mode(mem.git_dir, sha, paths.checkout)
     run = RequestRun("r", paths)
     run.library_mode = True
     run.index, run.shown = render_memory_library_mode(paths.checkout, librarian=True)
