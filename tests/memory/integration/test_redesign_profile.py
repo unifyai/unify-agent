@@ -47,7 +47,8 @@ def test_the_profile_lists_exactly_the_planned_switches_and_values():
         "UNIFY_MEMORY_LEDGER_K": "4",
         "UNIFY_MEMORY_IMPURE_ITEMS": "on",
         "UNIFY_MEMORY_WRITER_TESTS": "value",
-        "UNIFY_MEMORY_IN_EPISODE": "off",  # rev 2 (MAIN, 21 Oct): the main arm runs without in-episode memory
+        # rev 2: "off" on main (arms/redesign-rev2), "on" on the in-episode arm's branch (arms/redesign-rev2-ep)
+        "UNIFY_MEMORY_IN_EPISODE": switch.PROFILE_IN_EPISODE,
         "UNIFY_MEMORY_SERVING_FAILURE_RECORD": "on",
         "UNIFY_MEMORY_GATE_LABELS_ONLY": "on",  # rev 2: labels only, only pure items run
         "UNIFY_MEMORY_GATE_RECORDED_REPLAYS": "off",
@@ -213,17 +214,24 @@ def test_every_arm_is_a_settings_set_the_build_runs():
         for arm, values in switch.REDESIGN_ARMS.items()
         if arm not in ("redesign", "no_memory")
     }
+    ep = ["UNIFY_MEMORY_IN_EPISODE"]
+
+    def differs(value: str) -> list[str]:  # relative to the profile's own in-episode setting (main or the ep arm)
+        return ep if value != switch.PROFILE_IN_EPISODE else []
+
     assert changed == {
         "captures_only": ["UNIFY_MEMORY_WRITER_PASSES", "UNIFY_MEMORY_WRITER_SERVICE"],
-        "ledger_off": [
+        "ledger_off": sorted([
             "UNIFY_MEMORY_ATTENTION_LEDGER",
             "UNIFY_MEMORY_LEDGER_K",
             "UNIFY_MEMORY_LIBRARY_CAPTURES_PER_PASS",
             "UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE",
             "UNIFY_MEMORY_WRITER_SERVICE",
-        ],
-        "in_episode_on": ["UNIFY_MEMORY_IN_EPISODE"],
-        "in_episode_repin": ["UNIFY_MEMORY_IN_EPISODE"],
+            *differs("off"),
+        ]),
+        "in_episode_off": differs("off"),
+        "in_episode_on": differs("on"),
+        "in_episode_repin": ep,
         "failure_record_off": ["UNIFY_MEMORY_SERVING_FAILURE_RECORD"],
         "mesh_off": ["UNIFY_AGENTS_RUN_RECORD"],
     }
@@ -274,6 +282,30 @@ def test_in_episode_takes_repin_for_re_pins_without_segment_forks():
     on = _s(UNIFY_MEMORY_IN_EPISODE="on")
     assert switch.in_episode_repins(on) and switch.in_episode(on)
     main = _s(UNIFY_MEMORY_PROFILE="redesign")
-    assert not switch.in_episode_repins(main) and not switch.in_episode(main)
+    on = switch.PROFILE_IN_EPISODE == "on"
+    assert switch.in_episode_repins(main) is on and switch.in_episode(main) is on
     no_ledger = _s(UNIFY_MEMORY_IN_EPISODE="repin", UNIFY_MEMORY_ATTENTION_LEDGER="off")
     assert "UNIFY_MEMORY_ATTENTION_LEDGER=on" in (switch.redesign_b_refusal(no_ledger) or "")
+
+
+@pytest.mark.parametrize("ep", ["off", "on"])
+def test_both_rev2_arms_hold_every_fix(monkeypatch, ep):
+    """Rev 2 ships two arms on the same code: main (the profile's in-episode ``off``) and the in-episode arm (its
+    branch's one profile-default commit sets ``on``). Each is a coherent configuration with every rev 2 fix on: the
+    trace contract (no own check, the structural fold), the attention ledger (open-episode handling), the labels-only
+    gate with no recorded replays, and, with in-episode memory, the gate reading segment records."""
+    from unify.memory.integration import consolidate
+
+    monkeypatch.setitem(switch.REDESIGN_SWITCHES, "UNIFY_MEMORY_IN_EPISODE", ep)
+    monkeypatch.setattr(switch, "PROFILE_IN_EPISODE", ep)
+    kit = {**_LIBRARY, **switch.REDESIGN_COMPANIONS}
+    profile = _s(**kit, UNIFY_MEMORY_PROFILE="redesign")
+    written = SimpleNamespace(**{**kit, **switch.REDESIGN_ARMS[f"in_episode_{ep}"]})
+    for settings in (profile, written):
+        assert switch.profile_refusal(settings) is None, switch.profile_refusal(settings)
+        assert switch.in_episode(settings) is (ep == "on") and switch.in_episode_repins(settings) is (ep == "on")
+        assert switch.capture_trace(settings) and switch.attention_ledger(settings) and switch.impure_items(settings)
+        assert switch.gate_labels_only(settings) and not switch.gate_recorded_replays(settings)
+        fields = consolidate.learning_gate_fields(settings, SimpleNamespace(paths=SimpleNamespace(state_dir="/state")))
+        assert fields["labels_only"] is True and fields["recorded_replays"] is False and fields["labels"] is True
+        assert ("segments_dir" in fields) is (ep == "on")

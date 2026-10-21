@@ -977,6 +977,11 @@ MEMORY_PROFILES = ("", REDESIGN)
 #: Every switch the redesign profile turns on, with the value it gives. A switch left empty takes this value under
 #: the profile; a switch set to any other value is refused (:func:`redesign_refusal`). Off the profile, an empty
 #: switch keeps its own default (off).
+#: The redesign profile's in-episode setting. Rev 2 ships two arms on the same code: main (``arms/redesign-rev2``)
+#: with ``off``, and the in-episode arm (``arms/redesign-rev2-ep``), whose one profile-default commit sets ``on`` here
+#: (every rev 2 fix holds in both: segment outcome labels, the no-computation pause skip, the structural fold, the
+#: open-episode writer handling, and no execution to classify).
+PROFILE_IN_EPISODE = "off"
 REDESIGN_SWITCHES: dict[str, str] = {
     "UNIFY_AGENTS_RUN_RECORD": "on",
     "UNIFY_MEMORY_WRITER_SERVICE": "on",
@@ -988,9 +993,9 @@ REDESIGN_SWITCHES: dict[str, str] = {
     # value only: the replay mode is refused until its stand-in's confinement review (G2) is recorded
     # (``writer_tests.REPLAY_REVIEWED``; :func:`redesign_b_refusal`)
     "UNIFY_MEMORY_WRITER_TESTS": "value",
-    # rev 2 (MAIN, 21 Oct): the main arm runs without in-episode memory; alt-ep (``in_episode_on``) and re-pins only
-    # (``in_episode_repin``) are arms of their own
-    "UNIFY_MEMORY_IN_EPISODE": "off",
+    # rev 2 (MAIN, 21 Oct): main runs without in-episode memory (:data:`PROFILE_IN_EPISODE`); each setting is also an
+    # arm of its own (``in_episode_off``, ``in_episode_on``, ``in_episode_repin``)
+    "UNIFY_MEMORY_IN_EPISODE": PROFILE_IN_EPISODE,
     "UNIFY_MEMORY_SERVING_FAILURE_RECORD": "on",
     # rev 2 (MAIN, 21 Oct): the gate labels and runs only pure items; the recorded replays stay off
     "UNIFY_MEMORY_GATE_LABELS_ONLY": "on",
@@ -1029,8 +1034,8 @@ _LEDGER_PARTS = {
 #: * ``ledger_off`` (a bundle, labelled as one): the attention ledger off, G1's
 #:   per-capture trigger in its place, and the service and in-episode memory with it (each needs the ledger), so
 #:   the writer runs as the pass worker;
-#: * ``in_episode_on`` (alt-ep: checkpoints, segment forks and re-pins) and ``in_episode_repin`` (re-pins only), the
-#:   profile's in-episode setting (off, rev 2) changed; ``failure_record_off``: that one switch off;
+#: * ``in_episode_off``, ``in_episode_on`` (checkpoints, segment forks and re-pins) and ``in_episode_repin`` (re-pins
+#:   only): the in-episode setting written out (one of them is the profile's own, :data:`PROFILE_IN_EPISODE`); ``failure_record_off``: that one switch off;
 #: * ``mesh_off`` (informational): the run record off, the mesh alone (the service runs without it, each pass keeping
 #:   its own record);
 #: * ``no_memory``: memory off, the run record on (A1 is kept regardless).
@@ -1043,6 +1048,7 @@ REDESIGN_ARMS: dict[str, dict[str, str]] = {
         LIBRARY_REVIEW_EACH_CAPTURE: "on",
         "UNIFY_MEMORY_LIBRARY_CAPTURES_PER_PASS": "1",
     },
+    "in_episode_off": {**REDESIGN_SWITCHES, "UNIFY_MEMORY_IN_EPISODE": "off"},
     "in_episode_on": {**REDESIGN_SWITCHES, "UNIFY_MEMORY_IN_EPISODE": "on"},
     "in_episode_repin": {**REDESIGN_SWITCHES, "UNIFY_MEMORY_IN_EPISODE": "repin"},  # IN_EPISODE_REPIN
     "failure_record_off": {**REDESIGN_SWITCHES, "UNIFY_MEMORY_SERVING_FAILURE_RECORD": "off"},
