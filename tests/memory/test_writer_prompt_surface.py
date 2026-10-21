@@ -62,22 +62,44 @@ def _briefs():
     return {f"write helper={h}": lp.write_brief_now(helper=h) for h in (False, True)}
 
 
+#: The brief's fixed pointer list of what /inputs and /memory hold, item by item as rev 2 was evaluated with it (the
+#: helper brief adds the helpers' folder). It is fixed text, not a list that grows with the data: the size bound does
+#: not apply to it, and it may change only with this list (MAIN, 22 Oct: the evaluated brief ships as it was run).
+POINTERS = (
+    "/inputs/staging/<episode>/",
+    "/inputs/helpers/<name>/",
+    "/inputs/pool/",
+    "/inputs/drafts/<pass>/",
+    "/inputs/attention/",
+    "/inputs/batch_map.json",
+    "/inputs/episodes/<episode>.json",
+    "/inputs/shared/<id>.txt",
+    "/inputs/usage/",
+    "/memory",
+    "/inputs/gate/previous.md",
+)
+
+
+def _pointers(lines):
+    """The paths a run of list lines points to, when every line is ``- /inputs...`` or ``- /memory...``."""
+    paths = [ln[2:].split(":", 1)[0] for ln in lines]
+    return paths if all(p.startswith(("/inputs", "/memory")) for p in paths) else None
+
+
 def _lists(text):
     """Runs of consecutive list lines ("- ..." or table rows "a | b") outside the Tools section (rendered once
-    per run from the registry), each as (items, bytes)."""
+    per run from the registry), each as (items, bytes); the fixed pointer list (:data:`POINTERS`) is not one."""
     if "# Tools\n" in text:
         head, rest = text.split("# Tools\n", 1)
         text = head + ("\n# " + rest.split("\n# ", 1)[1] if "\n# " in rest else "")
     runs, cur = [], []
-    for line in text.splitlines():
+    for line in [*text.splitlines(), ""]:
         if line.startswith("- ") or line.count(" | ") >= 2:
             cur.append(line)
         else:
-            if cur:
+            if cur and _pointers(cur) is None:
                 runs.append((len(cur), len("\n".join(cur).encode())))
             cur = []
-    if cur:
-        runs.append((len(cur), len("\n".join(cur).encode())))
     return runs
 
 
@@ -97,6 +119,23 @@ def test_no_inline_list_is_longer_than_the_bound(registry):
             # a list of stable text may be long; only the first message's must also be short in bytes
             if name.startswith("first"):
                 assert size <= lp.MAX_INLINE_LIST_BYTES, name
+
+
+def test_the_pointer_list_is_the_evaluated_one(registry):
+    """The brief's /inputs pointer list is exactly the one rev 2 was evaluated with: eleven items with a helper lane,
+    the same ten without the helpers' folder."""
+    for helper in (False, True):
+        lines = lp.write_brief_now(helper=helper).splitlines()
+        runs, cur = [], []
+        for line in [*lines, ""]:
+            if line.startswith("- "):
+                cur.append(line)
+            else:
+                if cur and _pointers(cur) is not None:
+                    runs.append(_pointers(cur))
+                cur = []
+        want = [p for p in POINTERS if helper or p != "/inputs/helpers/<name>/"]
+        assert runs == [want], (helper, runs)
 
 
 def test_no_banned_word_reaches_the_writer(registry):

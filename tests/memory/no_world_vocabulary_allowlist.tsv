@@ -1,6 +1,10 @@
 # The reviewed allow-list of tests/memory/test_no_world_vocabulary.py: generic English uses of a guarded word.
 # One line per phrase: scope (* for every source, or a source prefix), the phrase as it appears around the word,
 # and why it names no world. Every line must cover at least one hit. The reviewer signs each line (G0).
+# Review note (22 Oct, builder A; awaiting the reviewer's G0 sign-off): two lines added for delegate's argument name
+# as rev 2's in-code stub renders it: `*\t_args(task=task\t...` (the stub passes the argument on) and
+# `*\tdelegate(task=\t...` (its example call). Same identifier as the reviewed `"task"` line. Eight lines that no
+# longer cover any text were removed (the test refuses unused lines).
 *	a reading or drafting task	the helper's assignment from the writer (delegate's own argument)
 *	hand a reading or drafting task	to hand work over (verb)
 *	Hand a reading or drafting task	to hand work over (verb)
