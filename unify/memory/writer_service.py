@@ -802,10 +802,37 @@ def pending_passes(home: Path | str) -> list[str]:
 # --- ensure ---------------------------------------------------------------------------------------------------------
 
 
+#: The provider key names the model client reads. With one missing it reads a ``.env`` file or, on a team machine, a
+#: Secret Manager (unillm's settings), so a writer process that needs no key gets :data:`NO_PROVIDER_KEY` for each.
+PROVIDER_KEY_NAMES = (
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_MANAGEMENT_API_KEY",
+    "TOGETHER_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "UNILLM_LLM_GATEWAY_KEY",
+)
+#: What each provider key holds in a writer process whose model calls all go through its lanes: not a key, so a call
+#: off the lanes fails at the provider instead of being billed.
+NO_PROVIDER_KEY = "none:the-writer-calls-through-its-lanes"
+
+
+def without_provider_keys(env: dict, settings: Any) -> dict:
+    """*env* for a writer process (the service, or a pass worker) whose writer calls go through the writer's lane:
+    every provider key replaced by :data:`NO_PROVIDER_KEY`. The writer's calls and its helpers' go through their lanes
+    (with no helper lane, helpers are not offered), and the librarian runs in the request, not here. One case keeps the
+    keys: an embedding route (``UNIFY_EMBED_URL``), which sends the provider key in its own header."""
+    if str(getattr(settings, "UNIFY_EMBED_URL", "") or "").strip():
+        return env
+    out = {k: v for k, v in env.items() if k.upper() not in PROVIDER_KEY_NAMES}
+    out.update(dict.fromkeys(PROVIDER_KEY_NAMES, NO_PROVIDER_KEY))
+    return out
+
+
 def _token_pipes() -> tuple[dict, list[int]]:
     """The writer's and the helpers' route tokens as this process holds them, each on a fresh pipe named in the
     child's environment, exactly as the pass worker gets the writer's (never argv, the environment or a file); and
-    the read ends to pass. Without a route, nothing."""
+    the read ends to pass. With the writer's route, the child's environment holds no provider key
+    (:func:`without_provider_keys`). Without a route, nothing changes."""
     from .integration import switch
     from .integration.async_pass import _route_token
 
@@ -836,6 +863,7 @@ def _token_pipes() -> tuple[dict, list[int]]:
     token = _route_token(settings)
     if token:
         env[switch.WRITER_TOKEN_FD] = str(pipe(token))
+        env = without_provider_keys(env, settings)
     switch.settle_helper_route_env(os.environ, settings)
     pair, _why = switch.helper_lane_route()
     if pair is not None:

@@ -1253,3 +1253,33 @@ def test_a_members_file_from_another_service_is_ignored(svc):
     finally:
         bystander.kill()
         bystander.wait()
+
+
+def test_a_service_on_the_writers_lane_gets_no_provider_key(monkeypatch):
+    """With the writer's route the service makes every model call through its lanes, so its environment holds no
+    provider key: each name gets a fixed non-key (missing, the model client would read a .env or a team's Secret
+    Manager). An embedding route still sends the key, so with one the environment is left as it is."""
+    from unify.memory.integration import async_pass, switch
+
+    placeholder = "sk-or-v1-" + "0" * 64  # pragma: allowlist secret
+    monkeypatch.setenv("OPENROUTER_API_KEY", placeholder)
+    monkeypatch.setattr(async_pass, "_route_token", lambda settings: "writer-route-token-for-a-test")
+    monkeypatch.setattr(switch, "helper_lane_route", lambda: (None, "no helper lane"))
+    monkeypatch.setattr(ws, "_settings", lambda: SimpleNamespace(UNIFY_EMBED_URL=""))
+    env, fds = ws._token_pipes()
+    for fd in fds:
+        os.close(fd)
+    assert {name: env[name] for name in ws.PROVIDER_KEY_NAMES} == dict.fromkeys(ws.PROVIDER_KEY_NAMES, ws.NO_PROVIDER_KEY)
+    assert placeholder not in env.values()
+    kept = ws.without_provider_keys({"OPENROUTER_API_KEY": placeholder}, SimpleNamespace(UNIFY_EMBED_URL="http://127.0.0.1:9/e"))
+    assert kept == {"OPENROUTER_API_KEY": placeholder}
+
+
+def test_without_the_writers_route_the_service_environment_is_unchanged(monkeypatch):
+    from unify.memory.integration import async_pass, switch
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "placeholder-not-a-key")
+    monkeypatch.setattr(async_pass, "_route_token", lambda settings: None)
+    monkeypatch.setattr(switch, "helper_lane_route", lambda: (None, "no helper lane"))
+    env, fds = ws._token_pipes()
+    assert fds == [] and env["OPENROUTER_API_KEY"] == "placeholder-not-a-key"

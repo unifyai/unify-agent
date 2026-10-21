@@ -373,8 +373,9 @@ def spawn(
 
     *route_token* (the writer's own route, which the parent read once and removed from its environment): handed to the
     worker through a fresh pipe named by ``UNIFY_MEMORY_WRITER_TOKEN_FD``, which the worker's settings read once and
-    close. The worker's environment is the parent's without any writer token name; the token is never in argv, the
-    environment or a file. Without one the worker starts exactly as before.
+    close. The worker's environment is the parent's without any writer token name and with no provider key
+    (:func:`..writer_service.without_provider_keys`); the token is never in argv, the environment or a file. Without
+    one the worker starts exactly as before.
     """
     fd = try_lock(lock_path(paths))
     if fd is None:
@@ -392,13 +393,18 @@ def spawn(
             finally:
                 os.close(token_w)
             os.set_inheritable(token_r, True)
+            from unify.settings import SETTINGS
+
+            from ..writer_service import without_provider_keys
+
             env = {
                 k: v
                 for k, v in os.environ.items()
                 if k.upper() not in (WRITER_TOKEN, WRITER_TOKEN_FD)
             }
             env[WRITER_TOKEN_FD] = str(token_r)
-            more = {"env": env}
+            # its writer calls go through the writer's lane: it needs no provider key
+            more = {"env": without_provider_keys(env, SETTINGS)}
         log = open(Path(paths.state_dir) / "pass-worker.log", "ab")
         argv = [
             *(argv_prefix or [sys.executable, "-m", WORKER_MODULE]),

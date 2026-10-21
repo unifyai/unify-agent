@@ -450,3 +450,25 @@ def test_without_a_route_token_the_worker_starts_as_before(tmp_path):
     ap.spawn(paths, "e1", "1" * 40, "low", wall_s=60, popen=popen)
     assert "env" not in seen and len(seen["pass_fds"]) == 1
     ap.inflight_path(paths).unlink()
+
+
+def test_a_worker_on_the_writers_lane_gets_no_provider_key(tmp_path, monkeypatch):
+    from unify.memory import writer_service as ws
+
+    seen = {}
+
+    class _Proc:
+        pid = os.getpid()
+
+    def popen(argv, **kw):
+        seen.update(kw)
+        return _Proc()
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "placeholder-not-a-key")
+    paths = Paths.under(tmp_path)
+    paths.state_dir.mkdir(parents=True, exist_ok=True)
+    ap.spawn(paths, "e1", "1" * 40, "low", wall_s=60, popen=popen, route_token="writer-route-token-for-a-test")
+    ap.inflight_path(paths).unlink()
+    env = seen["env"]  # spawn closed both descriptors it passed
+    assert {n: env[n] for n in ws.PROVIDER_KEY_NAMES} == dict.fromkeys(ws.PROVIDER_KEY_NAMES, ws.NO_PROVIDER_KEY)
+    assert "placeholder-not-a-key" not in env.values()
