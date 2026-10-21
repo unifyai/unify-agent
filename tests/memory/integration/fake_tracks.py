@@ -177,7 +177,12 @@ def install(monkeypatch) -> Fakes:
     )
 
     # -- Track B: consolidate -----------------------------------------------------------------
+    # the shipped module, for the parts of the request's interface that are not faked (a second install in one test
+    # finds the fake in sys.modules and takes its shipped module from it)
+    shipped = importlib.import_module(f"{PKG}.consolidate")
+    shipped = getattr(shipped, "_shipped", shipped)
     cons = types.ModuleType(f"{PKG}.consolidate")
+    cons._shipped = shipped
 
     def open_stores(paths, **kw):  # busy_timeout_s in library mode
         f.calls.append(("open_stores", (paths,), kw))
@@ -189,9 +194,10 @@ def install(monkeypatch) -> Fakes:
             evidence=EvidenceStore(paths.evidence),
         )
 
-    def post_checker(stores, eid, sha, solved, ts):
-        f.calls.append(("post_checker", (stores, eid, sha, solved, ts), {}))
-        return solved is not None
+    def checker_signal(stores, eid, solved, ts):
+        """As the shipped one (the hidden checker's verdict as a signal, posted by the request), recorded."""
+        f.calls.append(("checker_signal", (stores, eid, solved, ts), {}))
+        return shipped.checker_signal(stores, eid, solved, ts)
 
     def request_end(stores, eid, *, settings, emit):
         """As the real one (``async_pass.request_end``): one ``service`` event, to the events file always and the
@@ -219,7 +225,10 @@ def install(monkeypatch) -> Fakes:
         if emit is not None:
             emit(dict(row))
 
-    cons.open_stores, cons.post_checker, cons._deliver = open_stores, post_checker, _deliver
+    cons.open_stores, cons.checker_signal, cons._deliver = open_stores, checker_signal, _deliver
+    # the rest of the request's interface is the shipped code
+    for name in ("visible_checker_signals", "EpisodeLookup", "_error", "library_items_at"):
+        setattr(cons, name, getattr(shipped, name))
     from unify.memory.integration import async_pass
 
     monkeypatch.setattr(async_pass, "request_end", request_end)

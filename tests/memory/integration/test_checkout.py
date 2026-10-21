@@ -34,6 +34,26 @@ def _seed(tmp_path, extra=None):
     return mem, sha
 
 
+def _seed_library(tmp_path):
+    """A memory repo whose main holds one library package in the library layout (the actor's export copies its
+    modules, docstrings and notes only): memory/acct with ``users.user_id``."""
+    from tests.memory import library_example_world as lw
+
+    mem = Repo.init_bare(tmp_path / "memory")
+    base = mem.head()
+    with mem.temp_checkout() as wt:
+        for rel, text in {
+            lw.PACKAGE_INIT: '"""Accounts."""\n',
+            lw.README: "Reading account responses.\n",
+            lw.MODULE: lw.MODULE_SOURCE,
+        }.items():
+            (wt / rel).parent.mkdir(parents=True, exist_ok=True)
+            (wt / rel).write_text(text)
+        sha = mem.commit_all(wt, "seed", {})
+    mem.fast_forward("main", sha, expected_old=base)
+    return mem, sha
+
+
 def test_paths_are_fixed_under_home(tmp_path):
     p = Paths.under(tmp_path)
     assert p.memory == tmp_path / "memory"

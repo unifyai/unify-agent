@@ -22,6 +22,8 @@ from unify.memory import writer_service as ws
 DRIVER = str(Path(__file__).with_name("service_driver.py"))
 SWITCHES = {
     "UNIFY_MEMORY": "on",
+    # the writer needs a model the pinned price catalogue bounds (switch.writer_refusal): the shipped default
+    "UNIFY_MODEL": "openai/gpt-5.6-sol@openrouter",
     "UNIFY_MEMORY_CAP_USD": "100",
     "DRIVER_PASS_WALL_S": "60",
 }

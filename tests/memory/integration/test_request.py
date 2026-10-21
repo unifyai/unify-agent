@@ -13,13 +13,14 @@ import contextvars
 import json
 import os
 import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from tests.memory.integration import fake_tracks
-from tests.memory.integration.test_checkout import _seed
+from tests.memory.integration.test_checkout import _seed_library
 from unify import sandbox
 from unify.memory.integration import hooks
 from unify.memory.integration import request as request_mod
@@ -28,6 +29,9 @@ from unify.memory.integration.state import acquire_lock, release_lock
 from unify.settings import SETTINGS
 
 SENTINEL = "SENTINEL-7f3a"
+#: rev 2: the episode's fork is on whenever memory is; with no fork lane configured (as here) it is refused, and finish
+#: says so first
+FORK_REFUSED = "memory: fork refused: no fork lane"
 
 
 @pytest.fixture
@@ -41,7 +45,7 @@ def mv2(monkeypatch, tmp_path):
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
     monkeypatch.setattr(sandbox, "_POLICY_CACHE", None)
     monkeypatch.setattr(request_mod, "_CURRENT", None)
-    mem, sha = _seed(home)
+    mem, sha = _seed_library(home)  # rev 2: the actor's export is the library layout
     fakes = fake_tracks.install(monkeypatch)
     # The run is opened and closed in one context, as the CLI's task does; the test's own context
     # never sees its context variables.
@@ -114,7 +118,7 @@ def test_a_stale_export_from_a_killed_process_is_replaced(mv2):
     run = _begin(mv2, "hi")
     try:
         assert not (mv2.paths.checkout / "junk.py").exists()
-        assert (mv2.paths.checkout / "env/spotify/__init__.py").exists()
+        assert (mv2.paths.checkout / "memory/acct/users.py").exists()
     finally:
         _abort(mv2, run)
 
@@ -185,7 +189,6 @@ def test_the_effort_is_the_actors(mv2, monkeypatch, effort, want):
 def test_finish_records_the_episode_and_runs_the_passes(mv2):
     run = _begin(mv2, "Say hi to ada.")
     transcript = _transcript(run)
-    (mv2.paths.checkout / "env/spotify/scratch.py").write_text("x = 1\n")
     progress, emitted = _finish(mv2, run)
 
     f = mv2.fakes
@@ -197,15 +200,16 @@ def test_finish_records_the_episode_and_runs_the_passes(mv2):
             "read_jsonl",
             "worktree.finish",
             "assemble",
-            "post_checker",
+            "checker_signal",
             "request_end",
         )
     ]
+    # rev 2: the hidden checker's verdict is made a signal (checker_signal) and posted with the inferred regime
     assert order == [
         "read_jsonl",
         "worktree.finish",
         "assemble",
-        "post_checker",
+        "checker_signal",
         "request_end",
     ]
     (path,), _ = f.of("read_jsonl")
@@ -225,18 +229,19 @@ def test_finish_records_the_episode_and_runs_the_passes(mv2):
     episodes = mv2.paths.episodes
     log = os.popen(f"git --git-dir {episodes} log --format=%s main").read()
     assert log.splitlines()[0] == f"episode {run.episode_id}"
-    (_, eid, sha, solved, _ts), _ = f.of("post_checker")
-    assert eid == run.episode_id and solved is None and len(sha) == 40
+    (_, eid, solved, _ts), _ = f.of("checker_signal")
+    assert eid == run.episode_id and solved is None
     from unify.memory.evidence import EvidenceStore
 
-    assert EvidenceStore(mv2.paths.evidence).episode_ref(eid)[0] == sha
+    sha = EvidenceStore(mv2.paths.evidence).episode_ref(eid)[0]
+    assert len(sha) == 40 and sha == os.popen(f"git --git-dir {episodes} rev-parse main").read().strip()
     # the writer service is made sure of, with the settings and an emitter; the request never waits for a pass
     (_, p_eid), kw = f.of("request_end")
     assert p_eid == eid and kw["settings"] is SETTINGS and kw["emit"] is not None
     assert mv2.paths.state.exists()
     # the service event reaches the CLI's emitter
     assert [(e["phase"], e["episode_id"]) for e in emitted] == [("service", eid)]
-    assert progress == []
+    assert progress == [FORK_REFUSED]
     assert f.cost_active == [True, False]
     _left_nothing(mv2.paths)
     assert not mv2.paths.errors.exists()
@@ -271,7 +276,7 @@ def test_finish_never_raises_and_logs_a_failed_pass(mv2):
     assert [e["stage"] for e in errors] == ["passes"]
     assert errors[0]["episode_id"] == run.episode_id
     assert "RuntimeError" in errors[0]["error"]
-    assert progress and "memory v2" in progress[0]
+    assert len(progress) == 2 and progress[0] == FORK_REFUSED and "memory v2" in progress[1]
     assert mv2.paths.state.exists()  # generations are kept even when the passes fail
     _left_nothing(mv2.paths)
 
@@ -282,7 +287,7 @@ def test_a_failed_episode_runs_no_pass(mv2):
     _transcript(run)
     progress, _ = _finish(mv2, run)
     assert "request_end" not in mv2.fakes.names()
-    assert "post_checker" not in mv2.fakes.names()
+    assert "checker_signal" not in mv2.fakes.names()
     errors = [json.loads(x) for x in mv2.paths.errors.read_text().splitlines()]
     assert [e["stage"] for e in errors] == ["episode"]
     assert progress
@@ -361,21 +366,31 @@ def _cell_lines(code: str, system: str, error: str | None = None) -> list[dict]:
 # ── the outcome: pass/fail only ──────────────────────────────────────────────
 
 
-def _scan(value, seen=None) -> str:
-    """Every string reachable from *value* (attributes, containers), for a sentinel scan."""
-    seen = set() if seen is None else seen
-    if id(value) in seen:
-        return ""
-    seen.add(id(value))
-    if isinstance(value, (str, bytes)):
-        return value if isinstance(value, str) else value.decode("utf-8", "replace")
-    if isinstance(value, dict):
-        return " ".join(_scan(k, seen) + " " + _scan(v, seen) for k, v in value.items())
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return " ".join(_scan(v, seen) for v in value)
-    if hasattr(value, "__dict__") and not isinstance(value, type):
-        return _scan(vars(value), seen)
-    return repr(value)
+def _scan(value) -> str:
+    """Every string reachable from *value* (attributes, containers), for a sentinel scan; walked with an explicit
+    stack, since a run's object graph is deeper than the recursion limit."""
+    seen: set[int] = set()
+    out: list[str] = []
+    stack = [value]
+    while stack:
+        v = stack.pop()
+        if id(v) in seen:
+            continue
+        seen.add(id(v))
+        if isinstance(v, (str, bytes)):
+            out.append(v if isinstance(v, str) else v.decode("utf-8", "replace"))
+        elif isinstance(v, dict):
+            for k, x in v.items():
+                stack += [k, x]
+        elif isinstance(v, (list, tuple, set, frozenset)):
+            stack += list(v)
+        elif isinstance(v, types.ModuleType):
+            continue  # code the run refers to (a store module), not data it holds
+        elif hasattr(v, "__dict__") and not isinstance(v, type):
+            stack.append(vars(v))
+        else:
+            out.append(repr(v))
+    return " ".join(out)
 
 
 def test_take_outcome_keeps_only_pass_fail(mv2):
@@ -403,7 +418,7 @@ def test_take_outcome_keeps_only_pass_fail(mv2):
         _finish(mv2, run)
     finally:
         _abort(mv2, run)
-    (_, _, _, solved, _), _ = mv2.fakes.of("post_checker")
+    (_, _, solved, _), _ = mv2.fakes.of("checker_signal")
     assert solved is False
     assert SENTINEL.encode() not in fake_tracks.dump_home(mv2.home)
     assert SENTINEL not in _scan(mv2.fakes.calls)
@@ -439,6 +454,9 @@ class _Handle:
 
 
 class _Run:
+    #: the request's episode (the CLI's ``episode`` line names it whenever a memory run is open)
+    episode_id = "20261022T000000Z-ab12cd34"
+
     def __init__(self, log: list) -> None:
         self.log = log
 
@@ -510,8 +528,9 @@ def test_cli_opens_the_run_before_the_actor_and_finishes_before_ended(monkeypatc
     assert [e[0] for e in log] == ["begin", "act", "take_outcome", "finish", "abort"]
     assert log[0] == ("begin", "Say hi") and log[3] == ("finish", handle, True)
     types_ = [o["type"] for o in out]
-    assert types_ == ["outcome", "result", "consolidation", "ended"]
-    assert out[0] == {"type": "outcome", "accepted": True, "solved": True, "checks": 0}
+    assert types_ == ["episode", "outcome", "result", "consolidation", "ended"]
+    assert out[0] == {"type": "episode", "episode_id": _Run.episode_id}
+    assert out[1] == {"type": "outcome", "accepted": True, "solved": True, "checks": 0}
 
 
 def test_cli_without_jsonl_finishes_with_no_emitter(monkeypatch):
@@ -538,7 +557,7 @@ def test_quit_without_consolidation_records_the_episode_and_starts_no_pass(mv2):
     _transcript(run)
     progress, emitted = _finish(mv2, run, consolidate=False)
     names = mv2.fakes.names()
-    assert "assemble" in names and "post_checker" in names
+    assert "assemble" in names and "checker_signal" in names
     assert "request_end" not in names
     episodes = mv2.paths.episodes
     log = os.popen(f"git --git-dir {episodes} log --format=%s main").read()
@@ -554,6 +573,15 @@ def test_quit_without_consolidation_records_the_episode_and_starts_no_pass(mv2):
     held = [
         json.loads(x) for x in mv2.paths.events.read_text().splitlines() if x.strip()
     ]
-    assert held == emitted
+    # rev 2: the events file opens with the request's capture-serving row (written at begin, never emitted)
+    assert held[0] == {
+        "type": "capture_serving",
+        "episode_id": run.episode_id,
+        "withdrawn": 0,
+        "withdrawn_replaced": 0,
+        "offered_in_place": [],
+        "worked_examples": 0,
+    }
+    assert held[1:] == emitted
     assert any("no consolidation pass started" in p for p in progress)
     _left_nothing(mv2.paths)

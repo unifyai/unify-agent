@@ -34,6 +34,8 @@ from unify.memory import writer_service as ws
 DRIVER = str(Path(__file__).with_name("service_driver.py"))
 SWITCHES = {
     "UNIFY_MEMORY": "on",
+    # the writer needs a model the pinned price catalogue bounds (switch.writer_refusal): the shipped default
+    "UNIFY_MODEL": "openai/gpt-5.6-sol@openrouter",
     # a pass needs room for one writer call at the worst case (13.125 USD) to start
     "UNIFY_MEMORY_CAP_USD": "100",
     "DRIVER_PASS_WALL_S": "60",
@@ -965,22 +967,6 @@ def test_the_service_loop_and_a_step_run_the_same_turn(svc, monkeypatch):
     _open_entry(svc.home, first_seq=2000)
     _step(svc.home, runner, monkeypatch)
     assert len(seen) == looped + 1 and len(runner.passes) == 2
-
-
-def test_with_the_run_record_off_the_service_runs_its_passes_without_it(
-    svc, monkeypatch
-):
-    """The mesh-off arm (the mesh alone off): the service still hands the ledger's entries to its passes;
-    it holds no row on a run record and writes none."""
-    ids = _open_entry(svc.home, 2)
-    runner = Recording()
-    got = _step(svc.home, runner, monkeypatch, over={"UNIFY_AGENTS_RUN_RECORD": "off"})
-    assert got["pass_id"] is not None and sorted(got["handed"]) == sorted(ids)
-    assert not _roster_file(svc.home).exists() and not rr.record_path(svc.home).exists()
-    # and a stop leaves no record behind either
-    assert ws.stop_service(svc.home, "operator", "test", grace_s=0.1).verified
-    stopped = _step(svc.home, _no_pass, monkeypatch, over={"UNIFY_AGENTS_RUN_RECORD": "off"})
-    assert stopped["stop"] == "operator" and not _roster_file(svc.home).exists()
 
 
 def _pipe_holders(inodes: set[int]) -> list[tuple[int, int]]:

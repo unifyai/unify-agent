@@ -414,7 +414,8 @@ def test_the_manifest_takes_a_procedure_role_and_its_reader():
             parse_manifest({"items": [{**item, **bad}]})
 
 
-def test_an_actor_curator_or_helper_call_is_refused_by_the_allow_list():
+def test_every_agent_but_the_writer_is_refused_by_the_allow_list():
+    # rev 2: the curator role is gone; every other agent of the run (tool_registry.AGENTS) is refused
     from tests.memory.test_tool_handlers import _channel_for, _thread_call
 
     flags = frozenset(s.requires for s in tr.registry().values() if s.requires is not None)
@@ -422,7 +423,7 @@ def test_an_actor_curator_or_helper_call_is_refused_by_the_allow_list():
 
     async def main():
         out, rows = {}, []
-        for agent in ("actor", "curator", "helper"):
+        for agent in ("actor", "teammate", "helper", "librarian"):
             ch, box, got = _channel_for(agent, tr.allow_list(agent, flags), SimpleNamespace())
             task = asyncio.ensure_future(ch.serve())
             out[agent] = await _thread_call(box, "land_capture", args)
@@ -434,4 +435,4 @@ def test_an_actor_curator_or_helper_call_is_refused_by_the_allow_list():
     out, rows = asyncio.run(main())
     for agent, exc in out.items():
         assert getattr(exc, "form", None) == "unknown_tool", (agent, exc)
-    assert [r["refusal"]["form"] for r in rows if r.get("refusal")] == ["unknown_tool"] * 3
+    assert [r["refusal"]["form"] for r in rows if r.get("refusal")] == ["unknown_tool"] * 4

@@ -258,14 +258,16 @@ def test_finish_posts_visible_checkers_only_when_any_were_taken(
     # recorder goes on whichever module is installed now
     import sys
 
+    # rev 2: the taken verdicts become the episode's visible checker signals (consolidate.visible_checker_signals),
+    # which the request posts with the inferred regime; the real function runs, the spy records its entries
     cons = sys.modules["unify.memory.integration.consolidate"]
-    monkeypatch.setattr(
-        cons,
-        "post_visible_checkers",
-        lambda stores, ep, sha, entries, lines, counterpart: calls.append(entries)
-        or len(entries),
-        raising=False,
-    )
+    real = cons.visible_checker_signals
+
+    def spy(stores, ep, entries, lines, counterpart, regime):
+        calls.append(entries)
+        return real(stores, ep, entries, lines, counterpart, regime)
+
+    monkeypatch.setattr(cons, "visible_checker_signals", spy)
     _on(monkeypatch)
     run = _begin(mv2, "none taken")
     _transcript(run)
@@ -303,7 +305,8 @@ def test_cli_hands_a_checker_line_to_the_run_and_never_to_the_actor(monkeypatch)
     assert [e[0] for e in log] == ["begin", "act", "take_checker", "finish", "abort"]
     assert ("take_checker", {"label": "pass"}) in log
     assert all(e != ("act", '{"checker": {"label": "pass"}}') for e in log)
-    assert out[0] == {"type": "checker", "accepted": True, "label": "pass", "count": 1}
+    assert out[0] == {"type": "episode", "episode_id": _CheckerRun.episode_id}  # a memory run is open
+    assert out[1] == {"type": "checker", "accepted": True, "label": "pass", "count": 1}
 
 
 def test_cli_without_a_memory_run_refuses_the_checker_line(monkeypatch):

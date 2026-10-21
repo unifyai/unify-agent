@@ -10,6 +10,7 @@ import pytest
 
 from unify.memory import library_prompts as lp
 from unify.memory.manifest import (
+    LABEL_ITEM_FIELDS,
     LIBRARY_ITEM_FIELDS,
     Manifest,
     ManifestError,
@@ -26,15 +27,15 @@ READ_ELSEWHERE = {
     "pool": "pool.py",
     "why": "writer_pass.py",
     "summary": "writer_pass.py",
-    "kept": "curate.py",
-    "retired": "curate.py",
-    "aliases": "curate.py",
 }
 
 
 def _template(brief: str) -> str:
+    """The manifest template: the JSON object on the line that opens with ``{"items": [`` (rev 2 follows it on the same
+    line with the optional top-level keys)."""
     start = brief.index('{"items": [')
-    return brief[start : brief.index("}\n", start) + 1]
+    line = brief[start : brief.index("\n", start)]
+    return line[: line.rindex("}") + 1]
 
 
 def _levels(template: str) -> tuple[set[str], set[str]]:
@@ -50,7 +51,6 @@ def _briefs() -> dict[str, str]:
     return {
         "write": lp.write_brief_now(helper=True, similar=True),
         "write plain": lp.write_brief_now(),
-        "curate": lp.curate_brief_now(),
     }
 
 
@@ -62,12 +62,15 @@ def test_every_field_a_brief_shows_is_read_at_its_level():
     item_fields = {f.name for f in dataclasses.fields(ManifestItem)}
     parsed_top = {f.name for f in dataclasses.fields(Manifest)}
     root = Path(pkg.__file__).parent
+    # rev 2: an item may also state its label fields, which the gate parses (labels=True) into ``stated``
+    label_fields = set(LABEL_ITEM_FIELDS)
+    assert "stated" in item_fields
     for name, brief in _briefs().items():
         item_keys, top_keys = _levels(_template(brief))
-        assert item_keys and item_keys <= item_fields, (name, item_keys - item_fields)
-        assert item_keys <= set(LIBRARY_ITEM_FIELDS), (
+        assert item_keys and item_keys <= item_fields | label_fields, (name, item_keys - item_fields - label_fields)
+        assert item_keys <= set(LIBRARY_ITEM_FIELDS) | label_fields, (
             name,
-            item_keys - set(LIBRARY_ITEM_FIELDS),
+            item_keys - set(LIBRARY_ITEM_FIELDS) - label_fields,
         )
         for key in top_keys - parsed_top:
             assert key in READ_ELSEWHERE, (name, key)
@@ -86,6 +89,14 @@ ITEM_VALUES = {
     "adopts": [{"ref": STAGED, "how": "generalised"}],
     "field_types": {f"{FIXTURE}#rows[].month": "month", f"{FIXTURE}##3": "percentage"},
 }
+#: The label fields a template shows, with values the gate's parser (labels=True) takes, and what it keeps of each.
+LABEL_VALUES = {
+    "covers_episodes": ["e1", "e2"],
+    "inputs": ["response.user_id"],
+    "constants": [{"value": "the user_id key", "source": "e1/action:0"}],
+    "effects": "reads",
+}
+LABEL_KEPT = {**LABEL_VALUES, "constants": ["the user_id key (source: e1/action:0)"]}
 
 
 def _round_trip(name: str) -> None:
@@ -93,10 +104,14 @@ def _round_trip(name: str) -> None:
 
     item_keys, _ = _levels(_template(_briefs()[name]))
     keys = item_keys | {"field_types"}
+    labels = keys & set(LABEL_ITEM_FIELDS)
+    keys -= labels
     assert keys <= set(LIBRARY_ITEM_FIELDS), (name, keys - set(LIBRARY_ITEM_FIELDS))
     item = {k: ITEM_VALUES[k] for k in sorted(keys)}
+    stated = {k: LABEL_VALUES[k] for k in sorted(labels)}
     man = parse_manifest(
-        {"items": [item], "support": [], "why": "w", "summary": "s"},
+        {"items": [{**item, **stated}], "support": [], "why": "w", "summary": "s"},
+        labels=True,
     )
     got = man.items[0]
     assert (got.item, got.kind, got.source_episodes, got.tests) == (
@@ -110,6 +125,7 @@ def _round_trip(name: str) -> None:
         and got.covers == []
     )
     assert got.field_types == item["field_types"] and got.input is None
+    assert got.stated == {k: LABEL_KEPT[k] for k in labels}
     if "adopts" in item:
         assert got.adopts == ["staging:e2/candidates/fill.py"]
         assert got.adopt_how == {"staging:e2/candidates/fill.py": "generalised"}
@@ -129,10 +145,6 @@ def test_the_write_template_round_trips_through_the_parser():
     _round_trip("write plain")
 
 
-def test_the_curate_template_round_trips_through_the_parser():
-    _round_trip("curate")
-
-
 def test_no_brief_keeps_a_placeholder_and_write_brief_takes_no_input_forms():
     import inspect
 
@@ -145,9 +157,12 @@ def test_no_brief_keeps_a_placeholder_and_write_brief_takes_no_input_forms():
 def test_the_write_brief_names_the_semantic_types_field_types_takes():
     from unify.memory.manifest import SEMANTIC_TYPES, describe_semantic_types
 
+    # rev 2: the brief names `field_types` and points to /inputs/README.md, which carries the types (constant per run)
     brief = _briefs()["write"]
-    assert "`field_types`" in brief and describe_semantic_types() in brief
-    assert all(name in brief for name in SEMANTIC_TYPES)
+    assert "`field_types`" in brief and "(form: /inputs/README.md)" in brief
+    readme = lp.input_pointer_files()[lp.INPUTS_README_FILE]
+    assert describe_semantic_types() in readme
+    assert all(name in readme for name in SEMANTIC_TYPES)
 
 
 def test_the_write_brief_states_the_material_and_the_reach_as_facts():
@@ -157,16 +172,11 @@ def test_the_write_brief_states_the_material_and_the_reach_as_facts():
         lp.write_brief_now(helper=True, similar=True),
         lp.write_brief_now(),
     ):
-        assert (
-            "Proposals are not the only material: functions and notes can also come from any recorded episode"
-            in brief
-        )
-        assert (
-            "At any point in the pass, you can open any recorded episode, in this batch or not and from earlier passes too"
-            in brief
-        )
-        assert "`overview` and `read_episode` take any recorded id" in brief
-    assert "`similar` finds others with matching code" in lp.write_brief_now(
+        # rev 2 wording (tools are called in code): the same two facts, the material and the reach
+        assert "You can also build from any recorded episode with no proposal behind it." in brief
+        assert "At any point you can open any recorded episode, in this batch or not" in brief
+        assert "`tools.overview` and `tools.read_episode` take any recorded id" in brief
+    assert "`tools.similar` finds others with matching code" in lp.write_brief_now(
         similar=True,
     )
     with_helpers = lp.write_brief_now(helper=True)
