@@ -12,8 +12,9 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-#: Key-shaped, so the redaction patterns would match it, and fake.
-FAKE_KEY = "sk-or-v1-" + "0123456789abcdef" * 4  # pragma: allowlist secret
+#: Key-shaped, so the redaction patterns would match it, and plainly fake: 64 zeros, which no real key is, so a scan of
+#: a host or a log tells it from a real one at a glance.
+FAKE_KEY = "sk-or-v1-" + "0" * 64  # pragma: allowlist secret
 MODEL = "openai/gpt-6-luna"
 
 
