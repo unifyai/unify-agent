@@ -156,7 +156,7 @@ def test_each_form_is_captured_exported_and_shown_to_the_writer(tmp_path, form):
     calls = {"matched": 1, "differed": 0, "missing": 0, "unrecorded": 0, "repeats": 0} if form == "state_env" else None
     runner, seen = _box([6, 9] if form != "state_env" else None, form=form, calls=calls)
     ep = _ep(actions=[_write_action()] if form == "state_env" else [])
-    row = cp.capture_trace_step(staging, ep, store, runner=runner)
+    row = cp.capture_trace_step(staging, ep, store)
     cid = cp.capture_id(proc)
     assert row["v"] == 2 and row["capture_id"] == cid and row["safety"] == "ok"
     assert row["entry_point"]["form"] == form
@@ -186,7 +186,7 @@ def test_a_side_effect_only_episode_is_captured_with_no_value_and_its_calls(tmp_
     runner, _ = _box(None, form="state_env", calls=calls)
     ep = _ep(actions=[_write_action()], replies=["done"], worktree=("a", "b"), regime="sparse")
     end = Signal("s1", "e1", "provenance", "support", "2026-10-20T00:00:30Z", regime="sparse")
-    row = cp.capture_trace_step(staging, ep, store, runner=runner, signals=[end])
+    row = cp.capture_trace_step(staging, ep, store, signals=[end])
     assert row["value"] == {"present": False}
     assert row["own_check"] == ct.NOT_RUN
     assert row["outcome"] == "positive"  # from the signal only
@@ -194,8 +194,7 @@ def test_a_side_effect_only_episode_is_captured_with_no_value_and_its_calls(tmp_
     rec = json.loads((store / row["capture_id"] / "record.json").read_text())
     assert rec["outcome"] == "positive" and not cp.negative(rec)
     # the old contract would have refused it: no value and no work-tree change is not a completed attempt
-    old = cp.capture_trace_step(_staging(tmp_path / "old", "e1", {"procedure.py": VALUE_PROC}), _ep(), cp.store_dir(tmp_path / "old"),
-                     runner=_box([6, 9])[0])  # fmt: skip
+    old = cp.capture_trace_step(_staging(tmp_path / "old", "e1", {"procedure.py": VALUE_PROC}), _ep(), cp.store_dir(tmp_path / "old"))  # fmt: skip
     assert old["safety"] == "not a completed attempt: nothing was handed back"
 
 
@@ -203,7 +202,7 @@ def test_a_contrary_signal_makes_negative_knowledge_and_nothing_runs(tmp_path):
     store = cp.store_dir(tmp_path)
     runner, seen = _box([1], form="value", outcome="error", error_class="ValueError", stage="run")
     ep = _ep(actions=[Action(0, "env", "submit", [[6, 9]], {}, "ok", "ok", "unknown", kind="dialogue")], regime="dense")
-    row = cp.capture_trace_step(_staging(tmp_path, "e1", {"procedure.py": VALUE_PROC}), ep, store, runner=runner)
+    row = cp.capture_trace_step(_staging(tmp_path, "e1", {"procedure.py": VALUE_PROC}), ep, store)
     assert seen == [] and row["own_check"] == ct.NOT_RUN and row["outcome"] == "none"
     rec = json.loads((store / row["capture_id"] / "record.json").read_text())
     assert rec["outcome"] == "none" and not cp.negative(rec)
@@ -211,7 +210,7 @@ def test_a_contrary_signal_makes_negative_knowledge_and_nothing_runs(tmp_path):
                   regime="dense", visible_to_actor=True)  # fmt: skip
     other = VALUE_PROC.replace("Each row's total", "Each row's sum")
     ep2 = _ep("e2", actions=ep.actions, regime="dense")
-    row2 = cp.capture_trace_step(_staging(tmp_path, "e2", {"procedure.py": other}), ep2, store, runner=_box([6, 9])[0],
+    row2 = cp.capture_trace_step(_staging(tmp_path, "e2", {"procedure.py": other}), ep2, store, 
                       signals=[fail])  # fmt: skip
     assert row2["outcome"] == "contrary" and row2["own_check"] == ct.NOT_RUN
     # its procedure differs from the first only in a docstring: the same shape, so it folded into the first capture

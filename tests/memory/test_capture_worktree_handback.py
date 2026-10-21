@@ -36,7 +36,7 @@ def test_its_capture_is_unknown_not_failed_and_its_outcome_comes_from_signals(tm
     staging = _staging(tmp_path, "e1", {"procedure.py": PROC})
     store = cp.store_dir(tmp_path)
     runner, calls = _box(VALUE, [6, 9])
-    row = cp.capture_trace_step(staging, _worktree_episode("e1"), store, runner=runner)
+    row = cp.capture_trace_step(staging, _worktree_episode("e1"), store)
     assert row["safety"] == "ok" and len(calls) == 1
     assert (row["reproduces"], row["outcome"]) == ("unknown", "none")
     rec = cp.load(store)[row["capture_id"]]["record"]
@@ -52,7 +52,6 @@ def test_its_capture_is_unknown_not_failed_and_its_outcome_comes_from_signals(tm
         store,
         signals=[_checker("e2", "pass")],
 
-        runner=runner,
     )
     assert (row2["reproduces"], row2["outcome"]) == ("unknown", "positive")
     # and a contrary signal still makes it failed
@@ -66,7 +65,6 @@ def test_its_capture_is_unknown_not_failed_and_its_outcome_comes_from_signals(tm
         store,
         signals=[_checker("e3", "fail")],
 
-        runner=runner,
     )
     assert row3["outcome"] == "failed"
 

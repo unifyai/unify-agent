@@ -144,7 +144,7 @@ def _spawn(argv: list[str]) -> dict:
     return {"event": "subprocess.Popen", "exe": "/usr/bin/" + argv[0], "argv": argv, "tid": 1, "cell_thread": True}
 
 
-def _record(codes: list[str], drained: list[dict], library_mode: bool = True) -> dict:
+def _record(codes: list[str], drained: list[dict]) -> dict:
     acc = runtime_calls_empty()
     for d in drained:
         add_runtime_calls(acc, d)
@@ -152,7 +152,6 @@ def _record(codes: list[str], drained: list[dict], library_mode: bool = True) ->
         _ep(transcript=_lines([(c, None) for c in codes]), actions=[]),
         [PARSE_DATE],
         runtime_calls=acc,
-        library_mode=library_mode,
         export_roots=[LIBRARY],
     )
     assert "error" not in rec, rec
@@ -205,7 +204,6 @@ async def test_lookups_made_in_the_real_worker_reach_the_use_record(world, monke
     export_actor_library_mode(mem.git_dir, sha, paths.checkout)
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
     run = RequestRun("r", paths)
-    run.library_mode = True
     monkeypatch.setattr(request_mod, "_CURRENT", run)
     codes = [
         f"text = open({LIBRARY + '/INDEX.md'!r}).read()\nlen(text) > 0",
