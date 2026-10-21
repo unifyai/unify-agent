@@ -28,19 +28,6 @@ def helper_request(name: str, spawner: str, request: str, request_seq: int) -> s
     )
 
 
-def spawn_permitted() -> tuple[bool, str]:
-    """Helpers start only where each agent's code runs in its own confined
-    worker: always, outside a test that runs Python in this process."""
-    from unify.actor.execution import worker
-
-    if worker.enabled():
-        return True, ""
-    return False, (
-        "starting helpers needs Python in the sandboxed worker, so that each "
-        "agent's code runs in its own confined process"
-    )
-
-
 def current_root_pool() -> Optional[Pool]:
     """The pool of the most recent main agent in this process (for hosts and tests)."""
     return _LAST_ROOT[0]
@@ -169,13 +156,12 @@ def bind_run_record(*, request: str, user_reads: bool) -> Binding:
     else:
         raise PostRefused("no free name for the actor on the run record")
     record.root = name
-    allowed, why = spawn_permitted()
     pool: Pool
 
     async def start(helper: str, spawner: str, task: str, request_seq: int) -> str:
         return await _start_helper(pool, helper, spawner, task, request_seq)
 
-    pool = Pool(record, start_helper=start, spawn_allowed=allowed, spawn_refusal=why)
+    pool = Pool(record, start_helper=start)
     entry = record.append_harness(
         USER,
         str(request or ""),

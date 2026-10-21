@@ -443,10 +443,11 @@ class Limits:
     stage_bytes: int | None = None
 
 
-def _tool_names(role: str, flags: frozenset[str]) -> frozenset[str]:
-    from .tool_spec import tools_for
+def _tool_names(agent: str, flags: frozenset[str]) -> frozenset[str]:
+    """The tools *agent* calls in code with the configuration *flags* on."""
+    from unify.common.tool_registry import allow_list
 
-    return frozenset(s.name for s in tools_for(role, flags))
+    return frozenset(allow_list(agent, flags))
 
 
 def _join(parts: list[str]) -> str:
@@ -580,7 +581,7 @@ def write_brief_now(
         sample_k=qa.SAMPLE_K,
         lint_min=code_lint.LINT_MIN,
         pytest_env=_PYTEST_ENV,
-        tool_names=_tool_names("write", flags),
+        tool_names=_tool_names("writer", flags),
         flags=flags,
     )
 

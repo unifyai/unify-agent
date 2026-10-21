@@ -709,7 +709,6 @@ class RunRecord(Record):
     request, a writer pass, a fork relay) each read the same files; each wakes its own waiters at once and the others'
     through the file."""
 
-    run_wide = True
     is_run_record = True
 
     def __init__(

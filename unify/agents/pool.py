@@ -25,31 +25,21 @@ class Pool:
         record: Record,
         *,
         start_helper: StartHelper,
-        spawn_allowed: bool,
-        spawn_refusal: str = "",
     ) -> None:
         self.record = record
         self._start_helper = start_helper
-        self._spawn_allowed = spawn_allowed
-        self._spawn_refusal = (
-            spawn_refusal or "starting helpers is not allowed in this run"
-        )
         self._tasks: dict[str, asyncio.Task] = {}
         #: every helper this pool started or tried to start, in order (the run record's limits count these)
         self._started: list[str] = []
 
     def _helpers(self) -> list[str]:
-        if getattr(self.record, "run_wide", False):
-            # the run record (unify/agents/run_record.py) holds the whole run's agents: this pool's limits count only
-            # the helpers it started
-            return list(self._started)
-        return [n for n, p in self.record.participants.items() if p.spawner is not None]
+        # the run record (unify/agents/run_record.py) holds the whole run's agents: this pool's limits count only
+        # the helpers it started
+        return list(self._started)
 
     def _live(self) -> list[str]:
         rec = self.record
-        if getattr(rec, "run_wide", False):
-            return [n for n in self._started if rec.participants.get(n) is not None and rec.participants[n].state == "running"]
-        return [n for n in rec.live_agents() if n != rec.root]
+        return [n for n in self._started if rec.participants.get(n) is not None and rec.participants[n].state == "running"]
 
     async def spawn(
         self,
@@ -60,8 +50,6 @@ class Pool:
         rec, opts = self.record, self.record.options
         # Any agent may start helpers; the record's limits (live and total)
         # bound them all, whoever starts them.
-        if not self._spawn_allowed:
-            raise PermissionError(self._spawn_refusal)
         if opts.max_total == 0:
             raise PermissionError("starting helpers is off in this run")
         request = str(request or "")
@@ -76,11 +64,11 @@ class Pool:
                 "wait for a reply or stop one first",
             )
         if len(self._helpers()) >= opts.max_total:
-            scope = "this request or pass" if getattr(rec, "run_wide", False) else "this run"
+            scope = "this request or pass"
             raise RuntimeError(
                 f"{scope} has started its limit of {opts.max_total} helpers",
             )
-        picked = name is None and getattr(rec, "run_wide", False)
+        picked = name is None
         if picked:
             # a name no agent of the whole run has had (other processes name theirs too)
             name = rec.next_name("h")

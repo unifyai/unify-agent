@@ -2123,34 +2123,6 @@ class WriterPass:
         )
         (inputs / "library.json").write_text(json.dumps(summary) + "\n")
 
-    def _switches(self) -> dict[str, bool]:
-        """The library-mode switches the writer's brief states: the gate's own (the driver builds the gate from them)."""
-        return {
-            "docstrings": bool(getattr(self.gate, "docstring_standard", False)),
-            "catalogue": getattr(self.gate, "surfacing", "index") == "catalogue",
-            "soft_budget": bool(getattr(self.gate, "soft_budget", False)),
-        }
-
-    @staticmethod
-    def _library_message(wt: Path, switches: dict[str, bool]) -> str:
-        """The library part of the writer's first message: v2's index, or the generated README (``catalogue``)."""
-        if switches["catalogue"]:
-            try:
-                return readme_for_writer(
-                    wt,
-                )  # the README, or a compact view past its budget
-            except ValueError as exc:  # an unreadable notes file
-                return f"Current library: (catalogue not built: {exc})"
-        try:
-            index = (
-                build_index(wt, budget_tokens=sys.maxsize)
-                if switches["soft_budget"]
-                else build_index(wt)
-            )
-        except ValueError as exc:  # over budget, or an unreadable notes file
-            index = f"(index not built: {exc})"
-        return f"Current index:\n{index}"
-
     def _usage(self, req: PassRequest, tree: Path) -> str:
         """The library-use table over the pass's requests (:func:`.usage.usage_table`) for the functions
         of memory ``main`` at *tree*: harness counts only, nothing of a checker.
@@ -3825,34 +3797,14 @@ class WriterPass:
         return write_brief_now(**self._write_inputs())
 
     def _write_inputs(self) -> dict:
-        """The WRITE brief names each input this pass's configuration prepares (constant per run): staging only
-        with the episode-end fork on, the pool only with the pool on."""
+        """The WRITE brief's inputs, constant per run: a helper lane, a similar-code index, and finish's refusal cap
+        when the pass is capped."""
         return {
-            "staging": True,
-            "pool": True,
             "cell_s": float(self.cfg.cell_timeout_s),
             "helper": self.helper_turn is not None,
             "similar": bool(self.cfg.similar_index),
-            # the limits the brief states: compaction when it is on, finish's refusal cap when the pass is capped
-            "compact": True,
             "finish_capped": self.cfg.max_usd is not None,
-            "edit_tools": False,
-            # the redesign's switches, only when one is on (off: the call as built)
-            **({"switches": sw} if (sw := self._switches_b()).attention or sw.impure or sw.tests or sw.labels_only
-               else {}),
         }
-
-    def _switches_b(self) -> Any:
-        """The WRITE brief's switches (:class:`.library_prompts.WriterSwitches`): an attention pass, items of any
-        effect, stated tests; all off as built."""
-        from .library_prompts import WriterSwitches
-
-        return WriterSwitches(
-            attention=getattr(self, "_attention", None) is not None,
-            impure=True,
-            tests=True,
-            labels_only=True,
-        )
 
     def _keep_cancelled_work(
         self,

@@ -285,7 +285,7 @@ class DelegateContext:
             async def start(name: str, spawner: str, request: str, seq: int) -> str:
                 return await _body(self, name)
 
-            pr.pool = Pool(pr.record, start_helper=start, spawn_allowed=True)
+            pr.pool = Pool(pr.record, start_helper=start)
 
 
 def context_for(

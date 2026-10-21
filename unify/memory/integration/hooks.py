@@ -422,22 +422,18 @@ def before_cell() -> dict | None:
     ie = getattr(run, "in_episode", None) if run is not None else None
     if ie is None:
         return None
-    from unify.sandbox import unconfined
+    try:
+        from ..memory_writer import served_head
 
-    # the harness's own git reads and export, never the cell's: the cell's confinement is for what the cell starts
-    with unconfined():
-        try:
-            from ..memory_writer import served_head
-
-            head = served_head(run.stores.memory)
-        except Exception as exc:  # noqa: BLE001 - the cell runs on the pin it has
-            logger.warning("memory: the served head not read at a cell boundary (%s)", type(exc).__name__)
-            head = None
-        try:
-            return ie.before_cell(head)
-        except Exception as exc:  # noqa: BLE001 - a re-pin never stops a cell
-            logger.warning("memory: re-pin failed (%s)", type(exc).__name__)
-            return None
+        head = served_head(run.stores.memory)
+    except Exception as exc:  # noqa: BLE001 - the cell runs on the pin it has
+        logger.warning("memory: the served head not read at a cell boundary (%s)", type(exc).__name__)
+        head = None
+    try:
+        return ie.before_cell(head)
+    except Exception as exc:  # noqa: BLE001 - a re-pin never stops a cell
+        logger.warning("memory: re-pin failed (%s)", type(exc).__name__)
+        return None
 
 
 def after_cell() -> None:
@@ -474,12 +470,9 @@ def turn_boundary(client: Any, *, compacting: bool = False, new_message: bool = 
     inner = getattr(handle, "_inner", None) or handle
     if handle is None or getattr(inner, "_client", None) is not client:
         return
-    from unify.sandbox import unconfined
-
     try:
         # harness-owned: the segment's record and its fork, which runs in its own box
-        with unconfined():
-            event = ie.at_boundary(handle, compacting=compacting, new_message=new_message)
+        event = ie.at_boundary(handle, compacting=compacting, new_message=new_message)
     except Exception as exc:  # noqa: BLE001 - a pause never stops the actor
         logger.warning("memory: a checkpoint failed (%s)", type(exc).__name__)
         return
