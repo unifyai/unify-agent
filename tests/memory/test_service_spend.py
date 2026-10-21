@@ -110,7 +110,10 @@ def test_the_room_is_the_cap_less_the_other_passes_commitments(tmp_path):
     assert ws.pass_room(home, "me", settings) == Decimal("5.5")
     ws._append(ws.service_dir(home) / ws.SPEND_FILE, {"v": 1, "op": "reserve", "pass_id": "c", "usd": "9"})
     assert ws.pass_room(home, "me", settings) == Decimal(0)  # never below 0
-    assert ws.pass_room(home, "me", SimpleNamespace()) is None
+    # rev 2: memory's cap always applies; unset, it is the default (switch.MEMORY_CAP_DEFAULT, 20.00): 20 - 13.5 committed
+    from unify.memory.integration import switch
+
+    assert ws.pass_room(home, "me", SimpleNamespace()) == Decimal(switch.MEMORY_CAP_DEFAULT) - Decimal("13.5")
 
 
 def test_the_helpers_spend_and_their_lost_turns_count(tmp_path):
@@ -356,7 +359,7 @@ def test_each_models_worst_case_is_the_pinned_catalogues_bound_and_an_unknown_mo
 
 
 def test_a_service_pass_counts_calls_at_its_lanes_models_worst_case(monkeypatch):
-    """The writer's model's bound, and the helpers' when the helper lane is set (the larger of the two)."""
+    """The writer's model's bound, which its helpers run on too (with or without the helper lane)."""
     from pydantic import SecretStr
 
     from tests.memory import test_writer_service as T
@@ -368,7 +371,8 @@ def test_a_service_pass_counts_calls_at_its_lanes_models_worst_case(monkeypatch)
     monkeypatch.setattr(
         switch, "helper_lane_route", lambda: (("http://127.0.0.1:9/helper/v1", SecretStr("t-for-a-test")), None)
     )
-    assert ws.pass_call_worst_case(cheap) == Decimal("13.125")  # the helpers run on the actor's model
+    # rev 2: the helpers run on the writer's model (switch.writer_model), so the lane changes nothing
+    assert ws.pass_call_worst_case(cheap) == Decimal("0.65625")
     unknown = T._settings(UNIFY_MEMORY_WRITER_MODEL="vendor/no-such-model")
     monkeypatch.setattr(switch, "helper_lane_route", lambda: (None, "no helper lane"))
     try:
@@ -408,7 +412,8 @@ def test_a_writer_model_with_no_catalogue_bound_runs_no_pass(tmp_path, monkeypat
     got = _step(home, T._no_pass, monkeypatch, UNIFY_MEMORY_WRITER_MODEL="vendor/no-such-model")
     assert got["why_idle"] == "refused" and got["pass_id"] is None
     (reason,) = [e["reason"] for e in ws.events(home) if e.get("event") == "refused"]
-    assert "pinned price catalogue bounds for UNIFY_MEMORY_WRITER_MODEL" in reason and "no-such-model" not in reason
+    assert "UNIFY_MEMORY_WRITER_MODEL" in reason and "is not one the pinned price catalogue bounds" in reason
+    assert "no-such-model" not in reason
 
 
 def test_a_resumed_pass_that_diverges_keeps_its_killed_runs_spend(tmp_path, monkeypatch):

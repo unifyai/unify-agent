@@ -37,7 +37,20 @@ def _settings(model="openai/gpt-6-sol", cap="20.00"):
     return SimpleNamespace(UNIFY_MEMORY="on", UNIFY_MEMORY_WRITER_MODEL=model, UNIFY_MEMORY_CAP_USD=cap)
 
 
+#: The cell that ends a pass at once with nothing kept: rev 2 calls every tool from a cell, and ``finish`` needs a
+#: manifest, so the cell writes one that lists nothing and then finishes.
+FINISH_CELL = (
+    "import json, pathlib\n"
+    "p = pathlib.Path('/memory/.pass/manifest.json')\n"
+    "p.parent.mkdir(parents=True, exist_ok=True)\n"
+    "p.write_text(json.dumps({'items': [], 'why': 'nothing to keep', 'summary': 'nothing'}))\n"
+    "print(tools.finish(summary='nothing'))\n"
+)
+
+
 def _finish():
+    """The writer's finish with nothing kept, in one execute_code cell."""
+    name, args = "execute_code", {"code": FINISH_CELL}
     return {
         "role": "assistant",
         "content": None,
@@ -45,7 +58,7 @@ def _finish():
             {
                 "id": "f",
                 "type": "function",
-                "function": {"name": "finish", "arguments": '{"summary": "nothing"}'},
+                "function": {"name": name, "arguments": json.dumps(args)},
             },
         ],
     }
@@ -342,7 +355,7 @@ def test_the_reporting_gate_reports_a_check_and_a_merge_and_is_the_gate_otherwis
         def merge(self, *a, **k):
             return SimpleNamespace(passed=True, refused=[], merged="abc")
 
-    gate = consolidate._ReportingGate(Gate(library_mode=LibraryConfig()), lambda phase, **f: reports.append((phase, f)))
+    gate = consolidate._ReportingGate(Gate(), lambda phase, **f: reports.append((phase, f)))
     assert gate.check("p", "c", {}).refused == ["G2"] and gate.merge("p", "c", {}, "id", "k", None, "0").merged == "abc"
     assert gate._blob == "the gate's own"
     assert reports == [

@@ -1248,10 +1248,11 @@ def pass_reservation(settings: Any, effort: str) -> Decimal:
     pass's whole room instead (its USD stop, :func:`pass_room`), and calls this as the check that a pass can run.
     """
     from .integration.consolidate import writer_settings
+    from .integration.switch import WRITER_EFFORT_SCALE
 
     cfg = writer_settings(settings)
     level = (effort or "").strip().lower()
-    scale = cfg.effort_scale.get(level, Decimal(1))
+    scale = WRITER_EFFORT_SCALE.get(level, Decimal(1))
     return cfg.cap_usd * scale
 
 

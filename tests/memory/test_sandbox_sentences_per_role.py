@@ -1,5 +1,5 @@
 """What every agent is told about its sandbox, without a box: each role's system message (actor, teammate, writer,
-curator, helper) opens with the shared opening, and inside it says once that the sandbox is persistent and stateful
+helper) opens with the shared opening, and inside it says once that the sandbox is persistent and stateful
 (or, under ``UNIFY_CELL_STATE=fresh``, that each cell starts fresh), names the restarts that lose variables, and says
 that its pre-bound names (``memory`` and ``tools`` among them) are already available as variables with no import
 needed. No role says ``import memory`` or calls the library "importable" any more. The pre-bound sets come from one
@@ -52,7 +52,7 @@ NAMES_SENTENCE = re.compile(
     r"((?:`[A-Za-z_][A-Za-z0-9_]*`(?:, | and |, and )?)+) (?:is|are) already available as (?:a )?variables? in every "
     r"cell; no import needed\.",
 )
-#: design D.3 (B.4): the writer's and curator's sentence about a library file edited after it was imported
+#: design D.3 (B.4): the writer's sentence about a library file edited after it was imported
 REIMPORT_SENTENCE = (
     "Names you bound earlier keep the code they were bound to; after you edit a library file, import it again."
 )
@@ -60,8 +60,8 @@ REIMPORT_SENTENCE = (
 GUIDE_BOUND = "is already available in your cells as `memory`"
 # =====================================================================================================================
 
-ROLES = ("actor", "teammate", "writer", "curator", "helper")
-MEMORY_ROLES = ("writer", "curator", "helper")
+ROLES = ("actor", "teammate", "writer", "helper")  # rev 2 has no curator
+MEMORY_ROLES = ("writer", "helper")
 #: what no role says any more (design A.3, D.2-D.4)
 IMPORT_MEMORY = re.compile(r"\bimport memory\b")
 IMPORTABLE = "importable in your cells"
@@ -141,7 +141,6 @@ async def _openings(tmp_path: Path) -> dict[str, str]:
     """Each role's system message (the actor's and the teammate's opening; the memory agents' whole brief)."""
     out = {
         "writer": lp.write_brief_now(cell_s=60.0, helper=True),
-        "curator": lp.curate_brief_now(cell_s=60.0),
         "helper": helpers.helper_brief(False),
     }
     for agent in ("actor", "teammate"):
@@ -226,14 +225,15 @@ async def test_the_new_sentences_hold_no_host_path_secret_or_forcing(in_code, tm
 def test_the_actor_in_code_prompt_leaves_persistence_to_the_opening():
     from unify.actor import prompt_builders as pb
 
-    rules = flat(pb._LEAN_EXECUTION_RULES_IN_CODE)
+    # rev 2 has one actor prompt (tools always in code): its execution rules, bound-globals section and memory role
+    rules = flat(pb._EXECUTION_RULES)
     assert "cells share one persistent sandbox" not in rules
     assert "usually means the sandbox restarted" not in rules
     assert "**Sessions**: bind results to variables and build on them" in rules
-    sandbox = flat(pb._SANDBOX_IN_CODE)
+    sandbox = flat(pb._SANDBOX)
     assert "already bound" in sandbox and "no import needed" in sandbox
     assert "`tools`" in sandbox and "`display(obj)`" in sandbox
-    assert "importable" not in flat(pb._LEAN_ROLE_LIBRARY_MEMORY)
+    assert "importable" not in flat(pb._ROLE_FIRST_MEMORY)
 
 
 # --- the functions behind the sentences -----------------------------------------------------------------------------
@@ -308,13 +308,13 @@ def test_prebound_names_of_the_actor_and_teammate():
         "unillm",
         "run_coro_sync",
         "ModelRequestError",
-        "request_clarification",
     } <= actor, actor
+    # rev 2: no request_clarification global (the actor asks the user on the run record), so the actor and a
+    # teammate have the same names and the clarification fact changes nothing
     mate = _prebound("teammate", **facts)
-    assert "request_clarification" not in mate
-    assert actor - {"request_clarification"} == mate
+    assert "request_clarification" not in actor and actor == mate
     assert "memory" not in _prebound("actor", **{**facts, FACT_LIBRARY: False})
-    assert "request_clarification" not in _prebound("actor", **{**facts, FACT_CLARIFICATION: False})
+    assert _prebound("actor", **{**facts, FACT_CLARIFICATION: False}) == actor
     for names in (actor, mate):
         assert not names & set(REPLACED), names
         assert not names & {"functions", "guidance"}, names
