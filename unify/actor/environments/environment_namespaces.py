@@ -68,8 +68,7 @@ class EnvironmentNamespacesEnvironment(BaseEnvironment):
         if modules:
             listed = ", ".join(f"`{name}`" for name in sorted(modules))
             lines.append(
-                f"\nModules the environment supplies (import them freely; never "
-                f"declare them as `dependencies`): {listed}.",
+                f"\nModules the environment supplies (import them freely): {listed}.",
             )
         return "\n".join(lines)
 
