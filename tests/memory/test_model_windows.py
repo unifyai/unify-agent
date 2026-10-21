@@ -16,6 +16,8 @@ import pytest
 import unillm
 
 from unify.memory import writer_pass
+# the helper's lane refuses while unillm records OTel spans, which the test runner turns on for every session
+from tests.memory.test_writer_route import _otel_off_unless_a_test_turns_it_on  # noqa: F401 - an autouse fixture
 from unify.memory.integration import consolidate, switch
 from unify.memory.integration.consolidate import run_due_passes
 from unify.memory.integration.cost import HELPER_ORIGIN

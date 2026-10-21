@@ -18,6 +18,7 @@ from __future__ import annotations
 import errno
 import os
 import struct
+import sys
 from pathlib import Path
 
 import pytest
@@ -161,14 +162,21 @@ async def test_host_directories_outside_the_allowlist_do_not_exist(world):
     """Existence only, inside the sandbox: nothing on the host is read."""
     dirs = ("/root", "/var", "/var/log", "/opt", "/mnt", "/mnt/c", "/workspaces")
     dirs += ("/srv", "/media", "/run", "/snap", "/boot", "/init")
+    # a folder that holds this checkout or its Python exists on purpose (the code and its interpreter are bound
+    # there), and holds nothing but the way down to them
+    held = (Path(__file__).resolve(), Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve())
+    ways = {d: {h.relative_to(d).parts[0] for h in held if h.is_relative_to(d)} for d in dirs}
     ex = SessionExecutor()
     try:
         out, _ = await bash(
             ex,
-            "for p in " + " ".join(dirs) + "; do "
+            "for p in " + " ".join(d for d in dirs if not ways[d]) + "; do "
             'test -e "$p" && echo "seen $p"; done; echo done',
         )
         assert out.strip() == "done", out
+        for d in (d for d in dirs if ways[d]):
+            out, _ = await bash(ex, f"ls -A {d}")
+            assert set(out.split()) <= ways[d], (d, out)
         # The system directories are there, read-only.
         out, _ = await bash(
             ex,

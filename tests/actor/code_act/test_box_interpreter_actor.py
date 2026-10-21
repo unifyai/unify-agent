@@ -6,13 +6,12 @@ from __future__ import annotations
 
 import json
 import time
-from collections import Counter
 
 import pytest
 
 from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
 from tests.memory.box_channel_standin import StandInChannel, fd_listing_code
-from tests.memory.test_box_interpreter import EXPECTED_FDS, _kind
+from tests.memory.test_box_interpreter import fds_match
 from unify.common.box_interpreter import ActorProfile, BoxInterpreter
 
 LOST = "the interpreter was restarted: variables are gone, files remain"
@@ -47,7 +46,7 @@ async def test_actor_state_tools_and_descriptors(world):  # noqa: F811
         req, rep = ch.box_fds()
         assert fds[req].startswith("pipe:") and fds[rep].startswith("pipe:")
         assert fds[0] == "/dev/null"
-        assert Counter(_kind(t) for t in fds.values()) == EXPECTED_FDS, fds
+        assert fds_match(fds), fds
     finally:
         await interp.stop()
     assert not interp.box_alive()

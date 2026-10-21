@@ -30,6 +30,8 @@ from tests.memory.integration.test_episode_journal import (  # noqa: F401 (the h
     home,
 )
 from unify.memory.integration import consolidate, request as request_mod, switch
+# the writer's lane refuses while unillm records OTel spans, which the test runner turns on for every session
+from tests.memory.test_writer_route import _otel_off_unless_a_test_turns_it_on  # noqa: F401 - an autouse fixture
 from unify.memory.integration.state import State
 from unify.memory.writer_pass import PassOutcome, WriterPass
 from unify.settings import SETTINGS, ProductionSettings

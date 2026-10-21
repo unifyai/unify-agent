@@ -518,6 +518,13 @@ async def test_an_idle_interpreter_is_stopped_and_restarted_lazily(tmp_path):
 _OUTPUT_FILE = re.compile(r"/tmp/unify-worker-output-\w+ \(deleted\)")
 
 
+def fds_match(fds: dict) -> bool:
+    """Whether the box's descriptors are exactly :data:`EXPECTED_FDS`, the random-number device at most once (it is
+    open or not depending on how the box's Python seeds itself)."""
+    got = Counter(_kind(t) for t in fds.values())
+    return got.get("urandom", 0) <= 1 and +(got - Counter({"urandom": 1})) == +(EXPECTED_FDS - Counter({"urandom": 1}))
+
+
 def _kind(target: str) -> str:
     if target == "/dev/null":
         return "null"
@@ -545,7 +552,8 @@ EXPECTED_FDS = Counter(
         # the event loop: its epoll descriptor and its wake-up socket pair
         "epoll": 1,
         "socket": 2,
-        # the random-number device (found open in both the memory box and the actor box: a device, no host data)
+        # the random-number device (found open in both the memory box and the actor box: a device, no host data);
+        # a Python that reads its seed with getrandom() keeps none open, so it is counted apart (fds_match)
         "urandom": 1,
     },
 )
@@ -566,6 +574,6 @@ async def test_the_box_holds_exactly_the_expected_descriptors(tmp_path):
         assert fds[req].startswith("pipe:") and fds[rep].startswith("pipe:")
         assert fds[0] == "/dev/null"
         assert _kind(fds[1]) == "output" and _kind(fds[2]) == "output"
-        assert Counter(_kind(t) for t in fds.values()) == EXPECTED_FDS, fds
+        assert fds_match(fds), fds
     finally:
         await interp.stop()
