@@ -213,13 +213,12 @@ async def test_surface_2_a_tool_api_with_reads_and_writes_and_an_outcome_at_the_
     sigs = stores.evidence.signals_for(s.episode_id)
     assert {(x.visible_to_actor, x.label, x.timing) for x in sigs} == {(True, "pass", "in_episode"),
                                                                      (False, "pass", "in_episode")}
-    # the capture records what the episode did, with no value (none was handed back), its own check replaying
-    # the episode's two recorded calls, and its outcome from the signals only
+    # the capture records what the episode did, with no value (none was handed back), no own check (rev 2: a
+    # capture is never run to classify it), and its outcome from the signals only
     caps = [d.get("record") or {} for d in C.load(C.store_dir(paths.state_dir)).values()]
     case = next(c for r in caps for c in r.get("cases") or [] if c.get("episode") == s.episode_id)
     assert case["form"] == "state_env" and case["value"] == {"present": False}
-    assert case["own_check"]["calls"] == {"mode": "replay", "matched": 2, "differed": 0, "missing": 0, "unrecorded": 0}
-    assert case["own_check"]["value_match"] == "not_applicable"
+    assert case["own_check"] == {"ran": False, "why": "rev2: captures are never executed to classify"}
     assert case["effects_seen"] == {"read": 1, "write": 1, "unknown": 0}
     assert case["outcome"] == "positive" and "action:0..1" in case["trace"]["parts"]
     # the note the writer landed from the episode is served to the next request, with evidence served

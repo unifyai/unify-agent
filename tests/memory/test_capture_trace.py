@@ -1,9 +1,10 @@
 """The capture contract under ``UNIFY_MEMORY_CAPTURE_TRACE=on``: a capture records what its episode did.
 
-A procedure takes one of three forms (the request's value, the episode's state, or the state and the episode's tools);
-its own check runs confined on the recorded request, the recorded state or a replay of the episode's own recorded
-actions, and is recorded as evidence, never as a failure; the value is recorded only when one was handed back; the
-outcome comes from signals only; no recurrence row is written. With the switch off everything is as built.
+A procedure takes one of three forms (the request's value, the episode's state, or the state and the episode's tools).
+Rev 2 (D1): the capture step runs nothing, so its own check is recorded as not run (``capture_trace.NOT_RUN``); the
+confined own check (``run_box``, ``own_check``) is tested on its own below. The value is recorded only when one was
+handed back; the outcome comes from signals only; no recurrence row is written. With the switch off everything is as
+built.
 """
 
 from __future__ import annotations
@@ -213,16 +214,8 @@ def test_each_form_is_captured_exported_and_shown_to_the_writer(tmp_path, form):
     assert row["entry_point"]["form"] == form
     assert row["trace"]["episode"] == "e1" and row["trace"]["parts"][0] == "request"
     assert "same_as" not in row and "reproduces" not in row
-    # confined: the case read-only at /case (the procedure, the case, the replay stand-in), only /out writable, no env
-    [call] = seen
-    assert call["env"] == {} and sorted(call["ro"].values()) == ["/case"] and sorted(call["rw"].values()) == ["/out"]
-    assert call["case"]["form"] == form
-    if form == "state_env":
-        assert call["case"]["actions"][0]["method"] == "write" and row["own_check"]["calls"]["mode"] == "replay"
-    elif form == "state":
-        assert call["case"]["messages"] and "actions" not in call["case"]
-    else:
-        assert call["case"]["request"].startswith("Total") and row["own_check"]["calls"]["mode"] == "value"
+    # rev 2 (D1): nothing ran, and the record says so
+    assert seen == [] and row["own_check"] == ct.NOT_RUN and row["run"] == "not run"
     rec = json.loads((store / cid / "record.json").read_text())
     assert rec["v"] == 2 and rec["entry_point"]["form"] == form and rec["own_check"] == row["own_check"]
     assert "same_as" not in rec and "recurrence" not in rec and "reproduces" not in rec
@@ -247,9 +240,8 @@ def test_a_side_effect_only_episode_is_captured_with_no_value_and_its_calls(tmp_
     end = Signal("s1", "e1", "provenance", "support", "2026-10-20T00:00:30Z", regime="sparse")
     row = cp.capture(staging, ep, store, runner=runner, trace=True, signals=[end])
     assert row["value"] == {"present": False}
-    assert row["own_check"]["value_match"] == "not_applicable"
-    assert row["own_check"]["calls"] == {"mode": "replay", "matched": 1, "differed": 0, "missing": 0, "unrecorded": 0}
-    assert row["outcome"] == "positive"  # from the signal, never from the own check
+    assert row["own_check"] == ct.NOT_RUN
+    assert row["outcome"] == "positive"  # from the signal only
     assert row["effects_seen"] == {"read": 0, "write": 1, "unknown": 0}
     rec = json.loads((store / row["capture_id"] / "record.json").read_text())
     assert rec["outcome"] == "positive" and not cp.negative(rec)
@@ -259,23 +251,25 @@ def test_a_side_effect_only_episode_is_captured_with_no_value_and_its_calls(tmp_
     assert old["safety"] == "not a completed attempt: nothing was handed back"
 
 
-def test_a_contrary_signal_makes_negative_knowledge_and_the_own_check_never_does(tmp_path):
+def test_a_contrary_signal_makes_negative_knowledge_and_nothing_runs(tmp_path):
     store = cp.store_dir(tmp_path)
-    runner, _ = _box([1], form="value", outcome="error", error_class="ValueError", stage="run")
+    runner, seen = _box([1], form="value", outcome="error", error_class="ValueError", stage="run")
     ep = _ep(actions=[Action(0, "env", "submit", [[6, 9]], {}, "ok", "ok", "unknown", kind="dialogue")], regime="dense")
     row = cp.capture(_staging(tmp_path, "e1", {"procedure.py": VALUE_PROC}), ep, store, runner=runner, trace=True)
-    assert row["own_check"]["error"] == "ValueError" and row["outcome"] == "none"
+    assert seen == [] and row["own_check"] == ct.NOT_RUN and row["outcome"] == "none"
     rec = json.loads((store / row["capture_id"] / "record.json").read_text())
-    assert rec["outcome"] == "none" and not cp.negative(rec)  # a failing own check is evidence only
+    assert rec["outcome"] == "none" and not cp.negative(rec)
     fail = Signal("s-e2", "e2", "checker", "fail", "2026-10-20T00:00:30Z", refers_to="e2/actions/0",
                   regime="dense", visible_to_actor=True)  # fmt: skip
     other = VALUE_PROC.replace("Each row's total", "Each row's sum")
     ep2 = _ep("e2", actions=ep.actions, regime="dense")
     row2 = cp.capture(_staging(tmp_path, "e2", {"procedure.py": other}), ep2, store, runner=_box([6, 9])[0],
                       trace=True, signals=[fail], checker_visible=True)  # fmt: skip
-    assert row2["outcome"] == "contrary" and row2["own_check"]["value_match"] == "matched"
+    assert row2["outcome"] == "contrary" and row2["own_check"] == ct.NOT_RUN
+    # its procedure differs from the first only in a docstring: the same shape, so it folded into the first capture
+    assert row2["folded"] and row2["capture_id"] == row["capture_id"]
     rec2 = json.loads((store / row2["capture_id"] / "record.json").read_text())
-    assert rec2["outcome"] == "contrary" and cp.negative(rec2)
+    assert rec2["outcome"] == "contrary" and cp.negative(rec2) and rec2["occurrences"] == 2
 
 
 # --- 3. a dialogue whose values arrived later ---------------------------------------------------------------------------
@@ -290,8 +284,10 @@ def test_a_dialogue_with_later_values_is_a_state_capture_whose_own_check_passes_
     )
     staging = _staging(tmp_path, "e1", {"procedure.py": STATE_PROC})
     row = cp.capture(staging, ep, cp.store_dir(tmp_path), trace=True, work=tmp_path / "w")
-    assert row["entry_point"]["form"] == "state"
-    oc = row["own_check"]
+    assert row["entry_point"]["form"] == "state" and row["own_check"] == ct.NOT_RUN
+    # the own check itself (never run by the capture step under rev 2), on the recorded state
+    run = ct.run_box(STATE_PROC, "state", ct.case_doc("state", ep), work=tmp_path / "w2")
+    oc = ct.own_check(run, ct.value_of(ep)[0])
     assert oc["ran"] and oc["error"] is None and oc["deterministic"] is True
     assert oc["value_match"] == "matched", oc  # it gives what the episode handed back, from the later message
 
@@ -306,9 +302,10 @@ def test_no_recurrence_runs_under_the_trace_and_off_is_as_built(tmp_path, monkey
         cp.capture(_staging(tmp_path, eid, {"procedure.py": VALUE_PROC.replace("Total", f"Total {eid}")}),
                    _ep(eid, actions=[Action(0, "env", "submit", [[6, 9]], {}, "ok", "ok", "unknown", kind="dialogue")]),
                    store, runner=runner, trace=True)  # fmt: skip
-    assert len(seen) == 2  # one own check each: no capture was run on another's request
+    assert seen == []  # rev 2: nothing is run, neither an own check nor a capture on another's request
     rows = [json.loads(x) for x in (store / cp.EVENTS_FILE).read_text().splitlines()]
     assert all("same_as" not in r and "reproduces" not in r for r in rows)
+    assert [r["folded"] for r in rows] == [False, True]  # the two differ in a docstring only
     for d in store.iterdir():
         if d.is_dir():
             rec = json.loads((d / "record.json").read_text())
@@ -341,17 +338,18 @@ def test_an_unrecorded_env_call_in_the_own_check_is_labelled_evidence_not_a_fail
     ep = _ep(actions=[_write_action()])
     row = cp.capture(_staging(tmp_path, "e1", {"procedure.py": MISS_PROC}), ep, cp.store_dir(tmp_path), trace=True,
                      work=tmp_path / "w")  # fmt: skip
-    oc = row["own_check"]
-    assert row["capture_id"] and row["safety"] == "ok"
-    assert oc["error"] == "ReplayMiss" and oc["calls"]["mode"] == "replay"
-    assert oc["calls"]["differed"] == 1 and oc["calls"]["missing"] == 1 and oc["calls"]["matched"] == 0
+    assert row["capture_id"] and row["safety"] == "ok" and row["own_check"] == ct.NOT_RUN
     rec = json.loads((cp.store_dir(tmp_path) / row["capture_id"] / "record.json").read_text())
     assert not cp.negative(rec)
+    # the own check itself (never run by the capture step under rev 2)
+    oc = ct.own_check(ct.run_box(MISS_PROC, "state_env", ct.case_doc("state_env", ep), work=tmp_path / "w1"), {})
+    assert oc["error"] == "ReplayMiss" and oc["calls"]["mode"] == "replay"
+    assert oc["calls"]["differed"] == 1 and oc["calls"]["missing"] == 1 and oc["calls"]["matched"] == 0
     # and the matching procedure's replay matches every recorded call, nothing executed on the host
-    row2 = cp.capture(_staging(tmp_path, "e2", {"procedure.py": ENV_PROC}), _ep("e2", actions=[_write_action()]),
-                      cp.store_dir(tmp_path), trace=True, work=tmp_path / "w2")  # fmt: skip
-    assert row2["own_check"]["calls"] == {"mode": "replay", "matched": 1, "differed": 0, "missing": 0, "unrecorded": 0}
-    assert row2["own_check"]["error"] is None and row2["own_check"]["deterministic"] is True
+    ep2 = _ep("e2", actions=[_write_action()])
+    oc2 = ct.own_check(ct.run_box(ENV_PROC, "state_env", ct.case_doc("state_env", ep2), work=tmp_path / "w2"), {})
+    assert oc2["calls"] == {"mode": "replay", "matched": 1, "differed": 0, "missing": 0, "unrecorded": 0}
+    assert oc2["error"] is None and oc2["deterministic"] is True
     assert not (tmp_path / "out").exists() and not Path("out/report.txt").exists()
 
 
@@ -374,9 +372,8 @@ def test_a_procedure_reading_the_network_or_the_host_files_is_refused_by_confine
     return "reached"
 '''
     for i, proc in enumerate((host_read, net)):
-        row = cp.capture(_staging(tmp_path, f"e{i}", {"procedure.py": proc}), _ep(f"e{i}"), cp.store_dir(tmp_path),
-                         trace=True, work=tmp_path / f"w{i}")  # fmt: skip
-        oc = row["own_check"]
+        ep = _ep(f"e{i}")
+        oc = ct.own_check(ct.run_box(proc, "state", ct.case_doc("state", ep), work=tmp_path / f"w{i}"), ct.value_of(ep)[0])
         assert oc["ran"] and oc["error"] is not None and oc["value_match"] in ("not_applicable", "unknown"), oc
 
 

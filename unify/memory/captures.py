@@ -99,6 +99,13 @@ EXPORT_DIR = ".memory/captures"
 #: captures no longer offered (the writer superseded or retired them) and what is offered in each one's place
 #: (:func:`export_files`).
 WITHDRAWN_FILE = "withdrawn.json"
+#: The shape index (rev 2): one row per shape address, ``{"shape", "capture_id", "at"}``, the first row of a shape
+#: naming the capture its later occurrences fold into (:mod:`.capture_shape`).
+SHAPES_FILE = "shapes.jsonl"
+#: Each capture's occurrences: one row per episode (or segment) it was captured from, and the raw bytes of an
+#: occurrence that folded into it (``occurrences/<n>/procedure.py``), kept as evidence.
+OCCURRENCES_FILE = "occurrences.jsonl"
+OCCURRENCES_DIR = "occurrences"
 #: The key of an exported record that offers its capture as a worked example
 #: (``UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES=on``): ``{"why", "returns"}`` (:mod:`.fixed_answer`).
 EXAMPLE_KEY = "worked_example"
@@ -1181,15 +1188,22 @@ def capture_trace_step(
     1. the safety checks, as for every capture (a key-shaped string, a refused path, code that does not parse, no
        ``run``); a file that fails is not captured, and the reason is recorded;
     2. the procedure's form, read from its code (``value``, ``state`` or ``state_env``);
-    3. its own check, confined: on the recorded request, the recorded state, or the recorded state against a replay
-       of the episode's own actions (nothing executed); recorded as evidence (``own_check``), never as a failure;
+    3. no own check (rev 2): a capture is never run to classify it, so ``own_check`` records
+       ``{"ran": false, "why"}`` (:data:`.capture_trace.NOT_RUN`); its signature describes the recorded input and the
+       value the episode handed back;
     4. the value the episode handed back, if any (``value.present``), and the outcome from its signals only;
-    5. the capture's files and its record (``v`` 2: ``trace``, ``value``, ``entry_point``, ``own_check``,
-       ``effects_seen``, ``outcome``, and ``constant`` when its ``run`` gives a fixed answer).
+    5. its shape address (:func:`.capture_shape.shape_of`, from its syntax alone): when the store already holds a
+       capture of that shape, this occurrence folds into it (no new capture; the occurrence and its raw bytes kept
+       there, :data:`OCCURRENCES_FILE`), else it is a new capture under its own id;
+    6. the capture's files and its record (``v`` 2: ``trace``, ``value``, ``entry_point``, ``own_check``,
+       ``effects_seen``, ``outcome``, ``shape``, ``occurrences``, and ``constant`` when its ``run`` gives a fixed
+       answer).
 
     No recurrence step runs and nothing credits a use: the writer reads and groups. Returns the step's row, also
-    appended to ``captures-events.jsonl``; never raises for what the staging holds."""
+    appended to ``captures-events.jsonl``; never raises for what the staging holds. *runner*, *python* and *work* are
+    kept for the callers and never used: nothing is run."""
     from . import capture_trace as ct
+    from .capture_shape import shape_of
     from .fixed_answer import fixed_answer
 
     t0 = clock()
@@ -1231,33 +1245,33 @@ def capture_trace_step(
     entry = ct.entry_point(source) or {"name": "run", "params": [], "form": "state"}
     form = entry["form"]
     printed = frozenset(_signatures.printed_ids(request_text))
-    value_doc, _value = ct.value_of(ep, printed)
-    work_root = Path(work) if work is not None else Path(tempfile.mkdtemp(prefix="capture-"))
-    try:
-        case_doc = ct.case_doc(form, ep)
-        run = ct.run_box(source, form, case_doc, work=work_root / "self", runner=runner, python=python)
-    finally:
-        if work is None:
-            shutil.rmtree(work_root, ignore_errors=True)
-    check = ct.own_check(run, value_doc)
+    value_doc, value = ct.value_of(ep, printed)
+    case_doc = ct.case_doc(form, ep)
+    # rev 2 (D1): the procedure is never run to classify it; its own check is recorded as not run
+    check = dict(ct.NOT_RUN)
+    run: dict = {"outcome": "not run", "why": check["why"]}
     # the one derivation of an outcome from the episode's signals (judged_outcome), as the value-form capture's
     judged = judged_outcome(signals, ep, str(getattr(ep, "regime", "") or "none"), checker_visible=checker_visible)
     outcome = ct.outcome_of(judged)
     trace = ct.trace_of(ep, episode=name)
     effects = ct.effects_seen(ep)
-    returned = run.get("outcome") == "returned"
+    # the signature describes what was recorded: the input (the request's or the state's data) and the value the
+    # episode handed back, never a run's result
+    returned = bool(value_doc.get("present"))
     sig = signature(
         ct.signature_input(form, run, case_doc),
-        run.get("result"),
+        value,
         returned=returned,
-        applies=run.get("applies"),
-        holds=run.get("holds"),
+        applies=None,
+        holds=None,
         digests=function_digests(source),
         goal=asked(summary, request_text),
         request=request_text,
     )
     constant = fixed_answer(source)
-    cid = capture_id(source)
+    raw_cid = capture_id(source)
+    address = shape_of(source)
+    shape_id = address["shape"] if address else None
     case = {
         "episode": eid,
         "segment": segment,
@@ -1268,19 +1282,26 @@ def capture_trace_step(
         "own_check": check,
         "effects_seen": effects,
         "outcome": outcome,
-        "deterministic": check["deterministic"],
-        "applies": run.get("applies"),
-        "holds": run.get("holds"),
-        "run": run.get("outcome"),
-        "error_class": run.get("error_class"),
+        "deterministic": None,
+        "applies": None,
+        "holds": None,
+        "run": run["outcome"],
+        "error_class": None,
+        "source_capture_id": raw_cid,
     }
     with _locked(store):
+        known = shape_index(store).get(shape_id) if shape_id else None
+        cid = known or raw_cid
+        folded = cid != raw_cid
+        if shape_id and known is None:
+            _append_row(store / SHAPES_FILE, {"shape": shape_id, "capture_id": cid, "at": clock()})
         d = store / cid
         rec = _read_json(d / RECORD_FILE)
         rec = rec if isinstance(rec, dict) and rec.get("v") == TRACE_VERSION else trace_record(cid)
         if name not in rec["episodes"]:
             rec["episodes"].append(name)
             rec["cases"].append(case)
+            _occurrence(d, len(rec["episodes"]), case, source if folded else None, shape_id, clock())
         rec.update(
             entry_point=entry,
             trace=trace,
@@ -1288,6 +1309,8 @@ def capture_trace_step(
             own_check=check,
             effects_seen=effects,
             constant=constant,
+            shape=shape_id,
+            occurrences=len(rec["episodes"]),
         )
         refresh(rec)
         if not (d / PROCEDURE_FILE).exists():
@@ -1303,6 +1326,9 @@ def capture_trace_step(
         _write(d / RECORD_FILE, _json(rec))
     return finish(
         capture_id=cid,
+        source_capture_id=raw_cid,
+        shape=shape_id,
+        folded=folded,
         trace=trace,
         value=value_doc,
         entry_point=entry,
@@ -1310,9 +1336,95 @@ def capture_trace_step(
         effects_seen=effects,
         outcome=outcome,
         constant=constant is not None,
-        run=run.get("outcome"),
+        run=run["outcome"],
         published_at=clock(),
     )
+
+
+# --- the shape index and occurrences (rev 2) -----------------------------------------------------------------------------
+
+
+def _append_row(path: Path, row: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row, sort_keys=True, default=str) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def _rows_of(path: Path) -> list[dict]:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            out.append(row)
+    return out
+
+
+def shape_index(store: Path | str) -> dict[str, str]:
+    """Shape address -> the capture its occurrences fold into (the first row of each shape in :data:`SHAPES_FILE`).
+    A store from before the index (a run continued from an earlier stage) is indexed once, from its procedures' syntax
+    (nothing run), in the order its captures were first made; an older capture of a shape already indexed stays as it
+    is (nothing is merged or deleted). The caller holds the store's lock."""
+    from .capture_shape import shape_of
+
+    store = Path(store)
+    path = store / SHAPES_FILE
+    if not path.exists():
+        order: list[str] = []
+        for row in _rows_of(store / EVENTS_FILE):
+            cid = row.get("capture_id")
+            if isinstance(cid, str) and _ID.fullmatch(cid) and cid not in order:
+                order.append(cid)
+        try:
+            names = sorted(n for n in os.listdir(store) if _ID.fullmatch(n))
+        except OSError:
+            names = []
+        order += [n for n in names if n not in order]
+        rows = []
+        for cid in order:
+            address = shape_of(_read_text(store / cid / PROCEDURE_FILE))
+            if address is not None:
+                rows.append({"shape": address["shape"], "capture_id": cid, "at": None, "indexed": "existing"})
+        _write(path, "".join(json.dumps(r, sort_keys=True) + "\n" for r in rows).encode("utf-8"))
+    out: dict[str, str] = {}
+    for row in _rows_of(path):
+        shape, cid = row.get("shape"), row.get("capture_id")
+        if isinstance(shape, str) and isinstance(cid, str) and _ID.fullmatch(cid):
+            out.setdefault(shape, cid)
+    return out
+
+
+def _occurrence(d: Path, n: int, case: Mapping[str, Any], raw: str | None, shape: str | None, at: float) -> None:
+    """Record occurrence *n* of the capture in *d*: its row, and with *raw* (it folded in with other bytes) its source
+    as evidence under ``occurrences/<n>/procedure.py``."""
+    row = {
+        "n": n,
+        "episode": case.get("episode"),
+        "segment": case.get("segment"),
+        "staging": case.get("staging"),
+        "outcome": case.get("outcome"),
+        "source_capture_id": case.get("source_capture_id"),
+        "shape": shape,
+        "folded": raw is not None,
+        "at": at,
+    }
+    if raw is not None:
+        _write(d / OCCURRENCES_DIR / str(n) / PROCEDURE_FILE, raw.encode("utf-8", "surrogatepass"))
+    _append_row(d / OCCURRENCES_FILE, row)
+
+
+def occurrences(store: Path | str, cid: str) -> list[dict]:
+    """The occurrence rows of capture *cid* (:data:`OCCURRENCES_FILE`), in order."""
+    return _rows_of(Path(store) / cid / OCCURRENCES_FILE)
 
 
 # --- after a fork settles -------------------------------------------------------------------------------------

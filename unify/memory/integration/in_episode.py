@@ -2,7 +2,9 @@
 
 A long episode can learn and use memory before it ends.
 
-**Checkpoints are natural units**, never a count or a timer (:data:`SOURCES`):
+**Checkpoints are natural units**, never a count or a timer (:data:`SOURCES`). A pause whose cells since the last one
+computed nothing (:func:`..capture_shape.computes`: only calls with literal arguments) starts no fork; its cells stay
+for the next segment or the episode-end fork:
 
 =================  ===========================================================================================
 ``actor_call``     the actor calls ``tools.checkpoint(note="")``
@@ -307,6 +309,14 @@ class InEpisode:
         event["cells"] = [first, last] if last >= first else None
         if last < first:
             event["skipped"] = "no cell ran since the last pause"
+            self._log(event)
+            return event
+        from ..capture_shape import computes
+
+        if not computes(ep.cells[first : last + 1]):
+            # rev 2: cells that computed nothing (calls with literal arguments only, read from their syntax alone)
+            # start no fork; they stay for the next segment or the episode-end fork
+            event["skipped"] = "no computation"
             self._log(event)
             return event
         self.segments += 1

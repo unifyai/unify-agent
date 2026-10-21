@@ -122,8 +122,8 @@ The redesign profile:
 - ``UNIFY_MEMORY_PROFILE``: empty (each switch as set) or ``redesign``. ``redesign`` turns on every switch of the
   general harness redesign together (:data:`REDESIGN_SWITCHES`): a switch left empty takes the profile's value
   (:func:`profile_setting`, which each switch's accessor reads), and a run that sets one to another value, or sets
-  one of :data:`REDESIGN_CONFLICTS` (the per-capture trigger the attention ledger supersedes, fixed answers as worked
-  examples, the world notebook, no memory passes, no writer passes), is refused before anything runs, naming the
+  one of :data:`REDESIGN_CONFLICTS` (the per-capture trigger the attention ledger supersedes, the world notebook,
+  no memory passes, no writer passes), is refused before anything runs, naming the
   settings, never a value (:func:`redesign_refusal`, chained into :func:`profile_refusal`); each element's own
   refusals follow (:data:`REDESIGN_PART_REFUSALS`). With ``UNIFY_MEMORY`` off the profile gives the memory switches
   nothing (the no-memory arm keeps the run record).
@@ -926,6 +926,13 @@ def library_fixed_answers_as_examples(settings: Any) -> bool:
     return parse_library_fixed_answers_as_examples(value) == "on"
 
 
+def constant_captures_as_examples(settings: Any) -> bool:
+    """Whether the actor's copy offers a capture that gives a fixed answer as a worked example: under its own switch,
+    and always under the trace contract (``UNIFY_MEMORY_CAPTURE_TRACE``, rev 2: part of the capture contract, not a
+    switch of its own)."""
+    return library_fixed_answers_as_examples(settings) or capture_trace(settings)
+
+
 def parse_library_withdraw_closed_captures(v: Any) -> str:
     """``UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES``: empty, ``off`` or ``on``. Empty stays empty, so that the
     redesign profile can tell a setting it gives (empty) from one set to ``off`` (:func:`profile_setting`); without
@@ -987,11 +994,11 @@ REDESIGN_SWITCHES: dict[str, str] = {
     "UNIFY_MEMORY_REGIME": "inferred",
 }
 #: Settings the redesign profile refuses at these values: a mechanism it replaces (the per-capture trigger, which
-#: the attention ledger supersedes), one it leaves off (fixed answers as worked examples, the world notebook), or
-#: one that stops the work its switches do (no memory work after a request, no writer pass).
+#: the attention ledger supersedes), one it leaves off (the world notebook), or one that stops the work its switches
+#: do (no memory work after a request, no writer pass). Fixed answers as worked examples are no longer refused (rev 2):
+#: the trace contract offers them so (:func:`constant_captures_as_examples`), whatever the switch says.
 REDESIGN_CONFLICTS: dict[str, str] = {
     LIBRARY_REVIEW_EACH_CAPTURE: "on",
-    LIBRARY_FIXED_ANSWERS_AS_EXAMPLES: "on",
     NOTEBOOK: "on",
     MEMORY_PASSES: "off",
     WRITER_PASSES: "off",

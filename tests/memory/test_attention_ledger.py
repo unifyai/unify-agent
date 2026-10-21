@@ -132,7 +132,7 @@ def test_each_kind_fires_from_its_record_and_not_without_one(tmp_path):
         [
             "new_experience",  # e1, its capture row present
             "new_experience",  # e2: no procedure, so no capture to wait for
-            "own_check_failed",  # e1's own check errored
+            # rev 2 (D1): e1's capture row says its own check errored, and that makes no entry (none runs now)
             "use_went_badly",
             "late_evidence",
             "repeated_use",  # two new episodes called the note
@@ -148,7 +148,7 @@ def test_each_kind_fires_from_its_record_and_not_without_one(tmp_path):
     assert led2.sync(Fake(forks=[_fork("e9")])) == []
     [n] = led2.sync(Fake(forks=[_fork("e9")], captures={"e9": _cap("e9", "d" * 16)}))
     assert n.kind == "new_experience" and n.refs.captures == ("d" * 16,)
-    # an own check that ran clean makes no own_check_failed entry; each failing check does
+    # the row test still reads an older row's own check (an older ledger's entries fold); it makes no entry any more
     for bad in ({"refused": True}, {"deterministic": False}, {"value_match": "differed"},
                 {"calls": {"mode": "replay", "differed": 1}}, {"calls": {"mode": "replay", "missing": 1}}):  # fmt: skip
         assert at.own_check_failed(_cap("x", "e" * 16, **bad))
@@ -350,10 +350,11 @@ def test_hand_order_is_bad_news_first_oldest_first_and_k_entries(tmp_path):
         led.sync(src)
         clock.tick()
     first = led.hand("p1", 4)
-    assert [e.kind for e in first] == ["late_evidence", "use_went_badly", "message", "own_check_failed"]
+    # rev 2 (D1): e6's failing own check makes no entry; its fork is a new experience
+    assert [e.kind for e in first] == ["late_evidence", "use_went_badly", "message", "new_experience"]
     rest = led.hand("p2", 4)
     # the oldest open entry (the deferred one) is older than every age at hand so far: the backstop hands it first
-    assert [e.kind for e in rest] == ["deferred", "new_experience", "new_experience", "repeated_use"]
+    assert [e.kind for e in rest] == ["deferred", "new_experience", "repeated_use"]
     with pytest.raises(LedgerError, match="positive whole number"):
         led.hand("p3", 0)
 
@@ -607,7 +608,8 @@ def test_sync_over_the_phase0_cells_reproduces_its_per_kind_counts(tmp_path):
                "D": "deferred", "L": "late_evidence"}  # fmt: skip
     for name, cell in sorted(doc["cells"].items()):
         got = _phase0_counts(tmp_path / name, cell)
-        want = {kind_of[k]: n for k, n in cell["expected"].items()}
+        # rev 2 (D1): no capture is run, so no own check fails and Phase 0's own-check entries are not made
+        want = {kind_of[k]: (0 if k == "S" else n) for k, n in cell["expected"].items()}
         assert {k: got[k] for k in want} == want, name
         assert got["message"] == 0  # Phase 0's builds had no run record
 

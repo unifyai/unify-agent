@@ -12,8 +12,7 @@ and from nothing else: no world name, label, task id, stream position or request
 kind                   created when
 =====================  ==================================================================================================
 ``new_experience``     an episode's (or a segment's) fork settled with any output: the summary, plus the procedure
-``own_check_failed``   a capture's own check has an error, a refusal, nondeterminism, a differing value, or calls that
-                       differed or were missing (:mod:`.captures`, ``own_check``)
+``own_check_failed``   never made under rev 2 (no capture is run to classify it); kept so an older ledger still folds
 ``use_went_badly``     a use of an item was failed (an error, ``holds`` false, a contrary signal after it), or an actor
                        reported a problem about it on the run record (an actor entry to the writer with an ``item:``
                        ref)
@@ -23,8 +22,11 @@ kind                   created when
 ``message``            a run-record entry mentions the writer, or replies to a writer entry
 =====================  ==================================================================================================
 
-An episode whose capture is byte-identical (the same capture id) to an open entry's capture is appended to that entry
-(``append_ref``), never made a new one.
+An episode whose capture is the same capture as an entry's (the same id: byte-identical, or folded into it by its
+shape address, :mod:`.capture_shape`) is never made a new entry. Onto an active entry it is appended (``append_ref``);
+onto a closed one it is counted only (an ``occurrence`` row: no new entry, no new hand), unless its outcome is contrary
+(from its signals, never from running it), which reopens the entry (``append_ref``, then ``reopen`` by
+``contrary_occurrence``).
 
 **Lifecycle** (:data:`STATES`): ``open`` -> ``handed`` (to a pass, :meth:`Ledger.hand`, or pulled in by the writer,
 :meth:`Ledger.take`) -> ``read`` (verified from the pass's own read evidence, :meth:`Ledger.verify_reads`; never from
@@ -259,6 +261,8 @@ class AttentionEntry:
     #: the source ids appended to it (duplicates of its capture)
     sources: tuple[str, ...] = ()
     handed_at: str | None = None
+    #: later occurrences of its capture counted while it was closed (``occurrence`` rows)
+    occurrences: int = 0
 
     @property
     def active(self) -> bool:
@@ -333,6 +337,11 @@ def fold(rows: Iterable[Mapping[str, Any]]) -> dict[str, AttentionEntry]:
                 e,
                 refs=e.refs.merged(Refs.from_row(row.get("refs"))),
                 sources=e.sources + ((src,) if isinstance(src, str) else ()),
+            )
+        elif op == "occurrence":
+            src = row.get("src")
+            out[eid] = replace(
+                e, sources=e.sources + ((src,) if isinstance(src, str) else ()), occurrences=e.occurrences + 1
             )
         elif op == "hand":
             if not e.active:
@@ -864,19 +873,38 @@ class Ledger:
         *,
         at: str | None = None,
         dup_capture: bool = False,
+        contrary: bool = False,
     ) -> list[dict]:
-        """The rows that record *source* once (none when it is already recorded): ``create``, or ``append_ref`` to an
-        active entry of the same kind holding the same capture (*dup_capture*). *state* is updated in place."""
+        """The rows that record *source* once (none when it is already recorded): ``create``; or, for the same
+        capture as an entry of the same kind (*dup_capture*), ``append_ref`` to an active one, else for a closed one an
+        ``occurrence`` row only, or, when this occurrence's outcome is *contrary*, ``append_ref`` and a ``reopen``
+        (module docstring). *state* is updated in place."""
         eid = entry_id(kind, *source)
         if eid in state or any(eid in e.sources for e in state.values()):
             return []
         at = at or self.now()
         if dup_capture and refs.captures:
-            for e in state.values():
-                if e.kind == kind and e.active and set(e.refs.captures) & set(refs.captures):
+            same = [e for e in state.values() if e.kind == kind and set(e.refs.captures) & set(refs.captures)]
+            for e in same:
+                if e.active:
                     row = {"op": "append_ref", "entry": e.entry, "refs": refs.row(), "src": eid, "at": at}
                     state[e.entry] = replace(e, refs=e.refs.merged(refs), sources=e.sources + (eid,))
                     return [row]
+            closed = [e for e in same if e.state == "closed"]
+            if closed:
+                e = closed[-1]
+                if contrary:
+                    rows = [
+                        {"op": "append_ref", "entry": e.entry, "refs": refs.row(), "src": eid, "at": at},
+                        {"op": "reopen", "entry": e.entry, "by": "contrary_occurrence", "at": at},
+                    ]
+                    state[e.entry] = replace(e, refs=e.refs.merged(refs), sources=e.sources + (eid,), state="open",
+                                             pass_id=None, misses=0, undecided=0, reopen_count=e.reopen_count + 1,
+                                             why="contrary_occurrence")  # fmt: skip
+                    return rows
+                row = {"op": "occurrence", "entry": e.entry, "refs": refs.row(), "src": eid, "at": at}
+                state[e.entry] = replace(e, sources=e.sources + (eid,), occurrences=e.occurrences + 1)
+                return [row]
         row = {"op": "create", "entry": eid, "kind": kind, "at": at, "refs": refs.row()}
         state[eid] = AttentionEntry(eid, kind, "open", at, refs)
         return [row]
@@ -916,21 +944,10 @@ class Ledger:
                     segment=f.segment,
                     captures=(cid,) if isinstance(cid, str) and cid else (),
                 )
-                out += self._create_rows(state, "new_experience", refs, (f.name,), dup_capture=True)
-            # the capture's own check failed
-            for name, cap in caps.items():
-                if not own_check_failed(cap):
-                    continue
-                cid = cap.get("capture_id")
-                if not (isinstance(cid, str) and cid):
-                    continue
-                seg = cap.get("segment")
-                refs = Refs(
-                    episodes=(str(cap.get("episode") or name.split(".s")[0]),),
-                    segment=seg if isinstance(seg, int) and not isinstance(seg, bool) else None,
-                    captures=(cid,),
-                )
-                out += self._create_rows(state, "own_check_failed", refs, (name,), dup_capture=True)
+                contrary = isinstance(cap, Mapping) and cap.get("outcome") in ("contrary", "failed")
+                out += self._create_rows(state, "new_experience", refs, (f.name,), dup_capture=True, contrary=contrary)
+            # rev 2 (D1): no capture is run to classify it, so no own check fails and no ``own_check_failed`` entry
+            # is made (the kind stays readable: an older ledger's entries still fold)
             # uses that went badly (an actor's report on the record comes through the same source)
             for u in sources.use_failures():
                 refs = Refs(

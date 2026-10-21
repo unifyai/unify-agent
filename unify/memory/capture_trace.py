@@ -14,6 +14,10 @@ form            contract
                 as the episode's actions name them (:class:`.replay_box.ReplayEnv` in the own check)
 ==============  ============================================================================================
 
+**Rev 2: no own check runs.** A capture is never executed to classify, dedupe or rank it, so the capture step records
+``own_check`` as :data:`NOT_RUN` and makes no entry from it. :func:`run_box` and :func:`own_check` stay, unused by the
+capture step, for what they describe:
+
 **The own check** (:func:`run_box`, :func:`own_check`) runs the procedure confined, as the harness's other runs of
 model code are (no network, an empty environment, only ``/out`` writable): on the recorded request (``value``), on the
 recorded :class:`State` (``state``), or on the recorded state against a replay of the episode's own recorded actions
@@ -71,6 +75,8 @@ LISTED_ARGS_CHARS = 400
 MAX_RESULT_BYTES = 8 * 1024 * 1024
 REPLAY_BOX = Path(__file__).resolve().with_name("replay_box.py")
 PROCEDURE_FILE = "procedure.py"
+#: What a capture's ``own_check`` records under rev 2: it was not run, and why.
+NOT_RUN: dict = {"ran": False, "why": "rev2: captures are never executed to classify"}
 
 
 # --- the procedure's form -----------------------------------------------------------------------------------------------
@@ -466,7 +472,8 @@ def outcome_of(judged: Mapping[str, Any]) -> str:
 
 
 def signature_input(form: str, run: Mapping[str, Any], case: Mapping[str, Any]) -> Any:
-    """What a form's signature describes as its input: the read value (``value``), else the state's data."""
-    if form == "value":
+    """What a form's signature describes as its input: the read value (``value``) when a run read one, else the recorded
+    data (the request's for ``value``, the state's otherwise; rev 2: nothing is run, so always the recorded data)."""
+    if form == "value" and "value" in run:
         return run.get("value")
     return copy.deepcopy(case.get("data") or [])

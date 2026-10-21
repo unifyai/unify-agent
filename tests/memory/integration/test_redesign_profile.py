@@ -128,7 +128,6 @@ def test_a_switch_set_otherwise_under_the_profile_is_refused_by_name():
     "name, value",
     [
         ("UNIFY_MEMORY_LIBRARY_REVIEW_EACH_CAPTURE", "on"),
-        ("UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES", "on"),
         ("UNIFY_MEMORY_NOTEBOOK", "on"),
         ("UNIFY_MEMORY_PASSES", "off"),
         ("UNIFY_MEMORY_WRITER_PASSES", "off"),
@@ -250,3 +249,13 @@ def test_the_writer_tests_replay_mode_is_refused_until_its_review_is_recorded(mo
     monkeypatch.setattr(writer_tests, "REPLAY_REVIEWED", True)
     off_profile = SimpleNamespace(**{**kit, **switch.REDESIGN_ARMS["in_episode_off"], "UNIFY_MEMORY_WRITER_TESTS": "value,replay"})
     assert switch.profile_refusal(off_profile) is None
+
+
+def test_fixed_answers_as_examples_is_part_of_the_capture_contract_under_rev2():
+    """Rev 2: constants are served as worked examples under the trace contract, so the profile no longer refuses the
+    switch, and the accessor the request reads is on with the profile whatever the switch says."""
+    assert "UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES" not in switch.REDESIGN_CONFLICTS
+    on = _s(UNIFY_MEMORY_PROFILE="redesign", UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES="on")
+    assert "FIXED_ANSWERS" not in (switch.redesign_refusal(on) or "")
+    assert switch.constant_captures_as_examples(_s(UNIFY_MEMORY="on", UNIFY_MEMORY_PROFILE="redesign"))
+    assert not switch.constant_captures_as_examples(_s())

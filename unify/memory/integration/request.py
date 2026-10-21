@@ -1442,7 +1442,7 @@ class RequestRun:
         from unify.settings import SETTINGS
 
         from ..captures import export_files, store_dir
-        from .switch import library_fixed_answers_as_examples, library_withdraw_closed_captures
+        from .switch import constant_captures_as_examples, library_withdraw_closed_captures
 
         withdrawn = None
         if library_withdraw_closed_captures(SETTINGS):
@@ -1461,7 +1461,7 @@ class RequestRun:
             captured = export_files(
                 store_dir(paths.state_dir),
                 withdrawn=withdrawn,
-                examples=library_fixed_answers_as_examples(SETTINGS),
+                examples=constant_captures_as_examples(SETTINGS),
             )
         except OSError as exc:
             logger.warning(
@@ -1469,7 +1469,7 @@ class RequestRun:
                 type(exc).__name__,
             )
             captured = {}
-        if at_open and (withdrawn is not None or library_fixed_answers_as_examples(SETTINGS)):
+        if at_open and (withdrawn is not None or constant_captures_as_examples(SETTINGS)):
             from ..captures import EXAMPLE_KEY, EXPORT_DIR, RECORD_FILE
 
             examples = 0
