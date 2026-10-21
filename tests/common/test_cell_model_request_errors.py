@@ -7,9 +7,8 @@ schema with an array that has no ``items``) raises ``ModelRequestError``, a
 goes on. Any other provider failure of a cell's call (an authentication
 failure, an opaque 400, a rate limit, a 5xx) raises ``ModelCallFailed``, a
 fixed text with the status and the error's type and nothing of the provider's
-reply. The harness's own calls raise exactly what they raised before. With
-``UNIFY_REQUEST_METADATA_HEADERS=on`` every cell call carries
-``X-Unify-Call-Kind: cell``.
+reply. The harness's own calls raise exactly what they raised before. Every
+cell call carries ``X-Unify-Call-Kind: cell``.
 
 The provider is faked below unillm (``litellm.acompletion``, under unillm's
 retry policy, ``tests/scripted_model.py``) with the error LiteLLM raises for
@@ -28,7 +27,6 @@ import pytest
 
 from tests.scripted_model import ScriptedModel, cell, reply, scripted
 from unify.common import cell_models, llm_client, reasoning
-from unify.session_details import SESSION_DETAILS
 from unify.settings import SETTINGS
 
 LUNA = "openai/gpt-6-luna@openrouter"
@@ -113,12 +111,6 @@ class HeaderModel(ScriptedModel):
 def session(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(SETTINGS, "UNIFY_MODEL", LUNA)
     monkeypatch.setattr(SETTINGS, "UNIFY_CELL_LLM_MODELS", "")
-    monkeypatch.setattr(SESSION_DETAILS.assistant, "default_model", "")
-
-
-@pytest.fixture
-def headers_on(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_REQUEST_METADATA_HEADERS", "on")
 
 
 # ── which errors are the cell's own ─────────────────────────────────────────
@@ -439,7 +431,7 @@ async def test_a_cells_unillm_client_raises_it_too(session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_cell_calls_carry_the_cell_call_kind(session, headers_on) -> None:
+async def test_cell_calls_carry_the_cell_call_kind(session) -> None:
     model = HeaderModel(query_llm=[bad_schema(), reply("ok"), reply("ok")])
     with scripted(model, below_retry=True):
         with pytest.raises(cell_models.ModelRequestError):
@@ -455,7 +447,7 @@ async def test_cell_calls_carry_the_cell_call_kind(session, headers_on) -> None:
 
 
 @pytest.mark.asyncio
-async def test_harness_calls_keep_their_origin_as_call_kind(session, headers_on):
+async def test_harness_calls_keep_their_origin_as_call_kind(session):
     model = HeaderModel(query_llm=[reply("ok"), reply("ok")])
     with scripted(model, below_retry=True):
         await reasoning.query_llm("Say ok.")
@@ -474,10 +466,7 @@ async def _actor():
     from unify.actor.code_act_actor import CodeActActor
 
     actor = CodeActActor()
-    try:
-        yield actor
-    finally:
-        await actor.close()
+    yield actor
 
 
 def _tool_results(call) -> str:
@@ -510,10 +499,7 @@ NEXT = "print('NEXT CELL', schema['type'])\n"
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(180)
-async def test_in_a_cell_the_error_is_caught_and_the_cells_go_on(
-    session,
-    headers_on,
-):
+async def test_in_a_cell_the_error_is_caught_and_the_cells_go_on(session):
     model = HeaderModel(
         actor=[
             reply(calls=[cell(CAUGHT)]),
@@ -525,7 +511,7 @@ async def test_in_a_cell_the_error_is_caught_and_the_cells_go_on(
     )
     async with _actor() as actor:
         with scripted(model, below_retry=True):
-            handle = await actor.act("Tag it.", can_store=False)
+            handle = await actor.act("Tag it.")
             assert await asyncio.wait_for(handle.result(), 120) == "Done."
     model.assert_used_up()
     after_caught = _tool_results(model.calls[2])

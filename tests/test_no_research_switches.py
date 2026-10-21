@@ -1,119 +1,51 @@
-"""Symbolic: no research switch remains in the settings but the ones still in progress.
+"""Symbolic: the settings hold configuration only.
 
-The code freeze (7 Oct 2026) made the chosen configuration the only code
-path: every other research switch was baked or deleted, with its losing
-paths. What may remain is a switch still in progress (each one has a
-section in ``WIP_SWITCHES.md``) or a configuration setting, which selects
-a model, a limit, a path or an endpoint rather than a behaviour under test.
-A new ``UNIFY_`` setting therefore needs either a ``WIP_SWITCHES.md``
-section or a place in ``CONFIGURATION`` here.
+Every experiment switch was collapsed to the behaviour the rev 2 runs used,
+with its other paths deleted. What remains selects a model, a limit, a path or
+a deployment policy, never a behaviour under test. The memory settings (and
+the run record's) are the memory side's, checked against CONFIG.md by
+tests/test_env_allowlist.py; this test covers every other ``UNIFY_`` setting.
 """
 
 from __future__ import annotations
 
-import re
-from pathlib import Path
-
 from unify.settings import ProductionSettings
 
-WIP_SWITCHES_MD = Path(__file__).resolve().parents[1] / "WIP_SWITCHES.md"
+#: The memory side's settings, checked elsewhere.
+MEMORY_PREFIXES = ("UNIFY_MEMORY", "UNIFY_AGENTS_")
+MEMORY_NAMES = frozenset({"UNIFY_HOST_LEASE_END", "UNIFY_PROFILE"})
 
-# The configuration settings (the freeze's step-3 classification).
-CONFIGURATION = frozenset(
-    {
-        "UNIFY_BUILTINS_PROJECT",
-        # Deployment policy: a runner's variables a cell gets beside the allow-list.
-        "UNIFY_CELL_ENV_ALLOW",
-        # Deployment policy: which LLM endpoints cell code may name.
-        "UNIFY_CELL_LLM_MODELS",
-        "UNIFY_EMBED_URL",
-        "UNIFY_ENV_NAMESPACES",
-        "UNIFY_GUIDANCE_EMPTY_QUERY",
-        "UNIFY_LOCAL_EMBEDDINGS",
-        "UNIFY_LOCAL_ROOT",
-        "UNIFY_LOG_DIR",
-        "UNIFY_MAX_OUTPUT_TOKENS",
-        "UNIFY_MAX_TOOL_LOOP_STEPS",
-        "UNIFY_MODEL",
-        "UNIFY_REASONING_EFFORT",
-        # Observability for a proxy: HTTP headers only, the request body as shipped.
-        "UNIFY_REQUEST_METADATA_HEADERS",
-        # Resource limit: the address space of each process in the workspace sandbox.
-        "UNIFY_SANDBOX_ADDRESS_SPACE_BYTES",
-        "UNIFY_STORE_ADMISSION",
-        "UNIFY_STORE_VERIFY",
-        "UNIFY_TERMINAL_LOG",
-        "UNIFY_TERMINAL_LOG_LEVEL",
-        "UNIFY_TOOL_CHOICE_FALLBACK",
-        "UNIFY_TURN_STORAGE_REVIEWS",
-        "UNIFY_VALIDATE_LLM_PROVIDERS",
-        "UNIFY_WORKSPACE_NETWORK",
-        "UNIFY_WORKSPACE_PROXY_PORT",
-        # The compaction point: a context size, not a behaviour under test.
-        "UNIFY_COMPACTION_AT_TOKENS",
-        # A transport limit: how long a streamed model call may receive nothing before it is retried.
-        "UNIFY_STREAM_IDLE_S",
-        # The memory writer's model, route, credential channel, effort (the actor's for the run), spending caps,
-        # call bounds, journal and prices.
-        "UNIFY_MEMORY_WRITER_MODEL",
-        "UNIFY_MEMORY_WRITER_ALLOWANCE_USD_PER_TOKENS",
-        "UNIFY_MEMORY_WRITER_RUN_GUARD_USD",
-        "UNIFY_MEMORY_WRITER_BASE_URL",
-        "UNIFY_MEMORY_WRITER_TOKEN",
-        "UNIFY_MEMORY_WRITER_TOKEN_FD",
-        "UNIFY_MEMORY_WRITER_EFFORT",
-        "UNIFY_MEMORY_WRITER_EFFORT_SCALE",
-        "UNIFY_MEMORY_WRITER_MAX_CALLS",
-        "UNIFY_MEMORY_WRITER_JOURNAL",
-        "UNIFY_MEMORY_WRITER_PRICES_USD_PER_MILLION",
-        # The library mode's limits, price, and the routes and model of its fork and helper lanes.
-        "UNIFY_MEMORY_LIBRARY_MAX_READS",
-        "UNIFY_MEMORY_LIBRARY_PASS_WALL_S",
-        "UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN",
-        "UNIFY_MEMORY_LIBRARY_FORK_BASE_URL",
-        "UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD",
-        "UNIFY_MEMORY_LIBRARY_HELPER_MODEL",
-        "UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL",
-        "UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD",
-        # Deployment policy: the CLI waits for its pass slot where a sandbox ends with its controller.
-        "UNIFY_MEMORY_LIBRARY_WAIT_SLOT",
-        # Benchmark policy: whether the checker's verdict a bed showed the actor is recorded for the library.
-        "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE",
-        # Benchmark policy: the comparison profile every reported row runs under (the writer's model, route and
-        # effort, and the checker line); it fixes configuration, it is no arm under test.
-        "UNIFY_PROFILE",
-        # Deployment policy: when the host's lease ends; the writer service never runs past it less 30 minutes.
-        "UNIFY_HOST_LEASE_END",
-        # Deployment policy: who starts the writer service (a request, or the runner for the whole cell).
-        "UNIFY_MEMORY_WRITER_SERVICE_OWNER",
-        # Retired: only their off values are accepted, so an old configuration fails loudly.
-        "UNIFY_MEMORY_LIBRARY_ANALYSTS",
-        "UNIFY_MEMORY_LIBRARY_COVERAGE",
-    },
-)
+#: Each configuration setting, with why it is configuration.
+CONFIGURATION = {
+    # The model and its reasoning effort.
+    "UNIFY_MODEL": "the model every request runs on",
+    "UNIFY_REASONING_EFFORT": "the effort paired with the model",
+    # Limits that bound a runaway request's cost.
+    "UNIFY_MAX_OUTPUT_TOKENS": "bounds one turn's output",
+    "UNIFY_MAX_TOOL_LOOP_STEPS": "bounds one request's steps",
+    # Paths.
+    "UNIFY_LOCAL_ROOT": "the workspace directory",
+    "UNIFY_LOG_DIR": "where the log files go",
+    # Deployment policy.
+    "UNIFY_ENV_NAMESPACES": "the environment's own namespaces (an embedding application's factory)",
+    "UNIFY_CELL_LLM_MODELS": "which model endpoints cell code may name",
+    "UNIFY_CELL_ENV_ALLOW": "a runner's own variables a cell gets beside the allow-list",
+    "UNIFY_WORKSPACE_NETWORK": "whether cells reach the network, and only through the host's proxy",
+    "UNIFY_WORKSPACE_PROXY_PORT": "that proxy's port",
+    "UNIFY_EMBED_URL": "the loopback lane provider embeddings go through (an endpoint, like the model's)",
+    "UNIFY_LOCAL_EMBEDDINGS": "where embeddings are computed: in process instead of through that lane",
+}
 
 
-def wip_switches() -> set[str]:
-    """Every ``UNIFY_`` name a ``WIP_SWITCHES.md`` section heading names."""
-    names: set[str] = set()
-    for line in WIP_SWITCHES_MD.read_text().splitlines():
-        if line.startswith("## "):
-            names.update(re.findall(r"\bUNIFY_[A-Z0-9_]+\b", line))
-    return names
+def _memory(name: str) -> bool:
+    return name.startswith(MEMORY_PREFIXES) or name in MEMORY_NAMES
 
 
-def test_the_wip_list_names_the_switches_in_progress():
-    assert wip_switches() >= {
-        "UNIFY_CODE_PROJECTION",
-        "UNIFY_STATEFUL_CELLS",
-        "UNIFY_LOOP_STOP",
-        "UNIFY_LOOP_STOP_K",
-    }
-    assert not wip_switches() & CONFIGURATION
-
-
-def test_no_research_switch_remains():
+def test_every_setting_is_configuration():
     fields = {
-        name for name in ProductionSettings.model_fields if name.startswith("UNIFY_")
+        name
+        for name in ProductionSettings.model_fields
+        if name.startswith("UNIFY_") and not _memory(name)
     }
-    assert sorted(fields - wip_switches() - CONFIGURATION) == []
+    assert sorted(fields - set(CONFIGURATION)) == []
+    assert sorted(set(CONFIGURATION) - fields) == []

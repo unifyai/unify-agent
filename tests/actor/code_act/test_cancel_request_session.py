@@ -46,20 +46,8 @@ FOLLOW_UP = (
 )
 FINAL = '{"action": "submit", "grid": [[4]]}'
 LATE = "A late answer to the cancelled request."
-SUMMARY = "Nothing worth storing."
 # Well under the host's 60 s grace: a cancelled request must end at once.
 CANCEL_BOUND_S = 5.0
-
-
-def _is_review(messages: list) -> bool:
-    text = json.dumps(messages, default=str)
-    # The storage review as shipped, or framed as the agent's own curation
-    # step (UNIFY_REVIEW_FRAMING=unified, the default since the code freeze).
-    return (
-        "## Storage Review" in text
-        or "You are a skill librarian" in text
-        or "This is the curation step that follows" in text
-    )
 
 
 def _last_request_text(messages: list) -> str:
@@ -72,7 +60,7 @@ def _last_request_text(messages: list) -> str:
 class _Model:
     """Scripted replies. ``first`` answers the task's first call; a call it
     returns ``None`` for hangs until cancelled. The follow-up is answered
-    with an action and the review summarises."""
+    with an action."""
 
     def __init__(self, first) -> None:
         self._first = first
@@ -84,8 +72,6 @@ class _Model:
     async def __call__(self, *, shared_session=None, client=None, **kw):
         messages = kw.get("messages") or []
         self.requests.append(messages)
-        if _is_review(messages):
-            return h.completion(content=SUMMARY)
         if FOLLOW_UP in _last_request_text(messages):
             return h.completion(content=FINAL)
         self._task_calls += 1
@@ -106,7 +92,6 @@ class _Tools:
 
     def __init__(self) -> None:
         self.running = asyncio.Event()
-        self.real_cells = False
         self.calls = 0
         self.cancelled = 0
 
@@ -126,33 +111,20 @@ class _Actor:
     """The actor ``unify act`` starts, on a scripted persistent loop."""
 
     def __init__(self, tools: _Tools) -> None:
-        from unify.actor.code_act_actor import CodeActActor
-
-        self._actor = CodeActActor()
         self._tools = tools
-        self.real_cells = False
 
     async def act(self, request: str, *, persist: bool, **_kwargs):
-        from unify.actor.code_act_actor import _StorageCheckHandle
         from unify.common.async_tool_loop import start_async_tool_loop
 
-        inner = start_async_tool_loop(
+        return start_async_tool_loop(
             h.new_client(PROTOCOL),
             request,
-            (
-                {"execute_code": self._actor.get_tools("act")["execute_code"]}
-                if self.real_cells
-                else {"study": self._tools.study}
-            ),
+            {"study": self._tools.study},
             loop_id="CodeActActor.act",
             log_steps=False,
             timeout=300,
             persist=persist,
         )
-        return _StorageCheckHandle(inner=inner, actor=self._actor, persist=persist)
-
-    async def close(self) -> None:
-        await self._actor.close()
 
 
 @pytest.fixture
@@ -163,16 +135,14 @@ def jsonl_session(monkeypatch):
     read_fd, write_fd = os.pipe()
     monkeypatch.setattr(sys, "stdin", os.fdopen(read_fd, "r"))
     tools = _Tools()
-    # Built before any test's clock starts: the actor's build (its own
-    # function and guidance managers) and the first import of the bridge the
-    # session attaches are not the session's time.
+    # Imported before any test's clock starts: the first import of the bridge
+    # the session attaches is not the session's time.
     import unify.agents.cli_bridge  # noqa: F401
 
     actor = _Actor(tools)
 
     async def start(self) -> None:
         self._actor = actor
-        self._actor.real_cells = tools.real_cells
 
     monkeypatch.setattr(Act, "start", start)
     session = Act(
@@ -181,7 +151,6 @@ def jsonl_session(monkeypatch):
             jsonl=True,
             quiet=True,
             no_clarify=False,
-            no_store=False,
             timeout=None,
         ),
     )
@@ -204,7 +173,7 @@ async def _until(predicate, timeout: float = 20) -> None:
 
 
 def _types(lines: list[dict]) -> list[str]:
-    return [line["type"] for line in lines if line["type"] != "storage"]
+    return [line["type"] for line in lines]
 
 
 async def _cancel(send, lines) -> float:
@@ -250,14 +219,12 @@ async def test_a_cancel_ends_a_request_waiting_on_a_model_call(jsonl_session):
         run = asyncio.create_task(session.run(TASK))
         await asyncio.wait_for(model.in_flight.wait(), 20)
         elapsed = await _cancel(send, lines)
-        stats = session._handle._inner._runtime_state.cancelled_turns_by_cause
         # The late answer arrives while the next request runs.
         model.release.set()
         code = await _finish(run, send, lines)
 
     assert code == 0
     assert elapsed < CANCEL_BOUND_S
-    assert stats == {"cancel": 1}
     # The cancelled call's late answer reaches neither the host nor the model.
     assert LATE not in json.dumps(lines)
     assert not any(LATE in json.dumps(r, default=str) for r in model.requests)

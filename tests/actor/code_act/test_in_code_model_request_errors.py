@@ -1,5 +1,5 @@
-"""Symbolic: with ``UNIFY_TOOLS_IN_CODE=on`` a cell's row in ``tool-events.jsonl`` counts the cell's model calls the
-provider refused for the request's own content (``model_request_errors``), and the cell goes on.
+"""Symbolic: a cell's row in ``tool-events.jsonl`` counts the cell's model calls the provider refused for the
+request's own content (``model_request_errors``), and the cell goes on.
 
 The model is the scripted transport below unillm (tests/scripted_model.py): no key, no network. Cells run in the
 real sandboxed worker (the fixtures of tests/actor/code_act/test_in_code_tools_wiring.py).

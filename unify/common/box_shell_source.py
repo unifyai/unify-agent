@@ -21,8 +21,6 @@ it.
 
 from __future__ import annotations
 
-#: Bytes of output a call keeps (head and tail halves), as ``unify/actor/execution/shell.py``.
-MAX_OUTPUT_BYTES = 256 * 1024
 
 SOURCE = r'''
 # --- sh(): one bash call per command; the working directory and exported variables carry over ---------------

@@ -26,10 +26,8 @@ import tempfile
 import pytest
 
 from tests.actor.code_act import fake_relay_env
-from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
+from tests.actor.code_act.sandbox_world import actor_interpreter, needs_bwrap, world  # noqa: F401
 from unify import sandbox
-from unify.actor.execution.session import SessionExecutor
-from unify.actor.execution.types import parts_to_text
 
 TOKEN = "relay-token-5d1f"  # pragma: allowlist secret
 
@@ -38,7 +36,6 @@ TOKEN = "relay-token-5d1f"  # pragma: allowlist secret
 def relay_env(monkeypatch):
     """A registered environment with one namespace and the global ``relay``,
     whose resource lives under the harness's /tmp."""
-    from unify.function_manager import function_manager as fm_module
     from unify.function_manager.primitives import (
         EnvironmentMethod,
         EnvironmentNamespace,
@@ -75,16 +72,14 @@ def relay_env(monkeypatch):
         ),
         source="tests:relay",
     )
-    fm_module._PRIMITIVES_SEEDED_FOR.clear()
     yield client
     clear_environment_namespaces()
-    fm_module._PRIMITIVES_SEEDED_FOR.clear()
     shutil.rmtree(root, ignore_errors=True)
 
 
-async def _run(ex, code: str):
-    res = await ex.execute(code=code, state_mode="stateful", session_id=0)
-    return parts_to_text(res["stdout"]), res
+async def _run(interp, code: str):
+    res = await interp.run_cell(code)
+    return res.output, res
 
 
 @needs_bwrap
@@ -96,7 +91,7 @@ async def test_an_environment_global_is_served_from_the_harness(
     monkeypatch,
 ):
     harness = fake_relay_env.process_id()
-    ex = SessionExecutor(environments={})
+    ex = await actor_interpreter()
     try:
         _, res = await _run(
             ex,
@@ -104,27 +99,27 @@ async def test_an_environment_global_is_served_from_the_harness(
             "worker = f\"{os.getpid()}@{os.readlink('/proc/self/ns/pid')}\"\n"
             "(relay.ping('hi'), relay.music.show('song'), worker, repr(relay))",
         )
-        assert res["error"] is None, res["error"]
-        pong, shown, worker, shown_repr = res["result"]
+        assert res.error is None, res.error
+        pong, shown, worker, shown_repr = res.result
         # The call ran on the harness's client, which reaches the relay.
         assert pong == {"word": "hi", "token": TOKEN, "ran_in": harness}
         assert shown["app"] == "music" and shown["token"] == TOKEN
         assert worker != harness
         assert shown_repr == "<relay client>"
-        # A stored function defined in the worker reaches it the same way.
+        # A function defined in a cell reaches it the same way.
         _, res = await _run(
             ex,
             "def use_relay():\n    return relay.ping('fn')['token']\nuse_relay()",
         )
-        assert res["error"] is None and res["result"] == TOKEN, res["error"]
+        assert res.error is None and res.result == TOKEN, res.error
         # Confinement is unchanged: the worker cannot read the relay itself.
         _, res = await _run(ex, f"open({relay_env.path!r}).read()")
-        assert "FileNotFoundError" in str(res["error"])
+        assert "FileNotFoundError" in str(res.error)
         # Private attributes stay in the harness.
         _, res = await _run(ex, "relay._App")
-        assert "do not cross the worker boundary" in str(res["error"])
+        assert "do not cross the worker boundary" in str(res.error)
     finally:
-        await ex.close()
+        await ex.stop()
 
 
 @needs_bwrap
@@ -135,14 +130,14 @@ async def test_a_cell_subscripts_an_environment_global_then_calls_the_result(
     relay_env,
 ):
     harness = fake_relay_env.process_id()
-    ex = SessionExecutor(environments={})
+    ex = await actor_interpreter()
     try:
         _, res = await _run(
             ex,
             "(relay['music'].show('song'), relay[0].name, repr(relay['music']))",
         )
-        assert res["error"] is None, res["error"]
-        shown, name, shown_repr = res["result"]
+        assert res.error is None, res.error
+        shown, name, shown_repr = res.result
         # Indexed and called in the harness, which reaches the relay.
         assert shown["app"] == "music" and shown["token"] == TOKEN
         assert shown["ran_in"] == harness
@@ -150,14 +145,14 @@ async def test_a_cell_subscripts_an_environment_global_then_calls_the_result(
         assert "_App" in shown_repr
         # A missing key is the harness object's own KeyError.
         _, res = await _run(ex, "relay['films']")
-        assert "KeyError" in str(res["error"])
+        assert "KeyError" in str(res.error)
         # Other keys, and keys starting with '_', stay in the harness.
         _, res = await _run(ex, "relay[0:1]")
-        assert "only str and int subscripts" in str(res["error"])
+        assert "only str and int subscripts" in str(res.error)
         _, res = await _run(ex, "relay['_App']")
-        assert "do not cross the worker boundary" in str(res["error"])
+        assert "do not cross the worker boundary" in str(res.error)
     finally:
-        await ex.close()
+        await ex.stop()
 
 
 def test_registering_an_environment_mounts_nothing_new(

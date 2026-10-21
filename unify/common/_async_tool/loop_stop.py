@@ -1,39 +1,28 @@
-"""End a request whose tool calls stop making progress (``UNIFY_LOOP_STOP``).
+"""The no-progress rule: an agent whose tool calls stop making progress is told so, then stopped.
 
 The loop census of 7 October 2026 (87,147 recorded requests) found that
 most loops inside one request are no-op narration. The model runs a cell
 such as ``print('Request another demo.')``, ``print('')`` or ``pass`` instead
-of replying. The worst recorded loop ran 150 such cells, with 45 distinct
-strings, until the request's step limit. A rule that looks only for exact
-repeats misses it.
+of replying. A rule that looks only for exact repeats misses it.
 
 A model call makes *no progress* when every tool call it makes either
 
 * runs a Python cell that does nothing: only ``pass``, comments, prints of
   constant text (constant f-strings included), bare constants, or nothing,
-  with magics ignored; or
-* repeats one of the ``WINDOW`` model calls before it in the request: the
-  same tool with the same arguments (``thought`` dropped; a cell's code
-  without comments, whitespace or magics), string and number literals
-  ignored, and it got the same result (times, ids, durations and the step
-  budget footer ignored).
+  with magics ignored (:func:`is_noop_cell`); or
+* repeats one of the ``WINDOW`` model calls before it: the same tool with the
+  same arguments (``thought`` dropped; a cell's code without comments,
+  whitespace or magics), string and number literals ignored, and it got the
+  same result (times, ids, durations and the step budget footer ignored).
 
-A result that is not known yet (missing, empty, a pending placeholder, a
-running handle's sentinel) never matches. A call made while other calls are
-still running is not counted, because a turn taken then may be one the loop
-required. ``UNIFY_LOOP_STOP_K`` no-progress calls in a row end the request.
-A text reply, any other call and every requester message start the count
-again.
+A result that is not known yet (missing, empty, a pending placeholder) never
+matches. A call made while other calls are still running is not counted. A
+text reply, any other call and every user message start the count again.
 
-The tracker reads the transcript, from the request's own message on, before
-each model call, so it sees each call's result as the next call's request
-carries it.
-
-The memory agents (the writer, the curator and their helpers) run their own
-loops, and :class:`AgentNoProgress` applies the same definition to their
-conversations, always on: ``MEMORY_K`` no-progress calls in a row get one
-notice, twice as many end the agent's round. ``UNIFY_LOOP_STOP`` governs the
-actor's loop only.
+The memory agents (the writer, the curator, their helpers and the librarian)
+run their own loops, and :class:`AgentNoProgress` applies the rule to their
+conversations: ``MEMORY_K`` no-progress calls in a row get one notice, twice
+as many end the agent's round.
 """
 
 from __future__ import annotations
@@ -51,18 +40,6 @@ from .messages import is_loop_authored_message, is_non_final_tool_reply
 
 # How many earlier model calls a repeat is compared with.
 WINDOW = 2
-
-
-def enabled() -> bool:
-    from unify.settings import SETTINGS
-
-    return getattr(SETTINGS, "UNIFY_LOOP_STOP", "") == "on"
-
-
-def threshold() -> int:
-    from unify.settings import SETTINGS
-
-    return int(getattr(SETTINGS, "UNIFY_LOOP_STOP_K", 10) or 10)
 
 
 # ── cells that do nothing ────────────────────────────────────────────────
@@ -352,44 +329,6 @@ class Tracker:
 # ── what the stop says ───────────────────────────────────────────────────
 
 
-@dataclass(frozen=True)
-class Stop:
-    """The texts of one loop stop, in place of the step limit's."""
-
-    k: int
-    last_word: bool
-    label: str = "Loop stop"
-
-    @property
-    def reason(self) -> str:
-        return f"the last {self.k} tool calls made no progress"
-
-    @property
-    def cancelled(self) -> str:
-        return (
-            "Cancelled: the request was stopped for making no progress before "
-            "this call finished."
-        )
-
-    @property
-    def notice(self) -> str:
-        return (
-            f"The last {self.k} tool calls of this request made no progress: "
-            "each ran a cell that does nothing, or repeated one of the two calls "
-            "before it and got the same result. No more tools can be called "
-            "for this request. Reply now with your best answer to the request."
-        )
-
-    @property
-    def headline(self) -> str:
-        return (
-            f"🔚 Stopped: {self.reason} (each ran a cell that does nothing, or "
-            "repeated a recent call and got the same result), so this request "
-            "ended before it was finished. The session is still open: the "
-            "next message starts a new request."
-        )
-
-
 # ── agents that run their own loop ───────────────────────────────────────
 
 #: K for the memory agents (the writer, the curator and their helpers), which run their own loops rather than the
@@ -414,12 +353,11 @@ class AgentNoProgress:
     """The no-progress rule for an agent that runs its own loop over an OpenAI-format conversation.
 
     The agent calls :meth:`after_call` once after each of its model calls, when that call's tool results are in
-    its conversation. The calls are counted by :class:`Tracker`, the actor's definition, from the agent's own
-    messages. With tools called from code, a tool call is an ``execute_code`` cell whose in-code calls appear in
+    its conversation. The calls are counted by :class:`Tracker` from the agent's own messages. With tools called from code, a tool call is an ``execute_code`` cell whose in-code calls appear in
     its output, so the same rule applies to it. At ``k`` no-progress calls in a row one notice is appended to the
     conversation; at ``2 * k`` the agent's round ends. The notices are left out of what the tracker reads, so a
     notice is not taken for a new request; any other user message (a repair round's, a nudge after a text reply)
-    starts the count again, as a requester message does in the actor's loop.
+    starts the count again.
     """
 
     def __init__(self, terminal: str, *, in_code: bool = False, k: Optional[int] = None) -> None:
@@ -484,23 +422,14 @@ class AgentNoProgress:
         return {"k": self.k, "notices": self.notices, "ended": self.ended, "at_call": self.at_call}
 
 
-def run_stats(runtime_state: Any) -> dict:
-    """The counter the CLI reports beside the run's tokens."""
-    return {"loop_stops": int(getattr(runtime_state, "loop_stops", 0) or 0)}
-
-
 __all__ = [
     "AgentNoProgress",
     "CallRecord",
     "MEMORY_K",
-    "Stop",
     "Tracker",
     "WINDOW",
     "call_record",
-    "enabled",
     "is_noop_cell",
     "normalise_result",
-    "run_stats",
     "terminal_tool",
-    "threshold",
 ]

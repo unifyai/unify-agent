@@ -1,8 +1,8 @@
-"""OS confinement for the shell and file access the actor gets.
+"""OS confinement for the code the actor runs and the files it reads.
 
-Every shell cell, every subprocess a Python cell starts, and the sandboxed
-Python worker run inside bubblewrap (Linux) under one policy (the
-``UNIFY_WORKSPACE=sandboxed`` switch until the code freeze baked it in):
+The sandboxed Python worker that runs every cell, every subprocess a cell
+starts, and the harness's own reads for ``tools.grep`` run inside bubblewrap
+(Linux) under one policy:
 
 * The root is an allowlist, read-only (:data:`_ROOT_ALLOWLIST`): the system
   directories (``/usr``, ``/bin``, ``/lib*``, ``/sbin``), a few files of
@@ -30,14 +30,10 @@ Python worker run inside bubblewrap (Linux) under one policy (the
   ``socket-families``).
 * The Unify state directory (``UNIFY_HOME``) is hidden behind an empty tmpfs,
   except read-only views of the transcripts directory (every session's) and
-  the package venv, and the writable workspace; the store file is not mounted
-  (cells reach the library through its API). The harness's internal
-  transcripts (``internal-transcripts``: the storage review, whose prompt
-  carries the environment's checked outcome) stay hidden even when a mount
-  that is seen contains them (a workspace configured as ``UNIFY_HOME``).
+  the package venv, and the writable workspace.
 * The harness's log directories (``UNILLM_LOG_DIR``, which holds every LLM
-  request and reply, ``UNILLM_OTEL_LOG_DIR``, ``UNIFY_LOG_DIR`` and
-  ``UNIFY_OTEL_LOG_DIR``, wherever they are configured) are hidden too.
+  request and reply, ``UNILLM_OTEL_LOG_DIR`` and ``UNIFY_LOG_DIR``, wherever
+  they are configured) are hidden too.
 * Credential locations (``~/.ssh``, ``~/.config``, ``~/.aws``, ``~/.gnupg`` and
   a few other well-known ones) are hidden behind a notice, and so is every
   ``.env`` file found in the working directory and its parents, the home
@@ -57,8 +53,7 @@ Each rule has a name. A refusal the harness makes itself (a missing
 bubblewrap, a path :func:`check_readable` rejects) raises
 :class:`SandboxRefusal` naming it; a hidden directory contains one file,
 ``UNIFY_SANDBOX_MASKED``, and a hidden file reads as one line, each naming the
-rule that hid it; an OS error in a shell cell's output gets a note naming the
-rule behind it (:func:`annotate_refusals`).
+rule that hid it.
 
 The harness's package installer (unify/environment.py) runs under the same
 policy with two additions it asks for itself: the workspace environment and
@@ -79,7 +74,6 @@ subprocess it starts are confined alike.
 
 from __future__ import annotations
 
-import contextvars
 import hashlib
 import json
 import logging
@@ -88,7 +82,6 @@ import re
 import shutil
 import socket
 import stat
-import subprocess
 import sys
 import tempfile
 import threading
@@ -105,16 +98,13 @@ __all__ = [
     "EgressProxy",
     "SandboxPolicy",
     "SandboxRefusal",
-    "annotate_refusals",
     "build_policy",
     "box_path",
     "check_readable",
-    "confined_subprocesses",
     "host_path",
     "neutral_text",
     "egress_proxy",
     "scrubbed_env",
-    "unconfined",
     "wrap_argv",
 ]
 
@@ -123,8 +113,7 @@ RULES: dict[str, str] = {
     "resource-limits": (
         "every process runs under fixed resource limits: no core files, 8,192 "
         "open files, 4,096 processes and threads, 16 GiB per written file and "
-        "the configured address space (UNIFY_SANDBOX_ADDRESS_SPACE_BYTES), each "
-        "at most the host's own hard limit"
+        "16 GiB of address space, each at most the host's own hard limit"
     ),
     "sandbox-required": (
         "shell commands and Python cells run only inside bubblewrap, never "
@@ -257,16 +246,16 @@ _STATE_VIEW_MOUNTS = {
 # files, package installs, thread pools), so the bounds are set well above
 # what normal work needs and only stop runaway use: no core files, at most
 # 8,192 open files, 4,096 processes and threads in the sandbox's own user
-# namespace, 16 GiB per written file. The address space is
-# UNIFY_SANDBOX_ADDRESS_SPACE_BYTES (16 GiB by default).
+# namespace, 16 GiB per written file and 16 GiB of address space.
 PRLIMIT = "/usr/bin/prlimit"
+RLIMIT_AS_BYTES = 16 * 1024**3
 RLIMIT_CORE_BYTES = 0
 RLIMIT_NOFILE_COUNT = 8192
 RLIMIT_NPROC_COUNT = 4096
 RLIMIT_FSIZE_BYTES = 16 * 1024**3
 
 # The host paths every sandboxed command sees besides those derived at start
-# (_derived_roots: the interpreter, the Unify package, editable installs, the
+# (_derived_candidates: the interpreter, the Unify package, editable installs, the
 # trusted LD_PRELOAD) and those the policy mounts (workspace, state views,
 # proxy). Each is mounted read-only where it exists; a symlink whose target
 # is itself visible stays a symlink, any other is mounted from its target
@@ -510,10 +499,6 @@ class SandboxPolicy:
     root_args: list[str] = field(default_factory=list)
     root_visible: list[Path] = field(default_factory=list)
     created: float = field(default_factory=time.monotonic)
-    # The raw store's files (store.sqlite, -wal, -shm) at store_path(), and
-    # by name in the state directory: refused to the harness's file tools
-    # wherever they are, whatever mount would otherwise show them.
-    store_files: list[Path] = field(default_factory=list)
 
     # -- path checks ---------------------------------------------------------
     def readable_violation(self, path: Path) -> Optional[tuple[str, str]]:
@@ -529,8 +514,6 @@ class SandboxPolicy:
                 "root-allowlist",
                 f"the workspace {self.workspace} is the Unify state directory",
             )
-        if resolved in self.store_files:
-            return "mask-unify-state", f"{resolved} is the Unify store"
         seen = (self.workspace, *self.readonly_state)
         for hidden, rule in self.hidden:
             if _within(resolved, hidden) and not any(
@@ -589,18 +572,6 @@ class SandboxPolicy:
                 f"{resolved} is outside every path the sandbox mounts",
             )
         return None
-
-
-def _store_files(store: Path, state_dir: Path) -> list[Path]:
-    """The raw store's files: at *store* (``store_path()``, resolved) and, by
-    their default name, in *state_dir*."""
-    out: list[Path] = []
-    for base in (store, state_dir / "store.sqlite"):
-        for name in (base.name, f"{base.name}-wal", f"{base.name}-shm"):
-            path = Path(os.path.realpath(base.parent / name))
-            if path not in out:
-                out.append(path)
-    return out
 
 
 def _within(path: Path, root: Path) -> bool:
@@ -1287,7 +1258,6 @@ LOG_DIR_SETTINGS = (
     "UNILLM_LOG_DIR",
     "UNILLM_OTEL_LOG_DIR",
     "UNIFY_LOG_DIR",
-    "UNIFY_OTEL_LOG_DIR",
 )
 
 
@@ -1814,11 +1784,6 @@ def _derived_candidates(guarded: Optional[Sequence[Path]] = None) -> list[Derive
     return out
 
 
-def _derived_roots() -> list[tuple[Path, str]]:
-    """The accepted read-only roots taken from this process, with reasons."""
-    return [(d.path, d.reason) for d in _derived_candidates() if d.refusal is None]
-
-
 def _is_system(path: Path) -> bool:
     return any(
         _within(path, Path(os.path.realpath(d)))
@@ -1942,10 +1907,10 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
     Cached for five minutes (``fresh=True`` rebuilds it), since every sandboxed
     cell asks for it and finding ``.env`` files walks part of the home
     directory; a ``.env`` file created meanwhile is still refused by name by
-    ``read_file`` and ``grep``, but a shell cell sees it until the rebuild.
+    ``grep``, but a cell sees it until the rebuild.
     """
     global _POLICY_CACHE
-    from unify.db import store_home, store_path
+    from unify.db import store_home
     from unify.settings import SETTINGS
     from unify.workspace import get_local_root
 
@@ -1964,7 +1929,6 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
             tuple(sys.path),
             os.environ.get("LD_PRELOAD", ""),
             os.environ.get("PYTHONPATH", ""),
-            store_path(),
         )
         if (
             not fresh
@@ -1991,9 +1955,6 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
         #   section the harness rendered is redacted, unify/outcome.py), and
         #   the harness-internal sessions (reviews, gates) are written to
         #   internal-transcripts/, which is never mounted (``hidden`` below).
-        # - not the raw store (store.sqlite, -wal, -shm): cells reach the
-        #   library through the functions/guidance API, and the file holds
-        #   what the API does not give (recorded cases, trust, history).
         readonly = [
             p
             for p in (
@@ -2057,9 +2018,6 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
         # directory) and changes every cell. What inside it is masked or hidden anyway, its views put back
         # read-only, the installer's cache and a state directory inside it
         # (hidden whole, wrap_argv) are not entered.
-        from unify.transcripts import INTERNAL_DIRNAME
-
-        state_inside = state_dir != workspace and _within(state_dir, workspace)
         ws_skip = [
             d
             for d in (
@@ -2067,7 +2025,6 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
                 *log_dirs,
                 *readonly,
                 state_dir,
-                state_dir / INTERNAL_DIRNAME,
                 Path(os.path.realpath(installer_cache())),
             )
             if d != workspace and _within(d, workspace)
@@ -2091,18 +2048,6 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
                 target = workspace_masked if _within(path, workspace) else out
                 if all(path != m for m, _ in target):
                     target.append((path, rule))
-        # The store's files, wherever the workspace bind would show them (a
-        # UNIFY_STORE_PATH inside it; a workspace that is UNIFY_HOME itself is
-        # refused); inside a state directory hidden whole they are hidden
-        # already.
-        store = Path(os.path.realpath(store_path()))
-        for name in (store.name, f"{store.name}-wal", f"{store.name}-shm"):
-            path = store.parent / name
-            if _within(path, workspace) and not (
-                state_inside and _within(path, state_dir)
-            ):
-                workspace_masked.append((path, "mask-unify-state"))
-
         network = str(getattr(SETTINGS, "UNIFY_WORKSPACE_NETWORK", "") or "")
         port = int(getattr(SETTINGS, "UNIFY_WORKSPACE_PROXY_PORT", 0) or 0)
         notices = _notices_dir()
@@ -2113,10 +2058,7 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
             readonly_state=readonly,
             masked_dirs=masked_dirs,
             masked_files=masked_files,
-            hidden=[
-                (state_dir / INTERNAL_DIRNAME, "mask-unify-state"),
-                *((d, "mask-harness-logs") for d in log_dirs),
-            ],
+            hidden=[(d, "mask-harness-logs") for d in log_dirs],
             workspace_masked=workspace_masked,
             workspace_scan=scan,
             scan_note=scan_note,
@@ -2125,7 +2067,6 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
             notices_dir=notices,
             root_args=root_args,
             root_visible=root_visible,
-            store_files=_store_files(store, state_dir),
         )
         policy._key = key  # type: ignore[attr-defined]
         _POLICY_CACHE = policy
@@ -2694,8 +2635,6 @@ def wrap_argv(
 def _rlimit_args() -> list[str]:
     """``prlimit`` with the sandbox's resource limits, ending in ``--``: every
     process of the command runs under them (hard and soft alike)."""
-    from unify.settings import SETTINGS
-
     if not os.access(PRLIMIT, os.X_OK):
         raise SandboxRefusal(
             "resource-limits",
@@ -2711,10 +2650,7 @@ def _rlimit_args() -> list[str]:
         hard = resource.getrlimit(which)[1]
         return wanted if hard == resource.RLIM_INFINITY else min(wanted, hard)
 
-    address_space = within_hard(
-        resource.RLIMIT_AS,
-        int(SETTINGS.UNIFY_SANDBOX_ADDRESS_SPACE_BYTES),
-    )
+    address_space = within_hard(resource.RLIMIT_AS, RLIMIT_AS_BYTES)
     fsize = within_hard(resource.RLIMIT_FSIZE, RLIMIT_FSIZE_BYTES)
     nofile = within_hard(resource.RLIMIT_NOFILE, RLIMIT_NOFILE_COUNT)
     nproc = within_hard(resource.RLIMIT_NPROC, RLIMIT_NPROC_COUNT)
@@ -2909,7 +2845,7 @@ def sandbox_env(
     variables (:func:`allowed_env`), never from the harness's environment as a
     whole, so a provider key is not in it whatever its name. ``PATH`` starts
     with the cell interpreter's directories (:func:`interpreter_bin_dirs`), so
-    ``python`` and ``python3`` in a cell's subprocess or a bash cell are the
+    ``python`` and ``python3`` in a cell's subprocess are the
     interpreter cells run with, whether or not the host's ``PATH`` has them.
     They are already mounted; no mount changes. ``USER`` and ``LOGNAME`` are
     the account the generated ``/etc/passwd`` lists. An explicit *env* (a
@@ -2946,128 +2882,6 @@ def sandbox_env(
         out.pop("NO_PROXY", None)
         out.pop("no_proxy", None)
     return out
-
-
-def annotate_refusals(output: str, policy: SandboxPolicy) -> Optional[str]:
-    """A note naming the rule behind an OS error in *output*, if any."""
-    notes = []
-    if "Read-only file system" in output:
-        notes.append(
-            f"`workspace-write`: {RULES['workspace-write']} "
-            f"(workspace: {WORKSPACE_MOUNT})",
-        )
-    network_errors = (
-        "Network is unreachable",
-        "Could not resolve host",
-        "Temporary failure in name resolution",
-        "Name or service not known",
-    )
-    if any(e in output for e in network_errors):
-        rule = "network-proxy-only" if policy.network == "proxy" else "network-off"
-        notes.append(f"`{rule}`: {RULES[rule]}")
-    if not notes:
-        return None
-    return "Refused by workspace sandbox rule " + "; rule ".join(notes)
-
-
-# ---------------------------------------------------------------------------
-# Subprocesses started by Python cells
-# ---------------------------------------------------------------------------
-
-_CONFINE: contextvars.ContextVar[Optional[SandboxPolicy]] = contextvars.ContextVar(
-    "unify_sandbox_confine",
-    default=None,
-)
-_PATCH_LOCK = threading.Lock()
-_PATCHED = False
-
-
-@contextmanager
-def confined_subprocesses(policy: Optional[SandboxPolicy]) -> Iterator[None]:
-    """Run every subprocess started in this context (and its tasks) under *policy*."""
-    if policy is None:
-        yield
-        return
-    _install_popen_patch()
-    token = _CONFINE.set(policy)
-    try:
-        yield
-    finally:
-        _CONFINE.reset(token)
-
-
-@contextmanager
-def unconfined() -> Iterator[None]:
-    """Harness-owned subprocesses (package installs) started inside a cell."""
-    token = _CONFINE.set(None)
-    try:
-        yield
-    finally:
-        _CONFINE.reset(token)
-
-
-def _install_popen_patch() -> None:
-    """Wrap ``Popen.__init__`` and ``os.system`` once; inert outside a confined context.
-
-    Every stdlib route to a child process that takes a command line --
-    ``subprocess.run``/``call``/``check_output``, ``Popen``, ``os.popen`` and
-    asyncio's subprocess transports -- constructs a ``Popen``.
-    """
-    global _PATCHED
-    with _PATCH_LOCK:
-        if _PATCHED:
-            return
-        import inspect
-
-        original_init = subprocess.Popen.__init__
-        signature = inspect.signature(original_init)
-
-        def confined_init(self, *args, **kwargs):
-            policy = _CONFINE.get()
-            if policy is None:
-                return original_init(self, *args, **kwargs)
-            bound = signature.bind(self, *args, **kwargs)
-            bound.apply_defaults()
-            a = bound.arguments
-            command = a["args"]
-            if a.get("shell"):
-                shell = a.get("executable") or "/bin/sh"
-                if isinstance(command, (str, bytes, os.PathLike)):
-                    argv = [shell, "-c", os.fsdecode(command)]
-                else:
-                    argv = [shell, "-c", *map(os.fsdecode, command)]
-            elif isinstance(command, (str, bytes, os.PathLike)):
-                argv = [os.fsdecode(command)]
-            else:
-                argv = [os.fsdecode(c) for c in command]
-            if not a.get("shell") and a.get("executable"):
-                argv[0] = os.fsdecode(a["executable"])
-            cwd = a.get("cwd")
-            env = sandbox_env(policy, a.get("env"))
-            a["args"] = wrap_argv(
-                argv,
-                policy,
-                cwd=os.fsdecode(cwd) if cwd is not None else None,
-                env=env,
-            )
-            a["shell"] = False
-            a["executable"] = None
-            a["env"] = env
-            return original_init(*bound.args, **bound.kwargs)
-
-        original_system = os.system
-
-        def confined_system(command):
-            if _CONFINE.get() is None:
-                return original_system(command)
-            proc = subprocess.Popen(command, shell=True)
-            code = proc.wait()
-            # os.system reports a wait status, not an exit code.
-            return code << 8 if code >= 0 else -code
-
-        subprocess.Popen.__init__ = confined_init  # type: ignore[method-assign]
-        os.system = confined_system
-        _PATCHED = True
 
 
 # ---------------------------------------------------------------------------
@@ -3166,10 +2980,11 @@ def _pump(a: socket.socket, b: socket.socket) -> None:
 
 
 _BRIDGES: dict[int, _ProxyBridge] = {}
+_BRIDGES_LOCK = threading.Lock()
 
 
 def _proxy_bridge(port: int) -> _ProxyBridge:
-    with _PATCH_LOCK:
+    with _BRIDGES_LOCK:
         bridge = _BRIDGES.get(port)
         if bridge is None or not bridge.path.exists():
             bridge = _BRIDGES[port] = _ProxyBridge(port)

@@ -1,23 +1,16 @@
 """Symbolic: the actor's sandbox shows fixed paths, runs under resource limits
 with an explicit environment, and is killed verifiably.
 
-Nothing here reaches a model. The command lines are the real ``wrap_argv``'s;
-the end-to-end test starts the real sandboxed worker (bubblewrap), runs a
-cell, installs a local wheel offline with the real installer and calls the
-cell's ``read_file`` and ``grep``.
+Nothing here reaches a model. The command lines are the real ``wrap_argv``'s,
+and the kills are the real ``process_tree.kill_tree``.
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
-import io
 import os
-import shutil
 import subprocess
 import sys
-import zipfile
 from pathlib import Path
 
 import pytest
@@ -29,7 +22,6 @@ from tests.actor.code_act.sandbox_world import (  # noqa: F401 (fixture)
 )
 from unify import sandbox
 from unify.common import process_tree
-from unify.settings import ProductionSettings, SETTINGS
 
 GIB = 1024**3
 
@@ -112,9 +104,6 @@ def test_the_sandbox_gets_an_explicit_environment_and_resource_limits(
         "--",
         "true",
     ]
-    monkeypatch.setattr(SETTINGS, "UNIFY_SANDBOX_ADDRESS_SPACE_BYTES", 8 * GIB)
-    argv = sandbox.wrap_argv(["true"], policy, env=env, neutral=True)
-    assert f"--as={8 * GIB}:{8 * GIB}" in argv
 
 
 def test_a_host_hard_limit_below_the_sandbox_limit_is_kept(monkeypatch):
@@ -135,19 +124,6 @@ def test_a_host_hard_limit_below_the_sandbox_limit_is_kept(monkeypatch):
     args = sandbox._rlimit_args()
     assert "--nofile=2048:2048" in args
     assert "--nproc=300:300" in args
-
-
-def test_the_address_space_limit_is_a_validated_setting():
-    assert ProductionSettings().UNIFY_SANDBOX_ADDRESS_SPACE_BYTES == 16 * GIB
-    assert (
-        ProductionSettings(
-            UNIFY_SANDBOX_ADDRESS_SPACE_BYTES="4294967296",
-        ).UNIFY_SANDBOX_ADDRESS_SPACE_BYTES
-        == 4 * GIB
-    )
-    for bad in ("0", "-1", "1.5", "4G", "", True):
-        with pytest.raises(ValueError, match="positive whole number"):
-            ProductionSettings(UNIFY_SANDBOX_ADDRESS_SPACE_BYTES=bad)
 
 
 def test_paths_map_between_the_sandbox_and_the_host(world):
@@ -171,12 +147,10 @@ def test_paths_map_between_the_sandbox_and_the_host(world):
 
 
 def test_the_actor_and_the_memory_boxes_share_one_kill():
-    from unify.actor.execution import shell
     from unify.memory import sandbox_run
 
     assert sandbox_run._descendants is process_tree.descendants
     assert sandbox_run._alive is process_tree.alive
-    assert not hasattr(shell, "_kill_group")
 
 
 @pytest.mark.asyncio
@@ -190,17 +164,13 @@ async def test_the_kill_ends_a_process_group_and_every_descendant():
     await asyncio.sleep(0.3)
     children = process_tree.descendants(proc.pid)
     assert children
-    from unify.actor.execution.shell import kill_sandbox
-
-    kill_sandbox(proc)
+    process_tree.kill_tree(proc.pid)
     assert not any(process_tree.alive(pid, start) for pid, start in children)
     await asyncio.wait_for(proc.wait(), 10)
 
 
 @pytest.mark.asyncio
 async def test_a_survivor_makes_the_kill_raise(monkeypatch):
-    from unify.actor.execution.shell import kill_sandbox
-
     proc = await asyncio.create_subprocess_exec(
         "sleep",
         "60",
@@ -221,131 +191,13 @@ async def test_a_survivor_makes_the_kill_raise(monkeypatch):
     )
     try:
         with pytest.raises(RuntimeError, match="survived SIGKILL"):
-            kill_sandbox(proc)
+            process_tree.kill_tree(proc.pid, grace_s=0.3)
     finally:
         try:
             os.killpg(proc.pid, 9)
         except ProcessLookupError:
             pass
         await asyncio.wait_for(proc.wait(), 10)
-
-
-# ── the whole sandbox, end to end ────────────────────────────────────────────
-
-
-def _wheel(directory: Path, name: str, version: str) -> Path:
-    """A pure-Python wheel of one module, built by hand (no build step)."""
-    files = {
-        f"{name}/__init__.py": f"VALUE = {name!r}\n",
-        f"{name}-{version}.dist-info/METADATA": (
-            f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n"
-        ),
-        f"{name}-{version}.dist-info/WHEEL": (
-            "Wheel-Version: 1.0\nGenerator: hand\nRoot-Is-Purelib: true\n"
-            "Tag: py3-none-any\n"
-        ),
-    }
-    record = []
-    for path, text in files.items():
-        digest = hashlib.sha256(text.encode()).digest()
-        b64 = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
-        record.append(f"{path},sha256={b64},{len(text.encode())}")
-    record.append(f"{name}-{version}.dist-info/RECORD,,")
-    files[f"{name}-{version}.dist-info/RECORD"] = "\n".join(record) + "\n"
-    target = directory / f"{name}-{version}-py3-none-any.whl"
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as z:
-        for path, text in files.items():
-            z.writestr(path, text)
-    target.write_bytes(buf.getvalue())
-    return target
-
-
-_CELL = """
-import importlib, os, sys
-seen = {}
-seen["cwd"] = os.getcwd()
-seen["env"] = sorted(os.environ)
-seen["values"] = sorted(os.environ.values())
-outcome = await install(["/workspace/neutralprobe-0.1-py3-none-any.whl"])
-seen["install"] = outcome
-for key in [k for k, v in sys.path_importer_cache.items() if v is None]:
-    del sys.path_importer_cache[key]
-importlib.invalidate_caches()
-import neutralprobe
-seen["imported"] = [neutralprobe.VALUE, neutralprobe.__file__]
-read = await read_file("/workspace/data.txt", 2, 2)
-seen["read"] = [read["path"], read["content"]]
-found = await grep("line 3", "/workspace")
-seen["grep"] = found["hits"]
-seen
-"""
-
-
-@needs_bwrap
-@pytest.mark.asyncio
-@pytest.mark.timeout(300)
-async def test_the_actors_sandbox_runs_a_cell_installs_and_uses_its_tools(
-    world,
-    monkeypatch,
-):
-    """The real worker under the allow-list: a cell sees /workspace, only the
-    allow-listed variables, installs a local wheel offline (the installer of
-    test_install_confinement.py, UV_OFFLINE) and calls read_file and grep;
-    no reply names the host's state directory."""
-    if shutil.which("uv") is None:
-        pytest.skip("uv is not installed")
-    from unify import db
-    from unify.actor import core_surface
-    from unify.actor.code_act_actor import CodeActActor
-    from unify.actor.execution import _CURRENT_SANDBOX, PythonExecutionSession
-    from unify.actor.execution import worker
-
-    assert worker.enabled(), "cells must run in the sandboxed worker"
-    monkeypatch.setenv("UV_OFFLINE", "1")
-    (world["state"] / "store.sqlite").unlink()
-    db.reset_store()
-    _wheel(world["workspace"], "neutralprobe", "0.1")
-    actor = CodeActActor(environments=[])
-    session = PythonExecutionSession(environments={})
-    objects = core_surface.sandbox_objects(actor, policy=core_surface.WritePolicy())
-    session.global_state.update(objects)
-    session.core_globals = objects
-    token = _CURRENT_SANDBOX.set(session)
-    try:
-        out = await actor.get_tools("act")["execute_code"].fn(
-            thought="Probe the sandbox.",
-            code=_CELL,
-        )
-    finally:
-        _CURRENT_SANDBOX.reset(token)
-        await session.close()
-        await actor.close()
-        db.reset_store()
-    assert out.error is None, out.error
-    seen = out.result
-    assert seen["cwd"] == "/workspace"
-    allowed = set(sandbox.CELL_ENV_NAMES) | {
-        "PWD",
-        "TMPDIR",
-        "USER",
-        "LOGNAME",
-        "UNIFY_SANDBOX_PROBE",
-        *sandbox.TRUSTED_ENV,
-    }
-    assert set(seen["env"]) <= allowed | {
-        n for n in seen["env"] if n.startswith("LC_")
-    }, seen["env"]
-    assert "UNIFY_HOME" not in seen["env"] and "FAKE_SERVICE_TOKEN" not in seen["env"]
-    assert not any(str(world["state"]) in v for v in seen["values"])
-    assert seen["install"]["success"] is True, seen["install"]
-    installer_text = seen["install"]["stdout"] + seen["install"]["stderr"]
-    assert str(world["state"]) not in installer_text, installer_text
-    name, location = seen["imported"]
-    assert name == "neutralprobe" and location.startswith("/venv/"), location
-    assert seen["read"] == ["/workspace/data.txt", "     2\tline 2\n"]
-    assert seen["grep"] == ["/workspace/data.txt:3:line 3"]
-    assert str(world["state"]) not in repr(seen)
 
 
 def test_the_teammates_request_names_the_record_by_its_sandbox_path(tmp_path):

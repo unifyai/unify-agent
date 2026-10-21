@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 from unify.common.async_tool_loop import start_async_tool_loop
-from tests.helpers import _handle_project
 from tests.scripted_model import ScriptedModel, reply, scripted
 from unify.common.llm_client import new_llm_client
 
@@ -45,13 +44,12 @@ def _has_jpeg_block(content) -> bool:
 
 
 @pytest.mark.asyncio
-@_handle_project
 async def test_initial_user_image_is_promoted(llm_config) -> None:
     """
     The first user turn contains an inline JPEG. We expect the `image_url`
     block in the first user message, and in the request sent to the model.
     """
-    model = ScriptedModel(actor=[reply("cat")])
+    model = ScriptedModel(query_llm=[reply("cat")])
 
     img_block = {
         "type": "image_url",
@@ -82,12 +80,12 @@ async def test_initial_user_image_is_promoted(llm_config) -> None:
     ), "No promoted image_url block found in user message"
 
     # ---- 2. the request the model received carries the block --------------
-    (request,) = model.of("actor")
+    (request,) = model.of("query_llm")
     assert any(
         m["role"] == "user" and _has_jpeg_block(m.get("content"))
         for m in request.messages
     ), "The request sent to the model carries no image_url block"
-    assert model.kinds() == ["actor"]
+    assert model.kinds() == ["query_llm"]
 
 
 # --------------------------------------------------------------------------- #
@@ -102,7 +100,6 @@ async def image_tool() -> dict:
 
 
 @pytest.mark.asyncio
-@_handle_project
 async def test_tool_result_image_is_promoted_and_reasoned_over(llm_config) -> None:
     """
     Flow:

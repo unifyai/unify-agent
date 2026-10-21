@@ -7,9 +7,9 @@ method's docs come back from ``await functions.search(...)``; a memory run's san
 so the namespaces section never rendered there.
 
 Here an environment is registered (namespaces, a global and a module, as a world registers them) and the actor's
-first request is taken as sent, in each mode a run uses: memory on in library mode (tau2, CL-Bench, office and ARC
-memory cells), memory off with the library (the memory-off arms) and the library off (``UNIFY_LIBRARY=off``, the
-minimal arms). Each name it advertises is read, without being called, in one cell of the actor's real sandbox:
+first request is taken as sent, in each memory mode a run uses: memory on in library mode (tau2, CL-Bench, office and
+ARC memory cells) and memory off (no memory of any kind). Each name it advertises is read, without being called, in
+one cell of the actor's real sandbox:
 
 * every dotted name in a code span (``tools.read``, ``functions.search``, ``primitives.weather``, ``memory.ask``),
   and every bare name a span calls (``display``, ``query_llm``, ``help``);
@@ -211,15 +211,14 @@ def _memory_library(world: dict, monkeypatch) -> None:
     monkeypatch.setattr(request_mod, "_CURRENT", run)
 
 
-#: The modes a run uses: memory on in library mode, memory off with the library, and no library at all.
-MODES = ("memory-library", "library", "library-off")
+#: The modes a run uses: memory on in library mode, and memory off.
+MODES = ("memory-library", "memory-off")
 
 
 @pytest.fixture
 def registered_world():
     """An environment registered as a world registers one: namespaces, a global and a module."""
     from tests.function_manager.primitives.test_environment_namespaces import (
-        _reseed,
         weather_surface,
     )
     from unify.function_manager.primitives import register_environment
@@ -229,10 +228,8 @@ def registered_world():
 
     clear_environment_namespaces()
     register_environment(weather_surface(), source="tests:weather_surface")
-    _reseed()
     yield
     clear_environment_namespaces()
-    _reseed()
 
 
 async def _first_request_names(
@@ -242,20 +239,13 @@ async def _first_request_names(
 ) -> tuple[list[str], dict[str, str], str]:  # noqa: F811
     """The texts of the actor's first request in *mode*, the names they advertise, and the cell's output."""
     from unify.actor import in_code_tools
-    from unify.actor.environments.actor import top_level_environments
+    from unify.actor.environments import registered_environments
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "persistent")
     monkeypatch.setattr(in_code_tools, "SESSIONS", _Collect())
     if mode == "memory-library":
         _memory_library(core_world, monkeypatch)
     else:
-        monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "")
-        monkeypatch.setattr(
-            SETTINGS,
-            "UNIFY_LIBRARY",
-            "off" if mode == "library-off" else "",
-        )
+        monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")
     state: dict = {}
 
     def turn(call):
@@ -270,17 +260,14 @@ async def _first_request_names(
         state["output"] = _tool_results(call)
         return reply("done")
 
-    model = ScriptedModel(actor=[Always(turn)], allow=("review", "gate", "query_llm"))
-    actor = new_actor(environments=top_level_environments())
-    try:
-        with scripted(model):
-            handle = await actor.act(
-                "Read every name your instructions advertise.",
-                persist=False,
-            )
-            await asyncio.wait_for(handle.result(), 300)
-    finally:
-        await actor.close()
+    model = ScriptedModel(actor=[Always(turn)], allow=("query_llm",))
+    actor = new_actor(environments=registered_environments())
+    with scripted(model):
+        handle = await actor.act(
+            "Read every name your instructions advertise.",
+            persist=False,
+        )
+        await asyncio.wait_for(handle.result(), 300)
     return state["texts"], state["names"], state.get("output", "")
 
 
@@ -310,10 +297,7 @@ async def test_every_name_the_actors_prompt_advertises_resolves_in_its_sandbox(
     # the registered environment is advertised and read in every mode
     assert "primitives.weather" in names and "weather_client" in names, sorted(names)
     joined = "\n".join(texts)
-    if mode != "library":
-        assert not re.search(r"\bfunctions\.\w", joined), joined[:3000]
-    else:
-        assert "functions.search" in names, sorted(names)
+    assert not re.search(r"\bfunctions\.\w", joined), joined[:3000]
 
 
 @needs_box
@@ -324,7 +308,7 @@ async def test_every_span_not_bound_on_purpose_is_still_in_a_prompt(
     registered_world,
     monkeypatch,
 ):  # noqa: F811
-    texts, _, _ = await _first_request_names(core_world, monkeypatch, "library")
+    texts, _, _ = await _first_request_names(core_world, monkeypatch, "memory-library")
     joined = "\n".join(texts)
     for span in NOT_BOUND:
         assert span in joined, span

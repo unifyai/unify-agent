@@ -17,11 +17,11 @@ from pathlib import Path
 import pytest
 
 from tests.actor.code_act.sandbox_world import (  # noqa: F401 (fixture)
+    actor_interpreter,
     needs_bwrap,
     world,
 )
 from unify import sandbox
-from unify.actor.execution.session import SessionExecutor
 
 
 def _host_path_without_interpreter() -> str:
@@ -106,18 +106,18 @@ async def test_python_and_python3_run_in_a_cell_without_them_on_the_host_path(
     monkeypatch,
 ):
     monkeypatch.setenv("PATH", _host_path_without_interpreter())
-    ex = SessionExecutor()
+    ex = await actor_interpreter()
     try:
-        res = await ex.execute(code=CELL, state_mode="stateless", session_id=None)
+        res = await ex.run_cell(CELL)
     finally:
-        await ex.close()
-    assert res["error"] is None, res["error"]
+        await ex.stop()
+    assert res.error is None, res.text()
     policy = sandbox.build_policy()
     version = str(tuple(sys.version_info[:2]))
     dirs = sandbox.interpreter_bin_dirs()
     for name in ("python", "python3"):
-        code, stdout, found = res["result"][name]
-        assert (code, stdout) == (0, version), res["result"]
+        code, stdout, found = res.result[name]
+        assert (code, stdout) == (0, version), res.result
         # Found in the interpreter's directory, which an existing mount shows.
         assert os.path.dirname(found) in dirs, found
         real = Path(os.path.realpath(found))

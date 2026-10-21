@@ -115,20 +115,3 @@ async def test_the_in_code_surface_answers_the_cell_without_running_it(tmp_path,
     assert all(r["refusal"] == no_op_cells.REFUSAL and r["error"] is True for r in cell_rows), cell_rows
 
 
-@pytest.mark.asyncio
-@pytest.mark.timeout(60)
-async def test_the_full_surface_answers_the_cell_without_running_it():
-    from unify.actor.code_act_actor import CodeActActor
-
-    actor = CodeActActor()
-    try:
-        execute_code = actor.get_tools("act")["execute_code"]
-        out = await execute_code("think", "print('the next step is to compare the rows')")
-        assert isinstance(out, dict) and out["stdout"] == "" and out["result"] is None
-        assert "this cell computes nothing" in out["error"]
-        assert out["error"].endswith("To answer, reply with the answer as text.")
-        ran = await execute_code("count", "rows = [1, 2, 3]\nprint(len(rows))")
-        err = ran.get("error") if isinstance(ran, dict) else getattr(ran, "error", None)
-        assert err is None  # a cell that computes runs as before
-    finally:
-        await actor.close()

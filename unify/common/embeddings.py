@@ -1,10 +1,9 @@
 """Text embeddings for semantic search, kept on this machine.
 
 A vector is computed once per model and text and stored under a hash of the
-text in ``UNIFY_EMBED_CACHE``, else ``<UNIFY_HOME>/embeddings.sqlite``, so
-every comparison runs here and only text never embedded before reaches a
-model. The file is a cache: deleting it costs only the recomputation, and
-any number of stores can share one.
+text in ``<UNIFY_HOME>/embeddings.sqlite``, so every comparison runs here and
+only text never embedded before reaches a model. The file is a cache:
+deleting it costs only the recomputation.
 
 Two embedders produce the vectors:
 
@@ -23,7 +22,6 @@ Two embedders produce the vectors:
 from __future__ import annotations
 
 import hashlib
-import os
 import sqlite3
 import threading
 from contextlib import closing
@@ -223,8 +221,7 @@ def embedder() -> Embedder:
 
 
 def _connect() -> sqlite3.Connection:
-    explicit = os.environ.get("UNIFY_EMBED_CACHE", "").strip()
-    path = Path(explicit) if explicit else db.store_home() / "embeddings.sqlite"
+    path = db.store_home() / "embeddings.sqlite"
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")

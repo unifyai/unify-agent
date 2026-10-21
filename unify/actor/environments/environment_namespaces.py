@@ -2,26 +2,22 @@
 
 ``UNIFY_ENV_NAMESPACES`` (``unify/function_manager/primitives/environment.py``)
 registers an environment's callable surface as ``primitives.<name>``
-namespaces. This environment puts them in the actor's sandbox beside
-``primitives.actor``: it shares the ``primitives`` namespace, so the actor
-merges the two into one ``Primitives`` object whose scope holds both, and its
-prompt context is a short listing. Method documentation stays out of the
-prompt; each method is a primitive row that function search returns, and
-``help(primitives.<name>.<method>)`` reads it in the sandbox.
+namespaces. This environment binds them in the actor's cells as one
+``Primitives`` object, and its prompt context is a short listing. Method
+documentation stays out of the prompt: ``help(primitives.<name>.<method>)``
+reads it in a cell.
 """
 
 from __future__ import annotations
 
-import asyncio
-from typing import Dict, List, Optional
+from typing import List
 
-from unify.actor.environments.base import BaseEnvironment, ToolMetadata
+from unify.actor.environments.base import BaseEnvironment
 from unify.function_manager.primitives.environment import (
     environment_modules,
     environment_namespaces,
     environment_surface,
 )
-from unify.function_manager.primitives.registry import get_registry
 
 
 class EnvironmentNamespacesEnvironment(BaseEnvironment):
@@ -29,88 +25,23 @@ class EnvironmentNamespacesEnvironment(BaseEnvironment):
 
     NAMESPACE = "primitives"
 
-    def __init__(
-        self,
-        *,
-        clarification_up_q: Optional[asyncio.Queue[str]] = None,
-        clarification_down_q: Optional[asyncio.Queue[str]] = None,
-    ) -> None:
-        from unify.function_manager.primitives import Primitives, PrimitiveScope
+    def __init__(self) -> None:
+        from unify.function_manager.primitives import Primitives
 
         self._aliases = frozenset(environment_namespaces())
         if not self._aliases:
             raise ValueError("no environment namespace is registered")
-        self._primitives = Primitives(
-            primitive_scope=PrimitiveScope(scoped_managers=self._aliases),
-        )
-        super().__init__(
-            instance=self._primitives,
-            namespace=self.NAMESPACE,
-            clarification_up_q=clarification_up_q,
-            clarification_down_q=clarification_down_q,
-        )
-
-    @property
-    def prompt_documented_names(self) -> frozenset[str]:
-        """None: the listing names namespaces, so every method stays searchable."""
-        return frozenset()
-
-    def get_instance(self):
-        return self._primitives
-
-    def get_tools(self) -> Dict[str, ToolMetadata]:
-        registry = get_registry()
-        tools: Dict[str, ToolMetadata] = {}
-        for alias, namespace in sorted(environment_namespaces().items()):
-            if alias not in self._aliases:
-                continue
-            for method in namespace.methods:
-                fq_name = f"{self.NAMESPACE}.{alias}.{method.name}"
-                tools[fq_name] = ToolMetadata(
-                    name=fq_name,
-                    is_impure=method.effect != "read",
-                    is_steerable=False,
-                    signature=method.signature,
-                    function_id=registry.get_function_id(alias, method.name),
-                    function_context="primitive",
-                )
-        return tools
+        super().__init__(instance=Primitives(), namespace=self.NAMESPACE)
 
     def get_prompt_context(self) -> str:
-        """The context outside a session: as a session under the run's
-        switches would read it."""
-
-        from unify.actor.core_surface import bound_libraries
-
-        return self.get_prompt_context_for(bound_libraries())
-
-    def get_prompt_context_for(self, libraries: frozenset[str]) -> str:
-        from unify.actor.core_surface import FUNCTIONS
-
         namespaces = environment_namespaces()
-        # The library search is the sandbox's ``functions`` (the core
-        # surface). A sandbox without it (a memory run, or UNIFY_LIBRARY=off)
-        # has no stored function to inject them into and no search, so the
-        # docs come from help() alone.
-        library = FUNCTIONS in libraries
-        stored = (
-            "A stored function that calls them needs no import: they are "
-            "recorded and injected when it runs later. "
-            if library
-            else ""
-        )
-        search = (
-            "`await functions.search(...)` (as primitive rows) and from "
-            if library
-            else ""
-        )
         lines = [
             "### `primitives.*` — This Environment's Namespaces\n",
             "The environment you work in registered the namespaces below. "
             "Call their methods from Python as "
-            f"`primitives.<namespace>.<method>(...)`. {stored}Each method's "
+            "`primitives.<namespace>.<method>(...)`. Each method's "
             "signature and "
-            f"documentation come back from {search}"
+            "documentation come back from "
             "`help(primitives.<namespace>.<method>)`. "
             "Effects: `read` methods change nothing, `write` methods create or "
             "change state, `destructive` methods delete or overwrite it.\n",
@@ -137,8 +68,7 @@ class EnvironmentNamespacesEnvironment(BaseEnvironment):
         if modules:
             listed = ", ".join(f"`{name}`" for name in sorted(modules))
             lines.append(
-                f"\nModules the environment supplies (import them freely; never "
-                f"declare them as `dependencies`): {listed}.",
+                f"\nModules the environment supplies (import them freely): {listed}.",
             )
         return "\n".join(lines)
 

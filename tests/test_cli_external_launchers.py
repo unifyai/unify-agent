@@ -52,5 +52,4 @@ def test_the_paper_adapter_argv_parses():
     assert args.quiet is True
     assert args.home == HOME
     assert args.request == REQUEST
-    assert args.no_store is False
     assert args.timeout is None

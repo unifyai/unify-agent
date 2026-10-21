@@ -3,18 +3,15 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import copy
-import os
 import re
 import secrets
 from pathlib import Path
 from typing import Any, Literal
 
 import unillm
-from pydantic import BaseModel
 
 from unify.logger import LOGGER
 from unify.common.hierarchical_logger import ICONS
-from unify.session_details import SESSION_DETAILS
 from unify.settings import SETTINGS
 
 _THINKING_ICON = ICONS["llm_thinking"]
@@ -53,44 +50,12 @@ class PendingThinkingLog:
 
 
 def resolve_default_model() -> tuple[str, str | None]:
-    """Resolve the session's default LLM as (model, reasoning_effort).
+    """The run's model and reasoning effort, ``(UNIFY_MODEL, UNIFY_REASONING_EFFORT)``.
 
-    The per-assistant default (from the assistant record, via SESSION_DETAILS) takes
-    priority over the deployment-wide UNIFY_MODEL. A returned effort of None
-    means no effort override and per-call-site effort levels apply.
+    An effort of None means no effort override: each call site's own level applies.
     """
-    session_model = SESSION_DETAILS.assistant.default_model
-    if session_model:
-        return (
-            session_model,
-            SESSION_DETAILS.assistant.default_reasoning_effort or None,
-        )
     effort = SETTINGS.UNIFY_REASONING_EFFORT.strip() or None
     return SETTINGS.UNIFY_MODEL, effort
-
-
-def resolve_slow_brain_model() -> tuple[str, str | None]:
-    """Resolve the ConversationManager slow-brain LLM as (model, effort).
-
-    Priority:
-    1. Per-assistant slow brain (assistant record / SESSION_DETAILS), including effort
-    2. ``UNIFY_CONVERSATION_SLOW_BRAIN_MODEL`` when set (non-empty)
-    3. The global shared model (``UNIFY_MODEL``)
-
-    Independent of the actor ``default_model``. A returned effort of None means
-    per-call-site effort levels apply.
-    """
-    session_model = SESSION_DETAILS.assistant.slow_brain_model
-    if session_model:
-        return (
-            session_model,
-            SESSION_DETAILS.assistant.slow_brain_reasoning_effort or None,
-        )
-    slow_model = SETTINGS.conversation.SLOW_BRAIN_MODEL.strip()
-    if slow_model:
-        effort = SETTINGS.conversation.SLOW_BRAIN_REASONING_EFFORT.strip() or None
-        return slow_model, effort
-    return SETTINGS.UNIFY_MODEL, None
 
 
 LLMPurpose = Literal["planning"]
@@ -123,10 +88,13 @@ def purpose_from_origin(origin: str | None) -> LLMPurpose | None:
     return None
 
 
-# ── UNIFY_REQUEST_METADATA_HEADERS ──────────────────────────────────────────
-# Four HTTP headers on every model call, so a proxy can attribute it. The
-# values are random or counted by the harness and never request content; the
-# request body is untouched (headers are not part of it).
+# ── Request metadata headers ─────────────────────────────────────────────────
+# Four HTTP headers on every model call, so a proxy can attribute it (for
+# example, measure the cache hits of each session's first call and of the
+# calls after a compaction). The values are random or counted by the harness
+# and never request content; the request body is untouched (headers are not
+# part of it), so the provider's prompt cache is not affected. With no proxy
+# in front that strips them, the headers reach the model provider.
 
 SESSION_HEADER = "X-Unify-Session"
 PARENT_HEADER = "X-Unify-Parent"
@@ -134,8 +102,6 @@ REQUEST_HEADER = "X-Unify-Request"
 CALL_KIND_HEADER = "X-Unify-Call-Kind"
 MSG_COUNT_HEADER = "X-Unify-Msg-Count"
 
-#: Every header value matches this.
-HEADER_VALUE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 _OUTSIDE_HEADER_CHARSET = re.compile(r"[^A-Za-z0-9_.:-]")
 
 #: ``X-Unify-Call-Kind`` of every model call a cell's code makes (its
@@ -161,11 +127,6 @@ def call_kind(kind: str):
         _CALL_KIND.reset(token)
 
 
-def request_metadata_headers_enabled() -> bool:
-    """Whether ``UNIFY_REQUEST_METADATA_HEADERS=on``."""
-    return getattr(SETTINGS, "UNIFY_REQUEST_METADATA_HEADERS", "") == "on"
-
-
 def _header_value(text: Any) -> str:
     """*text* in the header charset, at most 64 characters, never empty."""
     value = _OUTSIDE_HEADER_CHARSET.sub("_", str(text or ""))[:64]
@@ -188,17 +149,14 @@ def _install_request_metadata(
     client: "unillm.AsyncUnify | unillm.Unify",
     parent: "unillm.AsyncUnify | unillm.Unify | None" = None,
 ) -> None:
-    """With ``UNIFY_REQUEST_METADATA_HEADERS=on``, add the headers to every
-    call *client* makes; off, *client* is left untouched.
+    """Add the headers to every call *client* makes.
 
     The headers are merged into the call's ``extra_headers`` where unillm
     has assembled the request (``_generate``), so ``X-Unify-Msg-Count``
-    counts the messages sent, and every retry (the tool-choice fallback's
-    included) carries them. A fork is a new client (unillm's ``copy()``
-    copies no instance attribute), so it gets its own session id.
+    counts the messages sent, and every retry carries them. A fork is a new
+    client (unillm's ``copy()`` copies no instance attribute), so it gets its
+    own session id.
     """
-    if not request_metadata_headers_enabled():
-        return
     state = _RequestMetadata(getattr(parent, "_unify_request_metadata", None))
     client._unify_request_metadata = state
     send = client._generate
@@ -220,8 +178,6 @@ def _install_request_metadata(
 # request headers (unify/memory/integration/fork.py).
 PASS_HEADER = "X-Unify-Pass-Id"
 ENTRIES_HEADER = "X-Unify-Entries"
-EPISODE_HEADER = "X-Unify-Episode"
-SEGMENT_HEADER = "X-Unify-Segment"
 #: A pass id or an entry id: 16 lower-case hex digits; the entries header carries at most this many, joined by ".".
 _ATTRIBUTION_ID = re.compile(r"^[0-9a-f]{16}$")
 MAX_HEADER_ENTRIES = 64
@@ -254,7 +210,7 @@ class Attribution:
 @contextlib.contextmanager
 def attribution(pass_id: str, entries: list[str] | None = None):
     """Model calls made inside the block (this context, and the tasks it starts) carry *pass_id* and *entries* as
-    ``X-Unify-Pass-Id`` and ``X-Unify-Entries`` (with ``UNIFY_REQUEST_METADATA_HEADERS=on``)."""
+    ``X-Unify-Pass-Id`` and ``X-Unify-Entries``."""
     token = _ATTRIBUTION.set(Attribution(pass_id, entries))
     try:
         yield _ATTRIBUTION.get()
@@ -296,22 +252,11 @@ def count_requester_message(client: Any) -> None:
     ``X-Unify-Request`` on *client*'s later calls is the count: 1 from the
     request the loop starts with, then one more for each later requester
     message (the next request of a persistent session, or a message sent
-    while a request runs). A client without the headers is left alone.
+    while a request runs).
     """
     state = getattr(client, "_unify_request_metadata", None)
     if state is not None:
         state.requests += 1
-
-
-#: ``UNIFY_REASONING_EFFORT=provider``: no client of the run sends a reasoning effort, whatever its call site or
-#: its caller asks (the actor, its forks, compaction, model-written ``query_llm`` and the memory writer alike), so
-#: every call runs at the provider's own default. An explicit ``reasoning_effort="provider"`` means the same.
-PROVIDER_EFFORT = "provider"
-
-
-def provider_effort_run() -> bool:
-    """Whether this run sends no reasoning effort at all (``UNIFY_REASONING_EFFORT=provider``)."""
-    return str(getattr(SETTINGS, "UNIFY_REASONING_EFFORT", "") or "").strip().lower() == PROVIDER_EFFORT
 
 
 def _build_llm_client(
@@ -337,49 +282,26 @@ def _build_llm_client(
     config.update(kwargs)
     if default_effort is not None:
         config["reasoning_effort"] = default_effort
-    if config.get("reasoning_effort") == PROVIDER_EFFORT or provider_effort_run():
-        config["reasoning_effort"] = None  # the provider's default: unillm sends no effort
 
     if async_client:
         client = unillm.AsyncUnify(model, **config)
     else:
         client = unillm.Unify(model, **config)
 
-    # UNIFY_STREAM_MODEL_CALLS=on: the client's calls are streamed so a long
-    # one shows traffic while the model generates; unillm reassembles each
-    # reply, and ``copy()`` (a fork) keeps the setting.
-    if SETTINGS.UNIFY_STREAM_MODEL_CALLS == "on":
-        client.set_stream_transport(True)
-    pass_stream_idle_limit()
+    # Every call is sent as a stream and read to its end, so bytes arrive while
+    # the model is still generating and a proxy that cancels a silent call
+    # does not cancel a long one; unillm reassembles each reply into the
+    # completion an unstreamed call returns, and ``copy()`` (a fork) keeps the
+    # setting.
+    client.set_stream_transport(True)
 
     if origin:
         pending_log = PendingThinkingLog(origin)
         client.set_on_log_file_pending(pending_log.on_pending_path)
         client._pending_thinking_log = pending_log
 
-    if SETTINGS.UNIFY_TOOL_CHOICE_FALLBACK:
-        from unify.common.tool_choice_fallback import install_tool_choice_fallback
-
-        install_tool_choice_fallback(client)
-
     _install_request_metadata(client)
     return client
-
-
-# unillm's limit on a streamed call's silence, read on each call.
-UNILLM_STREAM_IDLE_ENV = "UNILLM_STREAM_IDLE_S"
-
-
-def pass_stream_idle_limit() -> None:
-    """UNIFY_STREAM_IDLE_S, when set, becomes unillm's ``UNILLM_STREAM_IDLE_S``.
-
-    unillm reads it from the environment on every streamed call, so setting it
-    here applies to every client this process has made, forks included. Empty
-    leaves unillm's own value as it is.
-    """
-    value = SETTINGS.UNIFY_STREAM_IDLE_S
-    if value:
-        os.environ[UNILLM_STREAM_IDLE_ENV] = value
 
 
 def new_llm_client(
@@ -394,9 +316,8 @@ def new_llm_client(
     """
     Create a configured Unify client.
 
-    If model is not specified, uses the assistant's default model when one is
-    set (which also pins its reasoning effort, overriding the call site), and
-    otherwise UNIFY_MODEL from settings.
+    If model is not specified, uses UNIFY_MODEL, and UNIFY_REASONING_EFFORT
+    (when set) overrides the call site's effort.
     Defaults to high reasoning_effort where applicable. Callers that want a
     different setting (e.g. fast-path helpers at "low", or max-effort actor
     profiles) pass ``reasoning_effort`` explicitly.
@@ -454,41 +375,8 @@ def fork_llm_client(
         pending_log = PendingThinkingLog(origin)
         fork.set_on_log_file_pending(pending_log.on_pending_path)
         fork._pending_thinking_log = pending_log
-    if SETTINGS.UNIFY_TOOL_CHOICE_FALLBACK:
-        from unify.common.tool_choice_fallback import install_tool_choice_fallback
-
-        install_tool_choice_fallback(fork)
     _install_request_metadata(fork, parent)
     return fork
-
-
-def new_slow_brain_llm_client(
-    model: str | None = None,
-    *,
-    async_client: bool = True,
-    stateful: bool = False,
-    origin: str | None = None,
-    **kwargs: Any,
-) -> "unillm.AsyncUnify | unillm.Unify":
-    """Create an LLM client for ConversationManager slow-brain call sites.
-
-    When ``model`` is omitted, resolves via :func:`resolve_slow_brain_model`
-    (assistant slow brain → slow-brain setting → global ``UNIFY_MODEL``).
-    Defaults to high reasoning effort; an assistant- or setting-level effort
-    override pins the client effort the same way as :func:`new_llm_client`.
-    """
-    default_effort: str | None = None
-    if model is None:
-        model, default_effort = resolve_slow_brain_model()
-
-    return _build_llm_client(
-        model,
-        async_client=async_client,
-        stateful=stateful,
-        origin=origin,
-        default_effort=default_effort,
-        kwargs=kwargs,
-    )
 
 
 def _make_openai_strict_json_schema_compatible(node: Any) -> None:
@@ -517,37 +405,3 @@ def _make_openai_strict_json_schema_compatible(node: Any) -> None:
             _make_openai_strict_json_schema_compatible(v)
 
 
-def pydantic_to_json_schema_response_format(
-    response_model: type[BaseModel],
-    *,
-    name: str | None = None,
-    strict: bool = True,
-) -> dict[str, Any]:
-    """Build an OpenAI-style `response_format` dict from a Pydantic model.
-
-    This returns the JSON-schema response format shape used by OpenAI:
-
-        {"type": "json_schema", "json_schema": {"name": ..., "schema": ..., "strict": ...}}
-
-    When `strict=True`, the schema is post-processed to satisfy OpenAI's strict
-    constraints (see `_make_openai_strict_json_schema_compatible`).
-    """
-    schema = response_model.model_json_schema()
-    if strict:
-        schema = copy.deepcopy(schema)
-        _make_openai_strict_json_schema_compatible(schema)
-    else:
-        # Keep the existing behaviour of forbidding unknown keys where possible.
-        schema.setdefault("additionalProperties", False)
-        for def_schema in schema.get("$defs", {}).values():
-            if isinstance(def_schema, dict):
-                def_schema.setdefault("additionalProperties", False)
-
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "name": name or response_model.__name__,
-            "schema": schema,
-            "strict": strict,
-        },
-    }

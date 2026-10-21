@@ -3,8 +3,7 @@
 The loop runs one model turn at a time and a turn's tool calls in call order,
 each to completion; nothing the requester sends interrupts a model call or a
 cell (it is appended at the next turn boundary), and only ``stop()`` cancels
-what is in flight. Each case of the design note
-(``DESIGN-trim-the-loop.md``, cases 1-12) has a test here:
+what is in flight. The cases:
 
 1. several ``execute_code`` calls in one turn run in order;
 2. a plain text reply is the final answer (and a persistent session's
@@ -15,12 +14,11 @@ what is in flight. Each case of the design note
 5. provider errors are retried (a), an empty reply is nudged (b) and a reply
    cut at the token limit is taken as it is (c);
 6. the step cap and the loop's timeout end the request cleanly;
-7. compression mid-loop keeps every tool result;
-8. a cell's ``reply()`` ends the turn; a second one is refused;
+7. compaction mid-loop keeps every tool result;
+8. a cell's ``tools.answer`` ends the turn; a second one is refused;
 9. ``stop()`` during a model call and during a hung cell;
 10. record blocks posted during a cell arrive once, at the next boundary;
-11. a persistent session keeps its state across requests and errors;
-12. ``UNIFY_LOOP_STOP`` ends a request of no-progress cells.
+11. a persistent session keeps its state across requests and errors.
 
 The model is a scripted transport replacing unillm's provider call (or, for
 case 5a, ``litellm.acompletion`` below unillm's retry policy): nothing leaves
@@ -41,6 +39,8 @@ import pytest
 from openai.types.chat import ChatCompletion
 
 from tests import cache_discipline_helpers as h
+from tests.actor.code_act.helpers import history
+from tests.scripted_model import below_retry_transport
 from unify.settings import SETTINGS
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.timeout(120)]
@@ -138,7 +138,7 @@ def _scripted(model: _Model, *, below_retry: bool = False):
     unillm_settings.UNILLM_CACHE = False
     if below_retry:
         original = uni_llm.litellm.acompletion
-        uni_llm.litellm.acompletion = model
+        uni_llm.litellm.acompletion = below_retry_transport(model)
     else:
         original = uni_llm._acompletion_with_transient_retry
         uni_llm._acompletion_with_transient_retry = model
@@ -261,7 +261,7 @@ def _turns_with_calls(messages: list[dict]) -> list[dict]:
 
 
 async def _act(actor, request: str, **kw):
-    return await actor.act(request, can_store=False, **kw)
+    return await actor.act(request, **kw)
 
 
 @contextlib.asynccontextmanager
@@ -269,10 +269,7 @@ async def _actor(**kw):
     from unify.actor.code_act_actor import CodeActActor
 
     actor = CodeActActor(**kw)
-    try:
-        yield actor
-    finally:
-        await actor.close()
+    yield actor
 
 
 async def _next_response(handle, bound: float = 30.0) -> dict:
@@ -302,7 +299,7 @@ async def test_1_calls_of_one_turn_run_in_call_order(worker_pids):
         with _scripted(model):
             handle = await _act(actor, "Compute x.")
             result = await asyncio.wait_for(handle.result(), 60)
-            messages = list(handle.get_history())
+            messages = history(handle)
     assert result == DONE
     (turn,) = _turns_with_calls(messages)
     results = _results_of(messages, turn)
@@ -337,18 +334,14 @@ async def test_1_the_actors_requests_extend_each_other_byte_for_byte():
 
 
 async def test_2_a_text_reply_is_the_final_answer():
-    from unify.common._async_tool import cell_reply
-
     model = _Model([_reply("The answer is 4.")])
     async with _actor() as actor:
         with _scripted(model):
             handle = await _act(actor, "What is 2 + 2?")
             result = await asyncio.wait_for(handle.result(), 60)
-            final = handle.get_history()[-1]
+            final = history(handle)[-1]
     assert result == "The answer is 4."
     assert final["role"] == "assistant" and not final.get("tool_calls")
-    if cell_reply.enabled():
-        assert final[cell_reply.SOURCE_KEY] == "text"
     assert len(model.requests) == 1
 
 
@@ -394,7 +387,7 @@ async def test_3_malformed_and_unknown_calls_are_answered_and_the_loop_goes_on(
         with _scripted(model):
             handle = await _act(actor, "Print something.")
             result = await asyncio.wait_for(handle.result(), 60)
-            messages = list(handle.get_history())
+            messages = history(handle)
     assert result == DONE
     # unillm's own retry (as shipped) sent the turn again with its nudge.
     assert "were not valid JSON" in _text(model.requests[1][-1].get("content"))
@@ -431,7 +424,7 @@ async def test_4a_a_cell_that_raises_leaves_the_session_usable(worker_pids):
         with _scripted(model):
             handle = await _act(actor, "Go.")
             assert await asyncio.wait_for(handle.result(), 60) == DONE
-            messages = list(handle.get_history())
+            messages = history(handle)
     _, raised, read = _turns_with_calls(messages)
     assert "ValueError: boom" in _text(_results_of(messages, raised)[0]["content"])
     assert "kept=5" in _text(_results_of(messages, read)[0]["content"])
@@ -450,13 +443,11 @@ async def test_4b_a_hung_cell_is_interrupted_at_the_cell_timeout(worker_pids):
         with _scripted(model):
             handle = await _act(actor, "Go.")
             assert await asyncio.wait_for(handle.result(), 60) == DONE
-            messages = list(handle.get_history())
+            messages = history(handle)
     hung, after = _turns_with_calls(messages)
     hung_text = _text(_results_of(messages, hung)[0]["content"])
-    assert "timed out after 2" in hung_text
-    assert "worker was killed" in hung_text
-    after_text = _text(_results_of(messages, after)[0]["content"])
-    assert "alive" in after_text and "A fresh Python worker started" in after_text
+    assert "timed out after 2 s; the interpreter was restarted" in hung_text
+    assert "alive" in _text(_results_of(messages, after)[0]["content"])
     assert len(worker_pids) == 2  # the hung one, then a fresh one
     await _assert_gone(worker_pids)
 
@@ -477,9 +468,9 @@ async def test_4c_a_worker_that_dies_is_replaced_for_the_next_cell(worker_pids):
         with _scripted(model):
             handle = await _act(actor, "Go.")
             assert await asyncio.wait_for(handle.result(), 60) == DONE
-            messages = list(handle.get_history())
+            messages = history(handle)
     died, after = _turns_with_calls(messages)
-    assert "worker exited during the cell" in _text(
+    assert "the interpreter exited during the cell; the interpreter was restarted" in _text(
         _results_of(messages, died)[0]["content"],
     )
     assert "alive" in _text(_results_of(messages, after)[0]["content"])
@@ -566,9 +557,8 @@ async def test_6_the_step_cap_ends_the_request_and_leaves_nothing_running(
     await _assert_gone(worker_pids)
 
 
-async def test_6_the_step_cap_quotes_the_draft_under_step_cap_reply(monkeypatch):
+async def test_6_the_step_cap_quotes_the_draft(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_MAX_TOOL_LOOP_STEPS", 6)
-    monkeypatch.setattr(SETTINGS, "UNIFY_STEP_CAP_REPLY", "draft")
     model = _Model(
         [_reply("Draft: 41.", calls=[_cell(f"print({i})")]) for i in range(10)],
     )
@@ -609,7 +599,7 @@ async def test_6_the_loop_timeout_cancels_and_answers_the_running_call():
             timeout=1,
         )
         result = await asyncio.wait_for(handle.result(), 30)
-        messages = list(handle.get_history())
+        messages = history(handle)
     assert result.startswith("🔚 Terminating early: timeout (1s) exceeded")
     assert cancelled.is_set()
     (turn,) = _turns_with_calls(messages)
@@ -619,14 +609,15 @@ async def test_6_the_loop_timeout_cancels_and_answers_the_running_call():
     assert _loop_tasks() == []
 
 
-# ── 7. compression mid-loop ────────────────────────────────────────────────
+# ── 7. compaction mid-loop ─────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("full_on_turn", [0, 1])
-async def test_7_compression_keeps_every_tool_result(full_on_turn):
-    """The context fills on the first or on the second call's turn; both
-    results are in the request that compresses, and the session goes on from
-    the summary."""
+async def test_7_compaction_keeps_every_tool_result(full_on_turn):
+    """The context fills on the first or on the second call's turn; the summary
+    request carries every result so far, and the session goes on from the
+    summary."""
+    from unify.common._async_tool import cache_discipline
     from unify.common.async_tool_loop import start_async_tool_loop
 
     ran: list[str] = []
@@ -656,7 +647,6 @@ async def test_7_compression_keeps_every_tool_result(full_on_turn):
                 if full_on_turn == 1
                 else []
             ),
-            _reply(calls=[("compress_context", {})]),
             _reply(summary),
             *(
                 [_reply(calls=[("execute_code", {"code": "two"})])]
@@ -673,89 +663,78 @@ async def test_7_compression_keeps_every_tool_result(full_on_turn):
             {"execute_code": execute_code},
             log_steps=False,
             timeout=60,
+            tools_in_code=True,
         )
         result = await asyncio.wait_for(handle.result(), 60)
     assert result == DONE
     assert ran == ["one", "two"]
-    # The request that was told to compress carries every result so far.
-    compress_request = next(
+    # The summary request (a fork of the last request and what followed it)
+    # carries every result so far.
+    summarising = next(
         r
         for r in model.requests
-        if any(
-            "You must call `compress_context` now." in _text(m.get("content"))
-            for m in r
-        )
+        if cache_discipline.COMPRESSION_FORK_INSTRUCTION in _text(r[-1].get("content"))
     )
-    carried = [_text(m["content"]) for m in compress_request if m.get("role") == "tool"]
+    carried = [_text(m["content"]) for m in summarising if m.get("role") == "tool"]
     expected = ["result of one"] + (["result of two"] if full_on_turn == 1 else [])
     assert [c for c in carried if c.startswith("result of")] == expected
     # The session went on from the summary.
     assert any(summary in _text(m.get("content")) for m in model.requests[-1])
-    # Continuity: up to the compression every request extends the one
-    # before it, the summary request extends the compressing one (a fork),
-    # the requests after the restart extend each other from the summary, and
-    # no request leaves a call unanswered.
-    at = model.requests.index(compress_request)
-    before, summarising, after = (
-        model.requests[: at + 1],
-        model.requests[at + 1],
-        model.requests[at + 2 :],
-    )
+    # Continuity: up to the compaction every request extends the one before
+    # it, the summary request extends the last of them (a fork), the requests
+    # after the restart extend each other from the summary, and no request
+    # leaves a call unanswered.
+    at = model.requests.index(summarising)
+    before, after = model.requests[:at], model.requests[at + 1 :]
     assert _append_only(before)
-    assert _append_only([compress_request, summarising])
+    assert _append_only([before[-1], summarising])
     assert _append_only(after)
     assert any(summary in _text(m.get("content")) for m in after[0])
     assert all(_every_call_answered(r) for r in before + after)
 
 
-# ── 8. reply() from a cell ─────────────────────────────────────────────────
+# ── 8. tools.answer from a cell ────────────────────────────────────────────
 
 
-@pytest.fixture
-def reply_channel(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_CHANNEL", "code+text")
-
-
-async def test_8_a_cells_reply_ends_the_turn_and_a_second_is_ignored(reply_channel):
-    """Two reply() calls in one cell: the first ends the cell."""
-    model = _Model(
-        [_reply(calls=[_cell("reply('first')\nreply('second')\nprint('unreached')")])],
-    )
+async def test_8_a_cells_answer_ends_the_turn_when_the_cell_returns():
+    model = _Model([_reply(calls=[_cell("tools.answer('first')\nprint('after')")])])
     async with _actor() as actor:
         with _scripted(model):
             handle = await _act(actor, "Answer from code.")
             result = await asyncio.wait_for(handle.result(), 60)
-            messages = list(handle.get_history())
+            messages = history(handle)
     assert result == "first"
-    assert len(model.requests) == 1  # no model call after the reply
+    assert len(model.requests) == 1  # no model call after the answer
     (turn,) = _turns_with_calls(messages)
-    assert "unreached" not in _text(_results_of(messages, turn)[0]["content"])
+    assert "after" in _text(_results_of(messages, turn)[0]["content"])
 
 
-async def test_8_a_second_cell_reply_in_the_same_turn_is_refused(reply_channel):
-    from unify.common._async_tool import cell_reply
-
-    model = _Model(
-        [_reply(calls=[_cell("reply('first')"), _cell("reply('second')")])],
+async def test_8_a_second_answer_in_the_same_request_is_refused():
+    code = (
+        "tools.answer('first')\n"
+        "try:\n"
+        "    tools.answer('second')\n"
+        "except Exception as e:\n"
+        "    print('REFUSED', type(e).__name__)"
     )
+    model = _Model([_reply(calls=[_cell(code)])])
     async with _actor() as actor:
         with _scripted(model):
             handle = await _act(actor, "Answer from code.")
             result = await asyncio.wait_for(handle.result(), 60)
-            messages = list(handle.get_history())
+            messages = history(handle)
     assert result == "first"
     (turn,) = _turns_with_calls(messages)
-    first, second = _results_of(messages, turn)
-    assert cell_reply.ALREADY_REPLIED in _text(second["content"])
+    assert "REFUSED" in _text(_results_of(messages, turn)[0]["content"])
 
 
-async def test_8_a_reply_in_a_later_request_is_that_requests_answer(reply_channel):
-    """The reply slot starts empty for each request: a persistent session's
-    later request answers with its own cell's reply()."""
+async def test_8_an_answer_in_a_later_request_is_that_requests_answer():
+    """The answer slot starts empty for each request: a persistent session's
+    later request answers with its own cell's answer."""
     model = _Model(
         [
-            _reply(calls=[_cell("reply('first')")]),
-            _reply(calls=[_cell("reply('second')")]),
+            _reply(calls=[_cell("tools.answer('first')")]),
+            _reply(calls=[_cell("tools.answer('second')")]),
             _reply("unused"),
         ],
     )
@@ -768,7 +747,7 @@ async def test_8_a_reply_in_a_later_request_is_that_requests_answer(reply_channe
             await handle.stop("done")
             await asyncio.wait_for(handle.result(), 30)
     assert (first["content"], second["content"]) == ("first", "second")
-    assert len(model.requests) == 2  # no model call after either reply
+    assert len(model.requests) == 2  # no model call after either answer
 
 
 # ── 9. stop ────────────────────────────────────────────────────────────────
@@ -835,7 +814,6 @@ async def test_9_a_stopped_model_calls_cost_still_reaches_the_run_meter(monkeypa
     # The provider's answer arrives later and its charge is counted.
     assert meter.known_cost_usd("planning") == Decimal("0.0250")
     assert meter.cost_usd("planning") is None  # still never understated
-    assert handle._runtime_state.cancelled_turns_by_cause == {"stop": 1}
 
 
 async def test_9_a_callers_own_timeout_propagates_and_ends_the_loop():
@@ -924,44 +902,6 @@ async def test_10_record_posts_during_a_cell_arrive_once_at_the_next_boundary():
     assert "slept" in texts[tool_at]
 
 
-async def test_10_a_running_calls_progress_reaches_the_handle_not_the_model():
-    """A running call's progress notifications go to the handle
-    (``next_notification``) as they come; none enters the transcript, and
-    the model is not called until the call has finished."""
-    from unify.common.async_tool_loop import start_async_tool_loop
-
-    progressed, release = asyncio.Event(), asyncio.Event()
-
-    async def work(*, _notification_up_q: asyncio.Queue | None = None) -> str:
-        """Do some work, reporting progress."""
-        await _notification_up_q.put({"message": "halfway"})
-        progressed.set()
-        await release.wait()
-        await _notification_up_q.put({"message": "finishing"})
-        return "worked"
-
-    model = _Model([_reply(calls=[("work", {})]), _reply(DONE)])
-    with _scripted(model):
-        handle = start_async_tool_loop(
-            h.new_client(),
-            "Work.",
-            {"work": work},
-            log_steps=False,
-            timeout=30,
-        )
-        first = await asyncio.wait_for(handle.next_notification(), 10)
-        await asyncio.wait_for(progressed.wait(), 10)
-        assert len(model.requests) == 1  # nothing woke the model mid-call
-        release.set()
-        result = await asyncio.wait_for(handle.result(), 30)
-        second = await asyncio.wait_for(handle.next_notification(), 10)
-    assert result == DONE
-    assert (first["message"], second["message"]) == ("halfway", "finishing")
-    assert first["type"] == "notification" and first["tool_name"] == "work"
-    sent = json.dumps(model.requests, default=str)
-    assert "halfway" not in sent and "finishing" not in sent
-
-
 # ── 11. a persistent session ───────────────────────────────────────────────
 
 
@@ -986,7 +926,7 @@ async def test_11_a_persistent_session_keeps_state_across_requests_and_errors(
             assert (await _next_response(handle))["content"] == "That failed."
             await handle.submit("Read x.")
             assert (await _next_response(handle))["content"] == "Read x."
-            messages = list(handle.get_history())
+            messages = history(handle)
             await handle.stop("session ended")
             await asyncio.wait_for(handle.result(), 30)
     turns = _turns_with_calls(messages)
@@ -1036,7 +976,6 @@ async def test_11_after_a_request_that_failed_at_the_step_limit_the_next_starts_
 ):
     """A request that ends at its step limit (a failed request, not just a
     failed cell) leaves the session's state and the next request intact."""
-    monkeypatch.setattr(SETTINGS, "UNIFY_STEP_CAP_REPLY", "draft")
     monkeypatch.setattr(SETTINGS, "UNIFY_MAX_TOOL_LOOP_STEPS", 9)
     model = _Model(
         [
@@ -1059,7 +998,7 @@ async def test_11_after_a_request_that_failed_at_the_step_limit_the_next_starts_
             model.script[:] = [_read_x, _reply("Read x.")]
             await handle.submit("Read x.")
             third = await _next_response(handle)
-            messages = list(handle.get_history())
+            messages = history(handle)
             await handle.stop("session ended")
             await asyncio.wait_for(handle.result(), 30)
     assert failed["content"].startswith("🔚 Stopped at the step limit")
@@ -1162,31 +1101,3 @@ async def test_11_requeue_at_front_keeps_the_queue_order():
         "second",
         "third",
     ]
-
-
-# ── 12. loop stop ──────────────────────────────────────────────────────────
-
-
-async def test_12_loop_stop_ends_a_request_of_no_progress_cells(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_LOOP_STOP", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_LOOP_STOP_K", 3)
-    # the stop takes the model's last word with UNIFY_STEP_CAP_REPLY empty (with draft it quotes the draft)
-    monkeypatch.setattr(SETTINGS, "UNIFY_STEP_CAP_REPLY", "")
-
-    def _turn(messages):
-        return _reply(calls=[_cell("print('thinking')")])
-
-    def _last_word(messages):
-        return _reply("Best answer: 7.")
-
-    model = _Model([_turn, _turn, _turn, _last_word, _reply("unused")])
-    async with _actor() as actor:
-        with _scripted(model):
-            handle = await _act(actor, "Find the number.")
-            result = await asyncio.wait_for(handle.result(), 60)
-    assert "Best answer: 7." in result
-    assert len(model.requests) == 4
-    # The loop stop fired (not the step limit or the model ending it).
-    assert handle._runtime_state.loop_stops == 1
-    assert "no-progress" in result or "Terminating early" in result
-    assert model.requests[-1][-1]["content"].startswith("The last ")

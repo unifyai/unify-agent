@@ -42,8 +42,6 @@ CELLS_PER_TURN = 8
 POOL_RELATED_PAGE = 20
 #: the smallest statement ``similar`` reports, in AST nodes (``unify.memory.mining.MIN_NODES``; a test keeps them equal)
 SIMILAR_MIN_NODES = 12
-#: the flag ``store_skills`` needs: the actor may store and storage is not admission-gated
-STORE_FLAG = "store"
 #: the flag ``ask_library`` needs: ``UNIFY_MEMORY_LIBRARIAN=on``
 LIBRARIAN_FLAG = "librarian"
 
@@ -756,7 +754,7 @@ ASK = RegisteredTool(
 
 # --- every agent's one model-API tool, and the tools only the actor and its teammates have ---
 
-#: The one model-API tool of every agent with ``UNIFY_TOOLS_IN_CODE=on``: the same object, the same bytes, for all.
+#: The one model-API tool of every agent: the same object, the same bytes, for all.
 EXECUTE_CODE = RegisteredTool(
     name="execute_code",
     summary="run a Python cell in your interpreter, in your box.",
@@ -842,46 +840,6 @@ INSTALL = RegisteredTool(
     handler="unify.actor.tool_handlers:install",
     deadline_s=900.0,
     blocking=True,
-)
-
-STORE_SKILLS = RegisteredTool(
-    name="store_skills",
-    summary="start a review that stores reusable skills from your work so far.",
-    description=(
-        "Start a skill-storage review of the work so far: a dedicated reviewer examines the conversation and "
-        "stores any reusable functions and guidance, following your request. It returns at once; the review goes "
-        "on after the call, and its summary is kept with the request's result."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "request": {
-                "type": "string",
-                "description": (
-                    "The skill(s) to store: which part of the work holds the reusable pattern and what makes it "
-                    "valuable."
-                ),
-            },
-        },
-        "required": ["request"],
-        "additionalProperties": False,
-    },
-    refusals={
-        "no_context": "there is no active request to review; nothing was started",
-        "unavailable": "skill storage is not available in this session ({why}); nothing was started",
-        "no_request": "request must be a non-empty string; nothing was started",
-    },
-    requires=STORE_FLAG,
-    roles=(_A,),
-    returns="a line saying the review started; the review itself runs on after the call.",
-    examples=('tools.store_skills("Store the export function with the retry loop around the upload call.")',),
-    when=(
-        "Use it when you have just completed a complex subtask and recognise a reusable pattern worth keeping; say "
-        "which part of the work holds it."
-    ),
-    kind="action",
-    handler="unify.actor.tool_handlers:store_skills",
-    deadline_s=60.0,
 )
 
 ASK_LIBRARY = RegisteredTool(
@@ -1855,7 +1813,6 @@ _REGISTRY: tuple[RegisteredTool, ...] = (
     STOP,
     ASK,
     INSTALL,
-    STORE_SKILLS,
     ASK_LIBRARY,
     SEARCH,
     KEEP_NOTE,
@@ -1881,7 +1838,6 @@ def _check(specs: tuple[RegisteredTool, ...]) -> None:
 
 
 _check(_REGISTRY)
-_REGISTRY_BY_NAME = {s.name: s for s in _REGISTRY}
 
 
 #: The comms tools every agent on the run record has.
@@ -2031,7 +1987,6 @@ _ACTOR_HANDLED = {
     "ask": False,
     "delegate": False,
     "answer": False,
-    "store_skills": False,
     "current_request": False,
 }
 
@@ -2075,8 +2030,7 @@ def strict_parameters(agent: str, name: str) -> dict:
 
 
 def json_tools(agent: str) -> list[dict]:
-    """*agent*'s model-API tools with ``UNIFY_TOOLS_IN_CODE=on``: always ``execute_code`` alone, the same bytes for
-    every agent."""
+    """*agent*'s model-API tools: always ``execute_code`` alone, the same bytes for every agent."""
     if agent not in AGENTS:
         raise ValueError(f"unknown agent {agent!r}")
     return [EXECUTE_CODE.as_tool()]
@@ -2570,14 +2524,11 @@ _ACTOR_GLOBALS = ("display", "query_llm", "list_llms", "unillm", "run_coro_sync"
 
 def prebound_names(agent: str, facts: dict) -> tuple[str, ...]:
     """Every name bound in *agent*'s cells before any cell runs, with *facts* (``tools``, ``memory`` as for
-    :func:`prebound`; ``clarification``: the actor's session can ask its requester): the namespaces, ``help``
-    (the worker's own), and for the actor and teammates their other globals and, for the actor where it can ask,
-    ``request_clarification``. A declared set: binding a name never widens what the agent may do."""
+    :func:`prebound`): the namespaces, ``help`` (the worker's own), and for the actor and teammates their other
+    globals. A declared set: binding a name never widens what the agent may do."""
     names = [*namespace_names(agent, facts), "help"]
     if agent in (_A, _T):
         names += _ACTOR_GLOBALS
-        if agent == _A and facts.get("clarification"):
-            names.append("request_clarification")
     return tuple(names)
 
 

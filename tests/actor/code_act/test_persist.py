@@ -32,43 +32,36 @@ async def test_code_act_persist_keeps_loop_alive_until_stopped():
     """
     model = ScriptedModel(actor=[reply("READY"), reply("ACK")])
     actor = CodeActActor(timeout=60)
-    try:
-        with scripted(model):
-            handle = await actor.act(
-                "Reply with exactly 'READY' and do not call any tools. Then wait for further instructions.",
-                clarification_enabled=False,
-                persist=True,
-                can_store=False,
-            )
+    with scripted(model):
+        handle = await actor.act(
+            "Reply with exactly 'READY' and do not call any tools. Then wait for further instructions.",
+            clarification_enabled=False,
+            persist=True,
+        )
 
-            await _parked_with(handle, "READY")
-            assert (
-                not handle.done()
-            ), "persist=True should keep the loop alive after first message"
-            assert len(model.of("actor")) == 1
+        await _parked_with(handle, "READY")
+        assert (
+            not handle.done()
+        ), "persist=True should keep the loop alive after first message"
+        assert len(model.of("actor")) == 1
 
-            # A new request wakes the loop; it answers and parks again.
-            _ = await handle.submit(
-                "Now reply with exactly 'ACK' and keep waiting.",
-            )
-            await _parked_with(handle, "ACK")
-            assert (
-                not handle.done()
-            ), "persist=True should keep the loop alive after interjections"
-            second = model.of("actor")[1]
-            assert any(
-                m.get("role") == "user" and "exactly 'ACK'" in str(m.get("content"))
-                for m in second.messages
-            )
+        # A new request wakes the loop; it answers and parks again.
+        _ = await handle.submit(
+            "Now reply with exactly 'ACK' and keep waiting.",
+        )
+        await _parked_with(handle, "ACK")
+        assert (
+            not handle.done()
+        ), "persist=True should keep the loop alive after interjections"
+        second = model.of("actor")[1]
+        assert any(
+            m.get("role") == "user" and "exactly 'ACK'" in str(m.get("content"))
+            for m in second.messages
+        )
 
-            # Stop should terminate the loop, with no further request.
-            await asyncio.wait_for(handle.stop("test complete"), timeout=30)
-            await asyncio.wait_for(handle.result(), timeout=30)
-            assert handle.done()
-    finally:
-        try:
-            await actor.close()
-        except Exception:
-            pass
+        # Stop should terminate the loop, with no further request.
+        await asyncio.wait_for(handle.stop("test complete"), timeout=30)
+        await asyncio.wait_for(handle.result(), timeout=30)
+        assert handle.done()
     assert model.kinds() == ["actor", "actor"]
     model.assert_used_up()

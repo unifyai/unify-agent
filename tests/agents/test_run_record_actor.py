@@ -20,7 +20,6 @@ from tests.actor.code_act.core_world import (  # noqa: F401 (fixtures)
     world,
 )
 from tests.actor.code_act.sandbox_world import needs_bwrap
-from tests.helpers import _handle_project
 from unify.agents import run_record as rr
 from unify.common import tool_registry as R
 from unify.db import store_home
@@ -44,13 +43,10 @@ def _cell(code: str):
 
 
 async def _act(replies) -> tuple[list[dict], object]:
-    actor = new_actor(can_store=False)
-    try:
-        with h.scripted(tuple(replies)) as provider:
-            handle = await actor.act("Do the task.", persist=False)
-            assert await asyncio.wait_for(handle.result(), 120) == "done"
-    finally:
-        await actor.close()
+    actor = new_actor()
+    with h.scripted(tuple(replies)) as provider:
+        handle = await actor.act("Do the task.", persist=False)
+        assert await asyncio.wait_for(handle.result(), 120) == "done"
     return provider.requests, handle
 
 
@@ -67,7 +63,6 @@ def on_record(core_world, monkeypatch):  # noqa: F811
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(240)
-@_handle_project
 async def test_the_actor_reports_to_the_writer_and_reads_the_roster_through_its_tools(
     on_record,
 ):
@@ -96,7 +91,6 @@ async def test_the_actor_reports_to_the_writer_and_reads_the_roster_through_its_
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(240)
-@_handle_project
 async def test_the_cached_prefix_is_the_same_across_requests_whatever_the_roster_holds(
     on_record,
 ):

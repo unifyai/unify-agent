@@ -1,11 +1,9 @@
-"""The two records behind the record tools, each seen through :class:`unify.common.tool_registry.Record`.
+"""The record behind the actor's record tools, seen through :class:`unify.common.tool_registry.Record`.
 
-* :class:`PassRecordAdapter`: a memory pass's in-memory record (:class:`unify.memory.messaging.PassRecord`), shared
-  by the writer or curator and the helpers it starts.
-* :class:`AgentRecordAdapter`: the run's agent record (:mod:`unify.agents.record` and its :class:`Pool`), shared by
-  the actor and its teammates.
+:class:`AgentRecordAdapter`: the run's agent record (:mod:`unify.agents.record` and its :class:`Pool`), shared by
+the actor and its teammates.
 
-Neither changes what the record does: each method calls the record's own functions and turns a refusal into
+It does not change what the record does: each method calls the record's own functions and turns a refusal into
 :class:`unify.common.tool_registry.RecordRefused` with the record tool's form code, so the tools' handlers answer
 both records the same way: its ``text`` is either the finished refusal (a ``Refusal``, which keeps its form) or the
 reason, which the handler fills into the tool's template for that form. Entries are returned as plain dicts (``seq``, ``ts``, ``author``, ``kind``, ``text``,
@@ -14,7 +12,6 @@ reason, which the handler fills into the tool's template for that form. Entries 
 
 from __future__ import annotations
 
-import time
 from typing import Any, Optional
 
 from unify.common.tool_registry import RecordRefused
@@ -22,82 +19,6 @@ from unify.common.tool_registry import RecordRefused
 
 def _entry(e: Any) -> dict:
     return e.to_dict() if hasattr(e, "to_dict") else dict(e)
-
-
-class PassRecordAdapter:
-    """A memory pass's record (:class:`unify.memory.messaging.PassRecord`)."""
-
-    def __init__(self, pr: Any) -> None:
-        self.pr = pr
-
-    def post(self, sender: str, text: str, to: Optional[list] = None) -> dict:
-        from unify.memory import messaging
-
-        if to:
-            text = " ".join(f"@{n}" for n in to) + " " + str(text)
-        info: dict = {}
-        reply, sent_to = messaging.post(self.pr, sender, text, messaging.SEND_SPEC, info)
-        form = getattr(reply, "form", None)
-        if form is not None:
-            raise RecordRefused(form, reply)
-        return {"seq": info.get("seq"), "to": list(sent_to), "text": str(reply)}
-
-    def unseen(self, reader: str) -> list:
-        from unify.memory import messaging
-
-        return [_entry(e) for e in messaging.take(self.pr, reader)]
-
-    async def wait(self, reader: str, timeout: float) -> list:
-        """The unseen entries for *reader*; waits for one at most *timeout* seconds and never past the pass's wall
-        clock, and returns at once when no other agent is running (none can arrive) or *reader* is asked to stop.
-        """
-        from unify.memory import messaging
-
-        pr = self.pr
-        end = time.monotonic() + max(0.0, float(timeout))
-        while True:
-            new = messaging.take(pr, reader)
-            if new:
-                return [_entry(e) for e in new]
-            if not [n for n in pr.running() if n != reader] or reader in pr.stopping:
-                return []
-            left = min(pr.left(), end - time.monotonic())
-            if left <= 0:
-                return []
-            await pr.record.wait_for(reader, timeout=left)
-
-    def roster(self) -> list:
-        from unify.memory import messaging
-
-        return messaging.roster(self.pr)
-
-    async def start(self, spawner: str, task: str, **kw: Any) -> dict:
-        """Start a helper through the pass's pool (the pass's own lane, booking and wall clock apply)."""
-        pr = self.pr
-        if pr.pool is None:
-            raise RecordRefused("no_lane", "this pass has no helper lane")
-        name = kw.get("name")
-        if name is None:
-            k = 1
-            while f"h{k}" in pr.record.participants:
-                k += 1
-            name = f"h{k}"
-        pr.add_helper(name, task)
-        try:
-            started = await pr.pool.spawn(spawner, task, name)
-        except Exception as exc:  # the pool's own refusals, with the reason
-            raise RecordRefused(_spawn_form(exc), str(exc)) from None
-        return {"name": started}
-
-    async def stop(self, by: str, name: str) -> dict:
-        from unify.memory import messaging
-
-        info: dict = {}
-        reply = await messaging.stop(self.pr, by, {"helper": name}, info)
-        form = getattr(reply, "form", None)
-        if form is not None:
-            raise RecordRefused(form, reply)
-        return {"name": name, "text": str(reply), **info}
 
 
 def _post_form(exc: Exception) -> str:
@@ -203,4 +124,4 @@ class AgentRecordAdapter:
         return {"name": name, "state": participant.state}
 
 
-__all__ = ["AgentRecordAdapter", "PassRecordAdapter"]
+__all__ = ["AgentRecordAdapter"]

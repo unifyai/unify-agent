@@ -50,7 +50,6 @@ FINAL = '{"action": "submit", "grid": [[4]]}'
 AFTER = '{"action":"request_demos"}'
 PARTIAL = '{"action": "request_demos"}'
 REASONING = "**Requesting action demos**\n\nI need to request demos first."
-SUMMARY = "Nothing worth storing."
 # Every wait is bounded; the recorded host gave up after 300 s.
 WAIT_S = 30
 
@@ -120,17 +119,6 @@ def test_the_recorded_reply_reaches_unillm_as_a_stop():
     assert choice.provider_specific_fields["error"]["code"] == 502
 
 
-def _is_review(messages: list) -> bool:
-    text = json.dumps(messages, default=str)
-    # The storage review as shipped, or framed as the agent's own curation
-    # step (UNIFY_REVIEW_FRAMING=unified, the default since the code freeze).
-    return (
-        "## Storage Review" in text
-        or "You are a skill librarian" in text
-        or "This is the curation step that follows" in text
-    )
-
-
 class _Model:
     """The session's first calls play ``first`` in order; later calls answer:
     ``AFTER`` before the follow-up, ``FINAL`` once it has arrived."""
@@ -142,8 +130,6 @@ class _Model:
     async def __call__(self, *, shared_session=None, client=None, **kw):
         messages = kw.get("messages") or []
         self.requests.append(kw)
-        if _is_review(messages):
-            return h.completion(content=SUMMARY)
         if self.first:
             return self.first.pop(0)
         if "Demos received (request 1)" in json.dumps(messages, default=str):
@@ -262,7 +248,7 @@ async def test_a_session_answers_after_an_error_finish(jsonl_session, case):
                 await asyncio.gather(run, return_exceptions=True)
 
     assert code == 0
-    assert [line["type"] for line in lines if line["type"] != "storage"] == [
+    assert [line["type"] for line in lines] == [
         "response",
         "response",
         "result",
@@ -273,7 +259,7 @@ async def test_a_session_answers_after_an_error_finish(jsonl_session, case):
     assert answered == FINAL
     # A dropped reply's turn is sent again unchanged: same messages, tools
     # and tool choice as the turn whose reply failed.
-    session_calls = [r for r in model.requests if not _is_review(r["messages"])]
+    session_calls = model.requests
     turn = session_calls[0]
     for retry in session_calls[1:calls_before_answer]:
         for key in ("messages", "tools", "tool_choice"):

@@ -10,13 +10,7 @@ later task and session.
 Python runs in the sandboxed worker, so that process is the worker, which
 puts the environment on its own path
 (unify/actor/execution/worker.py). The harness, which holds the provider
-credentials, then never imports from it: :func:`activate` refuses, and
-:func:`missing` reads the installed distributions' metadata from the
-environment's path without putting it on ``sys.path``.
-
-A stored function records the packages it imports as PEP 508 requirement
-strings (its ``dependencies``); :func:`ensure` installs whichever of them
-are missing right before the function runs.
+credentials, never imports from it.
 
 The packages are the model's choice. So:
 
@@ -60,11 +54,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Tuple
 from urllib.parse import urlsplit
 
-from packaging.requirements import Requirement
 
 from unify import sandbox
 from unify.db import store_home
-from unify.sandbox import unconfined
 
 # What an install passes on from the harness's environment: finding uv and
 # the home directory, the locale, the index and proxy configuration, and
@@ -130,43 +122,6 @@ def site_packages() -> Path:
     """Where installed packages land; the directory put on ``sys.path``."""
     version = f"python{sys.version_info.major}.{sys.version_info.minor}"
     return environment_dir() / "lib" / version / "site-packages"
-
-
-def imports_in_process() -> bool:
-    """Whether this process imports the environment's packages: ``False``,
-    since Python runs in the sandboxed worker, except for a test of the
-    function manager's in-process loaders (tests' ``python_in_process``)."""
-    from unify.actor.execution import worker
-
-    return not worker.enabled()
-
-
-def activate() -> Path | None:
-    """Put the environment's packages on ``sys.path`` if it exists.
-
-    Returns the ``site-packages`` path when the environment has been created,
-    ``None`` otherwise. Idempotent and cheap, so it runs at the start of every
-    trajectory: an environment populated by an earlier session is importable
-    before the first cell runs.
-
-    Raises ``RuntimeError`` with Python in the sandboxed worker: what an
-    install put there would be importable by the harness (for example
-    through ``importlib.metadata.entry_points()`` discovery).
-    """
-    if not imports_in_process():
-        raise RuntimeError(
-            "The harness does not import from the workspace environment: with "
-            "Python in the sandboxed worker only the worker, confined, imports "
-            "what is installed there",
-        )
-    packages = site_packages()
-    if not packages.is_dir():
-        return None
-    path = str(packages)
-    if path not in sys.path:
-        sys.path.append(path)
-        importlib.invalidate_caches()
-    return packages
 
 
 def installer_cache() -> Path:
@@ -406,19 +361,18 @@ def _create() -> Path:
     if not environment_python().exists():
         venv.parent.mkdir(parents=True, exist_ok=True)
         _discard_unless_empty(venv)
-        with unconfined():
-            subprocess.run(
-                ["uv", "venv", "--no-config", "--python", sys.executable, str(venv)],
-                capture_output=True,
-                text=True,
-                check=True,
-                env=installer_env(),
-                cwd=str(venv.parent),
-            )
+        subprocess.run(
+            ["uv", "venv", "--no-config", "--python", sys.executable, str(venv)],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=installer_env(),
+            cwd=str(venv.parent),
+        )
         # Only in what uv just made: never through the paths of an
         # environment the installer's sandbox has written.
         site_packages().mkdir(parents=True, exist_ok=True)
-    return activate() if imports_in_process() else site_packages()
+    return site_packages()
 
 
 def _check_specifiers(specifiers: List[str]) -> None:
@@ -485,17 +439,14 @@ def _install(specifiers: List[str], timeout: float) -> Dict[str, Any]:
             egress,
             base_env,
         )
-        # Never wrapped by a cell's subprocess confinement: the command is the
-        # harness's, and already wrapped.
-        with unconfined():
-            result = subprocess.run(
-                argv,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                env=env,
-                cwd=cwd,
-            )
+        result = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+            cwd=cwd,
+        )
         note = _refusal_note(egress) if egress.refused else ""
     importlib.invalidate_caches()
     stderr = result.stderr
@@ -510,85 +461,3 @@ def _install(specifiers: List[str], timeout: float) -> Dict[str, Any]:
     }
 
 
-def parse_requirement(specifier: str) -> Requirement:
-    """The PEP 508 requirement a stored dependency string denotes.
-
-    Raises ``packaging.requirements.InvalidRequirement`` for anything else,
-    so a malformed dependency is rejected when it is recorded rather than
-    when the function first runs.
-    """
-    return Requirement(specifier)
-
-
-def _worker_path() -> List[str]:
-    """The path the worker imports from: this process's, then the environment."""
-    packages = str(site_packages())
-    return [p for p in sys.path if p and p != packages] + [packages]
-
-
-def _installed_version(name: str, path: Optional[List[str]]) -> str:
-    """The version of the distribution *name* found on *path* (``sys.path`` if
-    ``None``), read from its metadata; nothing is imported."""
-    if path is None:
-        return importlib.metadata.version(name)
-    found = next(iter(importlib.metadata.distributions(name=name, path=path)), None)
-    if found is None:
-        raise importlib.metadata.PackageNotFoundError(name)
-    return found.version
-
-
-def missing(specifiers: List[str]) -> List[str]:
-    """The subset of *specifiers* not satisfied by an installed distribution.
-
-    With Python in the sandboxed worker the distributions are looked up on the
-    worker's path by their metadata; the environment never joins this
-    process's ``sys.path``.
-    """
-    path: Optional[List[str]] = None
-    if imports_in_process():
-        activate()
-    else:
-        path = _worker_path()
-    absent: List[str] = []
-    for specifier in specifiers:
-        requirement = parse_requirement(specifier)
-        try:
-            version = _installed_version(requirement.name, path)
-        except importlib.metadata.PackageNotFoundError:
-            absent.append(specifier)
-            continue
-        if not requirement.specifier.contains(version, prereleases=True):
-            absent.append(specifier)
-    return absent
-
-
-def holds_module(module: str) -> bool:
-    """Whether the environment holds the top-level *module*, found by path
-    without importing anything or touching ``sys.path``."""
-    import importlib.machinery
-
-    try:
-        spec = importlib.machinery.PathFinder.find_spec(
-            module,
-            [str(site_packages())],
-        )
-    except (ImportError, ValueError):
-        return False
-    return spec is not None
-
-
-def ensure(specifiers: List[str]) -> None:
-    """Install whichever of *specifiers* are not already importable.
-
-    Raises ``RuntimeError`` carrying the installer's output when an install
-    fails, so a function whose dependencies cannot be met fails before its
-    body runs rather than on an import deep inside it.
-    """
-    absent = missing(specifiers)
-    if not absent:
-        return
-    outcome = install(absent)
-    if not outcome["success"]:
-        raise RuntimeError(
-            f"Failed to install {absent}: {outcome['stderr'].strip()}",
-        )

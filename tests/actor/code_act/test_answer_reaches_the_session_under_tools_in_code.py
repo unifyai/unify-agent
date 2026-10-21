@@ -5,7 +5,7 @@ reads JSON lines from stdout until one whose ``type`` is ``response``, ``result`
 ``str(event["content"])`` and parses the last JSON object in it as its next action. Later requests go in as stdin
 lines ``{"message": ...}``; ``{"quit": true}`` ends the session.
 
-With ``UNIFY_TOOLS_IN_CODE=on`` the actor's one model-API tool is ``execute_code(code)`` and it ends a turn either with
+The actor's one model-API tool is ``execute_code(code)`` and it ends a turn either with
 a plain text reply or with ``tools.answer(answer=...)`` from a cell (a dict answer is sent as its JSON text, and the
 loop ends the turn without another model call). Each test drives the CLI's ``Act`` session in process on the real
 ``CodeActActor`` and the real sandboxed interpreter; the model is the scripted transport (tests/scripted_model.py):
@@ -27,11 +27,11 @@ import pytest
 from tests.actor.code_act.core_world import core_world, new_actor  # noqa: F401 (fixture)
 from tests.actor.code_act.helpers import WORKER_START_BOUND_S
 from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401 (fixture)
-from tests.scripted_model import ScriptedModel, cell, reply, scripted
+from tests.scripted_model import ScriptedModel, reply, scripted
 from unify.actor import in_code_tools
 from unify.common import tool_registry as R
 from unify.memory.integration import request as request_mod
-from unify.settings import SETTINGS, ProductionSettings
+from unify.settings import SETTINGS
 
 REQUEST = "Look at the task and reply with your next action as one JSON object."
 FOLLOW_UP = "The action was taken. Reply with your next action as one JSON object."
@@ -103,9 +103,7 @@ class _Collect:
 @pytest.fixture
 def session_world(core_world, monkeypatch):  # noqa: F811
     """The sandbox world as the in-code tests set it up: a memory run (no stored-function library, no storage
-    review) whose consolidation is never due, the default cell state, and every in-code session the test opens.
-    Each test sets ``UNIFY_TOOLS_IN_CODE`` itself."""
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", ProductionSettings.model_fields["UNIFY_CELL_STATE"].default)
+    review) whose consolidation is never due, the default cell state, and every in-code session the test opens."""
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_E", 10**9)
     monkeypatch.setattr(request_mod, "_CURRENT", None)
@@ -235,7 +233,6 @@ CASES = {
 @pytest.mark.timeout(TEST_BOUND_S)
 @pytest.mark.parametrize("case", sorted(CASES))
 async def test_the_answer_reaches_the_session(session_world, monkeypatch, case):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     script, expected = CASES[case]
     model = ScriptedModel(actor=list(script))
     world = session_world["world"]
@@ -291,7 +288,6 @@ def _two_requests(mode: str) -> list:
 @pytest.mark.timeout(TEST_BOUND_S)
 @pytest.mark.parametrize("mode", ["text", "answer"])
 async def test_a_second_request_in_the_session_is_answered_the_same_way(session_world, monkeypatch, mode):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     model = ScriptedModel(actor=_two_requests(mode))
     world = session_world["world"]
     run = await _drive(world, monkeypatch, model, REQUEST, [FOLLOW_UP])
@@ -315,21 +311,3 @@ async def test_a_second_request_in_the_session_is_answered_the_same_way(session_
 # ── the tools off ────────────────────────────────────────────────────────────
 
 
-@needs_bwrap
-@pytest.mark.asyncio
-@pytest.mark.timeout(TEST_BOUND_S)
-async def test_off_a_text_answer_reaches_the_session_the_same(session_world, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "off")
-    model = ScriptedModel(actor=[reply(calls=[cell("print(6*7)")]), reply(SUBMIT_TEXT)])
-    world = session_world["world"]
-    run = await _drive(world, monkeypatch, model, REQUEST, [])
-
-    (content,) = _check_session(run, world, 1, model)
-    assert content == SUBMIT_TEXT
-    assert last_object(content) == SUBMIT
-    assert "42" in _tool_results(model.calls[1]), _why(model)
-    model.assert_used_up()
-    assert model.kinds() == ["actor", "actor"]
-    # the switch off: the actor's own tools, no in-code session
-    assert model.calls[0].request["tools"] != R.json_tools("actor")
-    assert session_world["opened"] == []

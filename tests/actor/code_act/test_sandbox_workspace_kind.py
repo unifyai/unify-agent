@@ -1,4 +1,4 @@
-"""Symbolic: the configured workspace is its own root kind, and the store is hidden inside it.
+"""Symbolic: the configured workspace is its own root kind, and the state directory is hidden inside it.
 
 The workspace (``UNIFY_LOCAL_ROOT``, or ``<UNIFY_HOME>/workspace``) is where
 the work is, so a top-level directory such as ``/data`` is allowed; only ``/``,
@@ -7,8 +7,8 @@ is or holds a configuration, cache or credential directory, and one that is,
 holds or (but for an editable checkout's root) is inside the harness's own
 code are refused.
 Inside it, secret files are masked (by an incremental, bounded scan), and a
-state directory or log directory it holds stays hidden (the store,
-``internal-transcripts/``, the logs) while ``transcripts/`` stays readable. Each test checks access only, on files it
+state directory or log directory it holds stays hidden (its caches, its
+journals, the logs) while ``transcripts/`` stays readable. Each test checks access only, on files it
 creates itself, and nothing connects anywhere.
 """
 
@@ -20,31 +20,31 @@ from pathlib import Path
 import pytest
 
 from tests.actor.code_act.sandbox_world import (  # noqa: F401 (fixture)
+    actor_interpreter,
     ENV_SECRET,
-    STATE_SECRET,
-    bash,
     needs_bwrap,
+    sh,
+    STATE_SECRET,
     world,
 )
 from unify import sandbox
-from unify.actor.execution.session import SessionExecutor
 from unify.settings import SETTINGS
 
-STORE_FILES = ("store.sqlite", "store.sqlite-wal", "store.sqlite-shm")
+STATE_FILES = ("embeddings.sqlite", "embeddings.sqlite-wal", "embeddings.sqlite-shm")
 
 
 def _seed_state(state: Path) -> dict[str, Path]:
-    """A state directory with a store, internal and ordinary transcripts."""
+    """A state directory with a cache, a run journal and a transcript."""
     (state / "transcripts").mkdir(parents=True, exist_ok=True)
     (state / "transcripts" / "s.jsonl").write_text('{"seq": 0}\n')
-    (state / "internal-transcripts").mkdir()
-    (state / "internal-transcripts" / "review.jsonl").write_text(STATE_SECRET + "\n")
-    for name in STORE_FILES:
+    (state / "runs").mkdir()
+    (state / "runs" / "journal.jsonl").write_text(STATE_SECRET + "\n")
+    for name in STATE_FILES:
         (state / name).write_text(STATE_SECRET)
     return {
         "transcript": state / "transcripts" / "s.jsonl",
-        "internal": state / "internal-transcripts" / "review.jsonl",
-        **{name: state / name for name in STORE_FILES},
+        "journal": state / "runs" / "journal.jsonl",
+        **{name: state / name for name in STATE_FILES},
     }
 
 
@@ -215,23 +215,23 @@ async def test_a_dot_env_inside_the_workspace_is_masked_in_a_cell(world):
     for path in secrets:
         assert policy.readable_violation(path) is not None, path
     assert policy.readable_violation(ws / "a" / "plain.txt") is None
-    ex = SessionExecutor()
+    ex = await actor_interpreter()
     # The cell sees the workspace at its fixed path.
     inside = [f"/workspace/{p.relative_to(ws)}" for p in secrets]
     try:
-        out, _ = await bash(
+        out, _ = await sh(
             ex,
             "cat " + " ".join(inside) + " 2>&1; cat /workspace/a/plain.txt",
         )
         assert ENV_SECRET not in out, out
         assert "rule mask-env-file" in out and "plain" in out, out
-        out, _ = await bash(ex, f"grep -r {ENV_SECRET} /workspace 2>/dev/null | wc -l")
+        out, _ = await sh(ex, f"grep -r {ENV_SECRET} /workspace 2>/dev/null | wc -l")
         assert out.strip() == "0"
         # The workspace stays writable around the masks.
-        out, _ = await bash(ex, "echo made > a/made.txt && cat a/made.txt")
+        out, _ = await sh(ex, "echo made > a/made.txt && cat a/made.txt")
         assert out.strip() == "made"
     finally:
-        await ex.close()
+        await ex.stop()
     # The host's files are untouched.
     for path in secrets:
         assert path.read_text() == f"KEY={ENV_SECRET}\n"
@@ -249,8 +249,8 @@ def test_a_workspace_that_is_unify_home_itself_is_refused(world, monkeypatch):
     _use(monkeypatch, state=state, workspace=str(state), log_dir=log_dir)
     assert sandbox._workspace_refusal(state) is not None
     policy = sandbox.build_policy(fresh=True)
-    # The harness's own file tools refuse the store there all the same.
-    for name in STORE_FILES:
+    # The harness's own file tools refuse the state's files there all the same.
+    for name in STATE_FILES:
         assert policy.readable_violation(state / name) is not None, name
     with pytest.raises(sandbox.SandboxRefusal) as raised:
         sandbox.wrap_argv(["true"], policy)
@@ -264,7 +264,7 @@ def test_a_workspace_that_is_unify_home_itself_is_refused(world, monkeypatch):
     "logs",
     ["outside the workspace", "under UNIFY_HOME", "in the workspace"],
 )
-async def test_a_workspace_holding_the_state_hides_the_store(
+async def test_a_workspace_holding_the_state_hides_it(
     world,
     monkeypatch,
     logs,
@@ -291,8 +291,8 @@ async def test_a_workspace_holding_the_state_hides_the_store(
     policy = sandbox.build_policy(fresh=True)
     sandbox.wrap_argv(["true"], policy)  # builds without a refusal
     hidden = [
-        *(seeded[name] for name in STORE_FILES),
-        seeded["internal"],
+        *(seeded[name] for name in STATE_FILES),
+        seeded["journal"],
         log_dir / "request.json",
         key,
     ]
@@ -301,33 +301,33 @@ async def test_a_workspace_holding_the_state_hides_the_store(
     assert policy.readable_violation(seeded["transcript"]) is None
     assert policy.readable_violation(workspace / "notes.txt") is None
 
-    ex = SessionExecutor()
+    ex = await actor_interpreter()
     try:
-        out, _ = await bash(ex, "cat " + _box(*hidden) + " 2>&1")
+        out, _ = await sh(ex, "cat " + _box(*hidden) + " 2>&1")
         assert STATE_SECRET not in out and ENV_SECRET not in out, out
-        out, _ = await bash(
+        out, _ = await sh(
             ex,
             f"cat {_box(seeded['transcript'])} {_box(workspace / 'notes.txt')}",
         )
         assert out.split() == ['{"seq":', "0}", "needle", "one"], out
-        out, _ = await bash(
+        out, _ = await sh(
             ex,
             f"grep -rl -e {STATE_SECRET} -e {ENV_SECRET} {_box(workspace, log_dir)} "
             "2>/dev/null | wc -l",
         )
         assert out.strip() == "0", out
-        out, _ = await bash(ex, f"ls -A {_box(state / 'internal-transcripts')}")
-        assert "review.jsonl" not in out
-        # Transcripts are readable, never writable; the store stays as it was.
-        out, _ = await bash(ex, f"echo x >> {_box(seeded['transcript'])} 2>&1")
+        out, _ = await sh(ex, f"ls -A {_box(state / 'runs')}")
+        assert "journal.jsonl" not in out
+        # Transcripts are readable, never writable; the state's files stay as they were.
+        out, _ = await sh(ex, f"echo x >> {_box(seeded['transcript'])} 2>&1")
         assert "Read-only file system" in out, out
-        await bash(ex, f"echo x > {_box(seeded['store.sqlite'])} 2>&1")
-        out, _ = await bash(ex, "echo made > made.txt && cat made.txt")
+        await sh(ex, f"echo x > {_box(seeded['embeddings.sqlite'])} 2>&1")
+        out, _ = await sh(ex, "echo made > made.txt && cat made.txt")
         assert out.strip() == "made"
     finally:
-        await ex.close()
+        await ex.stop()
     assert seeded["transcript"].read_text() == '{"seq": 0}\n'
-    for name in STORE_FILES:
+    for name in STATE_FILES:
         assert seeded[name].read_text() == STATE_SECRET
     assert (workspace / "made.txt").read_text() == "made\n"
 
@@ -361,29 +361,29 @@ async def test_the_runner_layout_builds_runs_and_hides_the_state(world, monkeypa
     assert sandbox._workspace_refusal(policy.workspace) is None
     sandbox.wrap_argv(["true"], policy)  # builds without a refusal
     hidden = [
-        *(seeded[name] for name in STORE_FILES),
-        seeded["internal"],
+        *(seeded[name] for name in STATE_FILES),
+        seeded["journal"],
         log_dir / "request.json",
     ]
     for path in hidden:
         assert policy.readable_violation(path) is not None, path
     assert policy.readable_violation(seeded["transcript"]) is None
 
-    ex = SessionExecutor()
+    ex = await actor_interpreter()
     try:
         # The cell starts in the workspace, shown at its fixed path.
-        out, _ = await bash(ex, "pwd -P; cat task.txt")
+        out, _ = await sh(ex, "pwd -P; cat task.txt")
         assert out.split() == ["/workspace", "the", "task"], out
-        out, _ = await bash(ex, "cat " + _box(*hidden) + " 2>&1")
+        out, _ = await sh(ex, "cat " + _box(*hidden) + " 2>&1")
         assert STATE_SECRET not in out, out
         # The state directory's host path shows only its mask: what may be
         # seen of it is shown at fixed paths.
-        out, _ = await bash(ex, f"ls -A {state}")
+        out, _ = await sh(ex, f"ls -A {state}")
         assert set(out.split()) == {sandbox.MASK_NOTICE_NAME}, out
-        out, _ = await bash(ex, f"cat {_box(seeded['transcript'])}")
+        out, _ = await sh(ex, f"cat {_box(seeded['transcript'])}")
         assert out.strip() == '{"seq": 0}'
     finally:
-        await ex.close()
+        await ex.stop()
 
 
 # ── the workspace scan: incremental, bounded, noted in the run's record ─────

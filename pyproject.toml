@@ -3,35 +3,37 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "unify"
+# The import package and the command are both `unify`. The distribution is
+# `unify-agent` because `unify` on PyPI is an unrelated project.
+name = "unify-agent"
 version = "0.0.0"
-description = "The brain of an AI assistant — steerable async tool loops, CodeAct, and distributed manager orchestration"
+description = "A self-improving agent harness: an actor that writes Python in a sandbox, and a memory that turns finished tasks into a tested library"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.12"
 dependencies = [
-    "aiohttp>=3.8.0",
-    "openai>=1.0.0",
     "pydantic>=2.0.0",
     "pydantic-core>=2.0.0",
     "pydantic-settings>=2.0.0",
     "pygments>=2.19.2",
     "python-dotenv>=1.0.0",
-    "requests>=2.31.0",
     "httpx>=0.27.0",
-    "unillm",
+    # The model client, pinned to a commit. `unillm` on PyPI is an unrelated
+    # project, so it is never named without this URL. The commit is not on
+    # GitHub yet: until it is, uv takes unillm from a sibling checkout of that
+    # commit ([tool.uv.sources] below), and a pip install fails at this line.
+    "unillm @ git+https://github.com/unifyai/unillm@9d8542206047d8131cf23f5511f4d6afcc81fc75",
     "numpy>=2.3.4",
-    # Document parsing
     "tiktoken>=0.11.0",
-    "docling>=2.82.0",
-    "spacy>=3.8.7",
-    "en-core-web-sm",
-    "pymupdf>=1.27.1",
     "openpyxl>=3.1.5",
     "pillow>=11.3.0",
-    "polars>=1.39.3",
     "jsonschema>=4.20",
-    # Local embeddings (UNIFY_LOCAL_EMBEDDINGS)
+]
+
+[project.optional-dependencies]
+# Embeddings computed in process (UNIFY_LOCAL_EMBEDDINGS). Only that path in
+# unify/common/embeddings.py imports these, and only when it runs.
+local-embeddings = [
     "torch>=2.13.0",
     "transformers>=5.17.0",
     "huggingface-hub>=1.16.1",
@@ -58,6 +60,12 @@ dev = [
     "rich>=13.9.4",
     "pre-commit>=4.0.1",
     "pyflakes>=3.2.0",
+    # Tests build chat-completion objects from openai's types directly.
+    "openai>=1.0.0",
+    # Tests exercise the in-process embedder: the local-embeddings extra.
+    "torch>=2.13.0",
+    "transformers>=5.17.0",
+    "huggingface-hub>=1.16.1",
     {include-group = "lint"},
 ]
 
@@ -68,8 +76,11 @@ include = ["unify", "unify.*"]
 unify = "unify.__main__:main"
 
 [tool.uv.sources]
+# Development only, and only until the pinned unillm commit is on GitHub: uv
+# installs unillm from a checkout beside this one, which must be at that
+# commit. Remove this entry once the commit is published, so that uv installs
+# the pin above as pip does.
 unillm = { path = "../unillm", editable = true }
-en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
 
 [tool.black]
 target-version = ["py312"]

@@ -4,10 +4,7 @@
 subcommand, which runs ``act`` on a request read from stdin): one
 ``CodeActActor`` takes the request, its progress streams to the terminal, a
 post it addresses to ``@user`` is shown and answered from the terminal, and
-the result is printed. This is the unit to compare against single-loop
-harnesses, and the shape a benchmark runner wants.
-
-``unify chat`` is legacy and unsupported: it only says so and exits.
+the result is printed.
 
 Runtime logs go to ``<UNIFY_HOME>/logs`` and stay off the terminal unless
 ``--debug`` is given.
@@ -21,24 +18,12 @@ import json
 import asyncio
 import os
 import select
-import signal
 import sys
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 
 from dotenv import load_dotenv
-
-# A cancelled request whose response has not come this long after the cancel
-# line was read, while model code holds the event loop's thread (a cell
-# running time.sleep, say), has that code interrupted; tried this many times.
-CANCEL_INTERRUPT_GRACE_S = 2.0
-CANCEL_INTERRUPT_TRIES = 3
-_CANCEL_INTERRUPT_SIGNAL = getattr(signal, "SIGUSR2", None)
-
-
-class CellInterrupted(Exception):
-    """Raised in a cell that held the event loop past a host's cancel."""
 
 
 ACT_HELP = """\
@@ -53,22 +38,22 @@ further line is a follow-up in the same sandbox, /quit ends the session.
 With --jsonl the session speaks newline-delimited JSON instead, for a
 program driving the actor: each stdin line is {"message": "..."} (a
 follow-up, which may span lines), {"cancel": true} or {"quit": true}
-(with UNIFY_MEMORY=on, "consolidate": false on any line, e.g. with the
+(with memory on, "consolidate": false on any line, e.g. with the
 stream's last request or with quit, makes the session record its episode but
 start no due consolidation pass whenever it ends, also at a step or time
 limit: a driver ending its stream uses it, since no pass may be tied to the
 stream's end); each
-stdout line is {"type": "result" | "response" | "record" | "storage" |
-"ended", ...}. With --persist every turn ends in one "response" line as the
+stdout line is {"type": "result" | "response" | "record" | "ended", ...}.
+With --persist every turn ends in one "response" line as the
 actor starts waiting, its content empty when the turn produced no text.
 {"cancel": true} ends the running turn at once and keeps the session: the
 model call and the tool calls still running are cancelled, and the turn's
 "response" line says "cancelled": true, its content the text the turn had
 drafted; with no turn running it is ignored. Without --persist it ends the
-session as {"quit": true} does. Progress still goes to stderr. A
-stdin line {"outcome": {...}} gives the session its checked outcome for the
-storage review (see unify/outcome.py) and is answered with
-{"type": "outcome", "accepted": ...}. A message is posted to the run's shared agent
+session as {"quit": true} does. Progress still goes to stderr. With memory
+on, a stdin line {"outcome": {...}} gives the request its checked outcome
+(see unify/outcome.py) and is answered with {"type": "outcome",
+"accepted": ...}. A message is posted to the run's shared agent
 record and reaches the actor at its next step instead of interrupting it,
 and each record entry that mentions @user is written out as
 {"type": "record", ...} (a "record>" line without --jsonl).
@@ -90,7 +75,7 @@ def _add_common_options(
         "--home",
         metavar="DIR",
         default=argparse.SUPPRESS if subcommand else None,
-        help="where the store, workspace and logs live "
+        help="where the workspace, transcripts, memory and logs live "
         "(default: UNIFY_HOME or ~/.unify)",
     )
     parser.add_argument(
@@ -108,16 +93,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     _add_common_options(parser)
     commands = parser.add_subparsers(dest="command")
-
-    chat = commands.add_parser(
-        "chat",
-        help="legacy, unsupported: the old conversation_manager product; "
-        "use `unify act`",
-        description="Legacy, unsupported: the old conversation_manager product "
-        "(unify/legacy/). It only prints that it is unsupported. Use "
-        "`unify act`.",
-    )
-    _add_common_options(chat, subcommand=True)
 
     act = commands.add_parser(
         "act",
@@ -137,11 +112,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="keep the actor alive after the result; further lines are follow-ups",
     )
     act.add_argument(
-        "--no-store",
-        action="store_true",
-        help="skip the storage review that distils the run into functions and guidance",
-    )
-    act.add_argument(
         "--no-clarify",
         action="store_true",
         help="no one answers questions: the record's @user posts get no reply "
@@ -156,7 +126,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     act.add_argument(
         "--json",
         action="store_true",
-        help="print the result as a JSON object with the run statistics",
+        help="print the result as a JSON object",
     )
     act.add_argument(
         "--quiet",
@@ -210,7 +180,6 @@ def _channel_pump(
     loop: asyncio.AbstractEventLoop,
     fd: int,
     reader: asyncio.StreamReader,
-    on_line: Callable[[bytes], None] | None,
 ) -> Iterator[None]:
     """Read *fd* on a thread into *reader* while the block runs.
 
@@ -226,7 +195,6 @@ def _channel_pump(
             stop.set()
 
     def pump() -> None:
-        partial = b""
         while not stop.is_set():
             try:
                 ready, _, _ = select.select([fd], [], [], 0.1)
@@ -238,14 +206,6 @@ def _channel_pump(
             if not data:
                 deliver(reader.feed_eof)
                 return
-            if on_line is not None:
-                partial += data
-                *lines, partial = partial.split(b"\n")
-                for line in lines:
-                    try:
-                        on_line(line)
-                    except Exception:
-                        pass
             deliver(reader.feed_data, data)
 
     thread = threading.Thread(target=pump, name="act-stdin", daemon=True)
@@ -258,9 +218,7 @@ def _channel_pump(
 
 
 @contextlib.contextmanager
-def _stdin_reader(
-    on_line: Callable[[bytes], None] | None = None,
-) -> Iterator[asyncio.StreamReader]:
+def _stdin_reader() -> Iterator[asyncio.StreamReader]:
     """Stream stdin into a reader on the running loop, leaving stdin blocking.
 
     A pipe transport would switch stdin to non-blocking, and a terminal's
@@ -275,9 +233,7 @@ def _stdin_reader(
     sandboxed worker, instead of waiting on, or taking, the driver's lines.
 
     That channel is read on its own thread, which hands the bytes to the
-    loop in order, so a line is read even while model code holds the
-    loop's thread; *on_line* sees each complete line there first (a host's
-    cancel must be seen while the loop cannot take it).
+    loop in order.
     """
     loop = asyncio.get_running_loop()
     fd = sys.stdin.fileno()
@@ -291,7 +247,7 @@ def _stdin_reader(
     reader = asyncio.StreamReader()
     if moved_from is not None:
         try:
-            with _channel_pump(loop, fd, reader, on_line):
+            with _channel_pump(loop, fd, reader):
                 yield reader
         finally:
             os.dup2(fd, moved_from)
@@ -314,25 +270,12 @@ def _stdin_reader(
 
 
 def _checker_lines_on() -> bool:
-    """Whether the CLI takes ``{"checker": ...}`` lines (memory v2.1 P9): ``UNIFY_MEMORY_LIBRARY`` and
-    ``UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE`` both on. Off, such a line is no control line at all.
-    """
-    try:
-        from unify.memory.integration.request import checker_visible_on
-    except ImportError:
-        return False
-    return checker_visible_on()
+    """Whether the CLI takes ``{"checker": ...}`` lines: whenever the run has memory. Without memory such a line is
+    no control line at all."""
+    from unify.memory.integration.switch import memory_on
+    from unify.settings import SETTINGS
 
-
-def _regime_lines_on() -> bool:
-    """Whether a ``{"checker": ...}`` line may also carry ``episode`` and ``about`` (``UNIFY_MEMORY_REGIME=inferred``,
-    with checker lines on): a verdict on an earlier episode, or what a verdict is about. Off, such a line is handled
-    exactly as before."""
-    try:
-        from unify.memory.integration.request import regime_inferred_on
-    except ImportError:
-        return False
-    return _checker_lines_on() and regime_inferred_on()
+    return memory_on(SETTINGS)
 
 
 class Act:
@@ -344,16 +287,11 @@ class Act:
         self._handle = None
         # Routes lines into the shared agent record.
         self._bridge = None
-        self._pending_clarifications: asyncio.Queue[dict] = asyncio.Queue()
         self._closing = asyncio.Event()
         # Set once the session is asked to end (/quit, {"quit": true}, end
         # of input); a persistent session whose result arrives without it
         # ended on its own.
         self._stop_requested = False
-        # A host's cancel the loop has not answered yet (see _escalate).
-        self._cancel_answered = threading.Event()
-        self._cancel_answered.set()
-        self._main_thread = threading.main_thread().ident
         # UNIFY_MEMORY: this request's memory run (None while the switch is off).
         self._mv2 = None
         # "consolidate": false on any stdin line: when the session ends, record the episode, start no pass.
@@ -366,33 +304,22 @@ class Act:
 
     async def start(self) -> None:
         import unify
-        from unify.actor.environments.actor import top_level_environments
-        from unify.manager_registry import ManagerRegistry
-        from unify.session_details import SESSION_DETAILS
+        from unify.actor.code_act_actor import CodeActActor
+        from unify.actor.environments import registered_environments
         from unify.workspace import get_local_root
 
-        SESSION_DETAILS.populate_from_env()
         unify.init()
-        # Relative paths in the actor's code resolve against the workspace,
-        # exactly as they do under the conversation loop.
+        # Relative paths in the actor's code resolve against the workspace.
         local_root = Path(get_local_root())
         local_root.mkdir(parents=True, exist_ok=True)
         os.chdir(local_root)
-        self._actor = ManagerRegistry.get_actor(
-            description="direct actor session",
-            environments=top_level_environments(),
-        )
+        self._actor = CodeActActor(environments=registered_environments())
 
     async def close(self) -> None:
         self._closing.set()
         if self._handle is not None and not self._handle.done():
             try:
                 await self._handle.stop("session closed")
-            except Exception:
-                pass
-        if self._actor is not None:
-            try:
-                await self._actor.close()
             except Exception:
                 pass
         if self._mv2 is not None:
@@ -429,7 +356,6 @@ class Act:
                 continue
             kind = notif.get("type", "")
             if kind == "response":
-                self._cancel_answered.set()
                 # A persist-mode turn finished; its answer is the result of the
                 # follow-up the user typed.
                 if self._args.jsonl:
@@ -443,41 +369,16 @@ class Act:
                     print(f"\n{notif.get('content', '')}\n", flush=True)
                 if self._bridge is not None:
                     await self._bridge.root_replied(str(notif.get("content", "")))
-            elif kind in ("storage_review_complete", "turn_storage_review_complete"):
-                verdict = "stored" if notif.get("success") else "storage review failed"
-                if self._args.jsonl:
-                    self._emit(
-                        type="storage",
-                        success=bool(notif.get("success")),
-                        message=notif.get("message", ""),
-                    )
-                else:
-                    self._progress(f"{verdict}: {notif.get('message', '')}")
             else:
                 text = notif.get("message") or notif.get("result_summary") or kind
                 self._progress(str(text))
 
-    async def _watch_clarifications(self) -> None:
-        while not self._closing.is_set():
-            clar = await self._handle.next_clarification()
-            if not clar:
-                continue
-            if self._args.jsonl:
-                self._emit(
-                    type="question",
-                    call_id=str(clar.get("call_id") or ""),
-                    question=clar.get("question", ""),
-                )
-            else:
-                print(f"\nactor asks> {clar.get('question', '')}", flush=True)
-            await self._pending_clarifications.put(clar)
-
     # ── input ────────────────────────────────────────────────────────────
 
     async def _read_lines(self) -> None:
-        """Route typed lines: answer a pending question, else submit the line
-        as the next message (read at the session's next turn boundary)."""
-        with _stdin_reader(on_line=self._on_channel_line) as reader:
+        """Route typed lines: each is the next message (read at the session's
+        next turn boundary)."""
+        with _stdin_reader() as reader:
             while not self._closing.is_set():
                 raw = await reader.readline()
                 if not raw:
@@ -508,18 +409,17 @@ class Act:
                         self._post_outcome(item.get("outcome"))
                         continue
                     if set(item) == {"checker"} and _checker_lines_on():
-                        # memory v2.1 P9: a verdict the bed showed the actor; never a message. Only a checker-only
-                        # line, only with UNIFY_MEMORY_LIBRARY and its checker switch on (review S4): any other line,
-                        # including one that also names message, quit or cancel, is handled exactly as before P9.
+                        # a verdict the environment showed the actor; never a message. Only a checker-only line:
+                        # any other line, including one that also names message, quit or cancel, is handled as such.
                         self._post_checker(item.get("checker"))
                         continue
                     if (
                         "checker" in item
                         and set(item) <= {"checker", "episode", "about"}
-                        and _regime_lines_on()
+                        and _checker_lines_on()
                     ):
-                        # UNIFY_MEMORY_REGIME=inferred: a verdict about an action or item, or on an earlier episode
-                        # named by its id (never by position)
+                        # a verdict about an action or item, or on an earlier episode named by its id (never by
+                        # position)
                         self._post_checker(
                             item.get("checker"),
                             episode=item.get("episode"),
@@ -536,7 +436,6 @@ class Act:
                             line = "/quit"
                         else:
                             if not await self._handle.cancel_request():
-                                self._cancel_answered.set()
                                 self._progress(
                                     "cancel ignored: the session takes no more requests",
                                 )
@@ -546,13 +445,10 @@ class Act:
                         if not isinstance(message, str) or not message:
                             continue
                         line = message
-                        # A new message: an earlier cancel is settled, or
-                        # was ignored (none ran), and needs no escalation.
-                        self._cancel_answered.set()
                 if line in {"/quit", "/exit", "/q"}:
                     from unify.actor.code_act_actor import SESSION_ENDED
 
-                    self._progress("session ended; reviewing the work for storage")
+                    self._progress("session ended")
                     self._stop_requested = True
                     await self._handle.stop(SESSION_ENDED)
                     return
@@ -560,92 +456,7 @@ class Act:
                     # A record post, read at the next boundary.
                     await self._bridge.user_message(line)
                     continue
-                if not self._pending_clarifications.empty():
-                    clar = await self._pending_clarifications.get()
-                    await self._handle.answer_clarification(
-                        str(clar.get("call_id") or ""),
-                        line,
-                    )
-                    continue
                 await self._handle.submit(line)
-
-    # ── cancel escalation ────────────────────────────────────────────────
-    # The loop takes a cancel at once, cancelling the model call and the
-    # tool calls in flight, and ends the request in its response line
-    # ("cancelled": true), which is the acknowledgement. Two things can hold
-    # that line: a tool that ignores its cancellation (the loop abandons it
-    # after a grace, see ToolsData.cancel_pending_tasks) and model code that
-    # holds the event loop's thread, so the loop never even reads the
-    # cancel. For the second, the channel's reader thread sees the cancel,
-    # and when no response has come after CANCEL_INTERRUPT_GRACE_S it raises
-    # CellInterrupted in the cell running on the main thread, if one is.
-    # Code blocked in C that never returns to the interpreter cannot be
-    # interrupted in process; the sandboxed worker (a process: interrupted on
-    # cancel, and killed if that does not stop it) can.
-
-    def _on_channel_line(self, raw: bytes) -> None:
-        """On the reader thread: arm the escalation for a host's cancel."""
-        if not (self._args.jsonl and self._args.persist):
-            return
-        if b"cancel" not in raw:
-            return
-        try:
-            item = json.loads(raw)
-        except ValueError:
-            return
-        if not isinstance(item, dict) or not item.get("cancel"):
-            return
-        self._cancel_answered.clear()
-        self._arm_escalation(CANCEL_INTERRUPT_TRIES)
-
-    def _arm_escalation(self, tries: int) -> None:
-        timer = threading.Timer(
-            CANCEL_INTERRUPT_GRACE_S,
-            self._escalate,
-            (tries,),
-        )
-        timer.daemon = True
-        timer.start()
-
-    def _escalate(self, tries: int) -> None:
-        if self._cancel_answered.is_set() or _CANCEL_INTERRUPT_SIGNAL is None:
-            return
-        try:
-            signal.pthread_kill(self._main_thread, _CANCEL_INTERRUPT_SIGNAL)
-        except (OSError, ValueError):
-            return
-        if tries > 1:
-            self._arm_escalation(tries - 1)
-
-    def _interrupt_cell(self, signum, frame) -> None:
-        """The signal's handler, on the main thread: interrupt a cell."""
-        if self._cancel_answered.is_set():
-            return
-        while frame is not None:
-            if frame.f_code.co_name == "__exec_wrapper":
-                raise CellInterrupted(
-                    "the requester cancelled the request while this cell held "
-                    "the session; it was interrupted",
-                )
-            frame = frame.f_back
-
-    @contextlib.contextmanager
-    def _cancel_escalation(self) -> Iterator[None]:
-        """Install the cell interrupt for a persistent jsonl session."""
-        if not (
-            self._args.jsonl
-            and self._args.persist
-            and _CANCEL_INTERRUPT_SIGNAL is not None
-            and threading.current_thread() is threading.main_thread()
-        ):
-            yield
-            return
-        previous = signal.signal(_CANCEL_INTERRUPT_SIGNAL, self._interrupt_cell)
-        try:
-            yield
-        finally:
-            self._cancel_answered.set()
-            signal.signal(_CANCEL_INTERRUPT_SIGNAL, previous)
 
     def _post_checker(self, raw: object, **where: object) -> None:
         """Hand a ``{"checker": ...}`` line to the memory run and answer it (memory v2.1 P9: a verdict the
@@ -665,45 +476,23 @@ class Act:
         self._emit(**answer)
 
     def _post_outcome(self, raw: object) -> None:
-        """Hand an ``{"outcome": ...}`` line to the session and answer it.
-
-        The outcome stays in this process (unify/outcome.py); the answer names
-        whether the session took it and, if not, why.
-        """
-        from unify import outcome as outcome_mod
-
-        if self._mv2 is not None:
-            # UNIFY_MEMORY: only the checker's pass/fail is kept.
+        """Hand an ``{"outcome": ...}`` line to the request's memory run and answer it (unify/outcome.py): the
+        answer names whether it was taken and, if not, why. Without a memory run it is refused."""
+        if self._mv2 is None:
+            answer = {
+                "type": "outcome",
+                "accepted": False,
+                "reason": "this session records no memory",
+            }
+        else:
             answer = self._mv2.take_outcome(raw)
-            if not answer["accepted"]:
-                self._progress(f"outcome refused: {answer['reason']}")
-            self._emit(**answer)
-            return
-        session_id = getattr(self._handle, "outcome_session_id", None)
-        try:
-            if session_id is None:
-                raise outcome_mod.OutcomeError(
-                    "this session takes no outcome (it does not store)",
-                )
-            normalized = outcome_mod.post(session_id, raw)
-        except outcome_mod.OutcomeError as exc:
-            self._progress(f"outcome refused: {exc}")
-            self._emit(type="outcome", accepted=False, reason=str(exc))
-            return
-        self._emit(
-            type="outcome",
-            accepted=True,
-            solved=normalized["solved"],
-            checks=normalized["checks_total"],
-        )
+        if not answer["accepted"]:
+            self._progress(f"outcome refused: {answer['reason']}")
+        self._emit(**answer)
 
     # ── run ──────────────────────────────────────────────────────────────
 
     async def run(self, request: str) -> int:
-        with self._cancel_escalation():
-            return await self._run(request)
-
-    async def _run(self, request: str) -> int:
         await self.start()
         args = self._args
         from unify.memory.integration import hooks as _mv2
@@ -726,7 +515,6 @@ class Act:
         self._handle = await self._actor.act(
             request,
             persist=args.persist,
-            can_store=not args.no_store,
             clarification_enabled=clarify,
         )
         # UNIFY_MEMORY_IN_EPISODE=on: a segment fork continues this session at a checkpoint (inert otherwise)
@@ -734,10 +522,7 @@ class Act:
         from unify.agents.cli_bridge import attach_bridge
 
         self._bridge = attach_bridge(self._handle, self._emit_record)
-        watchers = [
-            asyncio.create_task(self._watch_notifications()),
-            asyncio.create_task(self._watch_clarifications()),
-        ]
+        watchers = [asyncio.create_task(self._watch_notifications())]
         reader = None
         if (interactive and (clarify or args.persist)) or args.jsonl:
             reader = asyncio.create_task(self._read_lines())
@@ -769,10 +554,7 @@ class Act:
         self._print_result(result)
 
         if ended_on_its_own:
-            self._progress(
-                "the actor stopped on its own and takes no follow-ups; "
-                "reviewing the work for storage",
-            )
+            self._progress("the actor stopped on its own and takes no follow-ups")
         elif args.persist:
             self._progress("actor is waiting; type a follow-up, /quit to end")
             if reader is not None:
@@ -790,10 +572,7 @@ class Act:
                 emit=(lambda event: self._emit(**event)) if args.jsonl else None,
             )
         if args.jsonl:
-            # UNIFY_SYSTEM_SUFFIX: the run records which text ended its system prompt (only when one did).
-            from unify.actor import system_suffix
-
-            self._emit(type="ended", **system_suffix.record())
+            self._emit(type="ended")
         return 0
 
     def _print_result(self, result: object) -> None:
@@ -801,7 +580,6 @@ class Act:
             self._emit(
                 type="result",
                 content=result if isinstance(result, str) else str(result),
-                run_stats=getattr(self._handle, "run_stats", {}) or {},
             )
             return
         if self._args.json:
@@ -809,8 +587,6 @@ class Act:
                 "result": (
                     result if isinstance(result, (str, dict, list)) else str(result)
                 ),
-                # The storage-aware handle meters tokens; a bare loop handle does not.
-                "run_stats": getattr(self._handle, "run_stats", {}) or {},
             }
             print(json.dumps(payload, indent=2, default=str), flush=True)
         else:
@@ -830,18 +606,6 @@ def _read_request(args: argparse.Namespace) -> str:
     return text
 
 
-CHAT_UNSUPPORTED = (
-    "unify chat is legacy and unsupported: conversation_manager's steering was "
-    "removed in the harness-learning freeze. Use `unify act`."
-)
-
-
-async def _run_chat(args: argparse.Namespace) -> int:
-    """Say that chat is unsupported; nothing from unify.legacy is imported."""
-    print(CHAT_UNSUPPORTED, file=sys.stderr, flush=True)
-    return 0
-
-
 async def _run_act(args: argparse.Namespace) -> int:
     session = Act(args)
     try:
@@ -850,28 +614,24 @@ async def _run_act(args: argparse.Namespace) -> int:
         await session.close()
 
 
-def _profile_refusal() -> str | None:
-    """Why this run may not start under its ``UNIFY_PROFILE`` (the settings it fixes that are set otherwise, by name,
-    never a value), its ``UNIFY_LIBRARY`` (off with memory on) or its system suffix (set without its sha256, or not
-    matching it), or None."""
-    from unify.actor import library_switch, system_suffix
-    from unify.memory.integration.switch import profile_refusal
+def _memory_refusal() -> str | None:
+    """Why this run may not start under its memory settings (named, never a value), or None."""
+    from unify.memory.integration.switch import memory_on, writer_refusal
     from unify.settings import SETTINGS
 
-    return profile_refusal(SETTINGS) or library_switch.refusal(SETTINGS) or system_suffix.refusal(SETTINGS)
+    return writer_refusal(SETTINGS) if memory_on(SETTINGS) else None
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     _configure_environment(args)
-    refusal = _profile_refusal()
+    refusal = _memory_refusal()
     if refusal is not None:
         # fail closed: nothing starts, no model is called
         print(f"unify: {refusal}", file=sys.stderr)
         return 2
-    runner = _run_act if args.command == "act" else _run_chat
     try:
-        return asyncio.run(runner(args))
+        return asyncio.run(_run_act(args))
     except KeyboardInterrupt:
         return 130
 

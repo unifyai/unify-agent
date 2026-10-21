@@ -14,7 +14,6 @@ import pytest
 from unify.common._async_tool import loop as _loop
 from unify.common.async_tool_loop import AsyncToolLoopHandle, start_async_tool_loop
 from unify.common.llm_client import new_llm_client
-from tests.baked_defaults import as_shipped  # noqa: F401
 from tests.scripted_model import ScriptedModel, reply, scripted
 
 _STOPPED = "processed stopped early, no result"
@@ -41,8 +40,8 @@ def echo(text: str) -> str:
 def _start_holding(client) -> tuple[AsyncToolLoopHandle, asyncio.Event]:
     """Start a loop whose one tool call runs until the loop is stopped.
 
-    The call is seeded, so the tool starts without a model turn. The event is
-    set once the tool runs.
+    The call is already in the client's transcript, so the tool starts without
+    a model turn. The event is set once the tool runs.
     """
     started = asyncio.Event()
     cancelled = asyncio.Event()
@@ -57,10 +56,8 @@ def _start_holding(client) -> tuple[AsyncToolLoopHandle, asyncio.Event]:
             raise
         return "released"
 
-    handle = start_async_tool_loop(
-        client,
+    client.append_messages(
         [
-            {"role": "user", "content": "Hold until told otherwise."},
             {
                 "role": "assistant",
                 "content": None,
@@ -73,8 +70,8 @@ def _start_holding(client) -> tuple[AsyncToolLoopHandle, asyncio.Event]:
                 ],
             },
         ],
-        {"hold": hold},
     )
+    handle = start_async_tool_loop(client, "Hold until told otherwise.", {"hold": hold})
     handle.hold_cancelled = cancelled  # type: ignore[attr-defined]
     return handle, started
 
@@ -151,8 +148,6 @@ async def test_stop_with_a_tool_running_sends_no_further_request(
     assert handle.hold_cancelled.is_set()
 
 
-# as_shipped: deleted in step 5 (steer(stop) of steerable handles)
-@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 async def test_stop_while_persist_waits_logs_the_stop(
     llm_config,
@@ -160,7 +155,7 @@ async def test_stop_while_persist_waits_logs_the_stop(
 ):
     """A persist loop stopped while it waits for the next interjection logs
     the stop and ends without another request."""
-    model = ScriptedModel(actor=[reply("ready")])
+    model = ScriptedModel(query_llm=[reply("ready")])
     with scripted(model):
         handle = start_async_tool_loop(
             new_llm_client(**llm_config),
@@ -177,4 +172,4 @@ async def test_stop_while_persist_waits_logs_the_stop(
 
         assert await handle.result() == _STOPPED
     assert "Stop requested – reason: done for now" in unify_logs.text
-    assert model.kinds() == ["actor"]
+    assert model.kinds() == ["query_llm"]

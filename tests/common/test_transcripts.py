@@ -25,7 +25,6 @@ import unillm
 from openai.types.chat import ChatCompletion
 
 from unify import transcripts
-from unify.common._async_tool.event_bus_util import to_event_bus
 from unify.common._async_tool.loop_config import LoopConfig
 from unify.common._async_tool.message_dispatcher import LoopMessageDispatcher
 from unify.common.async_tool_loop import start_async_tool_loop
@@ -37,7 +36,7 @@ SUB_PROMPT = "You are the sub agent."
 FAKE_TOKEN = "tok-test-9f8e7d6c5b4a3210"  # pragma: allowlist secret
 
 
-def completion(content=None, calls=()) -> ChatCompletion:
+def completion(content=None, calls=(), prompt_tokens=1) -> ChatCompletion:
     tool_calls = [
         {
             "id": f"call_{name}_{i}",
@@ -63,7 +62,11 @@ def completion(content=None, calls=()) -> ChatCompletion:
                     },
                 },
             ],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": 1,
+                "total_tokens": prompt_tokens + 1,
+            },
         },
     )
 
@@ -163,7 +166,6 @@ async def run_delegation(provider) -> Provider:
             f"please {task}",
             {},
             loop_id="SubAgent.act",
-            enable_compression=False,
         )
         return await handle.result()
 
@@ -176,7 +178,6 @@ async def run_delegation(provider) -> Provider:
         "start",
         {"delegate": delegate, "broken": broken},
         loop_id="RootAgent.act",
-        enable_compression=False,
     )
     assert await handle.result() == "root done"
     return p
@@ -258,7 +259,7 @@ def test_lines_are_only_ever_appended(monkeypatch):
         checkpoint()
         user = {"role": "user", "content": "hi"}
         client.messages.append(user)
-        await to_event_bus(user, cfg)
+        transcripts.observe(user, cfg)
         checkpoint()
         call = {
             "role": "assistant",
@@ -280,12 +281,12 @@ def test_lines_are_only_ever_appended(monkeypatch):
         # The placeholder goes in without being published; the next publish
         # still records it, after the assistant message that preceded it.
         client.messages += [call, placeholder]
-        await to_event_bus(call, cfg)
+        transcripts.observe(call, cfg)
         checkpoint()
         placeholder["content"] = "42"
-        await to_event_bus(placeholder, cfg)
+        transcripts.observe(placeholder, cfg)
         checkpoint()
-        await to_event_bus(placeholder, cfg)  # unchanged: nothing new
+        transcripts.observe(placeholder, cfg)  # unchanged: nothing new
         checkpoint()
         return session, offsets, snapshots
 
@@ -318,28 +319,29 @@ async def test_compaction_is_recorded_and_the_new_context_points_at_the_file(
             # The compressor keeps every entry as it is.
             "You are a context compactor": [completion(content="done")],
             # Everything else is the root conversation, whose system prompt
-            # the rebuild folds into the compressed context. The summary fork
-            # (it carries the root's system prompt) answers nothing, so the
-            # compactor builds the new context.
+            # the rebuild folds into the compressed context. The first reply
+            # is over the compaction point; the summary fork (it carries the
+            # root's system prompt) answers nothing, so the compactor builds
+            # the new context.
             "": [
-                completion(content="thinking", calls=[("lookup", {})]),
-                completion(calls=[("compress_context", {})]),
+                completion(content="thinking", calls=[("execute_code", {"code": "lookup()"})], prompt_tokens=900_000),
                 completion(content=""),
                 completion(content="after compaction"),
             ],
         },
     )
 
-    def lookup() -> str:
-        """Return a fact."""
+    def execute_code(code: str) -> str:
+        """Run code (the actor's kind of loop has no other tool)."""
         return "the fact is 7"
 
     client = llm(ROOT_PROMPT)
     handle = start_async_tool_loop(
         client,
         "find the fact",
-        {"lookup": lookup},
+        {"execute_code": execute_code},
         loop_id="RootAgent.act",
+        tools_in_code=True,
     )
     assert await handle.result() == "after compaction"
     session = client._unify_transcript
@@ -385,27 +387,28 @@ async def test_a_compression_fork_is_recorded_and_its_summary_points_at_the_file
     compaction line and the pointer."""
     p = provider(
         {
-            # The root conversation; the fork asking for the summary carries
-            # its system prompt too.
+            # The root conversation (its first reply is over the compaction
+            # point); the fork asking for the summary carries its system
+            # prompt too.
             "": [
-                completion(content="thinking", calls=[("lookup", {})]),
-                completion(calls=[("compress_context", {})]),
+                completion(content="thinking", calls=[("execute_code", {"code": "lookup()"})], prompt_tokens=900_000),
                 completion(content="Summary: the fact is 7."),
                 completion(content="after compaction"),
             ],
         },
     )
 
-    def lookup() -> str:
-        """Return a fact."""
+    def execute_code(code: str) -> str:
+        """Run code (the actor's kind of loop has no other tool)."""
         return "the fact is 7"
 
     client = llm(ROOT_PROMPT)
     handle = start_async_tool_loop(
         client,
         "find the fact",
-        {"lookup": lookup},
+        {"execute_code": execute_code},
         loop_id="RootAgent.act",
+        tools_in_code=True,
     )
     assert await handle.result() == "after compaction"
     session = client._unify_transcript
@@ -444,7 +447,6 @@ _PROCESS = textwrap.dedent(
     """
     import asyncio, sys
     from unify import transcripts
-    from unify.common._async_tool.event_bus_util import to_event_bus
     from unify.common._async_tool.loop_config import LoopConfig
     from unify.common._async_tool.message_dispatcher import LoopMessageDispatcher
     from unify.settings import SETTINGS

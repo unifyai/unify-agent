@@ -36,7 +36,6 @@ from tests.actor.code_act.core_world import (  # noqa: F401 (fixtures)
     world,
 )
 from tests.actor.code_act.sandbox_world import needs_bwrap
-from tests.helpers import _handle_project
 from tests.memory.arc_transcript import (
     ITEM,
     WRITER_CELL,
@@ -210,7 +209,6 @@ def _files(root: Path) -> list[str]:
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(900)
-@_handle_project
 async def test_arc_visits_capture_dialogue_and_merge_an_env_item(
     core_world,
     monkeypatch,

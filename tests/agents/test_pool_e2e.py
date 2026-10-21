@@ -1,193 +1,116 @@
-"""Symbolic: a main agent and helpers in worker sandboxes, all through the record.
+"""Symbolic: the actor and its teammates in their own sandboxed interpreters, all through the agent record.
 
-Scripted models only. Each agent's requests are routed to its own script by
-who is asking: a helper's conversation opens with "You are `<name>`".
+The model is the scripted transport (``tests/scripted_model.py``): the actor's requests and its teammates' (the
+``helper`` kind) are answered from their own scripts. Cells run in the real sandboxed worker and call
+``tools.delegate``, ``tools.wait`` and ``tools.answer`` through the tool channel.
 """
 
 import asyncio
-import contextlib
 import json
-import os
 
 import pytest
 
-from tests import cache_discipline_helpers as h
-from unify.actor.environments import actor as actor_env
-from unify.settings import SETTINGS
+from tests.actor.code_act.core_world import core_world  # noqa: F401 (fixture)
+from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401 (fixture)
+from tests.scripted_model import Always, ScriptedModel, reply, scripted
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.timeout(300)]
-
-
-def _who(messages) -> str:
-    for m in messages:
-        if m.get("role") != "user":
-            continue
-        text = (
-            m["content"] if isinstance(m["content"], str) else json.dumps(m["content"])
-        )
-        for name in ("h1", "h2"):
-            if f"You are `{name}`" in text:
-                return name
-    return "root"
+pytestmark = [needs_bwrap, pytest.mark.asyncio, pytest.mark.timeout(300)]
 
 
-class Routed(h.Provider):
-    """Plays each agent's own script, chosen by who is asking."""
-
-    def __init__(self, scripts):
-        super().__init__()
-        self.scripts = {k: list(v) for k, v in scripts.items()}
-        self.by_agent = {k: [] for k in scripts}
-
-    async def __call__(self, *, shared_session=None, client=None, **kw):
-        who = _who(kw["messages"])
-        self.by_agent[who].append(kw)
-        self.requests.append(kw)
-        if not self.scripts[who]:
-            raise AssertionError(f"no scripted reply left for {who}")
-        reply = self.scripts[who].pop(0)
-        return reply() if callable(reply) else reply
+def _code(text: str):
+    return reply(calls=[("execute_code", {"code": text})])
 
 
-@contextlib.contextmanager
-def _routed(scripts):
-    """Install ``Routed`` as unillm's transport, as ``h.scripted`` does."""
-    import unillm.clients.uni_llm as uni_llm
-    from unillm.settings import SETTINGS as unillm_settings
-
-    provider = Routed(scripts)
-    original = uni_llm._acompletion_with_transient_retry
-    old_cache = os.environ.get("UNILLM_CACHE")
-    old_default = unillm_settings.UNILLM_CACHE
-    uni_llm._acompletion_with_transient_retry = provider
-    os.environ["UNILLM_CACHE"] = "false"
-    unillm_settings.UNILLM_CACHE = False
-    try:
-        yield provider
-    finally:
-        uni_llm._acompletion_with_transient_retry = original
-        unillm_settings.UNILLM_CACHE = old_default
-        if old_cache is None:
-            os.environ.pop("UNILLM_CACHE", None)
-        else:
-            os.environ["UNILLM_CACHE"] = old_cache
+def _task(call) -> str:
+    """The first user message of a request: the task the agent was given."""
+    return next(json.dumps(m.get("content")) for m in call.messages if m.get("role") == "user")
 
 
-def _code(src):
-    return lambda: h.completion(calls=[("execute_code", {"thought": "t", "code": src})])
-
-
-def _text(content):
-    return lambda: h.completion(content=content)
-
-
-async def _run(scripts, monkeypatch, tmp_path):
+async def _run(model: ScriptedModel, monkeypatch, tmp_path):
     from unify.actor.code_act_actor import CodeActActor
     from unify.agents import binding
 
-    # As record mode will be screened: on lean-all, whose discovery gate is off
-    # (the shipped gate forces a library search before any reply).
-    for key, value in {}.items():
-        monkeypatch.setattr(SETTINGS, key, value)
     monkeypatch.setattr(binding, "records_dir", lambda: tmp_path / "records")
-    actor = CodeActActor(
-        environments=actor_env.top_level_environments(),
-        tool_policy=None,
-    )
-    pool = None
-    try:
-        with _routed(scripts) as provider:
-            handle = await actor.act(
-                "Summarise a.csv and b.csv.",
-                persist=False,
-                can_store=False,
-                clarification_enabled=False,
-            )
-            pool = handle.agents_pool
+    with scripted(model):
+        handle = await CodeActActor().act(
+            "Count the rows of two tables.",
+            persist=False,
+            clarification_enabled=False,
+        )
+        pool = handle.agents_pool
+        try:
             result = await asyncio.wait_for(handle.result(), 240)
-    finally:
-        if pool is not None:
+        finally:
             await pool.close("test over")
-        await actor.close()
-    return provider, result, pool
+    return result, pool
 
 
-async def test_fan_out_wait_and_reply(monkeypatch, tmp_path):
-    root = [
-        _code(
-            "a = await agents.spawn('Summarise a.csv: rows and columns please.')\n"
-            "b = await agents.spawn('Summarise b.csv: rows and columns please.')\n"
-            "got = {}\n"
-            "while len(got) < 2:\n"
-            "    for e in await record.wait(timeout=120):\n"
-            "        if e['kind'] == 'reply':\n"
-            "            got[e['author']] = e['text']\n"
-            "print(sorted(got.items()))",
-        ),
-        _text("a: 3 rows; b: 5 rows"),
-    ]
-    scripts = {"root": root, "h1": [_text("3 rows")], "h2": [_text("5 rows")]}
-    provider, result, pool = await _run(scripts, monkeypatch, tmp_path)
-    assert result == "a: 3 rows; b: 5 rows"
-    seen = [(e.seq, e.author, e.kind, e.text[:120]) for e in pool.record.entries]
-    replies = [(e.author, e.mentions) for e in pool.record.entries if e.kind == "reply"]
-    assert ("h1", ("root",)) in replies and ("h2", ("root",)) in replies, seen
-    assert ("root", ("user",)) in replies
-    assert len(provider.by_agent["root"]) == 2  # waiting cost no model call
-    assert "primitives.actor" not in json.dumps(provider.by_agent["h1"][0], default=str)
+def _spawners(pool) -> dict[str, str]:
+    """Each started agent's name and the agent that started it."""
+    return {
+        name: p.spawner
+        for name, p in pool.record.participants.items()
+        if name != pool.record.root and p.spawner is not None
+    }
 
 
-async def test_a_helper_spawns_but_cannot_post_as_someone_else(monkeypatch, tmp_path):
-    root = [
-        _code(
-            "await agents.spawn('Try to spawn and to post as another agent, please.')\n"
-            "print(await record.wait(timeout=120))",
-        ),
-        _text("done"),
-    ]
-    helper = [
-        _code(
-            "print('started', await agents.spawn('another helper for this request now'))\n"
-            "try:\n"
-            "    record._name = 'root'\n"
-            "except Exception as e:\n"
-            "    print('refused', type(e).__name__)\n"
-            "record.post('@root hello')",
-        ),
-        _text("tried"),
-    ]
-    provider, result, pool = await _run(
-        {"root": root, "h1": helper, "h2": [_text("nested done")]},
-        monkeypatch,
-        tmp_path,
+FAN_OUT = (
+    "names = [tools.delegate('Count the rows of the first table, please.'),\n"
+    "         tools.delegate('Count the rows of the second table, please.')]\n"
+    "done = []\n"
+    "while len(done) < 2:\n"
+    "    done += [line for line in tools.wait(timeout=120).splitlines() if '(done)' in line]\n"
+    "tools.answer(' / '.join(sorted(line.split(': ', 1)[1] for line in done)))\n"
+)
+
+
+async def test_two_teammates_work_at_once_and_the_actor_waits_for_both(core_world, monkeypatch, tmp_path):  # noqa: F811
+    def mate(call):
+        return _code("tools.answer('3 rows')" if "the first table" in _task(call) else "tools.answer('5 rows')")
+
+    model = ScriptedModel(actor=[_code(FAN_OUT)], helper=Always(mate))
+    result, pool = await _run(model, monkeypatch, tmp_path)
+    assert result == "3 rows / 5 rows"
+    assert model.kinds().count("actor") == 1  # waiting cost no model call
+    assert set(_spawners(pool).values()) == {pool.record.root}
+    assert len(_spawners(pool)) == 2
+
+
+async def test_a_teammate_starts_a_teammate_of_its_own(core_world, monkeypatch, tmp_path):  # noqa: F811
+    def mate(call):
+        if "another helper for this request" in _task(call):
+            return reply("nested done")
+        if any(m.get("role") == "tool" for m in call.messages):
+            return reply("started one")
+        return _code("print('started', tools.delegate('another helper for this request, please.'))")
+
+    model = ScriptedModel(
+        actor=[
+            _code("print(tools.delegate('Start a teammate of your own, please.'))\nprint(tools.wait(timeout=120))"),
+            reply("done"),
+        ],
+        helper=Always(mate),
     )
-    helper_seen = json.dumps(provider.by_agent["h1"][-1]["messages"], default=str)
-    # Any agent may start helpers: the record shows h1 started h2.
-    assert "started h2" in helper_seen
-    assert pool.record.participants["h2"].spawner == "h1"
-    assert any(
-        e.author == "h1" and e.mentions == ("h2",) for e in pool.record.entries
-    )
-    hello = [e for e in pool.record.entries if e.text == "@root hello"]
-    assert hello and hello[0].author == "h1"
+    result, pool = await _run(model, monkeypatch, tmp_path)
+    assert result == "done"
+    spawners = _spawners(pool)
+    (first,) = [name for name, by in spawners.items() if by == pool.record.root]
+    # any agent may start agents: the record shows the teammate started the second
+    assert [name for name, by in spawners.items() if by == first], spawners
 
 
 async def test_agents_waiting_on_each_other_are_released_by_their_timeouts(
+    core_world,  # noqa: F811
     monkeypatch,
     tmp_path,
 ):
-    root = [
-        _code(
-            "await agents.spawn('Wait for the main agent to say go, then reply.')\n"
-            "print(await record.wait(timeout=2))",
-        ),
-        _text("gave up waiting"),
-    ]
-    helper = [_code("print(await record.wait(timeout=2))"), _text("no go")]
-    provider, result, pool = await _run(
-        {"root": root, "h1": helper},
-        monkeypatch,
-        tmp_path,
+    model = ScriptedModel(
+        actor=[
+            _code("tools.delegate('Wait for the main agent to say go, then reply.')\nprint(tools.wait(timeout=2))"),
+            reply("gave up waiting"),
+        ],
+        helper=[_code("print(tools.wait(timeout=2))"), reply("no go")],
     )
+    result, pool = await _run(model, monkeypatch, tmp_path)
     assert result == "gave up waiting"
     assert all(task.done() for task in pool._tasks.values())

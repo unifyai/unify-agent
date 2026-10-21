@@ -7,7 +7,7 @@ Global pytest configuration for the Unify test suite.
 Sections:
   1. Imports and logging guard
   2. Test stubs (DateTime)
-  3. Singleton isolation
+  3. Model-cache keying
   4. Command-line options
   5. Custom logging helpers
   6. Session lifecycle hooks
@@ -26,7 +26,6 @@ import shutil
 import tempfile
 
 import pytest
-from unify import db
 from pytest_metadata.plugin import metadata_key
 
 from datetime import datetime, timezone
@@ -43,64 +42,10 @@ if not _root_logger_early.handlers:
 from tests.helpers import _lock_file_nb
 from tests.settings import SETTINGS
 
-# Diagnostic switch for the async tool loop's sent-watermark append-only
-# transcript invariant. Prod behavior is identical whether this is set or
-# not — it only gates an integrity
-# assertion in generate_with_preprocess plus the below-watermark hashing
-# that backs it, which would otherwise ship real per-turn CPU to prod under
-# an `if __debug__` label. `setdefault` so an explicit override (e.g. a
-# targeted rerun with it forced off) still wins.
-os.environ.setdefault("UNIFY_TRANSCRIPT_INVARIANT_CHECKS", "1")
-
-# tests/legacy/ holds the tests of unify/legacy/ (legacy, unused, unsupported
-# code). They leave the default discovery and the gate: a directory sweep
-# (``pytest``, ``pytest tests/``) skips them, and they are collected only
-# when a path inside tests/legacy/ is named on the command line.
-_LEGACY_TESTS = Path(__file__).resolve().parent / "legacy"
-
-
-def _within_legacy_tests(path: Path) -> bool:
-    return path == _LEGACY_TESTS or _LEGACY_TESTS in path.parents
-
-
-def pytest_ignore_collect(collection_path, config):
-    if not _within_legacy_tests(Path(collection_path).resolve()):
-        return None
-    invocation_dir = Path(config.invocation_params.dir)
-    for arg in config.args:
-        target = (invocation_dir / arg.split("::", 1)[0]).resolve()
-        if _within_legacy_tests(target):
-            return None
-    return True
-
-
-def _reset_singleton_registries() -> None:
-    """Singletons must not leak across tests."""
-    from unify.manager_registry import ManagerRegistry
-    from unify.events.event_bus import EVENT_BUS
-
-    ManagerRegistry.clear()
-    EVENT_BUS.clear()
-
-
-def _reset_store_for_test() -> None:
-    """Give the test an empty store: the user tables are truncated and their
-    id sequences restart, so a rerun in a reused store never sees a previous
-    run's rows. The seeded catalogues (primitives, builtin guidance) stay."""
-    db.clear()
-    _reset_singleton_registries()
-
-
-def _uses_unify_context(item: pytest.Item) -> bool:
-    """Return whether this test needs the per-test store reset."""
-
-    return item.get_closest_marker("no_unify_context") is None
-
 
 def pytest_report_header(config):
     settings_str = [f"{k}={v}" for k, v in SETTINGS.model_dump().items()]
     return [
-        f"unify_store={os.environ.get('UNIFY_STORE_PATH')}",
         f"UNILLM_CACHE={os.environ.get('UNILLM_CACHE', 'not set')}",
     ] + settings_str
 
@@ -128,22 +73,9 @@ def stub_external_deps(monkeypatch):
     # All timestamps in prompts come from prompt_helpers.now() which returns either:
     # - A formatted string (as_string=True): "Friday, June 13, 2025 at 12:00 PM UTC"
     # - A datetime object (as_string=False): for timestamp comparisons
-    #
-    # When UNIFY_INCREMENTING_TIMESTAMPS is enabled (e.g., ConversationManager tests),
-    # datetime objects auto-increment by microseconds so last_snapshot < message.timestamp
-    # comparisons work correctly for **NEW** markers.
-
-    from datetime import timedelta
-
-    _timestamp_counter = {"value": 0}
 
     def _static_now(time_only: bool = False, as_string: bool = True):
         """Return a fixed timestamp for testing."""
-        if SETTINGS.UNIFY_INCREMENTING_TIMESTAMPS and not as_string:
-            # Return incrementing datetime for **NEW** marker comparisons
-            _timestamp_counter["value"] += 1
-            return _FIXED_DATETIME + timedelta(microseconds=_timestamp_counter["value"])
-
         if not as_string:
             return _FIXED_DATETIME
 
@@ -162,20 +94,6 @@ def stub_external_deps(monkeypatch):
 
     _static_now._frozen_prompt_clock = True
     _patch_every_copy(monkeypatch, prompt_helpers.now, _static_now)
-
-    def _static_perf_counter() -> float:
-        return 1000.0
-
-    # The monotonic clock behind tool-call timings and execute_code's
-    # ``duration_ms``.
-    monkeypatch.setattr(
-        "unify.common._async_tool.time_context.perf_counter",
-        _static_perf_counter,
-    )
-
-    # The store's clock: created_at, usage traces and the history, trust and
-    # case records of stored functions and guidance.
-    monkeypatch.setattr(db, "utc_now", lambda: _FIXED_DATETIME)
 
     # A transcript session's id is the wall-clock second and random hex
     # (unify/transcripts.py), and a compression summary names the session's
@@ -217,89 +135,7 @@ def _patch_every_copy(monkeypatch, original, replacement) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 3. Singleton isolation                                                      #
-# --------------------------------------------------------------------------- #
-
-from unify.manager_registry import ManagerRegistry
-
-
-@pytest.fixture
-def python_in_process(monkeypatch):
-    """Python in this process, for tests of the function manager's in-process
-    loaders (non-actor callers of ``list_functions(_return_callable=True)``,
-    ``execute_function``, the dynamic store check, the case replay, a store
-    verifier). Python always runs in the sandboxed worker otherwise
-    (``unify.actor.execution.worker.enabled``); under this fixture the #202
-    choke points let the loaders run, and the actor refuses to start."""
-    from unify.actor.execution import worker
-
-    monkeypatch.setattr(worker, "enabled", lambda: False)
-
-
-@pytest.fixture(autouse=True)
-def _clear_singletons_between_tests():
-    """Ensure *singleton* instances never leak from one test to the next."""
-    yield
-    ManagerRegistry.clear()  # Clear the registry after each test
-
-
-@pytest.fixture(autouse=True)
-def _exact_cache_keying_for_evals(request):
-    """An eval never accepts a canonically-equivalent recording.
-
-    Canonical keying deliberately lets a recording survive mundane prompt
-    churn, and the invariance it buys includes description rewording --
-    which is one of the ordinary ways to change which tool a model picks.
-    For a functional test that trade is right: the assertion is about the
-    code around the call. For an eval it inverts, because the model's
-    behaviour *is* the subject, so a canonical hit would score the
-    trajectory recorded before the change and report it green.
-
-    Scoped per test rather than per shard: a shard is a directory, and
-    directories hold both kinds.
-    """
-    if request.node.get_closest_marker("eval") is None:
-        yield
-        return
-
-    from unillm.settings import SETTINGS as UNILLM_SETTINGS
-
-    previous = UNILLM_SETTINGS.UNILLM_CACHE_KEYING
-    UNILLM_SETTINGS.UNILLM_CACHE_KEYING = "exact"
-    try:
-        yield
-    finally:
-        UNILLM_SETTINGS.UNILLM_CACHE_KEYING = previous
-
-
-@pytest.fixture(autouse=True)
-def _fresh_llm_calls(request, monkeypatch):
-    """A ``fresh_llm_calls`` or ``live_provider`` test reaches the model on
-    every call, never the cache.
-
-    For a test whose subject is the timing between live calls: a recording
-    replays in a fraction of a second and so finishes before a decision the
-    test drives with another call (a pause) can land. For a test whose
-    subject is the live model or provider: a replayed answer says nothing
-    about how the provider behaves now. Clients read the setting when they
-    are built, so this runs before any fixture builds one.
-    """
-    if (
-        request.node.get_closest_marker("fresh_llm_calls") is None
-        and request.node.get_closest_marker("live_provider") is None
-    ):
-        yield
-        return
-
-    from unillm.settings import SETTINGS as UNILLM_SETTINGS
-
-    monkeypatch.setenv("UNILLM_CACHE", "false")
-    monkeypatch.setattr(UNILLM_SETTINGS, "UNILLM_CACHE", False)
-    yield
-
-
-# --------------------------------------------------------------------------- #
-# 4. Command-line options                                                     #
+# 3. Command-line options                                                     #
 # --------------------------------------------------------------------------- #
 
 
@@ -326,7 +162,7 @@ def pytest_addoption(parser):
 
 
 # --------------------------------------------------------------------------- #
-# 5. Custom logging helpers                                                   #
+# 4. Custom logging helpers                                                   #
 # --------------------------------------------------------------------------- #
 
 
@@ -379,7 +215,7 @@ def get_test_log_format(config):
 
 
 # --------------------------------------------------------------------------- #
-# 6. Session lifecycle hooks                                                  #
+# 5. Session lifecycle hooks                                                  #
 # --------------------------------------------------------------------------- #
 
 
@@ -439,21 +275,18 @@ def pytest_sessionfinish(session, exitstatus):
 
 
 def pytest_unconfigure(config):
-    """Restore HOME (and HF_HOME if we set it).
+    """Restore HOME.
 
     The test HOME (``unity_test_home`` in the system temp directory) is
     deliberately left in place: every parallel pytest session
-    ``parallel_run.sh`` spawns shares it, along with the embeddings cache
-    inside it, so wiping it here would pull files out from under sessions
-    still running. It accumulates only for the life of the CI runner;
-    locally, deleting it gives a clean slate.
+    ``parallel_run.sh`` spawns shares it, so wiping it here would pull files
+    out from under sessions still running. It accumulates only for the life
+    of the CI runner; locally, deleting it gives a clean slate.
     """
     if _original_home is None:
         os.environ.pop("HOME", None)
     else:
         os.environ["HOME"] = _original_home
-    if _hf_home_set_by_us:
-        os.environ.pop("HF_HOME", None)
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
@@ -484,7 +317,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
 
 
 # --------------------------------------------------------------------------- #
-# 7. Test run hooks                                                           #
+# 6. Test run hooks                                                           #
 # --------------------------------------------------------------------------- #
 
 from unillm.cost_tracker import capture_costs
@@ -492,15 +325,9 @@ from unillm.cost_tracker import capture_costs
 _session_costs: list[tuple[str, float]] = []
 
 _original_home: str | None = None
-_hf_home_set_by_us: bool = False
 
 
 def pytest_configure(config):
-    config.addinivalue_line(
-        "markers",
-        "no_unify_context: skip the per-test store reset for pure unit tests",
-    )
-
     # ------------------------------------------------------------------
     # Isolate HOME so that tests never touch the real home directory
     # (dotfiles, ~/.cache, the default ~/.unify). The path is fixed, not
@@ -513,34 +340,6 @@ def pytest_configure(config):
     test_home = os.path.join(tempfile.gettempdir(), "unity_test_home")
     os.makedirs(test_home, exist_ok=True)
     os.environ["HOME"] = test_home
-
-    # Preserve access to the real HuggingFace model cache.  The HOME
-    # override above moves ~/.cache/huggingface to a temp dir that won't
-    # contain pre-downloaded models (e.g. SmolVLM used by docling's PDF
-    # pipeline).  Pinning HF_HOME to the original location avoids
-    # redundant multi-GB downloads and the .incomplete-blob hangs that
-    # occur when the download is interrupted or raced across sessions.
-    global _hf_home_set_by_us
-    if "HF_HOME" not in os.environ and _original_home:
-        original_hf = os.path.join(_original_home, ".cache", "huggingface")
-        if os.path.isdir(original_hf):
-            os.environ["HF_HOME"] = original_hf
-            _hf_home_set_by_us = True
-
-    config.addinivalue_line(
-        "markers",
-        "requires_real_unify: mark test as requiring the real unify implementation",
-    )
-    config.addinivalue_line(
-        "markers",
-        "eval: mark a test as a fuzzy evaluation test for English language "
-        "APIs. Selects the eval tier in discover_test_paths.py, and pins cache "
-        "lookups to exact keying so a canonical hit cannot score a trajectory "
-        "recorded before the prompt changed. Distinct from llm_call, which "
-        "says only that a model is reached: eval asks whether the answer was "
-        "good, llm_call whether the call happens at all. The two are applied "
-        "independently and neither implies the other.",
-    )
 
     # Required to disable explicit log level if set from pytest.ini or command line options
     if os.environ.get("UNIFY_TESTS_CLI_LOGGING", "true").lower() == "false":
@@ -599,7 +398,7 @@ def unify_home(request, monkeypatch):
     monkeypatch.setenv("UNIFY_HOME", str(home))
     cwd = os.getcwd()
     yield home
-    # The conversation loop and ``unify act`` chdir into the workspace.
+    # ``unify act`` chdirs into the workspace.
     os.chdir(cwd)
     shutil.rmtree(home, ignore_errors=True)
     # The lock file stays: were it deleted, a run still holding the old file
@@ -686,8 +485,6 @@ def pytest_runtest_setup(item):
                 "the marker",
                 pytrace=False,
             )
-    if not os.environ.get("SKIP_UNIFY_TEST_INIT") and _uses_unify_context(item):
-        _reset_store_for_test()
 
 
 def _normalize_pytest_nodeid(nodeid):

@@ -1,4 +1,4 @@
-"""Forced-compression watermark reset.
+"""Compaction watermark reset.
 
 A compression rebuild is a deliberate full-cache sacrifice: the transcript it
 replaces no longer exists, so nothing in the rebuilt one was ever dispatched.
@@ -6,10 +6,11 @@ The sent watermark must reset to 0 (not merely end up smaller than the old
 transcript length), and the loop must keep running cleanly afterward — proving
 the reset didn't leave a stale hash the very next dispatch would trip over.
 
-The model is scripted (``loop_model``, tests/async_tool_loop/conftest.py),
-and the compression takes the shipped path: the summary comes from a fork of
-the last request, whose scripted answer resets the threshold trigger, and the
-compactor is never called.
+The model is scripted (``loop_model``, tests/async_tool_loop/conftest.py).
+The loop is the actor's kind (``tools_in_code``): over the threshold it
+compacts before its next model call, and the compression takes the shipped
+path: the summary comes from a fork of the last request, whose scripted answer
+resets the threshold trigger, and the compactor is never called.
 """
 
 from __future__ import annotations
@@ -21,13 +22,12 @@ import unify.common._async_tool.context_compression as _cc_mod
 import unify.common.async_tool_loop as _atl_mod
 from unify.common.async_tool_loop import start_async_tool_loop
 from unify.common.llm_client import new_llm_client
-from tests.helpers import _handle_project
 from tests.scripted_model import reply
 
 _SYS = (
     "You are in a test. Follow the steps exactly:\n"
-    "1. Call `add` with a=2, b=3.\n"
-    "2. Call `add` with a=10, b=20.\n"
+    "1. Run `2 + 3` with execute_code.\n"
+    "2. Run `10 + 20` with execute_code.\n"
     "3. Report both results."
 )
 
@@ -58,22 +58,24 @@ async def _compactor_not_called(messages, endpoint, **kwargs):
 
 
 def _make_add(trigger):
+    """The loop's ``execute_code`` (the actor's kind of loop has no other tool): it adds the two numbers its code
+    names."""
     _triggered = False
 
-    def add(a: int, b: int) -> str:
-        """Add two numbers."""
+    def execute_code(code: str) -> str:
+        """Run code."""
         nonlocal _triggered
         if not _triggered:
             _triggered = True
             trigger()
+        a, b = (int(n) for n in code.split("+"))
         return str(a + b)
 
-    return add
+    return execute_code
 
 
 @pytest.mark.asyncio
-@_handle_project
-async def test_watermark_resets_to_zero_after_forced_compression(
+async def test_watermark_resets_to_zero_after_compaction(
     llm_config,
     monkeypatch,
     loop_model,
@@ -87,12 +89,10 @@ async def test_watermark_resets_to_zero_after_forced_compression(
         return reply(SUMMARY)
 
     # add, add (the first reply over the threshold, since the first add fired
-    # the trigger), the turn that must compress, the fork's summary, and the
-    # restarted loop's answer.
+    # the trigger), the fork's summary, and the restarted loop's answer.
     model = loop_model(
-        reply(calls=[("add", {"a": 2, "b": 3})]),
-        reply(calls=[("add", {"a": 10, "b": 20})]),
-        reply(calls=[("compress_context", {})]),
+        reply(calls=[("execute_code", {"code": "2 + 3"})]),
+        reply(calls=[("execute_code", {"code": "10 + 20"})]),
         reply(FINAL),
         compression_fork=[_summary],
     )
@@ -122,14 +122,14 @@ async def test_watermark_resets_to_zero_after_forced_compression(
     client.set_system_message(_SYS)
 
     # Pre-compression: dispatch at least one real request so the watermark is
-    # meaningfully non-zero and the dev-mode hash is populated — otherwise a
+    # meaningfully non-zero and the append-only hash is set — otherwise a
     # reset-to-zero would be indistinguishable from "never touched".
     handle = start_async_tool_loop(
         client=client,
         message="Add the numbers",
-        tools={"add": add},
+        tools={"execute_code": add},
         timeout=120,
-        max_parallel_tool_calls=1,
+        tools_in_code=True,
     )
 
     result = await handle.result()
@@ -147,8 +147,8 @@ async def test_watermark_resets_to_zero_after_forced_compression(
     assert watermarks_before[0] > 0, watermarks_before
 
     # The loop continued normally after the reset: if the reset had left a
-    # stale watermark/hash pair, the very next dispatch's dev-mode integrity
+    # stale watermark/hash pair, the very next dispatch's append-only integrity
     # assertion in generate_with_preprocess would have raised, and
     # handle.result() above would have surfaced that as an exception instead
     # of a clean result. The restarted loop did send that request.
-    assert model.kinds() == ["actor", "actor", "actor", "compression_fork", "actor"]
+    assert model.kinds() == ["actor", "actor", "compression_fork", "actor"]

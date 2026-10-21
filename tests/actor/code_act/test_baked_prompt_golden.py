@@ -1,13 +1,10 @@
-"""Symbolic: under the default settings, the actor's first request is the recorded one.
+"""Symbolic: the actor's first request is the recorded one.
 
-The code freeze made the chosen configuration the default (lean-all, Python
-tool mode, the shared agent record). This pins what a model receives from it
-on a fresh actor's first call, byte for byte: the system prompt, the tool
-list (``execute_code`` alone), the tool choice and the first user message.
-Nothing is pinned: every setting is at its default. Requests are captured at
-unillm's transport (``tests/cache_discipline_helpers.py``), so nothing leaves
-the process. Since step 4 of the freeze this golden replaces the
-switches-off equivalence test: the baked values are the only code path.
+This pins what a model receives on a fresh actor's first call with memory off,
+byte for byte: the system prompt, the tool list (``execute_code`` alone), the
+tool choice and the first user message. Requests are captured at unillm's
+transport (``tests/cache_discipline_helpers.py``), so nothing leaves the
+process.
 
 To record it again after a deliberate change, run this file with
 ``UNIFY_RECORD_GOLDEN=1``: the recording is written to
@@ -24,7 +21,6 @@ from pathlib import Path
 import pytest
 
 from tests import cache_discipline_helpers as h
-from tests.baked_defaults import BAKED_DEFAULTS
 
 BAKED_GOLDEN = Path(__file__).resolve().parents[2] / "actor_baked_prompt_golden.json"
 RECORDED = Path(__file__).resolve().parents[3] / "logs" / BAKED_GOLDEN.name
@@ -54,28 +50,16 @@ def baked_recording(requests: list[dict]) -> dict:
 
 
 async def record_first_request() -> dict:
-    """``CodeActActor.act`` on a fresh actor under the defaults; its first request."""
+    """``CodeActActor.act`` on a fresh actor; its first request."""
     _result, _, requests = await h.scenario_actor(
         [lambda: h.completion(content="done")] * 8,
     )
     return baked_recording(requests)
 
 
-def test_the_defaults_are_the_baked_values():
-    from unify.settings import ProductionSettings
-
-    # A switch the strip deleted has no field: its baked value is the code.
-    fields = ProductionSettings.model_fields
-    assert {
-        name: fields[name].default
-        for name in BAKED_DEFAULTS
-        if name in fields and fields[name].default != BAKED_DEFAULTS[name]
-    } == {}
-
-
 @pytest.mark.asyncio
 @pytest.mark.timeout(180)
-async def test_the_default_first_request_is_the_recorded_one():
+async def test_the_first_request_is_the_recorded_one():
     recorded = await record_first_request()
     if os.environ.get("UNIFY_RECORD_GOLDEN") == "1":
         RECORDED.parent.mkdir(parents=True, exist_ok=True)

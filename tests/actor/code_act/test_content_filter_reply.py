@@ -2,11 +2,10 @@
 
 A live run's streamed replies through OpenRouter sometimes end this way: HTTP 200, usage all zero, nothing charged,
 and a fixed stand-in text from the provider (or no text). The loop drops such a reply and sends the same turn again, at most twice with the
-provider-error backoff, counting each retry apart; once both retries are spent the turn ends with a text that says
-the reply was withheld, never an empty answer (unify/common/_async_tool/loop.py, ``_completion_withheld``). A reply
-counts as withheld when its blank text, its zero output tokens or its all-zero usage shows it is a stand-in; one that
-finished with ``content_filter`` with text and output tokens is the model's turn, as before. The counts are in the actor's
-run stats only when there were any.
+provider-error backoff; once both retries are spent the turn ends with a text that says the reply was withheld,
+never an empty answer (unify/common/_async_tool/loop.py, ``_completion_withheld``). A reply counts as withheld when its
+blank text, its zero output tokens or its all-zero usage shows it is a stand-in; one that finished with
+``content_filter`` with text and output tokens is the model's turn, as before.
 
 The reply is built by LiteLLM's own response conversion from an OpenRouter-shaped body; the transport is scripted
 (tests/cache_discipline_helpers.py), so nothing leaves the process.
@@ -20,7 +19,6 @@ import pytest
 
 from tests import cache_discipline_helpers as h
 from tests.actor.code_act.core_world import core_world, new_actor, world  # noqa: F401 (fixtures)
-from tests.helpers import _handle_project
 from unify.common._async_tool import loop
 
 
@@ -73,56 +71,42 @@ def test_the_withheld_reply_is_told_from_a_reply_with_text():
     assert not loop._completion_withheld(h.completion(calls=[("execute_code", {"code": "print(1)"})]))
 
 
-async def _act(*replies) -> tuple[str, dict, int]:
-    actor = new_actor(can_store=False)
-    try:
-        with h.scripted(replies) as provider:
-            handle = await actor.act("Do the task.", persist=False)
-            result = await asyncio.wait_for(handle.result(), 120)
-            # The CLI reads the run stats from the request's handle.
-            stats = dict(handle.run_stats)
-    finally:
-        await actor.close()
-    return result, stats, len(provider.requests)
+async def _act(*replies) -> tuple[str, int]:
+    actor = new_actor()
+    with h.scripted(replies) as provider:
+        handle = await actor.act("Do the task.", persist=False)
+        result = await asyncio.wait_for(handle.result(), 120)
+    return result, len(provider.requests)
 
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
-@_handle_project
 async def test_a_withheld_reply_is_sent_again_and_counted(core_world):  # noqa: F811
-    result, stats, requests = await _act(withheld, withheld, lambda: h.completion(content="done"))
+    result, requests = await _act(withheld, withheld, lambda: h.completion(content="done"))
     assert result == "done" and requests == 3
-    assert stats.get("content_filter_retries") == 2 and "content_filter_withheld" not in stats
 
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
-@_handle_project
 async def test_once_the_retries_are_spent_the_turn_says_the_reply_was_withheld(core_world):  # noqa: F811
-    result, stats, requests = await _act(withheld, withheld, withheld)
+    result, requests = await _act(withheld, withheld, withheld)
     assert result == loop.WITHHELD_REPLY.format(attempts=3) and requests == 3
-    assert stats.get("content_filter_retries") == 2 and stats.get("content_filter_withheld") == 1
 
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
-@_handle_project
 async def test_a_content_filter_reply_with_text_and_tokens_is_the_models_turn(core_world):  # noqa: F811
-    result, stats, requests = await _act(lambda: withheld("Partial answer.", completion_tokens=5))
+    result, requests = await _act(lambda: withheld("Partial answer.", completion_tokens=5))
     assert result == "Partial answer." and requests == 1
-    assert "content_filter_retries" not in stats and "content_filter_withheld" not in stats
 
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
-@_handle_project
 async def test_a_stand_in_text_with_zero_usage_is_sent_again_and_never_reaches_the_answer(core_world):  # noqa: F811
     def stand_in():
         return withheld(STAND_IN, completion_tokens=0, prompt_tokens=0)
 
-    result, stats, requests = await _act(stand_in, stand_in, lambda: h.completion(content="done"))
+    result, requests = await _act(stand_in, stand_in, lambda: h.completion(content="done"))
     assert result == "done" and requests == 3
-    assert stats.get("content_filter_retries") == 2 and "content_filter_withheld" not in stats
-    result, stats, requests = await _act(stand_in, stand_in, stand_in)
+    result, requests = await _act(stand_in, stand_in, stand_in)
     assert result == loop.WITHHELD_REPLY.format(attempts=3) and STAND_IN not in result
-    assert stats.get("content_filter_withheld") == 1

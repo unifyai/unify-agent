@@ -1,8 +1,9 @@
 """Symbolic: Python cells run in a sandboxed child (the worker).
 
-Nothing here reaches a model. Cells run through the real ``SessionExecutor``,
-the worker is a real child process inside the real bubblewrap policy, and the
-harness objects it calls are fakes that record where they ran. Tests that need
+Nothing here reaches a model. Cells run in the actor's real interpreter
+(``sandbox_world.actor_interpreter``), the worker is a real child process inside
+the real bubblewrap policy, and the harness objects it calls are fakes that
+record where they ran. Tests that need
 bubblewrap are skipped, saying so, where it is missing. The world is described
 in ``sandbox_world.py``.
 """
@@ -16,17 +17,16 @@ import sqlite3
 import pytest
 from pydantic import BaseModel
 
-from tests.helpers import _handle_project
 from tests.actor.code_act.sandbox_world import (  # noqa: F401 (fixture)
     STATE_SECRET,
     TOKEN_VALUE,
+    actor_interpreter,
     needs_bwrap,
     serve,
     world,
 )
-from unify.actor.execution.session import SessionExecutor
-from unify.actor.execution.types import parts_to_text
 from unify.actor.execution import worker as worker_mod
+from unify.function_manager.execution_env import create_execution_globals
 from unify.settings import SETTINGS
 
 
@@ -113,21 +113,12 @@ class FakePrimitives:
         self.files = FakeFiles(calls)
 
 
-class FakeEnvironment:
-    def __init__(self, calls: list) -> None:
-        self._instance = FakePrimitives(calls)
-
-    def get_instance(self):
-        return self._instance
-
-
-def executor_with_fakes(timeout=None):
+async def executor_with_fakes(timeout: float = 60.0):
+    """The actor's interpreter with ``primitives`` bound to the fakes, and the list their calls are recorded in."""
     calls: list = []
-    ex = SessionExecutor(
-        environments={"primitives": FakeEnvironment(calls)},
-        timeout=timeout,
-    )
-    return ex, calls
+    shadow = create_execution_globals()
+    shadow["primitives"] = FakePrimitives(calls)
+    return await actor_interpreter(shadow=shadow, limit=timeout), calls
 
 
 @pytest.fixture
@@ -135,13 +126,9 @@ def worker_world(world, monkeypatch):
     return world
 
 
-async def run(ex, code, *, mode="stateful", session_id=0):
-    res = await ex.execute(
-        code=code,
-        state_mode=mode,
-        session_id=session_id if mode != "stateless" else None,
-    )
-    return parts_to_text(res["stdout"]), res
+async def run(ex, code):
+    res = await ex.run_cell(code)
+    return res.output, res
 
 
 # ── the worker ───────────────────────────────────────────────────────────────
@@ -149,34 +136,20 @@ async def run(ex, code, *, mode="stateful", session_id=0):
 
 @needs_bwrap
 @pytest.mark.asyncio
-async def test_state_persists_across_cells_in_one_worker_per_session(worker_world):
-    ex, _ = executor_with_fakes()
+async def test_state_persists_across_cells_in_one_worker(worker_world):
+    ex, _ = await executor_with_fakes()
     try:
         out, res = await run(
             ex,
             "import os, math\nx = 41\ndef f(y):\n    return y * 2\n" + PROCESS_ID,
         )
-        assert res["error"] is None, res["error"]
-        pid = res["result"]
+        assert res.error is None, res.error
+        pid = res.result
         assert isinstance(pid, str) and pid != HARNESS_PID
         out, res = await run(ex, "print(f(x), math.floor(2.5))\n" + PROCESS_ID)
-        assert out == "82 2\n" and res["result"] == pid
-        # Another session and a stateless cell have workers of their own.
-        _, res = await run(ex, HAS_X, session_id=1)
-        assert res["result"] is False
-        _, res = await run(ex, HAS_X, mode="stateless")
-        assert res["result"] is False
-        # read_only sees the session's state, and what it changes is dropped.
-        res = await ex.execute(
-            code="x = x - 41\nx",
-            state_mode="read_only",
-            session_id=0,
-        )
-        assert res["result"] == 0, res["error"]
-        _, res = await run(ex, "x")
-        assert res["result"] == 41
+        assert out == "82 2\n" and res.result == pid
     finally:
-        await ex.close()
+        await ex.stop()
 
 
 # A cell's model whose annotations name what the cell imported: pydantic
@@ -198,32 +171,21 @@ USE_MODEL = "Record(ids=[1, 2], tags=[Tag(label='a')]).model_dump_json()"
 async def test_a_cells_typed_model_resolves_against_the_session_module(
     worker_world,
 ):
-    ex, _ = executor_with_fakes(timeout=3)
+    ex, _ = await executor_with_fakes(timeout=3)
     expected = '{"ids":[1,2],"tags":[{"label":"a"}]}'
     try:
         _, res = await run(ex, TYPED_MODEL + USE_MODEL)
-        assert res["error"] is None, res["error"]
-        assert res["result"] == expected
+        assert res.error is None, res.error
+        assert res.result == expected
         _, res = await run(ex, "Record.__module__")
-        assert res["result"] == "__sandbox_worker__"
-        # A read_only cell resolves against the session's module, and a model
-        # it defines is dropped with the rest of what it changed.
-        res = await ex.execute(
-            code="class Extra(BaseModel):\n    xs: List[int]\n"
-            "Extra(xs=[3]).model_dump_json()",
-            state_mode="read_only",
-            session_id=0,
-        )
-        assert res["result"] == '{"xs":[3]}', res["error"]
-        _, res = await run(ex, HAS_X.replace("x\n", "Extra\n", 1))
-        assert res["result"] is False
+        assert res.result == "__sandbox_worker__"
         # A fresh worker registers its module again.
         _, res = await run(ex, "while True:\n    pass")
-        assert "timed out" in res["error"]
+        assert res.timed_out
         _, res = await run(ex, TYPED_MODEL + USE_MODEL)
-        assert res["result"] == expected, res["error"]
+        assert res.result == expected, res.error
     finally:
-        await ex.close()
+        await ex.stop()
 
 
 @pytest.fixture
@@ -245,7 +207,7 @@ def answers(monkeypatch) -> dict:
 @needs_bwrap
 @pytest.mark.asyncio
 async def test_a_cells_response_model_crosses_as_its_schema(worker_world, answers):
-    ex, _ = executor_with_fakes()
+    ex, _ = await executor_with_fakes()
     try:
         answers["next"] = {"ids": [1, 2], "tags": [{"label": "a"}]}
         _, res = await run(
@@ -253,8 +215,8 @@ async def test_a_cells_response_model_crosses_as_its_schema(worker_world, answer
             TYPED_MODEL + "r = await query_llm('Extract.', response_format=Record)\n"
             "f'{type(r) is Record}:{r.tags[0].label}'",
         )
-        assert res["error"] is None, res["error"]
-        assert res["result"] == "True:a"
+        assert res.error is None, res.error
+        assert res.result == "True:a"
         (sent,) = answers["sent"]
         assert sent["type"] == "json_schema" and sent["json_schema"]["name"] == "Record"
         assert set(sent["json_schema"]["schema"]["properties"]) == {"ids", "tags"}
@@ -265,7 +227,7 @@ async def test_a_cells_response_model_crosses_as_its_schema(worker_world, answer
             ex,
             "await query_llm('Extract.', response_format=Record)",
         )
-        assert "ValidationError" in res["error"] and "ids" in res["error"]
+        assert "ValidationError" in res.error and "ids" in res.error
         # A schema too large to send is refused before anything crosses.
         _, res = await run(
             ex,
@@ -274,10 +236,10 @@ async def test_a_cells_response_model_crosses_as_its_schema(worker_world, answer
             "{'__module__': __name__, '__annotations__': fields})\n"
             "await query_llm('Extract.', response_format=Wide)",
         )
-        assert "BoundaryRefusal" in res["error"] and "JSON schema is" in res["error"]
+        assert "BoundaryRefusal" in res.error and "JSON schema is" in res.error
         assert len(answers["sent"]) == 2
     finally:
-        await ex.close()
+        await ex.stop()
 
 
 OPUS = "anthropic/claude-opus-4.6@openrouter"
@@ -287,19 +249,14 @@ LUNA = "openai/gpt-6-luna@openrouter"
 @needs_bwrap
 @pytest.mark.asyncio
 async def test_a_cell_can_call_only_the_sessions_model(worker_world, monkeypatch):
-    """UNIFY_CELL_LLM_MODELS at its default: a cell's query_llm and unillm,
-    and a stored function's, are refused another model before any client is
-    built in the harness; query_llm without model= uses the session's."""
+    """UNIFY_CELL_LLM_MODELS at its default: a cell's query_llm and unillm are refused another model before any
+    client is built in the harness; query_llm without model= uses the session's."""
     import unillm
 
     import unify.common.reasoning as reasoning
-    from unify.function_manager.function_manager import _LineageTrackedFunction
-    from unify.function_manager.source_labels import compile_function_source
-    from unify.session_details import SESSION_DETAILS
 
     monkeypatch.setattr(SETTINGS, "UNIFY_MODEL", LUNA)
     monkeypatch.setattr(SETTINGS, "UNIFY_CELL_LLM_MODELS", "")
-    monkeypatch.setattr(SESSION_DETAILS.assistant, "default_model", "")
     built: list = []
 
     class FakeClient:
@@ -316,15 +273,7 @@ async def test_a_cell_can_call_only_the_sessions_model(worker_world, monkeypatch
     monkeypatch.setattr(reasoning, "new_llm_client", fake_new_llm_client)
     monkeypatch.setattr(unillm, "AsyncUnify", no_client)
     monkeypatch.setattr(unillm, "Unify", no_client)
-    source = (
-        "async def ask_other(q):\n" f"    return await query_llm(q, model={OPUS!r})\n"
-    )
-    ns: dict = {}
-    exec(compile_function_source("ask_other", source), ns)
-    ex, _ = executor_with_fakes()
-    ex.register_fm_globals(
-        {"ask_other": _LineageTrackedFunction(ns["ask_other"], "ask_other")},
-    )
+    ex, _ = await executor_with_fakes()
     try:
         _, res = await run(
             ex,
@@ -338,20 +287,14 @@ async def test_a_cell_can_call_only_the_sessions_model(worker_world, monkeypatch
             "except Exception as e:\n"
             "    seen.append(f'{type(e).__name__}: {e}')\n"
             "try:\n"
-            "    await ask_other('x')\n"
-            "except Exception as e:\n"
-            "    seen.append(f'{type(e).__name__}: {e}')\n"
-            "try:\n"
             "    unillm.SETTINGS\n"
             "except Exception as e:\n"
             "    seen.append(type(e).__name__)\n"
             "seen.append(await query_llm('x'))\n"
             "seen",
         )
-        assert res["error"] is None, res["error"]
-        refused_query, refused_unillm, refused_stored, refused_attr, answer = res[
-            "result"
-        ]
+        assert res.error is None, res.error
+        refused_query, refused_unillm, refused_attr, answer = res.result
         message = (
             f"can only use the session's model {LUNA} here (UNIFY_CELL_LLM_MODELS)"
         )
@@ -360,22 +303,21 @@ async def test_a_cell_can_call_only_the_sessions_model(worker_world, monkeypatch
         )
         assert refused_unillm.startswith("CellModelRefused: unillm.AsyncUnify() ")
         assert message in refused_unillm
-        assert refused_stored == refused_query
         assert refused_attr == "CellAttributeRefused"
         # Only the call without model= built a client: the configured model.
         assert answer == "configured" and built == [None]
     finally:
-        await ex.close()
+        await ex.stop()
 
 
 @needs_bwrap
 @pytest.mark.asyncio
-async def test_a_cell_cannot_read_secrets_write_the_store_or_reach_the_network(
+async def test_a_cell_cannot_read_secrets_write_the_state_or_reach_the_network(
     worker_world,
 ):
     srv, port = serve(b"hello-from-host\n")
     store = worker_world["state"] / "store.sqlite"
-    ex, _ = executor_with_fakes()
+    ex, _ = await executor_with_fakes()
     try:
         out, res = await run(
             ex,
@@ -383,9 +325,8 @@ async def test_a_cell_cannot_read_secrets_write_the_store_or_reach_the_network(
             "print(os.environ.get('FAKE_SERVICE_TOKEN'), "
             "os.environ.get('DB_PASSWORD'), os.environ.get('UNIFY_SANDBOX_PROBE'))",
         )
-        assert out == "None None visible\n", res["error"]
-        # The store is not mounted (cells use the functions/guidance API):
-        # neither read nor written.
+        assert out == "None None visible\n", res.error
+        # A file in the state directory is not mounted: neither read nor written.
         out, res = await run(
             ex,
             "import sqlite3\n"
@@ -404,7 +345,7 @@ async def test_a_cell_cannot_read_secrets_write_the_store_or_reach_the_network(
         )
         assert out.startswith("refused: unable to open database file\n"), (
             out,
-            res["error"],
+            res.error,
         )
         assert "('f',)" not in out
         con = sqlite3.connect(store)
@@ -420,8 +361,8 @@ async def test_a_cell_cannot_read_secrets_write_the_store_or_reach_the_network(
             ex,
             f"open({str(worker_world['state'] / 'logs' / 'unify.log')!r}).read()",
         )
-        assert STATE_SECRET not in str(res["result"]) and STATE_SECRET not in str(
-            res["error"],
+        assert STATE_SECRET not in str(res.result) and STATE_SECRET not in str(
+            res.error,
         )
         # No socket reaches the host, not even its loopback.
         out, res = await run(
@@ -433,61 +374,10 @@ async def test_a_cell_cannot_read_secrets_write_the_store_or_reach_the_network(
             "except OSError as e:\n"
             "    print('refused:', type(e).__name__)",
         )
-        assert out.startswith("refused:"), (out, res["error"])
+        assert out.startswith("refused:"), (out, res.error)
     finally:
         srv.close()
-        await ex.close()
-
-
-@needs_bwrap
-@pytest.mark.asyncio
-async def test_a_cell_cannot_open_the_store_or_its_wal_by_absolute_path(worker_world):
-    """The raw store is not mounted: cells reach the library through the
-    functions/guidance API, and the file holds what that API does not give."""
-    from unify import sandbox
-
-    store = worker_world["state"] / "store.sqlite"
-    # The write-ahead log and shared memory exist on the host, as they do while
-    # the harness has the store open.
-    wal, shm = (store.with_name(store.name + s) for s in ("-wal", "-shm"))
-    wal.write_text(STATE_SECRET)
-    shm.write_text(STATE_SECRET)
-    paths = [str(store), str(wal), str(shm)]
-    ex, _ = executor_with_fakes()
-    try:
-        out, res = await run(
-            ex,
-            "import os, sqlite3\n"
-            "seen = {}\n"
-            f"for path in {paths!r}:\n"
-            "    try:\n"
-            "        with open(path, 'rb') as fh:\n"
-            "            seen[path] = fh.read()[:64]\n"
-            "    except OSError as e:\n"
-            "        seen[path] = type(e).__name__\n"
-            "try:\n"
-            f"    sqlite3.connect('file:{store}?mode=ro', uri=True).execute(\n"
-            "        'select name from functions').fetchall()\n"
-            "    seen['sqlite'] = 'opened'\n"
-            "except sqlite3.OperationalError as e:\n"
-            "    seen['sqlite'] = str(e)\n"
-            f"seen['listing'] = sorted(os.listdir({str(store.parent)!r}))\n"
-            "seen",
-        )
-        assert res["error"] is None, res["error"]
-        seen = res["result"]
-        assert all(seen[p] == "FileNotFoundError" for p in paths), seen
-        assert seen["sqlite"] == "unable to open database file", seen
-        assert not {store.name, wal.name, shm.name} & set(seen["listing"]), seen
-        assert STATE_SECRET not in str(seen)
-    finally:
-        await ex.close()
-    # The harness's own file tools refuse the same paths.
-    policy = sandbox.build_policy(fresh=True)
-    for path in (store, wal, shm):
-        with pytest.raises(sandbox.SandboxRefusal) as refused:
-            sandbox.check_readable(path, policy)
-        assert refused.value.rule == "mask-unify-state", refused.value
+        await ex.stop()
 
 
 @needs_bwrap
@@ -508,25 +398,25 @@ async def test_proxy_mode_gives_the_worker_only_the_proxy_port(
         "except OSError as e:\n"
         "    print('refused:', type(e).__name__)"
     )
-    ex, _ = executor_with_fakes()
+    ex, _ = await executor_with_fakes()
     try:
         out, res = await run(ex, connect.format(port=proxy_port))
-        assert out == "got from proxy\n", res["error"]
+        assert out == "got from proxy\n", res.error
         out, _ = await run(ex, connect.format(port=other_port))
         assert out.startswith("refused:")
         # The channel to the harness still works through the forwarder.
         _, res = await run(ex, "(await primitives.files.search('p', limit=1))['hits']")
-        assert res["result"] == ["p-0"]
+        assert res.result == ["p-0"]
     finally:
         proxy.close()
         other.close()
-        await ex.close()
+        await ex.stop()
 
 
 @needs_bwrap
 @pytest.mark.asyncio
 async def test_primitives_run_in_the_harness_through_the_proxy(worker_world):
-    ex, calls = executor_with_fakes()
+    ex, calls = await executor_with_fakes()
     try:
         out, res = await run(
             ex,
@@ -538,8 +428,8 @@ async def test_primitives_run_in_the_harness_through_the_proxy(worker_world):
             "print(r['hits'], n, [b['hits'] for b in both], primitives.files.root)\n"
             + PROCESS_ID,
         )
-        assert res["error"] is None, res["error"]
-        worker_pid = res["result"]
+        assert res.error is None, res.error
+        worker_pid = res.result
         assert out == "['cat-0', 'cat-1'] 3 [['x-0'], ['y-0']] /data\n"
         # Every call ran in the harness, not the worker.
         assert {c[-1] for c in calls} == {HARNESS_PID} and worker_pid != HARNESS_PID
@@ -556,22 +446,22 @@ async def test_primitives_run_in_the_harness_through_the_proxy(worker_world):
             "print(sorted(n for n in dir(primitives.files) if not n.startswith('_'))[:3])\n"
             "h",
         )
-        assert res["error"] is None, res["error"]
+        assert res.error is None, res.error
         lines = out.splitlines()
         assert lines[0] == "a 3 Item(name='a', size=3)"
         assert lines[1] == "Item:a"
         assert lines[2] == f"Opaque('job') finished job in {HARNESS_PID}"
         assert lines[3] == "['api_token', 'broken', 'calls']"
         # The handle returned as the result is the harness's own object.
-        assert isinstance(res["result"], Opaque) and res["result"].label == "job"
+        assert isinstance(res.result, Opaque) and res.result.label == "job"
     finally:
-        await ex.close()
+        await ex.stop()
 
 
 @needs_bwrap
 @pytest.mark.asyncio
 async def test_harness_exceptions_are_reraised_in_the_worker(worker_world):
-    ex, _ = executor_with_fakes()
+    ex, _ = await executor_with_fakes()
     try:
         out, res = await run(
             ex,
@@ -584,101 +474,61 @@ async def test_harness_exceptions_are_reraised_in_the_worker(worker_world):
             "except Exception as e:\n"
             "    print(type(e).__name__, type(e).__module__, e)",
         )
-        assert res["error"] is None, res["error"]
+        assert res.error is None, res.error
         assert out.splitlines() == [
             "KeyError 'k'",
             f"HarnessOnlyError {__name__} only the harness knows this type",
         ]
         # Uncaught, it is the cell's error, named.
         _, res = await run(ex, "await primitives.files.broken()")
-        assert "HarnessOnlyError: only the harness knows this type" in res["error"]
+        assert "HarnessOnlyError: only the harness knows this type" in res.error
         # A cell's own exception is reported as a traceback, as in process.
         _, res = await run(ex, "1 / 0")
-        assert "ZeroDivisionError" in res["error"]
+        assert "ZeroDivisionError" in res.error
     finally:
-        await ex.close()
+        await ex.stop()
 
 
 @needs_bwrap
 @pytest.mark.asyncio
 async def test_what_cannot_cross_is_refused_by_name(worker_world):
-    ex, calls = executor_with_fakes()
+    ex, calls = await executor_with_fakes()
     try:
         _, res = await run(ex, "await primitives.files.search(lambda: 1)")
-        assert "BoundaryRefusal" in res["error"]
-        assert "argument 1 of primitives.files.search is a function" in res["error"]
+        assert "BoundaryRefusal" in res.error
+        assert "argument 1 of primitives.files.search is a function" in res.error
         _, res = await run(
             ex,
             "class Mine:\n    pass\nawait primitives.files.search('q', limit=Mine())",
         )
-        assert "argument 'limit' of primitives.files.search is a Mine" in (res["error"])
+        assert "argument 'limit' of primitives.files.search is a Mine" in (res.error)
         assert calls == []  # refused before anything was sent
         _, res = await run(ex, "primitives.files._private")
-        assert "attributes starting with '_'" in res["error"]
+        assert "attributes starting with '_'" in res.error
         _, res = await run(ex, "primitives.files.api_token")
-        assert "looks like a credential" in res["error"]
-        assert "tok-attr-never-sent" not in res["error"]
+        assert "looks like a credential" in res.error
+        assert "tok-attr-never-sent" not in res.error
         # Modules and the harness's environment never cross, however reached.
         _, res = await run(
             ex,
             "primitives.files.tools.environ.get('FAKE_SERVICE_TOKEN')",
         )
-        assert "primitives.files.tools is a harness module (os)" in res["error"]
+        assert "primitives.files.tools is a harness module (os)" in res.error
         _, res = await run(
             ex,
             "(await primitives.files.environment()).get('DB_PASSWORD')",
         )
-        assert "harness's environment" in res["error"]
-        assert TOKEN_VALUE not in res["error"]
+        assert "harness's environment" in res.error
+        assert TOKEN_VALUE not in res.error
         # A worker object returned as the result comes back as its repr.
         _, res = await run(
             ex,
             "class Box:\n    def __repr__(self): return 'Box!'\nBox()",
         )
-        assert res["error"] is None and repr(res["result"]) == "Box!"
-        assert isinstance(res["result"], worker_mod.WorkerValue)
+        assert res.error is None and repr(res.result) == "Box!"
+        assert isinstance(res.result, worker_mod.WorkerValue)
     finally:
-        await ex.close()
-
-
-@needs_bwrap
-@pytest.mark.asyncio
-async def test_stored_functions_run_in_the_worker_and_call_back_for_primitives(
-    worker_world,
-):
-    from unify.function_manager.function_manager import _LineageTrackedFunction
-    from unify.function_manager.source_labels import compile_function_source
-
-    source = (
-        "async def tally(word):\n"
-        "    import os\n"
-        "    r = await primitives.files.search(word, limit=2)\n"
-        "    return {'hits': r['hits'], 'ran_in': " + PROCESS_ID + "}\n"
-    )
-    ns: dict = {}
-    exec(compile_function_source("tally", source), ns)
-    used: list = []
-    stored = _LineageTrackedFunction(
-        ns["tally"],
-        "tally",
-        on_call=lambda: used.append(1),
-    )
-    ex, calls = executor_with_fakes()
-    ex.register_fm_globals({"tally": stored})
-    try:
-        out, res = await run(
-            ex,
-            f"import os\nr = await tally('dog')\n(r, {PROCESS_ID})",
-        )
-        assert res["error"] is None, res["error"]
-        value, worker_pid = res["result"]
-        assert value["hits"] == ["dog-0", "dog-1"]
-        # The body ran in the worker; only its primitive call came back.
-        assert value["ran_in"] == worker_pid != HARNESS_PID
-        assert calls == [("search", "dog", 2, HARNESS_PID)]
-        assert used == [1]
-    finally:
-        await ex.close()
+        await ex.stop()
 
 
 @needs_bwrap
@@ -686,91 +536,48 @@ async def test_stored_functions_run_in_the_worker_and_call_back_for_primitives(
 async def test_a_timeout_kills_the_worker_and_the_next_cell_starts_fresh(
     worker_world,
 ):
-    ex, _ = executor_with_fakes(timeout=3)
+    ex, _ = await executor_with_fakes(timeout=3)
     try:
         _, res = await run(ex, "x = 1")
         tree = worker_tree(ex)
         assert len(tree) >= 2  # bwrap and the worker inside it
         _, res = await run(ex, "while True:\n    pass")
-        assert "timed out after 3" in res["error"] and "killed" in res["error"]
+        assert res.timed_out and "timed out after 3 s" in res.note
         assert await all_gone(tree)
         out, res = await run(ex, HAS_X)
-        assert res["result"] is False
-        assert "fresh Python worker" in out and "timed out" in out
+        assert res.result is False
     finally:
-        await ex.close()
-
-
-async def _stop_after(ex, code: str, seconds: float = 1.0) -> float:
-    """Start *code* as a cell, cancel it after *seconds*, and return how long the cancel took to take effect."""
-    task = asyncio.create_task(run(ex, code))
-    await asyncio.sleep(seconds)
-    started = asyncio.get_running_loop().time()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    return asyncio.get_running_loop().time() - started
+        await ex.stop()
 
 
 @needs_bwrap
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "code",
-    [
-        pytest.param("await asyncio.sleep(60)", id="waiting"),
-        pytest.param("while True:\n    pass", id="computing"),
-        pytest.param("import time\ntime.sleep(60)", id="sleeping"),
-        pytest.param("try:\n    while True:\n        pass\nexcept Exception:\n    pass", id="catching-exception"),
-    ],
-)
-async def test_a_stopped_cell_is_interrupted_and_the_worker_keeps_its_variables(worker_world, code):
-    """A cancel stops the cell where it is; the worker, and everything earlier cells bound, stays."""
-    ex, _ = executor_with_fakes()
+async def test_a_stopped_cell_kills_the_interpreter_and_the_next_cell_is_told(worker_world):
+    ex, _ = await executor_with_fakes()
     try:
         await run(ex, "x = 1")
-        pid = worker_pid(ex)
-        took = await _stop_after(ex, code)
-        assert took < worker_mod.INTERRUPT_GRACE_S
-        out, res = await run(ex, HAS_X)
-        assert res["result"] is True and "fresh Python worker" not in out
-        assert worker_pid(ex) == pid
-    finally:
-        await ex.close()
-
-
-@needs_bwrap
-@pytest.mark.asyncio
-async def test_a_stopped_cell_that_will_not_stop_kills_the_worker(worker_world):
-    """A cell that swallows its interrupt and runs on is killed with its worker after the grace."""
-    ex, _ = executor_with_fakes()
-    try:
-        await run(ex, "x = 1")
-        pid = worker_pid(ex)
         tree = worker_tree(ex)
-        stubborn = "while True:\n    try:\n        while True:\n            pass\n    except BaseException:\n        pass"
-        took = await _stop_after(ex, stubborn)
-        assert took >= worker_mod.INTERRUPT_GRACE_S
+        task = asyncio.create_task(run(ex, "import time\ntime.sleep(60)"))
+        await asyncio.sleep(1.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
         assert await all_gone(tree)
-        out, res = await run(ex, HAS_X)
-        assert res["result"] is False and "was stopped" in out
-        assert worker_pid(ex) != pid
+        _, res = await run(ex, HAS_X)
+        assert res.result is False and "the previous cell was stopped" in res.note
         # A worker that exits by itself says so too.
         _, res = await run(ex, "import os\nos._exit(3)")
-        assert "exited during the cell" in res["error"]
+        assert res.restarted and "exited during the cell" in res.note
         _, res = await run(ex, "1")
-        assert res["result"] == 1
+        assert res.result == 1
     finally:
-        await ex.close()
+        await ex.stop()
 
 
 @needs_bwrap
 @pytest.mark.asyncio
-async def test_output_display_and_clarification_cross(worker_world):
-    async def request_clarification(question: str) -> str:
-        return f"answer to {question}"
-
-    ex, _ = executor_with_fakes()
-    ex.register_fm_globals({"request_clarification": request_clarification})
+async def test_output_and_display_cross_in_order(worker_world):
+    ex, _ = await executor_with_fakes()
     try:
         out, res = await run(
             ex,
@@ -778,100 +585,19 @@ async def test_output_display_and_clarification_cross(worker_world):
             "print('printed')\n"
             "sys.stdout.write('written\\n')\n"
             "display({'a': 1})\n"
-            "print(await request_clarification('why?'))\n"
             "subprocess.run(['echo', 'from-subprocess'])\n"
             "print('err', file=sys.stderr)",
         )
-        assert res["error"] is None, res["error"]
-        assert out == ("printed\nwritten\n{'a': 1}\nanswer to why?\nfrom-subprocess\n")
-        assert parts_to_text(res["stderr"]) == "err\n"
+        assert res.error is None, res.error
+        assert out.startswith("printed\nwritten\n{'a': 1}\nfrom-subprocess\n")
+        assert out.rstrip().endswith("err")
     finally:
-        await ex.close()
-
-
-@needs_bwrap
-@pytest.mark.asyncio
-async def test_steering_probes_and_memoisation_reach_the_worker(worker_world):
-    from unify.function_manager.steering import (
-        InterruptionRequest,
-        Patch,
-        SteeringSession,
-        use_session,
-    )
-
-    ex, calls = executor_with_fakes()
-    try:
-        steering = SteeringSession()
-        with use_session(steering):
-            _, res = await run(
-                ex,
-                "out = []\n"
-                "for w in ['a', 'a']:\n"
-                "    out.append((await primitives.files.search(w, limit=1))['hits'])\n"
-                "out",
-            )
-        assert res["error"] is None, res["error"]
-        assert res["result"] == [["a-0"], ["a-0"]]
-        assert steering.runtime.action_counter > 0
-        assert steering.cache.misses == 2
-        # A stop request fires at the next checkpoint in the worker.
-        stopping = SteeringSession()
-        stopping.interruption = InterruptionRequest(reason="enough", stop=True)
-        with use_session(stopping):
-            _, res = await run(ex, "await primitives.files.search('z')")
-        assert res["result"] == {"status": "stopped", "reason": "enough"}
-        assert not any(c[1] == "z" for c in calls)
-        # A correction raised by a probe in the worker unwinds the cell there,
-        # is spliced here, and the patched cell runs again in the worker.
-        patching = SteeringSession()
-        patching.interruption = InterruptionRequest(
-            reason="use the new step",
-            patches=[Patch("step", "async def step():\n    return 'patched'\n")],
-        )
-        with use_session(patching):
-            _, res = await run(
-                ex,
-                "async def step():\n    return 'original'\nawait step()",
-            )
-        assert res["error"] is None, res["error"]
-        assert res["result"] == "patched" and patching.retries == 1
-    finally:
-        await ex.close()
-
-
-@needs_bwrap
-@pytest.mark.asyncio
-@_handle_project
-async def test_inspect_state_reads_the_workers_variables(worker_world):
-    from unify.actor.code_act_actor import CodeActActor
-    from unify.actor.execution import _CURRENT_SANDBOX, PythonExecutionSession
-
-    actor = CodeActActor(environments=[])
-    tools = actor.get_tools("act")
-    sandbox_session = PythonExecutionSession(environments={})
-    token = _CURRENT_SANDBOX.set(sandbox_session)
-    try:
-        # Before any cell there is no worker and nothing to list.
-        empty = await tools["inspect_state"]()
-        assert empty["state"]["variables"] == []
-        seeded = await tools["execute_code"](
-            thought="Seed the session.",
-            code="import os\ncolour = 'teal'\ntotal = 8\n" + PROCESS_ID,
-        )
-        assert seeded.error is None and seeded.result != HARNESS_PID
-        names = await tools["inspect_state"]()
-        assert names["state"]["variables"] == ["colour", "total"]
-        full = await tools["inspect_state"](detail="full")
-        assert full["state"]["variables"] == {"colour": "'teal'", "total": "8"}
-    finally:
-        _CURRENT_SANDBOX.reset(token)
-        await sandbox_session.close()
-        await actor.close()
+        await ex.stop()
 
 
 def worker_pid(ex) -> int:
-    """The host pid of session 0's worker sandbox."""
-    return ex.python_session(session_id=0)._worker.pid
+    """The host pid of the interpreter's sandbox (its bwrap)."""
+    return ex._backend.host_pid
 
 
 def _parent(pid: int) -> int | None:

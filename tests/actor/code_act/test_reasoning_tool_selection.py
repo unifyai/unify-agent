@@ -40,21 +40,6 @@ def _coerce_query_llm_result(response_format: Any, result: dict[str, Any]) -> An
     )
 
 
-def _execution_only_actor() -> CodeActActor:
-    """A CodeActActor with the execution tools only, no library discovery."""
-    actor = CodeActActor(environments=[], tool_policy=None, timeout=200)
-    act_tools = actor.get_tools("act")
-    actor.add_tools(
-        "act",
-        {
-            name: tool
-            for name, tool in act_tools.items()
-            if not name.startswith(("FunctionManager_", "GuidanceManager_"))
-        },
-    )
-    return actor
-
-
 @pytest.mark.asyncio
 @pytest.mark.timeout(240)
 async def test_code_act_sprinkles_query_llm_into_semantic_python_loop(
@@ -139,20 +124,10 @@ async def test_code_act_sprinkles_query_llm_into_semantic_python_loop(
         actor=[reply(calls=[cell(loop)]), reply("['m1', 'm3']")],
     )
 
-    actor = _execution_only_actor()
-    try:
-        with scripted(model):
-            handle = await actor.act(
-                request,
-                clarification_enabled=False,
-                can_store=False,
-            )
-            result = await handle.result()
-    finally:
-        try:
-            await actor.close()
-        except Exception:
-            pass
+    actor = CodeActActor(environments=[], timeout=200)
+    with scripted(model):
+        handle = await actor.act(request, clarification_enabled=False)
+        result = await handle.result()
 
     assert "execute_code" in set(get_code_act_tool_calls(handle))
     snippets = extract_code_act_execute_code_snippets(handle)

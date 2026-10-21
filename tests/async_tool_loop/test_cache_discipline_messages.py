@@ -3,9 +3,8 @@
 Every actor conversation on the pre-rebase build broke its cached prefix on
 its last call: every earlier assistant message lost its
 ``provider_specific_fields`` and reasoning details, shed when a persistent
-session parked, and a storage review's compaction note shortened the tool
-results it covered. Both are gone, so each request is the previous request
-plus what came after it.
+session parked. Now each request is the previous request plus what came after
+it.
 """
 
 from __future__ import annotations
@@ -23,19 +22,19 @@ def _as_bytes(messages: list[dict]) -> list[str]:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scenario", h.ONE_SESSION)
-async def test_on_each_request_extends_the_previous_one(monkeypatch, scenario):
+async def test_each_request_extends_the_previous_one(monkeypatch, scenario):
     _result, _counter, requests = await h.SCENARIOS[scenario]()
     if scenario == "compress":
-        # The session restarts from its summary after the third request; the
+        # The session restarts from its summary after the second request; the
         # restart is checked in test_cache_discipline_compression.py.
-        requests = requests[:3]
+        requests = requests[:2]
     for before, after in zip(requests, requests[1:]):
         sent = _as_bytes(before["messages"])
         assert _as_bytes(after["messages"])[: len(sent)] == sent
 
 
 @pytest.mark.asyncio
-async def test_on_a_parked_session_keeps_reasoning_and_reviewed_results(monkeypatch):
+async def test_a_parked_session_keeps_reasoning_and_results(monkeypatch):
     result, _counter, requests = await h.scenario_persist()
     assert result == "first done|second done"
     last = requests[-1]["messages"]

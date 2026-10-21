@@ -61,19 +61,6 @@ def system_prompt(text: str) -> str:
     """
     if not enabled():
         return text
-    from unify.actor import prompt_builders as _prompts
-
-    text = text.replace(_prompts._CORE_SANDBOX_SEARCH_PYTHON, _HELP_ONLY)
-    # No function store either: the role and the sandbox section say what a
-    # cell has instead.
-    text = text.replace(
-        _prompts._LEAN_ROLE_LIBRARY,
-        _prompts._LEAN_ROLE_LIBRARY_MEMORY,
-    )
-    text = text.replace(
-        _prompts._SANDBOX_GLOBALS_INTRO,
-        _prompts._SANDBOX_GLOBALS_INTRO_MEMORY,
-    )
     run = _run()
     index = getattr(run, "index", "") if run is not None else ""
     return f"{text}\n\n{index}" if index else text

@@ -53,7 +53,6 @@ from tests.actor.code_act.core_world import (  # noqa: F401 (fixtures)
     world,
 )
 from tests.actor.code_act.sandbox_world import needs_bwrap
-from tests.helpers import _handle_project
 from tests.scripted_model import ScriptedModel, cell, reply, scripted
 from unify.common._async_tool import time_context
 from unify.memory.integration.paths import Paths
@@ -274,7 +273,6 @@ def _first_difference(a: list[str], b: list[str]) -> str:
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(420)
-@_handle_project
 async def test_off_is_byte_identical_to_memory_absent(core_world, monkeypatch):
     monkeypatch.setattr(time_context, "perf_counter", lambda: 0.0)
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "")

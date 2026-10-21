@@ -4,17 +4,13 @@ Providers cache a prompt by its exact leading bytes: tools, system prompt,
 then messages in order. A request reuses the cache only as far as it matches
 the previous one byte for byte, so anything that changes early in the
 request -- the tool list, an old message -- makes every later token cold.
-The loop keeps what it advertises and what it has sent fixed (the
-``UNIFY_CACHE_DISCIPLINE`` switch until the code freeze baked it in):
+The loop keeps what it advertises and what it has sent fixed:
 
 * **One tool list per session.** The advertised tools are computed once, in
-  a deterministic order, and sent unchanged on every call. What a phase does
-  not allow (a policy's gated turn, a context-full turn, a read-only library) is
-  refused at call time with the rule that masks it, instead of being removed
-  from the list ("mask, don't remove").
+  a deterministic order, and sent unchanged on every call. A call to a tool
+  outside the list is refused with the rule, so the list never changes.
 * **Sent messages are never edited.** Reasoning payloads are not shed when a
-  persistent session parks, and a storage review's compaction note no
-  longer shortens the turns it covered.
+  persistent session parks.
 * **Compression is a fork** (``context_compression.FORK_SUMMARY``). The
   summary is asked for with the last request sent, unchanged, plus one
   appended instruction, so it is served from the cache; the session then
@@ -57,80 +53,13 @@ def schema_names(schemas: Iterable[Any]) -> list[str]:
     return [n for n in (schema_name(s) for s in schemas or []) if n]
 
 
-def build_session_schema(
-    *,
-    base_schemas: dict[str, dict],
-    compress_schema: Optional[dict],
-    turn_schemas: list[dict],
-) -> list[dict]:
-    """The tool list a session advertises on every call.
-
-    ``base_schemas`` holds every tool the caller passed, whether or not this
-    turn's policy shows it, and is emitted in name order so the list does not
-    depend on dict insertion. ``compress_context`` follows whenever
-    compression is enabled, eager turns included. The loop-owned tools this
-    turn assembled (the response tool, multi-request tools, ``wait``,
-    ``steer``, ``ask_about_completed_tool``) are the same on every turn and
-    keep the order the loop gives them.
-    """
-    fixed = [base_schemas[name] for name in sorted(base_schemas)]
-    if compress_schema is not None:
-        fixed.append(compress_schema)
-    taken = set(base_schemas) | ({"compress_context"} if compress_schema else set())
-    for schema in turn_schemas:
-        name = schema_name(schema)
-        if name and name not in taken:
-            fixed.append(schema)
-            taken.add(name)
-    return fixed
-
-
-def policy_mask_rules(policy_result: Any) -> tuple[dict[str, str], Optional[str]]:
-    """The rules a ``tool_policy`` result gives for the tools it withholds.
-
-    A policy may return ``(mode, tools, opts)`` with ``opts["mask_rules"]``
-    (tool name -> why it is withheld) and ``opts["mask_rule"]`` (why every
-    other withheld tool is). Both are optional; the loop reads nothing else
-    from them.
-    """
-    if not isinstance(policy_result, (tuple, list)) or len(policy_result) < 3:
-        return {}, None
-    opts = policy_result[2]
-    if not isinstance(opts, dict):
-        return {}, None
-    rules = opts.get("mask_rules")
-    rules = (
-        {str(k): str(v) for k, v in rules.items() if v}
-        if isinstance(rules, dict)
-        else {}
-    )
-    default = opts.get("mask_rule")
-    return rules, (str(default) if default else None)
-
-
-def masked_tool_refusal(
-    name: str,
-    *,
-    advertised: Iterable[str],
-    available: Iterable[str],
-    rule: Optional[str],
-) -> str:
-    """The tool reply for a call to a tool this turn does not allow.
-
-    It names the rule that masks the tool and what can be called instead, so
-    the model can act on it rather than retry.
-    """
-    advertised = set(advertised)
-    now = sorted(set(available))
-    if name not in advertised:
-        why = f"`{name}` is not in this session's tool list."
-    elif rule:
-        why = f"`{name}` is not available right now: {rule.rstrip('.')}."
-    else:
-        why = f"`{name}` is not available on this turn."
+def masked_tool_refusal(name: str, *, advertised: Iterable[str]) -> str:
+    """The tool reply for a call to a tool outside the session's list: it says what can be called instead, so the
+    model can act on it rather than retry."""
+    now = sorted(set(advertised))
     listed = ", ".join(f"`{n}`" for n in now) if now else "none"
     return (
-        f"⚠️ {why} The tool list stays the same for the whole session, so a "
+        f"⚠️ `{name}` is not in this session's tool list. The tool list stays the same for the whole session, so a "
         "tool that is not allowed yet is refused rather than removed. "
         f"Available now: {listed}."
     )
@@ -171,12 +100,6 @@ def last_sent_request(client: Any) -> Optional[dict]:
     return record if isinstance(record, dict) else None
 
 
-def is_forced_tool_choice(tool_choice: Any) -> bool:
-    if isinstance(tool_choice, str):
-        return tool_choice.strip().lower() in ("required", "any")
-    return isinstance(tool_choice, dict)
-
-
 COMPRESSION_FORK_INSTRUCTION = (
     "Context compression: the conversation above is about to be replaced by "
     "the summary you write now, and you will continue the task from that "
@@ -184,25 +107,14 @@ COMPRESSION_FORK_INSTRUCTION = (
     "the task and every requirement, correction or preference the user gave, "
     "verbatim where the wording matters; what has been done and what was "
     "found, with the exact names, ids, paths and values the rest of the task "
-    "needs (stored functions and guidance used included); what failed and "
+    "needs (library items used included); what failed and "
     "why; the current state; and the next steps. Leave out tool output that "
     "is no longer needed."
 )
 
-#: The same instruction when tools are called from code (``UNIFY_TOOLS_IN_CODE=on``): what the agent used from earlier
-#: work is the memory library's items, not stored functions and guidance.
-COMPRESSION_FORK_INSTRUCTION_IN_CODE = COMPRESSION_FORK_INSTRUCTION.replace(
-    "(stored functions and guidance used included)",
-    "(library items used included)",
-)
-
 
 def compression_fork_instruction() -> str:
-    """The summary turn's instruction every agent reads: :data:`COMPRESSION_FORK_INSTRUCTION`, or its in-code form."""
-    from unify.common import in_code_switch
-
-    if in_code_switch.tools_in_code():
-        return COMPRESSION_FORK_INSTRUCTION_IN_CODE
+    """The summary turn's instruction every agent reads."""
     return COMPRESSION_FORK_INSTRUCTION
 
 
@@ -300,12 +212,6 @@ def cache_usage(completion: Any) -> tuple[Optional[int], Optional[int]]:
     prompt = int(prompt) if isinstance(prompt, (int, float)) else None
     cached = int(cached) if isinstance(cached, (int, float)) else None
     return prompt, cached
-
-
-def cache_stats(client: Any) -> Optional[dict]:
-    """The session's running cache totals, or ``None`` before its first call."""
-    stats = getattr(client, _CACHE_STATS, None)
-    return dict(stats) if isinstance(stats, dict) else None
 
 
 def _share(cached: int, total: int) -> str:

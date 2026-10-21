@@ -117,7 +117,6 @@ def run_transformation(code: str, content: str, base_globals: dict) -> str:
     ``TimeoutError`` past :data:`TIMEOUT_S`, ``RuntimeError`` without
     bubblewrap or when the box gives no usable reply.
     """
-    from unify import sandbox
     from unify.memory import sandbox_run
 
     names, specs = _globals_spec(base_globals)
@@ -132,10 +131,7 @@ def run_transformation(code: str, content: str, base_globals: dict) -> str:
     ).encode("ascii")
     limit = max(MAX_REPLY_BYTES, 2 * len(request))
     argv = [str(sandbox_run.PYTHON), "-I", "-c", _CHILD.read_text(encoding="utf-8")]
-    # The command is a box already: a cell's subprocess confinement, when
-    # this runs inside one, must not wrap it a second time.
-    with sandbox.unconfined():
-        box = sandbox_run.start_confined(argv, cwd=_BOX_CWD)
+    box = sandbox_run.start_confined(argv, cwd=_BOX_CWD)
     try:
         out = _exchange(box, request, limit)
     finally:

@@ -1,5 +1,10 @@
-"""Symbolic: in record mode the actor offers no steering surface, binds record and
-agents, and sees new entries only between its steps."""
+"""Symbolic: the actor on the agent record.
+
+Its only model-API tool is ``execute_code``; the record starts with the request, its rules are one help topic away
+(``tools.help("record")``), the handle carries the record's pool, a stopped actor stops its helpers and posts no
+reply, and an answer from a cell ends the request with no further model call. Cells run in the real sandboxed worker;
+the model is the scripted transport.
+"""
 
 import asyncio
 import json
@@ -7,314 +12,104 @@ import json
 import pytest
 
 from tests import cache_discipline_helpers as h
-from unify.actor.environments import actor as actor_env
-from unify.settings import SETTINGS
+from tests.actor.code_act.core_world import core_world  # noqa: F401 (fixture)
+from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401 (fixture)
+from unify.common import tool_registry as R
+
+pytestmark = [needs_bwrap, pytest.mark.asyncio, pytest.mark.timeout(180)]
 
 _DONE = [lambda: h.completion(content="done")]
-_STEERING = {
-    "wait",
-    "steer",
-    "ask_about_completed_tool",
-    "request_clarification",
-    "send_notification",
-}
+
+
+def _cell(code: str):
+    return lambda: h.completion(calls=[("execute_code", {"thought": "t", "code": code})])
+
+
+def _actor(monkeypatch, tmp_path):
+    from unify.actor.code_act_actor import CodeActActor
+    from unify.agents import binding
+
+    monkeypatch.setattr(binding, "records_dir", lambda: tmp_path / "records")
+    return CodeActActor()
 
 
 async def _run(replies, monkeypatch, tmp_path):
-    from unify.actor.code_act_actor import CodeActActor
-    from unify.agents import binding
-
-    monkeypatch.setattr(binding, "records_dir", lambda: tmp_path / "records")
-    actor = CodeActActor(
-        environments=actor_env.top_level_environments(),
-        tool_policy=None,
-    )
-    try:
-        with h.scripted(replies) as provider:
-            handle = await actor.act(
-                "Answer the request.",
-                persist=False,
-                can_store=False,
-                clarification_enabled=False,
-            )
-            result = await asyncio.wait_for(handle.result(), 60)
-    finally:
-        await actor.close()
+    actor = _actor(monkeypatch, tmp_path)
+    with h.scripted(replies) as provider:
+        handle = await actor.act("Answer the request.", persist=False, clarification_enabled=False)
+        result = await asyncio.wait_for(handle.result(), 60)
     return provider.requests, handle, result
 
 
-def _pool():
-    from unify.agents.binding import current_root_pool
-
-    return current_root_pool()
+def _tool_texts(request: dict) -> str:
+    return json.dumps([m.get("content") for m in request["messages"] if m.get("role") == "tool"])
 
 
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)
-async def test_record_mode_offers_no_steering_tools_and_no_sub_actor(
+async def test_the_actor_has_one_tool_and_the_record_starts_with_the_request(
+    core_world,  # noqa: F811
     monkeypatch,
     tmp_path,
 ):
-    requests, handle, _ = await _run(_DONE, monkeypatch, tmp_path)
-    tools = {t["function"]["name"] for t in requests[0]["tools"] or []}
-    assert not (tools & _STEERING)
-    assert "primitives.actor" not in json.dumps(requests[0])
-    assert "### Team record" in json.dumps(requests[0]["messages"])
-    assert handle.agents_pool.record.entries[0].author == "user"
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)
-async def test_record_and_agents_are_in_the_sandbox(monkeypatch, tmp_path):
-    replies = [
-        lambda: h.completion(
-            calls=[
-                ("execute_code", {"thought": "t", "code": "record.post('@user hi')"}),
-            ],
-        ),
-        *_DONE,
-    ]
-    requests, handle, _ = await _run(replies, monkeypatch, tmp_path)
-    texts = [e.text for e in handle.agents_pool.record.entries]
-    assert texts == ["Answer the request.", "@user hi", "done"]  # request, post, reply
-    assert "nobody reads @user in this run" in json.dumps(requests[1]["messages"])
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)
-async def test_posts_during_a_call_and_a_cell_arrive_together_after_the_tool_result(
-    monkeypatch,
-    tmp_path,
-):
-    from unify.agents.views import RecordView
-
-    post = RecordView.post
-
-    def post_and_hear_back(self, text):
-        # Served in the harness while the cell waits for it: the user posts
-        # meanwhile.
-        out = post(self, text)
-        _pool().record.append("user", "posted during the cell")
-        return out
-
-    monkeypatch.setattr(RecordView, "post", post_and_hear_back)
-
-    def first():
-        _pool().record.append("user", "posted during the model call")
-        return h.completion(
-            calls=[
-                (
-                    "execute_code",
-                    {
-                        # The sandbox's own global, as a real cell posts; the
-                        # sandboxed worker has no pool of its own to reach.
-                        "thought": "t",
-                        "code": "record.post('noted')\n'ok'",
-                    },
-                ),
-            ],
-        )
-
-    requests, handle, result = await _run([first, *_DONE], monkeypatch, tmp_path)
-    assert result == "done" and len(requests) == 2  # no extra or cancelled call
-    assert "posted during" not in json.dumps(requests[0])
-    msgs = requests[1]["messages"]
-    tool_i = max(i for i, m in enumerate(msgs) if m["role"] == "tool")
-    assert tool_i == len(msgs) - 2 and msgs[-1]["role"] == "user"
-    block = json.dumps(msgs[-1]["content"])
-    assert "posted during the model call" in block and "posted during the cell" in block
-    # the cell's own post is in the record, not delivered back to it
-    assert "noted" in [e.text for e in handle.agents_pool.record.entries]
-    assert "noted" not in block
-    first_msgs = requests[0]["messages"]
-    assert msgs[: len(first_msgs)] == first_msgs
-
-
-async def _run_slow_cell(monkeypatch, tmp_path):
-    from unify.actor.code_act_actor import CodeActActor
-    from unify.agents import binding
-
-    monkeypatch.setattr(binding, "records_dir", lambda: tmp_path / "records")
-    actor = CodeActActor(
-        environments=actor_env.top_level_environments(),
-        tool_policy=None,
-    )
-    # A cell long enough for the code-step heartbeat to fire.
-    actor._active_work_heartbeat_interval_s = 0.2
-    actor._active_work_fallback_initial_delay_s = 0.3
-    replies = [
-        lambda: h.completion(
-            calls=[
-                (
-                    "execute_code",
-                    {
-                        "thought": "t",
-                        "code": "import asyncio\nawait asyncio.sleep(2)\n'ok'",
-                    },
-                ),
-            ],
-        ),
-        *_DONE * 3,
-    ]
-    try:
-        with h.scripted(replies) as provider:
-            handle = await actor.act(
-                "Answer the request.",
-                persist=False,
-                can_store=False,
-                clarification_enabled=False,
-            )
-            result = await asyncio.wait_for(handle.result(), 60)
-    finally:
-        await actor.close()
-    return provider.requests, result
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)
-async def test_a_long_cell_never_wakes_the_model_in_record_mode(monkeypatch, tmp_path):
-    requests, result = await _run_slow_cell(monkeypatch, tmp_path)
+    requests, handle, result = await _run(_DONE, monkeypatch, tmp_path)
     assert result == "done"
-    assert len(requests) == 2  # the cell's call, then one call after the cell ended
-    assert "Still working on the code step" not in json.dumps(requests)
-    msgs = requests[1]["messages"]
-    assert msgs[-1]["role"] == "tool" and "ok" in json.dumps(msgs[-1])
+    assert [t["function"]["name"] for t in requests[0]["tools"]] == ["execute_code"]
+    assert "primitives.actor" not in json.dumps(requests[0])
+    first = handle.agents_pool.record.entries[0]
+    assert (first.author, first.text) == ("user", "Answer the request.")
 
 
-def _fake_helper(pool, name="h9"):
-    """A helper that never ends unless it is stopped."""
-    pool.record.add_agent(name, spawner="root")
-    pool._tasks[name] = asyncio.get_running_loop().create_task(asyncio.sleep(3600))
-    return pool._tasks[name]
+async def test_the_record_rules_are_one_help_topic_away(core_world, monkeypatch, tmp_path):  # noqa: F811
+    requests, _, _ = await _run([_cell('print(tools.help("record"))'), *_DONE], monkeypatch, tmp_path)
+    first = [str(m.get("content")) for m in requests[0]["messages"]]
+    assert R.RECORD_POINTER in first[0]  # the system message
+    assert not any("only you can answer them" in text for text in first)
+    assert "only you can answer them" in _tool_texts(requests[1])
 
 
-async def _actor(monkeypatch, tmp_path):
-    from unify.actor.code_act_actor import CodeActActor
-    from unify.agents import binding
-
-    monkeypatch.setattr(binding, "records_dir", lambda: tmp_path / "records")
-    return CodeActActor(
-        environments=actor_env.top_level_environments(),
-        tool_policy=None,
-    )
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(180)
-async def test_a_stored_session_handle_carries_the_pool(monkeypatch, tmp_path):
-    # The CLI's default (storage on) wraps the loop's handle for the review.
-    actor = await _actor(monkeypatch, tmp_path)
-    try:
-        with h.scripted(_DONE * 12):
-            handle = await actor.act(
-                "Answer the request.",
-                persist=False,
-                can_store=True,
-                clarification_enabled=False,
-            )
-            assert getattr(handle, "agents_pool", None) is not None
-            await asyncio.wait_for(handle.result(), 120)
-    finally:
-        await actor.close()
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(180)
 async def test_a_stopped_main_agent_stops_its_helpers_and_records_no_reply(
+    core_world,  # noqa: F811
     monkeypatch,
     tmp_path,
 ):
     from unify.agents.binding import current_root_pool
 
-    actor = await _actor(monkeypatch, tmp_path)
+    actor = _actor(monkeypatch, tmp_path)
     helper = {}
 
     def first():
-        helper["task"] = _fake_helper(current_root_pool())
-        return h.completion(
-            calls=[
-                (
-                    "execute_code",
-                    {"thought": "t", "code": "import asyncio\nawait asyncio.sleep(5)"},
-                ),
-            ],
-        )
+        pool = current_root_pool()
+        pool.record.add_agent("h9", spawner=pool.record.root)
+        helper["task"] = pool._tasks["h9"] = asyncio.get_running_loop().create_task(asyncio.sleep(3600))
+        return h.completion(calls=[("execute_code", {"thought": "t", "code": "import time\ntime.sleep(5)"})])
 
-    try:
-        with h.scripted([first, *_DONE * 3]):
-            handle = await actor.act(
-                "Answer the request.",
-                persist=False,
-                can_store=False,
-                clarification_enabled=False,
-            )
-            await asyncio.sleep(1.0)
-            await handle.stop("the user stopped it")
-            await asyncio.wait_for(handle.result(), 60)
-    finally:
-        await actor.close()
+    with h.scripted([first, *_DONE * 3]):
+        handle = await actor.act("Answer the request.", persist=False, clarification_enabled=False)
+        await asyncio.sleep(1.0)
+        await handle.stop("the user stopped it")
+        await asyncio.wait_for(handle.result(), 60)
     pool = current_root_pool()
     assert helper["task"].done()
     kinds = [(e.author, e.kind) for e in pool.record.entries]
-    assert ("root", "reply") not in kinds
+    assert (pool.record.root, "reply") not in kinds
     notice = [e.text for e in pool.record.entries if e.kind == "system"]
     assert notice and "stopped" in notice[-1]
 
 
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)
-async def test_a_turn_ended_by_a_cells_reply_gets_no_block_and_no_model_call(
+async def test_an_answer_from_a_cell_ends_the_request_with_no_block_and_no_model_call(
+    core_world,  # noqa: F811
     monkeypatch,
     tmp_path,
 ):
     from unify.agents.binding import current_root_pool
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_CHANNEL", "code+text")
-    actor = await _actor(monkeypatch, tmp_path)
+    actor = _actor(monkeypatch, tmp_path)
 
     def first():
         current_root_pool().record.append("user", "posted during the last call")
-        return h.completion(
-            calls=[("execute_code", {"thought": "t", "code": "reply('final answer')"})],
-        )
+        return h.completion(calls=[("execute_code", {"thought": "t", "code": "tools.answer('final answer')"})])
 
-    try:
-        with h.scripted([first]) as provider:
-            handle = await actor.act(
-                "Answer the request.",
-                persist=False,
-                can_store=False,
-                clarification_enabled=False,
-            )
-            result = await asyncio.wait_for(handle.result(), 60)
-    finally:
-        await actor.close()
+    with h.scripted([first]) as provider:
+        handle = await actor.act("Answer the request.", persist=False, clarification_enabled=False)
+        result = await asyncio.wait_for(handle.result(), 60)
     assert result == "final answer" and len(provider.requests) == 1
     assert "posted during the last call" not in json.dumps(provider.requests)
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)
-@pytest.mark.parametrize("lean", ["lean", ""])
-async def test_record_mode_states_the_reply_owner_rule_instead_of_the_reply_note(
-    monkeypatch,
-    tmp_path,
-    lean,
-):
-    # Design v2 §5.2: the record enforces the rule the note states ("only the
-    # asked agent may reply; helpers cannot take the requester's action"), so
-    # the note, which also tells the model not to delegate, is not sent.
-    requests, _, _ = await _run(_DONE, monkeypatch, tmp_path)
-    sent = json.dumps(requests[0]["messages"])
-    assert "Actions Taken By Replying" not in sent
-    assert "only you can answer them" in sent
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)
-async def test_record_mode_still_says_a_cell_can_reply(monkeypatch, tmp_path):
-    monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_CHANNEL", "code+text")
-    requests, _, _ = await _run(_DONE, monkeypatch, tmp_path)
-    sent = json.dumps(requests[0]["messages"])
-    assert "Actions Taken By Replying" not in sent
-    assert "reply(text)" in sent

@@ -35,20 +35,10 @@ class TestingSettings(ProductionSettings):
     ProductionSettings. This class adds test-only settings.
     """
 
-    # Override composed manager settings with test defaults
-
     # ─────────────────────────────────────────────────────────────────────────
     # Test Infrastructure Settings
     # ─────────────────────────────────────────────────────────────────────────
-    UNIFY_INCREMENTING_TIMESTAMPS: bool = (
-        False  # Auto-increment timestamps for NEW markers
-    )
     UNIFY_CACHE_STATS: bool = False
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # File Lock Settings (for parallel test coordination)
-    # ─────────────────────────────────────────────────────────────────────────
-    UNIFY_FILE_LOCK_TIMEOUT: float = 3600.0  # 1 hour - handles slow tests under load
 
 
 class _SettingsProxy:

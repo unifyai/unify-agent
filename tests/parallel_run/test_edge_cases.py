@@ -168,67 +168,6 @@ class TestEmptyResults:
 
         assert "No tests" in result.stdout or len(result.sessions_created) == 0
 
-    def test_eval_only_no_eval_tests(self, runner):
-        """--eval-only with file that has no eval tests creates no sessions.
-
-        In default per-test mode, the script pre-filters tests by marker.
-        If a file has no matching tests, no sessions are created for it.
-        parallel_run.sh now surfaces "marker filter excluded all tests"
-        as a non-zero exit with a descriptive stderr message (rather than
-        silently exiting 0) — that's the loud-failure surface this test
-        cares about.
-        """
-        result = runner.run(
-            "--eval-only",
-            runner.fixture_path("test_symbolic_only.py"),
-        )
-
-        # test_symbolic_only.py has no eval marks, so no sessions created
-        # and the runner surfaces "No tests found / marker filter excluded
-        # all tests" via stderr + non-zero exit.
-        assert len(result.sessions_created) == 0
-        assert result.exit_code in (0, 1), f"unexpected exit_code={result.exit_code}"
-        if result.exit_code != 0:
-            assert (
-                "No tests found" in result.stderr
-                or "excluded all tests" in result.stderr
-                or "marker filter" in result.stderr
-            ), (
-                f"non-zero exit should be accompanied by a descriptive "
-                f"stderr explaining the marker-filter empty result; "
-                f"got stderr={result.stderr!r}"
-            )
-
-    def test_symbolic_only_all_eval_tests(self, runner):
-        """--symbolic-only with all-eval file creates no sessions.
-
-        In default per-test mode, the script pre-filters tests by marker.
-        If a file has no matching tests, no sessions are created for it.
-        parallel_run.sh now surfaces "marker filter excluded all tests"
-        as a non-zero exit with a descriptive stderr message — the
-        loud-failure surface this test cares about.
-        """
-        result = runner.run(
-            "--symbolic-only",
-            runner.fixture_path("test_eval_marked.py"),
-        )
-
-        # test_eval_marked.py is all eval, so no symbolic tests to run.
-        # The runner surfaces this as exit_code in (0, 1) with no
-        # sessions and a descriptive stderr if non-zero.
-        assert len(result.sessions_created) == 0
-        assert result.exit_code in (0, 1), f"unexpected exit_code={result.exit_code}"
-        if result.exit_code != 0:
-            assert (
-                "No tests found" in result.stderr
-                or "excluded all tests" in result.stderr
-                or "marker filter" in result.stderr
-            ), (
-                f"non-zero exit should be accompanied by a descriptive "
-                f"stderr explaining the marker-filter empty result; "
-                f"got stderr={result.stderr!r}"
-            )
-
 
 class TestPathFormats:
     """Tests for different path format handling."""

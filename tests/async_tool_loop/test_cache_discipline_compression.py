@@ -1,12 +1,11 @@
-"""Symbolic: compression is a fork of the conversation (``FORK_SUMMARY``).
+"""Symbolic: compression is a fork of the conversation.
 
-As shipped, compression hands the transcript to a separate compactor loop
-with its own system prompt, which edits entries over several calls, and the
-session restarts with a rewritten system prompt and an extra tool. None of
-it is cached: one ScienceWorld compression cost 0.172 USD over 8 calls, and
-the call after it had 0 cached tokens. Now the summary is asked for with the
-last request sent plus one appended instruction, and the session continues
-from its own system prompt, the same tool list and the summary.
+A separate compactor loop with its own system prompt is not cached: one
+ScienceWorld compression cost 0.172 USD over 8 calls, and the call after it
+had 0 cached tokens. The summary is asked for with the last request sent, what
+followed it, and one appended instruction, and the session continues from its
+own system prompt, the same tool list and the summary. The compactor loop is
+only the fallback for a fork that returns no summary.
 """
 
 from __future__ import annotations
@@ -29,37 +28,36 @@ async def test_the_summary_request_is_the_last_request_plus_one_message():
     result, counter, requests = await h.scenario_compress()
     assert result == "done"
     assert counter == {"execute_code": 1}
-    assert len(requests) == 4
-    last, summary = requests[1], requests[2]
+    assert len(requests) == 3
+    last, summary = requests[0], requests[1]
 
-    # Byte prefix: every message of the last request, unchanged, then one.
+    # Byte prefix: every message of the last request, unchanged, then what
+    # followed it (the reply and the cell's result), then the instruction.
     assert _dumps(summary["messages"])[: len(last["messages"])] == _dumps(
         last["messages"],
     )
-    assert len(summary["messages"]) == len(last["messages"]) + 1
+    tail = summary["messages"][len(last["messages"]) : -1]
+    assert [m["role"] for m in tail] == ["assistant", "tool"]
     assert summary["messages"][-1] == {
         "role": "user",
         "content": cd.COMPRESSION_FORK_INSTRUCTION,
     }
-    # Same tools; the forced choice of the context-full turn is sent as auto.
     assert h.request_bytes(summary)["tools"] == h.request_bytes(last)["tools"]
-    assert last["tool_choice"] == "required"
-    assert summary["tool_choice"] == "auto"
-    assert summary["reasoning_effort"] == last["reasoning_effort"] == "low"
+    assert summary["reasoning_effort"] == last["reasoning_effort"]
 
 
 @pytest.mark.asyncio
 async def test_the_session_continues_from_the_summary_with_the_same_prefix():
     _result, _counter, requests = await h.scenario_compress()
-    first, restarted = requests[0], requests[3]
+    first, restarted = requests[0], requests[2]
     # The system prompt and the tool list survive the restart byte for byte.
     assert _dumps(restarted["messages"][:1]) == _dumps(first["messages"][:1])
     assert restarted["messages"][0]["content"] == "You are a scripted test agent."
     assert h.request_bytes(restarted)["tools"] == h.request_bytes(first)["tools"]
     assert "unpack_messages" not in h.request_bytes(restarted)["tools"]
     user = [m for m in restarted["messages"] if m["role"] == "user"]
-    # The summary, the restart notice and (UNIFY_TRANSCRIPTS, on by default)
-    # the line naming the session's transcript file.
+    # The summary, the restart notice and the line naming the session's
+    # transcript file.
     from unify import transcripts
 
     restart, pointer = user[-1]["content"].rsplit("\n\n", 1)
@@ -79,17 +77,16 @@ async def test_the_session_continues_from_the_summary_with_the_same_prefix():
 async def test_a_fork_that_returns_no_text_falls_back_to_the_compactor():
     replies = (
         h.COMPRESS_REPLIES[0],
-        h.COMPRESS_REPLIES[1],
         # the fork calls a tool instead of summarising
         lambda: h.completion(calls=[("execute_code", {"code": "nope"})]),
-        # the compactor as shipped, then the restarted session
+        # the fallback compactor, then the restarted session
         lambda: h.completion(content="compacted"),
         lambda: h.completion(content="done"),
     )
     result, counter, requests = await h.scenario_compress(replies)
     assert result == "done"
     assert counter == {"execute_code": 1}
-    compactor = requests[3]
+    compactor = requests[2]
     assert compactor["messages"][0]["content"].startswith(
         "You are a context compactor",
     )
@@ -213,13 +210,13 @@ def test_a_fork_keeps_model_and_effort_under_its_own_origin():
     snapshot = [{"role": "system", "content": "sys"}, {"role": "user", "content": "s"}]
     fork = fork_llm_client(
         parent,
-        origin="StorageCheck",
+        origin="compress_context",
         purpose="planning",
         messages=snapshot,
     )
     assert fork.endpoint == parent.endpoint
     assert fork.reasoning_effort == "low"
-    assert fork.origin == "StorageCheck#purpose=planning"
+    assert fork.origin == "compress_context#purpose=planning"
     assert fork.system_message == "sys"
     assert fork.messages == snapshot and fork.messages is not snapshot
     fork._messages.append({"role": "user", "content": "fork only"})

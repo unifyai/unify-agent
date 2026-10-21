@@ -1,18 +1,17 @@
 # Tests
 
-This directory contains the test suite for Unify. Everything runs locally:
-each pytest process opens its own SQLite store (`UNIFY_STORE_PATH`), seeds
-the primitive and builtin guidance catalogues into it, and empties the user
-tables before each test with `db.clear()`. There is no backend to start, no
-credentials beyond an LLM provider key, and no shared state between sessions.
+This directory contains the test suite for unify-agent. Everything runs
+locally: every model reply is scripted, each test gets a home of its own, and
+no test needs a provider key or reaches the network. There is no backend to
+start and no shared state between sessions.
 
 ## Table of Contents
 
 - [Quick Start](#quick-start)
 - [Tools at a Glance](#tools-at-a-glance)
-- [Test Philosophy](#test-philosophy-symbolic--eval-spectrum)
+- [What a Test Asserts](#what-a-test-asserts)
 - [Parallel Runner Reference](#parallel-runner-reference)
-- [Stores](#stores)
+- [Homes](#homes)
 - [Sandbox and Time Limits](#sandbox-and-time-limits)
 - [Common Workflows](#common-workflows)
 - [Worktree Support](#worktree-support)
@@ -67,62 +66,11 @@ All commands support `--help` for usage details.
 
 ---
 
-## Test Philosophy: Symbolic ↔ Eval Spectrum
+## What a Test Asserts
 
-Tests fall on a spectrum between two paradigms:
-
-**Symbolic Tests** use the LLM purely as a stub—minimal "dummy" instructions trigger specific code paths. Focus is on testing *infrastructure*: async tool loops, steering, state mutations. Failures indicate regressions in symbolic/programmatic logic.
-
-**Eval Tests** exercise the system end-to-end. We ask a high-level question, then verify the outcome—regardless of internal tool calls. Focus is on *capability*: "Did the assistant complete the task?" Failures may indicate prompt issues or capability gaps.
-
-Most tests sit somewhere between these extremes.
-
-### Caching and Determinism
-
-When `UNILLM_CACHE="true"` (the default), all LLM responses are cached:
-- **First run**: LLM executes normally; responses stored in `.cache.ndjson`
-- **Subsequent runs**: Cached responses replayed—no actual LLM calls
-
-Both test types become deterministic after caching. To re-evaluate LLM behavior:
-```bash
-parallel_run --no-cache tests/guidance_manager/test_skill_migration.py
-```
-
-The cache is keyed on the exact LLM input, so a prompt or docstring change
-gets fresh inference on its own. Clearing the cache never fixes a failing
-test; it only re-runs the same decision.
-
-### Marking Tests as Eval
-
-```python
-import pytest
-
-pytestmark = pytest.mark.eval  # All tests in file are eval
-
-# Or per-test:
-@pytest.mark.eval
-async def test_natural_language_query():
-    ...
-```
-
-### `eval` vs `llm_call`
-
-Two independent questions, not two levels of one:
-
-| Marker | Asks | Effect |
-|---|---|---|
-| `llm_call` | does this test reach a model? | cost/deselection only |
-| `eval` | is the model's answer the thing under test? | eval tier, plus cache lookups pinned to `exact` keying |
-
-A test can reach a model and still assert something exact — "did it call the
-right tool?" — and that is `llm_call` without `eval`. An eval is scoring the
-answer itself, which is why it refuses a canonically-equivalent recording: a
-reworded tool description is an ordinary way to change what a model picks, so
-a canonical hit would score the trajectory from before the change.
-
-Neither marker implies the other. A test carrying neither is one you are
-asserting never reaches a model; if you find a model-reaching test with
-neither, that is a missing marker rather than a free test.
+A test that involves a model writes the model's replies itself and asserts
+what the harness does with them (the scripted transport turns unillm's
+response cache off), so every run of it is the same run.
 
 ### No test reaches a model provider or the network
 
@@ -137,14 +85,6 @@ the model, and a socket may connect only to this machine. A test that
 still carries `live_provider` or `requires_provider_key` fails. An eval
 whose subject is a live model's answers lives in `model_evals/`, run by
 hand with a key (`model_evals/README.md`); the suite never collects it.
-
-### Running by Category
-
-```bash
-parallel_run --eval-only tests           # Only eval tests
-parallel_run --symbolic-only tests       # Only symbolic tests
-parallel_run --deterministic-only tests  # Only tests carrying neither marker
-```
 
 ---
 
@@ -165,10 +105,7 @@ parallel_run --timeout 300 tests/                # Abort after 5 minutes
 parallel_run --session-timeout 600 tests/        # Kill any one session after 10 minutes
 parallel_run -s tests/                           # Serial (per-file, not per-test)
 parallel_run -j 8 tests/                         # Limit to 8 concurrent
-parallel_run --eval-only tests/                  # Only eval tests
-parallel_run --symbolic-only tests/              # Only symbolic tests
 parallel_run --env KEY=VALUE tests/              # Set environment variable
-parallel_run --no-cache tests/                   # Fresh LLM inference
 parallel_run --repeat 5 tests/                   # Run each test 5 times
 
 # Pass extra args directly to pytest (after --)
@@ -184,12 +121,7 @@ parallel_run tests/ -- -k 'pattern'             # Filter by test name
 | `-s`, `--serial` | One session per file (default: one per test) |
 | `-j N`, `--jobs N` | Limit concurrent sessions (default: CPU cores) |
 | `-m`, `--match PATTERN` | Filter files by glob pattern |
-| `--eval-only` | Only `@pytest.mark.eval` tests |
-| `--symbolic-only` | Only non-eval tests |
-| `--deterministic-only` | Only tests with no model in the loop |
-| `--keyless` | Accepted and ignored: every run refuses model-provider and network calls |
 | `--env K=V` | Set environment variable (repeatable) |
-| `--no-cache` | Shorthand for `--env UNILLM_CACHE=false` |
 | `--repeat N` | Run each test N times |
 | `--` | Pass remaining args to pytest |
 
@@ -197,38 +129,12 @@ Exit codes: `0` all passed, `1` something failed, `2` whole-run timeout.
 
 Each run writes to `logs/pytest/<YYYY-MM-DDTHH-MM-SS_socket>/`: one
 `<session>.txt` log per session, `duration_summary.txt` with the sorted
-duration/cache/cost table, and `stores/` (see below). The runner prints the
-directory at the start and end of every run.
+duration/cache/cost table. The runner prints the directory at the start and
+end of every run.
 
 ---
 
-## Stores
-
-Every session opens the SQLite store named by `UNIFY_STORE_PATH`. The runner
-gives each session its own file, `logs/pytest/<run>/stores/<session>.sqlite`,
-so sessions never share tables and each store stays on disk next to the
-session's log — open it with `sqlite3` to inspect what a test left behind.
-
-Within a session every test starts from an empty store: `tests/conftest.py`
-calls `db.clear()` before each test, which deletes the rows of `functions`,
-`guidance` and `messages` and restarts their id sequences. The seeded
-catalogues (`primitives`, `builtin_guidance`) persist across tests. After a
-run the file holds whatever the last test left behind:
-
-```bash
-sqlite3 logs/pytest/<run>/stores/<session>.sqlite 'SELECT name FROM functions;'
-```
-
-Set `UNIFY_STORE_PATH` yourself (in the environment, in `.env`, or via
-`--env`) and the runner honours it instead: every session then shares that
-one store, and nothing deletes it afterwards.
-
-```bash
-parallel_run --env UNIFY_STORE_PATH=/tmp/shared.sqlite tests/guidance_manager/
-```
-
-A bare `pytest` invocation (no runner) gets a per-process store under the
-system temp directory, removed when the process exits.
+## Homes
 
 Each test also gets a home of its own (`UNIFY_HOME`, which holds the actor's
 `workspace/` and the workspace environment) at `unity_test_homes/<hash of the
@@ -262,10 +168,10 @@ anything (`tests/_test_sandbox.py`, called from the root `conftest.py`). Inside:
 - PID, IPC and hostname namespaces are private, and everything a test starts
   dies with the pytest process.
 
-What it does not do: the network is shared (tests call model providers), and
-model code runs in the same process as the harness, so it can read the provider
-keys in the environment and `.env`. A key that is only in Google Secret Manager
-is not available inside: unillm's fallback needs `~/.config/gcloud`.
+What it does not do: the network namespace is shared (the guard in
+`tests/conftest.py` refuses provider calls and connections off this machine),
+and the test process can read a provider key in its environment or `.env`.
+Model-written code runs in the sandboxed worker, without either.
 
 `UNIFY_TEST_SANDBOX=auto` (default) confines where bubblewrap is installed and
 warns elsewhere; `required` refuses to run unconfined; `off` disables it.
@@ -275,8 +181,7 @@ Each test phase (setup, call, teardown) has a time limit: its
 none). At the limit the test fails; `UNIFY_TEST_TIMEOUT_GRACE` seconds later
 (60) the process prints every thread's stack and exits, even if the test's code
 never yields (`tests/_test_timeouts.py`). `UNIFY_TEST_TIMEOUTS=off` or `--pdb`
-disables both. A test marked `@pytest.mark.fresh_llm_calls` never reads the
-UniLLM cache.
+disables both.
 
 ---
 
@@ -299,14 +204,11 @@ watch_tests
 watch_tests                    # Look for f ❌ prefix
 
 # Attach to see full output
-attach 'f ❌ guidance_manager-test_skill_migration'
+attach 'f ❌ actor-code_act-test_trimmed_loop_edges-test_2_a_text_reply_is_the_final_answer'
 
 # Or check the log file
 ls logs/pytest/*/             # Find the run directory
-cat logs/pytest/2025-12-05T14-30-22_unity_dev_ttys042/guidance_manager-test_skill_migration.txt
-
-# Query the store the session left behind
-sqlite3 logs/pytest/2025-12-05T14-30-22_unity_dev_ttys042/stores/guidance_manager-test_skill_migration.sqlite
+cat logs/pytest/2025-12-05T14-30-22_unity_dev_ttys042/actor-code_act-test_trimmed_loop_edges-test_2_a_text_reply_is_the_final_answer.txt
 ```
 
 ### Clean up after tests
@@ -321,11 +223,8 @@ kill_server --global  # Kill ALL tmux servers
 ### Run with different settings
 
 ```bash
-# Fresh LLM calls
-parallel_run --no-cache tests/guidance_manager/test_skill_migration.py
-
-# Compare models (grid search)
-grid_search --env UNIFY_MODEL="gpt-4o|claude-3" tests/
+# Compare settings (grid search)
+grid_search --env UNIFY_MAX_TOOL_LOOP_STEPS="50|300" tests/async_tool_loop/
 ```
 
 ---
@@ -336,12 +235,10 @@ All test commands **automatically detect the current git repository** and use th
 
 - Commands work correctly in **git worktrees**
 - Tests run against the **current repo's code**, not a hardcoded path
-- Logs and stores appear in the **current repo's** `logs/pytest/` directory
+- Logs appear in the **current repo's** `logs/pytest/` directory
 - No manual path adjustments needed
 
 **How it works:** When you run `parallel_run`, the shell function checks `git rev-parse --show-toplevel` to find the current repo root, then uses that repo's `tests/parallel_run.sh`. If you're not in a git repo, it falls back to the originally configured path.
-
-Worktrees share the main repo's LLM cache (`UNILLM_CACHE_DIR` resolves to the main checkout), so cache hits carry across worktrees.
 
 ### Browsing All Worktree Logs from Main Repo
 
@@ -364,14 +261,12 @@ This lets you browse **all logs from all worktrees** in one place (the main repo
 
 | Problem | Solution |
 |---------|----------|
-| `tmux: command not found` | `brew install tmux` |
+| `tmux: command not found` | `sudo apt install tmux` |
 | High resource usage after tests | `kill_server --global` |
 | "error connecting to ... (No such file or directory)" | Socket was deleted; re-run tests |
 | Tests not found | Check that path exists and isn't in `EXCLUDE_DIRS` |
 | Permission denied | `chmod +x tests/*.sh` |
-| `--session-timeout` has no effect on macOS | `brew install coreutils` (provides `timeout`) |
 | `create window failed: fork failed: Device not configured` | The machine is out of pseudo-terminals, usually held by failed sessions from earlier runs: `kill_failed --all` |
-| Every model-reaching test fails with a 403 `Key limit exceeded` | The OpenRouter key hit its spending limit; the code is not at fault |
 | `bubblewrap cannot start the test sandbox` | Install bubblewrap and allow unprivileged user namespaces, or set `UNIFY_TEST_SANDBOX=off` to run unconfined |
 | A test fails with `Timeout: the call of ...` | It exceeded its `timeout` marker (or `UNIFY_TEST_TIMEOUT`); a `Timeout (h:mm:ss)!` stack dump means it was killed |
 
@@ -379,11 +274,11 @@ This lets you browse **all logs from all worktrees** in one place (the main repo
 
 ## Requirements
 
-- **tmux**: `brew install tmux`
-- **bubblewrap** (Linux): `apt install bubblewrap` — confines each pytest process (see [Sandbox and Time Limits](#sandbox-and-time-limits))
-- **coreutils** (macOS): `brew install coreutils` — provides `timeout` for the per-session hang guard and helper scripts
-- **Python virtualenv**: Repo-local `.venv/` (create/sync via `uv sync --all-groups`)
-- **Environment**: Optional `.env` file at repo root for the LLM provider key and other settings
+- **Linux, or Windows with WSL2** (the harness and the tests need bubblewrap)
+- **tmux**: `sudo apt install tmux`
+- **bubblewrap**: `sudo apt install bubblewrap` — confines each pytest process (see [Sandbox and Time Limits](#sandbox-and-time-limits))
+- **Python virtualenv**: Repo-local `.venv/` (create/sync via `uv sync --group dev`)
+- **Environment**: Optional `.env` file at repo root for settings; no key is needed
 
 ---
 
@@ -397,12 +292,12 @@ Understanding how env vars flow from `.env` to your test process avoids subtle "
 
 1. `parallel_run.sh` sources the repo-root `.env` file (via `set -a; source .env; set +a`), exporting all variables into its own process.
 2. It creates one tmux session per test. Sessions run `bash -c`, so they **inherit the full environment** from `parallel_run.sh` — every variable from `.env` is available.
-3. The variables the runner owns (`UNIFY_STORE_PATH`, `UNIFY_TEST_SOCKET`, `UNIFY_LOG_SUBDIR`, the OTel switches, and every `--env`) are re-exported **inside** the session command, after the shell's own init files have run, so a `~/.zshenv` that exports one of them cannot clobber the runner's value.
+3. The variables the runner owns (`UNIFY_TEST_SOCKET`, `UNIFY_LOG_SUBDIR` and every `--env`) are re-exported **inside** the session command, after the shell's own init files have run, so a `~/.zshenv` that exports one of them cannot clobber the runner's value.
 4. `--env KEY=VALUE` flags override inherited values.
 
 ### pydantic-settings (Python side)
 
-Once inside a pytest process, `unify/settings.py` uses pydantic-settings with `env_file=".env"`. This reads the repo-root `.env` **again** at Python import time, so a setting present only in `.env` is still picked up by the `SETTINGS` object.
+Inside a pytest process, `unify/settings.py` reads each setting from the environment the session inherited; it does not read `.env` itself.
 
 ---
 

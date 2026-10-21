@@ -18,22 +18,20 @@ import time
 
 import pytest
 
-from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
-from unify.actor.execution.session import SessionExecutor
-from unify.actor.execution.types import parts_to_text
+from tests.actor.code_act.sandbox_world import actor_interpreter, needs_bwrap, world  # noqa: F401
 
 BOUND = 2.0
 BLOCKING_PAGER = "sleep 30"
 
 
-async def _run(code: str) -> tuple[str, dict, float]:
-    ex = SessionExecutor(environments={}, timeout=30)
+async def _run(code: str):
+    interp = await actor_interpreter(limit=30)
     try:
         started = time.monotonic()
-        res = await ex.execute(code=code, state_mode="stateful", session_id=0)
-        return parts_to_text(res["stdout"]), res, time.monotonic() - started
+        res = await interp.run_cell(code)
+        return res.output, res, time.monotonic() - started
     finally:
-        await ex.close()
+        await interp.stop()
 
 
 @pytest.fixture
@@ -59,7 +57,7 @@ async def test_pydoc_help_in_the_worker_prints_its_page(world, monkeypatch):
     monkeypatch.setenv("PAGER", BLOCKING_PAGER)
     monkeypatch.setenv("MANPAGER", BLOCKING_PAGER)
     out, res, elapsed = await _run("import pydoc\npydoc.help(str)")
-    assert res["error"] is None, res["error"]
+    assert res.error is None, res.text()
     # The worker starts a sandboxed process first; the page itself is quick.
     assert elapsed < 30
     assert "class str" in out

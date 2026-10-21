@@ -1,9 +1,8 @@
-"""Remove credentials from a copy of an LLM request before anything publishes it.
+"""Remove credentials from a copy of a value before anything shows it.
 
-unillm hands every listener the request it sent (``LLMEvent.request``),
-including the transport's ``api_key`` and any authorization header, and a
-listener that publishes or persists that dict would carry the provider key
-with it. :func:`redact_llm_request` returns a copy with:
+A provider's error message, or any request-shaped value, can carry the
+transport's ``api_key``, an authorization header or a key echoed back.
+:func:`redact_value` returns a copy with:
 
 - the value of every credential-named field replaced, at any depth:
   ``api_key`` in any case or spelling (``x-api-key``, ``apiKey``,
@@ -18,9 +17,8 @@ with it. :func:`redact_llm_request` returns a copy with:
   variables whose name contains KEY, TOKEN, SECRET or PASSWORD, and unillm's
   provider keys), as the session transcripts replace them.
 
-The request passed in is never changed: dicts, lists and tuples are rebuilt and
-only immutable leaves are shared, so the request that was sent, which shares
-its nested headers and messages with the event's request, stays as it was.
+The value passed in is never changed: dicts, lists and tuples are rebuilt and
+only immutable leaves are shared.
 """
 
 from __future__ import annotations
@@ -28,7 +26,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-__all__ = ["REDACTED", "redact_llm_request", "redact_value"]
+__all__ = ["REDACTED", "redact_value"]
 
 REDACTED = "[REDACTED]"
 
@@ -128,11 +126,3 @@ def redact_value(value: Any) -> Any:
     return _redact(value, _held_secrets(), 0)
 
 
-def redact_llm_request(request: Any) -> dict[str, Any]:
-    """A copy of an LLM *request* dict that carries no credential; *request* is unchanged.
-
-    Anything that is not a dict gives an empty dict.
-    """
-    if not isinstance(request, dict):
-        return {}
-    return redact_value(request)

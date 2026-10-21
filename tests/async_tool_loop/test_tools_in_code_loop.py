@@ -1,8 +1,7 @@
-"""``UNIFY_TOOLS_IN_CODE=on`` in the agent loop (the actor's and its teammates'): ``execute_code`` is the request's
+"""The agent loop with the tools in code (the actor's and its teammates'): ``execute_code`` is the request's
 only model-API tool; over the compaction point the loop compacts by itself before the next model call, with the same
-fork summary and restart message and no forced ``compress_context`` turn; and ``tools.answer(answer)`` from a cell
-answers the request (validated against its response format) with no further model call. With the switch off
-nothing changes (tests/async_tool_loop/test_every_agent_compacts_by_default.py keeps the forced turn).
+fork summary and restart message; and ``tools.answer(answer)`` from a cell
+answers the request (validated against its response format) with no further model call.
 """
 
 from __future__ import annotations
@@ -21,16 +20,9 @@ from unify.common import tool_registry
 from unify.common._async_tool import cell_reply
 from unify.common._async_tool import context_compression as cc
 from unify.common._async_tool.response_format import normalize_response_format
-from unify.settings import SETTINGS
 
 SUMMARY = "Summary: ran one cell; the answer is 42."
 WAIT = 30
-NOTICE = "You must call `compress_context` now."
-
-
-@pytest.fixture
-def switch_on(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
 
 
 def _names(call) -> list[str]:
@@ -57,7 +49,7 @@ async def _run_loop(tools: dict, answer, *, response_format=None, fork=None):
 
 
 @pytest.mark.asyncio
-async def test_the_loop_compacts_before_the_next_call_with_no_forced_turn(switch_on):
+async def test_the_loop_compacts_before_the_next_call_with_no_forced_turn():
     ran = []
 
     async def execute_code(code: str) -> str:
@@ -73,9 +65,6 @@ async def test_the_loop_compacts_before_the_next_call_with_no_forced_turn(switch
     result, model = await _run_loop({"execute_code": execute_code}, answer, fork=[reply(SUMMARY)])
     assert result == "done" and ran == ["print(6 * 7)"]
     assert model.kinds() == ["actor", "compression_fork", "actor"]
-    for call in model.calls:
-        assert "compress_context" not in _names(call)
-        assert not any(NOTICE in str(m.get("content")) for m in call.messages)
     first, fork, restarted = model.calls
     assert _names(first) == ["execute_code"] and _names(restarted) == ["execute_code"]
     assert first.request["tools"] == tool_registry.json_tools("actor")
@@ -91,7 +80,7 @@ async def test_the_loop_compacts_before_the_next_call_with_no_forced_turn(switch
 
 
 @pytest.mark.asyncio
-async def test_below_the_compaction_point_nothing_is_compacted(switch_on):
+async def test_below_the_compaction_point_nothing_is_compacted():
     async def execute_code(code: str) -> str:
         """Run a cell."""
         return "ok"
@@ -119,7 +108,7 @@ def _answering_cell(validate=None):
 
 
 @pytest.mark.asyncio
-async def test_answer_from_a_cell_answers_the_request_with_no_further_model_call(switch_on):
+async def test_answer_from_a_cell_answers_the_request_with_no_further_model_call():
     def answer(call):
         return reply(calls=[("execute_code", {"code": json.dumps("the answer is 42")})])
 
@@ -133,7 +122,7 @@ class Answer(BaseModel):
 
 
 @pytest.mark.asyncio
-async def test_answer_validates_against_the_response_format_and_a_refusal_lets_the_request_go_on(switch_on):
+async def test_answer_validates_against_the_response_format_and_a_refusal_lets_the_request_go_on():
     validate = tool_handlers.response_validator(normalize_response_format(Answer))
 
     def answer(call):
@@ -157,7 +146,7 @@ async def test_answer_validates_against_the_response_format_and_a_refusal_lets_t
 
 
 @pytest.mark.asyncio
-async def test_a_second_answer_in_the_same_turn_is_refused(switch_on):
+async def test_a_second_answer_in_the_same_turn_is_refused():
     async def execute_code(code: str) -> str:
         """Run a cell."""
         state = tool_handlers.ActorRequestState(reply_slot=cell_reply.current())
@@ -189,20 +178,3 @@ async def test_one_state_answers_each_request_of_a_session_once():
     assert slot.take()["content"] == json.dumps({"action": "submit"})
 
 
-@pytest.mark.asyncio
-async def test_with_the_switch_off_the_argument_changes_nothing(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "off")
-
-    def look() -> str:
-        """Look."""
-        return "looked"
-
-    def answer(call):
-        if any(m.get("role") == "tool" for m in call.messages):
-            return reply("done")
-        return reply(calls=[("look", {})])
-
-    result, model = await _run_loop({"look": look}, answer)
-    assert result == "done"
-    names = _names(model.calls[0])
-    assert "look" in names and "compress_context" in names

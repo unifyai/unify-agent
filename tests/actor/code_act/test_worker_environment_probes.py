@@ -20,8 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
-from unify.actor.execution.session import SessionExecutor
+from tests.actor.code_act.sandbox_world import actor_interpreter, needs_bwrap, world  # noqa: F401
 
 
 class NoSuchApp(Exception):
@@ -65,7 +64,6 @@ class Apis:
 
 @pytest.fixture
 def apis_env():
-    from unify.function_manager import function_manager as fm_module
     from unify.function_manager.primitives import (
         EnvironmentMethod,
         EnvironmentNamespace,
@@ -97,10 +95,8 @@ def apis_env():
         ),
         source="tests:apis",
     )
-    fm_module._PRIMITIVES_SEEDED_FOR.clear()
     yield apis
     clear_environment_namespaces()
-    fm_module._PRIMITIVES_SEEDED_FOR.clear()
 
 
 def test_describing_a_dynamic_object_reads_nothing_from_it(apis_env):
@@ -133,32 +129,24 @@ async def test_no_probe_reaches_the_environment_and_real_calls_work(
     apis_env,
     monkeypatch,
 ):
-    ex = SessionExecutor(environments={})
+    ex = await actor_interpreter()
     try:
-        res = await ex.execute(
-            code=(
+        res = await ex.run_cell((
                 "import asyncio, inspect\n"
                 "token = apis.spotify.login(username='ada')\n"
                 "probe = (inspect.iscoroutinefunction(apis.spotify.login), "
                 "asyncio.iscoroutinefunction(apis), callable(apis.spotify))\n"
                 "(token, probe)"
-            ),
-            state_mode="stateful",
-            session_id=0,
-        )
-        assert res["error"] is None, res["error"]
-        token, probe = res["result"]
+            ))
+        assert res.error is None, res.text()
+        token, probe = res.result
         assert token == {"app": "spotify", "api": "login", "username": "ada"}
         assert probe == (False, False, False)  # an app is a namespace, not a callable
         # Underscored attributes stay refused to cell code, in the worker.
-        res = await ex.execute(
-            code="apis._secret",
-            state_mode="stateful",
-            session_id=0,
-        )
-        assert "do not cross the worker boundary" in str(res["error"])
+        res = await ex.run_cell("apis._secret")
+        assert "do not cross the worker boundary" in str(res.error)
     finally:
-        await ex.close()
+        await ex.stop()
     # The only names the environment saw are the ones the cell used.
     assert apis_env.calls == [("spotify", "login", {"username": "ada"})]
     assert [n for n in apis_env.seen if n.split(".")[-1].startswith("_")] == []

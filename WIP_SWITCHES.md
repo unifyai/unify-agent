@@ -2,83 +2,6 @@
 
 At the code freeze of 7 October 2026 every other research switch was either made the default behaviour or set to be removed. The switches below stay as switches, at the defaults shown, until the experiment named for each one decides them. Each is read from `unify/settings.py`, where its comment gives the full behaviour, and each is set through the environment variable of the same name.
 
-## UNIFY_CODE_PROJECTION
-
-- **Values:** empty (the same as `legacy`) or `notebook`.
-- **Default:** empty.
-- **What it does:** With `notebook`, `execute_code` takes a single `code` field, and where a cell runs is written inside the cell as Jupyter magics on its first lines (for example `%%bash` or `%%scratch`) instead of as separate arguments. The cell's result then reads like a notebook cell: its output, its errors and its last value.
-- **Evidence:** This is the "code alone" schema of design B, which the 5 October Python-tool-mode debugging lane ranked first. Its Stage 2/3 screen had not reported when the freeze was made. The proposal was to make `notebook` the default if the Stage 3 readout is not worse.
-
-## UNIFY_STATEFUL_CELLS
-
-- **Values:** a boolean.
-- **Default:** off.
-- **What it does:** When on, every `execute_code` cell runs in the task's one persistent session, like a notebook, and the tool no longer offers a stateless mode or a choice of session. The session-management tools are also withdrawn.
-- **Evidence:** This switch is an arm of the E4 workbench screen (build de97caa57; preregistration `workbench-screen-v1/PREREG-v1.md`). Its canaries passed on ARC and AppWorld, but no counted readout existed at the freeze. The proposal was to turn it on if the readout is inconclusive, because the change only removes options and no measured run had made a stateless choice useful. Under the core tool surface, the choice it removes is already small.
-
-## UNIFY_VARIABLE_INVENTORY
-
-- **Values:** empty (the same as `off`) or `on`.
-- **Default:** empty.
-- **What it does:** When on, a cell that ran in a persistent session ends its result with one line naming the variables the session has bound, each with its type and a short description of its shape. The line appears only when those names or shapes have changed since the last one shown.
-- **Evidence:** This switch is an arm of the E4 workbench screen (the W arm against the W-without-inventory arm). Its canaries passed, but no counted readout existed at the freeze. It is to be removed unless E4 shows a gain.
-
-## UNIFY_BIND_REQUEST
-
-- **Values:** empty (the same as `off`) or `on`.
-- **Default:** empty.
-- **What it does:** When on, code in a cell can read the current request as `request`: `request.text` is the requester's latest message, and `request.data` is the list of JSON objects and arrays found in it. The object is read-only, and a fresh copy is given to each cell.
-- **Evidence:** This switch is an arm of the E4 workbench screen. No counted readout existed at the freeze. It is to be removed unless E4 shows a gain.
-
-## UNIFY_REPLY_CHANNEL
-
-- **Values:** empty (the same as `text`) or `code+text`.
-- **Default:** empty.
-- **What it does:** With `code+text`, code in a cell can send the turn's reply by calling `reply(text)`. The cell ends at once and the text becomes the reply, without another model call.
-- **Evidence:** This switch is in the E4 workbench screen. In the earlier WI-2 screen it scored 11 of 25 on a single run, and a trace review judged that difference to be noise rather than a defect. It is to be removed unless E4 shows a gain.
-
-## UNIFY_CELL_SCOPE_FIX
-
-- **Values:** a boolean.
-- **Default:** on.
-- **What it does:** A cell runs as the body of a wrapper function, so a name the cell binds outside a plain top-level assignment used to be lost when the cell ended. When on, every name the cell's own scope binds is kept in the session, as the prompt promises, including names bound inside `if`, `for`, `with` and `try` blocks.
-- **Evidence:** This is a bug fix and is already on by default. In measured runs, where about 95% of cells were stateless, it never mattered. Its exposure rises when every cell is stateful.
-
-## UNIFY_STEP_CAP_COMPACT
-
-- **Values:** empty (the same as `off`), `on` or `continue`.
-- **Default:** empty.
-- **What it does:** When on, a task loop that can compress its context compacts it when it reaches its step limit, instead of stopping, and carries on with the same request. This happens at most twice per request. At the third limit, the request stops as it would without the switch.
-- **`continue`:** one long-horizon mode for the actor's task loop, the one that answers the requester (every other loop runs as shipped). Each part keys only on the request and the session, never on a task stream:
-  - The step budget (`UNIFY_MAX_TOOL_LOOP_STEPS`, a count of messages) is counted per request, from the requester's message, and afresh after each compaction.
-  - At the limit, the conversation is compacted as under `on`, with no bound on compactions per request, and the request goes on. The summary is a loop-authored message, so it starts no request and `UNIFY_LOOP_STOP`'s count carries across it.
-  - A compaction whose rebuilt context is not smaller than the one it replaced (serialised message characters) is ineffective. A second ineffective compaction in a row in one request ends that request.
-  - That end, a compaction that fails, a loop stop and the loop's timeout all end the request through `UNIFY_STEP_CAP_REPLY`'s reply path, in its `draft` mode when that switch is empty. The requester always gets an answer, and a persistent session waits for its next request.
-- **Evidence:** long-horizon WIP, unscreened; to be tested on the long-horizon beds.
-
-## UNIFY_COMPACTION_KEEP_PREFIX
-
-- **Values:** empty (the same as `off`) or `on`.
-- **Default:** empty.
-- **What it does:** When on, a context compaction keeps what the session already sent at the start of the conversation, byte for byte: the system prompt, the session's first user message and every requester message of the current request, unchanged and in their original order. The summary follows them as one loop-authored message, and the tools stay the same. As shipped, the conversation restarts from the system prompt and the summary alone, so the request's own words are replaced by the model's paraphrase of them, and only the tools and the system prompt stay cached. The current request is read from the session's own messages: it starts at the latest requester message. If the first call after such a compaction is still over the compression threshold, what was kept is too large on its own, and the next compaction rebuilds as shipped from the summary alone. That way a request is never compacted around the same prefix again and again. "Byte for byte" covers the system prompt and the kept user messages. The loop's runtime-context system messages are rebuilt at the restart: they are the same for the actor, but not for a nested loop given a parent chat context.
-- **Evidence:** long-horizon WIP, unscreened; part of the cache-preserving compaction design of 8 October, to be tested on the long-horizon beds.
-
-## UNIFY_LOOP_STOP and UNIFY_LOOP_STOP_K
-
-- **Values:** `UNIFY_LOOP_STOP` is empty (the same as `off`) or `on`. `UNIFY_LOOP_STOP_K` is a whole number of at least 1.
-- **Defaults:** empty and 10.
-- **What it does:** When on, a request ends early once the model has made `UNIFY_LOOP_STOP_K` calls in a row that make no progress. A call makes no progress when it runs a cell that does nothing, or when it repeats one of the two calls before it and gets the same result. The request then ends the way the step limit ends it under `UNIFY_STEP_CAP_REPLY`.
-- **Evidence:** long-horizon WIP, unscreened; to be tested on the long-horizon beds.
-
-## UNIFY_STEP_CAP_REPLY
-
-- **Values:** empty, `draft` or `last_word`. The boolean spellings are also accepted, with true meaning `draft`.
-- **Default:** `draft` (since 13 October 2026; empty before).
-- **What it does:** With `draft`, reaching the step limit in a persistent session ends only the current request. The reply quotes the latest reply text the model drafted, and the next message starts a new request with its own step budget. With `last_word`, the model first gets one call with no tools to give its best answer. Empty: the limit counts every message of a persistent session and ends the session.
-- **Evidence:** a benchmark adapter that sends each step as another request of one session reaches a session-wide count however short each request is. In the Continual-ARC runs of 12-13 October, it ended a session in each of the two medium-effort runs. `last_word` is still unscreened.
-
-The three long-horizon switches share the step-limit reply path.
-
 ## UNIFY_MEMORY
 
 - **Values:** empty (the same as `off`) or `on`.
@@ -136,34 +59,6 @@ The three long-horizon switches share the step-limit reply path.
 - **Default:** empty.
 - **What it does:** It applies only with `UNIFY_MEMORY=on`. With `env`, each request's episode also records its dialogue actions: every turn-ending reply (text, no tool call) is one action on the channel `env` (memory channel `env/env/`), paired with the counterpart's next message as its observation. The action is read from the reply's structure only: a trailing JSON object names its method by its first member whose value is an identifier (`{"action": "submit", "grid": g}` is `submit(g)`), else the reply's last line is `act(line)`. The observation is the counterpart's message, parsed when it is wholly JSON, redacted, and kept whole up to 65,536 characters. A benchmark whose actions are text in the replies (Continual-ARC) then leaves actions a consolidation item can cover. Off, episodes are recorded as without the setting.
 - **Evidence:** keyless tests only (`tests/memory/test_arc_dialogue.py`, `tests/memory/integration/test_cli_e2e_arc.py`); the Continual-ARC memory arm needs it.
-
-## UNIFY_CLOCK_PLACEMENT
-
-- **Values:** empty (the same as `system`) or `first_message`.
-- **Default:** empty.
-- **What it does:** As shipped, the system prompt carries a "Current Time" section that tells the model to resolve "today" against it and to prefer it over any clock read in code. With `first_message`, the system prompt has no clock section, and the session's first user message opens with one line: "The host clock reads <time>. Dates stated in the request or in the files and records you work with take precedence." The time is sampled once, when the session starts. Later requests in a persistent session do not repeat the line. The system prompt, and the cache affinity key derived from it, are then the same for every session of one configuration, whenever it starts.
-- **Evidence:** office-v2 defect note P2c (the clock read as an authority over dates in the work, and a per-minute timestamp that breaks the cross-session prompt cache); unscreened. To be compared with the shipped placement under the per-instance fake clock, reporting the cache-hit rate and clock-attributable losses from traces.
-
-## UNIFY_TOOLS_IN_CODE
-
-- **Values:** `on` or `off`.
-- **Default:** `off`.
-- **What it does:** When on, every agent (the actor, its teammates, and the memory writer, curator and helpers) keeps exactly one model-API tool, `execute_code`. Every other tool is a Python call in a cell, `tools.<name>(...)`, defined once in the shared registry (`unify/common/tool_registry.py`) and run on the host with the same handler, limits and refusal texts. For the actor and its teammates the loop also compacts by itself when the prompt reaches the compaction point (no forced `compress_context` turn), and `tools.answer(answer)` replaces the response tool. When off, every agent's requests are byte for byte as before.
-- **Evidence:** It is the treatment arm of a paired replay against the build without it (same requests and passes, LOW and HIGH), reported with task outcome, cost, prompt tokens, cache-read share, turns and compactions per request.
-
-## UNIFY_CELL_STATE
-
-- **Values:** `persistent` or `fresh`.
-- **Default:** `persistent`.
-- **What it does:** With `persistent`, each agent's cells run in one interpreter that keeps its variables between cells until it is restarted (a cell that runs out of time restarts it; files stay). With `fresh`, every cell starts in a new interpreter (files stay; variables do not).
-- **Evidence:** Set together with `UNIFY_TOOLS_IN_CODE=on` in the same paired replay.
-
-## UNIFY_STREAM_MODEL_CALLS
-
-- **Values:** empty (the same as `off`) or `on`.
-- **Default:** empty.
-- **What it does:** When on, every model call of a client made by `new_llm_client` (or forked from one) goes out as a stream and is read to its end, and unillm reassembles the reply into the completion the same call returns unstreamed (its `stream_transport` flag). Transcripts, caching, cost and postprocessing are unchanged. Bytes arrive while the model is still generating, so a proxy that cancels a call after a spell with no traffic does not cancel a long one. Nothing is sent but the model's own reply: no keepalive or filler bytes.
-- **Evidence:** A benchmark adapter's proxy cancels a turn after 300 s with no bytes, and an actor call of 377 s was cancelled by it, because Unify's calls are never streamed while the other agent harnesses compared with it all stream. Keyless tests only so far (unillm's `tests/test_clients/test_stream_transport.py`, on a hand-written OpenRouter stream, and `tests/common/test_stream_model_calls.py`). A recorded real stream is to confirm that the reassembled reply matches the unstreamed one before the switch becomes the default.
 
 ## UNIFY_MEMORY_LIBRARY, UNIFY_MEMORY_LIBRARY_E, UNIFY_MEMORY_LIBRARY_FORK, UNIFY_MEMORY_LIBRARY_POOL, UNIFY_MEMORY_LIBRARY_EDIT_TOOLS, UNIFY_MEMORY_LIBRARY_COMPACT, UNIFY_MEMORY_LIBRARY_ACTOR_INDEX and UNIFY_MEMORY_WRITER_USAGE
 
@@ -283,20 +178,6 @@ The three long-horizon switches share the step-limit reply path.
 - **Default:** empty (`on`).
 - **What it does:** When off (in the library mode with the episode-end fork on), the settled forks are still captured and the actor still runs the captures, and nothing after the capture step runs: no WRITE, CURATE or verdict pass starts and no writer or helper call is made, so the library never changes. It is refused without the library mode, without the fork, or with `UNIFY_MEMORY_PASSES=off`. On, every pass runs as before.
 - **Evidence:** the captures-only arm of the cross-world memory screen (captures and librarian without the writer), against the full memory arm on one build; keyless tests only so far (`tests/memory/integration/test_writer_passes_off.py`).
-
-## UNIFY_LIBRARY
-
-- **Values:** `on` or `off` (empty is `on`).
-- **Default:** empty (`on`).
-- **What it does:** When off, the actor has no library: it removes memory and library surface only. The sandbox has no `functions` or `guidance` object, so the prompt has no library sections, no shortlist of stored entries and no line giving the library's size; the session may not store, so there is no `store_skills`, no storage review at a turn or at the end and no library write; and the system prompt no longer points to `functions.search` or says the actor has stored functions to draw on. Everything else is as it is (`execute_code`, `install`, `read_file`, `grep`, `sh`, `tools.check_examples`, the record, teammates). A run that also sets `UNIFY_MEMORY=on` is refused at start-up.
-- **Evidence:** the minimal-agent arms: j3 with only memory and the library removed, so a paired comparison with j3 isolates what memory adds. No counted readout yet; keyless tests only.
-
-## UNIFY_SYSTEM_SUFFIX and UNIFY_SYSTEM_SUFFIX_SHA256
-
-- **Values:** `UNIFY_SYSTEM_SUFFIX` a text; `UNIFY_SYSTEM_SUFFIX_SHA256` the lowercase hex sha256 of its UTF-8 bytes.
-- **Default:** both empty (no suffix).
-- **What it does:** The text ends the system prompt of every `act()` (the actor's and a teammate's), after one blank line and after everything else the prompt carries. The two are set together and must match, or the run is refused at start-up, naming the settings and never the text. The CLI's `ended` line carries `system_suffix_sha256` when a suffix is set.
-- **Evidence:** the minimal-agent arms' one paragraph (M0, and M1 with the cost sentence); a paired comparison of the two isolates the sentence. No counted readout yet; keyless tests only.
 
 ## UNIFY_AGENTS_RUN_RECORD
 

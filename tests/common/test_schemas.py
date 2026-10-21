@@ -15,7 +15,6 @@ import pytest
 from pydantic import BaseModel
 
 import unify.common.llm_helpers as llmh
-from unify.common.tool_spec import ToolSpec
 
 
 # --------------------------------------------------------------------------- #
@@ -138,7 +137,7 @@ def _demo_func(a: str, col: ColumnType):
 
 
 def test_schema_includes_enum():
-    schema = llmh.method_to_schema(_demo_func)
+    schema = llmh.method_to_schema(_demo_func, "tool")
     params = schema["function"]["parameters"]["properties"]
     assert params["a"]["type"] == "string"
     # Enum must appear with *exact* allowed literals
@@ -160,12 +159,6 @@ def test_method_to_schema_marks_tools_non_strict_by_default():
     }
 
 
-def test_method_to_schema_allows_explicit_strict_opt_in():
-    schema = llmh.method_to_schema(_demo_func, strict=True)
-
-    assert schema["strict"] is True
-
-
 async def _wrapped_schema_target(
     thought: str,
     code: str | None = None,
@@ -179,18 +172,11 @@ async def _wrapped_schema_target(
 
 
 def test_method_to_schema_preserves_wrapped_execute_code_signature():
-    original = ToolSpec(fn=_wrapped_schema_target, display_label="Running code")
-
-    @functools.wraps(original.fn)
+    @functools.wraps(_wrapped_schema_target)
     async def wrapped_execute_code(*a, **kw):
-        return await original.fn(*a, **kw)
+        return await _wrapped_schema_target(*a, **kw)
 
-    wrapped = ToolSpec(
-        fn=wrapped_execute_code,
-        display_label=original.display_label,
-    )
-
-    schema = llmh.method_to_schema(wrapped.fn, "execute_code")
+    schema = llmh.method_to_schema(wrapped_execute_code, "execute_code")
     params = schema["function"]["parameters"]["properties"]
     required = schema["function"]["parameters"]["required"]
     desc = schema["function"]["description"]
@@ -203,36 +189,6 @@ def test_method_to_schema_preserves_wrapped_execute_code_signature():
     assert "thought" in required
     assert "session_name" in required
     assert "Execute arbitrary Python code in a specified state mode." in desc
-
-
-@pytest.mark.asyncio
-async def test_real_execute_code_schema_keeps_thought_required_and_described():
-    """The production ``execute_code`` tool advertises ``thought`` as required
-    with a property-level description, and is marked soft-required so a model
-    omission is backfilled rather than crashing the loop.
-
-    Mirrors the loop's schema and dispatch paths, which both resolve the
-    registered ``ToolSpec`` to its underlying callable (``spec.fn``).
-    """
-    from unify.actor.code_act_actor import CodeActActor
-    from unify.common.tool_spec import LLM_SOFT_REQUIRED_DEFAULTS_ATTR
-
-    actor = CodeActActor()
-    try:
-        spec = actor.get_tools("act")["execute_code"]
-        fn = spec.fn if isinstance(spec, ToolSpec) else spec
-        schema = llmh.method_to_schema(fn, "execute_code")
-        params = schema["function"]["parameters"]
-
-        assert "thought" in params["required"]
-        assert params["properties"]["thought"]["type"] == "string"
-        assert params["properties"]["thought"]["description"].strip()
-
-        # The runtime safety net: declared soft-required with an empty default.
-        soft_required = getattr(fn, LLM_SOFT_REQUIRED_DEFAULTS_ATTR, None)
-        assert soft_required == {"thought": ""}
-    finally:
-        await actor.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -272,7 +228,7 @@ def test_schema_hides_private_optionals() -> None:
         """
         return a + b
 
-    schema = llmh.method_to_schema(sample_tool)
+    schema = llmh.method_to_schema(sample_tool, "tool")
     props = schema["function"]["parameters"]["properties"]
     required = schema["function"]["parameters"]["required"]
     desc = schema["function"]["description"]
@@ -303,7 +259,7 @@ def test_schema_hides_private_optionals() -> None:
         """
         return _hidden * x
 
-    schema2 = llmh.method_to_schema(tool_with_required_private)
+    schema2 = llmh.method_to_schema(tool_with_required_private, "tool")
     props2 = schema2["function"]["parameters"]["properties"]
     required2 = schema2["function"]["parameters"]["required"]
     desc2 = schema2["function"]["description"]
@@ -351,7 +307,7 @@ def test_schema_hides_context_param() -> None:
         return a
 
     for fn in (tool_with_ctx, tool_with_ctx_optional):
-        schema = llmh.method_to_schema(fn)
+        schema = llmh.method_to_schema(fn, "tool")
         props = schema["function"]["parameters"]["properties"]
         required = schema["function"]["parameters"]["required"]
         desc = schema["function"]["description"]
@@ -373,7 +329,7 @@ def test_optional_dict_schema_simplification() -> None:
     branch, with null expressible so the model can omit the argument outright.
     """
 
-    schema = llmh.method_to_schema(_tool_with_optional_mapping)
+    schema = llmh.method_to_schema(_tool_with_optional_mapping, "tool")
     params = schema["function"]["parameters"]["properties"]
     refs_schema = params["references"]
 
@@ -399,7 +355,7 @@ def test_optional_builtin_dict_schema() -> None:
     send serialized strings for images.
     """
 
-    schema = llmh.method_to_schema(_tool_with_optional_builtin_mapping)
+    schema = llmh.method_to_schema(_tool_with_optional_builtin_mapping, "tool")
     params = schema["function"]["parameters"]["properties"]
     images_schema = params["images"]
 
@@ -429,7 +385,7 @@ def test_schema_inherits_base_docstring() -> None:
             # no docstring → should inherit from base via MRO
             return None
 
-    schema = llmh.method_to_schema(_Child().action)
+    schema = llmh.method_to_schema(_Child().action, "tool")
     desc = schema["function"]["description"]
     assert "Base doc: perform action." in desc
 
@@ -445,7 +401,7 @@ def test_schema_prefers_child_docstring() -> None:
             """Child doc: go fast."""
             return None
 
-    schema = llmh.method_to_schema(_Child().go)
+    schema = llmh.method_to_schema(_Child().go, "tool")
     desc = schema["function"]["description"]
     assert "Child doc: go fast." in desc
     assert "Base doc" not in desc
@@ -511,7 +467,7 @@ def test_schema_strips_hidden_params_from_inherited_doc() -> None:
 
     FunctionManager_search.__doc__ = _BaseFM.search.__doc__
 
-    schema = llmh.method_to_schema(FunctionManager_search)
+    schema = llmh.method_to_schema(FunctionManager_search, "tool")
     props = schema["function"]["parameters"]["properties"]
     desc = schema["function"]["description"]
 
@@ -566,7 +522,7 @@ def test_schema_strips_hidden_param_references_from_returns() -> None:
         """
         return []
 
-    schema = llmh.method_to_schema(search)
+    schema = llmh.method_to_schema(search, "tool")
     desc = schema["function"]["description"]
 
     # The Returns section should not reference hidden params
@@ -608,7 +564,7 @@ def test_schema_strips_hidden_param_references_from_raises() -> None:
         """
         return []
 
-    schema = llmh.method_to_schema(search)
+    schema = llmh.method_to_schema(search, "tool")
     desc = schema["function"]["description"]
 
     # The Raises section should not reference hidden params
@@ -621,7 +577,7 @@ def test_schema_plain_function() -> None:
         """Plain function doc."""
         return None
 
-    schema = llmh.method_to_schema(_plain)
+    schema = llmh.method_to_schema(_plain, "tool")
     desc = schema["function"]["description"]
     assert desc == "Plain function doc."
 
@@ -631,83 +587,9 @@ def test_schema_plain_function() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_request_clarification_tool_has_docstring_and_schema_description():
-    """The programmatically generated request_clarification tool must expose a
-    non-empty docstring so that method_to_schema produces a non-empty
-    description for the LLM."""
-    import asyncio
-
-    fn = llmh.make_request_clarification_tool(asyncio.Queue(), asyncio.Queue())
-
-    # The inner function should have a docstring.
-    assert (
-        fn.__doc__ and fn.__doc__.strip()
-    ), "make_request_clarification_tool returned a function without a docstring"
-
-    # The schema sent to the LLM should have a non-empty description.
-    schema = llmh.method_to_schema(fn, "request_clarification")
-    desc = schema["function"]["description"]
-    assert (
-        isinstance(desc, str) and desc.strip()
-    ), f"method_to_schema produced an empty description: {desc!r}"
-
-
 # --------------------------------------------------------------------------- #
 #  functools.wraps + get_type_hints: base class annotations must resolve       #
 # --------------------------------------------------------------------------- #
-
-
-def test_wrapped_methods_resolve_type_hints() -> None:
-    """Every concrete method decorated with ``@functools.wraps(Base*.method)``
-    must have resolvable type hints at runtime.
-
-    ``functools.wraps`` copies ``__module__`` from the base class method to the
-    wrapper.  ``get_type_hints()`` then resolves string annotations (from
-    ``from __future__ import annotations``) in the **base** module's namespace.
-    If a type referenced in the signature lives under ``TYPE_CHECKING`` in the
-    base module, ``get_type_hints()`` fails silently in ``method_to_schema``,
-    causing every parameter to degrade to ``{"type": "string"}`` in the JSON
-    tool schema the LLM sees.
-
-    Discovery is fully automatic via ``ManagerRegistry`` and
-    ``BaseStateManager._registry`` — no hardcoded class lists.
-    """
-    from typing import get_type_hints
-
-    from unify.manager_registry import ManagerRegistry
-    from unify.common.state_managers import BaseStateManager
-
-    ManagerRegistry._ensure_populated()
-
-    classes = set(ManagerRegistry._classes.values())
-    classes.update(
-        cls
-        for name, cls in BaseStateManager._registry.items()
-        if not name.startswith("Base")
-    )
-    assert classes, "Registry discovery found no classes — check imports"
-
-    failures: list[str] = []
-
-    for cls in sorted(classes, key=lambda c: c.__name__):
-        inst = cls.__new__(cls)
-
-        for name in sorted(dir(inst)):
-            if name.startswith("_"):
-                continue
-            attr = getattr(inst, name, None)
-            if not callable(attr) or not hasattr(attr, "__wrapped__"):
-                continue
-            try:
-                get_type_hints(attr)
-            except Exception as exc:
-                failures.append(f"{cls.__name__}.{name}: {exc}")
-
-    assert not failures, (
-        "functools.wraps methods with unresolvable type hints "
-        "(likely TYPE_CHECKING imports in the base module):\n"
-        + "\n".join(f"  - {f}" for f in failures)
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -729,7 +611,7 @@ def test_optional_scalars_are_nullable() -> None:
     "none", so it sends sentinels (0, -1, 999, 2147483647) that the receiver
     reads as real requests for resources that never existed.
     """
-    schema = llmh.method_to_schema(_tool_with_optional_scalars)
+    schema = llmh.method_to_schema(_tool_with_optional_scalars, "tool")
     params = schema["function"]["parameters"]["properties"]
 
     assert params["session_id"]["type"] == ["integer", "null"]

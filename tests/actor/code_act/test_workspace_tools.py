@@ -1,13 +1,11 @@
-"""Symbolic: the actor gets bash cells, ``read_file`` and ``grep`` in the workspace sandbox.
+"""Symbolic: the harness's ``grep`` (behind ``tools.grep``) searches only what a cell could read.
 
-Nothing here reaches a model; the tools are the actor's real ones. With the
-switch off the actor's tools and the schema the model sees are as shipped.
+Nothing here reaches a model; the search is the real one.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import re
 import shutil
@@ -25,61 +23,13 @@ from tests.actor.code_act.sandbox_world import (  # noqa: F401 (fixture)
     world,
 )
 from unify import sandbox
-from unify.actor.code_act_actor import CodeActActor
 from unify.actor.execution import file_tools
-from unify.actor.execution.types import parts_to_text
-from unify.common import llm_helpers as llmh
 from unify.common.tool_errors import ToolInputError
-from unify.common.tool_spec import ToolSpec
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
 
-def _schema(actor, name):
-    spec = actor.get_tools("act")[name]
-    fn = spec.fn if isinstance(spec, ToolSpec) else spec
-    return fn, llmh.method_to_schema(fn, name)
-
-
-# ── read_file and grep ───────────────────────────────────────────────────────
-
-
-def test_read_file_reads_numbered_ranges_and_refuses_hidden_paths(world):
-    policy = sandbox.build_policy(fresh=True)
-    home, state = world["home"], world["state"]
-    out = file_tools.read_file("data.txt", 3, 4, policy=policy)
-    assert out["content"] == "     3\tline 3\n     4\tline 4\n"
-    assert out["total_lines"] == 10 and out["end"] == 4
-    # Outside the allowlisted root: the sandbox does not show it, so neither
-    # does the harness's own file tool.
-    with pytest.raises(sandbox.SandboxRefusal) as refused:
-        file_tools.read_file(str(home / "plain.txt"), policy=policy)
-    assert refused.value.rule == "root-allowlist"
-    out = file_tools.read_file(str(state / "transcripts" / "s.jsonl"), policy=policy)
-    assert '"seq": 0' in out["content"]
-    (world["workspace"] / "link").symlink_to(home / ".ssh" / "id_rsa")
-    # The raw store is not mounted into cells (they use the functions/guidance
-    # API), so the harness's file tools refuse it too, with its -wal and -shm.
-    store = state / "store.sqlite"
-    for suffix in ("-wal", "-shm"):
-        store.with_name(store.name + suffix).write_text(STATE_SECRET)
-    refusals = {
-        str(store): "mask-unify-state",
-        str(store) + "-wal": "mask-unify-state",
-        str(store) + "-shm": "mask-unify-state",
-        str(home / ".ssh" / "id_rsa"): "mask-credentials",
-        "link": "mask-credentials",
-        str(home / ".env"): "mask-env-file",
-        str(home / "project" / ".env"): "mask-env-file",
-        str(state / "logs" / "unify.log"): "mask-unify-state",
-        "/proc/self/environ": "mask-proc",
-        str(state / "workspace"): "regular-files-only",
-    }
-    for path, rule in refusals.items():
-        with pytest.raises(sandbox.SandboxRefusal) as refused:
-            file_tools.read_file(path, policy=policy)
-        assert refused.value.rule == rule, path
-        assert f"rule `{rule}`" in refused.value.as_tool_result()
+# ── grep ───────────────────────────────────────────────────────
 
 
 @needs_bwrap
@@ -271,36 +221,6 @@ async def test_grep_without_bubblewrap_refuses_and_never_matches_in_process(
 
 
 # ── the actor's tools ────────────────────────────────────────────────────────
-
-
-@needs_bwrap
-@pytest.mark.asyncio
-async def test_on_the_actor_offers_bash_read_file_and_grep(world):
-    actor = CodeActActor(environments=[])
-    try:
-        tools = actor.get_tools("act")
-        assert {"read_file", "grep", "execute_code"} <= set(tools)
-        fn, schema = _schema(actor, "execute_code")
-        props = schema["function"]["parameters"]["properties"]
-        assert "language" in props and "_language" not in props
-        desc = schema["function"]["description"]
-        assert "Python or bash" in desc and "there is no network" in desc
-        assert "there is no shell cell" not in desc
-        execute_code = tools["execute_code"]
-        await execute_code("set a variable", "export N=5", language="bash")
-        out = await execute_code("read it", 'echo "n=$N"', language="bash")
-        assert parts_to_text(out.stdout).strip() == "n=5" and out.result == 0
-        out = await execute_code("python still works", "6 * 7")
-        assert out.result == 42
-        with pytest.raises(ToolInputError, match="Unsupported language"):
-            await execute_code("ruby", "puts 1", language="ruby")
-        read = await tools["read_file"].fn("data.txt", 1, 1)
-        assert read["content"] == "     1\tline 1\n"
-        found = await tools["grep"].fn("line 1", ".")
-        assert any(h.endswith("line 10") for h in found["hits"])
-        json.dumps(read), json.dumps(found)
-    finally:
-        await actor.close()
 
 
 # ── under the cache discipline ─────────────────────────────────────────────

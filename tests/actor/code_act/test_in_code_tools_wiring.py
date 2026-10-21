@@ -1,11 +1,11 @@
-"""Symbolic: with ``UNIFY_TOOLS_IN_CODE=on`` the actor and its teammates carry one model-API tool,
+"""Symbolic: the actor and its teammates carry one model-API tool,
 ``execute_code(code)``; their cells run in one persistent interpreter per agent and call every other tool as
 ``tools.<name>(...)`` through the tool channel to the host handlers (unify/actor/in_code_tools.py).
 
 The model is the scripted transport (tests/scripted_model.py): no key, no network. Cells run in the real
 sandboxed worker. Each request's ``tool-events.jsonl`` (in its own folder under the harness's state directory)
 has one row per cell and one per in-code call. When the request ends, no interpreter box and no handler thread
-is left. With the switch off, nothing of this is built.
+is left.
 """
 
 from __future__ import annotations
@@ -63,10 +63,8 @@ class _Collect:
 
 @pytest.fixture
 def in_code(core_world, monkeypatch):  # noqa: F811
-    """The switch on, a persistent interpreter, a memory run (no stored-function library), a ``.env`` file in the
-    workspace, and every in-code session the test opens."""
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "persistent")
+    """A persistent interpreter, a memory run, a ``.env`` file in the workspace, and every in-code session the test
+    opens."""
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
     (core_world["workspace"] / ".env").write_text(f"KEY={ENV_SECRET}\n")
     collect = _Collect()
@@ -78,12 +76,9 @@ async def _act(model: ScriptedModel, request: str) -> str:
     from unify.actor.code_act_actor import CodeActActor
 
     actor = CodeActActor()
-    try:
-        with scripted(model):
-            handle = await actor.act(request, persist=False)
-            return await asyncio.wait_for(handle.result(), 240)
-    finally:
-        await actor.close()
+    with scripted(model):
+        handle = await actor.act(request, persist=False)
+        return await asyncio.wait_for(handle.result(), 240)
 
 
 def _rows(session) -> list[dict]:
@@ -394,28 +389,6 @@ async def test_a_teammate_gets_the_same_wiring_with_its_own_allow_list(in_code):
     _assert_ended(in_code["opened"])
 
 
-@needs_bwrap
-@pytest.mark.asyncio
-@pytest.mark.timeout(300)
-async def test_off_the_actor_is_as_before(core_world, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "off")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    collect = _Collect()
-    monkeypatch.setattr(in_code_tools, "SESSIONS", collect)
-    cell = ("execute_code", {"thought": "Counting.", "code": "print(sum(range(4)))"})
-    model = ScriptedModel(actor=[reply(calls=[cell]), reply("6")])
-    result = await _act(model, "Sum 0..3.")
-
-    assert result == "6" and collect.opened == []
-    assert not any(OPENING_HEADING in t for c in model.calls for t in _system_texts(c))
-    (tool,) = model.calls[0].request["tools"]
-    params = tool["function"]["parameters"]["properties"]
-    assert "thought" in params and "code" in params
-    assert model.calls[0].request["tools"] != R.json_tools("actor")
-    assert "6" in _tool_results(model.calls[1])
-    assert not in_code_tools.request_folder("x").parent.exists()
-
-
 # ── the parts, without a sandbox ─────────────────────────────────────────────
 
 
@@ -448,23 +421,6 @@ def test_the_event_file_is_created_new_and_never_through_a_link(tmp_path):
     assert [json.loads(x)["call"] for x in lines] == [0, 1]
 
 
-@needs_bwrap
-@pytest.mark.asyncio
-@pytest.mark.timeout(300)
-async def test_fresh_cell_state_starts_every_cell_in_a_new_interpreter(in_code, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "fresh")
-    model = ScriptedModel(
-        actor=[
-            reply(calls=[code("kept = 1\nprint('SET')")]),
-            reply(calls=[code("print('HAS', 'kept' in dir())")]),
-            reply("done"),
-        ],
-    )
-    assert await _act(model, "Twice.") == "done"
-    assert "HAS False" in _tool_results(model.calls[2]), _why(model)
-    _assert_ended(in_code["opened"])
-
-
 def _session(tmp_path, **kw):
     from types import SimpleNamespace
 
@@ -480,62 +436,3 @@ def _session(tmp_path, **kw):
     )
 
 
-@pytest.mark.asyncio
-async def test_the_default_cell_state_is_the_one_the_opening_states(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from unify.common import box_interpreter
-    from unify.settings import ProductionSettings
-
-    default = ProductionSettings.model_fields["UNIFY_CELL_STATE"].default
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", default)
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")
-    assert box_interpreter.cell_state() == "persistent" and box_interpreter.persistent()
-    planted = tmp_path / "planted-run-root"
-    monkeypatch.setenv("UNIFY_HOME", str(planted))
-    monkeypatch.setenv("PLANTED_VALUE_FOR_THE_OPENING_TEST", "planted-value-for-the-opening-test")
-    actor = _session(tmp_path)
-    mate = in_code_tools.InCodeTools(
-        agent="teammate",
-        name="mate",
-        record=SimpleNamespace(),
-        workspace_root=str(tmp_path),
-        shadow={},
-        cell_limit_s=30.0,
-        events_folder=tmp_path / "mate-events",
-    )
-    try:
-        for session in (actor, mate):
-            opening = session.opening()
-            assert opening.startswith(OPENING_HEADING + "\n") and KEPT_SENTENCE in opening
-            assert FRESH_SENTENCE not in opening
-            # no library in this run: `tools` alone is named as bound
-            assert "`tools` is already available as a variable in every cell; no import needed." in opening
-            for value in (str(tmp_path), str(planted), "planted-value-for-the-opening-test"):
-                assert value not in opening
-            assert "/workspace" in opening
-            assert opening == session.opening()  # constant for the run: a stable prefix
-        assert "A cell runs for at most 30 s." in mate.opening()
-        assert "A cell runs for at most" not in actor.opening()  # no cell limit set
-        assert "`memory`" not in actor.opening()
-        monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "fresh")
-        assert FRESH_SENTENCE in actor.opening() and KEPT_SENTENCE not in actor.opening()
-    finally:
-        await actor.close(completed=True)
-        await mate.close(completed=True)
-
-
-@pytest.mark.asyncio
-async def test_the_end_awaits_work_a_call_started_or_cancels_it(tmp_path):
-    done = _session(tmp_path)
-    finished = asyncio.ensure_future(asyncio.sleep(0.05, result="stored"))
-    done.state.host_tasks.add(finished)
-    await done.close(completed=True)
-    assert finished.done() and finished.result() == "stored"
-
-    stopped = _session(tmp_path)
-    forever = asyncio.ensure_future(asyncio.sleep(3600))
-    stopped.state.host_tasks.add(forever)
-    await stopped.close(completed=False)
-    assert forever.cancelled()
-    assert stopped.closed and not stopped.threads_alive()

@@ -1,40 +1,24 @@
 from secrets import token_hex
-from typing import Any, Callable, Dict, Union
-from ..llm_helpers import short_id
 from contextvars import ContextVar
+
+from ..llm_helpers import short_id
 
 # Hierarchical lineage of nested async tool loops (propagates via contextvars)
 TOOL_LOOP_LINEAGE: ContextVar[list[str]] = ContextVar("TOOL_LOOP_LINEAGE", default=[])
 
-# Bridge for suffix consistency: when a decorator (log_manager_call,
-# log_manager_result) or boundary wrapper generates a suffix for the
-# ManagerMethod incoming event, it stores that suffix here *before*
-# spawning the tool loop.  LoopConfig.__init__ consumes it (and resets
-# to None) so that the loop's hierarchy_label carries the same suffix
-# as the boundary event.  Without this, two independent token_hex(2)
-# calls would produce different suffixes for the same operation.
-_PENDING_LOOP_SUFFIX: ContextVar[str | None] = ContextVar(
-    "_PENDING_LOOP_SUFFIX",
-    default=None,
-)
-
-
-# Public re-exports
-
 __all__ = [
     "TOOL_LOOP_LINEAGE",
-    "_PENDING_LOOP_SUFFIX",
     "LoopConfig",
 ]
 
 
 class LoopConfig:
+    """A loop's identity for its logs and transcript: its id, and its lineage with a random suffix on its own
+    segment."""
+
     def __init__(self, loop_id, lineage, parent_lineage):
         self._loop_id = loop_id if loop_id is not None else short_id()
-        # Consume _PENDING_LOOP_SUFFIX if a decorator/boundary set one for us;
-        # otherwise generate a fresh random suffix.
-        _pending = _PENDING_LOOP_SUFFIX.get(None)
-        _suffix = _pending if _pending else token_hex(2)
+        _suffix = token_hex(2)
         # Embed the suffix into the leaf segment so the hierarchy array is
         # self-describing for unique parent-child linking (every segment
         # carries per-invocation identity).
@@ -47,9 +31,6 @@ class LoopConfig:
         self._label = (
             "->".join(self._lineage) if self._lineage else f"{self._loop_id}({_suffix})"
         )
-        self._tool_alias_lookup: (
-            Dict[str, Union[str, Callable[[Dict[str, Any]], str]]] | None
-        ) = None
 
     @property
     def loop_id(self):
@@ -62,16 +43,3 @@ class LoopConfig:
     @property
     def label(self):
         return self._label
-
-    @property
-    def tool_alias_lookup(
-        self,
-    ) -> Dict[str, Union[str, Callable[[Dict[str, Any]], str]]] | None:
-        return self._tool_alias_lookup
-
-    @tool_alias_lookup.setter
-    def tool_alias_lookup(
-        self,
-        value: Dict[str, Union[str, Callable[[Dict[str, Any]], str]]] | None,
-    ):
-        self._tool_alias_lookup = value

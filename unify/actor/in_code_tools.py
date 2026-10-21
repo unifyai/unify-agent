@@ -1,6 +1,6 @@
-"""The actor's and a teammate's tools called from code, for one request (``UNIFY_TOOLS_IN_CODE=on``).
+"""The actor's and a teammate's tools called from code, for one request.
 
-With the switch on, the request's one model-API tool is ``execute_code(code)``. Each cell runs in the agent's
+The request's one model-API tool is ``execute_code(code)``. Each cell runs in the agent's
 persistent interpreter (:class:`unify.common.box_interpreter.BoxInterpreter` over the agent's sandboxed
 :class:`~unify.actor.execution.worker.PythonWorker`), and every other tool is a call ``tools.<name>(...)`` from the
 cell, through the tool channel (:mod:`unify.common.tool_channel`) to a host handler of
@@ -13,7 +13,7 @@ One :class:`InCodeTools` serves one request of one agent:
   as an open directory descriptor under the box root ``/workspace``, the record
   (:class:`unify.common.record_adapters.AgentRecordAdapter`) and the request's state
   (:class:`unify.actor.tool_handlers.ActorRequestState`: the loop's reply slot that ``tools.answer`` fills, the
-  response format's check, the storage review's starter, the act's request);
+  response format's check, the act's request);
 * the channel table: each allowed tool's registry spec with the actor's handler (``tool_registry.handler_for``) and
   the agent's own parameter schema (``tool_registry.strict_parameters``);
 * the box module ``tools``: ``tool_registry.render_stub`` for the allow-list, built in the box when the interpreter
@@ -24,12 +24,10 @@ One :class:`InCodeTools` serves one request of one agent:
   memory pass writes its rows (a file created new, never through a link, then appended). A cell's row counts its
   model calls the provider refused for the request's own content (``model_request_errors``,
   :class:`unify.common.cell_models.ModelRequestError`); the request's count is the sum over its cells;
-* the end (:meth:`InCodeTools.close`): the interpreter is stopped with the verified kill, the handler threads are
-  waited for, and host work a call started (a storage review) is awaited, or cancelled when the request did not end
-  normally; each is checked to have ended.
+* the end (:meth:`InCodeTools.close`): the interpreter is stopped with the verified kill and the handler threads
+  are waited for; each is checked to have ended.
 
-``UNIFY_CELL_STATE=persistent`` keeps the interpreter between cells; ``fresh`` stops it after every cell, so each
-cell starts in a new one.
+The interpreter keeps its variables between cells until it restarts.
 """
 
 from __future__ import annotations
@@ -54,7 +52,6 @@ __all__ = [
     "EventFile",
     "InCodeTools",
     "SESSIONS",
-    "enabled",
     "open_for_act",
     "request_folder",
 ]
@@ -66,13 +63,6 @@ NO_WALL_CLOCK_S = 30 * 86400.0
 THREADS_GRACE_S = 10.0
 #: Every session opened in this process (weakly held), so a test can check each one ended.
 SESSIONS: "weakref.WeakSet[InCodeTools]" = weakref.WeakSet()
-
-
-def enabled() -> bool:
-    """Whether ``UNIFY_TOOLS_IN_CODE=on``."""
-    from unify.common import in_code_switch
-
-    return in_code_switch.tools_in_code()
 
 
 def _utc() -> str:
@@ -167,8 +157,6 @@ class InCodeTools:
         workspace_root: str,
         shadow: dict,
         cell_limit_s: Optional[float],
-        can_store: bool = False,
-        store_skills: Optional[Callable[[str], Awaitable[Any]]] = None,
         validate: Optional[Callable[[Any], str]] = None,
         spawner: Optional[str] = None,
         policy: Any = None,
@@ -191,14 +179,12 @@ class InCodeTools:
         self._root_fd = os.open(workspace_root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
         self.state = H.ActorRequestState(
             validate=validate,
-            store_skills=store_skills if can_store else None,
             workspace_root=str(workspace_root),
             policy=policy,
             spawner=spawner,
         )
         # the request the memory package reads through current_request (its text, and the JSON values it carries)
         self.state.request_text, self.state.request_data = H.request_of(request)
-        stores = can_store and store_skills is not None
         # UNIFY_MEMORY_LIBRARIAN=on: the actor asks the request's librarian (tools.ask_library, from memory.ask)
         asks = agent == "actor" and _librarian_on()
         if asks:
@@ -212,7 +198,7 @@ class InCodeTools:
                 request_id=self.request_id,
             )
         # the flags the allow-list is built with, which the opening names its tools by
-        self.flags = H.actor_flags(agent, stores, asks)
+        self.flags = H.actor_flags(agent, librarian=asks)
         self.binding, self.allow = H.actor_binding(
             agent=agent,
             name=name,
@@ -221,7 +207,6 @@ class InCodeTools:
             record=record,
             deadline=time.monotonic() + NO_WALL_CLOCK_S,
             state=self.state,
-            can_store=stores,
             librarian=asks,
         )
         # the channel also serves the tools only the memory package calls (current_request); the stub never has them
@@ -242,13 +227,11 @@ class InCodeTools:
 
     def opening(self) -> str:
         """The shared opening this agent reads first (:func:`unify.common.tool_registry.preamble`): its box (the
-        workspace and a private /tmp, writable; the network), its cell time, the tools its allow-list has, whether
-        variables carry over (``UNIFY_CELL_STATE``) and the names bound in its cells (:meth:`namespace_names`). Box
+        workspace and a private /tmp, writable; the network), its cell time, the tools its allow-list has, that
+        variables carry over, and the names bound in its cells (:meth:`namespace_names`). Box
         paths and settings only, so it is constant for the run and the system message stays a stable prefix."""
         from unify.actor import tool_handlers as H
-        from unify.actor.workspace_tools import _network_text
         from unify.common import tool_registry as R
-        from unify.common.box_interpreter import persistent
 
         environment = f"Your box: {H.WORKSPACE} and a private /tmp are writable; {_network_text()}."
         if math.isfinite(self.cell_limit_s):
@@ -258,7 +241,7 @@ class InCodeTools:
             {
                 "environment": environment,
                 "flags": self.flags,
-                "persistent": persistent(),
+                "persistent": True,
                 "names": self.namespace_names(),
             },
         )
@@ -279,7 +262,6 @@ class InCodeTools:
         """The request's ``execute_code`` for the loop: ``thought`` and ``code``, both optional (the schema the model
         is sent is the registry's, ``tool_registry.json_tools``). A call with no code runs nothing."""
         from unify.common import tool_registry as R
-        from unify.common.tool_spec import ToolSpec
 
         session = self
 
@@ -291,7 +273,7 @@ class InCodeTools:
             return await session.run_cell(code)
 
         execute_code.__doc__ = _execute_code_doc()
-        return ToolSpec(fn=execute_code, display_label="Running code")
+        return execute_code
 
     # -- the channel and the interpreter -----------------------------------------------------------------------
 
@@ -346,8 +328,7 @@ class InCodeTools:
     async def run_cell(self, code: str) -> Any:
         """Run one cell; its output as the loop shows it (an ``ExecutionResult``). Its event row is written when it
         ends, with the number reserved when it started (the in-code calls it made are numbered after it)."""
-        from unify.common._async_tool import bound_request, cell_reply
-        from unify.common.box_interpreter import persistent
+        from unify.common._async_tool import cell_reply
         from unify.common.cell_models import counting_model_request_errors
 
         if self.closed:
@@ -359,7 +340,7 @@ class InCodeTools:
         if taught is not None:
             async with self._lock:
                 call = self._next_call()
-                out = self._result(None, None, time.monotonic(), failed=taught)
+                out = self._result(None, time.monotonic(), failed=taught)
                 self._cell_row(call, code, out, refusal=no_op_cells.REFUSAL)
             return out
         async with self._lock:
@@ -376,7 +357,6 @@ class InCodeTools:
                 interp = await self._interpreter()
                 if self.channel is not None:
                     self.channel.gone_during = None
-                bound_request.install(self.shadow)
                 # the cell's model calls are served in tasks this one starts, so they count here
                 with counting_model_request_errors() as request_errors:
                     res = await interp.run_cell(code, call=call)
@@ -390,23 +370,19 @@ class InCodeTools:
                     "cell: variables are gone, files remain)"
                 )
                 await self._drop_interpreter()
-            except BaseException as exc:  # a cell's reply() (a BaseException) or another control exception
+            except BaseException as exc:  # a control exception out of the cell
                 raised = exc
             finally:
                 self._cell_call = None
-                if not persistent() and self.interp is not None:
-                    interp, self.interp = self.interp, None
-                    await interp.stop()
-            crashed = raised is not None and not _is_reply(raised)
-            out = self._result(res, None if crashed else raised, started, failed)
+            out = self._result(res, started, failed)
             self._cell_row(
                 call,
                 code,
                 out,
                 request_errors.n if request_errors is not None else 0,
-                exception=type(raised).__name__ if crashed else None,
+                exception=type(raised).__name__ if raised is not None else None,
             )
-            if crashed:
+            if raised is not None:
                 raise raised
             return out
 
@@ -421,12 +397,10 @@ class InCodeTools:
     def _result(
         self,
         res: Any,
-        raised: Optional[BaseException],
         started: float,
         failed: Optional[str] = None,
     ) -> Any:
         from unify.actor.execution.types import ExecutionResult, TextPart, parts_to_text
-        from unify.common._async_tool import cell_reply
 
         stdout: list = []
         stderr: list = []
@@ -450,9 +424,6 @@ class InCodeTools:
             after.append(
                 f"(the cell ended during tools.{tool}; that call {'completed' if completed else 'did not run'})",
             )
-        if raised is not None and _is_reply(raised):
-            refused = cell_reply.deliver(raised.text, raised.from_value)
-            error = refused if refused is not None else error
         if failed is not None:
             error = failed
         stdout += [TextPart(text=n + "\n") for n in after]
@@ -543,10 +514,9 @@ class InCodeTools:
 
     # -- the end of the request --------------------------------------------------------------------------------
 
-    async def close(self, *, completed: bool = True) -> None:
-        """Stop the interpreter (verified kill), wait for every handler thread, and end the host work calls started:
-        awaited when the request ended normally (*completed*), else cancelled; each is checked to have ended. Safe
-        to repeat. Raises when something could not be ended."""
+    async def close(self) -> None:
+        """Stop the interpreter (verified kill) and the librarian, and wait for every handler thread; each is
+        checked to have ended. Safe to repeat. Raises when something could not be ended."""
         if self.closed:
             return
         self.closed = True
@@ -570,17 +540,6 @@ class InCodeTools:
                     problems.append("the librarian's box is still alive")
             if not await self.threads.wait_idle(THREADS_GRACE_S):
                 problems.append("a tool handler thread is still running")
-            tasks = list(self.state.host_tasks)
-            if tasks:
-                if not completed:
-                    for t in tasks:
-                        t.cancel()
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for r in results:
-                    if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
-                        logger.warning("work a tool call started ended with %s", type(r).__name__)
-                if any(not t.done() for t in tasks):
-                    problems.append("work a tool call started is still running")
         finally:
             try:
                 os.close(self._root_fd)
@@ -590,28 +549,31 @@ class InCodeTools:
             raise RuntimeError("; ".join(problems))
 
 
-#: The objects a cell held before that the registry's tools replace with the switch on: a cell calls
-#: ``tools.install``, ``tools.read``, ``tools.grep`` and the record tools instead.
-REPLACED_OBJECTS = ("install", "read_file", "grep", "record", "agents")
+def _network_text() -> str:
+    """What the box's network is, as the opening states it."""
+    from unify.settings import SETTINGS
+
+    if SETTINGS.UNIFY_WORKSPACE_NETWORK == "proxy":
+        port = SETTINGS.UNIFY_WORKSPACE_PROXY_PORT
+        return (
+            f"the only network is the proxy at http://127.0.0.1:{port} "
+            "(HTTP_PROXY and HTTPS_PROXY point at it)"
+        )
+    return "there is no network"
 
 
 def open_for_act(
     *,
     agents: Any,
-    sandbox: Any,
-    store_skills: Optional[Callable[[str], Awaitable[Any]]],
+    shadow: dict,
     response_format: Any,
     cell_limit_s: Optional[float],
     request: Any = None,
-) -> Optional[InCodeTools]:
+) -> InCodeTools:
     """The in-code tools of one ``act()`` (the actor's request, or a teammate's when *agents* is a teammate's
-    binding), or None while ``UNIFY_TOOLS_IN_CODE`` is off. *agents*: the act's
-    :class:`unify.agents.binding.Binding`; *sandbox*: its ``PythonExecutionSession`` (the namespace the worker's
-    proxy serves, without the objects :data:`REPLACED_OBJECTS` names); *store_skills*: the storage review's
-    starter, None where the request may not store; *response_format*: the request's, whose check ``tools.answer``
-    applies; *request*: the act's request, which the memory package reads through ``current_request``."""
-    if not enabled():
-        return None
+    binding). *agents*: the act's
+    :class:`unify.agents.binding.Binding`; *shadow*: the namespace the worker's proxy serves to its cells;
+    *response_format*: the request's, whose check ``tools.answer`` applies; *request*: the act's request, which the memory package reads through ``current_request``."""
     from unify import sandbox as _sandbox
     from unify.actor import tool_handlers as H
     from unify.common.record_adapters import AgentRecordAdapter
@@ -621,13 +583,8 @@ def open_for_act(
         from unify.common._async_tool.response_format import normalize_response_format
 
         validate = H.response_validator(normalize_response_format(response_format))
-    for holder in (sandbox.global_state, getattr(sandbox, "core_globals", None)):
-        if isinstance(holder, dict):
-            for key in REPLACED_OBJECTS:
-                holder.pop(key, None)
-    # the prompt names display(obj): the worker binds its own (rich output comes back with the cell's output), as the
-    # off path's execute_code binds it per call
-    sandbox.global_state["display"] = display
+    # the prompt names display(obj): the worker binds its own (rich output comes back with the cell's output)
+    shadow["display"] = display
     pool = agents.pool
     root = pool.record.root
     participant = pool.record.participants.get(agents.name)
@@ -639,10 +596,8 @@ def open_for_act(
         name=agents.name,
         record=view if view is not None else AgentRecordAdapter(pool),
         workspace_root=str(policy.workspace),
-        shadow=sandbox.global_state,
+        shadow=shadow,
         cell_limit_s=cell_limit_s,
-        can_store=store_skills is not None and agents.name == root,
-        store_skills=store_skills,
         validate=validate,
         spawner=getattr(participant, "spawner", None),
         policy=policy,
@@ -663,12 +618,6 @@ def _librarian_on() -> bool:
         return _librarian.enabled()
     except Exception:  # noqa: BLE001 - no settings: off
         return False
-
-
-def _is_reply(exc: BaseException) -> bool:
-    from unify.actor.execution.worker_child import CellReply
-
-    return isinstance(exc, CellReply)
 
 
 def _plain(value: Any) -> Any:

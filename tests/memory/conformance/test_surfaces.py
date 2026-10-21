@@ -37,7 +37,6 @@ import pytest
 
 from tests.actor.code_act.core_world import core_world, world  # noqa: F401 (fixtures)
 from tests.actor.code_act.sandbox_world import needs_bwrap
-from tests.helpers import _handle_project
 from tests.memory.conformance import fake_lanes as FL
 from tests.memory.conformance import harness as H
 from tests.memory.conformance import scripts as SX
@@ -138,7 +137,6 @@ def check_mesh(home: Path) -> dict:
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(900)
-@_handle_project
 async def test_surface_1_a_conversation_with_follow_ups_and_no_reward(core_world, monkeypatch, lanes):  # noqa: F811
     H.apply_settings(monkeypatch, H.in_episode_env())
     home = Path(core_world["state"])
@@ -176,7 +174,6 @@ async def test_surface_1_a_conversation_with_follow_ups_and_no_reward(core_world
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(900)
-@_handle_project
 async def test_surface_2_a_tool_api_with_reads_and_writes_and_an_outcome_at_the_end(core_world, monkeypatch, lanes):  # noqa: F811
     from unify.memory import captures as C
     from unify.memory.integration.paths import Paths
@@ -266,7 +263,6 @@ async def _wait_for_item_served(home: Path, item: str, timeout_s: float = 300.0)
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(1200)
-@_handle_project
 async def test_surface_3_a_long_episode_with_checkpoints(core_world, monkeypatch, lanes):  # noqa: F811
     from unify.memory.gitio import Repo
     from unify.memory.integration.paths import Paths
@@ -340,7 +336,6 @@ async def test_surface_3_a_long_episode_with_checkpoints(core_world, monkeypatch
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(1200)
-@_handle_project
 async def test_surface_4_an_outcome_that_arrives_two_requests_later(core_world, monkeypatch, lanes):  # noqa: F811
     from unify.memory.integration.paths import Paths
 
@@ -442,7 +437,6 @@ def _memory_fingerprint(home: Path) -> dict:
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(1200)
-@_handle_project
 async def test_frozen_memory_serves_what_it_holds_and_changes_nothing(core_world, monkeypatch, lanes):  # noqa: F811
     """The held-out mode (``UNIFY_MEMORY_FROZEN=on``): after a request that lands a note, the kit stops the service
     (the drain) and freezes memory. Two frozen requests are served the same library and evidence, start no writer,

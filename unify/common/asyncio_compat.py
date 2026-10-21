@@ -12,7 +12,7 @@ import asyncio
 import concurrent.futures
 import contextvars
 from collections.abc import Awaitable, Callable
-from typing import Any, TypeVar
+from typing import TypeVar
 
 R = TypeVar("R")
 T = TypeVar("T")
@@ -24,13 +24,11 @@ def run_coro_sync(factory: Callable[[], Awaitable[R]]) -> R:
     When no loop is running, delegates to ``asyncio.run``. When a loop is
     already running, schedules the factory on a private worker thread that
     owns its own loop so nested ``asyncio.run`` is avoided on the caller
-    thread. The ContextVars registered with :func:`carry_across_threads`
-    keep the caller's values there; no other context crosses, since much of
-    it holds objects bound to the caller's loop.
+    thread. No context crosses, since much of it holds objects bound to the
+    caller's loop.
 
-    Prefer ``async def`` + ``await`` end-to-end when authoring stored task
-    entrypoints. Use this helper only when a sync façade is required (CLI
-    runners, legacy sync libraries, sync symbolic helpers).
+    Prefer ``async def`` + ``await`` end to end; use this helper only where a
+    sync façade is required (a cell's synchronous code, a sync library).
     """
 
     try:
@@ -38,29 +36,11 @@ def run_coro_sync(factory: Callable[[], Awaitable[R]]) -> R:
     except RuntimeError:
         return asyncio.run(factory())
 
-    carried = [(var, var.get()) for var in _CARRIED]
-
     def _run() -> R:
-        for var, value in carried:
-            var.set(value)
         return asyncio.run(factory())
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         return pool.submit(contextvars.Context().run, _run).result()
 
 
-_CARRIED: list[contextvars.ContextVar[Any]] = []
-
-
-def carry_across_threads(var: contextvars.ContextVar[T]) -> contextvars.ContextVar[T]:
-    """Register *var* to keep its value in :func:`run_coro_sync`'s worker thread.
-
-    For values that must hold wherever the caller's work runs, such as the
-    grants an actor run holds (unify/actor/grants.py). *var* must have a
-    default. Returns *var*.
-    """
-    _CARRIED.append(var)
-    return var
-
-
-__all__ = ["carry_across_threads", "run_coro_sync"]
+__all__ = ["run_coro_sync"]

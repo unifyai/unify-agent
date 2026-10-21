@@ -2,14 +2,12 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-import asyncio
 import inspect
 import random
 import string
 from enum import Enum
 from pydantic import BaseModel
 from typing import (
-    Tuple,
     List,
     Dict,
     Union,
@@ -18,12 +16,7 @@ from typing import (
     get_type_hints,
     get_origin,
     get_args,
-    Callable,
-    Awaitable,
 )
-
-
-from .tool_spec import ToolSpec  # Backward-compatibility
 
 
 def short_id(length=4):
@@ -32,7 +25,6 @@ def short_id(length=4):
 
 
 TYPE_MAP = {str: "string", int: "integer", float: "number", bool: "boolean"}
-DEFAULT_TOOL_SCHEMA_STRICT = False
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Image-handling helpers
@@ -112,92 +104,6 @@ def _strip_image_keys(obj):
         return [_strip_image_keys(v) for v in obj]
     else:
         return obj
-
-
-def _canonical_tool_owner_name(cls: type) -> str:
-    """Return a normalised class name for tool exposure.
-
-    Policy:
-    - Walk the MRO; if any ancestor's name starts with "Base", strip "Base"
-      and use the remainder (e.g., BaseActor → Actor).
-    - If any ancestor's name starts with "Simulated", strip "Simulated" and use the remainder
-      (e.g., SimulatedActor → Actor).
-    - Fallback to the class' own __name__ unchanged.
-    """
-    try:
-        for c in getattr(cls, "__mro__", ()):
-            if c is object:
-                continue
-            name = getattr(c, "__name__", "")
-            if name.startswith("Base") and len(name) > 4:
-                return name[4:]
-            elif name.startswith("Simulated") and len(name) > 9:
-                return name[9:]
-    except Exception:
-        pass
-
-    try:
-        return getattr(cls, "__name__", "")
-    except Exception:
-        return ""
-
-
-def methods_to_tool_dict(
-    *methods: Tuple[Union[Callable, "ToolSpec"]],
-    include_class_name: bool = True,
-) -> Dict[str, Union[Callable, "ToolSpec"]]:
-    """
-    Build the ``{name → tool}`` mapping from a list of *bound* methods **or**
-    :class:`ToolSpec` instances.
-
-    When a ``ToolSpec`` is given we keep its metadata (`max_concurrent`, …)
-    but replace ``fn`` with the *bound* method so calls execute on the correct
-    object.
-    """
-
-    ret: Dict[str, Union[Callable, ToolSpec]] = {}
-    for m in methods:
-        # ── unwrap, but remember whether we saw a ToolSpec ─────────────────
-        if isinstance(m, ToolSpec):
-            spec = m
-            fn: Callable = spec.fn
-        else:  # plain callable
-            spec = None
-            fn = m
-
-        # ── derive a sensible key (className_method or plain method) ───────
-        if (
-            include_class_name
-            and hasattr(fn, "__self__")
-            and hasattr(
-                fn.__self__,
-                "__class__",
-            )
-        ):
-            cls_name = _canonical_tool_owner_name(fn.__self__.__class__)
-            key = f"{cls_name}_{fn.__name__}".replace("__", "_")
-        else:
-            key = fn.__name__.lstrip("_")
-
-        # ── store ----------------------------------------------------------------
-        if spec is None:
-            ret[key] = fn
-        else:
-            # Preserve the metadata but *bind* the function correctly.
-            ret[key] = ToolSpec(
-                fn=fn,
-                max_concurrent=spec.max_concurrent,
-                max_total_calls=spec.max_total_calls,
-                read_only=(
-                    spec.read_only
-                    if spec.read_only is not None
-                    else getattr(fn, "_tool_spec_read_only", None)
-                ),
-                manager_tool=spec.manager_tool
-                or getattr(fn, "_tool_spec_manager_tool", False),
-                display_label=spec.display_label,
-            )
-    return ret
 
 
 def _dumps(
@@ -631,45 +537,14 @@ def _annotation_to_schema(ann: Any) -> Dict[str, Any]:
     return {"type": "string"}
 
 
-def method_to_schema(
-    bound_method,
-    tool_name: Optional[str] = None,
-    include_class_name: bool = True,
-    expose_context_control: bool = False,
-    has_parent_context: bool = False,
-    expose_context_cont_control: bool = False,
-    strict: bool = DEFAULT_TOOL_SCHEMA_STRICT,
-):
-    """Convert a bound method into an OpenAI-compatible function-tool schema.
+def method_to_schema(bound_method, tool_name: str) -> dict:
+    """Convert a callable into an OpenAI-compatible function-tool schema named *tool_name*.
 
-    Parameters
-    ----------
-    bound_method
-        The callable to convert.
-    tool_name : str | None
-        Override the function name in the schema.
-    include_class_name : bool
-        Whether to prefix the tool name with the class name.
-    expose_context_control : bool
-        If True and the tool accepts ``_parent_chat_context``, the schema will
-        include an ``include_parent_chat_context`` boolean parameter that lets
-        the LLM control whether parent context is passed to this tool invocation.
-        This should be True only when propagate_chat_context is LLM_DECIDES.
-    has_parent_context : bool
-        Whether the current loop has parent context. Used to build the
-        conditional docstring for ``include_parent_chat_context`` (only relevant
-        when ``expose_context_control=True``).
-    expose_context_cont_control : bool
-        If True and the method accepts ``_parent_chat_context_cont``, the schema
-        will include an ``include_parent_chat_context_cont`` boolean parameter.
-        This is for steering methods (ask, interject) on in-flight tools
-        that originally opted into context. The LLM can control whether context
-        continuations are forwarded on each steering call.
-    strict : bool
-        Whether the provider should enforce the declared JSON schema exactly.
-        The tool loop keeps Python defaults, open mappings, and argument
-        normalization available at execution time, so generated tools are
-        non-strict unless a caller explicitly opts into provider enforcement.
+    Parameters whose names start with ``_`` are internal plumbing and never
+    reach the model; ``*args`` and ``**kwargs`` are not expressible as fixed
+    JSON fields (a ``**kwargs`` callable allows extra keys). The schema is
+    non-strict: the tool loop keeps Python defaults, open mappings and
+    argument normalisation available at execution time.
     """
 
     sig = inspect.signature(bound_method)
@@ -684,36 +559,20 @@ def method_to_schema(
     except Exception:
         hints = {}
 
-    import inspect as _inspect
-
     props, required, hidden = {}, [], set()
 
     # Detect whether the callable accepts **kwargs so we can permit extra keys
     has_var_keyword = any(
-        p.kind == _inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
     )
 
-    # Track whether this tool accepts _parent_chat_context or _parent_chat_context_cont
-    accepts_parent_chat_context = False
-    accepts_parent_chat_context_cont = False
-
     for name, param in sig.parameters.items():
-        # Skip star-args and star-kwargs – these are not expressible as fixed JSON fields
         if param.kind in (
-            _inspect.Parameter.VAR_POSITIONAL,
-            _inspect.Parameter.VAR_KEYWORD,
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
         ):
             continue
-        # Determine whether *name* is **hidden** (never exposed to the LLM)
-        # Convention: parameters starting with "_" are internal plumbing
-        is_hidden = name.startswith("_")
-
-        if name == "_parent_chat_context":
-            accepts_parent_chat_context = True
-        if name == "_parent_chat_context_cont":
-            accepts_parent_chat_context_cont = True
-
-        if is_hidden:
+        if name.startswith("_"):
             hidden.add(name)
             continue  # do NOT surface to the model
 
@@ -722,80 +581,13 @@ def method_to_schema(
         if param.default is inspect._empty:
             required.append(name)
 
-    # If the tool accepts _parent_chat_context and we're in LLM_DECIDES mode,
-    # inject the visible control parameter
-    if accepts_parent_chat_context and expose_context_control:
-        # Build conditional docstring based on whether the current loop has parent context
-        if has_parent_context:
-            ctx_desc = (
-                "Whether to pass conversation context into this tool. Off by "
-                "default: when omitted or `false`, the tool sees no conversation "
-                "history — write a self-contained request instead. When `true`, "
-                "the tool receives a filtered snapshot of (1) the Parent Chat "
-                "Context from your system message and (2) your own conversation "
-                "so far: genuine user turns and substantive assistant replies "
-                "only (tool calls and tool results are omitted). Set `true` only "
-                "when the sub-task depends on conversation specifics you cannot "
-                "restate compactly in the request itself."
-            )
-        else:
-            ctx_desc = (
-                "Whether to pass conversation context into this tool. Off by "
-                "default: when omitted or `false`, the tool sees no conversation "
-                "history — write a self-contained request instead. When `true`, "
-                "the tool receives a filtered snapshot of your conversation so "
-                "far: genuine user turns and substantive assistant replies only "
-                "(tool calls and tool results are omitted). Set `true` only when "
-                "the sub-task depends on conversation specifics you cannot "
-                "restate compactly in the request itself."
-            )
-        props["include_parent_chat_context"] = {
-            "type": "boolean",
-            "description": ctx_desc,
-        }
-        # Not in required - defaults to False when omitted
-
-    # If this is a steering method that accepts _parent_chat_context_cont and we want
-    # LLM control over context continuation propagation, inject the visible control param
-    if accepts_parent_chat_context_cont and expose_context_cont_control:
-        ctx_cont_desc = (
-            "Whether to forward recent conversation updates to this running tool. "
-            "When `true`, the tool receives any new messages that have arrived in "
-            "your conversation since the tool started running. Set `true` when the "
-            "tool would benefit from knowing about these recent updates (e.g., new "
-            "instructions or context). Set `false` when this steering call is "
-            "self-contained and the tool does not need the additional context."
-        )
-        props["include_parent_chat_context_cont"] = {
-            "type": "boolean",
-            "description": ctx_cont_desc,
-        }
-        # Not in required - defaults to True when omitted
-
     # ── resolve docstring with MRO fallback, then scrub hidden args ───────────
     raw_doc = _resolve_doc_with_mro_fallback(bound_method) or ""
     cleaned_doc = _strip_hidden_params_from_doc(raw_doc, hidden)
 
-    if hasattr(bound_method, "__self__") and hasattr(
-        bound_method.__self__,
-        "__class__",
-    ):
-        _cls_name = _canonical_tool_owner_name(bound_method.__self__.__class__)
-        prefix = f"{_cls_name}_"
-    elif hasattr(bound_method, "__qualname__"):
-        parts = bound_method.__qualname__.split(".")
-        prefix = f"{parts[-2]}_" if len(parts) > 1 else ""
-    else:
-        prefix = ""
-    if tool_name is None:
-        if include_class_name:
-            tool_name = f"{prefix}{bound_method.__name__}".replace("__", "_")
-        else:
-            tool_name = bound_method.__name__.lstrip("_")
-
     schema: dict = {
         "type": "function",
-        "strict": strict,
+        "strict": False,
         "function": {
             "name": tool_name,
             "description": cleaned_doc.strip(),
@@ -812,186 +604,3 @@ def method_to_schema(
     return schema
 
 
-TOOL_CALL_THOUGHTS_PARAM = "thoughts"
-TOOL_CALL_THOUGHTS_DESCRIPTION = (
-    "Optional freeform text explaining why you chose this tool. "
-    "Populate when the choice is non-obvious; omit when the action is self-explanatory."
-)
-
-
-def inject_tool_call_thoughts(schema: dict) -> dict:
-    """Add optional ``thoughts`` to a function-tool schema's parameters."""
-    fn = schema.get("function") or {}
-    params = fn.get("parameters") or {}
-    props = params.get("properties") or {}
-    if TOOL_CALL_THOUGHTS_PARAM in props:
-        return schema
-    props[TOOL_CALL_THOUGHTS_PARAM] = {
-        "type": "string",
-        "description": TOOL_CALL_THOUGHTS_DESCRIPTION,
-    }
-    required = params.get("required") or []
-    if TOOL_CALL_THOUGHTS_PARAM in required:
-        required = [name for name in required if name != TOOL_CALL_THOUGHTS_PARAM]
-        params["required"] = required
-    params["properties"] = props
-    fn["parameters"] = params
-    schema["function"] = fn
-    return schema
-
-
-def make_request_clarification_tool(
-    up_q: "asyncio.Queue[str]" | None,
-    down_q: "asyncio.Queue[str]" | None,
-    *,
-    on_request: Optional[Callable[[str], Awaitable[None] | None]] = None,
-    on_answer: Optional[Callable[[str], Awaitable[None] | None]] = None,
-):
-    """Return an async tool that bubbles a question up and awaits the answer.
-
-    Behaviour and integration notes
-    --------------------------------
-    - Prefers caller-supplied / outer ``up_q``/``down_q`` when present so nested
-      manager loops keep writing into the parent tool's clarification channel.
-    - Otherwise uses loop-injected per-call ``_clarification_up_q`` /
-      ``_clarification_down_q`` (same mailbox as other tools) so
-      ``_handle_clarification`` can surface the question on the handle's
-      ``_clar_q`` for ConversationManager.
-    - If neither channel is available, the loop MUST NOT ask the user
-      questions in its final response. Proceed with sensible defaults and
-      state those assumptions. If an inner tool asks for clarification but
-      the outer loop has no clarification tool, tell the inner tool that no
-      channel is available and either (a) instruct safe defaults, or
-      (b) pass concrete best-guess values.
-
-    - Raises RuntimeError if queues are missing at call time.
-    - Optionally invokes async/sync callbacks on request/answer events.
-    """
-
-    async def _request(
-        question: str,
-        *,
-        _clarification_up_q: "asyncio.Queue[str] | None" = None,
-        _clarification_down_q: "asyncio.Queue[str] | None" = None,
-    ) -> str:
-        """Ask the caller a clarifying question and block until they answer.
-
-        Use this when you need additional information from the process that
-        invoked you — either because you **cannot proceed** or because
-        proceeding without confirmation risks **low-quality results**.
-        Requests arrive self-contained by design: when required context is
-        missing from the request itself (identifiers, scope, preferences the
-        request assumes), ask here rather than guessing what was meant.
-
-        Clarification is not only for blockers.  It is equally appropriate
-        when you *could* continue but your confidence in the outcome is
-        low — for example, when making subjective decisions about user
-        data at scale (classifying, labeling, reorganizing, prioritizing),
-        when interpreting ambiguous patterns, or when a wrong guess would
-        be costly to review and undo.  One well-timed question early in a
-        large task is far cheaper than hundreds of corrections afterward.
-
-        The question is forwarded to the caller; execution pauses until a
-        response is received.
-
-        Parameters
-        ----------
-        question : str
-            The clarifying question to ask.
-
-        Returns
-        -------
-        str
-            The caller's answer.
-        """
-        # Outer/closure queues win when present (nested manager → parent tool
-        # channel). Otherwise use the per-call hidden queues so this loop's
-        # clar_waiters → _handle_clarification → handle._clar_q path runs.
-        use_up = up_q if up_q is not None else _clarification_up_q
-        use_down = down_q if down_q is not None else _clarification_down_q
-        if use_up is None or use_down is None:
-            raise RuntimeError(
-                "Clarification queues not supplied – cannot request clarification in this context.",
-            )
-        # Emit request event if provided
-        if on_request is not None:
-            maybe = on_request(question)
-            if asyncio.iscoroutine(maybe):
-                await maybe
-
-        await use_up.put(question)
-        answer = await use_down.get()
-
-        # Emit answer event if provided
-        if on_answer is not None:
-            maybe = on_answer(answer)
-            if asyncio.iscoroutine(maybe):
-                await maybe
-
-        return answer
-
-    return _request
-
-
-def make_send_notification_tool(
-    *,
-    on_notify: Optional[Callable[[str], Awaitable[None] | None]] = None,
-):
-    """Return an async tool that sends a progress notification to the caller.
-
-    The returned function accepts ``_notification_up_q`` as a hidden parameter
-    (injected by the async tool loop) so it participates in the standard
-    notification pipeline.
-    """
-
-    async def _send(
-        message: str,
-        completed: bool = False,
-        *,
-        _notification_up_q: "asyncio.Queue[dict] | None" = None,
-    ) -> str:
-        """Send a progress notification to the user.
-
-        Use this to report meaningful milestones during active work — for
-        example, announcing that a long-running step has started, providing
-        intermediate results, or flagging a blocker that needs user action.
-        The notification is fire-and-forget: execution continues immediately.
-
-        Do NOT call this tool alongside your final response. When you are
-        done, provide the final answer as a plain assistant message with no
-        tool calls. The loop's natural termination is the completion signal.
-
-        Parameters
-        ----------
-        message : str
-            A concise, user-facing progress update.
-        completed : bool
-            Set to True to mark the notification as a completion
-            announcement within a multi-step procedure. Leave False
-            (default) for in-progress updates, intermediate steps, or
-            blockers awaiting user action. At the top level, prefer
-            ending with a tool-less text response rather than calling
-            send_notification(completed=True).
-
-        Returns
-        -------
-        str
-            Acknowledgement that the notification was sent.
-        """
-        if _notification_up_q is None:
-            return "Notification channel not available in this context."
-        payload = {
-            "type": "notification",
-            "message": message,
-            "completed": completed,
-        }
-        await _notification_up_q.put(payload)
-
-        if on_notify is not None:
-            maybe = on_notify(message)
-            if asyncio.iscoroutine(maybe):
-                await maybe
-
-        return "Notification sent."
-
-    return _send

@@ -12,16 +12,16 @@ import unify.common.llm_helpers as llmh
 # --------------------------------------------------------------------------- #
 def _assert_internal_queues_hidden(fn) -> None:
     """
-    Verify that *_clarification_up_q*, *_clarification_down_q*, and *_notification_up_q* never show up
+    Verify that *_internal_in*, *_internal_out*, and *_internal_note* never show up
     in the generated schema nor in the docstring description that is forwarded
     to the LLM.
     """
-    schema = llmh.method_to_schema(fn)
+    schema = llmh.method_to_schema(fn, fn.__name__)
     props = schema["function"]["parameters"]["properties"]
     required = schema["function"]["parameters"]["required"]
     desc = schema["function"]["description"]
 
-    for name in ("_clarification_up_q", "_clarification_down_q", "_notification_up_q"):
+    for name in ("_internal_in", "_internal_out", "_internal_note"):
         # ––– must be absent from JSON schema –––
         assert name not in props
         assert name not in required
@@ -34,18 +34,18 @@ def _assert_internal_queues_hidden(fn) -> None:
 # --------------------------------------------------------------------------- #
 def tool_google_style(
     a: int,
-    _clarification_up_q: asyncio.Queue[str],
-    _clarification_down_q: asyncio.Queue[str],
-    _notification_up_q: asyncio.Queue | None = None,
+    _internal_in: asyncio.Queue[str],
+    _internal_out: asyncio.Queue[str],
+    _internal_note: asyncio.Queue | None = None,
 ) -> int:
     """
     Google-style.
 
     Args:
         a: Some value.
-        _clarification_up_q: internal.
-        _clarification_down_q: internal.
-        _notification_up_q: internal.
+        _internal_in: internal.
+        _internal_out: internal.
+        _internal_note: internal.
     """
     return a
 
@@ -55,9 +55,9 @@ def tool_google_style(
 # --------------------------------------------------------------------------- #
 def tool_numpy_slash(
     a: int,
-    _clarification_up_q: asyncio.Queue[str] | None = None,
-    _clarification_down_q: asyncio.Queue[str] | None = None,
-    _notification_up_q: asyncio.Queue | None = None,
+    _internal_in: asyncio.Queue[str] | None = None,
+    _internal_out: asyncio.Queue[str] | None = None,
+    _internal_note: asyncio.Queue | None = None,
 ) -> int:
     """
     NumPy style — slash-separated synonyms.
@@ -66,7 +66,7 @@ def tool_numpy_slash(
     ----------
     a : int
         Some value.
-    _clarification_up_q / _clarification_down_q / _notification_up_q : asyncio.Queue | None
+    _internal_in / _internal_out / _internal_note : asyncio.Queue | None
         Internal queues.
     """
     return a
@@ -77,9 +77,9 @@ def tool_numpy_slash(
 # --------------------------------------------------------------------------- #
 def tool_numpy_commas(
     a: int,
-    _clarification_up_q: asyncio.Queue[str] | None = None,
-    _clarification_down_q: asyncio.Queue[str] | None = None,
-    _notification_up_q: asyncio.Queue | None = None,
+    _internal_in: asyncio.Queue[str] | None = None,
+    _internal_out: asyncio.Queue[str] | None = None,
+    _internal_note: asyncio.Queue | None = None,
 ) -> int:
     """
     NumPy style — comma-separated, no type / no colon.
@@ -89,7 +89,7 @@ def tool_numpy_commas(
     a : int
         Some value.
 
-    _clarification_up_q, _clarification_down_q, _notification_up_q
+    _internal_in, _internal_out, _internal_note
         Internal queues.
     """
     return a

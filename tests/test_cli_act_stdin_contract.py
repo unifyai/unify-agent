@@ -20,8 +20,8 @@ stdin; a bare end of input ends it the same way.
 Keyless and deterministic: the child installs the scripted transport of
 ``tests/cache_discipline_helpers.py`` before it calls the entry point, so no
 request leaves the process. Its one session reply is the plain text "done"
-(no tool call); the end-of-session storage review is answered "Nothing worth
-storing.". No provider key reaches the child, and ``.env`` loading is off.
+(no tool call). No provider key reaches the child (the placeholder that is not
+a key stands in, as the root conftest sets it), and ``.env`` loading is off.
 """
 
 from __future__ import annotations
@@ -44,8 +44,7 @@ from tests.test_cli_external_launchers import CONTINUAL_ARC_BASELINES_UNIFY_AGEN
 pytestmark = pytest.mark.no_unify_context
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-# Bounds: the first answer includes a cold interpreter importing the actor;
-# the session's end includes its storage review.
+# Bounds: the first answer includes a cold interpreter importing the actor.
 FIRST_RESPONSE_S = 180
 EXIT_S = 60
 FORBIDDEN = ("context manager protocol", "Traceback")
@@ -61,22 +60,9 @@ calls_path = sys.argv[1]
 session_replies = ["done"]
 
 
-def is_review(messages):
-    # As tests/actor/code_act/test_provider_error_finish.py::_is_review.
-    text = json.dumps(messages, default=str)
-    return (
-        "## Storage Review" in text
-        or "You are a skill librarian" in text
-        or "This is the curation step that follows" in text
-    )
-
-
 async def model(*, shared_session=None, client=None, **kw):
-    review = is_review(kw.get("messages") or [])
     with open(calls_path, "a") as f:
-        f.write(json.dumps({"review": review}) + "\n")
-    if review:
-        return h.completion(content="Nothing worth storing.")
+        f.write(json.dumps({"messages": len(kw.get("messages") or [])}) + "\n")
     if not session_replies:
         raise AssertionError("no scripted session reply left")
     return h.completion(content=session_replies.pop(0))
@@ -105,11 +91,11 @@ def _child_env() -> dict[str, str]:
     env = {
         k: v
         for k, v in os.environ.items()
-        # Keyless: no provider key, and the store is the home's own.
-        if not k.endswith("_API_KEY") and k != "UNIFY_STORE_PATH"
+        # Keyless: no provider key.
+        if not k.endswith("_API_KEY")
     }
     env.update(
-        UNIFY_VALIDATE_LLM_PROVIDERS="false",
+        OPENROUTER_API_KEY="ci-placeholder-not-a-key",
         PYTHON_DOTENV_DISABLED="1",
         PYTHONPATH=os.pathsep.join(
             [str(REPO_ROOT), *filter(None, [os.environ.get("PYTHONPATH")])],
@@ -215,6 +201,5 @@ def test_act_over_a_piped_stdin_answers_and_exits(ending, unify_home, tmp_path):
     assert len(answered) == 1, context
     assert answered[0]["content"] == "done", context
     assert exit_code == 0, context
-    # The one scripted reply answered the request; any other call was the
-    # session's storage review.
-    assert [c for c in model_calls if not c["review"]] == [{"review": False}], context
+    # The one scripted reply answered the request, and no other call was made.
+    assert len(model_calls) == 1, context

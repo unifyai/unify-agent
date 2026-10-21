@@ -1,32 +1,24 @@
 """Python cells in a sandboxed child process.
 
-Each Python session owns one :class:`PythonWorker` (the
-``UNIFY_WORKSPACE_PYTHON=worker`` switch until the code freeze baked it in):
-a persistent ``python -I -S`` started inside the workspace sandbox (unify/sandbox.py) -- scrubbed
-environment, store read-only, state directory hidden, network per
-``UNIFY_WORKSPACE_NETWORK``. Cells run there, so a cell's variables persist
-from one cell to the next exactly as in the in-process session, but the cell
-cannot read the harness's environment, write the store or open a socket the
-sandbox does not allow.
+The actor's and each teammate's interpreter (unify/common/box_interpreter.py)
+is one :class:`PythonWorker`: a persistent ``python -I -S`` started inside the
+workspace sandbox (unify/sandbox.py) -- scrubbed environment, state directory
+hidden, network per ``UNIFY_WORKSPACE_NETWORK``. Cells run there, so a cell's
+variables persist from one cell to the next, but the cell cannot read the
+harness's environment or open a socket the sandbox does not allow.
 
 What the cell needs from the harness it reaches through a proxy served here.
-Every name the session's namespace holds beyond the base globals is installed
+Every name the request's namespace holds beyond the base globals is installed
 in the worker as one of:
 
 * a **remote** object (``primitives``, environment namespaces, the globals a
-  registered environment binds (``apis``), ``request_clarification``,
-  ``query_llm``, steering probes): attribute access
+  registered environment binds (``apis``), ``query_llm``): attribute access
   asks the harness what the attribute is, and a call is sent over the channel,
-  run here against the session's *current* binding of that name -- so the
-  memoising and context-forwarding wrappers a cell installs apply -- and its
+  run here against the namespace's *current* binding of that name, and its
   result sent back;
-* a **stored function**: its source is defined in the worker, so the
-  model-written body runs confined and only its primitive calls come back;
 * a **value** (plain data), sent once;
 * a **worker-local** stand-in (``display``, ``run_coro_sync``,
-  ``_around_cp``, ``SteerableToolHandle``, ``ModelRequestError``,
-  ``ModelCallFailed``, ``reply``),
-  or the current ``request``, built in the worker from its text;
+  ``ModelRequestError``, ``ModelCallFailed``);
 * or **refused**, naming why, when none of these applies.
 
 Values cross as tagged JSON (worker_child.py explains why not pickle). A result
@@ -49,7 +41,6 @@ import functools
 import inspect
 import itertools
 import json
-import linecache
 import logging
 import os
 import sys
@@ -69,7 +60,6 @@ __all__ = [
     "PythonWorker",
     "WorkerCellError",
     "WorkerValue",
-    "enabled",
 ]
 
 #: Largest single message either side may send.
@@ -79,18 +69,12 @@ START_TIMEOUT_S = 60.0
 #: two seconds for a cancelled call) before the worker is killed instead.
 INTERRUPT_GRACE_S = 1.5
 
-#: Appended to a timed-out cell's error.
-KILLED_NOTE = (
-    ". The sandboxed Python worker was killed; the next cell starts a fresh one "
-    "(variables, imports and definitions are reset)."
-)
 
 _BOOTSTRAP = (
     "import runpy, sys; runpy.run_path(sys.argv[1], run_name='__unify_worker__')"
 )
 
-#: Session globals that never cross: interpreter plumbing and the harness's
-#: own per-call state (clarification queues, the steering session object).
+#: Namespace globals that never cross: interpreter plumbing.
 _SKIP = frozenset(
     {
         "__builtins__",
@@ -102,20 +86,6 @@ _SKIP = frozenset(
         "__exec_wrapper",
     },
 )
-_DUNDER_SENT = frozenset({"__sandbox_id__"})
-
-
-def enabled() -> bool:
-    """Whether Python runs in the sandboxed worker: always.
-
-    The function manager's in-process loaders, which execute stored code in
-    this process, refuse while this holds (the #202 choke points). A test of
-    those loaders, which serve non-actor callers, patches this to ``False``
-    (tests' ``python_in_process`` fixture); the actor then refuses to start
-    (:func:`unify.actor.core_surface.require_prerequisites`), so a cell never
-    runs in this process.
-    """
-    return True
 
 
 class WorkerCellError(Exception):
@@ -161,37 +131,12 @@ def _importable(name: str, value: Any) -> Optional[list]:
     return None
 
 
-def _stored_function_code(value: Any) -> Optional[types.CodeType]:
-    """The code of the stored function *value* wraps, if it wraps one.
-
-    Stored functions are compiled under ``<function:NAME>``
-    (unify/function_manager/source_labels.py); the function manager's
-    lineage wrapper keeps the raw function as ``__wrapped__``.
-    """
-    from unify.function_manager.source_labels import function_source_filename
-
-    prefix = function_source_filename("")[:-1]
-    fn = value
-    for _ in range(8):
-        if isinstance(fn, types.FunctionType):
-            code = fn.__code__
-            return code if code.co_filename.startswith(prefix) else None
-        fn = getattr(fn, "__wrapped__", None)
-        if fn is None:
-            return None
-    return None
-
-
 def _refuse_unreachable(obj: Any, label: str) -> None:
     """Modules and the environment never cross, whatever holds them.
 
     Without this, any exposed object with a module among its public attributes
-    (``unillm.os``) would hand the worker ``os.environ.get``. An object
-    wrapped for an environment's observers is judged by what it wraps.
+    (``unillm.os``) would hand the worker ``os.environ.get``.
     """
-    from unify.function_manager.primitives.observers import proxy_target
-
-    obj = proxy_target(obj)
     if isinstance(obj, types.ModuleType):
         raise BoundaryRefusal(
             f"{label} is a harness module ({obj.__name__}); harness modules do not "
@@ -212,14 +157,9 @@ def _subscriptable(obj: Any) -> bool:
     safe to reach from a cell as its public attributes, with the class
     attribute ``boundary_subscript = True``. Checked before ``obj[key]`` runs.
     """
-    from unify.function_manager.primitives.observers import proxy_target
-
-    # An environment global wrapped for its observers forwards obj[key] to
-    # the object it wraps, so that object's class is the one that decides.
-    target = proxy_target(obj)
-    if type(target) in (list, tuple, dict):
+    if type(obj) in (list, tuple, dict):
         return True
-    return getattr(type(target), "boundary_subscript", False) is True
+    return getattr(type(obj), "boundary_subscript", False) is True
 
 
 def _credential_inside(value: Any) -> Optional[str]:
@@ -264,14 +204,6 @@ def _credential_inside(value: Any) -> Optional[str]:
     return None
 
 
-def _model_written(value: Any) -> bool:
-    """Whether *value* was defined by cell code run in a session's namespace."""
-    module = getattr(value, "__module__", None)
-    if not isinstance(module, str):
-        module = getattr(type(value), "__module__", None)
-    return isinstance(module, str) and module.startswith("__sandbox_")
-
-
 class PythonWorker:
     """One persistent sandboxed Python process and the proxy that serves it."""
 
@@ -291,8 +223,6 @@ class PythonWorker:
         # paths sent to the child are those it shows (sandbox.box_path).
         self._policy: Optional[sandbox.SandboxPolicy] = None
         self._binds: list = []
-        # UNIFY_VARIABLE_INVENTORY=on: the line the last cell's run returned.
-        self.inventory: Optional[str] = None
         # UNIFY_MEMORY_IN_EPISODE=on: the library copy's pin generation this worker's modules were loaded at (None:
         # nothing loaded yet), and a re-pin's notice not yet shown (its cell ended before it could be)
         self._memory_gen: Optional[int] = None
@@ -401,19 +331,18 @@ class PythonWorker:
         )
         self._policy = policy
         self._binds = [*mounts, *late_ro]
-        with sandbox.unconfined():  # already wrapped; never wrap twice
-            self._proc = await asyncio.create_subprocess_exec(
-                *wrapped,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-                cwd=workspace,
-                start_new_session=True,
-                limit=MAX_MESSAGE_BYTES,
-                # close_fds stays on: the box inherits only the standard streams and these pipes
-                pass_fds=tuple(self.box_fds),
-            )
+        self._proc = await asyncio.create_subprocess_exec(
+            *wrapped,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+            cwd=workspace,
+            start_new_session=True,
+            limit=MAX_MESSAGE_BYTES,
+            # close_fds stays on: the box inherits only the standard streams and these pipes
+            pass_fds=tuple(self.box_fds),
+        )
         if self.on_spawn is not None:
             try:
                 self.on_spawn()
@@ -458,7 +387,7 @@ class PythonWorker:
 
     async def close(self) -> None:
         """Kill the worker and its sandbox and wait until it is gone."""
-        from .shell import kill_sandbox
+        from unify.common import process_tree
 
         proc, self._proc = self._proc, None
         self._refs.clear()
@@ -467,7 +396,8 @@ class PythonWorker:
         if proc is None:
             return
         if proc.returncode is None:
-            kill_sandbox(proc)
+            # SIGKILL to the process group and every process below it, verified gone
+            process_tree.kill_tree(proc.pid)
         try:
             await asyncio.wait_for(proc.wait(), timeout=10)
         except asyncio.TimeoutError:
@@ -541,8 +471,6 @@ class PythonWorker:
 
     # -- codec -----------------------------------------------------------------
     def _ref(self, obj: Any) -> dict:
-        from unify.common.async_tool_loop import SteerableToolHandle
-
         _refuse_unreachable(obj, f"a {child.type_name(obj)} returned by the harness")
         rid = self._ref_ids.get(id(obj))
         if rid is None or self._refs.get(rid) is not obj:
@@ -556,7 +484,6 @@ class PythonWorker:
             "repr": short_repr(obj),
             "callable": callable(obj),
             "async": _async_callable(obj),
-            "handle": isinstance(obj, SteerableToolHandle),
         }
 
     def _pre(self, value: Any) -> Any:
@@ -602,31 +529,19 @@ class PythonWorker:
         return decode(value, tagged=tagged)
 
     # -- namespace sync --------------------------------------------------------
-    def _describe_global(self, name: str, value: Any, record: bool = False) -> dict:
-        from unify.common.async_tool_loop import SteerableToolHandle
+    def _describe_global(self, name: str, value: Any) -> dict:
         from unify.common.asyncio_compat import run_coro_sync
         from unify.common.cell_models import ModelCallFailed, ModelRequestError
-        from unify.function_manager.steering import AROUND_CP_FN
 
         if name == "display" and callable(value):
             return {"kind": "local", "local": "display"}
-        if name == AROUND_CP_FN:
-            return {"kind": "local", "local": "around_cp"}
         if value is run_coro_sync:
             return {"kind": "local", "local": "run_coro_sync"}
-        if value is SteerableToolHandle:
-            return {"kind": "local", "local": "handle_class"}
         if value is ModelRequestError:
             # The worker's own class, which the harness's error arrives as.
             return {"kind": "local", "local": "model_request_error"}
         if value is ModelCallFailed:
             return {"kind": "local", "local": "model_call_failed"}
-        if isinstance(value, child.Reply):
-            # UNIFY_REPLY_CHANNEL=code+text: the worker's own reply().
-            return {"kind": "local", "local": "reply"}
-        if isinstance(value, child.Request):
-            # UNIFY_BIND_REQUEST=on: the worker builds its own from the text.
-            return {"kind": "request", "text": value.text}
         if isinstance(value, types.ModuleType):
             spec = _importable(name, value)
             if spec is not None:
@@ -637,44 +552,6 @@ class PythonWorker:
             # imported in the worker would dial it from inside the sandbox,
             # which does not reach it, so it is served from here.
             return self._remote(name, value)
-        from unify.function_manager.source_labels import StoredSource
-
-        if isinstance(value, StoredSource):
-            # Bound by a read from its stored source; never executed here.
-            desc = {
-                "kind": "function",
-                "source": value.source,
-                "filename": value.filename,
-            }
-            if record:
-                desc["record"] = True
-            return desc
-        code = _stored_function_code(value)
-        if code is not None:
-            entry = linecache.cache.get(code.co_filename)
-            if entry is None:
-                return {
-                    "kind": "refused",
-                    "reason": "the stored function's source is not available to "
-                    "define it in the worker",
-                }
-            desc = {
-                "kind": "function",
-                "source": "".join(entry[2]),
-                "filename": code.co_filename,
-            }
-            if record:
-                # The core tool surface: its calls are recorded here.
-                desc["record"] = True
-            return desc
-        if _model_written(value):
-            # Defined by model code in this namespace; it runs only in the
-            # worker, which defines its own copy when it runs that code.
-            return {
-                "kind": "model",
-                "reason": "it was defined by code that ran in the harness, and "
-                "model-written code runs only in the worker",
-            }
         spec = _importable(name, value)
         if spec is not None:
             return {"kind": "import", "spec": spec}
@@ -689,35 +566,26 @@ class PythonWorker:
 
     @staticmethod
     def _remote(name: str, value: Any) -> dict:
-        from unify.function_manager.steering import RUNTIME_GLOBAL, SteeringRuntime
-
-        desc = {
+        return {
             "kind": "remote",
             "callable": callable(value),
             "async": _async_callable(value),
             "repr": short_repr(value, 200),
-            "runtime": name == RUNTIME_GLOBAL and isinstance(value, SteeringRuntime),
         }
-        if _function_library(value) is not None:
-            # The core tool surface: ``functions.run`` runs in the worker.
-            desc["library"] = "functions"
-        return desc
 
     def _manifest(self, shadow: Dict[str, Any]) -> dict:
         want: Dict[str, dict] = {}
-        record = _function_library(shadow.get("functions")) is not None
         for name, value in list(shadow.items()):
             if not isinstance(name, str) or name in _SKIP:
                 continue
-            if name.startswith("__") and name not in _DUNDER_SENT:
+            if name.startswith("__"):
                 continue
             if name in self._base and self._base[name] is value:
                 continue
-            want[name] = self._describe_global(name, value, record=record)
+            want[name] = self._describe_global(name, value)
         changed: Dict[str, dict] = {}
         for name, desc in want.items():
-            # A root rebinds every cell (steering wraps ``primitives`` anew);
-            # the worker resolves it by name, so only its kind matters.
+            # The worker resolves a root by name, so only its kind matters.
             token = tuple(
                 sorted((k, json.dumps(v)) for k, v in desc.items() if k != "repr"),
             )
@@ -788,8 +656,6 @@ class PythonWorker:
         return obj
 
     def _describe(self, obj: Any, name: str) -> dict:
-        from unify.function_manager.steering import _PASSTHROUGH_TYPES
-
         if callable(obj):
             return {"kind": "callable", "async": _async_callable(obj)}
         if isinstance(obj, _PASSTHROUGH_TYPES):
@@ -825,8 +691,7 @@ class PythonWorker:
         op = msg.get("op")
         reply: Dict[str, Any] = {"op": "reply", "id": msg.get("id")}
         try:
-            with self._recording(msg.get("cases"), shadow):
-                await self._answer(op, msg, shadow, reply)
+            await self._answer(op, msg, shadow, reply)
         except asyncio.CancelledError:
             reply["error"] = {
                 "type": "CancelledError",
@@ -847,30 +712,6 @@ class PythonWorker:
         except WorkerDied:
             pass
 
-    @staticmethod
-    def _recording(cases: Any, shadow: Dict[str, Any]) -> Any:
-        """the core tool surface: the environment calls served inside add
-        to the cases of the stored-function calls the request came from."""
-        import contextlib
-
-        stack = contextlib.ExitStack()
-        library = _function_library(shadow.get("functions"))
-        if not cases or library is None or not isinstance(cases, list):
-            return stack
-        from unify.function_manager import store_cases
-
-        for token in cases:
-            stack.enter_context(store_cases.tracing(library._case_pending(token)))
-        return stack
-
-    def _library(self, shadow: Dict[str, Any]) -> Any:
-        library = _function_library(shadow.get("functions"))
-        if library is None or not self._exposed_remote("functions"):
-            raise BoundaryRefusal(
-                "stored functions are recorded only where the session's "
-                "`functions` library is exposed",
-            )
-        return library
 
     async def _answer(
         self,
@@ -879,32 +720,12 @@ class PythonWorker:
         shadow: Dict[str, Any],
         reply: Dict[str, Any],
     ) -> None:
-        if op == "fn_begin":
-            reply["value"] = self.encode(
-                await self._library(shadow)._begin(
-                    name=str(msg.get("name")),
-                    mode=str(msg.get("mode")),
-                    args=list(self.decode(msg.get("args") or [], shadow)),
-                    kwargs=dict(self.decode(msg.get("kwargs") or {}, shadow)),
-                ),
-            )
-            return
-        if op == "fn_end":
-            reply["value"] = self.encode(
-                await self._library(shadow)._end(
-                    token=msg.get("token"),
-                    result=self.decode(msg.get("result"), shadow),
-                    error=msg.get("error"),
-                    abandoned=bool(msg.get("abandoned")),
-                ),
-            )
-            return
         if op == "doc":
             from unify.actor import core_surface
 
             target = msg.get("target")
             if not target:
-                reply["value"] = core_surface.index_help(shadow)
+                reply["value"] = core_surface.INDEX_HELP
                 return
             reply["value"] = core_surface.help_text(
                 self._resolve(shadow, target),
@@ -935,26 +756,6 @@ class PythonWorker:
         else:
             raise BoundaryRefusal(f"unknown request {op!r}")
 
-    def _apply_note(self, msg: dict, shadow: Dict[str, Any]) -> None:
-        from unify.function_manager.steering import SteeringRuntime
-
-        event = msg.get("event")
-        try:
-            if event == "runtime":
-                runtime = shadow.get("runtime")
-                method = str(msg.get("method"))
-                if (
-                    isinstance(runtime, SteeringRuntime)
-                    and method in child.RUNTIME_NOTES
-                ):
-                    getattr(runtime, method)(*list(msg.get("args") or [])[:1])
-            elif event == "function_used":
-                fn = shadow.get(str(msg.get("name")))
-                on_call = getattr(fn, "_on_call", None) if fn is not None else None
-                if callable(on_call):
-                    on_call()
-        except Exception:  # noqa: BLE001 - notes are best effort by design
-            logger.debug("worker note %r failed", event, exc_info=True)
 
     async def _serve_until_done(self, cid: int, shadow: Dict[str, Any]) -> dict:
         tasks: set[asyncio.Task] = set()
@@ -970,8 +771,6 @@ class PythonWorker:
                     task = asyncio.create_task(self._serve(msg, shadow))
                     tasks.add(task)
                     task.add_done_callback(tasks.discard)
-                elif op == "note":
-                    self._apply_note(msg, shadow)
                 elif op == "done" and msg.get("id") == cid:
                     return msg
         finally:
@@ -987,23 +786,15 @@ class PythonWorker:
         shadow: Dict[str, Any],
         *,
         timeout: Optional[float],
-        scratch: bool = False,
         stdout: List[Any],
         stderr: List[Any],
-        display: Optional[Callable[[Any], None]] = None,
-        inventory: bool = False,
     ) -> Any:
         """Run one wrapped cell (``async def __exec_wrapper(): ...``) in the worker.
 
         Output parts are appended to *stdout* / *stderr*. Returns the cell's
         result; raises :class:`WorkerCellError` with the worker's traceback,
-        ``ControlledInterruption`` when a steering probe interrupted the cell,
-        or ``asyncio.TimeoutError`` after killing the worker. With
-        *inventory* (UNIFY_VARIABLE_INVENTORY), :attr:`inventory` is then
-        the line the worker computed from its namespace, or None.
+        or ``asyncio.TimeoutError`` after killing the worker.
         """
-        from unify.function_manager.steering import ControlledInterruption
-
         from .types import TextPart
 
         if not self.is_running:
@@ -1018,7 +809,6 @@ class PythonWorker:
                     TextPart,
                 )
         cid = next(self._ids)
-        self.inventory = None
         from unify.memory.integration import hooks as _mv2
 
         # UNIFY_MEMORY_IN_EPISODE=on: at this cell boundary the library copy may be re-pinned to a commit the writer
@@ -1032,8 +822,6 @@ class PythonWorker:
                     "id": cid,
                     "source": source,
                     "sync": self._manifest(shadow),
-                    "scratch": scratch,
-                    **({"inventory": True} if inventory else {}),
                     **({"repin": repin} if repin is not None else {}),
                 },
             )
@@ -1069,29 +857,14 @@ class PythonWorker:
 
         # UNIFY_MEMORY=on: the cell's audit records, stamped on this clock.
         _mv2.worker_cell_done(done.get("audit"))
-        listed = done.get("inventory")
-        self.inventory = listed if isinstance(listed, str) else None
-        self._collect_parts(done.get("stdout") or [], stdout, display, TextPart)
-        self._collect_parts(done.get("stderr") or [], stderr, None, TextPart)
+        self._collect_parts(done.get("stdout") or [], stdout, TextPart)
+        self._collect_parts(done.get("stderr") or [], stderr, TextPart)
         if self._memory_notice:
             # UNIFY_MEMORY_IN_EPISODE=on: the cell's result ends with what the re-pin changed (one line)
             notice, self._memory_notice = self._memory_notice, None
             ends_open = bool(stdout) and isinstance(stdout[-1], TextPart) and not stdout[-1].text.endswith("\n")
             _append_text(stdout, ("\n" if ends_open else "") + notice + "\n", TextPart)
-        replied = done.get("reply")
-        if isinstance(replied, dict):
-            # UNIFY_REPLY_CHANNEL=code+text: the cell called reply(); the
-            # session executor takes it as it takes one made in process.
-            raise child.CellReply(
-                str(replied.get("text", "")),
-                bool(replied.get("from_value", True)),
-            )
         if done.get("error"):
-            if (
-                done.get("remote")
-                and done.get("error_type") == "ControlledInterruption"
-            ):
-                raise ControlledInterruption(str(done.get("message") or "steered"))
             # The model reads the traceback without the harness's own frames (the tools stub, its channel
             # client, the library package's module and contract); the full one is logged.
             error = str(done["error"])
@@ -1101,8 +874,7 @@ class PythonWorker:
 
                 logger.info("cell error, full traceback:\n%s", bounded_for_log(error))
                 error = shown
-            # UNIFY_MEMORY_SURFACING=catalogue: a suspect channel's refusal says so.
-            raise WorkerCellError(_mv2.cell_error(error))
+            raise WorkerCellError(error)
         return self.decode(done.get("result"), shadow)
 
     def _memory_step(self, step: Optional[dict]) -> Optional[dict]:
@@ -1132,12 +904,7 @@ class PythonWorker:
         return {"roots": roots, "drop_paths": old, "paths": list(paths)}
 
     @staticmethod
-    def _collect_parts(
-        parts: list,
-        into: List[Any],
-        display: Optional[Callable[[Any], None]],
-        text_part: type,
-    ) -> None:
+    def _collect_parts(parts: list, into: List[Any], text_part: type) -> None:
         from .types import ImagePart
 
         for part in parts:
@@ -1146,25 +913,11 @@ class PythonWorker:
             if part.get("type") == "text":
                 _append_text(into, str(part.get("text") or ""), text_part)
             elif part.get("type") == "image":
-                data = str(part.get("data") or "")
-                image = _decode_png(data) if display is not None else None
-                if image is not None:
-                    display(image)  # scaled for the model like an in-process image
-                else:
-                    into.append(ImagePart(mime="image/png", data=data))
-
-    async def variables(self) -> Dict[str, str]:
-        """The worker's own variables (name -> short repr), for ``inspect_state``."""
-        if not self.is_running:
-            return {}
-        cid = next(self._ids)
-        await self._send({"op": "variables", "id": cid})
-        done = await asyncio.wait_for(self._serve_until_done(cid, {}), timeout=30)
-        return dict(done.get("variables") or {})
+                into.append(ImagePart(mime="image/png", data=str(part.get("data") or "")))
 
 
 #: What the worker asks of the harness, each served in a task of its own.
-_SERVED = frozenset({"call", "describe", "dir", "fn_begin", "fn_end", "doc"})
+_SERVED = frozenset({"call", "describe", "dir", "doc"})
 
 
 _PLAIN_TYPES = (
@@ -1188,8 +941,38 @@ def _plain(obj: Any) -> bool:
     )
 
 
+#: Values the harness hands back as data, never by reference.
+_PASSTHROUGH_TYPES = (
+    str,
+    bytes,
+    bytearray,
+    int,
+    float,
+    bool,
+    complex,
+    type(None),
+    list,
+    tuple,
+    dict,
+    set,
+    frozenset,
+)
+
+
+def _is_async_callable(fn: Any) -> bool:
+    """Whether *fn* ultimately dispatches a coroutine: ``iscoroutinefunction``,
+    following ``__wrapped__`` through synchronous wrappers."""
+    seen: set[int] = set()
+    while fn is not None and id(fn) not in seen:
+        if asyncio.iscoroutinefunction(fn):
+            return True
+        seen.add(id(fn))
+        fn = getattr(fn, "__wrapped__", None)
+    return False
+
+
 def _async_callable(fn: Any) -> bool:
-    """``steering._is_async_callable`` without running an object's dynamic
+    """:func:`_is_async_callable` without running an object's dynamic
     attribute lookup.
 
     The harness describes the objects it serves the worker by probing them
@@ -1200,8 +983,6 @@ def _async_callable(fn: Any) -> bool:
     holds is read (``inspect.getattr_static``); every other object is probed
     as before.
     """
-    from unify.function_manager.steering import _is_async_callable
-
     seen: set[int] = set()
     while fn is not None and id(fn) not in seen:
         seen.add(id(fn))
@@ -1218,27 +999,16 @@ def _async_callable(fn: Any) -> bool:
 
 def _environment_global(name: str, value: Any) -> bool:
     """Whether *value* is the global ``name`` a registered environment binds
-    (``UNIFY_ENV_NAMESPACES``), or the proxy that observes its calls
-    (primitives/observers.py); modules are imported as they are."""
+    (``UNIFY_ENV_NAMESPACES``); modules are imported as they are."""
     if isinstance(value, types.ModuleType):
         return False
     from unify.function_manager.primitives.environment import environment_globals
-    from unify.function_manager.primitives.observers import proxy_target
 
     try:
         bound = environment_globals()
     except Exception:  # noqa: BLE001 - an environment that fails to load binds nothing
         return False
-    return name in bound and bound[name] is proxy_target(value)
-
-
-def _function_library(value: Any) -> Any:
-    """*value* when it is a core-surface ``functions`` library, else None."""
-    if value is None:
-        return None
-    from unify.actor.core_surface import FunctionLibrary
-
-    return value if isinstance(value, FunctionLibrary) else None
+    return name in bound and bound[name] is value
 
 
 def _no_refs(value: Any, where: str) -> Any:
@@ -1252,19 +1022,3 @@ def _append_text(into: List[Any], text: str, text_part: type) -> None:
         into[-1] = text_part(text=into[-1].text + text)
     else:
         into.append(text_part(text=text))
-
-
-def _decode_png(data: str) -> Any:
-    try:
-        import base64
-        import io
-
-        from PIL import Image
-    except ImportError:
-        return None
-    try:
-        image = Image.open(io.BytesIO(base64.b64decode(data)))
-        image.load()
-        return image
-    except Exception:  # noqa: BLE001 - passed through as sent instead
-        return None
