@@ -802,7 +802,10 @@ def pending_passes(home: Path | str) -> list[str]:
 # --- ensure ---------------------------------------------------------------------------------------------------------
 
 
-#: The provider credential names the model client (unillm: its settings and ``uni_llm``) reads. With one missing it reads a ``.env`` file or, on a team machine, a
+from unify.lanes.provider_names import LITELLM_PROVIDER_KEY_NAMES  # noqa: E402
+
+#: The provider credential names the model client reads: unillm's (its settings and ``uni_llm``), then the litellm
+#: ones it falls back to (:mod:`unify.lanes.provider_names`). With one missing it reads a ``.env`` file or, on a team machine, a
 #: Secret Manager (unillm's settings), so a writer process that needs no key gets :data:`NO_PROVIDER_KEY` for each.
 PROVIDER_KEY_NAMES = (
     "OPENROUTER_API_KEY",
@@ -812,6 +815,7 @@ PROVIDER_KEY_NAMES = (
     "XIAOMI_MIMO_API_KEY",
     "GOOGLE_APPLICATION_CREDENTIALS",
     "UNILLM_LLM_GATEWAY_KEY",
+    *LITELLM_PROVIDER_KEY_NAMES,
 )
 #: What each provider key holds in a writer process whose model calls all go through its lanes: not a key, so a call
 #: off the lanes fails at the provider instead of being billed.

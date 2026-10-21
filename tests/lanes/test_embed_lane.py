@@ -271,3 +271,30 @@ def test_the_relays_embedding_route_without_its_token_is_refused_and_the_key_nev
     ):
         embeddings._openrouter(["a text"])
     assert posted == []
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "OPENAI_API_KEY",
+        "AZURE_API_KEY",
+        "GEMINI_API_KEY",
+        "MISTRAL_API_KEY",
+        "GROQ_API_KEY",
+        "COHERE_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "XAI_API_KEY",
+        "AWS_SECRET_ACCESS_KEY",
+        "HF_TOKEN",
+    ],
+)
+def test_a_writer_process_masks_the_provider_names_litellm_falls_back_to(
+    fresh_token, name
+):
+    from unify.memory import writer_service as ws
+
+    env = ws.without_provider_keys(
+        {name: "a-real-looking-value", "PATH": "/usr/bin"},
+        SimpleNamespace(UNIFY_EMBED_URL=""),
+    )
+    assert env[name] == ws.NO_PROVIDER_KEY and env["PATH"] == "/usr/bin"
