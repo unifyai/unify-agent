@@ -49,14 +49,3 @@ def listed(record: Mapping[str, Any] | None) -> bool:
     return listing(rec)[0]
 
 
-def unlisted_captures(records: Mapping[str, Any] | None) -> set[str]:
-    """The capture ids whose landed procedure the item *records* do not list: none, under rev 2 (kept for the
-    callers that ask)."""
-    return {
-        rec["landed_from"]["capture"]
-        for rec in (records or {}).values()
-        if isinstance(rec, Mapping)
-        and not listed(rec)
-        and isinstance(rec.get("landed_from"), Mapping)
-        and isinstance(rec["landed_from"].get("capture"), str)
-    }

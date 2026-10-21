@@ -41,16 +41,13 @@ import ast
 import copy
 import hashlib
 import json
-import shutil
 import stat
-import tempfile
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, Literal, get_args
 
 from .fixtures import canonical
 from .request_value import REQUEST_CLASS, request_data
-from .sandbox_run import PYTHON, SandboxResult, run_confined
 
 Form = Literal["value", "state", "state_env"]
 Outcome = Literal["positive", "contrary", "none"]
@@ -348,80 +345,6 @@ def case_doc(form: str, ep: Any) -> dict:
         if form == "state_env":
             doc["actions"] = served_actions(ep)
     return doc
-
-
-def run_box(
-    source: str,
-    form: str,
-    case: Mapping[str, Any],
-    *,
-    work: Path,
-    runner: Callable[..., SandboxResult] = run_confined,
-    python: Path = PYTHON,
-    timeout_s: float = RUN_S,
-) -> dict:
-    """Run *source* in its *form* on *case* (:func:`case_doc`) in a confined box: the procedure, the case and the
-    replay stand-in read-only at ``/case``, only ``/out`` writable, no network, an empty environment. Returns
-    ``{outcome, value, result, deterministic, applies, holds, error_class, stage, calls, issued}``; ``outcome`` is
-    ``returned``, ``refused``, ``error`` or ``not run`` (the case was over the bound, the box timed out or gave no
-    result; ``why`` says which)."""
-    if form not in FORMS:
-        return {"outcome": "not run", "why": f"unknown form {form!r}"}
-    data = json.dumps(case, ensure_ascii=False, default=str).encode("utf-8")
-    if len(data) > MAX_CASE_BYTES:
-        return {"outcome": "not run", "why": "the recorded messages and actions are over the replay bound"}
-    work.mkdir(parents=True, exist_ok=True)
-    box = Path(tempfile.mkdtemp(prefix="case-", dir=work))
-    out = Path(tempfile.mkdtemp(prefix="out-", dir=work))
-    try:
-        (box / "lib").mkdir()
-        shutil.copyfile(REPLAY_BOX, box / "lib" / "replay_box.py")
-        (box / PROCEDURE_FILE).write_text(source, encoding="utf-8")
-        (box / "case.json").write_bytes(data)
-        (box / "run.py").write_text(_RUN, encoding="utf-8")
-        res = runner(
-            [str(python), "-I", "/case/run.py"],
-            ro={box: "/case"},
-            rw={out: "/out"},
-            cwd="/out",
-            timeout_s=timeout_s,
-            env={},
-        )
-        if res.timed_out:
-            return {"outcome": "not run", "why": f"it did not finish within {timeout_s:g} s"}
-        doc = _read_result(out / "result.json")
-        if doc is None:
-            return {"outcome": "not run", "why": "it could not be run (no result)"}
-    finally:
-        shutil.rmtree(box, ignore_errors=True)
-        shutil.rmtree(out, ignore_errors=True)
-    outcome = doc.get("outcome")
-    if outcome not in ("returned", "refused", "error"):
-        return {"outcome": "not run", "why": "it could not be run (no outcome)"}
-    row: dict = {"outcome": outcome, "form": form}
-    for key in ("value", "result", "result2"):
-        if isinstance(doc.get(key), str):
-            try:
-                row[key] = json.loads(doc[key])
-            except ValueError:
-                row[key] = doc[key]
-    if outcome == "returned":
-        same = doc.get("result") == doc.get("result2")
-        if form == "state_env":
-            same = same and doc.get("calls1") == doc.get("calls2")
-        row["deterministic"] = same
-    row.pop("result2", None)
-    for key in ("applies", "holds"):
-        if isinstance(doc.get(key), bool):
-            row[key] = doc[key]
-    if isinstance(doc.get("calls"), dict):
-        row["calls"] = {k: int(doc["calls"].get(k) or 0) for k in ("matched", "differed", "missing", "unrecorded", "repeats")}
-    if isinstance(doc.get("issued"), list):
-        row["issued"] = [c for c in doc["issued"] if isinstance(c, dict)][:MAX_LISTED_CALLS]
-    if outcome != "returned":
-        row["error_class"] = _cls(doc.get("error_class"))
-        row["stage"] = doc.get("stage") if doc.get("stage") in ("import", "read_input", "applies", "run", "holds") else None
-    return row
 
 
 def own_check(run: Mapping[str, Any], value: Mapping[str, Any], handed: Any = None) -> dict:

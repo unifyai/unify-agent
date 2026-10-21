@@ -58,7 +58,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import stat
 import tempfile
 import time
@@ -70,7 +69,7 @@ from . import signatures as _signatures
 from . import trust
 from .fixtures import canonical
 from .redact import KEY_SHAPED
-from .request_value import REQUEST_CLASS, request_data
+from .request_value import REQUEST_CLASS
 from .sandbox_run import PYTHON, SandboxResult, run_confined
 from .signals import REGIME_SOURCES
 
@@ -367,65 +366,6 @@ with open("/out/result.json", "w", encoding="utf-8") as f:
 
 def _cls(name: Any) -> str:
     return name if isinstance(name, str) and name.isidentifier() and len(name) <= 64 else "an exception"
-
-
-def run_box(
-    source: str,
-    request_text: str,
-    *,
-    work: Path,
-    runner: Callable[..., SandboxResult] = run_confined,
-    python: Path = PYTHON,
-    timeout_s: float = RUN_S,
-) -> dict:
-    """Run the procedure *source* on *request_text* (handed to ``read_input`` with its data, :mod:`.request_value`) in a
-    confined box. Returns ``{outcome, value, result,
-    deterministic, applies, holds, error_class, stage}``: ``outcome`` is ``returned``, ``refused``, ``error`` or
-    ``not run`` (the box gave no result, or timed out); ``value`` and ``result`` are parsed JSON."""
-    work.mkdir(parents=True, exist_ok=True)
-    case = Path(tempfile.mkdtemp(prefix="case-", dir=work))
-    out = Path(tempfile.mkdtemp(prefix="out-", dir=work))
-    try:
-        (case / PROCEDURE_FILE).write_text(source, encoding="utf-8")
-        (case / "request.txt").write_text(request_text, encoding="utf-8")
-        (case / "data.json").write_text(json.dumps(request_data(request_text), ensure_ascii=False), encoding="utf-8")
-        (case / "run.py").write_text(_RUN, encoding="utf-8")
-        res = runner(
-            [str(python), "-I", "/case/run.py"],
-            ro={case: "/case"},
-            rw={out: "/out"},
-            cwd="/out",
-            timeout_s=timeout_s,
-            env={},
-        )
-        if res.timed_out:
-            return {"outcome": "not run", "why": f"it did not finish within {timeout_s:g} s"}
-        doc = _read_result(out / "result.json")
-        if doc is None:
-            return {"outcome": "not run", "why": "it could not be run (no result)"}
-    finally:
-        shutil.rmtree(case, ignore_errors=True)
-        shutil.rmtree(out, ignore_errors=True)
-    outcome = doc.get("outcome")
-    if outcome not in ("returned", "refused", "error"):
-        return {"outcome": "not run", "why": "it could not be run (no outcome)"}
-    row: dict = {"outcome": outcome}
-    for key in ("value", "result", "result2"):
-        if isinstance(doc.get(key), str):
-            try:
-                row[key] = json.loads(doc[key])
-            except ValueError:
-                row[key] = doc[key]
-    if outcome == "returned":
-        row["deterministic"] = doc.get("result") == doc.get("result2")
-    row.pop("result2", None)
-    for key in ("applies", "holds"):
-        if isinstance(doc.get(key), bool):
-            row[key] = doc[key]
-    if outcome != "returned":
-        row["error_class"] = _cls(doc.get("error_class"))
-        row["stage"] = doc.get("stage") if doc.get("stage") in ("import", *STATE_FUNCTIONS) else None
-    return row
 
 
 def _read_result(path: Path) -> dict | None:
@@ -851,11 +791,6 @@ def stored(row: Any) -> bool:
     return isinstance(cid, str) and _ID.fullmatch(cid) is not None
 
 
-def stored_episodes(store: Path | str) -> set[str]:
-    """The episodes whose capture step's row stored a capture (:func:`stored`)."""
-    return {eid for eid, row in episode_rows(store).items() if stored(row)}
-
-
 def episode_row(store: Path | str, eid: str) -> dict | None:
     """The capture step's row for episode *eid*, or None when it has none."""
     if not _EPISODE_ID.fullmatch(eid or ""):
@@ -892,247 +827,6 @@ def _broke_lines(text: str) -> list[str]:
     from .pool import broke_lines
 
     return broke_lines(text)
-
-
-def capture(
-    staging: Path | str,
-    ep: Any,
-    store: Path | str,
-    *,
-    signals: Iterable[Any] = (),
-    checker_visible: bool = False,
-    runner: Callable[..., SandboxResult] = run_confined,
-    python: Path = PYTHON,
-    work: Path | None = None,
-    clock: Callable[[], float] = time.time,
-    trace: bool = False,
-    segment: int | None = None,
-) -> dict:
-    """Capture episode *ep*'s attempt from its settled staging dir into *store* (module docstring). Returns the
-    capture step's row, also appended to ``captures-events.jsonl``. Never
-    raises for what the staging holds; a step that cannot capture says why in ``safety``.
-
-    With *trace* (``UNIFY_MEMORY_CAPTURE_TRACE=on``) the capture records what the episode did instead
-    (:func:`capture_trace_step`, :mod:`.capture_trace`); *segment* names the part of an episode a checkpoint's fork
-    covered (``UNIFY_MEMORY_IN_EPISODE``)."""
-    if trace:
-        return capture_trace_step(
-            staging,
-            ep,
-            store,
-            signals=signals,
-            runner=runner,
-            python=python,
-            work=work,
-            clock=clock,
-            segment=segment,
-        )
-    t0 = clock()
-    staging, store = Path(staging), Path(store)
-    eid = str(getattr(ep, "episode_id", ""))
-    row: dict = {
-        "capture_id": None,
-        "episode": eid,
-        "safety": "ok",
-        "reproduces": None,
-        "deterministic": None,
-        "applies": None,
-        "holds": None,
-        "outcome": None,
-        "same_as": [],
-        "seconds": None,
-        "published_at": None,
-    }
-
-    def finish(**fields: Any) -> dict:
-        row.update(fields)
-        row["seconds"] = round(clock() - t0, 3)
-        if _EPISODE_ID.fullmatch(eid):
-            with _locked(store):
-                _event(store, row)
-        return row
-
-    if not _EPISODE_ID.fullmatch(eid):
-        return finish(safety="no episode id")
-    if not completed(ep):
-        return finish(safety="not a completed attempt: nothing was handed back")
-    source = _staged(staging, PROCEDURE_FILE)
-    if source is None:
-        return finish(safety="no procedure")
-    why = safety(source)
-    if why is not None:
-        return finish(safety=why)
-    broke = _staged(staging, BROKE_FILE)
-    if broke is not None and (KEY_SHAPED.search(broke) or not _broke_lines(broke)):
-        broke = None  # nothing broke ("none"), or a key-shaped string, which never enters the store
-    summary = _staged(staging, SUMMARY_FILE) or ""
-    request_text = ep.request[0] if getattr(ep, "request", None) else ""
-    work_root = Path(work) if work is not None else Path(tempfile.mkdtemp(prefix="capture-"))
-    try:
-        run = run_box(source, request_text, work=work_root / "self", runner=runner, python=python)
-        found, value = handed_back(ep)
-        reproduces = compare(run, found, value) if run.get("outcome") != "not run" else UNKNOWN
-        regime = str(getattr(ep, "regime", "") or "none")
-        regime = regime if regime in trust.REGIMES else "none"
-        # judged by the signals on the value it reproduces: a verdict on an earlier, other value never counts
-        judged = final_value_signals(signals, ep)
-        sig_out = trust.signal_outcome(judged, regime)
-        # a correction after the answer, where the regime observes its source, says the answer was wrong
-        corrected = any(
-            (getattr(s, "source", None), getattr(s, "label", None)) in IMPLICIT_CORRECTIONS
-            and getattr(s, "source", None) in REGIME_SOURCES.get(regime, frozenset())
-            for s in judged
-        )
-        contrary = sig_out["verdict"] == "rejected" or sig_out["end_outcome"] == "contrary" or corrected
-        positive = sig_out["verdict"] == "accepted" or sig_out["end_outcome"] == "positive"
-        outcome = FAILED if (contrary or reproduces == DIFFERS) else ("positive" if positive else "none")
-        returned = run.get("outcome") == "returned"
-        sig = signature(
-            run.get("value"),
-            run.get("result"),
-            returned=returned,
-            applies=run.get("applies"),
-            holds=run.get("holds"),
-            digests=function_digests(source),
-            goal=asked(summary, request_text),
-            request=request_text,
-        )
-        cid = capture_id(source)
-        agreed = None
-        if returned and reproduces != UNKNOWN:
-            agreed = reproduces == REPRODUCES and run.get("deterministic") is not False
-        elif returned:
-            agreed = run.get("deterministic")
-        case = {
-            "episode": eid,
-            "reproduces": reproduces,
-            "deterministic": run.get("deterministic"),
-            "applies": run.get("applies"),
-            "holds": run.get("holds"),
-            "run": run.get("outcome"),
-            "error_class": run.get("error_class"),
-            "outcome": outcome,
-        }
-        use = (
-            trust.Use(
-                eid,
-                regime,
-                run["outcome"],
-                answered=reproduces == REPRODUCES,
-                verdict=sig_out["verdict"],
-                end_outcome=sig_out["end_outcome"],
-                holds=run.get("holds"),
-                corrected=sig_out["corrected"],
-                agreed=agreed,
-            )
-            if run.get("outcome") in trust.OUTCOMES
-            else None
-        )
-        # recurrence needs this procedure's read of the request: its input signature
-        same_as = _recurrence(
-            store, cid, sig, request_text, found, value, eid, regime, sig_out,
-            runner=runner, python=python, work=work_root,
-        ) if "value" in run else []  # fmt: skip
-        with _locked(store):
-            d = store / cid
-            rec = _read_json(d / RECORD_FILE)
-            rec = rec if isinstance(rec, dict) else empty_record(cid)
-            if eid not in rec["episodes"]:
-                rec["episodes"].append(eid)
-                rec["cases"].append(case)
-                if use is not None:
-                    rec["uses"].append(use.row())
-            rec["same_as"] = sorted(set(rec.get("same_as") or []) | set(same_as))
-            refresh(rec)
-            if not (d / PROCEDURE_FILE).exists():
-                _write(d / PROCEDURE_FILE, source.encode("utf-8", "surrogatepass"))
-            if not (d / SIGNATURE_FILE).exists():
-                _write(d / SIGNATURE_FILE, _json(sig))
-            if not (d / SAVED_FILE).exists():
-                _write(d / SAVED_FILE, _json(saved_against(source, summary, request_text)))
-            if broke is not None and broke.strip():
-                old = _read_text(d / BROKE_FILE) or ""
-                if broke.strip() not in old:
-                    _write(d / BROKE_FILE, (old + broke.rstrip() + "\n").encode("utf-8"))
-            _write(d / RECORD_FILE, _json(rec))
-        return finish(
-            capture_id=cid,
-            reproduces=reproduces,
-            deterministic=run.get("deterministic"),
-            applies=run.get("applies"),
-            holds=run.get("holds"),
-            outcome=outcome,
-            same_as=same_as,
-            run=run.get("outcome"),
-            published_at=clock(),
-        )
-    finally:
-        if work is None:
-            shutil.rmtree(work_root, ignore_errors=True)
-
-
-def _recurrence(
-    store: Path,
-    cid: str,
-    sig: Mapping[str, Any],
-    request_text: str,
-    found: bool,
-    value: Any,
-    eid: str,
-    regime: str,
-    sig_out: Mapping[str, Any],
-    *,
-    runner: Callable[..., SandboxResult],
-    python: Path,
-    work: Path,
-) -> list[str]:
-    """Run every other capture whose input signature is *sig*'s on this request, confined; each one that gives the
-    handed-back value is returned (``same_as``) and gains a use. Every run is noted in its ``recurrence`` rows. Failed
-    captures are never run. Content only: no identifier and no text of the request is compared."""
-    if not found:
-        return []
-    same: list[str] = []
-    for other, doc in sorted(load(store).items()):
-        if other == cid or doc.get("procedure") is None:
-            continue
-        rec, osig = doc["record"], doc.get("signature")
-        if negative(rec) or not isinstance(osig, dict):
-            continue
-        if osig.get("input") != sig.get("input") or eid in (rec.get("episodes") or []):
-            continue
-        if safety(doc["procedure"]) is not None:
-            continue
-        run = run_box(doc["procedure"], request_text, work=work / other, runner=runner, python=python)
-        gives = (
-            "same"
-            if run.get("outcome") == "returned" and digest(run.get("result")) == digest(value)
-            else "different" if run.get("outcome") == "returned" else str(run.get("outcome"))
-        )
-        with _locked(store):
-            r = _read_json(store / other / RECORD_FILE)
-            if not isinstance(r, dict):
-                continue
-            r.setdefault("recurrence", []).append({"episode": eid, "gives": gives})
-            if gives == "same":
-                r.setdefault("uses", []).append(
-                    trust.Use(
-                        eid,
-                        regime,
-                        "returned",
-                        answered=True,
-                        verdict=sig_out.get("verdict"),
-                        end_outcome=sig_out.get("end_outcome"),
-                        holds=run.get("holds"),
-                        corrected=bool(sig_out.get("corrected")),
-                        agreed=run.get("deterministic") is not False,
-                    ).row(),
-                )
-                r["same_as"] = sorted(set(r.get("same_as") or []) | {cid})
-            refresh(r)
-            _write(store / other / RECORD_FILE, _json(r))
-        if gives == "same":
-            same.append(other)
-    return same
 
 
 # --- the trace contract (UNIFY_MEMORY_CAPTURE_TRACE) ----------------------------------------------------------
@@ -1414,15 +1108,14 @@ def capture_settled(
     signals: Callable[[str], Iterable[Any]],
     runner: Callable[..., SandboxResult] = run_confined,
     python: Path = PYTHON,
-    trace: bool = False,
     segment_episode: Callable[[str], Any] | None = None,
 ) -> list[dict]:
     """Capture each episode of *eids* whose fork has settled and that has no capture row yet. *episode* reads an
     episode by id (raising when it is not recorded), *signals* its signals. Returns the new rows. Never raises: an
     episode that cannot be read is left for a later call.
 
-    With *trace* each is captured under the trace contract (:func:`capture_trace_step`). A segment's staging dir
-    (``<episode>.s<n>``, ``UNIFY_MEMORY_IN_EPISODE``) is captured from the segment's own record, read by
+    Each is captured under the trace contract (:func:`capture_trace_step`): what it did, nothing run. A segment's
+    staging dir (``<episode>.s<n>``, ``UNIFY_MEMORY=in_episode``) is captured from the segment's own record, read by
     *segment_episode* (None: segments are left alone), unjudged: its episode is still running, so no signal of it is
     recorded yet, and the episode's own rules would judge it by the final value, which it did not hand back. Once its
     episode is recorded, :func:`judge_segments` gives it its outcome from the signals about the segment itself."""
@@ -1444,7 +1137,7 @@ def capture_settled(
             continue
         if not any(os.path.lexists(d / name) for name in STATUS_FILES):
             continue  # not settled yet
-        base, segment = split_staging_name(eid) if trace else (eid, None)
+        base, segment = split_staging_name(eid)
         try:
             if segment is not None:
                 if segment_episode is None:
@@ -1460,20 +1153,11 @@ def capture_settled(
             continue
         try:
             out.append(
-                capture(
-                    d,
-                    ep,
-                    store,
-                    signals=sigs,
-                    checker_visible=True,
-                    runner=runner,
-                    python=python,
-                    **({"trace": True, "segment": segment} if trace else {}),
-                ),
+                capture_trace_step(d, ep, store, signals=sigs, runner=runner, python=python, segment=segment),
             )
         except OSError:
             continue
-    if trace and segment_episode is not None:
+    if segment_episode is not None:
         out += judge_segments(store, episode=episode, signals=signals, segment_episode=segment_episode)  # fmt: skip
     return out
 

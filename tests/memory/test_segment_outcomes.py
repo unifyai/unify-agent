@@ -77,7 +77,7 @@ def test_a_segment_is_captured_unjudged_and_labelled_once_its_episode_is_recorde
 
     def call():
         return cp.capture_settled(tmp_path, ["e1.s1"], episode=episode, signals=signals, 
-                                  trace=True, segment_episode=lambda name: _segment() if name == "e1.s1" else None)  # fmt: skip
+                                  segment_episode=lambda name: _segment() if name == "e1.s1" else None)  # fmt: skip
 
     [row] = call()
     assert row["segment"] == 1 and row["outcome"] == "none" and "judged" not in row
@@ -96,7 +96,7 @@ def test_a_late_rejudge_of_the_episode_leaves_its_segments_alone(tmp_path):
     store = cp.store_dir(tmp_path)
     _staging(tmp_path, "e1.s1", {"procedure.py": PROC})
     cp.capture_settled(tmp_path, ["e1.s1"], episode=lambda e: _episode(), signals=lambda e: [], 
-                       trace=True, segment_episode=lambda name: _segment())  # fmt: skip
+                       segment_episode=lambda name: _segment())  # fmt: skip
     final = _verdict(1, "pass", "2026-10-20T00:00:59Z", action=1)
     assert cp.rejudge_episode(store, "e1", [final], _episode(), "dense") == []
 

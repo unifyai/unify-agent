@@ -1208,18 +1208,6 @@ class RequestRun:
             self.export_roots += [r for r in use.roots_of(paths.checkout) if r not in self.export_roots]
         self.surface = use.library_surface(copy)  # re-exports for the use record
         self.index, self.shown = render_memory_section(copy)
-        from .. import notebook as _notebook
-
-        if _notebook.notebook_on():
-            # the established lessons and open trials, after the memory section (nothing when there are none)
-            section = _notebook.render_for(paths.state_dir)
-            if section:
-                self.index = f"{self.index}\n{section}" if self.index else section
-                self.shown = use.record_shown(
-                    self.index,
-                    channels=(self.shown or {}).get("channels") or (),
-                    renderer=f"{(self.shown or {}).get('renderer') or 'library'}+notebook",
-                )
 
     def repinned(self, tree: Path) -> None:
         """``UNIFY_MEMORY=in_episode``: the copy now serves the pin at *tree*; the use record's items are those of

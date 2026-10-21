@@ -22,7 +22,7 @@ import builtins
 import copy
 import hashlib
 from dataclasses import dataclass
-from typing import Callable, Iterable
+from typing import Callable
 
 MIN_NODES = 12  # a unit smaller than this ("pass", "print(x)", a bare call) is not code worth a function
 _TRACEBACK = "Traceback (most recent call last)"
@@ -46,17 +46,6 @@ def successful(cell: Cell) -> bool:
         and cell.error is None
         and _TRACEBACK not in (cell.output or "")
     )
-
-
-def keep_names(trees: Iterable[ast.AST]) -> set[str]:
-    """Names kept as written: builtins and every name imported in *trees* (an episode's cells)."""
-    out = set(_BUILTINS)
-    for tree in trees:
-        for n in ast.walk(tree):
-            if isinstance(n, (ast.Import, ast.ImportFrom)):
-                for a in n.names:
-                    out.add((a.asname or a.name).split(".")[0])
-    return out
 
 
 def _literal(node: ast.AST) -> bool:
