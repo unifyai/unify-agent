@@ -14,8 +14,8 @@ The one switch, ``UNIFY_MEMORY``
 ``in_episode``
     Everything ``on`` does, plus memory during an episode. The actor may pause at a checkpoint
     (``tools.checkpoint``), and each pause forks the segment so far into a ledger entry. The episode's copy of the
-    library is re-pinned at cell boundaries to what the writer landed meanwhile. In the rev 2 evaluation it cost
-    about twice as much per visit as ``on``, with no measured gain on ARC.
+    library is re-pinned at cell boundaries to what the writer landed meanwhile. In evaluation it cost about twice as
+    much per visit as ``on``, with no measured gain.
 
 ``off``
     No memory: no memory home, no writer, no fork and no memory tools. This is the no-memory baseline.
