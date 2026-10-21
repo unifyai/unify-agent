@@ -52,9 +52,12 @@ from typing import Any
 from .item_states import (  # noqa: E402
     ADOPTED,
     CONFIRMED_BY_OUTCOMES,
+    FROM_LIFECYCLE,  # noqa: F401 - read as trust.FROM_LIFECYCLE
     ON_TRIAL,
     REPRODUCES_ITS_CASE,
     RETIRED,
+    STATUSES,  # noqa: F401 - read as trust.STATUSES
+    UNCHECKED,  # noqa: F401 - read as trust.UNCHECKED
 )
 
 #: What an adoption rests on.
