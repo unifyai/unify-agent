@@ -500,7 +500,7 @@ class Act:
         # UNIFY_MEMORY=on: export memory and open the request's record
         # before the actor builds its prompt.
         self._mv2 = _mv2.begin_request(request)
-        if args.jsonl and self._mv2 is not None and getattr(self._mv2, "regime_inferred", False):
+        if args.jsonl and self._mv2 is not None:
             # UNIFY_MEMORY_REGIME=inferred: the episode's id, so a verdict that arrives after it ends can name it
             self._emit(type="episode", episode_id=self._mv2.episode_id)
         interactive = sys.stdin.isatty()
