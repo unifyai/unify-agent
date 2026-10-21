@@ -40,15 +40,6 @@ _WORD = re.compile(r"[^\W_]+")
 _ROUND = 6
 
 
-def paper_profile() -> bool:
-    """Whether the run's profile is the paper's (``UNIFY_PROFILE=paper``): one model only, so no embedding call."""
-    try:
-        from unify.settings import SETTINGS
-    except Exception:  # noqa: BLE001 - no settings: not the paper profile
-        return False
-    return str(getattr(SETTINGS, "UNIFY_PROFILE", "") or "").strip().lower() == "paper"
-
-
 @dataclass(frozen=True)
 class Backend:
     """How texts are embedded: *model* labels the vectors (None: none are made, and *why* says why) and *embed*
@@ -67,8 +58,6 @@ def backend(on_call: Callable[[dict], None] | None = None) -> Backend:
     (``UNIFY_LOCAL_EMBEDDINGS``, the local model, or ``UNIFY_EMBED_URL``, an endpoint of the provider's form);
     otherwise the harness's embedder (:func:`unify.common.embeddings.embedder`), each request it sends told to
     *on_call*."""
-    if paper_profile():
-        return Backend(None, PAPER)
     try:
         from unify.settings import SETTINGS
     except Exception:  # noqa: BLE001 - no settings: no backend

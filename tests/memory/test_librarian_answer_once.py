@@ -67,7 +67,7 @@ class Turn:
 def _session(tmp_path: Path, turn: Turn, library: str | None = "c0ffee") -> L.LibrarianSession:
     """A session whose cells run ``tools.finish(answer)`` on the host (its box is never started)."""
     session = L.LibrarianSession(
-        copy=_copy(tmp_path), turn=turn, compact=False, library=library,
+        copy=_copy(tmp_path), turn=turn, library=library,
     )
 
     async def tool_call(tc: dict) -> str:

@@ -68,7 +68,6 @@ from . import repair as _repair
 from . import safe_paths as _safe
 from . import views as _views
 from . import writer_tools as _wt
-from . import edit_tools as _et
 from .tool_spec import form_of as _form_of
 from . import testkit as _testkit
 from .qa_static import cuts as _cuts
@@ -100,9 +99,6 @@ _CHECK_REASON_CHARS = 200
 # A check starts only with at least this much of the pass deadline left (it runs to completion).
 CHECK_FLOOR_S = 60.0
 
-_RULES_HEADING = "Manifest rules for consolidators"
-
-
 def _thought_only(args: object) -> bool:
     """Whether execute_code's *args* hold no code to run (:func:`unify.common.tool_registry.thought_only`)."""
     from unify.common.tool_registry import thought_only
@@ -114,195 +110,6 @@ def _thought_only_reply() -> str:
     from unify.common.tool_registry import THOUGHT_ONLY_REPLY
 
     return THOUGHT_ONLY_REPLY
-
-def _manifest_rules() -> str:
-    """The consolidator rules of :mod:`.manifest`'s docstring, verbatim, so prompt and gate cannot drift."""
-    doc = _manifest.__doc__ or ""
-    start = doc.find(_RULES_HEADING)
-    if start < 0:
-        raise ImportError(
-            f"unify.memory.manifest's docstring lacks the section {_RULES_HEADING!r} "
-            "(docstrings stripped by -OO?)",
-        )
-    return doc[start:].strip()
-
-
-_PROMPT = """\
-You consolidate an agent's recorded work into a shared library that a cheaper working model will import.
-You work in a sandbox with no network. /memory is the library (a copy of its git checkout that you edit; the
-harness commits it when you finish); /inputs is read-only and holds request.json (this pass's request: kind,
-channel, episodes), episodes/<episode_id>.json (the recorded episodes for this pass), blobs/ (the file contents
-the episodes' worktree actions recorded, one file per blob id, with index.json naming any skipped), library.json
-(the library's functions on this pass's channels: signature, summary, covers so far and their ids, the pass that
-last changed each), previous_gate.json (per channel, the reasons the gate gave when it last refused a pass there or
-refused an item there) and `memlab`, a
-toolkit: memlab.analysis.cells (call_sites), memlab.analysis.provenance (def_use_edges, value_edges),
-memlab.analysis.slicing (backward_slice, generic_methods, prelude), memlab.analysis.antiunify (antiunify),
-memlab.analysis.recorded (actions_of_kind, worktree_files, load_blob), memlab.analysis.shapes (shape, signature,
-conforms: file format, delimiter, columns and types, key trees, sheets), memlab.analysis.shellout (records,
-output_shape, exit_codes, by_shape), memlab.analysis.transitions (transitions, table, conflicts, check, fixture),
-memlab.replay.RecordedEnv, memlab.episodes (Cell, Action, env_channel).
-Each episode file holds "episode_id", "request", "cells" (code and printed output; memlab.episodes.Cell(**cell))
-and "actions" ("index" is the action's action_index, and memlab.episodes.Action(**{k: v for k, v in a.items()
-if k != "index"}) rebuilds it), and "memory_channels" (memory_channels[i] is the channel items covering
-actions[i] live under).
-Every action has a "kind":
-- tool: a call through an environment namespace, with its response or error;
-- shell: a command (args) with response {"exit_code", "tail"} (the output's last part);
-- worktree: a file read or write (args[0] is the path) with response {"blob_before", "blob_after", "size", "shape"};
-- dialogue: the action an agent's reply carried (args[0]) with the next observation as its response.
-An item covering actions[i] lives in env/<memory_channels[i]>/ exactly (never derive another name); an action
-whose memory channel is null cannot be covered. The recordings say
-nothing about whether a request was solved; do not guess.
-Each execute_code call runs your code as a Python script in a fresh process, cwd /memory,
-PYTHONPATH=/inputs:/memory; only files persist between calls. /memory may hold at most {entries} files and
-directories, {file_mib} MiB per file and {total_mib} MiB in all, or the pass is refused. Run tests as the gate does:
-subprocess.run([sys.executable, "-m", "pytest", "env/<channel>/tests", "-q", "-p", "no:cacheprovider",
-"--rootdir", "/memory", "-c", "/dev/null", "--import-mode=importlib"],
-env={"PYTHONPATH": "/memory", "PYTHONDONTWRITEBYTECODE": "1"}).
-
-Fix what the last gate refused before adding more (previous_gate.json). Rank what to store by how many episodes it
-recurs in, and prefer extending an existing function (library.json) over adding one: fewer, more general functions.
-What to build, in priority order:
-1. env/<channel>/__init__.py: general, parametric Python functions for the environment work that recurs:
-   - tool channels: auth once, typed call wrappers, pagination, known pitfalls, taking the environment object as
-     the first argument `apis`;
-   - shell channels: functions that parse a command's output text into values, with an output-shape check (the
-     gate never runs commands; tests feed recorded outputs);
-   - worktree channels: readers and writers for recurring files (taking a path, text or bytes), with schema checks
-     (delimiter, columns, types, sign and date conventions) that raise on files of another shape;
-   - dialogue channels: observation parsers, an action grammar, transition facts and small predictors.
-   Each public function's docstring has a one-line summary and a line `Effect: read`, `Effect: write` or
-   `Effect: unknown` (a function taking the environment that covers a call recorded with effect "write" must say
-   `Effect: write`), and a line `Input: <form>` saying what its first parameter takes, the same form as
-   "input" in its manifest entry (the gate passes each covered input in that form), one of: {input_kinds}.
-{library_docstrings}   Each function checks the shape of its inputs and raises MemoryInputError(diagnosis) when it
-   differs. Define MemoryInputError in the module (that is module skeleton: declare "skeleton": ["env/<channel>"]
-   when you add it, together with every public function of the module in items).
-   Scope is shape, not observed values. A check or refusal names only types, columns or fields, required keys, the
-   call (channel, method, parameter names) and formats; never the range or the list of values the recordings
-   happened to show. Bad: `if status not in ("open", "closed"): raise MemoryInputError(...)` because only open and
-   closed were recorded. Good: `if not isinstance(status, str) or not status: raise MemoryInputError("status must be
-   a non-empty string")`. The one exception: a recording in which the environment itself rejected a value (an error
-   response or a nonzero exit) may justify refusing such values, and that rejection must then be one of the
-   function's covers. The gate reruns each function on its covered inputs with unseen values of the same types
-   (new strings, numbers beyond the recorded range, dates outside the recorded span) and refuses it if it raises
-   MemoryInputError on them. Restrict a field's values only through this fixed list of types, declared in the item's
-   manifest entry as "field_types": {"<field>": "<type>"}: {semantic_types}.
-2. env/<channel>/NOTES.md: `## ` sections for pitfalls observed in the recordings (a failed call followed by one that
-   worked) that code cannot express. Each section is an item env/<channel>/NOTES.md#<section-slug> (the slug rule is
-   below).
-Never store: results of calls with effects, credentials, session tokens (always re-acquire them), rules drawn from a
-single judgement, anything about whether a request was solved. Do not write workflow notes in this pass. Do not write
-job functions (end-to-end code for a whole request): v0 refuses them.
-
-Test first. For every function you add or change, first write env/<channel>/tests/test_<name>.py over the recorded
-observations it covers: replayed calls (use the recorded responses; /memory/unify_memory_testkit.py, the only helper
-module allowed at the root, may build the fake environment), recorded shell outputs, recorded file blobs, or every
-recorded (action, next observation) pair in its scope. The gate mounts only /memory, so copy the fixtures a test
-needs into data files under env/<channel>/tests/ (never memlab) and list them in "support". Test agreement on every covered observation, and that
-shape checks reject recorded observations of another shape. Run the test and see it fail,
-then write the code and see it pass. Revise existing
-modules in place; do not add near-duplicates. Prefer nothing over a weak function: the library must earn its place.
-
-Tend the library too. On this pass's channels, read the existing functions and tests (the request lists each
-function's recorded covers; /inputs/library.json holds them in cover_ids as [episode_id, action_index] lists) and, where
-it makes the library smaller or clearer: merge near-duplicates into one function (keep an old name that code outside
-the channel may import as a thin alias calling the merged one); delete a function the episodes show is wrong or
-unused, listing every recorded input it covered in a remaining function's covers; repair a function that refused
-an input the environment accepted. Test first here as well: every old test keeps passing against the result, or
-is retired in "deleted_tests" (only a test file of deleted functions) with the reason in the summary. Any change
-in what a stored function returns on recorded inputs needs a failing-then-passing test, also when only a helper,
-constant or alias changed: the gate runs every function of a channel you change, old and new, on its recorded
-covers and on the channel's actions in this pass's episodes, and a function whose results differ must be listed in
-"items" with a test that fails on the parent's library and passes after. A repair changes behaviour, so it always
-needs one. Only a merge, alias or deletion that keeps behaviour is exempt: in a pass that adds nothing and shrinks
-the library (fewer functions or less code in them; comments and docstrings do not count), an edited function needs
-no failing test when an old passing test calls it and it returns exactly what its old version returned on all
-those inputs.
-
-Finish by writing /memory/.pass/manifest.json (never committed):
-{"items":[{"item":"env/<channel>:<function>","kind":"env_function","input":"<form>","source_episodes":[...],
-  "tests":["env/<channel>/tests/test_<function>.py"],"covers":[[episode_id, action_index], ...]}],
- "support":["unify_memory_testkit.py"],"skeleton":[],"unlisted":[],"deleted":[],"deleted_tests":[],"summary":"..."}
-`covers` lists the recorded actions on the function's own channel whose observations its tests check: tool calls
-with status "ok" and a response, shell commands with an output tail, worktree reads or writes with a recorded blob,
-dialogue actions with status "ok" and an observation, and any recorded rejection (status "error" with its error, or a
-nonzero exit) that justifies a value check (never covers made only of rejections).
-A function that replaces a value it computed from its input under a condition encodes a policy; it needs covers
-from at least two episodes.
-Before finish, call check(manifest) with the manifest JSON and fix every reason it returns: it runs the gate's
-{check_names} on your current files, changes
-nothing, and counts as a call ({checks} per pass at most). The folders env/<channel>/ for this pass's memory channels
-already exist; put each item in the one its covers' memory_channels name. Then call finish(summary).
-A deterministic gate will check provenance, that each new test fails before your change and passes after, the full
-test suite, {gate_checks}that the library only grows when it covers new recorded calls or shrinks, that what
-deleted functions covered stays covered, and safety{soft_note}. Its rules follow. An item that breaks an item rule
-is refused alone, with every item that calls it, imports it in a test or shares a test file with it, and the rest
-can still merge; a pass that breaks a pass-wide rule (layout, undeclared changes, lost or regressed tests, the
-library's size and growth, deleted functions' covers, secrets) is refused whole.
-"""
-
-
-def writer_system(
-    *,
-    docstrings: bool = False,
-    catalogue: bool = False,
-    soft_budget: bool = False,
-) -> str:
-    """The writer's brief under the library-mode switches (:mod:`.integration.switch`); all off, it is v2's byte for byte.
-
-    *docstrings* states the lean docstring standard and adds the docstring and examples checks to the check
-    lists; *catalogue* says the harness generates README.md, memory.py and .memory/ and the writer must never
-    write them; *soft_budget* replaces the index budget with the soft size note.
-    """
-    library_mode = ""
-    if docstrings:
-        library_mode += (
-            "   Docstrings follow the lean standard, so that `help(fn)` alone tells the working model how to use a\n"
-            f"   function: {describe_docstring_standard()}.\n"
-        )
-    if catalogue:
-        library_mode += (
-            "   The harness renders README.md, memory.py and .memory/ at the library root from your commit for the\n"
-            "   working model (a catalogue of the library); never write them: the gate refuses them.\n"
-        )
-    checks = ["manifest", "provenance", "scope"]
-    checks += ["docstring"] if docstrings else []
-    checks += ["cover-channel", "size" if soft_budget else "index"]
-    check_names = (
-        ", ".join(checks)
-        + " and safety checks (not the tests"
-        + (" or examples" if docstrings else "")
-        + ")"
-    )
-    gate_checks = (
-        "the docstring standard and its examples, " if docstrings else ""
-    ) + ("" if soft_budget else "an index budget, ")
-    soft_note = (
-        "; past a soft size it notes that the library is due for hygiene, and never refuses growth"
-        if soft_budget
-        else ""
-    )
-    return (
-        _PROMPT.replace("{library_docstrings}", library_mode)
-        .replace("{check_names}", check_names)
-        .replace("{gate_checks}", gate_checks)
-        .replace("{soft_note}", soft_note)
-        .replace("{entries}", str(QUOTA_ENTRIES))
-        .replace("{file_mib}", str(QUOTA_FILE_BYTES // 1024**2))
-        .replace("{total_mib}", str(QUOTA_TOTAL_BYTES // 1024**2))
-        .replace("{checks}", str(MAX_CHECKS))
-        .replace("{semantic_types}", _manifest.describe_semantic_types())
-        .replace("{input_kinds}", _manifest.describe_input_kinds())
-        + "\n"
-        + _manifest_rules()
-        + "\n"
-    )
-
-
-#: The v2 brief (every library-mode switch at its default).
-WRITER_SYSTEM = writer_system()
 
 # The toolkit copied into /inputs/memlab. Not gitio (git), the gate or the sandbox runner. When a stage-5 switch
 # is on or the library's tests use it, the whole test kit (:mod:`.testkit`: these, memlab.inputs, the pin
@@ -320,51 +127,6 @@ class Repo:
     def __init__(self, *args, **kwargs):
         raise GitError("git is not available inside the consolidation sandbox")
 '''
-_TOOL_TEMPLATES = [
-    {
-        "type": "function",
-        "function": {
-            "name": "execute_code",
-            "description": "Run Python code as a script in the sandbox, cwd /memory; returns stdout and stderr.",
-            "parameters": {
-                "type": "object",
-                "properties": {"code": {"type": "string"}},
-                "required": ["code"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "check",
-            "description": "{check_description}",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "manifest": {
-                        "type": "string",
-                        "description": "The manifest JSON, as you will write it to /memory/.pass/manifest.json.",
-                    },
-                },
-                "required": ["manifest"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "finish",
-            "description": "End the pass after writing /memory/.pass/manifest.json.",
-            "parameters": {
-                "type": "object",
-                "properties": {"summary": {"type": "string"}},
-                "required": ["summary"],
-            },
-        },
-    },
-]
-
-
 # finish refuses an unparseable manifest at most this many times in a pass
 FINISH_G1_REFUSALS = 2
 
@@ -658,25 +420,18 @@ def _trailers(
     pass_id: str,
     sources: object,
     manifest: object,
-    library_mode: bool,
-    curate: bool = False,
 ) -> dict:
-    """A candidate commit's trailers: v2's; in library mode also ``Why:``, ``Episodes:`` and ``Items:``
-    (:func:`_library_trailers`) and ``Tests-Changed:`` when the manifest states reasons; a CURATE pass's
-    ``Why:`` and ``Items:`` are :func:`.curate.trailers`' (every item it adds, changes, deletes, aliases or retires).
-    """
+    """A candidate commit's trailers: ``Pass``, ``Episode`` and ``Evidence``, then ``Why:``, ``Episodes:`` and
+    ``Items:`` (:func:`_library_trailers`), and ``Tests-Changed:`` when the manifest states reasons."""
     out: dict = {"Pass": pass_id, "Episode": sources, "Evidence": sources}
-    if library_mode:
-        out.update(
-            _library_trailers(
-                manifest,
-                list(sources) if isinstance(sources, list) else [],
-            ),
-        )
-        if _tests_changed(manifest):
-            out["Tests-Changed"] = _tests_changed(manifest)
-        if curate:
-            out.update(_curate.trailers(manifest))
+    out.update(
+        _library_trailers(
+            manifest,
+            list(sources) if isinstance(sources, list) else [],
+        ),
+    )
+    if _tests_changed(manifest):
+        out["Tests-Changed"] = _tests_changed(manifest)
     return out
 
 
@@ -684,11 +439,6 @@ _OUTPUT_CAP = 8000
 #: parts per read_episode call (one shared page) and reader calls per model turn (stated in the tool descriptions)
 READ_PARTS_PER_CALL = _wt.READ_PARTS_PER_CALL
 READERS_PER_TURN = _wt.READERS_PER_TURN
-
-
-def _library_on(writer: object) -> bool:
-    """PassConfig.library_mode of *writer*; off when it has no config (tests drive the staging helpers on stand-ins)."""
-    return bool(getattr(getattr(writer, "cfg", None), "library_mode", False))
 
 
 def _head_marked(text: str) -> tuple[str, str]:
@@ -721,7 +471,6 @@ _SUMMARY_CHARS = 200
 # The writer's transcript: kept whole, never cut (:mod:`.transcripts`). On this notes ref of the request's episode
 # commit go its JSON lines while they fit TRANSCRIPT_MAX_BYTES, else one row pointing to its chunk files
 TRANSCRIPT_REF = "writer-transcripts"
-TRANSCRIPT_MAX_BYTES = 256 * 1024
 # the per-string cut of a bounded view (:func:`transcript_lines` with *string_chars*); the stored transcript has none
 TRANSCRIPT_STRING_CHARS = _OUTPUT_CAP
 
@@ -756,6 +505,8 @@ class ModelTurn(Protocol):
 class PassConfig:
     """Per-pass bounds. ``model`` and ``effort`` build the real turn: ``unillm_turn(cfg.model, cfg.effort)``."""
 
+    # the memory home whose run record the pass's agent and its helpers join (unify/agents/run_record.py)
+    run_home: str
     model: str = "openai/gpt-6-sol"
     effort: str = "low"
     max_calls: int = 40
@@ -782,8 +533,6 @@ class PassConfig:
     pass_record_root: str | None = None
     # the memory home whose attention ledger the pass reads and decides (attention.py, attention_tools.py)
     attention_home: str | None = None
-    # the memory home whose run record the pass's agent and its helpers join (unify/agents/run_record.py)
-    run_home: str | None = None
     # the writer service's room for this pass (its cap less what its other passes committed, less what a resumed pass
     # already lost), a decimal string: a hard USD stop that leaves the pass's other limits as they are (an uncapped
     # library pass stays uncapped). No model call, the writer's or a helper's, starts unless the pass's spend so far,
@@ -1781,48 +1530,6 @@ def _exported_channels(episodes: Path) -> list[str]:
     return sorted(out)
 
 
-def library_covers(
-    tree: Path,
-    channels: Iterable[str],
-    recorded: set[tuple[str, str, int]],
-) -> dict[str, list[list]]:
-    """Each environment function of the library at *tree* on *channels*, with its recorded covers.
-
-    ``{item: [[episode_id, action_index], ...]}``, sorted; a function nothing recorded covers maps to [].
-    """
-    scope = tuple(f"env/{ch}:" for ch in channels)
-    out: dict[str, list[list]] = {
-        i: []
-        for i, b in sorted(item_bodies(tree).items())
-        if b[0] == "env_function" and i.startswith(scope)
-    }
-    for item, eid, idx in sorted(recorded):
-        if item in out:
-            out[item].append([eid, idx])
-    return out
-
-
-def _channel_dirs(box: Path, channels: Iterable[str]) -> None:
-    """Create an empty ``env/<channel>/`` in *box* for each well-formed channel; never a file, never via a link.
-
-    Git tracks no empty directory, so a folder left empty is neither committed nor seen by the gate.
-    """
-    for ch in channels:
-        if not _manifest.SKELETON_ID.match(f"env/{ch}"):
-            continue
-        try:
-            for d in (box / "env", box / "env" / ch):
-                try:
-                    st = os.lstat(d)
-                except FileNotFoundError:
-                    os.mkdir(d, 0o755)
-                    continue
-                if not stat.S_ISDIR(st.st_mode):
-                    break  # a file or link already holds the name: leave it to the gate
-        except OSError:
-            continue
-
-
 def _drop_unchanged(tree: Path, generated: Mapping[str, bytes]) -> None:
     """Remove each generated file of a library-mode box (never committed) that still holds the bytes the
     harness wrote, then ``.memory/`` if it is left empty. An edited one stays, so the gate sees and refuses it.
@@ -1982,54 +1689,6 @@ def _read_manifest(box: Path) -> tuple[bool, object, str | None]:
     if _depth(parsed) > _MANIFEST_MAX_DEPTH:  # the gate walks it recursively
         return True, None, f"manifest: nested deeper than {_MANIFEST_MAX_DEPTH} levels"
     return True, parsed, None
-
-
-def _read_pass_json(box: Path, name: str) -> tuple[object, str | None]:
-    """(parsed JSON or None, problem) of ``/memory/.pass/<name>``, read like the manifest (:func:`_read_manifest`):
-    from the box's descriptor one component at a time, never through a link, a regular file of at most
-    :data:`_MANIFEST_MAX_BYTES`. ``(None, None)``: there is no such file."""
-    shown = f"/memory/.pass/{name}"
-    try:
-        root = os.open(box, _safe.DIR_FLAGS)
-    except OSError as exc:
-        return None, f"{shown}: /memory cannot be read ({exc.strerror})"
-    try:
-        try:
-            pfd = _safe.walk_dirs(root, [".pass"])
-        except (_safe.Missing, _safe.LinkFound):
-            return None, None
-        except OSError as exc:
-            return None, f"{shown}: /memory/.pass cannot be read ({exc.strerror})"
-        try:
-            try:
-                fd = _safe.openat(name, _safe.READ_FLAGS, pfd)
-            except FileNotFoundError:
-                return None, None
-            except OSError as exc:
-                return (
-                    None,
-                    f"{shown} is not a regular file that can be read ({exc.strerror})",
-                )
-        finally:
-            os.close(pfd)
-    finally:
-        os.close(root)
-    try:
-        fst = os.fstat(fd)
-        if not stat.S_ISREG(fst.st_mode):
-            return None, f"{shown} is not a regular file"
-        data = os.read(fd, _MANIFEST_MAX_BYTES + 1)
-    finally:
-        os.close(fd)
-    if len(data) > _MANIFEST_MAX_BYTES:
-        return None, f"{shown}: larger than {_MANIFEST_MAX_BYTES} bytes"
-    try:
-        parsed = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
-        return None, f"{shown}: not valid JSON ({type(exc).__name__}: {exc})"[:300]
-    if _depth(parsed) > _MANIFEST_MAX_DEPTH:
-        return None, f"{shown}: nested deeper than {_MANIFEST_MAX_DEPTH} levels"
-    return parsed, None
 
 
 def _depth(value: object) -> int:
@@ -2237,7 +1896,6 @@ class WriterPass:
         config: PassConfig,
         *,
         redactor: Redactor | None = None,
-        curate: "_curate.CurateState | None" = None,
         helper_turn: Callable[[], ModelTurn] | None = None,
         helper_refusal: str | None = None,
     ) -> None:
@@ -2320,9 +1978,6 @@ class WriterPass:
         # library mode: the live box and checkout, and a cancelled pass's (patch blob, named items)
         self._live: tuple[Path, Path] | None = None
         self._cancel_patch: tuple[str | None, list[str]] = (None, [])
-        # CURATE: the library state a "curate" request curates, and the pass's role
-        self.curate_state = curate
-        self._role = "write"
 
     def transcript(self, pass_id: str) -> list[str]:
         """The last run's messages as redacted JSON lines, every message whole (:func:`transcript_lines`): the brief
@@ -2420,7 +2075,7 @@ class WriterPass:
         return (
             pr.root
             if pr is not None
-            else ("curator" if self._role == "curate" else "writer")
+            else ("writer")
         )
 
     def transcript_note(self, pass_id: str) -> list[str]:
@@ -2459,12 +2114,6 @@ class WriterPass:
         adds each function's recorded cover ids to ``library.json``.
         """
         channels = _exported_channels(inputs / "episodes")
-        if not _library_on(
-            self,
-        ):  # library mode gives drafts and full gate results instead
-            (inputs / "previous_gate.json").write_text(
-                json.dumps(previous_gate(self.ev, channels), indent=1) + "\n",
-            )
         summary = library_summary(
             tree,
             channels,
@@ -2555,7 +2204,7 @@ class WriterPass:
             # the store pass reads each episode's library use as its own file (none for a curate pass, whose use
             # records are /inputs/curate/use.json)
             usage_dest=(
-                inputs / "usage" if req.kind != "curate" else None
+                inputs / "usage"
             ),
         )
         exported = export_blobs(
@@ -2600,28 +2249,25 @@ class WriterPass:
             (inputs / "shared").mkdir(exist_ok=True)
             for b, text in self._shared.items():
                 (inputs / "shared" / f"{b}.txt").write_text(text)
-        if (
-            req.kind != "curate"
-        ):  # a curate pass has no batch: its inputs are /inputs/curate/
-            (inputs / "batch_map.json").write_text(
-                json.dumps(
-                    build_batch_map(self.load, list(req.episodes), self._shared),
-                    sort_keys=True,
-                    default=str,
-                    indent=1,
-                )
-                + "\n",
+        (inputs / "batch_map.json").write_text(
+            json.dumps(
+                build_batch_map(self.load, list(req.episodes), self._shared),
+                sort_keys=True,
+                default=str,
+                indent=1,
             )
-            from unify.common import in_code_switch
+            + "\n",
+        )
+        from unify.common import in_code_switch
 
-            # the reference tables the brief points to instead of carrying them
-            from .library_prompts import input_pointer_files
+        # the reference tables the brief points to instead of carrying them
+        from .library_prompts import input_pointer_files
 
-            for name, text in input_pointer_files(
-                staging=True,
-                pool=True,
-            ).items():
-                (inputs / name).write_text(text)
+        for name, text in input_pointer_files(
+            staging=True,
+            pool=True,
+        ).items():
+            (inputs / name).write_text(text)
         # the library test kit, as the gate mounts it, when a switch is on or the parent library's tests use
         # it (the blobs those tests name join the pass's blobs); else the toolkit as at the screen build
         staged = tree is not None and isinstance(store, BlobStore)
@@ -2646,17 +2292,12 @@ class WriterPass:
         if not staged:
             _stage_memlab(inputs / "memlab")
         self._drafts = []
-        if req.kind == "curate":
-            # CURATE: its own inputs; drafts are WRITE's
-            (inputs / "gate").mkdir(exist_ok=True)
-            _curate.stage_inputs(inputs, self.curate_state)
-        else:
-            from .drafts import stage_drafts
+        from .drafts import stage_drafts
 
-            if isinstance(store, BlobStore):
-                self._drafts = stage_drafts(self.ev, store, inputs)
-            else:
-                (inputs / "gate").mkdir(exist_ok=True)
+        if isinstance(store, BlobStore):
+            self._drafts = stage_drafts(self.ev, store, inputs)
+        else:
+            (inputs / "gate").mkdir(exist_ok=True)
 
     def _stage_library_library_mode(self, box: Path, parent: str) -> dict[str, bytes]:
         """Library mode: write the generated helper, INDEX.md, links.json and ``.memory/`` into the writer's box
@@ -2822,8 +2463,7 @@ class WriterPass:
                 "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "helpers_closed": dict(pr.closed),
                 "helpers": pr.agents()[1:],
-                "record": str(pr.log.path) if pr.log is not None else (str(pr.record.path) if pr.run else None),
-                "record_error": getattr(self, "_record_error", None),
+                "record": str(pr.record.path),
                 "record_entries": len(pr.record.entries),
                 "helper_transcripts": transcripts,
                 # tools in code: the pass ended with a handler thread still running, so its folder was kept
@@ -2842,26 +2482,6 @@ class WriterPass:
             },
         )
 
-    def _no_record_log(self) -> None:
-        """On the run record the pass keeps no record file of its own (the run record holds its entries)."""
-        self._record_error = None
-        return None
-
-    def _record_log(self, pass_id: str) -> Any:
-        """``<pass_record_root>/<pass id>/record.jsonl`` (created new) for the pass's record, or None when the pass
-        keeps no record folder or the file cannot be made (the record then lives in memory only, and the pass end
-        event says so with ``record: null``)."""
-        from unify.agents.log import RecordLog
-
-        self._record_error = None
-        root = getattr(self.cfg, "pass_record_root", None)
-        if not root:
-            return None
-        try:
-            return RecordLog(Path(root) / pass_id / "record.jsonl", create=True)
-        except OSError as exc:
-            self._record_error = type(exc).__name__
-            return None
 
     def _replay_call(self, args: dict, box: Path, tmp: Path) -> str:
         """Verify one manifest item's ``replaces`` by replay (:mod:`.replay_verify`); write the verified instances
@@ -2987,38 +2607,36 @@ class WriterPass:
                 library_items=getattr(self, "_pool_library_items", None),
                 notes=unapplied,
             )
-            if req.kind != "curate":
-                from .captures import landings
+            from .captures import landings
 
-                # each capture's entry closes by the one route the writer took: landed by land_capture, or a draft
-                # staged from its episode adopted instead
-                store = self._captures_root()
-                changed += _pool_mod.close_captures(
-                    p,
-                    pass_id,
-                    landed=set(out.items_merged or []),
-                    landings=landings(store) if store is not None else {},
-                    provenance=self._provenance,
-                )
+            # each capture's entry closes by the one route the writer took: landed by land_capture, or a draft
+            # staged from its episode adopted instead
+            store = self._captures_root()
+            changed += _pool_mod.close_captures(
+                p,
+                pass_id,
+                landed=set(out.items_merged or []),
+                landings=landings(store) if store is not None else {},
+                provenance=self._provenance,
+            )
             new: list = []
             extended: list[str] = []
-            if req.kind != "curate":
-                # the manifest's defer rows (pool decide defer): episodes join a named entry, or open deferred entries
-                deferred: set[str] = set()
-                for row in _wt.defer_rows(self._pool_manifest):
-                    deferred.update(row["episodes"])
-                    for e in row["episodes"]:
-                        if row["id"] == "new":
-                            new.append(_pool_mod.deferred(e, row["reason"]))
-                        elif p.add_evidence(row["id"], e, row["reason"], pass_id):
-                            extended.append(row["id"])
-                # a batch episode the writer never opened is kept as unread (a measure: nothing gates on it)
-                log = self._read_logs.get("writer") or _wt.ReadLog()
-                for e in self._batch:
-                    if e not in log.parts and e not in deferred:
-                        new.append(_unread_entry(_pool_mod, e))
-                if not out.passed:
-                    new += self._pool_draft(pass_id)
+            # the manifest's defer rows (pool decide defer): episodes join a named entry, or open deferred entries
+            deferred: set[str] = set()
+            for row in _wt.defer_rows(self._pool_manifest):
+                deferred.update(row["episodes"])
+                for e in row["episodes"]:
+                    if row["id"] == "new":
+                        new.append(_pool_mod.deferred(e, row["reason"]))
+                    elif p.add_evidence(row["id"], e, row["reason"], pass_id):
+                        extended.append(row["id"])
+            # a batch episode the writer never opened is kept as unread (a measure: nothing gates on it)
+            log = self._read_logs.get("writer") or _wt.ReadLog()
+            for e in self._batch:
+                if e not in log.parts and e not in deferred:
+                    new.append(_unread_entry(_pool_mod, e))
+            if not out.passed:
+                new += self._pool_draft(pass_id)
             added = 0
             for e in new:
                 e.add_provenance([], [pass_id], [])
@@ -3306,11 +2924,6 @@ class WriterPass:
         nothing that grows (no library index, pool index, use table, drafts or curate reasons: those are files the
         brief points to). Byte-stable apart from the ids and the wall-clock number."""
         wall = format(Decimal(str(float(self.cfg.deadline_s))).normalize(), "f")
-        if req.kind == "curate":
-            return (
-                f"Pass {pass_id}: a curate pass. Why it runs: /inputs/curate/trigger.json.\n"
-                f"Wall clock for this pass: {wall} s.\n"
-            )
         eids = [e for e in req.episodes if isinstance(e, str)]
         from .library_prompts import MAX_INLINE_LIST
 
@@ -3493,7 +3106,7 @@ class WriterPass:
             probs = block_problems(
                 _wt.without_defer(manifest),
                 self._pool,
-                self._role,
+                "write",
                 library_items=library_items,
             )
             block = manifest.get("pool") if isinstance(manifest, dict) else None
@@ -3515,19 +3128,6 @@ class WriterPass:
                 return _redact(f"G1: {probs[0]}")[:600], False
             self._pool_manifest = manifest
             self._pool_library_items = library_items
-        if self.curate_state is not None:
-            # rule 7 of the curate brief, checked while the pass can still act on it: a reason left without a
-            # change to an item it names, or a keep, fires again after a later WRITE pass
-            left = _curate.unaddressed(self.curate_state, manifest)
-            if left:
-                return (
-                    _redact(
-                        f"G1: {len(left)} reason(s) in your inputs have no change to an item they name and no "
-                        "keep; change one of each one's items, or keep it with why in `kept`: "
-                        + "; ".join(left),
-                    )[:600],
-                    False,
-                )
         return None, not man.items and not man.deleted
 
     def _event(
@@ -3551,9 +3151,9 @@ class WriterPass:
         text_bytes = len(reply.text.encode("utf-8", errors="replace"))
         row = {
             "event": "tool_call",
-            "agent": "curator" if self._role == "curate" else "writer",
+            "agent": "writer",
             # the agent's name on the pass's record
-            "name": "curator" if self._role == "curate" else "writer",
+            "name": "writer",
             "pass_id": pass_id,
             "call": len(self.tool_events) if call is None else call,
             "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -3948,7 +3548,7 @@ class WriterPass:
 
         from . import tool_handlers as _th
 
-        agent = "curator" if self._role == "curate" else "writer"
+        agent = "writer"
         ic = _th.WriterCalls(
             writer=self,
             agent=agent,
@@ -3978,7 +3578,7 @@ class WriterPass:
         session = _th.InterpreterSession(
             agent=agent,
             name=agent,
-            role=self._role,
+            role="write",
             pass_id=pass_id,
             state=ic,
             allow=allow,
@@ -3992,7 +3592,7 @@ class WriterPass:
             profile=profile,
             start=self.interpreter_start,
             # the run record: the comms tools' record is the pass agent's view of it
-            record=pr.view(pr.root) if pr is not None and pr.run else None,
+            record=pr.view(pr.root) if pr is not None else None,
         )
         ic.kill_box = session.kill
         ic.measure_quota = session.measure_quota
@@ -4050,12 +3650,12 @@ class WriterPass:
 
         from . import tool_handlers as _th
 
-        agent = "curator" if self._role == "curate" else "writer"
+        agent = "writer"
         binds, profile = self._interpreter_box(agent, pass_id, box, inputs)
         session = _th.InterpreterSession(
             agent=agent,
             name=agent,
-            role=self._role,
+            role="write",
             pass_id=pass_id,
             state=None,
             allow=(),
@@ -4183,7 +3783,7 @@ class WriterPass:
                     "\0",
                     "",
                 ),
-                _trailers(pass_id, sources, manifest, True, self._role == "curate"),
+                _trailers(pass_id, sources, manifest),
             )
 
     def _close_rounds(
@@ -4209,7 +3809,7 @@ class WriterPass:
         self.ev.record_pass_rounds(
             {
                 "pass_id": pass_id,
-                "role": self._role,
+                "role": "write",
                 "rounds": round_no + 1,
                 "round_blobs": json.dumps(round_blobs),
                 "gate_blob": (
@@ -4218,76 +3818,11 @@ class WriterPass:
             },
         )
 
-    def _notebook_on(self) -> bool:
-        """A store pass with the world notebook on (``PassConfig.notebook_state``)."""
-        return (
-            False
-        )
-
-    def _stage_notebook(self, req: PassRequest, inputs: Path) -> None:
-        """``/inputs/notebook.json``: the lessons with their counts and the batch episodes' moments. Never raises."""
-        from . import notebook as _notebook
-
-        try:
-            doc = _notebook.writer_input(None, list(req.episodes))
-        # an unreadable notebook is an empty one
-        except Exception as exc:  # noqa: BLE001
-            logging.getLogger(__name__).warning(
-                "notebook: input not staged (%s)",
-                type(exc).__name__,
-            )
-            doc = {"lessons": [], "moments": {}}
-        (inputs / _notebook.INPUT_FILE).write_text(
-            json.dumps(doc, sort_keys=True, ensure_ascii=False),
-        )
-
-    def _absorb_notebook(self, box: Path, req: PassRequest, pass_id: str) -> None:
-        """Merge the writer's ``/memory/.pass/notebook.json`` into the run's notebook (:func:`.notebook.absorb`),
-        whatever the gate decided, and record what was merged as a ``notebook`` event. Read from the box's
-        descriptor without following a link, like the manifest. Never raises."""
-        from . import notebook as _notebook
-
-        try:
-            doc, problem = _read_pass_json(box, "notebook.json")
-            if doc is None and problem is None:
-                return  # the writer wrote no notebook file
-            report = (
-                _notebook.absorb(
-                    None,
-                    doc,
-                    list(req.episodes),
-                    origin=pass_id,
-                )
-                if problem is None
-                else {"skipped": [problem]}
-            )
-        except Exception as exc:  # noqa: BLE001 - the notebook never fails a pass
-            report = {"error": type(exc).__name__}
-        try:
-            self._write_event(
-                pass_id,
-                {"event": "notebook", "pass_id": pass_id, **report},
-            )
-        except Exception:  # noqa: BLE001
-            pass
-
     def _brief_library_mode(self) -> str:
-        """The library-mode system message: the CURATE brief for a curate pass (the request's role), else WRITE."""
-        from .library_prompts import curate_brief_now, write_brief_now
+        """The writer's system message: the WRITE brief for this pass's inputs."""
+        from .library_prompts import write_brief_now
 
-        if self._role == "curate" or getattr(self.cfg, "role", "write") == "curate":
-            return curate_brief_now(
-                cell_s=float(self.cfg.cell_timeout_s),
-                compact=True,
-                finish_capped=self.cfg.max_usd is not None,
-                edit_tools=False,
-            )
-        brief = write_brief_now(**self._write_inputs())
-        if self._notebook_on():
-            from .notebook import WRITER_BRIEF
-
-            brief += WRITER_BRIEF
-        return brief
+        return write_brief_now(**self._write_inputs())
 
     def _write_inputs(self) -> dict:
         """The WRITE brief names each input this pass's configuration prepares (constant per run): staging only
@@ -4393,19 +3928,6 @@ class WriterPass:
         self._live, self._cancel_patch = None, (None, [])
         # an attention pass's state (attention_tools.AttentionPass) and the stated tests' context (writer_tests)
         self._attention, self._tests = None, None
-        self._role = "curate" if req.kind == "curate" else "write"
-        if req.kind == "curate" and (
-            (self.curate_state is None)
-        ):
-            # CURATE runs only in library mode, on the library state its trigger read; nothing is spent
-            return PassOutcome(
-                pass_id,
-                False,
-                None,
-                "0",
-                0,
-                ["curate: needs the library mode and the library state it curates"],
-            )
         if self.ev.pass_exists(pass_id):
             # never overwrite an earlier attempt's record, and spend nothing on a pass the gate would refuse
             return PassOutcome(
@@ -4448,7 +3970,7 @@ class WriterPass:
                     self.ev.record_pass_rounds(
                         {
                             "pass_id": pass_id,
-                            "role": self._role,
+                            "role": "write",
                             "rounds": None,
                             "round_blobs": "[]",
                             # a cancelled pass's draft points at its fixed gate result
@@ -4481,16 +4003,12 @@ class WriterPass:
             Decimal(0) if uncapped else (cap / max_calls if max_calls > 0 else cap)
         )
         deadline = time.monotonic() + float(self.cfg.deadline_s)
-        # one record per pass for its agent and every helper it starts (messaging.py), kept beside the pass's
-        # events when the pass has a record folder
-        run_home = getattr(self.cfg, "run_home", None)
+        # the pass on the run record, for its agent and every helper it starts (messaging.py)
         self._pass_record = _messaging.PassRecord(
-            root="curator" if self._role == "curate" else "writer",
+            root="writer",
             deadline=deadline,
-            # on the run record the entries live in the run's record file, not a file per pass
-            log=self._no_record_log() if run_home else self._record_log(pass_id),
+            run_home=self.cfg.run_home,
             pass_id=pass_id,
-            run_home=run_home,
             held_by_service=True,
         )
         calls, checks, summary = 0, 0, ""
@@ -4551,7 +4069,7 @@ class WriterPass:
         from unify.common._async_tool import loop_stop as _loop_stop
 
         no_progress = _loop_stop.AgentNoProgress(
-            _loop_stop.terminal_tool("curator" if self._role == "curate" else "writer"),
+            _loop_stop.terminal_tool("writer"),
             in_code=True,
         )
 
@@ -4616,11 +4134,10 @@ class WriterPass:
             o.finished = bool(phase["finish_accepted"])
             o.provenance = list(self._provenance)
             o.levels, o.capped_reasons = self._levels
-            if self._role != "curate":
-                try:  # measures only: they never fail a pass
-                    o.chain = self._chain_counts()
-                except Exception as exc:  # noqa: BLE001
-                    o.chain = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+            try:  # measures only: they never fail a pass
+                o.chain = self._chain_counts()
+            except Exception as exc:  # noqa: BLE001
+                o.chain = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
             o.staging = self._staging_counts
             o.staging_episodes = self._staging_episodes_out()
             o.helpers = [
@@ -4667,13 +4184,8 @@ class WriterPass:
 
                 # on every way out: the pass's read evidence, which the service verifies the entries' reads against
                 scope.callback(_at_tools.write_read_log, self)
-            if self._role != "curate":
-                # UNIFY_MEMORY_WRITER_TESTS: the tests the writer states, recorded beside the pass's records
-                self._tests = self._tests_start(pass_id, box, Path(tmp), Path(inputs))
-            if self._notebook_on():
-                # before the pass's folders go, on every way out: the writer's notebook judgements are merged
-                self._stage_notebook(req, inputs)
-                scope.callback(self._absorb_notebook, box, req, pass_id)
+            # UNIFY_MEMORY_WRITER_TESTS: the tests the writer states, recorded beside the pass's records
+            self._tests = self._tests_start(pass_id, box, Path(tmp), Path(inputs))
             bmap_path = inputs / "batch_map.json"
             bmap = (
                 json.loads(bmap_path.read_text())
@@ -4695,7 +4207,7 @@ class WriterPass:
 
             # the registry's allow-list for the agent, with the flags its model-API tools were chosen by
             in_code_allow = _registry.allow_list(
-                "curator" if self._role == "curate" else "writer",
+                "writer",
                 tool_flags(
                     pool=True,
                     helper=self.helper_turn is not None,
@@ -4706,7 +4218,7 @@ class WriterPass:
                 ),
             )
             tools = _th.in_code_json_tools(
-                "curator" if self._role == "curate" else "writer",
+                "writer",
             )
             tool_names = [t["function"]["name"] for t in tools]
             # the writer-chosen tree with its generated helper and index; no channel
@@ -4726,24 +4238,23 @@ class WriterPass:
                 self._pool_error = (
                     f"load: {type(exc).__name__}: {str(exc)[:200]}"
                 )
-            if req.kind != "curate":
-                # every batch episode's staging, read-only for the writer
-                await self._staging_library_mode(
-                    req,
-                    inputs,
-                    box,
-                    roots,
-                    spend,
-                    pass_id=pass_id,
+            # every batch episode's staging, read-only for the writer
+            await self._staging_library_mode(
+                req,
+                inputs,
+                box,
+                roots,
+                spend,
+                pass_id=pass_id,
+            )
+            # the staging rows were added to the batch map: overview reads them
+            staged_map = inputs / "batch_map.json"
+            if staged_map.is_file():
+                self._bmap_rows = list(
+                    json.loads(staged_map.read_text()).get("episodes", []),
                 )
-                # the staging rows were added to the batch map: overview reads them
-                staged_map = inputs / "batch_map.json"
-                if staged_map.is_file():
-                    self._bmap_rows = list(
-                        json.loads(staged_map.read_text()).get("episodes", []),
-                    )
             if (
-                self._pool is not None and req.kind != "curate"
+                self._pool is not None
             ):  # the curator has no pool
                 try:
                     self._pool_open = self._pool.stage(Path(inputs) / "pool")
@@ -4763,15 +4274,14 @@ class WriterPass:
                 wall = format(Decimal(str(float(self.cfg.deadline_s))).normalize(), "f")
                 first = _at_tools.first_message(self._attention, req, wall)
             pr = self._pass_record
-            if pr is not None and pr.run:
+            if pr is not None:
                 # the run record: the common section and this agent's roster lines, after the constant brief
                 from unify.agents.run_record import prompt_lines
 
                 first += "\n\n" + prompt_lines(pr.root, "writer")
             self._inputs_dir = Path(inputs)
             # point, don't paste: the use table is a file (/inputs/usage/table.md), named by the brief
-            if req.kind != "curate":
-                self._usage(req, wt)
+            self._usage(req, wt)
             messages: list[dict] = [
                 # the library-mode surfacing switches' brief, then the stage-5 rewrites and paragraph (each
                 # unchanged while its switches are off)
@@ -5485,13 +4995,7 @@ class WriterPass:
                 candidate = self.mem.commit_all(
                     wt,
                     f"consolidation pass {pass_id}: {summary[:200]}".replace("\0", ""),
-                    _trailers(
-                        pass_id,
-                        sources,
-                        manifest,
-                        True,
-                        self._role == "curate",
-                    ),
+                    _trailers(pass_id, sources, manifest),
                 )
         # a manifest that could not be read (not a regular file, not JSON) reaches the gate as None: G1 refuses it
         res = self.gate.merge(

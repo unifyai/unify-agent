@@ -119,7 +119,6 @@ def _pass(tmp_path: Path, calls: list[dict], *, role: str = "write", helper=None
         load=lambda eid: ep,
         model_turn=model,
         config=PassConfig(library_mode=True, tools_in_code=False, pass_record_root=str(tmp_path / "out"), **cfg),
-        curate=curate,
     )
     if helper is not None:
         writer.helper_turn = helper

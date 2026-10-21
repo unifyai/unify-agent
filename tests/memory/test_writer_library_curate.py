@@ -86,7 +86,6 @@ def test_a_curate_pass_merges_through_its_own_brief_inputs_role_and_gate(
         load=lambda e: EPISODES[e],
         model_turn=model,
         config=PassConfig(max_calls=10, library_mode=True),
-        curate=_state(parent),
     )
     out = asyncio.run(writer.run(PassRequest("curate", None, [], False), "c1"))
     assert out.passed, out.reasons
@@ -170,7 +169,6 @@ def test_finish_names_a_reason_the_curate_manifest_neither_changes_nor_keeps(
         load=lambda e: EPISODES[e],
         model_turn=model,
         config=PassConfig(max_calls=10, library_mode=True),
-        curate=_state(parent),
     )
     out = asyncio.run(writer.run(PassRequest("curate", None, [], False), "c2"))
     refused = model.outputs["f1"]

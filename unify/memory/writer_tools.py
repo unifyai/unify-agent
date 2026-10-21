@@ -42,21 +42,6 @@ MANIFEST = ".pass/manifest.json"
 
 _POOL_STATUS = ("open", "closed", "any")
 
-# The tools' definitions live in the shared registry (unify/common/tool_registry.py); these names stay for callers.
-READ = _registry.READ
-GREP = _registry.GREP
-OVERVIEW = _registry.OVERVIEW
-READ_EPISODE = _registry.READ_EPISODE
-POOL = _registry.POOL
-FIXTURE = _registry.FIXTURE
-REPLAY = _registry.REPLAY
-#: the writer's and curator's execute_code as the model-API tool sends it while UNIFY_TOOLS_IN_CODE is off
-EXECUTE_CODE = _registry.earlier_tool("writer", "execute_code")
-CHECK = _registry.CHECK
-FINISH = _registry.FINISH
-
-SPECS = (READ, GREP, OVERVIEW, READ_EPISODE, POOL, FIXTURE, REPLAY, EXECUTE_CODE, CHECK, FINISH)
-
 #: Answers the pass loop gives on any tool, by stable form code (defined with the specs in :mod:`.tool_spec`).
 GENERAL_REFUSALS = _GENERAL_REFUSALS
 #: The numbers the per-turn answers state, filled in when a caller does not give them.

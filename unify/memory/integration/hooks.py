@@ -134,7 +134,7 @@ def worker_globals() -> dict[str, list]:
     imported by the first cell that uses it (the actor's guide says the library is ``memory`` in its cells).
     Nothing of the library runs when the worker starts; empty otherwise."""
     path = _copy()
-    if path is None or not getattr(_run(), "library_mode", False):
+    if path is None:
         return {}
     try:
         present = (path / "memory" / "__init__.py").is_file()
@@ -193,13 +193,9 @@ def library_line(actor: bool = True) -> str | None:
 
 
 def worker_mounts() -> list[Path]:
-    """Paths the worker's sandbox binds read-write: the run's memory export (v2), nothing else. Under
-    UNIFY_MEMORY_LIBRARY there are none: the copy is bound read-only (:func:`worker_readonly_mounts`).
-    """
-    path = _checkout()
-    if path is None or getattr(_run(), "library_mode", False):
-        return []
-    return [path]
+    """Paths the worker's sandbox binds read-write: none (the library copy is bound read-only,
+    :func:`worker_readonly_mounts`)."""
+    return []
 
 
 def worker_readonly_mounts() -> list[Path]:
@@ -207,7 +203,7 @@ def worker_readonly_mounts() -> list[Path]:
     whose root, the parent of ``memory/``, is also first on the import path (:func:`worker_paths`).
     """
     path = _checkout()
-    if path is None or not getattr(_run(), "library_mode", False):
+    if path is None:
         return []
     return [path]
 
@@ -226,16 +222,11 @@ def worker_audit() -> dict | None:
         return None
     try:
         from .adapters import audit
-        from .request import memory_library_on
         from .worktree_capture import active
 
         capture = active()
-        library = _library_roots() if memory_library_on() else []
+        library = _library_roots()
         if capture is None:
-            # library mode still needs the library's runtime calls (the evidence "used" rests on): the hook goes
-            # in with the library copy's roots only, so it records calls and the cells' opens of the copy
-            if not memory_library_on():
-                return None
             return {"roots": library, "path": str(Path(audit.__file__))}
         # The sandbox binds the workspace at a fixed path (``unify.sandbox.WORKSPACE_MOUNT``), so that is
         # the root the child sees; the records are mapped back to the host's in :func:`worker_cell_done`.
@@ -353,7 +344,7 @@ def worker_cell_done(events: Any) -> None:
 
         capture = active()
         if capture is not None:
-            library = _library_roots() if getattr(run, "library_mode", False) else []
+            library = _library_roots()
             capture.cell_done(
                 time.time(),
                 _host_paths(_without_library(events, library), capture.workspace),
@@ -401,25 +392,7 @@ def cell_error(text: str) -> str:
     ``index``, with no run or no suspect channel; never raises.
     """
     run = _run()
-    if run is None or not getattr(getattr(run, "surfacing", None), "catalogue", False):
-        return text
-    try:
-        suspect = set(getattr(getattr(run, "state", None), "suspect", ()) or ())
-        hit = sorted({m.group(1) for m in _REFUSAL.finditer(text)} & suspect)
-    except Exception as exc:  # noqa: BLE001 - the cell's error is shown either way
-        logger.warning(
-            "memory v2: refusal not checked for drift (%s)",
-            type(exc).__name__,
-        )
-        return text
-    if not hit:
-        return text
-    notes = "".join(
-        f"memory: env.{ch} is suspect: the environment changed since its functions were built, so this "
-        "refusal may come from that change; do the work directly.\n"
-        for ch in hit
-    )
-    return (text if text.endswith("\n") else text + "\n") + notes
+    return text
 
 
 # --- memory during an episode (UNIFY_MEMORY_IN_EPISODE=on; in_episode.py) ---------------------------------------------

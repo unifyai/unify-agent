@@ -257,8 +257,6 @@ def test_the_brief_describes_every_batch_map_key():
         sample_k=8,
         lint_min=4,
         pytest_env={},
-        staging=True,
-        pool=True,
     )
     for key, _ in lp.row_keys(staging=True, pool=True):
         assert f"`{key}` (" in write, key

@@ -207,7 +207,6 @@ def _pass(tmp_path: Path, cells: list[str], *, role: str = "write", helper=None,
             pass_record_root=str(tmp_path / "out"),
             **cfg,
         ),
-        curate=curate,
     )
     if helper is not None:
         writer.helper_turn = helper

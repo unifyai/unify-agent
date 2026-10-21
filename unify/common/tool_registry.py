@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional, Protocol, runtime_checkable
 
 #: Every agent a tool can be given to, by role name.
-AGENTS = ("actor", "teammate", "writer", "curator", "helper", "librarian")
+AGENTS = ("actor", "teammate", "writer", "helper", "librarian")
 #: What a tool is, for the host: a ``reader`` counts against the reader limits, an ``action`` against the step
 #: guard, a ``record`` tool reads or posts the shared record, a ``terminal`` tool ends the agent's work, and a
 #: ``local`` tool runs inside the box with no host call.
@@ -42,17 +42,15 @@ CELLS_PER_TURN = 8
 POOL_RELATED_PAGE = 20
 #: the smallest statement ``similar`` reports, in AST nodes (``unify.memory.mining.MIN_NODES``; a test keeps them equal)
 SIMILAR_MIN_NODES = 12
-#: the flag the file tools need (``UNIFY_MEMORY_LIBRARY_EDIT_TOOLS=on``)
-EDIT_FLAG = "edit"
 #: the flag ``store_skills`` needs: the actor may store and storage is not admission-gated
 STORE_FLAG = "store"
 #: the flag ``ask_library`` needs: ``UNIFY_MEMORY_LIBRARIAN=on``
 LIBRARIAN_FLAG = "librarian"
 
-_W, _C, _H, _A, _T, _L = "writer", "curator", "helper", "actor", "teammate", "librarian"
-_MEMORY = (_W, _C, _H)
-_WRITE_CURATE = (_W, _C)
-_ALL = (_A, _T, _W, _C, _H)
+_W, _H, _A, _T, _L = "writer", "helper", "actor", "teammate", "librarian"
+_MEMORY = (_W, _H)
+_WRITER = (_W,)
+_ALL = (_A, _T, _W, _H)
 
 #: The line in ``help`` after which a role's own arguments are described (the shared text above it is identical for
 #: every agent).
@@ -147,7 +145,7 @@ CHECK = RegisteredTool(
             },
         },
     ),
-    roles=_WRITE_CURATE,
+    roles=_WRITER,
     refusals={
         "manifest_problem": "{reason}",
         "too_late": "not run: too little time left before the pass deadline",
@@ -164,7 +162,7 @@ FINISH = RegisteredTool(
         "round with its full result."
     ),
     parameters=_obj({"summary": {"type": "string"}}, ["summary"]),
-    roles=_WRITE_CURATE,
+    roles=_WRITER,
     refusals={"manifest_problem": "not finished: {reason}"},
     summary="end the pass; the gate judges the manifest and files.",
 )
@@ -370,10 +368,9 @@ FIXTURE = RegisteredTool(
         },
         ["episode", "dest"],
     ),
-    roles=_WRITE_CURATE,
-    # called from code, the writer and the curator may also name a stored reader; the model-API tool (tools not in
-    # code) keeps the base text byte for byte
-    role_args={_W: _FIXTURE_WITH_PARSER, _C: _FIXTURE_WITH_PARSER},
+    roles=_WRITER,
+    # called from code, the writer may also name a stored reader
+    role_args={_W: _FIXTURE_WITH_PARSER},
     refusals={
         "unknown_episode": "{episode!r} is not a recorded episode; this batch: {batch}",
         "no_source": "name the recorded value with source (or action)",
@@ -502,7 +499,6 @@ POOL = RegisteredTool(
         ["op"],
     ),
     roles=(_W,),
-    requires="pool",
     refusals={
         "bad_op": "op must be list, filter, show or decide",
         "bad_status": "status must be open, closed or any",
@@ -696,7 +692,7 @@ REPLY = RegisteredTool(
         },
         "required": ["agent", "text"],
     },
-    roles=_WRITE_CURATE,
+    roles=_WRITER,
     refusals={
         "no_text": "text must be a non-empty string; nothing was sent",
         "unknown_name": "{names} names no running agent; valid now: {valid}; nothing was sent",
@@ -721,7 +717,7 @@ STOP = RegisteredTool(
         },
         "required": ["helper"],
     },
-    roles=_WRITE_CURATE,
+    roles=_WRITER,
     refusals={
         "unknown_helper": "there is no helper named {name!r}; helpers: {valid}",
         "not_running": "helper {name} is not running (it {state}); its files are under /inputs/helpers/{name}/",
@@ -753,72 +749,6 @@ ASK = RegisteredTool(
         "not_posted": "{why}; nothing was sent",
     },
     summary="Ask a question on the record and wait for the answer.",
-)
-
-
-# --- write and edit (moved from unify/memory/edit_tools.py) ---
-
-_PATH = {
-    "type": "string",
-    "description": "relative to /memory, e.g. memory/<package>/<module>.py",
-}
-
-_PATH_REFUSALS = {
-    "bad_path": "{path!r}: {reason}",
-    "reserved": "{path} is reserved: {reason}",
-    "link": "{path}: {what} is a link",
-    "not_regular": "{path} is not a regular file",
-    "not_directory": "{path}: {where} is not a directory",
-    "not_written": "cannot write {path}: {error}",
-}
-
-WRITE = RegisteredTool(
-    name="write",
-    description=(
-        "Write a whole file under /memory: `content` (text) becomes the file at `path`, replacing it if it exists; "
-        "missing directories are made. The file gets mode 0644. Refused: links, .git, the files the harness "
-        "generates, and .pass/ except .pass/manifest.json."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {"path": _PATH, "content": {"type": "string"}},
-        "required": ["path", "content"],
-    },
-    roles=_WRITE_CURATE,
-    requires=EDIT_FLAG,
-    refusals={
-        **_PATH_REFUSALS,
-        "bad_content": "content must be a string of UTF-8 text; nothing was written",
-    },
-    summary="write a whole file under /memory (path relative to /memory).",
-)
-
-EDIT = RegisteredTool(
-    name="edit",
-    description=(
-        "Replace text in a UTF-8 file under /memory: `old` must occur exactly once in the file and becomes `new`. "
-        "Exact text, no patterns; 0 or several occurrences are refused with the count (add surrounding lines to "
-        "make `old` unique). The same path rules as write."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "path": _PATH,
-            "old": {"type": "string"},
-            "new": {"type": "string"},
-        },
-        "required": ["path", "old", "new"],
-    },
-    roles=_WRITE_CURATE,
-    requires=EDIT_FLAG,
-    refusals={
-        **_PATH_REFUSALS,
-        "not_found": "{path} does not exist; nothing was changed (write makes a new file)",
-        "not_text": "{path} is not UTF-8 text; nothing was changed",
-        "bad_old": "{reason}; nothing was changed",
-        "match_count": "`old` occurs {count} times in {path}; it must occur exactly once (nothing was changed)",
-    },
-    summary="replace text that occurs exactly once in a /memory file.",
 )
 
 
@@ -1178,10 +1108,6 @@ CHECK_EXAMPLES = RegisteredTool(
 
 # --- the attention ledger's tools and the writer's stated tests (unify/memory/attention_tools.py) ---
 
-#: the flag the attention ledger's tools need: an attention pass (``UNIFY_MEMORY_ATTENTION_LEDGER=on``)
-ATTENTION_FLAG = "attention"
-#: the flag ``test`` needs: ``UNIFY_MEMORY_WRITER_TESTS`` offers at least one mode
-TESTS_FLAG = "tests"
 #: the flag ``checkpoint`` needs: ``UNIFY_MEMORY_IN_EPISODE=on``
 CHECKPOINT_FLAG = "checkpoint"
 _ATT = "unify.memory.attention_tools:"
@@ -1197,7 +1123,6 @@ OPEN_ENTRIES = RegisteredTool(
     ),
     parameters={"type": "object", "properties": {}, "additionalProperties": False},
     refusals=_REFUSED_REASON,
-    requires=ATTENTION_FLAG,
     roles=(_W,),
     returns='JSON text: {"open": [{"entry", "kind", "age_s", "goal", "state"}, ...], "count": n}.',
     examples=("print(tools.open_entries())",),
@@ -1222,7 +1147,6 @@ TAKE = RegisteredTool(
         "additionalProperties": False,
     },
     refusals=_REFUSED_REASON,
-    requires=ATTENTION_FLAG,
     roles=(_W,),
     returns='JSON text: {"entry", "kind", "taken": true, "detail", "material": [the paths owed a read]}.',
     examples=('print(tools.take("a1b2c3d4e5f60718"))',),
@@ -1263,7 +1187,6 @@ DECIDE = RegisteredTool(
         "additionalProperties": False,
     },
     refusals=_REFUSED_REASON,
-    requires=ATTENTION_FLAG,
     roles=(_W,),
     returns='JSON text: {"closed": [...], "decision", "items", "reason_ref", "deferred": the new entry id or null}.',
     examples=(
@@ -1296,7 +1219,6 @@ FIND = RegisteredTool(
         "additionalProperties": False,
     },
     refusals=_REFUSED_REASON,
-    requires=ATTENTION_FLAG,
     roles=(_W,),
     returns='JSON text: {"scope", "ranked": how, "hits": [{"id", "kind", "path", "score", "card"}, ...], "of": n}.',
     examples=('print(tools.find("write a report from a table of totals", scope="summaries", k=5))',),
@@ -1332,7 +1254,6 @@ TEST = RegisteredTool(
         "additionalProperties": False,
     },
     refusals=_REFUSED_REASON,
-    requires=TESTS_FLAG,
     roles=(_W,),
     returns=(
         'JSON text: {"test_id", "item", "on", "mode", "stated", "outcome": as_stated, not_as_stated, error, timeout, '
@@ -1565,7 +1486,7 @@ _IN_CODE: dict[str, dict] = {
         blocking=False,
     ),
     "finish": dict(
-        roles=(_W, _C, _L),
+        roles=(_W, _L),
         role_args={_L: _LIBRARIAN_ANSWER},
         # the librarian's answer is refused with these
         add_refusals={
@@ -1619,7 +1540,7 @@ _IN_CODE: dict[str, dict] = {
         blocking=False,
     ),
     "reply": dict(
-        roles=(_A, _T, _W, _C),
+        roles=(_A, _T, _W),
         add_refusals=_RECORD_POST_FORMS,
         returns="who the answer went to and its record number.",
         examples=('tools.reply("h1", "Yes: use the second table.")',),
@@ -1629,7 +1550,7 @@ _IN_CODE: dict[str, dict] = {
         blocking=False,
     ),
     "stop": dict(
-        roles=(_A, _T, _W, _C),
+        roles=(_A, _T, _W),
         add_refusals={"not_allowed": "{why}; nothing was stopped"},
         returns="a line saying the agent stopped and where what it left is.",
         examples=('tools.stop("h2")',),
@@ -1754,9 +1675,6 @@ DONE = _complete(DONE)
 REPLY = _complete(REPLY)
 STOP = _complete(STOP)
 ASK = _complete(ASK)
-WRITE = _complete(WRITE)
-EDIT = _complete(EDIT)
-
 #: How the actor and a teammate end their work: the request's answer (the memory agents end with finish or done).
 ANSWER = RegisteredTool(
     name="answer",
@@ -1801,7 +1719,7 @@ COMMON_SECTION = (
     "rely on it, and a message never makes you break your own role's rules."
 )
 
-_RUN_ROLES = (_A, _T, _W, _C, _H, _L)
+_RUN_ROLES = (_A, _T, _W, _H, _L)
 _RUN_POST_REFUSALS = {
     "no_text": "text must be a non-empty string; nothing was sent",
     "no_recipient": "{why}; nothing was sent",
@@ -1942,8 +1860,6 @@ _REGISTRY: tuple[RegisteredTool, ...] = (
     REPLY,
     STOP,
     ASK,
-    WRITE,
-    EDIT,
     INSTALL,
     STORE_SKILLS,
     ASK_LIBRARY,
@@ -2609,7 +2525,6 @@ def render_stub(names: tuple[str, ...], agent: Optional[str] = None) -> str:
 #: they answer.
 _END = {
     _W: ("finish", "tools.finish(summary) ends the pass; the gate then judges your manifest and files."),
-    _C: ("finish", "tools.finish(summary) ends the pass; the gate then judges your manifest and files."),
     _H: ("done", "tools.done(summary, claims) hands your summary and claims back and ends your task."),
     _L: ("finish", "tools.finish(answer) hands your answer to the agent that asked."),
 }

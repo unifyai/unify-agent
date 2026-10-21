@@ -26,7 +26,7 @@ from typing import Any, Awaitable, Callable
 
 from unify.common.tool_channel import HANDLER_GRACE_S, event_extra, in_thread
 
-from . import edit_tools as _et
+from . import memory_files as _mf
 from . import writer_tools as _wt
 from .tool_spec import form_of
 
@@ -110,16 +110,6 @@ class WriterCalls:
             self.calls += 1  # a writer action, against the step guard
             self.writing()
             return None
-        if tool in _et.NAMES:
-            if self.stop is not None:
-                return _wt.general("stopped", reason=self.stop)
-            if self.remaining() <= 0:
-                self.stop = f"pass deadline of {self.deadline_s} s reached"
-                self.cause(CODE_DEADLINE)
-                return _wt.general("stopped", reason=self.stop)
-            self.calls += 1  # a writer action, against the step guard
-            self.writing()
-            return None
         if tool in ("read", "grep", "overview", "read_episode", "pool"):
             if self.readers >= _wt.READERS_PER_TURN:
                 return _wt.general("readers_per_turn")
@@ -166,7 +156,7 @@ def _reply_of(content: object, paths: list | tuple = ()) -> "_wt.Reply":
 
 def write_draft_manifest(box: Path, manifest: object) -> None:
     """Write the draft manifest ``/memory/.pass/manifest.json`` from /memory's descriptor, component by component
-    without following a link, through a new ``O_EXCL`` file renamed over it (``edit_tools._replace``): a link swapped
+    without following a link, through a new ``O_EXCL`` file renamed over it (``memory_files._replace``): a link swapped
     in at the leaf is replaced, never written through. ``OSError`` on any refusal."""
     import json
 
@@ -177,17 +167,17 @@ def write_draft_manifest(box: Path, manifest: object) -> None:
     )
     parts = _wt.MANIFEST.split("/")
     try:
-        root = os.open(Path(box), _et._DIR_FLAGS)
+        root = os.open(Path(box), _mf._DIR_FLAGS)
     except OSError:
         raise OSError("/memory cannot be opened") from None
     try:
-        dir_fd = _et._parent(root, parts, _wt.MANIFEST, create=True)
+        dir_fd = _mf._parent(root, parts, _wt.MANIFEST)
         try:
-            _et._check_leaf(_et._leaf_kind(dir_fd, parts[-1]), _wt.MANIFEST)
-            _et._replace(dir_fd, parts[-1], text.encode("utf-8"), _wt.MANIFEST)
+            _mf._check_leaf(_mf._leaf_kind(dir_fd, parts[-1]), _wt.MANIFEST)
+            _mf._replace(dir_fd, parts[-1], text.encode("utf-8"), _wt.MANIFEST)
         finally:
             os.close(dir_fd)
-    except _et._Refused as r:
+    except _mf.Refused as r:
         raise OSError(f"/memory/.pass/manifest.json: {r.form}") from None
     finally:
         os.close(root)
@@ -346,21 +336,6 @@ async def replay(ctx: Any, args: dict) -> "_wt.Reply":
     )
 
 
-def _edit_call(name: str) -> Callable[[Any, dict], Any]:
-    async def handler(ctx: Any, args: dict) -> "_wt.Reply":
-        st: WriterCalls = ctx.state
-        reply = await in_thread(_locked, st, _et.call, name, args, st.box)
-        return await _after_write(st, reply)
-
-    handler.__name__ = handler.__qualname__ = name
-    handler.__doc__ = f"The ``{name}`` tool on /memory (descriptor-relative), then the quota measure."
-    return handler
-
-
-write = _edit_call("write")
-edit = _edit_call("edit")
-
-
 def _check_copy(st: WriterCalls, given: object) -> tuple["_wt.Reply | None", Path | None, bool]:
     """Under the /memory lock: write a given manifest to the live draft, then copy /memory (descriptor-relative,
     never following a link) for the check to judge. (refusal or None, the copy, whether a manifest was written)."""
@@ -437,8 +412,7 @@ async def finish(ctx: Any, args: dict) -> "_wt.Reply":
     st: WriterCalls = ctx.state
     if st.kill_box is not None:
         await st.kill_box()
-    library = bool(st.writer.cfg.library_mode)
-    if library and (st.uncapped or st.phase["g1_refusals"] < FINISH_G1_REFUSALS):
+    if st.uncapped or st.phase["g1_refusals"] < FINISH_G1_REFUSALS:
         g1, empty = await in_thread(_locked, st, st.writer._finish_manifest_problem, st.box)
     else:
         g1, empty = None, False
@@ -456,7 +430,7 @@ async def finish(ctx: Any, args: dict) -> "_wt.Reply":
         # the gate never starts while a handler thread of this pass runs
         if st.threads is not None and not await st.threads.wait_idle(HANDLER_GRACE_S):
             st.stop = "a tool handler of this pass did not end; the gate does not start"
-        reply = _wt.Reply("ok", paths=manifest_path if library else ())
+        reply = _wt.Reply("ok", paths=manifest_path)
     st.finish_text = reply.text
     return reply
 

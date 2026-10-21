@@ -174,7 +174,7 @@ async def test_the_system_message_is_the_same_bytes_for_a_small_and_a_large_libr
     small = _copy(tmp_path / "small", WEB)
     large = _copy(tmp_path / "large", {**WEB, **DOCS, **_bulk(80)})
     assert len(L.library_items(large)[0]) > len(L.library_items(small)[0]) + 80
-    sessions = [L.LibrarianSession(copy=c, turn=Turn([]), compact=False) for c in (small, large)]
+    sessions = [L.LibrarianSession(copy=c, turn=Turn([])) for c in (small, large)]
     try:
         first, second = (s.messages[0]["content"] for s in sessions)
     finally:
@@ -449,7 +449,7 @@ def test_memory_ask_shows_each_fits_call_beside_its_reason(tmp_path):
 
 
 def _session(copy: Path, turn: Turn, library: str) -> L.LibrarianSession:
-    session = L.LibrarianSession(copy=copy, turn=turn, compact=False, library=library)
+    session = L.LibrarianSession(copy=copy, turn=turn, library=library)
 
     async def tool_call(tc: dict) -> str:
         answer = json.loads(json.loads(tc["function"]["arguments"])["code"])

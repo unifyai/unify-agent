@@ -13,7 +13,7 @@ from .example_calls import CALLS_DIR, CALLS_OUT
 from .integration.switch import PASS_WALL_S
 from .library_prompts import MEMORY_HELP_LINE
 
-#: The real limits of a writer, curator or helper pass, each with its number (the briefs state them as information).
+#: The real limits of a writer or helper pass, each with its number (the briefs state them as information).
 _PASS_LIMITS = [
     {"limit": "reader page", "value": 8000, "unit": "bytes"},
     {"limit": "reader calls per model turn", "value": 16, "unit": "calls"},
@@ -96,7 +96,7 @@ _BOX_MOUNTS = [
 
 
 #: The record of the calls a function's tests make, written by the observe-only plugin in the gate's test box while
-#: the gate runs the tests the writer or curator wrote. Gate-internal: no writer-visible artifact.
+#: the gate runs the tests the writer wrote. Gate-internal: no writer-visible artifact.
 _CALL_RECORD = {"artifact": "call record", "path": CALLS_OUT}
 #: The gate's test box mounts the plugin read-only and a fresh directory for the record read-write.
 _CALL_RECORD_MOUNTS = [
@@ -143,11 +143,6 @@ AGENT_PROFILES: tuple[dict, ...] = (
                 "artifact": "episode record",
                 "path": "<state>/episodes/<episode>",
                 "consumer": "writer",
-            },
-            {
-                "artifact": "episode record",
-                "path": "<state>/episodes/<episode>",
-                "consumer": "curator",
             },
             {
                 "artifact": "episode record",
@@ -416,117 +411,6 @@ AGENT_PROFILES: tuple[dict, ...] = (
         ],
     },
     {
-        "agent": "curator",
-        "mode": "curate",
-        "instructions": "unify.memory.library_prompts:curate_brief_now",
-        "json_tools": list(_JSON_TOOLS),
-        "in_code": [
-            "read",
-            "grep",
-            "overview",
-            "read_episode",
-            "fixture",
-            *_RECORD_TOOLS,
-            "reply",
-            "stop",
-            "check",
-            "finish",
-            "sh",
-            "check_examples",
-        ],
-        "mounts": list(_BOX_MOUNTS),
-        "denied": [
-            "pool",
-            "similar",
-            "replay",
-            "delegate",
-            "staging",
-            "batch map",
-            "network",
-            "credentials",
-        ],
-        "consumes": [
-            {"artifact": "curate inputs", "path": "/inputs/curate"},
-            {"artifact": "gate result", "path": "/inputs/gate"},
-            {"artifact": "episode record", "path": "read_episode"},
-            {"artifact": "record", "path": _RECORD},
-        ],
-        "produces": [
-            {"artifact": "library item", "path": "/memory/memory/", "consumer": "gate"},
-            {
-                "artifact": "manifest",
-                "path": "/memory/.pass/manifest.json",
-                "consumer": "gate",
-            },
-            {"artifact": "record", "path": _RECORD, "consumer": "helper"},
-            # its tests, run by the gate, give the call record
-            {**_CALL_RECORD, "consumer": "gate"},
-        ],
-        "limits": list(_PASS_LIMITS),
-        "inlined": [{"what": "brief (constant)", "bound": _INLINE_BOUND}],
-        "capabilities": [
-            "read any recorded episode read-only",
-            "run Python in a confined box",
-            "write the library copy",
-        ],
-        "absent_paths": [
-            "/inputs/staging",
-            "/inputs/pool",
-            "/inputs/batch_map.json",
-            "/memory/.git",
-        ],
-        "expectations": [
-            {
-                "expectation": "read why the pass runs",
-                "tool": "read",
-                "permission": "/inputs ro",
-            },
-            {
-                "expectation": "read episodes cited by retired items",
-                "tool": "read_episode",
-                "permission": "recorded episodes ro",
-            },
-            {
-                "expectation": "make a recorded value a fixture",
-                "tool": "fixture",
-                "permission": "/memory rw",
-            },
-            {
-                "expectation": "merge, repair or retire items",
-                "tool": "execute_code",
-                "permission": "/memory rw",
-            },
-            {
-                "expectation": "check before finishing",
-                "tool": "check",
-                "permission": "/memory rw",
-            },
-            {
-                "expectation": "end the pass",
-                "tool": "finish",
-                "permission": "/memory rw",
-            },
-        ],
-        "fields": [
-            "manifest.items",
-            "manifest.deleted",
-            "manifest.retired",
-            "manifest.deleted_tests",
-            "manifest.aliases",
-            "manifest.tests_changed",
-            "manifest.why",
-            "manifest.summary",
-        ],
-        "emits": list(_PASS_EVENTS),
-        "pointers": [
-            {"pointer": "/inputs/curate/trigger.json", "tool": "read"},
-            {"pointer": "recorded episodes", "tool": "read_episode"},
-            {"pointer": "an episode's end and steps", "tool": "overview"},
-            {"pointer": "/memory/INDEX.md", "tool": "read"},
-            {"pointer": "agents on the record", "tool": "who"},
-        ],
-    },
-    {
         "agent": "helper",
         "mode": "helper",
         "instructions": "unify.memory.helpers:helper_brief",
@@ -574,7 +458,6 @@ AGENT_PROFILES: tuple[dict, ...] = (
             },
             # helper to helper included: any agent on the record can address any other
             {"artifact": "record", "path": _RECORD, "consumer": "writer"},
-            {"artifact": "record", "path": _RECORD, "consumer": "curator"},
             {"artifact": "record", "path": _RECORD, "consumer": "helper"},
         ],
         # the helper's own limits, as its brief and first message state them (helpers.py constants)
@@ -677,11 +560,6 @@ AGENT_PROFILES: tuple[dict, ...] = (
                 "consumer": "writer",
             },
             {
-                "artifact": "gate result",
-                "path": "/inputs/gate/result-<round>.md",
-                "consumer": "curator",
-            },
-            {
                 "artifact": "library export",
                 "path": "library main, copied to <library scratch copy>",
                 "consumer": "actor",
@@ -727,11 +605,6 @@ AGENT_PROFILES: tuple[dict, ...] = (
             {"artifact": "staging", "path": "/inputs/staging", "consumer": "writer"},
             {"artifact": "pool", "path": "/inputs/pool", "consumer": "writer"},
             {"artifact": "drafts", "path": "/inputs/drafts", "consumer": "writer"},
-            {
-                "artifact": "curate inputs",
-                "path": "/inputs/curate",
-                "consumer": "curator",
-            },
         ],
         "limits": [],
         "inlined": [],
@@ -774,10 +647,6 @@ _MODE_TEXT = {"ro": "read-only", "rw": "writable"}
 #: help holds those, and the line points to it.
 _LIBRARY_LINE = {
     "writer": (
-        "The library is the Python package `memory` under /memory, bound as `memory` in your cells. "
-        + MEMORY_HELP_LINE
-    ),
-    "curator": (
         "The library is the Python package `memory` under /memory, bound as `memory` in your cells. "
         + MEMORY_HELP_LINE
     ),
@@ -827,7 +696,7 @@ def environment_text(agent: str, cell_s: float | None = None) -> str:
 
 
 def in_code_opening(agent: str, flags: frozenset[str] = frozenset(), cell_s: float | None = None) -> str:
-    """The shared opening (:func:`unify.common.tool_registry.preamble`) of the writer, curator or a helper when tools
+    """The shared opening (:func:`unify.common.tool_registry.preamble`) of the writer or a helper when tools
     are called from code: its box and limits, its library line, the tools its allow-list has with *flags* on, that
     variables are kept between cells, and the names bound in its cells (``tools`` and ``memory``). Constant for a run,
     so the system message stays a stable prefix."""

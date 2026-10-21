@@ -86,10 +86,11 @@ _HEADING = re.compile(r"^### (\S+)\s*$")
 
 
 def enabled() -> bool:
-    """Whether ``UNIFY_MEMORY_LIBRARIAN=on``."""
+    """Whether the run has the librarian: whenever it has memory (``UNIFY_MEMORY`` is ``on`` or ``in_episode``)."""
+    from unify.memory.integration.switch import memory_on
     from unify.settings import SETTINGS
 
-    return getattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "off") == "on"
+    return memory_on(SETTINGS)
 
 
 # --- the prompt -----------------------------------------------------------------------------------------------------
@@ -770,7 +771,6 @@ class LibrarianSession:
         request_id: str | None = None,
         cell_limit_s: float = CELL_TIMEOUT_S,
         step_guard: int | None = None,
-        compact: bool | None = None,
         library: str | None = None,
         run_record: Any = None,
         name: str = AGENT,
@@ -801,7 +801,6 @@ class LibrarianSession:
         self.turn = turn
         self.cell_limit_s = float(cell_limit_s)
         self.step_guard = STEP_GUARD if step_guard is None else int(step_guard)
-        self.compact = _compact_on() if compact is None else bool(compact)
         self.usage = Usage()
         #: every ask this session answered or tried to (the use record's ``questions``), and those answered with an
         #: answer it already gave (``answers_from_cache``)
@@ -945,7 +944,7 @@ class LibrarianSession:
 
         from .writer_pass import compact_by_summary, compaction_due
 
-        if not self.compact or not compaction_due(last_prompt, getattr(self.turn, "max_input_tokens", None)):
+        if not compaction_due(last_prompt, getattr(self.turn, "max_input_tokens", None)):
             return
         with call_kind(CALL_KIND):
             comp = await compact_by_summary(self.messages, self.turn, self.tools, pointer=RESTART_POINTER)
@@ -1053,15 +1052,6 @@ class LibrarianSession:
                     self.run_record.leave(self.name)
                 except Exception:  # noqa: BLE001 - leaving never fails the request's end
                     pass
-
-
-def _compact_on() -> bool:
-    try:
-        from unify.settings import SETTINGS
-
-        return str(getattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_COMPACT", "on") or "on") != "off"
-    except Exception:  # noqa: BLE001 - no settings: the default
-        return True
 
 
 # --- opening the request's session ------------------------------------------------------------------------------------
@@ -1199,7 +1189,7 @@ def opener(
         run = _request.current()
         # the copy as cells read it (UNIFY_MEMORY_IN_EPISODE: its link to the current pin), else the export itself
         copy = getattr(run, "copy_root", None) or getattr(getattr(run, "paths", None), "checkout", None)
-        if run is None or copy is None or not getattr(run, "library_mode", False):
+        if run is None or copy is None:
             raise Unavailable("no library is mounted in this request")
         if library_items(Path(copy)) is None:
             raise Unavailable("the library's items cannot be read")

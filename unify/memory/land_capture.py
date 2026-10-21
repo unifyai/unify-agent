@@ -43,8 +43,8 @@ Checks, each a fixed refusal: the id is 16 hex digits (optionally ``capture:``-p
 files are read without following a link, only as regular files, size-bounded; ``procedure.py``'s sha256 starts with
 the id; the capture is not failed and not retired; the gate's safety checks hold (:func:`.captures.safety`); nothing
 landed holds a key-shaped string or a URL with a password; *package* and *name* are plain module identifiers. Every
-file is written through the writer's ``write`` tool (:func:`.edit_tools.call`: the same path checks, never through a
-link) and the fixture tool; the caller then measures the quota as after any write. Model-written code runs only in
+file is written through :func:`.memory_files.write` (the same path checks as every host write, never through a link)
+and the fixture tool; the caller then measures the quota as after any write. Model-written code runs only in
 :func:`.sandbox_run.run_confined`; on the host it is only parsed as data.
 
 Not in this build: the ``episode`` cover of the ``request`` runner (design I.3.5) on the procedure's entry.
@@ -69,7 +69,7 @@ from pathlib import Path
 from typing import Any
 
 from . import captures as _captures
-from . import edit_tools as _et
+from . import memory_files
 from . import fixtures as _fx
 from . import safe_paths as _safe
 from . import writer_tools as _wt
@@ -473,14 +473,15 @@ def _box_text(box: Path, rel: str) -> str | None:
 
 
 def _write(box: Path, rel: str, text: str, written: list[str]) -> None:
-    """Through the writer's ``write`` tool: its path checks, never through a link. The final text is scanned for a
+    """Through :func:`.memory_files.write`: its path checks, never through a link. The final text is scanned for a
     key shape too (the store's source was scanned before the rename; a renamed name or the generated docstring line
     must never carry one into the library the actor sees)."""
     if _looks_like_key(text):
         raise _NotLanded("not_landed", reason=f"/memory/{rel} would hold a key-shaped string")
-    reply = _et.call("write", {"path": rel, "content": text}, box)
-    if reply.status != "ok":
-        raise _NotLanded("not_landed", reason=reply.text[:300])
+    try:
+        memory_files.write(box, rel, text)
+    except memory_files.Refused as r:
+        raise _NotLanded("not_landed", reason=r.text[:300]) from None
     written.append(rel)
 
 
