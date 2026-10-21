@@ -19,6 +19,7 @@ from unify.agents.options import Options
 from unify.common import tool_registry as R
 from unify.settings import SETTINGS
 from tests.memory.test_helpers import fake_box  # noqa: F401,F811 (fixture)
+from tests.agents.roster import read_roster
 
 RECORD_TOOLS = {"send", "messages", "wait", "who"}
 FAST = Options(
@@ -154,7 +155,7 @@ def test_the_actors_and_a_teammates_first_message_carry_the_common_section(
     rows = rr.read_entries(tmp_path / "home")
     assert rows[0]["author"] == "user" and rows[0]["mentions"] == [main.name]
     main.leave()
-    assert {r["name"]: r["state"] for r in rr.read_roster(tmp_path / "home")["agents"]}[
+    assert {r["name"]: r["state"] for r in read_roster(tmp_path / "home")["agents"]}[
         main.name
     ] == "ended"
 
@@ -198,7 +199,7 @@ def test_the_writers_first_message_carries_the_common_section_and_its_brief_poin
     assert first.count(R.COMMON_SECTION) == 1 and "you are `writer` (writer)" in first
     assert messaging.RECORD_TEXT_RUN in system and R.COMMON_SECTION not in system
     # the pass's agent joined the run record and left it at the pass's end (no service holds its place)
-    roster = {r["name"]: r for r in rr.read_roster(stores.paths.home)["agents"]}
+    roster = {r["name"]: r for r in read_roster(stores.paths.home)["agents"]}
     assert roster["writer"]["state"] == "ended" and roster["writer"]["role"] == "writer"
 
 
@@ -336,7 +337,7 @@ def test_a_helper_box_that_tries_to_open_the_run_record_is_refused(tmp_path):
         pass_id="cd" * 8,
         run_home=str(home),
     )
-    targets = [rr.record_path(home), rr.deliveries_path(home), rr.roster_path(home)]
+    targets = [rr.record_path(home), rr.deliveries_path(home), rr.agents_dir(home) / rr.ROSTER_FILE]
     code = (
         "import os\n"
         f"for p in {[str(t) for t in targets]!r}:\n"

@@ -15,7 +15,6 @@ def _pool(start, **opts):
     return Pool(
         Record(None, options=Options(min_post_interval_s=0, **opts)),
         start_helper=start,
-        spawn_allowed=True,
     )
 
 
@@ -48,15 +47,7 @@ async def test_spawn_posts_the_task_and_the_reply_comes_back_to_the_spawner():
 
 
 @pytest.mark.asyncio
-async def test_spawning_is_refused_only_when_not_allowed():
-    refused = Pool(
-        Record(None, options=Options()),
-        start_helper=_replies("x"),
-        spawn_allowed=False,
-        spawn_refusal="needs the worker sandbox",
-    )
-    with pytest.raises(PermissionError, match="worker sandbox"):
-        await refused.spawn("root", REQUEST)
+async def test_spawning_is_refused_when_the_record_starts_no_helpers():
     off = _pool(_replies("x"), max_total=0)
     with pytest.raises(PermissionError, match="off"):
         await off.spawn("root", REQUEST)

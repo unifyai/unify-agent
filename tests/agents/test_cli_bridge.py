@@ -44,7 +44,7 @@ def _pool():
         return "ok"
 
     rec = Record(None, options=Options(min_post_interval_s=0), user_reads=True)
-    return Pool(rec, start_helper=start, spawn_allowed=True)
+    return Pool(rec, start_helper=start)
 
 
 def _bridge():

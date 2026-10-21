@@ -34,7 +34,7 @@ def _agent_pool(replies: dict | None = None, **options):
         await asyncio.sleep(0)
         return (replies or {}).get(name, f"{name} did: {request}")
 
-    return Pool(record, start_helper=start, spawn_allowed=True)
+    return Pool(record, start_helper=start)
 
 
 def test_both_records_are_the_one_interface():

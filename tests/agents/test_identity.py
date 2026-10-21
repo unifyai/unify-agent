@@ -22,7 +22,6 @@ async def test_helper_names_and_numbering_survive_a_reload(tmp_path):
     first = Pool(
         Record(RecordLog(path, create=True), options=Options(min_post_interval_s=0)),
         start_helper=_done,
-        spawn_allowed=True,
     )
     await first.spawn("root", REQUEST)
     await first.spawn("root", REQUEST, name="csv-stats")
@@ -35,7 +34,7 @@ async def test_helper_names_and_numbering_survive_a_reload(tmp_path):
     )
     assert record.participants["h1"].state == "replied"
     assert record.participants["csv-stats"].spawner == "root"
-    again = Pool(record, start_helper=_done, spawn_allowed=True)
+    again = Pool(record, start_helper=_done)
     assert await again.spawn("root", REQUEST) == "h2"
     with pytest.raises(ValueError):
         await again.spawn("root", REQUEST, name="csv-stats")

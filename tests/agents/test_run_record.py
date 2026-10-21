@@ -21,6 +21,7 @@ import pytest
 from unify.agents import run_record as rr
 from unify.agents.options import Options
 from unify.agents.record import PostRefused
+from tests.agents.roster import read_roster
 
 FAST = Options(
     max_live=16,
@@ -426,7 +427,7 @@ def test_rows_carry_the_schema_fields(tmp_path):
     assert set(row) >= {"v", "seq", "ts", "author", "kind", "text", "mentions", "role", "episode", "pass_id",
                         "reply_to", "refs"}  # fmt: skip
     assert row["ts"].endswith("Z") and row["kind"] == "post" and row["reply_to"] is None
-    roster = rr.read_roster(home)
+    roster = read_roster(home)
     actor = next(a for a in roster["agents"] if a["name"] == "actor-3f9a")
     assert actor["can_mention"] == ["*"] and actor["state"] == "running"
     assert [m["who"] for m in actor["should_mention"]] == ["writer", "librarian"]

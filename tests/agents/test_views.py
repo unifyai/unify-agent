@@ -65,7 +65,7 @@ async def test_agents_view_spawns_as_its_owner():
         return "ok"
 
     rec = Record(None, options=Options(min_post_interval_s=0))
-    pool = Pool(rec, start_helper=start, spawn_allowed=True)
+    pool = Pool(rec, start_helper=start)
     agents = AgentsView(pool, "root")
     name = await agents.spawn("Summarise b.csv: rows and columns please.")
     assert rec.entries[0].author == "root" and name == "h1"

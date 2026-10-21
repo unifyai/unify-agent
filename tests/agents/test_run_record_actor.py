@@ -25,6 +25,7 @@ from unify.agents import run_record as rr
 from unify.common import tool_registry as R
 from unify.db import store_home
 from unify.settings import SETTINGS
+from tests.agents.roster import read_roster
 
 REPORT = "@writer the served item item:notes/totals gave a wrong sum here: action:0"
 
@@ -91,7 +92,7 @@ async def test_the_actor_reports_to_the_writer_and_reads_the_roster_through_its_
     # the first message carried the common section and the actor's roster lines
     assert any(R.COMMON_SECTION in _text(m) for m in requests[0]["messages"] if m.get("role") == "user")
     # the actor left the record at its request's end
-    roster = {r["name"]: r["state"] for r in rr.read_roster(home)["agents"]}
+    roster = {r["name"]: r["state"] for r in read_roster(home)["agents"]}
     assert roster[name] == "ended" and roster["writer"] == "idle"
 
 

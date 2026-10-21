@@ -24,6 +24,7 @@ from unify.common import tool_registry as R
 from unify.memory.integration import fork, fork_worker
 from unify.memory.integration.paths import Paths
 from unify.settings import SETTINGS
+from tests.agents.roster import read_roster
 
 TOKEN = "fork-lane-token-for-a-test-0042"  # pragma: allowlist secret
 
@@ -295,7 +296,7 @@ def test_a_fork_tells_the_writer_where_its_summary_is_and_answers_its_question(
     assert "refused import" not in relay_log.read_text(), relay_log.read_text()
     assert not (folder / fork.RELAY_HOME).exists()
     # the fork left the record when it settled; the route token never reached it
-    roster = {r["name"]: r["state"] for r in rr.read_roster(home)["agents"]}
+    roster = {r["name"]: r["state"] for r in read_roster(home)["agents"]}
     assert roster[name] == "ended"
     assert (
         TOKEN not in rr.record_path(home).read_text()
@@ -426,7 +427,7 @@ def test_with_the_run_record_on_the_fork_starts_through_its_relay_with_the_commo
         spec["doc"]["body"]["messages"][:2] == source["sent_messages"]
         and spec["doc"]["body"]["tools"] == source["tools"]
     )
-    roster = {r["name"]: r for r in rr.read_roster(paths.home)["agents"]}
+    roster = {r["name"]: r for r in read_roster(paths.home)["agents"]}
     assert (
         roster["fork-3f9a"]["role"] == "fork" and roster["fork-3f9a"]["episode"] == eid
     )
@@ -509,7 +510,7 @@ def test_a_segment_fork_is_named_for_its_segment_and_its_calls_carry_episode_and
     assert spec["doc"]["headers"]["x-unify-episode"] == "20261020T210311-3f9a0c1d"
     assert spec["doc"]["headers"]["x-unify-segment"] == "2"
     row = next(
-        r for r in rr.read_roster(paths.home)["agents"] if r["name"] == "fork-3f9a-s2"
+        r for r in read_roster(paths.home)["agents"] if r["name"] == "fork-3f9a-s2"
     )
     assert row["episode"] == "20261020T210311-3f9a0c1d" and row["role"] == "fork"
 
@@ -544,5 +545,5 @@ def test_a_box_that_ignores_sigterm_at_the_end_of_its_wait_is_killed(tmp_path, m
     started = time.monotonic()
     code = asyncio.run(asyncio.wait_for(fork_relay.relay(spec), 30))
     assert code == -9 and time.monotonic() - started < 15
-    roster = {r["name"]: r["state"] for r in rr.read_roster(home)["agents"]}
+    roster = {r["name"]: r["state"] for r in read_roster(home)["agents"]}
     assert roster["fork-3f9a"] == "ended"
