@@ -1,5 +1,5 @@
 """What the writer is told: briefs per pass type and configuration, the first message, and what the transcript
-keeps. Lists that grow (library index, pool, use table, drafts, curate reasons) are files the brief points to; a
+keeps. Lists that grow (library index, pool, use table, drafts) are files the brief points to; a
 sentence that relies on an optional tool appears only when that tool is registered for the role; no economy cue or
 reading-quota word reaches the writer; the transcript keeps the brief and the tool JSON by hash.
 """
@@ -20,7 +20,6 @@ from unify.memory.trigger import PassRequest
 from unify.memory.usage import LIBRARY_COPY, writer_usage_record
 
 _SCHEMA = {"type": "object", "properties": {}}
-_WRITE_ONLY_TOOLS = ("pool", "similar", "delegate", "replay", "land_capture")
 
 
 def _spec(name, roles, requires=None):
@@ -28,27 +27,27 @@ def _spec(name, roles, requires=None):
         name=name,
         description=f"The {name} tool. More text.",
         parameters=_SCHEMA,
-        # the registry names the agents (writer, curator, helper), not the earlier pass roles
-        roles=tuple(sorted({"write": "writer", "curate": "curator"}.get(r, r) for r in roles)),
+        # the registry names the agents (writer, helper), not the earlier pass roles
+        roles=tuple(sorted({"write": "writer"}.get(r, r) for r in roles)),
         requires=requires,
     )
 
 
 #: A registry with every tool the contracts name, so the briefs render as they will once all tools exist.
 _FULL = (
-    _spec("read", {"write", "curate", "helper"}),
-    _spec("grep", {"write", "curate", "helper"}),
-    _spec("overview", {"write", "curate", "helper"}),
-    _spec("read_episode", {"write", "curate", "helper"}),
+    _spec("read", {"write", "helper"}),
+    _spec("grep", {"write", "helper"}),
+    _spec("overview", {"write", "helper"}),
+    _spec("read_episode", {"write", "helper"}),
     _spec("similar", {"write", "helper"}),
     _spec("pool", {"write"}, requires="pool"),
-    _spec("fixture", {"write", "curate"}),
+    _spec("fixture", {"write"}),
     _spec("replay", {"write"}),
     _spec("land_capture", {"write"}),
     _spec("delegate", {"write"}),
-    _spec("execute_code", {"write", "curate", "helper"}),
-    _spec("check", {"write", "curate"}),
-    _spec("finish", {"write", "curate"}),
+    _spec("execute_code", {"write", "helper"}),
+    _spec("check", {"write"}),
+    _spec("finish", {"write"}),
 )
 
 
@@ -92,7 +91,6 @@ def test_no_inline_list_is_longer_than_the_bound(registry):
     for name, text in {
         **_briefs(),
         "first": _first(),
-        "first curate": _first("curate"),
     }.items():
         for items, size in _lists(text):
             assert items <= lp.MAX_INLINE_LIST, name
@@ -105,7 +103,6 @@ def test_no_banned_word_reaches_the_writer(registry):
     for name, text in {
         **_briefs(),
         "first": _first(),
-        "first curate": _first("curate"),
     }.items():
         low = text.lower()
         for word in lp.BANNED_WORDS:
@@ -142,46 +139,36 @@ def test_the_first_message_points_and_is_stable_apart_from_ids_and_the_wall_cloc
         and f"over {lp.MAX_INLINE_LIST + 1} recorded episodes." in many
     )
     assert len(one.encode()) <= lp.MAX_INLINE_LIST_BYTES
-    cur = _first("curate")
-    assert "/inputs/curate/trigger.json" in cur and "runs because" not in cur
 
 
-def test_optional_inputs_appear_only_when_present(registry):
-    b = _briefs()
-    for name, text in b.items():
-        fork = "fork=True" in name
-        pool = "pool=True" in name
-        assert ("/inputs/staging" in text) == fork, name
-        assert ("`staging`" in text) == fork, name
-        assert ("/inputs/pool" in text) == pool, name
-        assert ("pool_entries" in text) == pool, name
-    curate = b["curate"]
-    for denied in ("/inputs/staging", "/inputs/pool", "batch_map", "/inputs/helpers"):
-        assert denied not in curate
-    for tool in _WRITE_ONLY_TOOLS:
-        assert f"`{tool}`" not in curate
-    assert '"kept": {' in curate and "never a failure" in curate
+def test_the_staged_inputs_are_always_named(registry):
+    """Rev 2: the fork and the pool are always on, so every brief names the staging folder and the pool, and the
+    batch map's keys (in /inputs/batch_map_keys.md, which the brief points to) carry `staging` and `pool_entries`."""
+    keys = lp.input_pointer_files()[lp.BATCH_MAP_KEYS_FILE]
+    assert "`staging`" in keys and "`pool_entries`" in keys
+    for name, text in _briefs().items():
+        assert "/inputs/staging" in text and "`staging`" in text, name
+        assert "/inputs/pool" in text, name
+        assert "/inputs/batch_map_keys.md" in text, name
 
 
 def test_every_named_path_is_a_staged_input_or_the_library(registry):
+    # rev 2 also stages /inputs/attention (the writer's entries) and the two reference files of
+    # library_prompts.input_pointer_files; "/inputs" alone is the folder itself
     allowed = re.compile(
-        r"^/(inputs/(staging|captures|helpers|pool|drafts|batch_map\.json|episodes|shared|usage|gate|curate)|memory|outputs)\b",
+        r"^/(inputs/(staging|captures|helpers|pool|drafts|batch_map\.json|batch_map_keys\.md|README\.md|attention|"
+        r"episodes|shared|usage|gate)|inputs$|memory|outputs)\b",
     )
     for name, text in _briefs().items():
         for path in re.findall(r"(?<![\w.])/(?:inputs|memory|outputs)[\w./<>-]*", text):
             assert allowed.match(path), (name, path)
 
 
-def test_the_brief_states_no_git_history_and_the_curate_rollback_files(registry):
+def test_the_brief_states_no_git_history(registry):
     b = _briefs()
     for name, text in b.items():
         assert "no git history" in text, name
         assert "git log" not in text and "git show" not in text, name
-    assert "/inputs/curate/rollback/" in b["curate"]
-    assert (
-        "same_shape.json" in b["curate"]
-        and "/inputs/gate/previous.md" not in b["curate"]
-    )
 
 
 def test_limits_are_stated_once_as_information(registry):
@@ -204,8 +191,10 @@ def test_the_gate_section_defines_every_check_it_names(registry):
 
 def test_trust_and_field_contradictions_are_gone(registry):
     write = lp.write_brief_now()
-    # the manifest parser reads field_types per fixture field in library mode, so the brief documents that form
-    assert '`{"<fixture path>#<field>": "<type>"}`' in write
+    # the manifest parser reads field_types per fixture field in library mode, so the inputs' reference file
+    # (/inputs/README.md, which the brief points to) documents that form
+    assert '`{"<fixture path>#<field>": "<type>"}`' in lp.input_pointer_files()[lp.INPUTS_README_FILE]
+    assert "(form: /inputs/README.md)" in write
     assert (
         "in this order of trust" in write
         and "A value you make up is not trusted" in write
@@ -214,7 +203,7 @@ def test_trust_and_field_contradictions_are_gone(registry):
     # the done condition is a decision, not a count
     assert (
         "when you have built the best library items you can from this batch, with the proposals as material and the episodes as evidence, and every item you wrote "
-        "has passed the gate or is kept as a draft"
+        "has landed with its label, or is kept as a draft with the check that refused it"
     ) in write
 
 
@@ -226,8 +215,11 @@ def test_the_brief_describes_every_batch_map_key():
         lint_min=4,
         pytest_env={},
     )
+    # rev 2: the keys are described in /inputs/batch_map_keys.md, which the brief points to
+    keys = lp.input_pointer_files()[lp.BATCH_MAP_KEYS_FILE]
+    assert "/inputs/batch_map_keys.md" in write
     for key, _ in lp.row_keys():
-        assert f"`{key}` (" in write, key
+        assert f"`{key}` (" in keys, key
 
 
 def test_pool_kinds_follow_the_pool_module():
