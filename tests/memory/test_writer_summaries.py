@@ -151,21 +151,13 @@ def _system(model) -> str:
 # --- the brief ------------------------------------------------------------------------------------------------------
 
 
-@pytest.fixture(params=[False, True], ids=["json-tools", "tools-in-code"])
-def in_code(request, monkeypatch):
-    from unify.common import in_code_switch
-
-    monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: request.param)
-    return request.param
-
-
 def _section(text: str, heading: str) -> str:
     start = text.index(heading)
     nxt = text.find("\n# ", start + len(heading))
     return text[start : nxt if nxt >= 0 else len(text)]
 
 
-def test_the_brief_points_to_the_summaries_first(in_code):
+def test_the_brief_points_to_the_summaries_first():
     text = lp.write_brief_now()
     inputs = _section(text, "# Inputs")
     assert SUMMARY_PATH in inputs and WITHHELD_SENTENCE in inputs
@@ -179,18 +171,13 @@ def test_the_brief_points_to_the_summaries_first(in_code):
     assert OPEN_ONLY_WHEN_NEEDED in how[two:]
     assert NOT_EVIDENCE in how
     assert lp.benchmark_words(text) == [] and lp.example_checks(text) == []
-    # with the fork off there are no summaries, and the brief names none
-    assert SUMMARY_PATH not in lp.write_brief_now(staging=False)
-    assert SUMMARY_PATH not in lp.write_brief_now(staging=False, helper=True)
 
 
-def test_the_brief_stays_complete_with_summaries(in_code):
+def test_the_brief_stays_complete_with_summaries():
     text = lp.write_brief_now(helper=True)
     assert SUMMARY_PATH in text
     for heading in ("# Role", "# Inputs", "# How to work", "# Done"):
         assert heading in text, heading
-    if not in_code:
-        assert "# Tools" in text
     # the reader's other files are still described, and every tool the writer uses is named where it is used
     for name in ("`candidates/<name>.py`", "`cases/<name>.json`", "`notes.md`", "staging:<episode>/candidates"):
         assert name in text, name
@@ -199,7 +186,7 @@ def test_the_brief_stays_complete_with_summaries(in_code):
     assert "untrusted" in text
 
 
-def test_delegate_is_still_offered_beside_the_summaries(in_code):
+def test_delegate_is_still_offered_beside_the_summaries():
     text = lp.write_brief_now(helper=True)
     assert "delegate" in text
     assert "delegate" in lp._tool_names("write", lp.tool_flags(helper=True))

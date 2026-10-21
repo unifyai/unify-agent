@@ -116,7 +116,7 @@ def test_a_landable_capture_reaches_the_writer_once_and_a_failed_one_keeps_its_s
 def test_the_brief_says_where_the_procedure_is_and_which_call_lands_it():
     from unify.memory import library_prompts as lp
 
-    doc = dict(lp.row_keys(staging=True))["staging"]
+    doc = dict(lp.row_keys())["staging"]
     assert "`capture` (`{id, land}` when the episode's capture can be landed" in doc
     assert "its procedure then under /inputs/captures/<id>/ only; else null" in doc
     for in_code in (False, True):

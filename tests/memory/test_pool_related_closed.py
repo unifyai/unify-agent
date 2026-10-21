@@ -308,7 +308,7 @@ def test_a_draft_retired_in_one_pass_is_named_when_similar_code_is_staged_later(
     # the link reopened nothing
     assert st.pool().entries[old].status == "retired"
     # every row key is in the brief's table
-    assert set(rows["e3"]) == {k for k, _ in lp.row_keys(staging=True, pool=True)}
+    assert set(rows["e3"]) == {k for k, _ in lp.row_keys()}
 
 
 def test_the_brief_states_closed_entries_and_the_row_key():

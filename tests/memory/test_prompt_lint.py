@@ -26,7 +26,6 @@ from dataclasses import dataclass
 
 import pytest
 
-from unify.common import in_code_switch
 from unify.common import tool_registry as R
 
 #: Each rule: its name and the pattern a prompt line must not hold.
@@ -97,25 +96,16 @@ _SECTION = "\n## memory.text\n\n- `memory.text.dates:parse_date(s)` — Parse a 
 
 
 def _actor_memory_sections() -> list[str]:
-    """Each form of the actor's memory section with tools in code: the inline guide with the index head and the
-    overflow paragraph, the pointer guide, and the librarian's guide."""
-    from unify.memory import library_index as li
+    """The actor's memory section: the librarian's guide (the actor reads no index of its own)."""
     from unify.memory import library_prompts as lp
 
-    view = li.prompt_view_head(li.index_view(li.INDEX_HEAD + _SECTION, budget_tokens=1))
-    assert view.startswith(li.INDEX_HEAD_IN_CODE) and li.SECTION_CALL_IN_CODE in view, view
-    return [lp.guide_library() + "\n" + view, lp.guide_pointer(), lp.GUIDE_LIBRARIAN]
+    return [lp.GUIDE_LIBRARIAN]
 
 
 def _actor_core() -> str:
     from unify.actor import prompt_builders as pb
-    from unify.actor.core_surface import PromptSurface
 
-    return pb.build_code_act_prompt(
-        environments={},
-        core=PromptSurface(functions=False, guidance=False),
-        session_sections=False,
-    )
+    return pb.build_code_act_prompt(environments={})
 
 
 def _opening(agent: str) -> str:
@@ -132,7 +122,7 @@ def role_texts() -> dict[str, list[str]]:
     from unify.memory import library_prompts as lp
     from unify.memory.integration import fork
 
-    full = {"staging": True, "pool": True, "helper": True, "similar": True, "edit_tools": True}
+    full = {"helper": True, "similar": True}
     tool_text = R.EXECUTE_CODE.description
     actor = [_opening("actor"), _actor_core(), *_actor_memory_sections(), tool_text]
     return {
@@ -143,7 +133,6 @@ def role_texts() -> dict[str, list[str]]:
             lp.write_brief_now(**full, finish_capped=True),
             tool_text,
         ],
-        "curator": [lp.curate_brief_now(compact=True, finish_capped=True, edit_tools=True), tool_text],
         "helper": [helpers.helper_brief(True), helpers.helper_brief(False), tool_text],
         "librarian": [L.system_prompt(), tool_text],
         "fork": [fork.fork_instruction()],
@@ -167,11 +156,6 @@ def hits(role: str, text: str) -> list[Hit]:
     return out
 
 
-@pytest.fixture
-def in_code(monkeypatch):
-    monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: True)
-
-
 def test_the_rules_find_what_they_are_for():
     found = {
         h.rule
@@ -189,7 +173,7 @@ def test_the_rules_find_what_they_are_for():
     assert hits("x", "`tools.list()` prints one line per tool; `tools.overview()` shows the rows.") == []
 
 
-def test_no_role_prompt_shows_a_calls_mechanics(in_code):
+def test_no_role_prompt_shows_a_calls_mechanics():
     """Every rule hit in every role's in-code prompt is on the reviewed list, and every list entry is still used."""
     texts = role_texts()
     assert set(texts) == set(ROLES)

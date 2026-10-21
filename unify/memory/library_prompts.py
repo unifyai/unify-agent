@@ -438,13 +438,9 @@ def _pool_kinds() -> str:
     )
 
 
-def row_keys(staging: bool = False, pool: bool = False) -> tuple[tuple[str, str], ...]:
-    """The batch-map row keys a pass with these inputs writes, in the order the brief lists them."""
-    return (
-        BATCH_ROW_KEYS
-        + ((STAGING_ROW_KEY, CAPTURE_ROW_KEY) if staging else ())
-        + ((POOL_ROW_KEY, _related_row_key()) if pool else ())
-    )
+def row_keys() -> tuple[tuple[str, str], ...]:
+    """The batch-map row keys a pass writes, in the order the brief lists them."""
+    return BATCH_ROW_KEYS + (STAGING_ROW_KEY, CAPTURE_ROW_KEY, POOL_ROW_KEY, _related_row_key())
 
 
 def _related_row_key() -> tuple[str, str]:
@@ -1180,14 +1176,13 @@ BATCH_MAP_KEYS_FILE = "batch_map_keys.md"
 INPUTS_README_FILE = "README.md"
 
 
-def input_pointer_files(staging: bool = False, pool: bool = False) -> dict[str, str]:
-    """The reference files a store pass's /inputs holds when tools are called from code, by name: what each
-    batch-map row key holds (:func:`row_keys`, the same table the brief carries today), and the manifest's
-    `field_types` form with the semantic types and, with the pool on, the pool's entry kinds. The brief points to
-    both; each is constant for a run."""
+def input_pointer_files() -> dict[str, str]:
+    """The reference files a pass's /inputs holds, by name: what each batch-map row key holds (:func:`row_keys`, the
+    same table the brief carries), and the manifest's `field_types` form with the semantic types and the pool's
+    entry kinds. The brief points to both; each is constant for a run."""
     from .manifest import describe_semantic_types
 
-    keys = "".join(f"- `{k}` ({doc})\n" for k, doc in row_keys(staging, pool))
+    keys = "".join(f"- `{k}` ({doc})\n" for k, doc in row_keys())
     readme = (
         "# Inputs: reference\n\n"
         "## The manifest's `field_types`\n\n"
@@ -1197,11 +1192,9 @@ def input_pointer_files(staging: bool = False, pool: bool = False) -> dict[str, 
         "file made with `append=True`, a key path under `[].input`; the type is one of "
         + describe_semantic_types()
         + ". Leave it out when no field has a fixed domain.\n"
-        + (
-            "\n## Pool entry kinds\n\n" + _pool_kinds() + ".\n"
-            if pool
-            else ""
-        )
+        + "\n## Pool entry kinds\n\n"
+        + _pool_kinds()
+        + ".\n"
     )
     return {
         BATCH_MAP_KEYS_FILE: (

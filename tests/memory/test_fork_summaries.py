@@ -11,7 +11,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from unify.common import in_code_switch
 from unify.memory import library_prompts as lp
 from unify.memory import staging, summaries
 from unify.memory.episodes import Action, Cell
@@ -152,9 +151,8 @@ def test_the_pointers_that_do_not_resolve_are_counted():
 # --- the writer ----------------------------------------------------------------------------------------------------
 
 
-def _brief(monkeypatch, in_code, staging_on, helper=True):
-    monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: in_code)
-    return lp.write_brief_now(staging=staging_on, helper=helper, similar=True)
+def _brief(helper=True):
+    return lp.write_brief_now(helper=helper, similar=True)
 
 
 def _step(brief, n):
@@ -162,9 +160,8 @@ def _step(brief, n):
     return next(ln for ln in work.splitlines() if ln.startswith(f"{n}. "))
 
 
-@pytest.mark.parametrize("in_code", [False, True])
-def test_the_writer_brief_names_the_summaries_first(monkeypatch, in_code):
-    brief = _brief(monkeypatch, in_code, True)
+def test_the_writer_brief_names_the_summaries_first():
+    brief = _brief()
     one, two = _step(brief, 1), _step(brief, 2)
     # step 1: the batch, then each episode's summary, then the proposals
     assert one.index("overview()") < one.index("summary.md") < one.index("proposals")
@@ -180,16 +177,12 @@ def test_the_writer_brief_names_the_summaries_first(monkeypatch, in_code):
     assert "hand a reading or drafting task to a helper" in _step(brief, 5)
     assert all(head in brief for head in ("# Role\n", "# Inputs\n", "# How to work\n", "# Done\n"))
     assert not lp.example_checks(brief) and not lp.benchmark_words(brief)
-    # without staging, nothing about summaries, and step 2 is as before
-    plain = _brief(monkeypatch, in_code, False)
-    assert "summary.md" not in plain and lp.STAGING_UNFINISHED not in plain
-    assert _step(plain, 2).startswith("2. Read the episodes behind what may be worth keeping")
 
 
 def test_the_staging_row_keys_are_the_built_rows_keys_with_the_summary_and_no_reader_name(tmp_path):
     from unify.memory.writer_pass import _staged_candidates
 
-    doc = dict(lp.row_keys(staging=True))["staging"]
+    doc = dict(lp.row_keys())["staging"]
     assert "no reader output" in doc and "`source`" not in doc
     named = [k for k in lp.STAGING_ROW_FIELDS if f"`{k}`" in doc]
     assert named == list(lp.STAGING_ROW_FIELDS) and "summary" in named and "source" not in named

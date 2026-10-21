@@ -159,3 +159,34 @@ def test_the_settings_refuse_another_value(monkeypatch):
     monkeypatch.setenv("UNIFY_MEMORY", "repin")
     with pytest.raises(ValueError, match="off, on, in_episode"):
         ProductionSettings()
+
+
+def test_the_writer_runs_on_its_own_model_or_the_runs():
+    from types import SimpleNamespace
+
+    from unify.memory.integration import switch
+
+    run = SimpleNamespace(UNIFY_MODEL="vendor/actor@openrouter", UNIFY_MEMORY_WRITER_MODEL="")
+    assert switch.writer_model(run) == "vendor/actor@openrouter"
+    run.UNIFY_MEMORY_WRITER_MODEL = " vendor/writer "
+    assert switch.writer_model(run) == "vendor/writer"
+
+
+@pytest.mark.parametrize("value", ["20.00", "0.01", "7.5"])
+def test_the_cap_is_a_plain_decimal(value):
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    from unify.memory.integration import switch
+
+    assert switch.memory_cap_usd(SimpleNamespace(UNIFY_MEMORY_CAP_USD=value)) == Decimal(value)
+
+
+@pytest.mark.parametrize("value", ["0", "1e1", "-1", "two", "$5"])
+def test_any_other_cap_is_refused(value):
+    from types import SimpleNamespace
+
+    from unify.memory.integration import switch
+
+    with pytest.raises(ValueError):
+        switch.memory_cap_usd(SimpleNamespace(UNIFY_MEMORY_CAP_USD=value))

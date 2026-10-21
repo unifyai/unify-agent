@@ -284,15 +284,11 @@ def test_the_fork_may_stage_a_procedure_and_what_broke_and_is_told_how(monkeypat
     assert fw.allowed("procedure.py") is None and fw.allowed("broke.md") is None
     assert (fw.kind("procedure.py"), fw.kind("broke.md")) == ("procedure", "broke")
     assert fw.allowed("procedures/x.py") is not None
-    from unify.common import in_code_switch
-
-    for on in (False, True):
-        monkeypatch.setattr(in_code_switch, "tools_in_code", lambda on=on: on)
-        text = fork_mod.fork_instruction()
-        assert fork_mod.CAPTURE_BULLETS in text
-        assert "`read_input(request)`" in text and "`broke.md`" in text
-        # the procedure reads the values the request carries from its data, not from its layout
-        assert "`request.data`" in text and "not from line positions or the prose around them" in text
+    text = fork_mod.fork_instruction()
+    assert fork_mod.CAPTURE_BULLETS in text
+    assert "`read_input(request)`" in text and "`broke.md`" in text
+    # the procedure reads the values the request carries from its data, not from its layout
+    assert "`request.data`" in text and "not from line positions or the prose around them" in text
 
 
 def test_a_fork_reply_with_a_procedure_records_it_in_fork_json(tmp_path):
