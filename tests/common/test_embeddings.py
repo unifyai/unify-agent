@@ -1,9 +1,10 @@
-"""Symbolic: vectors are computed once per text, then served from the local cache.
+"""Symbolic: vectors are computed once per text and embedder, then served from the local cache.
 
-The embedder posts to OpenRouter's embeddings endpoint, stubbed here: the
-request is built and the reply read as the real call does, and the stub's
-vectors are a fixed function of each text, listed out of order as the real
-endpoint may list them. Nothing leaves the process.
+The provider embedder posts OpenRouter-style requests to the run's loopback
+lane (``UNIFY_EMBED_URL``; tests/common/test_embed_url.py checks the route),
+stubbed here: the request is built and the reply read as the real call does,
+and the stub's vectors are a fixed function of each text, listed out of order
+as the real endpoint may list them. Nothing leaves the process.
 """
 
 from __future__ import annotations
@@ -16,7 +17,10 @@ import numpy as np
 import pytest
 
 from unify.common import embeddings
-from unify.common.embeddings import OPENROUTER, embed, embedder
+from unify.common.embeddings import LOCAL, OPENROUTER, embed, embedder
+from unify.settings import SETTINGS
+
+ROUTE = "http://127.0.0.1:9/v1/embeddings"
 
 
 def _vector(text: str) -> list[float]:
@@ -26,7 +30,8 @@ def _vector(text: str) -> list[float]:
 
 @pytest.fixture
 def endpoint(monkeypatch):
-    """OpenRouter's embeddings endpoint, stubbed; the requests it got."""
+    """The run's embeddings lane, stubbed; the requests it got."""
+    monkeypatch.setattr(SETTINGS, "UNIFY_EMBED_URL", ROUTE)
     sent: list[dict] = []
 
     def post(url, *, headers, json, timeout):
@@ -42,16 +47,21 @@ def endpoint(monkeypatch):
     return sent
 
 
-def test_the_embedder_is_openrouters():
+def test_the_setting_selects_the_embedder(monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_EMBEDDINGS", False)
     assert embedder() is OPENROUTER
     assert OPENROUTER.model == "openai/text-embedding-3-small@openrouter/2048"
+    monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_EMBEDDINGS", True)
+    assert embedder() is LOCAL
+    # the two never label their vectors alike, so the cache never mixes them
+    assert LOCAL.model != OPENROUTER.model
 
 
-def test_a_request_goes_to_openrouter_with_the_provider_key(endpoint):
+def test_a_request_goes_to_the_lane_with_the_provider_key(endpoint):
     rows: list[dict] = []
     vectors = embed(["Rotate the signing key."], on_call=rows.append)
     (request,) = endpoint
-    assert request["url"] == "https://openrouter.ai/api/v1/embeddings"
+    assert request["url"] == ROUTE
     assert request["headers"]["Authorization"].startswith("Bearer ")
     assert request["json"]["model"] == "openai/text-embedding-3-small"
     assert np.allclose(np.linalg.norm(vectors, axis=1), 1.0, atol=1e-5)

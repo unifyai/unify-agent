@@ -32,6 +32,8 @@ CONFIGURATION = {
     "UNIFY_CELL_ENV_ALLOW": "a runner's own variables a cell gets beside the allow-list",
     "UNIFY_WORKSPACE_NETWORK": "whether cells reach the network, and only through the host's proxy",
     "UNIFY_WORKSPACE_PROXY_PORT": "that proxy's port",
+    "UNIFY_EMBED_URL": "the loopback lane provider embeddings go through (an endpoint, like the model's)",
+    "UNIFY_LOCAL_EMBEDDINGS": "where embeddings are computed: in process instead of through that lane",
 }
 
 

@@ -65,6 +65,19 @@ class ProductionSettings(BaseSettings):
     UNIFY_MAX_TOOL_LOOP_STEPS: int = 300
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Embeddings (memory's semantic search, unify/common/embeddings.py)
+    # ─────────────────────────────────────────────────────────────────────────
+    # The loopback lane OpenRouter-style embedding requests are posted to,
+    # ``http://127.0.0.1:<port>/<path>``: the run's proxy, which holds the real
+    # credential and books the calls. Empty: a text not yet embedded is refused;
+    # nothing is posted to a provider directly.
+    UNIFY_EMBED_URL: str = ""
+    # Embed with BAAI/bge-small-en-v1.5 in process instead (the
+    # ``local-embeddings`` extra). It needs no network once its weights (134 MB)
+    # are downloaded, but reads only English and the first 512 tokens of a text.
+    UNIFY_LOCAL_EMBEDDINGS: bool = False
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Environment Namespaces
     # ─────────────────────────────────────────────────────────────────────────
     # ``package.module:factory`` entries, comma-separated: factories that
@@ -327,6 +340,13 @@ class ProductionSettings(BaseSettings):
     # ─────────────────────────────────────────────────────────────────────────
     # Validators
     # ─────────────────────────────────────────────────────────────────────────
+    @field_validator("UNIFY_LOCAL_EMBEDDINGS", mode="before")
+    @classmethod
+    def parse_local_embeddings(cls, v: Any) -> bool:
+        if isinstance(v, str):
+            return v.strip().lower() in ("true", "yes", "1", "on")
+        return bool(v)
+
     @field_validator("UNIFY_REASONING_EFFORT", mode="before")
     @classmethod
     def parse_reasoning_effort(cls, v: Any) -> str:
