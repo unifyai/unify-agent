@@ -262,7 +262,6 @@ class InCodeTools:
         """The request's ``execute_code`` for the loop: ``thought`` and ``code``, both optional (the schema the model
         is sent is the registry's, ``tool_registry.json_tools``). A call with no code runs nothing."""
         from unify.common import tool_registry as R
-        from unify.common.tool_spec import ToolSpec
 
         session = self
 
@@ -274,7 +273,7 @@ class InCodeTools:
             return await session.run_cell(code)
 
         execute_code.__doc__ = _execute_code_doc()
-        return ToolSpec(fn=execute_code, display_label="Running code")
+        return execute_code
 
     # -- the channel and the interpreter -----------------------------------------------------------------------
 

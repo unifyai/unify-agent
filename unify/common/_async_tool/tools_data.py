@@ -113,7 +113,6 @@ class ToolsData:
         *,
         client,
         logger: "LoopLogger",
-        call_counts: Optional[Dict[str, int]] = None,
     ):
         self._client = client
         # Calls abandoned after a bounded cancel, held until they end.
@@ -122,24 +121,11 @@ class ToolsData:
         self.normalized = normalise_tools(tools)
         self.pending: Set[asyncio.Task] = set()
         self.info: Dict[asyncio.Task, ToolCallMetadata] = {}
-        self.call_counts: Dict[str, int] = (
-            call_counts if call_counts is not None else {}
-        )
         self.completed_results: Dict[str, str] = {}
-
-    def _quota_count(self, task_name: str) -> int:
-        return self.call_counts.get(task_name, 0)
 
     def _mutable(self, msg: dict) -> bool:
         """True when *msg* has not yet been included in any dispatched request."""
         return is_mutable(self._client, msg)
-
-    def has_exceeded_quota_for_tool(self, task_name: str) -> bool:
-        if task_name not in self.normalized:
-            return False
-
-        limit = self.normalized[task_name].max_total_calls
-        return limit is not None and self._quota_count(task_name) >= limit
 
     def save_task(self, coro, metadata: ToolCallMetadata):
         self.pending.add(coro)
@@ -225,68 +211,6 @@ class ToolsData:
             answered.append(info.call_id)
         return answered
 
-    def prune_over_quota_tool_calls(self, asst_msg: dict) -> None:
-        """Remove, in place, the tool_calls of asst_msg that would exceed the
-        per-tool quota. Calls that are not executed must not remain in the
-        history without a response, or the provider rejects the request.
-
-        Only safe while asst_msg is still mutable (not yet included in a
-        dispatched request): an in-place tool_calls edit below the sent
-        watermark would shift every already-dispatched message that follows.
-        Both call sites only reach a message at preflight (watermark 0) or
-        the current turn's own message (index == watermark); the assertion
-        makes that a stated invariant instead of caller discipline.
-        """
-        tcs = asst_msg.get("tool_calls")
-        if not tcs:
-            return
-        if not is_mutable(self._client, asst_msg):
-            # Logged explicitly: the callers (preflight repair, the
-            # persist-mode branch) wrap this in suppress/except-pass, which
-            # would otherwise swallow the raise along with the failure.
-            _msg = (
-                "prune_over_quota_tool_calls: asst_msg is already below the "
-                "sent watermark; an in-place tool_calls edit would mutate "
-                "already-dispatched bytes."
-            )
-            self._logger.error(_msg, prefix="🚨")
-            raise ValueError(_msg)
-
-        # Count locally across this batch; self.call_counts itself is only
-        # incremented when a call is scheduled.
-        temp_counts = self.call_counts.copy()
-
-        valid_tcs = []
-        for tc in tcs:
-            try:
-                name = tc.get("function", {}).get("name")
-
-                if name not in self.normalized:
-                    # Unknown tools are kept (handled by execution/error logic)
-                    valid_tcs.append(tc)
-                    continue
-
-                spec = self.normalized[name]
-                limit = spec.max_total_calls
-                current = temp_counts.get(name, 0)
-
-                if limit is not None and current >= limit:
-                    continue
-
-                temp_counts[name] = current + 1
-                valid_tcs.append(tc)
-            except Exception:
-                # Malformed tool call, keep it
-                valid_tcs.append(tc)
-
-        asst_msg["tool_calls"] = valid_tcs
-
-        # An assistant message with neither content nor tool_calls is
-        # rejected by the API; a placeholder also tells the model why.
-        has_content = bool(asst_msg.get("content"))
-        if not valid_tcs and not has_content:
-            asst_msg["content"] = "(Tool calls were removed due to quota limits)"
-
     # Shared by the main dispatch path and backfill.
     async def schedule_base_tool_call(
         self,
@@ -300,18 +224,11 @@ class ToolsData:
         msg_dispatcher: Optional["LoopMessageDispatcher"] = None,
     ) -> Optional[asyncio.Task]:
         """Start one call of tool *name*; returns its task, or ``None`` when
-        the tool is unknown or its call limit is reached (not started)."""
+        the tool is unknown (not started)."""
         if name not in self.normalized:
             return None
 
         fn = self.normalized[name].fn
-
-        # Over-quota calls should already be pruned from the assistant
-        # message; one that slipped through is not started.
-        with suppress(Exception):
-            lim = self.normalized[name].max_total_calls
-            if lim is not None and self.call_counts.get(name, 0) >= lim:
-                return None
 
         with suppress(Exception):
             call_args = (
@@ -383,10 +300,6 @@ class ToolsData:
                 f"{name} - {call_id}",
                 prefix=f"🛠️  ToolCall Scheduled",
             )
-
-        # The quota counter moves only once scheduling has succeeded.
-        with suppress(Exception):
-            self.call_counts[name] = self.call_counts.get(name, 0) + 1
 
         # Ensure assistant meta exists for deterministic insertion ordering
         assistant_meta.setdefault(id(asst_msg), {"results_count": 0})

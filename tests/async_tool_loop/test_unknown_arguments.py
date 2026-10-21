@@ -22,13 +22,8 @@ import json
 
 import pytest
 
-from tests.async_helpers import any_tool_message_content_contains
-from tests.helpers import _handle_project
-from unify.common._async_tool.context_tracker import LoopContextState
 from unify.common._async_tool.loop import ToolLoopRuntimeState, _LoopToolFailureTracker
 from unify.common._async_tool.tools_data import ToolsData
-from unify.common.async_tool_loop import ChatContextPropagation, start_async_tool_loop
-from unify.common.llm_client import new_llm_client
 
 
 class _Client:
@@ -43,11 +38,8 @@ class _Dispatcher:
     def __init__(self, client):
         self._client = client
 
-    async def append_msgs(self, msgs, origin=None, *, skip_event_bus=False, kind=None):
+    async def append_msgs(self, msgs):
         self._client.append_messages(msgs)
-
-    async def publish_to_event_bus(self, msgs, origin=None, kind=None):
-        pass
 
 
 class _Logger:
@@ -65,7 +57,7 @@ class _Loop:
         self.client = _Client()
         self._dispatcher = _Dispatcher(self.client)
         self._tools_data = ToolsData(tools, client=self.client, logger=_Logger())
-        self.tracker = _LoopToolFailureTracker(3, ToolLoopRuntimeState())
+        self.tracker = _LoopToolFailureTracker(ToolLoopRuntimeState())
         self._calls = 0
 
     async def call(self, name: str, args: dict) -> str:
@@ -93,8 +85,6 @@ class _Loop:
             args_json=args_json,
             call_id=call_id,
             call_idx=0,
-            context_state=LoopContextState(),
-            propagate_chat_context=ChatContextPropagation.NEVER,
             assistant_meta=assistant_meta,
             msg_dispatcher=self._dispatcher,
         )
@@ -103,7 +93,6 @@ class _Loop:
         await self._tools_data.process_completed_task(
             task,
             self.tracker,
-            [None],
             assistant_meta,
             self._dispatcher,
         )
@@ -116,7 +105,7 @@ class _Loop:
 
 
 def _search_tool(received: list, *, is_async: bool = False):
-    """A guidance-search-shaped tool that records every call it runs."""
+    """A search tool that records every call it runs."""
 
     def search(references: dict | None = None, k: int = 10) -> str:
         received.append({"references": references, "k": k})
@@ -136,12 +125,12 @@ def _search_tool(received: list, *, is_async: bool = False):
 async def test_a_misnamed_argument_fails_the_call_naming_the_real_parameters(
     is_async,
 ):
-    """Guidance search called with the function search's parameter names, as
-    the actor's discovery mutator once did, reads back a refusal, not rows."""
+    """A search called with another search's parameter names reads back a
+    refusal, not rows."""
     received: list = []
     loop = _Loop({"search": _search_tool(received, is_async=is_async)})
 
-    reply = await loop.call("search", {"query": "relevant guidance", "n": 5})
+    reply = await loop.call("search", {"query": "relevant notes", "n": 5})
 
     assert reply == (
         "search was not run: it has no parameter named 'query' or 'n'.\n"
@@ -201,7 +190,7 @@ async def test_a_misnamed_call_is_a_refusal_not_a_failure():
 @pytest.mark.asyncio
 async def test_resending_the_same_misnamed_call_stops_the_loop():
     loop = _Loop({"search": _search_tool([])})
-    args = {"query": "relevant guidance", "n": 5}
+    args = {"query": "relevant notes", "n": 5}
 
     for _ in range(_LoopToolFailureTracker.IDENTICAL_CALL_LIMIT - 1):
         await loop.call("search", args)
@@ -244,11 +233,6 @@ async def test_misnaming_the_same_argument_while_varying_its_value_stops_the_loo
             {"references": {"content": "deploys"}, "k": "3"},
             {"references": {"content": "deploys"}, "k": 3},
             id="string-coercion",
-        ),
-        pytest.param(
-            {"references": {"content": "deploys"}, "include_parent_chat_context": True},
-            {"references": {"content": "deploys"}, "k": 10},
-            id="loop-popped-context-key",
         ),
     ],
 )

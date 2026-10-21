@@ -60,7 +60,6 @@ if TYPE_CHECKING:
 
 @dataclass
 class ToolLoopRuntimeState:
-    call_counts: Dict[str, int] = field(default_factory=dict)
     step_index: int = 0
     consecutive_failures: int = 0
     message_count_offset: int = 0
@@ -301,13 +300,8 @@ class LoopLogger:
 
 
 class _LoopToolFailureTracker:
-    def __init__(
-        self,
-        max_consecutive_failures: int,
-        runtime_state: ToolLoopRuntimeState,
-    ):
+    def __init__(self, runtime_state: ToolLoopRuntimeState):
         self._runtime_state = runtime_state
-        self._max_consecutive_failures = max_consecutive_failures
 
     @property
     def current_failures(self):
@@ -315,11 +309,11 @@ class _LoopToolFailureTracker:
 
     @property
     def max_failures(self):
-        return self._max_consecutive_failures
+        return MAX_CONSECUTIVE_FAILURES
 
     def has_exceeded_failures(self) -> bool:
         return (
-            self._runtime_state.consecutive_failures >= self._max_consecutive_failures
+            self._runtime_state.consecutive_failures >= MAX_CONSECUTIVE_FAILURES
         )
 
     def increment_failures(self):
@@ -649,16 +643,12 @@ async def async_tool_loop_inner(
         tools,
         client=client,
         logger=logger,
-        call_counts=runtime_state.call_counts,
     )
     logger.debug(
         f"[setup +{_setup_elapsed()}] ToolsData ready ({len(tools_data.normalized)} tools)",
     )
 
-    consecutive_failures = _LoopToolFailureTracker(
-        MAX_CONSECUTIVE_FAILURES,
-        runtime_state,
-    )
+    consecutive_failures = _LoopToolFailureTracker(runtime_state)
     assistant_meta: Dict[int, Dict[str, Any]] = {}
 
     _max_input_tokens = unillm.get_max_input_tokens(client.endpoint)
@@ -950,12 +940,7 @@ async def async_tool_loop_inner(
             msg_dispatcher=_msg_dispatcher,
         )
         if task is None:
-            await _answer_call(
-                msg,
-                call,
-                f"⚠️ Error: '{call['function']['name']}' was not run: its call "
-                "limit is reached.",
-            )
+            await _answer_call(msg, call, _unknown_tool_text(call["function"]["name"]))
             return None
         while not task.done():
             if timer.has_exceeded_time():
@@ -1085,15 +1070,12 @@ async def async_tool_loop_inner(
     async def _repair_unreplied(entries: list) -> Optional[str]:
         """Run the unanswered calls of *entries*, oldest first; see
         ``_run_missing_calls``. Each entry is repaired inside its own
-        try/except: prune_over_quota_tool_calls may raise (a below-watermark
-        mutation refused on a resumed client whose watermark carried over),
-        and one failure must not abandon the entries after it."""
+        try/except, so one failure does not abandon the entries after it."""
         for entry in entries:
             amsg = entry["assistant_msg"]
             if id(amsg) in assistant_meta:
                 continue
             try:
-                tools_data.prune_over_quota_tool_calls(amsg)
                 if amsg.get("tool_calls"):
                     unique, pruned = prune_duplicate_tool_calls(amsg["tool_calls"])
                     if pruned:
@@ -1513,33 +1495,10 @@ async def async_tool_loop_inner(
                         "mutate already-dispatched bytes.",
                     )
 
-                # De-duplication runs before quota pruning: quota accounting
-                # should count unique calls, not raw duplicate occurrences — a
-                # tool called identically 3x against a max_total_calls=2 limit
-                # spends 1 unit of quota, not 3.
+                # A call repeated identically within one turn runs once.
                 unique, _ = prune_duplicate_tool_calls(msg["tool_calls"])
                 if len(unique) != len(msg["tool_calls"]):
                     msg["tool_calls"] = unique
-
-                # Over-quota calls are always removed before any scheduling,
-                # regardless of the de-duplication setting.
-                tools_data.prune_over_quota_tool_calls(msg)
-
-                # If pruning removed every call and left the placeholder
-                # notice, a user turn prompts the model to continue; without
-                # it strict models reject the assistant->assistant history.
-                # The 'user' role keeps alternation valid for all providers.
-                if not msg.get(
-                    "tool_calls",
-                ) and "(Tool calls were removed due to quota limits)" in str(
-                    msg.get("content") or "",
-                ):
-                    sys_notice = loop_user_notice(
-                        "System notification: The tool calls in your last response "
-                        "were blocked due to quota limits. Please modify your plan "
-                        "or conclude.",
-                    )
-                    await _msg_dispatcher.append_msgs([sys_notice])
 
                 assistant_meta.setdefault(id(msg), {"results_count": 0})
                 _turn_calls = list(msg["tool_calls"])
@@ -1610,17 +1569,6 @@ async def async_tool_loop_inner(
                             if stop_reason:
                                 raise RuntimeError(stop_reason)
                             continue
-
-                    # Over-quota calls were already pruned above; this guards
-                    # the remainder.
-                    if tools_data.has_exceeded_quota_for_tool(name):
-                        await _answer_call(
-                            msg,
-                            call,
-                            f"⚠️ Error: '{name}' was not run: its call limit is "
-                            "reached.",
-                        )
-                        continue
 
                     # A tool the loop does not run gets an error tool response
                     # so the transcript stays valid; an unresolved tool_call
