@@ -36,7 +36,7 @@ def test_its_capture_is_unknown_not_failed_and_its_outcome_comes_from_signals(tm
     staging = _staging(tmp_path, "e1", {"procedure.py": PROC})
     store = cp.store_dir(tmp_path)
     runner, calls = _box(VALUE, [6, 9])
-    row = cp.capture(staging, _worktree_episode("e1"), store, runner=runner)
+    row = cp.capture_trace_step(staging, _worktree_episode("e1"), store, runner=runner)
     assert row["safety"] == "ok" and len(calls) == 1
     assert (row["reproduces"], row["outcome"]) == ("unknown", "none")
     rec = cp.load(store)[row["capture_id"]]["record"]
@@ -46,12 +46,12 @@ def test_its_capture_is_unknown_not_failed_and_its_outcome_comes_from_signals(tm
         tmp_path, "e2", {"procedure.py": PROC.replace("Total", "Add up")}
     )
     runner, _ = _box(VALUE, [6, 9])
-    row2 = cp.capture(
+    row2 = cp.capture_trace_step(
         staging2,
         _worktree_episode("e2"),
         store,
         signals=[_checker("e2", "pass")],
-        checker_visible=True,
+
         runner=runner,
     )
     assert (row2["reproduces"], row2["outcome"]) == ("unknown", "positive")
@@ -60,12 +60,12 @@ def test_its_capture_is_unknown_not_failed_and_its_outcome_comes_from_signals(tm
         tmp_path, "e3", {"procedure.py": PROC.replace("Total", "Count")}
     )
     runner, _ = _box(VALUE, [6, 9])
-    row3 = cp.capture(
+    row3 = cp.capture_trace_step(
         staging3,
         _worktree_episode("e3"),
         store,
         signals=[_checker("e3", "fail")],
-        checker_visible=True,
+
         runner=runner,
     )
     assert row3["outcome"] == "failed"

@@ -36,13 +36,13 @@ def _world(tmp_path):
     (d2 / "procedure.py").write_text(PROC)
     (d2 / "broke.md").write_text(BROKE)
     runner, _ = _box(VALUE, [6, 9])
-    landable = cp.capture(d2, _ep("e2"), store, runner=runner)["capture_id"]
+    landable = cp.capture_trace_step(d2, _ep("e2"), store, runner=runner)["capture_id"]
     d1 = root / "e1"
     d1.mkdir(parents=True)
     (d1 / "procedure.py").write_text(FAILED_PROC)
     (d1 / "fork.json").write_text(json.dumps({"episode": "e1", "status": "ok"}))
     runner, _ = _box(VALUE, [6, 10])  # another result than the one handed back
-    failed = cp.capture(d1, _ep("e1"), store, runner=runner)["capture_id"]
+    failed = cp.capture_trace_step(d1, _ep("e1"), store, runner=runner)["capture_id"]
     assert cp.load(store)[failed]["record"]["outcome"] == cp.FAILED
     assert cp.load(store)[landable]["record"]["outcome"] != cp.FAILED
     return root, store, landable, failed

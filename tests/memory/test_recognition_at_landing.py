@@ -147,7 +147,7 @@ def _capture(root: Path, ep, source: str, verdict: str | None) -> dict:
     (staging / captures.PROCEDURE_FILE).write_text(source, encoding="utf-8")
     (staging / captures.SUMMARY_FILE).write_text(SUMMARY, encoding="utf-8")
     signals = [_checker(ep.episode_id, verdict)] if verdict else []
-    return captures.capture(staging, ep, root / "store", signals=signals, checker_visible=True)
+    return captures.capture_trace_step(staging, ep, root / "store", signals=signals)
 
 
 def _world(

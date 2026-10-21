@@ -154,7 +154,7 @@ def build(
         staging.mkdir(parents=True)
         (staging / captures.PROCEDURE_FILE).write_text(landing.procedure, encoding="utf-8")
         (staging / captures.SUMMARY_FILE).write_text(landing.summary, encoding="utf-8")
-        row = captures.capture(staging, episodes[landing.episode], store)
+        row = captures.capture_trace_step(staging, episodes[landing.episode], store)
         assert row["safety"] == "ok" and row["capture_id"], row
         captured[landing.episode] = row["capture_id"]
         args = {"capture_id": row["capture_id"], "package": landing.package, "name": landing.name}

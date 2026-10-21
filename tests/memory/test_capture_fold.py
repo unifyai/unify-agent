@@ -169,7 +169,7 @@ def test_two_occurrences_of_one_shape_are_one_capture_with_both_sources_kept(tmp
     a, b = WORLDS[world]
     store = cp.store_dir(tmp_path)
     rows = [
-        cp.capture(_staging(tmp_path, eid, {"procedure.py": src}), _episode(world, eid), store, trace=True,
+        cp.capture_trace_step(_staging(tmp_path, eid, {"procedure.py": src}), _episode(world, eid), store,
                    runner=nothing_runs)  # fmt: skip
         for eid, src in (("e1", a), ("e2.s1", b))
     ]
@@ -203,7 +203,7 @@ def test_a_store_from_before_the_index_is_indexed_from_its_procedures_and_keeps_
     index = cp.shape_index(store)
     assert index == {cs.shape_of(a)["shape"]: cp.capture_id(a)}  # the first made (by its event) names the shape
     assert sorted(d.name for d in store.iterdir() if d.is_dir()) == sorted([cp.capture_id(a), cp.capture_id(b)])
-    row = cp.capture(_staging(tmp_path, "e9", {"procedure.py": b}), _episode("tool", "e9"), store, trace=True,
+    row = cp.capture_trace_step(_staging(tmp_path, "e9", {"procedure.py": b}), _episode("tool", "e9"), store,
                      runner=nothing_runs)  # fmt: skip
     assert row["capture_id"] == cp.capture_id(a) and row["folded"]
 
@@ -212,8 +212,8 @@ def test_d1_no_own_check_runs_and_no_entry_comes_from_one(tmp_path, nothing_runs
     from unify.memory import attention as at
 
     store = cp.store_dir(tmp_path)
-    row = cp.capture(_staging(tmp_path, "e1", {"procedure.py": WORLDS["shell"][0]}), _episode("shell", "e1"), store,
-                     trace=True, runner=nothing_runs)  # fmt: skip
+    row = cp.capture_trace_step(_staging(tmp_path, "e1", {"procedure.py": WORLDS["shell"][0]}), _episode("shell", "e1"), store,
+                     runner=nothing_runs)  # fmt: skip
     assert row["own_check"] == {"ran": False, "why": "rev2: captures are never executed to classify"}
     assert not at.own_check_failed(row)
     # even a row from before rev 2 whose own check failed makes no entry now
@@ -231,8 +231,8 @@ def test_a_constant_capture_is_served_as_a_worked_example(tmp_path, nothing_runs
 
     constant = 'def run(state):\n    """The answer."""\n    return [6, 9]\n'
     store = cp.store_dir(tmp_path)
-    row = cp.capture(_staging(tmp_path, "e1", {"procedure.py": constant}), _episode("dialogue", "e1"), store,
-                     trace=True, runner=nothing_runs)  # fmt: skip
+    row = cp.capture_trace_step(_staging(tmp_path, "e1", {"procedure.py": constant}), _episode("dialogue", "e1"), store,
+                     runner=nothing_runs)  # fmt: skip
     assert row["constant"] is True
     under_trace = SimpleNamespace(UNIFY_MEMORY="on", UNIFY_MEMORY_CAPTURE_TRACE="on")
     assert switch.constant_captures_as_examples(under_trace)

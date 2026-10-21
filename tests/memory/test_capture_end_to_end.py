@@ -43,13 +43,13 @@ from unify.memory.writer_pass import PassConfig, WriterPass
 from unify.settings import SETTINGS
 
 # ── assumed names: the integrator adapts these to the build in this one block ─────────────────────────────────
-#: Design I.2.3: ``captures.capture(staging_dir, episode, store)`` runs at once when a fork settles.
+#: Design I.2.3: ``captures.capture_trace_step(staging_dir, episode, store)`` runs at once when a fork settles.
 CAPTURES_MODULE = "unify.memory.captures"
 
 
 def run_capture(staging_dir: Path, episode, store: Path) -> str:
     """The capture step on one settled staging dir; returns the capture id (the step returns its event row)."""
-    return importlib.import_module(CAPTURES_MODULE).capture(staging_dir, episode, store)["capture_id"]
+    return importlib.import_module(CAPTURES_MODULE).capture_trace_step(staging_dir, episode, store)["capture_id"]
 
 
 #: The capture store under the state dir (``<state>/memory-captures/<capture id>/``) and its files: ``saved.json``
