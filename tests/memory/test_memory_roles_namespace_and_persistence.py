@@ -1,8 +1,7 @@
-"""The memory agents' sandboxes, in real boxes, with tools called from code: the writer, the curator and a helper
+"""The memory agents' sandboxes, in real boxes, with tools called from code: the writer and a helper
 each find ``tools``, ``memory`` and ``help`` bound in their first cell with no import (``memory`` imported only by
 the first cell that uses it, under that cell's open log), even when the library is empty; none finds a model or
-network helper. Their cells keep their variables by default (``x = 41`` in one cell, ``x + 1`` in the next), and
-under ``UNIFY_CELL_STATE=fresh`` each cell starts a new interpreter, for every role, and the prompt says so. The
+network helper. Their cells keep their variables by default (``x = 41`` in one cell, ``x + 1`` in the next). The
 restarts that lose variables are told in the cell's output. A library module rewritten after it was imported is
 imported again with the new code, and ``memory`` is bound lazily again. Each role's first request opens with the
 shared opening, which says the sandbox is persistent and stateful and that ``memory`` and ``tools`` are already
@@ -25,13 +24,12 @@ from tests.memory.test_tool_channel_box import needs_box
 from tests.memory.test_writer_pass import Turns, _call, _e1, _ME
 from unify.common.box_interpreter import BoxInterpreter
 from unify.memory.blobs import BlobStore
-from unify.memory.curate import CurateState
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
+from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
 from unify.memory.trigger import PassRequest
 from unify.memory.writer_pass import PassConfig, WriterPass
-from unify.settings import SETTINGS
 
 # ==== names and sentences this file assumes (the spec gives them; adapt them here, in one place) ====================
 #: design D.1, persistent form, its first sentence
@@ -130,15 +128,11 @@ def _bound(output: str) -> list[str]:
     return json.loads(line[len("BOUND ") :].replace("'", '"'))
 
 
-def _assert_first_request(messages: list[dict], role: str, persistent: bool = True) -> None:
+def _assert_first_request(messages: list[dict], role: str) -> None:
     system = flat(_system(messages))
     assert system.startswith("## How you work here"), (role, system[:300])
-    if persistent:
-        assert system.count(PERSISTENT_SENTENCE) == 1, (role, system[:2000])
-        assert FRESH_SENTENCE not in system, role
-    else:
-        assert system.count(FRESH_SENTENCE) == 1, (role, system[:2000])
-        assert "persistent and stateful" not in system, role
+    assert system.count(PERSISTENT_SENTENCE) == 1, (role, system[:2000])
+    assert FRESH_SENTENCE not in system, role
     assert {"tools", "memory"} <= _names(system), role
     assert not re.search(r"\bimport memory\b", system), role
 
@@ -184,17 +178,9 @@ def _pass(tmp_path: Path, cells: list[str], *, role: str = "write", helper=None,
     ep = _e1()
     ev.index_episode(ep, "1" * 40)
     lookup = lambda eid, i: _ME if (eid, i) == ("e1", 0) else None  # noqa: E731
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup)
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup, library_mode=LibraryConfig())
     model = Recording([_cell(f"c{i + 1}", code) for i, code in enumerate(cells)], delays)
     cfg.setdefault("max_calls", len(cells) + 1)
-    curate = None
-    if role == "curate":
-        curate = CurateState(
-            commit=mem.head(),
-            overlap={"version": 1, "candidates": [], "truncated": []},
-            suspects={},
-            index_tokens=None,
-        )
     writer = WriterPass(
         mem,
         gate,
@@ -210,12 +196,7 @@ def _pass(tmp_path: Path, cells: list[str], *, role: str = "write", helper=None,
         writer.helper_turn = helper
     if start is not None:
         writer.interpreter_start = start
-    req = PassRequest("curate", None, [], False) if role == "curate" else PassRequest(
-        "incremental",
-        "venmo",
-        ["e1"],
-        False,
-    )
+    req = PassRequest("incremental", "venmo", ["e1"], False)
     asyncio.run(writer.run(req, "p1"))
     outputs = {m["tool_call_id"]: _text(m["content"]) for m in writer.messages if m.get("role") == "tool"}
     return writer, model, outputs
@@ -265,7 +246,6 @@ def _helper_outputs(seen: list) -> dict[str, str]:
 @needs_box
 @pytest.mark.timeout(600)
 def test_writer_and_helper_have_their_names_bound_and_keep_variables(tmp_path, monkeypatch):
-    monkeypatch.delenv("UNIFY_CELL_STATE", raising=False)
     helper_seen: list = []
     writer, model, out = _pass(
         tmp_path,
@@ -284,38 +264,6 @@ def test_writer_and_helper_have_their_names_bound_and_keep_variables(tmp_path, m
     _assert_next(helper_out["h2"], "helper")
     _assert_first_request(model.requests[0], "writer")
     _assert_first_request(helper_seen[0], "helper")
-
-
-@needs_box
-@pytest.mark.timeout(600)
-def test_the_curator_has_its_names_bound_and_keeps_variables(tmp_path, monkeypatch):
-    writer, model, out = _pass(tmp_path, [PROBE, NEXT, "print('LAST')"], role="curate")
-    assert writer._role == "curate"
-    assert "NEXT 42" in out["c2"], out["c2"]
-    _assert_probe(out["c1"], "curator")
-    _assert_next(out["c2"], "curator")
-    _assert_first_request(model.requests[0], "curator")
-
-
-@needs_box
-@pytest.mark.timeout(600)
-def test_under_fresh_cell_state_every_memory_role_loses_its_variables(tmp_path, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "fresh")
-    helper_seen: list = []
-    writer, model, out = _pass(
-        tmp_path / "write",
-        ["x = 41\nprint('SET')", ONLY_NEXT, DELEGATE_AND_WAIT],
-        helper=_helper(["x = 41\nprint('SET')", ONLY_NEXT], helper_seen),
-    )
-    (tmp_path / "curate").mkdir()
-    _, curator, cout = _pass(tmp_path / "curate", ["x = 41\nprint('SET')", ONLY_NEXT, "print('LAST')"], role="curate")
-    assert helper_seen, ("the helper never ran", out.get("c3"))
-    helper_out = _helper_outputs(helper_seen)
-    for role, shown in (("writer", out["c2"]), ("helper", helper_out["h2"]), ("curator", cout["c2"])):
-        assert "NameError" in shown and "NEXT 42" not in shown, (role, shown)
-    _assert_first_request(model.requests[0], "writer", persistent=False)
-    _assert_first_request(helper_seen[0], "helper", persistent=False)
-    _assert_first_request(curator.requests[0], "curator", persistent=False)
 
 
 # --- what the model is told when the interpreter restarts -----------------------------------------------------------

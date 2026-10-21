@@ -7,6 +7,7 @@ from unify.memory.blobs import BlobStore
 from unify.memory.drafts import draft_states
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate, GateResult
+from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
 from unify.memory.writer_pass import PassConfig, WriterPass
 from unify.memory.trigger import PassRequest
@@ -59,7 +60,7 @@ def test_repair_round_lands_one_commit_on_the_parent(tmp_path):
     ep = _e1()
     ev.index_episode(ep, "1" * 40)
     lookup = lambda eid, i: _ME if (eid, i) == ("e1", 0) else None
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup)
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup, library_mode=LibraryConfig())
     seen: list = []
     calls = _count(gate, seen)
     manifest = {**MAN, "items": [ITEM], "summary": "s"}
@@ -231,7 +232,7 @@ def test_check_runs_the_items_own_tests_under_library_mode(tmp_path):
     ep = _e1()
     ev.index_episode(ep, "1" * 40)
     lookup = lambda eid, i: _ME if (eid, i) == ("e1", 0) else None
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup)
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup, library_mode=LibraryConfig())
     calls = _count(gate)
     manifest = {**MAN, "items": [ITEM], "summary": "s"}
     bad = "\n".join(
@@ -286,7 +287,7 @@ def test_a_long_check_result_is_a_file_read_can_page(tmp_path):
     ep = _e1()
     ev.index_episode(ep, "1" * 40)
     lookup = lambda eid, i: _ME if (eid, i) == ("e1", 0) else None
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup)
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup, library_mode=LibraryConfig())
     long = (
         "G3: env/venmo/tests/test_me.py is not green on the candidate "
         + "w" * 9000

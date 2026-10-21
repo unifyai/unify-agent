@@ -16,6 +16,7 @@ from unify.memory.manifest import (
     parse_manifest,
 )
 from unify.memory.staging import StagingView
+from tests.memory.library_example_world import library_example_world  # noqa: F401 - a fixture
 from tests.memory.test_gate import ITEM, MAN
 from tests.memory.test_pool import EMPTY, INDEX, _finish_with, _open, _Stores
 from tests.memory.test_writer_pass import _call, needs_bwrap

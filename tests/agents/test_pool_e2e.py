@@ -30,7 +30,7 @@ async def _run(model: ScriptedModel, monkeypatch, tmp_path):
     from unify.actor.code_act_actor import CodeActActor
     from unify.agents import binding
 
-    monkeypatch.setattr(binding, "records_dir", lambda: tmp_path / "records")
+    monkeypatch.setattr(binding, "_run_home", lambda: tmp_path / "home")
     with scripted(model):
         handle = await CodeActActor().act(
             "Count the rows of two tables.",

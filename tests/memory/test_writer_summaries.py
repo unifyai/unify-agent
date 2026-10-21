@@ -17,6 +17,7 @@ from unify.memory.blobs import BlobStore
 from unify.memory.episodes import Cell
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
+from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
 from unify.memory.integration import fork_worker as fw
 from unify.memory.trigger import PassRequest
@@ -129,7 +130,7 @@ def _pass(tmp_path, model, *, helper=False, eids=("e1", "e2")):
     _staging(root)
     mem = Repo.init_bare(tmp_path / "mem.git")
     ev = EvidenceStore(tmp_path / "e.sqlite")
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"))
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), library_mode=LibraryConfig())
     writer = WriterPass(
         mem,
         gate,

@@ -1,6 +1,6 @@
 """The prompt-to-runtime contract: every call a role's prompt shows runs, as written, in that role's own sandbox.
 
-For each role (the actor, a teammate, the writer, the curator and a helper), with tools called from code, in library
+For each role (the actor, a teammate, the writer and a helper), with tools called from code, in library
 mode, over a small fixture library (one package with a function, its test and a note) and one recorded episode
 ``e1``:
 
@@ -49,7 +49,6 @@ from tests.scripted_model import ScriptedModel, reply
 from unify.actor import in_code_tools
 from unify.common import tool_registry as R
 from unify.memory.blobs import BlobStore
-from unify.memory.curate import CurateState
 from unify.memory.episodes import Action, Cell
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
@@ -79,7 +78,6 @@ PREBOUND_FACTS = {
     "actor": {"tools": True, "memory": True, "clarification": False},
     "teammate": {"tools": True, "memory": True},
     "writer": {"tools": True, "memory": True},
-    "curator": {"tools": True, "memory": True},
     "helper": {"tools": True, "memory": True},
 }
 
@@ -95,7 +93,7 @@ SKIPPED_LIST = Path(__file__).parent / "data" / "contract_skipped.txt"
 from tests.memory.test_prompt_runtime_contract import NOT_RUN  # noqa: E402
 # ── end of assumed names ──────────────────────────────────────────────────────────────────────────────────────
 
-ROLES = ("actor", "teammate", "writer", "curator", "helper")
+ROLES = ("actor", "teammate", "writer", "helper")
 FUNCTION_ID = "memory.text.dates:parse_date"
 PACKAGE = "text"
 MODULE = "dates"
@@ -155,7 +153,6 @@ BARE_RULES = {
 
 MEMORY_END = {
     "writer": "tools.finish('contract check done')\n",
-    "curator": "tools.finish('contract check done')\n",
     "helper": "tools.done('contract check done', [])\n",
 }
 
@@ -254,20 +251,12 @@ def _episode():
     )
 
 
-CANDIDATE = {
-    "rule": "antiunify",
-    "items": [FUNCTION_ID, "memory.text.dates:week"],
-    "reasons": ["bodies anti-unify: kept share 1.00, 0 hole(s)"],
-    "fingerprint": "overlap:f1",
-}
-FIRED = {"overlap:f1": f"overlap (antiunify): {FUNCTION_ID}, memory.text.dates:week"}
-
 DELEGATE_CELL = "print(tools.delegate('Run the calls you are given in your own box.', episodes=['e1']))\n"
 WAIT_CELL = "for _ in range(12):\n    print(tools.wait()[:200])\n"
 
 
 def _memory_pass(tmp_path: Path, role: str, model: Steps, helper: Steps | None = None):
-    """One pass of *role* (writer or curator; a helper is started by a scripted writer) over the fixture library and
+    """One pass of *role* (the writer; a helper is started by a scripted writer) over the fixture library and
     episode, tools called from code, in real boxes."""
     mem = Repo.init_bare(tmp_path / "mem.git")
     _commit(mem, LIB, "seed the library")
@@ -279,17 +268,8 @@ def _memory_pass(tmp_path: Path, role: str, model: Steps, helper: Steps | None =
         ev,
         BlobStore(tmp_path / "b"),
         action_lookup=lambda eid, i: ep.actions[i] if (eid, i) == ("e1", 0) else None,
-        library_mode=LibraryConfig(role="curate" if role == "curator" else "write", episodes={"e1": ep}.get),
+        library_mode=LibraryConfig(episodes={"e1": ep}.get),
     )
-    extra: dict[str, Any] = {}
-    if role == "curator":
-        extra["curate"] = CurateState(
-            commit=mem.head(),
-            overlap={"version": 1, "candidates": [CANDIDATE], "truncated": []},
-            suspects={},
-            index_tokens=120,
-            fired=dict(FIRED),
-        )
     writer = WriterPass(
         mem,
         gate,
@@ -297,21 +277,15 @@ def _memory_pass(tmp_path: Path, role: str, model: Steps, helper: Steps | None =
         load=lambda eid: ep,
         model_turn=model,
         config=PassConfig(
-            edit_tools=True,
             pass_record_root=str(tmp_path / "out"),
             max_calls=8,
             cell_timeout_s=300.0,
             deadline_s=1500.0,
         ),
-        **extra,
     )
     if helper is not None:
         writer.helper_turn = lambda label=None: helper
-    req = (
-        PassRequest("curate", None, [], False)
-        if role == "curator"
-        else PassRequest("incremental", PACKAGE, ["e1"], False)
-    )
+    req = PassRequest("incremental", PACKAGE, ["e1"], False)
     out = asyncio.run(writer.run(req, "p1"))
     return out, writer
 

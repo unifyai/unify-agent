@@ -11,6 +11,7 @@ from unify.memory.blobs import BlobStore
 from unify.memory.episodes import Action, env_channel
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
+from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
 from unify.memory.writer_pass import PassConfig, WriterPass, export_blobs
 from unify.memory.trigger import PassRequest
@@ -262,7 +263,7 @@ def office(tmp_path):
     ev = EvidenceStore(tmp_path / "e.sqlite")
     ev.index_episode(ep, "1" * 40)
     lookup = lambda eid, i: acts[i] if eid == "o1" and 0 <= i < len(acts) else None
-    gate = Gate(mem, ev, store, action_lookup=lookup)
+    gate = Gate(mem, ev, store, action_lookup=lookup, library_mode=LibraryConfig())
     return mem, ev, gate, ep
 
 

@@ -6,6 +6,7 @@ from decimal import Decimal
 
 import pytest
 
+from unify.memory.library_checks import LibraryConfig
 from unify.memory.blobs import BlobStore
 from unify.memory.episodes import Action, Cell, CostRow
 from unify.memory.evidence import EvidenceStore
@@ -110,7 +111,7 @@ SUITE = (
 def test_pass_stops_at_call_cap_without_manifest(tmp_path):
     mem = Repo.init_bare(tmp_path / "mem.git")
     ev = EvidenceStore(tmp_path / "e.sqlite")
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"))
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), library_mode=LibraryConfig())
     writer = WriterPass(
         mem,
         gate,
@@ -162,7 +163,7 @@ def test_spend_cap_reserves_budget_for_unknown_costs(
 ):
     mem = Repo.init_bare(tmp_path / "mem.git")
     ev = EvidenceStore(tmp_path / "e.sqlite")
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"))
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), library_mode=LibraryConfig())
     writer = WriterPass(
         mem,
         gate,
@@ -189,7 +190,7 @@ def test_recorded_pass_id_is_refused_before_any_model_call(tmp_path):
     model = Costs(["0.1"])
     writer = WriterPass(
         mem,
-        Gate(mem, ev, BlobStore(tmp_path / "b")),
+        Gate(mem, ev, BlobStore(tmp_path / "b"), library_mode=LibraryConfig()),
         ev,
         load=_never,
         model_turn=model,
@@ -318,7 +319,7 @@ def test_export_for_writer_refuses_unsafe_episode_ids(tmp_path):
 def test_pass_never_follows_links_or_git_files_written_in_the_box(tmp_path):
     mem = Repo.init_bare(tmp_path / "mem.git")
     ev = EvidenceStore(tmp_path / "e.sqlite")
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"))
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), library_mode=LibraryConfig())
     planted = tmp_path / "planted.json"  # a host file the box cannot see
     planted.write_text(json.dumps(MAN))
     cells = [
@@ -355,7 +356,7 @@ def test_model_error_ends_the_pass_and_is_recorded(tmp_path):
     ev = EvidenceStore(tmp_path / "e.sqlite")
     writer = WriterPass(
         mem,
-        Gate(mem, ev, BlobStore(tmp_path / "b")),
+        Gate(mem, ev, BlobStore(tmp_path / "b"), library_mode=LibraryConfig()),
         ev,
         load=_never,
         model_turn=boom,
@@ -453,7 +454,7 @@ class Turns:
 def _writer(tmp_path, model, **cfg):
     mem = Repo.init_bare(tmp_path / "mem.git")
     ev = EvidenceStore(tmp_path / "e.sqlite")
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"))
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), library_mode=LibraryConfig())
     cfg.setdefault("max_calls", 10)
     writer = WriterPass(
         mem,
@@ -863,7 +864,7 @@ def test_channel_folders_exist_for_exactly_the_pass_channels_and_hold_no_file(tm
     ev = EvidenceStore(tmp_path / "e.sqlite")
     writer = WriterPass(
         mem,
-        Gate(mem, ev, BlobStore(tmp_path / "b")),
+        Gate(mem, ev, BlobStore(tmp_path / "b"), library_mode=LibraryConfig()),
         ev,
         load=lambda eid: ep,
         model_turn=model,
@@ -929,7 +930,7 @@ def test_writer_fixes_a_misplaced_item_with_check_and_the_pass_merges(tmp_path):
     lookup = lambda eid, i: (
         ep.actions[i] if eid == "e1" and 0 <= i < len(ep.actions) else None
     )
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup)
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup, library_mode=LibraryConfig())
     # the function covers the venmo call, but the writer first puts it in the slack folder
     misplaced = {
         **MAN,
@@ -1019,7 +1020,7 @@ def _store_backed(tmp_path, model, **cfg):
         ok = ev.episode_exists(eid) and 0 <= i < len(ep.actions)
         return ep.actions[i] if ok else None
 
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup)
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup, library_mode=LibraryConfig())
     cfg.setdefault("max_calls", 10)
     writer = WriterPass(
         mem,

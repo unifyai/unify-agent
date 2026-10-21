@@ -220,7 +220,7 @@ def test_a_writer_that_raises_puts_its_class_on_the_report(tmp_path, monkeypatch
 
     _asked, report = _pass(tmp_path, monkeypatch, attention.Refs(record_seq=1), writer_run=raising)
     assert report.ended == "error" and report.error_class == "KeyError" and report.error_where.endswith(":raising")
-    row = metering.pass_row(tmp_path, report, metering=False)
+    row = metering.pass_row(tmp_path, report)
     assert row["error_class"] == "KeyError" and "secret" not in json.dumps(row)
 
 
@@ -231,7 +231,7 @@ def test_every_error_row_names_a_cause_and_no_other_row_has_one(tmp_path, ended,
     report = SimpleNamespace(
         pass_id="p", ended=ended, outcome=None, seconds=0.0, reconciled=None, error_class=cls, error_where=where
     )
-    row = metering.pass_row(tmp_path, report, metering=False)
+    row = metering.pass_row(tmp_path, report)
     if ended == "error":
         assert row["error_class"] == (cls or "unrecorded") and row["error_where"] == (where or "unrecorded")
     else:

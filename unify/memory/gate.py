@@ -349,11 +349,9 @@ class GateResult:
     # an item refused only because the whole pass was).
     items_merged: list[str] = field(default_factory=list)
     items_refused: dict[str, list[str]] = field(default_factory=dict)
-    # library mode (library_checks): the item verification records and whether CURATE is due (G4)
+    # the item verification records (library_checks)
     verification: dict[str, dict] = field(default_factory=dict)
-    curate_due: bool = False
-    # library-mode CURATE: the aliases, retirements and dropped aliases of the checked candidate; a landed
-    # merge records them (EvidenceStore.record_curations)
+    # the candidate's renames; a landed merge records them (EvidenceStore.record_curations)
     curations: list[dict] = field(default_factory=list)
     # Library mode: each failing run's whole output (sandbox_run.PytestOutcome.full_output: bounded
     # only by the sandbox's marked capture), key-shaped strings redacted, by run label. Never stored in the pass
@@ -810,10 +808,9 @@ class _Run:
     episode_inputs: dict[str, list[tuple[str, int, Action]]] = field(
         default_factory=dict,
     )
-    # library mode: per item, what the checks measured (library_checks, qa); whether the index is over its view (G4)
+    # per item, what the checks measured (library_checks, qa)
     verification: dict[str, dict] = field(default_factory=dict)
-    curate_due: bool = False
-    # library-mode CURATE: what LibraryChecks.curate found the candidate does to aliases and retirements
+    # the candidate's renames (LibraryChecks.aliases_kept)
     curations: list[dict] = field(default_factory=list)
     # run label -> the whole recorded output of a failing run (GateResult.outputs; library mode)
     outputs: dict[str, str] = field(default_factory=dict)
@@ -983,8 +980,6 @@ class Gate:
         the state dir whose segment records (``<episode>.s<n>``) an item may cite as its source while their episode
         is still open; None: only recorded episodes.
         """
-        if not (library_mode.checks and library_mode.layout):
-            raise ValueError("the gate needs the library layout and its checks (LibraryConfig.layout and .checks)")
         self.mem, self.ev, self.blobs = memory, evidence, blobs
         self.python, self.budget, self.reader_promotes = (
             python,
@@ -1306,8 +1301,7 @@ class Gate:
                 ],
             )
         if res.passed and res.curations:
-            # CURATE's aliases, retirements and dropped aliases, for the item records (alias_of,
-            # deprecated), and any pass's renames, which carry an item's uid to its new id
+            # the pass's renames, which carry an item's uid to its new id (the item records)
             self.ev.record_curations(pass_id, res.merged, res.curations)
         return res
 
@@ -1474,7 +1468,7 @@ class Gate:
                 if v is not None:
                     v.g3()
                     v.g4()
-                    v.curate()
+                    v.aliases_kept()
                 else:
                     self._g4(run)
                 self._g5(run)
@@ -1492,7 +1486,6 @@ class Gate:
         self._levels(run)
         self._labels(run)
         res.verification = {i: dict(r) for i, r in sorted(run.verification.items())}
-        res.curate_due = run.curate_due
         res.curations = [dict(r) for r in run.curations]
         res.outputs = dict(run.outputs)
         res.fixtures_verified = dict(run.fixtures_verified)
@@ -2237,22 +2230,13 @@ class Gate:
             and run.p_bodies.get(it.item, ("", ""))[:2]
             != run.c_bodies.get(it.item, ("", ""))[:2]
         }
-        # a clean-up pass may edit a function without a red test when an old test holds it
-        cleanup = self._cleanup(run)
         unseen: set[str] = set()
         # already refused here: the behaviour check need not run them
         refused: set[str] = set()
         for it in man.items:
             if it.item in edited and not any(t in changed for t in it.tests):
-                if cleanup:
-                    unseen.add(it.item)
-                else:
-                    refused.add(it.item)
-                    run.fail(
-                        "G3",
-                        f"{it.item} has no new or changed test. {RED_TEST_HINT}",
-                        it.item,
-                    )
+                refused.add(it.item)
+                run.fail("G3", f"{it.item} has no new or changed test. {RED_TEST_HINT}", it.item)
         missing = [t for t in new_tests if t not in run.c_files]
         for t in missing:
             run.fail("G3", f"listed test {t} is not in the candidate", _owners(man, t))
@@ -2490,20 +2474,6 @@ class Gate:
                     "the parent's library and passes on the candidate's",
                     self._behaviour_owner(run, item, pr),
                 )
-
-    def _declared_aliases(self, run: _Run) -> dict[str, str]:
-        """A library-mode CURATE gate's declared aliases (old id -> target) of the checked manifest; {} otherwise."""
-        if not (
-            (getattr(self.library_mode, "role", "write") == "curate")
-        ):
-            return {}
-        raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
-        found = raw.get("aliases")
-        if not isinstance(found, dict):
-            return {}
-        return {
-            a: t for a, t in found.items() if isinstance(a, str) and isinstance(t, str)
-        }
 
     @staticmethod
     def _exemption_refused(item: str, why: str) -> str:
@@ -3013,20 +2983,6 @@ class Gate:
         if before is None or after is None:
             return False
         return after[:2] != before[:2] and all(a <= b for a, b in zip(after, before))
-
-    def _cleanup(self, run: _Run) -> bool:
-        """A clean-up pass: it adds no item and the library shrinks.
-
-        Library mode: a CURATE pass is the clean-up pass, by its role, and a WRITE pass never is. The clean-up size
-        measure reads v2's channel modules only; in library mode, the behaviour check's strict comparison on the import-graph scope is
-        what proves each exempted edit keeps behaviour, and CURATE's growth rule (:meth:`.library_checks.LibraryChecks.curate`)
-        bounds the library.
-        """
-        role = getattr(getattr(self, "library_mode", None), "role", None)
-        if role is not None:
-            return role == "curate"
-        added = any(it.item not in run.p_bodies for it in run.man.items)
-        return not added and self._shrinks(run)
 
     @staticmethod
     def _held(run: _Run, item: str, protected: set[str]) -> bool:

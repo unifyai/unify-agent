@@ -11,6 +11,7 @@ from unify.memory import usage
 from unify.memory.blobs import BlobStore
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
+from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
 from unify.memory.index import build_index
 from unify.memory.signals import Signal
@@ -121,7 +122,7 @@ def _first_message(tmp_path, mem, ev, eids, pass_id, show_usage=True) -> str:
     model = _First()
     writer = WriterPass(
         mem,
-        Gate(mem, ev, BlobStore(tmp_path / "b")),
+        Gate(mem, ev, BlobStore(tmp_path / "b"), library_mode=LibraryConfig()),
         ev,
         load=lambda eid: _ep(episode_id=eid),
         model_turn=model,

@@ -10,6 +10,7 @@ from unify.memory import writer_pass
 from unify.memory.blobs import BlobStore
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
+from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
 from unify.memory.writer_pass import FINISH_G1_REFUSALS, PassConfig, WriterPass
 from unify.memory.trigger import PassRequest
@@ -165,7 +166,7 @@ def test_a_long_read_still_leaves_a_repair_round(tmp_path, monkeypatch):
     ep = _e1()
     ev.index_episode(ep, "1" * 40)
     lookup = lambda eid, i: _ME if (eid, i) == ("e1", 0) else None  # noqa: E731
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup)
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup, library_mode=LibraryConfig())
     manifest = {**MAN, "items": [ITEM], "summary": "s"}
     first_try = "\n".join(
         [

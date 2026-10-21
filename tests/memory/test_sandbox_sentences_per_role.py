@@ -16,7 +16,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from unify.common import box_interpreter as bi
 from unify.common import tool_registry as R
 from unify.memory import helpers
 from unify.memory import library_prompts as lp
@@ -192,18 +191,6 @@ async def test_no_role_says_import_memory_or_importable(in_code, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_under_fresh_cell_state_every_role_is_told_each_cell_starts_fresh(in_code, tmp_path):
-    _library_run(in_code, tmp_path / "home")
-    in_code.setattr(SETTINGS, "UNIFY_CELL_STATE", "fresh")
-    texts = await _openings(tmp_path)
-    for role, text in texts.items():
-        body = flat(text)
-        assert body.count(FRESH_SENTENCE) == 1, (role, body[:1500])
-        assert PERSISTENT_SENTENCE not in body and "persistent and stateful" not in body, role
-        assert "keeps its variables between cells" not in body, role
-
-
-@pytest.mark.asyncio
 async def test_the_actor_without_a_library_is_told_tools_only(in_code, tmp_path):
     in_code.setattr(SETTINGS, "UNIFY_MEMORY", "off")
     session = _actor_session(tmp_path, "actor")
@@ -331,11 +318,3 @@ def test_prebound_names_of_the_actor_and_teammate():
     for names in (actor, mate):
         assert not names & set(REPLACED), names
         assert not names & {"functions", "guidance"}, names
-
-
-def test_the_default_cell_state_is_persistent(monkeypatch):
-    from unify.settings import ProductionSettings
-
-    monkeypatch.delenv(bi.CELL_STATE_SETTING, raising=False)
-    assert ProductionSettings.model_fields["UNIFY_CELL_STATE"].default == "persistent"
-    assert bi.cell_state() == "persistent"

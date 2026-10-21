@@ -54,7 +54,6 @@ from unify.sandbox import LIBRARY_MOUNT
 from unify.settings import SETTINGS
 
 # ==== ASSUMED NAMES (the integrator adapts these to the code, here only) ======================================
-SWITCH = "UNIFY_MEMORY_LIBRARIAN"
 ASK_TOOL = "ask_library"
 CATALOGUE = w.CATALOGUE_FILE
 #: The call kind the librarian's model calls carry (design J(b).4, accounting).
@@ -129,9 +128,6 @@ ANSWER_TWO = {
 GHOST = "memory.orders.nope:ghost"
 
 
-def _set(monkeypatch, name: str, value: str) -> None:
-    if hasattr(SETTINGS, name):  # while the setting does not exist yet, the test fails on what it checks
-        monkeypatch.setattr(SETTINGS, name, value)
 
 
 def _open_request(paths: Paths, sha: str, monkeypatch) -> request_mod.RequestRun:
@@ -151,15 +147,7 @@ def librarian(core_world, monkeypatch):  # noqa: F811
     """Tools in code, a persistent interpreter, library mode, the librarian, request headers; a library with the item
     records production writes for it (``librarian_world``), its episodes' summaries staged and two captured procedures
     in the store; every in-code session kept."""
-    for name, value in (
-        ("UNIFY_TOOLS_IN_CODE", "on"),
-        ("UNIFY_CELL_STATE", "persistent"),
-        ("UNIFY_MEMORY", "on"),
-        ("UNIFY_MEMORY_LIBRARY", "on"),
-        ("UNIFY_REQUEST_METADATA_HEADERS", "on"),
-    ):
-        monkeypatch.setattr(SETTINGS, name, value)
-    _set(monkeypatch, SWITCH, "on")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
     collect = _Collect()
     monkeypatch.setattr(in_code_tools, "SESSIONS", collect)
     paths = Paths.under(core_world["state"])
@@ -507,44 +495,6 @@ async def test_no_host_path_planted_secret_or_parsed_value_reaches_the_librarian
 
 
 # --- off ----------------------------------------------------------------------------------------------------------
-
-
-@needs_bwrap
-@pytest.mark.asyncio
-@pytest.mark.timeout(600)
-async def test_off_binds_no_ask_offers_no_tool_and_generates_no_catalogue(librarian):
-    env = librarian
-    _set(env["monkeypatch"], SWITCH, "off")
-    run = _open_request(env["paths"], env["sha"], env["monkeypatch"])
-    actor_cell = "print('HAS_ASK', hasattr(memory, 'ask'))\ntools.answer('done')\n"
-    script = Script([actor_cell], [])
-    result, model, sent = await _ask_act(env, script)
-
-    assert result == "done"
-    assert script.librarian_calls == []
-    first = script.actor_calls[0]
-    assert "memory.ask" not in _system(first)
-    assert _system(first).endswith(run.index)  # the index section, as without the librarian
-    session = _actor_session(env["opened"])
-    assert ASK_TOOL not in session.allow
-    assert not (env["paths"].checkout / CATALOGUE).exists()
-    assert not (env["paths"].checkout / w.DISPATCH_FILE).exists()
-    for call in model.calls:
-        assert _headers(sent, model, call).get("X-Unify-Call-Kind") != CALL_KIND
-    _assert_ended(env["opened"])
-
-
-@needs_bwrap
-@pytest.mark.asyncio
-@pytest.mark.timeout(600)
-async def test_off_the_cell_has_no_ask(librarian):
-    env = librarian
-    _set(env["monkeypatch"], SWITCH, "off")
-    _open_request(env["paths"], env["sha"], env["monkeypatch"])
-    actor_cell = "tools.answer('HAS_ASK ' + str(hasattr(memory, 'ask')))\n"
-    script = Script([actor_cell], [])
-    result, _, _ = await _ask_act(env, script)
-    assert result == "HAS_ASK False"
 
 
 # --- the first user message ---------------------------------------------------------------------------------------

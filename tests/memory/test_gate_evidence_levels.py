@@ -232,7 +232,7 @@ def text_world(tmp_path) -> World:
             ev,
             blobs,
             action_lookup=_lookup,
-            library_mode=LibraryConfig(checks=True, episodes=EPISODES.get, **cfg),
+            library_mode=LibraryConfig(episodes=EPISODES.get, **cfg),
         )
 
     return World(mem, ev, blobs, gate)

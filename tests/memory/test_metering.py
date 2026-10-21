@@ -334,9 +334,6 @@ def test_a_pass_row_names_its_entries_items_usd_and_a_killed_turn_once(tmp_path)
         and row["turns"] == 6
     )
     assert set(row["messages"]) == {"sent", "received"}
-    assert M.pass_row(home, report, metering=False).keys() == {
-        "pass_id", "kind", "ended", "commit", "drift_cleared", "suspect_cleared", "seconds", "reconciled", "ended_at",
-    }  # fmt: skip
 
 
 @pytest.mark.timeout(300)

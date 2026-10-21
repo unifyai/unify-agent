@@ -2,7 +2,6 @@
 host-stamped box-opens.jsonl rows, the execute_code tool-event fields and the box interpreter's flags.
 """
 
-import asyncio
 import json
 import os
 import shutil
@@ -11,9 +10,6 @@ import time
 import pytest
 
 from unify.memory import sandbox_run as sr
-from unify.memory.trigger import PassRequest
-from tests.memory.test_writer_pass import Turns, _call, _writer
-from tests.memory.test_writer_library_tools import EPS
 
 needs_bwrap = pytest.mark.skipif(
     shutil.which("bwrap") is None,
@@ -109,72 +105,6 @@ def test_a_cell_that_opens_nothing_in_the_areas_is_measured_not_dead(tmp_path):
     assert r.returncode == 0, r.stderr
     # the hook reported its start, so no rows means no opens, not a blind cell
     assert log.result == {"rows": [], "dropped": 0, "dead": False, "reason": "ok"}
-
-
-@needs_bwrap
-def test_a_writer_cell_open_is_recorded_and_stamped_by_the_host(tmp_path, monkeypatch):
-    from unify.settings import SETTINGS
-
-    # the fresh box per cell (the opt-out), whose open log is the pipe this cell writes to; the persistent
-    # interpreter's open log is the worker's audit (tests/memory/test_box_interpreter.py)
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "fresh")
-    code = (
-        "import os, sys\n"
-        "open('/inputs/request.json').read()\n"
-        "fd = int(os.environ['MEMORY_BOX_OPEN_LOG'][3:])\n"
-        'os.write(fd, b\'{"event": "open", "path": "/inputs/claimed", "mode": "r", '
-        '"pass_id": "forged", "call": 99, "agent": "actor"}\\n\')\n'
-        "for name in ('box-opens.jsonl', 'tool-events.jsonl'):\n"
-        "    with open('/memory/' + name, 'w') as fh:\n"
-        '        fh.write(\'{"pass_id": "forged"}\\n\')\n'
-        "print('no_user_site', sys.flags.no_user_site)\n"
-    )
-    model = Turns(
-        [
-            _call("a", "read", {"path": "/inputs/batch_map.json"}),
-            _call("b", "execute_code", {"code": code}),
-        ],
-    )
-    out = tmp_path / "out"
-    _, _, writer = _writer(
-        tmp_path,
-        model,
-        library_mode=True,
-        max_calls=4,
-        pass_record_root=str(out),
-    )
-    writer.load = EPS.__getitem__
-    asyncio.run(writer.run(PassRequest("incremental", "svc", ["e1"], False), "p1"))
-    assert "no_user_site 1" in model.outputs["b"], model.outputs["b"]
-    rows = writer.tool_events
-    read_row = next(r for r in rows if r["tool"] == "read")
-    cell_row = next(r for r in rows if r["tool"] == "execute_code")
-    assert "box_opens" not in read_row
-    assert cell_row["box_hook_dead"] is False and cell_row["box_opens_dropped"] == 0
-    written = [
-        json.loads(line)
-        for line in (out / "p1" / "box-opens.jsonl").read_text().splitlines()
-    ]
-    assert written == writer.box_opens and cell_row["box_opens"] == len(written)
-    for o in written:
-        assert set(o) == {"agent", "pass_id", "call", "event", "path", "mode"}
-        assert (o["agent"], o["pass_id"], o["call"]) == (
-            "writer",
-            "p1",
-            cell_row["call"],
-        )
-    paths = {(o["path"], o["mode"]) for o in written}
-    assert ("/inputs/request.json", "r") in paths
-    assert (
-        "/memory/box-opens.jsonl",
-        "w",
-    ) in paths  # the write through /memory is an observed open, nothing more
-    assert (
-        "/inputs/claimed",
-        "r",
-    ) in paths  # a line from the box keeps only its event, path and mode
-    assert "forged" not in (out / "p1" / "box-opens.jsonl").read_text()
-    assert "forged" not in (out / "p1" / "tool-events.jsonl").read_text()
 
 
 def test_the_open_rows_file_is_never_written_through_a_link(tmp_path):

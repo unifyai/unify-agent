@@ -38,6 +38,8 @@ from typing import Any, Optional
 
 import pytest
 
+from unify.memory.library_checks import LibraryConfig
+
 from tests.actor.code_act.core_world import core_world, world  # noqa: F401 (fixtures)
 from tests.memory.test_layout import LIB
 from tests.memory.test_library_helper import _commit
@@ -455,7 +457,7 @@ def _library_pass(tmp_path: Path, model: Any, *, in_code: bool, **cfg: Any):
     ep = _e1()
     ev.index_episode(ep, "1" * 40)
     lookup = lambda eid, i: _ME if (eid, i) == ("e1", 0) else None  # noqa: E731
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup)
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup, library_mode=LibraryConfig())
     cfg.setdefault("max_calls", 400)
     cfg.setdefault("deadline_s", 900.0)
     return WriterPass(

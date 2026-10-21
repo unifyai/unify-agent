@@ -100,7 +100,9 @@ def _capture(root: Path, cid: str, *, procedure: str, signature: dict, outcome: 
     (d / "record.json").write_text(
         json.dumps({"level": "unchecked", "status": "on-trial", "outcome": outcome}),
     )
-    (d / "saved.json").write_bytes(lx.capture_saved_bytes(d, SUMMARY, _strip))
+    from unify.memory import captures
+
+    (d / "saved.json").write_bytes(captures._json(captures.saved_against(procedure, SUMMARY)))
     return d
 
 

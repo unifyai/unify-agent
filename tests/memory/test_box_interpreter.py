@@ -12,7 +12,6 @@ import shutil
 import time
 from collections import Counter
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -49,22 +48,6 @@ async def _start(tmp_path: Path, *, channel=None, stub=None, limit: float = 30.0
 
 
 # --- without a box ---------------------------------------------------------------------------------------------
-
-
-def test_cell_state_setting(monkeypatch):
-    import unify.settings
-
-    # settings without the field (read from the environment), then with it
-    monkeypatch.setattr(unify.settings, "SETTINGS", SimpleNamespace())
-    monkeypatch.delenv(bi.CELL_STATE_SETTING, raising=False)
-    assert bi.cell_state() == "persistent" and bi.persistent()  # the default
-    monkeypatch.setenv(bi.CELL_STATE_SETTING, "fresh")
-    assert bi.cell_state() == "fresh" and not bi.persistent()
-    monkeypatch.setattr(unify.settings, "SETTINGS", SimpleNamespace(**{bi.CELL_STATE_SETTING: "persistent"}))
-    assert bi.cell_state() == "persistent"  # the settings field wins over the environment
-    monkeypatch.setattr(unify.settings, "SETTINGS", SimpleNamespace(**{bi.CELL_STATE_SETTING: "sometimes"}))
-    with pytest.raises(ValueError):
-        bi.cell_state()
 
 
 def test_stage_read_only_is_new_and_never_through_a_link(tmp_path):

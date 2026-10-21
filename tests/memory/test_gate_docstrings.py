@@ -17,9 +17,10 @@ from unify.memory.blobs import BlobStore
 from unify.memory.episodes import Action
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
+from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
 from tests.memory.test_episodes import _ep
-from tests.memory.test_gate import FILES, KIT, MOD, TEST, _candidate, _merged
+from tests.memory.test_gate import KIT, TEST, _candidate
 
 pytestmark = pytest.mark.skipif(
     shutil.which("bwrap") is None,
@@ -209,9 +210,7 @@ def lab(tmp_path):
         ev,
         BlobStore(tmp_path / "b"),
         action_lookup=_lookup,
-        docstring_standard=True,
-        surfacing="catalogue",
-        soft_budget=True,
+        ry_mode=LibraryConfig()
     )
     return mem, ev, gate
 
@@ -224,335 +223,19 @@ def _gate(mem, gate, files, man):
 # --- G1: the standard --------------------------------------------------------------------------------------
 
 
-def test_a_function_meeting_the_standard_passes(lab):
-    mem, _, gate = lab
-    res = _gate(mem, gate, DOC_FILES, DOC_MAN)
-    assert res.passed, res.reasons
-    assert all(res.checks.values())
-
-
-def test_a_missing_required_section_is_refused_with_a_precise_reason(lab):
-    mem, _, gate = lab
-    no_returns = DOC_MOD.replace(
-        "    Returns:\n        The user id string that `venmo.me` returns.\n\n",
-        "",
-    )
-    assert no_returns != DOC_MOD
-    res = _gate(mem, gate, {**DOC_FILES, "env/venmo/__init__.py": no_returns}, DOC_MAN)
-    assert not res.passed and not res.checks["G1"]
-    assert (
-        "G1: env/venmo:me docstring has no Returns: section" in res.reasons
-    ), res.reasons
-    assert res.checks["G3"]  # its example still runs green
-
-
-def test_the_first_argument_must_name_its_input_form(lab):
-    mem, _, gate = lab
-    vague = DOC_MOD.replace(
-        "(input: env), with a `venmo` namespace",
-        "with a `venmo` namespace",
-    )
-    res = _gate(mem, gate, {**DOC_FILES, "env/venmo/__init__.py": vague}, DOC_MAN)
-    assert (
-        "G1: env/venmo:me docstring Args: the entry of the first parameter `apis` does not name "
-        "its input form `env`"
-    ) in res.reasons, res.reasons
-
-
-def test_a_refusal_without_a_useful_message_is_refused(lab):
-    mem, _, gate = lab
-    terse = DOC_MOD.replace(
-        '"expected venmo.me to return a string user_id; call apis.venmo.me() directly"',
-        '"bad"',
-    )
-    res = _gate(mem, gate, {**DOC_FILES, "env/venmo/__init__.py": terse}, DOC_MAN)
-    assert not res.checks["G1"]
-    assert any(
-        r.startswith(
-            "G1: env/venmo:me raises MemoryInputError with a 3-character message",
-        )
-        for r in res.reasons
-    ), res.reasons
-
-
-def test_the_check_tool_reports_a_missing_section_before_any_run(lab, tmp_path):
-    mem, _, gate = lab
-    tree = tmp_path / "tree"
-    no_example = (
-        DOC_MOD.split("    Example:")[0]
-        + '    Effect: read\n    Input: env\n    """\n    return 1\n'
-    )
-    for rel, text in {**DOC_FILES, "env/venmo/__init__.py": no_example}.items():
-        (tree / rel).parent.mkdir(parents=True, exist_ok=True)
-        (tree / rel).write_text(text)
-    reasons = gate.preview(mem.head(), tree, DOC_MAN)
-    assert (
-        "G1: env/venmo:me docstring has no Example: section with a `>>>` example"
-        in reasons
-    )
-
-
-def test_unchanged_legacy_functions_are_not_held_to_the_standard(lab):
-    mem, _, gate = lab
-    _merged(mem, FILES)  # `me` without the sections, from before the standard
-    module = (
-        MOD.replace('__all__ = ["me"]', '__all__ = ["me", "balance"]')
-        + ERROR_CLASS
-        + BALANCE
-    )
-    files = {
-        **FILES,
-        "env/venmo/__init__.py": module,
-        "env/venmo/tests/test_balance.py": BALANCE_TEST,
-        "env/venmo/tests/balance.json": '{"balance": 3}',
-    }
-    man = {
-        "items": [
-            ME_ITEM,
-            {
-                **ME_ITEM,
-                "item": "env/venmo:balance",
-                "tests": ["env/venmo/tests/test_balance.py"],
-                "covers": [["e1", 3]],
-            },
-        ],
-        "support": ["unify_memory_testkit.py", "env/venmo/tests/balance.json"],
-        "skeleton": ["env/venmo"],
-    }
-    res = _gate(mem, gate, files, man)
-    assert res.passed, res.reasons
-
-
-def test_without_the_switch_the_standard_is_not_applied(lab, tmp_path):
-    mem, ev, _ = lab
-    plain = Gate(mem, ev, BlobStore(tmp_path / "b2"), action_lookup=_lookup)
-    res = _gate(
-        mem,
-        plain,
-        FILES,
-        {**DOC_MAN, "support": ["unify_memory_testkit.py"], "skeleton": []},
-    )
-    assert res.passed, res.reasons
-
-
 # --- G3: examples run as doctests --------------------------------------------------------------------------
-
-
-def test_a_failing_example_refuses_the_function(lab):
-    mem, _, gate = lab
-    wrong = DOC_MOD.replace("        'u-1'\n", "        'u-2'\n")
-    assert wrong != DOC_MOD
-    res = _gate(mem, gate, {**DOC_FILES, "env/venmo/__init__.py": wrong}, DOC_MAN)
-    assert not res.passed and res.checks["G1"] and not res.checks["G3"]
-    assert any(
-        r.startswith(
-            "G3: an example in the docstring of env/venmo:me fails as a doctest",
-        )
-        for r in res.reasons
-    ), res.reasons
 
 
 CALL = '        >>> me(env_from([("venmo", "me", {}, rec)]))\n        \'u-1\'\n'
 
 
-@pytest.mark.parametrize(
-    ("example", "reason"),
-    [
-        (
-            '        >>> me(env_from([("venmo", "me", {}, rec)]))  # doctest: +SKIP\n        \'u-1\'\n',
-            "Example: an example is skipped (`+SKIP`); every example must run",
-        ),
-        (
-            "        >>> x = 1\n",
-            "Example: no example calls `me(...)` with an argument and shows its result",
-        ),
-        (
-            '        >>> me(env_from([("venmo", "me", {}, rec)]))\n        ...\n',
-            "Example: no example calls `me(...)` with an argument and shows its result",
-        ),
-        (
-            "        >>> rec\n        {...}\n",
-            "Example: no example calls `me(...)` with an argument and shows its result",
-        ),
-    ],
-    ids=["skip", "trivial", "ellipsis-only", "no-call"],
-)
-def test_an_example_that_is_not_a_real_call_is_refused(lab, example, reason):
-    mem, _, gate = lab
-    module = DOC_MOD.replace(CALL, example)
-    assert module != DOC_MOD
-    res = _gate(mem, gate, {**DOC_FILES, "env/venmo/__init__.py": module}, DOC_MAN)
-    assert not res.checks["G1"]
-    assert any(
-        r.startswith(f"G1: env/venmo:me docstring {reason}") for r in res.reasons
-    ), res.reasons
-
-
-def test_an_example_must_read_a_fixture_the_commit_holds(lab):
-    mem, _, gate = lab
-    inline = DOC_MOD.replace(
-        '        >>> rec = json.load(open("env/venmo/tests/me.json"))\n',
-        '        >>> rec = {"user_id": "u-1"}\n',
-    )
-    res = _gate(mem, gate, {**DOC_FILES, "env/venmo/__init__.py": inline}, DOC_MAN)
-    assert (
-        "G1: env/venmo:me docstring Example: no example reads a recorded input from a fixture under "
-        "env/venmo/tests/"
-    ) in res.reasons, res.reasons
-    missing = DOC_MOD.replace("tests/me.json", "tests/gone.json")
-    res = _gate(mem, gate, {**DOC_FILES, "env/venmo/__init__.py": missing}, DOC_MAN)
-    assert (
-        "G1: env/venmo:me docstring Example: reads env/venmo/tests/gone.json, which the commit does "
-        "not hold"
-    ) in res.reasons, res.reasons
-
-
-def test_the_runner_requires_the_function_to_be_called(lab):
-    """An example that shows the call but never makes it (its name is rebound first) passes G1's static
-    check and fails G3: the counter never fires."""
-    mem, _, gate = lab
-    dodge = DOC_MOD.replace(
-        CALL,
-        '        >>> me = lambda apis: "u-1"\n' + CALL,
-    )
-    assert dodge != DOC_MOD
-    res = _gate(mem, gate, {**DOC_FILES, "env/venmo/__init__.py": dodge}, DOC_MAN)
-    assert res.checks["G1"] and not res.checks["G3"], res.reasons
-    assert any("fails as a doctest" in r for r in res.reasons), res.reasons
-
-
-@pytest.mark.parametrize(
-    "example",
-    [
-        '        >>> me(env_from([("venmo", "me", {}, rec)])) if False else "u-1"\n        \'u-1\'\n',
-        '        >>> me(env_from([("venmo", "me", {}, rec)])) == me(env_from([("venmo", "me", {}, rec)]))\n'
-        "        True\n",
-        '        >>> (me(env_from([("venmo", "me", {}, rec)])), 3)[1]\n        3\n',
-        '        >>> isinstance(me(env_from([("venmo", "me", {}, rec)])), str)\n        True\n',
-        '        >>> [me(env_from([("venmo", "me", {}, rec)]))]\n        [...]\n',
-    ],
-    ids=["conditional", "self-comparison", "discarded", "wrapped", "bracket-ellipsis"],
-)
-def test_a_vacuous_example_is_refused_before_any_run(lab, example):
-    """The shown output must be the call's own value, made once, with content."""
-    mem, _, gate = lab
-    module = DOC_MOD.replace(CALL, example)
-    assert module != DOC_MOD
-    res = _gate(mem, gate, {**DOC_FILES, "env/venmo/__init__.py": module}, DOC_MAN)
-    assert not res.checks["G1"]
-    assert any(
-        r.startswith("G1: env/venmo:me docstring Example: no example calls `me(...)`")
-        for r in res.reasons
-    ), res.reasons
-
-
-def test_an_example_must_pass_the_fixture_to_the_call(lab):
-    mem, _, gate = lab
-    ignored = DOC_MOD.replace(
-        CALL,
-        '        >>> me(env_from([("venmo", "me", {}, {"user_id": "u-1"})]))\n        \'u-1\'\n',
-    )
-    res = _gate(mem, gate, {**DOC_FILES, "env/venmo/__init__.py": ignored}, DOC_MAN)
-    assert (
-        "G1: env/venmo:me docstring Example: the example showing `me(...)`'s result does not pass it "
-        "the recorded fixture (name the fixture's path, or a name bound to it, in the call's arguments)"
-    ) in res.reasons, res.reasons
-
-
-def test_examples_run_with_a_fixed_hash_seed(lab):
-    mem, _, gate = lab
-    seeded = DOC_MOD.replace(
-        CALL,
-        CALL
-        + "        >>> import os\n        >>> os.environ.get(\"PYTHONHASHSEED\")\n        '0'\n",
-    )
-    res = _gate(mem, gate, {**DOC_FILES, "env/venmo/__init__.py": seeded}, DOC_MAN)
-    assert res.passed, res.reasons
-
-
-def test_an_example_fixture_must_have_a_covered_input_shape(lab):
-    """The fixture is a recorded input: it has the shape of one of the function's validated covers."""
-    mem, _, gate = lab
-    parent = mem.head()
-    cand = _candidate(mem, _dlg_files(fixture='{"score": 3}'))
-    res = gate.merge(
-        parent,
-        cand,
-        DLG_MAN,
-        "p-fixture",
-        "incremental",
-        "dialogue_user",
-        "0.01",
-    )
-    assert not res.passed
-    assert (
-        "G3: the examples of env/dialogue_user:parse_feedback read no fixture shaped like an input it "
-        "covers (env/dialogue_user/tests/feedback.json)"
-    ) in res.reasons, res.reasons
-
-
 # --- G4: a soft budget -------------------------------------------------------------------------------------
-
-
-def test_growth_past_the_old_4000_token_index_cap_is_not_refused(lab):
-    mem, _, gate = lab
-    long = DOC_MOD.replace(
-        "Return the logged-in user's id.",
-        "Return the logged-in user's id, " + "and say so " * 1500 + "at length.",
-    )
-    res = _gate(mem, gate, {**DOC_FILES, "env/venmo/__init__.py": long}, DOC_MAN)
-    assert res.passed and res.checks["G4"], res.reasons
-    assert any(
-        r.startswith("note: G4 hygiene due: the catalogue") for r in res.reasons
-    ), res.reasons
 
 
 # --- generated paths ---------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "path",
-    [
-        "README.md",
-        ".memory/catalog.json",
-        "memory.abi3.so",
-        "env.py",
-        "memory/notes.md",
-    ],
-)
-def test_a_commit_may_not_write_a_reserved_path(lab, path):
-    mem, _, gate = lab
-    res = _gate(mem, gate, {**DOC_FILES, path: "mine\n"}, DOC_MAN)
-    assert not res.passed
-    assert any(
-        r.startswith(f"G1: file {path} is reserved") for r in res.reasons
-    ), res.reasons
-
-
 # --- input shapes, recorded at a merge and found from the export -------------------------------------------
-
-
-def test_a_refused_merge_records_no_shapes(lab):
-    mem, ev, gate = lab
-    parent = mem.head()
-    wrong = DLG_MOD.replace("        3\n", "        4\n", 1)
-    cand = _candidate(mem, _dlg_files(module=wrong))
-    res = gate.merge(
-        parent,
-        cand,
-        DLG_MAN,
-        "p-refused",
-        "incremental",
-        "dialogue_user",
-        "0.01",
-    )
-    assert not res.passed
-    tables = {
-        r[0] for r in ev.db.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    }
-    if "shape_commits" in tables:
-        assert ev.db.execute("SELECT COUNT(*) FROM shape_commits").fetchone() == (0,)
-    assert ev.commit_shapes(cand) is None
 
 
 # --- a fixture of exactly a low-information recorded shape passes -------------------------------------------
@@ -675,9 +358,7 @@ def _shape_lab(tmp_path, action, eid):
         ev,
         blobs,
         action_lookup=lambda e, i: action if (e, i) == (eid, 0) else None,
-        docstring_standard=True,
-        surfacing="catalogue",
-        soft_budget=True,
+        ry_mode=LibraryConfig()
     )
     return mem, gate, blobs
 
@@ -793,52 +474,6 @@ _PICKS = {
     "records": ('{{"first": {0}, "second": {1}}}', '["first"]'),
     "wrapped": ('{{"rows": [{0}, {1}]}}', '["rows"][0]'),
 }
-
-
-@pytest.mark.parametrize("layout", sorted(_PICKS))
-def test_an_example_fixture_may_be_a_collection_of_recorded_inputs(lab, layout):
-    mem, _, gate = lab
-    template, pick = _PICKS[layout]
-    other = dict(FEEDBACK, score=5)
-    fixture = template.format(json.dumps(FEEDBACK), json.dumps(other))
-    module = DLG_MOD.replace(
-        '>>> parse_feedback(json.load(open("env/dialogue_user/tests/feedback.json")))',
-        f'>>> parse_feedback(json.load(open("env/dialogue_user/tests/feedback.json")){pick})',
-    )
-    assert module != DLG_MOD
-    res = gate.merge(
-        mem.head(),
-        _candidate(mem, _dlg_files(module=module, fixture=fixture)),
-        DLG_MAN,
-        f"p-collection-{layout}",
-        "incremental",
-        "dialogue_user",
-        "0.01",
-    )
-    assert not any("read no fixture shaped" in r for r in res.reasons), res.reasons
-    assert res.passed, res.reasons
-
-
-def test_a_collection_of_wrongly_shaped_elements_is_still_refused(lab):
-    mem, _, gate = lab
-    module = DLG_MOD.replace(
-        '>>> parse_feedback(json.load(open("env/dialogue_user/tests/feedback.json")))',
-        '>>> parse_feedback(json.load(open("env/dialogue_user/tests/feedback.json"))[0])',
-    )
-    res = gate.merge(
-        mem.head(),
-        _candidate(mem, _dlg_files(module=module, fixture="[[1, 2], [3, 4]]")),
-        DLG_MAN,
-        "p-collection-wrong",
-        "incremental",
-        "dialogue_user",
-        "0.01",
-    )
-    assert not res.passed
-    assert (
-        "G3: the examples of env/dialogue_user:parse_feedback read no fixture shaped like an input it "
-        "covers (env/dialogue_user/tests/feedback.json)"
-    ) in res.reasons, res.reasons
 
 
 def test_fixture_elements_are_bounded_and_value_free():

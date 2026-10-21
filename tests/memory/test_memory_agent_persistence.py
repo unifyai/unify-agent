@@ -1,9 +1,7 @@
-"""The memory agents' interpreters keep their state between cells (``UNIFY_CELL_STATE=persistent``, the default),
-with tools in code on (the interpreter with its tool channel) and off (the same interpreter with no channel and no
-``tools`` stub, the agent's tools staying JSON tools); ``fresh`` (the opt-out) starts every cell anew. ``memory``
-and ``help`` are bound in every cell. The end calls stop the interpreter before anything is judged, the restart
-cases say so in the cell's output, a quota breach stops it, and a library module changed on disk is imported anew.
-Keyless; the boxes need bubblewrap and prlimit, as the other box tests do.
+"""The memory agents' interpreters keep their state between cells, and ``memory`` and ``help`` are bound in every cell.
+The end calls stop the interpreter before anything is judged, the restart cases say so in the cell's output, a quota
+breach stops it, and a library module changed on disk is imported anew. Keyless; the boxes need bubblewrap and
+prlimit, as the other box tests do.
 """
 
 from __future__ import annotations
@@ -24,11 +22,11 @@ from unify.memory import sandbox_run as sr
 from unify.memory.blobs import BlobStore
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
+from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
 from unify.memory.tool_handlers import RESTARTED
 from unify.memory.trigger import PassRequest
 from unify.memory.writer_pass import PassConfig, WriterPass
-from unify.settings import SETTINGS
 
 needs_box = pytest.mark.skipif(
     shutil.which("bwrap") is None or not os.access(sr.PRLIMIT, os.X_OK),
@@ -36,10 +34,6 @@ needs_box = pytest.mark.skipif(
 )
 
 _ = EPS  # the helper context reads the shared recorded episodes
-
-
-def _cell_state(monkeypatch, value: str) -> None:
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", value)
 
 
 def _cell(cid: str, code: str) -> dict:
@@ -59,13 +53,13 @@ class Watched(Turns):
         return await super().__call__(messages, tools)
 
 
-def _writer(tmp_path: Path, turns: list, *, in_code: bool, **cfg) -> tuple[WriterPass, Watched]:
+def _writer(tmp_path: Path, turns: list, **cfg) -> tuple[WriterPass, Watched]:
     mem = Repo.init_bare(tmp_path / "mem.git")
     ev = EvidenceStore(tmp_path / "e.sqlite")
     ep = _e1()
     ev.index_episode(ep, "1" * 40)
     lookup = lambda eid, i: _ME if (eid, i) == ("e1", 0) else None  # noqa: E731
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup)
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup, library_mode=LibraryConfig())
     model = Watched(turns)
     cfg.setdefault("max_calls", 12)
     writer = WriterPass(
@@ -75,7 +69,6 @@ def _writer(tmp_path: Path, turns: list, *, in_code: bool, **cfg) -> tuple[Write
         load=lambda eid: ep,
         model_turn=model,
         config=PassConfig(
-            tools_in_code=in_code,
             pass_record_root=str(tmp_path / "out"),
             **cfg,
         ),
@@ -87,43 +80,34 @@ def _run(writer: WriterPass):
     return asyncio.run(writer.run(PassRequest("incremental", "venmo", ["e1"], False), "p1"))
 
 
-def _end(in_code: bool) -> list:
-    """With tools in code the pass ends from a cell; off, the scripted model's own finish ends it."""
-    return [_cell("end", "tools.finish('done')")] if in_code else []
+def _end() -> list:
+    """The pass ends from a cell."""
+    return [_cell("end", "tools.finish('done')")]
 
 
 # --- state between cells, per role and per switch ------------------------------------------------------------------
 
 
 @needs_box
-@pytest.mark.parametrize("in_code", [False, True], ids=["tools-off", "tools-in-code"])
-@pytest.mark.parametrize("state", ["persistent", "fresh"])
-def test_a_writer_cell_sees_the_last_cells_variables_only_when_persistent(tmp_path, monkeypatch, in_code, state):
-    _cell_state(monkeypatch, state)
-    turns = [_cell("c1", "x = 41"), _cell("c2", "print(x + 1)"), *_end(in_code)]
-    writer, model = _writer(tmp_path, turns, in_code=in_code)
+def test_a_writer_cell_sees_the_last_cells_variables(tmp_path, monkeypatch):
+    turns = [_cell("c1", "x = 41"), _cell("c2", "print(x + 1)"), *_end()]
+    writer, model = _writer(tmp_path, turns)
     _run(writer)
     out = model.outputs["c2"]
-    if state == "persistent":
-        assert out.splitlines()[0] == "42", out
-    else:
-        assert "NameError" in out and "42" not in out, out
+    assert out.splitlines()[0] == "42", out
     assert _descendants(os.getpid()) == []
 
 
-def _helper_steps(cells: list[tuple[str, str]], in_code: bool) -> list:
+def _helper_steps(cells: list[tuple[str, str]]) -> list:
     steps = [_msg(_tc(cid, "execute_code", {"code": code})) for cid, code in cells]
-    if in_code:
-        steps.append(_msg(_tc("d", "execute_code", {"code": "tools.done('s', [])"})))
-    else:
-        steps.append(_msg(_tc("d", "done", {"summary": "s", "claims": []})))
+    steps.append(_msg(_tc("d", "execute_code", {"code": "tools.done('s', [])"})))
     return steps
 
 
-def _helper(tmp_path: Path, cells: list[tuple[str, str]], *, in_code: bool, library: str | None = None) -> dict:
+def _helper(tmp_path: Path, cells: list[tuple[str, str]], *, library: str | None = None) -> dict:
     """One helper task running *cells*; its tool outputs by call id."""
-    model = Steps({"t": _helper_steps(cells, in_code)})
-    ctx = _ctx(tmp_path, model, tools_in_code=in_code)
+    model = Steps({"t": _helper_steps(cells)})
+    ctx = _ctx(tmp_path, model)
     if library is not None:
         (ctx.library / "memory").mkdir()
         (ctx.library / "memory" / "__init__.py").write_text(library)
@@ -138,15 +122,9 @@ def _helper(tmp_path: Path, cells: list[tuple[str, str]], *, in_code: bool, libr
 
 
 @needs_box
-@pytest.mark.parametrize("in_code", [False, True], ids=["tools-off", "tools-in-code"])
-@pytest.mark.parametrize("state", ["persistent", "fresh"])
-def test_a_helper_cell_sees_the_last_cells_variables_only_when_persistent(tmp_path, monkeypatch, in_code, state):
-    _cell_state(monkeypatch, state)
-    out = _helper(tmp_path, [("c1", "x = 41"), ("c2", "print(x + 1)")], in_code=in_code)["c2"]
-    if state == "persistent":
-        assert out.splitlines()[0] == "42", out
-    else:
-        assert "NameError" in out and "42" not in out, out
+def test_a_helper_cell_sees_the_last_cells_variables(tmp_path, monkeypatch):
+    out = _helper(tmp_path, [("c1", "x = 41"), ("c2", "print(x + 1)")])["c2"]
+    assert out.splitlines()[0] == "42", out
     assert _descendants(os.getpid()) == []
 
 
@@ -160,10 +138,8 @@ BOUND = (
 
 
 @needs_box
-@pytest.mark.parametrize("in_code", [False, True], ids=["tools-off", "tools-in-code"])
-def test_memory_and_help_are_bound_in_the_writers_cells_with_no_import(tmp_path, monkeypatch, in_code):
-    _cell_state(monkeypatch, "persistent")
-    writer, model = _writer(tmp_path, [_cell("c1", BOUND), *_end(in_code)], in_code=in_code)
+def test_memory_and_help_are_bound_in_the_writers_cells_with_no_import(tmp_path, monkeypatch):
+    writer, model = _writer(tmp_path, [_cell("c1", BOUND), *_end()])
     _run(writer)
     out = model.outputs["c1"]
     # lazy until the first use, which imports the generated package inside the cell
@@ -172,19 +148,16 @@ def test_memory_and_help_are_bound_in_the_writers_cells_with_no_import(tmp_path,
 
 
 @needs_box
-@pytest.mark.parametrize("in_code", [False, True], ids=["tools-off", "tools-in-code"])
-def test_memory_and_help_are_bound_in_a_helpers_cells_with_no_import(tmp_path, monkeypatch, in_code):
-    _cell_state(monkeypatch, "persistent")
+def test_memory_and_help_are_bound_in_a_helpers_cells_with_no_import(tmp_path, monkeypatch):
     library = "def index():\n    return 'helper index\\n'\n"
-    out = _helper(tmp_path, [("c1", BOUND)], in_code=in_code, library=library)["c1"]
+    out = _helper(tmp_path, [("c1", BOUND)], library=library)["c1"]
     assert "TYPE _LazyModule" in out and "INDEX True" in out, out
     assert "number of items" in out and "Error" not in out, out
 
 
 @needs_box
 def test_a_helper_without_the_library_package_has_no_memory_name(tmp_path, monkeypatch):
-    _cell_state(monkeypatch, "persistent")
-    out = _helper(tmp_path, [("c1", "print('memory' in dir())")], in_code=False)["c1"]
+    out = _helper(tmp_path, [("c1", "print('memory' in dir())")])["c1"]
     assert out.splitlines()[0] == "False", out
 
 
@@ -193,13 +166,12 @@ def test_a_helper_without_the_library_package_has_no_memory_name(tmp_path, monke
 
 @needs_box
 def test_finish_stops_the_interpreter_before_anything_is_judged_and_a_repair_cell_starts_anew(tmp_path, monkeypatch):
-    _cell_state(monkeypatch, "persistent")
     turns = [
         _cell("c1", "x = 41"),
         _call("f1", "finish", {"summary": "s"}),  # no manifest yet: refused (G1), the pass goes on
         _cell("c2", "print(x)"),
     ]
-    writer, model = _writer(tmp_path, turns, in_code=False)
+    writer, model = _writer(tmp_path, turns, )
     judged: list[int] = []
     problem = writer._finish_manifest_problem
     close_record = writer._close_record
@@ -228,7 +200,6 @@ def test_finish_stops_the_interpreter_before_anything_is_judged_and_a_repair_cel
 
 @needs_box
 def test_a_json_write_over_the_quota_stops_the_interpreter(tmp_path, monkeypatch):
-    _cell_state(monkeypatch, "persistent")
     real = writer_pass._measure
 
     def measure(root):
@@ -250,7 +221,7 @@ def test_a_json_write_over_the_quota_stops_the_interpreter(tmp_path, monkeypatch
         _cell("c1", "x = 41"),
         _call("w1", "write", {"path": "big.txt", "content": "x" * 100}),
     ]
-    writer, model = _writer(tmp_path, turns, in_code=False, edit_tools=True)
+    writer, model = _writer(tmp_path, turns, edit_tools=True)
     out = _run(writer)
     assert model.boxes[1] > 0, model.boxes  # alive after the cell
     # the last reply is never sent back to the model: read it from the pass's conversation
@@ -267,7 +238,6 @@ def test_a_json_write_over_the_quota_stops_the_interpreter(tmp_path, monkeypatch
 
 @needs_box
 def test_a_timed_out_cell_and_a_thread_left_running_each_restart_with_a_note(tmp_path, monkeypatch):
-    _cell_state(monkeypatch, "persistent")
     turns = [
         _cell("c1", "x = 41"),
         _cell("c2", "import time\ntime.sleep(60)"),
@@ -276,7 +246,7 @@ def test_a_timed_out_cell_and_a_thread_left_running_each_restart_with_a_note(tmp
         _cell("c5", "import threading, time\nthreading.Thread(target=time.sleep, args=(60,), daemon=True).start()"),
         _cell("c6", "print(x)"),
     ]
-    writer, model = _writer(tmp_path, turns, in_code=False, cell_timeout_s=3.0)
+    writer, model = _writer(tmp_path, turns, cell_timeout_s=3.0)
     _run(writer)
     assert "(the cell timed out after 3 s; the interpreter was restarted: variables are gone, files remain)" in (
         model.outputs["c2"]
@@ -292,7 +262,6 @@ def test_a_timed_out_cell_and_a_thread_left_running_each_restart_with_a_note(tmp
 
 @needs_box
 def test_a_module_changed_on_disk_is_imported_anew_in_the_same_interpreter(tmp_path, monkeypatch):
-    _cell_state(monkeypatch, "persistent")
     write = "import pathlib, time\npathlib.Path('/memory/sweepmod.py').write_text({!r})\n"
     turns = [
         # older than the next cell's start by more than the sweep's margin, so the import there is recorded as
@@ -302,7 +271,7 @@ def test_a_module_changed_on_disk_is_imported_anew_in_the_same_interpreter(tmp_p
         _cell("c3", write.format("V = 22\n") + "print('rewritten')"),
         _cell("c4", "import importlib\nprint('V', importlib.import_module('sweepmod').V)\nprint('x', 'x' in dir())"),
     ]
-    writer, model = _writer(tmp_path, [_cell("c0", "x = 1"), *turns], in_code=False)
+    writer, model = _writer(tmp_path, [_cell("c0", "x = 1"), *turns])
     _run(writer)
     assert model.outputs["c2"].splitlines()[0] == "V 1", model.outputs["c2"]
     out = model.outputs["c4"].splitlines()

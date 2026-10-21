@@ -363,7 +363,7 @@ def test_a_writer_pass_lands_the_capture_as_a_library_item(tmp_path, monkeypatch
         action_lookup=lambda eid, i: (
             episodes[eid].actions[i] if eid in episodes and 0 <= i < len(episodes[eid].actions) else None
         ),
-        library_mode=LibraryConfig(checks=True, episodes=episodes.get),
+        library_mode=LibraryConfig(episodes=episodes.get),
     )
     results: list = []
     merge = gate.merge

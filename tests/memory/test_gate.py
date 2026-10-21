@@ -10,6 +10,7 @@ from unify.memory.blobs import BlobStore
 from unify.memory.episodes import Action
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import RED_TEST_HINT, Gate
+from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
 from unify.memory.snapshot import blob_id, listing, materialise, tree_listing
 from unify.memory.sandbox_run import PytestOutcome
@@ -66,7 +67,7 @@ def world(tmp_path):
     mem = Repo.init_bare(tmp_path / "mem.git")
     ev = EvidenceStore(tmp_path / "e.sqlite")
     ev.index_episode(_ep(episode_id="e1"), "1" * 40)
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=_lookup)
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=_lookup, library_mode=LibraryConfig())
     return mem, ev, gate
 
 
@@ -463,7 +464,7 @@ def test_gate_g3_outcome_rules(tmp_path, world, on_parent, on_candidate, ok):
         ev,
         BlobStore(tmp_path / "b2"),
         action_lookup=_lookup,
-        pytest_runner=_fake_runner(on_parent, on_candidate),
+        pytest_runner=_fake_runner(on_parent, on_candidate),library_mode=LibraryConfig()
     )
     parent = mem.head()
     cand = _candidate(mem, FILES)
@@ -480,7 +481,7 @@ def test_gate_g3_contradiction_is_never_red(tmp_path, world):
         ev,
         BlobStore(tmp_path / "b2"),
         action_lookup=_lookup,
-        pytest_runner=_fake_runner(forged, GREEN),
+        pytest_runner=_fake_runner(forged, GREEN),library_mode=LibraryConfig()
     )
     parent = mem.head()
     res = gate.check(parent, _candidate(mem, FILES), MAN)
@@ -525,7 +526,7 @@ def test_gate_g4_index_budget(tmp_path, world):
         ev,
         BlobStore(tmp_path / "b2"),
         action_lookup=_lookup,
-        budget_tokens=10,
+        budget_tokens=10,library_mode=LibraryConfig()
     )
     parent = mem.head()
     res = gate.check(parent, _candidate(mem, FILES), MAN)
@@ -544,8 +545,7 @@ def test_gate_g4_is_a_soft_budget(tmp_path, world, surfacing):
         BlobStore(tmp_path / "b2"),
         action_lookup=_lookup,
         budget_tokens=10,
-        surfacing=surfacing,
-        soft_budget=True,
+        ry_mode=LibraryConfig()
     )
     parent = mem.head()
     res = gate.check(parent, _candidate(mem, FILES), MAN)
@@ -645,7 +645,7 @@ def test_gate_reasons_never_carry_key_shaped_test_output(tmp_path, world):
         ev,
         BlobStore(tmp_path / "b2"),
         action_lookup=_lookup,
-        pytest_runner=_fake_runner(RED, leaky),
+        pytest_runner=_fake_runner(RED, leaky),library_mode=LibraryConfig()
     )
     parent = mem.head()
     res = gate.merge(
@@ -691,7 +691,7 @@ def probe(tmp_path, world):
             ev,
             BlobStore(tmp_path / "pb"),
             action_lookup=_lookup,
-            pytest_runner=_probe_runner,
+            pytest_runner=_probe_runner,library_mode=LibraryConfig()
         ),
     )
 
@@ -1074,7 +1074,7 @@ def test_gate_suite_keeps_every_test_that_passed_on_the_parent(tmp_path, world):
             ev,
             BlobStore(tmp_path / "b3"),
             action_lookup=_lookup,
-            pytest_runner=_suite_runner(old, cand_passed),
+            pytest_runner=_suite_runner(old, cand_passed),library_mode=LibraryConfig()
         )
         res = gate.check(parent, cand, man)
         assert res.passed is ok, res.reasons
@@ -1696,7 +1696,7 @@ def test_r3_suites_run_per_channel(tmp_path, r2):
         ev,
         BlobStore(tmp_path / "b4"),
         action_lookup=_lookup,
-        pytest_runner=runner,
+        pytest_runner=runner,library_mode=LibraryConfig()
     )
     cand = _candidate(
         mem,
@@ -2143,7 +2143,7 @@ def test_preview_judges_an_uncommitted_tree_without_tests_held_out_runs_or_write
         ev,
         BlobStore(tmp_path / "b"),
         action_lookup=_lookup,
-        pytest_runner=boom,
+        pytest_runner=boom,library_mode=LibraryConfig()
     )
     tree = _tree(tmp_path / "tree", FILES)
     (tree / "env" / "empty" / "tests").mkdir(
@@ -2191,7 +2191,7 @@ def test_preview_bounds_the_covers_it_looks_up_and_looks_each_up_once(world, tmp
         asked.append((eid, i))
         return _lookup(eid, i)
 
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=counting)
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=counting, library_mode=LibraryConfig())
     tree = _tree(tmp_path / "tree", FILES)
     too_many = gate.preview(mem.head(), tree, _man(covers=[["e1", 0]] * 501))
     assert any("at most 500 covers" in r for r in too_many) and asked == []
@@ -2249,7 +2249,7 @@ def test_preview_refuses_a_declared_input_form_the_covers_cannot_give(
 
     monkeypatch.setattr("unify.memory.gate.plan", boom)
     monkeypatch.setattr("unify.memory.gate.run_plan", boom)
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=_lookup)
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=_lookup, library_mode=LibraryConfig())
     files = {
         **FILES,
         "env/venmo/__init__.py": MOD.replace("Input: env", "Input: bytes"),
@@ -2276,7 +2276,7 @@ def test_a_function_that_replaces_a_computed_value_needs_covers_from_two_episode
         mem,
         ev,
         BlobStore(tmp_path / "b"),
-        action_lookup=lambda eid, i: _lookup("e1", i) if eid in ("e1", "e2") else None,
+        action_lookup=lambda eid, i: _lookup("e1", i) if eid in ("e1", "e2") else None,library_mode=LibraryConfig()
     )
     assert RULE_MOD != MOD
     parent = mem.head()
@@ -2313,7 +2313,7 @@ def test_check_keeps_each_failing_runs_whole_output_beside_the_reasons(tmp_path,
         ev,
         BlobStore(tmp_path / "b2"),
         action_lookup=_lookup,
-        pytest_runner=_fake_runner(RED, failing),
+        pytest_runner=_fake_runner(RED, failing),library_mode=LibraryConfig()
     )
     parent = mem.head()
     res = gate.check(parent, _candidate(mem, FILES), MAN)
@@ -2367,7 +2367,7 @@ def test_check_and_merge_thread_one_seed_to_every_gate_run(
         ev,
         BlobStore(tmp_path / "b2"),
         action_lookup=_lookup,
-        pytest_runner=_fake_runner(RED, GREEN),
+        pytest_runner=_fake_runner(RED, GREEN),library_mode=LibraryConfig()
     )
     seen: list = []
     real = Gate._check
@@ -2420,7 +2420,7 @@ def test_outputs_keep_the_runs_whole_output_not_the_4000_character_tail(
         ev,
         BlobStore(tmp_path / "b2"),
         action_lookup=_lookup,
-        pytest_runner=_fake_runner(RED, failing),
+        pytest_runner=_fake_runner(RED, failing),library_mode=LibraryConfig()
     )
     res = gate.check(mem.head(), _candidate(mem, FILES), MAN)
     kept = res.outputs["env/venmo/tests/test_me.py (candidate)"]

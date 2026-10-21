@@ -13,6 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from unify.memory.library_checks import LibraryConfig
+
 from unify.memory.admission import cover_problem
 from unify.memory.episodes import Action, CostRow, EpisodeWriter
 from unify.memory.integration import consolidate
@@ -187,7 +189,7 @@ def test_the_gate_names_the_checks_that_refused_structurally(tmp_path):
 
     stores = _stores(tmp_path)
     head = stores.memory.head()
-    res = Gate(stores.memory, stores.evidence, stores.blobs).check(
+    res = Gate(stores.memory, stores.evidence, stores.blobs, library_mode=LibraryConfig()).check(
         head,
         head,
         {"items": "not a list"},
@@ -295,7 +297,7 @@ def test_the_gate_admits_a_worktree_cover_through_the_lookup(tmp_path):
         stores.memory,
         stores.evidence,
         stores.blobs,
-        action_lookup=EpisodeLookup(stores).action,
+        action_lookup=EpisodeLookup(stores).action,library_mode=LibraryConfig()
     )
     parent = stores.memory.head()
     cand = _commit(stores.memory, WT_FILES)
@@ -304,7 +306,7 @@ def test_the_gate_admits_a_worktree_cover_through_the_lookup(tmp_path):
     blind = Gate(
         stores.memory,
         stores.evidence,
-        stores.blobs,
+        stores.blobs,library_mode=LibraryConfig()
     )  # no lookup: fails closed
     assert not blind.check(parent, cand, WT_MAN).checks["G2"]
 
@@ -398,7 +400,7 @@ def test_the_reporting_gate_reports_a_check_and_a_merge_and_is_the_gate_otherwis
         def merge(self, *a, **k):
             return SimpleNamespace(passed=True, refused=[], merged="abc")
 
-    gate = consolidate._ReportingGate(Gate(), lambda phase, **f: reports.append((phase, f)))
+    gate = consolidate._ReportingGate(Gate(library_mode=LibraryConfig()), lambda phase, **f: reports.append((phase, f)))
     assert gate.check("p", "c", {}).refused == ["G2"] and gate.merge("p", "c", {}, "id", "k", None, "0").merged == "abc"
     assert gate._blob == "the gate's own"
     assert reports == [

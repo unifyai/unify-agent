@@ -8,6 +8,7 @@ from pathlib import Path
 
 from unify.memory import pool, library_prompts as pv, writer_pass
 from unify.memory.batch_map import build_batch_map
+from tests.memory.library_example_world import library_example_world  # noqa: F401 - a fixture
 from tests.memory.test_gate import _candidate
 from unify.memory import fixtures as fx
 from tests.memory import library_example_world as w

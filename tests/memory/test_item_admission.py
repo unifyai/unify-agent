@@ -9,6 +9,7 @@ import pytest
 from unify.memory.blobs import BlobStore
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
+from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
 from unify.memory.manifest import parse_manifest
 from unify.memory.reduction import build, with_dependents
@@ -53,7 +54,7 @@ def world(tmp_path):
     mem = Repo.init_bare(tmp_path / "mem.git")
     ev = EvidenceStore(tmp_path / "e.sqlite")
     ev.index_episode(_ep(episode_id="e1"), "1" * 40)
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=_lookup)
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=_lookup, library_mode=LibraryConfig())
     return mem, ev, gate
 
 

@@ -22,6 +22,7 @@ from tests.memory.test_writer_pass import Turns, _call, _e1, _ME
 from unify.memory.blobs import BlobStore
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
+from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
 from unify.memory.trigger import PassRequest
 from unify.memory.writer_pass import CODE_WRITER_ERROR, PassConfig, WriterPass
@@ -82,7 +83,7 @@ def _pass(tmp_path: Path, monkeypatch, turns: list, *, in_code: bool, survives: 
     ep = _e1()
     ev.index_episode(ep, "1" * 40)
     lookup = lambda eid, i: _ME if (eid, i) == ("e1", 0) else None  # noqa: E731
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup)
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup, library_mode=LibraryConfig())
     writer = WriterPass(
         mem,
         gate,

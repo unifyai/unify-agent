@@ -49,6 +49,7 @@ from unify.memory.experience import (
 )
 from unify.memory.fingerprint import Generations, fingerprint
 from unify.memory.gate import Gate
+from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
 from unify.memory.integration import consolidate
 from unify.memory.integration.adapters.dialogue import (
@@ -425,7 +426,7 @@ def _pass_world(tmp_path, episodes):
         ep = by_id.get(eid)
         return ep.actions[i] if ep is not None and 0 <= i < len(ep.actions) else None
 
-    gate = Gate(mem, ev, BlobStore(tmp_path / "blobs"), action_lookup=lookup)
+    gate = Gate(mem, ev, BlobStore(tmp_path / "blobs"), action_lookup=lookup, library_mode=LibraryConfig())
     return mem, ev, gate, by_id
 
 

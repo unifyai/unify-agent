@@ -7,7 +7,7 @@ from unify.agents import binding
 
 @pytest.fixture
 def record_mode(monkeypatch, tmp_path):
-    monkeypatch.setattr(binding, "records_dir", lambda: tmp_path / "records")
+    monkeypatch.setattr(binding, "_run_home", lambda: tmp_path / "home")
 
 
 def test_the_first_act_is_the_main_agent_and_has_seen_the_request(record_mode):

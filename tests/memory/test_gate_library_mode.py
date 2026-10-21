@@ -11,6 +11,7 @@ import shutil
 
 import pytest
 
+from tests.memory.library_example_world import library_example_world  # noqa: F401 - a fixture
 from tests.memory import library_example_world as w
 
 pytestmark = pytest.mark.skipif(

@@ -96,8 +96,10 @@ def export_capture_files(d: Path, signature, summary: str) -> None:
     """Write a capture's signature and what it was saved against as the harness exports them into the actor's copy
     (``captures.export_files``): the store builds a signature with identifiers stripped (the one rule,
     ``signatures``), and ``saved.json`` holds the procedure's docstring and the summary's Asked and Approach,
-    stripped (``library_export.capture_saved``). The summary itself stays beside them, as written."""
-    from unify.memory.library_export import capture_saved_bytes, strip_signature
+    stripped (``captures.saved_against``, as the capture step writes it). The summary itself stays beside them, as
+    written."""
+    from unify.memory import captures
+    from unify.memory.library_export import strip_signature
     from unify.memory.signatures import strip_identifiers
 
     if isinstance(signature, str):  # a malformed file, as written
@@ -108,7 +110,9 @@ def export_capture_files(d: Path, signature, summary: str) -> None:
             sig["goal"] = strip_identifiers(sig["goal"])
         (d / CAPTURE_SIGNATURE).write_text(json.dumps(sig))
     (d / CAPTURE_SUMMARY).write_text(summary)
-    (d / CAPTURE_SAVED).write_bytes(capture_saved_bytes(d, summary))
+    proc = d / "procedure.py"
+    source = proc.read_text() if proc.is_file() else ""
+    (d / CAPTURE_SAVED).write_bytes(captures._json(captures.saved_against(source, summary)))
 
 
 # ==============================================================================================================

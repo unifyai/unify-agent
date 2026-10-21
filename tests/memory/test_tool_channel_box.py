@@ -22,6 +22,7 @@ from unify.memory import tool_handlers
 from unify.memory.blobs import BlobStore
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
+from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
 from unify.memory.trigger import PassRequest
 from unify.memory.writer_pass import PassConfig, WriterPass
@@ -64,7 +65,7 @@ def _writer(tmp_path: Path, turns: list, **cfg) -> tuple[WriterPass, Turns, Evid
     ep = _e1()
     ev.index_episode(ep, "1" * 40)
     lookup = lambda eid, i: _ME if (eid, i) == ("e1", 0) else None  # noqa: E731
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup)
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup, library_mode=LibraryConfig())
     model = Turns(turns)
     cfg.setdefault("max_calls", 30)
     writer = WriterPass(

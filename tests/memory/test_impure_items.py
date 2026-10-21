@@ -96,9 +96,8 @@ def _gate(world, labels=True) -> Gate:
         ev,
         blobs,
         action_lookup=w.lookup,
-        library_mode=LibraryConfig(checks=True, episodes=w.EPISODES.get),
-        labels=labels,
-    )
+        library_mode=LibraryConfig(episodes=w.EPISODES.get),
+        )
 
 
 def _merge(world, files, man, labels=True):

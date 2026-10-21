@@ -295,7 +295,7 @@ def _pass(tmp_path: Path, cells: list[str], eids: list[str]):
         action_lookup=lambda eid, i: (
             EPISODES[eid].actions[i] if eid in EPISODES and 0 <= i < len(EPISODES[eid].actions) else None
         ),
-        library_mode=LibraryConfig(checks=True, episodes=EPISODES.get),
+        library_mode=LibraryConfig(episodes=EPISODES.get),
     )
     results: list = []
     merge = gate.merge

@@ -24,6 +24,7 @@ import pytest
 from unify.memory.blobs import BlobStore
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
+from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
 from unify.memory.manifest import (
     TESTKIT,
@@ -89,7 +90,7 @@ def _gate(tmp_path, mem, ev, runner):
         ev,
         BlobStore(tmp_path / "lb"),
         action_lookup=_lookup,
-        pytest_runner=runner,
+        pytest_runner=runner,library_mode=LibraryConfig()
     )
 
 

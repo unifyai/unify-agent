@@ -29,9 +29,9 @@ With ``Gate(library_mode=None)`` (the default) nothing here runs and the gate is
   - for WRITE, no fewer tests.
   - a stored function's episode covers re-run on the parent and the candidate: green to red is a behaviour change
     (the covers are persisted at merge, :meth:`.evidence.EvidenceStore.add_typed_cover`).
-* **G4** never refuses growth: over the index view budget it notes that CURATE is due.
+* **G4** never refuses growth: over the index view budget it notes the index's size.
 * **G5:**
-  - for WRITE, no fewer items (removal belongs to CURATE);
+  - no fewer items;
   - a deleted function's typed episode covers stay covered by a remaining item.
 
 The stage-5 checks run with drawn inputs ``strict`` and mutation gated at :data:`.qa.MUTATION_MIN`
@@ -82,7 +82,6 @@ from .quality import (
 )
 from .testkit import imports_kit
 
-ROLES = ("write", "curate")
 CROSS_CASES = (
     16  # recorded inputs from other episodes per function (cross-episode held-out)
 )
@@ -195,35 +194,22 @@ def _index_tokens(tree: Path, examples: dict[str, dict] | None = None) -> int:
 
 @dataclass(frozen=True)
 class LibraryConfig:
-    """The library-mode gate (``Gate(library_mode=LibraryConfig(...))``; None is v2).
+    """The library checks' configuration (``Gate(library_mode=LibraryConfig(...))``): how to read an episode and a
+    recorded work tree, and the checks' bounds."""
 
-    *layout*: the library layout. *checks*: this module's checks and stage 5 in library mode, off until the
-    consolidation builds the gate with :func:`config_for`. *checker_visible*: the bed shows the actor its
-    checker's verdict, so a checker signal may verify a dialogue procedure (``switch.checker_visible``).
-    """
-
-    layout: bool = True
-    checks: bool = False
-    role: str = "write"
     episodes: Callable[[str], Episode | None] = _no_episode
     worktree_files: Callable[[str, Path], Path | None] = _no_snapshot
     index_tokens: int = INDEX_VIEW_TOKENS
     cross_cases: int = CROSS_CASES
     lint_min: int = LINT_MIN
     runner: Callable[..., SandboxResult] = run_confined
-    checker_visible: bool = False
-
-    def __post_init__(self) -> None:
-        if self.role not in ROLES:
-            raise ValueError(f"role must be one of {ROLES}, not {self.role!r}")
 
 
 def config_for(
     stores: Any,
     lookup: Any,
-    role: str = "write",
 ) -> LibraryConfig:
-    """The library-mode gate configuration of a run's stores (:mod:`.integration.consolidate`), checks on."""
+    """The library checks' configuration for a run's stores (:mod:`.integration.consolidate`)."""
 
     def episodes(eid: str) -> Episode | None:
         try:
@@ -233,13 +219,7 @@ def config_for(
 
     git = Path(stores.paths.worktree_git)
     reader = snapshot_files(Repo(git)) if (git / "HEAD").is_file() else _no_snapshot
-    return LibraryConfig(
-        checks=True,
-        role=role,
-        episodes=episodes,
-        worktree_files=reader,
-        checker_visible=True,
-    )
+    return LibraryConfig(episodes=episodes, worktree_files=reader)
 
 
 def cap(run: Any, check: str, reason: str, item: Any) -> None:
@@ -269,19 +249,10 @@ class LibraryChecks:
 
     def _edited(self) -> list[Any]:
         run = self.run
-        raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
-        declared = raw.get("aliases")
-        # a CURATE pass's declared aliases are forwarding stubs that the behaviour check compares strictly, not new code to test
-        forwarding = (
-            set(declared)
-            if self.cfg.role == "curate" and isinstance(declared, dict)
-            else set()
-        )
         return [
             it
             for it in self._functions()
-            if it.item not in forwarding
-            and it.item in run.c_bodies
+            if it.item in run.c_bodies
             and run.p_bodies.get(it.item, ("", ""))[:2] != run.c_bodies[it.item][:2]
         ]
 
@@ -325,7 +296,7 @@ class LibraryChecks:
         self.g1()
         self._plain()
         self._test_changes()
-        self.curate()
+        self.aliases_kept()
 
     # -- G1 -------------------------------------------------------------------------------------------------
     def g1(self) -> None:
@@ -906,13 +877,10 @@ class LibraryChecks:
                     f"test {tid} is {what} without a stated reason (the manifest's tests_changed)",
                     self._owners(path) if path in run.c_files else None,
                 )
-        if self.cfg.role != "write":
-            return
         if len(after) < len(before):
             run.fail(
                 "G3",
-                f"a WRITE pass may not reduce the number of tests ({len(before)} to {len(after)}); removals and "
-                "merges belong to CURATE",
+                f"a pass may not reduce the number of tests ({len(before)} to {len(after)})",
             )
         is_item = lambda p: (
             p.startswith("memory/") and p.endswith(".py")
@@ -924,8 +892,7 @@ class LibraryChecks:
         if n_c < n_p:
             run.fail(
                 "G5",
-                f"a WRITE pass may not reduce the number of items ({n_p} to {n_c}); removals and merges belong "
-                "to CURATE",
+                f"a pass may not reduce the number of items ({n_p} to {n_c})",
             )
 
     def _exact(self, it: Any) -> None:
@@ -993,150 +960,25 @@ class LibraryChecks:
             run.fail("G4", f"index not built: {exc}"[:300])
             return
         if size > self.cfg.index_tokens:
-            run.curate_due = True
-            run.note(
-                f"G4 CURATE due: the index is {size} tokens, over its {self.cfg.index_tokens}-token view; "
-                "growth is not refused",
-            )
+            run.note(f"G4: the index is {size} tokens, over its {self.cfg.index_tokens}-token view; growth is not refused")
 
     # -- procedures in the behaviour check and in deletion ---------------------------------------
-    # -- CURATE --------------------------------------------------------------------------------------
-    def curate(self) -> None:
-        """CURATE's own rules, static: they read the manifest and both trees and run nothing.
-
-        A WRITE pass may not declare aliases or retirements (removals and merges belong to CURATE). A
-        CURATE pass:
-        - states why in one line (the ``Why:`` trailer);
-        - forwards each declared alias, an item of the parent, to a function of the candidate that is not itself an
-          alias (:func:`.aliases.forwards`);
-        - gives every deleted item a reason: an alias, or a one-line ``retired`` reason;
-        - lists an old name's tests under its alias's target, which they keep testing through the alias;
-        - keeps a live alias for one more pass: one added by the pass that made the parent stays;
-        - does not grow the library: the items that are not aliases do not increase.
-        The aliases, retirements and dropped aliases go to ``run.curations``; :meth:`.gate.Gate.merge` records them
-        for a landed pass.
-        """
+    # -- aliases and retirements --------------------------------------------------------------------
+    def aliases_kept(self) -> None:
+        """A pass changes no item's name by alias or retirement, and keeps every live alias forwarding: static, it
+        reads the manifest and both trees and runs nothing. The pass's renames go to ``run.curations``;
+        :meth:`.gate.Gate.merge` records them for a landed pass."""
         run = self.run
         raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
         aliases, retired = raw.get("aliases") or {}, raw.get("retired") or {}
         live = dict(self.gate.ev.aliases())
-        renamed = self._renames(raw)
-        if self.cfg.role != "curate":
-            run.curations = renamed
-            if aliases or retired:
-                run.fail(
-                    "G1",
-                    "aliases and retirements belong to CURATE; a WRITE pass may not declare them",
-                )
-            # live aliases are checked for every role; dropping one is a removal (CURATE's)
-            c_mods = layout.library_modules(run.c_tree)
-            for alias in sorted(live):
-                if self._forwards(run.c_tree, alias, c_mods) is None:
-                    run.fail(
-                        "G5",
-                        f"alias {alias} is no longer forwarded; removals belong to CURATE, and a WRITE pass may not "
-                        "drop an alias",
-                    )
-            return
-        if not all(
-            isinstance(d, dict)
-            and all(isinstance(k, str) and isinstance(v, str) for k, v in d.items())
-            for d in (aliases, retired)
-        ):
-            run.fail("G1", "aliases and retired map item ids to strings")
-            return
-        why = raw.get("why")
-        if not isinstance(why, str) or not why.strip() or "\n" in why.strip():
-            run.fail("G1", "a CURATE pass states why in one line (the manifest's why)")
-            why = ""
-        why = why.strip()
-        p_lib, c_lib = layout.discover(run.p_tree), layout.discover(run.c_tree)
-        p_ids = {f.item_id for f in p_lib.functions}
-        c_ids = {f.item_id for f in c_lib.functions}
-        p_mods, c_mods = layout.library_modules(run.p_tree), layout.library_modules(
-            run.c_tree,
-        )
-        listed = {it.item: it for it in run.man.items}
-        rows: list[dict] = []
-        deleted = set(run.man.deleted)
-        for alias, target in sorted(aliases.items()):
-            problem = self._alias_problem(
-                alias,
-                target,
-                set(aliases) | set(live),
-                p_ids | set(live),
-                c_ids - deleted,  # the target is a kept function of the candidate
-                c_mods,
-            )
-            if problem is not None:
-                run.fail("G1", problem, target if target in listed else None)
-                continue
-            rows.append(
-                {"item": alias, "action": "alias", "target": target, "reason": why},
-            )
-            self._alias_tests(alias, target, listed, p_mods)
-        renamed_old = {r["item"] for r in renamed}
-        for item in sorted(deleted - set(aliases) - renamed_old):
-            if not retired.get(item, "").strip():
-                run.fail(
-                    "G5",
-                    f"deleted item {item} needs a reason: keep its name as an alias (aliases) or retire it with a "
-                    "one-line reason (retired)",
-                )
-        for item, reason in sorted(retired.items()):
-            if item not in deleted:
-                run.fail("G1", f"retired {item} is not in deleted")
-            elif reason.strip():
-                rows.append(
-                    {
-                        "item": item,
-                        "action": "retire",
-                        "target": None,
-                        "reason": " ".join(reason.split())[:300],
-                    },
-                )
-        for alias, row in sorted(live.items()):
-            if (
-                alias in aliases
-                or self._forwards(run.c_tree, alias, c_mods) is not None
-            ):
-                continue  # still forwarded, or declared again
-            if row.get("commit") in self._parent_chain():
-                run.fail(
-                    "G5",
-                    f"alias {alias} was added by the pass that made the parent ({run.parent[:12]}); it stays for "
-                    "one more pass",
-                )
-            else:
-                rows.append(
-                    {
-                        "item": alias,
-                        "action": "drop_alias",
-                        "target": row.get("target"),
-                        "reason": why,
-                    },
-                )
-        # generalising and regrouping are CURATE's, so the parent's count leaves out only its live
-        # aliases, the candidate's every alias; and a new function is the target of an alias this pass declares
-        aliased = set(aliases) | set(live)
-        n_p = len((p_ids | {n.item_id for n in p_lib.notes}) - set(live))
-        n_c = len((c_ids | {n.item_id for n in c_lib.notes}) - aliased)
-        if n_c > n_p:
-            run.fail(
-                "G5",
-                f"a CURATE pass may not grow the library ({n_p} to {n_c} items that are not aliases); add a function "
-                "only as the target that old names become aliases of",
-            )
-        else:
-            targets = set(aliases.values()) | {r["target"] for r in renamed}
-            for new in sorted(c_ids - p_ids - aliased - targets):
-                run.fail(
-                    "G5",
-                    f"{new} is a new function; a CURATE pass adds a function only as the target that old names "
-                    "become aliases of",
-                    new if new in listed else None,
-                )
-        run.curations = rows + renamed
+        run.curations = self._renames(raw)
+        if aliases or retired:
+            run.fail("G1", "a pass may not declare aliases or retirements")
+        c_mods = layout.library_modules(run.c_tree)
+        for alias in sorted(live):
+            if self._forwards(run.c_tree, alias, c_mods) is None:
+                run.fail("G5", f"alias {alias} is no longer forwarded; a pass may not drop an alias")
 
     def _renames(self, raw: dict) -> list[dict]:
         """The manifest's ``renames`` (old item id -> new item id), any role: the item keeps its identity (its
@@ -1169,8 +1011,8 @@ class LibraryChecks:
             elif new in p_ids:
                 run.fail(
                     "G1",
-                    f"rename of {old} to {new}: {new} is already an item of the parent; to merge two items, keep "
-                    "the old name as an alias (CURATE)",
+                    f"rename of {old} to {new}: {new} is already an item of the parent; a rename may not merge two "
+                    "items",
                 )
             elif new in taken:
                 run.fail(
@@ -1394,7 +1236,7 @@ class LibraryChecks:
         As in the behaviour check, a remaining item vouches for a deleted item's procedure only when
         :func:`.procedures.run_procedure` gives on the candidate's library the same outcome (``ok``) as the deleted
         item gave on the parent's. The holders tried are the remaining items that list or store the same cover and,
-        for a deleted item that is an alias (declared by this CURATE pass, or live), its target: an alias forwarding a
+        for a deleted item that is a live alias, its target: an alias forwarding a
         procedure is held by that re-run. Bounded like the behaviour check, never silently.
         """
         run = self.run
@@ -1464,7 +1306,7 @@ class LibraryChecks:
                 )
 
     def _alias_targets(self) -> dict[str, str]:
-        """Deleted name -> the function it forwards to: this CURATE pass's declared aliases and the live ones."""
+        """Deleted name -> the function it forwards to: the live aliases."""
         out: dict[str, str] = {}
         try:
             live = dict(self.gate.ev.aliases())
@@ -1473,16 +1315,6 @@ class LibraryChecks:
         for a, row in live.items():
             if isinstance(row, dict) and isinstance(row.get("target"), str):
                 out[a] = row["target"]
-        raw = self.run.manifest_raw if isinstance(self.run.manifest_raw, dict) else {}
-        declared = raw.get("aliases")
-        if self.cfg.role == "curate" and isinstance(declared, dict):
-            out.update(
-                {
-                    a: t
-                    for a, t in declared.items()
-                    if isinstance(a, str) and isinstance(t, str)
-                },
-            )
         return out
 
     def _reproduced(

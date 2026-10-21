@@ -7,6 +7,7 @@ import json
 
 
 from unify.memory import batch_map, pool, library_prompts as pv
+from tests.memory.library_example_world import library_example_world  # noqa: F401 - a fixture
 from tests.memory import library_example_world as w
 from tests.memory.test_pool import EMPTY, INDEX, _defer, _finish_with, _open, _Stores
 from unify.memory.episodes import Cell

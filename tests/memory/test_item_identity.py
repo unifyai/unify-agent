@@ -144,7 +144,7 @@ def test_a_write_pass_rename_is_recorded_for_landing(tmp_path):
         {"renames": {SPLIT_ID: RENAMED_SPLIT}},
         role="write",
     )
-    v.curate()
+    v.aliases_kept()
     assert v.run.fails == []
     assert v.run.curations == [_rename(SPLIT_ID, RENAMED_SPLIT)]
 
@@ -158,7 +158,7 @@ def test_a_curate_pass_rename_needs_no_alias_or_retirement(tmp_path):
         items=[_item(item=RENAMED_SPLIT)],
         deleted=[SPLIT_ID],
     )
-    v.curate()
+    v.aliases_kept()
     assert v.run.fails == []
     assert v.run.curations == [_rename(SPLIT_ID, RENAMED_SPLIT)]
 
@@ -176,7 +176,7 @@ def test_a_rename_of_an_unknown_id_or_to_a_missing_id_is_refused(tmp_path):
         },
         role="write",
     )
-    v.curate()
+    v.aliases_kept()
     assert _reasons(v) == [
         "rename of memory.text.nowhere:gone: it is not an item of the parent",
         f"rename of {SPLIT_ID} to memory.text.words:missing: memory.text.words:missing is not an item of the "
@@ -187,7 +187,7 @@ def test_a_rename_of_an_unknown_id_or_to_a_missing_id_is_refused(tmp_path):
 
 def test_a_rename_onto_an_existing_item_or_of_a_malformed_map_is_refused(tmp_path):
     v = _checks(tmp_path, BEFORE, BEFORE, {"renames": {SPLIT_ID: TOKENS}}, role="write")
-    v.curate()
+    v.aliases_kept()
     assert _reasons(v) == [
         f"rename of {SPLIT_ID} to {TOKENS}: {TOKENS} is already an item of the parent; to merge two items, "
         "keep the old name as an alias (CURATE)",
@@ -199,7 +199,7 @@ def test_a_rename_onto_an_existing_item_or_of_a_malformed_map_is_refused(tmp_pat
         {"renames": [SPLIT_ID]},
         role="write",
     )
-    bad.curate()
+    bad.aliases_kept()
     assert _reasons(bad) == ["renames maps old item ids to new item ids (strings)"]
 
 

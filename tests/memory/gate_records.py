@@ -209,7 +209,7 @@ def build(
         ev,
         blobs,
         action_lookup=lookup,
-        library_mode=LibraryConfig(checks=True, episodes=episodes.get, **dict(config_kwargs or {})),
+        library_mode=LibraryConfig(episodes=episodes.get, **dict(config_kwargs or {})),
         **dict(gate_kwargs or {}),
     )
     result = gate.check(mem.head(), commit, checked)

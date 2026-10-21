@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from .episodes import Episode
@@ -76,12 +75,9 @@ _FIXTURE_PROVENANCE_SCHEMA = (
     "PRIMARY KEY(path, sha256))"
 )
 
-# CURATE passes: the fingerprints each CURATE pass was shown, and the aliases,
-# retirements and dropped aliases each landed CURATE pass made (the item records read them for alias_of and
-# the curator's retirements).
-# Created by the first write, so a store that never runs CURATE keeps the v2 schema (as with _SHAPE_SCHEMA).
+# The renames each landed pass made, and the aliases, retirements and dropped aliases a store from an earlier build
+# holds (the item records read them for alias_of; a live alias must keep forwarding). Created by the first write.
 _CURATE_SCHEMA = """
-CREATE TABLE IF NOT EXISTS curate_seen(fingerprint TEXT PRIMARY KEY, pass_id TEXT);
 CREATE TABLE IF NOT EXISTS curations(seq INTEGER PRIMARY KEY AUTOINCREMENT, pass_id TEXT, commit_sha TEXT,
   item TEXT, action TEXT, target TEXT, reason TEXT, UNIQUE(pass_id, item, action))
 """
@@ -916,28 +912,10 @@ class EvidenceStore:
             if ddl.strip():
                 self.db.execute(ddl)
 
-    def record_curate_seen(self, pass_id: str, fingerprints: Iterable[str]) -> int:
-        """Record the fingerprints CURATE pass *pass_id* was shown (:mod:`.curate`); returns how many were new."""
-        with self.db:
-            self._curate_tables()
-            n = 0
-            for fp in sorted(set(fingerprints)):
-                n += self.db.execute(
-                    "INSERT OR IGNORE INTO curate_seen VALUES(?,?)",
-                    (fp, pass_id),
-                ).rowcount
-        return n
-
-    def curate_seen(self) -> set[str]:
-        """Every fingerprint some CURATE pass was shown."""
-        if not self._has_table("curate_seen"):
-            return set()
-        return {r[0] for r in self.db.execute("SELECT fingerprint FROM curate_seen")}
-
     def record_curations(self, pass_id: str, commit: str, rows: list[dict]) -> int:
-        """Record what landed CURATE pass *pass_id* (commit *commit*) did: ``alias``, ``retire`` or ``drop_alias``
-        rows with ``item``, ``target`` and ``reason``, and the ``rename`` rows (old id -> new id) of any landed pass. Returns the rows written; a pass's rows are written once.
-        """
+        """Record the ``rename`` rows (old id -> new id) of landed pass *pass_id* (commit *commit*); an earlier build
+        also wrote ``alias``, ``retire`` and ``drop_alias`` rows with ``item``, ``target`` and ``reason``. Returns the
+        rows written; a pass's rows are written once."""
         with self.db:
             self._curate_tables()
             n = 0
@@ -978,7 +956,7 @@ class EvidenceStore:
 
     def aliases(self) -> dict[str, dict]:
         """The live aliases: old item -> ``{"target", "pass_id", "commit"}`` of the landed pass that added it,
-        until a later landed CURATE pass dropped or retired it."""
+        until a later landed pass dropped or retired it."""
         live: dict[str, dict] = {}
         for r in self.curations():
             if r["action"] == "alias":

@@ -18,6 +18,7 @@ from unify.memory.blobs import BlobStore
 from unify.memory.episodes import Action
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
+from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
 from unify.memory.held_out import (
     _read_results,
@@ -981,7 +982,7 @@ def test_the_gate_reads_the_stores_episodes_first_in_store_order(tmp_path, monke
         Repo.init_bare(tmp_path / "m.git"),
         ev,
         BlobStore(tmp_path / "b"),
-        action_lookup=lookup,
+        action_lookup=lookup,library_mode=LibraryConfig()
     )
     named = SimpleNamespace(source_episodes=["n1"], covers=[("n1", 0)])
     run = SimpleNamespace(pools={}, man=SimpleNamespace(items=[named]))
@@ -1305,7 +1306,7 @@ def shop(tmp_path, recorded):
     ev = EvidenceStore(tmp_path / "e.sqlite")
     ev.index_episode(_ep(episode_id="h1"), "1" * 40)
     lookup = lambda eid, i: acts[i] if eid == "h1" and 0 <= i < len(acts) else None
-    gate = Gate(mem, ev, store, action_lookup=lookup, pytest_runner=_green)
+    gate = Gate(mem, ev, store, action_lookup=lookup, pytest_runner=_green, library_mode=LibraryConfig())
     return mem, gate
 
 

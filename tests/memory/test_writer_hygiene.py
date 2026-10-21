@@ -15,6 +15,7 @@ from unify.memory.episodes import Action
 from unify.memory.evidence import EvidenceStore
 import unify.memory.gate as gate_module
 from unify.memory.gate import Gate
+from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
 from tests.memory.test_episodes import _ep
 from tests.memory.test_gate import _candidate, _merged
@@ -214,7 +215,7 @@ def arc(tmp_path):
     def lookup(eid, i):
         return acts[i] if eid == "a1" and 0 <= i < len(acts) else None
 
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup)
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup, library_mode=LibraryConfig())
     parent = _merged(mem, PARENT_FILES)
     for item, idx in RECORDED.items():
         for i in idx:
