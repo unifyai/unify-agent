@@ -328,6 +328,7 @@ def test_each_call_is_journaled_in_its_lanes_journal_in_the_shape_the_memory_cod
     assert started["requested_model"] == MODEL and started["account_charge"] is None
     assert done["status"] == "completed" and done["status_code"] == 200
     assert done["account_charge"] == "0.00125" and done["generation_id"] == "gen-stub-1"
+    assert done["booked_usd"] == "0.00125"  # what the run's ledger booked for it
     assert done["tokens"] == {
         "input": 120,
         "output": 7,
@@ -519,18 +520,27 @@ def test_a_call_made_right_after_another_is_admitted_against_what_that_one_cost(
     assert got == [200] * 25
 
 
-def test_the_booked_spend_outlives_the_relay(tmp_path):
+def test_each_run_starts_with_the_whole_cap(tmp_path):
+    """The cap holds one run (one relay): what an earlier run booked, in the same journals, does not count."""
     up = Upstream(cost=None)
     try:
         doc, tokens = _doc(tmp_path / "lanes", up.base, cap="1.00")
         with serving(doc) as relay:
             assert call(relay.port, "writer", tokens["writer"], BODY)[0] == 200
+            assert (
+                call(relay.port, "fork", tokens["fork"], BODY)[0] == 403
+            )  # this run's cap is spent
         doc2, tokens2 = _doc(tmp_path / "lanes", up.base, cap="1.00")
         with serving(doc2) as relay:
-            status, reply = call(relay.port, "fork", tokens2["fork"], BODY)
+            status, _reply = call(relay.port, "fork", tokens2["fork"], BODY)
+            state = relay.ledger.state()
     finally:
         up.close()
-    assert status == 403 and reply["error"]["reason"] == "fork_cap_reached"
+    assert status == 200 and state == {
+        "booked_usd": "0.65625",
+        "cap_usd": "1.00",
+        "calls": 1,
+    }
 
 
 def test_a_call_with_no_free_slot_is_refused_for_now(tmp_path, monkeypatch):

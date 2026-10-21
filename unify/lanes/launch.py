@@ -12,8 +12,9 @@ stdout and stderr as they are, so ``--jsonl`` drivers and terminals see no diffe
 
 **What the relay gets.** The provider key (``OPENROUTER_API_KEY``), on its stdin only; each lane's model (the writer's
 for the writer lane, the helpers' for the helper lane, the actor's for the fork, which continues the actor's
-conversation); the memory spend cap, one ledger for all three lanes; the worst case per call of every model the pinned
-catalogue bounds (``unify/memory/call_bounds.py``); the writer's pinned prices when set. A lane that cannot be served
+conversation); the memory spend cap, which holds this run (the relay's life) on one ledger for all three lanes; the
+worst case per call of every model the pinned catalogue bounds (``unify/memory/call_bounds.py``); the writer's pinned
+prices when set. A lane that cannot be served
 (a model that is not an OpenRouter one, or that the catalogue does not bound) is left out with a note; with no key or
 no cap, or no lane left, the command runs as before, in this process, with a one-line note on stderr (the fork then
 records ``refused: no fork lane``).

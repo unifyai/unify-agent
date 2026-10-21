@@ -125,9 +125,10 @@ class LaneRelay:
         log_path: Path | str | None = None,
         start_timeout_s: float = START_TIMEOUT_S,
     ) -> "LaneRelay":
-        """Start the relay for *lanes* (lane -> the models it serves), all held to *cap_usd* on one ledger, each
-        model's unpriced call booked at *worst_case_usd*; journals and the lock file in *journal_dir* (made mode
-        0700); the relay's own log (fixed lines only) at *log_path* (else nowhere)."""
+        """Start the relay for *lanes* (lane -> the models it serves), all held to *cap_usd* on one ledger for the
+        relay's life (one run), each model's unpriced call booked at *worst_case_usd*; the journals in *journal_dir*
+        (made mode 0700); the relay's own log (fixed lines only) at *log_path* (else nowhere).
+        """
         if not lanes or not set(lanes) <= set(LANES):
             raise LaneRelayError("the lanes must be some of writer, helper and fork")
         folder = _private_folder(Path(journal_dir).resolve())

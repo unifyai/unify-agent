@@ -49,17 +49,16 @@ that then does not reach it adds one more row, ``cancelled``, with the same char
 decimal string, or null), ``tokens``, ``generation_id``, ``status_code`` and a fixed ``error_type``. A call that
 failed before anything was sent has the charge ``"0"``.
 
-**Spend.** One cap over all lanes, for the memory home's whole life. What is booked is read from the three journals
-themselves, under a lock file, before each admission (so two relays on one home share it too): each call at its
-charge; else at its tokens times the model's pinned prices; else, and for every call still in flight, at the model's
-worst case (a model the table does not know: the table's largest). A call is admitted only while the booked amount plus
-its own model's worst case stays within the cap. Money is a decimal string everywhere.
+**Spend.** One cap over all lanes, for this run: this relay, which lives as long as one ``unify act`` and the writer
+service it ran. Each call is booked in this process's memory from its admission, at its model's worst case, to its
+end: then at its charge; else at its tokens times the model's pinned prices; else still at its worst case. A call is
+admitted only while the booked amount plus its own model's worst case stays within the cap, and each terminal row
+records what was booked (``booked_usd``). Money is a decimal string everywhere.
 """
 
 from __future__ import annotations
 
 import ctypes
-import fcntl
 import hmac
 import http.client
 import json
@@ -289,7 +288,6 @@ class Config:
             self.worst[model] = _decimal(
                 value, positive=True, what="a worst case per call"
             )
-        self.worst_max = max(self.worst.values())
         prices = doc.get("prices") or {}
         if not isinstance(prices, dict):
             raise ConfigError("the prices must be an object")
@@ -381,42 +379,44 @@ class Journal:
                 view = view[n:]
 
 
-class _Call:
-    """What the journals say of one call: its model, its last charge, its last token counts, whether it ended."""
-
-    __slots__ = ("model", "charge", "tokens", "ended")
-
-    def __init__(self, model):
-        self.model, self.charge, self.tokens, self.ended = model, None, None, False
-
-
 class Ledger:
-    """The spend booked against the cap, folded from the lane journals (module docstring)."""
+    """What this run's calls have booked against the cap (module docstring): one amount per call, in this process's
+    memory, from the call's admission (its model's worst case) to its end (what it cost, :meth:`price`).
+    """
 
-    def __init__(self, config: Config, paths: list[str], lock_path: str):
+    def __init__(self, config: Config):
         self.config = config
-        self.offsets = {p: 0 for p in paths}
-        self.calls: dict[str, _Call] = {}
         self.booked: dict[str, Decimal] = {}
         self.total = Decimal(0)
         self.lock = threading.Lock()
-        self.lock_fd = os.open(
-            lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
-        )
 
-    def _price(self, call: _Call) -> Decimal:
-        if call.charge is not None:
-            return call.charge
-        if call.ended:
-            estimate = self._estimate(call)
-            if estimate is not None:
-                return estimate
-        return self.config.worst.get(call.model or "", self.config.worst_max)
+    def _book(self, rid: str, amount: Decimal) -> None:
+        self.total += amount - self.booked.get(rid, Decimal(0))
+        self.booked[rid] = amount
 
-    def _estimate(self, call: _Call) -> Decimal | None:
+    def admit(self, rid: str, model: str, start) -> bool:
+        """If the booked amount plus *model*'s worst case stays within the cap, call *start* (which writes the call's
+        ``request_started`` row), book the call at that worst case and return True; else False.
+        """
+        with self.lock:
+            worst = self.config.worst[model]
+            if self.total + worst > self.config.cap:
+                return False
+            start()
+            self._book(rid, worst)
+            return True
+
+    def price(self, model: str, charge: Decimal | None, tokens) -> Decimal:
+        """What an ended call books: its charge; else its tokens at the model's pinned prices; else its model's worst
+        case."""
+        if charge is not None:
+            return charge
+        estimate = self._estimate(model, tokens)
+        return estimate if estimate is not None else self.config.worst[model]
+
+    def _estimate(self, model: str, tokens) -> Decimal | None:
         """As ``unify/memory/reconcile.estimate``: input, output and cache-write tokens at the pinned prices."""
-        prices = self.config.prices.get(call.model or "")
-        tokens = call.tokens
+        prices = self.config.prices.get(model)
         if not prices or not isinstance(tokens, dict):
             return None
         if tokens.get("input") is None and tokens.get("output") is None:
@@ -429,84 +429,17 @@ class Ledger:
             usd += prices["cache_write"] * counts["cache_write"]
         return usd / Decimal(1000000)
 
-    def _fold(self, row: dict) -> None:
-        rid = row.get("request_attempt_id") or row.get("call_id")
-        if not isinstance(rid, str) or not rid:
-            return
-        call = self.calls.get(rid)
-        if call is None:
-            model = row.get("requested_model") or row.get("model")
-            call = self.calls[rid] = _Call(model if isinstance(model, str) else None)
-        if row.get("origin") != "request_started":
-            call.ended = True
-        charge = _charge(row.get("account_charge"))
-        if charge is not None:
-            call.charge = charge
-        tokens = row.get("tokens")
-        if isinstance(tokens, dict) and any(v is not None for v in tokens.values()):
-            call.tokens = tokens
-        before = self.booked.get(rid, Decimal(0))
-        after = self._price(call)
-        self.booked[rid] = after
-        self.total += after - before
-
-    def refresh(self) -> None:
-        """Fold every complete row appended to the journals since the last refresh (a journal that shrank is read
-        again from its start: the whole fold is rebuilt)."""
-        for path in list(self.offsets):
-            try:
-                size = os.stat(path).st_size
-            except FileNotFoundError:
-                continue
-            if size < self.offsets[path]:
-                self.offsets = dict.fromkeys(self.offsets, 0)
-                self.calls, self.booked, self.total = {}, {}, Decimal(0)
-                return self.refresh()
-        for path, offset in self.offsets.items():
-            try:
-                with open(path, "rb") as fh:
-                    fh.seek(offset)
-                    data = fh.read()
-            except FileNotFoundError:
-                continue
-            complete = data[: data.rfind(b"\n") + 1]
-            for raw in complete.split(b"\n")[:-1]:
-                try:
-                    row = json.loads(raw)
-                except ValueError:
-                    continue
-                if isinstance(row, dict):
-                    self._fold(row)
-            self.offsets[path] = offset + len(complete)
-
-    def admit(self, model: str, start) -> bool:
-        """Under the lock (this process's and the lock file's): fold the journals, then, if the booked amount plus
-        *model*'s worst case stays within the cap, call *start* (which writes the call's ``request_started`` row, its
-        reservation) and return True; else False."""
+    def settle(self, rid: str, amount: Decimal) -> None:
         with self.lock:
-            fcntl.flock(self.lock_fd, fcntl.LOCK_EX)
-            try:
-                self.refresh()
-                if self.total + self.config.worst[model] > self.config.cap:
-                    return False
-                start()
-                self.refresh()
-                return True
-            finally:
-                fcntl.flock(self.lock_fd, fcntl.LOCK_UN)
+            self._book(rid, amount)
 
     def state(self) -> dict:
         with self.lock:
-            fcntl.flock(self.lock_fd, fcntl.LOCK_EX)
-            try:
-                self.refresh()
-                return {
-                    "booked_usd": _money(self.total),
-                    "cap_usd": _money(self.config.cap),
-                    "calls": len(self.calls),
-                }
-            finally:
-                fcntl.flock(self.lock_fd, fcntl.LOCK_UN)
+            return {
+                "booked_usd": _money(self.total),
+                "cap_usd": _money(self.config.cap),
+                "calls": len(self.booked),
+            }
 
 
 # --- request metadata, bodies and replies -----------------------------------------------------------------------------
@@ -672,16 +605,21 @@ TOKEN_FIELDS = ("input", "output", "cache_read", "cache_write", "reasoning")
 
 
 class _Ending:
-    """One call's terminal journal row, written once (:meth:`end`), in the shape of its ``request_started`` row."""
+    """One call's terminal journal row, written once (:meth:`end`), in the shape of its ``request_started`` row, with
+    what the run's ledger books for the call (``booked_usd``)."""
 
-    def __init__(self, journal: Journal, base: dict, began: float):
-        self.journal, self.base, self.began = journal, base, began
-        self.ended = False
+    def __init__(self, journal: Journal, ledger: Ledger, base: dict, began: float):
+        self.journal, self.ledger, self.base, self.began = journal, ledger, base, began
+        self.row: dict | None = None
 
     def past(self, seconds: float) -> bool:
         return time.monotonic() - self.began > seconds
 
-    def _row(self, end: dict, info: dict) -> dict:
+    def end(self, end: dict, info: dict | None = None) -> None:
+        """Journal how the call ended and book what it cost (only the first time; later calls are no-ops)."""
+        if self.row is not None:
+            return
+        info = info or {}
         charge = info.get("charge")
         row = {
             **self.base,
@@ -696,28 +634,25 @@ class _Ending:
             "finish_reason": info.get("finish_reason"),
         }
         row.update(end)
-        return row
+        model, rid = self.base["requested_model"], self.base["request_attempt_id"]
+        booked = self.ledger.price(model, _charge(row["account_charge"]), row["tokens"])
+        row["booked_usd"] = _money(booked)
+        self.row = row
+        self.journal.write(row)
+        self.ledger.settle(rid, booked)
 
-    def end(self, end: dict, info: dict | None = None) -> None:
-        """Journal how the call ended (only the first time; later calls are no-ops)."""
-        if self.ended:
-            return
-        self.ended = True
-        self.journal.write(self._row(end, info or {}))
-
-    def undelivered(self, status: int, info: dict) -> None:
+    def undelivered(self) -> None:
         """The reply did not reach the caller after the call was journaled: one more row, ``cancelled``, with the same
-        charge (the last row is the one readers take)."""
-        self.journal.write(
-            self._row(
+        charge and booking (the last row is the one readers take)."""
+        if self.row is not None:
+            self.journal.write(
                 {
+                    **self.row,
+                    "at": _now(),
                     "status": "cancelled",
                     "error_type": "client_gone",
-                    "status_code": status,
-                },
-                info,
+                }
             )
-        )
 
 
 class Relay:
@@ -728,11 +663,7 @@ class Relay:
             lane: Journal(os.path.join(config.journal_dir, f"{lane}.jsonl"))
             for lane in config.tokens
         }
-        paths = [os.path.join(config.journal_dir, f"{lane}.jsonl") for lane in LANES]
-        self.ledger = Ledger(
-            config, paths, os.path.join(config.journal_dir, "ledger.lock")
-        )
-        self.ledger.refresh()
+        self.ledger = Ledger(config)
         self.refusals = Journal(os.path.join(config.journal_dir, "refusals.jsonl"))
         self.slots = threading.BoundedSemaphore(MAX_IN_FLIGHT)
         self.stopping = threading.Event()
@@ -915,7 +846,9 @@ class Relay:
             "measurement": "unknown",
             "tokens": dict.fromkeys(TOKEN_FIELDS),
         }
-        if not self.ledger.admit(model, lambda: self.journals[lane].write(started)):
+        if not self.ledger.admit(
+            rid, model, lambda: self.journals[lane].write(started)
+        ):
             raise Refusal(
                 403,
                 f"{lane}_budget_exhausted",
@@ -927,7 +860,7 @@ class Relay:
         if "usage" not in parsed:
             parsed["usage"] = {"include": True}
             body = json.dumps(parsed, separators=(",", ":")).encode("utf-8")
-        call = _Ending(self.journals[lane], base, time.monotonic())
+        call = _Ending(self.journals[lane], self.ledger, base, time.monotonic())
         try:
             self._upstream(handler, lane, rid, body, call)
         except _Cut:
@@ -1096,7 +1029,7 @@ class Relay:
             handler.wfile.write(out)
             handler.wfile.flush()
         except OSError:
-            call.undelivered(resp.status, info)
+            call.undelivered()
 
     def _relay_stream(self, handler, resp, ctype, rid, call: "_Ending") -> None:
         handler.send_response_only(resp.status)
@@ -1143,7 +1076,7 @@ class Relay:
         try:
             handler.wfile.write(b"0\r\n\r\n")  # the stream's end, after its row
         except OSError:
-            call.undelivered(resp.status, info)
+            call.undelivered()
 
     # -- refusals and replies ---------------------------------------------------------------------------------------
 
