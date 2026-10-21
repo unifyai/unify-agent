@@ -470,9 +470,9 @@ def test_the_brief_is_complete_general_and_says_nothing_of_ids_answers_or_exampl
     lowered = brief.lower()
     for word in ("task id", "identifier", "example", "store the answer", "expected"):
         assert word not in lowered, word
-    assert R.allow_list("librarian", frozenset({"helper", "store", "edit", "pool", "similar"})) == (
-        "read", "grep", "finish", "search",
-    )
+    assert set(R.allow_list("librarian", frozenset({"helper", "store", "edit", "pool", "similar"}))) == {
+        "read", "grep", "finish", "search", "keep_note",
+    }
     opening = L.opening()
     assert opening.startswith("## How you work here") and "tools.finish(answer)" in opening
     assert "tools.sh" not in opening and "tools.install" not in opening and "Messages:" not in opening

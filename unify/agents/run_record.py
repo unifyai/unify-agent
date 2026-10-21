@@ -211,13 +211,17 @@ SHOULD_MENTION: dict[str, tuple[dict[str, str], ...]] = {
 COMMON_SECTION = _registry.COMMON_SECTION
 
 
-def prompt_lines(name: str, role: str, spawner: Optional[str] = None) -> str:
+def prompt_lines(name: str, role: str, spawner: Optional[str] = None, *, home: Optional[Path | str] = None) -> str:
     """What every agent on the record reads after its cache-preserving prefix: :data:`COMMON_SECTION` (the same bytes
-    for every role), then its own roster lines: its name and whom its role should mention, and when.
+    for every role), then its own roster lines: its name and whom its role should mention, and when. A role that
+    outlives its instances (:data:`INSTANCE_ROLES`) is named only when the run has it (seeded in *home*; no *home*:
+    not named), so no agent is told to mention someone the run does not have.
     """
     lines = [COMMON_SECTION, "", f"On the record you are `{name}` ({role})."]
     for m in SHOULD_MENTION.get(role, ()):
         who = (spawner or "") if m["who"] == "<starter>" else m["who"]
+        if who in INSTANCE_ROLES and (home is None or not role_seeded(home, who)):
+            continue
         if who:
             lines.append(
                 f"Mention @{who} {m['when']}."

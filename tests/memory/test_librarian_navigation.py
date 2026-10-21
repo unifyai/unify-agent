@@ -184,7 +184,8 @@ async def test_the_system_message_is_the_same_bytes_for_a_small_and_a_large_libr
     for item in (PAGES, RETRY, OUTLINE, TONE, "memory.bulk.part_000:step_0"):
         assert item not in first
     # the librarian's tools: search, read, grep and finish, in its own box and nowhere else
-    assert R.allow_list("librarian") == ("read", "grep", "finish", "search")
+    # rev 2: and keep_note, the role's notes for its later instances
+    assert set(R.allow_list("librarian")) == {"read", "grep", "finish", "search", "keep_note"}
     assert R.registry()["search"].roles == ("librarian",)
     assert R.handler_for("librarian", "search") == ("unify.memory.librarian:search", True)
     assert R.handler_for("librarian", "read") == ("unify.memory.librarian:read", True)

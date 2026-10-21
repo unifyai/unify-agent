@@ -120,7 +120,8 @@ class Binding:
             from unify.agents.run_record import prompt_lines
 
             participant = self.pool.record.participants.get(self.name)
-            return prompt_lines(self.name, self.run_role, getattr(participant, "spawner", None))
+            return prompt_lines(self.name, self.run_role, getattr(participant, "spawner", None),
+                                home=getattr(self.pool.record, "home", None))  # fmt: skip
         return "" if in_code_switch.tools_in_code() else PROMPT_SECTION
 
     def comms_view(self) -> Any:

@@ -187,12 +187,16 @@ def who_text(view: RunRecordView, *, info: Optional[dict] = None) -> str:
         lines.append(f"({ended} agents of this run have ended)")
     me = next((r for r in rows if r["name"] == view.name), None)
     lines.append(f"You are {view.name} ({view.role}).")
+    from unify.agents.run_record import INSTANCE_ROLES, role_seeded
+
+    home = getattr(view.record, "home", None)
+    has = {r for r in INSTANCE_ROLES if home is not None and role_seeded(home, r)}
     for m in (me or {}).get("should_mention") or ():
+        if m.get("who") in INSTANCE_ROLES and m.get("who") not in has:
+            continue  # a role this run does not have is never offered
         lines.append(f"Mention @{m.get('who')} when {m.get('when')}.")
-    lines.append(
-        "Address an agent with @<name>, or a role: @writer, @actor, @librarian and @fork (of your own episode), "
-        "@helpers. Anyone may address anyone.",
-    )
+    roles = "@writer, @actor, " + ("@librarian, " if "librarian" in has else "") + "@fork (of your own episode), @helpers"
+    lines.append(f"Address an agent with @<name> while it runs, or a role: {roles}. Anyone may address anyone.")
     return "\n".join(lines)
 
 

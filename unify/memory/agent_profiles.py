@@ -694,9 +694,9 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "agent": "librarian",
         "mode": "librarian",
         "instructions": "unify.memory.librarian:system_prompt",
-        "tools": ["search", "read", "grep", "finish"],
+        "tools": ["search", "read", "grep", "keep_note", "finish"],
         "json_tools": list(_JSON_TOOLS),
-        "in_code": ["search", "read", "grep", "finish"],
+        "in_code": ["search", "read", "grep", "keep_note", "finish"],
         "in_cells": ["memory.get"],
         # the actor's library copy, read-only; no write root, no network
         "mounts": [{"path": "/memory", "mode": "ro"}],

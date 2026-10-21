@@ -121,6 +121,8 @@ BRIEF = (
     "- `tools.grep` finds where a name or a call occurs in the library's files: which functions call a function, "
     "which notes mention it.\n"
     "- `memory.get` in a cell gives an item's record: its status, its evidence level and how it has been used.\n"
+    "- `tools.keep_note` keeps one short note for the later librarians of this run: something about the library "
+    "that would save them time, never a request's details.\n"
     "- `tools.finish` gives your answer.\n"
     "\n"
     "## What each question brings\n"
@@ -425,6 +427,10 @@ class LibrarianCalls:
     #: the JSON Schema of the question in progress (``memory.ask(..., schema=...)``), and its answers that missed it
     schema: dict | None = None
     schema_failures: int = 0
+    #: rev 2: the run's memory home when the run has the librarian role (its notes are kept there), and this
+    #: instance's name on the record (:func:`keep_note`); None and "" without the role
+    role_home: Path | None = None
+    instance: str = ""
 
 
 def _text(value: Any) -> bool:
@@ -553,6 +559,56 @@ async def finish(ctx: Any, args: dict) -> Any:
     state.answer, state.finished = got, True
     state.finish_text = "finished: your answer goes to the agent that asked"
     return Reply(state.finish_text)
+
+
+#: Rev 2: one kept note's characters at most, and the role's notes file's bytes at most (a full file refuses more).
+NOTE_CHARS = 1000
+NOTES_MAX_BYTES = 256 * 1024
+
+
+def keep_note(ctx: Any, args: dict) -> Any:
+    """The librarian's ``tools.keep_note(text)``: append one note for the later instances of the run's librarian role
+    to ``memory-state/agents/roles/librarian/notes.md`` in the run's memory home (``run_record.role_dir``), and nothing
+    else: append-only, one line, at most :data:`NOTE_CHARS` characters, identifiers stripped
+    (:func:`.signatures.strip_identifiers`), refused when it holds a key-shaped string, when the run has no librarian
+    role, or when the notes are full (:data:`NOTES_MAX_BYTES`)."""
+    import fcntl
+    import os
+
+    from unify.agents import run_record as _rr
+    from unify.memory import writer_tools as _wt
+
+    from .redact import KEY_SHAPED
+    from .signatures import strip_identifiers
+
+    state = ctx.state
+    text = args.get("text")
+    if not _text(text):
+        return _wt.refused("keep_note", "no_text")
+    home = getattr(state, "role_home", None)
+    if home is None or not _rr.role_seeded(home, AGENT):
+        return _wt.refused("keep_note", "no_role")
+    if KEY_SHAPED.search(str(text)):
+        return _wt.refused("keep_note", "key_shaped")
+    line = " ".join(strip_identifiers(str(text)).split())[:NOTE_CHARS]
+    row = f"- {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {getattr(state, 'instance', '') or AGENT}: {line}\n"
+    folder = _rr.role_dir(home, AGENT)
+    path = folder / _rr.ROLE_NOTES
+    lock = os.open(folder / (_rr.ROLE_NOTES + ".lock"), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        try:
+            data = row.encode("utf-8")
+            if os.fstat(fd).st_size + len(data) > NOTES_MAX_BYTES:
+                return _wt.refused("keep_note", "full", limit=NOTES_MAX_BYTES)
+            os.write(fd, data)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    finally:
+        os.close(lock)
+    return _wt.Reply(f"kept: a note of {len(line)} characters for the later librarians of this run")
 
 
 # --- finding items: search, read, grep -------------------------------------------------------------------------------
@@ -1106,6 +1162,8 @@ def _role_state(session: LibrarianSession, home: Any) -> None:
     if home is None or not _rr.role_seeded(home, AGENT):
         return
     session.role_home = home
+    # the notes tool appends to the role's notes in this home, as this instance (keep_note)
+    session.state.role_home, session.state.instance = Path(home), str(getattr(session, "name", "") or AGENT)
     keys = set()
     for row in _rr.role_answers(home, AGENT):
         session.answers.setdefault(row["key"], row["answer"])

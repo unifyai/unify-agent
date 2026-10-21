@@ -117,7 +117,12 @@ def test_who_shows_the_roster_and_whom_this_agent_should_mention(tmp_path):
     )
     assert "h1 (" not in text and "(1 agents of this run have ended)" in text
     assert "Mention @writer when a served item was wrong" in text
+    # rev 2: the librarian is a role the run seeds; until it does, nobody is told to mention it
+    assert "Mention @librarian" not in text and "@librarian" not in text.splitlines()[-1]
+    rr.seed_role(home, "librarian", by="test")
+    text = T.who_text(rr.RunRecordView(rec, "actor-3f9a", "actor"))
     assert "Mention @librarian when you want to know whether stored items fit" in text
+    assert "@librarian" in text.splitlines()[-1]
 
 
 # --- test 6 and 7: the common section, and the prompt-size report -----------------------------------------------------
