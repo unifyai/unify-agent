@@ -1,6 +1,6 @@
 # --- asking the librarian (``memory.ask``) ------------------------------------------------------------------------
 #
-# This section is generated after the rest of the package only with ``UNIFY_MEMORY_LIBRARIAN=on``
+# This section is generated after the rest of the package whenever the run has memory
 # (``library_export.package_source``); it uses the names defined above it and is never imported on its own.
 #
 # ``ask(question=None)`` informs and runs nothing, here or anywhere (rev 2: no stored reader or ``applies`` runs to

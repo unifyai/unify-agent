@@ -90,7 +90,7 @@ SAVED_FILE = "saved.json"
 LANDED_FILE = "landed.json"
 #: The actor's snapshot of the store, under its library copy.
 EXPORT_DIR = ".memory/captures"
-#: In the snapshot, beside the capture folders, with ``UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES=on``: the
+#: In the snapshot, beside the capture folders, the
 #: captures no longer offered (the writer superseded or retired them) and what is offered in each one's place
 #: (:func:`export_files`).
 WITHDRAWN_FILE = "withdrawn.json"
@@ -589,11 +589,11 @@ def judged_outcome(signals: Iterable[Any], ep: Any, regime: str) -> dict:
     judge that value (:func:`final_value_signals`) under the episode's *regime*, ``{"regime", "verdict",
     "end_outcome", "corrected"}`` (:func:`.trust.signal_outcome`), with ``contrary`` (a rejected verdict, a contrary
     end, or a correction after the answer that the regime observes) and ``positive``. Under
-    ``UNIFY_MEMORY_REGIME=inferred`` a hidden grader's verdict (never shown to the actor) judges nothing."""
+    a hidden grader's verdict (never shown to the actor) judges nothing."""
     regime = regime if regime in trust.REGIMES else "none"
     signals = list(signals)
     if any(getattr(s, "timing", "") for s in signals):
-        # UNIFY_MEMORY_REGIME=inferred (its signals carry their timing): a verdict the actor never saw (a hidden
+        # signals carry their timing: a verdict the actor never saw (a hidden
         # grader's) decides nothing, so it never stands for the final value's verdict either
         signals = [
             s
@@ -620,7 +620,7 @@ def rejudge_episode(
     regime: str
 ) -> list[str]:
     """Every stored capture with a case or a use in episode *eid*, judged again on the episode's signals now (one
-    arrived after the capture, or the episode's regime changed: ``UNIFY_MEMORY_REGIME=inferred``): each case of that
+    arrived after the capture, or the episode's regime changed): each case of that
     episode gets its outcome as the capture step gives it (:func:`judged_outcome`; a case that differs from what was
     handed back stays failed), each use row of that episode its regime, verdict, end outcome and correction, then the
     record's derived fields (:func:`refresh`). Returns the ids whose record changed, in id order."""
@@ -1217,7 +1217,7 @@ def export_files(
     :data:`EXAMPLE_KEY`, and the package, the catalogue, the search index and the dispatch file then offer it as a
     worked example to read, never as a procedure to call.
 
-    With *withdrawn* (``UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES=on``: :func:`.pool.withdrawn_captures`, capture
+    With *withdrawn* (:func:`.pool.withdrawn_captures`, capture
     id -> ``{"status", "by", "reason"}``) those captures are left out of the snapshot, so nothing offers them, and
     ``.memory/captures/withdrawn.json`` names each with what is offered in its place and what it was saved against
     (its signature and ``saved.json`` texts, identifiers already stripped), so the item that superseded it is offered

@@ -3,7 +3,7 @@
 A signal may also say when it arrived (``arrived_at``), when its episode ended (``episode_ended_at``), whether it
 came within the episode or after it (``timing``, derived from the two, :func:`timing_of`) and what it bears on
 (``about``: ``action:<n>``, ``item:<id>`` or ``capture:<id>``). These fields are set only under
-``UNIFY_MEMORY_REGIME=inferred``; a signal without them is written as before, byte for byte (:func:`note_text`).
+an inferred regime; a signal without them is written as before, byte for byte (:func:`note_text`).
 
 Under that switch an episode's regime is never defaulted: :func:`infer_regime` infers it from the signals that
 arrive for that episode, by their source and timing, with the run's own history (:func:`run_prior`) as the prior

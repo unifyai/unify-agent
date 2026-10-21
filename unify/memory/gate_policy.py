@@ -3,7 +3,7 @@
 The rules: no capture or function is re-run to classify or test it (that fails for impure items and for worlds that
 cannot be replayed); a write-time quality check labels, never rejects; confinement, security and credential
 checks stay hard; the replay of a pure function's own recorded real calls stays. So, with
-``UNIFY_MEMORY_GATE_LABELS_ONLY`` (the redesign profile):
+The gate's policy:
 
 * **Labels only** (:func:`hard`): a finding about an item is recorded on its label, a finding about the pass is a
   note, and nothing refuses a merge, except the hard checks: G6 (safety: key-shaped strings, unreadable items), the
@@ -116,7 +116,7 @@ def test_subjects(source: Any) -> set[str] | None:
 
 @dataclass
 class Policy:
-    """One gate run's execution policy (module docstring): *replays* is ``UNIFY_MEMORY_GATE_RECORDED_REPLAYS``;
+    """One gate run's execution policy (module docstring): *replays* (recorded task data replayed) is always off;
     *bodies* the candidate's function sources by item id (the gate's ``c_bodies`` sources)."""
 
     replays: bool = False

@@ -42,7 +42,7 @@ CELLS_PER_TURN = 8
 POOL_RELATED_PAGE = 20
 #: the smallest statement ``similar`` reports, in AST nodes (``unify.memory.mining.MIN_NODES``; a test keeps them equal)
 SIMILAR_MIN_NODES = 12
-#: the flag ``ask_library`` needs: ``UNIFY_MEMORY_LIBRARIAN=on``
+#: the flag ``ask_library`` needs: the run has memory
 LIBRARIAN_FLAG = "librarian"
 
 _W, _H, _A, _T, _L = "writer", "helper", "actor", "teammate", "librarian"
@@ -2543,14 +2543,14 @@ def names_sentence(names: Iterable[str]) -> str:
     return f"{listed} are already available as variables in every cell; no import needed."
 
 
-#: The persistent form of the shared sandbox paragraph (the default, ``UNIFY_CELL_STATE=persistent``).
+#: The persistent form of the shared sandbox paragraph (every agent's).
 SANDBOX_PERSISTENT = (
     "Your Python sandbox is persistent and stateful: variables, imports and functions you define in one cell are "
     "still there in the next, so build on what you already have instead of defining or loading it again. If the "
     "sandbox restarts (a cell ran out of time, broke a limit, left something running, or sat idle too long), the "
     "cell's output says so; then variables are gone and files remain."
 )
-#: The fresh form (only under ``UNIFY_CELL_STATE=fresh``).
+#: The fresh form (a preamble given ``persistent: False``).
 SANDBOX_FRESH = (
     "Each cell runs in a fresh Python sandbox: files you write stay, but variables, imports and functions do not "
     "carry over to the next cell."

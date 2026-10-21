@@ -6,7 +6,7 @@ that ignores its arguments, an assertion that would hold whatever the function d
 quality, each behind its own switch (all off by default; :class:`QAConfig`). With every switch off, ``on`` is
 False, the gate makes exactly the calls it made before, and nothing here runs.
 
-**Seeded random fixtures** (``UNIFY_MEMORY_QA_FIXTURES``: ``on`` or ``strict``). Inputs are drawn, never
+**Seeded random fixtures** (:attr:`QAConfig.fixtures`: ``on`` or ``strict``). Inputs are drawn, never
 chosen by the consolidator. For each new or changed function, :func:`draw` takes up to :data:`SAMPLE_K`
 recorded inputs of the function's family (the family G2's held-out check uses: a tool call's
 ``channel.method``, a work-tree path family, a dialogue ``channel.method``) from the store-wide pool G2 read
@@ -196,7 +196,7 @@ class QAConfig:
 
     @property
     def strict(self) -> bool:
-        """``UNIFY_MEMORY_QA_FIXTURES=strict``: what the checks could not judge refuses the pass."""
+        """``fixtures="strict"``: what the checks could not judge refuses the pass."""
         return self.fixtures == "strict"
 
     @property

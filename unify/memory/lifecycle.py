@@ -842,7 +842,7 @@ def next_records(
     version's commits, wherever the episode started (:func:`served`), and only its calls under those commits
     (:func:`version_use`); without them, by the episode's first pin, as built.
 
-    With *writer_decisions* (``UNIFY_MEMORY_ATTENTION_LEDGER=on``: item -> what the writer's latest decision naming it
+    With *writer_decisions* (item -> what the writer's latest decision naming it
     says, :func:`.attention.item_decisions`) an item the writer retired is ``retired`` (rule ``writer``) and one an
     entry about it was merged into another item is ``retired`` with ``superseded_by`` that item; a later ``new_item``,
     ``changed_item`` or ``note`` naming it undoes that. The decisions are read again each time; None: as built.

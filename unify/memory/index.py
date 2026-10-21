@@ -2,7 +2,7 @@
 """The v2 compact index: one line per function.
 
 It ends the actor's prompt (the default) and is the writer's first message
-there; G4 caps it unless ``UNIFY_MEMORY_SOFT_BUDGET`` is on. Under ``catalogue`` the prompt ends with a
+there; G4 notes its size over the budget. Under ``catalogue`` the prompt ends with a
 constant guide (:mod:`.integration.prompt`) and the catalogue is the export's generated README and
 ``memory.catalog()`` (:mod:`.catalogue`); the index is then kept for the consolidation end event's
 ``index_tokens`` measurement.

@@ -669,7 +669,7 @@ def _end_event(
         **(
             {
                 "coverage": outcome.coverage,
-                # UNIFY_MEMORY_LIBRARY_COVERAGE=optional only (absent otherwise): measures, read by no gate
+                # measures, read by no gate (absent unless recorded)
                 **(
                     {"coverage_measures": outcome.coverage_measures}
                     if getattr(outcome, "coverage_measures", None) is not None

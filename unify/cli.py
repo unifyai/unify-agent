@@ -461,7 +461,7 @@ class Act:
     def _post_checker(self, raw: object, **where: object) -> None:
         """Hand a ``{"checker": ...}`` line to the memory run and answer it (memory v2.1 P9: a verdict the
         bed showed the actor, kept as an agent-visible checker signal). Without a memory run it is refused.
-        *where*: the line's ``episode`` and ``about`` (``UNIFY_MEMORY_REGIME=inferred`` only).
+        *where*: the line's ``episode`` and ``about`` (a run with memory).
         """
         if self._mv2 is None:
             answer = {

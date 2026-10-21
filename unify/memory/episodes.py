@@ -111,7 +111,7 @@ class Episode:
     # ``{"reason": "unknown", "recovered_at": ...}`` in ``meta.json``; None (no key) for an episode its request
     # finished.
     incomplete: dict | None = None
-    # The run's ``UNIFY_PROFILE`` (``paper``), in ``meta.json`` only when set; empty (no key) for today's behaviour.
+    # An earlier build's run profile (``paper``), in ``meta.json`` only when set; empty (no key) for today's behaviour.
     profile: str = ""
     # ``"off"`` (no memory work ran after the request), in ``meta.json`` only then.
     memory_passes: str = ""

@@ -5,9 +5,8 @@ code and tracebacks, never a checker's verdict or text, so the signals never dep
 
 * :func:`item_signals`: the flags the hygiene and promotion stages will read (this module only reports
   them; nothing here promotes, retires or hides an item);
-* :func:`usage_table`: the compact, deterministic table of a batch's library use: in library mode the file
-  ``/inputs/usage/table.md`` of a store pass; otherwise the end of a pass's first message when
-  ``UNIFY_MEMORY_WRITER_USAGE=on`` (off by default).
+* :func:`usage_table`: the compact, deterministic table of a batch's library use, the file
+  ``/inputs/usage/table.md`` of a pass.
 
 :func:`writer_usage_record` gives one episode's recorded library use as the writer reads it
 (``/inputs/usage/<episode>.json``), with host paths taken out.

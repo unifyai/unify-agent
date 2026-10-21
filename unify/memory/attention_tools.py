@@ -120,7 +120,7 @@ def take(ctx: Any, args: dict) -> "_wt.Reply":
 
 
 def _attribute(entry_id: str) -> None:
-    """The pass's later model calls name a taken entry too (``UNIFY_MEMORY_METERING``: the request metadata headers,
+    """The pass's later model calls name a taken entry too (metering: the request metadata headers,
     ids only); nothing where the attribution is not built. Never raises."""
     try:
         from unify.common.llm_client import add_attributed_entry

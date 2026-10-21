@@ -183,7 +183,7 @@ async def compact_by_summary(
     model *turn* (its route, its model, its accounting) with its *tools*, so the cached prefix serves all but the
     instruction. Only message content goes in: what the agent's own calls already sent. The restart is the leading
     system message and the summary as the agent loop builds it (``restart_text``, here with *pointer*), after the
-    kept request messages when ``UNIFY_COMPACTION_KEEP_PREFIX=on`` (``kept_prefix``, the summary then marked as the
+    kept request messages when a prefix is kept (``kept_prefix``, the summary then marked as the
     loop's own message)."""
     from unify.common._async_tool import cache_discipline as _cd
     from unify.common._async_tool import context_compression as _cc
@@ -3602,7 +3602,7 @@ class WriterPass:
         deadline: float,
         scope: contextlib.AsyncExitStack,
     ) -> Any:
-        """Tools in code off, library mode, ``UNIFY_CELL_STATE=persistent``: the agent's execute_code cells run in
+        """The agent's execute_code cells run in
         one interpreter for the pass, with no tool channel and no ``tools`` stub (its tools stay JSON tools), in the
         box the in-code interpreter gets. It ends with the pass."""
         from unify.common.tool_channel import HandlerThreads
@@ -4494,7 +4494,7 @@ class WriterPass:
                 scope=scope,
             )
             # tools in code off, library mode: the cells' persistent interpreter, no channel (None: a fresh box per
-            # cell, UNIFY_CELL_STATE=fresh, or the earlier mode without the library)
+            # cell, or a fresh box per cell)
             cell_session: Any = None
             last_prompt: list = [
                 None,

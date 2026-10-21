@@ -32,7 +32,7 @@ context headers) are harness text, not the counterpart's, and are skipped when l
 observation. Only ``type == "message"`` lines are read, so ``message_update``, ``system_prompt``,
 ``session_start``, ``compaction`` and outcome lines never become actions or observations.
 
-Wired into the actor by ``UNIFY_MEMORY_DIALOGUE`` (:mod:`..switch`): ``RequestRun`` appends these
+Wired into the actor whenever the run has memory: ``RequestRun`` appends these
 actions to the request's episode when it is set (``env``: the channel ``env``, memory channel ``env``),
 answered replies only (``answered_only``): a reply the counterpart never answered (a single-turn
 request's final reply, a session's closing ``finish``) adds no action, so such a request's episode is
@@ -167,7 +167,7 @@ def action_payload(text: str, scan_chars: int | None = _SCAN_CHARS) -> Any:
 
 def cap_text(text: str, cap: int | None) -> str:
     """At most ``cap`` characters, keeping the head and the tail (where counters and JSON sit); ``None`` keeps
-    the whole text (``UNIFY_MEMORY_LIBRARY``: the episode writer stores a large value as a blob).
+    the whole text (the episode writer stores a large value as a blob).
     """
     if cap is None:
         return text

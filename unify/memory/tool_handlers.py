@@ -707,7 +707,7 @@ class InterpreterSession:
     :meth:`close` ends it at the pass's end.
 
     *tools* False (tools in code off: the agent's tools stay JSON tools): no channel and no ``tools`` stub, so the
-    box has no route to the host at all; everything else is the same. Under ``UNIFY_CELL_STATE=fresh``
+    box has no route to the host at all; everything else is the same. In a fresh box per cell
     (:func:`unify.common.box_interpreter.persistent` False) the interpreter is stopped after each cell, with no note,
     as the actor's is.
     """
@@ -736,7 +736,7 @@ class InterpreterSession:
     ) -> None:
         """*specs*: tool specs by name for the channel (None: the shared registry's, as in a pass). *tools*: the
         box gets a tool channel and the ``tools`` stub (False: neither). *record*: the agent's view of the run record
-        (``UNIFY_AGENTS_RUN_RECORD=on``: its comms tools' record), else None."""
+        (its comms tools' record), else None."""
         from unify.common.tool_channel import CallContext
 
         self.tools = bool(tools)

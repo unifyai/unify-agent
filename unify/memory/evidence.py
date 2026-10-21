@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS cursors(channel TEXT PRIMARY KEY, seq INTEGER);
 CREATE TABLE IF NOT EXISTS experience(episode_id TEXT PRIMARY KEY, tokens INTEGER, counter TEXT);
 CREATE TABLE IF NOT EXISTS item_use(item TEXT, episode_id TEXT, PRIMARY KEY(item, episode_id));
 """
-# The input-shape snapshots of ``UNIFY_MEMORY_SURFACING=catalogue`` (:mod:`.shape_rows`), created by the
+# The input-shape snapshots (:mod:`.shape_rows`), created by the
 # first write, so a store that never freezes a snapshot (``index``, the default) keeps the v2 schema.
 _SHAPE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS shape_commits(commit_sha TEXT PRIMARY KEY);
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS commit_shapes(commit_sha TEXT, item TEXT, body TEXT, 
   PRIMARY KEY(commit_sha, item));
 """
 # The checker signals the bed showed the actor, created by the first such signal, so a store
-# that never records one (every bed without UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE) keeps the schema above.
+# that never records one (a bed that never shows the actor a verdict) keeps the schema above.
 _VISIBLE_TABLE = "CREATE TABLE IF NOT EXISTS signal_visible(signal_id TEXT PRIMARY KEY)"
 # each signal's arrival, its episode's end, its timing and what it bears on; each
 # episode's inferred regime with what it rests on; and every change of an episode's regime. Created by the first
@@ -637,7 +637,7 @@ class EvidenceStore:
                     (sig.signal_id,),
                 )
             if sig.timing or sig.arrived_at or sig.about:
-                # UNIFY_MEMORY_REGIME=inferred only: a store that never infers a regime keeps its schema
+                # a store that never infers a regime keeps its schema
                 self.db.execute(_TIMING_TABLE)
                 self.db.execute(
                     "INSERT OR REPLACE INTO signal_timing VALUES(?,?,?,?,?)",

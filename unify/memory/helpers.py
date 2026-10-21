@@ -159,7 +159,7 @@ SIMILAR_LINE_IN_CODE = (
 
 def helper_brief(similar: bool) -> str:
     """The helper's system message; it names exactly the tools :func:`helper_tools` gives for *similar*. *in_code*
-    (None: ``UNIFY_TOOLS_IN_CODE``) gives the brief for tools called from code, after the shared opening for the
+    gives the brief for tools called from code, after the shared opening for the
     flags the helper's allow-list is built with (:func:`helper_flags`)."""
     from .agent_profiles import in_code_opening
 
@@ -1086,7 +1086,7 @@ async def _run_helper(
     doc: dict,
 ) -> None:
     """One helper's turns inside its interpreter session, which ends with it (verified kill): with tools in code, a
-    session with the tool channel; off, one with no channel (``UNIFY_CELL_STATE=fresh``: a fresh box per cell,
+    session with the tool channel; off, one with no channel (a fresh box per cell,
     :func:`box_cell`, and no session)."""
     session = _in_code_session(ctx, call, st, doc)
     try:

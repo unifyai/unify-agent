@@ -831,7 +831,7 @@ class _Run:
     calls_cand: dict[str, Any] = field(default_factory=dict)
     # library mode: evidence findings set an item's evidence level instead of refusing it (:meth:`cap`)
     levels_on: bool = False
-    # UNIFY_MEMORY_IMPURE_ITEMS=on (Gate(labels=True)): a quality finding about an item is recorded on its label and
+    # a quality finding about an item is recorded on its label and
     # refuses nothing (:meth:`fail`, :func:`labelled`); the hard checks refuse as before
     labels_on: bool = False
     # item -> the quality findings recorded on its label (in order, each once)
@@ -841,7 +841,7 @@ class _Run:
     # library mode: per function listed only to change its tests, the episodes of the stored typed ``episode`` covers
     # its manifest entry repeats; they were checked when it landed and are not run again
     typed_kept: dict[str, list[str]] = field(default_factory=dict)
-    # UNIFY_MEMORY_GATE_LABELS_ONLY=on (rev 2, :mod:`.gate_policy`): every finding but the hard ones labels its item
+    # (:mod:`.gate_policy`) every finding but the hard ones labels its item
     # or notes the pass, and only a statically pure item's own tests run; None: as built
     policy: Any = None
 
@@ -1494,7 +1494,7 @@ class Gate:
 
     @staticmethod
     def _labels(run: _Run) -> None:
-        """``UNIFY_MEMORY_IMPURE_ITEMS=on``: each manifest item's label inputs in its verification record, from which
+        """Each manifest item's label inputs in its verification record, from which
         the item records build its label (:mod:`.item_label`): what the writer stated (``stated``) and the quality
         findings recorded instead of refusals (``label_findings``)."""
         for it in run.man.items:

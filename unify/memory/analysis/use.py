@@ -87,7 +87,7 @@ there, and when the record is there but no system prompt was recorded (``prompt_
 can say whether the section reached the model, so nothing counts as shown).
 
 What the cells asked the library helper to show counts as exposure too (``cell_exposure``), read from each
-cell's syntax tree like the call sites, never from its output: under ``UNIFY_MEMORY_SURFACING=catalogue``
+cell's syntax tree like the call sites, never from its output: in the catalogue surfacing of earlier builds
 the prompt names no channel or function, and the model looks them up. The helper is the export's ``memory``
 module (``import memory [as m]``, ``from memory import catalog, find, describe``):
 

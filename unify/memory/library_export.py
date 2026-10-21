@@ -257,7 +257,7 @@ def items_data(
             "use": use_totals(rec) if rec else None,
             "history": h[:HISTORY_SHOW],
             "history_more": max(0, len(h) - HISTORY_SHOW),
-            # its evidence label (UNIFY_MEMORY_IMPURE_ITEMS: what its effects, tests and uses show; only when recorded)
+            # its evidence label (what its effects, tests and uses show; only when recorded)
             **({"label": rec["label"]} if rec and isinstance(rec.get("label"), dict) else {}),
         }
 
@@ -586,7 +586,7 @@ def _capture_docs(captures: Mapping[str, bytes] | None) -> dict[str, dict]:
 
 def _withdrawn_rows(captures: Mapping[str, bytes] | None) -> dict[str, dict]:
     """The snapshot's withdrawn captures (``.memory/captures/withdrawn.json``, :func:`.captures.export_files` under
-    ``UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES=on``) by capture id; {} when there is none or it is unreadable."""
+    by capture id; {} when there is none or it is unreadable."""
     from .captures import EXPORT_DIR, WITHDRAWN_FILE
 
     data = (captures or {}).get(f"{EXPORT_DIR}/{WITHDRAWN_FILE}")
@@ -612,7 +612,7 @@ def in_place_of(captures: Mapping[str, bytes] | None) -> dict[str, list[tuple[st
 
 def worked_example(rec: Mapping | None) -> dict | None:
     """The exported record's worked-example mark (:data:`.captures.EXAMPLE_KEY`, under
-    ``UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES=on``), or None: such a capture is read, never called."""
+    as worked examples), or None: such a capture is read, never called."""
     from .captures import EXAMPLE_KEY
 
     mark = rec.get(EXAMPLE_KEY) if isinstance(rec, Mapping) else None
@@ -647,7 +647,7 @@ def failure_line(row: Mapping[str, Any] | None) -> str:
 
 
 def _serving_lines(serving: Mapping[str, Any] | None, iid: str) -> list[str]:
-    """A card's evidence lines under ``UNIFY_MEMORY_SERVING_FAILURE_RECORD``: what its status rests on, its recorded
+    """A card's evidence lines : what its status rests on, its recorded
     failures, its contradictions and its stated conditions; [] with the switch off."""
     if not serving:
         return []
@@ -665,7 +665,7 @@ def _serving_lines(serving: Mapping[str, Any] | None, iid: str) -> list[str]:
 
 def items_in_place_of(serving: Mapping[str, Any] | None) -> dict[str, list[tuple[str, dict]]]:
     """For each library item offered in the place of withdrawn library items (their ``by``), those items in id order
-    with their withdrawn rows (``UNIFY_MEMORY_SERVING_FAILURE_RECORD`` and the withdrawal switch on)."""
+    with their withdrawn rows ."""
     out: dict[str, list[tuple[str, dict]]] = {}
     for iid, row in sorted(((serving or {}).get("withdrawn_items") or {}).items()):
         by = row.get("by") if isinstance(row, dict) else None
@@ -714,7 +714,7 @@ def catalogue_text(
     captured procedures from *captures* (the actor's snapshot, ``.memory/captures/...``), each at level
     ``unchecked``; a captured attempt that failed is listed with what broke and is never offered to run. Card fields
     are fixed; the only free text is the docstrings and the summaries, identifiers removed with *strip*. Pure: the
-    same inputs give the same bytes. With *serving* (``UNIFY_MEMORY_SERVING_FAILURE_RECORD``: the evidence and the
+    same inputs give the same bytes. With *serving* (the evidence and the
     withdrawn library items), each card also says what its status rests on, its recorded failures, its
     contradictions and its stated conditions, and a library item offered in the place of withdrawn ones names them;
     a withdrawn item has no card."""
@@ -1106,7 +1106,7 @@ def generated_library_mode(
     against (:func:`saved_against_of`); None reads only the item records' ``signature`` (no summaries). A function
     with a signature gets an ``input:`` line in the index and a ``procedures`` row in ``find.json``.
 
-    *serving* (``UNIFY_MEMORY_SERVING_FAILURE_RECORD``: ``{"evidence", "withdrawn_items"}``, :mod:`.serving`) adds
+    *serving* (``{"evidence", "withdrawn_items"}``, :mod:`.serving`) adds
     the evidence file and the withdrawn library items' file, and every file then treats a withdrawn item as hidden
     (it leaves the index, ``find.json``, the catalogue, the search index and the dispatch file); None gives every
     byte as without it."""

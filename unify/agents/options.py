@@ -1,8 +1,4 @@
-"""The agent record's tunables, at their documented defaults.
-
-They were settable through ``UNIFY_AGENTS_OPTIONS`` until the code freeze
-removed the setting.
-"""
+"""The agent record's tunables, at their documented defaults."""
 
 from __future__ import annotations
 

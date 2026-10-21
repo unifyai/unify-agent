@@ -1071,7 +1071,7 @@ def from_capture(cid: str, doc: dict) -> Entry:
 #: The prefix a captured procedure's id carries where it is offered (``memory.get``, the librarian's answers).
 CAPTURE_PREFIX = "capture:"
 #: The closed statuses after which a capture is no longer offered under
-#: ``UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES=on``; a capture merged into an item stays offered.
+#: a capture merged into an item stays offered.
 WITHDRAWN_STATUSES = ("superseded", "retired")
 
 
