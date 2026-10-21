@@ -992,6 +992,9 @@ REDESIGN_SWITCHES: dict[str, str] = {
     # (``in_episode_repin``) are arms of their own
     "UNIFY_MEMORY_IN_EPISODE": "off",
     "UNIFY_MEMORY_SERVING_FAILURE_RECORD": "on",
+    # rev 2 (MAIN, 21 Oct): the gate labels and runs only pure items; the recorded replays stay off
+    "UNIFY_MEMORY_GATE_LABELS_ONLY": "on",
+    "UNIFY_MEMORY_GATE_RECORDED_REPLAYS": "off",
     LIBRARY_WITHDRAW_CLOSED_CAPTURES: "on",
     "UNIFY_MEMORY_REGIME": "inferred",
 }
@@ -1140,6 +1143,12 @@ LEDGER_K = "UNIFY_MEMORY_LEDGER_K"
 IMPURE_ITEMS = "UNIFY_MEMORY_IMPURE_ITEMS"
 WRITER_TESTS = "UNIFY_MEMORY_WRITER_TESTS"
 IN_EPISODE = "UNIFY_MEMORY_IN_EPISODE"
+#: Rev 2's gate (:mod:`..gate_policy`): ``on`` makes every check but the hard ones (safety, confinement, the declared
+#: change set, recorded provenance, what breaks the library) a label, and the gate runs only statically pure items'
+#: own tests, recipes and recorded calls; ``UNIFY_MEMORY_GATE_RECORDED_REPLAYS=on`` adds the replays of recorded task
+#: data (episode covers, held-out values, perturbed and drawn inputs, the history probe), for comparisons only.
+GATE_LABELS_ONLY = "UNIFY_MEMORY_GATE_LABELS_ONLY"
+GATE_RECORDED_REPLAYS = "UNIFY_MEMORY_GATE_RECORDED_REPLAYS"
 #: The writer service's switch (its own module reads it); the ledger hands entries only to its passes.
 WRITER_SERVICE = "UNIFY_MEMORY_WRITER_SERVICE"
 #: Entries handed to one writer pass (``attention.K``), the same in every world.
@@ -1185,6 +1194,16 @@ def parse_in_episode(v: Any) -> str:
     if value not in ("", "on", "off", IN_EPISODE_REPIN):
         raise ValueError(f"{IN_EPISODE} must be empty, 'off', 'on' or 'repin', not {v!r}"[:200])
     return value
+
+
+def parse_gate_labels_only(v: Any) -> str:
+    """``UNIFY_MEMORY_GATE_LABELS_ONLY``: empty, ``off`` or ``on``."""
+    return _on_off_empty(GATE_LABELS_ONLY, v)
+
+
+def parse_gate_recorded_replays(v: Any) -> str:
+    """``UNIFY_MEMORY_GATE_RECORDED_REPLAYS``: empty, ``off`` or ``on``."""
+    return _on_off_empty(GATE_RECORDED_REPLAYS, v)
 
 
 def parse_ledger_k(v: Any) -> str:
@@ -1242,6 +1261,16 @@ def in_episode(settings: Any) -> bool:
     """Whether memory changes during an episode with its pauses: checkpoints, segment forks and re-pins at cell
     boundaries (``on``)."""
     return parse_in_episode(profile_setting(settings, IN_EPISODE)) == "on"
+
+
+def gate_labels_only(settings: Any) -> bool:
+    """Whether the gate labels every finding but the hard ones and runs only statically pure items (rev 2)."""
+    return parse_gate_labels_only(profile_setting(settings, GATE_LABELS_ONLY)) == "on"
+
+
+def gate_recorded_replays(settings: Any) -> bool:
+    """Whether the gate and the records run the replays of recorded task data (off by default; comparisons only)."""
+    return parse_gate_recorded_replays(profile_setting(settings, GATE_RECORDED_REPLAYS)) == "on"
 
 
 def in_episode_repins(settings: Any) -> bool:
@@ -2035,6 +2064,8 @@ PARSERS.update(
         IMPURE_ITEMS: parse_impure_items,
         WRITER_TESTS: parse_writer_tests,
         IN_EPISODE: parse_in_episode,
+        GATE_LABELS_ONLY: parse_gate_labels_only,
+        GATE_RECORDED_REPLAYS: parse_gate_recorded_replays,
     },
 )
 

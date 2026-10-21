@@ -847,6 +847,9 @@ class _Run:
     # library mode: per function listed only to change its tests, the episodes of the stored typed ``episode`` covers
     # its manifest entry repeats; they were checked when it landed and are not run again
     typed_kept: dict[str, list[str]] = field(default_factory=dict)
+    # UNIFY_MEMORY_GATE_LABELS_ONLY=on (rev 2, :mod:`.gate_policy`): every finding but the hard ones labels its item
+    # or notes the pass, and only a statically pure item's own tests run; None: as built
+    policy: Any = None
 
     def cap(
         self,
@@ -883,6 +886,19 @@ class _Run:
         admission, :meth:`Gate.merge`); an unattributed failure refuses the whole pass.
         """
         owners = [item] if isinstance(item, str) else list(item or [])
+        if self.policy is not None:
+            from .gate_policy import hard
+
+            if not hard(check, reason, owners):
+                # rev 2: a finding labels its items (or notes the pass) and refuses nothing
+                line = KEY_SHAPED.sub(_REDACTED, f"{check}: {reason}")
+                for owner in owners:
+                    found = self.label_findings.setdefault(owner, [])
+                    if line not in found:
+                        found.append(line)
+                who = ", ".join(owners) if owners else "the pass"
+                self.note(f"label: {who}: {line.splitlines()[0][:300]}")
+                return
         if self.labels_on and owners and labelled(check, reason):
             # a quality finding about these items: their label carries it, and nothing is refused
             line = KEY_SHAPED.sub(_REDACTED, f"{check}: {reason}")
@@ -910,6 +926,17 @@ class _Run:
 
     def note(self, reason: str) -> None:
         self.notes.append(KEY_SHAPED.sub(_REDACTED, f"note: {reason}"))
+
+    def not_run(self, item: str | list[str] | None, why: str) -> None:
+        """Rev 2 (:mod:`.gate_policy`): a check that did not run on *item*, recorded on its label (``not run: <why>``)
+        and noted; it refuses nothing."""
+        owners = [item] if isinstance(item, str) else list(item or [])
+        line = KEY_SHAPED.sub(_REDACTED, why if why.startswith("not run") else f"not run: {why}")
+        for owner in owners:
+            found = self.label_findings.setdefault(owner, [])
+            if line not in found:
+                found.append(line)
+        self.note(f"{', '.join(owners) if owners else 'the pass'}: {line[:300]}")
 
     def output(self, label: str, o: PytestOutcome) -> None:
         """Keep a failing run's whole recorded output under *label* for the full gate result (library mode):
@@ -953,6 +980,8 @@ class Gate:
         library_mode: LibraryConfig | None = None,
         labels: bool = False,
         segments_dir: Path | str | None = None,
+        labels_only: bool = False,
+        recorded_replays: bool = False,
     ) -> None:
         """The library-mode switches (:mod:`.integration.switch`; each default is the v2 behaviour):
         *docstring_standard* turns on the lean docstring standard (G1) and its examples run (G3) for new or
@@ -985,6 +1014,11 @@ class Gate:
         self.library_mode = library_mode
         # UNIFY_MEMORY_IMPURE_ITEMS=on: quality findings label their items (library mode only)
         self.labels = bool(labels) and library_mode is not None
+        # UNIFY_MEMORY_GATE_LABELS_ONLY=on (rev 2, :mod:`.gate_policy`; library mode only): every finding but the hard
+        # ones labels, and only statically pure items run; UNIFY_MEMORY_GATE_RECORDED_REPLAYS=on adds the recorded
+        # replays (episode covers, held-out values, perturbed inputs, stage 5's drawn inputs)
+        self.labels_only = bool(labels_only) and library_mode is not None
+        self.recorded_replays = bool(recorded_replays)
         # UNIFY_MEMORY_IN_EPISODE=on: the state dir whose segment records (<episode>.s<n>) an item may cite as its
         # source while their episode is still open; None: only recorded episodes
         self.segments_dir = Path(segments_dir) if segments_dir is not None else None
@@ -1471,6 +1505,13 @@ class Gate:
         reduced = None
         try:
             if self._prepare(run):
+                if getattr(self, "labels_only", False):
+                    from .gate_policy import Policy
+
+                    run.policy = Policy(
+                        replays=bool(getattr(self, "recorded_replays", False)),
+                        bodies={i: b[1] for i, b in run.c_bodies.items() if b[0] == "function"},
+                    )
                 v = self._library_mode(run)
                 self._g1(run)
                 if v is not None:
@@ -1495,7 +1536,10 @@ class Gate:
                 if v is not None:
                     v.g5()
                 self._g6(run)
-                if self.qa.on:
+                if self.qa.on and run.policy is not None and not run.policy.replays:
+                    # rev 2: stage 5's determinism, drawn-input and mutant runs replay recorded task data
+                    run.note("stage 5 dynamic checks not run: recorded replays are off (rev 2)")
+                elif self.qa.on:
                     # last: only a candidate the rest of the gate accepts, or, under per-item admission,
                     # one refused item by item only, so that a stage-5 refusal joins the reduction
                     qa.dynamic(item_scoped=reduce_as is not None)
@@ -1512,7 +1556,7 @@ class Gate:
         res.items_refused = {i: list(c) for i, c in run.item_fail.items()}
         if run.levels_on:
             self._levels(run)
-        if run.labels_on:
+        if run.labels_on or run.policy is not None:
             self._labels(run)
         res.verification = {i: dict(r) for i, r in sorted(run.verification.items())}
         res.curate_due = run.curate_due
@@ -2271,7 +2315,11 @@ class Gate:
         A field declared with a semantic type is checked two-sided instead: unseen in-domain values
         accepted, an out-of-domain value refused before any environment call.
         """
+        if run.policy is not None and not run.policy.replays:
+            from .gate_policy import NOT_RUN_REPLAYS
 
+            run.not_run(item, f"G2 held-out values: {NOT_RUN_REPLAYS}")
+            return
         p = plan(
             item,
             covers,
@@ -2322,6 +2370,7 @@ class Gate:
         for t in missing:
             run.fail("G3", f"listed test {t} is not in the candidate", _owners(man, t))
         runnable = [t for t in new_tests if t not in missing]
+        unran: set[str] = set()  # rev 2: tests the gate did not run (an impure item's)
         classic: set[str] = (
             set()
         )  # red on the parent's library with the candidate's test copied in
@@ -2337,6 +2386,13 @@ class Gate:
                     shutil.copyfile(run.c_tree / rel, red_tree / rel)
             targets = self._example_targets(run)
             for t in runnable:
+                if run.policy is not None:
+                    ok, why = run.policy.test(run.c_tree, t)
+                    if not ok:
+                        # rev 2: a test of an impure item is never run by the gate
+                        run.not_run(_owners(man, t), f"G3 {t}: {why}")
+                        unran.add(t)
+                        continue
                 on_parent = self._pytest(red_tree, t, qa_env=run.qa_env)
                 on_cand = (
                     self._pytest(run.c_tree, t, qa_env=run.qa_env, calls=targets)
@@ -2366,6 +2422,8 @@ class Gate:
             tests = {t for t in it.tests if t in changed and t in run.c_files}
             if tests & classic:
                 declared.add(it.item)
+            elif tests and tests <= unran:
+                continue  # rev 2: none of its tests ran, so whether one is red is not known (its label says why)
             elif it.item in edited and tests:
                 if cleanup:
                     unseen.add(it.item)
@@ -2590,6 +2648,10 @@ class Gate:
             recorded.setdefault(it, set()).add((e, i))
         probes: dict[str, _Probe] = {}
         for item in sorted(ex.uncalled):
+            if run.policy is not None and not run.policy.item(item)[0]:
+                # rev 2: an impure item is never run on its recorded covers; its label says so
+                run.not_run(item, f"G3 behaviour on its recorded calls: {run.policy.item(item)[1]}")
+                continue
             if item in strict:
                 run.fail(
                     "G3",
@@ -2768,6 +2830,10 @@ class Gate:
                 docstrings.parse(ast.get_docstring(node) or ""),
             ):
                 targets.append(item)
+        if run.policy is not None:
+            for item in [t for t in targets if not run.policy.item(t)[0]]:
+                run.not_run(item, f"G3 docstring examples: {run.policy.item(item)[1]}")
+            targets = [t for t in targets if run.policy.item(t)[0]]
         if not targets:
             return
         for item in targets:
@@ -3037,6 +3103,12 @@ class Gate:
             return {"calls": targets} if targets and rel.startswith("memory/") else {}
 
         for rel, is_touched, area in suites:
+            if run.policy is not None:
+                ok, why = run.policy.suite(run.c_tree, rel)
+                ok_parent, why_parent = run.policy.suite(run.p_tree, rel) if ok else (ok, why)
+                if not (ok and ok_parent):
+                    run.note(f"suite {rel} not run: {why or why_parent} (rev 2: the gate runs only pure items' tests)")
+                    continue
             before: set[str] = set()  # protected: passed on the parent
             known_red: set[str] = set()  # failed on the parent
             broken: str | None = None  # the baseline cannot be read

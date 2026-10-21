@@ -167,11 +167,17 @@ class ExampleChecks:
 
     # -- the record -------------------------------------------------------------------------------------------
     def functions(self) -> list[Any]:
-        return [
+        """The manifest's functions in the candidate; under rev 2 (``run.policy``) only the statically pure ones,
+        whose tests the gate runs (:mod:`.gate_policy`)."""
+        found = [
             it
             for it in self.run.man.items
             if it.kind == "function" and it.item in self.run.c_bodies
         ]
+        policy = getattr(self.run, "policy", None)
+        if policy is None:
+            return found
+        return [it for it in found if policy.item(it.item)[0]]
 
     def targets(self) -> list[str]:
         """The manifest's function items present in the candidate."""
@@ -189,6 +195,10 @@ class ExampleChecks:
         run, targets = self.run, self.targets()
         out: dict[str, list[ExampleCall]] = {t: [] for t in targets}
         tests = sorted({t for it in self.functions() for t in self.listed(it)})
+        policy = getattr(run, "policy", None)
+        if policy is not None:
+            # rev 2: a test that uses an impure item is not run (the item's label says so)
+            tests = [t for t in tests if t in run.qa_first or policy.test(run.c_tree, t)[0]]
         for t in tests:
             o = run.qa_first.get(t)
             rec = getattr(o, "calls", None) if o is not None else None
@@ -228,6 +238,11 @@ class ExampleChecks:
     def judge(self) -> None:
         """Every manifest function's examples: B-rules here, the evidence, perturbation, view and shape parts called
         with the record."""
+        policy = getattr(self.run, "policy", None)
+        if policy is not None:
+            for it in self.run.man.items:
+                if it.kind == "function" and it.item in self.run.c_bodies and not policy.item(it.item)[0]:
+                    self.run.not_run(it.item, f"G2 examples: {policy.item(it.item)[1]}")
         calls = self.record()
         perturb = self.part("example_perturb")
         deadline = self.clock() + float(
@@ -400,21 +415,32 @@ class ExampleChecks:
         pool, capped = self._pool(inputs)
         from .held_out import seen_actions
 
-        verdict = perturb.check(
-            item,
-            calls=calls,
-            fixtures=inputs,
-            tree=run.c_tree,
-            tests=self.listed(it),
-            run_tests=self._run_tests(item),
-            pool=pool,
-            pool_capped=capped,
-            seen=seen_actions(self.gate._named_episodes(run), self.gate.lookup),
-            blob=self.gate._blob,
-            field_types=dict(getattr(it, "field_types", None) or {}),
-            work=run.tmp / f"perturb-{hashlib.sha256(item.encode()).hexdigest()[:12]}",
-            deadline=deadline,
-        )
+        policy = getattr(run, "policy", None)
+        if policy is not None and not policy.replays:
+            # rev 2: the reruns on perturbed (unseen) values replay recorded task data; off unless switched on
+            from types import SimpleNamespace
+
+            from .gate_policy import NOT_RUN_REPLAYS
+
+            verdict = SimpleNamespace(derived={}, reasons=None, refused=[], special=[], unjudged=[],
+                                      notes=[f"perturbed reruns {NOT_RUN_REPLAYS}"], type_changes=[], runs=0,
+                                      fields=0, judged=0, unstable=0)  # fmt: skip
+        else:
+            verdict = perturb.check(
+                item,
+                calls=calls,
+                fixtures=inputs,
+                tree=run.c_tree,
+                tests=self.listed(it),
+                run_tests=self._run_tests(item),
+                pool=pool,
+                pool_capped=capped,
+                seen=seen_actions(self.gate._named_episodes(run), self.gate.lookup),
+                blob=self.gate._blob,
+                field_types=dict(getattr(it, "field_types", None) or {}),
+                work=run.tmp / f"perturb-{hashlib.sha256(item.encode()).hexdigest()[:12]}",
+                deadline=deadline,
+            )
         derived = dict(getattr(verdict, "derived", {}) or {})
         ground = evidence.groundings(calls, views, derived)
         accepted = [c for c in calls if c.outcome == "returned"]

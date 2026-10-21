@@ -63,7 +63,9 @@ def test_a_landing_is_recorded_in_the_store_and_carried_into_its_item_record(tmp
     reply = _land(tmp_path, {"e7": ep}, capture_id=cid)
     assert reply.status == "ok", reply.text
     # the test's landing names no pass; a writer pass's names its own (test_capture_one_route)
-    landing = {"item": PROC, "reader": READER, "applies": APPLIES, "episode": "e7", "pass": None}
+    landing = {"item": PROC, "reader": READER, "applies": APPLIES, "episode": "e7", "pass": None,
+               "verified": {"ran": False, "why": "rev2: a capture is never replayed to verify it; its tests are written "
+                                                 "from its code"}}  # fmt: skip
     got = captures.landings(store)
     assert set(got) == {cid} and isinstance(got[cid].pop("at"), float)
     # rev 2: nothing landed runs to decide its listing; the landing says so explicitly
@@ -106,7 +108,8 @@ def test_landed_items_skips_a_landing_without_an_item_and_reads_no_store_as_none
     assert captures.landings(store) == {} and captures.landed_items(store) == {}
     captures.record_landing(store, cid, {"item": PROC, "reader": READER, "pass": "p9", "extra": "dropped"})
     want = {
-        "item": PROC, "reader": READER, "applies": None, "episode": None, "pass": "p9", "recognition": None, "at": None,
+        "item": PROC, "reader": READER, "applies": None, "episode": None, "pass": "p9", "recognition": None,
+        "verified": None, "at": None,
     }
     assert captures.landings(store)[cid] == want
     assert captures.landed_items(None) == {} and captures.landings(tmp_path / "missing") == {}

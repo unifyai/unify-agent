@@ -16,10 +16,9 @@ a path the box names), checks it, and writes into the writer's ``/memory``:
   recorded request with the value its episode handed back (``<name>.case<k>.source.case.json``), and each case the
   call names in *cases* (an input of the episode with the output the request or the environment showed for it,
   ``<name>.case<k>.shown<j>.case.json``);
-- two fixtures of the request text: the text itself and the reader's value on it (a parsed fixture,
-  ``fixture(..., parser=...)``), and a fixture of the handed-back value, a slice of the recorded arguments of the
-  dialogue action that handed it back (``args:<i>``), all made by the fixture tool, so the gate re-derives them from
-  the recording;
+- a fixture of the request text, and a fixture of the handed-back value, a slice of the recorded arguments of the
+  dialogue action that handed it back (``args:<i>``), both made by the fixture tool, so the gate re-derives them from
+  the recording (rev 2: no parsed fixture, which would run the reader);
 - a test, ``memory/<package>/tests/test_<name>.py``: the procedure on the reader's value of the recorded text against
   the handed-back value's fixture, the reader on the recorded text, and one refusal of text the reader was not built
   for. Each reader call hands the request over as the harness does (``request(text)``: the text with ``.text`` and
@@ -426,8 +425,9 @@ def case_tests(
     result: Any,
     from_fixture: bool = True,
 ) -> str:
-    """The test functions of case *k*: the reader on the recorded text, the procedure on the reader's value of it
-    against the handed-back value, and the recipe on the recorded request against the same value. *reader_mod* is the reader's module, dotted (``memory.<package>.<module>``).
+    """The test functions of case *k*: the reader on the recorded text (it gives a JSON value; rev 2 makes no parsed
+    fixture, which would run it), the procedure on the reader's value of it against the handed-back value, and the
+    recipe on the recorded request against the same value. *reader_mod* is the reader's module, dotted (``memory.<package>.<module>``).
     With *from_fixture*, the expected value is loaded from :func:`result_fixture`, a fixture of the recording; else
     *result* is written in the test (a value the fixture tool has no source for)."""
     reader = reader_fn if reader_fn != name else f"read_{name}"
@@ -440,8 +440,9 @@ def case_tests(
         f"\n\ndef test_{name}_case{k}_reader_reads_the_recorded_request():\n"
         f"    from {reader_mod} import {imported}\n\n"
         f'    text = (DATA / "{name}.case{k}.txt").read_text(encoding="utf-8")\n'
-        f'    value = json.loads((DATA / "{name}.case{k}.json").read_text(encoding="utf-8"))\n'
-        f"    assert json.loads(json.dumps({reader}({REQUEST_HELPER}(text)))) == value\n"
+        f"    value = {reader}({REQUEST_HELPER}(text))\n"
+        f"    assert value is not None\n"
+        f"    json.dumps(value)  # a JSON value, as the procedure takes it\n"
         f"\n\ndef test_{name}_case{k}_gives_the_recorded_result():\n"
         f"    from {reader_mod} import {imported}\n"
         f"    from memory.{package}.procedures import {name}\n\n"
@@ -457,13 +458,14 @@ def case_tests(
 
 
 def refusal_test(name: str, reader_mod: str, reader_fn: str, package: str, refuses: bool) -> str:
-    """The refusal test: the reader raises ``MemoryInputError`` on empty text. When it does not yet (*refuses* is
-    False, from a confined run), the test records that as a known failure (a strict expected failure), which turns
-    red once the reader refuses such text."""
+    """The refusal test: the reader raises ``MemoryInputError`` on empty text. When its code states no such refusal
+    (*refuses* False, read from its code: :func:`_raises_memory_input_error`; rev 2 never runs it to find out), the
+    test is a non-strict expected failure: it passes either way until the reader states its refusal."""
     mark = (
         ""
         if refuses
-        else '@pytest.mark.xfail(strict=True, reason="the reader does not refuse text it was not built for yet")\n'
+        else '@pytest.mark.xfail(strict=False, reason="the reader states no refusal of text it was not built for '
+        'yet")\n'
     )
     return (
         f"\n\n{mark}def test_{name}_reader_refuses_text_it_was_not_built_for():\n"
@@ -643,9 +645,7 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
     found, handed = _captures.handed_back(ep)
     if not found:
         raise _NotLanded("not_landed", reason=f"capture {cid}'s episode handed back no value to test against")
-    run = _captures.run_box(source, request_text, work=work / "capture", runner=runner, python=python)
-    if run.get("outcome") != "returned" or _captures.compare(run, True, handed) != _captures.REPRODUCES:
-        raise _NotLanded("not_landed", reason=f"capture {cid} does not give its recorded result on its request now")
+    # rev 2: a capture is a record of possibly impure work; it is never replayed to verify it (its tests say)
     # where the recording holds the handed-back value: a slice of the answering action's arguments (a value the
     # episode used); a value handed back in the final reply has no fixture source, so its test states it instead
     answer = _captures.answered_action(ep)
@@ -670,9 +670,10 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
     reader_mod, reader_fn = reader_id.split(":")
     k = _free_case(box, package, name)
     data_dir = f"memory/{package}/tests/data"
+    # the request text as a fixture; rev 2 makes no parsed fixture (that would run the reader): the reader's test
+    # checks what it gives on the text when the tests run
     plan: list[dict] = [
         {"source": "request:0", "dest": f"{data_dir}/{name}.case{k}.txt"},
-        {"source": "request:0", "dest": f"{data_dir}/{name}.case{k}.json", "parser": reader_id},
     ]
     if result_cut is not None:
         plan.append(
@@ -703,15 +704,11 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
     )
     refuses = None
     if not old:
-        # how the reader answers empty text, confined: it refuses (the refusal test), it returns (the refusal test
-        # records a known failure), or it raises another exception (no call is written: the gate refuses an example
-        # call that raises anything but MemoryInputError)
-        _, why = _run_reader(reader_id, "", box, python, runner, work / "refusal")
-        refuses = "raises" if why and " raises " in why and " raises MemoryInputError " not in why else (
-            bool(why) and " raises MemoryInputError " in why
-        )
-        if refuses != "raises":
-            text += refusal_test(name, reader_mod, reader_fn, package, bool(refuses))
+        # whether the reader refuses text it was not built for, read from its code (rev 2: never by running it): a
+        # reader that raises MemoryInputError somewhere gets the plain refusal test, any other a non-strict expected
+        # failure (it passes either way until the reader states its refusal)
+        refuses = _raises_memory_input_error(box, reader_id, None)
+        text += refusal_test(name, reader_mod, reader_fn, package, refuses)
     if _looks_like_key(text):
         raise _NotLanded("not_landed", reason="the recorded result holds a key-shaped string")
     _write(box, test_rel, text, written)
@@ -749,6 +746,9 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
             "episode": eid,
             "pass": pass_id,
             "recognition": recognition,
+            # rev 2: nothing was run to verify the capture or to choose its tests
+            "verified": {"ran": False, "why": "rev2: a capture is never replayed to verify it; its tests are written "
+                                              "from its code"},
             "at": time.time(),
         },
     )
@@ -771,13 +771,8 @@ def _land(args, store, box, episode, blob, batch, python, runner, parse, work, p
     lines.append("- the manifest entries of " + ", ".join(e["item"] for e in entries) + " in /memory/.pass/manifest.json")
     if refuses is False:
         lines.append(
-            f"- {reader_id} does not raise MemoryInputError on empty text: its refusal test is marked as a known "
-            "failure until it does",
-        )
-    elif refuses == "raises":
-        lines.append(
-            f"- {reader_id} raises another exception than MemoryInputError on empty text, so no refusal test was "
-            "written: make it raise MemoryInputError on text it was not built for, and add the test",
+            f"- {reader_id} states no MemoryInputError in its code: its refusal test is an expected failure until it "
+            "refuses text it was not built for",
         )
     if result_cut is None:
         lines.append(
@@ -823,11 +818,27 @@ def _same_reader(box: Path, source: str) -> str:
     return ""
 
 
-def _run_reader(item, text, box, python, runner, work):
-    from .procedures import run_reader
-
-    work.mkdir(parents=True, exist_ok=True)
-    return run_reader(item, [text], tree=box, python=python, work=work, runner=runner)
+def _raises_memory_input_error(box: Path, reader_id: str, capture_source: str | None) -> bool:
+    """Whether the reader *reader_id* (in the library at *box*, or, for a new one, the capture's ``read_input`` in
+    *capture_source*) raises ``MemoryInputError`` anywhere in its code: read from its syntax, never run."""
+    module, _, fn = reader_id.partition(":")
+    text = capture_source if capture_source is not None else (_box_text(box, module.replace(".", "/") + ".py") or "")
+    name = "read_input" if capture_source is not None else fn
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return False
+    node = next((n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name),
+                None)  # fmt: skip
+    if node is None:
+        return False
+    for n in ast.walk(node):
+        if isinstance(n, ast.Raise) and n.exc is not None:
+            target = n.exc.func if isinstance(n.exc, ast.Call) else n.exc
+            label = target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", "")
+            if label == "MemoryInputError":
+                return True
+    return False
 
 
 def _write_recipe(box, package, name, reader_id, applies, written) -> None:

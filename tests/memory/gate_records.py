@@ -120,11 +120,15 @@ def build(
     signals: Sequence[Any] = (),
     require_pass: bool = True,
     edit_manifest: Any = None,
+    gate_kwargs: Mapping[str, Any] | None = None,
+    config_kwargs: Mapping[str, Any] | None = None,
 ) -> Built:
     """The world under *root* (module docstring): *base* is committed first; the pass lands *landings*, then writes
     *files* (path -> text), makes *fixtures* (fixture tool arguments) and lists *items* beside the landings' manifest
     entries. *signals* are indexed for the gate to read; with *require_pass* off a refused check is returned too;
-    *edit_manifest* (manifest -> manifest) changes the draft manifest as a writer would before the check."""
+    *edit_manifest* (manifest -> manifest) changes the draft manifest as a writer would before the check; *gate_kwargs*
+    and *config_kwargs* are more fields of the gate and its library configuration (rev 2's ``labels_only``, a
+    ``pytest_runner`` or ``runner`` that records or refuses runs)."""
     root = Path(root)
     episodes = dict(episodes)
     batch = sorted(episodes)
@@ -205,7 +209,8 @@ def build(
         ev,
         blobs,
         action_lookup=lookup,
-        library_mode=LibraryConfig(checks=True, episodes=episodes.get),
+        library_mode=LibraryConfig(checks=True, episodes=episodes.get, **dict(config_kwargs or {})),
+        **dict(gate_kwargs or {}),
     )
     result = gate.check(mem.head(), commit, checked)
     assert result.passed or not require_pass, result.reasons

@@ -49,6 +49,8 @@ def test_the_profile_lists_exactly_the_planned_switches_and_values():
         "UNIFY_MEMORY_WRITER_TESTS": "value",
         "UNIFY_MEMORY_IN_EPISODE": "off",  # rev 2 (MAIN, 21 Oct): the main arm runs without in-episode memory
         "UNIFY_MEMORY_SERVING_FAILURE_RECORD": "on",
+        "UNIFY_MEMORY_GATE_LABELS_ONLY": "on",  # rev 2: labels only, only pure items run
+        "UNIFY_MEMORY_GATE_RECORDED_REPLAYS": "off",
         "UNIFY_MEMORY_LIBRARY_WITHDRAW_CLOSED_CAPTURES": "on",
         "UNIFY_MEMORY_REGIME": "inferred",
     }

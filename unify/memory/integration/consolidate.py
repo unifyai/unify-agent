@@ -1146,7 +1146,7 @@ def after_passes(
         return
     from .. import lifecycle
     from ..captures import store_dir as captures_store_dir
-    from .switch import checker_visible, impure_items
+    from .switch import checker_visible, gate_labels_only, gate_recorded_replays, impure_items
 
     try:
         with tempfile.TemporaryDirectory(prefix="memlib-records-") as work:
@@ -1162,6 +1162,8 @@ def after_passes(
                 **({"labels": True} if impure_items(settings) else {}),
                 # UNIFY_MEMORY_ATTENTION_LEDGER=on: the writer's retire and merge decisions reach the records
                 **({"writer_decisions": True} if attention_ledger(settings) else {}),
+                # rev 2: the history probe (a retired item's bisect) replays recorded task data; off unless switched
+                **({"bisect": False} if gate_labels_only(settings) and not gate_recorded_replays(settings) else {}),
             )
     except Exception as exc:  # noqa: BLE001 - the records never stop the request
         _error(stores, redact_error(f"item records: {type(exc).__name__}: {exc}"))
@@ -1441,11 +1443,15 @@ def learning_gate_fields(settings: Any, stores: Stores | None = None) -> dict:
     (``UNIFY_MEMORY_IMPURE_ITEMS``: every quality finding a label on its item, the hard checks refusing as before) and
     ``segments_dir`` (``UNIFY_MEMORY_IN_EPISODE``, with *stores*: an item may cite a segment of an open episode,
     ``<episode>.s<n>``, whose record the harness wrote, as its source)."""
-    from .switch import impure_items, in_episode
+    from .switch import gate_labels_only, gate_recorded_replays, impure_items, in_episode
 
     out: dict = {"labels": True} if impure_items(settings) else {}
     if stores is not None and in_episode(settings):
         out["segments_dir"] = str(stores.paths.state_dir)
+    if gate_labels_only(settings):
+        # rev 2: labels only, and only statically pure items run (:mod:`..gate_policy`)
+        out["labels_only"] = True
+        out["recorded_replays"] = gate_recorded_replays(settings)
     return out
 
 
@@ -1661,6 +1667,8 @@ async def run_due_passes(
                 stores.evidence,
                 stores.blobs,
                 **common,
+                # rev 2's labels-only gate holds for CURATE too (:mod:`..gate_policy`)
+                **{k: v for k, v in learning_gate_fields(settings, stores).items() if k in ("labels_only", "recorded_replays")},
                 library_mode=library_checks.config_for(
                     stores,
                     lookup,

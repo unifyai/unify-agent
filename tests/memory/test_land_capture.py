@@ -105,13 +105,13 @@ def test_landing_writes_the_reader_procedure_fixtures_test_and_manifest_entries(
     # the reader under read_<name>, one text parameter
     assert "def read_row_sums(text):" in readers and "def read_input(" not in readers
     assert (mem / "__init__.py").read_text().startswith('"""')
-    # the request text, and its parsed value through the reader, as fixtures the gate re-derives
+    # the request text as a fixture the gate re-derives; rev 2 makes no parsed fixture (that would run the reader)
     data = mem / "tests" / "data"
     assert (data / "row_sums.case1.txt").read_text() == ep.request[0]
-    assert json.loads((data / "row_sums.case1.json").read_text()) == ROWS
+    assert not (data / "row_sums.case1.json").exists()
     listing = json.loads((tmp_path / "box" / ".pass" / "fixtures.json").read_text())
     parsed = json.dumps(listing)
-    assert "memory.readings.readers:read_row_sums" in parsed and "parsed" in parsed
+    assert "row_sums.case1.json" not in parsed and "read_row_sums" not in parsed
     # the handed-back value as a fixture of the recording: a slice of the answering dialogue action's arguments
     result = data / "row_sums.case1.result.json"
     assert json.loads(result.read_text()) == {"sums": [sum(r) for r in ROWS]}
@@ -129,8 +129,11 @@ def test_landing_writes_the_reader_procedure_fixtures_test_and_manifest_entries(
     assert '"sums"' not in test
     assert "def test_row_sums_case1_reader_reads_the_recorded_request():" in test
     assert "def test_row_sums_reader_refuses_text_it_was_not_built_for():" in test
-    # the reader returns [] on empty text, so its refusal test records a known failure
-    assert '@pytest.mark.xfail(strict=True, reason="the reader does not refuse text it was not built for yet")' in test
+    # its code states no MemoryInputError (read from the code, never run), so its refusal test is a non-strict
+    # expected failure
+    assert '@pytest.mark.xfail(strict=False, reason="the reader states no refusal of text it was not built for yet")' in (
+        test
+    )
     # the manifest entries, with their roles
     items = {i["item"]: i for i in _manifest(tmp_path)["items"]}
     proc = items["memory.readings.procedures:row_sums"]
@@ -159,12 +162,11 @@ def test_landing_writes_the_reader_procedure_fixtures_test_and_manifest_entries(
         "readings/procedures.py",
         "readings/readers.py",
         "readings/tests/data/row_sums.case1.txt",
-        "readings/tests/data/row_sums.case1.json",
         "readings/tests/data/row_sums.case1.result.json",
         "readings/tests/test_row_sums.py",
     ):
         assert f"- wrote /memory/memory/{rel}" in reply.text, reply.text
-    assert "known failure" in reply.text
+    assert "expected failure" in reply.text
     _no_leak(reply, tmp_path)
 
 
@@ -198,8 +200,6 @@ def test_a_landed_reader_that_is_the_same_code_is_reused(tmp_path):
     items = {i["item"]: i for i in _manifest(tmp_path)["items"]}
     assert items["memory.readings.procedures:row_sums"]["reader"] == "memory.text.readers:labelled_rows"
     assert set(items) == {"memory.readings.procedures:row_sums", "memory.readings.procedures:apply_row_sums"}
-    fixture = tmp_path / "box" / "memory" / "readings" / "tests" / "data" / "row_sums.case1.json"
-    assert json.loads(fixture.read_text()) == ROWS
     assert "from memory.text.readers import labelled_rows" in (
         tmp_path / "box" / "memory" / "readings" / "tests" / "test_row_sums.py"
     ).read_text()

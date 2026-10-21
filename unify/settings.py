@@ -524,6 +524,11 @@ class ProductionSettings(BaseSettings):
     UNIFY_MEMORY_IMPURE_ITEMS: str = ""
     UNIFY_MEMORY_WRITER_TESTS: str = ""
     UNIFY_MEMORY_IN_EPISODE: str = ""
+    # Rev 2's gate (unify/memory/gate_policy.py): ``UNIFY_MEMORY_GATE_LABELS_ONLY=on`` makes every check but the hard
+    # ones a label and runs only statically pure items; ``UNIFY_MEMORY_GATE_RECORDED_REPLAYS=on`` adds the replays of
+    # recorded task data, for comparisons. Empty: off (the redesign profile gives on and off).
+    UNIFY_MEMORY_GATE_LABELS_ONLY: str = ""
+    UNIFY_MEMORY_GATE_RECORDED_REPLAYS: str = ""
     # Serving on the situation plus the failure record: ``on`` gives the librarian each item's failure record and
     # contradictions beside the situation, shows match and applicability results as evidence (never as a claim of
     # fit), states each status by what it rests on, and withdraws retired and superseded library items as well as
@@ -890,6 +895,8 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_IMPURE_ITEMS",
         "UNIFY_MEMORY_WRITER_TESTS",
         "UNIFY_MEMORY_IN_EPISODE",
+        "UNIFY_MEMORY_GATE_LABELS_ONLY",
+        "UNIFY_MEMORY_GATE_RECORDED_REPLAYS",
         mode="before",
     )
     @classmethod

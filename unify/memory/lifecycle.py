@@ -1249,8 +1249,11 @@ def consolidate_records(
     captures: Any = None,
     labels: bool = False,
     writer_decisions: bool = False,
+    bisect: bool = True,
 ) -> dict:
-    """The item records of ``main``'s head, after a consolidation's passes. With *labels*
+    """The item records of ``main``'s head, after a consolidation's passes. Without *bisect* (rev 2:
+    ``UNIFY_MEMORY_GATE_RECORDED_REPLAYS`` off) no retired item is bisected: the history probe replays recorded task
+    data. With *labels*
     (``UNIFY_MEMORY_IMPURE_ITEMS=on``) every record carries its evidence label (:func:`label_inputs`). With
     *writer_decisions* (``UNIFY_MEMORY_ATTENTION_LEDGER=on``) the writer's retire and merge decisions set the records'
     statuses (:func:`next_records`).
@@ -1377,6 +1380,8 @@ def consolidate_records(
         rec = records[item]
         if rec["status"] != RETIRED or rec["status_rule"] not in OUTCOME_RULES:
             continue
+        if not bisect:
+            continue  # rev 2: no history probe
         at = rec.get("changed_at")
         done = rec.get("bisect")
         if (

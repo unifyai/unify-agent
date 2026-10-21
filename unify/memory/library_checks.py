@@ -427,6 +427,10 @@ class LibraryChecks:
                 )
                 continue
             data = (run.c_tree / p).read_bytes()
+            if getattr(run, "policy", None) is not None and self._readers_of(entries.get(p)):
+                # rev 2: re-deriving a parsed fixture would run its reader; the gate runs none
+                run.not_run(owners, f"G1 parsed fixture {p}: re-deriving it would run its reader")
+                continue
             if p.endswith(REPLAY_SUFFIX):
                 replays[p] = (
                     data  # verified by replaying its instances again, not by its bytes
@@ -548,6 +552,9 @@ class LibraryChecks:
         from .procedures import reader_digest
 
         run = self.run
+        if getattr(run, "policy", None) is not None:
+            run.note("G1: parsed fixtures of changed readers not re-derived (rev 2: re-deriving runs the reader)")
+            return
         modules = {layout.module_of(p) for p in run.changed}
         if not any(modules):
             return
@@ -595,6 +602,13 @@ class LibraryChecks:
         from . import replay_verify
 
         run = self.run
+        policy = getattr(run, "policy", None)
+        if policy is not None and not policy.replays:
+            from .gate_policy import NOT_RUN_REPLAYS
+
+            owners = sorted({o for p in replays for o in (self._owners(p) or [])})
+            run.not_run(owners or None, f"G1 replay case files: {NOT_RUN_REPLAYS}")
+            return
         replaces_of = {
             r["item"]: r["replaces"]
             for r in (raw.get("items") if isinstance(raw.get("items"), list) else [])
@@ -729,6 +743,17 @@ class LibraryChecks:
                     "output, each made with fixture(..., expected=...)",
                     owners,
                 )
+            policy = getattr(run, "policy", None)
+            if policy is not None:
+                ok, why = policy.item(it.item)
+                if ok:
+                    ok, why = policy.item(recipe)
+                if not ok:
+                    # rev 2: an impure procedure's recipe is never run by the gate
+                    run.not_run(owners, f"G2 recipe {recipe}: {why}")
+                    self._record(it.item)["recipe"] = {"item": recipe, "cases": len(it.cases), "ran": False,
+                                                       "why": why}  # fmt: skip
+                    continue
             reports = check_cases(
                 recipe,
                 [c for _, c in cases],
@@ -785,6 +810,15 @@ class LibraryChecks:
                     it.item,
                 )
         elif cover.type == "episode":
+            policy = getattr(run, "policy", None)
+            if policy is not None and not policy.replays:
+                from .gate_policy import NOT_RUN_REPLAYS
+
+                run.not_run(it.item, f"G2 episode cover {cover.episode}: {NOT_RUN_REPLAYS}")
+                self._record(it.item).setdefault("procedures", []).append(
+                    {"episode": cover.episode, "runner": cover.runner, "ok": None, "ran": False},
+                )
+                return
             out = run_procedure(
                 it.item,
                 cover,
@@ -1265,6 +1299,10 @@ class LibraryChecks:
         run = self.run
         if not any(classify(p) in ("module", "package_init") for p in run.changed):
             return
+        policy = getattr(run, "policy", None)
+        if policy is not None and not policy.replays:
+            run.note("G3: stored procedures' episode covers not re-run (rev 2: recorded replays are off)")
+            return
         graph = getattr(run, "graph", None)
         scope: set[str] | None = None
         if graph is not None:
@@ -1365,6 +1403,10 @@ class LibraryChecks:
         run = self.run
         deleted = set(run.man.deleted)
         if not deleted:
+            return
+        policy = getattr(run, "policy", None)
+        if policy is not None and not policy.replays:
+            run.note("G5: deleted procedures' episode covers not re-run (rev 2: recorded replays are off)")
             return
 
         def key(c: Any) -> str:

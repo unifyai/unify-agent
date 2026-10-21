@@ -1697,13 +1697,14 @@ def batch_row(store: Path | str, eid: str) -> dict | None:
 
 def record_landing(store: Path | str, cid: str, landing: Mapping[str, Any]) -> None:
     """Record that capture *cid* was landed as *landing* (``item``, ``reader``, ``applies``, ``episode``, ``pass``: the
-    pass that landed it, ``recognition``: its recognition record, :mod:`.recognition`, and ``at``: when that was
-    tested), replacing an earlier landing of it."""
+    pass that landed it, ``recognition``: its recognition record, :mod:`.recognition`, ``verified``: rev 2's
+    ``{"ran": false, "why"}`` (nothing was run to verify it), and ``at``: when it landed), replacing an earlier landing
+    of it."""
     if not _ID.fullmatch(str(cid)):
         raise ValueError(f"not a capture id: {str(cid)[:40]!r}")
     root = Path(store)
     with _locked(root):
-        keys = ("item", "reader", "applies", "episode", "pass", "recognition", "at")
+        keys = ("item", "reader", "applies", "episode", "pass", "recognition", "verified", "at")
         _write(root / cid / LANDED_FILE, _json({k: landing.get(k) for k in keys}))
 
 
