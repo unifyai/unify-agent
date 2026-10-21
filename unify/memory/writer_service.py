@@ -820,12 +820,32 @@ def without_provider_keys(env: dict, settings: Any) -> dict:
     """*env* for a writer process (the service, or a pass worker) whose writer calls go through the writer's lane:
     every provider key replaced by :data:`NO_PROVIDER_KEY`. The writer's calls and its helpers' go through their lanes
     (with no helper lane, helpers are not offered), and the librarian runs in the request, not here. One case keeps the
-    keys: an embedding route (``UNIFY_EMBED_URL``), which sends the provider key in its own header."""
-    if str(getattr(settings, "UNIFY_EMBED_URL", "") or "").strip():
+    keys: an embedding route the user set (``UNIFY_EMBED_URL`` with no lane token), which sends the provider key in its
+    own header. With the relay's embedding lane the client sends that lane's token, so the keys are masked."""
+    from unify.lanes import embed_token
+
+    try:
+        lane_token = embed_token.token()
+    except embed_token.EmbedTokenRefused:
+        lane_token = ""  # a lane was given, unusable: embeddings are refused, the keys masked all the same
+    if lane_token is None and str(getattr(settings, "UNIFY_EMBED_URL", "") or "").strip():
         return env
     out = {k: v for k, v in env.items() if k.upper() not in PROVIDER_KEY_NAMES}
     out.update(dict.fromkeys(PROVIDER_KEY_NAMES, NO_PROVIDER_KEY))
     return out
+
+
+def _embed_lane_token() -> str | None:
+    """The embedding lane's token as this process holds it (None without one, or when it was unusable)."""
+    from unify.lanes import embed_token
+
+    try:
+        return embed_token.token()
+    except embed_token.EmbedTokenRefused:
+        return None
+
+
+from unify.lanes.embed_token import EMBED_TOKEN_FD  # noqa: E402
 
 
 def _token_pipes() -> tuple[dict, list[int]]:
@@ -845,6 +865,7 @@ def _token_pipes() -> tuple[dict, list[int]]:
             switch.WRITER_TOKEN_FD,
             switch.LIBRARY_HELPER_TOKEN_FD,
             switch.LIBRARY_HELPER_BASE_URL,
+            EMBED_TOKEN_FD,
         )
     }
     fds: list[int] = []
@@ -864,6 +885,9 @@ def _token_pipes() -> tuple[dict, list[int]]:
     if token:
         env[switch.WRITER_TOKEN_FD] = str(pipe(token))
         env = without_provider_keys(env, settings)
+    embed = _embed_lane_token()
+    if embed:
+        env[EMBED_TOKEN_FD] = str(pipe(embed))
     switch.settle_helper_route_env(os.environ, settings)
     pair, _why = switch.helper_lane_route()
     if pair is not None:

@@ -86,11 +86,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 FORMAT = "unify-lane-relay/1"
-LANES = ("writer", "helper", "fork")
+LANES = ("writer", "helper", "fork", "embed")
 LOOPBACK = "127.0.0.1"
 #: The client path of each lane's one route, and the upstream path under the upstream base URL.
-ROUTE = re.compile(r"/(writer|helper|fork)/v1/chat/completions")
+ROUTE = re.compile(r"/(writer|helper|fork)/v1/chat/completions|/(embed)/v1/embeddings")
 UPSTREAM_PATH = "/chat/completions"
+#: The embedding lane: its upstream path, and the bounds of one request (the client sends at most 128 texts of at
+#: most 2,048 tokens each).
+EMBED_UPSTREAM_PATH = "/embeddings"
+MAX_EMBED_INPUTS = 128
+MAX_EMBED_BYTES = 2 << 20
 
 #: A lane token: what ``secrets.token_urlsafe(32)`` gives (the harness's own rule is 16 or more of these characters).
 TOKEN_FORM = re.compile(r"[A-Za-z0-9._~-]{32,512}")
@@ -553,6 +558,40 @@ def check_body(
     return parsed, model, None
 
 
+def check_embed_body(
+    body: bytes, allowed: frozenset[str]
+) -> tuple[dict | None, str | None, str | None]:
+    """As :func:`check_body`, for the embedding lane: exactly ``{"model", "input"}`` (no ``dimensions`` or any other
+    field), ``input`` a list of 1 to :data:`MAX_EMBED_INPUTS` strings of at most :data:`MAX_EMBED_BYTES` in all; the
+    body goes upstream unchanged."""
+    try:
+        parsed = json.loads(body, object_pairs_hook=_unique)
+    except _DuplicateKey:
+        return None, None, "duplicate_keys"
+    except (ValueError, RecursionError):
+        return None, None, "unparseable_body"
+    if not isinstance(parsed, dict):
+        return None, None, "not_an_object"
+    model = parsed.get("model")
+    if not isinstance(model, str):
+        return None, None, "missing_model" if model is None else "model_not_a_string"
+    shown = model if MODEL_FORM.fullmatch(model) else None
+    if set(parsed) != {"model", "input"}:
+        return None, shown, "embedding_fields"
+    inputs = parsed["input"]
+    if (
+        not isinstance(inputs, list)
+        or not 1 <= len(inputs) <= MAX_EMBED_INPUTS
+        or not all(isinstance(x, str) for x in inputs)
+    ):
+        return None, shown, "embedding_input"
+    if sum(len(x.encode("utf-8")) for x in inputs) > MAX_EMBED_BYTES:
+        return None, shown, "embedding_input_size"
+    if model not in allowed:
+        return None, shown, "not_allowed"
+    return parsed, model, None
+
+
 def bill(doc) -> dict:
     """What one reply (or one stream event) says of the call's cost: charge, tokens, generation id, finish reason."""
     out: dict = {}
@@ -735,7 +774,7 @@ class Relay:
         path = handler.path
         m = ROUTE.fullmatch(path)
         lane = (
-            m.group(1)
+            (m.group(1) or m.group(2))
             if m
             else next((n for n in LANES if path.startswith(f"/{n}/")), None)
         )
@@ -752,7 +791,7 @@ class Relay:
             raise Refusal(
                 404,
                 f"{lane or 'lane'}_route_refused",
-                "the lane relay serves POST /<lane>/v1/chat/completions only",
+                "the lane relay serves POST /<lane>/v1/chat/completions and /embed/v1/embeddings only",
                 "path",
                 lane=lane,
             )
@@ -826,7 +865,8 @@ class Relay:
         handler.body_read = True
         if len(body) != size:
             return  # the client went away mid-body
-        parsed, model, why = check_body(body, self.config.models[lane])
+        check = check_embed_body if lane == "embed" else check_body
+        parsed, model, why = check(body, self.config.models[lane])
         if why is not None:
             allowed = ", ".join(sorted(self.config.models[lane]))
             raise Refusal(
@@ -891,7 +931,7 @@ class Relay:
                 lane=lane,
                 model=model,
             )
-        if "usage" not in parsed:
+        if lane != "embed" and "usage" not in parsed:
             parsed["usage"] = {"include": True}
             body = json.dumps(parsed, separators=(",", ":")).encode("utf-8")
         call = _Ending(self.journals[lane], self.ledger, base, time.monotonic())
@@ -972,7 +1012,8 @@ class Relay:
         try:
             conn.request(
                 "POST",
-                self.config.base_path + UPSTREAM_PATH,
+                self.config.base_path
+                + (EMBED_UPSTREAM_PATH if lane == "embed" else UPSTREAM_PATH),
                 body=body,
                 headers={
                     "Authorization": f"Bearer {self.config.key}",

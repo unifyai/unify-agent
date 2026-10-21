@@ -1207,3 +1207,7 @@ settle_fork_route_env(os.environ, SETTINGS)
 from unify.memory.integration.switch import settle_helper_route_env  # noqa: E402
 
 settle_helper_route_env(os.environ, SETTINGS)
+# The embedding lane's token likewise: read once from its descriptor, its name out of the environment.
+from unify.lanes.embed_token import settle as settle_embed_token  # noqa: E402
+
+settle_embed_token(os.environ)

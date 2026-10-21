@@ -65,6 +65,14 @@ LANE_ENV = {
     ),
 }
 JOURNAL_ENV = "UNIFY_MEMORY_WRITER_JOURNAL"
+#: The embedding lane, as the embedding client reads it (``unify/common/embeddings.py``, :mod:`.embed_token`):
+#: the URL it posts to and the descriptor holding the lane's token. Given only when the user set neither.
+EMBED_URL_ENV = "UNIFY_EMBED_URL"
+EMBED_TOKEN_FD_ENV = "UNIFY_EMBED_TOKEN_FD"
+EMBED_MODEL = "openai/text-embedding-3-small"
+#: One embedding request's worst case: the relay bounds a request to 2 MiB of input, at most 2,097,152 tokens, at the
+#: model's listed USD 0.02 per million input tokens (the pinned call-bounds table has no embedding model).
+EMBED_WORST_CASE_USD = Decimal("0.05")
 #: Names that mean the lanes were given from outside (a research launcher, or this module in the parent process): the
 #: command then runs as it is, and no relay starts.
 GIVEN_ENV = (
@@ -184,12 +192,26 @@ def plan(settings: Any, environ: Mapping[str, str]) -> tuple[Plan | None, str | 
             None,
             "memory has no model lanes: no lane's model is an OpenRouter model the worst-case table bounds",
         )
+    if not _embedding_given(settings, environ):
+        lanes["embed"] = (EMBED_MODEL,)
+        bounds = {**bounds, EMBED_MODEL: EMBED_WORST_CASE_USD}
     prices = {}
     pinned = switch.writer_prices(settings)
     if pinned and writer is not None:
         prices[writer] = pinned
     why = f"memory: no {', '.join(skipped)} lane (its model is not an OpenRouter model the worst-case table bounds)"
     return Plan(lanes, cap, bounds, prices), (why if skipped else None)
+
+
+def _embedding_given(settings: Any, environ: Mapping[str, str]) -> bool:
+    """Whether embeddings need no lane here: the user set an embedding route (or its token), or local embeddings."""
+    names = {n.upper() for n in environ}
+    return (
+        EMBED_URL_ENV in names
+        or EMBED_TOKEN_FD_ENV in names
+        or bool(str(getattr(settings, EMBED_URL_ENV, "") or "").strip())
+        or bool(getattr(settings, "UNIFY_LOCAL_EMBEDDINGS", False))
+    )
 
 
 def handover(
@@ -206,7 +228,7 @@ def handover(
     fds: list[int] = []
     try:
         for lane in relay.lanes:
-            base_name, fd_name = LANE_ENV[lane]
+            base_name, fd_name = LANE_ENV.get(lane, (EMBED_URL_ENV, EMBED_TOKEN_FD_ENV))
             r, w = os.pipe()
             fds.append(r)
             try:
@@ -214,7 +236,9 @@ def handover(
             finally:
                 os.close(w)
             os.set_inheritable(r, True)
-            env[base_name] = relay.base_url(lane)
+            env[base_name] = relay.base_url(lane) + (
+                "/embeddings" if lane == "embed" else ""
+            )
             env[fd_name] = str(r)
         if "writer" in relay.lanes:
             env[JOURNAL_ENV] = str(relay.journal("writer"))

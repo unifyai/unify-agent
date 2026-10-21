@@ -52,7 +52,9 @@ def test_with_memory_on_every_lane_is_planned_on_its_model_under_one_cap():
         "writer": ("openai/gpt-6-sol",),
         "helper": (MODEL,),
         "fork": (MODEL,),
+        "embed": (launch.EMBED_MODEL,),
     }
+    assert plan.worst[launch.EMBED_MODEL] == launch.EMBED_WORST_CASE_USD
     assert plan.cap == Decimal("2.00")
     assert plan.worst[MODEL] == Decimal("0.65625") and plan.worst[
         "openai/gpt-6-sol"
@@ -121,7 +123,7 @@ def test_lanes_that_cannot_be_served_leave_the_command_as_it_is_with_a_note(
 
 def test_a_lane_whose_model_cannot_be_served_is_left_out_by_name():
     plan, why = launch.plan(_settings(UNIFY_MODEL="claude-x@anthropic"), ENV)
-    assert set(plan.lanes) == {"writer"} and plan.lanes["writer"] == (
+    assert set(plan.lanes) == {"writer", "embed"} and plan.lanes["writer"] == (
         "openai/gpt-6-sol",
     )
     assert (
@@ -201,17 +203,29 @@ def is_open(fd):
         return True
     except OSError:
         return False
-tokens = [t for _, t in routes.values()]
+from unify.lanes import embed_token
+etok = embed_token.token()
+def post_embed(url, token):
+    req = urllib.request.Request(url, method="POST",
+        data=json.dumps({"model": "openai/text-embedding-3-small", "input": ["x"]}).encode(),
+        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+tokens = [t for _, t in routes.values()] + [etok]
 print(json.dumps({
     "pid": os.getpid(),
     "names_before": sorted(before),
     "names_after": sorted(k for k in os.environ if k.startswith("UNIFY_") and any(w in k for w in watch)),
-    "status": {lane: post(*routes[lane]) for lane in sorted(routes)},
+    "status": {**{lane: post(*routes[lane]) for lane in sorted(routes)}, "embed": post_embed(SETTINGS.UNIFY_EMBED_URL, etok)},
     "crossed": post(routes["writer"][0], routes["fork"][1]),
     "token_in_env": any(t in v for t in tokens for v in os.environ.values()),
-    "distinct": len(set(tokens)) == 3,
+    "distinct": len(set(tokens)) == 4,
     "fds_open": [is_open(fd) for fd in fds],
     "journal": SETTINGS.UNIFY_MEMORY_WRITER_JOURNAL,
+    "embed_url": SETTINGS.UNIFY_EMBED_URL,
     "bases": {lane: routes[lane][0] for lane in routes},
 }), flush=True)
 if sys.argv[1:] == ["sleep"]:
@@ -302,6 +316,7 @@ def test_the_controller_gets_each_lane_on_its_descriptor_and_the_relay_ends_with
         [
             *(name for pair in launch.LANE_ENV.values() for name in pair),
             "UNIFY_MEMORY_WRITER_JOURNAL",
+            "UNIFY_EMBED_TOKEN_FD",
         ]
     )
     # the settings took every token off its descriptor, closed it, and left no token or descriptor name behind
@@ -310,7 +325,7 @@ def test_the_controller_gets_each_lane_on_its_descriptor_and_the_relay_ends_with
         "UNIFY_MEMORY_WRITER_JOURNAL",
     ]
     assert (
-        report["fds_open"] == [False, False, False]
+        report["fds_open"] == [False, False, False, False]
         and report["token_in_env"] is False
         and report["distinct"]
     )
@@ -318,12 +333,15 @@ def test_the_controller_gets_each_lane_on_its_descriptor_and_the_relay_ends_with
         lane: f"http://127.0.0.1:{relay['port']}/{lane}/v1" for lane in launch.LANE_ENV
     }
     assert (
-        report["status"] == {"fork": 200, "helper": 200, "writer": 200}
+        report["status"] == {"fork": 200, "helper": 200, "writer": 200, "embed": 200}
         and report["crossed"] == 403
     )
     assert report["journal"] == str(lanes / "writer.jsonl")
     assert _gone(relay["pid"])
-    for lane in launch.LANE_ENV:
+    assert (
+        report["embed_url"] == f"http://127.0.0.1:{relay['port']}/embed/v1/embeddings"
+    )
+    for lane in [*launch.LANE_ENV, "embed"]:
         rows = [
             json.loads(x) for x in (lanes / f"{lane}.jsonl").read_text().splitlines()
         ]
@@ -574,3 +592,17 @@ def test_the_end_of_a_run_gives_the_writers_pass_at_most_five_minutes_then_suspe
     assert seen == [
         (tmp_path, {"end": "suspend", "wait_s": 300.0, "service_wait_s": 300.0})
     ]
+
+
+@pytest.mark.parametrize(
+    "settings, environ",
+    [
+        (_settings(UNIFY_EMBED_URL="http://127.0.0.1:9/mine"), ENV),
+        (_settings(), {**ENV, "UNIFY_EMBED_URL": "http://127.0.0.1:9/mine"}),
+        (_settings(), {**ENV, "UNIFY_EMBED_TOKEN_FD": "7"}),
+        (_settings(UNIFY_LOCAL_EMBEDDINGS=True), ENV),
+    ],
+)
+def test_an_embedding_route_the_user_set_is_never_replaced(settings, environ):
+    plan, _why = launch.plan(settings, environ)
+    assert "embed" not in plan.lanes and set(plan.lanes) == {"writer", "helper", "fork"}

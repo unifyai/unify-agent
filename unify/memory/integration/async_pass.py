@@ -382,6 +382,7 @@ def spawn(
         return None
     log = None
     token_r: int | None = None
+    embed_r: int | None = None
     more: dict = {}
     try:
         if route_token:
@@ -403,6 +404,19 @@ def spawn(
                 if k.upper() not in (WRITER_TOKEN, WRITER_TOKEN_FD)
             }
             env[WRITER_TOKEN_FD] = str(token_r)
+            # the embedding lane's token on a pipe of its own, as the writer's
+            from ..writer_service import EMBED_TOKEN_FD, _embed_lane_token
+
+            embed = _embed_lane_token()
+            env.pop(EMBED_TOKEN_FD, None)
+            if embed:
+                embed_r, embed_w = os.pipe()
+                try:
+                    os.write(embed_w, (embed + "\n").encode("latin-1"))
+                finally:
+                    os.close(embed_w)
+                os.set_inheritable(embed_r, True)
+                env[EMBED_TOKEN_FD] = str(embed_r)
             # its writer calls go through the writer's lane: it needs no provider key
             more = {"env": without_provider_keys(env, SETTINGS)}
         log = open(Path(paths.state_dir) / "pass-worker.log", "ab")
@@ -425,7 +439,7 @@ def spawn(
             stdout=log,
             stderr=log,
             start_new_session=True,
-            pass_fds=(fd,) if token_r is None else (fd, token_r),
+            pass_fds=tuple(x for x in (fd, token_r, embed_r) if x is not None),
             close_fds=True,
             **more,
         )
@@ -446,10 +460,9 @@ def spawn(
         return rec
     finally:
         os.close(fd)  # the worker keeps the lock on the descriptor it inherited
-        if token_r is not None:
-            os.close(
-                token_r,
-            )  # the worker holds its own copy; no later child of this process inherits it
+        for r in (token_r, embed_r):
+            if r is not None:
+                os.close(r)  # the worker holds its own copy; no later child of this process inherits it
         if log is not None:
             log.close()
 

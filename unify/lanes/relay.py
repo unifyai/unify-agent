@@ -34,7 +34,7 @@ from typing import Mapping, Sequence
 
 SERVER = Path(__file__).with_name("relay_server.py")
 FORMAT = "unify-lane-relay/1"
-LANES = ("writer", "helper", "fork")
+LANES = ("writer", "helper", "fork", "embed")
 #: OpenRouter's API: the only upstream the lanes have (their bodies are OpenRouter-shaped). Tests pass a local stand-in.
 DEFAULT_UPSTREAM = "https://openrouter.ai/api/v1"
 #: The relay's environment: nothing of this process's (no key, no token, no ``PYTHON*``).
