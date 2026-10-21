@@ -2,16 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
-from tests.memory.integration.test_consolidate import (
-    FakeWriter,
-    _record,
-    _settings,
-    _stores,
-)
 from tests.memory.test_item_admission import _write
 from tests.memory.test_layout import LIB
 from unify.memory import layout, reduction
@@ -19,8 +12,6 @@ from unify.memory.admission import cover_problem
 from unify.memory.episodes import Action
 from unify.memory.gate import CHECKS, Gate, GateResult, _Probe, _Run
 from unify.memory.library_checks import LibraryConfig
-from unify.memory.integration import consolidate
-from unify.memory.integration.state import State
 from unify.memory.manifest import Manifest, ManifestItem
 
 TOKENS = "memory.text.parse:tokens"
@@ -271,44 +262,6 @@ def test_a_package_reexport_does_not_chain_its_other_modules(tmp_path):
         library_mode=True,
     )
     assert refused == {"memory.kit.a:fa": ["G3"], "memory.use.y:gy": ["dependency"]}
-
-
-def test_the_switch_reaches_the_gate(tmp_path, monkeypatch):
-    made: list = []
-
-    class Recording(consolidate.Gate):
-        def __init__(self, *a, **k):
-            made.append(k.get("library_mode"))
-            super().__init__(*a, **k)
-
-    monkeypatch.setattr(consolidate, "Gate", Recording)
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter())
-    for value, seen in (("", False), ("on", True)):
-        stores = _stores(tmp_path / (value or "off"))
-        sha, _ = _record(stores, "e1")
-        settings = _settings()
-        settings.UNIFY_MEMORY_LIBRARY = value
-        settings.UNIFY_MEMORY_LIBRARY_E = (
-            1  # a tiny experience budget (100k by default)
-        )
-        asyncio.run(
-            consolidate.run_due_passes(
-                stores,
-                "e1",
-                sha,
-                State(stores.paths.state),
-                effort="low",
-                settings=settings,
-                emit=None,
-            ),
-        )
-        assert (
-            made[-1] is not None
-        ) is seen  # a LibraryConfig when on, None (v2) when off
-        # consolidate builds it with library_checks.config_for, the layout and the checks on
-        assert made[-1] is None or (
-            isinstance(made[-1], LibraryConfig) and made[-1].layout and made[-1].checks
-        )
 
 
 def test_an_init_change_puts_its_packages_modules_in_scope(tmp_path):

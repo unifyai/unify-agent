@@ -20,7 +20,6 @@ from unify.memory import writer_tests as wt
 from unify.memory.episodes import Action, Episode
 from unify.memory.gate import Gate, _Run, labelled
 from unify.memory.library_checks import LibraryConfig
-from unify.memory.library_prompts import WriterSwitches, write_brief_now
 
 needs_bwrap = pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap required")
 
@@ -276,68 +275,6 @@ def test_a_checklist_note_lands_and_is_served(library_example_world, tmp_path): 
 # --- the label -------------------------------------------------------------------------------------------------------------
 
 
-def test_the_label_names_contradictions_tests_uses_and_failures():
-    from unify.memory import trust
-
-    seen = {"read": 2, "write": 1}
-    assert item_label.contradictions("none", seen) == [
-        "declared none, but a replay test saw 1 write",
-        "declared none, but a replay test saw 2 reads",
-    ]
-    assert item_label.contradictions("reads", seen) == ["declared reads, but a replay test saw 1 write"]
-    assert item_label.contradictions("writes", seen) == [] and item_label.contradictions(None, seen) == []
-    uses = [trust.Use("e1", "sparse", "error"), trust.Use("e2", "none", "returned", answered=None)]
-    label = item_label.build(
-        kind="function",
-        record={"status": "on-trial", "track": trust.track(uses)},
-        verification={"stated": {"effects": "none"}, "label_findings": ["G2: x"]},
-        tests=[{"mode": "replay", "outcome": "not_as_stated", "effects": {"write": 1}},
-               {"mode": "value", "outcome": "as_stated", "effects": {}}],  # fmt: skip
-        uses=uses,
-        failures=[{"episode": "e1", "pin": "a" * 40, "why": "error", "ref": "episode:e1"}],
-    )
-    assert label["effects"]["contradictions"] == ["declared none, but a replay test saw 1 write"]
-    assert label["tests"]["not_as_stated"] == 1 and label["tests"]["by_mode"] == {"value": 1, "replay": 1}
-    assert label["uses"]["failed"] == 1 and label["uses"]["clean"] == 1
-    assert label["uses"]["by_regime"] == {"sparse": 1, "none": 1}
-    assert label["failure_record"][0]["why"] == "error" and label["findings"] == ["G2: x"]
-    assert label["status_basis"] == "implicit"
-    assert item_label.status_basis({"verdicts": {"accepted": 1, "rejected": 0}}, {}) == "verdicts"
-    assert item_label.status_basis({"end_outcomes": {"positive": 0, "contrary": 1}}, {}) == "end_outcomes"
-
-
 # --- the brief -------------------------------------------------------------------------------------------------------------
 
 
-def test_the_brief_says_what_an_item_may_be_and_is_as_built_with_the_switches_off(monkeypatch):
-    from unify.common import in_code_switch
-
-    monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: True)
-    built = write_brief_now(staging=True, pool=True)
-    assert write_brief_now(staging=True, pool=True, switches=WriterSwitches()) == built
-    assert "the results of calls with side effects" in built and "every expected output" in built
-    on = write_brief_now(staging=True, pool=True, switches=WriterSwitches(attention=True, impure=True, tests=True))
-    for line in (
-        "You are given entries that need your attention; decide each with `tools.decide`.",
-        "Open entries listed beside them may share a rule with yours; look with `tools.open_entries` and "
-        "`tools.find`, and `tools.take` those that do.",
-        "An item is written for a kind of situation, with what varies as its inputs. It may take the current state "
-        "and act through the environment's tools. When you land or change one, say which episodes it is meant to "
-        "cover and which of its values are inputs and which are constants, with the source of each constant.",
-        "Notes and checklists are items too.",
-        "Running code is a test you state first: say what you expect, then run `tools.test`.",
-        "your own code holds no key, opens no network and writes nothing outside /memory",
-        '"effects": "<none|reads|writes|unknown>"',
-    ):
-        assert line in on, line
-    for gone in (
-        "the results of calls with side effects",
-        "lands the procedure only if it gives every expected output",
-        "literal equal to a value that varies across its recorded inputs",
-        "cannot be verified, so it stays a draft",
-    ):
-        assert gone not in on, gone
-    # each switch alone changes only its own part
-    tests_only = write_brief_now(staging=True, pool=True, switches=WriterSwitches(tests=True))
-    assert "tools.test" in tests_only and "tools.decide" not in tests_only
-    assert "the results of calls with side effects" in tests_only

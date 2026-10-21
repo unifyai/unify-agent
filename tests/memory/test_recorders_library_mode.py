@@ -9,7 +9,6 @@ import json
 from pathlib import Path
 
 from unify.memory.integration.adapters.dialogue import dialogue_actions
-from unify.memory.integration.adapters.shell import shell_actions
 from unify.memory.integration.adapters.tool import RecordingObserver
 from unify.memory.redact import Redactor
 from tests.memory import recorder_inputs as inp
@@ -65,14 +64,6 @@ def test_tool_keeps_the_full_response():
     assert "__truncated__" not in json.dumps(a.response) and inp.KEY not in json.dumps(
         a.response,
     )
-
-
-def test_shell_keeps_full_arguments():
-    audit = inp.shell_audit()
-    audit[0]["argv"][2] = _planted(9000, "ARG_END")
-    (a,) = shell_actions(audit, redactor=RED, full=True)
-    assert a.args[2].endswith("ARG_END") and "<truncated" not in a.args[2]
-    assert inp.KEY not in json.dumps(a.args)
 
 
 def test_worktree_stores_a_file_over_the_old_blob_cap_whole_and_redacted(tmp_path):

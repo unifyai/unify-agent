@@ -9,7 +9,6 @@ import json
 import sys
 import types
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -21,7 +20,6 @@ from unify.memory import library_export as lx
 from unify.memory import library_search
 from unify.memory.catalogue import write_files
 from unify.memory.episodes import EpisodeWriter
-from unify.memory.integration import switch
 from unify.memory.integration.consolidate import open_stores
 from unify.memory.integration.paths import Paths
 from unify.memory.integration.request import RequestRun
@@ -558,32 +556,6 @@ def test_the_e4_replay_the_librarian_input_now_carries_the_failure_record(
 
 
 # --- the switch and the request's wiring ----------------------------------------------------------------------------
-
-
-def test_the_switch_parses_and_needs_memory_and_the_library_mode():
-    assert (
-        switch.parse_serving_failure_record("") == ""
-        and switch.parse_serving_failure_record("ON") == "on"
-    )
-    with pytest.raises(
-        ValueError, match="UNIFY_MEMORY_SERVING_FAILURE_RECORD must be empty"
-    ):
-        switch.parse_serving_failure_record("yes")
-    assert (
-        switch.PARSERS[switch.SERVING_FAILURE_RECORD]
-        is switch.parse_serving_failure_record
-    )
-    on = SimpleNamespace(UNIFY_MEMORY_SERVING_FAILURE_RECORD="on")
-    assert switch.profile_refusal(on) == (
-        "UNIFY_MEMORY_SERVING_FAILURE_RECORD=on needs UNIFY_MEMORY=on, UNIFY_MEMORY_LIBRARY=on; nothing runs"
-    )
-    ok = SimpleNamespace(
-        UNIFY_MEMORY="on",
-        UNIFY_MEMORY_LIBRARY="on",
-        UNIFY_MEMORY_SERVING_FAILURE_RECORD="on",
-    )
-    assert switch.profile_refusal(ok) is None and switch.serving_failure_record(ok)
-    assert not switch.serving_failure_record(SimpleNamespace())
 
 
 def test_the_request_serves_evidence_only_under_its_switch(tmp_path, monkeypatch):

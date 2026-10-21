@@ -1,11 +1,10 @@
 """The fixture tool: recorded bytes into tests/data/, with provenance derived from the files themselves."""
 
-import json
 import os
 
 from unify.memory import fixtures as fx
 from unify.memory import writer_tools as wt
-from unify.memory.writer_pass import _tests_changed, _with_fixtures, writer_tools
+from unify.memory.writer_pass import _tests_changed, _with_fixtures
 from tests.memory.test_fixtures import BLOB, EP, _blob
 
 EPS = {"e1": EP}
@@ -161,16 +160,3 @@ def test_tests_changed_trailers():
     assert _tests_changed(None) == []
 
 
-def test_fixture_tool_listed_only_with_library_mode():
-    names = lambda ts: {t["function"]["name"] for t in ts}  # noqa: E731
-    assert "fixture" not in names(writer_tools())
-    tool = next(
-        t for t in writer_tools(library_mode=True) if t["function"]["name"] == "fixture"
-    )
-    params = tool["function"]["parameters"]
-    assert params["required"] == ["episode", "dest"]
-    assert {"source", "action", "slice", "append", "replace"} <= set(
-        params["properties"],
-    )
-    assert "clamped" in tool["function"]["description"]
-    assert json.dumps(tool)  # serialisable as sent to the model

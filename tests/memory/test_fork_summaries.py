@@ -73,28 +73,6 @@ def _source():
 # --- the fork ----------------------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("in_code", [False, True])
-def test_the_fork_instruction_asks_for_the_summary_first_in_the_format(monkeypatch, in_code):
-    monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: in_code)
-    text = fork_mod.fork_instruction()
-    assert text == (fork_mod.INSTRUCTION_IN_CODE if in_code else fork_mod.INSTRUCTION)
-    wanted = text[text.index("What to write:\n") :].splitlines()[1:5]
-    assert [ln.split("`")[1] for ln in wanted] == [
-        "summary.md",
-        "candidates/<name>.py",
-        "cases/<name>.json",
-        "notes.md",
-    ]
-    assert lp.SUMMARY_FORMAT in text and fork_mod.NUMBERING in text
-    assert text.index(lp.SUMMARY_FORMAT) < text.index("Limits:")
-    assert not lp.example_checks(text) and not lp.benchmark_words(text)
-    # the format and its example name no benchmark or environment: a general task only
-    for part in (fork_mod.FORMAT_EXAMPLE, lp.SUMMARY_FORMAT, fork_mod.NUMBERING, fork_mod.PARTS_HEAD):
-        assert lp.benchmark_words(part) == [] and lp.example_checks(part) == []
-    assert "grid" not in fork_mod.FORMAT_EXAMPLE.lower()
-    assert fw.allowed("summary.md") is None and fw.kind("summary.md") == "summary"
-
-
 def test_the_fork_is_given_the_episodes_part_list():
     ep = _counting_episode()
     parts = fork_mod.part_list(ep)

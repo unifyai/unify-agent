@@ -15,15 +15,11 @@ from unify.memory import fixtures as fx
 from unify.memory.gate import Gate, GateResult
 from unify.memory.library_checks import LibraryConfig
 from tests.memory import library_example_world as w
-from tests.memory.library_example_world import (
-    library_example_world,
-)  # noqa: F401 (fixture)
 from tests.memory.test_gate import (
     FILES,
     MAN,
     _candidate,
     _merged,
-    world,
 )  # noqa: F401 (fixture)
 
 needs_bwrap = pytest.mark.skipif(

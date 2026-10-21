@@ -1,22 +1,13 @@
 import hashlib
 import json
-from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
-from unify.memory import mutation
 from unify.memory.episodes import Action
 from unify.memory.example_calls import ArgRecord, CallKey, CallRecord, ExampleCall
 from unify.memory.example_perturb import InputFixture
 from unify.memory.fixtures import canonical, inputs_file
-from unify.memory.qa import (
-    MUTATION_MIN,
-    QAChecks,
-    QAConfig,
-    QAEnv,
-    drawn_value,
-    library_config,
-)
+from unify.memory.qa import QAChecks, QAConfig, QAEnv, library_config
 from unify.memory.sandbox_run import PytestOutcome
 
 ITEM = "memory.calc.ops:half"
@@ -90,53 +81,6 @@ def _tree(ro):
     return next(p for p, d in ro.items() if d == "/memory")
 
 
-def test_library_config_gates_strict_drawn_inputs_and_mutation_at_06():
-    cfg = library_config(QAConfig())
-    assert (
-        cfg.fixtures == "strict"
-        and cfg.mutation
-        and cfg.min_kill == MUTATION_MIN == Decimal("0.6")
-        and cfg.library_mode
-    )
-    assert QAConfig().library_mode is False and QAConfig().guard_mutants == 8
-
-
-def test_mutants_record_kill_share_and_guard_coverage(tmp_path):
-    control = mutation.reprint(MOD)
-
-    def fake(
-        target,
-        *,
-        python,
-        ro,
-        rw,
-        cwd,
-        timeout_s,
-        env,
-        import_skips_fail=False,
-        calls=None,
-    ):
-        text = (_tree(ro) / REL).read_text()
-        green = (
-            text == control or "raise MemoryInputError" not in text
-        )  # every mutant killed but a dropped guard
-        return (
-            PytestOutcome(passed={"t::a"})
-            if green
-            else PytestOutcome(failed={"t::a"}, returncode=1)
-        )
-
-    checks, run, it = _world(tmp_path, fake)
-    checks._mutants(it, None, None)
-    assert run.verification[ITEM]["mutation"] == {
-        "killed": 4,
-        "total": 5,
-        "equivalent": 0,
-    }
-    assert run.verification[ITEM]["guard"] == {"killed": 0, "total": 1}
-    assert run.fails == []  # 0.8 >= 0.6; guard coverage is measured, not gated
-
-
 def test_mutation_below_06_refuses_the_item(tmp_path):
     def fake(
         target,
@@ -181,36 +125,6 @@ FORM_OF_SOURCE = {
     "request": "text",
     "cell": "text",
 }
-
-
-def test_drawn_value_forms(tmp_path):
-    """Each form a fixture's source kind gives (FORM_OF_SOURCE) becomes the value the test reads: an observation as
-    recorded, a text as it is, a work-tree file copied under tests/data/ and named by its path there. No source kind
-    gives the env form: a library function's tests load recorded values, never a tool environment.
-    """
-    samples, data = tmp_path / "s", tmp_path / "d"
-    (samples / "files/3").mkdir(parents=True)
-    (samples / "files/3/pay.csv").write_bytes(b"a,1\n")
-    assert set(FORM_OF_SOURCE.values()) == {"observation", "path", "text"}
-    assert drawn_value(
-        {"id": 1, "form": "observation", "action": {"response": {"n": 1}}},
-        samples,
-        data,
-    ) == {"n": 1}
-    assert (
-        drawn_value(
-            {"id": 2, "form": "text", "text": "hi", "action": {}},
-            samples,
-            data,
-        )
-        == "hi"
-    )
-    got = drawn_value(
-        {"id": 3, "form": "path", "file": "/qa/files/3/pay.csv", "action": {}},
-        samples,
-        data,
-    )
-    assert got == "_drawn/3/pay.csv" and (data / got).read_bytes() == b"a,1\n"
 
 
 _MODULE: dict = {}

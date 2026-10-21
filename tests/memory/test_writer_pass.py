@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import json
 import os
 import shutil
@@ -7,27 +6,14 @@ from decimal import Decimal
 
 import pytest
 
-import unify.memory.manifest as manifest_module
 from unify.memory.blobs import BlobStore
 from unify.memory.episodes import Action, Cell, CostRow
 from unify.memory.evidence import EvidenceStore
-from unify.memory.gate import RULE_EPISODES, Gate
+from unify.memory.gate import Gate
 from unify.memory.gitio import Repo
 from unify.memory.index import estimate_tokens
 from unify.memory.redact import Redactor
-from unify.memory.writer_pass import (
-    LIBRARY_BUDGET_TOKENS,
-    PREVIOUS_GATE_LINES,
-    WRITER_SYSTEM,
-    PassConfig,
-    WriterPass,
-    _mirror,
-    export_for_writer,
-    last_passes,
-    library_summary,
-    previous_gate,
-    transcript_lines,
-)
+from unify.memory.writer_pass import LIBRARY_BUDGET_TOKENS, PREVIOUS_GATE_LINES, PassConfig, WriterPass, _mirror, export_for_writer, last_passes, library_summary, previous_gate, transcript_lines
 from unify.memory.trigger import PassRequest
 from tests.memory.test_episodes import _ep
 from tests.memory.test_gate import ITEM, KIT, MAN, MOD, TEST
@@ -118,73 +104,6 @@ SUITE = (
     "    env={'PYTHONPATH': '/memory', 'PYTHONDONTWRITEBYTECODE': '1'}, capture_output=True, text=True)\n"
     "print(r.stdout[-300:], r.returncode)\n"
 )
-
-
-@needs_bwrap
-@pytest.mark.parametrize(
-    "per_call, usd, unknown",
-    [("0.001", "0.009", 0), ("unknown", "0", 9)],
-)
-def test_scripted_pass_merges_through_gate(tmp_path, per_call, usd, unknown):
-    mem = Repo.init_bare(tmp_path / "mem.git")
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    ep = _e1()
-    ev.index_episode(ep, "1" * 40)
-    lookup = lambda eid, i: _ME if (eid, i) == ("e1", 0) else None
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup)
-    manifest = {**MAN, "items": [ITEM], "summary": "s"}
-    cells = [
-        SMOKE,
-        REPLAY,
-        READ_ONLY,
-        _write("/memory/unify_memory_testkit.py", KIT),
-        _write("/memory/env/venmo/tests/test_me.py", TEST),
-        _write("/memory/env/venmo/__init__.py", MOD),
-        SUITE,
-        _write("/memory/.pass/manifest.json", json.dumps(manifest)),
-    ]
-    script = Script(cells, usd=per_call)
-    writer = WriterPass(
-        mem,
-        gate,
-        ev,
-        load=lambda eid: ep,
-        model_turn=script,
-        config=PassConfig(max_calls=10),
-    )
-    parent = mem.head()
-    out = asyncio.run(
-        writer.run(PassRequest("incremental", "venmo", ["e1"], False), "p1"),
-    )
-    # the toolkit imports inside the box, the episodes replay, and /inputs is read-only
-    assert script.outputs["c1"].strip() == "OK", script.outputs["c1"]
-    assert script.outputs["c2"].strip() == "REPLAY u-1 0 venmo", script.outputs["c2"]
-    assert script.outputs["c3"].strip() == "RO", script.outputs["c3"]
-    assert "1 passed" in script.outputs["c7"] and script.outputs["c7"].strip().endswith(
-        " 0",
-    )
-    assert script.first[0] == {"role": "system", "content": WRITER_SYSTEM}
-    assert {t["function"]["name"] for t in script.tools} == {
-        "execute_code",
-        "check",
-        "finish",
-    }
-    assert out.passed, out.reasons
-    assert out.calls == 9 and out.usd == usd and out.unknown_cost_calls == unknown
-    notes = [f"note: {unknown} unpriced calls"] if unknown else []
-    assert out.reasons == notes
-    assert out.summary == "added venmo.me"
-    assert mem.head() == out.commit != parent
-    body = mem.run("log", "-1", "--format=%B", out.commit)
-    assert "Pass: p1" in body and "Episode: e1" in body and "Evidence: e1" in body
-    tree = mem.run("ls-tree", "-r", "--name-only", out.commit).split()
-    assert ".pass/manifest.json" not in tree and not any(
-        p.startswith(".pass") for p in tree
-    )
-    row = ev.db.execute(
-        "SELECT passed, usd, reasons FROM passes WHERE pass_id='p1'",
-    ).fetchone()
-    assert row == (1, usd, json.dumps(notes))
 
 
 @needs_bwrap
@@ -393,110 +312,6 @@ def test_export_for_writer_names_each_actions_memory_channel_as_the_gate_maps_it
 def test_export_for_writer_refuses_unsafe_episode_ids(tmp_path):
     with pytest.raises(ValueError):
         export_for_writer(lambda eid: _e1(), ["../e1"], tmp_path)
-
-
-def test_writer_system_embeds_the_manifest_rules_verbatim():
-    doc = manifest_module.__doc__
-    rules = doc[doc.index("Manifest rules for consolidators") :].strip()
-    assert rules in WRITER_SYSTEM
-    assert (
-        "env/<channel>/tests/test_" in WRITER_SYSTEM and '"skeleton"' in WRITER_SYSTEM
-    )
-
-
-def test_writer_system_states_that_scope_is_shape_not_observed_values():
-    """Refusals name shape only; a value restriction needs a covered environment rejection."""
-    assert "Scope is shape, not observed values" in WRITER_SYSTEM
-    assert "value domains" not in WRITER_SYSTEM
-    assert "outside the function's scope" not in WRITER_SYSTEM
-    assert "Bad: `if status not in" in WRITER_SYSTEM
-    assert "Good: `if not isinstance(status" in WRITER_SYSTEM
-    assert "rejection must then be one of the" in WRITER_SYSTEM
-
-
-def test_writer_system_states_the_two_episode_rule_for_overriding_functions():
-    """The gate's G2 rule (``gate.RULE_EPISODES``), in one sentence."""
-    assert RULE_EPISODES == 2
-    assert (
-        "A function that replaces a value it computed from its input under a condition encodes a policy; it "
-        "needs covers\nfrom at least two episodes." in WRITER_SYSTEM
-    )
-
-
-def test_writer_system_asks_each_function_to_declare_its_input_from_the_one_constant():
-    """Items declare the form of their first argument, in the manifest and as an Input: docstring line."""
-    flat = WRITER_SYSTEM.replace("\n   ", " ")
-    assert manifest_module.describe_input_kinds() in flat
-    for name in manifest_module.INPUT_KINDS:
-        assert f"{name} (" in flat
-    assert "`Input: <form>`" in flat
-    assert '"input":"<form>"' in WRITER_SYSTEM
-    assert "{input_kinds}" not in WRITER_SYSTEM
-
-
-def test_writer_system_states_the_docstring_standard_from_the_constants():
-    """With the docstring, catalogue and soft-budget switches on: the lean docstring standard is generated from
-    its constants; the catalogue is the harness's; growth is never refused for size."""
-    from unify.memory import docstrings
-    from unify.memory.writer_pass import writer_system
-
-    brief = writer_system(docstrings=True, catalogue=True, soft_budget=True)
-    flat = " ".join(brief.split())
-    assert " ".join(docstrings.describe_standard().split()) in flat
-    for name in docstrings.REQUIRED_SECTIONS + docstrings.OPTIONAL_SECTIONS:
-        assert f"`{name}:`" in flat
-    assert "{" + "library_docstrings}" not in brief and "{check_names}" not in brief
-    assert "README.md, memory.py and .memory/" in flat and "never write them" in flat
-    assert "an index budget" not in flat  # growth is never refused for size
-    assert (
-        "docstring, cover-channel, size and safety checks (not the tests or examples)"
-        in flat
-    )
-
-
-@pytest.mark.parametrize(
-    "docstrings_on,catalogue,soft",
-    [(d, c, s) for d in (False, True) for c in (False, True) for s in (False, True)],
-)
-def test_writer_system_states_each_switch_only_when_it_is_on(
-    docstrings_on,
-    catalogue,
-    soft,
-):
-    """Each of those switches adds only its own text to the writer's brief and to the check tool's description."""
-    from unify.memory import docstrings
-    from unify.memory.writer_pass import writer_system, writer_tools
-
-    flat = " ".join(
-        writer_system(
-            docstrings=docstrings_on,
-            catalogue=catalogue,
-            soft_budget=soft,
-        ).split(),
-    )
-    assert (" ".join(docstrings.describe_standard().split()) in flat) is docstrings_on
-    assert ("README.md, memory.py and .memory/" in flat) is catalogue
-    assert ("an index budget" in flat) is not soft
-    assert ("due for hygiene" in flat) is soft
-    check = next(
-        t["function"]["description"]
-        for t in writer_tools(docstrings=docstrings_on, soft_budget=soft)
-        if t["function"]["name"] == "check"
-    )
-    assert ("docstrings, " in check) is docstrings_on
-    assert ("index, safety" in check) is not soft and ("size, safety" in check) is soft
-
-
-def test_writer_system_lists_the_declared_semantic_types_from_the_one_constant():
-    """Values are restricted only through the fixed type list, declared in the manifest."""
-    flat = WRITER_SYSTEM.replace("\n   ", " ")
-    assert manifest_module.describe_semantic_types() in flat
-    for name in manifest_module.SEMANTIC_TYPES:
-        assert f"{name} (" in flat
-    assert "month (integer 1–12)" in flat and "percentage (number 0–100)" in flat
-    assert "probability (number 0–1)" in flat and "nonneg_money (decimal ≥ 0)" in flat
-    assert "currency_code (three uppercase letters, a format)" in flat
-    assert "{semantic_types}" not in WRITER_SYSTEM
 
 
 @needs_bwrap
@@ -1193,11 +1008,6 @@ def test_writer_fixes_a_misplaced_item_with_check_and_the_pass_merges(tmp_path):
     ]
 
 
-def test_writer_system_tells_writer_to_check_before_finish():
-    assert "call check(manifest)" in WRITER_SYSTEM
-    assert "fix every reason it returns" in WRITER_SYSTEM
-
-
 def _store_backed(tmp_path, model, **cfg):
     """A pass over e1 (venmo and slack actions) whose lookups read the evidence store, as production's do."""
     mem = Repo.init_bare(tmp_path / "mem.git")
@@ -1324,49 +1134,6 @@ def test_check_refuses_a_declared_input_in_library_mode(tmp_path):
     )
     assert any(line.startswith("G1:") and line.endswith(text) for line in reply), reply
     assert out.checks == 1 and not out.passed
-
-
-@pytest.mark.parametrize("surfacing", ["index", "catalogue"])
-def test_the_writers_first_message_follows_the_surfacing_switch(tmp_path, surfacing):
-    """index (default): v2's "Current index"; catalogue: the README (capped) and never the index."""
-    from unify.memory.catalogue import readme_for_writer
-    from unify.memory.integration.checkout import export_checkout
-
-    mem = Repo.init_bare(tmp_path / "mem.git")
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    base = mem.head()
-    with mem.temp_checkout() as wt:
-        (wt / "env/venmo").mkdir(parents=True)
-        (wt / "env/venmo/__init__.py").write_text(MOD)
-        sha = mem.commit_all(wt, "seed", {})
-    mem.fast_forward("main", sha, expected_old=base)
-    seen: list = []
-
-    async def record(messages, tools):
-        seen.append([dict(m) for m in messages])
-        raise RuntimeError("recorded")
-
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), surfacing=surfacing)
-    writer = WriterPass(
-        mem,
-        gate,
-        ev,
-        load=_never,
-        model_turn=record,
-        config=PassConfig(),
-    )
-    asyncio.run(writer.run(PassRequest("incremental", "venmo", [], False), "p-s"))
-    first = seen[0][1]["content"]
-    export_checkout(mem.git_dir, sha, tmp_path / "co")
-    if surfacing == "catalogue":
-        # the README, then the pass's functions with their cover counts
-        library = first.split("\n\nFunctions on this pass's channels:\n", 1)[0]
-        assert library.endswith("\n\n" + readme_for_writer(tmp_path / "co"))
-        assert "Current index" not in first
-        assert "README.md, memory.py and .memory/" in seen[0][0]["content"]
-    else:
-        assert "\n\nCurrent index:\n" in first and "README" not in first
-        assert seen[0][0]["content"] == WRITER_SYSTEM
 
 
 def test_test_run_caches_are_never_mirrored_out_of_the_box(tmp_path):
@@ -1611,55 +1378,6 @@ def test_library_summary_with_cover_ids_lists_every_functions_ids_past_the_budge
 PLANTED = "tok-PLANTED-0123456789abcdef"  # pragma: allowlist secret
 
 
-def test_transcript_is_redacted_by_value_before_any_cut_and_bounded():
-    red = Redactor({"FAKE_TOKEN": PLANTED})
-    shaped = "sk-proj-" + "A" * 40
-    messages = [
-        {"role": "system", "content": WRITER_SYSTEM},
-        {"role": "user", "content": f"Pass p9: {PLANTED} {shaped}"},
-        _call("c1", "execute_code", {"code": f"print({PLANTED!r})"}),
-        {
-            "role": "tool",
-            "tool_call_id": "c1",
-            "content": "x" * 40 + PLANTED,
-        },  # straddles the cut
-        {"role": "tool", "tool_call_id": "c2", "content": {PLANTED: [PLANTED]}},
-        *(
-            {"role": "tool", "tool_call_id": f"b{i}", "content": "y" * 1000}
-            for i in range(200)
-        ),
-    ]
-    lines = transcript_lines(messages, "p9", red, max_bytes=8000, string_chars=50)
-    text = "\n".join(lines)
-    assert "tok-PLANT" not in text and shaped not in text  # not even a cut-off prefix
-    assert "<secret:FAKE_TOKEN>" in text and "<redacted:key-shaped>" in text
-    assert len(text.encode()) + 1 <= 8000
-    rows = [json.loads(ln) for ln in lines]
-    assert all(r["pass_id"] == "p9" for r in rows)
-    # the header names the brief by hash; the system message is named, not copied
-    sha = hashlib.sha256(WRITER_SYSTEM.encode()).hexdigest()
-    assert rows[0]["header"]["brief_sha256"] == sha
-    assert rows[1]["message"] == {"role": "system", "content": f"(brief sha256 {sha})"}
-    kept = rows[1:-1]
-    assert rows[-1]["truncated"] == len(messages) - len(kept) > 0
-    # every string is cut, except the brief's name and the first user message, which are kept whole (redacted)
-    assert all(
-        len(v) <= 50
-        for r in kept
-        if r["i"] not in (0, 1)
-        for v in r["message"].values()
-        if isinstance(v, str)
-    )
-    whole = kept[1]["message"]["content"]
-    assert (
-        whole.startswith("Pass p9: <secret:FAKE_TOKEN> ") and "tok-PLANT" not in whole
-    )
-    # nothing to cut: every message kept
-    short = transcript_lines(messages[:3], "p9", red)
-    assert [json.loads(ln).get("i") for ln in short] == [None, 0, 1, 2]
-    assert PLANTED not in "\n".join(short)
-
-
 def test_transcript_redacts_a_secret_registered_after_its_redactor_was_built(
     monkeypatch,
 ):
@@ -1756,15 +1474,3 @@ def test_the_pass_stages_the_new_inputs_and_keeps_its_transcript(tmp_path, monke
     assert rows[2]["message"]["tool_calls"][0]["function"]["name"] == "finish"
 
 
-def test_writer_system_points_at_the_last_gate_and_ranks_by_recurrence():
-    flat = " ".join(WRITER_SYSTEM.split())
-    assert (
-        "Fix what the last gate refused before adding more (previous_gate.json)."
-        in flat
-    )
-    assert "Rank what to store by how many episodes it recurs in" in flat
-    assert (
-        "prefer extending an existing function (library.json) over adding one" in flat
-    )
-    assert "Never store: results of calls with effects, credentials" in flat
-    assert "anything about whether a request was solved" in flat

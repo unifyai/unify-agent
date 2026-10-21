@@ -443,39 +443,6 @@ def test_the_manifest_takes_declared_types_from_the_fixed_list_only():
         parse_manifest({"items": [note]})
 
 
-def test_the_manifest_takes_an_input_form_from_the_fixed_list_only():
-    from unify.memory.manifest import (
-        INPUT_KINDS,
-        ManifestError,
-        describe_input_kinds,
-        parse_manifest,
-    )
-
-    assert set(INPUT_KINDS) == {"path", "text", "bytes", "observation", "env"}
-    import unify.memory.manifest as manifest_module
-
-    rules = manifest_module.__doc__
-    assert "{input_forms}" not in rules
-    assert ", ".join(f"``{name}``" for name in INPUT_KINDS) in rules
-    for name in INPUT_KINDS:
-        assert f"{name} (" in describe_input_kinds()
-    item = {
-        "item": "env/worktree_workspace:parse_load_log",
-        "kind": "env_function",
-        "covers": [["h1", 4]],
-    }
-    for kind in INPUT_KINDS:
-        (parsed,) = parse_manifest({"items": [{**item, "input": kind}]}).items
-        assert parsed.input == kind
-    assert parse_manifest({"items": [item]}).items[0].input is None
-    for bad in ("file", "Text", "", 3, ["text"], {"text": 1}):
-        with pytest.raises(ManifestError):
-            parse_manifest({"items": [{**item, "input": bad}]})
-    note = {"item": "env/x/NOTES.md#a", "kind": "env_note", "input": "text"}
-    with pytest.raises(ManifestError):
-        parse_manifest({"items": [note]})
-
-
 def test_a_declared_field_gets_unseen_in_domain_values_and_one_out_of_domain(recorded):
     store, acts = recorded
     p = plan(

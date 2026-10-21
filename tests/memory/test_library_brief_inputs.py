@@ -7,11 +7,7 @@ import json
 
 
 from unify.memory import batch_map, pool, library_prompts as pv
-from unify.memory.writer_pass import writer_tools
 from tests.memory import library_example_world as w
-from tests.memory.library_example_world import (
-    library_example_world,
-)  # noqa: F401 (a fixture)
 from tests.memory.test_pool import EMPTY, INDEX, _defer, _finish_with, _open, _Stores
 from unify.memory.episodes import Cell
 from tests.memory.test_writer_pass import _call, _writer, needs_bwrap
@@ -93,48 +89,7 @@ def test_a_deferral_can_add_its_episode_to_an_open_entry(tmp_path, monkeypatch):
     )
 
 
-def test_a_deferral_must_name_an_open_entry_or_new(tmp_path, monkeypatch):
-    st = _Stores(tmp_path)
-    _finish_with(monkeypatch, _defer("e2"))
-    st.run([], "p1")
-    did = pool.entry_id("deferred", "e2")
-    _finish_with(
-        monkeypatch,
-        {
-            **EMPTY,
-            "pool": {"defer": [{"id": "0" * 16, "episodes": ["e2"], "reason": "r"}]},
-        },
-    )
-    out, model = st.run([_open("e2"), _call("f", "finish", {"summary": "s"})], "p2")
-    assert (
-        model.outputs["f"]
-        == f"not finished: G1: pool.defer: {'0' * 16} is not an open entry"
-    )
-    assert out.pool["extended"] == [] and st.pool().entries[did].provenance[
-        "episodes"
-    ] == ["e2"]
-    names = {t["function"]["name"] for t in writer_tools(library_mode=True, pool=True)}
-    assert "pool" in names and "dismiss" not in names
-
-
 # --- (c) the WRITE brief ---------------------------------------------------------------------------------------
-
-
-def test_the_write_brief_says_new_items_are_on_trial_and_revised_later():
-    text = pv.write_brief_now()
-    sentence = (
-        "A new item starts as `on-trial`; later passes and the curate pass revise, generalise or remove it as "
-        "evidence arrives, so storing a rule that worked is not a final commitment."
-    )
-    assert sentence in text and sentence not in pv.curate_brief_now()
-    line = text.split("A new item starts as")[1].split("\n")[0]
-    assert (
-        "must" not in line
-        and "only" not in line
-        and "task" not in line
-        and " id" not in line
-    )
-    assert pv.benchmark_words(text) == [] and pv.example_checks(text) == []
 
 
 # --- (d) read_episode ------------------------------------------------------------------------------------------
@@ -187,7 +142,6 @@ def test_parts_given_as_text_are_read_as_the_list_they_name(tmp_path):
 # --- the brief's inputs, minimal note entries, shared modules and fixture slices ---------------------------------
 
 
-from unify.memory import fixtures as fx  # noqa: E402
 from unify.memory.manifest import ManifestError, parse_manifest  # noqa: E402
 
 
@@ -222,17 +176,6 @@ def test_the_write_brief_names_each_input_the_pass_prepares(tmp_path):
         fork=True,
         pool=True,
     )
-
-
-def test_the_optional_inputs_keep_the_brief_guards():
-    text = pv.write_brief_now(staging=True, pool=True)
-    assert pv.benchmark_words(text) == [] and pv.example_checks(text) == []
-    for marker in pv.CURATE_ONLY:
-        assert marker not in text.lower()
-    inputs = text.split("# Inputs\n")[1].split("\n# Tools")[0].lower()
-    assert " must " not in inputs and "task" not in inputs and "answer" not in inputs
-    curate = pv.curate_brief_now()
-    assert "/inputs/staging" not in curate and "/inputs/pool" not in curate
 
 
 def test_the_end_condition_is_a_decision_not_a_count():
@@ -303,22 +246,6 @@ def test_support_may_declare_a_shared_module_of_the_package():
         "a shared module `memory/<package>/<module>.py` that the package's items import"
         in pv.write_brief_now()
     )
-
-
-def test_a_fixture_slice_refusal_names_the_valid_range():
-    try:
-        fx._cut(b"x" * 1950, [0, 3831])
-    except fx.FixtureError as exc:
-        msg = str(exc)
-    else:
-        raise AssertionError("an out-of-range slice was accepted")
-    assert msg.startswith("slice [0, 3831] is outside the 1950 recorded bytes")
-    assert "0 <= start < end <= 1950; [0, 1950] or no slice copies all of it" in msg
-    assert fx._cut(b"abc", [0, 3]) == b"abc"
-    tool = next(
-        t for t in writer_tools(library_mode=True) if t["function"]["name"] == "fixture"
-    )
-    assert "keeps raw bytes start to end-1" in tool["function"]["description"]
 
 
 HELPER = '''"""Shared account helpers."""

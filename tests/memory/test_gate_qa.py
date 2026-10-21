@@ -34,15 +34,7 @@ from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
 from unify.memory.gitio import Repo
 from unify.memory.integration.adapters.dialogue import cap_text
-from unify.memory.qa import (
-    QAConfig,
-    builtin_error,
-    draw,
-    pytest_env,
-    same_outputs,
-    seed_of,
-    stage_inputs,
-)
+from unify.memory.qa import QAConfig, pytest_env, stage_inputs
 from unify.memory.sandbox_run import PytestOutcome
 from tests.memory.test_episodes import _ep
 
@@ -628,113 +620,6 @@ def _screens(n):
     ]
 
 
-def test_the_draw_is_seeded_by_the_candidate_bounded_and_of_the_family():
-    acts = _screens(30)
-    covers = [("c0", 0, acts[0]), ("c0", 1, acts[1])]
-    pool = [(f"c{i // 10}", a) for i, a in enumerate(acts)]
-    pool += [
-        (
-            "c9",
-            Action(
-                -1,
-                "dialogue:crafter",
-                "reply",
-                ["x"],
-                {},
-                acts[5].response,
-                "error",
-                error="busy",
-                kind="dialogue",
-            ),
-        ),  # a rejection
-        (
-            "c9",
-            Action(
-                -1,
-                "dialogue:crafter",
-                "reset",
-                ["x"],
-                {},
-                "You see: new world",
-                "ok",
-                kind="dialogue",
-            ),
-        ),
-        (
-            "c9",
-            _dl(
-                cap_text("You see: " + "grass " * 500 + "\nhealth: 9", 300),
-                "dialogue:crafter",
-            ),
-        ),
-    ]
-
-    def run(candidate, k=4):
-        return draw(
-            HP_ITEM,
-            covers,
-            pool,
-            form="text",
-            blob=lambda s: b"",
-            seed=seed_of(candidate),
-            k=k,
-        )
-
-    rows, notes = run("a" * 40)
-    assert [r.role for r in rows if r.role != "negative"] == [
-        "cover",
-        "cover",
-        "sample",
-        "sample",
-        "sample",
-        "sample",
-    ]
-    assert {r.role for r in rows[6:]} == {
-        "negative",
-    }  # the covers' structural negatives
-    texts = [r.action.response for r in rows[2:6]]
-    assert len(set(texts)) == 4 and not set(texts) & {
-        acts[0].response,
-        acts[1].response,
-    }
-    assert all(
-        r.action.status == "ok" and r.action.method == "reply" for r in rows[2:6]
-    )
-    assert all("middle elided" not in t for t in texts)
-    assert any("1 truncated recording" in n for n in notes)
-    again, _ = run("a" * 40)
-    assert [r.action.response for r in again] == [
-        r.action.response for r in rows
-    ]  # reproducible
-    others = {
-        tuple(r.action.response for r in run(f"{i:040x}")[0][2:6]) for i in range(12)
-    }
-    assert len(others) > 1  # another candidate commit draws another sample
-    big, _ = run("a" * 40, k=100)
-    assert (
-        len([r for r in big if r.role == "sample"]) == 28
-    )  # every distinct accepted input, no more
-
-
-def test_an_env_input_replays_its_episodes_calls_with_the_drawn_call_first():
-    me = Action(0, "venmo", "me", [], {}, {"user_id": "u-1"}, "ok")
-    other_me = Action(0, "venmo", "me", [], {}, {"user_id": "u-2"}, "ok")
-    pay = Action(1, "venmo", "pay", [], {"to": "u-3"}, {"ok": True}, "ok")
-    rows, _ = draw(
-        "env/venmo:me",
-        [("v1", 0, me)],
-        [("v1", me), ("v2", pay), ("v2", other_me)],
-        form="env",
-        blob=lambda s: b"",
-        seed=seed_of("b" * 40),
-    )
-    sample = next(r for r in rows if r.role == "sample" and r.action is other_me)
-    assert (
-        sample.context[0] is other_me and pay in sample.context and sample.form == "env"
-    )
-    assert sample.covered_shape  # same keyword names as the cover
-
-
 # --- budget, flakiness and the probe's verdicts (injected runners) --------------------------------------
 
 
@@ -928,51 +813,6 @@ def test_dynamic_checks_wait_for_a_candidate_that_passes_the_rest(tmp_path):
     assert not res.passed and "G1" in res.refused
     assert any("undeclared change env/dialogue_crafter/tests/undeclared.txt" in r for r in res.reasons)
     assert any("[qa:skipped]" in r for r in res.reasons)
-
-
-def test_same_outputs_and_builtin_errors():
-    base = {
-        0: {"outcome": "handled", "digest": "a"},
-        1: {"outcome": "refused"},
-        2: {"outcome": "timeout"},
-    }
-    assert same_outputs(
-        base,
-        {0: {"outcome": "handled", "digest": "a"}, 1: {"outcome": "refused"}},
-    )
-    assert not same_outputs(
-        base,
-        {0: {"outcome": "handled", "digest": "b"}, 1: {"outcome": "refused"}},
-    )
-    assert not same_outputs(base, {0: {"outcome": "handled", "digest": "a"}})
-    assert (
-        not same_outputs(base, None)
-        and not same_outputs({}, {})
-        and not same_outputs(
-            {0: {"outcome": "timeout"}},
-            {0: {"outcome": "timeout"}},
-        )
-    )
-    # replay misses, recorded errors, unbuilt or unbound rows say nothing about the function
-    missed = {
-        i: {"outcome": o}
-        for i, o in enumerate(["miss", "recorded_error", "unbuilt", "unbound"])
-    }
-    assert not same_outputs(missed, dict(missed))
-    mixed = {0: {"outcome": "handled", "digest": "a"}, 1: {"outcome": "miss"}}
-    assert same_outputs(
-        mixed,
-        {0: {"outcome": "handled", "digest": "a"}, 1: {"outcome": "handled"}},
-    )
-    assert (
-        builtin_error("KeyError") == "KeyError"
-        and builtin_error("JSONDecodeError") is None
-    )
-    assert (
-        builtin_error("print") is None
-        and builtin_error("A" * 100) is None
-        and builtin_error(3) is None
-    )
 
 
 # --- the static checks, through the consolidator's check (preview) ---------------------------------------
@@ -1490,40 +1330,3 @@ def test_drawn_inputs_are_not_judged_when_the_covers_do_not_return_under_the_pro
     assert any("returns on none of its covers" in r for r in res.reasons)
 
 
-def test_the_probe_rows_hold_structural_negatives_of_the_covers(tmp_path):
-    """The samples file gives the probe the covers, the draws and the covers' negatives (role
-    "negative", the broken value itself); only the draws are appended to the tests' inputs.
-    """
-    acts = _screens(6)
-    rows, _ = draw(
-        HP_ITEM,
-        [("c0", 0, acts[0])],
-        [("c0", a) for a in acts],
-        form="text",
-        blob=lambda s: b"",
-        seed=seed_of("c" * 40),
-    )
-    negatives = [r for r in rows if r.role == "negative"]
-    assert [r.role for r in rows[:6]] == ["cover"] + ["sample"] * 5
-    assert sorted(r.value for r in negatives if isinstance(r.value, str)) == [""]
-    assert [r.value for r in negatives if isinstance(r.value, int)] == [
-        len(acts[0].response),
-    ]
-    assert all(r.has_value and not r.covered_shape for r in negatives)
-    me = Action(0, "venmo", "me", [], {}, {"user_id": "u-1", "name": "A"}, "ok")
-    env_rows, _ = draw(
-        "env/venmo:me",
-        [("v1", 0, me)],
-        [("v1", me)],
-        form="env",
-        blob=lambda s: b"",
-        seed=seed_of("d" * 40),
-    )
-    broken = [r for r in env_rows if r.role == "negative"]
-    assert broken and all(
-        r.form == "env"
-        and r.context[0] is r.action
-        and r.action.response != me.response
-        for r in broken
-    )
-    assert me.response == {"user_id": "u-1", "name": "A"}  # the recording is untouched

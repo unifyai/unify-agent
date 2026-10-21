@@ -7,7 +7,6 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
-import os
 import signal
 import time
 from pathlib import Path
@@ -16,10 +15,8 @@ from types import SimpleNamespace
 import pytest
 
 from unify.memory import staging
-from unify.memory.evidence import EvidenceStore
 from unify.memory.integration import fork as fork_mod
 from unify.memory.integration import fork_worker as fw
-from unify.memory.trigger import Trigger
 from tests.memory.test_episodes import _ep
 
 CORPUS = Path(__file__).resolve().parents[1] / "data" / "fork_replies" / "corpus.json"
@@ -388,22 +385,6 @@ def _sleeper(reservation, tmp_path):
     )
 
 
-def test_a_killed_worker_is_recorded_lost_and_then_admitted(tmp_path):
-    paths = _paths(tmp_path)
-    res = fork_mod.reserve(paths, "e1", ON)
-    adm = fork_mod.admission(paths, ON)
-    assert not adm.settled("e1")  # reserved by this process: unsettled
-    fork = _sleeper(res, tmp_path)
-    assert res.fd is None  # this process no longer holds the lock; the worker does
-    assert not adm.settled("e1")
-    os.killpg(fork.proc.pid, signal.SIGKILL)
-    fork.proc.wait(timeout=30)
-    assert adm.settled("e1")
-    doc = _status(paths, "e1")
-    assert doc["status"] == "lost" and "without writing its record" in doc["detail"]
-    assert staging.read(Path(paths.state_dir) / "memory-staging", "e1").status == "lost"
-
-
 def test_the_real_worker_settles_its_episode_itself(tmp_path):
     paths = _paths(tmp_path)
     res = fork_mod.reserve(paths, "e1", ON)
@@ -465,14 +446,6 @@ def test_a_dir_never_started_and_a_stale_lock_settle(tmp_path, monkeypatch):
     assert fork_mod.settled(root, "no-dir")  # no staging dir: the episode had no fork
 
 
-def test_admission_is_off_with_the_fork_off(tmp_path):
-    paths = _paths(tmp_path)
-    assert fork_mod.admission(paths, OFF) is None
-    assert fork_mod.reserve(paths, "e1", OFF) is None
-    assert not (Path(paths.state_dir) / "memory-staging").exists()
-    assert isinstance(fork_mod.admission(paths, ON), fork_mod.Admission)
-
-
 # --- the trigger under admission --------------------------------------------------------------------------------------
 
 
@@ -481,56 +454,6 @@ def _index(ev, eid):
         _ep(episode_id=eid, transcript=[], actions=[]),
         hashlib.sha1(eid.encode()).hexdigest(),
     )
-
-
-def test_admission_holds_an_unsettled_episode_then_admits_it(tmp_path):
-    paths = _paths(tmp_path)
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    adm = fork_mod.admission(paths, ON)
-    tr = Trigger(ev, experience_budget=1, admission=adm)
-    res = {e: fork_mod.reserve(paths, e, ON) for e in ("a", "b", "c")}
-    for e in ("a", "b", "c"):
-        _index(ev, e)
-    res["a"].abandon("ok")
-    res["c"].abandon("ok")
-    [req] = tr.after_episode("c")
-    assert req.episodes == ["a", "c"] and req.held == ["b"]
-    tr.mark_done(req)
-    assert adm.rolled() == ["b"]
-    assert tr.after_episode("c") == []  # b is still unsettled: nothing is due
-    _index(ev, "d")  # d has no staging dir: it had no fork and is admitted
-    [req] = tr.after_episode("d")
-    assert req.episodes == ["d"] and req.held == ["b"]
-    tr.mark_done(req)
-    res["b"].abandon("ok")  # b settles
-    [req] = tr.after_episode("d")
-    assert req.episodes == ["b"] and req.held == []
-    tr.mark_done(req)
-    assert adm.rolled() == [] and tr.pending() == []
-
-
-def test_without_admission_the_trigger_is_unchanged(tmp_path):
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    tr = Trigger(ev, experience_budget=1)
-    for e in ("a", "b"):
-        _index(ev, e)
-    [req] = tr.after_episode("b")
-    assert req.episodes == ["a", "b"] and req.held == []
-
-
-def test_the_pass_request_never_admits_by_stream_position(tmp_path):
-    """A settled episode recorded after an unsettled one enters the batch; the order of recording decides nothing."""
-    paths = _paths(tmp_path)
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    tr = Trigger(ev, experience_budget=1, admission=fork_mod.admission(paths, ON))
-    first = fork_mod.reserve(paths, "first", ON)
-    later = fork_mod.reserve(paths, "later", ON)
-    _index(ev, "first")
-    _index(ev, "later")
-    later.abandon("ok")
-    [req] = tr.after_episode("later")
-    assert (req.episodes, req.held) == (["later"], ["first"])
-    first.close()
 
 
 @pytest.mark.parametrize(

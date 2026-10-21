@@ -82,7 +82,6 @@ def _failure_entry(**kw):
     return pool.failure(**kw)
 
 
-
 # ---------------------------------------------------------------------------------------------------------------
 
 ITEM = "memory.lists.order:sort_numbers"

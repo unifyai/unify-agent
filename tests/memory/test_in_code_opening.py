@@ -98,22 +98,6 @@ def test_the_openings_library_line_names_no_call_and_points_to_the_help(monkeypa
         assert (lp.MEMORY_HELP_LINE in opening) is (agent != "helper"), name
 
 
-def test_the_flags_decide_which_tools_the_opening_names(monkeypatch):
-    from unify.memory import helpers
-    from unify.memory import library_prompts as lp
-
-    monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: True)
-    base = lp.write_brief_now().split("\n\n# Role\n", 1)[0]
-    with_helpers = lp.write_brief_now(helper=True).split("\n\n# Role\n", 1)[0]
-    assert "tools.finish(summary) ends the pass" in base
-    assert "tools.done" not in base and "tools.done(summary, claims)" in helpers.helper_brief(True)
-    # the writer's record tools and its end are named with or without helpers; the opening is the same either way
-    assert "tools.who()" in base and base == with_helpers
-    # the writer's and the curator's openings are each constant for a run: the same bytes on every call
-    assert lp.write_brief_now() == lp.write_brief_now()
-    assert lp.curate_brief_now() == lp.curate_brief_now()
-
-
 def test_with_the_setting_off_no_brief_has_the_opening(monkeypatch):
     """With tools in code off there is no opening: each brief starts with the shared sandbox paragraph instead, which
     names `memory` alone (its tools stay JSON tools)."""

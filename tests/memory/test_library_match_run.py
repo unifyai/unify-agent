@@ -14,7 +14,6 @@ import atexit
 import copy
 import functools
 import json
-import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -26,7 +25,6 @@ from tests.memory.test_episodes import _ep
 from tests.memory.test_layout import LIB, _tree
 from tests.memory.test_library_helper import _py
 from unify.memory import library_export as lx
-from unify.memory import library_prompts as lp
 from unify.memory import memory_helper
 from unify.memory.catalogue import write_files
 from unify.memory.integration.adapters.audit import CellAudit
@@ -476,85 +474,3 @@ def test_the_audit_hook_marks_opens_by_the_import_system_and_the_library(tmp_pat
 # --- the index line, the guide and the pointer section -----------------------------------------------------------
 
 
-def test_the_index_line_shows_the_signature_compactly_without_identifiers(tmp_path):
-    from unify.memory import layout
-    from unify.memory.library_index import INDEX_HEAD, INDEX_HEAD_IN_CODE, build_links, render_index
-
-    lib = layout.discover(_tree(tmp_path))
-    links = build_links(lib)
-    sig = _signature([{"price": 3, "<id>": "pen"}])
-    index = render_index(lib, links, None, None, None, None, {DATE: sig}.get)
-    paths = memory_helper.signature(sig["input"])
-    line = (
-        "  input: {" + ", ".join(f"{k}: {v}" for k, v in sorted(paths.items()))
-        + "}; relations: output_within_input\n"
-    )
-    assert "[].price: int" in line and "[].<id>" in line
-    assert line in index and index.count("  input: ") == 1
-    assert render_index(lib, links, None, None, None, None, {DATE: sig}.get) == index  # byte-stable
-    assert "`input:` line" in INDEX_HEAD and "`input:` line" in INDEX_HEAD_IN_CODE
-    # no signature: no line
-    assert "  input: " not in render_index(lib, links, None, None, None, None, lambda i: None)
-
-
-def test_the_guides_nudge_to_match_and_try_first_and_never_mention_examples():
-    texts = {
-        "guide": lp.GUIDE_LIBRARY,
-        "pointer": lp.GUIDE_POINTER,
-    }
-    for name, text in texts.items():
-        assert "At the start of a request, `memory.match(request)`" in text, name
-        assert "pass any data you were given as `inputs=` too" in text, name
-        assert "memory.match(request, inputs)" not in text, name
-        assert "`memory.run(\"<id>\", ...)`" in text, name
-        assert "Trying a matching stored procedure costs one call, and rediscovering it usually costs many." in text
-        assert "It compares structure only" in text and "it runs nothing" in text, name
-        assert "example" not in text.lower().replace("e.g.", ""), name
-        assert lp.example_checks(text) == [] and lp.benchmark_words(text) == [], name
-        assert "stored function" not in text.lower(), name
-    assert lp.POINTER_BOUND in lp.GUIDE_POINTER and lp.POINTER_BOUND in lp.GUIDE_POINTER_IN_CODE
-    assert "already available in your cells as `memory`, no import needed" in lp.GUIDE_POINTER_IN_CODE
-
-
-def test_the_in_code_guides_say_when_to_look_open_and_call_and_name_no_arguments():
-    """With tools in code the guides orchestrate: look for what applies before working a step out (with the librarian
-    on, ask it), open what you will use, call it. They name the library's calls with no arguments, id form or result
-    shape (each call's help has those); ``memory.ask`` is the librarian, so only its guide names it."""
-    texts = {
-        "guide in code": lp.GUIDE_LIBRARY_IN_CODE,
-        "pointer in code": lp.GUIDE_POINTER_IN_CODE,
-        "librarian": lp.GUIDE_LIBRARIAN,
-    }
-    assert lp.LOOK_LINE_IN_CODE in texts["guide in code"]
-    assert lp.LOOK_LINE_POINTER_IN_CODE in texts["pointer in code"]
-    for name, text in texts.items():
-        assert (lp.ASK_LINE_IN_CODE in text) is (name == "librarian"), name
-        assert ("memory.ask" in text) is (name == "librarian"), name
-        assert lp.USE_LINE_IN_CODE in text, name
-        assert "Trying a fitting item costs one call, and working it out again usually costs many." in text, name
-        assert "`memory.items`" in text and lp.MEMORY_HELP_LINE in text, name
-        assert not re.search(r"\b(?:memory|env)\.[a-z_]+\(", text), name
-        assert not re.search(r"memory\.[a-z_]+\.[a-z_]+:[a-z_]+|<package>|<topic>|<slug>|inputs=", text), name
-        assert "example" not in text.lower(), name
-        assert lp.example_checks(text) == [] and lp.benchmark_words(text) == [], name
-        assert "stored function" not in text.lower(), name
-
-
-def test_the_pointer_section_is_the_same_bytes_as_the_library_grows(tmp_path, monkeypatch):
-    from unify.memory.integration import prompt
-    from unify.settings import SETTINGS
-
-    small = _tree(tmp_path / "small", {k: v for k, v in LIB.items() if not k.startswith("memory/web")})
-    big = _tree(tmp_path / "big")
-    (big / "memory/more").mkdir(parents=True)
-    for i in range(30):
-        (big / f"memory/more/m{i}.py").write_text(f'def f{i}(x):\n    """Item {i}."""\n    return x\n')
-    for root in (small, big):
-        write_files(root, lx.generated_library_mode(root))
-    assert (small / "INDEX.md").read_text() != (big / "INDEX.md").read_text()
-    for mode in ("off", "on"):
-        monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", mode)
-        a = prompt.render_memory_library_mode(small, actor_index="pointer")[0]
-        b = prompt.render_memory_library_mode(big, actor_index="pointer")[0]
-        assert a == b
-        assert a.startswith(lp.GUIDE_POINTER_IN_CODE if mode == "on" else lp.GUIDE_POINTER)

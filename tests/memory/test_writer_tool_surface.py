@@ -4,14 +4,10 @@ tool set, the pool tool, structured tool events and the removed reading rule."""
 import asyncio
 import json
 
-import pytest
 
 from unify.memory import agent_profiles, pool, tool_spec
 from unify.memory import writer_tools as wt
-from unify.memory.integration import switch
-from unify.memory.writer_pass import PassConfig, writer_tools
 from unify.memory.trigger import PassRequest
-from unify.settings import SETTINGS
 from tests.memory.test_writer_pass import Turns, _call, _writer
 from tests.memory.test_writer_library_tools import EPS
 
@@ -32,102 +28,6 @@ CURATE_TOOLS = {
     "reply",
     "stop",
 }
-
-
-def test_the_tool_json_is_the_spec_render():
-    for pool_on in (False, True):
-        flags = frozenset({"pool"} if pool_on else ())
-        got = writer_tools(library_mode=True, pool=pool_on)
-        want = [s.as_tool() for s in tool_spec.tools_for("write", flags)]
-        assert got == want
-        assert {t["function"]["name"] for t in got} == set(
-            agent_profiles.tool_names("writer", flags),
-        )
-    names = [s.name for s in tool_spec.registry()]
-    assert len(names) == len(set(names)) and "dismiss" not in names
-
-
-def test_the_curator_gets_only_its_own_tools():
-    for pool_on in (False, True):
-        got = {
-            t["function"]["name"]
-            for t in writer_tools(library_mode=True, pool=pool_on, role="curate")
-        }
-        assert got == CURATE_TOOLS
-    got = {
-        t["function"]["name"]
-        for t in writer_tools(library_mode=True, role="curate", edit_tools=True)
-    }
-    assert got == CURATE_TOOLS | {"write", "edit"}
-    row = agent_profiles.profile("curator")
-    # write and edit are named in the row and exist only with the edit switch on
-    assert set(row["tools"]) == CURATE_TOOLS | {"write", "edit"}
-    for denied in ("pool", "similar", "replay", "delegate"):
-        assert denied in row["denied"] and denied not in row["tools"]
-
-
-def test_every_profile_tool_exists_in_the_spec_and_rows_have_the_interface_shape():
-    known = {s.name for s in tool_spec.registry()}
-    agents = [r["agent"] for r in agent_profiles.AGENT_PROFILES]
-    assert agents == ["actor", "teammate", "fork", "writer", "curator", "helper", "librarian", "gate", "harness"]
-    modes = {r["agent"]: r["mode"] for r in agent_profiles.AGENT_PROFILES}
-    assert modes == {
-        "actor": "consumer",
-        "teammate": "teammate",
-        "fork": "fork",
-        "writer": "write",
-        "curator": "curate",
-        "helper": "helper",
-        "librarian": "librarian",
-        "gate": "repair",
-        "harness": "inputs",
-    }
-    keys = {
-        "agent",
-        "mode",
-        "instructions",
-        "tools",
-        "mounts",
-        "denied",
-        "consumes",
-        "produces",
-        "limits",
-        "inlined",
-        "capabilities",
-        "absent_paths",
-        "expectations",
-        "fields",
-        "emits",
-        "pointers",
-    }
-    for row in agent_profiles.AGENT_PROFILES:
-        assert keys <= set(row), row["agent"]
-        assert all(m["mode"] in ("ro", "rw") for m in row["mounts"])
-        if (
-            row["agent"] == "fork"
-        ):  # the actor's schemas, kept for the prompt cache and never executed
-            assert row["tools_executed"] is False
-            continue
-        for name in row["tools"]:
-            assert name in known or name in (
-                "similar",
-                "delegate",
-                "stage",
-                "done",
-            ), name
-        assert not set(row["tools"]) & set(row["denied"])
-        for exp in row["expectations"]:
-            assert exp["tool"] in row["tools"] or exp["tool"].startswith("memory."), exp
-        for ptr in row["pointers"]:
-            assert ptr["tool"] in row["tools"] or ptr["tool"].startswith("memory."), ptr
-        for lim in row["limits"]:
-            assert lim["value"] not in (None, "")
-    # the spec's roles and the profiles agree: a spec tool for a role is named in that role's profile
-    for agent, role in agent_profiles.SPEC_ROLE.items():
-        spec_names = {s.name for s in tool_spec.tools_for(role, frozenset({"pool"}))}
-        assert spec_names == set(
-            agent_profiles.tool_names(agent, frozenset({"pool"})),
-        ), agent
 
 
 def test_every_hand_off_has_a_producer_and_a_consumer():
@@ -179,18 +79,6 @@ def test_every_refusal_form_renders_and_every_described_parameter_is_in_the_sche
     assert wt.general("unknown_tool", name="x", tools="a, b").text == (
         "refused: unknown tool 'x'; your tools: a, b"
     )
-
-
-def test_the_reading_setting_accepts_empty_and_optional_and_refuses_required():
-    assert SETTINGS.UNIFY_MEMORY_LIBRARY_COVERAGE == ""
-    assert switch.parse_library_coverage("") == "optional"
-    assert switch.parse_library_coverage(" Optional ") == "optional"
-    assert switch.PARSERS[switch.LIBRARY_COVERAGE] is switch.parse_library_coverage
-    with pytest.raises(ValueError, match="required is no longer supported"):
-        switch.parse_library_coverage("required")
-    with pytest.raises(ValueError, match="UNIFY_MEMORY_LIBRARY_COVERAGE"):
-        switch.parse_library_coverage("off")
-    assert PassConfig().coverage_rule == "optional"
 
 
 # --- the pool tool --------------------------------------------------------------------------------------------

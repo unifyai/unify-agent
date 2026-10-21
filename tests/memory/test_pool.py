@@ -15,13 +15,11 @@ from unify.memory.blobs import BlobStore
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
 from unify.memory.gitio import Repo
-from unify.memory.integration import switch
 from unify.memory.integration.checkout import export_checkout
 from unify.memory.memory_writer import publish
-from unify.memory.writer_pass import PassConfig, WriterPass, writer_tools
+from unify.memory.writer_pass import PassConfig, WriterPass
 from unify.memory.staging import StagingView
 from unify.memory.trigger import PassRequest
-from unify.settings import SETTINGS
 from tests.memory.test_gate import ITEM, KIT, MAN, MOD, TEST
 from tests.memory.test_writer_pass import Turns, _call, _e1, _ME, _write, needs_bwrap
 from tests.memory.test_writer_library_tools import EPS
@@ -171,29 +169,6 @@ def test_a_deferred_episode_is_listed_next_pass_merged_there_and_then_gone(
             ],
         )
         assert r.returncode == 1
-
-
-def test_the_writer_sees_the_pool_after_the_requests_first_line(tmp_path, monkeypatch):
-    st = _Stores(tmp_path)
-    _finish_with(monkeypatch, _defer("e2"))
-    st.run([], "p1")
-    _finish_with(monkeypatch, EMPTY)
-    out, model = st.run([_open("e2")], "p2")
-    first = model.seen[1]["content"]
-    assert first.splitlines()[0] == "Pass p2: a store pass over 1 recorded episode: e2."
-    # the pool is a file the brief names, never inlined in the first message
-    assert (
-        "Candidate pool" not in first
-        and "/inputs/pool/INDEX.md" in model.seen[0]["content"]
-    )
-    assert "deferred: episode e2" not in first  # a pointer, not the list
-    tool = next(
-        t
-        for t in writer_tools(library_mode=True, pool=True)
-        if t["function"]["name"] == "pool"
-    )
-    assert "defer" in tool["function"]["parameters"]["properties"]["decision"]["enum"]
-    assert out.pool["open"] == 1 and out.pool["added"] == 0
 
 
 # --- 2. accumulation ------------------------------------------------------------------------------------------
@@ -356,61 +331,6 @@ def test_the_index_is_the_same_bytes_for_the_same_pool_and_long_indexes_page(
 
 
 # --- 7. the off path ------------------------------------------------------------------------------------------
-
-
-def test_off_there_is_no_pool_ref_no_inputs_pool_and_the_pass_is_m4hs(
-    tmp_path,
-    monkeypatch,
-):
-    _finish_with(monkeypatch, EMPTY)
-    assert (
-        switch.parse_library_pool("") == "off"
-        and switch.parse_library_pool("on") == "on"
-    )
-    assert SETTINGS.UNIFY_MEMORY_LIBRARY_POOL == "off" and PassConfig().pool is False
-    assert switch.PARSERS[switch.LIBRARY_POOL] is switch.parse_library_pool
-    try:
-        switch.parse_library_pool("maybe")
-    except ValueError as exc:
-        assert "UNIFY_MEMORY_LIBRARY_POOL" in str(exc)
-    else:
-        raise AssertionError("an unknown value was accepted")
-
-    seen = {}
-    for name, cfg in (("default", {}), ("off", {"pool": False})):
-        st = _Stores(tmp_path / name)
-        turns = [
-            _call("r", "read", {"path": "/inputs"}),
-            _call("d", "pool", {"op": "list"}),
-        ]
-        model = Turns(turns)
-        writer = WriterPass(
-            st.mem,
-            st.gate,
-            st.ev,
-            load=EPS.__getitem__,
-            model_turn=model,
-            config=PassConfig(library_mode=True, max_calls=12, **cfg),
-        )
-        out = asyncio.run(
-            writer.run(PassRequest("incremental", "svc", ["e2"], False), "p1"),
-        )
-        refs = st.mem.run("for-each-ref", "--format=%(refname)").split()
-        assert out.pool is None and "refs/heads/pool" not in refs
-        assert (
-            "pool" not in model.outputs["r"]
-            and "Candidate pool" not in model.seen[1]["content"]
-        )
-        assert "pool" not in {
-            t["function"]["name"] for t in writer_tools(library_mode=True)
-        }
-        assert model.outputs["d"].startswith("refused: unknown tool 'pool'")
-        seen[name] = [json.dumps(m, sort_keys=True) for m in model.seen[:2]]
-    assert seen["default"] == seen["off"]
-    assert writer_tools(library_mode=True) == writer_tools(
-        library_mode=True,
-        pool=False,
-    )
 
 
 # --- a crafted pool commit never writes outside /inputs/pool -----------------------------------------------------

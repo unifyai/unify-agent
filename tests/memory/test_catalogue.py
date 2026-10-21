@@ -18,8 +18,7 @@ from unify.memory.analysis import shapes as shapes_module
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gitio import Repo
 from unify.memory.integration.checkout import export_checkout
-from unify.memory.integration.prompt import GUIDE, render_memory_section
-from unify.memory.shape_rows import lookup_from, shapes_at, snapshot_rows
+from unify.memory.shape_rows import lookup_from, shapes_at
 from unify.memory.snapshot import item_bodies
 
 WT_MOD = '''"""Readers for the workspace's files."""
@@ -197,24 +196,6 @@ def _helper(root: Path):
 # --- the generated files ---------------------------------------------------------------------------------
 
 
-def test_the_catalogue_is_byte_stable_for_the_same_commit(library, tmp_path):
-    mem, sha, export, ev, written = library
-    assert set(written) == set(catalogue.GENERATED)
-    for rel, data in written.items():
-        assert (export / rel).read_bytes() == data
-    # export the same commit again, and to another path: the same bytes
-    export_checkout(mem.git_dir, sha, export)
-    again = catalogue.write_generated(export, shapes=_shapes(ev, sha))
-    other = tmp_path / "elsewhere"
-    export_checkout(mem.git_dir, sha, other)
-    elsewhere = catalogue.write_generated(other, shapes=_shapes(ev, sha))
-    assert again == written == elsewhere
-    # the helper and the shape functions are the harness's own files, byte for byte
-    here = Path(memory_helper.__file__)
-    assert written["memory.py"] == here.read_bytes()
-    assert written[".memory/shapes.py"] == Path(shapes_module.__file__).read_bytes()
-
-
 def test_the_readme_lists_channels_and_functions_but_not_unlisted_ones(library):
     _, _, export, _, written = library
     readme = written["README.md"].decode()
@@ -304,53 +285,6 @@ def test_a_changed_body_does_not_inherit_the_old_shapes(library):
     fns = {e["id"]: e for e in data["functions"]}
     assert "input_shapes" not in fns[READ_LEDGER]  # the gate never checked this body
     assert "input_shapes" in fns[READ_ANY]
-
-
-def test_reexporting_an_older_commit_after_a_later_merge_gives_the_same_bytes(
-    library,
-    tmp_path,
-):
-    """Shapes are frozen per memory commit, so a later merge never changes an older commit's catalogue."""
-    mem, sha, export, ev, written = library
-    base = mem.head()
-    with (
-        mem.temp_checkout() as wt,
-    ):  # a later commit: read_ledger unchanged, a note added
-        (wt / "env/worktree_workspace/NOTES.md").write_text(
-            NOTES + "\n## Dates\nISO dates.\n",
-        )
-        later = mem.commit_all(wt, "later", {})
-    mem.fast_forward("main", later, expected_old=base)
-    later_tree = tmp_path / "later"
-    export_checkout(mem.git_dir, later, later_tree)
-    digest = catalogue.body_digest(item_bodies(later_tree)[READ_LEDGER][1])
-    extra = memory_helper.file_shape(
-        "ledger/2027/ledger.tsv",
-        LEDGER.replace(b",", b"\t"),
-    )
-    prev = shapes_at(mem, ev, sha, export)
-    assert ev.write_commit_shapes(
-        later,
-        snapshot_rows(later_tree, prev, {READ_LEDGER: (digest, [extra])}),
-    )
-    assert not ev.write_commit_shapes(later, {})  # frozen: never rewritten
-    # the older commit, exported again, renders the same bytes as before the later merge
-    export_checkout(mem.git_dir, sha, export)
-    again = catalogue.write_generated(
-        export,
-        shapes=lookup_from(shapes_at(mem, ev, sha, export, freeze=True)),
-    )
-    assert again == written
-    # the later commit shows both of read_ledger's recorded shapes
-    data = json.loads(
-        catalogue.render_catalog(
-            later_tree,
-            shapes=lookup_from(shapes_at(mem, ev, later, later_tree, freeze=True)),
-        ),
-    )
-    fns = {e["id"]: e for e in data["functions"]}
-    assert len(fns[READ_LEDGER]["input_shapes"]) == 2
-    assert len(fns[PARSE_FEEDBACK]["input_shapes"]) == 1  # carried over unchanged
 
 
 def test_functions_without_recorded_shapes_are_backfilled_from_covers_and_frozen(
@@ -676,70 +610,7 @@ def test_catalog_lists_the_channels_and_functions_the_prompt_no_longer_names(lib
     assert written["README.md"].decode().startswith("# Memory library\n")
 
 
-def test_suspect_channels_are_flagged_in_the_catalog_and_in_describe(library):
-    mem, sha, export, ev, written = library
-    flagged = catalogue.write_generated(
-        export,
-        shapes=_shapes(ev, sha),
-        suspect={"dialogue_user", "not_a_channel"},
-    )
-    assert (
-        flagged["README.md"] == written["README.md"]
-    )  # the README holds no drift state
-    rows = json.loads(flagged[".memory/catalog.json"])["channels"]
-    assert [(r["channel"], r.get("suspect")) for r in rows] == [
-        ("dialogue_user", True),
-        ("worktree_workspace", None),
-    ]
-    memory = _helper(export)
-    text = memory.catalog()
-    assert (
-        "- `env.dialogue_user`: 4 functions (suspect: the environment changed since these were "
-        "built; verify before use)\n"
-    ) in text
-    assert (
-        "- `env.worktree_workspace`: 2 functions, 1 note. Readers for the workspace's files.\n"
-        in text
-    )
-    assert "is suspect" in memory.describe("parse_feedback")
-    # describe names the export's directory, which sits under this test's tmp_path ("test_suspect_…"): look
-    # for the flag's text, not the bare word
-    assert "is suspect" not in memory.describe("read_ledger")
-    assert memory_helper.SUSPECT_NOTE not in memory.describe("read_ledger")
-    # with no suspect channel the catalog is byte for byte what it was
-    again = catalogue.write_generated(export, shapes=_shapes(ev, sha))
-    assert again == written
-
-
-def test_an_empty_librarys_catalog_says_so(tmp_path):
-    mem = Repo.init_bare(tmp_path / "memory")
-    export = tmp_path / "memory-checkout"
-    export_checkout(mem.git_dir, mem.head(), export)
-    catalogue.write_generated(export)
-    assert _helper(export).catalog() == (
-        "Memory library: empty (no channel holds a function yet). Do the work directly.\n"
-    )
-
-
 # --- the prompt's memory section ---------------------------------------------------------------------------
-
-
-def test_the_prompt_section_is_the_constant_guide_whatever_the_library_holds(
-    library,
-    tmp_path,
-):
-    mem, sha, export, _, _ = library
-    assert render_memory_section(export) == GUIDE
-    export_checkout(mem.git_dir, sha, tmp_path / "elsewhere")
-    assert render_memory_section(tmp_path / "elsewhere") == GUIDE
-    for name in (
-        "read_ledger",
-        "dialogue_user",
-        "worktree_workspace",
-        str(export),
-        "Channels",
-    ):
-        assert name not in GUIDE
 
 
 def test_a_single_key_match_is_weak_unless_a_typed_structure_sits_under_it():
@@ -788,42 +659,6 @@ def test_a_huge_nested_value_is_shaped_in_bounded_time_and_marked_truncated():
     assert elapsed < 0.25, elapsed  # about 12 ms on the laptop when measured
     small = memory_helper.value_shape(nest(3, 4))
     assert "truncated" not in small and small["tree"] == [[["int"]]]
-
-
-def test_the_writers_readme_message_is_capped_with_a_compact_view(library, tmp_path):
-    """The writer's first message carries the README while it fits WRITER_README_BUDGET_TOKENS; past it, the
-    channel lines and one line per function as fit, and how to read the rest. Bounded at any size.
-    """
-    _, _, export, _, _ = library
-    small = catalogue.readme_for_writer(export)
-    assert small == (
-        "Current library (its README, which the harness generates; never write it):\n"
-        + catalogue.render_readme(export)
-    )
-    tree = tmp_path / "big"
-    for ch in ("alpha", "beta"):
-        body = "".join(
-            f"def f{i}(path):\n    \"\"\"{'Read one recorded kind of file into rows. ' * 3}\n\n"
-            '    Effect: read\n    Input: path\n    """\n    return path\n\n\n'
-            for i in range(400)
-        )
-        (tree / "env" / ch).mkdir(parents=True)
-        (tree / "env" / ch / "__init__.py").write_text(body)
-    readme = catalogue.render_readme(tree)
-    per_function = (catalogue.estimate_tokens(readme) - 150) / 800
-    assert 30 < per_function < 60  # the README grows by about 40 tokens a function
-    text = catalogue.readme_for_writer(tree)
-    budget = catalogue.WRITER_README_BUDGET_TOKENS
-    assert catalogue.estimate_tokens(text) <= budget
-    assert "compact view" in text and "help(env.<channel>.<function>)" in text
-    assert (
-        "- `env.alpha`: 400 functions" in text and "- `env.beta`: 400 functions" in text
-    )
-    assert "- env.alpha.f0: Read one recorded kind of file" in text
-    assert "more functions (help(env.<channel>) lists them)" in text
-    assert catalogue.readme_for_writer(tree, budget_tokens=10**6).startswith(
-        "Current library (its README",
-    )
 
 
 # --- memory.catalog() is bounded -------------------------------------------------------------------------

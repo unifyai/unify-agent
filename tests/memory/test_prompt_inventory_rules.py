@@ -15,7 +15,6 @@ With the setting off every text is today's, byte for byte; the existing wording 
 from __future__ import annotations
 
 import re
-import warnings
 from pathlib import Path
 
 import pytest
@@ -374,54 +373,6 @@ def test_the_team_record_section_is_left_to_the_shared_opening(on):
     assert view.prompt_section() == ""
 
 
-def test_with_the_setting_off_every_text_is_todays(off):
-    from unify.actor import core_surface
-    from unify.agents import binding
-    from unify.common._async_tool import cache_discipline, context_compression, in_code_texts
-    from unify.memory import helpers, library_index, messaging
-    from unify.memory import library_prompts as lp
-    from unify.memory.integration import fork
-
-    assert lp.guide_library() == lp.GUIDE_LIBRARY
-    assert lp.candidate_contract() == lp.CANDIDATE_CONTRACT
-    assert messaging.record_text() == messaging.RECORD_TEXT
-    assert lp.EPISODES_RULE in lp.write_brief_now()
-    assert "# Tools\n" in lp.write_brief_now() and "# Tools\n" in lp.curate_brief_now()
-    # in the persistent interpreter (the default) the brief starts with the shared sandbox paragraph
-    assert helpers.helper_brief(True).endswith(
-        "\n\n"
-        + helpers.HELPER_BRIEF.replace("{similar}", helpers.SIMILAR_LINE).replace(
-            "<<execute_code>>",
-            helpers.EXECUTE_CODE_LINE,
-        ),
-    )
-    assert fork.fork_instruction() == fork.INSTRUCTION
-    assert cache_discipline.compression_fork_instruction() == cache_discipline.COMPRESSION_FORK_INSTRUCTION
-    assert context_compression.compress_context_tool() is context_compression.compress_context
-    assert core_surface.install_doc() == core_surface._INSTALL_DOC
-    assert in_code_texts.send_response_description() == in_code_texts.SEND_RESPONSE_DESCRIPTION
-    assert in_code_texts.unknown_tool_text("x").startswith("⚠️ Error: Tool 'x' is not available.")
-    assert library_index.prompt_view_head(library_index.INDEX_HEAD + "x") == library_index.INDEX_HEAD + "x"
-    view = binding.Binding.__new__(binding.Binding)
-    assert view.prompt_section() == binding.PROMPT_SECTION
-
-
-def test_the_in_code_texts_that_follow_a_switch(on):
-    from unify.common._async_tool import in_code_texts
-    from unify.memory import library_index
-    from unify.memory.gate import GateResult
-    from unify.memory.repair import repair_message
-
-    res = GateResult(False, {}, ["G3: x"], ["G3"], items_refused={"memory.a.b:c": ["G3"]})
-    msg = repair_message(1, "/inputs/gate/result-0.md", res)
-    assert "read it with tools.read(path)" in msg and "call tools.finish(summary) again" in msg
-    assert "notifications" not in in_code_texts.send_response_description()
-    assert "`tools.list()`" in in_code_texts.unknown_tool_text("x")
-    view = library_index.prompt_view_head(library_index.INDEX_HEAD + "\n## memory.a\n")
-    assert view == library_index.INDEX_HEAD_IN_CODE + "\n## memory.a\n"
-    assert "examples from one episode" in view and "never edit it" not in view
-
-
 def test_the_pointer_files_hold_the_tables_the_brief_points_to(on):
     from unify.memory import library_prompts as lp
 
@@ -434,49 +385,6 @@ def test_the_pointer_files_hold_the_tables_the_brief_points_to(on):
     brief = _texts()["writer"]
     assert "/inputs/batch_map_keys.md" in brief and "/inputs/README.md" in brief
     assert "`episode_id` (str)" not in brief
-
-
-def test_prompt_sizes_off_and_on(monkeypatch):
-    """Each role's prompt size in characters, with the setting off and on (printed and warned for the report)."""
-    from unify.agents import binding
-    from unify.common._async_tool import cache_discipline
-    from unify.memory import helpers, library_index
-    from unify.memory import library_prompts as lp
-    from unify.memory.integration import fork
-
-    def sizes() -> dict[str, int]:
-        writers = _writer_briefs()
-        return {
-            "writer base brief": len(writers["writer base"][0]),
-            "writer full brief": len(writers["writer full"][0]),
-            "curator brief": len(lp.curate_brief_now(compact=True, finish_capped=True, edit_tools=True)),
-            "helper brief (no similar)": len(helpers.helper_brief(False)),
-            "helper brief (similar)": len(helpers.helper_brief(True)),
-            "fork instruction": len(fork.fork_instruction()),
-            "actor system prompt (no clock, workspace or library)": len(_actor_prompt()),
-            "actor library guide + index head": len(lp.guide_library())
-            + len(library_index.prompt_view_head(library_index.INDEX_HEAD)),
-            "actor team record section": len(binding.Binding.__new__(binding.Binding).prompt_section()),
-            "compaction instruction": len(cache_discipline.compression_fork_instruction()),
-        }
-
-    monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: False)
-    before = sizes()
-    monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: True)
-    after = sizes()
-    # the memory briefs now start with the shared opening every agent reads first; the role's own text is what the
-    # in-code rewrite trimmed, so that is what is compared, and the opening's share is reported beside it
-    opening = _opening_sizes()
-    lines = [
-        f"{k}: off {before[k]}, on {after[k]} ({after[k] - before[k]:+d})"
-        + (f", of which the opening {opening[k]}" if k in opening else "")
-        for k in before
-    ]
-    report = "PROMPT SIZES (characters)\n" + "\n".join(lines)
-    print(report)
-    warnings.warn(report, stacklevel=1)
-    for k in before:
-        assert after[k] - opening.get(k, 0) <= before[k], k
 
 
 def _opening_sizes() -> dict[str, int]:

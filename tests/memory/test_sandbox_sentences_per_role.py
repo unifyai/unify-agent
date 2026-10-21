@@ -194,13 +194,6 @@ async def test_no_role_says_import_memory_or_importable(in_code, tmp_path):
         assert IMPORTABLE not in flat(text), role
 
 
-def test_the_writer_and_curator_are_told_to_import_an_edited_library_file_again(in_code):
-    for role, text in (("writer", lp.write_brief_now(cell_s=60.0)), ("curator", lp.curate_brief_now(cell_s=60.0))):
-        body = flat(text)
-        assert REIMPORT_SENTENCE in body, role
-        assert not IMPORT_MEMORY.search(text), role
-
-
 @pytest.mark.asyncio
 async def test_under_fresh_cell_state_every_role_is_told_each_cell_starts_fresh(in_code, tmp_path):
     _library_run(in_code, tmp_path / "home")
@@ -244,21 +237,6 @@ async def test_the_new_sentences_hold_no_host_path_secret_or_forcing(in_code, tm
 
 
 # --- the actor's guide, role and sandbox section ------------------------------------------------------------------
-
-
-def test_the_actor_library_guide_says_memory_is_already_available(in_code, tmp_path):
-    from unify.memory.integration.prompt import render_memory_library_mode
-
-    guide = flat(lp.guide_library())
-    assert GUIDE_BOUND in guide and IMPORTABLE not in guide
-    assert "so `grep` and file reads work on it" not in guide  # the bare grep is tools.grep now
-    checkout = tmp_path / "copy"
-    checkout.mkdir()
-    pointer = flat(render_memory_library_mode(checkout, actor_index="pointer")[0])
-    assert GUIDE_BOUND in pointer and IMPORTABLE not in pointer
-    # the guide's role part is found by the new phrase
-    (phrase,) = [p for k, p in lp.GUIDE_PARTS if k == "role"]
-    assert phrase in lp.guide_library() and "importable" not in phrase
 
 
 def test_the_actor_in_code_prompt_leaves_persistence_to_the_opening():

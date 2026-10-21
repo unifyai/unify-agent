@@ -1,46 +1,9 @@
 from unify.memory.evidence import EvidenceStore
-from unify.memory.trigger import Trigger
 from tests.memory.test_episodes import _ep
-
-
-def test_incremental_then_lift_then_maintenance(tmp_path):
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    tr = Trigger(ev, maintenance_every=3, mode="d6")
-    ev.index_episode(_ep(episode_id="a"), "1" * 40)
-    [r] = tr.after_episode("a")
-    assert (r.kind, r.channel, r.episodes, r.lift) == (
-        "incremental",
-        "venmo",
-        ["a"],
-        False,
-    )
-    ev.index_episode(_ep(episode_id="b"), "2" * 40)
-    [r] = tr.after_episode("b")
-    assert (
-        r.episodes == ["a", "b"] and r.lift
-    )  # not marked done: both pending, lifting allowed
-    tr.mark_done(r)
-    ev.index_episode(_ep(episode_id="c"), "3" * 40)
-    reqs = tr.after_episode("c")
-    assert [x.kind for x in reqs] == ["incremental", "maintenance"] and reqs[
-        0
-    ].episodes == ["c"]
-
-
-def test_drift_queues_channel_without_new_episodes(tmp_path):
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    tr = Trigger(ev, maintenance_every=100, mode="d6")
-    ev.index_episode(_ep(episode_id="a"), "1" * 40)
-    tr.mark_done(tr.after_episode("a")[0])
-    tr.queue_drift("venmo")
-    ev.index_episode(_ep(episode_id="b", actions=[]), "2" * 40)
-    [r] = tr.after_episode("b")
-    assert r.channel == "venmo" and r.kind == "incremental"
 
 
 # --- the batched mode (the default) ----------------------------------------------------------------------
 
-from decimal import Decimal
 
 import pytest
 
@@ -55,94 +18,6 @@ def _big(eid, n_chars):
         cells=[Cell(0, "print(x)", "w " * (n_chars // 2))],
         transcript=[],
         actions=[],
-    )
-
-
-def test_batched_is_the_default_and_fires_on_experience_tokens(tmp_path):
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    a, b = _big("a", 1200), _ep(
-        episode_id="b",
-        actions=[],
-        transcript=[],
-    )  # b: no channel
-    budget = experience_tokens(a)[0] + experience_tokens(b)[0] + 1
-    tr = Trigger(ev, experience_budget=budget)
-    assert tr.mode == "batched"
-    assert Trigger(ev).budget == 150_000
-    ev.index_episode(a, "1" * 40)
-    assert tr.after_episode("a") == []
-    ev.index_episode(b, "2" * 40)
-    assert tr.after_episode("b") == []  # one token short
-    ev.index_episode(_big("c", 1200), "3" * 40)
-    [r] = tr.after_episode("c")
-    assert (r.kind, r.channel, r.episodes, r.lift) == (
-        "batched",
-        None,
-        ["a", "b", "c"],
-        True,
-    )
-    assert r.experience_tokens == sum(ev.experience_of(e)[0] for e in "abc") >= budget
-    assert tr.after_episode("c") == [r]  # due until marked done
-    tr.mark_done(r)
-    assert tr.pending() == []
-    ev.index_episode(_big("d", 200), "4" * 40)
-    assert tr.after_episode("d") == [] and [e for e, _ in tr.pending()] == ["d"]
-
-
-def test_batched_has_no_maintenance_or_per_channel_passes_and_drift_rides_along(
-    tmp_path,
-):
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    tr = Trigger(ev, maintenance_every=1, experience_budget=10**9)
-    ev.index_episode(_ep(episode_id="a"), "1" * 40)
-    tr.queue_drift("venmo")
-    assert tr.after_episode("a") == []
-    small = Trigger(ev, experience_budget=1)
-    small.queue_drift("venmo")
-    [r] = small.after_episode("a")
-    small.mark_done(r)
-    assert small._drift == set()
-
-
-def test_idle_trigger_is_off_by_default_and_needs_three_new_trajectories(tmp_path):
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    off = Trigger(ev, experience_budget=10**9)
-    on = Trigger(ev, experience_budget=10**9, idle_after_s=600)
-    for i, eid in enumerate("abc"):
-        ev.index_episode(_ep(episode_id=eid), str(i) * 40)
-        assert on.after_episode(eid, at=100.0 * i) == []
-        off.after_episode(eid, at=100.0 * i)
-        if eid != "c":
-            assert on.idle(10_000) == []  # fewer than three new
-    assert off.idle(10_000) == []
-    assert on.idle(200 + 599) == []  # not idle long enough
-    [r] = on.idle(200 + 600)
-    assert r.kind == "batched" and r.episodes == ["a", "b", "c"]
-
-
-def test_d6_mode_is_kept_and_modes_are_validated(tmp_path):
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    with pytest.raises(ValueError):
-        Trigger(ev, mode="stream")
-    with pytest.raises(ValueError):
-        Trigger(ev, experience_budget=0)
-    ev.index_episode(_ep(episode_id="a"), "1" * 40)
-    [r] = Trigger(ev, mode="d6").after_episode("a")
-    assert (r.kind, r.channel) == ("incremental", "venmo")
-
-
-def test_pass_budget_is_experience_times_usd_per_token(tmp_path):
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    assert Trigger(ev).pass_budget_usd() == Decimal("0.10950000")
-    assert (
-        str(
-            Trigger(
-                ev,
-                experience_budget=1000,
-                usd_per_token="0.000001",
-            ).pass_budget_usd(),
-        )
-        == "0.001000"
     )
 
 

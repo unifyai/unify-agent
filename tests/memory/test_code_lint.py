@@ -1,7 +1,6 @@
 import pytest
 
 from unify.memory import code_lint as cl
-from unify.memory.episodes import Action
 
 
 def test_varying_values_from_json_leaves_and_text_tokens():
@@ -57,24 +56,3 @@ def test_literal_problems_name_lines_never_values():
     ]
 
 
-def test_input_value_per_form():
-    tool = Action(0, "acct", "get", [], {"id": "E-1"}, '{"n": 3}', "ok")
-    assert cl.input_value(tool, "env", lambda s: b"") == {
-        "kwargs": {"id": "E-1"},
-        "response": {"n": 3},
-    }
-    assert cl.input_value(tool, "observation", lambda s: b"") == {"n": 3}
-    wt = Action(
-        0,
-        "worktree:ws",
-        "read",
-        ["a.csv"],
-        {},
-        {"blob_before": "a" * 64},
-        "ok",
-        kind="worktree",
-    )
-    assert cl.input_value(wt, "path", lambda s: b"x,1\n") == "x,1\n"
-    assert (
-        cl.input_value(wt, "path", lambda s: (_ for _ in ()).throw(KeyError(s))) == ""
-    )

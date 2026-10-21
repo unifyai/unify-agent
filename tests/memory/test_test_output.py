@@ -14,9 +14,6 @@ from unify.memory.library_checks import OUTPUT_VIEW_BYTES, keep_output
 from unify.memory.sandbox_run import PytestOutcome, SandboxResult
 from tests.memory.test_gate import _candidate
 from tests.memory import library_example_world as w
-from tests.memory.library_example_world import (
-    library_example_world,
-)  # noqa: F401 (fixture)
 
 needs_box = pytest.mark.skipif(
     shutil.which("bwrap") is None

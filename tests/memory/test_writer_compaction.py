@@ -16,11 +16,9 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 
 from unify.common._async_tool import cache_discipline, context_compression
 from unify.memory import helpers, transcripts, writer_pass
-from unify.memory.integration import switch
 from unify.memory.trigger import PassRequest
 from unify.settings import SETTINGS
 from tests.memory.test_writer_library_tools import EPS
@@ -305,29 +303,6 @@ def test_a_helper_compacts_on_its_own_turn_and_books_the_call(tmp_path):
         [*ctx.archived["call-0"], *msgs],
     )
     assert m["lines"] == 1 + len(ctx.archived["call-0"]) + len(msgs)
-
-
-def test_the_switch_is_on_by_default_and_takes_only_on_or_off():
-    """Every agent compacts under the one shared rule without a setting: the default, and an empty value, are on."""
-    from unify.settings import ProductionSettings
-
-    assert (
-        ProductionSettings.model_fields["UNIFY_MEMORY_LIBRARY_COMPACT"].default == "on"
-    )
-    assert switch.library_compact(SimpleNamespace(UNIFY_MEMORY_LIBRARY_COMPACT="on"))
-    assert switch.library_compact(SimpleNamespace(UNIFY_MEMORY_LIBRARY_COMPACT=""))
-    assert switch.library_compact(SimpleNamespace())
-    assert not switch.library_compact(
-        SimpleNamespace(UNIFY_MEMORY_LIBRARY_COMPACT="off"),
-    )
-    assert (
-        switch.parse_library_compact("") == "on"
-        and switch.parse_library_compact("on") == "on"
-        and switch.parse_library_compact("OFF") == "off"
-    )
-    assert switch.PARSERS[switch.LIBRARY_COMPACT] is switch.parse_library_compact
-    with pytest.raises(ValueError, match="UNIFY_MEMORY_LIBRARY_COMPACT"):
-        switch.parse_library_compact("maybe")
 
 
 # --- a recorded pass's sizes, replayed through the trigger (a measurement, no model) -----------------------------

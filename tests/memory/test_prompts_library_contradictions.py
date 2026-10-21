@@ -4,13 +4,10 @@ instructions. Each rule lives in its role's prompts only, and no retired rule su
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 
 import pytest
 
 from unify.memory import library_prompts as pv
-from unify.memory.integration.switch import library_conflicts
-from unify.memory.writer_pass import writer_tools
 
 
 def _prompts():
@@ -36,24 +33,22 @@ def _integrated():
 
 def _surfaces(tmp_path):
     from tests.memory.test_layout import _tree
-    from unify.memory import catalogue, drafts, library_export, repair
+    from unify.memory import catalogue, library_export, repair
     from unify.memory.gate import CHECKS, GateResult
     from unify.memory.integration import prompt
 
     out = dict(_prompts())
     root = _tree(tmp_path / "lib")
     catalogue.write_files(root, library_export.generated_library_mode(root))
-    out["section"] = prompt.render_memory_library_mode(root)[0]
-    for tool in writer_tools(library_mode=True):
-        out[f"tool:{tool['function']['name']}"] = tool["function"]["description"]
+    out["section"] = prompt.render_memory_section(root)[0]
+    from unify.common.tool_registry import allow_list, registry
+
+    for name in allow_list("writer", frozenset({"helper", "similar"})):
+        out[f"tool:{name}"] = registry()[name].description
     out["repair"] = repair.repair_message(
         1,
         "/inputs/gate/result-0.md",
         GateResult(False, {c: True for c in CHECKS}),
-    )
-    out["drafts"] = drafts.drafts_message(
-        [{"pass_id": "e1.p0", "items": ["memory.text.dates:parse_date"]}],
-        True,
     )
     return out
 
@@ -80,64 +75,6 @@ def test_each_rule_lives_in_its_roles_prompts_only():
                 assert phrase not in text, (rule, role)
 
 
-def test_the_library_tool_descriptions_hold_no_retired_rule():
-    for tool in writer_tools(library_mode=True):
-        text = tool["function"]["description"]
-        for retired in pv.V2_RETIRED:
-            assert retired.lower() not in text.lower(), (
-                tool["function"]["name"],
-                retired,
-            )
-        assert pv.benchmark_words(text) == [] and pv.example_checks(text) == []
-
-
-def test_the_library_check_description_names_no_channel_and_says_what_it_runs():
-    """In library mode check() also runs the items' own tests and the drawn inputs."""
-    check = next(
-        t for t in writer_tools(library_mode=True) if t["function"]["name"] == "check"
-    )["function"]["description"]
-    assert "channel" not in check and "static checks" in check
-    assert "not the tests" not in check
-    assert "the items' own tests and the recorded inputs the gate draws" in check
-    v2 = next(t for t in writer_tools() if t["function"]["name"] == "check")[
-        "function"
-    ]["description"]
-    assert (
-        "covers and their channels" in v2 and "not the tests" in v2
-    )  # v2 is unchanged
-
-
-def test_v2_settings_that_contradict_library_are_named_only_with_library_on():
-    bad = SimpleNamespace(
-        UNIFY_MEMORY_LIBRARY="on",
-        UNIFY_MEMORY_DOCSTRINGS="on",
-        UNIFY_MEMORY_SURFACING="catalogue",
-        UNIFY_MEMORY_QA_REPLAY="on",
-        UNIFY_MEMORY_QA_FIXTURE_SIZE="on",
-    )
-    assert library_conflicts(bad) == [
-        "UNIFY_MEMORY_DOCSTRINGS=on",
-        "UNIFY_MEMORY_SURFACING=catalogue",  # pragma: allowlist secret (a setting)
-        "UNIFY_MEMORY_QA_REPLAY=on",
-        "UNIFY_MEMORY_QA_FIXTURE_SIZE=on",
-    ]
-    assert (
-        library_conflicts(
-            SimpleNamespace(**{**vars(bad), "UNIFY_MEMORY_LIBRARY": "off"}),
-        )
-        == []
-    )
-    assert (
-        library_conflicts(
-            SimpleNamespace(
-                UNIFY_MEMORY_LIBRARY="on",
-                UNIFY_MEMORY_SURFACING="index",
-            ),
-        )
-        == []
-    )
-
-
 def test_the_write_brief_points_to_where_an_outcome_is_and_never_to_a_reading_list():
     """The batch map names no reading list; the brief points to the parts where each episode ended."""
     brief = " ".join(pv.write_brief_now().split())
@@ -145,19 +82,3 @@ def test_the_write_brief_points_to_where_an_outcome_is_and_never_to_a_reading_li
     assert "starting from each one's `end_parts`" in brief
 
 
-def test_the_curate_brief_asks_for_the_retirement_reason_the_gate_requires(tmp_path):
-    """The CURATE gate refuses a deletion that is neither an alias nor `retired` with a
-    one-line reason, so the brief's manifest and its retire bullet name `retired`; and the brief's input paths are
-    the files CURATE's inputs are written to."""
-    from unify.memory import curate
-
-    brief = " ".join(pv.curate_brief_now().split())
-    assert '"retired": {"<retired id>": "<one-line reason>"}' in brief
-    assert "together with its tests, with a one-line reason in `retired`." in brief
-    assert '"kept": {"<item id, or INDEX.md>": "<why it stays as it is>"}' in brief
-    from tests.memory.test_curate import _state
-
-    written = curate.stage_inputs(tmp_path, _state())
-    assert {curate.OVERLAPS_INPUT, curate.SUSPECTS_INPUT, curate.TRIGGER_INPUT} <= set(
-        written,
-    )

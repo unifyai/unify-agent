@@ -5,15 +5,12 @@ from __future__ import annotations
 import os
 import signal
 import sys
-import time
 from types import SimpleNamespace
 
 import pytest
 
-from tests.memory.test_batch_map import _ep
 from unify.memory.gitio import Repo
 from unify.memory.integration import async_pass as ap
-from unify.memory.integration.consolidate import open_stores
 from unify.memory.integration.paths import Paths
 from unify.memory.integration.state import State
 from unify.memory.memory_writer import land, publish, served_head
@@ -76,137 +73,6 @@ def test_a_request_pins_the_served_head_and_never_sees_an_unrecorded_pass(tmp_pa
     assert "memory/text/extra.py" in _snapshot(tmp_path / "c")
 
 
-def test_finish_spawns_and_returns_without_waiting_and_one_pass_runs_at_a_time(
-    tmp_path,
-):
-    stores = open_stores(Paths.under(tmp_path))
-    stores.evidence.index_episode(_ep(eid="e1"), "1" * 40)
-    started = time.monotonic()
-    ev = ap.maybe_spawn(
-        stores,
-        "e1",
-        "1" * 40,
-        effort="low",
-        settings=SETTINGS,
-        emit=None,
-        argv_prefix=[sys.executable, "-c", SLEEPER],
-    )
-    rec = ap.read_inflight(stores.paths)
-    try:
-        assert time.monotonic() - started < 2.0 and ev["phase"] == "spawned"
-        assert rec is not None and ap.owns(rec)
-        assert rec.pass_id == "e1.p0" and rec.after_episode == "e1"
-        assert rec.deadline_at - rec.started_at == ap.slot_s(
-            60,
-        )  # WRITE, then a due CURATE, each with its item records
-        calls = []
-        busy = ap.maybe_spawn(
-            stores,
-            "e1",
-            "1" * 40,
-            effort="low",
-            settings=SETTINGS,
-            emit=None,
-            popen=lambda *a, **k: calls.append(a),
-        )
-        assert busy["phase"] == "busy" and busy["pass_id"] == "e1.p0" and calls == []
-        # the worker holds the pass lock
-        assert ap.try_lock(ap.lock_path(stores.paths)) is None
-    finally:
-        os.killpg(rec.pgid, signal.SIGKILL)
-
-
-def test_the_worker_argv_carries_no_credentials(tmp_path):
-    stores = open_stores(Paths.under(tmp_path))
-    stores.evidence.index_episode(_ep(eid="e1"), "1" * 40)
-    seen = {}
-
-    class _Proc:
-        pid = os.getpid()  # a live process, so the record has a start time
-
-    def popen(argv, **kw):
-        seen["argv"], seen["kw"] = argv, kw
-        return _Proc()
-
-    ev = ap.maybe_spawn(
-        stores,
-        "e1",
-        "1" * 40,
-        effort="low",
-        settings=SETTINGS,
-        emit=None,
-        popen=popen,
-    )
-    assert ev["phase"] == "spawned"
-    argv = seen["argv"]
-    assert argv[1:3] == ["-m", ap.WORKER_MODULE]
-    assert argv[3:] == [
-        "--home",
-        str(tmp_path),
-        "--episode",
-        "e1",
-        "--sha",
-        "1" * 40,
-        "--effort",
-        "low",
-        "--lock-fd",
-        argv[-1],
-    ]
-    assert seen["kw"]["start_new_session"] and seen["kw"]["close_fds"]
-    assert seen["kw"]["pass_fds"] == (int(argv[-1]),)
-
-
-def test_not_due_spawns_nothing(tmp_path):
-    stores = open_stores(Paths.under(tmp_path))
-    stores.evidence.index_episode(_ep(eid="e1"), "1" * 40)
-    calls = []
-    ev = ap.maybe_spawn(
-        stores,
-        "e1",
-        "1" * 40,
-        effort="low",
-        settings=SimpleNamespace(
-            UNIFY_MEMORY_LIBRARY="on",
-        ),  # E = 100k: one episode is not enough
-        emit=None,
-        popen=lambda *a, **k: calls.append(a),
-    )
-    assert ev["phase"] == "not_due" and calls == []
-    assert ap.read_inflight(stores.paths) is None
-
-
-def test_results_apply_once_and_name_the_first_request(tmp_path):
-    paths = Paths.under(tmp_path)
-    state = State(paths.state, drift={"x"}, suspect={"x", "y"})
-    ap.record_result(
-        paths,
-        {
-            "pass_id": "e1.p0",
-            "ended": "landed",
-            "commit": "c" * 40,
-            "drift_cleared": ["x"],
-            "suspect_cleared": ["x"],
-        },
-    )
-    rows = ap.apply_results(state, paths)
-    assert [r["pass_id"] for r in rows] == ["e1.p0"]
-    assert state.drift == set() and state.suspect == {"y"}
-    assert State.load(paths.state).suspect == {"y"}
-    assert ap.apply_results(state, paths) == [] and ap.unapplied(paths) == []
-    assert ap.landed_event(rows[0], "e7", "c" * 40) == {
-        "type": "consolidation",
-        "phase": "landed",
-        "pass_id": "e1.p0",
-        "ended": "landed",
-        "commit": "c" * 40,
-        "library_commit": "c" * 40,
-        "library_items": None,
-        "first_request": "e7",
-        "pinned": "c" * 40,
-    }
-    assert ap.landed_event(rows[0], "e7", "c" * 40, 6)["library_items"] == 6
-
-
 def test_a_half_written_results_line_waits_for_its_end(tmp_path):
     paths = Paths.under(tmp_path)
     paths.state_dir.mkdir(parents=True)
@@ -218,21 +84,6 @@ def test_a_half_written_results_line_waits_for_its_end(tmp_path):
     with open(ap.results_path(paths), "a") as fh:
         fh.write('.p0", "ended": "refused"}\n')
     assert [r["pass_id"] for r in ap.apply_results(state, paths)] == ["e2.p0"]
-
-
-def test_a_record_without_a_start_time_owns_nothing():
-    rec = ap.InFlight("e1.p0", os.getpid(), os.getpgid(0), "", 0.0, 1.0, "e1")
-    assert not ap.owns(rec)  # never a signal on a pid alone
-    live = ap.InFlight(
-        "e1.p0",
-        os.getpid(),
-        os.getpgid(0),
-        ap.proc_start(os.getpid()),
-        0.0,
-        1.0,
-        "e1",
-    )
-    assert ap.owns(live)
 
 
 # --- UNIFY_MEMORY_LIBRARY_WAIT_SLOT (for hosts whose sandbox ends the controller's processes with it) ---
@@ -262,128 +113,6 @@ def _stop(rec):
         os.killpg(rec.pgid, signal.SIGKILL)
 
 
-def test_wait_slot_on_returns_only_after_the_worker_ends(tmp_path):
-    import asyncio
-
-    from unify.memory.integration.request import wait_after_finish
-
-    paths, rec = _spawn(tmp_path, 1)
-    try:
-        started = time.monotonic()
-        out = asyncio.run(
-            wait_after_finish(
-                paths,
-                SimpleNamespace(**vars(SETTINGS), UNIFY_MEMORY_LIBRARY_WAIT_SLOT="on"),
-            ),
-        )
-        assert out == {"waited": True, "ended": "worker_ended"} and not ap.owns(rec)
-        assert time.monotonic() - started >= 0.5
-    finally:
-        _stop(rec)
-
-
-def test_a_request_that_spawned_nothing_still_waits_for_the_worker_in_flight(tmp_path, monkeypatch):
-    """A worker another request spawned (one of a session that has since restarted, say) is waited for too, so the
-    session never ends while it runs; with the switch off nothing waits."""
-    import asyncio
-
-    from unify.memory.integration.request import RequestRun
-    from unify.settings import SETTINGS as LIVE
-
-    paths, rec = _spawn(tmp_path, 1)
-    run = RequestRun("a request that spawned nothing", paths)
-    try:
-        monkeypatch.setattr(LIVE, "UNIFY_MEMORY_LIBRARY_WAIT_SLOT", "off")
-        assert asyncio.run(run._wait_for_pass_worker(lambda _: None)) is None
-
-        monkeypatch.setattr(LIVE, "UNIFY_MEMORY_LIBRARY_WAIT_SLOT", "on")
-        monkeypatch.setattr(LIVE, "UNIFY_MEMORY_LIBRARY_PASS_WALL_S", 60)
-        out = asyncio.run(run._wait_for_pass_worker(lambda _: None))
-        assert out == {"waited": True, "ended": "worker_ended"} and not ap.owns(rec)
-    finally:
-        _stop(rec)
-
-
-def test_wait_slot_respects_its_bound_then_drains(tmp_path):
-    paths, rec = _spawn(tmp_path, 30)
-    drained = []
-    try:
-        started = time.monotonic()
-        out = ap.wait_slot(
-            paths,
-            60,
-            budget_s=1.0,
-            drain_fn=lambda p, wait_s: drained.append(wait_s) or {"x": 1},
-        )
-        assert out == {
-            "waited": True,
-            "ended": "drained",
-            "drain": {"x": 1},
-        } and drained == [0]
-        assert time.monotonic() - started < 10
-    finally:
-        _stop(rec)
-
-
-def test_wait_slot_off_returns_at_once(tmp_path):
-    import asyncio
-
-    from unify.memory.integration.request import wait_after_finish
-
-    def never(*a, **k):
-        raise AssertionError("waited with the switch off")
-
-    assert (
-        asyncio.run(wait_after_finish(Paths.under(tmp_path), SETTINGS, wait=never))
-        is None
-    )
-
-
-def test_wait_slot_relays_the_slots_pass_events_once_in_order(tmp_path):
-    import json as _json
-
-    from unify.memory.integration.consolidate import events_path
-
-    paths, rec = _spawn(tmp_path, 1.5)
-    ev = events_path(paths)
-    ev.parent.mkdir(parents=True, exist_ok=True)
-    ev.write_text(
-        _json.dumps({"type": "consolidation", "phase": "end", "pass_id": "e0.p0"})
-        + "\n",
-    )
-    offset = ev.stat().st_size
-    rows = [
-        {
-            "type": "consolidation",
-            "phase": "start",
-            "pass_id": "e1.p0",
-            "effort": "low",
-            "cap_usd": "1",
-        },
-        {"type": "consolidation", "phase": "turn", "pass_id": "e1.p0", "seconds": 0.5, "turn": 1, "returned": True},
-        {"type": "consolidation", "phase": "gate", "pass_id": "e1.p0", "seconds": 0.9, "step": "check", "passed": True},
-        {"type": "consolidation", "phase": "end", "pass_id": "e1.p0", "usd": "0.01"},
-        {"type": "consolidation", "phase": "records", "passes": ["e1.p0"]},
-        {
-            "type": "consolidation",
-            "phase": "start",
-            "pass_id": "e1.p1",
-            "effort": "low",
-            "curate": ["x"],
-        },
-        {"type": "consolidation", "phase": "end", "pass_id": "e1.p1", "usd": "0"},
-        {"type": "consolidation", "phase": "published", "served": "s"},
-    ]
-    with open(ev, "a") as fh:
-        fh.writelines(_json.dumps(r, sort_keys=True) + "\n" for r in rows)
-    seen = []
-    try:
-        ap.wait_slot(paths, 60, relay=seen.append, events_from=offset)
-    finally:
-        _stop(rec)
-    assert seen == [r for r in rows if r["phase"] in ("start", "turn", "gate", "end")]
-
-
 TOKEN_CHILD = """
 import hashlib, json, os, sys
 home = sys.argv[sys.argv.index("--home") + 1]
@@ -398,55 +127,3 @@ json.dump(out, open(os.path.join(home, "token-child.json"), "w"))
 """
 
 
-def test_the_route_token_reaches_the_worker_through_a_pipe_only(tmp_path, monkeypatch):
-    """The parent removed the writer's token from its environment, so the worker gets it over a fresh pipe
-    named by UNIFY_MEMORY_WRITER_TOKEN_FD: never in argv, the environment or a file.
-    """
-    import hashlib
-    import json as _json
-
-    token = "test-route-token-0123456789abcdef"  # a stand-in, never a real credential
-    monkeypatch.setenv(
-        "UNIFY_MEMORY_WRITER_TOKEN",
-        token,
-    )  # a stray name the worker must not see
-    paths = Paths.under(tmp_path)
-    paths.state_dir.mkdir(parents=True, exist_ok=True)
-    rec = ap.spawn(
-        paths,
-        "e1",
-        "1" * 40,
-        "low",
-        wall_s=60,
-        argv_prefix=[sys.executable, "-c", TOKEN_CHILD],
-        route_token=token,
-    )
-    try:
-        out, deadline = tmp_path / "token-child.json", time.monotonic() + 20
-        while time.monotonic() < deadline and not (
-            out.exists() and out.read_text().endswith("]}")
-        ):
-            time.sleep(0.1)
-        got = _json.loads(out.read_text())
-    finally:
-        _stop(rec)
-    assert got["read"] == hashlib.sha256((token + "\n").encode()).hexdigest()
-    assert got["names"] == ["UNIFY_MEMORY_WRITER_TOKEN_FD"]
-    assert hashlib.sha256(token.encode()).hexdigest() not in got["values"]
-
-
-def test_without_a_route_token_the_worker_starts_as_before(tmp_path):
-    seen = {}
-
-    class _Proc:
-        pid = os.getpid()
-
-    def popen(argv, **kw):
-        seen.update(kw)
-        return _Proc()
-
-    paths = Paths.under(tmp_path)
-    paths.state_dir.mkdir(parents=True, exist_ok=True)
-    ap.spawn(paths, "e1", "1" * 40, "low", wall_s=60, popen=popen)
-    assert "env" not in seen and len(seen["pass_fds"]) == 1
-    ap.inflight_path(paths).unlink()

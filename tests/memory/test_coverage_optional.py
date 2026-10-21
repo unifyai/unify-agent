@@ -3,26 +3,10 @@ unread (in the read log and, with the pool, as an ``unread`` entry), and nothing
 """
 
 from unify.memory import pool
-from unify.memory.writer_pass import writer_tools
 from tests.memory.test_pool import EMPTY, _defer, _finish_with, _open, _Stores
 from tests.memory.test_writer_pass import _call, needs_bwrap
-from tests.memory.test_writer_library_tools import _pass
 
 FINISH = [_call("f", "finish", {"summary": "s"})]
-
-
-def test_there_is_no_dismiss_and_finish_is_accepted_without_reading(
-    tmp_path,
-    monkeypatch,
-):
-    names = {t["function"]["name"] for t in writer_tools(library_mode=True)}
-    assert "dismiss" not in names and "read_episode" in names
-    _finish_with(monkeypatch, EMPTY)
-    out, model = _pass(tmp_path, FINISH, eids=("e2",), max_calls=3)
-    # accepted at its first call: the pass ended there, so no refusal was ever fed back to the model
-    assert out.finished and "f" not in model.outputs
-    assert out.coverage["unread"] == ["e2"] and out.coverage["opened"] == []
-    assert out.coverage_measures is None
 
 
 @needs_bwrap

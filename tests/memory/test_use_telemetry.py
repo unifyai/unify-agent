@@ -31,8 +31,7 @@ from unify.memory.episodes import (
 )
 from unify.memory.evidence import _USE_COUNTS, EvidenceStore, _use_rows
 from unify.memory.gitio import Repo
-from unify.memory.index import HEADER, build_index, index_with_names
-from unify.memory.integration.prompt import render_index, render_memory
+from unify.memory.index import HEADER, build_index
 from unify.memory.integration import hooks
 from unify.memory.integration.request import RequestRun, memory_use
 from unify.memory.redact import Redactor
@@ -451,45 +450,6 @@ def test_the_analysis_module_imports_only_the_standard_library():
 # --- the episode and post-hoc parity ---------------------------------------------------------------------
 
 
-def test_the_record_is_written_with_the_episode_and_recomputed_from_its_directory(
-    lib,
-    tmp_path,
-):
-    cells = _session(
-        ["from env.x import parse as p\np(1)\n", "import env.x\nenv.x.lookup('a')\n"],
-    )
-    acts = [Action(1, "x", "get", [], {}, None, "ok", "read")]
-    text, shown = render_memory(lib)
-    ep = _ep(transcript=_lines(cells, system=f"core\n\n{text}"), actions=acts, cells=[])
-    ep.memory_use = memory_use(
-        ep,
-        ITEMS,
-        redactor=Redactor(),
-        export_roots=use.roots_of(lib),
-        surface=use.library_surface(lib),
-        shown=shown,
-        shown_text=text,
-        cell_status=_status(cells, roots=use.roots_of(lib)),
-    )
-    assert ep.memory_use["export_roots"][0] == str(lib)
-    assert ep.memory_use["exposure_source"] == "record"
-    assert (
-        ep.memory_use["outcomes_known"] and ep.memory_use["cells_without_metadata"] == 0
-    )
-    assert ep.memory_use["shown_items"] == ITEMS
-    assert ep.memory_use["items"]["env/x:parse"]["refused_then_accepted"] == 1
-    repo, blobs = Repo.init_bare(tmp_path / "episodes.git"), BlobStore(tmp_path / "b")
-    sha = EpisodeWriter(repo, blobs, Redactor()).write(ep)
-    rel = episode_dir(ep)
-    assert load_episode(repo, sha, rel, blobs).memory_use == ep.memory_use
-    out = tmp_path / "export"
-    out.mkdir()
-    for name in ("transcript.jsonl", "actions.jsonl", "memory_use.json", "memory.diff"):
-        (out / name).write_bytes(repo.show(sha, f"{rel}/{name}"))
-    assert use.use_from_episode_dir(out) == ep.memory_use
-    assert use.use_from_episode_dir(out, ITEMS) == ep.memory_use
-
-
 def test_an_episode_without_a_record_is_written_as_before(tmp_path):
     """The OFF path never computes a record; an episode without one has the old file set and no rows."""
     repo, blobs = Repo.init_bare(tmp_path / "episodes.git"), BlobStore(tmp_path / "b")
@@ -711,33 +671,6 @@ def test_a_catalogue_of_channels_shows_channels_and_no_items(lib):
     rec = use.request_use(_lines([], system=f"core\n\n{catalogue}"), ITEMS)
     assert rec["shown_items"] == [] and rec["shown_channels"] == ["x"]
     assert rec["exposure_source"] == "legacy_text"
-
-
-def test_the_real_renderer_records_what_the_index_shows(lib):
-    """The record comes from the renderer itself (``prompt.render_memory``), not from the prompt's text."""
-    (lib / "env/x/__init__.py").write_text(MODULE + '\n__all__ = ["parse", "strict"]\n')
-    text, shown = render_memory(lib)
-    assert text == render_index(lib) and text.startswith(build_index(lib))
-    assert build_index(lib) == index_with_names(lib)[0]
-    assert shown["renderer"] == "index" and shown["channels"] == ["x"]
-    assert shown["items"] == ["env/x:parse", "env/x:strict"]  # lookup is unlisted
-    assert shown["sha256"] == hashlib.sha256(text.encode()).hexdigest()
-    assert text not in json.dumps(shown)  # names and a digest, never the text
-    rec = use.request_use(_lines([], system=f"core\n\n{text}"), ITEMS, shown=shown)
-    assert rec["exposure_source"] == "record" and rec["shown_record"] == shown
-    assert rec["shown_items"] == ["env/x:parse", "env/x:strict"]
-    assert rec["shown_channels"] == ["x"]
-    section = rec["memory_section_shown"]
-    assert section["shown"] and section["prompt_confirmed"] is True
-    assert (section["sha256"], section["bytes"]) == (shown["sha256"], shown["bytes"])
-    # an empty library renders nothing and records that nothing was shown
-    empty = lib.parent / "empty"
-    (empty / "env").mkdir(parents=True)
-    text0, shown0 = render_memory(empty)
-    assert text0 == "" and shown0["sha256"] is None and shown0["channels"] == []
-    rec0 = use.request_use(_lines([]), ITEMS, shown=shown0)
-    assert rec0["exposure_source"] == "record" and rec0["shown_items"] == []
-    assert not rec0["memory_section_shown"]["shown"]
 
 
 S1_GUIDE = (

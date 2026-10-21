@@ -25,16 +25,6 @@ from unify.memory import recognition
 from unify.memory.sandbox_run import run_confined
 
 
-def test_every_procedure_is_listed_and_says_why():
-    assert recognition.listing(None) == (True, "")
-    assert recognition.listing(recognition.not_run()) == (True, recognition.LISTED_BY_STRUCTURE)
-    # a record from before rev 2 with counts that once kept it off the list: not used
-    old = {"tested": 3, "false_holds": 1, "fails": 2}
-    assert recognition.listing(old) == (True, recognition.EARLIER_TEST_UNUSED)
-    assert recognition.listed({"recognition": old}) and recognition.unlisted_captures({"x": {"recognition": old}}) == set()
-    assert recognition.NOT_RUN == {"ran": False, "why": "rev2: a landed procedure is never run to decide its listing"}
-
-
 def test_nothing_in_the_listing_or_the_landing_can_run_code_to_list():
     src = inspect.getsource(recognition)
     for word in ("run_confined", "subprocess", "sandbox_run", "exec(", "eval("):

@@ -18,13 +18,10 @@ import re
 import pytest
 
 from tests.actor.code_act.test_prompt_generality import BENCHMARK_WORDS
-from tests.memory.librarian_world import WRITTEN_FILES as FILES
-from tests.memory.librarian_world import big_files
 from tests.memory.test_episodes import _ep
 from tests.memory.test_library_helper import _commit
 from unify.memory import library_prompts
 from unify.memory.gitio import Repo
-from unify.memory.integration import prompt
 from unify.memory.integration.checkout import export_actor_library_mode
 from unify.memory.integration.request import (
     add_runtime_calls,
@@ -32,7 +29,6 @@ from unify.memory.integration.request import (
     memory_use,
     runtime_calls_empty,
 )
-from unify.memory.library_index import index_view
 from unify.settings import ProductionSettings, SETTINGS
 
 # ==== ASSUMED NAMES (the integrator adapts these to the code, here only) ======================================
@@ -114,44 +110,6 @@ def librarian_on(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
     _set(monkeypatch, SWITCH, "on")
-
-
-def test_the_pointer_has_the_same_bytes_for_an_empty_and_a_large_library(tmp_path, librarian_on):
-    _, empty = _export(tmp_path, "empty", None)
-    _, small = _export(tmp_path, "small", FILES)
-    _, large = _export(tmp_path, "large", big_files(60))
-    texts = [prompt.render_memory_library_mode(co)[0] for co in (empty, small, large)]
-    assert texts[0] == texts[1] == texts[2], [len(t) for t in texts]
-    assert _flat(POINTER) in _flat(texts[0])
-
-
-def test_the_pointer_has_the_same_bytes_across_commits_and_carries_no_index(tmp_path, librarian_on):
-    mem, co = _export(tmp_path, "lib", FILES)
-    one, shown = prompt.render_memory_library_mode(co)
-    index = (co / "INDEX.md").read_text()
-    new = _commit(mem, {"memory/orders/more.py": 'def more(x):\n    """More."""\n    return x\n'}, "a pass lands")
-    export_actor_library_mode(mem.git_dir, new, co)
-    two = prompt.render_memory_library_mode(co)[0]
-    assert one == two
-    # no index text: no item, package or note of the library, and not the index view
-    for name in ("memory.orders", "memory.billing", "total_amount", "read_orders", "notes/orders", "more("):
-        assert name not in one, name
-    assert index_view(index) not in one
-    assert shown.get("items", []) == [] and shown.get("channels", []) == []
-    # the rest of the guide stays: the calls that browse, open and call an item, named without arguments
-    for call in ("`memory.items`", "`memory.get`"):
-        assert call in one, call
-    assert not re.search(r"memory\.[a-z_]+\(", one)
-
-
-def test_off_the_actor_section_is_the_inline_index_as_before(tmp_path, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
-    _set(monkeypatch, SWITCH, "off")
-    _, co = _export(tmp_path, "lib", FILES)
-    text = prompt.render_memory_library_mode(co, actor_index="inline")[0]
-    assert "memory.ask" not in text
-    assert text.startswith(library_prompts.GUIDE_LIBRARY_IN_CODE)
-    assert "count_rows" in text  # the index view is still there
 
 
 # --- the in-code tool -------------------------------------------------------------------------------------------

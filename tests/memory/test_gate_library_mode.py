@@ -12,9 +12,6 @@ import shutil
 import pytest
 
 from tests.memory import library_example_world as w
-from tests.memory.library_example_world import (
-    library_example_world,
-)  # noqa: F401 (fixture)
 
 pytestmark = pytest.mark.skipif(
     shutil.which("bwrap") is None,

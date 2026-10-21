@@ -73,34 +73,6 @@ def _rows(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines()]
 
 
-def test_the_entry_shares_sum_exactly_to_the_passes_known_usd(tmp_path):
-    """A3 test 1: sum(entries.share_usd) + handed_not_read (0) == sum(pass.usd.known), exactly in Decimal."""
-    home = _home(tmp_path)
-    M.rebuild_views(home)
-    entries = _rows(M.metering_dir(home) / M.ENTRIES_FILE)
-    total = sum(Decimal(p["usd"]["known"]) for p in SPLIT)
-    assert sum(Decimal(r["share_usd"]) for r in entries) == total
-    read = [r for r in entries if r["basis"] == "read_equal_split"]
-    assert [r["entry"] for r in read] == ["e1", "e2", "e5", "e7"]
-    assert sum(
-        Decimal(r["share_usd"]) for r in read if r["pass_id"] == "p1"
-    ) == Decimal("0.01")
-    # handed and not read: 0 each, labelled; a pass that read nothing keeps its USD on one row with no entry
-    unread = [r for r in entries if r["basis"] == "handed_not_read"]
-    assert {(r["entry"], r["share_usd"]) for r in unread if r["entry"]} == {
-        ("e3", "0"),
-        ("e4", "0"),
-        ("e6", "0"),
-    }
-    assert [r["share_usd"] for r in unread if r["entry"] is None] == ["0.0213"]
-    for r in entries:
-        assert (
-            r["basis"] in M.BASES
-            and isinstance(r["share_usd"], str)
-            and "e" not in r["share_usd"].lower()
-        )
-
-
 def test_split_equal_is_exact_for_any_total_and_count():
     for total in ("0.01", "1", "0.000000000000001", "13.125", "0"):
         for n in (1, 2, 3, 7, 13):

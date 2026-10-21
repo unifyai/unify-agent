@@ -347,19 +347,6 @@ def test_no_text_an_agent_reads_names_a_world(tmp_path, monkeypatch):
     ), "allow-list lines that cover nothing (remove them):\n" + "\n".join(stale)
 
 
-def test_the_replaced_examples_name_no_world():
-    """The examples the actor sees in the package's errors and help (``_GET_EXAMPLE``, the NotFound fallbacks and
-    the docstrings of ``get``, ``items`` and ``show``) and the test kit's usage example are neutral.
-    """
-    from unify.memory import inputs, library_helper
-
-    assert library_helper._GET_EXAMPLE == "memory.get('notes/reports/summary.md')"
-    for fn in (library_helper.get, library_helper.items, library_helper.show):
-        assert not GUARD.search(fn.__doc__ or ""), fn.__name__
-    assert not GUARD.search(inputs.__doc__ or "")
-    assert not GUARD.search(library_helper.wanted_key.__doc__ or "")
-
-
 def test_the_allow_list_is_well_formed():
     allowed = allow_list()
     assert len(allowed) == len({(a.scope, a.phrase) for a in allowed})

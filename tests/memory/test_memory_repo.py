@@ -1,11 +1,6 @@
 # tests/memory/test_memory_repo.py
 from unify.memory.gitio import Repo
-from unify.memory.memory_repo import (
-    MemoryRepo,
-    items,
-    remove_function,
-    unlist_function,
-)
+from unify.memory.memory_repo import MemoryRepo, items, remove_function
 
 MOD = '''"""Venmo."""
 __all__ = ["login", "list_friends"]
@@ -65,11 +60,6 @@ def test_items_reports_syntax_error(tmp_path):
     assert rep.errors and rep.errors[0].startswith("env/venmo/__init__.py")
 
 
-def test_unlist_keeps_code_importable(tmp_path):
-    src = unlist_function(MOD, "list_friends")
-    assert "def list_friends" in src and '"list_friends"' not in src.split("def ")[0]
-
-
 def test_remove_function_cuts_def_and_all_entry():
     src = remove_function(MOD, "login")
     assert "def login" not in src and '"login"' not in src and "def list_friends" in src
@@ -110,33 +100,6 @@ def b(apis):
     Effect: read
     """
 '''
-
-
-def test_unlist_without_all_synthesizes_it(tmp_path):
-    from unify.memory.index import build_index
-
-    src = unlist_function(NO_ALL, "b")
-    compile(src, "x", "exec")
-    assert "def b" in src and '__all__ = ["a"]' in src
-    assert src.index("__future__") < src.index("__all__")
-    root = tmp_path / "co"
-    (root / "env" / "m").mkdir(parents=True)
-    (root / "env" / "m" / "__init__.py").write_text(src)
-    listed = {i.name for i in items(root).items if i.listed}
-    assert listed == {"a"}
-    idx = build_index(root)
-    assert "a(apis)" in idx and "b(apis)" not in idx
-
-
-def test_annassign_all_is_recognised(tmp_path):
-    src = MOD.replace("__all__ =", "__all__: list[str] =")
-    root = tmp_path / "co"
-    (root / "env" / "m").mkdir(parents=True)
-    (root / "env" / "m" / "__init__.py").write_text(
-        unlist_function(src, "list_friends"),
-    )
-    listed = {i.name: i.listed for i in items(root).items}
-    assert listed == {"login": True, "list_friends": False}
 
 
 def test_items_reports_undecodable_module(tmp_path):

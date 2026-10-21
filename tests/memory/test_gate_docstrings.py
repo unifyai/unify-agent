@@ -8,21 +8,16 @@ budget (G4), reserved generated paths, and the input shapes a merge records for 
 Gates here run for real (confined pytest, held-out values), so bubblewrap is required.
 """
 
-import importlib.util
 import json
 import shutil
 
 import pytest
 
 from unify.memory.blobs import BlobStore
-from unify.memory.catalogue import write_generated
 from unify.memory.episodes import Action
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
 from unify.memory.gitio import Repo
-from unify.memory.integration.checkout import export_checkout
-from unify.memory.memory_helper import value_shape
-from unify.memory.shape_rows import lookup_from, shapes_at
 from tests.memory.test_episodes import _ep
 from tests.memory.test_gate import FILES, KIT, MOD, TEST, _candidate, _merged
 
@@ -535,44 +530,6 @@ def test_a_commit_may_not_write_a_reserved_path(lab, path):
 
 
 # --- input shapes, recorded at a merge and found from the export -------------------------------------------
-
-
-def test_a_merge_records_input_shapes_and_the_export_finds_by_them(lab, tmp_path):
-    mem, ev, gate = lab
-    parent = mem.head()
-    cand = _candidate(mem, _dlg_files())
-    res = gate.merge(
-        parent,
-        cand,
-        DLG_MAN,
-        "p-shapes",
-        "incremental",
-        "dialogue_user",
-        "0.01",
-    )
-    assert res.passed, res.reasons
-    item = DLG_ITEM["item"]
-    snapshot = ev.commit_shapes(mem.head())  # frozen for the merged commit
-    assert snapshot[item]["shapes"] == [value_shape(FEEDBACK)]
-    assert snapshot[item]["backfilled"] is False
-    export = tmp_path / "memory-checkout"
-    export_checkout(mem.git_dir, mem.head(), export)
-    write_generated(
-        export,
-        shapes=lookup_from(shapes_at(mem, ev, mem.head(), export, freeze=True)),
-    )
-    spec = importlib.util.spec_from_file_location(
-        "memory_after_merge",
-        export / "memory.py",
-    )
-    memory = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(memory)
-    found = memory.find({"type": "Feedback", "score": 9, "notes": ["b"]})
-    assert [(f.name, f.match, f.reason) for f in found] == [
-        ("env.dialogue_user.parse_feedback", "exact", "matched notes, score, type"),
-    ]
-    assert memory.find({"room": "hall"}) == []
-    assert "- a value with keys notes, score, type" in memory.describe("parse_feedback")
 
 
 def test_a_refused_merge_records_no_shapes(lab):

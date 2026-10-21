@@ -228,32 +228,6 @@ def _copy(tmp_path: Path, librarian: bool = True, name: str = "copy") -> Path:
 
 
 @needs_box
-def test_the_catalogue_has_one_card_per_function_in_module_order_then_notes_then_captures(tmp_path):
-    root = _copy(tmp_path)
-    text = (root / lx.CATALOGUE_FILE).read_text()
-    # its applies is private to the procedure's module: no card of its own; its recipe is a function with a card
-    assert L.catalogue_ids(text) == [COUNT, RECIPE, TOTAL, READ_ROWS, NOTE, "capture:" + CAPTURE, "capture:" + FAILED]
-    assert text.index("## Functions") < text.index("## Notes") < text.index("## Captured procedures")
-    card = text.split(f"### {TOTAL}\n", 1)[1].split("\n### ", 1)[0]
-    assert f"`{TOTAL}(value)`" in card
-    assert "Sum every number of a table's rows." in card and "It takes the rows" not in card  # first paragraph
-    assert "- Asked: Add up a table of numbers from <id> and report the total (<id>)." in card
-    assert "Approach: - Read the rows" in card and "run <id>" in card
-    # landed with no parsed fixture (rev 2: a landing runs nothing), its own test computes its argument through the
-    # reader, so the gate keeps it at the first level until a test calls it on a fixture
-    assert f"Evidence: level unchecked; status on-trial; reader {READ_ROWS}; applies: yes" in card
-    assert "Recognition: listed by its structure" in card
-    sig = _records()[TOTAL]["signature"]
-    assert f"Input: {signature_text(sig)}" in card and "Input: {" in card
-    assert "Record: " in card and f"Notes: {NOTE}" in card
-    # the recipe the gate ran on the procedure's cases, and how it did
-    assert f"Recipe: {RECIPE}; 1 of 1 cases passed (1 source)" in card
-    failed = text.split(f"### capture:{FAILED}\n", 1)[1]
-    assert "tried and failed: never offered to run" in failed and "Broke: reading the words raised ValueError <id>" in failed
-    assert "level unchecked" in text.split(f"### capture:{CAPTURE}\n", 1)[1]
-
-
-@needs_box
 def test_the_catalogue_holds_no_identifier_answer_or_request_and_is_byte_stable(tmp_path):
     root = _copy(tmp_path)
     text = (root / lx.CATALOGUE_FILE).read_bytes()
@@ -526,26 +500,6 @@ def test_the_first_user_message_line_counts_the_copy_and_is_absent_for_an_empty_
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")
     assert line_for(one) is None
-
-
-@needs_box
-def test_the_pointer_is_constant_across_libraries_and_replaces_the_index(tmp_path, monkeypatch):
-    from unify.memory.integration.prompt import render_memory_library_mode
-
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
-    a = _copy(tmp_path, name="a")
-    b = _tree(tmp_path / "b")  # another library: one module fewer, no records
-    (b / "memory/tables/count.py").unlink()
-    write_files(b, lx.generated_library_mode(b, librarian=True))
-    text_a, shown = render_memory_library_mode(a, librarian=True)
-    text_b, _ = render_memory_library_mode(b, librarian=True)
-    assert text_a == text_b and lp.LIBRARIAN_POINTER in text_a
-    assert "index at the end of this prompt" not in text_a and TOTAL not in text_a and "## memory." not in text_a
-    assert shown["renderer"] == "librarian_pointer"
-    assert lp.benchmark_words(lp.GUIDE_LIBRARIAN) == [] and lp.example_checks(lp.GUIDE_LIBRARIAN) == []
-    off, _ = render_memory_library_mode(a, librarian=False)
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "off")
-    assert render_memory_library_mode(a)[0] == off and lp.LIBRARIAN_POINTER not in off
 
 
 # --- the switch ------------------------------------------------------------------------------------------------

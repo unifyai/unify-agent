@@ -1,17 +1,8 @@
 """Measured use for the writer, same-shape functions for CURATE, the when-to-use section."""
 
-from unify.memory import curate, library_prompts as pv
+from unify.memory import library_prompts as pv
 from unify.memory.evidence import EvidenceStore
 from unify.memory.usage import MAX_TABLE_ROWS, usage_table
-
-
-def test_curate_lists_library_functions_with_the_same_shape():
-    bodies = {
-        "memory.a.b:first": "def first(xs):\n    return [x * 2 for x in xs if x > 3]\n",
-        "memory.a.c:second": "def second(items):\n    return [i * 5 for i in items if i > 9]\n",
-        "memory.a.d:third": "def third(xs):\n    return sorted(xs)\n",
-    }
-    assert curate.same_shape(bodies) == [["memory.a.b:first", "memory.a.c:second"]]
 
 
 def test_the_library_usage_table_can_list_every_item(tmp_path):
@@ -43,21 +34,6 @@ def _with_replay(monkeypatch):
         roles=frozenset({"write"}),
     )
     monkeypatch.setattr(tool_spec, "registry", lambda: (spec,))
-
-
-def test_write_points_lifted_functions_to_replay_without_requiring_it(monkeypatch):
-    """WRITE says how to verify a lifted function when the replay tool exists."""
-    _with_replay(monkeypatch)
-    text = pv.write_brief_now()
-    assert (
-        "listing in its manifest entry the code it `replaces` and calling `replay`"
-        in text
-    )
-    assert (
-        "must" not in text.split("can be verified by listing")[1].split("\n")[0]
-    )  # informs, never forces
-    assert pv.benchmark_words(text) == [] and pv.example_checks(text) == []
-    assert "calling `replay`" not in pv.curate_brief_now()
 
 
 def test_the_notes_and_replay_sentences_inform_and_never_set_a_bar(monkeypatch):

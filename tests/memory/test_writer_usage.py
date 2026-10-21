@@ -19,7 +19,7 @@ import pytest
 from pydantic import SecretStr
 
 from unify.common._async_tool import cache_discipline
-from unify.memory import helpers, writer_pass
+from unify.memory import writer_pass
 from unify.memory.integration import consolidate
 from unify.memory.writer_pass import WriterRoute, split_usage, unillm_turn
 from tests.memory.test_helpers import _ctx as _helper_ctx

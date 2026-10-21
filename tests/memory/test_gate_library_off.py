@@ -8,7 +8,6 @@ from tests.memory.test_gate import (
     FILES,
     MAN,
     _candidate,
-    world,
 )  # noqa: F401 (fixture)
 
 ENV = {

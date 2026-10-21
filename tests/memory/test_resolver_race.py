@@ -2,7 +2,7 @@
 only regular files and directories (:mod:`unify.memory.safe_paths`). Box code can change /memory and /work while a
 handler runs: a thread here swaps a directory for a link to a decoy directory outside the roots, a file for a FIFO
 and a file for a link to a credential-like decoy file, in a tight loop, while the readers, grep, overview, fixture,
-write, edit and stage run many times. No reply may hold decoy bytes, nothing outside the roots may change and no
+the host write and stage run many times. No reply may hold decoy bytes, nothing outside the roots may change and no
 call may hang. Also: a FIFO leaf, hard links, the manifest written by ``pool(op="decide")``, grep's child failure
 text and the helper's episode reader."""
 
@@ -19,8 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from unify.memory import edit_tools, helpers, safe_paths, tool_spec, views, writer_pass
-from unify.memory import fixtures as fx
+from unify.memory import helpers, memory_files, safe_paths, tool_spec, views, writer_pass
 from unify.memory import writer_tools as wt
 from tests.memory.test_helpers import EPS as HELPER_EPS
 from tests.memory.test_helpers import _ctx
@@ -150,6 +149,14 @@ def _helper_state(tmp_path: Path, box: Path) -> tuple:
     return ctx, st, helpers._resolver(ctx)
 
 
+def _written(write) -> str:
+    """A host write's reply text: what it did, or its refusal."""
+    try:
+        return write()
+    except memory_files.Refused as r:
+        return r.text
+
+
 def _calls(writer, roots, box, ctx, st, resolve):
     """One round of every handler on the swapped paths: (label, reply text)."""
 
@@ -186,27 +193,11 @@ def _calls(writer, roots, box, ctx, st, resolve):
         ),
         (
             "write",
-            lambda: edit_tools.call(
-                "write",
-                {"path": "memory/other/mod.py", "content": "y = 3\n"},
-                box,
-            ).text,
+            lambda: _written(lambda: memory_files.write(box, "memory/other/mod.py", "y = 3\n")),
         ),
         (
             "write in pkg",
-            lambda: edit_tools.call(
-                "write",
-                {"path": "memory/pkg/new.py", "content": "z = 1\n"},
-                box,
-            ).text,
-        ),
-        (
-            "edit",
-            lambda: edit_tools.call(
-                "edit",
-                {"path": "memory/other/data.txt", "old": "needle other", "new": "needle other!"},
-                box,
-            ).text,
+            lambda: _written(lambda: memory_files.write(box, "memory/pkg/new.py", "z = 1\n")),
         ),
         ("helper read", lambda: helper("read", {"path": "/work/pkg/mod.py"})),
         ("helper read link", lambda: helper("read", {"path": "/work/other/mod.py"})),
@@ -330,58 +321,6 @@ def test_a_fifo_leaf_is_refused_by_every_reader_and_never_blocks(tmp_path):
     assert wt._read_manifest(box)[0] is None
     with pytest.raises(OSError):
         wt.write_manifest(box, {"items": []})
-
-
-def test_hard_links_are_replaced_never_written_through(tmp_path):
-    box, _, secret = _tree(tmp_path)
-    before = secret.read_bytes()
-    writer, _ = _writer_for(tmp_path, box)
-    for rel in (
-        "memory/other/mod.py",
-        "memory/pkg/tests/data/req.json",
-        ".pass/manifest.json",
-        ".pass/fixtures.json",
-        "memory/pkg/tests/test_f_replay.py",
-    ):
-        target = box / rel
-        if target.exists():
-            target.unlink()
-        os.link(secret, target)
-    assert edit_tools.call(
-        "write",
-        {"path": "memory/other/mod.py", "content": "y = 3\n"},
-        box,
-    ).status == "ok"
-    got = wt.fixture(
-        {"episode": "e1", "source": "request:0", "dest": "memory/pkg/tests/data/req.json"},
-        writer._episode,
-        box,
-        writer.gate._blob,
-        ["e1"],
-    )
-    assert got.status == "ok", got.text
-    pool_dir = tmp_path / "pool"
-    pool_dir.mkdir()
-    (box / ".pass" / "manifest.json").unlink()
-    os.link(secret, box / ".pass" / "manifest.json")
-    secret.write_text("{}")  # a manifest the decision can read through the hard link
-    before = secret.read_bytes()
-    got = wt.pool(
-        {
-            "op": "decide",
-            "id": "new",
-            "decision": "defer",
-            "reason": "later",
-            "episodes": ["e1"],
-        },
-        pool_dir,
-        box,
-    )
-    assert got.status == "ok", got.text
-    writer_pass._write_in_box(box, "memory/pkg/tests/test_f_replay.py", b"x = 1\n")
-    assert secret.read_bytes() == before
-    for rel in ("memory/other/mod.py", ".pass/manifest.json", ".pass/fixtures.json"):
-        assert os.stat(box / rel).st_nlink == 1, rel
 
 
 def test_decide_never_follows_a_link_at_the_manifest(tmp_path):

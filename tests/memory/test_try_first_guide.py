@@ -25,7 +25,6 @@ import pytest
 from tests.memory.gate_records import Built, Landing, build, needs_box
 from tests.memory.test_episodes import _ep
 from tests.memory.test_layout import LIB, _tree
-from unify.common import in_code_switch
 from unify.memory import library_export as lx
 from unify.memory import library_prompts as lp
 from unify.memory.catalogue import write_files
@@ -207,14 +206,6 @@ def test_the_guide_never_tells_the_agent_to_store_or_avoid_ids_or_answers(name):
         assert phrase not in text
 
 
-def test_the_in_code_guide_is_what_the_actor_reads_with_tools_in_code(monkeypatch):
-    monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: True)
-    assert lp.guide_library() == lp.GUIDE_LIBRARY_IN_CODE and lp.guide_pointer() == lp.GUIDE_POINTER_IN_CODE
-    assert GET_NAME in lp.guide_library() and ASK_NAME not in lp.guide_library() and MATCH_CALL not in lp.guide_library()
-    monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: False)
-    assert MATCH_CALL in lp.guide_library() and RUN_CALL in lp.guide_library()
-
-
 # --- the pointer section -------------------------------------------------------------------------------------
 
 
@@ -229,72 +220,6 @@ def _copies(tmp_path: Path) -> list[Path]:
     big = _tree(tmp_path / "big", files)
     write_files(big, lx.generated_library_mode(big))
     return [empty, big]
-
-
-@pytest.mark.parametrize("in_code", [True, False])
-def test_the_pointer_section_has_the_same_bytes_at_any_library_size(tmp_path, monkeypatch, in_code):
-    from unify.memory.integration.prompt import render_memory_library_mode
-
-    monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: in_code)
-    texts = [render_memory_library_mode(c, actor_index="pointer")[0] for c in _copies(tmp_path)]
-    assert texts[0] == texts[1]
-    assert texts[0]  # shown even for an empty library
-    assert "memory.extra" not in texts[0] and "f00" not in texts[0]
-
-
-@pytest.mark.parametrize("in_code", [True, False])
-def test_the_pointer_section_names_match_and_run_and_says_memory_is_bound(tmp_path, monkeypatch, in_code):
-    from unify.memory.integration.prompt import render_memory_library_mode
-
-    monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: in_code)
-    text = render_memory_library_mode(_copies(tmp_path)[1], actor_index="pointer")[0]
-    if in_code:
-        assert ITEMS_NAME in text and GET_NAME in text and ASK_NAME not in text
-        assert MATCH_CALL not in text and RUN_CALL not in text
-    else:
-        assert MATCH_CALL in text and RUN_CALL in text
-    assert re.search(r"\bmemory\b`?[^.\n]*\balready\b|\balready\b[^.\n]*`memory`", text), text
-    assert lp.example_checks(text) == [] and lp.benchmark_words(text) == []
-
-
-def test_under_tools_in_code_the_pointer_section_follows_the_shared_opening_and_repeats_none_of_it(
-    tmp_path,
-    monkeypatch,
-):
-    from types import SimpleNamespace
-
-    from unify.common import tool_registry as R
-    from unify.memory.integration import hooks
-    from unify.memory.integration.prompt import render_memory_library_mode
-
-    monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: True)
-    section = render_memory_library_mode(_copies(tmp_path)[1], actor_index="pointer")[0]
-    opening = R.preamble(
-        "actor",
-        {"environment": "Your box: /workspace and a private /tmp are writable.", "memory": OPENING_MEMORY_LINE},
-    )
-    # nothing the opening says is said again in the section
-    for sentence in _sentences(opening):
-        if len(sentence) >= 30:
-            assert sentence not in section, sentence
-    assert OPENING_MEMORY_LINE not in section
-    # the opening already says the library is importable as `memory`; the section says it is bound, not again
-    assert "importable in your cells as `memory`" not in section
-    assert "## How you work here" not in section
-    # the section comes last, after the opening and the role's text
-    monkeypatch.setattr(hooks, "enabled", lambda: True)
-    monkeypatch.setattr(hooks, "_run", lambda: SimpleNamespace(index=section))
-    full = hooks.system_prompt(opening + "\n\n# Role\nYou act for the user.\n")
-    assert full.startswith(opening)
-    assert full.endswith(section) and full.count(section) == 1
-
-
-def test_the_default_actor_index_stays_inline():
-    from unify.memory.integration.switch import parse_library_actor_index
-    from unify.settings import SETTINGS
-
-    assert parse_library_actor_index("") == "inline"
-    assert parse_library_actor_index(getattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_ACTOR_INDEX", "") or "") == "inline"
 
 
 # --- the index line ------------------------------------------------------------------------------------------

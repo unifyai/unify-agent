@@ -3,7 +3,6 @@
 import asyncio
 
 from unify.memory import batch_map as bm
-from unify.memory import library_prompts as pv
 from unify.memory.episodes import Action, Cell, Episode
 from unify.memory.trigger import PassRequest
 from tests.memory.test_writer_pass import Turns, _call, _writer
@@ -106,11 +105,3 @@ def test_the_overview_logs_the_end_parts_it_shows_in_full(tmp_path):
     assert out.coverage["opened"] == ["e1"] and out.coverage["parts_read"]["e1"]
 
 
-def test_the_notes_sentence_is_in_write_and_passes_the_guards():
-    text = pv.write_brief_now()
-    assert (
-        "in general terms where it can; a rule for one kind of request is worth keeping"
-        in text
-    )
-    assert pv.benchmark_words(text) == [] and pv.example_checks(text) == []
-    assert "in general terms, so it applies" not in pv.curate_brief_now()

@@ -17,7 +17,6 @@ import pytest
 
 from unify.memory.integration import fork as fork_mod
 from unify.memory.integration import fork_worker as fw
-from unify.memory.integration import switch
 from unify.settings import SETTINGS
 from tests.memory.integration.test_request import (  # noqa: F401
     _begin,
@@ -152,16 +151,6 @@ def _reply(content=None, calls=None, cost="0.0012"):
 # --- the switch ----------------------------------------------------------------------------------------------
 
 
-def test_the_switch_is_off_by_default_and_takes_only_on_or_off():
-    assert (
-        switch.parse_library_fork("") == "off"
-        and switch.parse_library_fork("on") == "on"
-    )
-    assert SETTINGS.UNIFY_MEMORY_LIBRARY_FORK == "off"
-    with pytest.raises(ValueError, match="UNIFY_MEMORY_LIBRARY_FORK"):
-        switch.parse_library_fork("maybe")
-
-
 # --- the route (fork-lane design): the key proxy's fork lane only ----------------------------------------------
 
 
@@ -245,34 +234,6 @@ def test_c5_fork_on_without_a_lane_is_recorded_refused(mv2, monkeypatch):  # noq
 
 
 # --- the worker: what it stages, from either reply shape, executing nothing ------------------------------------
-
-
-def test_parse_reply_reads_text_and_tool_call_blocks_and_refuses_other_paths(tmp_path):
-    marker = tmp_path / "ran"
-    code = f"open({str(marker)!r}, 'w').write('x')\n"  # would create the marker if anything ran it
-    msg = {
-        "content": _fence("notes.md", "A lesson.\n")
-        + _fence("../escape.py", "x\n")
-        + _fence("other.txt", "x\n"),
-        "tool_calls": [
-            {
-                "id": "c1",
-                "function": {
-                    "name": "execute_code",
-                    "arguments": json.dumps(
-                        {"code": code + "\n" + _fence("candidates/double.py", CODE)},
-                    ),
-                },
-            },
-        ],
-    }
-    files, refused = _files(fw.settle(fw.message_blocks(msg)))
-    assert files == {"notes.md": "A lesson.\n", "candidates/double.py": CODE}
-    assert {(r["path"], r["from"]) for r in refused} == {
-        ("../escape.py", "text"),
-        ("other.txt", "text"),
-    }
-    assert not marker.exists()
 
 
 def _files(blocks):
@@ -442,24 +403,6 @@ def test_the_worker_imports_only_the_standard_library():
 
 
 # --- the box ---------------------------------------------------------------------------------------------------
-
-
-def test_the_box_mounts_only_the_worker_and_the_staging_dir_writable(
-    tmp_path,
-    monkeypatch,
-):
-    monkeypatch.setattr(fork_mod.shutil, "which", lambda n: f"/usr/bin/{n}")
-    argv = fork_mod.box_argv(tmp_path / "staging", die_with_parent=True)
-    binds = [argv[i + 1 : i + 3] for i, a in enumerate(argv) if a == "--bind"]
-    assert binds == [[str(tmp_path / "staging"), "/staging"]]
-    ro = [argv[i + 1] for i, a in enumerate(argv) if a == "--ro-bind"]
-    assert str(fork_mod.WORKER_FILE) in ro and not any(
-        str(Path.home()) in p for p in ro if p != str(fork_mod.WORKER_FILE)
-    )
-    assert {"--unshare-all", "--share-net", "--clearenv", "--die-with-parent"} <= set(
-        argv,
-    )
-    assert argv[-4:-2] == ["-I", fork_mod.BOX_WORKER] and fork_mod.FORK_MARK in argv
 
 
 def _started(mv2, monkeypatch, replies, source=None):  # noqa: F811

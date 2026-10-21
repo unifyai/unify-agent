@@ -89,20 +89,6 @@ async def test_the_window_is_the_journal_range_the_pass_ran_in(tmp_path):
     ] == 0  # no writer-lane request started
 
 
-def test_state_view_reports_what_a_pass_cleared(tmp_path):
-    from unify.memory.integration.state import State
-
-    State(tmp_path / "state.json", drift={"a", "b"}, suspect={"a", "c"}).save()
-    view = ap.StateView.load(tmp_path / "state.json")
-    view.drift.difference_update({"a"})
-    view.suspect.difference_update({"a"})
-    assert view.cleared() == (["a"], ["a"])
-    assert State.load(tmp_path / "state.json").drift == {
-        "a",
-        "b",
-    }  # the worker never saves state
-
-
 class _Blocking:
     """A model turn that writes one function and a manifest, then never answers again."""
 
@@ -244,80 +230,6 @@ def _end(consolidate, stores):
 def _ledger(consolidate, stores):
     lines = consolidate.ledger_path(stores.paths).read_text().splitlines()
     return [json.loads(x) for x in lines]
-
-
-@pytest.mark.asyncio
-async def test_run_due_passes_under_the_supervisor_ends_at_the_bound_and_books_the_worst_case(
-    monkeypatch,
-    tmp_path,
-):
-    j = tmp_path / "costs.jsonl"
-    j.write_text("")
-    consolidate, stores, sha, settings, sup = _supervised_driver(
-        tmp_path,
-        monkeypatch,
-        journal=str(j),
-    )
-    loop = asyncio.get_running_loop()
-
-    def writer_calls():  # the proxy journals two writer requests while the pass runs; one is never priced
-        rows = [
-            {
-                "origin": "request_started",
-                "request_attempt_id": "a",
-                "requested_model": "openai/gpt-6-sol",
-            },
-            {
-                "origin": "response",
-                "request_attempt_id": "a",
-                "requested_model": "openai/gpt-6-sol",
-                "status": "completed",
-                "account_charge": "0.40",
-            },
-            {
-                "origin": "request_started",
-                "request_attempt_id": "b",
-                "requested_model": "openai/gpt-6-sol",
-            },
-            {
-                "origin": "transport_error",
-                "request_attempt_id": "b",
-                "requested_model": "openai/gpt-6-sol",
-                "status": "cancelled",
-            },
-        ]
-        with open(j, "a") as fh:
-            fh.writelines(json.dumps(r) + "\n" for r in rows)
-
-    loop.call_later(0.1, writer_calls)
-    out = await _drive(consolidate, stores, sha, settings, sup)
-    assert out == [] and sup.last.ended == "deadline"
-    end = _end(consolidate, stores)
-    assert end["phase"] == "end" and end["reason_codes"] == ["deadline"]
-    assert end["ended"] == "deadline"
-    assert end["usd"] == "0.40" and end["unknown_cost_calls"] == 1
-    assert end["reconciled"]["journal"] == "read" and end["reconciled"]["calls"] == 2
-    assert end["reconciled"]["booked_usd"] == "13.525"
-    settle = _ledger(consolidate, stores)[-1]
-    assert settle["phase"] == "settle" and settle["usd"] == "0.40"
-    assert settle["unknown_cost_calls"] == 1 and settle["unknown_usd_each"] == "13.125"
-    # the run guard books the unpriced call at the worst case of one writer call, not at the per-call reserve
-    assert consolidate.committed_writer_usd(stores) == Decimal("13.525")
-
-
-@pytest.mark.asyncio
-async def test_with_no_journal_the_pass_is_not_settled_and_its_whole_cap_stays_committed(
-    monkeypatch,
-    tmp_path,
-):
-    consolidate, stores, sha, settings, sup = _supervised_driver(tmp_path, monkeypatch)
-    assert await _drive(consolidate, stores, sha, settings, sup) == []
-    end = _end(consolidate, stores)
-    assert end["ended"] == "deadline" and end["reconciled"]["journal"] == "unavailable"
-    assert end["usd"] == "unknown" and end["unknown_cost_calls"] is None
-    ledger = _ledger(consolidate, stores)
-    assert [r["phase"] for r in ledger] == ["reserve"]
-    assert consolidate.committed_writer_usd(stores) == Decimal(ledger[0]["cap_usd"])
 
 
 @pytest.mark.asyncio

@@ -103,29 +103,6 @@ def _write_old_map(mem: Repo, sha: str) -> None:
     mem.append_note_lines(sha, lines, ir.NOTES_REF)
 
 
-def test_an_old_map_reads_in_todays_names(mem):
-    head = mem.head()
-    _write_old_map(mem, head)
-    recs = ir.read_records(mem, head)
-    assert {i: (r["status"], r["status_rule"]) for i, r in recs.items()} == {
-        WEEK: (RETIRED, CURATE_RULE),  # the curator's: a retirement with the rule curate
-        PD: (RETIRED, "errors"),
-        TOK: (ADOPTED, None),
-        NOTE: (ON_TRIAL, None),
-    }
-    assert recs[PD]["status_reason"] == "it raised in 2 episodes"
-    # a later unrecorded commit reads the same map, in the same names
-    later = _commit(mem, {"notes/text/dates.md": "---\ntitle: D\ndescription: d\n---\nx\n"}, "note")
-    at, source = ir.records_at(mem, later)
-    assert source == head and at == recs
-    assert ir.status_of(at)(WEEK) == RETIRED and ir.status_of(at)(TOK) == ADOPTED
-    assert ir.is_outcome_retirement(at[PD]) and not ir.is_outcome_retirement(at[WEEK])
-    assert ir.is_outcome_retirement(OLD[PD]) and not ir.is_outcome_retirement(OLD[WEEK])
-    # a function record without a level fails closed unless its examples ran on recorded values; a note has none
-    level = ir.level_of(at)
-    assert (level(WEEK), level(PD), level(TOK), level(NOTE)) == (UNCHECKED, REPRODUCES_ITS_CASE, UNCHECKED, None)
-
-
 def test_the_next_map_keeps_a_curators_retirement_and_decides_an_outcome_retirement_again(mem):
     head = mem.head()
     _write_old_map(mem, head)

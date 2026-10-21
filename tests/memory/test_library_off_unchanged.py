@@ -5,13 +5,10 @@ from __future__ import annotations
 
 import asyncio
 
-from tests.memory.integration import test_consolidate as tc
-from unify.memory import memory_writer as mw
 from unify.memory.integration import consolidate
 from unify.memory.integration import request as request_mod
 from unify.memory.integration.paths import Paths
 from unify.memory.integration.state import State
-from unify.memory.writer_pass import PassConfig, writer_tools
 
 ASYNC_FILES = (
     "pass.lock",
@@ -42,29 +39,3 @@ def test_off_passes_block_and_create_no_async_files(tmp_path, monkeypatch):
         assert not (paths.state_dir / name).exists(), name
 
 
-def test_off_settings_brief_and_tools_are_v2s():
-    s = tc._settings()
-    s.UNIFY_MEMORY_E = ""
-    s.UNIFY_MEMORY_LIBRARY_E = 5  # read only in the library mode
-    assert consolidate.writer_settings(s).experience_budget == 150000
-    assert PassConfig().deadline_s == 900.0 and PassConfig().library_mode is False
-    check = next(t for t in writer_tools() if t["function"]["name"] == "check")[
-        "function"
-    ]["description"]
-    assert "covers and their channels" in check
-
-
-def test_off_a_pass_leaves_no_served_head_lock_or_lag(tmp_path, monkeypatch):
-    monkeypatch.setattr(consolidate, "unillm_turn", tc.FakeWriter())
-    stores = tc._stores(tmp_path)
-    sha, _ = tc._record(stores, "e1")
-    (out,) = tc._run(stores, "e1", sha)
-    assert not mw.lock_path(stores.memory).exists()
-    assert mw.served_head(stores.memory) == stores.memory.head()  # no served ref: main
-    assert stores.memory.run("for-each-ref", "refs/heads/served").strip() == ""
-    events = tc._events(stores)
-    assert all("served_lag_commits" not in e and "ended" not in e for e in events)
-    ledger = consolidate.ledger_path(stores.paths).read_text()
-    assert "unknown_usd_each" not in ledger
-    for name in ASYNC_FILES:
-        assert not (stores.paths.state_dir / name).exists(), name

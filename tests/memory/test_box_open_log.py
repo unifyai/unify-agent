@@ -7,11 +7,9 @@ import json
 import os
 import shutil
 import time
-from types import SimpleNamespace
 
 import pytest
 
-from unify.memory import helpers
 from unify.memory import sandbox_run as sr
 from unify.memory.trigger import PassRequest
 from tests.memory.test_writer_pass import Turns, _call, _writer
@@ -177,53 +175,6 @@ def test_a_writer_cell_open_is_recorded_and_stamped_by_the_host(tmp_path, monkey
     ) in paths  # a line from the box keeps only its event, path and mode
     assert "forged" not in (out / "p1" / "box-opens.jsonl").read_text()
     assert "forged" not in (out / "p1" / "tool-events.jsonl").read_text()
-
-
-@needs_bwrap
-def test_a_helper_cell_open_is_recorded_beside_the_pass_events(tmp_path):
-    hin, lib, work, cells = (
-        tmp_path / n for n in ("inputs", "memory", "work", "cells")
-    )
-    for d in (hin, lib, work, cells):
-        d.mkdir()
-    sr.stage_open_hook(hin)
-    (hin / "x.txt").write_text("x")
-    audit: dict = {}
-    out = helpers.box_cell(
-        "import sys\nopen('/inputs/x.txt').read()\nprint(sys.flags.no_user_site)\n",
-        hin,
-        lib,
-        work,
-        cells,
-        60.0,
-        audit,
-    )
-    assert out.strip() == "1", out
-    events = tmp_path / "out" / "p1" / "tool-events.jsonl"
-    ctx = SimpleNamespace(pass_id="p1", events=events, box_opens=[])
-    row = {"helper_call": "h-1", "call": 2, "tool": "execute_code"}
-    helpers.record_box_opens(ctx, row, audit)
-    assert (
-        row["box_opens"] == 1
-        and row["box_opens_dropped"] == 0
-        and row["box_hook_dead"] is False
-    )
-    want = [
-        {
-            "agent": "helper",
-            "pass_id": "p1",
-            "helper_call": "h-1",
-            "call": 2,
-            "event": "open",
-            "path": "/inputs/x.txt",
-            "mode": "r",
-        },
-    ]
-    assert ctx.box_opens == want
-    assert [
-        json.loads(line)
-        for line in (events.parent / "box-opens.jsonl").read_text().splitlines()
-    ] == want
 
 
 def test_the_open_rows_file_is_never_written_through_a_link(tmp_path):

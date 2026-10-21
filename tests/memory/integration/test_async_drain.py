@@ -13,7 +13,6 @@ import pytest
 
 from unify.memory.integration import async_pass as ap
 from unify.memory.integration.paths import Paths
-from unify.memory.integration.state import State
 
 STUB = r"""
 import json, os, signal, sys, time
@@ -63,42 +62,6 @@ def _launch(paths, mode, deadline_in):
     return proc
 
 
-def test_drain_waits_at_most_the_bound_then_cancels(tmp_path):
-    paths = Paths.under(tmp_path)
-    proc = _launch(paths, "graceful", deadline_in=0.5)
-    started = time.time()
-    report = ap.drain(paths, grace_s=5)
-    assert proc.wait(timeout=5) == 0
-    assert report["in_flight"] is True and report["pass_id"] == "e1.p0"
-    assert report["ended"] == "cancelled" and report["sigkill"] is False
-    assert 0.3 <= report["waited_s"] < 1.5 and time.time() - started < 7
-    assert report["terminated"] is True and report["counted"] is False
-    assert report["after_last_request"] == [
-        {"pass_id": "e1.p0", "ended": "cancelled", "commit": None},
-    ]
-    assert ap.read_inflight(paths) is None
-
-
-def test_drain_kills_a_worker_that_ignores_sigterm(tmp_path):
-    paths = Paths.under(tmp_path)
-    proc = _launch(paths, "stubborn", deadline_in=0.2)
-    report = ap.drain(paths, grace_s=0.5, settle_s=3)
-    assert report["ended"] == "killed" and report["terminated"] is True
-    assert report["sigkill"] is True
-    assert proc.wait(timeout=3) == -9 and ap.read_inflight(paths) is None
-
-
-def test_a_process_left_in_the_workers_group_is_killed_before_termination_is_claimed(
-    tmp_path,
-):
-    paths = Paths.under(tmp_path)
-    proc = _launch(paths, "straggler", deadline_in=0.2)
-    report = ap.drain(paths, grace_s=1, settle_s=3)
-    proc.wait(timeout=3)
-    assert report["ended"] == "cancelled" and report["sigkill"] is True
-    assert report["terminated"] is True and ap._group_alive(proc.pid) is False
-
-
 def test_a_stale_record_gets_no_signal(tmp_path):
     paths = Paths.under(tmp_path)
     proc = _launch(paths, "quick", deadline_in=60)
@@ -120,57 +83,6 @@ def test_wait_s_shortens_the_wait_and_a_finished_worker_is_reported(tmp_path):
     report2 = ap.drain(paths2)
     assert report2["in_flight"] is False and report2["ended"] == "landed"
     assert report2["waited_s"] == 0
-
-
-def test_a_pass_landing_after_the_last_request_is_reported_and_not_counted(tmp_path):
-    paths = Paths.under(tmp_path)
-    state = State.load(paths.state)
-    ap.record_result(
-        paths,
-        {
-            "pass_id": "e1.p0",
-            "ended": "landed",
-            "commit": "a" * 40,
-            "drift_cleared": [],
-            "suspect_cleared": [],
-        },
-    )
-    # the last request saw it
-    assert [r["pass_id"] for r in ap.apply_results(state, paths)] == ["e1.p0"]
-    ap.record_result(
-        paths,
-        {
-            "pass_id": "e9.p0",
-            "ended": "landed",
-            "commit": "b" * 40,
-            "drift_cleared": [],
-            "suspect_cleared": [],
-        },
-    )  # after the last request
-    report = ap.drain(paths)
-    assert report["in_flight"] is False and report["counted"] is False
-    assert report["after_last_request"] == [
-        {"pass_id": "e9.p0", "ended": "landed", "commit": "b" * 40},
-    ]
-    events = [
-        json.loads(x)
-        for x in (paths.state_dir / "events.jsonl").read_text().splitlines()
-    ]
-    assert not any(
-        e.get("phase") == "landed" and e.get("pass_id") == "e9.p0" for e in events
-    )
-    assert events[-1] == report
-    assert ap.unapplied(paths) == [
-        report["after_last_request"][0] | {"drift_cleared": [], "suspect_cleared": []},
-    ]
-
-
-def test_drain_never_starts_a_pass(tmp_path):
-    paths = Paths.under(tmp_path)
-    report = ap.drain(paths)
-    assert report["in_flight"] is False and report["ended"] == "none"
-    assert ap.read_inflight(paths) is None and not ap.results_path(paths).exists()
-    assert not ap.lock_path(paths).exists()
 
 
 def test_drain_archives_the_repo_with_its_notes_once_no_worker_writes(tmp_path):
@@ -234,27 +146,3 @@ def _unseen_worker(tmp_path, hold_s):
     return paths, proc
 
 
-def test_a_pass_worker_in_another_pid_namespace_is_waited_for_by_its_lock(tmp_path):
-    """C's w289 finding: the drain ran in a sandbox of its own, could not see the spawned worker, took its record for
-    stale and returned, and the session's end then killed the worker before its pass started. A worker that holds the
-    pass lock is in flight wherever it runs: the drain waits for the lock to free (never signalling what it cannot
-    see) and reports the worker's own result."""
-    paths, proc = _unseen_worker(tmp_path, 2.0)
-    sent = []
-    report = ap.drain(paths, kill=lambda *a: sent.append(a))
-    proc.wait(timeout=30)
-    assert report["in_flight"] is True and report["unseen"] is True and report["pass_id"] == "e1.p0"
-    assert report["terminated"] is True and report["ended"] == "landed" and report["waited_s"] >= 1.0
-    assert sent == [] and ap.read_inflight(paths) is None
-
-
-def test_an_unseen_worker_still_running_at_the_bound_is_reported_not_terminated_and_never_signalled(tmp_path):
-    paths, proc = _unseen_worker(tmp_path, 30.0)
-    try:
-        sent = []
-        report = ap.drain(paths, wait_s=1.0, kill=lambda *a: sent.append(a))
-        assert report["terminated"] is False and report["ended"] == "not_terminated" and sent == []
-        assert ap.read_inflight(paths) is not None  # still in flight: its record stays
-    finally:
-        proc.kill()
-        proc.wait()

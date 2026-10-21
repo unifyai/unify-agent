@@ -11,9 +11,6 @@ from unify.memory.batch_map import build_batch_map
 from tests.memory.test_gate import _candidate
 from unify.memory import fixtures as fx
 from tests.memory import library_example_world as w
-from tests.memory.library_example_world import (
-    library_example_world,
-)  # noqa: F401 (a fixture)
 from tests.memory.test_pool import EMPTY, _finish_with, _Stores
 from tests.memory.test_writer_pass import _call
 from tests.memory.test_writer_library_tools import EPS, _pass
@@ -144,11 +141,6 @@ def test_the_brief_names_every_batch_map_key_and_its_shape():
     for k in sorted(keys):
         assert f"`{k}`" in text or f'\\"{k}\\"' in text or f'"{k}"' in text, k
     assert "`request` (str" in text and '{"version": 1, "episodes": [row, ...]' in text
-
-
-def test_neither_brief_speaks_of_the_pass_time():
-    for text in (pv.write_brief_now(), pv.curate_brief_now()):
-        assert "time runs out" not in text and "kept as a draft" in text
 
 
 # --- 5b. G3's exact-assertion refusal shows a passing form ----------------------------------------------------------

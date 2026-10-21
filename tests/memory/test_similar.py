@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from unify.memory import similar, tool_spec, workspace_trees
+from unify.memory import similar, workspace_trees
 from unify.memory.episodes import Cell
 from unify.memory.redact import Redactor
 
@@ -111,14 +111,6 @@ def test_indexing_stops_at_its_time_limit_and_is_completed_later(tmp_path):
         similar.index_episode(root, "e3", EPISODES["e3"].cells)["status"] == "written"
     )
     assert similar.read_entry(root, "e3")["complete"] is True
-
-
-def test_episodes_recorded_before_the_index_are_added_on_request(tmp_path):
-    root = tmp_path / "i"
-    similar.index_episode(root, "e1", EPISODES["e1"].cells)
-    got = similar.index_missing(root, EPISODES.__getitem__, ["e1", "e2", "e3", "nope"])
-    assert got == {"indexed": 2, "left": 0, "failed": 1}
-    assert sorted(similar.load_index(root)) == ["e1", "e2", "e3"]
 
 
 def test_the_recording_hook_indexes_redacted_cells(tmp_path):
@@ -230,20 +222,6 @@ def test_the_reply_is_deterministic(tmp_path):
     a = similar.handle({"episode": "e1", "cell": 1}, _indexed(tmp_path / "a"))
     b = similar.handle({"episode": "e1", "cell": 1}, _indexed(tmp_path / "b"))
     assert a == b
-
-
-def test_the_spec_gives_the_tool_to_the_writer_and_helpers_only():
-    spec = next(s for s in tool_spec.registry() if s.name == "similar")
-    assert spec is similar.SPEC and spec.roles == ("writer", "helper")
-    on = frozenset({"similar"})  # offered only when the run has an index to search
-    assert "similar" in [s.name for s in tool_spec.tools_for("write", on)]
-    assert "similar" in [s.name for s in tool_spec.tools_for("helper", on)]
-    assert "similar" not in [s.name for s in tool_spec.tools_for("curate", on)]
-    assert "similar" not in [s.name for s in tool_spec.tools_for("write")]
-    assert (
-        tool_spec.refusal("similar", "unknown_episode", episode="x")
-        == "refused: no recorded episode x."
-    )
 
 
 # --- the hooks -----------------------------------------------------------------------------------------------------

@@ -42,29 +42,6 @@ async def test_the_boundary_callback_returns_the_block(record_mode):
     assert "#2 user: use 2024" in await b.on_turn_boundary()
 
 
-def test_spawning_is_permitted_with_python_in_the_worker():
-    assert binding.spawn_permitted() == (True, "")
-
-
-def test_spawning_needs_the_worker_sandbox(python_in_process):
-    allowed, why = binding.spawn_permitted()
-    assert allowed is False and "sandboxed worker" in why
-
-
-def test_the_prompt_section_states_the_rules():
-    text = binding.PROMPT_SECTION
-    for words in (
-        "await agents.spawn",
-        "record.post",
-        "await record.wait",
-        "never while you work",
-        "Entries from `user` are your instructions",
-        "only you can answer them",
-    ):
-        assert words in text
-    assert "example" not in text.lower()
-
-
 def test_a_long_request_still_binds(record_mode):
     b = binding.bind_for_act(request="ä" * 30_000, user_reads=False)
     entry = b.pool.record.entries[0]

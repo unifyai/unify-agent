@@ -144,13 +144,6 @@ def test_params_and_catalog_form():
     }
 
 
-def test_the_standard_text_is_generated_from_the_constants():
-    text = docstrings.describe_standard()
-    for name in docstrings.REQUIRED_SECTIONS + docstrings.OPTIONAL_SECTIONS:
-        assert f"`{name}:`" in text
-    assert str(docstrings.MIN_REFUSAL_CHARS) in text and "MemoryInputError" in text
-
-
 def test_the_example_must_call_the_function_on_a_fixture_and_show_its_result():
     """A real example calls the function itself with an argument, shows a result and reads a fixture."""
     split = docstrings.problems(

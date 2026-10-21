@@ -8,7 +8,7 @@ import asyncio
 from unify.memory import batch_map as bm
 from unify.memory import views
 from unify.memory.episodes import Cell, Episode
-from unify.memory.writer_pass import _head_marked, writer_tools
+from unify.memory.writer_pass import _head_marked
 from unify.memory.trigger import PassRequest
 from tests.memory.test_writer_pass import Turns, _call, _writer, needs_bwrap
 
@@ -47,37 +47,6 @@ def _pass(tmp_path, turns, eids=("e1", "e2"), **cfg):
         writer.run(PassRequest("incremental", "svc", list(eids), False), "p1"),
     )
     return out, model
-
-
-def test_tools_present_only_with_library_mode():
-    names = lambda ts: {t["function"]["name"] for t in ts}  # noqa: E731
-    assert names(writer_tools()) == {"execute_code", "check", "finish"}
-    assert names(writer_tools(library_mode=True)) == {
-        "execute_code",
-        "check",
-        "finish",
-        "read",
-        "grep",
-        "overview",
-        "read_episode",
-        "fixture",
-        "replay",
-        "land_capture",
-        # the pass's record: every agent can message, read, wait and see who runs; the writer replies and stops
-        "send",
-        "messages",
-        "wait",
-        "who",
-        "reply",
-        "stop",
-    }
-    assert "pool" in names(writer_tools(library_mode=True, pool=True))
-    desc = next(
-        t
-        for t in writer_tools(library_mode=True)
-        if t["function"]["name"] == "read_episode"
-    )
-    assert "observation:<i>" in desc["function"]["description"]
 
 
 def test_cell_output_is_head_first_and_marked():
@@ -252,11 +221,3 @@ def test_read_episode_bad_offsets_refuse_the_whole_call(tmp_path):
     assert out.coverage["parts_read"] == {"e1": ["request"]}
 
 
-def test_read_episode_says_its_page_is_one_8000_byte_page():
-    desc = next(
-        t
-        for t in writer_tools(library_mode=True)
-        if t["function"]["name"] == "read_episode"
-    )
-    assert "on one page of 8000 bytes" in desc["function"]["description"]
-    assert "parts" in desc["function"]["parameters"]["properties"]

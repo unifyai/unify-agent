@@ -23,7 +23,6 @@ from types import SimpleNamespace
 import pytest
 
 from tests.memory.test_librarian import (
-    CAPTURE,
     PLANTED_VALUE,
     REQUEST,
     TOTAL,

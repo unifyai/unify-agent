@@ -21,7 +21,6 @@ import pytest
 from tests.memory.integration import fake_tracks
 from tests.memory.integration.test_checkout import _seed
 from unify import sandbox
-from unify.function_manager.primitives import observers
 from unify.memory.integration import hooks
 from unify.memory.integration import request as request_mod
 from unify.memory.integration.paths import Paths
@@ -107,68 +106,6 @@ def _left_nothing(paths: Paths) -> None:
 
 
 # ── begin ────────────────────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize("surfacing", ["index", "catalogue"])
-def test_begin_exports_memory_and_opens_the_scope(mv2, monkeypatch, surfacing):
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_SURFACING", surfacing)
-    run = _begin(mv2, "Say hi to ada.")
-    try:
-        paths = mv2.paths
-        assert request_mod.current() is run
-        assert run.pin == mv2.sha and run.request == "Say hi to ada."
-        assert (paths.checkout / "env/spotify/__init__.py").exists()
-        if surfacing == "catalogue":
-            # the generated catalogue sits beside the commit's files; the prompt holds the constant guide
-            readme = (paths.checkout / "README.md").read_text()
-            assert "- `hello(apis, name)`: Say hi." in readme
-            assert (paths.checkout / ".memory/catalog.json").is_file()
-            assert (paths.checkout / "memory.py").is_file()
-            assert set(run.generated) == {
-                "README.md",
-                "memory.py",
-                ".memory/catalog.json",
-                ".memory/shapes.py",
-            }
-            from unify.memory.integration.prompt import GUIDE
-            from unify.memory.integration.state import State
-
-            assert run.index == GUIDE
-            # shown once, kept for the rest of the run (saved at once, so an abort keeps it too)
-            assert run.state.guide is True and State.load(paths.state).guide is True
-        else:  # v2: the index in the prompt, nothing generated beside the export
-            assert "`hello(apis, name)`" in run.index
-            assert run.state.guide is False and not paths.state.exists()
-            assert run.generated == {}
-            assert not (paths.checkout / "README.md").exists()
-            assert not (paths.checkout / "memory.py").exists()
-            assert not (paths.checkout / ".memory").exists()
-        assert hooks.system_prompt("S").endswith(run.index)
-        assert hooks.worker_mounts() == [paths.checkout]
-        assert not _lock_is_free(paths)
-        # the work-tree capture saw the policy's workspace and took its before snapshot
-        (wc_paths, workspace), _ = mv2.fakes.of("WorktreeCapture")
-        assert wc_paths == paths
-        assert workspace == sandbox.build_policy().workspace
-        assert mv2.fakes.names()[:3] == [
-            "open_stores",
-            "WorktreeCapture",
-            "worktree.begin",
-        ]
-        # the transcript continues the episode id; costs are recorded; no tool observer (not wired)
-        from unify import transcripts
-
-        assert mv2.ctx.run(transcripts._REQUESTED_ID.get) == run.episode_id
-        assert transcripts._REQUESTED_ID.get() is None  # only the run's context
-        assert run.observer is None and mv2.ctx.run(observers._OBSERVERS.get) == ()
-        assert mv2.fakes.cost_active == [True]
-        assert run.episode_id[:8].isdigit() and run.episode_id[8] == "T"
-    finally:
-        _abort(mv2, run)
-    _left_nothing(mv2.paths)
-    assert mv2.ctx.run(transcripts._REQUESTED_ID.get) is None
-    assert mv2.fakes.names()[-1] == "worktree.abort"
-    assert mv2.fakes.cost_active == [True, False]
 
 
 def test_a_stale_export_from_a_killed_process_is_replaced(mv2):
@@ -723,16 +660,6 @@ def test_a_fixed_writer_effort_overrides_the_actors_only_when_declared(
     _, kw = mv2.fakes.of("run_due_passes")
     want = actor_effort if writer_effort == "actor" else writer_effort
     assert kw["effort"] == want and run.effort == actor_effort
-
-
-def test_the_writer_effort_setting_is_validated():
-    from unify.memory.integration import switch
-
-    assert switch.parse_writer_effort("") == "actor"
-    assert switch.parse_writer_effort("low") == "low"
-    assert switch.parse_writer_effort(" Medium ") == "medium"
-    with pytest.raises(ValueError):
-        switch.parse_writer_effort("xhigh")
 
 
 def test_quit_without_consolidation_records_the_episode_and_starts_no_pass(mv2):

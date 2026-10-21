@@ -155,21 +155,6 @@ def test_an_unrecorded_call_is_a_replay_miss(tmp_path, reviewed):
 # --- 4. unknown effects are compared, never executed --------------------------------------------------------------------------
 
 
-@needs_bwrap
-def test_an_unknown_effect_call_is_answered_from_the_record_and_the_box_holds_no_real_handle(tmp_path, reviewed):
-    held = sorted(["_rows", "_table", "_names", "_next", "_used", "max_calls", "issued"])
-    ctx = _ctx(tmp_path)
-    res = wt.run_test(ctx, "memory.files.report:handles", "e1", {"kind": "returns", "value": held}, "replay")
-    assert res.outcome == "as_stated", res.detail
-    rows = [json.loads(x) for x in ctx.tests_path.read_text().splitlines()]
-    assert rows[-1]["effects"]["unknown"] == 1
-    # the replay's whole surface is its recorded rows: no attribute leads to a channel, a socket or a file
-    from unify.memory import replay_box
-
-    env = replay_box.ReplayEnv([a.__dict__ for a in _ep().actions])
-    assert all(not callable(getattr(env, k)) for k in vars(env))
-
-
 # --- 5. the expectation is on record first, and a changed one is a new test --------------------------------------------------
 
 
@@ -232,27 +217,3 @@ def test_calls_that_are_not_tests_are_refused_and_nothing_is_recorded(tmp_path):
 # --- 8. replay is refused until its review is recorded ----------------------------------------------------------------------
 
 
-def test_replay_is_refused_with_what_to_do_while_its_review_is_not_recorded(tmp_path):
-    assert wt.REPLAY_REVIEWED is False
-    ctx = _ctx(tmp_path)
-    with pytest.raises(wt.WriterTestRefused, match="awaits its confinement review.*mode='value'"):
-        wt.run_test(ctx, "memory.files.report:write_report", "e1", RECORDED, "replay")
-    assert not ctx.tests_path.exists()
-
-
-def test_the_judgement_order_and_the_call_comparison():
-    stated = wt.Expectation.of(RECORDED)
-    served = {"channel": "files", "method": "write", "args": ["out/report.txt", "total 6"], "kwargs": {},
-              "outcome": "served", "effect": "write", "row": 0}  # fmt: skip
-    rec = [{"channel": "files", "method": "write", "args": ["out/report.txt", "total 6"], "kwargs": {}}]
-    assert wt.judge(stated, {"timed_out": True}, "replay")[0] == "timeout"
-    assert wt.judge(stated, {"outcome": "not run"}, "replay")[0] == "not_run"
-    ok = {"outcome": "returned", "result": None, "issued": [served], "recorded": rec,
-          "calls": {"matched": 1, "missing": 0}}  # fmt: skip
-    assert wt.judge(stated, ok, "replay")[0] == "as_stated"
-    other_effect = wt.Expectation.of({"kind": "issues_calls", "calls": [{**RECORDED["calls"][0], "effect": "read"}]})
-    assert wt.judge(other_effect, ok, "replay")[0] == "not_as_stated"
-    repeated = {**ok, "issued": [served, {**served, "outcome": "repeat"}]}
-    out, detail = wt.judge(stated, repeated, "replay")
-    assert out == "not_as_stated" and "a repeated write" in detail
-    assert wt.args_digest(["out/report.txt", "total 6"]) == wt.CallSpec.of(RECORDED["calls"][0]).args_digest

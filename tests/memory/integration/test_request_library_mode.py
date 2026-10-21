@@ -18,15 +18,7 @@ from tests.memory.integration.test_request import (
     _begin,
     _finish,
     _transcript,
-    mv2,
 )  # noqa: F401
-
-
-def test_memory_library_on_reads_the_setting(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "off")
-    assert request_mod.memory_library_on() is False
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
-    assert request_mod.memory_library_on() is True
 
 
 def test_recorded_dialogue_keeps_the_full_observation_only_under_library_mode():

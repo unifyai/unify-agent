@@ -19,9 +19,8 @@ from types import SimpleNamespace
 import pytest
 
 from unify.common import tool_channel as tc
-from unify.memory import helpers, tool_handlers, tool_spec
+from unify.memory import tool_handlers, tool_spec
 from unify.memory.trigger import PassRequest
-from unify.memory.writer_pass import writer_tools
 from unify.memory.writer_tools import Reply
 from tests.memory.test_writer_library_tools import EPS
 from tests.memory.test_writer_pass import Turns, _call, _writer
@@ -281,25 +280,6 @@ def test_the_event_file_has_the_base_fields_plus_the_additive_ones(tmp_path):
     assert end["handlers_alive_at_gate"] == 0 and "temp_kept" not in end
 
 
-def test_off_the_requests_and_rows_are_as_before(tmp_path):
-    model = ToolsSeen([_call("a", "read", {"path": "/inputs"})])
-    _, _, writer = _writer(
-        tmp_path,
-        model,
-        library_mode=True,
-        max_calls=2,
-        pass_record_root=str(tmp_path / "out"),
-    )
-    writer.load = EPS.__getitem__
-    asyncio.run(writer.run(PassRequest("incremental", "svc", ["e1"], False), "p1"))
-    names = [t["function"]["name"] for t in writer_tools(library_mode=True)]
-    assert model.tool_lists[0] == names
-    assert all(not (ADDED_FIELDS & set(r)) for r in writer.tool_events)
-    events = [json.loads(line) for line in (tmp_path / "out" / "p1" / "tool-events.jsonl").read_text().splitlines()]
-    (end,) = [r for r in events if r["event"] == "pass_end"]
-    assert "handlers_alive_at_gate" not in end
-
-
 # --- the allow-lists ---------------------------------------------------------------------------------------------------
 
 
@@ -345,37 +325,6 @@ def _thread_call(box, tool, args):
 
     threading.Thread(target=go, daemon=True).start()
     return fut
-
-
-def test_a_helper_cannot_call_delegate_finish_or_check_and_a_curator_cannot_call_pool():
-    helper_allow = _allow(t["function"]["name"] for t in helpers.helper_tools())
-    curator_allow = _allow(
-        t["function"]["name"]
-        for t in writer_tools(library_mode=True, role="curate", pool=True, helper=True, similar=True)
-    )
-    assert "delegate" not in helper_allow and "pool" not in curator_allow
-
-    async def main():
-        out = {}
-        ch, box, rows = _channel_for("helper", helper_allow, SimpleNamespace())
-        task = asyncio.ensure_future(ch.serve())
-        for tool, args in (("delegate", {"task": "x"}), ("finish", {"summary": "s"}), ("check", {})):
-            out[tool] = await _thread_call(box, tool, args)
-        await ch.close("ended", record=False)
-        await asyncio.gather(task, return_exceptions=True)
-        ch2, box2, rows2 = _channel_for("curator", curator_allow, SimpleNamespace())
-        task2 = asyncio.ensure_future(ch2.serve())
-        out["pool"] = await _thread_call(box2, "pool", {"op": "list"})
-        await ch2.close("ended", record=False)
-        await asyncio.gather(task2, return_exceptions=True)
-        return out, rows + rows2
-
-    out, rows = asyncio.run(main())
-    for tool, exc in out.items():
-        assert getattr(exc, "form", None) == "unknown_tool", (tool, exc)
-        # another role's tool reads as unavailable in this role, never as unknown (and no other role's tool is named)
-        assert f"tools.{tool} isn't available in your role" in str(exc)
-    assert [r["refusal"]["form"] for r in rows] == ["unknown_tool"] * 4
 
 
 # --- no secret, host path or route value in any reply or row --------------------------------------------------------------
@@ -621,7 +570,6 @@ def test_the_worker_pool_reads_the_evidence_store_through_its_own_connection(tmp
     finally:
         undo()
     assert type(ev.db).__name__ == "Connection"
-
 
 
 def test_a_pass_that_ends_with_a_handler_thread_alive_keeps_its_folder_and_says_why(tmp_path, monkeypatch):

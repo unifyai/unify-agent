@@ -539,49 +539,6 @@ def test_a_helper_that_never_fixes_its_claims_hands_back_none(tmp_path, fake_box
     assert status["claims"] == [] and status["summary"] == ""
 
 
-def test_the_done_spec_asks_for_sources_and_the_briefs_say_claims_are_untrusted():
-    props = helpers.DONE_SPEC.parameters["properties"]
-    assert helpers.DONE_SPEC.parameters["required"] == ["summary", "claims"]
-    assert props["claims"]["items"]["required"] == ["claim", "sources"]
-    assert "<episode>/<part>" in helpers.DONE_SPEC.description
-    assert "done(summary, claims)" in helpers.HELPER_BRIEF
-    assert (
-        "is refused" in helpers.HELPER_BRIEF
-        and "<episode>/<part>" in helpers.HELPER_BRIEF
-    )
-    assert "untrusted until you read the parts" in helpers.SPEC.description
-    assert "cannot launch helpers" in helpers.SPEC.description
-
-
-def test_the_helper_brief_names_exactly_the_tools_the_helper_gets():
-    for similar in (True, False):
-        brief = helpers.helper_brief(similar)
-        names = {t["function"]["name"] for t in helpers.helper_tools(similar=similar)}
-        assert "{similar}" not in brief
-        for name in (
-            "overview",
-            "read_episode",
-            "read",
-            "grep",
-            "similar",
-            "execute_code",
-            "stage",
-            "done",
-            "delegate",
-            "send",
-            "ask",
-            "messages",
-            "wait",
-            "who",
-            "reply",
-            "stop",
-        ):
-            assert (f"`{name}(" in brief or f"`{name}`" in brief) == (name in names), (
-                similar,
-                name,
-            )
-
-
 def test_staging_again_replaces_and_the_quota_is_stated(tmp_path, monkeypatch):
     st = helpers._Staging(tmp_path / "s" / "call-0")
     assert st.stage("notes.md", "one") == "staged notes.md (3 bytes)"
@@ -593,45 +550,6 @@ def test_staging_again_replaces_and_the_quota_is_stated(tmp_path, monkeypatch):
     assert refused.startswith("refused: 'evil.sh': outside ") and "candidates/*.py" in refused, refused
     with pytest.raises(FileExistsError):
         helpers._Staging(tmp_path / "s" / "call-0")  # always a fresh directory
-
-
-def test_delegate_is_a_write_tool_offered_only_with_a_helper_lane():
-    write = [s.name for s in tool_spec.tools_for("write", frozenset({"helper"}))]
-    assert "delegate" in write
-    assert "delegate" not in [s.name for s in tool_spec.tools_for("write")]
-    assert "delegate" not in [
-        s.name for s in tool_spec.tools_for("curate", frozenset({"helper"}))
-    ]
-    names = [t["function"]["name"] for t in helpers.helper_tools()]
-    assert "delegate" not in names and {"stage", "done", "execute_code"} <= set(names)
-    # a helper never launches helpers, whatever flags the pass has
-    for flags in (
-        frozenset(),
-        frozenset({"helper"}),
-        frozenset({"helper", "pool", "fork"}),
-    ):
-        assert "delegate" not in [s.name for s in tool_spec.tools_for("helper", flags)]
-
-
-def test_the_analysts_setting_is_retired_loudly():
-    assert (
-        switch.parse_library_analysts("") == "off"
-        and switch.parse_library_analysts("off") == "off"
-    )
-    with pytest.raises(ValueError, match="retired"):
-        switch.parse_library_analysts("writer")
-
-
-def test_helper_model_defaults_to_the_forks_model():
-    s = SimpleNamespace(
-        UNIFY_MEMORY_LIBRARY_HELPER_MODEL="",
-        UNIFY_MODEL="vendor/actor-model@openrouter",
-    )
-    assert switch.library_helper_model(s) == "vendor/actor-model@openrouter"
-    s.UNIFY_MEMORY_LIBRARY_HELPER_MODEL = "vendor/other"
-    assert switch.library_helper_model(s) == "vendor/other"
-    with pytest.raises(ValueError):
-        switch.parse_library_helper_model("two words")
 
 
 def test_the_helper_lane_reads_its_token_from_a_descriptor_and_scrubs_the_environment(

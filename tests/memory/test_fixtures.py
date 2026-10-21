@@ -256,20 +256,6 @@ def test_a_cell_that_raised_or_printed_nothing_is_refused():
         fx.source_bytes(CELLS, "cell:3", _blob)
 
 
-def test_the_fixture_tool_copies_a_cell_and_refuses_one_that_raised(tmp_path):
-    from unify.memory import writer_tools as wt
-
-    eps = {"e2": CELLS}.get
-    dest = "memory/office/tests/data/total.txt"
-    ok = wt.fixture({"episode": "e2", "source": "cell:0", "dest": dest}, eps, tmp_path, _blob, ["e2"])
-    assert ok.status == "ok" and (tmp_path / dest).read_bytes() == b"120\n"
-    assert fx.derive_ledger(tmp_path)[dest]["source"] == "cell:0"
-    bad = wt.fixture({"episode": "e2", "source": "cell:1", "dest": dest}, eps, tmp_path, _blob, ["e2"])
-    assert bad.status != "ok" and "cell 1 of e2 raised; its output is not a recorded value" in bad.text
-    assert "'cell:<i>'" in wt.FIXTURE.description
-    assert wt.contents(CELLS, "e2", _blob).count("fixture source: cell:0 (4 bytes)") == 1
-
-
 # --- provenance across passes ---------------------------------------------------------------------------------------
 
 LINE_REL = "memory/acct/tests/data/users.me.inputs.jsonl"

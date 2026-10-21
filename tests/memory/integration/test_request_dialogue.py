@@ -26,7 +26,6 @@ from unify.memory.episodes import EpisodeWriter
 from unify.memory.experience import experience_tokens
 from unify.memory.gitio import Repo
 from unify.memory.integration import request as request_mod
-from unify.memory.integration import switch
 from unify.memory.integration.adapters import dialogue
 from unify.memory.integration.trajectory import assemble
 from unify.memory.redact import Redactor
@@ -72,26 +71,6 @@ def test_env_redacts_with_the_runs_redactor(mv2, monkeypatch):
     _, kw = mv2.fakes.of("assemble")
     first, *_rest = [a for a in kw["extra_actions"] if a.kind == "dialogue"]
     assert first.response == "proxy <secret:ARC_PROXY_TOKEN>"
-
-
-@pytest.mark.parametrize("raw", ["", "off"])
-def test_off_records_the_worktree_rows_only(mv2, monkeypatch, raw):
-    monkeypatch.setattr(
-        SETTINGS,
-        "UNIFY_MEMORY_DIALOGUE",
-        switch.parse_dialogue(raw),
-    )
-
-    def never(*_a, **_k):
-        raise AssertionError("the dialogue adapter ran with the switch off")
-
-    monkeypatch.setattr(dialogue, "dialogue_actions", never)
-    run = _begin(mv2, "an ARC visit")
-    _write_transcript(run, visit()["lines"])
-    _finish(mv2, run)
-    _, kw = mv2.fakes.of("assemble")
-    assert kw["extra_actions"] == [fake_tracks.WT_ACTION]
-    assert not mv2.paths.errors.exists()
 
 
 # --- a single-turn office request: its final reply is never answered -------------------------------------

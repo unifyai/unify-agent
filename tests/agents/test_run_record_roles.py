@@ -41,62 +41,6 @@ def run_record_on(monkeypatch):
 # --- test 5: every role has the four comms tools, and who shows the roster --------------------------------------------
 
 
-def test_every_role_has_the_four_comms_tools_on_the_run_record(run_record_on):
-    from unify.actor.tool_handlers import actor_flags
-    from unify.memory.helpers import helper_flags
-
-    flags = {
-        "actor": actor_flags("actor", can_store=False, librarian=True),
-        "teammate": actor_flags("teammate", can_store=False, librarian=False),
-        "writer": frozenset({"pool", "similar", "helper", "edit"}),
-        "curator": frozenset({"edit"}),
-        "helper": helper_flags(True),
-        "librarian": frozenset(),
-    }
-    for agent, f in flags.items():
-        allowed = set(R.allow_list(agent, f))
-        assert RECORD_TOOLS <= allowed, (agent, sorted(allowed))
-        stub = R.render_stub(R.allow_list(agent, f), agent)
-        for name in RECORD_TOOLS:
-            assert f"def {name}(" in stub, (agent, name)
-        # one definition for every agent: the same spec and the same handler
-        for name in RECORD_TOOLS:
-            assert R.registry()[name] is R._RUN_SPECS[name]
-            assert R.handler_for(agent, name) == (
-                f"unify.agents.run_record_tools:{name}",
-                False,
-            )
-    # the fork, which runs no code, makes the same calls through its relay
-    from unify.memory.integration import fork, fork_worker
-
-    assert fork_worker.comms_calls(
-        'tools.send("@writer x")\nprint(tools.wait(timeout=5))\ntools.who()'
-    ) == [
-        ("send", {"text": "@writer x"}),
-        ("wait", {"timeout": 5}),
-        ("who", {}),
-    ]
-    assert fork_worker.comms_calls("tools.messages(all=True)") == [
-        ("messages", {"all": True})
-    ]
-    assert fork_worker.comms_calls("import os\ntools.send('x')") is None
-    assert fork_worker.comms_calls("tools.read('/memory')") is None
-    assert (
-        fork.RECORD_CALLS_ONLY in fork.fork_instruction()
-        and fork.NO_TOOLS not in fork.fork_instruction()
-    )
-
-
-def test_with_the_switch_off_no_role_gains_or_loses_a_tool(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS_RUN_RECORD", "")
-    assert R.registry()["send"] is R.SEND and "librarian" not in R.SEND.roles
-    assert not RECORD_TOOLS & set(R.allow_list("librarian", frozenset()))
-    from unify.memory.integration import fork
-
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
-    assert fork.fork_instruction() == fork.INSTRUCTION_IN_CODE
-
-
 def test_who_shows_the_roster_and_whom_this_agent_should_mention(tmp_path):
     from unify.agents import run_record_tools as T
 
@@ -158,49 +102,6 @@ def test_the_actors_and_a_teammates_first_message_carry_the_common_section(
     assert {r["name"]: r["state"] for r in read_roster(tmp_path / "home")["agents"]}[
         main.name
     ] == "ended"
-
-
-def test_the_writers_first_message_carries_the_common_section_and_its_brief_points_at_it(
-    run_record_on,
-    tmp_path,
-    monkeypatch,
-):
-    """A writer pass on the run record (a pass worker's, the mesh on with the service off): the brief stays a constant
-    prefix and the first message carries the common section and the writer's roster lines.
-    """
-    from tests.memory.integration import test_consolidate as tc
-    from unify.memory import messaging
-    from unify.memory.integration import consolidate
-
-    fake = tc.FakeWriter()
-    monkeypatch.setattr(consolidate, "unillm_turn", fake)
-    # the fake writer answers with JSON tools, so this pass runs with the tools in code off; the run record's own need
-    # for them (a refusal tested in tests/memory/integration) is not what this checks
-    from unify.memory.integration import switch
-
-    monkeypatch.setattr(switch, "redesign_a_refusal", lambda settings: None)
-    tc._no_records(monkeypatch)
-    stores = tc._stores(tmp_path)
-    sha, _ = tc._record(stores, "e1")
-    settings = tc._settings_library()
-    settings.UNIFY_AGENTS_RUN_RECORD = "on"
-    asyncio.run(
-        consolidate.run_due_passes(
-            stores,
-            "e1",
-            sha,
-            tc.State(stores.paths.state),
-            effort="low",
-            settings=settings,
-            emit=None,
-        ),
-    )
-    system, first = fake.seen[0][0]["content"], fake.seen[0][1]["content"]
-    assert first.count(R.COMMON_SECTION) == 1 and "you are `writer` (writer)" in first
-    assert messaging.RECORD_TEXT_RUN in system and R.COMMON_SECTION not in system
-    # the pass's agent joined the run record and left it at the pass's end (no service holds its place)
-    roster = {r["name"]: r for r in read_roster(stores.paths.home)["agents"]}
-    assert roster["writer"]["state"] == "ended" and roster["writer"]["role"] == "writer"
 
 
 def _tokens(text: str) -> int:

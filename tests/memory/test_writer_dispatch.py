@@ -9,11 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from unify.memory import helpers
-from unify.memory import library_prompts as lp
 from unify.memory import similar
 from unify.memory.trigger import PassRequest
-from unify.memory.writer_pass import writer_tools
 from tests.memory.test_writer_library_tools import EPS
 from tests.memory.test_writer_pass import Turns, _call, _writer
 
@@ -95,33 +92,6 @@ def _pass(tmp_path, turns, *, helper=None, **cfg):
         writer.run(PassRequest("incremental", "svc", ["e1", "e2"], False), "p1"),
     )
     return out, model, writer
-
-
-def test_delegate_and_similar_are_offered_only_with_their_lane_and_index():
-    plain = names(writer_tools(library_mode=True))
-    assert "delegate" not in plain and "similar" not in plain
-    both = names(writer_tools(library_mode=True, helper=True, similar=True))
-    assert {"delegate", "similar"} <= both and both - plain == {"delegate", "similar"}
-    assert "delegate" not in names(
-        writer_tools(library_mode=True, helper=True, role="curate"),
-    )
-    assert "similar" not in names(
-        writer_tools(library_mode=True, similar=True, role="curate"),
-    )
-    # the brief's Tools section names exactly the tools offered
-    brief = lp.write_brief_now(helper=True, similar=True)
-    assert (
-        "- `delegate`:" in brief
-        and "- `similar`:" in brief
-        and "with `delegate`" in brief
-    )
-    bare = lp.write_brief_now()
-    assert "`delegate`" not in bare and "`similar`" not in bare
-
-
-def test_the_helper_gets_its_readers_from_the_registry_and_never_delegate():
-    assert names(helpers.helper_tools()) == HELPER_TOOLS
-    assert names(helpers.helper_tools(similar=False)) == HELPER_TOOLS - {"similar"}
 
 
 def test_a_writer_that_delegates_gets_the_helpers_messages_and_staged_files(tmp_path):

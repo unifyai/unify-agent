@@ -5,7 +5,7 @@ operational step guard and the deadline end a runaway. A capped pass (v2, or lib
 from decimal import Decimal
 
 from unify.common._async_tool import loop_stop
-from unify.memory import library_prompts, repair, writer_pass
+from unify.memory import repair, writer_pass
 from unify.memory.writer_pass import CODE_PASS_CAP, CODE_STEP_GUARD
 from tests.memory.test_writer_pass import _call
 from tests.memory.test_writer_library_tools import _pass
@@ -84,30 +84,3 @@ def test_repair_without_a_usd_figure_has_no_round_count():
     )
 
 
-def test_the_library_briefs_state_no_count_limits_but_numbers_still_render_when_given():
-    text = library_prompts.write_brief_now()
-    assert "times per pass" not in text and "while the pass budget lasts" not in text
-    # no sentence about time running out (it fed the writer's economy worry); the limits are stated as facts
-    assert (
-        "time runs out" not in text
-        and "The items that pass land, and the rest is kept as a draft" in text
-    )
-    numbered = library_prompts.write_brief(
-        limits=library_prompts.limits_now(cell_s=45.0),
-        mutation_min=Decimal("0.7"),
-        sample_k=11,
-        lint_min=6,
-        pytest_env={},
-    )
-    # the real limits render as information: the cell time, the step guard, no count of checks or rounds
-    assert (
-        "at most 45 s" in numbered
-        and "There is no set number of repair rounds" in numbered
-    )
-    assert "times per pass" not in numbered
-    check = next(
-        t
-        for t in writer_pass.writer_tools(library_mode=True)
-        if t["function"]["name"] == "check"
-    )
-    assert "at most" not in check["function"]["description"]

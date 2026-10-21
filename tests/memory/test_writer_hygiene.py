@@ -6,8 +6,6 @@ The library is the ARC dialogue pair ``parse_submit_feedback`` / ``submit_state`
 second pass's near-duplicate of ``parse_submit_feedback``.
 """
 
-import asyncio
-import json
 import shutil
 
 import pytest
@@ -18,11 +16,8 @@ from unify.memory.evidence import EvidenceStore
 import unify.memory.gate as gate_module
 from unify.memory.gate import Gate
 from unify.memory.gitio import Repo
-from unify.memory.writer_pass import WRITER_SYSTEM, PassConfig, WriterPass
-from unify.memory.trigger import PassRequest
 from tests.memory.test_episodes import _ep
 from tests.memory.test_gate import _candidate, _merged
-from tests.memory.test_writer_pass import Script, _write
 
 pytestmark = pytest.mark.skipif(
     shutil.which("bwrap") is None,
@@ -230,46 +225,6 @@ def arc(tmp_path):
 # --- a merge inside the normal pass ------------------------------------------------------------------------
 
 WRITER_READS_COVERS = "print(open('/inputs/library.json').read())"
-
-
-def test_a_scripted_pass_merges_the_duplicated_validation_and_the_gate_admits_it(arc):
-    mem, ev, gate, ep, parent = arc
-    man = {
-        "items": [_item(SS, [T_SS], RECORDED[SS])],
-        "summary": "submit_state calls parse_submit_feedback",
-    }
-    script = Script(
-        [
-            WRITER_READS_COVERS,
-            _write(f"/memory/{MODULE}", HEAD + READ + STATE_MERGED),
-            _write("/memory/.pass/manifest.json", json.dumps(man)),
-        ],
-    )
-    writer = WriterPass(
-        mem,
-        gate,
-        ev,
-        load=lambda eid: ep,
-        model_turn=script,
-        config=PassConfig(max_calls=10),
-    )
-    out = asyncio.run(
-        writer.run(PassRequest("incremental", "dialogue:arc", ["a1"], False), "p1"),
-    )
-    assert "Tend the library too." in WRITER_SYSTEM
-    # the writer is shown the channel's functions with their recorded covers, and can read them
-    user = script.first[1]["content"]
-    assert (
-        f"- {PSF}: 2 recorded covers\n- {RSF}: 1 recorded cover\n- {SS}: 3 recorded covers"
-        in user
-    )
-    library = json.loads(script.outputs["c1"])["functions"]
-    assert {row["item"]: row["cover_ids"] for row in library} == {
-        item: [["a1", i] for i in RECORDED[item]] for item in sorted(RECORDED)
-    }
-    # an edit without a red test lands: the pass adds nothing, shrinks the module, and the old tests hold it
-    assert out.passed, out.reasons
-    assert mem.head() == out.commit
 
 
 def test_a_behaviour_preserving_edit_that_does_not_shrink_still_needs_a_red_test(arc):

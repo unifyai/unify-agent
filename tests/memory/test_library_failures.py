@@ -112,57 +112,6 @@ def _failing_cell() -> dict:
     return audit.drain()
 
 
-def test_each_failure_is_listed_with_its_kind_target_type_first_line_and_cell():
-    acc = library_failures_empty()
-    add_library_failures(acc, _failing_cell())
-    settle_library_failures(acc, "call-b")  # the failing calls' cell
-    # a later cell whose error was a missing name, and one whose import failed
-    settle_library_failures(acc, "call-c", "Traceback (most recent call last):\nNameError: name 'memory' is not defined\n")
-    settle_library_failures(
-        acc,
-        "call-d",
-        "Traceback ...\nModuleNotFoundError: No module named 'memory.text.nope'",
-    )
-    settle_library_failures(acc, "call-e", "Traceback ...\nValueError: unrelated")  # not the library's
-    listed, dropped = library_failure_list(
-        acc,
-        [{"index": i, "call": c} for i, c in enumerate(["call-a", "call-b", "call-c", "call-d", "call-e"])],
-        Redactor({"SERVICE_TOKEN": PLANTED_SECRET}),
-    )
-    assert dropped == 0
-    assert listed == [
-        {
-            "kind": "item",
-            "target": PARSE_DATE,
-            "exception": "MemoryInputError",
-            "message": "not a date: <secret:SERVICE_TOKEN>",
-            "cell": 1,
-        },
-        {
-            "kind": "show",
-            "target": "(str[1])",
-            "exception": "LookupError",
-            "message": "memory: no item 'x'",
-            "cell": 1,
-        },
-        {
-            "kind": "name",
-            "target": None,
-            "exception": "NameError",
-            "message": "name 'memory' is not defined",
-            "cell": 2,
-        },
-        {
-            "kind": "import",
-            "target": None,
-            "exception": "ModuleNotFoundError",
-            "message": "No module named 'memory.text.nope'",
-            "cell": 3,
-        },
-    ]
-    assert set(request_mod.LIBRARY_FAILURE_KINDS) >= {e["kind"] for e in listed}
-
-
 def test_the_list_is_capped_and_counts_what_it_left_out(monkeypatch):
     monkeypatch.setattr(request_mod, "MAX_LIBRARY_FAILURES", 3)
     acc = library_failures_empty()

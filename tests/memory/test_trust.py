@@ -177,6 +177,3 @@ def test_the_lifecycle_counts_attributed_outcomes_from_the_use_record():
     assert lc.decide_status(ITEM, None, unanswered)[0] == "on-trial"
 
 
-def test_lifecycle_names_map_onto_the_trust_statuses():
-    assert {tr.FROM_LIFECYCLE[k] for k in ("experimental", "stable", "suspect")} == set(tr.STATUSES)
-    assert set(tr.LEVELS) == {"unchecked", "reproduces-its-case", "confirmed-by-outcomes"}

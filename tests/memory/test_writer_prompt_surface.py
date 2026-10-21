@@ -171,30 +171,6 @@ def test_optional_inputs_appear_only_when_present(registry):
     assert '"kept": {' in curate and "never a failure" in curate
 
 
-def test_a_sentence_relying_on_a_tool_appears_only_when_it_is_registered(registry):
-    names = {s.name for s in registry}
-    text = lp.write_brief_now(staging=True, pool=True)
-    # `pool` is also the manifest field's name; the tool is named by what it does
-    uses = {
-        "pool": "`pool` lists, filters and shows",
-        "similar": "`similar` finds",
-        "delegate": "with `delegate`",
-        "replay": "calling `replay`",
-        "land_capture": "land_capture(capture_id, package, name)",
-    }
-    for tool, phrase in uses.items():
-        assert (phrase in text) == (tool in names), tool
-    # the Tools section is rendered from the registry, one bullet per registered tool
-    section = text.split("# Tools\n", 1)[1].split("\n# ", 1)[0]
-    assert [ln for ln in section.splitlines() if ln.startswith("- `")] == [
-        ln
-        for ln in tool_spec.tools_section(
-            "write",
-            lp.tool_flags(True, True),
-        ).splitlines()
-    ]
-
-
 def test_every_named_path_is_a_staged_input_or_the_library(registry):
     allowed = re.compile(
         r"^/(inputs/(staging|captures|helpers|pool|drafts|batch_map\.json|episodes|shared|usage|gate|curate)|memory|outputs)\b",

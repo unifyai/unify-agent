@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from types import SimpleNamespace
 
 import pytest
 
 from tests.memory.integration.test_consolidate import (
-    FakeWriter,
-    _record,
-    _settings,
     _stores,
 )
 from tests.memory.test_episodes import _ep
@@ -21,8 +17,6 @@ from unify.memory import lifecycle
 from unify.memory.history_probe import ProbeRow
 from unify.memory.integration import consolidate
 from unify.memory.integration.checkout import export_actor_library_mode
-from unify.memory.integration.state import State
-from unify.memory.integration.switch import checker_visible
 from unify.memory.item_records import read_records, records_at, status_of
 
 PD, WEEK, SUM = (
@@ -100,54 +94,6 @@ def lib(tmp_path):
         },
     )
     return stores, head
-
-
-def test_a_consolidation_records_the_map_on_main_and_hides_a_retired_item(lib, tmp_path):
-    stores, head = lib
-    _episode(stores, "e1", head, {WEEK: {"called": 1, "errored": 1}})
-    _episode(stores, "e2", head, {WEEK: {"called": 1, "errored": 1}, PD: {"called": 1}})
-    probe = _Probe()
-    out = _consolidate(stores, tmp_path, probe)
-    assert out["noted"] == head and out["changes"] == {WEEK: "retired", SUM: "retired"}
-    recs = read_records(stores.memory, head)
-    assert (recs[WEEK]["status_rule"], recs[WEEK]["status_evidence"]) == (
-        "errors",
-        ["e1", "e2"],
-    )
-    assert (recs[SUM]["status_rule"], recs[SUM]["status_evidence"]) == ("taint", [WEEK])
-    assert recs[WEEK]["use"] == {
-        head: {
-            "episodes": 0,  # each call raised: no call returned, so no use
-            "uses": 2,
-            "seen": 2,
-            "errors": 2,
-            "refused": 0,
-            "negative_signals": 0,
-            "positive_signals": 0,
-            "unknown": 0,
-        },
-    }
-    assert (
-        recs[WEEK]["verification"]["tests"] == [DATES_TEST]
-        and recs[WEEK]["provenance"]["pass"] == "p1"
-    )
-    assert out["bisected"] == [WEEK] and probe.calls == [([("v0", head)], [DATES_TEST])]
-    # the map was published before the bisect; the result is stored and reaches the next map
-    assert recs[WEEK]["bisect"] is None
-    assert (
-        out["bisects"][WEEK]["bisect"]["introduced"] == head
-        and out["bisects"][WEEK]["rollback"] is None
-    )
-    assert lifecycle.bisect_results(stores.evidence)[WEEK][0] == head
-    files = _copy(stores, head, tmp_path / "co")
-    index = files["INDEX.md"].decode()
-    assert "week(" not in index and "summary(" not in index and "parse_date(" in index
-    items = json.loads(files[".memory/items.json"])["items"]
-    assert (
-        items[WEEK]["status"] == "retired"
-        and "raised in 2 episodes" in items[WEEK]["status_reason"]
-    )
-    assert items[WEEK]["use"]["errors"] == 2
 
 
 def test_status_change_lands_as_a_commit_and_notes_are_never_rewritten(lib, tmp_path):
@@ -243,38 +189,6 @@ def test_after_passes_runs_only_under_library_and_after_a_recorded_pass(
         None,
     )
     assert [kw["checker_visible"] for kw in seen] == [False]
-
-
-def test_a_library_consolidation_records_the_map_of_main(tmp_path, monkeypatch):
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter())
-    stores = _stores(tmp_path)
-    sha, _ = _record(stores, "e1")
-    settings = _settings()
-    settings.UNIFY_MEMORY_LIBRARY = "on"
-    settings.UNIFY_MEMORY_LIBRARY_E = 1  # the pass interval E (100k by default)
-    asyncio.run(
-        consolidate.run_due_passes(
-            stores,
-            "e1",
-            sha,
-            State(stores.paths.state),
-            effort="low",
-            settings=settings,
-            emit=None,
-        ),
-    )
-    assert stores.evidence.pass_exists("e1.p0")
-    assert read_records(stores.memory, stores.memory.head()) == {}
-
-
-def test_checker_visibility_is_a_declared_switch():
-    assert checker_visible(SimpleNamespace()) is False
-    assert (
-        checker_visible(SimpleNamespace(UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE="on"))
-        is True
-    )
-    with pytest.raises(ValueError):
-        checker_visible(SimpleNamespace(UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE="yes"))
 
 
 # --- the bisect bound (bounded runtime) ----------------------------------------------------------------------

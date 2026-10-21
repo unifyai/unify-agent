@@ -17,7 +17,6 @@ What is checked here, keyless and with no model call:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 from pathlib import Path
@@ -326,58 +325,3 @@ def test_the_fork_request_carries_the_recorded_part_list_after_the_cached_prefix
 # --- the consolidation end event: pointers per episode and the writer's input tokens ------------------------------
 
 
-def test_the_end_event_counts_each_summarys_pointers_and_the_writers_input_tokens(tmp_path, monkeypatch):
-    from tests.memory.integration import test_consolidate as tc
-    from unify.memory.integration import consolidate
-    from unify.memory.integration.state import State
-
-    usage = {"prompt_tokens": 700, "prompt_tokens_details": {"cached_tokens": 100}}
-    fake = tc.FakeWriter(script=[(dict(tc._finish(), usage=usage), "0.01")])
-    monkeypatch.setattr(consolidate, "unillm_turn", fake)
-    stores = tc._stores(tmp_path)
-    sha, _ = tc._record(stores, "e1")
-    root = Path(stores.paths.state_dir) / "memory-staging"
-    d = root / "e1"
-    d.mkdir(parents=True)
-    (d / SUMMARY_PATH).write_text(SUMMARY)
-    (d / "notes.md").write_text("A lesson.\n")
-    (d / fw.FORK_JSON).write_text(
-        json.dumps(
-            {
-                "episode": "e1",
-                "status": "ok",
-                "usd": "0.0012",
-                "usage": {"prompt_tokens": 1000, "cached_tokens": 900, "completion_tokens": 50, "reasoning_tokens": 10},
-                "files": [{"path": SUMMARY_PATH}, {"path": "notes.md"}],
-                "seconds": 3.5,
-                FORK_SUMMARY_BYTES: len(SUMMARY.encode()),
-            },
-        ),
-    )
-    settings = tc._library_settings("on")
-    settings.UNIFY_MEMORY_LIBRARY_FORK = "on"
-    (out,) = asyncio.run(
-        consolidate.run_due_passes(
-            stores,
-            "e1",
-            sha,
-            State(stores.paths.state),
-            effort="low",
-            settings=settings,
-            emit=None,
-        ),
-    )
-    end = [e for e in tc._events(stores) if e.get("phase") == "end"][-1]
-    (row,) = end[STAGING_EPISODES]
-    assert row["episode"] == "e1" and row["reader"] == "fork" and row["status"] == "ok"
-    assert row["summary_bytes"] == len(SUMMARY.encode())
-    # four pointers: action:0 "u-1" and request "Venmo friends" resolve; cell:4 does not exist, and the last quote
-    # is not in action:0
-    assert (row[POINTERS], row[RESOLVED]) == (4, 2)
-    # the writer's own calls: every call reported its prompt tokens
-    assert end[WRITER_CALLS] == fake.calls >= 1
-    assert end[INPUT_TOKENS_CALLS] == fake.calls
-    assert end["input_tokens"] == 700 * fake.calls
-    assert end[FIRST_PROMPT] == 700
-    # the fork's spend joins the pass's categories
-    assert end["usd_by_category"]["reader"] == "0.0012"

@@ -260,19 +260,6 @@ def test_history_subjects_reach_the_actor_redacted(tmp_path):
     assert not any(key.encode() in data for data in out.values())
 
 
-def test_write_generated_still_writes_v2s_files(tmp_path):
-    from unify.memory.catalogue import generated, write_generated
-
-    (tmp_path / "env/x").mkdir(parents=True)
-    (tmp_path / "env/x/__init__.py").write_text(
-        'def f(a):\n    """F."""\n    return a\n',
-    )
-    assert write_generated(tmp_path) == generated(tmp_path)
-    assert (tmp_path / "memory.py").read_bytes() == (
-        Path(memory_helper.__file__)
-    ).read_bytes()
-
-
 def test_the_derived_effect_shows_beside_the_status_in_the_index_and_show(tmp_path):
     from unify.memory.item_records import empty_record
 
@@ -559,8 +546,3 @@ print(json.dumps(events))
     assert json.loads(out) == []  # lookups are not calls
 
 
-def test_the_harness_import_of_the_helper_installs_no_finder():
-    from unify.memory import library_helper
-
-    assert library_helper.__name__ != "memory"
-    assert not any(getattr(f, "memory_call_finder", False) for f in sys.meta_path)

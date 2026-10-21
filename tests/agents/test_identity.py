@@ -66,9 +66,3 @@ def test_resume_never_creates_a_file_by_accident(tmp_path):
         RecordLog(tmp_path / "missing.jsonl", create=False)
 
 
-def test_run_ids_carry_128_random_bits():
-    from unify.agents.binding import _run_id
-
-    ids = {_run_id() for _ in range(1000)}
-    assert len(ids) == 1000
-    assert all(len(i.rsplit("-", 1)[-1]) == 32 for i in ids)

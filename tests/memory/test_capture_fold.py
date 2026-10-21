@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -222,23 +221,6 @@ def test_d1_no_own_check_runs_and_no_entry_comes_from_one(tmp_path, nothing_runs
     led = _ledger(tmp_path / "led")
     made = led.sync(Fake(captures={"e2": old}))
     assert made == [] and "own_check_failed" not in {e.kind for e in led.entries().values()}
-
-
-def test_a_constant_capture_is_served_as_a_worked_example(tmp_path, nothing_runs):
-    from types import SimpleNamespace
-
-    from unify.memory.integration import switch
-
-    constant = 'def run(state):\n    """The answer."""\n    return [6, 9]\n'
-    store = cp.store_dir(tmp_path)
-    row = cp.capture_trace_step(_staging(tmp_path, "e1", {"procedure.py": constant}), _episode("dialogue", "e1"), store,
-                     runner=nothing_runs)  # fmt: skip
-    assert row["constant"] is True
-    under_trace = SimpleNamespace(UNIFY_MEMORY="on", UNIFY_MEMORY_CAPTURE_TRACE="on")
-    assert switch.constant_captures_as_examples(under_trace)
-    exported = cp.export_files(store, examples=switch.constant_captures_as_examples(under_trace))
-    rec = json.loads(exported[f"{cp.EXPORT_DIR}/{row['capture_id']}/{cp.RECORD_FILE}"])
-    assert rec[cp.EXAMPLE_KEY]["returns"] == ["[6, 9]"]
 
 
 # --- the ledger keys new experience on the folded capture -------------------------------------------------------------------

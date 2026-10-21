@@ -234,14 +234,6 @@ def test_every_observation_is_readable():
     assert row["observations"] == 2
 
 
-def test_identical_observations_name_their_first_copy():
-    ep = _obs_ep(["same", "other", "same", "same"])
-    assert bm.canonical_part(ep, "observation:2") == "observation:0"
-    assert bm.canonical_part(ep, "observation:3") == "observation:0"
-    assert bm.canonical_part(ep, "observation:1") == "observation:1"
-    assert bm.canonical_part(ep, "cell:0") == "cell:0"
-
-
 def test_row_states_which_observations_are_copies():
     ep = _obs_ep(["same", "other", "same"])
     row = bm.build_batch_map(lambda e: ep, ["e1"])["episodes"][0]

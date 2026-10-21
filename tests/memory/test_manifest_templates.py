@@ -10,7 +10,6 @@ import pytest
 
 from unify.memory import library_prompts as lp
 from unify.memory.manifest import (
-    INPUT_KINDS,
     LIBRARY_ITEM_FIELDS,
     Manifest,
     ManifestError,
@@ -135,27 +134,6 @@ def test_the_curate_template_round_trips_through_the_parser():
     _round_trip("curate")
 
 
-def test_no_brief_shows_an_input_form_or_an_action_cover():
-    """The manifest templates and the brief sections on what to write, the rules and the gate name no input form
-    and no action cover. (The fixture tool's own description shows an appended line's ``"input"`` key, which is
-    a fixture's line format, not a manifest field.)"""
-    sections = (
-        lp._WHAT_TO_WRITE,
-        lp._WRITE_RULES,
-        lp._GATE,
-        lp._CURATE_GATE,
-        lp._CURATE,
-    )
-    for name, brief in _briefs().items():
-        assert '"input"' not in _template(brief), name
-        assert "<<input_forms>>" not in brief and "first parameter" not in _template(
-            brief,
-        ), name
-    for text in sections:
-        assert '"input"' not in text and "`input`" not in text and "<form>" not in text
-        assert "action index" not in text and "same-shaped input" not in text
-
-
 def test_no_brief_keeps_a_placeholder_and_write_brief_takes_no_input_forms():
     import inspect
 
@@ -171,40 +149,6 @@ def test_the_write_brief_names_the_semantic_types_field_types_takes():
     brief = _briefs()["write"]
     assert "`field_types`" in brief and describe_semantic_types() in brief
     assert all(name in brief for name in SEMANTIC_TYPES)
-
-
-def test_no_drafting_or_curating_text_names_an_input_form_and_the_curator_states_the_contract():
-    """No text names a first-parameter input form any more. The curator is told the function contract the gate
-    enforces (any arguments, MemoryInputError on other shapes); the drafting agents draft what they saw, with cases
-    as recorded values the writer can copy into fixtures, and fitting the library is the writer's work.
-    """
-    from unify.memory import curate, helpers
-    from unify.memory.integration import fork
-
-    texts = {
-        "fork": fork.fork_instruction(),
-        "helper": helpers.helper_brief(False),
-        "helper with similar": helpers.helper_brief(True),
-        "curate": curate.curate_system(),
-    }
-    for name, text in texts.items():
-        assert "first parameter" not in text and "recorded form" not in text, name
-        for form in INPUT_KINDS:
-            assert f"`{form}`" not in text, (name, form)
-    # the curator works on the library itself and is told the contract the gate enforces
-    assert "MemoryInputError" in texts["curate"] and "any arguments" in texts["curate"]
-    # drafting agents draft what they saw; generalising and fitting the library is the writer's work
-    assert lp.CANDIDATE_CONTRACT in texts["fork"]
-    assert "Each value must appear in this conversation as it is" in texts["fork"]
-    for name in ("helper", "helper with similar"):
-        assert (
-            lp.CANDIDATE_CONTRACT.replace("recorded here", "recorded in the episodes")
-            in texts[name]
-            and "Where you can, write a reusable function or lesson in general form"
-            in texts[name]
-            and "still write it down as it is" in texts[name]
-        )
-        assert "each value as the records hold it" in texts[name]
 
 
 def test_the_write_brief_states_the_material_and_the_reach_as_facts():

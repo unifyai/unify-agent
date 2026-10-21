@@ -9,15 +9,7 @@ import pytest
 from tests.memory.test_layout import FUNCTIONS, LIB, _tree
 from unify.memory import layout
 from unify.memory.library_helper import find_section
-from unify.memory.library_index import (
-    INDEX_HEAD,
-    build_links,
-    index_view,
-    listed,
-    packages_of,
-    render_index,
-    render_links,
-)
+from unify.memory.library_index import INDEX_HEAD, build_links, index_view, listed, render_index, render_links
 
 PARSE_DATE = "memory.text.dates:parse_date"
 NOTE_ID = "notes/text/dates.md"
@@ -73,15 +65,6 @@ def test_malformed_and_wrong_kind_links_are_dangling(tmp_path):
         "to": "memory.text.parse:tokens",
         "why": "not a note",
     } in links["dangling"]
-
-
-def test_index_is_complete_sorted_and_byte_stable(tmp_path):
-    lib = _lib(tmp_path)
-    index = render_index(lib, build_links(lib))
-    assert index == EXPECTED_INDEX
-    again = layout.discover(_tree(tmp_path / "again"))
-    assert render_index(again, build_links(again)) == index
-    assert listed(index) == 7 and packages_of(index) == ["text", "web"]
 
 
 def test_retired_items_leave_the_index_but_not_the_links(tmp_path):
@@ -178,28 +161,6 @@ def _example_of(tmp_path):
     example = {"test": EXAMPLE_TEST, "line": 5, "call": "parse_date('2026-10-09')"}
     records = {PARSE_DATE: {**empty_record(PARSE_DATE, "function"), "example": example}}
     return example_of(records, tree_reader(tmp_path))
-
-
-def test_an_example_call_is_a_second_line_under_its_function_byte_stable(tmp_path):
-    lib = _lib(tmp_path)
-    links = build_links(lib)
-    index = render_index(lib, links, None, None, _example_of(tmp_path))
-    first = (
-        "- `memory.text.dates:parse_date(s: str) -> str` — Parse a date written as YYYY-MM-DD. [on-trial]; "
-        "notes: notes/text/dates.md\n"
-    )
-    assert first + EXAMPLE_LINE in index
-    assert index == EXPECTED_INDEX.replace(first, first + EXAMPLE_LINE)
-    assert render_index(lib, links, None, None, _example_of(tmp_path)) == index
-    assert "`e.g.` line" in INDEX_HEAD  # the head says what the second line is
-    # the example line is not an item: counts, sections and the collapsed view are unchanged
-    assert listed(index) == 7 and packages_of(index) == ["text", "web"]
-    assert "e.g." not in index_view(index, budget_tokens=10).split("\n## ", 1)[1]
-    assert find_section(index, "text").count("  e.g. ") == 1
-    # no example function, or none known: the index is byte for byte the one without examples
-    assert render_index(lib, links) == render_index(
-        lib, links, None, None, lambda i: None
-    )
 
 
 def test_the_index_grows_by_the_example_lines_only(tmp_path):

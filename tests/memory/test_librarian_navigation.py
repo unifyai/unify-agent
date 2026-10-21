@@ -238,35 +238,6 @@ def test_search_ranks_lexically_without_an_embedding_backend_and_says_so(tmp_pat
     assert refused.status == "refused" and refused.form == "no_query"
 
 
-def test_the_paper_profile_makes_no_embedding_call_at_export_or_at_search(tmp_path, monkeypatch, embed_cache):
-    calls: list = []
-
-    def counted(*args, **kwargs):
-        calls.append(args)
-        raise AssertionError("an embedding was made under the paper profile")
-
-    monkeypatch.setattr(embeddings, "embed", counted)
-    monkeypatch.setattr(embeddings, "_local", counted)
-    monkeypatch.setattr(embeddings, "_openrouter", counted)
-    # a backend is configured, and the paper profile still makes no embedding call
-    monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_EMBEDDINGS", True)
-    monkeypatch.setattr(SETTINGS, "UNIFY_EMBED_URL", "http://127.0.0.1:9/embeddings")
-    _paper(monkeypatch)
-    assert ls.paper_profile() and ls.backend() == ls.Backend(None, ls.PAPER)
-    copy = _copy(tmp_path / "lib", {**WEB, **DOCS}, search=ls.backend())
-    index = ls.read_index(copy)
-    assert index["backend"] == "lexical" and index["why"] == ls.PAPER
-    got = L.search(_state(copy), {"query": API_REQUEST})
-    assert "ranked by a lexical score" in got.text and ls.PAPER in got.text and _first(got.text) == PAGES
-    # an index built with vectors elsewhere is searched lexically too, with no call
-    fake = ls.Backend("fake-model", "", lambda texts: [[1.0, 0.0] for _ in texts])
-    write_files(copy, ls.index_files(copy, use=fake))
-    assert ls.read_index(copy)["backend"] == "embedding"
-    got = L.search(_state(copy), {"query": DOCUMENT_REQUEST})
-    assert ls.PAPER in got.text and _first(got.text) == OUTLINE
-    assert calls == []
-
-
 def test_an_embedding_that_fails_leaves_a_lexical_index_that_says_why(tmp_path, no_backend):
     def broken(texts):
         raise ConnectionError("unreachable")

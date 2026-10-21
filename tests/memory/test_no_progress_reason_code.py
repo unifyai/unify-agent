@@ -9,7 +9,6 @@ Keyless: the model is scripted; the end-to-end case runs the writer's cells in t
 
 from __future__ import annotations
 
-import pytest
 
 from tests.memory.test_agent_no_progress import COUNTER, NOOP, _admit
 from tests.memory.test_writer_library_repair import FILES_CODE

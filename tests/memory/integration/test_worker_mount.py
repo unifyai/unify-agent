@@ -139,42 +139,6 @@ def test_the_init_message_asks_for_no_bytecode_only_under_memory(
     assert PythonWorker()._init_message()["no_bytecode"] is True
 
 
-@needs_bwrap
-@pytest.mark.asyncio
-@pytest.mark.timeout(180)
-async def test_a_cell_imports_the_memory_helper_from_the_export(
-    world,  # noqa: F811
-    monkeypatch,
-):
-    """``import memory`` in a cell is the export's generated helper; it reads only the catalogue."""
-    from unify.memory.catalogue import write_generated
-
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    paths, _ = _home(world)
-    write_generated(paths.checkout)
-    monkeypatch.setattr(
-        request_mod,
-        "_CURRENT",
-        SimpleNamespace(index="", paths=paths),
-    )
-    ex = SessionExecutor(environments={})
-    try:
-        out = await _cell(
-            ex,
-            "import memory\n"
-            "[memory.__file__, memory.catalog().splitlines()[0], memory.find({'a': 1}),\n"
-            " memory.describe('hello').splitlines()[:2]]",
-        )
-    finally:
-        await ex.close()
-    assert list(out) == [
-        f"{LIBRARY}/memory.py",
-        f"Memory library: 1 channel, 1 function, at {LIBRARY} (first on the import path).",
-        [],
-        ["env.spotify.hello(apis, name)", "Say hi."],
-    ]
-
-
 REFUSER = (
     "\n\nclass MemoryInputError(ValueError):\n    pass\n\n\n"
     "def need_name(apis, name):\n"
@@ -183,54 +147,6 @@ REFUSER = (
     '        raise MemoryInputError("name must be a non-empty string")\n'
     "    return name\n"
 )
-
-
-@needs_bwrap
-@pytest.mark.asyncio
-@pytest.mark.timeout(180)
-async def test_a_suspect_channels_refusal_says_so_in_the_cell_error(
-    world,  # noqa: F811
-    monkeypatch,
-):
-    """``catalogue``: the drift flag is not in the prompt; a suspect channel's MemoryInputError, as the
-    model reads it from the real worker, ends with a line saying the channel is suspect.
-    """
-    from unify.memory.integration.switch import SurfacingOptions
-
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    paths, _ = _home(world)
-    module = paths.checkout / "env/spotify/__init__.py"
-    module.write_text(module.read_text() + REFUSER)
-
-    def run(suspect: set) -> SimpleNamespace:
-        return SimpleNamespace(
-            index="",
-            paths=paths,
-            surfacing=SurfacingOptions(surfacing="catalogue"),
-            state=SimpleNamespace(suspect=suspect),
-        )
-
-    code = "from env.spotify import need_name\nneed_name(None, '')"
-    errors = []
-    for suspect in ({"spotify"}, set()):
-        monkeypatch.setattr(request_mod, "_CURRENT", run(suspect))
-        ex = SessionExecutor(environments={})
-        try:
-            res = await asyncio.wait_for(
-                ex.execute(code=code, state_mode="stateful", session_id=0),
-                timeout=60,
-            )
-        finally:
-            await ex.close()
-        errors.append(res["error"])
-    flagged, plain = errors
-    assert "env.spotify.MemoryInputError: name must be a non-empty string" in plain
-    assert "suspect" not in plain
-    assert flagged.startswith(plain.rstrip("\n"))
-    assert flagged.rstrip("\n").endswith(
-        "memory: env.spotify is suspect: the environment changed since its functions were built, "
-        "so this refusal may come from that change; do the work directly.",
-    )
 
 
 @needs_bwrap

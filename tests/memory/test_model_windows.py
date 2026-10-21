@@ -8,7 +8,6 @@ No test makes a model call.
 
 from __future__ import annotations
 
-import asyncio
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -19,15 +18,9 @@ from unify.memory import writer_pass
 # the helper's lane refuses while unillm records OTel spans, which the test runner turns on for every session
 from tests.memory.test_writer_route import _otel_off_unless_a_test_turns_it_on  # noqa: F401 - an autouse fixture
 from unify.memory.integration import consolidate, switch
-from unify.memory.integration.consolidate import run_due_passes
 from unify.memory.integration.cost import HELPER_ORIGIN
-from unify.memory.integration.state import State
 from tests.memory.integration.test_consolidate import (
     FakeWriter,
-    _events as _run_events,
-    _library_settings,
-    _record,
-    _stores,
 )
 from tests.memory.test_writer_compaction import (
     Compacting,
@@ -69,27 +62,6 @@ class RealWindowWriter(FakeWriter):
         turn = super().__call__(model, effort, **kw)
         turn.max_input_tokens = _window(model)
         return turn
-
-
-def test_the_writers_end_event_reports_the_registered_window(tmp_path, monkeypatch):
-    factory = RealWindowWriter()
-    monkeypatch.setattr(consolidate, "unillm_turn", factory)
-    stores = _stores(tmp_path)
-    sha, _ = _record(stores, "e1")
-    asyncio.run(
-        run_due_passes(
-            stores,
-            "e1",
-            sha,
-            State(stores.paths.state),
-            effort="low",
-            settings=_library_settings("on"),
-            emit=None,
-        ),
-    )
-    assert factory.made and factory.made[0][0] == WRITER_MODEL
-    end = [e for e in _run_events(stores) if e.get("phase") == "end"][-1]
-    assert end["context_window"] == _window(WRITER_MODEL) == WINDOWS[WRITER_MODEL]
 
 
 def test_the_helper_turn_consolidate_builds_carries_the_registered_window(

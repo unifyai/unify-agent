@@ -31,9 +31,7 @@ from __future__ import annotations
 import ast
 import builtins
 import asyncio
-import json
 import re
-import shutil
 import textwrap
 from pathlib import Path
 from typing import Any, Optional
@@ -443,7 +441,6 @@ class Contract:
         return bad
 
 
-
 def _library_pass(tmp_path: Path, model: Any, *, in_code: bool, **cfg: Any):
     """A library-mode writer pass over episode ``e1`` whose parent commit holds the fixture library."""
     from unify.memory.blobs import BlobStore
@@ -579,66 +576,12 @@ def test_every_call_the_writers_and_a_helpers_prompts_show_runs_as_written(tmp_p
             assert f"`{name}`" in joined, (agent, name)
 
 
-@needs_box
-@pytest.mark.timeout(1200)
-@pytest.mark.parametrize("in_code", [True, False], ids=["tools-in-code", "tools-off"])
-def test_every_call_the_curators_prompt_shows_runs_as_written(tmp_path, monkeypatch, no_waiting, in_code):
-    """The curator's brief, rendered by its builder, run in the curator's box (the writer pass's box: the same
-    binds, profile and names); every tool it names is on the curator's allow-list."""
-    from unify.memory import library_prompts as lp
-    from unify.memory.trigger import PassRequest
-
-    _switch(monkeypatch, in_code)
-    brief = lp.curate_brief_now(edit_tools=True)
-    texts = [brief, *((R.EXECUTE_CODE.description,) if in_code else ())]
-    named = R.tool_names_in(brief) - {"list", "help", "Refused", "NotRun"}
-    assert named <= set(R.allow_list("curator", lp.tool_flags(edit=True))), named
-    model = Contract(
-        "curator",
-        NOTE,
-        in_code=in_code,
-        json_end=("finish", {"summary": "contract test summary"}),
-        texts_override=texts,
-    )
-    writer = _library_pass(tmp_path, model, in_code=in_code, edit_tools=True)
-    asyncio.run(writer.run(PassRequest("incremental", "text", ["e1"], False), "p1"))
-    assert model.cells
-    bad = model.report()
-    assert not bad, "\n".join(bad)
-    assert "memory" in model.namespace and ("tools" in model.namespace) is in_code
-
-
 def test_the_fork_names_no_pre_bound_name():
     from unify.memory.integration import fork
 
     text = fork.fork_instruction()
     assert "Do not call" in text
     assert not said_bound(text) and "already bound" not in text
-
-
-def test_every_listed_span_that_is_not_run_is_still_in_a_prompt(monkeypatch):
-    from unify.actor import prompt_builders as pb
-    from unify.actor.core_surface import PromptSurface
-    from unify.memory import helpers
-    from unify.memory import library_prompts as lp
-
-    shown: set[str] = set()
-    for switch in ("on", "off"):
-        monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", switch)
-        full = {"staging": True, "pool": True, "helper": True, "similar": True, "edit_tools": True}
-        for text in (
-            pb.build_code_act_prompt(
-                environments={},
-                core=PromptSurface(functions=False, guidance=False),
-                session_sections=False,
-            ),
-            lp.write_brief_now(**full),
-            lp.curate_brief_now(edit_tools=True),
-            helpers.helper_brief(True),
-        ):
-            shown |= {s.strip() for s in shown_code(text)}
-    for span in NOT_RUN:
-        assert span in shown, span
 
 
 # --- the actor and a teammate: the real request in the real sandbox ------------------------------------------------

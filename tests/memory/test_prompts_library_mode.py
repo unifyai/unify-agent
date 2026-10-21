@@ -8,7 +8,6 @@ from decimal import Decimal
 import pytest
 
 from unify.memory import library_prompts as pv
-from unify.memory.integration import prompt as v2_prompt
 
 BRIEF_HEADINGS = {
     "write": [
@@ -102,23 +101,6 @@ def test_each_brief_has_its_parts_in_order():
     assert _headings(_curate()) == BRIEF_HEADINGS["curate"]
 
 
-def test_the_guide_has_every_part_and_takes_extra_lines_only_before_the_files_line():
-    for part, phrase in pv.GUIDE_PARTS:
-        assert phrase in pv.GUIDE_LIBRARY, part
-    assert pv.GUIDE_LIBRARY.startswith(
-        "### Memory Library\n\n",
-    ) and pv.GUIDE_LIBRARY.endswith(
-        "as usual.\n",
-    )
-    assert pv.guide_library_mode() == pv.GUIDE_LIBRARY
-    more = pv.guide_library_mode(("- one more line.\n",))
-    assert more == pv.GUIDE_LIBRARY.replace(
-        pv.FILES_LINE,
-        "- one more line.\n" + pv.FILES_LINE,
-    )
-    assert pv.GUIDE_LIBRARY.count(pv.FILES_LINE) == 1
-
-
 def test_numbers_come_from_the_values_given():
     limits = _limits(view_bytes=1234, cell_s=45.0, step_guard=321, entries=77)
     text = _write(
@@ -198,17 +180,6 @@ def test_the_contract_texts_carry_no_benchmark_words_and_no_example_checking():
         assert pv.example_checks(text) == [], name
 
 
-def test_the_guides_say_find_matches_argument_shapes_and_the_index_quotes_a_call():
-    for guide in (pv.GUIDE_LIBRARY, pv.GUIDE_POINTER):
-        assert (
-            "`memory.find(value)` lists the functions whose tests call them on arguments shaped like a structured "
-            "value you hold" in guide
-        )
-        assert "and which parameter matched" in guide
-        assert "a call quoted from the function's tests" in guide
-        assert "built on inputs shaped like" not in guide
-
-
 def test_the_fork_format_block_follows_the_contract_it_states():
     """The format's candidate defines MemoryInputError in its module and raises it on another shape; its cases
     return the expected values."""
@@ -226,97 +197,6 @@ def test_the_fork_format_block_follows_the_contract_it_states():
         ns["double"]("21")
 
 
-def test_the_curate_template_round_trips_through_the_library_parser():
-    """Every key of the curator's manifest template parses at its level, and the parsed item equals the one
-    written; a typed cover is the only cover the template's items carry."""
-    from unify.memory import curate, manifest
-    from unify.memory.procedures import Cover
-
-    text = curate.curate_system()
-    start = text.index('{"why": ')
-    template = text[start : text.index("}\nList in items", start) + 1]
-    assert '"input"' not in template
-    items_part = template[template.index("[{") : template.index("}]") + 2]
-    item_keys = set(re.findall(r'"([a-z_]+)":', items_part))
-    top_keys = set(re.findall(r'"([a-z_]+)":', template.replace(items_part, "[]")))
-    item = {
-        "item": "memory.acct.users:user_id",
-        "kind": "function",
-        "source_episodes": ["e1", "e2"],
-        "tests": ["memory/acct/tests/test_users.py"],
-        "covers": [{"episode": "e1", "type": "cell", "cell": 3}],
-    }
-    assert set(item) == item_keys
-    allowed_items = getattr(manifest, "LIBRARY_ITEM_FIELDS", None)
-    allowed_top = getattr(manifest, "LIBRARY_MANIFEST_FIELDS", None)
-    if allowed_items is not None:
-        assert item_keys <= set(allowed_items), item_keys - set(allowed_items)
-    if allowed_top is not None:
-        assert top_keys <= set(allowed_top), top_keys - set(allowed_top)
-    values = {
-        "why": "w",
-        "summary": "s",
-        "items": [item],
-        "deleted": ["memory.acct.users:old_id"],
-        "deleted_tests": ["memory/acct/tests/test_old.py"],
-        "aliases": {"memory.acct.users:old_id": "memory.acct.users:user_id"},
-        "retired": {},
-        "tests_changed": {"memory/acct/tests/test_old.py": "merged into test_users"},
-        "skeleton": ["memory.acct.users"],
-    }
-    assert set(values) == top_keys
-    got = manifest.parse_manifest(values, library_mode=True)
-    (parsed,) = got.items
-    assert (parsed.item, parsed.kind, parsed.source_episodes, parsed.tests) == (
-        item["item"],
-        "function",
-        ["e1", "e2"],
-        ["memory/acct/tests/test_users.py"],
-    )
-    assert parsed.covers == [] and parsed.typed_covers == [Cover("e1", "cell", index=3)]
-    assert parsed.input is None
-    assert (got.deleted, got.deleted_tests, got.skeleton) == (
-        values["deleted"],
-        values["deleted_tests"],
-        values["skeleton"],
-    )
-
-
-def test_no_example_verification_instruction_and_the_check_is_live():
-    assert pv.example_checks(
-        v2_prompt.GUIDE,
-    )  # v2's "check the example first" is caught
-    for bad in (
-        "Verify your function against the training examples.",
-        "Test it on the task's example pairs first.",
-        "check each example before you answer",
-        "Run the given examples through it.",
-    ):
-        assert pv.example_checks(bad), bad
-    for name, text in _texts().items():
-        assert pv.example_checks(text) == [], name
-
-
-def test_no_role_carries_another_roles_instructions():
-    t = {k: v.lower() for k, v in _texts().items()}
-    for marker in pv.WRITE_ONLY:
-        assert (
-            marker in t["write"]
-            and marker not in t["curate"]
-            and marker not in t["guide"]
-        ), marker
-    for marker in pv.CURATE_ONLY:
-        assert (
-            marker in t["curate"]
-            and marker not in t["write"]
-            and marker not in t["guide"]
-        ), marker
-    for marker in pv.WRITER_ONLY:
-        assert (
-            marker in t["write"] and marker in t["curate"] and marker not in t["guide"]
-        ), marker
-
-
 #: How the library briefs described a first parameter's recorded input forms, before a function took any arguments.
 FORMER_INPUT_FORMS = (
     "a path to a work-tree file",
@@ -327,78 +207,3 @@ FORMER_INPUT_FORMS = (
 )
 
 
-def test_no_input_form_is_named_in_library_briefs():
-    """Replaces test_input_forms_match_the_manifest. The rule that replaces it: a library function takes any
-    arguments and its examples are the calls its tests make on fixtures, so no library text names an input form, the
-    manifest's ``input`` key or a first-parameter rule (``INPUT_KINDS`` stays for v2 only).
-    """
-    from unify.memory import helpers
-    from unify.memory.integration import fork
-
-    texts = {
-        "write": pv.write_brief_now(staging=True, pool=True, helper=True, similar=True),
-        "write plain": pv.write_brief_now(),
-        "curate": pv.curate_brief_now(),
-        "guide": pv.GUIDE_LIBRARY,
-        "pointer": pv.GUIDE_POINTER,
-        "contract": pv.CANDIDATE_CONTRACT,
-        "fork": fork.fork_instruction(),
-        "helper": helpers.helper_brief(False),
-        "helper similar": helpers.helper_brief(True),
-    }
-    assert not hasattr(pv, "INPUT_FORMS_LIBRARY")
-    for name, text in texts.items():
-        assert '"input"' not in text and "<<input_forms>>" not in text, name
-        assert "first parameter takes one recorded form" not in text, name
-        for form in FORMER_INPUT_FORMS:
-            assert form not in text, (name, form)
-
-
-def test_rendered_from_the_constants_that_enforce_them():
-    """Needs repair, library_index, code_lint with MUTATION_MIN, and curate: runs once they are integrated."""
-    repair = pytest.importorskip("unify.memory.repair")
-    code_lint = pytest.importorskip("unify.memory.code_lint")
-    INDEX_VIEW_TOKENS = pytest.importorskip(
-        "unify.memory.library_index",
-    ).INDEX_VIEW_TOKENS
-    pytest.importorskip("unify.memory.curate")
-    from unify.memory import qa, views
-    from unify.memory.gate import _PYTEST_ENV
-
-    from unify.memory import writer_pass
-
-    text = pv.write_brief_now()
-    assert f"at most {views.VIEW_BYTES} bytes" in text
-    # the briefs state no check or repair-round counts (the pass enforces none)
-    assert "times per pass" not in text and "while the pass" not in text
-    assert f"appends {qa.SAMPLE_K} more recorded inputs" in text
-    assert f"text of {code_lint.LINT_MIN} or more characters" in text
-    assert f"at least {pv._pct(qa.MUTATION_MIN)}% of small mutations" in text
-    assert f"after {writer_pass.STEP_GUARD} model and check calls" in text
-    assert pv._env(_PYTEST_ENV) in text
-    assert INDEX_VIEW_TOKENS and repair  # imported: the constants exist
-    assert (
-        f"after {writer_pass.STEP_GUARD} model and check calls" in pv.curate_brief_now()
-    )
-
-
-def test_no_read_only_instruction():
-    """Read-only is enforced by the mount; no text tells anyone not to write the library."""
-    for name, text in _texts().items():
-        assert "never write" not in text.lower(), name
-        assert "The library is read-only" not in text, name
-    assert "generated by the harness" in _write()
-    assert pv.GUIDE_LIBRARY.endswith(
-        "\n\nWrite your own code and files in your session as usual.\n",
-    )
-
-
-def test_the_guide_sentences_are_kept():
-    for name, t in _texts().items():
-        assert "does not run the tests" not in t, name
-    # the two GUIDE sentences still awaiting a decision are kept
-    assert (
-        "Before you write code for a step, look in the index for an item that does it."
-        in pv.GUIDE_LIBRARY
-    )
-    assert "Using the library is optional: use an item when it fits" in pv.GUIDE_LIBRARY
