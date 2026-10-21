@@ -1774,11 +1774,14 @@ class WriterSwitches:
     (``UNIFY_MEMORY_ATTENTION_LEDGER=on``): its entries, ``tools.decide``, ``tools.take``, ``tools.open_entries`` and
     ``tools.find``. *impure*: ``UNIFY_MEMORY_IMPURE_ITEMS=on``: items of any effect, each with its stated inputs,
     constants, episodes and effects, every quality finding a label. *tests*: ``UNIFY_MEMORY_WRITER_TESTS`` offers
-    ``tools.test``."""
+    ``tools.test``. *labels_only*: rev 2's gate (:data:`LABELS_ONLY_GATE`)."""
 
     attention: bool = False
     impure: bool = False
     tests: bool = False
+    #: ``UNIFY_MEMORY_GATE_LABELS_ONLY=on`` (rev 2, :mod:`.gate_policy`): a finding labels its item, only the hard checks
+    #: refuse, and the gate runs code only for a pure function of its input
+    labels_only: bool = False
 
 
 #: The attention pass's section of the brief.
@@ -1810,12 +1813,117 @@ IMPURE_MANIFEST_DOCS = (
 #: The stated tests (``UNIFY_MEMORY_WRITER_TESTS``).
 TESTS_TEXT = "Running code is a test you state first: say what you expect, then run `tools.test`."
 
+#: Rev 2's gate (``UNIFY_MEMORY_GATE_LABELS_ONLY``, :mod:`.gate_policy`): what a finding does and what the gate runs.
+LABELS_ONLY_GATE = (
+    "# The gate\n"
+    "After `tools.finish(summary)` a deterministic gate checks the candidate. A finding about an item is recorded on "
+    "its label and the item lands with it; a finding about the whole pass is a note. Only these refuse: safety "
+    "(G6), a change outside `memory/` and `notes/` or to the generated files, a manifest that does not parse or "
+    "leaves a change undeclared, a fixture that did not come through `tools.fixture` unchanged, a cited episode that "
+    "is not recorded, and code that does not parse or import. The gate runs code only for an item that is a pure "
+    "function of its input (it reads its input and calls no tools, no files and no network): its listed tests, its "
+    "recipe on its cases and its own recorded calls. For any other item its label says what was not run and why. "
+    "Its labels name the check: G1, layout and provenance (the paths, the manifest, the links, the fixtures, each "
+    "new or changed function and note's `When to use` section and each changed folder's README.md); G2, evidence "
+    "(each function's listed tests call it, and what those calls show sets its evidence level); G3, tests (plain "
+    "pytest, the tests pass, a behaviour change has a test that fails on the parent, no test is lost or weakened "
+    "without a reason, and an exact assertion against a trusted value on a recorded fixture for each changed "
+    "function, never one that recomputes it); G4, the index (a note when it has outgrown the view the working "
+    "model is shown); G5, items (no fewer items, and a deleted item's recorded jobs kept by a remaining one); G6, "
+    "safety (no links, executables, submodules, git, pytest or interpreter configuration files, bytecode or "
+    "key-shaped strings).\n"
+)
+#: Rev 2's repair: only a hard check gives a repair round.
+LABELS_ONLY_REPAIR = (
+    "# Repair\n"
+    "If a check refuses anything, its full result (every check, every failing test's output and every note) is "
+    "written to /inputs/gate/result-<round>.md and you get a repair round: fix what it refused, keep the manifest "
+    "current, and call `tools.finish(summary)` again. The limits below say how many repair rounds a pass has. "
+    "Everything else lands, each item with its label; the labels are in the same result, for this pass or a later "
+    "one to improve.\n"
+)
+
 
 def _swap(text: str, old: str, new: str) -> str:
     """*text* with *old*, which it holds exactly once, replaced by *new* (a brief whose wording moved fails loudly)."""
     if text.count(old) != 1:
         raise ValueError(f"the WRITE brief holds {text.count(old)} copies of {old[:60]!r}, not one")
     return text.replace(old, new)
+
+
+def with_labels_only(body: str, sw: "WriterSwitches", recipe_rule: str) -> str:
+    """The in-code WRITE brief under rev 2's gate (:data:`LABELS_ONLY_GATE`): every sentence that says the gate refuses
+    what it now labels, or runs what it now leaves alone, says what it does instead."""
+    if sw.impure:
+        body = _swap(
+            body,
+            "The gate runs the recipe, confined, on every case and records what each case gave on the procedure's "
+            "label; the procedure lands either way. ",
+            "The gate runs the recipe on every case when the procedure is a pure function of its input, and records "
+            "what each case gave on its label; the procedure lands either way. ",
+        )
+        body = _swap(
+            body,
+            "Each quality finding about an item (its recipe's cases, the unseen values, its examples, its tests and "
+            "its behaviour) is recorded on its label and lands with it; safety, paths, syntax and the library's other "
+            "tests still refuse.\n\n",
+            "",
+        )
+    else:
+        body = _swap(
+            body,
+            recipe_rule,
+            "The gate runs the recipe on every case when the procedure is a pure function of its input, and records "
+            "what each case gave on its label; the procedure lands either way. ",
+        )
+        body = _swap(
+            body,
+            "A procedure of any other kind cannot be verified, so it stays a draft.",
+            "A procedure the gate cannot run is kept with its label.",
+        )
+    body = _swap(
+        body,
+        "A procedure is verified by replaying its episode: a work-tree procedure must reproduce the recorded file "
+        "changes, a tool procedure the recorded calls, and a dialogue procedure the recorded reply the environment "
+        "then accepted. ",
+        "A procedure is judged by its own tests and its recipe's cases. ",
+    )
+    body = _swap(
+        body,
+        "The gate replaces the fixture values the tests load with unseen values of the same type and reruns the "
+        "tests: the function must not then raise `MemoryInputError` or another exception on a call it accepted "
+        "before. ",
+        "",
+    )
+    body = _swap(
+        body,
+        "the gate refuses a candidate with fewer items or tests.",
+        "a candidate with fewer items or tests is labelled so.",
+    )
+    body = _swap(
+        body,
+        " The gate appends <<sample_k>> more recorded inputs of the same kind to a copy of that file, and the "
+        "function's tests must pass on every one.",
+        "",
+    )
+    body = _swap(
+        body,
+        "  The gate refuses a new or changed function or note without the section or one of its four lines.",
+        "  A new or changed function or note without the section or one of its four lines is labelled so.",
+    )
+    body = _swap(
+        body,
+        "The gate refuses the items of a folder the pass changes when the folder has no README.md, or an empty one.",
+        "The items of a folder the pass changes are labelled when the folder has no README.md, or an empty one.",
+    )
+    body = _swap(body, _GATE_IN_CODE, LABELS_ONLY_GATE)
+    body = _swap(body, _REPAIR_IN_CODE, LABELS_ONLY_REPAIR)
+    body = _swap(
+        body,
+        "has passed the gate or is kept as a draft with its failure.",
+        "has landed with its label, or is kept as a draft with the check that refused it.",
+    )
+    return body
 
 
 def with_switches(body: str, sw: "WriterSwitches") -> str:
@@ -1831,12 +1939,15 @@ def with_switches(body: str, sw: "WriterSwitches") -> str:
             "- /inputs/attention/: your entries (index.json) and, per entry, what the harness holds for it outside the "
             "episodes (use.json, signal.json, note.json). For: what each entry owes a read.\n- /inputs/batch_map.json:",
         )
+    recipe_rule = (
+        "The gate runs the recipe, confined, on every case and lands the procedure only if it gives every expected "
+        "output; a failing case comes back with the difference. An episode whose recipe does not pass, or that "
+        "failed, lands no procedure (a note of what was tried may still land). "
+    )
     if sw.impure:
         body = _swap(
             body,
-            "The gate runs the recipe, confined, on every case and lands the procedure only if it gives every expected "
-            "output; a failing case comes back with the difference. An episode whose recipe does not pass, or that "
-            "failed, lands no procedure (a note of what was tried may still land). ",
+            recipe_rule,
             "The gate runs the recipe, confined, on every case and records what each case gave on the procedure's "
             "label; the procedure lands either way. ",
         )
@@ -1868,6 +1979,8 @@ def with_switches(body: str, sw: "WriterSwitches") -> str:
             "its behaviour) is recorded on its label and lands with it; safety, paths, syntax and the library's other "
             "tests still refuse.\n\n# Repair\n",
         )
+    if sw.labels_only:
+        body = with_labels_only(body, sw, recipe_rule)
     if sw.tests:
         body = _swap(body, "\n# What to write\n", "\n" + TESTS_TEXT + "\n\n# What to write\n")
     return body

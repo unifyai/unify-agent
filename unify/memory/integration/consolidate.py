@@ -2222,7 +2222,7 @@ async def run_attention_pass(
         **surfacing_options(settings).gate_kwargs(),
         qa=QAConfig.from_settings(settings),
     )
-    from .switch import impure_items, writer_tests_modes
+    from .switch import gate_labels_only, impure_items, writer_tests_modes
 
     impure = impure_items(settings)
     gate = Gate(
@@ -2269,6 +2269,7 @@ async def run_attention_pass(
         attention_home=str(home),
         writer_tests=tuple(sorted(writer_tests_modes(settings))),
         impure_items=impure,
+        gate_labels_only=gate_labels_only(settings),
     )
     session = f"writer.{pass_id}"
     if turn_factory is not None:

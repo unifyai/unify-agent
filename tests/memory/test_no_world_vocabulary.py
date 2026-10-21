@@ -284,8 +284,8 @@ def _rendered_redesign(monkeypatch) -> dict[str, str]:
     for in_code in (False, True):
         monkeypatch.setattr(in_code_switch, "tools_in_code", lambda v=in_code: v)
         tag = "code" if in_code else "json"
-        for sw in itertools.product((False, True), repeat=3):
-            switches = lp.WriterSwitches(attention=sw[0], impure=sw[1], tests=sw[2])
+        for sw in itertools.product((False, True), repeat=4):
+            switches = lp.WriterSwitches(attention=sw[0], impure=sw[1], tests=sw[2], labels_only=sw[3])
             for staging, pool, helper in itertools.product((False, True), repeat=3):
                 out[f"rendered:write_redesign:{tag}:{sw}:{(staging, pool, helper)}"] = lp.write_brief_now(
                     staging=staging, pool=pool, helper=helper, switches=switches,

@@ -208,3 +208,33 @@ def test_the_rev2_profile_never_enables_the_v1_capture_path_or_the_recorded_repl
         assert refused is not None and name in refused, (name, refused)
     assert switch.parse_gate_recorded_replays("") == "" and switch.parse_gate_labels_only("ON") == "on"
     assert json.dumps(switch.REDESIGN_SWITCHES)  # plain values a kit pins
+
+
+# --- the writer's brief says labels, not refusals -------------------------------------------------------------------------
+
+
+def test_the_brief_under_the_rev2_gate_describes_labels_and_stays_general(monkeypatch):
+    from unify.common import in_code_switch
+    from unify.memory import library_prompts as lp
+
+    monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: True)
+    for impure in (False, True):
+        text = lp.write_brief_now(staging=True, pool=True, switches=lp.WriterSwitches(impure=impure, labels_only=True))
+        assert lp.LABELS_ONLY_GATE in text and lp.LABELS_ONLY_REPAIR in text
+        for gone in (
+            "The gate refuses a new or changed function or note",
+            "The gate refuses the items of a folder",
+            "the gate refuses a candidate with fewer items",
+            "unseen values of the same type and reruns the tests",
+            "more recorded inputs of the same kind to a copy of that file",
+            "lands the procedure only if it gives every expected output",
+            "A procedure is verified by replaying its episode",
+            "has passed the gate or is kept as a draft with its failure",
+        ):
+            assert gone not in text, gone
+        assert "is labelled so" in text and "has landed with its label" in text
+        assert lp.benchmark_words(text) == [] and lp.example_checks(text) == []
+    # off: the brief as built
+    assert lp.write_brief_now(staging=True, pool=True, switches=lp.WriterSwitches()) == lp.write_brief_now(
+        staging=True, pool=True,
+    )

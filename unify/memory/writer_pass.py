@@ -873,6 +873,9 @@ class PassConfig:
     # UNIFY_MEMORY_IMPURE_ITEMS=on: items of any effect, every quality finding a label (the brief says so; the gate
     # is configured apart, Gate(labels=...)); off: the brief as before
     impure_items: bool = False
+    # UNIFY_MEMORY_GATE_LABELS_ONLY=on (rev 2): the brief says a finding labels its item and only pure items run (the
+    # gate is configured apart, Gate(labels_only=...)); off: the brief as before
+    gate_labels_only: bool = False
     # UNIFY_AGENTS_RUN_RECORD=on (library mode): the memory home whose run record the pass's agent and its helpers
     # join (unify/agents/run_record.py); None: the pass keeps its own record, as built
     run_home: str | None = None
@@ -4418,7 +4421,8 @@ class WriterPass:
             "finish_capped": self.cfg.max_usd is not None,
             "edit_tools": bool(self.cfg.edit_tools),
             # the redesign's switches, only when one is on (off: the call as built)
-            **({"switches": sw} if (sw := self._switches_b()).attention or sw.impure or sw.tests else {}),
+            **({"switches": sw} if (sw := self._switches_b()).attention or sw.impure or sw.tests or sw.labels_only
+               else {}),
         }
 
     def _switches_b(self) -> Any:
@@ -4430,6 +4434,7 @@ class WriterPass:
             attention=getattr(self, "_attention", None) is not None,
             impure=bool(getattr(self.cfg, "impure_items", False)),
             tests=bool(getattr(self.cfg, "writer_tests", ())),
+            labels_only=bool(getattr(self.cfg, "gate_labels_only", False)),
         )
 
     def _keep_cancelled_work(
