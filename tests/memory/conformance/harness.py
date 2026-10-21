@@ -42,9 +42,6 @@ WRITER_MODEL = "openai/gpt-6-luna"
 SERVICE_CAP_USD = "100"  # no writer journal here: every pass settles at its reservation (worst case)
 #: How long a surface waits for the service to have nothing owed before it drains.
 SETTLE_S = 180.0
-#: The in-episode arm's setting (rev 2's main profile runs without in-episode memory): the surfaces that check segment
-#: forks and serving while an episode runs set it on top of :func:`redesign_env`.
-IN_EPISODE_ON = {"UNIFY_MEMORY_IN_EPISODE": "on"}
 
 GUARD = re.compile(
     r"\b(grid|grids|puzzle|demo|demos|task|tasks|airline|booking|crafter|arc|poker|hand|game|colleague|office|stencil"
@@ -79,6 +76,15 @@ def redesign_env(port: int) -> dict[str, str]:
         "UNIFY_LOCAL_EMBEDDINGS": "false",
         "UNIFY_EMBED_URL": f"http://127.0.0.1:{port}/embed/v1/embeddings",
     }
+
+
+def in_episode_env() -> dict[str, str]:
+    """The in-episode arm's settings on top of :func:`redesign_env` (rev 2's main profile runs without in-episode
+    memory, and the profile takes no other in-episode value): no profile, and the arm's switches each set, as a kit
+    sets an arm."""
+    from unify.memory.integration import switch
+
+    return {"UNIFY_MEMORY_PROFILE": "", **switch.REDESIGN_ARMS["in_episode_on"]}
 
 
 def apply_settings(monkeypatch: Any, env: dict[str, str]) -> None:

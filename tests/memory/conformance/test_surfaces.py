@@ -139,7 +139,7 @@ def check_mesh(home: Path) -> dict:
 @pytest.mark.timeout(900)
 @_handle_project
 async def test_surface_1_a_conversation_with_follow_ups_and_no_reward(core_world, monkeypatch, lanes):  # noqa: F811
-    H.apply_settings(monkeypatch, H.IN_EPISODE_ON)
+    H.apply_settings(monkeypatch, H.in_episode_env())
     home = Path(core_world["state"])
     _forever(lanes, "fork", SX.FORK_REPLY)
     _forever(lanes, "writer", SX.writer_policy(land=False))
@@ -270,7 +270,7 @@ async def test_surface_3_a_long_episode_with_checkpoints(core_world, monkeypatch
     from unify.memory.gitio import Repo
     from unify.memory.integration.paths import Paths
 
-    H.apply_settings(monkeypatch, H.IN_EPISODE_ON)
+    H.apply_settings(monkeypatch, H.in_episode_env())
     home = Path(core_world["state"])
     paths = Paths.under(home)
     (Path(core_world["workspace"]) / "inbox.csv").write_text(SX.INBOX)
@@ -493,9 +493,10 @@ async def test_frozen_memory_serves_what_it_holds_and_changes_nothing(core_world
     # no writer, fork or helper call, and no service started
     assert {lane: len(lanes.of(lane)) for lane in ("fork", "writer", "helper")} == calls_before
     assert len(ws.events(home)) == events_before, ws.events(home)[events_before:]
-    # the writer is not available on the record; a pause is not taken
+    # the writer is not available on the record; a pause is not taken: rev 2's main profile has no in-episode memory,
+    # so the role has no checkpoint at all (the frozen refusal of a checkpoint is test_frozen_memory's)
     assert all("not available: memory is frozen" in x for x in said), said
-    assert all("refused: memory is frozen in this run" in x for x in said), said
+    assert all("tools.checkpoint isn't available in your role" in x for x in said), said
     frozen_rows = [e for e in H._jsonl(paths.state_dir / "events.jsonl") if e.get("phase") == "frozen"]
     assert sorted(e["episode_id"] for e in frozen_rows) == sorted(s.episode_id for s in sessions), frozen_rows
     from unify.agents import run_record as rr
