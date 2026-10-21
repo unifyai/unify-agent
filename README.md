@@ -6,220 +6,368 @@
 </p>
 
 <p align="center">
-  <a href="https://unify.ai">unify.ai</a> · <a href="https://discord.com/invite/sXyFF8tDtm">Discord</a> · <a href="LICENSE">MIT license</a>
+  <a href="https://unify.ai">unify.ai</a> · <a href="LICENSE">MIT license</a>
 </p>
 
-# unify
+# unify-agent
 
-**unify is a self-improving agent harness for research on how an assistant learns tasks and skills. It runs entirely on your machine: a persistent conversation loop above a code-writing actor, two skill libraries the actor consults before it writes code and distils into after work that went well, and a steering protocol that reaches into any running operation. One LLM key and `python -m unify`.**
+unify-agent is an agent harness that learns from use. You give it a task in
+plain words. A model, the actor, solves it by writing Python, one program per
+turn, which the harness runs in a sandbox on your machine. With memory on, each
+finished task is written down, and a background writer turns those records into
+a library of tested functions and notes that later tasks can ask for and call.
 
-The repo is deliberately small. Everything that is not the harness itself has been cut, so that what is left can be studied, changed and measured: how skills are discovered, how a run is distilled into a function or a procedure, how a correction reaches work that is already running, and how all of that composes when actors nest.
+It runs locally with one model-provider key, and keeps everything it learns in
+a git repository under `~/.unify`. It is research code, published so the design
+can be read, run and measured. [Research arms](#research-arms) lists the
+variants we measured and where their code lives.
 
-## The design
+## Quickstart
 
-Seven decisions, each of which the rest of the code serves:
+You need:
 
-- **Everything is code.** The actor writes one Python program per turn in a persistent sandbox. Files are read where they are, shell commands run through `subprocess`, packages install into one workspace environment, and nested actors are spawned from code with `primitives.actor.act(...)`. There is no tool per capability.
-- **Two skill libraries, discovered first.** Functions are the *what*: executable Python with a docstring and pip dependencies. Guidance is the *how*: procedures for composing them. The actor searches both before it writes new code.
-- **A run is distilled, not remembered.** After a run completes, a storage review reads the trajectory and decides whether anything is worth keeping: a callable that worked becomes a function, a non-obvious composition becomes guidance. Often nothing is. That review is the only way the libraries grow.
-- **A conversation loop above the actor.** A slow brain stays present across the conversation and keeps deciding whether to speak or wait while work is in flight. Dispatching work and replying to you are different decisions, made by different loops. This is the interaction-model split [described by Thinking Machines](https://thinkingmachines.ai/blog/interaction-models/), arrived at in the harness rather than in the model.
-- **Steering is a protocol.** Every operation returns the same steerable handle: `ask`, `interject`, `pause`, `resume`, `stop`. Handles nest, so a correction made in chat propagates down the live call stack into whatever loop is running, and a clarification from the innermost loop bubbles up to you. Corrections reach code that is already executing, not just the next tool boundary.
-- **One process, one file.** Runtime, chat history and both libraries run in one process against one SQLite file under `~/.unify`. No services, no accounts, no infrastructure.
-- **Reactive.** Every piece of work starts from a message you sent or from work that message started. There is no scheduler and no inbound channel other than the chat.
+- **Linux, or Windows with WSL2.** macOS is not supported: every program the
+  agent runs is confined with bubblewrap, which needs Linux, and the harness
+  refuses to run without it.
+- **bubblewrap, util-linux (for `prlimit`) and git.** On Debian or Ubuntu:
+  `sudo apt install bubblewrap util-linux git`. Check that bubblewrap can start
+  a sandbox with `bwrap --ro-bind / / true`; some distributions (Ubuntu 24.04,
+  for one) restrict the user namespaces it needs.
+- **Python 3.12 and [uv](https://docs.astral.sh/uv/).**
+- **One model-provider key:** `OPENROUTER_API_KEY` for the default model, or
+  `ANTHROPIC_API_KEY` with an Anthropic model named in `UNIFY_MODEL`.
 
-unify shares the stance of [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent)'s recursive language model: a persistent Python control environment, subagents as function calls, skills as importable code, and harness state that improves with use. It differs in the conversation layer above the actor, in steering as a first-class protocol, and in keeping everything in one process over one store.
-
----
-
-## Install
-
-**Prerequisites:** Python 3.12+, [uv](https://docs.astral.sh/uv/), and one LLM provider key (OpenRouter or Anthropic; OpenAI, DeepSeek and every other provider's models are reached through OpenRouter). macOS, Linux, or WSL2.
-
-`unify` and its LLM client `unillm` are sibling checkouts linked by an editable install:
+> **Install status.** unify-agent pins its model client, unillm, to commit
+> `9d85422`, which is not yet on GitHub. Until it is, the checkout step below
+> fails unless your unillm clone already has that commit.
+> TODO(lead): publish unillm `9d85422` (12 commits past unillm `main`). After
+> that, remove the sibling-checkout entry in `pyproject.toml`, and
+> `pip install git+https://github.com/unifyai/unify-agent` installs the pin
+> directly.
 
 ```bash
 git clone https://github.com/unifyai/unify-agent.git
 git clone https://github.com/unifyai/unillm.git
+git -C unillm checkout 9d8542206047d8131cf23f5511f4d6afcc81fc75
 cd unify-agent
-uv sync --all-groups
-cp .env.example .env      # add your provider key
+uv sync --no-dev
 ```
 
-Then hand the actor a request:
+Put your key in a `.env` file in the checkout (git ignores it), as
+`OPENROUTER_API_KEY=...`, or export it in your shell. Then give the actor a
+file and a task:
 
 ```bash
-.venv/bin/python -m unify act "Count the rows in ~/exports/run-42.csv"
+mkdir -p ~/.unify/workspace
+cp data.csv ~/.unify/workspace/
+.venv/bin/unify act "How many rows does data.csv have, and which columns are mostly empty?"
 ```
 
-`unify` with no subcommand runs `act` on a request read from stdin. `unify chat`, the old conversation loop (`unify/legacy/`), is legacy and unsupported: it only says so and exits.
+Progress goes to stderr and the answer to stdout. The actor's programs see the
+system's read-only directories, their workspace `~/.unify/workspace` and a
+private `/tmp`, and can write only the last two. Everything the agent keeps
+lives under `~/.unify` (`UNIFY_HOME`); delete that directory to start from
+nothing. For in-process embeddings instead of the provider's, add
+the extra: `uv sync --no-dev --extra local-embeddings`.
 
-Progress streams to stderr and the result to stdout, so it slots into a benchmark runner. The request can come from stdin, `--json` adds the token accounting, `--no-store` skips the storage review, `--persist` keeps the sandbox alive for follow-up lines, and a question the actor asks is answered by typing at the terminal. This is the like-for-like unit against single-loop harnesses such as Prime Agent.
+## What the agent and its memory do
 
-Everything the assistant keeps lives under `~/.unify/` (`UNIFY_HOME`): the SQLite store, the embeddings cache, the workspace environment, the `workspace/` directory the actor reads and writes files in, and the runtime logs. Delete the directory and you have a fresh assistant. `unify act --debug` streams the runtime logs to the terminal.
+**The actor.** Each turn, the model writes one Python program. The harness runs
+it in a persistent sandboxed interpreter, so variables carry over from one
+program to the next. Shell commands run from Python through `subprocess`.
+Packages a program needs are installed into one shared environment under
+`~/.unify`, from prebuilt wheels only. The actor answers when it is done; with
+`--persist` it then waits for a follow-up in the same sandbox.
 
-<details>
-<summary>Configuration</summary>
+**Memory** is on by default. After each task:
 
-`.env` holds the whole configuration; `.env.example` documents every key. The ones that matter:
+1. **A capture.** A confined copy of the actor's conversation, a fork, is asked
+   to write down what it did: a small runnable procedure, what it was for, and
+   which parts of the task it rests on.
+2. **The writer.** A background writer reads the captures and failures that
+   need attention, and keeps a library of functions and notes in a git
+   repository at `~/.unify/memory`. It states tests for what it writes, and the
+   harness runs them in a sandbox. A gate checks every change and records what
+   it finds as labels on the item. The writer has its own spend cap, outlives
+   the `unify act` command, and stops by itself once idle for 30 minutes.
+3. **The librarian.** In a later task the actor can call `memory.ask("...")`.
+   A librarian agent reads the library and answers with the items that fit.
+   Each item comes with a recorded example call and can be called directly,
+   as `item(...)`. The actor decides whether to use it.
+4. **A shared run record.** The actor, the forks, the writer and the librarian
+   post to one append-only record. They can address one another (`@writer`,
+   `@librarian`), so a question reaches the agent that can answer it.
 
-| Variable | Purpose |
+[`docs/memory.md`](docs/memory.md) explains the memory in full.
+
+## Configuration
+
+Memory has one switch, `UNIFY_MEMORY`:
+
+- `UNIFY_MEMORY=off`: no memory of any kind. Each task costs only the actor's
+  model calls.
+- `UNIFY_MEMORY=on`, the default (also when unset or empty): memory between
+  tasks. It adds the capture, writer and librarian calls to the actor's.
+- `UNIFY_MEMORY=in_episode`: `on`, plus memory during a task. It costs about
+  twice as much per task as `on`, with no measured gain so far.
+
+Everything else is essential configuration only: the provider key, the model
+and reasoning effort, the paths, and the writer's spend cap.
+[`CONFIG.md`](CONFIG.md) lists every environment variable, one line each.
+
+## Using it in your own workflow
+
+### As a subprocess
+
+`unify act --persist --jsonl "first request"` keeps one session open and speaks
+newline-delimited JSON. Progress still goes to stderr.
+
+Lines your program writes to its stdin:
+
+| Line | Effect |
 |---|---|
-| `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` | At least one provider key |
-| `UNIFY_MODEL`, `UNIFY_REASONING_EFFORT` | The default model (a unillm `model@provider` endpoint) and effort |
-| `UNIFY_HOME` | Where the store, environment and workspace live (default `~/.unify`) |
-| `UNIFY_STORE_PATH` | An explicit path for the SQLite store |
-| `UNIFY_LOCAL_EMBEDDINGS` | Embed skills for search in process with `BAAI/bge-small-en-v1.5` instead of `openai/text-embedding-3-small` through OpenRouter |
-| `UNILLM_CACHE` | Cache LLM responses locally; later runs replay identical calls |
-| `ASSISTANT_FIRST_NAME`, `USER_FIRST_NAME`, … | Optional identity for the assistant and its user |
+| `{"message": "..."}` | A follow-up request in the same session. |
+| `{"cancel": true}` | Ends the running turn at once and keeps the session. |
+| `{"quit": true}` | Ends the session. |
+| `{"outcome": {"solved": true, ...}}` | Your verdict on the work, so memory learns what worked. The full form is in `unify/outcome.py`. |
 
-</details>
+Lines it writes to stdout, each with a `type`:
 
----
+| `type` | When |
+|---|---|
+| `response` | At the end of every turn, with the turn's text in `content`; `"cancelled": true` if a cancel ended it. |
+| `record` | An entry in the run record addressed to `@user`. |
+| `outcome` | The answer to an outcome line: `accepted`, or a `reason` if it was refused. |
+| `result` | The session's final result, with `run_stats`. |
+| `ended` | The last line: the session is over. |
 
-## Steering while work is in flight
-
-When the assistant is mid-task, steer it the way you would steer a colleague: send another message.
-
-```text
-> Actually, narrow it to ones with Rust bindings.
-> What step are you on?
-> Pause that, something urgent.
-```
-
-Each message wakes the slow brain, which can answer you directly or redirect in-flight work through its steering tools (`interject_action`, `ask_action`, `pause_action`, `resume_action`, `stop_action`, `answer_clarification_action`), each addressed by the action's id. Nothing restarts; the correction propagates down the live call stack into whatever loop is currently running.
-
-```text
-You          ▸  "Find me high-throughput vector DBs under Apache 2."
-Assistant    ▸  (start searching)
-You          ▸  "Actually, narrow it to ones with Rust bindings."
-Assistant    ▸  (adjust the in-flight search, don't restart)
-You          ▸  "Pause that, something urgent."
-Assistant    ▸  (freeze exactly where they are)
-... five minutes later ...
-You          ▸  "OK, resume. How's it going?"
-Assistant    ▸  (pick up where they left off, give you a status update)
-```
-
-Several actions can run at once, each independently inspectable, steerable and pausable:
-
-```text
-┌─ In-Flight Actions ────────────────────────────────┐
-│  [0] watch_pr_reviews    ██████████░░░  In progress │
-│  [1] digest_releases     ████████████░  In progress │
-│  [2] retry_failed_build  ██░░░░░░░░░░  Starting     │
-└─────────────────────────────────────────────────────┘
-```
-
----
-
-## How it works
-
-```text
-You ──► ConversationManager (slow brain: event-driven, single-shot tool decisions)
-            │
-            │  act(...) / interject / ask / pause / resume / stop
-            ▼
-        CodeActActor (writes one Python program per turn in a persistent sandbox)
-            │
-            ▼
-        Skill libraries (stored functions + procedures, discovered before writing code)
-            │
-            ▼
-        unify.db (one SQLite file: functions, primitives, guidance, builtin_guidance, messages)
-```
-
-**Dispatch flows down; steering flows back up the same path.** Every level returns the same `SteerableToolHandle`, so a mid-flight redirect doesn't abort the run, doesn't append a second prompt, and doesn't wait for the next tool boundary. It propagates through the live nested call stack as a typed signal any inner loop can act on.
-
-### Steerable handles
+With memory on, other types report memory's progress; ignore types you do not
+know. A minimal driver, with `unify` on the `PATH` (or `.venv/bin/unify`):
 
 ```python
-handle = await actor.act("Survey high-throughput vector DBs and draft a comparison")
-await handle.interject("Only ones with Rust bindings")   # mid-flight redirect
-await handle.pause(); ...; await handle.resume()         # freeze and resume
-answer = await handle.ask("what step are you on and why?")  # a read-only inspection loop over the live transcript
+import json, subprocess
+
+proc = subprocess.Popen(
+    ["unify", "act", "--persist", "--jsonl", "How many rows does data.csv have?"],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+)
+
+def send(line: dict) -> None:
+    proc.stdin.write(json.dumps(line) + "\n")
+    proc.stdin.flush()
+
+for raw in proc.stdout:
+    event = json.loads(raw)
+    if event["type"] == "response":
+        print(event["content"])
+        send({"outcome": {"solved": True, "source": "user"}})
+        send({"quit": True})
+    elif event["type"] == "ended":
+        break
+proc.wait()
 ```
 
-When the actor calls `primitives.actor.act(...)`, the nested actor returns its own handle, nested inside the actor's, which is nested inside the `ConversationManager`'s. Steering at any level propagates down through the live call stack. When an inner loop hits genuine ambiguity, its clarification bubbles up through every intervening layer to you, and your answer flows back down to the loop that asked, without unwinding the stack. `stop()` on one nested branch leaves its siblings running.
-
-### CodeAct: the actor writes programs
-
-Most agents emit one JSON tool call at a time and let the LLM stitch results across turns. unify's actor writes a single Python program per turn in a persistent sandbox, calling stored functions and nested actors from code:
+### From Python
 
 ```python
-rows = load_orders("~/exports/orders.csv")          # a stored function, discovered first
-by_status = {}
-for row in rows:
-    by_status[row["status"]] = by_status.get(row["status"], 0) + row["amount"]
-note = await primitives.actor.act(f"Write a short note explaining {by_status}")
+import asyncio
+
+import unify
+from unify.actor.code_act_actor import CodeActActor
+from unify.actor.environments.actor import top_level_environments
+
+
+async def main() -> None:
+    unify.init()
+    actor = CodeActActor(environments=top_level_environments())
+    handle = await actor.act("How many rows does data.csv have?")
+    print(await handle.result())
+    await actor.close()
+
+
+asyncio.run(main())
 ```
 
-A load, reshape, delegate sequence becomes one plan with real variables, loops and control flow, rather than separate tool-selection turns round-tripping through tool messages. Corrections reach a running program too: an AST pass adds probes at function entry and loop iteration, dispatches are memoised, and a patched function is spliced into the source and re-run from where the change first matters.
+`act()` returns a handle with `result()`, `done()`, `stop(reason)`, `submit(text)`
+(a follow-up, read at the next turn boundary), `cancel_request()`,
+`next_notification()`, and `next_clarification()` with
+`answer_clarification(call_id, answer)`. This runs the actor alone: memory is
+driven by the `unify act` session (`unify/cli.py`), so to use memory from your
+program, drive the command as above.
 
-### Functions and guidance
+### Your own tools
 
-Two libraries the actor consults before reaching for raw code:
+Give the actor your own functions as `primitives.<name>`. Point
+`UNIFY_ENV_NAMESPACES` at a factory, `package.module:factory`, importable by the
+harness:
 
-- **Functions**: executable Python with a docstring and pip dependencies, run in-process with dependencies ensured in the workspace environment.
-- **Guidance**: procedural how-to prose (walkthroughs, multi-step strategies), linked to the functions it composes.
+```python
+from unify.function_manager.primitives.environment import (
+    EnvironmentMethod,
+    EnvironmentNamespace,
+    EnvironmentSurface,
+)
 
-Search is semantic: a function's name and docstring, or a procedure's title and content, is embedded once, the vector is cached in `~/.unify/embeddings.sqlite`, and every query is ranked by cosine similarity on this machine. The vectors come from `openai/text-embedding-3-small` through OpenRouter, or from `BAAI/bge-small-en-v1.5` in process when `UNIFY_LOCAL_EMBEDDINGS` is set. Skills in the [Agent Skills](https://agentskills.io) format import as guidance through `scripts/skill_migration`.
 
-### The local store
+def lookup(order_id: str) -> dict:
+    """Return the order with this id from the order service."""
+    ...
 
-`unify.db` is one SQLite file with five tables: `functions`, `primitives`, `guidance`, `builtin_guidance` and `messages`. The `primitives` table is seeded from the primitive registry. The `builtin_guidance` table is seeded from the committed Agent Skills snapshot. Two views, `all_functions` (`is_primitive`) and `all_guidance` (`is_builtin`), read each seeded catalogue alongside the assistant's own rows. Managers write plain SQL. Filters the model writes are SQL `WHERE` clauses (`docstring LIKE '%csv%' AND is_primitive = 0`) run through a read-only authorizer, so a clause can only read.
 
-Chat history, functions and procedures all live in this one file, so the whole assistant is something you can back up, inspect with `sqlite3` or delete.
+def surface() -> EnvironmentSurface:
+    return EnvironmentSurface(
+        namespaces=(
+            EnvironmentNamespace(
+                name="orders",
+                description="Our order service.",
+                methods=(
+                    EnvironmentMethod(
+                        name="lookup",
+                        call=lookup,
+                        effect="read",  # or "write" or "destructive"
+                        signature="(order_id: str) -> dict",
+                        docstring=lookup.__doc__,
+                    ),
+                ),
+            ),
+        ),
+    )
+```
 
-For the full breakdown (async tool loop internals, event bus, primitive registry, context propagation) see [`ARCHITECTURE.md`](ARCHITECTURE.md).
+With `UNIFY_ENV_NAMESPACES=mytools:surface`, the actor's programs call
+`primitives.orders.lookup("A-17")` and its prompt lists the namespace. Your
+functions run in the harness process, outside the sandbox and with its access;
+arguments and results cross from the sandbox as plain data. A factory that
+fails stops the harness at start-up. The details are in
+`unify/function_manager/primitives/environment.py`.
 
----
+### Network
 
-## The runtime stack
+The actor's programs have no network by default. With
+`UNIFY_WORKSPACE_NETWORK=proxy`, their only route out is a proxy you run on
+the host at `127.0.0.1:UNIFY_WORKSPACE_PROXY_PORT`; `HTTP_PROXY` and
+`HTTPS_PROXY` point at it inside the sandbox, so your proxy decides what is
+reachable. Package installs are separate: they go through the harness's own
+proxy, which reaches only the package index (PyPI, or the index your
+`UV_INDEX` settings name).
 
-| Repo | Role |
-|------|------|
-| **unify** (this) | The harness: conversation loop, actor, skill libraries, the store |
-| **[unillm](https://github.com/unifyai/unillm)** | LLM access layer: OpenRouter, Anthropic, DeepSeek, or any compatible endpoint, with response caching |
+## Safety model
 
----
+- Every program the actor writes, every shell command and every subprocess
+  runs inside bubblewrap. The host root is mounted read-only and only as an
+  allow-list; the workspace and a private `/tmp` are the only writable places.
+  `~/.unify`, credential directories (`~/.ssh`, `~/.config`, `~/.aws` and
+  others) and `.env` files are hidden. Environment variables that look like
+  credentials are removed, a seccomp filter limits sockets and system calls,
+  and resource limits apply. Without bubblewrap nothing runs.
+- Model-written code never sees the provider key. Model calls are made by
+  harness code; a program the actor writes reaches a model only by asking the
+  harness.
+- Memory's agents run their code in the same kind of box, with no network and
+  an empty environment.
+- Your own tools (`primitives.<name>`) run outside the sandbox, with the
+  harness's access. They are the openings you choose.
+- The sandbox limits what injected instructions can reach; it does not stop a
+  model from following them. Review what you feed the agent.
 
-## Running the tests
+[`SECURITY.md`](SECURITY.md) has the full trust model.
 
-Tests exercise the real system (steerable handles, CodeAct, nested tool loops, the storage review) against a per-session SQLite store with cached LLM responses. The LLM is never mocked: responses are cached per exact input, so a first run is slow and later runs replay in milliseconds.
+## Testing
 
 ```bash
-uv sync --all-groups
-
-tests/parallel_run.sh -s -j 36 tests/           # everything, one session per file
-tests/parallel_run.sh tests/actor/              # one area, one session per test
+uv sync --group dev
+uv run pytest -n auto              # the whole suite
+uv run pytest -n auto tests/actor  # one area
 ```
 
-See [tests/README.md](tests/README.md) for the philosophy and the runner.
+The tests need no key and make no network calls. Every model reply is
+scripted (`tests/scripted_model.py`), provider calls are refused, and sockets
+may connect only to this machine. When no key is set, the root `conftest.py`
+sets a placeholder that is plainly not a secret. Each pytest process runs
+inside bubblewrap, so the tests need it too. The tests of the in-process
+embedder also need its weights in the Hugging Face cache.
 
----
+- `tests/parallel_run.sh tests/` runs one tmux session per test file (it needs
+  tmux); see [`tests/README.md`](tests/README.md).
+- [`model_evals/`](model_evals/README.md) holds checks of a live model. They
+  need a key, spend money and are run by hand.
 
-## Where to start reading
+## Project status
 
-| File | What's there |
-|------|-------------|
-| `unify/common/async_tool_loop.py` | `SteerableToolHandle`: the protocol everything returns |
-| `unify/common/_async_tool/loop.py` | The async tool loop engine: nesting, steering, context propagation |
-| `unify/actor/code_act_actor.py` | CodeAct: plan generation, sandbox, the storage review |
-| `unify/function_manager/steering.py` | Steering code that is already running |
-| `unify/legacy/conversation_manager/conversation_manager.py` | The slow brain: debouncing, in-flight actions, event loop |
-| `unify/legacy/conversation_manager/domains/brain_action_tools.py` | How the brain starts, steers and tracks concurrent work |
-| `unify/db.py` | The local store: the five tables, the two views, the read-only path for model-written SQL |
-| `unify/environment.py` | The workspace environment: one venv, packages installed once |
+This is research code, published as it is.
+TODO(lead): maintenance status after the wind-down (who reviews pull requests,
+whether issues are answered).
 
-## Project structure
+Please report security issues privately, not in a public issue; see
+[`SECURITY.md`](SECURITY.md). Contributions: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-```text
-unify/
-├── unify/             # The harness: cli, actor, function_manager, guidance_manager, db, common, legacy
-├── tests/             # Pytest suite (cached LLM responses, per-session SQLite store)
-├── scripts/           # Skill import, git hooks
-└── docs/              # Design writeups
-```
+## Research arms
+
+Each arm in the ledger is kept as a git tag named by its ledger id, and a
+branch `arms/<id>`. Main carries one design; an arm's code stays on its tag.
+TODO(lead): the arm tags and branches are not published yet; the names below
+are the planned ones.
+
+The numbers come from **Continual-ARC**, a stream of ARC tasks that recur, with
+correct or incorrect as the only feedback. They are ARC numbers only: none of
+them shows that a design works on other kinds of work, and no design counts as
+general without ablations on at least two other worlds. Results on other worlds
+and the full list of 98 arms are in the
+[Harness Research Ledger](https://claude.ai/artifact/CW5WXLmcj398zRAVqKU5qJ).
+TODO(lead): the ledger page is private; share it or replace this link before
+release.
+
+- **U**: budget used, as a percentage of each instance's 16 units (wrong
+  answers plus requests for examples), over the 200 task instances of the
+  workstreams stream. Lower is better.
+- **P**: percentage of those 200 instances solved.
+- **USD**: mean model spend per visit (one instance), as the harness reported
+  it inside the visit. It leaves out memory spend between visits (the writer,
+  the capture fork and embeddings); the ledger shows both. `≥` marks a build
+  whose own post-task review is not counted, so the figure is a lower bound.
+- **Source**: `T` is ledger tables t14 (U) and t15 (P), the workstreams row,
+  the mean over complete 200-instance runs. `R` is the mean over the arm's
+  workstreams runs in `allruns-l.json`; a number in brackets is how many
+  instances a still-running run has reached. USD is `actor_usd_per_visit`
+  from `ours-l.json` over the same runs, or `usd_actor` from `allruns-l.json`
+  for the two builds `ours-l.json` does not cover.
+
+All figures are from ledger build `l` of 21 October 2026, effort LOW, MEDIUM
+and HIGH, written U / P / USD.
+
+| Tag (ledger id) | Branch | Build | What it is | LOW | MEDIUM | HIGH | Source, state |
+|---|---|---|---|---|---|---|---|
+| `redesign-noep` | `arms/redesign-noep` | `ed1f3eb22` | Rev 2 main arm: memory between tasks, none during one. Main's `UNIFY_MEMORY=on`. | 38.2 / 79.0 / 0.017 | 19.9 / 96.6 / 0.041 (176) | 19.3 / 97.0 / 0.073 (100) | R, running |
+| `redesign` | `arms/redesign` | `ed1f3eb22` | Everything on, with memory during a task. Main's `UNIFY_MEMORY=in_episode`. | 37.6 / 80.8 / 0.034 | 23.9 / 93.6 / 0.074 (141, 108) | 24.6 / 93.6 / 0.140 (57, 53) | R, 2 runs, running |
+| `redesign-nomem` | `arms/redesign-nomem` | `ed1f3eb22` | Same build, memory off. Main's `UNIFY_MEMORY=off`. | 40.6 / 74.0 / 0.010 | 22.0 / 96.5 / 0.015 | 20.1 / 95.5 / 0.016 | R, baseline |
+| `redesign-cap` | `arms/redesign-cap` | `ed1f3eb22` | Same build, captures and librarian only; no writer. | 41.6 / 76.0 / 0.019 | 20.4 / 96.8 / 0.027 (154) | 20.3 / 98.1 / 0.051 (52) | R, running |
+| `redesign-nofr` | `arms/redesign-nofr` | `ed1f3eb22` | Without the record of each item's failures in what the librarian serves. | 37.6 / 80.5 / 0.032 | 20.3 / 95.8 / 0.075 (118) | 21.6 / 96.0 / 0.133 (50) | R, running |
+| `redesign-nomesh` | `arms/redesign-nomesh` | `ed1f3eb22` | Without the shared run record. Informational: main keeps the record. | 38.5 / 78.5 / 0.039 | 21.7 / 95.5 / 0.069 (133) | 21.9 / 97.3 / 0.093 (74) | R, running |
+| `redesign-noled` | `arms/redesign-noled` | `ed1f3eb22` | The writer takes one capture per pass instead of its to-do list. Medium only. | – | 20.4 / 95.8 / 0.039 (96) | – | R, running |
+| `j3` | `arms/j3` | `75755ba09` | Earlier full-memory design: a writer curates functions, a fork captures each task, the librarian navigates. | 37.9 / 76.3 / 0.052 | 18.7 / 96.3 / 0.223 | 17.4 / 97.2 / 0.356 | T, kept as reference |
+| `luna-writer` | `arms/luna-writer` | `75755ba09` | `j3` with the writer on the actor's cheaper model. | 38.3 / 77.0 / 0.014 | 19.8 / 96.0 / 0.062 | 16.8 / 98.0 / 0.079 (196) | T; HIGH R, running |
+| `captures-only` | `arms/captures-only` | `0ea11ee24` | `j3` with the writer off: captures stored and served only. | 40.2 / 78.5 / 0.010 | 20.7 / 96.0 / 0.019 | 17.4 / 97.5 / 0.025 | T, kept |
+| `ungated` | `arms/ungated` | `4d0e63572` | `j3` with every check against task-specific content removed. | 40.6 / 73.5 / 0.066 | 19.7 / 95.0 / 0.292 | 15.9 / 98.5 / 0.413 | T, kept |
+| `j3-memoff` | `arms/j3-memoff` | `75755ba09` | The `j3` build with memory off. | 40.3 / 75.3 / 0.009 | 23.5 / 94.0 / 0.011 | 21.9 / 96.5 / 0.014 | T, baseline |
+| `hl-7e6723598` | `arms/hl-7e6723598` | `7e6723598` | The harness before this memory: a review after each task stores functions and notes. | 42.4 / 74.5 / ≥0.013 | 24.4 / 91.8 / ≥0.020 | 20.9 / 95.5 / ≥0.023 | R, 2 runs, baseline |
+| none | none | `592685713` | Unify `main` as shipped, before this work. Ledger column "Unify @ main · as shipped". | 43.9 / 70.0 / ≥0.031 | no complete run | 21.5 / 94.5 / ≥0.035 | T, baseline |
+
+**Clean main's own numbers.** Clean main has not been run on Continual-ARC.
+Its default, `UNIFY_MEMORY=on`, is the configuration of `redesign-noep`, which
+was measured on build `ed1f3eb22`. Clean main adds 14 later memory commits (a
+gate that labels instead of refusing, a librarian that reads a structural
+catalogue, and others) and the clean-up, so the `redesign-noep` row describes
+its closest measured relative, not main itself. For `redesign-noep` the ledger
+holds one run per effort: a complete LOW run, a MEDIUM run at 176 of 200
+instances and a HIGH run at 100 of 200, both still running on 21 October. The
+ledger finds every difference between a redesign arm and its same-build
+baselines (memory off, captures only) inside overlapping 95% intervals: on
+these tasks, the memory has not yet shown a measured gain over no memory.
+
+For context, the published rows in the same ledger tables: Prime Agent as
+shipped, U 42.8 / 23.6 / 20.2 and P 71 / 94.5 / 97 at LOW / MEDIUM / HIGH; the
+program library, U 15.7 / 11.7 / 7.8 and P 82 / 93.5 / 98, whose lead comes
+from recalling stored programs by task id.
 
 ## License
 
