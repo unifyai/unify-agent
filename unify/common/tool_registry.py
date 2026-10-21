@@ -1231,16 +1231,14 @@ FIND = RegisteredTool(
 
 TEST = RegisteredTool(
     name="test",
-    summary="run a test you state first: an item on a recorded input, or against an episode's recorded tools.",
+    summary="run a test you state first: an item on a recorded input.",
     description=(
-        "Run a test whose outcome you state first. expect is {'kind': 'returns', 'value': v}, {'kind': "
-        "'issues_calls', 'calls': [{'channel', 'method', 'args', 'kwargs', 'effect'}, ...]}, {'kind': 'raises', "
-        "'exception': 'Name'} or {'kind': 'refuses'}; it is recorded before the test runs and never changed. "
-        "mode='value' runs the item (a function id) on the recorded input on names: '<episode>' (its state), "
+        "Run a test whose outcome you state first. expect is {'kind': 'returns', 'value': v}, {'kind': 'raises', "
+        "'exception': 'Name'} or {'kind': 'refuses'}; it is recorded before the test runs and never changed. The item "
+        "(a function id that takes one input) runs on the recorded input on names: '<episode>' (its state), "
         "'<episode>/request', '<episode>/observation:<n>', '<episode>/action:<n>' (the action's recorded response) "
-        "or '<episode>/cell:<n>' (the cell's output). mode='replay' runs an item taking (state, env) on a whole "
-        "episode: env answers each call only from that episode's identical recorded call; writes are compared, never "
-        "made. The test runs confined, on a copy of /memory as it is now."
+        "or '<episode>/cell:<n>' (the cell's output). The test runs confined, on a copy of /memory as it is now, and "
+        "nothing the episode called is replayed."
     ),
     parameters={
         "type": "object",
@@ -1248,7 +1246,6 @@ TEST = RegisteredTool(
             "item": {"type": "string", "description": "A function id, memory.<package>.<module>:<name>."},
             "on": {"type": "string", "description": "The recorded input: '<episode>' or '<episode>/<part>'."},
             "expect": {"type": "object", "description": "What you expect, stated before the run."},
-            "mode": {"type": "string", "enum": ["value", "replay"]},
         },
         "required": ["item", "on", "expect"],
         "additionalProperties": False,
@@ -1256,13 +1253,10 @@ TEST = RegisteredTool(
     refusals=_REFUSED_REASON,
     roles=(_W,),
     returns=(
-        'JSON text: {"test_id", "item", "on", "mode", "stated", "outcome": as_stated, not_as_stated, error, timeout, '
-        'replay_miss or not_run, "detail", "seconds"}; every result is kept on the item\'s label.'
+        'JSON text: {"test_id", "item", "on", "stated", "outcome": as_stated, not_as_stated, error, timeout or '
+        'not_run, "detail", "seconds"}; every result is kept on the item\'s label.'
     ),
-    examples=(
-        'print(tools.test("memory.files.report:write", "<episode>", {"kind": "issues_calls", "calls": '
-        '[{"channel": "files", "method": "write", "args": ["out/report.txt", "total 6"]}]}, mode="replay"))',
-    ),
+    examples=('print(tools.test("memory.files.report:total", "<episode>/cell:2", {"kind": "returns", "value": 6}))',),
     when="Run code only as a test you state first: say what you expect, then run it.",
     kind="action",
     handler=_ATT + "test",

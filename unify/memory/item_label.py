@@ -1,16 +1,15 @@
-"""An item's evidence label (``UNIFY_MEMORY_IMPURE_ITEMS=on``): what is known about it, never a filter.
+"""An item's evidence label: what is known about it, never a filter.
 
 Every library item's record carries a label (``label`` in its item record, :mod:`.item_records`), built by the harness
 from its own records each time the item records are written (:func:`build`):
 
 * ``form``: ``function``, ``note`` or ``checklist`` (a note the writer stated is one);
 * ``effects``: what the writer declared its calls do to the environment (``none``, ``reads``, ``writes`` or
-  ``unknown``; ``declared`` says whether it declared one), how many reads and writes its replay tests saw, and each
-  contradiction between the two ("declared none, but a replay test saw 2 writes");
+  ``unknown``; ``declared`` says whether it declared one);
 * ``covers``: the episodes it is meant to cover, as the writer stated them (``stated_by``: ``writer``), else the
   episodes it was built from (``stated_by``: ``harness``);
 * ``inputs_vs_constants``: what the writer said varies and what it holds fixed, each constant with its source;
-* ``tests``: the writer's stated tests of its current version (:mod:`.writer_tests`), by outcome and by mode;
+* ``tests``: the writer's stated tests of its current version (:mod:`.writer_tests`), by outcome;
 * ``uses``: its uses since its current version, clean, failed or neutral (:func:`.trust.judge`), and by regime;
 * ``failure_record``: each failed use: the episode, the version served when it was called (``pin``), why
   (``error``, ``holds_false``, ``contrary_signal``, ``late_contrary`` or ``actor_reported``) and a ref, as serving
@@ -32,7 +31,7 @@ from typing import Any
 VERSION = 1
 FORMS = ("function", "note", "checklist")
 DECLARED = ("none", "reads", "writes", "unknown")
-TEST_OUTCOMES = ("as_stated", "not_as_stated", "error", "timeout", "replay_miss", "not_run")
+TEST_OUTCOMES = ("as_stated", "not_as_stated", "error", "timeout", "not_run")
 STATUS_BASES = ("verdicts", "end_outcomes", "implicit", "no_outcome_signals")
 
 
@@ -71,9 +70,7 @@ def tests_by_item(state_dir: Path | str | None) -> dict[str, list[dict]]:
                     out.setdefault(item, []).append(
                         {
                             "pass_id": s.get("pass_id") or d.name,
-                            "mode": s.get("mode"),
                             "outcome": row.get("outcome"),
-                            "effects": row.get("effects") if isinstance(row.get("effects"), dict) else {},
                         },
                     )
     return out
@@ -81,35 +78,9 @@ def tests_by_item(state_dir: Path | str | None) -> dict[str, list[dict]]:
 
 def _tests(rows: Iterable[Mapping[str, Any]]) -> dict:
     out: dict = {k: 0 for k in TEST_OUTCOMES}
-    by_mode = {"value": 0, "replay": 0}
     for r in rows:
         if r.get("outcome") in out:
             out[r["outcome"]] += 1
-        if r.get("mode") in by_mode:
-            by_mode[r["mode"]] += 1
-    out["by_mode"] = by_mode
-    return out
-
-
-def _seen(rows: Iterable[Mapping[str, Any]]) -> dict:
-    seen = {"read": 0, "write": 0, "unknown": 0}
-    for r in rows:
-        if r.get("mode") != "replay":
-            continue
-        for k in seen:
-            n = (r.get("effects") or {}).get(k)
-            seen[k] += n if isinstance(n, int) and not isinstance(n, bool) else 0
-    return seen
-
-
-def contradictions(declared: str | None, seen: Mapping[str, int]) -> list[str]:
-    """Where what the writer declared and what replay tests saw disagree."""
-    out = []
-    writes, reads = int(seen.get("write") or 0), int(seen.get("read") or 0)
-    if declared in ("none", "reads") and writes:
-        out.append(f"declared {declared}, but a replay test saw {writes} write{'' if writes == 1 else 's'}")
-    if declared == "none" and reads:
-        out.append(f"declared none, but a replay test saw {reads} read{'' if reads == 1 else 's'}")
     return out
 
 
@@ -146,7 +117,6 @@ def build(
     v = verification if isinstance(verification, Mapping) else {}
     stated = v.get("stated") if isinstance(v.get("stated"), Mapping) else {}
     tests = [dict(t) for t in tests]
-    seen = _seen(tests)
     declared = stated.get("effects") if stated.get("effects") in DECLARED else None
     if kind == "function":
         form = "function"
@@ -166,8 +136,6 @@ def build(
         "effects": {
             "declares": declared or ("none" if kind != "function" else "unknown"),
             "declared": declared is not None,
-            "seen_in_tests": {"read": seen["read"], "write": seen["write"]},
-            "contradictions": contradictions(declared, seen),
         },
         "covers": {
             "episodes": list(covers) if isinstance(covers, list) else list(prov.get("episodes") or []),

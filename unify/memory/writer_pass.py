@@ -3315,7 +3315,7 @@ class WriterPass:
 
     def _tests_start(self, pass_id: str, box: Path, tmp: Path, inputs: Path) -> Any:
         """The stated tests' context (:class:`.writer_tests.TestContext`): ``tests.jsonl`` beside the pass's records,
-        the writer's /memory, the episodes it may read and the modes the run offers."""
+        the writer's /memory and the episodes it may read."""
         from . import writer_tests as _tests
 
         return _tests.TestContext(
@@ -3323,7 +3323,6 @@ class WriterPass:
             tests_path=self._record_dir(pass_id, inputs) / _tests.TESTS_FILE,
             library=Path(box),
             episode=self._episode,
-            modes=frozenset({"value"}),
             work=Path(tmp) / "tests",
         )
 

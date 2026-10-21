@@ -1,4 +1,4 @@
-"""The capture contract under ``UNIFY_MEMORY_CAPTURE_TRACE=on``: what the episode did, a value only when there is one.
+"""The capture contract: what the episode did, and a value only when there is one.
 
 A capture records what its episode did: a pointer list into the episode's own record (its request, observations,
 cells and actions with their responses; :func:`trace_of`), never a copy. The procedure the fork wrote takes one of
@@ -8,29 +8,17 @@ three forms (:data:`FORMS`, read from its code by :func:`entry_point`, never run
 form            contract
 ==============  ============================================================================================
 ``value``       ``read_input(request) -> run(value)``: the whole job was in the first message
-``state``       ``run(state)``: :class:`.replay_box.State` holds every message so far (``.request``, ``.messages``,
+``state``       ``run(state)``: :class:`.box_state.State` holds every message so far (``.request``, ``.messages``,
                 ``.last``, ``.data``)
 ``state_env``   ``run(state, env)``: ``env`` is the episode's tool namespace, ``env.<channel>.<method>(...)``
-                as the episode's actions name them (:class:`.replay_box.ReplayEnv` in the own check)
+                as the episode's actions name them
 ==============  ============================================================================================
 
-**Rev 2: no own check runs.** A capture is never executed to classify, dedupe or rank it, so the capture step records
-``own_check`` as :data:`NOT_RUN` and makes no entry from it. :func:`run_box` and :func:`own_check` stay, unused by the
-capture step, for what they describe:
-
-**The own check** (:func:`run_box`, :func:`own_check`) runs the procedure confined, as the harness's other runs of
-model code are (no network, an empty environment, only ``/out`` writable): on the recorded request (``value``), on the
-recorded :class:`State` (``state``), or on the recorded state against a replay of the episode's own recorded actions
-(``state_env``), where every call is answered only by an identical recorded call and nothing is executed. It runs twice
-(determinism) and records what happened as evidence (``own_check``), never as a failure of the capture:
-
-* ``value_match``: ``matched`` or ``differed`` against the value the episode handed back, ``not_applicable`` when it
-  handed none back (absence is a state of its own), ``unknown`` when the run gave nothing to compare;
-* ``calls``: ``replay`` (with how many issued calls matched, differed, were missing or unrecorded), ``value`` (a form
-  with no tools) or ``not_run``.
+**No capture is ever run.** A capture is never executed to classify, dedupe or rank it, so the capture step records
+``own_check`` as :data:`NOT_RUN`.
 
 **The value** (:func:`value_of`): ``{"present": false}``, or ``{"present": true, "digest", "shape"}``. Its outcome comes
-from the signals only (``positive``, ``contrary``, ``none``), never from the own check.
+from the signals only (``positive``, ``contrary``, ``none``).
 
 Nothing here keys on a task id, a stream position, a world or a word.
 """
@@ -41,9 +29,7 @@ import ast
 import copy
 import hashlib
 import json
-import stat
 from collections.abc import Iterable, Mapping
-from pathlib import Path
 from typing import Any, Literal, get_args
 
 from .fixtures import canonical
@@ -55,18 +41,11 @@ FORMS: tuple[str, ...] = get_args(Form)
 OUTCOMES: tuple[str, ...] = get_args(Outcome)
 #: The record version a trace capture stamps (``record.json`` and its ``captures-events.jsonl`` row).
 VERSION = 2
-#: One confined own check's wall bound (both runs), as the capture step's other runs.
-RUN_S = 60.0
 #: Calls one replay serves at most (an outer bound, not a quota): past it the run raises ``TooManyCalls``.
 MAX_REPLAY_CALLS = 2000
-#: The recorded messages and actions handed into one box, at most (a bound on the box's memory): past it the own
-#: check does not run, and says why.
-MAX_CASE_BYTES = 64 * 1024**2
 #: Issued calls a box's result lists (each call's arguments clipped), for the evidence that names a differing call.
 MAX_LISTED_CALLS = 200
 LISTED_ARGS_CHARS = 400
-MAX_RESULT_BYTES = 8 * 1024 * 1024
-REPLAY_BOX = Path(__file__).resolve().with_name("replay_box.py")
 PROCEDURE_FILE = "procedure.py"
 #: What a capture's ``own_check`` records under rev 2: it was not run, and why.
 NOT_RUN: dict = {"ran": False, "why": "rev2: captures are never executed to classify"}
@@ -226,26 +205,6 @@ def value_of(ep: Any, printed: frozenset[str] = frozenset()) -> tuple[dict, Any]
 
 # --- the confined run ----------------------------------------------------------------------------------------------------
 
-def _read_result(path: Path) -> dict | None:
-    import os
-
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except OSError:
-        return None
-    with os.fdopen(fd, "rb") as fh:
-        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
-            return None
-        data = fh.read(MAX_RESULT_BYTES + 1)
-    if len(data) > MAX_RESULT_BYTES:
-        return None
-    try:
-        doc = json.loads(data.decode("utf-8", "replace"))
-    except ValueError:
-        return None
-    return doc if isinstance(doc, dict) else None
-
-
 def case_doc(form: str, ep: Any) -> dict:
     """What the box is given for *form*: the request and its data (``value``), every message and their data
     (``state``), and the episode's recorded actions too (``state_env``)."""
@@ -259,38 +218,6 @@ def case_doc(form: str, ep: Any) -> dict:
         if form == "state_env":
             doc["actions"] = served_actions(ep)
     return doc
-
-
-def own_check(run: Mapping[str, Any], value: Mapping[str, Any], handed: Any = None) -> dict:
-    """The own check's evidence (module docstring) from a :func:`run_box` result and the episode's :func:`value_of`."""
-    ran = run.get("outcome") in ("returned", "refused", "error")
-    form = run.get("form")
-    if not ran:
-        calls = {"mode": "not_run", "matched": 0, "differed": 0, "missing": 0, "unrecorded": 0}
-    elif form == "state_env":
-        got = run.get("calls") if isinstance(run.get("calls"), dict) else {}
-        calls = {"mode": "replay", **{k: int(got.get(k) or 0) for k in ("matched", "differed", "missing", "unrecorded")}}
-    else:
-        calls = {"mode": "value", "matched": 0, "differed": 0, "missing": 0, "unrecorded": 0}
-    if not value.get("present"):
-        match = "not_applicable"
-    elif run.get("outcome") != "returned":
-        match = "unknown"
-    else:
-        match = "matched" if digest(run.get("result")) == value.get("digest") else "differed"
-    out = {
-        "ran": ran,
-        "error": run.get("error_class") if run.get("outcome") == "error" else None,
-        "refused": run.get("outcome") == "refused",
-        "deterministic": run.get("deterministic") if isinstance(run.get("deterministic"), bool) else None,
-        "value_match": match,
-        "calls": calls,
-    }
-    if not ran:
-        out["why"] = str(run.get("why") or "not run")
-    if run.get("stage") is not None and run.get("outcome") in ("refused", "error"):
-        out["stage"] = run["stage"]
-    return out
 
 
 def outcome_of(judged: Mapping[str, Any]) -> str:

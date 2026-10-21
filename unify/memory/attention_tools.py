@@ -1,8 +1,7 @@
 """The writer's tools for the attention ledger and its stated tests, as host handlers of in-code calls.
 
 ``tools.open_entries()``, ``tools.take(entry_id)``, ``tools.decide(entry_ids, decision, items=[], reason=...)``,
-``tools.find(query, scope="items", k=10)`` (``UNIFY_MEMORY_ATTENTION_LEDGER=on``, an attention pass) and
-``tools.test(item, on, expect, mode="value")`` (``UNIFY_MEMORY_WRITER_TESTS``). Each runs on the host, in the pass's
+``tools.find(query, scope="items", k=10)`` and ``tools.test(item, on, expect)``. Each runs on the host, in the pass's
 worker pool, against the pass's own state (:class:`AttentionPass`, set by the writer pass): the ledger, the entries
 handed to the pass, its read evidence as it stands now and its record directory. Every reply is JSON text; a refusal
 says what was given, what is expected and one correct call.
@@ -38,7 +37,7 @@ class AttentionPass:
     home: Path
     handed: list = field(default_factory=list)
     sources: Any = None
-    tests: Any = None  # writer_tests.TestContext, when UNIFY_MEMORY_WRITER_TESTS offers any mode
+    tests: Any = None  # writer_tests.TestContext
     exported: set = field(default_factory=set)
 
     @property
@@ -249,13 +248,11 @@ def find(ctx: Any, args: dict) -> "_wt.Reply":
 
 
 def test(ctx: Any, args: dict) -> "_wt.Reply":
-    """``tools.test(item, on, expect, mode="value")``: a test stated before it runs (:mod:`.writer_tests`)."""
+    """``tools.test(item, on, expect)``: a test stated before it runs (:mod:`.writer_tests`)."""
     from . import writer_tests as wt
 
     writer, att = _state(ctx)
-    tests = getattr(writer, "_tests", None)
-    if tests is None:
-        return _refused("test", "tests are not offered in this run (UNIFY_MEMORY_WRITER_TESTS is off)")
+    tests = writer._tests
     lock = getattr(ctx.state, "memory_lock", None)
     if lock is not None:
         from .writer_pass import _mirror
@@ -267,7 +264,7 @@ def test(ctx: Any, args: dict) -> "_wt.Reply":
 
         tests.snapshot = snapshot
     try:
-        res = wt.run_test(tests, args.get("item"), args.get("on"), args.get("expect"), args.get("mode", "value"))
+        res = wt.run_test(tests, args.get("item"), args.get("on"), args.get("expect"))
     except wt.WriterTestRefused as exc:
         return _refused("test", f"{exc}; nothing was recorded or run")
     return _wt.Reply(_json(res.row()))

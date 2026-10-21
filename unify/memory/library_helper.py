@@ -674,20 +674,17 @@ def _count_text(counts: Any, names: tuple[str, ...]) -> str:
 
 def _label_lines(label: Any, served_evidence: bool) -> list[str]:
     """A card's lines from the item's evidence label (the harness's record of what it is and what its tests and uses
-    showed; never a filter): its form and declared effects against what its replay tests saw, the episodes it covers,
+    showed; never a filter): its form and declared effects, the episodes it covers,
     its inputs and constants, its stated tests and its uses since this version; its failure record and what its
     status rests on only when the harness's evidence lines do not already state them (*served_evidence*). [] without
     a label."""
     if not isinstance(label, dict):
         return []
     effects = label.get("effects") if isinstance(label.get("effects"), dict) else {}
-    seen = effects.get("seen_in_tests") if isinstance(effects.get("seen_in_tests"), dict) else {}
     out = [
         f"Form: {_str(label.get('form'), 'function')}; effects: {_str(effects.get('declares'), 'unknown')}"
-        + ("" if effects.get("declared") else " (not declared)")
-        + f"; its replay tests saw {_count_text(seen, ('read', 'write'))}",
+        + ("" if effects.get("declared") else " (not declared)"),
     ]
-    out += ["Contradicted: " + c for c in effects.get("contradictions") or [] if isinstance(c, str)]
     covers = label.get("covers") if isinstance(label.get("covers"), dict) else {}
     episodes = [e for e in covers.get("episodes") or [] if isinstance(e, str)]
     if episodes:
@@ -704,7 +701,7 @@ def _label_lines(label: Any, served_evidence: bool) -> list[str]:
     tests = label.get("tests") if isinstance(label.get("tests"), dict) else {}
     out.append(
         "Stated tests of this version: "
-        + _count_text(tests, ("as_stated", "not_as_stated", "error", "timeout", "replay_miss", "not_run")),
+        + _count_text(tests, ("as_stated", "not_as_stated", "error", "timeout", "not_run")),
     )
     uses = label.get("uses") if isinstance(label.get("uses"), dict) else {}
     out.append("Uses of this version: " + _count_text(uses, ("clean", "failed", "neutral")))

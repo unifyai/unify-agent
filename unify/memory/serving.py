@@ -8,8 +8,8 @@ that it fits:
   (``holds_false``), a contrary signal its episode's regime observes followed it (``contrary_signal``; when every such
   signal arrived after the episode ended, ``late_contrary``), or the actor reported a problem with it on the run
   record (``actor_reported``); ``pin`` is the library commit that was served when it was used;
-* its **contradictions**: what the writer's stated tests found not as stated, and an effect its tests contradicted,
-  from the item's evidence label when the label exists (:func:`contradictions`);
+* its **contradictions**: what the writer's stated tests found not as stated, from the item's evidence label when
+  the label exists (:func:`contradictions`);
 * what its status **rests on** (:func:`.trust.status_basis`: verdicts, outcomes at episode end, implicit signals, or
   no outcome signal at all) and how its uses were judged, stated as text (:func:`.trust.basis_text`);
 * its **stated conditions**: the first line of its ``applies`` (what it says it applies to).
@@ -150,8 +150,8 @@ def actor_reports(home: Path | str | None) -> list[dict]:
 
 
 def contradictions(label: Mapping[str, Any] | None) -> list[str]:
-    """What an item's evidence label (the writer's stated tests and effects) contradicts, as short lines: tests
-    not as stated, and an effect the item declared that its replay tests contradicted. [] without a label."""
+    """What an item's evidence label (the writer's stated tests) contradicts, as short lines: tests not as stated.
+    [] without a label."""
     if not isinstance(label, Mapping):
         return []
     out: list[str] = []
@@ -159,15 +159,6 @@ def contradictions(label: Mapping[str, Any] | None) -> list[str]:
     n = tests.get("not_as_stated")
     if isinstance(n, int) and not isinstance(n, bool) and n > 0:
         out.append(f"{n} of its stated tests did not go as stated")
-    effects = label.get("effects") if isinstance(label.get("effects"), Mapping) else {}
-    declared = effects.get("declares")
-    seen = effects.get("seen_in_tests") if isinstance(effects.get("seen_in_tests"), Mapping) else {}
-    writes = seen.get("write") if isinstance(seen.get("write"), int) else 0
-    reads = seen.get("read") if isinstance(seen.get("read"), int) else 0
-    if declared == "none" and (writes or reads):
-        out.append(f"it declares no effects, but its tests saw {reads} read(s) and {writes} write(s)")
-    elif declared == "reads" and writes:
-        out.append(f"it declares reads only, but its tests saw {writes} write(s)")
     return out
 
 
