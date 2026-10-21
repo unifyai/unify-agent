@@ -12,7 +12,6 @@ import json
 import sys
 import types
 from dataclasses import dataclass, field
-from decimal import Decimal
 from pathlib import Path
 
 from unify.memory.blobs import BlobStore
@@ -135,7 +134,6 @@ def install(monkeypatch) -> Fakes:
     def assemble(
         run,
         lines,
-        memory_diff,
         ended_at,
         *,
         extra_actions=(),
@@ -149,7 +147,7 @@ def install(monkeypatch) -> Fakes:
             worktree_after=worktree_after,
             worktree_diff=worktree_diff,
         )
-        f.calls.append(("assemble", (run, lines, memory_diff, ended_at), kw))
+        f.calls.append(("assemble", (run, lines, ended_at), kw))
         if f.assemble_raise is not None:
             raise f.assemble_raise
         ep = Episode(
@@ -167,7 +165,6 @@ def install(monkeypatch) -> Fakes:
             list(lines),
             [],
             list(extra_actions),
-            memory_diff=memory_diff,
             worktree_diff=worktree_diff,
         )
         return ep, Redactor()
@@ -196,66 +193,21 @@ def install(monkeypatch) -> Fakes:
         f.calls.append(("post_checker", (stores, eid, sha, solved, ts), {}))
         return solved is not None
 
-    async def run_due_passes(
-        stores,
-        eid,
-        sha,
-        state,
-        *,
-        effort,
-        settings,
-        emit,
-        clock=None,
-    ):
-        f.calls.append(
-            (
-                "run_due_passes",
-                (stores, eid, sha, state),
-                {"effort": effort, "settings": settings, "emit": emit},
-            ),
-        )
-
-        def emit_and_file(
-            event,
-        ):  # as the real driver: the events file always, the emitter if any
+    def request_end(stores, eid, *, settings, emit):
+        """As the real one (``async_pass.request_end``): one ``service`` event, to the events file always and the
+        emitter if any; the writer service itself is not started."""
+        f.calls.append(("request_end", (stores, eid), {"settings": settings, "emit": emit}))
+        if f.passes_raise is not None:
+            raise f.passes_raise
+        event = {"type": "consolidation", "phase": "service", "episode_id": eid, "status": "started", "pid": None}
+        if f.pass_events:
             path = stores.paths.events
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a") as fh:
                 fh.write(json.dumps(event, default=str) + "\n")
             if emit is not None:
-                emit(event)
-
-        if f.pass_events:
-            emit_and_file(
-                {
-                    "type": "consolidation",
-                    "phase": "start",
-                    "pass_id": f"{eid}.p0",
-                    "trigger_tokens": 1,
-                    "episodes": [eid],
-                    "writer_model": settings.UNIFY_MEMORY_WRITER_MODEL,
-                    "writer_effort": effort,
-                    "cap_usd": Decimal("0.00000073") * 1,  # a Decimal on purpose
-                },
-            )
-            emit_and_file(
-                {
-                    "type": "consolidation",
-                    "phase": "end",
-                    "pass_id": f"{eid}.p0",
-                    "usd": Decimal("1E-7"),
-                    "unknown_cost_calls": 0,
-                    "calls": 1,
-                    "seconds": 0.5,
-                    "gate_passed": False,
-                    "items": [],
-                    "index_tokens": 0,
-                    "reason_codes": ["no_manifest"],
-                },
-            )
-        if f.passes_raise is not None:
-            raise f.passes_raise
-        return []
+                emit(dict(event))
+        return event
 
     # as the real one: the events file always, the emitter if any
     def _deliver(stores, emit, row):
@@ -267,12 +219,10 @@ def install(monkeypatch) -> Fakes:
         if emit is not None:
             emit(dict(row))
 
-    cons.open_stores, cons.post_checker, cons.run_due_passes, cons._deliver = (
-        open_stores,
-        post_checker,
-        run_due_passes,
-        _deliver,
-    )
+    cons.open_stores, cons.post_checker, cons._deliver = open_stores, post_checker, _deliver
+    from unify.memory.integration import async_pass
+
+    monkeypatch.setattr(async_pass, "request_end", request_end)
 
     for name, mod in (
         ("worktree_capture", wc),

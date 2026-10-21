@@ -196,7 +196,7 @@ def _memory_library(world: dict, monkeypatch) -> None:
     from unify.memory.integration import request as request_mod
     from unify.memory.integration.checkout import export_actor_library_mode
     from unify.memory.integration.paths import Paths
-    from unify.memory.integration.prompt import render_memory_library_mode
+    from unify.memory.integration.prompt import render_memory_section
     from unify.memory.integration.request import RequestRun
 
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
@@ -206,7 +206,7 @@ def _memory_library(world: dict, monkeypatch) -> None:
     export_actor_library_mode(mem.git_dir, sha, paths.checkout)
     run = RequestRun("r", paths)
     run.library_mode = True
-    run.index, run.shown = render_memory_library_mode(paths.checkout, librarian=True)
+    run.index, run.shown = render_memory_section(paths.checkout)
     run.memory_bound = True
     monkeypatch.setattr(request_mod, "_CURRENT", run)
 

@@ -275,10 +275,10 @@ _PROBE_HOOK = "import sys\n'_unify_memory_cell_audit' in sys.modules"
 @pytest.mark.asyncio
 @pytest.mark.timeout(180)
 async def test_real_worker_off_installs_no_hook(world, monkeypatch):  # noqa: F811
-    from unify.actor.execution.session import SessionExecutor
+    from tests.memory.cells import Cells
 
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "")
-    ex = SessionExecutor(environments={})
+    ex = Cells()
     try:
         assert await _cell(ex, _PROBE_HOOK) is False
     finally:
@@ -292,7 +292,7 @@ async def test_real_worker_audits_a_cell_into_worktree_rows(
     world,
     monkeypatch,
 ):  # noqa: F811
-    from unify.actor.execution.session import SessionExecutor
+    from tests.memory.cells import Cells
 
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
     paths = Paths.under(world["state"])
@@ -307,7 +307,7 @@ async def test_real_worker_audits_a_cell_into_worktree_rows(
     )  # the sandbox policy hides
     cap.begin()
     assert capture_mod.active() is cap
-    ex = SessionExecutor(environments={})
+    ex = Cells()
     try:
         assert await _cell(ex, _PROBE_HOOK) is True
         await _cell(

@@ -61,16 +61,6 @@ def tool_call() -> tuple[EnvCall, dict]:
     }
 
 
-def shell_audit() -> list[dict]:
-    return [
-        {
-            "event": "subprocess",
-            "argv": ["python", "-c", big_text(9000, "ARG_END")],
-            "cell": 0,
-        },
-    ]
-
-
 def worktree_file() -> str:
     return big_text(2 * 1024 * 1024 + 4096, "FILE_END")
 
@@ -96,7 +86,6 @@ def off_records(tmp: Path) -> dict:
     """Each recorder's actions over the cap, with its default (4675a3c45) arguments, plus the blob ids the
     worktree recorder stored."""
     from unify.memory.integration.adapters.dialogue import dialogue_actions
-    from unify.memory.integration.adapters.shell import shell_actions
     from unify.memory.integration.adapters.tool import RecordingObserver
 
     out: dict = {"dialogue": _rows(dialogue_actions(dialogue_lines(), "env"))}
@@ -112,7 +101,6 @@ def off_records(tmp: Path) -> dict:
         elapsed_s=0.0,
     )
     out["tool"] = _rows(obs.drain().actions)
-    out["shell"] = _rows(shell_actions(shell_audit()))
     wt, rec = _setup_worktree(Path(tmp))
     rec.begin()
     out["worktree"] = _rows(

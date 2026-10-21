@@ -96,7 +96,6 @@ FIXTURE_MODULES = (
     "tests.memory.test_held_out",
     "tests.memory.test_memory_repo",
     "tests.memory.integration.test_checkout",
-    "tests.memory.integration.test_cli_e2e_office",
 )
 _LIBRARY_PATH = re.compile(r"^(?:env|workflows)/[^\s:#]+\Z")
 

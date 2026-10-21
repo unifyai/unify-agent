@@ -170,31 +170,13 @@ def test_hooks_open_the_run_under_the_switch(mv2):
     [("low", "low"), ("medium", "medium"), ("", "high")],
 )
 def test_the_effort_is_the_actors(mv2, monkeypatch, effort, want):
-    from unify.session_details import SESSION_DETAILS
-
-    monkeypatch.setattr(SESSION_DETAILS.assistant, "default_model", "")
     monkeypatch.setattr(SETTINGS, "UNIFY_REASONING_EFFORT", effort)
     assert request_mod.actor_effort() == want
     run = _begin(mv2, "hi")
     _transcript(run)
     _finish(mv2, run)
-    _, kw = mv2.fakes.of("run_due_passes")
-    # the writer's effort matches the actor's by default
-    assert run.effort == want and kw["effort"] == want
-
-
-def test_an_assistant_default_model_brings_its_effort(mv2, monkeypatch):
-    from unify.session_details import SESSION_DETAILS
-
-    monkeypatch.setattr(SESSION_DETAILS.assistant, "default_model", "openai/x")
-    monkeypatch.setattr(
-        SESSION_DETAILS.assistant,
-        "default_reasoning_effort",
-        "minimal",
-    )
-    monkeypatch.setattr(SETTINGS, "UNIFY_REASONING_EFFORT", "high")
-    assert request_mod.actor_effort() == "minimal"
-    assert request_mod.actor_model() == "openai/x"
+    # the run records the actor's effort, the effort its writer passes run at
+    assert run.effort == want
 
 
 # ── finish ───────────────────────────────────────────────────────────────────
@@ -216,7 +198,7 @@ def test_finish_records_the_episode_and_runs_the_passes(mv2):
             "worktree.finish",
             "assemble",
             "post_checker",
-            "run_due_passes",
+            "request_end",
         )
     ]
     assert order == [
@@ -224,17 +206,14 @@ def test_finish_records_the_episode_and_runs_the_passes(mv2):
         "worktree.finish",
         "assemble",
         "post_checker",
-        "run_due_passes",
+        "request_end",
     ]
     (path,), _ = f.of("read_jsonl")
     assert path == transcript
     (cells,), _ = f.of("worktree.finish")
     assert cells == [("cell", 1)]  # trajectory.timed_cells over the folded transcript
-    (a_run, lines, memory_diff, ended_at), kw = f.of("assemble")
+    (a_run, lines, ended_at), kw = f.of("assemble")
     assert a_run is run and [x["seq"] for x in lines] == [0, 1, 2]
-    assert "scratch.py" in memory_diff
-    # the untouched generated catalogue is not something the request wrote
-    assert "README.md" not in memory_diff and "catalog.json" not in memory_diff
     assert kw == {
         "extra_actions": [fake_tracks.WT_ACTION],
         "worktree_before": fake_tracks.WT_BEFORE,
@@ -251,16 +230,12 @@ def test_finish_records_the_episode_and_runs_the_passes(mv2):
     from unify.memory.evidence import EvidenceStore
 
     assert EvidenceStore(mv2.paths.evidence).episode_ref(eid)[0] == sha
-    # the passes: inherited effort, the settings, and an emitter
-    (_, p_eid, p_sha, state), kw = f.of("run_due_passes")
-    assert (p_eid, p_sha) == (eid, sha)
-    assert kw["settings"] is SETTINGS and kw["effort"] == run.effort
+    # the writer service is made sure of, with the settings and an emitter; the request never waits for a pass
+    (_, p_eid), kw = f.of("request_end")
+    assert p_eid == eid and kw["settings"] is SETTINGS and kw["emit"] is not None
     assert mv2.paths.state.exists()
-    # the events reach the CLI's emitter, money as plain decimal strings (never an exponent)
-    assert [e["phase"] for e in emitted] == ["start", "end"]
-    assert emitted[0]["cap_usd"] == "0.00000073" and emitted[1]["usd"] == "0.0000001"
-    assert emitted[0]["writer_effort"] == run.effort
-    assert emitted[1]["reason_codes"] == ["no_manifest"]
+    # the service event reaches the CLI's emitter
+    assert [(e["phase"], e["episode_id"]) for e in emitted] == [("service", eid)]
     assert progress == []
     assert f.cost_active == [True, False]
     _left_nothing(mv2.paths)
@@ -283,7 +258,7 @@ def test_without_jsonl_the_driver_gets_no_emitter(mv2):
     run = _begin(mv2, "hi")
     _transcript(run)
     _in_ctx(mv2, run.finish(None, progress=lambda _t: None))
-    _, kw = mv2.fakes.of("run_due_passes")
+    _, kw = mv2.fakes.of("request_end")
     assert kw["emit"] is None
 
 
@@ -306,7 +281,7 @@ def test_a_failed_episode_runs_no_pass(mv2):
     run = _begin(mv2, "hi")
     _transcript(run)
     progress, _ = _finish(mv2, run)
-    assert "run_due_passes" not in mv2.fakes.names()
+    assert "request_end" not in mv2.fakes.names()
     assert "post_checker" not in mv2.fakes.names()
     errors = [json.loads(x) for x in mv2.paths.errors.read_text().splitlines()]
     assert [e["stage"] for e in errors] == ["episode"]
@@ -641,27 +616,6 @@ def test_cli_with_the_switch_off_is_as_shipped(monkeypatch):
     assert [o["type"] for o in out] == ["outcome", "result", "ended"]
 
 
-@pytest.mark.parametrize("actor_effort", ["low", "medium", "high"])
-@pytest.mark.parametrize("writer_effort", ["actor", "low", "medium"])
-def test_a_fixed_writer_effort_overrides_the_actors_only_when_declared(
-    mv2,
-    monkeypatch,
-    actor_effort,
-    writer_effort,
-):
-    from unify.session_details import SESSION_DETAILS
-
-    monkeypatch.setattr(SESSION_DETAILS.assistant, "default_model", "")
-    monkeypatch.setattr(SETTINGS, "UNIFY_REASONING_EFFORT", actor_effort)
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_WRITER_EFFORT", writer_effort)
-    run = _begin(mv2, "hi")
-    _transcript(run)
-    _finish(mv2, run)
-    _, kw = mv2.fakes.of("run_due_passes")
-    want = actor_effort if writer_effort == "actor" else writer_effort
-    assert kw["effort"] == want and run.effort == actor_effort
-
-
 def test_quit_without_consolidation_records_the_episode_and_starts_no_pass(mv2):
     # a driver ending its stream: {"quit": true, "consolidate": false}; no pass may be tied to the stream's end
     run = _begin(mv2, "Say hi to ada.")
@@ -669,7 +623,7 @@ def test_quit_without_consolidation_records_the_episode_and_starts_no_pass(mv2):
     progress, emitted = _finish(mv2, run, consolidate=False)
     names = mv2.fakes.names()
     assert "assemble" in names and "post_checker" in names
-    assert "run_due_passes" not in names
+    assert "request_end" not in names
     episodes = mv2.paths.episodes
     log = os.popen(f"git --git-dir {episodes} log --format=%s main").read()
     assert log.splitlines()[0] == f"episode {run.episode_id}"

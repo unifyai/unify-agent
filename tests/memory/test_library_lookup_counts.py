@@ -192,7 +192,7 @@ def test_a_request_with_no_cells_records_zero_lookups():
 @pytest.mark.timeout(240)
 async def test_lookups_made_in_the_real_worker_reach_the_use_record(world, monkeypatch):  # noqa: F811
     from tests.memory.integration.test_actor_export_library_mode import _library_repo
-    from unify.actor.execution.session import SessionExecutor
+    from tests.memory.cells import Cells
     from unify.memory.integration import request as request_mod
     from unify.memory.integration.checkout import export_actor_library_mode
     from unify.memory.integration.paths import Paths
@@ -212,7 +212,7 @@ async def test_lookups_made_in_the_real_worker_reach_the_use_record(world, monke
         "found = [p for p in hits if 'memory' in open(p).read()]\nlen(found) > 0",
         "1 + 1",
     ]
-    ex = SessionExecutor(environments={})
+    ex = Cells()
     results: list[Any] = []
     try:
         for i, code in enumerate(codes):

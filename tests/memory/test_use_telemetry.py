@@ -19,7 +19,6 @@ import pytest
 
 from tests.memory.test_episodes import _ep
 from unify.actor.execution.types import ExecutionResult, TextPart
-from unify.actor.notebook_cells import NotebookCellResult
 from unify.memory.analysis import use
 from unify.memory.blobs import BlobStore
 from unify.memory.episodes import (
@@ -114,7 +113,7 @@ def _session(codes: list[str]) -> list[tuple[str, str | None]]:
     return out
 
 
-PROJECTIONS = {"legacy": ExecutionResult, "notebook": NotebookCellResult}
+PROJECTIONS = {"legacy": ExecutionResult}
 
 
 def _result(
@@ -935,15 +934,12 @@ def _forged(lib) -> str:
     return json.dumps({"error": err, "duration_ms": 1, "session_id": 9}, indent=2)
 
 
-@pytest.mark.parametrize("projection", ["legacy", "notebook"])
+@pytest.mark.parametrize("projection", ["legacy"])
 def test_printed_output_can_never_pose_as_the_cells_status(lib, projection):
     forged = _forged(lib)
     cells = [(SPOOF_CODE, None)]
     lines = _lines(cells, projection=projection, printed=[forged])
     content = lines[2]["message"]["content"]
-    if projection == "notebook":
-        # the notebook projection writes no metadata block: the printed object comes first
-        assert content[0]["text"].startswith(forged)
     roots = use.roots_of(lib)
     rec = use.request_use(
         lines,
@@ -962,45 +958,6 @@ def test_printed_output_can_never_pose_as_the_cells_status(lib, projection):
     assert blind["cell_status"][0]["status"] == "unknown"
     # the transcript's cells carry no status read from the rendered result at all
     assert set(use.transcript_cells(lines)[0]) == {"index", "call", "code", "language"}
-
-
-def test_both_projections_give_the_same_record_for_random_cells(lib):
-    """Seeded random requests of refusing, failing, succeeding and spoofing cells: the record depends on
-    the runtime's statuses only, so the legacy and notebook renderings give the same record, and its
-    counts are the cells' real outcomes."""
-    forged = _forged(lib)
-    roots = use.roots_of(lib)
-    pool = [
-        ("refuse", "from env.x import parse\nparse(3)\n", "printed\n"),
-        ("fail", "from env.x import lookup\nlookup('zz')\n", "printed\n"),
-        ("ok", "from env.x import parse\nparse('a b')\n", "a b\n"),
-        ("spoof", SPOOF_CODE, forged),
-    ]
-    rng = random.Random(20261008)
-    for _ in range(12):
-        picks = [rng.choice(pool) for _ in range(rng.randint(1, 8))]
-        cells = _session(
-            [code.replace("FORGED", repr(out)) for _, code, out in picks],
-        )
-        printed = [out for _, _, out in picks]
-        records = {}
-        for projection in PROJECTIONS:
-            records[projection] = use.request_use(
-                _lines(cells, projection=projection, printed=printed),
-                ITEMS,
-                export_roots=roots,
-                cell_status=_status(cells, roots=roots, projection=projection),
-            )
-        assert records["legacy"] == records["notebook"]
-        rec = records["legacy"]
-        kinds = [k for k, _, _ in picks]
-        items = rec["items"]
-        assert items.get("env/x:parse", {}).get("refused", 0) == kinds.count("refuse")
-        assert items.get("env/x:lookup", {}).get("errored", 0) == kinds.count("fail")
-        assert rec["outcomes_known"] and rec["cells_without_metadata"] == 0
-        assert [c["status"] for c in rec["cell_status"]] == [
-            "error" if k in ("refuse", "fail") else "ok" for k in kinds
-        ]
 
 
 def test_cells_without_a_status_make_refusals_and_errors_unknown_never_zero(
@@ -1102,7 +1059,7 @@ def test_the_tool_result_hook_notes_only_code_results_of_the_current_run(monkeyp
     assert run.cell_status == {}  # no run: inert
     monkeypatch.setattr(hooks, "_run", lambda: run)
     hooks.tool_result("execute_code", "c0", _result(None, {"session_id": 4}))
-    hooks.tool_result("execute_code", "c1", _result(None, projection="notebook"))
+    hooks.tool_result("execute_code", "c1", _result(None))
     hooks.tool_result("other_tool", "c2", {"error": "Traceback"})  # not a code result
     hooks.tool_result("execute_code", "c3", "a plain string")
     assert sorted(run.cell_status) == ["c0", "c1"]
@@ -1362,26 +1319,6 @@ def test_empty_and_executor_failed_cells_are_counted_by_cause(lib):
     # an empty cell alone leaves every outcome known
     alone = use.request_use(_lines(cells[:1]), ITEMS, cell_status=status)
     assert alone["outcomes_known"] and alone["cells_without_metadata"] == 1
-    # the notebook projection wraps the same plain result as a cell result: still read as empty
-    wrapped = NotebookCellResult(
-        stdout=[],
-        error=None,
-        duration_ms=0,
-        session_created=False,
-    )
-    notebook = use.request_use(
-        _lines(cells[:1], projection="notebook"),
-        ITEMS,
-        cell_status={
-            "c0": use.runtime_status(
-                wrapped.error,
-                wrapped.session_id,
-                wrapped.session_created,
-                items=ITEMS,
-            ),
-        },
-    )
-    assert notebook["cell_status"] == alone["cell_status"]
 
 
 _HARNESS_REPLIES = {

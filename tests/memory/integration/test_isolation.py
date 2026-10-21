@@ -129,13 +129,13 @@ async def _cell(ex, code: str) -> Any:
 @pytest.mark.asyncio
 @pytest.mark.timeout(180)
 async def test_a_cell_sees_the_export_and_no_store(world, monkeypatch):  # noqa: F811
-    from unify.actor.execution.session import SessionExecutor
+    from tests.memory.cells import Cells
 
     o = _open_run(world, monkeypatch)
     stores = [str(p) for p in _stores(o.paths)]
     # The worker's sandbox shows the transcripts and the export at fixed paths.
     transcripts_dir = sandbox.TRANSCRIPTS_MOUNT
-    ex = SessionExecutor(environments={})
+    ex = Cells()
     try:
         out = await _cell(
             ex,

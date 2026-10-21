@@ -14,7 +14,7 @@ from tests.memory.integration.test_worker_mount import _cell
 from tests.memory.test_layout import LIB, _tree
 from tests.memory.test_library_helper import _commit, _py
 from unify import sandbox
-from unify.actor.execution.session import SessionExecutor
+from tests.memory.cells import Cells
 from unify.memory.gitio import Repo
 from unify.memory.integration import hooks
 from unify.memory.integration import request as request_mod
@@ -169,7 +169,7 @@ async def test_a_cell_imports_the_library_and_cannot_write_it(
     )
     # The cell sees the copy where the worker's sandbox binds it.
     target = sandbox.LIBRARY_MOUNT + "/memory/text/dates.py"
-    ex = SessionExecutor(environments={})
+    ex = Cells()
     try:
         out = await _cell(
             ex,

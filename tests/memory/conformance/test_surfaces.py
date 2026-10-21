@@ -49,15 +49,32 @@ from tests.memory.arrivals import read_arrivals
 ID16 = re.compile(r"[0-9a-f]{16}")
 
 
+def _fake_embed(texts, on_call=None):
+    """Unit vectors of hashed lower-case words (texts that share words are close): no provider is called."""
+    import hashlib
+
+    import numpy as np
+
+    rows = []
+    for text in texts:
+        vector = np.zeros(512, dtype=np.float32)
+        for word in re.findall(r"[a-z0-9]+", str(text).lower()):
+            vector[int(hashlib.md5(word.encode()).hexdigest(), 16) % 512] += 1.0
+        if not vector.any():
+            vector[0] = 1.0
+        rows.append(vector / np.linalg.norm(vector))
+    return np.stack(rows) if rows else np.zeros((0, 512), dtype=np.float32)
+
+
 @pytest.fixture
 def lanes(monkeypatch, core_world):  # noqa: F811
-    from tests.actor.code_act.library_world import install_fake_embed
+    import unify.common.embeddings as embeddings
 
     lanes = FL.Lanes()
     server, port = FL.serve(lanes)
     H.apply_settings(monkeypatch, H.redesign_env(port))
     H.settle_lanes(monkeypatch, port)
-    install_fake_embed(monkeypatch.setattr)
+    monkeypatch.setattr(embeddings, "embed", _fake_embed)
     try:
         yield lanes
     finally:

@@ -24,7 +24,7 @@ from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
 from tests.memory.integration.test_actor_export_library_mode import _library_repo
 from tests.memory.integration.test_library_name_in_cells import _library_run, _run
 from tests.memory.test_episodes import _ep
-from unify.actor.execution.session import SessionExecutor
+from tests.memory.cells import Cells
 from unify.memory.integration.checkout import export_actor_library_mode
 from unify.memory.integration.paths import Paths
 from unify.memory.integration.request import memory_use
@@ -120,7 +120,7 @@ def _entries(record: dict) -> list[dict]:
 @pytest.mark.timeout(300)
 async def test_failures_are_listed_by_kind_target_exception_message_and_cell(world, monkeypatch):  # noqa: F811
     run = _library(world, monkeypatch)
-    ex = SessionExecutor(environments={})
+    ex = Cells()
     try:
         # one cell: an item that raises and an item that refuses, both caught
         res = await _run(
@@ -181,7 +181,7 @@ async def test_a_name_error_on_memory_is_listed(world, monkeypatch):  # noqa: F8
     paths = Paths.under(world["state"])
     paths.checkout.mkdir(parents=True)  # a library-mode request whose copy has no package
     run = _library_run(monkeypatch, paths)
-    ex = SessionExecutor(environments={})
+    ex = Cells()
     try:
         res = await _run(ex, run, f"memory.find({{'name': {PLANTED_ARG!r}}})")
     finally:
@@ -197,7 +197,7 @@ async def test_a_name_error_on_memory_is_listed(world, monkeypatch):  # noqa: F8
 async def test_the_list_is_capped_and_counts_what_it_dropped(world, monkeypatch):  # noqa: F811
     total = 1000
     run = _library(world, monkeypatch)
-    ex = SessionExecutor(environments={})
+    ex = Cells()
     try:
         res = await _run(
             ex,

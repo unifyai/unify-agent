@@ -17,10 +17,6 @@ Cell outputs are inside the request bodies (each ``execute_code`` result is a to
 
 Named normalisations, and nothing else:
 
-- The harness writes elapsed-time annotations into request bodies (``time_context``: user messages'
-  ``[elapsed: ...]`` and tool results' ``called_at``/``duration``). Its clock,
-  ``unify.common._async_tool.time_context.perf_counter``, is fixed at 0 in both runs, so those
-  values are constant rather than excluded.
 - Tool-call ids come from the scripted model, not the harness; its id counter restarts for each run.
 - A transport argument that is not JSON (none is expected) is rendered as its type's name, never an
   address.
@@ -54,7 +50,6 @@ from tests.actor.code_act.core_world import (  # noqa: F401 (fixtures)
 )
 from tests.actor.code_act.sandbox_world import needs_bwrap
 from tests.scripted_model import ScriptedModel, cell, reply, scripted
-from unify.common._async_tool import time_context
 from unify.memory.integration.paths import Paths
 from unify.settings import SETTINGS
 
@@ -274,7 +269,6 @@ def _first_difference(a: list[str], b: list[str]) -> str:
 @pytest.mark.asyncio
 @pytest.mark.timeout(420)
 async def test_off_is_byte_identical_to_memory_absent(core_world, monkeypatch):
-    monkeypatch.setattr(time_context, "perf_counter", lambda: 0.0)
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "")
     # the tool loop's memory hook: asked for at each finished call, None while off, never entered
     from unify.common._async_tool import tools_data

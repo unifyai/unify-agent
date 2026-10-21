@@ -332,7 +332,7 @@ async def test_a_commit_landed_mid_cell_is_served_from_the_next_cell_with_one_no
     world,  # noqa: F811
     monkeypatch,
 ):
-    from unify.actor.execution.session import SessionExecutor
+    from tests.memory.cells import Cells
 
     paths = Paths.under(world["state"])
     mem = Repo.init_bare(paths.memory)
@@ -341,7 +341,7 @@ async def test_a_commit_landed_mid_cell_is_served_from_the_next_cell_with_one_no
     monkeypatch.setattr(memory_writer, "served_head", lambda repo: head["sha"])
     run = _library_run(monkeypatch, paths, mem, first)
     started, go = world["workspace"] / "started", world["workspace"] / "go"
-    ex = SessionExecutor(environments={})
+    ex = Cells()
     try:
         # cell 0, session 1: another worker loads the library at the first pin
         res = await _cell(ex, "import memory.text.dates as d1\nd1.parse_date('2026-10-09')", session=1)

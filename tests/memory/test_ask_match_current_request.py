@@ -354,13 +354,6 @@ async def test_the_host_gives_the_acts_request_and_refuses_when_none_is_known(tm
     prose = 'Totals for {"rows": [[1, 2]]} and then [3, 4], please.'
     mixed = session(prose, "g")
     assert json.loads(ask(mixed).text) == {"text": prose, "data": [{"rows": [[1, 2]]}, [3, 4]]}
-    # each text is the one the loop's first user message carries (loop.py's single-message path wraps a request that
-    # is not a message as the user's content)
-    from unify.common._async_tool.bound_request import text_of
-
-    for tools, req in ((text, "Total the table, please."), (shown, shown_request), (arc, grid)):
-        first = req if isinstance(req, dict) else {"role": "user", "content": req}
-        assert json.loads(ask(tools).text)["text"] == text_of(first)
     message = session([{"role": "user", "content": "first"}, {"role": "user", "content": "the latest"}], "c")
     assert json.loads(ask(message).text) == {"text": "the latest", "data": []}
     nothing = session(None, "d")

@@ -14,14 +14,14 @@ import pytest
 from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
 from tests.memory.integration.test_checkout import _seed
 from unify import sandbox
-from unify.actor.execution.session import SessionExecutor
+from tests.memory.cells import Cells
 from unify.memory.integration import request as request_mod
 from unify.memory.integration.checkout import export_checkout
 from unify.memory.integration.paths import Paths
 from unify.settings import SETTINGS
 
 
-async def _cell(ex: SessionExecutor, code: str) -> Any:
+async def _cell(ex: Cells, code: str) -> Any:
     res = await asyncio.wait_for(
         ex.execute(code=code, state_mode="stateful", session_id=0),
         timeout=60,
@@ -73,7 +73,7 @@ async def test_the_worker_imports_and_writes_the_export_and_sees_nothing_else(
     )
     policy = sandbox.build_policy(fresh=True)
     assert all(policy.readable_violation(p) is not None for p in hidden)
-    ex = SessionExecutor(environments={})
+    ex = Cells()
     try:
         out = await _cell(
             ex,
@@ -108,7 +108,7 @@ async def test_the_worker_writes_no_bytecode_into_the_export(
         "_CURRENT",
         SimpleNamespace(index="", paths=paths),
     )
-    ex = SessionExecutor(environments={})
+    ex = Cells()
     try:
         out = await _cell(
             ex,
@@ -163,7 +163,7 @@ async def test_with_the_switch_off_the_export_is_neither_mounted_nor_imported(
         "_CURRENT",
         SimpleNamespace(index="", paths=paths),
     )
-    ex = SessionExecutor(environments={})
+    ex = Cells()
     try:
         assert list(await _cell(ex, _probe(paths, hidden))) == [
             False,

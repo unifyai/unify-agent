@@ -23,7 +23,10 @@ def _planted(n: int, tag: str) -> str:
 
 
 def test_off_records_equal_the_4675a3c45_golden(tmp_path):
-    assert inp.dumps(inp.off_records(tmp_path)) == GOLDEN.read_text()
+    """Every recorder that still exists records exactly what it did at 4675a3c45 (the shell recorder is gone)."""
+    golden = json.loads(GOLDEN.read_text())
+    golden.pop("shell")
+    assert inp.dumps(inp.off_records(tmp_path)) == inp.dumps(golden)
 
 
 def test_dialogue_keeps_the_full_observation_and_payload(tmp_path):

@@ -16,7 +16,7 @@ import pytest
 from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
 from tests.memory.integration.test_actor_export_library_mode import _library_repo
 from tests.memory.test_episodes import _ep
-from unify.actor.execution.session import SessionExecutor
+from tests.memory.cells import Cells
 from unify.memory.integration import hooks
 from unify.memory.integration import request as request_mod
 from unify.memory.integration.adapters.audit import CellAudit
@@ -50,7 +50,7 @@ def _write_copy(root: Path, files: dict) -> None:
         (root / rel).write_bytes(data if isinstance(data, bytes) else data.encode())
 
 
-async def _run(ex: SessionExecutor, run: RequestRun | None, code: str) -> Any:
+async def _run(ex: Cells, run: RequestRun | None, code: str) -> Any:
     res = await asyncio.wait_for(
         ex.execute(code=code, state_mode="stateful", session_id=0),
         timeout=90,
@@ -79,7 +79,7 @@ async def test_cells_use_memory_with_no_import_line_and_failed_calls_are_counted
     mem, sha = _library_repo(paths.memory)
     export_actor_library_mode(mem.git_dir, sha, paths.checkout)
     run = _library_run(monkeypatch, paths)
-    ex = SessionExecutor(environments={})
+    ex = Cells()
     try:
         out = _ok(
             await _run(
@@ -135,7 +135,7 @@ async def test_an_empty_library_is_bound_too(world, monkeypatch, tmp_path):  # n
     _write_copy(paths.checkout, generated_library_mode(empty))
     assert (paths.checkout / "memory" / "__init__.py").is_file()
     run = _library_run(monkeypatch, paths)
-    ex = SessionExecutor(environments={})
+    ex = Cells()
     try:
         out = _ok(
             await _run(
@@ -167,7 +167,7 @@ async def test_a_library_that_fails_to_import_never_breaks_the_session(
         },
     )
     run = _library_run(monkeypatch, paths)
-    ex = SessionExecutor(environments={})
+    ex = Cells()
     try:
         assert (
             _ok(await _run(ex, run, "import json, os\njson.dumps({'a': os.sep})"))
@@ -197,7 +197,7 @@ async def test_a_library_that_never_finishes_importing_is_stopped_by_the_cell_ti
     paths = Paths.under(world["state"])
     _write_copy(paths.checkout, {"memory/__init__.py": "while True:\n    pass\n"})
     run = _library_run(monkeypatch, paths)
-    ex = SessionExecutor(environments={}, timeout=5)
+    ex = Cells(limit=5)
     try:
         assert _ok(await _run(ex, run, "x = 1\nx")) == 1  # starting the worker imports nothing of it
         res = await _run(ex, run, "memory.index()")
@@ -215,7 +215,7 @@ async def test_without_a_library_cells_have_no_memory_and_a_name_error_is_counte
     monkeypatch,
 ):
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "")
-    ex = SessionExecutor(environments={})
+    ex = Cells()
     try:
         probe = "try:\n    memory\n    bound = True\nexcept NameError:\n    bound = False\nbound"
         assert _ok(await _run(ex, None, probe)) is False
@@ -226,7 +226,7 @@ async def test_without_a_library_cells_have_no_memory_and_a_name_error_is_counte
     paths.checkout.mkdir(parents=True)
     run = _library_run(monkeypatch, paths)
     assert hooks.worker_globals() == {}
-    ex = SessionExecutor(environments={})
+    ex = Cells()
     try:
         res = await _run(ex, run, "memory.index()")
     finally:
