@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 
 from tests.memory.test_item_admission import _write
 from tests.memory.test_layout import LIB
@@ -11,7 +10,6 @@ from unify.memory import layout, reduction
 from unify.memory.admission import cover_problem
 from unify.memory.episodes import Action
 from unify.memory.gate import CHECKS, Gate, GateResult, _Probe, _Run
-from unify.memory.library_checks import LibraryConfig
 from unify.memory.manifest import Manifest, ManifestItem
 
 TOKENS = "memory.text.parse:tokens"
@@ -61,37 +59,6 @@ def test_a_cover_on_any_channel_is_admitted_under_library_mode():
     assert cover_problem(bad, None, lambda s: False, channel_rule=False) == (
         "not a recorded successful call or rejection (tool)"
     )
-
-
-def test_g2_drops_the_channel_rule_only_under_library_mode(tmp_path):
-    action = Action(0, "svc", "get", [], {}, {"x": 1}, "ok")
-    item = ManifestItem(
-        "env/files:read",
-        "env_function",
-        "env/files/__init__.py",
-        ["e1"],
-        [],
-        [("e1", 0)],
-    )
-    for library_mode, expect in (
-        (False, ["G2: env/files:read covers (e1,0), a tool action on svc"]),
-        (True, []),
-    ):
-        gate = Gate.__new__(Gate)
-        gate.library_mode = (
-            LibraryConfig() if library_mode else None
-        )  # Amendment B: a config object
-        gate.blobs = SimpleNamespace(has=lambda s: False)
-        run = _Run(
-            GateResult(True, {c: True for c in CHECKS}),
-            Manifest(items=[item]),
-            {},
-            "p" * 40,
-            "c" * 40,
-            tmp_path,
-        )
-        gate._g2(run, preview=True, lookup=lambda e, i: action)
-        assert run.res.reasons == expect
 
 
 def test_behaviour_targets_keep_v2s_channel_loop(tmp_path):

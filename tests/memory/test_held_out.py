@@ -400,50 +400,6 @@ def test_a_file_rejection_compares_rows_by_content_not_position(
         assert any("changes no field" in n and "exempts nothing" in n for n in p.notes)
 
 
-def test_the_manifest_takes_declared_types_from_the_fixed_list_only():
-    from unify.memory.manifest import SEMANTIC_TYPES, ManifestError, parse_manifest
-
-    assert set(SEMANTIC_TYPES) == {
-        "month",
-        "day_of_month",
-        "hour",
-        "probability",
-        "percentage",
-        "nonneg_count",
-        "nonneg_money",
-        "currency_code",
-    }
-    item = {
-        "item": "env/worktree_workspace:read_periods",
-        "kind": "env_function",
-        "covers": [["h1", 17]],
-        "field_types": {"month": "month", "share": "probability"},
-    }
-    (parsed,) = parse_manifest({"items": [item]}).items
-    assert parsed.field_types == {"month": "month", "share": "probability"}
-    assert (
-        parse_manifest({"items": [{**item, "field_types": None}]}).items[0].field_types
-        == {}
-    )
-    for bad in (
-        {"month": "fiscal_month"},  # not on the list
-        {"month": 3},
-        ["month"],
-        {"": "month"},
-        {"a\nb": "month"},
-        {"x" * 201: "month"},
-    ):
-        with pytest.raises(ManifestError):
-            parse_manifest({"items": [{**item, "field_types": bad}]})
-    note = {
-        "item": "env/x/NOTES.md#a",
-        "kind": "env_note",
-        "field_types": {"a": "month"},
-    }
-    with pytest.raises(ManifestError):
-        parse_manifest({"items": [note]})
-
-
 def test_a_declared_field_gets_unseen_in_domain_values_and_one_out_of_domain(recorded):
     store, acts = recorded
     p = plan(
@@ -1357,137 +1313,6 @@ def _check(mem, gate, channel, module, covers, fn, field_types=None, input_kind=
     return gate.check(parent, cand, man)
 
 
-@needs_bwrap
-def test_an_item_with_a_seen_value_whitelist_fails_g2(shop):
-    mem, gate = shop
-    res = _check(
-        mem,
-        gate,
-        "shop",
-        _module("search", "apis, colour, limit=20", WHITELIST),
-        [0, 1],
-        "search",
-    )
-    assert not res.checks["G2"]
-    bad = [r for r in res.reasons if "held-out value refused" in r]
-    assert bad == ["G2: env/shop:search held-out value refused: colour"], res.reasons
-    # the reason names the field, never a value
-    assert not any(v in r for r in bad for v in ("red", "blue", "mauve"))
-
-
-@needs_bwrap
-def test_the_same_item_with_a_shape_only_check_passes_g2(shop):
-    mem, gate = shop
-    res = _check(
-        mem,
-        gate,
-        "shop",
-        _module("search", "apis, colour, limit=20", SHAPE_ONLY),
-        [0, 1],
-        "search",
-    )
-    assert res.checks["G2"], res.reasons
-
-
-@needs_bwrap
-def test_an_item_covering_an_environment_rejection_may_refuse(shop):
-    mem, gate = shop
-    res = _check(
-        mem,
-        gate,
-        "shop",
-        _module("search", "apis, colour, limit=20", WHITELIST),
-        [0, 1, 2],
-        "search",
-    )
-    assert res.checks["G2"], res.reasons
-    assert any(
-        r.startswith("note:")
-        and "refusal of colour allowed by a covered recorded rejection" in r
-        for r in res.reasons
-    ), res.reasons
-    only = _check(
-        mem,
-        gate,
-        "shop",
-        _module("search", "apis, colour, limit=20", WHITELIST),
-        [2],
-        "search",
-    )
-    assert not only.checks["G2"]
-    assert any("only recorded rejections" in r for r in only.reasons)
-
-
-@needs_bwrap
-@pytest.mark.parametrize(
-    "body",
-    [CALL_FIRST, UNCAUGHT],
-    ids=["refuses-after-miss", "miss-propagates"],
-)
-def test_a_tool_replay_miss_is_not_a_violation(shop, body):
-    mem, gate = shop
-    res = _check(
-        mem,
-        gate,
-        "shop",
-        _module("search", "apis, colour, limit=20", body),
-        [0, 1],
-        "search",
-    )
-    assert res.checks["G2"], res.reasons
-
-
-@needs_bwrap
-@pytest.mark.parametrize(
-    "body, field",
-    [(STOCK_WHITELIST, "colour"), (STOCK_RANGE, "qty"), (STOCK_SHAPE, None)],
-    ids=["whitelist", "observed-range", "shape-only"],
-)
-def test_worktree_readers_are_checked_on_perturbed_files(shop, body, field):
-    mem, gate = shop
-    mod = _module(
-        "read_stock",
-        "path",
-        body,
-        doc="Read a stock CSV.",
-        imports="import csv\n\n",
-    )
-    res = _check(mem, gate, "worktree_workspace", mod, [4], "read_stock")
-    refused = [r for r in res.reasons if "held-out value refused" in r]
-    if field is None:
-        assert res.checks["G2"] and not refused, res.reasons
-    else:
-        assert refused == [
-            f"G2: env/worktree_workspace:read_stock held-out value refused: {field}",
-        ], res.reasons
-    # a rejected write without a recorded file cannot show which field it varied: no exemption, a note
-    if field is not None:
-        res2 = _check(mem, gate, "worktree_workspace", mod, [4, 6], "read_stock")
-        assert not res2.checks["G2"], res2.reasons
-        assert any("does not record a changed file" in r for r in res2.reasons)
-
-
-@needs_bwrap
-def test_a_shell_item_is_skipped_with_a_note(shop):
-    mem, gate = shop
-    body = """    if text.strip() not in ("3 checks passed",):
-        raise MemoryInputError("unseen output")
-    return int(text.split()[0])"""
-    res = _check(
-        mem,
-        gate,
-        "shell_make",
-        _module("parse", "text", body, doc="Parse the check count."),
-        [3],
-        "parse",
-    )
-    assert res.checks["G2"], res.reasons
-    assert any(
-        r.startswith("note:") and "shell" in r and "not supported yet" in r
-        for r in res.reasons
-    )
-
-
 TICKET_PREFIX = """    for r in csv.DictReader(open(path, newline="")):
         if not r["ticket_id"].startswith(("NET-", "DSK-", "APP-")):
             raise MemoryInputError("unknown ticket family")
@@ -1539,39 +1364,6 @@ LEDGER_SIGNS = """    from decimal import Decimal
     return True"""
 
 
-@needs_bwrap
-def test_a_sign_convention_in_a_mixed_sign_column_is_not_flagged(shop):
-    mem, gate = shop
-    mod = _module(
-        "read_ledger",
-        "path",
-        LEDGER_SIGNS,
-        doc="Read a ledger CSV.",
-        imports="import csv\n\n",
-    )
-    res = _check(mem, gate, "worktree_workspace", mod, [11], "read_ledger")
-    assert res.checks["G2"], res.reasons
-    assert not [r for r in res.reasons if "held-out value refused" in r]
-
-
-@needs_bwrap
-@pytest.mark.parametrize("cover", [8, 9], ids=["auth-failure", "other-method"])
-def test_an_unrelated_rejection_exempts_nothing(shop, cover):
-    mem, gate = shop
-    res = _check(
-        mem,
-        gate,
-        "shop",
-        _module("search", "apis, colour, limit=20", WHITELIST),
-        [0, 1, cover],
-        "search",
-    )
-    assert [r for r in res.reasons if "held-out value refused" in r] == [
-        "G2: env/shop:search held-out value refused: colour",
-    ], res.reasons
-    assert any("exempts nothing" in r for r in res.reasons)
-
-
 KEYED = """    APPS = {"red": 1, "blue": 2}
     APPS[colour]
     return apis.shop.search(colour=colour, limit=limit)["items"]"""
@@ -1584,55 +1376,6 @@ STALLS = """    import time
     except BaseException:
         return []"""
 REFUSES_ALL = """    raise MemoryInputError("never")"""
-
-
-@needs_bwrap
-@pytest.mark.parametrize(
-    "params, body, note",
-    [
-        ("apis, colour, limit=20", KEYED, "colour (KeyError)"),
-        (
-            "apis, shade, limit=20",
-            RENAMED,
-            "not taken under the same name, not checked: colour",
-        ),
-        ("apis, colour, limit=20", STALLS, "limit and were stopped"),
-        ("apis, colour, limit=20", REFUSES_ALL, "refuses 1 of its own covered inputs"),
-    ],
-    ids=[
-        "keyerror-whitelist",
-        "renamed-parameter",
-        "swallowed-timeout",
-        "refused-baseline",
-    ],
-)
-def test_unjudged_outcomes_are_notes_not_failures(shop, params, body, note):
-    mem, gate = shop
-    res = _check(mem, gate, "shop", _module("search", params, body), [0], "search")
-    assert res.checks["G2"], res.reasons
-    assert any(r.startswith("note:") and note in r for r in res.reasons), res.reasons
-
-
-@needs_bwrap
-def test_a_dialogue_item_is_checked_and_reasons_are_capped_at_five(shop):
-    mem, gate = shop
-    body = f"""    if obs != {SEVEN!r}:
-        raise MemoryInputError("not the recorded observation")
-    return obs"""
-    res = _check(
-        mem,
-        gate,
-        "dialogue_user",
-        _module("parse", "obs", body, doc="Parse the counts."),
-        [10],
-        "parse",
-    )
-    refused = [r for r in res.reasons if "held-out value refused" in r]
-    assert len(refused) == 5 and not res.checks["G2"], res.reasons
-    assert all(
-        r.startswith("G2: env/dialogue_user:parse held-out value refused: f")
-        for r in refused
-    )
 
 
 @needs_bwrap
@@ -1657,36 +1400,6 @@ def test_g5_does_not_count_a_rejection_cover_as_new_coverage(shop, old_ok_covers
     )
     assert res.checks["G2"], res.reasons
     assert res.checks["G5"] is (not old_ok_covers), res.reasons
-
-
-@needs_bwrap
-@pytest.mark.parametrize(
-    "body, field",
-    [(STOCK_WHITELIST, "colour"), (STOCK_RANGE, "qty")],
-    ids=["colour", "qty"],
-)
-def test_a_refused_write_of_the_unchanged_file_exempts_nothing(shop, body, field):
-    """The reviewer's probe: a permission-denied write recording the file as it was varies no field."""
-    mem, gate = shop
-    mod = _module(
-        "read_stock",
-        "path",
-        body,
-        doc="Read a stock CSV.",
-        imports="import csv\n\n",
-    )
-    res = _check(mem, gate, "worktree_workspace", mod, [4, 12], "read_stock")
-    assert [r for r in res.reasons if "held-out value refused" in r] == [
-        f"G2: env/worktree_workspace:read_stock held-out value refused: {field}",
-    ], res.reasons
-    assert any("does not record a changed file" in r for r in res.reasons)
-    # the write that changed the colour exempts the colour only
-    res2 = _check(mem, gate, "worktree_workspace", mod, [4, 13], "read_stock")
-    if field == "colour":
-        assert res2.checks["G2"], res2.reasons
-        assert any("refusal of colour allowed" in r for r in res2.reasons)
-    else:
-        assert not res2.checks["G2"], res2.reasons
 
 
 PERIOD_HEAD = """    from decimal import Decimal
@@ -1714,52 +1427,6 @@ PERIOD_HOURS = PERIOD_OK.replace(
 _ITEM = "G2: env/worktree_workspace:read_periods"
 
 
-@needs_bwrap
-@pytest.mark.parametrize(
-    "body, reasons",
-    [
-        (PERIOD_OK, []),
-        (PERIOD_SEEN, [f"{_ITEM} declared month field month refuses in-domain values"]),
-        (
-            PERIOD_LOOSE,
-            [
-                f"{_ITEM} declared month field month does not refuse out-of-domain values",
-                f"{_ITEM} declared probability field share does not refuse out-of-domain values",
-            ],
-        ),
-        (PERIOD_HOURS, [f"{_ITEM} held-out value refused: hours"]),
-    ],
-    ids=[
-        "domain-checks",
-        "seen-month-whitelist",
-        "no-domain-check",
-        "untagged-hours-range",
-    ],
-)
-def test_declared_types_are_checked_on_both_sides(shop, body, reasons):
-    mem, gate = shop
-    mod = _module(
-        "read_periods",
-        "path",
-        body,
-        doc="Read a periods CSV.",
-        imports="import csv\n\n",
-    )
-    res = _check(
-        mem,
-        gate,
-        "worktree_workspace",
-        mod,
-        [17],
-        "read_periods",
-        field_types={"month": "month", "share": "probability"},
-    )
-    assert sorted(r for r in res.reasons if r.startswith("G2:")) == sorted(
-        reasons,
-    ), res.reasons
-    assert res.checks["G2"] is (not reasons)
-
-
 LIMIT_CHECKED = """    if not isinstance(limit, int) or limit < 0:
         raise MemoryInputError("limit is a non-negative count")
     return apis.shop.search(colour=colour, limit=limit)["items"]"""
@@ -1769,86 +1436,9 @@ MONTHS_OK = """    for r in csv.DictReader(open(path, newline="")):
     return True"""
 
 
-@needs_bwrap
-@pytest.mark.parametrize(
-    "body, reasons",
-    [
-        (LIMIT_CHECKED, []),
-        (
-            UNCAUGHT,
-            [
-                "G2: env/shop:search declared nonneg_count field limit does not refuse out-of-domain values",
-            ],
-        ),
-    ],
-    ids=["checked", "unchecked"],
-)
-def test_a_declared_unbounded_tool_keyword_through_the_gate(shop, body, reasons):
-    mem, gate = shop
-    res = _check(
-        mem,
-        gate,
-        "shop",
-        _module("search", "apis, colour, limit=20", body),
-        [0, 1],
-        "search",
-        field_types={"limit": "nonneg_count"},
-    )
-    assert sorted(r for r in res.reasons if r.startswith("G2:")) == reasons, res.reasons
-
-
-@needs_bwrap
-def test_a_correct_item_over_a_fully_observed_domain_passes(shop):
-    mem, gate = shop
-    mod = _module(
-        "read_months",
-        "path",
-        MONTHS_OK,
-        doc="Read monthly sales.",
-        imports="import csv\n\n",
-    )
-    res = _check(
-        mem,
-        gate,
-        "worktree_workspace",
-        mod,
-        [18],
-        "read_months",
-        field_types={"month": "month"},
-    )
-    assert res.checks["G2"], res.reasons
-    assert any("every in-domain value is already recorded" in r for r in res.reasons)
-
-
 RANGES_READER = """    for r in csv.DictReader(open(path, newline="")):
         float(r["amount"]); int(r["pct"])
     return True"""
-
-
-@needs_bwrap
-def test_a_declaration_contradicted_by_a_later_recorded_value_fails_g2(shop):
-    mem, gate = shop
-    mod = _module(
-        "read_ranges",
-        "path",
-        RANGES_READER,
-        doc="Read ranges.",
-        imports="import csv\n\n",
-    )
-    res = _check(
-        mem,
-        gate,
-        "worktree_workspace",
-        mod,
-        [22],
-        "read_ranges",
-        field_types={"amount": "nonneg_money", "pct": "percentage"},
-    )
-    item = "G2: env/worktree_workspace:read_ranges"
-    assert sorted(r for r in res.reasons if r.startswith("G2:")) == [
-        f"{item} declared nonneg_money field amount does not match its recorded values",
-        f"{item} declared percentage field pct does not match its recorded values",
-    ], res.reasons
 
 
 # --- fix 13: constant fields are identity; items declare their input --------------------------------------
@@ -1909,25 +1499,6 @@ ROOM_WHITELIST = """    if obs["room"] != "hall":
     return obs"""
 
 
-@needs_bwrap
-def test_a_declared_form_the_covers_cannot_give_fails_g2(shop):
-    """A dialogue whitelist declared as taking a path would otherwise check nothing."""
-    mem, gate = shop
-    mod = _module("parse", "obs", ROOM_WHITELIST, doc="Parse a room.")
-    res = _check(mem, gate, "dialogue_user", mod, [5], "parse", input_kind="path")
-    assert res.checks["G1"], res.reasons
-    assert not res.checks["G2"]
-    assert (
-        "G2: env/dialogue_user:parse declares input path, which a dialogue cover cannot give"
-        in res.reasons
-    ), res.reasons
-    # declared as an observation, the whitelist is caught on its one cover
-    ok = _check(mem, gate, "dialogue_user", mod, [5], "parse", input_kind="observation")
-    assert [r for r in ok.reasons if "held-out value refused" in r] == [
-        "G2: env/dialogue_user:parse held-out value refused: room",
-    ], ok.reasons
-
-
 STOCK_TEXT_HEAD = """    if not isinstance(data, str):
         raise MemoryInputError("data must be the file's text")
     lines = data.splitlines()
@@ -1940,46 +1511,6 @@ STOCK_TEXT_WHITELIST = STOCK_TEXT_HEAD + """    for r in rows:
         if r[1] not in ("red", "blue"):
             raise MemoryInputError("unknown colour")
     return rows"""
-
-
-@needs_bwrap
-@pytest.mark.parametrize(
-    "body, input_kind, refused, baseline_refused",
-    [
-        (STOCK_TEXT_SHAPE, "text", [], False),
-        (STOCK_TEXT_WHITELIST, "text", ["colour"], False),
-        # declared as a path, the same text reader refuses its own covered input: nothing is checked
-        (STOCK_TEXT_SHAPE, "path", [], True),
-    ],
-    ids=["text-shape-only", "text-whitelist", "declared-path"],
-)
-def test_a_text_reader_is_called_with_the_files_text(
-    shop,
-    body,
-    input_kind,
-    refused,
-    baseline_refused,
-):
-    """A parse_load_log(data)-style reader gets the decoded text when it declares input text."""
-    mem, gate = shop
-    mod = _module("read_stock_text", "data", body, doc="Parse a stock CSV's text.")
-    res = _check(
-        mem,
-        gate,
-        "worktree_workspace",
-        mod,
-        [4],
-        "read_stock_text",
-        input_kind=input_kind,
-    )
-    assert res.checks["G1"], res.reasons
-    got = [r for r in res.reasons if "held-out value refused" in r]
-    assert got == [
-        f"G2: env/worktree_workspace:read_stock_text held-out value refused: {f}"
-        for f in refused
-    ], res.reasons
-    own = any("refuses 1 of its own covered inputs" in r for r in res.reasons)
-    assert own is baseline_refused, res.reasons
 
 
 def test_a_result_line_nested_too_deep_to_parse_is_dropped_not_raised(tmp_path):

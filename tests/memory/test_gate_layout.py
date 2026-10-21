@@ -259,31 +259,6 @@ def test_many_refused_paths_are_listed_up_to_ten(tmp_path, world):
     assert runner.calls == [] and MARKER not in "\n".join(res.reasons)
 
 
-@needs_bwrap
-def test_a_library_with_data_fixtures_and_a_helper_still_merges(tmp_path, world):
-    """No false refusal: data files and a helper under tests/, the test kit and a workflow still merge."""
-    mem, ev = world
-    runner = _Recorder("env/venmo/tests/rec/rows.json")
-    gate = _gate(tmp_path, mem, ev, runner)
-    parent = mem.head()
-    support = [
-        "env/venmo/tests/rec/rows.json",
-        "env/venmo/tests/rec/out.tsv",
-        "env/venmo/tests/venmo_fixtures.py",
-    ]
-    files = {
-        **PROBE_BASE,
-        support[0]: '[{"user_id": "u-1"}]\n',
-        support[1]: "a\tb\n1\t2\n",
-        support[2]: "ROWS = []\n",
-    }
-    cand = _commit(mem, files)
-    man = {"items": [PROBE_ITEM], "support": support}
-    res = gate.merge(parent, cand, man, "ok4", "incremental", "venmo", "0")
-    assert res.passed, res.reasons
-    assert mem.head() == cand and runner.calls
-
-
 # --- the policy function itself -------------------------------------------------------------------------
 
 

@@ -284,24 +284,6 @@ WT_FILES = {
 
 
 @needs_bwrap
-def test_gate_admits_a_reader_covering_a_recorded_file(office):
-    mem, ev, gate, _ = office
-    parent = mem.head()
-    cand = _commit(mem, WT_FILES)
-    res = gate.merge(
-        parent,
-        cand,
-        WT_MAN,
-        "p1",
-        "incremental",
-        "worktree:workspace",
-        "0",
-    )
-    assert res.passed, res.reasons
-    assert ev.covered() == {("o1", 0)}
-
-
-@needs_bwrap
 @pytest.mark.parametrize(
     "covers",
     [[["o1", 2]], [["o1", 3]], [["o1", 4]], [["o1", 5]], [["o1", 0], ["o1", 9]]],

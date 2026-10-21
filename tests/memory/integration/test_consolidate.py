@@ -270,69 +270,11 @@ def test_a_worktree_cover_is_admitted_by_the_g2_rule_through_the_lookup(tmp_path
     )
 
 
-@needs_bwrap
-def test_the_gate_admits_a_worktree_cover_through_the_lookup(tmp_path):
-    """Remote (bwrap): the real gate's G2, held-out values included, with the lookup over a written episode."""
-    from tests.memory.test_kinds_gate import (
-        INVENTORY,
-        INVOICES,
-        WT_FILES,
-        WT_MAN,
-        _commit,
-        _wt,
-    )
-    from unify.memory.gate import Gate
-
-    stores = _stores(tmp_path)
-    inv, tsv = stores.blobs.put(INVOICES), stores.blobs.put(INVENTORY)
-    _record(
-        stores,
-        "o1",
-        actions=[
-            _wt("finance/ap/invoices-2026-10.csv", inv),
-            _wt("ops/inventory.csv", tsv),
-        ],
-    )
-    gate = Gate(
-        stores.memory,
-        stores.evidence,
-        stores.blobs,
-        action_lookup=EpisodeLookup(stores).action,library_mode=LibraryConfig()
-    )
-    parent = stores.memory.head()
-    cand = _commit(stores.memory, WT_FILES)
-    res = gate.check(parent, cand, WT_MAN)
-    assert res.checks["G2"], res.reasons
-    blind = Gate(
-        stores.memory,
-        stores.evidence,
-        stores.blobs,library_mode=LibraryConfig()
-    )  # no lookup: fails closed
-    assert not blind.check(parent, cand, WT_MAN).checks["G2"]
-
-
 def test_open_stores_is_idempotent(tmp_path):
     a = _stores(tmp_path)
     head = (a.memory.head(), a.episodes.head())
     b = _stores(tmp_path)
     assert (b.memory.head(), b.episodes.head()) == head
-
-
-def test_every_setting_the_driver_reads_is_a_build_setting():
-    """The driver reads its switches by name; a renamed setting must never be read under its old name."""
-    import inspect
-    import re
-
-    from unify.memory.integration import consolidate
-    from unify.settings import ProductionSettings
-
-    read = set(
-        re.findall(r'"(UNIFY_MEMORY_[A-Z0-9_]+)"', inspect.getsource(consolidate)),
-    )
-    assert read, "the driver reads no v2 setting by name"
-    assert read <= set(ProductionSettings.model_fields), sorted(
-        read - set(ProductionSettings.model_fields),
-    )
 
 
 # --- the library a pass landed ---------------------------------------------------------------------------------

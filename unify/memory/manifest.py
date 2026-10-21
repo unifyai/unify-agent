@@ -848,8 +848,8 @@ def _parse_library_mode(manifest: dict, labels: bool = False) -> Manifest:
 def parse_manifest(manifest: object, *, labels: bool = False) -> Manifest:
     """Validate the manifest's shape, its ids and its paths against the layout; raise ManifestError.
 
-    *library_mode*: the library layout (:func:`_parse_library_mode`); off, v2's, unchanged. *labels*
-    (library layout): an item may state its label fields (:data:`LABEL_ITEM_FIELDS`).
+    The library layout (:func:`_parse_library_mode`). *labels*: an item may state its label fields
+    (:data:`LABEL_ITEM_FIELDS`).
     """
     if not isinstance(manifest, dict):
         raise ManifestError("the manifest must be an object")

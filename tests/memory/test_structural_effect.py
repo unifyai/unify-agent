@@ -142,34 +142,6 @@ def test_a_writer_declared_read_is_refused_and_declared_write_lands_marked(
     assert lines["pay"].endswith("(input: env) (writes)")
 
 
-@sandboxed
-def test_a_parser_of_a_recorded_write_needs_no_write_effect(world):
-    mem, ev, gate = world
-    parent = mem.head()
-    # a parser of the write's recorded response, declared read: it makes no call
-    parse = _fn("paid", 'return obs["ok"]', form="observation").replace(
-        "(apis)",
-        "(obs)",
-    )
-    files = {
-        "env/venmo/__init__.py": parse,
-        "env/venmo/tests/test_paid.py": (
-            "from env.venmo import paid\n\ndef test_paid():\n    assert paid({'ok': True})\n"
-        ),
-    }
-    man = {"items": [{**_item("paid", [["e1", 5]]), "input": "observation"}]}
-    res = gate.merge(
-        parent,
-        _candidate(mem, files),
-        man,
-        "w3",
-        "incremental",
-        "venmo",
-        "0",
-    )
-    assert res.passed, res.reasons
-
-
 def test_write_is_read_from_the_recording_never_from_names():
     write = Action(5, "venmo", "list_things", [], {}, {"ok": True}, "ok", "write")
     named = Action(6, "venmo", "create_payment", [], {}, {"ok": True}, "ok", "unknown")

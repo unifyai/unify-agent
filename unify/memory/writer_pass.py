@@ -4560,7 +4560,7 @@ class WriterPass:
                         continue  # the summary call took the last call the pass had
                     calls += 1
                 pr_run = self._pass_record
-                if pr_run is not None and pr_run.run:
+                if pr_run is not None:
                     # the run record's turn boundary: what is new for this agent, after the turn's tool results
                     try:
                         block = pr_run.record.take_block(pr_run.root)

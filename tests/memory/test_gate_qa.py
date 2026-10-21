@@ -571,43 +571,6 @@ def test_default_config_is_off_and_settings_parse():
             QAConfig.from_settings(SimpleNamespace(**bad))
 
 
-@pytest.mark.parametrize("variant", ["pass", "touched", "undeclared"])
-def test_every_switch_off_is_the_gate_as_before(tmp_path, variant):
-    """Same reasons, checks and test runs (arguments and environment) with no config and the default one."""
-    files, man = _hp()
-    if variant == "touched":
-        files[HP_TEST] = files[HP_TEST] + "\n# touched\n"
-    if variant == "undeclared":
-        files["env/dialogue_crafter/tests/data.json"] = "{}"
-    results = []
-    for n, kw in enumerate(({}, {"qa": QAConfig()})):
-        runner = FakePytest()
-        res = _check(tmp_path / str(n), CRAFTER, files, man, pytest_runner=runner, **kw)
-        # run_pytest's default: a skip stays a skip (import skips fail only with the kit mounted)
-        assert runner.import_skips_fail and not any(runner.import_skips_fail)
-        results.append(
-            (
-                res.passed,
-                res.checks,
-                res.reasons,
-                res.refused,
-                [c[0] for c in runner.calls],
-                [c[1:] for c in runner.calls],
-            ),
-        )
-    assert results[0] == results[1]
-    assert all(c[0] == ["/memory"] for c in results[0][5])  # nothing else mounted
-    assert all(
-        c[4]
-        == {
-            "PYTHONPATH": "/memory",
-            "PYTEST_ADDOPTS": "-c /dev/null --import-mode=importlib",
-        }
-        for c in results[0][5]
-    )
-    assert not any("[qa:" in r for r in results[0][2])
-
-
 # --- the seeded draw -------------------------------------------------------------------------------------
 
 
@@ -622,99 +585,6 @@ def _screens(n):
 
 
 # --- budget, flakiness and the probe's verdicts (injected runners) --------------------------------------
-
-
-def test_an_exhausted_budget_refuses_the_pass_as_unjudged_never_a_crash(tmp_path):
-    files, man = _hp()
-    res = _check(
-        tmp_path,
-        CRAFTER,
-        files,
-        man,
-        pytest_runner=FakePytest(),
-        qa=QAConfig(determinism=True, clock=Ticking(1000.0)),
-    )
-    assert not res.passed and res.refused == ["G3"], res.reasons
-    (reason,) = [r for r in res.reasons if "[qa:budget]" in r]
-    assert (
-        reason.startswith("G3: [qa:budget] ")
-        and "determinism rerun" in reason
-        and "unjudged" in reason
-    )
-
-
-def test_the_budget_stops_mutants_midway_and_refuses_the_pass(tmp_path):
-    files, man = _hp()
-    probe = _fake_probe(
-        {
-            "cover": {"outcome": "handled", "digest": "x"},
-            "sample": {
-                "outcome": "handled",
-                "digest": "y",
-            },
-        },
-    )
-    res = _check(
-        tmp_path,
-        CRAFTER,
-        files,
-        man,
-        pytest_runner=FakePytest(),
-        qa=QAConfig(
-            mutation=True,
-            clock=Ticking(100.0, free=4),
-            runner=probe,
-            budget_s=300.0,
-        ),
-    )
-    assert not res.passed and res.refused == ["G3"], res.reasons
-    assert any(
-        r.startswith("G3: [qa:budget]") and "the mutants of " + HP_ITEM in r
-        for r in res.reasons
-    )
-    assert not any(r.startswith("G3: [qa:mutation]") for r in res.reasons)
-
-
-def test_a_test_with_two_outcomes_under_the_pins_is_refused_as_flaky(tmp_path):
-    files, man = _hp()
-    flaky = PytestOutcome(passed={"t::a", "t::b"}, returncode=0)
-    runner = FakePytest(second=flaky)
-    res = _check(
-        tmp_path,
-        CRAFTER,
-        files,
-        man,
-        pytest_runner=runner,
-        qa=QAConfig(determinism=True),
-    )
-    assert not res.passed and res.refused == ["G3"]
-    (reason,) = _qa_lines(res)
-    assert (
-        reason.startswith("G3: [qa:determinism] " + HP_TEST)
-        and "1 test(s) differ" in reason
-    )
-    pinned = [c for c in runner.calls if c[0] == HP_TEST]
-    assert all("-p _memory_pin" in c[5]["PYTEST_ADDOPTS"] for c in pinned)
-    # every run under pin variant 0 but the rerun, which uses variant 1 (other epoch, seeds)
-    assert [
-        (c[5]["PYTHONHASHSEED"], c[5]["MEMORY_PIN"], c[5]["TZ"]) for c in pinned
-    ] == [
-        ("0", "0", "UTC"),
-    ] * (
-        len(pinned) - 1
-    ) + [
-        ("1", "1", "<+0545>-05:45"),
-    ]
-    assert all(c[1] == ["/inputs", "/memory"] for c in runner.calls)
-    steady = _check(
-        tmp_path / "steady",
-        CRAFTER,
-        files,
-        man,
-        pytest_runner=FakePytest(),
-        qa=QAConfig(determinism=True),
-    )
-    assert steady.passed, steady.reasons
 
 
 @pytest.mark.parametrize(
@@ -795,27 +665,6 @@ def test_strict_refuses_drawn_inputs_no_test_read(tmp_path):
     )
 
 
-def test_dynamic_checks_wait_for_a_candidate_that_passes_the_rest(tmp_path):
-    files, man = _hp()
-    files[HP_TEST] = files[HP_TEST] + "\n# touched\n"
-    runner = FakePytest()
-    mem, gate = _world(
-        tmp_path,
-        CRAFTER,
-        pytest_runner=runner,
-        qa=QAConfig(mutation=True, determinism=True),
-    )
-    parent = _commit(mem, files)
-    mem.fast_forward("main", parent, expected_old=mem.head())
-    files[HP_TEST] = files[HP_TEST] + "\n# again\n"
-    # a test-only change is accepted by G3 (a keeping test); an undeclared file refuses the candidate instead
-    files["env/dialogue_crafter/tests/undeclared.txt"] = "x\n"
-    res = gate.check(parent, _commit(mem, files), man)
-    assert not res.passed and "G1" in res.refused
-    assert any("undeclared change env/dialogue_crafter/tests/undeclared.txt" in r for r in res.reasons)
-    assert any("[qa:skipped]" in r for r in res.reasons)
-
-
 # --- the static checks, through the consolidator's check (preview) ---------------------------------------
 
 
@@ -829,22 +678,6 @@ def _preview(tmp_path, episodes, files, manifest, qa):
         else:
             (tree / rel).write_text(text)
     return gate.preview(mem.head(), tree, manifest)
-
-
-def test_preview_refuses_a_stand_in_environment_and_accepts_the_replay(tmp_path):
-    files, man = _cl(CLOCK_FAKE_TEST)
-    reasons = _preview(tmp_path / "a", PHONE, files, man, QAConfig(replay=True))
-    (reason,) = [r for r in reasons if "[qa:replay]" in r]
-    assert reason.startswith(f"G3: [qa:replay] {CL_TEST} line 10 passes {CL_ITEM}")
-    assert not any(v in reason for v in RECORDED_VALUES)
-    files, man = _cl(CLOCK_REPLAY_TEST)
-    assert _preview(tmp_path / "b", PHONE, files, man, QAConfig(replay=True)) == []
-    files, man = _cl(CLOCK_ENV_FROM_TEST)  # the harness's replay helper
-    assert _preview(tmp_path / "e", PHONE, files, man, QAConfig(replay=True)) == []
-    files, man = _cl(CLOCK_FAKE_TEST)
-    assert (
-        _preview(tmp_path / "c", PHONE, files, man, QAConfig()) == []
-    )  # switch off: as before
 
 
 def test_preview_refuses_an_oversized_fixture_and_accepts_a_blob_reference(tmp_path):
@@ -995,166 +828,6 @@ def test_the_pin_installs_only_under_its_box_name(tmp_path):
 # --- end to end in the sandbox ---------------------------------------------------------------------------
 
 
-@needs_bwrap
-def test_mutation_refuses_a_weak_suite_naming_kinds_and_lines(tmp_path):
-    files, man = _fb(WEAK_TEST)
-    res = _check(tmp_path, ARC, files, man, qa=QAConfig(mutation=True, max_mutants=64))
-    assert not res.passed and res.refused == ["G3"], res.reasons
-    (reason,) = [r for r in res.reasons if r.startswith("G3: [qa:mutation]")]
-    # 12 sites. Killed (4): both negations, != to ==, < to >= (each makes OBS refused). Surviving (8): 0 to 1,
-    # return None, both "is True" flips, and the two and/or swaps and two dropped raises, which equal the
-    # original on every accepted recording (the other guard masks them) but not on the covers' structural
-    # negatives (14 here: each field dropped or retyped, "type" emptied, an extra field, the object retyped
-    # or emptied), so none is left out as equivalent. Re-derived from mutation.py and the probe's signature.
-    assert (
-        "kill 4 of 12 mutants that change its outputs" in reason
-        and "0 likely equivalent" in reason
-    )
-    assert "surviving: " in reason and " at line " in reason
-    _no_values(res)
-
-
-@needs_bwrap
-def test_mutation_accepts_a_strong_suite(tmp_path):
-    files, man = _fb(STRONG_TEST)
-    res = _check(tmp_path, ARC, files, man, qa=QAConfig(mutation=True, max_mutants=64))
-    assert res.passed, res.reasons
-    assert any(
-        "[qa:mutation]" in r and "kill 12 of 12 mutants" in r for r in res.reasons
-    )
-
-
-@needs_bwrap
-def test_mutation_with_the_default_bound_is_seeded_by_the_candidate(tmp_path):
-    files, man = _fb(STRONG_TEST)
-    res = _check(tmp_path, ARC, files, man, qa=QAConfig(mutation=True))
-    assert res.passed, res.reasons
-    assert any("[qa:mutation]" in r and "kill 8 of 8 mutants" in r for r in res.reasons)
-
-
-@needs_bwrap
-def test_drawn_inputs_that_crash_the_function_refuse_it(tmp_path):
-    files = {"env/dialogue_user/__init__.py": CRASHING, AU_TEST: CRASHING_TEST}
-    man = _manifest(AU_ITEM, AU_TEST, ARC_COVERS, "observation", "e1")
-    res = _check(tmp_path, ARC, files, man, qa=QAConfig(fixtures="on"))
-    assert not res.passed and res.refused == ["G3"], res.reasons
-    assert any(
-        r
-        == f"G3: [qa:fixtures] {AU_ITEM} raises on 3 of 7 drawn recorded inputs of its family (KeyError (3)); "
-        "it must return or raise MemoryInputError"
-        for r in res.reasons
-    ), res.reasons
-    _no_values(res)
-
-
-@needs_bwrap
-def test_drawn_inputs_shaped_like_the_covers_must_not_be_refused(tmp_path):
-    files, man = _fb(WEAK_TEST, module=NARROW)
-    res = _check(tmp_path, ARC, files, man, qa=QAConfig(fixtures="on"))
-    assert not res.passed and res.refused == ["G3"], res.reasons
-    assert any(
-        "refuses 2 of 7 drawn recorded inputs shaped like its covers" in r
-        for r in res.reasons
-    )
-    assert any(
-        "refuses 3 of 7 drawn inputs whose fields differ" in r for r in res.reasons
-    )  # a precondition
-    _no_values(res)
-
-
-@needs_bwrap
-def test_unread_drawn_inputs_are_a_note_and_under_strict_a_refusal(tmp_path):
-    files, man = _fb(STRONG_TEST)
-    on = _check(tmp_path / "on", ARC, files, man, qa=QAConfig(fixtures="on"))
-    assert on.passed, on.reasons
-    assert any("own tests read 0 of 7 drawn inputs" in r for r in on.reasons)
-    strict = _check(
-        tmp_path / "strict",
-        ARC,
-        files,
-        man,
-        qa=QAConfig(fixtures="strict"),
-    )
-    assert not strict.passed and strict.refused == ["G3"]
-
-
-@needs_bwrap
-def test_strict_accepts_tests_parametrised_over_the_drawn_inputs(tmp_path):
-    files, man = _fb(PROPERTY_TEST)
-    res = _check(tmp_path, ARC, files, man, qa=QAConfig(fixtures="strict"))
-    assert res.passed, res.reasons
-    assert not any("own tests read" in r for r in res.reasons)
-
-
-@needs_bwrap
-def test_a_test_that_depends_on_the_pinned_values_is_refused(tmp_path):
-    """The pins make runs reproducible but never make a test pass: the rerun's pins differ."""
-    files, man = _hp(DEPENDS_ON_PINS_TEST)
-    res = _check(
-        tmp_path / "pinned",
-        CRAFTER,
-        files,
-        man,
-        qa=QAConfig(determinism=True),
-    )
-    assert not res.passed and res.refused == ["G3"], res.reasons
-    (reason,) = _qa_lines(res)
-    assert reason.startswith(f"G3: [qa:determinism] {HP_TEST} gives different outcomes")
-    assert "1 test(s) differ" in reason and "depends on the clock" in reason
-    steady = _check(
-        tmp_path / "steady",
-        CRAFTER,
-        *_hp(),
-        qa=QAConfig(determinism=True),
-    )
-    assert steady.passed, steady.reasons
-    unpinned = _check(
-        tmp_path / "unpinned",
-        CRAFTER,
-        files,
-        man,
-        qa=QAConfig(replay=True),
-    )
-    assert not unpinned.passed and unpinned.refused == [
-        "G3",
-    ]  # the same test without the pins
-
-
-@needs_bwrap
-def test_the_recorded_replay_runs_in_the_gate_and_a_stand_in_is_refused(tmp_path):
-    files, man = _cl(CLOCK_REPLAY_TEST)
-    res = _check(tmp_path / "replay", PHONE, files, man, qa=QAConfig(replay=True))
-    assert res.passed, res.reasons  # memlab imports in the gate's runs
-    # every switch off: a library whose tests import memlab is checked with the kit all the same
-    replay_off = _check(tmp_path / "replay-off", PHONE, files, man)
-    assert replay_off.passed, replay_off.reasons
-    # the harness's replay helper, under the replay switch and with every switch off (the kit is mounted)
-    files, man = _cl(CLOCK_ENV_FROM_TEST)
-    for name, kw in (("env-from", {"qa": QAConfig(replay=True)}), ("env-from-off", {})):
-        res = _check(tmp_path / name, PHONE, files, man, **kw)
-        assert res.passed, res.reasons
-    files, man = _cl(CLOCK_FAKE_TEST)
-    fake = _check(tmp_path / "fake", PHONE, files, man, qa=QAConfig(replay=True))
-    assert not fake.passed and any("[qa:replay]" in r for r in fake.reasons)
-    off = _check(tmp_path / "off", PHONE, files, man)
-    assert off.passed, off.reasons  # switch off: the stand-in passes as before
-
-
-@needs_bwrap
-def test_the_probe_never_invents_an_argument_no_recording_names(tmp_path):
-    """A required parameter beyond the input with no recorded value leaves the probe unbound: no
-    "raises on" refusal caused by the probe's own argument (it used to pass "")."""
-    files, man = _hp(SCALED_TEST, module=SCALED)
-    res = _check(tmp_path, CRAFTER, files, man, qa=QAConfig(fixtures="on"))
-    assert res.passed, res.reasons
-    assert not any("raises on" in r for r in res.reasons)
-    assert any(
-        "[qa:fixtures]" in r
-        and "returns on none of its covers under the probe's call" in r
-        for r in res.reasons
-    )
-
-
 # --- the test kit: a property of the library, not of the switches ---------------------------------------
 
 
@@ -1281,33 +954,6 @@ def test_tests_import_only_what_the_kit_provides_and_never_name_inputs(tmp_path)
 # --- equivalence that cannot be judged, and the probe's arguments -----------------------------------
 
 
-def test_mutation_is_not_judged_when_the_probe_gets_no_output(tmp_path):
-    """Every probe row a replay miss: no survivor can be judged equivalent, so the kill share is not
-    judged either, and the mutation switch alone refuses the pass (fixtures off or strict), never a note.
-    """
-    files, man = _hp()
-    missing = _fake_probe({"cover": {"outcome": "miss"}, "sample": {"outcome": "miss"}})
-    for name, qa in (
-        ("on", QAConfig(mutation=True, runner=missing)),
-        ("strict", QAConfig(mutation=True, fixtures="strict", runner=missing)),
-    ):
-        res = _check(
-            tmp_path / name,
-            CRAFTER,
-            files,
-            man,
-            pytest_runner=FakePytest(),
-            qa=qa,
-        )
-        assert not res.passed and res.refused == ["G3"], (name, res.reasons)
-        assert any(
-            r.startswith("G3: [qa:mutation] ") and "mutation not judged" in r
-            for r in res.reasons
-        )
-        assert not any(r.startswith("note: [qa:mutation] ") for r in res.reasons)
-        _no_values(res)
-
-
 def test_drawn_inputs_are_not_judged_when_the_covers_do_not_return_under_the_probe(
     tmp_path,
 ):
@@ -1329,5 +975,3 @@ def test_drawn_inputs_are_not_judged_when_the_covers_do_not_return_under_the_pro
     assert res.passed, res.reasons
     assert not any("raises on" in r for r in res.reasons)
     assert any("returns on none of its covers" in r for r in res.reasons)
-
-

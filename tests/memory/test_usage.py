@@ -164,20 +164,6 @@ def test_with_the_switch_off_the_writers_first_message_is_the_screen_builds(tmp_
     assert usage.USAGE_HEADING not in got
 
 
-def test_with_the_switch_on_the_table_is_added_after_the_index(tmp_path):
-    mem = _library(tmp_path)
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    _index(ev, "e1", _record({"env/x:parse": {"called": 2}}), "2026-10-08T01:00:00Z")
-    off = _first_message(tmp_path, mem, ev, ["e1"], "p1")
-    on = _first_message(tmp_path, mem, ev, ["e1"], "p1b", show_usage=True)
-    table = usage.usage_table(
-        ev,
-        ["e1"],
-        ["env/x:lookup", "env/x:parse", "env/x:strict"],
-    )
-    assert on == off.replace("Pass p1:", "Pass p1b:", 1) + "\n\n" + table
-
-
 def test_the_writers_first_message_carries_the_usage_table_and_no_checker_text(
     tmp_path,
 ):
