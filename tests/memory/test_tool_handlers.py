@@ -469,7 +469,7 @@ def test_a_helper_polling_during_a_slow_check_is_stopped_by_a_finish_requested_m
                                       deadline_s=None, handler=slow_check)}
 
     async def main():
-        pr = messaging.PassRecord(root="writer", deadline=time.monotonic() + 60)
+        pr = messaging.PassRecord(root="writer", deadline=time.monotonic() + 60, run_home=__import__("tempfile").mkdtemp())
         state = SimpleNamespace()
         binding = tc.CallContext(
             agent="writer", name="writer", role="write", pass_id="p1", request_id=None, roots={},

@@ -37,6 +37,9 @@ def names(tools):
 
 
 def _tc(cid, name, args):
+    from tests.memory.in_code_calls import as_cell
+
+    name, args = as_cell(name, args)
     return {
         "id": cid,
         "type": "function",

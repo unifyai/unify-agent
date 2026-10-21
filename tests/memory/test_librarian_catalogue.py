@@ -38,7 +38,7 @@ from unify.settings import SETTINGS
 CATALOGUE = w.CATALOGUE_FILE
 DISPATCH = w.DISPATCH_FILE
 #: The setting (design J(b).2) and the one it requires.
-SWITCH = "UNIFY_MEMORY_LIBRARIAN"
+SWITCH = "UNIFY_MEMORY"  # the librarian is on whenever memory is
 #: The two field labels the spec names on every function card (J(b).3, in bold there).
 SAVED_AGAINST_LABEL = "saved against"
 EVIDENCE_LABEL = "evidence"

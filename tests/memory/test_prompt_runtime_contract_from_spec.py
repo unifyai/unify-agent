@@ -612,13 +612,12 @@ def test_spans_that_do_not_parse_are_on_the_reviewed_list(role, tmp_path, reques
 # ── 4. the episode-end fork ──────────────────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("in_code", ["on", "off"])
+@pytest.mark.parametrize("in_code", ["on"])
 def test_the_fork_instruction_names_no_call_it_cannot_make(in_code, monkeypatch):
     """The fork has no sandbox and no tools: its own instruction shows no call of ``tools``, ``memory`` or a tool by
     its bare name. (The functions it is asked to write, such as ``read_input(text)``, are not calls it makes.)"""
     from unify.memory.integration import fork
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", in_code)
     text = fork.fork_instruction()
     assert text and "Do not call" in text
     shown = pc.harness_calls(text, R.registry())

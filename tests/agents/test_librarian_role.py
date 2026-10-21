@@ -356,17 +356,10 @@ def test_a_question_to_the_role_keeps_its_author_waiting_until_the_reply(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_the_request_seeds_the_role_and_dispatches_only_with_the_record_library_and_librarian_on(tmp_path, monkeypatch):
-    from unify.settings import SETTINGS
-
+async def test_the_request_seeds_the_role_and_dispatches(tmp_path, monkeypatch):
     home = tmp_path / "home"
-    run = SimpleNamespace(library_mode=True, paths=SimpleNamespace(home=home), episode_id="ep-a")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "off")
-    assert R.start_role_dispatcher(run) is None and not rr.role_seeded(home, "librarian")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "on")
-    import unify.memory.integration.switch as switch
-
-    monkeypatch.setattr(switch, "run_record_on", lambda s: True)
+    run = SimpleNamespace(paths=SimpleNamespace(home=home), episode_id="ep-a")
+    assert not rr.role_seeded(home, "librarian")
     seen = []
 
     async def fake_dispatcher(r, **kw):
@@ -377,18 +370,11 @@ async def test_the_request_seeds_the_role_and_dispatches_only_with_the_record_li
     assert task is not None and rr.role_seeded(home, "librarian")
     await task
     assert seen == [run]
-    run.library_mode = False
-    assert R.start_role_dispatcher(run) is None
 
 
 def test_with_no_running_loop_nothing_is_seeded(tmp_path, monkeypatch):
-    from unify.settings import SETTINGS
-    import unify.memory.integration.switch as switch
-
     home = tmp_path / "home"
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "on")
-    monkeypatch.setattr(switch, "run_record_on", lambda s: True)
-    run = SimpleNamespace(library_mode=True, paths=SimpleNamespace(home=home), episode_id="ep-a")
+    run = SimpleNamespace(paths=SimpleNamespace(home=home), episode_id="ep-a")
     assert R.start_role_dispatcher(run) is None and not rr.role_seeded(home, "librarian")
 
 

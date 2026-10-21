@@ -200,7 +200,6 @@ def _memory_library(world: dict, monkeypatch) -> None:
     from unify.memory.integration.request import RequestRun
 
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "on")
     paths = Paths.under(world["state"])
     mem, sha = _library_repo(paths.memory)
     export_actor_library_mode(mem.git_dir, sha, paths.checkout)

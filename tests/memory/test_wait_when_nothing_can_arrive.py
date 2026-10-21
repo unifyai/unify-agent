@@ -11,7 +11,7 @@ import time
 import pytest
 
 from unify.memory import helpers, messaging
-from tests.memory.test_helpers import _ctx, _msg, _tc, fake_box  # noqa: F401 (fixture)
+from tests.memory.test_helpers import _ctx, _msg, _tc, helper_boxes  # noqa: F401 (fixture)
 from tests.memory.test_tool_channel_box import _cell
 
 #: what ``wait`` answers when every other running agent is waiting too
@@ -20,7 +20,7 @@ ALL_WAITING = f"{messaging.NO_NEW}; {messaging.ALL_WAITING}"
 
 def _record(*names: str) -> messaging.PassRecord:
     """A writer's record with the helpers *names* running (started on the record, no model behind them)."""
-    pr = messaging.PassRecord(root="writer", deadline=time.monotonic() + 600)
+    pr = messaging.PassRecord(root="writer", deadline=time.monotonic() + 600, run_home=__import__("tempfile").mkdtemp())
     for name in names:
         pr.add_helper(name, "a task")
         pr.record.add_agent(name, spawner="writer")

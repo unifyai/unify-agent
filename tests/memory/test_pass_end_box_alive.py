@@ -77,7 +77,7 @@ def _starter(survives: bool, started: list):
 
 
 def _pass(tmp_path: Path, monkeypatch, turns: list, *, in_code: bool, survives: bool):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on" if in_code else "off")
+    assert in_code  # tools are always called from code
     mem = Repo.init_bare(tmp_path / "mem.git")
     ev = EvidenceStore(tmp_path / "e.sqlite")
     ep = _e1()
@@ -91,7 +91,6 @@ def _pass(tmp_path: Path, monkeypatch, turns: list, *, in_code: bool, survives: 
         load=lambda eid: ep,
         model_turn=Turns(turns),
         config=PassConfig(run_home=str(tmp_path / "run-home"), 
-            tools_in_code=in_code,
             pass_record_root=str(tmp_path / "out"),
             max_calls=len(turns),
         ),
@@ -131,7 +130,7 @@ def _assert_failed_closed(out, merged, started, kept) -> None:
     assert any(STILL_RUNNING in r and "the gate did not start" in r for r in out.reasons), out.reasons
 
 
-@pytest.mark.parametrize("in_code", [True, False], ids=["tools-in-code", "tools-off"])
+@pytest.mark.parametrize("in_code", [True], ids=["tools-in-code"])
 def test_a_box_alive_after_the_pass_s_stop_keeps_the_gate_from_running(tmp_path, monkeypatch, in_code):
     _, out, merged, started, kept = _pass(tmp_path, monkeypatch, TWO_CELLS, in_code=in_code, survives=True)
     assert started[0].cells == 2  # one interpreter for both cells
@@ -139,14 +138,14 @@ def test_a_box_alive_after_the_pass_s_stop_keeps_the_gate_from_running(tmp_path,
 
 
 def test_a_box_alive_after_an_end_call_stopped_it_keeps_the_gate_from_running(tmp_path, monkeypatch):
-    """Tools in code off: the accepted finish stops the interpreter at once; its box surviving that stop is seen at
-    the pass's end, though no interpreter is running any more."""
-    turns = [_cell("c1", "x = 1"), _call("f", "finish", {"summary": "done"})]
-    _, out, merged, started, kept = _pass(tmp_path, monkeypatch, turns, in_code=False, survives=True)
+    """The accepted finish (a cell's ``tools.finish``) stops the interpreter at once; its box surviving that stop is
+    seen at the pass's end, though no interpreter is running any more."""
+    turns = [_cell("c1", "x = 1"), _cell("f", "tools.finish('done')")]
+    _, out, merged, started, kept = _pass(tmp_path, monkeypatch, turns, in_code=True, survives=True)
     _assert_failed_closed(out, merged, started, kept)
 
 
-@pytest.mark.parametrize("in_code", [True, False], ids=["tools-in-code", "tools-off"])
+@pytest.mark.parametrize("in_code", [True], ids=["tools-in-code"])
 def test_a_box_that_stopped_lets_the_gate_run(tmp_path, monkeypatch, in_code):
     _, out, merged, started, kept = _pass(tmp_path, monkeypatch, TWO_CELLS, in_code=in_code, survives=False)
     assert started and all(i.stopped for i in started), started

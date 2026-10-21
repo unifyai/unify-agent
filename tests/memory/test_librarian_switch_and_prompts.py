@@ -32,7 +32,7 @@ from unify.memory.integration.request import (
 from unify.settings import ProductionSettings, SETTINGS
 
 # ==== ASSUMED NAMES (the integrator adapts these to the code, here only) ======================================
-SWITCH = "UNIFY_MEMORY_LIBRARIAN"
+SWITCH = "UNIFY_MEMORY"  # the librarian is on whenever memory is
 #: The in-code tool ``memory.ask`` reaches the host with (design J(b).4 step 2).
 ASK_TOOL = "ask_library"
 #: The helper's audit id (design J(b).4) and its name among ``library_helper_calls``.
@@ -76,21 +76,6 @@ def _flat(text: str) -> str:
 
 
 # --- the setting -----------------------------------------------------------------------------------------------
-
-
-def test_the_setting_is_off_by_default_and_parses_on_and_off():
-    assert getattr(ProductionSettings(), SWITCH) == "off"
-    assert getattr(ProductionSettings(**{SWITCH: "on", "UNIFY_TOOLS_IN_CODE": "on"}), SWITCH) == "on"
-    assert getattr(ProductionSettings(**{SWITCH: "off"}), SWITCH) == "off"
-    with pytest.raises(ValueError, match=SWITCH):
-        ProductionSettings(**{SWITCH: "maybe", "UNIFY_TOOLS_IN_CODE": "on"})
-
-
-def test_on_with_tools_in_code_off_is_refused_at_settings_load_with_a_reason():
-    with pytest.raises(ValueError) as caught:
-        ProductionSettings(**{SWITCH: "on", "UNIFY_TOOLS_IN_CODE": "off"})
-    text = str(caught.value)
-    assert SWITCH in text and "UNIFY_TOOLS_IN_CODE" in text
 
 
 # --- the actor's pointer ----------------------------------------------------------------------------------------

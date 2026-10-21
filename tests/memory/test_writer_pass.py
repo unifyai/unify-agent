@@ -47,6 +47,9 @@ def _write(path, text):
 
 
 def _call(cid, name, args):
+    from tests.memory.in_code_calls import as_cell
+
+    name, args = as_cell(name, args)
     return {
         "role": "assistant",
         "tool_calls": [

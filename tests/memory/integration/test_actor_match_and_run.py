@@ -83,14 +83,13 @@ def _tool_texts(model: ScriptedModel) -> str:
 
 @needs_bwrap
 @pytest.mark.timeout(600)
-@pytest.mark.parametrize("in_code", ["on", "off"])
+@pytest.mark.parametrize("in_code", ["on"])
 def test_an_actor_episode_matches_and_runs_a_captured_procedure_with_no_import_line(
     in_code,
     core_world,  # noqa: F811
     monkeypatch,
     tmp_path,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", in_code)
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
     monkeypatch.setattr(in_code_tools, "SESSIONS", _Collect())
     paths = Paths.under(core_world["state"])

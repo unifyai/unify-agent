@@ -11,7 +11,7 @@ import time
 import pytest
 
 from unify.memory import helpers, messaging, tool_spec
-from tests.memory.test_helpers import EPS, _ctx, _msg, _tc, fake_box  # noqa: F401 (fixture)
+from tests.memory.test_helpers import EPS, _ctx, _msg, _tc, helper_boxes  # noqa: F401 (fixture)
 from tests.memory.test_writer_pass import needs_bwrap
 
 RECORD_TOOLS = {"send", "messages", "wait", "who"}
@@ -85,7 +85,7 @@ def _status(ctx, call="call-0"):
     return json.loads((ctx.out_root / call / "helper.json").read_text())
 
 
-def test_two_helpers_model_calls_are_in_flight_at_the_same_time(tmp_path, fake_box):
+def test_two_helpers_model_calls_are_in_flight_at_the_same_time(tmp_path, helper_boxes):
     model = Steps({"A": [_after(0.2, _done())], "B": [_after(0.2, _done())]})
     ctx = _ctx(tmp_path, model)
 
@@ -99,7 +99,7 @@ def test_two_helpers_model_calls_are_in_flight_at_the_same_time(tmp_path, fake_b
     assert model.max_in_flight == 2
 
 
-def test_a_helper_mentions_another_helper_and_its_wait_returns_it(tmp_path, fake_box):
+def test_a_helper_mentions_another_helper_and_its_wait_returns_it(tmp_path, helper_boxes):
     model = Steps(
         {
             "A": [
@@ -127,8 +127,8 @@ def test_a_helper_mentions_another_helper_and_its_wait_returns_it(tmp_path, fake
     assert entry.mentions == ("call-1",)
 
 
-def test_role_names_resolve_and_an_unknown_name_is_refused():
-    pr = messaging.PassRecord(root="writer", deadline=time.monotonic() + 600)
+def test_role_names_resolve_and_an_unknown_name_is_refused(tmp_path):
+    pr = messaging.PassRecord(root="writer", deadline=time.monotonic() + 600, run_home=str(tmp_path / "run-home"))
     for name in ("call-0", "call-1"):
         pr.add_helper(name, "a task")
         pr.record.add_agent(name, spawner="writer")
@@ -147,16 +147,9 @@ def test_role_names_resolve_and_an_unknown_name_is_refused():
     assert tool_spec.form_of(refused) == "no_recipient"
     # nothing refused reached the record
     assert not any("nobody" in e.text or "whom" in e.text for e in pr.record.entries)
-    # in a curate pass @writer and @curator both name the curator
-    cur = messaging.PassRecord(root="curator", deadline=time.monotonic() + 600)
-    cur.add_helper("call-0", "a task")
-    cur.record.add_agent("call-0", spawner="curator")
-    for alias in ("@writer", "@curator"):
-        _, to = messaging.post(cur, "call-0", f"{alias} hello", messaging.SEND_SPEC)
-        assert to == ["curator"]
 
 
-def test_a_helper_reads_the_writers_inputs_read_only(tmp_path, fake_box):
+def test_a_helper_reads_the_writers_inputs_read_only(tmp_path, helper_boxes):
     model = Steps(
         {
             "t": [
@@ -184,7 +177,7 @@ def test_a_helper_reads_the_writers_inputs_read_only(tmp_path, fake_box):
     out = model.outputs("t")
     assert "def f()" in out["st"] and "pool" in out["pool"] and not out["pool"].startswith("refused")
     assert '"e1"' in out["task"] or "e1" in out["task"]
-    (call,) = fake_box
+    (call,) = helper_boxes
     # the writer's own /inputs, read-only; nothing writable but /work
     assert call["ro"][ctx.inputs] == "/inputs" and list(call["rw"].values()) == ["/work"]
     assert sorted(call["ro"].values()) == ["/cell", "/inputs", "/memory", "/task"]
@@ -218,8 +211,8 @@ def test_in_the_real_box_the_writers_inputs_read_and_refuse_writes(tmp_path):
 
 
 @pytest.mark.parametrize("tool", ["send", "reply"])
-def test_an_empty_message_is_refused(tool):
-    pr = messaging.PassRecord(root="writer", deadline=time.monotonic() + 600)
+def test_an_empty_message_is_refused(tool, tmp_path):
+    pr = messaging.PassRecord(root="writer", deadline=time.monotonic() + 600, run_home=str(tmp_path / "run-home"))
     args = {"text": " "} if tool == "send" else {"agent": "writer", "text": " "}
     out = asyncio.run(messaging.call(pr, "writer", tool, args))
     assert tool_spec.form_of(out) == "no_text"
@@ -236,7 +229,7 @@ def _readable_inputs(ctx):
     (ctx.inputs / "shared" / "a1b2c3d4e5f6.txt").write_text("the shared rules")
 
 
-def test_the_recorded_helper_calls_that_were_refused_now_work(tmp_path, fake_box):
+def test_the_recorded_helper_calls_that_were_refused_now_work(tmp_path, helper_boxes):
     """Calls reconstructed from recorded runs, each refused before: every valid intent is now answered."""
     calls = [
         _tc("bm", "read", {"path": "/inputs/batch_map.json"}),
@@ -272,25 +265,6 @@ def test_the_recorded_helper_calls_that_were_refused_now_work(tmp_path, fake_box
     ]
 
 
-def test_in_a_curate_pass_without_helpers_reply_and_stop_are_refused_with_stable_codes():
-    pr = messaging.PassRecord(root="curator", deadline=time.monotonic() + 600)
-    reply = asyncio.run(messaging.call(pr, "curator", "reply", {"agent": "call-0", "text": "hello"}))
-    stop = asyncio.run(messaging.call(pr, "curator", "stop", {"helper": "call-0"}))
-    send = asyncio.run(messaging.call(pr, "curator", "send", {"text": "@helpers hello"}))
-    assert tool_spec.form_of(reply) == "unknown_name" and tool_spec.form_of(stop) == "unknown_helper"
-    assert tool_spec.form_of(send) == "no_recipient"  # @helpers names no running helper
-    codes = tool_spec.refusal_codes()
-    assert "unknown_name" in codes["reply"] and "unknown_helper" in codes["stop"]
-    assert "no_recipient" in codes["send"] and {"unknown_name", "not_posted"} <= set(codes["ask"])
-    assert pr.record.entries == []  # nothing refused reached the record
-    # the reply's seq is recorded as send's is
-    pr.add_helper("call-0", "a task")
-    pr.record.add_agent("call-0", spawner="curator")
-    info = {}
-    asyncio.run(messaging.call(pr, "curator", "reply", {"agent": "call-0", "text": "hello"}, info))
-    assert info == {"to": ["call-0"], "seq": 1}
-
-
 @needs_bwrap
 def test_a_helper_cell_imports_the_library_as_the_writer_sees_it(tmp_path):
     code = "import memory, os\nprint(memory.__file__)\nprint(os.getcwd())\n"
@@ -307,5 +281,3 @@ def test_a_helper_cell_imports_the_library_as_the_writer_sees_it(tmp_path):
     asyncio.run(go())
     out = model.outputs("t")["x"].splitlines()
     assert out[:2] == ["/memory/memory/__init__.py", "/work"], out
-
-

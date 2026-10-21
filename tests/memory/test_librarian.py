@@ -461,7 +461,7 @@ def test_the_brief_is_complete_general_and_says_nothing_of_ids_answers_or_exampl
 def test_the_first_user_message_line_counts_the_copy_and_is_absent_for_an_empty_library(tmp_path, monkeypatch):
     """The actor's first user message of a request opens with how many functions and notes its library copy holds
     (as ``memory.items()`` lists them: the retired are left out), with the library bound in its cells and the
-    librarian on; never for an empty library, a teammate, or with the librarian off."""
+    librarian on; never for an empty library, a teammate, or with memory off."""
     from types import SimpleNamespace
 
     from unify.memory.integration import hooks
@@ -481,7 +481,6 @@ def test_the_first_user_message_line_counts_the_copy_and_is_absent_for_an_empty_
         return hooks.library_line(**kw)
 
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "on")
     tail = "; memory.ask() shows the ones that apply, memory.items() lists them all."
     # the world's catalogue: COUNT, TOTAL, its recipe and READ_ROWS, and NOTE
     assert line_for(_copy(tmp_path)) == "Your memory library holds 4 functions and 1 note" + tail
@@ -495,23 +494,11 @@ def test_the_first_user_message_line_counts_the_copy_and_is_absent_for_an_empty_
     assert line_for(one, actor=False) is None
     assert line_for(copy_with("empty", {})) is None
     assert line_for(copy_with("retired", {"memory.a.b:c": {"kind": "function", "status": "retired"}})) is None
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "off")
-    assert line_for(one) is None
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")
     assert line_for(one) is None
 
 
 # --- the switch ------------------------------------------------------------------------------------------------
-
-
-def test_the_switch_is_off_by_default_and_on_needs_the_tools_in_code():
-    assert ProductionSettings().UNIFY_MEMORY_LIBRARIAN == "off"
-    assert ProductionSettings(UNIFY_MEMORY_LIBRARIAN=" On ").UNIFY_MEMORY_LIBRARIAN == "on"
-    with pytest.raises(ValueError, match="requires UNIFY_TOOLS_IN_CODE=on"):
-        ProductionSettings(UNIFY_MEMORY_LIBRARIAN="on", UNIFY_TOOLS_IN_CODE="off")
-    with pytest.raises(ValueError, match="must be 'on' or 'off'"):
-        ProductionSettings(UNIFY_MEMORY_LIBRARIAN="sometimes")
 
 
 def test_off_the_actor_has_no_ask_tool_and_its_stub_is_unchanged():
@@ -775,7 +762,6 @@ async def test_the_request_closes_its_librarian(tmp_path, monkeypatch):
 
     from unify.actor import in_code_tools
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "on")
 
     class Session:
         closed = False
@@ -802,9 +788,9 @@ async def test_the_request_closes_its_librarian(tmp_path, monkeypatch):
     assert "ask_library" in tools.allow and "def ask_library(" in tools.stub
     tools.state.librarian = await tools.state.open_librarian()
     session = tools.state.librarian
-    await tools.close(completed=True)
+    await tools.close()
     assert session.closed and tools.state.librarian is None
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "off")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")
     off = in_code_tools.InCodeTools(
         agent="actor",
         name="root",
@@ -818,4 +804,4 @@ async def test_the_request_closes_its_librarian(tmp_path, monkeypatch):
         assert "ask_library" not in off.allow and "ask_library" not in off.stub
         assert off.state.open_librarian is None
     finally:
-        await off.close(completed=True)
+        await off.close()

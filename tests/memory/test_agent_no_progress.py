@@ -10,7 +10,7 @@ from unify.common._async_tool import loop_stop
 from unify.common._async_tool.loop_stop import MEMORY_K, AgentNoProgress, terminal_tool
 from unify.memory.drafts import draft_states
 from unify.memory.gate import GateResult
-from tests.memory.test_helpers import fake_box  # noqa: F401 - the helpers' scripted box
+from tests.memory.test_helpers import helper_boxes  # noqa: F401 - the helpers' scripted box
 from tests.memory.test_writer_library_repair import FILES_CODE
 from tests.memory.test_writer_pass import Turns, _call, _run, _writer, needs_bwrap
 
@@ -266,7 +266,7 @@ def test_a_writer_whose_repeated_cell_changes_its_result_is_never_stopped(tmp_pa
 # --- a helper ------------------------------------------------------------------------------------------------
 
 
-def test_a_helper_repeating_a_no_op_is_told_then_ends_with_what_it_staged(tmp_path, fake_box):
+def test_a_helper_repeating_a_no_op_is_told_then_ends_with_what_it_staged(tmp_path, helper_boxes):
     from tests.memory.test_helpers import CANDIDATE, Script, _ctx, _msg, _run as _delegate, _tc
 
     loops = 3 * MEMORY_K
@@ -292,7 +292,7 @@ def test_a_helper_repeating_a_no_op_is_told_then_ends_with_what_it_staged(tmp_pa
     assert len(notices) == 1 and "call done and keep the item as a draft" in notices[0]["content"]
 
 
-def test_a_helper_that_finishes_records_no_notice(tmp_path, fake_box):
+def test_a_helper_that_finishes_records_no_notice(tmp_path, helper_boxes):
     from tests.memory.test_helpers import Script, _ctx, _drafting, _run as _delegate
 
     ctx = _ctx(tmp_path, Script(_drafting()))

@@ -14,7 +14,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from tests.memory import test_helpers as th
-from tests.memory.test_helpers import fake_box  # noqa: F401 - the helpers' scripted box
+from tests.memory.test_helpers import helper_boxes  # noqa: F401 - the helpers' scripted box
 from tests.memory.test_writer_pass import Turns, _call, _run, _writer, needs_bwrap
 from unify.memory import attention, writer_pass
 from unify.memory import writer_service as ws
@@ -84,7 +84,7 @@ def test_without_a_room_an_uncapped_pass_is_as_built(tmp_path):
     assert not any("room of" in r for r in out.reasons)
 
 
-def test_a_helper_stops_before_a_call_past_the_passes_room(tmp_path, fake_box):
+def test_a_helper_stops_before_a_call_past_the_passes_room(tmp_path, helper_boxes):
     """Helpers share the pass's spend: a helper starts no call once the pass's room is used (0.001 a call, room one
     worst-case call plus 0.0015: two calls, then it stops)."""
     script = th.Script(th._drafting(), usd="0.001")

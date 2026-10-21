@@ -17,7 +17,7 @@ from unify.agents import run_record as rr
 from unify.agents.options import Options
 from unify.common import tool_registry as R
 from unify.settings import SETTINGS
-from tests.memory.test_helpers import fake_box  # noqa: F401,F811 (fixture)
+from tests.memory.test_helpers import helper_boxes  # noqa: F401,F811 (fixture)
 from tests.agents.roster import read_roster
 
 RECORD_TOOLS = {"send", "messages", "wait", "who"}
@@ -110,7 +110,7 @@ def _tokens(text: str) -> int:
 # --- test 10: no box binds the record --------------------------------------------------------------------------------
 
 
-def test_no_helper_box_bind_reaches_the_run_record(tmp_path, fake_box):
+def test_no_helper_box_bind_reaches_the_run_record(tmp_path, helper_boxes):
     """A1 test 10: a helper on the run record runs a cell; every folder its box binds (read-only or writable) is
     outside ``memory-state/agents``, and none holds it."""
     from tests.memory.test_helper_messaging import Steps, _done
@@ -135,10 +135,10 @@ def test_no_helper_box_bind_reaches_the_run_record(tmp_path, fake_box):
         await messaging.close(pr, "done")
 
     asyncio.run(go())
-    assert fake_box, "the helper ran no cell"
+    assert helper_boxes, "the helper ran no cell"
     agents = rr.agents_dir(home).resolve()
     assert rr.record_path(home).is_file()
-    for call in fake_box:
+    for call in helper_boxes:
         for kind in ("ro", "rw", "late_ro"):
             for src in call.get(kind) or {}:
                 path = Path(src).resolve()
@@ -233,7 +233,7 @@ def test_the_actors_sandbox_never_shows_the_run_record(
 
 
 def test_a_writer_delegates_to_a_helper_and_the_helper_answers_on_the_run_record(
-    tmp_path, fake_box
+    tmp_path, helper_boxes
 ):
     """Acceptance: a writer -> helper delegation and a helper -> writer reply, on the run record."""
     from tests.memory.test_helper_messaging import Steps, _done
@@ -283,7 +283,7 @@ def test_a_writer_delegates_to_a_helper_and_the_helper_answers_on_the_run_record
     assert first.count(R.COMMON_SECTION) == 1 and f"you are `{name}` (helper)" in first
 
 
-def test_a_helper_message_that_names_no_one_goes_to_the_writer(tmp_path, fake_box):
+def test_a_helper_message_that_names_no_one_goes_to_the_writer(tmp_path, helper_boxes):
     from tests.memory.test_helper_messaging import Steps, _done
     from tests.memory.test_helpers import _ctx, _msg, _tc
     from unify.memory import helpers, messaging

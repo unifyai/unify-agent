@@ -15,7 +15,6 @@ import pytest
 from unify.memory import helpers, messaging, tool_spec, views
 from unify.memory.episodes import Cell
 from unify.memory.integration import consolidate, switch
-from unify.memory.sandbox_run import SandboxResult
 from tests.memory.test_writer_library_tools import _episode
 from tests.memory.test_writer_pass import needs_bwrap
 
@@ -32,6 +31,9 @@ CASE = json.dumps([{"args": [2, 3], "result": 6}])
 
 
 def _tc(cid, name, args):
+    from tests.memory.in_code_calls import as_cell
+
+    name, args = as_cell(name, args)
     return {
         "id": cid,
         "type": "function",
@@ -102,6 +104,12 @@ def _ctx(tmp_path, script=None, **kw):
         events=tmp_path / "out" / "tool-events.jsonl",
     )
     base.update(kw)
+    if "pass_record" not in base:
+        from unify.memory import messaging
+
+        base["pass_record"] = messaging.PassRecord(
+            root="writer", deadline=base["deadline"], run_home=str(tmp_path / "run-home"), pass_id=base["pass_id"],
+        )
     return helpers.DelegateContext(**base)
 
 
@@ -156,23 +164,25 @@ def _drafting(task_key="draft area"):
 
 
 @pytest.fixture
-def fake_box(monkeypatch):
-
+def helper_boxes(monkeypatch):
+    """Each helper interpreter box a test starts, as the helper built it: its read-only and read-write binds, its
+    profile and a listing of each read-only root (the box itself is real)."""
     seen = []
+    real = helpers._helper_box
 
-    def run(argv, **kw):
+    def spy(ctx, st):
+        binds, profile = real(ctx, st)
         listing = {
-            dst: sorted(str(p.relative_to(src)) for p in Path(src).rglob("*"))
-            for src, dst in kw["ro"].items()
+            dst: sorted(str(p.relative_to(src)) for p in Path(src).rglob("*")) for src, dst in binds["ro"].items()
         }
-        seen.append({**kw, "argv": argv, "listing": listing})
-        return SandboxResult(0, "6\n", "", False)
+        seen.append({**binds, "profile": profile, "listing": listing})
+        return binds, profile
 
-    monkeypatch.setattr(helpers, "run_confined", run)
+    monkeypatch.setattr(helpers, "_helper_box", spy)
     return seen
 
 
-def test_delegate_stages_in_the_fork_format_and_the_writer_reads_it(tmp_path, fake_box):
+def test_delegate_stages_in_the_fork_format_and_the_writer_reads_it(tmp_path, helper_boxes):
     script = Script(_drafting())
     ctx = _ctx(tmp_path, script)
     reply = _run({"task": "draft area", "episodes": ["e1"]}, ctx)
@@ -215,32 +225,21 @@ def test_delegate_stages_in_the_fork_format_and_the_writer_reads_it(tmp_path, fa
 
 def test_the_helper_box_reads_the_writers_inputs_its_task_and_the_library_and_writes_only_work(
     tmp_path,
-    fake_box,
+    helper_boxes,
 ):
+    """The helper's interpreter box: the writer's own /inputs, the task and the library read-only, /work its only
+    writable root and its cwd, the work-file size limit, and the import path the box sees."""
     ctx = _ctx(tmp_path, Script(_drafting()), shared={"b1": "shared block"})
     _run({"task": "draft area", "episodes": ["e1"]}, ctx)
-    (call,) = fake_box
-    assert sorted(call["ro"].values()) == ["/cell", "/inputs", "/memory", "/task"]
+    (call,) = helper_boxes
+    profile = call["profile"]
+    assert sorted(call["ro"].values()) == ["/inputs", "/memory", "/task"]
     assert call["ro"][ctx.inputs] == "/inputs"  # the writer's own /inputs, read-only
-    assert list(call["rw"].values()) == ["/work"] and call["cwd"] == "/work"
-    # the open log's pipe is the one extra descriptor and variable; the interpreter skips the user site
-    (fd,) = call["pass_fds"]
-    assert call["env"] == {
-        "PYTHONPATH": "/inputs:/memory",
-        "MEMORY_BOX_OPEN_LOG": f"fd:{fd}",
-    }
-    assert call["argv"][-2:] == ["-s", "/cell/code.py"]
-    assert (
-        f"--fsize={helpers.WORK_FILE_BYTES}:{helpers.WORK_FILE_BYTES}" in call["argv"]
-    )
-    # /inputs: what the writer has (here its pool) with the open-log hook and the helpers' output folder; /task:
-    # the named episode's record
-    assert call["listing"]["/inputs"] == [
-        "helpers",
-        "pool",
-        "pool/INDEX.md",
-        "sitecustomize.py",
-    ]
+    assert list(call["rw"].values()) == ["/work"] and profile.cwd == "/work"
+    assert tuple(profile.sys_path) == ("/inputs", "/memory")
+    assert profile.fsize_bytes == helpers.WORK_FILE_BYTES
+    # /inputs: what the writer has (here its pool) with the helpers' output folder; /task: the named episode's record
+    assert call["listing"]["/inputs"] == ["helpers", "pool", "pool/INDEX.md", "sitecustomize.py"]
     assert call["listing"]["/task"] == ["episodes", "episodes/e1.json"]
     # /memory: the library as the writer sees it, without the writer's .pass
     assert call["listing"]["/memory"] == ["INDEX.md"]
@@ -248,7 +247,7 @@ def test_the_helper_box_reads_the_writers_inputs_its_task_and_the_library_and_wr
 
 def test_helpers_run_concurrently_and_so_do_their_model_calls(
     tmp_path,
-    fake_box,
+    helper_boxes,
 ):
     def two(key):
         return [
@@ -279,7 +278,7 @@ def test_helpers_run_concurrently_and_so_do_their_model_calls(
     assert ctx.spend.usd == Decimal("0.004") and len(ctx.records) == 2
 
 
-def test_every_helper_tool_call_is_an_event(tmp_path, fake_box):
+def test_every_helper_tool_call_is_an_event(tmp_path, helper_boxes):
     ctx = _ctx(tmp_path, Script(_drafting()))
     _run({"task": "draft area", "episodes": ["e1"]}, ctx)
     rows = [json.loads(x) for x in ctx.events.read_text().splitlines()]
@@ -322,7 +321,7 @@ def test_every_helper_tool_call_is_an_event(tmp_path, fake_box):
 
 def test_a_failing_helper_returns_a_clear_result_and_never_fails_the_pass(
     tmp_path,
-    fake_box,
+    helper_boxes,
 ):
     script = Script({"boom": [RuntimeError("upstream said no")]})
     ctx = _ctx(tmp_path, script)
@@ -339,7 +338,7 @@ def test_a_failing_helper_returns_a_clear_result_and_never_fails_the_pass(
     assert (ctx.inputs / "helpers" / "call-0" / "helper.json").is_file()
 
 
-def test_unpriced_helper_calls_stay_unknown(tmp_path, fake_box):
+def test_unpriced_helper_calls_stay_unknown(tmp_path, helper_boxes):
     script = Script(
         {"t": [_msg(_tc("d", "done", {"summary": "nothing", "claims": []}))]},
         usd="unknown",
@@ -369,7 +368,7 @@ def test_refusals_start_no_helper(tmp_path):
 
 def test_helpers_read_any_recorded_episode_but_only_through_the_index(
     tmp_path,
-    fake_box,
+    helper_boxes,
 ):
     script = Script(
         {
@@ -414,7 +413,7 @@ def _done_then(cid, claims, then=None):
 
 def test_done_with_resolving_sources_is_recorded_and_shown_to_the_writer(
     tmp_path,
-    fake_box,
+    helper_boxes,
 ):
     claims = [
         {"claim": "area is w * h", "sources": ["e1/cell:0"]},
@@ -445,7 +444,7 @@ def test_done_with_resolving_sources_is_recorded_and_shown_to_the_writer(
     assert "3. a shared block holds the rules\n   sources: e1/shared:b1" in reply
 
 
-def test_no_claims_is_stated_in_the_reply(tmp_path, fake_box):
+def test_no_claims_is_stated_in_the_reply(tmp_path, helper_boxes):
     ctx = _ctx(tmp_path, Script(_done_then("d", [])))
     reply = _run({"task": "t", "episodes": ["e1"]}, ctx)
     assert reply.splitlines()[-1] == "claims: (none)"
@@ -497,7 +496,7 @@ def test_no_claims_is_stated_in_the_reply(tmp_path, fake_box):
 )
 def test_done_with_a_missing_or_unresolved_source_is_refused_and_can_be_fixed(
     tmp_path,
-    fake_box,
+    helper_boxes,
     claims,
     phrase,
     form,
@@ -521,7 +520,7 @@ def test_done_with_a_missing_or_unresolved_source_is_refused_and_can_be_fixed(
     assert "sources: e1/cell:0" in reply
 
 
-def test_a_helper_that_never_fixes_its_claims_hands_back_none(tmp_path, fake_box):
+def test_a_helper_that_never_fixes_its_claims_hands_back_none(tmp_path, helper_boxes):
     script = Script(
         {
             "t": [_msg(_tc("d", "done", {"summary": "s", "claims": [{"claim": "x"}]}))]
@@ -646,7 +645,7 @@ def test_a_helpers_episode_reads_record_the_paths_the_writer_records():
     ]
 
 
-def test_helper_json_records_the_largest_prompt_a_call_reported(tmp_path, fake_box):
+def test_helper_json_records_the_largest_prompt_a_call_reported(tmp_path, helper_boxes):
     first = {
         **_msg(_tc("o", "overview", {"episode": "e1"})),
         "usage": {"prompt_tokens": 300},

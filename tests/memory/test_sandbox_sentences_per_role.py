@@ -149,7 +149,7 @@ async def _openings(tmp_path: Path) -> dict[str, str]:
         try:
             out[agent] = session.opening()
         finally:
-            await session.close(completed=True)
+            await session.close()
     return out
 
 
@@ -197,7 +197,7 @@ async def test_the_actor_without_a_library_is_told_tools_only(in_code, tmp_path)
     try:
         text = session.opening()
     finally:
-        await session.close(completed=True)
+        await session.close()
     names = names_in_sentence(text)
     assert "tools" in names and "memory" not in names, names
     assert flat(text).count(PERSISTENT_SENTENCE) == 1

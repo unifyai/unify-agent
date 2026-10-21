@@ -467,7 +467,6 @@ def _library_pass(tmp_path: Path, model: Any, *, in_code: bool, **cfg: Any):
         load=lambda eid: ep,
         model_turn=model,
         config=PassConfig(run_home=str(tmp_path / "run-home"), 
-            tools_in_code=in_code,
             pass_record_root=str(tmp_path / "out"),
             **cfg,
         ),
@@ -490,7 +489,7 @@ def no_waiting(monkeypatch):
 
 
 def _switch(monkeypatch, in_code: bool) -> None:
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on" if in_code else "off")
+    assert in_code  # tools are always called from code
 
 
 NOTE = "/memory/notes/text/dates.md"
@@ -498,7 +497,7 @@ NOTE = "/memory/notes/text/dates.md"
 
 @needs_box
 @pytest.mark.timeout(1500)
-@pytest.mark.parametrize("in_code", [True, False], ids=["tools-in-code", "tools-off"])
+@pytest.mark.parametrize("in_code", [True], ids=["tools-in-code"])
 def test_every_call_the_writers_and_a_helpers_prompts_show_runs_as_written(tmp_path, monkeypatch, no_waiting, in_code):
     from unify.memory.trigger import PassRequest
 
