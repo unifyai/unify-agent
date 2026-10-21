@@ -863,12 +863,20 @@ def _profile_refusal() -> str | None:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    _configure_environment(args)
+    home = _configure_environment(args)
     refusal = _profile_refusal()
     if refusal is not None:
         # fail closed: nothing starts, no model is called
         print(f"unify: {refusal}", file=sys.stderr)
         return 2
+    if args.command == "act":
+        # memory's model lanes: with memory on and no lane given, this process starts the local lane relay and runs
+        # the command as its child, with each lane's route (unify/lanes/launch.py); None: run it here
+        from unify.lanes.launch import run_controller
+
+        code = run_controller(list(sys.argv[1:] if argv is None else argv), home)
+        if code is not None:
+            return code
     runner = _run_act if args.command == "act" else _run_chat
     try:
         return asyncio.run(runner(args))
