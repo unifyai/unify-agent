@@ -69,7 +69,8 @@ def test_with_memory_on_every_lane_is_planned_on_its_model_under_one_cap():
         ENV,
     )[0]
     assert pinned.prices == {
-        "openai/gpt-6-sol": {"input": Decimal("1.25"), "output": Decimal("10")}
+        "openai/gpt-6-sol": {"input": Decimal("1.25"), "output": Decimal("10")},
+        launch.EMBED_MODEL: {"input": Decimal("0.02"), "output": Decimal("0")},
     }
 
 

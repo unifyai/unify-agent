@@ -802,13 +802,15 @@ def pending_passes(home: Path | str) -> list[str]:
 # --- ensure ---------------------------------------------------------------------------------------------------------
 
 
-#: The provider key names the model client reads. With one missing it reads a ``.env`` file or, on a team machine, a
+#: The provider credential names the model client (unillm: its settings and ``uni_llm``) reads. With one missing it reads a ``.env`` file or, on a team machine, a
 #: Secret Manager (unillm's settings), so a writer process that needs no key gets :data:`NO_PROVIDER_KEY` for each.
 PROVIDER_KEY_NAMES = (
     "OPENROUTER_API_KEY",
     "OPENROUTER_MANAGEMENT_API_KEY",
     "TOGETHER_API_KEY",
     "ANTHROPIC_API_KEY",
+    "XIAOMI_MIMO_API_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
     "UNILLM_LLM_GATEWAY_KEY",
 )
 #: What each provider key holds in a writer process whose model calls all go through its lanes: not a key, so a call

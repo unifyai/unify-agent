@@ -134,6 +134,11 @@ def _openrouter(texts: list[str]) -> np.ndarray:
         lane = embed_token.token()
     except embed_token.EmbedTokenRefused as exc:  # set but unusable: no embedding, and never the key instead
         raise EmbeddingRouteRefused(str(exc)) from None
+    if lane is None and urlsplit(url).path.rstrip("/") == "/embed/v1/embeddings":
+        # the local lane relay's embedding route, without its token: the key never goes there
+        raise EmbeddingRouteRefused(
+            "UNIFY_EMBED_URL names the lane relay's embedding route but no UNIFY_EMBED_TOKEN_FD was given",
+        )
     headers = {
         "Authorization": f"Bearer {lane if lane is not None else unillm.SETTINGS.OPENROUTER_API_KEY.get_secret_value()}",
     }

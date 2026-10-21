@@ -73,6 +73,8 @@ EMBED_MODEL = "openai/text-embedding-3-small"
 #: One embedding request's worst case: the relay bounds a request to 2 MiB of input, at most 2,097,152 tokens, at the
 #: model's listed USD 0.02 per million input tokens (the pinned call-bounds table has no embedding model).
 EMBED_WORST_CASE_USD = Decimal("0.05")
+#: Its listed prices, USD per million tokens: a call that reports its tokens but no charge is estimated from them.
+EMBED_PRICES = {"input": Decimal("0.02"), "output": Decimal("0")}
 #: Names that mean the lanes were given from outside (a research launcher, or this module in the parent process): the
 #: command then runs as it is, and no relay starts.
 GIVEN_ENV = (
@@ -195,7 +197,7 @@ def plan(settings: Any, environ: Mapping[str, str]) -> tuple[Plan | None, str | 
     if not _embedding_given(settings, environ):
         lanes["embed"] = (EMBED_MODEL,)
         bounds = {**bounds, EMBED_MODEL: EMBED_WORST_CASE_USD}
-    prices = {}
+    prices = {EMBED_MODEL: EMBED_PRICES} if "embed" in lanes else {}
     pinned = switch.writer_prices(settings)
     if pinned and writer is not None:
         prices[writer] = pinned

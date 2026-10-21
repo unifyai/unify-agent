@@ -214,3 +214,60 @@ def test_a_writer_process_holds_no_real_key_with_the_relay_serving_embeddings(
     finally:
         for fd in fds:
             os.close(fd)
+
+
+def test_an_embedding_that_reports_tokens_but_no_charge_is_estimated_at_the_pinned_price(
+    tmp_path,
+):
+    up = Upstream(
+        lambda body: (
+            200,
+            {
+                "data": [{"index": 0, "embedding": [1.0]}],
+                "usage": {"prompt_tokens": 1000},
+            },
+        )
+    )
+    doc, tokens = _doc(tmp_path / "lanes", up.base, lanes=("embed",))
+    doc["lanes"]["embed"]["models"] = [EMBED]
+    doc["worst_case_usd"][EMBED] = "0.05"
+    doc["prices"] = {EMBED: {"input": "0.02", "output": "0"}}
+    try:
+        with serving(doc) as relay:
+            assert (
+                call(
+                    relay.port,
+                    "embed",
+                    tokens["embed"],
+                    {"model": EMBED, "input": ["x"]},
+                    path="/embed/v1/embeddings",
+                )[0]
+                == 200
+            )
+            state = relay.ledger.state()
+    finally:
+        up.close()
+    _, done = _rows(tmp_path / "lanes" / "embed.jsonl")
+    assert (done["charge_class"], done["booked_usd"]) == (
+        "estimate",
+        "0.00002",
+    )  # 1,000 x 0.02 / 1e6
+    assert state["booked_usd"] == "0.00002"
+
+
+def test_the_relays_embedding_route_without_its_token_is_refused_and_the_key_never_sent(
+    fresh_token, monkeypatch
+):
+    from unify.common import embeddings
+    from unify.settings import SETTINGS
+
+    monkeypatch.setattr(
+        SETTINGS, "UNIFY_EMBED_URL", "http://127.0.0.1:9/embed/v1/embeddings"
+    )
+    posted = []
+    monkeypatch.setattr(embeddings.httpx, "post", lambda *a, **k: posted.append(k))
+    with pytest.raises(
+        embeddings.EmbeddingRouteRefused, match="no UNIFY_EMBED_TOKEN_FD"
+    ):
+        embeddings._openrouter(["a text"])
+    assert posted == []
