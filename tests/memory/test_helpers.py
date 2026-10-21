@@ -186,13 +186,13 @@ def test_delegate_stages_in_the_fork_format_and_the_writer_reads_it(tmp_path, he
     script = Script(_drafting())
     ctx = _ctx(tmp_path, script)
     reply = _run({"task": "draft area", "episodes": ["e1"]}, ctx)
-    assert reply.startswith("helper call-0: ok")
+    assert reply.startswith("helper call-1: ok")
     assert (
         "candidates/area.py" in reply
         and "cases/area.json" in reply
         and "drafted area from e1" in reply
     )
-    out = ctx.out_root / "call-0"
+    out = ctx.out_root / "call-1"
     assert (out / "candidates" / "area.py").read_text() == CANDIDATE
     assert (out / "cases" / "area.json").read_text() == CASE
     status = json.loads((out / "helper.json").read_text())
@@ -214,8 +214,8 @@ def test_delegate_stages_in_the_fork_format_and_the_writer_reads_it(tmp_path, he
     ]
     # the writer reads the helper's files with its own reader, under /inputs/helpers/<name>/
     roots = {"/inputs": ctx.inputs}
-    assert "def area" in views.read("/inputs/helpers/call-0/candidates/area.py", roots)
-    assert '"status": "ok"' in views.read("/inputs/helpers/call-0/helper.json", roots)
+    assert "def area" in views.read("/inputs/helpers/call-1/candidates/area.py", roots)
+    assert '"status": "ok"' in views.read("/inputs/helpers/call-1/helper.json", roots)
     assert "not a plain relative path" in script.outputs["bad"]
     assert "6" in script.outputs["x"] and script.outputs["o"].strip()
     # spend joins the pass's and is recorded per call
@@ -263,60 +263,51 @@ def test_helpers_run_concurrently_and_so_do_their_model_calls(
     async def go():
         for task, eps in (("A", ["e1"]), ("B", ["e2"])):
             await helpers.handle({"task": task, "episodes": eps}, ctx)
-        replies = [await helpers.result(ctx, c) for c in ("call-0", "call-1")]
+        replies = [await helpers.result(ctx, c) for c in ("call-1", "call-2")]
         await messaging.close(ctx.pass_record, "the writer finished")
         return replies
 
     replies = asyncio.run(go())
-    assert replies[0].startswith("helper call-0: ok") and replies[1].startswith(
-        "helper call-1: ok",
+    assert replies[0].startswith("helper call-1: ok") and replies[1].startswith(
+        "helper call-2: ok",
     )
     assert script.order == ["A", "B", "A", "B"]  # both helpers were live at once
     assert script.max_in_flight == 2  # both helpers' model calls were in flight at once
     assert len(set(script.prefixes)) == 1  # siblings share the brief byte for byte
-    assert (ctx.out_root / "call-1" / "notes.md").read_text() == "lesson B"
+    assert (ctx.out_root / "call-2" / "notes.md").read_text() == "lesson B"
     assert ctx.spend.usd == Decimal("0.004") and len(ctx.records) == 2
 
 
 def test_every_helper_tool_call_is_an_event(tmp_path, helper_boxes):
+    """Each of the helper's cells is an ``execute_code`` row and each call its cells make a row of its own, every row
+    numbered once in the helper's own sequence; usage rides on the first cell of each model turn only."""
     ctx = _ctx(tmp_path, Script(_drafting()))
     _run({"task": "draft area", "episodes": ["e1"]}, ctx)
     rows = [json.loads(x) for x in ctx.events.read_text().splitlines()]
-    assert [r["tool"] for r in rows] == [
-        "overview",
-        "read",
-        "execute_code",
-        "stage",
-        "stage",
-        "stage",
-        "done",
-    ]
+    calls, cells = _calls(rows)
+    assert [t for t, _ in calls] == ["overview", "read", "stage", "stage", "stage", "done"]
+    assert cells == 7  # one per model-API call: the six above and the cell that prints 6
     assert all(
-        r["agent"] == "helper" and r["pass_id"] == "p1" and r["helper_call"] == "call-0"
+        r["agent"] == "helper" and r["pass_id"] == "p1" and r["helper_call"] == "call-1"
         for r in rows
     )
-    assert [r["call"] for r in rows] == list(range(7))
-    # usage on the first call of each model turn only
-    assert [r["usage"] is not None for r in rows] == [
-        True,
-        False,
-        True,
-        True,
-        False,
-        False,
-        True,
-    ]
-    assert rows[0]["usage"]["usd"] == "0.001"
-    bad = rows[5]
+    assert sorted(r["call"] for r in rows) == list(range(13))
+    # usage on the first call of each model turn only (four turns), never on a call a cell makes
+    with_usage = [r for r in rows if r["usage"] is not None]
+    assert len(with_usage) == 4 and all(r["tool"] == "execute_code" for r in with_usage)
+    assert with_usage[0]["usage"]["usd"] == "0.001"
+    stages = [r for r in rows if r["tool"] == "stage"]
+    bad = stages[2]
     assert (
         bad["status"] == "refused"
         and bad["refusal"]["form"] == "path"
         and bad["paths"] == []
     )
-    assert rows[3]["paths"] == [
-        {"path": "/inputs/helpers/call-0/candidates/area.py", "mode": "write"},
+    assert stages[0]["paths"] == [
+        {"path": "/inputs/helpers/call-1/candidates/area.py", "mode": "write"},
     ]
-    assert rows[1]["paths"] == [{"path": "/task/episodes/e1.json", "mode": "read"}]
+    (read,) = [r for r in rows if r["tool"] == "read"]
+    assert read["paths"] == [{"path": "/task/episodes/e1.json", "mode": "read"}]
 
 
 def test_a_failing_helper_returns_a_clear_result_and_never_fails_the_pass(
@@ -327,15 +318,15 @@ def test_a_failing_helper_returns_a_clear_result_and_never_fails_the_pass(
     ctx = _ctx(tmp_path, script)
     reply = _run({"task": "boom", "episodes": ["e1"]}, ctx)
     assert (
-        reply.startswith("helper call-0: error: RuntimeError")
+        reply.startswith("helper call-1: error: RuntimeError")
         and "upstream said no" not in reply
     )
     assert (
         ctx.spend.unknown == 1
     )  # a failed call may have cost money: booked as unknown
-    status = json.loads((ctx.out_root / "call-0" / "helper.json").read_text())
+    status = json.loads((ctx.out_root / "call-1" / "helper.json").read_text())
     assert status["status"] == "error: RuntimeError" and status["usd"] == "unknown"
-    assert (ctx.inputs / "helpers" / "call-0" / "helper.json").is_file()
+    assert (ctx.inputs / "helpers" / "call-1" / "helper.json").is_file()
 
 
 def test_unpriced_helper_calls_stay_unknown(tmp_path, helper_boxes):
@@ -403,6 +394,12 @@ def test_helpers_read_any_recorded_episode_but_only_through_the_index(
     )
 
 
+def _calls(rows):
+    """(tool, status) of each in-code call's row, in order, and the number of cells (``execute_code`` rows)."""
+    calls = [(r["tool"], r["status"]) for r in rows if r["tool"] != "execute_code"]
+    return calls, sum(r["tool"] == "execute_code" for r in rows)
+
+
 def _done_then(cid, claims, then=None):
     """A helper that calls done with *claims*, then (if refused) done again with *then*."""
     turns = [_msg(_tc(cid, "done", {"summary": "s", "claims": claims}))]
@@ -424,8 +421,8 @@ def test_done_with_resolving_sources_is_recorded_and_shown_to_the_writer(
     ctx = _ctx(tmp_path, script, shared={"b1": "shared block"})
     reply = _run({"task": "t", "episodes": ["e1"]}, ctx)
     rows = [json.loads(x) for x in ctx.events.read_text().splitlines()]
-    assert [(r["tool"], r["status"]) for r in rows] == [("done", "ok")]
-    status = json.loads((ctx.out_root / "call-0" / "helper.json").read_text())
+    assert _calls(rows) == ([("done", "ok")], 1)
+    status = json.loads((ctx.out_root / "call-1" / "helper.json").read_text())
     assert status["status"] == "ok"
     assert status["claims"] == [
         {"claim": "area is w * h", "sources": ["e1/cell:0"]},
@@ -433,7 +430,7 @@ def test_done_with_resolving_sources_is_recorded_and_shown_to_the_writer(
         {"claim": "a shared block holds the rules", "sources": ["e1/shared:b1"]},
     ]
     exported = json.loads(
-        (ctx.inputs / "helpers" / "call-0" / "helper.json").read_text(),
+        (ctx.inputs / "helpers" / "call-1" / "helper.json").read_text(),
     )
     assert exported["claims"] == status["claims"]
     assert ctx.records[0]["claims"] == status["claims"]
@@ -454,7 +451,8 @@ def test_no_claims_is_stated_in_the_reply(tmp_path, helper_boxes):
     "claims, phrase, form",
     [
         ([{"claim": "x", "sources": []}], "claim 1 has no sources", "no_sources"),
-        ([{"claim": "x"}], "claim 1 has no sources", "no_sources"),
+        # a claim without a sources key: the call's schema refuses it before the helper reads it
+        ([{"claim": "x"}], "claims[0].sources is missing", "bad_arguments"),
         (
             [{"claim": "x", "sources": ["e1/cell:0"]}, {"claim": "y", "sources": []}],
             "claim 2 has no sources",
@@ -490,7 +488,7 @@ def test_no_claims_is_stated_in_the_reply(tmp_path, helper_boxes):
             "has no part 'shared:nope'",
             "bad_source",
         ),
-        ("all good", "claims must be a list", "claims"),
+        ("all good", "claims is 'all good' (str)", "bad_arguments"),
         ([{"claim": "", "sources": ["e1/cell:0"]}], "claim 1 has no text", "claims"),
     ],
 )
@@ -507,15 +505,15 @@ def test_done_with_a_missing_or_unresolved_source_is_refused_and_can_be_fixed(
     reply = _run({"task": "t", "episodes": ["e1"]}, ctx)
     refused = script.outputs["d"]
     assert refused.startswith("refused: ") and phrase in refused, refused
-    assert "the task is not done, call done again" in refused
+    if form == "bad_arguments":  # the schema's refusal says what the call takes
+        assert "Expected claims" in refused, refused
+    else:
+        assert "the task is not done, call done again" in refused
     # the helper went on and fixed it
     rows = [json.loads(x) for x in ctx.events.read_text().splitlines()]
-    assert [(r["tool"], r["status"]) for r in rows] == [
-        ("done", "refused"),
-        ("done", "ok"),
-    ]
-    assert rows[0]["refusal"]["form"] == form
-    status = json.loads((ctx.out_root / "call-0" / "helper.json").read_text())
+    assert _calls(rows) == ([("done", "refused"), ("done", "ok")], 2)
+    assert next(r for r in rows if r["tool"] == "done")["refusal"]["form"] == form
+    status = json.loads((ctx.out_root / "call-1" / "helper.json").read_text())
     assert status["status"] == "ok" and status["claims"] == fixed
     assert "sources: e1/cell:0" in reply
 
@@ -529,22 +527,22 @@ def test_a_helper_that_never_fixes_its_claims_hands_back_none(tmp_path, helper_b
     )
     ctx = _ctx(tmp_path, script, step_guard=3)
     reply = _run({"task": "t", "episodes": ["e1"]}, ctx)
-    assert reply.startswith("helper call-0: operational step guard")
-    status = json.loads((ctx.out_root / "call-0" / "helper.json").read_text())
+    assert reply.startswith("helper call-1: operational step guard")
+    status = json.loads((ctx.out_root / "call-1" / "helper.json").read_text())
     assert status["claims"] == [] and status["summary"] == ""
 
 
 def test_staging_again_replaces_and_the_quota_is_stated(tmp_path, monkeypatch):
-    st = helpers._Staging(tmp_path / "s" / "call-0")
+    st = helpers._Staging(tmp_path / "s" / "call-1")
     assert st.stage("notes.md", "one") == "staged notes.md (3 bytes)"
     assert st.stage("notes.md", "two!") == "staged notes.md (4 bytes)"
-    assert (tmp_path / "s" / "call-0" / "notes.md").read_text() == "two!"
+    assert (tmp_path / "s" / "call-1" / "notes.md").read_text() == "two!"
     monkeypatch.setattr(helpers, "QUOTA_FILES", 1)
     assert "staging quota" in st.stage("candidates/f.py", "def f(): pass")
     refused = st.stage("evil.sh", "x")
     assert refused.startswith("refused: 'evil.sh': outside ") and "candidates/*.py" in refused, refused
     with pytest.raises(FileExistsError):
-        helpers._Staging(tmp_path / "s" / "call-0")  # always a fresh directory
+        helpers._Staging(tmp_path / "s" / "call-1")  # always a fresh directory
 
 
 def test_the_helper_lane_reads_its_token_from_a_descriptor_and_scrubs_the_environment(
@@ -584,12 +582,10 @@ def test_no_helper_lane_means_no_delegate_and_no_fallback(monkeypatch):
     s = SimpleNamespace(
         UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL="",
         UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD="",
-        UNIFY_MEMORY_LIBRARY_HELPER_MODEL="",
         UNIFY_MODEL="vendor/actor-model@openrouter",
     )
     got = consolidate._helper_turns(s, "low")
     assert got == {"helper_turn": None, "helper_refusal": "no helper lane"}
-    assert consolidate._helper_turns(s, "low", False) == {}
 
 
 @needs_bwrap
@@ -656,5 +652,5 @@ def test_helper_json_records_the_largest_prompt_a_call_reported(tmp_path, helper
     }
     ctx = _ctx(tmp_path, Script({"t": [first, last]}))
     _run({"task": "t", "episodes": ["e1"]}, ctx)
-    status = json.loads((ctx.out_root / "call-0" / "helper.json").read_text())
+    status = json.loads((ctx.out_root / "call-1" / "helper.json").read_text())
     assert status["max_prompt_tokens"] == 300

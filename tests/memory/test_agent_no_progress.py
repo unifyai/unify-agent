@@ -280,14 +280,14 @@ def test_a_helper_repeating_a_no_op_is_told_then_ends_with_what_it_staged(tmp_pa
     reply = _delegate({"task": "t", "episodes": ["e1"]}, ctx)
     # call 1 stages; every cell after it does nothing: the notice at the K-th, the end at the 2K-th
     ended_at = 2 * MEMORY_K + 1
-    assert reply.startswith("helper call-0: no progress: "), reply
+    assert reply.startswith("helper call-1: no progress: "), reply
     assert "candidates/area.py" in reply
-    status = json.loads((ctx.out_root / "call-0" / "helper.json").read_text())
+    status = json.loads((ctx.out_root / "call-1" / "helper.json").read_text())
     assert status["stopped_by"] == "no_progress" and status["turns"] == ended_at
     assert status["no_progress"] == {"k": MEMORY_K, "notices": 1, "ended": True, "at_call": ended_at}
     assert [f["path"] for f in status["files"]] == ["candidates/area.py"]
     assert ctx.records[0]["no_progress"] == status["no_progress"]
-    messages, _ = ctx.transcripts["call-0"]
+    messages, _ = ctx.transcripts["call-1"]
     notices = [m for m in messages if m.get("role") == "user" and NOTICE in str(m.get("content"))]
     assert len(notices) == 1 and "call done and keep the item as a draft" in notices[0]["content"]
 
@@ -297,6 +297,6 @@ def test_a_helper_that_finishes_records_no_notice(tmp_path, helper_boxes):
 
     ctx = _ctx(tmp_path, Script(_drafting()))
     reply = _delegate({"task": "draft area", "episodes": ["e1"]}, ctx)
-    assert reply.startswith("helper call-0: ok")
-    status = json.loads((ctx.out_root / "call-0" / "helper.json").read_text())
+    assert reply.startswith("helper call-1: ok")
+    status = json.loads((ctx.out_root / "call-1" / "helper.json").read_text())
     assert status["no_progress"] is None and status["stopped_by"] == "done"

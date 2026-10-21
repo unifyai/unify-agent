@@ -81,7 +81,7 @@ def _never(flag=None):
     return step
 
 
-def _status(ctx, call="call-0"):
+def _status(ctx, call="call-1"):
     return json.loads((ctx.out_root / call / "helper.json").read_text())
 
 
@@ -92,7 +92,7 @@ def test_two_helpers_model_calls_are_in_flight_at_the_same_time(tmp_path, helper
     async def go():
         await helpers.handle({"task": "A", "episodes": ["e1"]}, ctx)
         await helpers.handle({"task": "B", "episodes": ["e2"]}, ctx)
-        await asyncio.gather(helpers.result(ctx, "call-0"), helpers.result(ctx, "call-1"))
+        await asyncio.gather(helpers.result(ctx, "call-1"), helpers.result(ctx, "call-2"))
         await messaging.close(ctx.pass_record, "the writer finished")
 
     asyncio.run(go())
@@ -103,7 +103,7 @@ def test_a_helper_mentions_another_helper_and_its_wait_returns_it(tmp_path, help
     model = Steps(
         {
             "A": [
-                _after(0.1, _msg(_tc("s", "send", {"text": "@call-1 e2/cell:0 prints two"}))),
+                _after(0.1, _msg(_tc("s", "send", {"text": "@call-2 e2/cell:0 prints two"}))),
                 _done(),
             ],
             "B": [_msg(_tc("w", "wait", {})), _done()],
@@ -115,34 +115,34 @@ def test_a_helper_mentions_another_helper_and_its_wait_returns_it(tmp_path, help
         await helpers.handle({"task": "A", "episodes": ["e1"]}, ctx)
         await helpers.handle({"task": "B", "episodes": ["e2"]}, ctx)
         await asyncio.wait_for(
-            asyncio.gather(helpers.result(ctx, "call-0"), helpers.result(ctx, "call-1")),
+            asyncio.gather(helpers.result(ctx, "call-1"), helpers.result(ctx, "call-2")),
             5,
         )
         await messaging.close(ctx.pass_record, "the writer finished")
 
     asyncio.run(go())
-    assert model.outputs("A")["s"].startswith("sent to call-1")
-    assert "call-0: @call-1 e2/cell:0 prints two" in model.outputs("B")["w"]
-    entry = next(e for e in ctx.pass_record.record.entries if e.author == "call-0" and e.kind == "post")
-    assert entry.mentions == ("call-1",)
+    assert model.outputs("A")["s"].startswith("sent to call-2")
+    assert "call-1: @call-2 e2/cell:0 prints two" in model.outputs("B")["w"]
+    entry = next(e for e in ctx.pass_record.record.entries if e.author == "call-1" and e.kind == "post")
+    assert entry.mentions == ("call-2",)
 
 
 def test_role_names_resolve_and_an_unknown_name_is_refused(tmp_path):
     pr = messaging.PassRecord(root="writer", deadline=time.monotonic() + 600, run_home=str(tmp_path / "run-home"))
-    for name in ("call-0", "call-1"):
+    for name in ("call-1", "call-2"):
         pr.add_helper(name, "a task")
         pr.record.add_agent(name, spawner="writer")
-    out, to = messaging.post(pr, "call-0", "@writer done reading e1", messaging.SEND_SPEC)
+    out, to = messaging.post(pr, "call-1", "@writer done reading e1", messaging.SEND_SPEC)
     assert to == ["writer"] and out.startswith("sent to writer")
     out, to = messaging.post(pr, "writer", "@helpers stop drafting", messaging.SEND_SPEC)
-    assert to == ["call-0", "call-1"]
-    out, to = messaging.post(pr, "call-0", "@helpers e1 is done", messaging.SEND_SPEC)
-    assert to == ["call-1"]  # never to itself
-    out, to = messaging.post(pr, "call-1", "no address", messaging.SEND_SPEC)
+    assert to == ["call-1", "call-2"]
+    out, to = messaging.post(pr, "call-1", "@helpers e1 is done", messaging.SEND_SPEC)
+    assert to == ["call-2"]  # never to itself
+    out, to = messaging.post(pr, "call-2", "no address", messaging.SEND_SPEC)
     assert to == ["writer"]  # a helper's message that names no one goes to the writer
-    refused, to = messaging.post(pr, "call-0", "@nobody look", messaging.SEND_SPEC)
+    refused, to = messaging.post(pr, "call-1", "@nobody look", messaging.SEND_SPEC)
     assert to == [] and tool_spec.form_of(refused) == "unknown_name"
-    assert "@nobody" in refused and "@call-1" in refused and "@helpers" in refused
+    assert "@nobody" in refused and "@call-2" in refused and "@helpers" in refused
     refused, _ = messaging.post(pr, "writer", "to whom?", messaging.SEND_SPEC)
     assert tool_spec.form_of(refused) == "no_recipient"
     # nothing refused reached the record
@@ -170,7 +170,7 @@ def test_a_helper_reads_the_writers_inputs_read_only(tmp_path, helper_boxes):
 
     async def go():
         await helpers.handle({"task": "t", "episodes": ["e1"]}, ctx)
-        await helpers.result(ctx, "call-0")
+        await helpers.result(ctx, "call-1")
         await messaging.close(ctx.pass_record, "the writer finished")
 
     asyncio.run(go())
@@ -200,7 +200,7 @@ def test_in_the_real_box_the_writers_inputs_read_and_refuse_writes(tmp_path):
 
     async def go():
         await helpers.handle({"task": "t", "episodes": ["e1"]}, ctx)
-        await helpers.result(ctx, "call-0")
+        await helpers.result(ctx, "call-1")
         await messaging.close(ctx.pass_record, "the writer finished")
 
     asyncio.run(go())
@@ -247,7 +247,7 @@ def test_the_recorded_helper_calls_that_were_refused_now_work(tmp_path, helper_b
 
     async def go():
         await helpers.handle({"task": "t", "episodes": ["e1"]}, ctx)
-        await helpers.result(ctx, "call-0")
+        await helpers.result(ctx, "call-1")
         await messaging.close(ctx.pass_record, "the writer finished")
 
     asyncio.run(go())
@@ -275,7 +275,7 @@ def test_a_helper_cell_imports_the_library_as_the_writer_sees_it(tmp_path):
 
     async def go():
         await helpers.handle({"task": "t", "episodes": ["e1"]}, ctx)
-        await helpers.result(ctx, "call-0")
+        await helpers.result(ctx, "call-1")
         await messaging.close(ctx.pass_record, "the writer finished")
 
     asyncio.run(go())
