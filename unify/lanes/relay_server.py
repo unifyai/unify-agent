@@ -24,8 +24,9 @@ with ``Host: 127.0.0.1:<port>``:
 1. exactly one ``Authorization: Bearer <token>`` header equal (constant time) to that lane's token. Another lane's
    token is refused too (``other_lane_token``): each token is valid on its own lane only;
 2. a JSON object body of at most :data:`MAX_REQUEST_BYTES`, without duplicate keys, OpenRouter's fallback ``models``
-   field or its ``plugins`` (which cost beyond a model's worst case), whose ``model`` is exactly one of the lane's
-   models; anything else is ``off_model_refused`` before anything goes upstream;
+   field, its ``plugins``, or ``n`` other than 1 or ``best_of`` (each costs beyond a model's worst case per call, which
+   bounds one completion), whose ``model`` is exactly one of the lane's models; anything else is ``off_model_refused``
+   before anything goes upstream;
 3. room under the spend cap (below) and a free slot among :data:`MAX_IN_FLIGHT` calls;
 4. the ``X-Unify-*`` headers are taken off (journaled as ``unify_meta`` when well formed) and the call goes upstream
    with the provider key, ``usage: {"include": true}`` added when the body does not ask for usage, so the provider
@@ -536,6 +537,10 @@ def check_body(
     if "plugins" in parsed or "web_search_options" in parsed:
         # OpenRouter's plugins (web search and the like) cost beyond a model's worst case per call
         return None, shown, "plugins_field"
+    n = parsed.get("n", 1)
+    if "best_of" in parsed or isinstance(n, bool) or n != 1:
+        # the worst case per call bounds one completion: several per call (n, best_of) cost a multiple of it
+        return None, shown, "several_completions"
     if "stream" in parsed and not isinstance(parsed["stream"], bool):
         return None, shown, "stream_not_a_boolean"
     if model not in allowed:

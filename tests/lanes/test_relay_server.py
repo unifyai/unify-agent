@@ -256,6 +256,11 @@ def test_a_malformed_request_is_answered_without_echoing_it(tmp_path, upstream):
         ),
         ({"model": MODEL, "plugins": [{"id": "web"}], "messages": []}, "plugins_field"),
         ({"model": MODEL, "web_search_options": {}, "messages": []}, "plugins_field"),
+        ({"model": MODEL, "n": 128, "messages": []}, "several_completions"),
+        ({"model": MODEL, "n": 0, "messages": []}, "several_completions"),
+        ({"model": MODEL, "n": "1", "messages": []}, "several_completions"),
+        ({"model": MODEL, "n": True, "messages": []}, "several_completions"),
+        ({"model": MODEL, "best_of": 4, "messages": []}, "several_completions"),
         ({"messages": []}, "missing_model"),
         ({"model": ["x"], "messages": []}, "model_not_a_string"),
         ({"model": MODEL, "stream": "yes", "messages": []}, "stream_not_a_boolean"),
@@ -753,3 +758,10 @@ def test_connections_beyond_the_bound_are_closed_unread_and_the_relay_serves_on(
         threading.Event().wait(0.3)
         assert call(relay.port, "writer", tokens["writer"], BODY)[0] == 200
     assert len(upstream.requests) == 1
+
+
+def test_a_body_that_asks_for_exactly_one_completion_is_served(tmp_path, upstream):
+    doc, tokens = _doc(tmp_path / "lanes", upstream.base)
+    with serving(doc) as relay:
+        status, _reply = call(relay.port, "writer", tokens["writer"], {**BODY, "n": 1})
+    assert status == 200 and upstream.requests[0]["body"]["n"] == 1
