@@ -1,12 +1,8 @@
-import asyncio
-
 import pytest
 from pydantic import BaseModel, Field
 from unittest.mock import MagicMock
 
 from tests.actor.code_act.helpers import patch_actor_act
-from unify.actor.code_act_actor import CodeActActor
-from unify.actor.environments.actor import ActorEnvironment
 from unify.actor.execution.session import PythonExecutionSession, _PARENT_CHAT_CONTEXT
 from unify.actor.simulated import _StaticAnswerHandle
 
@@ -15,38 +11,7 @@ class SecretModel(BaseModel):
     secret: int = Field(description="The secret number from context.")
 
 
-@pytest.mark.asyncio
-@pytest.mark.llm_call
-@pytest.mark.timeout(300)
-async def test_code_act_initial_parent_chat_context_is_used():
-    """CodeActActor should append _parent_chat_context before the first LLM turn."""
-    SecretModel.model_rebuild()
-
-    actor = CodeActActor(timeout=60)
-
-    parent_ctx = [
-        {"role": "user", "content": "The secret number is 456."},
-        {"role": "assistant", "content": "Acknowledged."},
-    ]
-
-    handle = await actor.act(
-        "What is the secret number? Return {secret: <int>} and do not guess.",
-        clarification_enabled=False,
-        response_format=SecretModel,
-        _parent_chat_context=parent_ctx,
-        persist=False,
-    )
-    try:
-        res = await asyncio.wait_for(handle.result(), timeout=90)
-        assert isinstance(res, SecretModel)
-        assert res.secret == 456
-    finally:
-        try:
-            await actor.close()
-        except Exception:
-            pass
-
-
+# as_shipped: deleted in step 5 (parent chat context for primitives)
 # ────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ────────────────────────────────────────────────────────────────────────────
@@ -117,88 +82,7 @@ class _SpyRunner:
 # ────────────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.eval
-@pytest.mark.asyncio
-@pytest.mark.llm_call
-@pytest.mark.timeout(300)
-async def test_execute_function_forwards_parent_chat_context(monkeypatch):
-    """Parent chat context should flow from the outer act() loop through the
-    execute_function tool into the sandbox via the _PARENT_CHAT_CONTEXT
-    ContextVar, just like execute_code.
-
-    Scenario: the parent conversation mentions "Baker" as the surname, but
-    the act() description just says "Find Lucy's phone number."  A spy
-    stands in for ``primitives.actor.act`` and records the context visible
-    when it is reached.
-
-    Context injection is opt-in, so the request explicitly instructs the
-    model to set include_parent_chat_context=true on the tool call; the
-    subject here is the forwarding plumbing, not the model's opt-in
-    judgment.
-    """
-    calls = _spy_actor_act(monkeypatch)
-    actor = CodeActActor(environments=[ActorEnvironment()], timeout=60)
-
-    try:
-        handle = await actor.act(
-            _LUCY_REQUEST,
-            can_compose=False,
-            persist=False,
-            clarification_enabled=False,
-            _parent_chat_context=_LUCY_PARENT_CTX,
-        )
-        await asyncio.wait_for(handle.result(), timeout=90)
-
-        assert len(calls) > 0, "primitives.actor.act was never called"
-        assert calls[0]["parent_chat_context"] is not None, (
-            "primitives.actor.act ran without _PARENT_CHAT_CONTEXT set — "
-            "execute_function needs to set it for the sandbox"
-        )
-    finally:
-        try:
-            await actor.close()
-        except Exception:
-            pass
-
-
-@pytest.mark.eval
-@pytest.mark.asyncio
-@pytest.mark.llm_call
-@pytest.mark.timeout(300)
-async def test_execute_code_forwards_parent_chat_context(monkeypatch):
-    """Parent chat context should reach primitives called from within
-    execute_code.
-
-    Same Lucy Baker scenario as the execute_function test, but here the LLM
-    generates code that calls ``primitives.actor.act(...)`` directly in the
-    sandbox.  As there, the request instructs the explicit
-    include_parent_chat_context=true opt-in because injection is opt-in and
-    the subject is the forwarding plumbing.
-    """
-    calls = _spy_actor_act(monkeypatch)
-    actor = CodeActActor(environments=[ActorEnvironment()], timeout=60)
-
-    try:
-        handle = await actor.act(
-            _LUCY_REQUEST,
-            persist=False,
-            clarification_enabled=False,
-            _parent_chat_context=_LUCY_PARENT_CTX,
-        )
-        await asyncio.wait_for(handle.result(), timeout=90)
-
-        assert len(calls) > 0, "primitives.actor.act was never called"
-        assert calls[0]["parent_chat_context"] is not None, (
-            "primitives.actor.act ran without _PARENT_CHAT_CONTEXT set — "
-            "execute_code needs to set it for the sandbox"
-        )
-    finally:
-        try:
-            await actor.close()
-        except Exception:
-            pass
-
-
+# as_shipped: deleted in step 5 (parent chat context for primitives)
 # ────────────────────────────────────────────────────────────────────────────
 # Symbolic: PythonExecutionSession wraps primitives via _PARENT_CHAT_CONTEXT
 # ────────────────────────────────────────────────────────────────────────────

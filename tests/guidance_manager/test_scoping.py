@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from unify.guidance_manager.guidance_manager import GuidanceManager
+from tests.actor.code_act.library_world import install_fake_embed
 from tests.helpers import _handle_project
 
 # Reads span the assistant's own rows plus the read-only builtins library, so
@@ -128,7 +129,8 @@ def test_scope_and_exclusion_combined():
 
 
 @_handle_project
-def test_search_respects_filter_scope():
+def test_search_respects_filter_scope(monkeypatch):
+    install_fake_embed(monkeypatch.setattr)
     gm = GuidanceManager()
     ids = _seed(gm)
 
@@ -142,7 +144,8 @@ def test_search_respects_filter_scope():
 
 
 @_handle_project
-def test_search_respects_exclude_ids():
+def test_search_respects_exclude_ids(monkeypatch):
+    install_fake_embed(monkeypatch.setattr)
     gm = GuidanceManager()
     ids = _seed(gm)
 

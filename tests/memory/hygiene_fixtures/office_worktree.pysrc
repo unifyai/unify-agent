@@ -1,0 +1,102 @@
+"""Readers for recorded workspace tabular formats."""
+import csv
+import io
+from datetime import date
+from pathlib import Path
+
+class MemoryInputError(ValueError):
+    """Input lies outside the supported recorded format."""
+
+
+def read_ledger(path):
+    """Read a close ledger with integer debit and credit cents.
+
+    Effect: read
+    """
+    if not isinstance(path, (str, Path)):
+        raise MemoryInputError("ledger path must be a string or Path")
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise MemoryInputError("cannot read UTF-8 ledger") from exc
+    columns = ["entry_id", "date", "account", "description", "debit_cents", "credit_cents", "reference"]
+    if not text.startswith(",".join(columns) + "\n"):
+        raise MemoryInputError("ledger needs the seven recorded comma-separated columns")
+    # A captured file may end mid-row at the recording byte limit.
+    if not text.endswith("\n"):
+        text = text[:text.rfind("\n") + 1]
+    rows = list(csv.DictReader(io.StringIO(text), strict=True))
+    if not rows:
+        raise MemoryInputError("empty ledger")
+    for row in rows:
+        try:
+            if None in row or not row["entry_id"].startswith("JE-") or not row["account"].isdigit():
+                raise ValueError("invalid entry or account")
+            row["date"] = date.fromisoformat(row["date"])
+            for column in ("debit_cents", "credit_cents"):
+                if not row[column].isdigit():
+                    raise ValueError("cents must be unsigned decimal integers")
+                row[column] = int(row[column])
+            if bool(row["debit_cents"]) == bool(row["credit_cents"]):
+                raise ValueError("exactly one side must be positive")
+        except (ValueError, TypeError, KeyError) as exc:
+            raise MemoryInputError("invalid ledger row") from exc
+    return rows
+
+
+def read_retention(path):
+    """Read record-retention periods as integer years.
+
+    Effect: read
+    """
+    if not isinstance(path, (str, Path)):
+        raise MemoryInputError("retention path must be a string or Path")
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise MemoryInputError("cannot read UTF-8 retention table") from exc
+    if not text.startswith("type,retain_years\n") or not text.endswith("\n"):
+        raise MemoryInputError("retention table needs CSV header and complete rows")
+    try:
+        rows = list(csv.DictReader(io.StringIO(text), strict=True))
+        if not rows:
+            raise ValueError("empty table")
+        for row in rows:
+            if set(row) != {"type", "retain_years"} or not row["type"] or not row["retain_years"].isdigit():
+                raise ValueError("invalid retention row")
+            row["retain_years"] = int(row["retain_years"])
+            if row["retain_years"] <= 0:
+                raise ValueError("retention must be positive")
+    except (csv.Error, ValueError, TypeError) as exc:
+        raise MemoryInputError("invalid retention table") from exc
+    return rows
+
+
+def read_inventory(path):
+    """Read a fleet service inventory with validated service configuration paths.
+
+    Effect: read
+    """
+    if not isinstance(path, (str, Path)):
+        raise MemoryInputError("inventory path must be a string or Path")
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+        if not text.endswith("\n"):
+            raise ValueError("incomplete inventory")
+        reader = csv.DictReader(io.StringIO(text), strict=True)
+        columns = ["service", "team", "tier", "region", "config"]
+        if reader.fieldnames != columns:
+            raise ValueError("inventory columns differ")
+        rows = list(reader)
+        if not rows:
+            raise ValueError("empty inventory")
+        for row in rows:
+            if set(row) != set(columns) or not all(isinstance(v, str) and v for v in row.values()):
+                raise ValueError("invalid inventory row")
+            if row["tier"] not in ("production", "staging") or row["region"] not in ("eu-west", "us-east", "ap-south"):
+                raise ValueError("invalid tier or region")
+            if row["config"] not in ("services/{}/{}.ini".format(row["team"], row["service"]), "services/{}/{}.toml".format(row["team"], row["service"])):
+                raise ValueError("invalid configuration path")
+        return rows
+    except (OSError, UnicodeError, ValueError, csv.Error) as exc:
+        raise MemoryInputError("invalid UTF-8 fleet inventory") from exc

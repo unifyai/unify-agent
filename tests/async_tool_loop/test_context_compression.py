@@ -10,8 +10,11 @@ import pytest
 import json
 
 from tests.helpers import _handle_project
+from tests.scripted_model import reply
 import unify.common._async_tool.context_compression as _cc_mod
 from unify.common._async_tool.context_compression import (
+    COMPRESSION_MULTI_PASS_ADDENDUM,
+    COMPRESSION_PROMPT,
     CompressedMessage,
     CompressedMessages,
     CompressionState,
@@ -27,6 +30,11 @@ from unify.common._async_tool.context_compression import (
 
 # Vision-aware compression is handed the real image bytes, so a placeholder
 # data URL is rejected by the provider before the compressor ever runs.
+#
+# The ``compress_messages`` tests check what the function does with the
+# compactor's edits, so the compactor is scripted (``scripted_model``): its
+# ``update`` calls are written in the test. Whether a real compactor chooses
+# good edits is what model_evals/eval_context_compression.py measures.
 with open(Path(__file__).parent / "cat.jpg", "rb") as _f:
     _CAT_IMG = base64.b64encode(_f.read()).decode("utf-8")
 
@@ -556,10 +564,21 @@ class TestCompressAndRebuild:
         assert "error" in err
 
 
+def _system_text(call) -> str:
+    """The system messages of a recorded request, as one text."""
+    return "\n".join(
+        part.get("text", "") if isinstance(part, dict) else str(part)
+        for m in call.messages
+        if m["role"] == "system"
+        for part in (
+            m["content"] if isinstance(m["content"], list) else [m["content"]]
+        )
+    )
+
+
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
-async def test_compress_returns_compressed_messages(llm_config):
+async def test_compress_returns_compressed_messages(llm_config, scripted_model):
     messages = [
         {
             "role": "user",
@@ -590,15 +609,21 @@ async def test_compress_returns_compressed_messages(llm_config):
             "content": "I found the contact named John, their email is example@email.com and their phone number is +1234567890, would you like me to help with anything else?",
         },
     ]
+    model = scripted_model(compactor=[reply("done")])
     result = await compress_messages(messages, llm_config["model"])
     assert isinstance(result, CompressedMessages)
     assert len(result.messages) == len(messages)
+    # No edit: each entry is its message as the compactor received it.
+    assert [m.content for m in result.messages] == [
+        json.dumps(m, default=str) for m in messages
+    ]
+    assert COMPRESSION_PROMPT in _system_text(model.of("compactor")[0])
+    assert model.kinds() == ["compactor"]
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
-async def test_compress_output_length_matches_input(llm_config):
+async def test_compress_output_length_matches_input(llm_config, scripted_model):
     messages = [
         {"role": "user", "content": "Hello, how are you doing today?"},
         {
@@ -611,14 +636,15 @@ async def test_compress_output_length_matches_input(llm_config):
             "content": "I'm sorry, I don't have access to weather information. Would you like me to help with something else?",
         },
     ]
+    model = scripted_model(compactor=[reply("done")])
     result = await compress_messages(messages, llm_config["model"])
     assert len(result.messages) == 4
+    assert model.kinds() == ["compactor"]
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
-async def test_compress_compacts_tool_call_messages(llm_config):
+async def test_compress_compacts_tool_call_messages(llm_config, scripted_model):
     messages = [
         {"role": "user", "content": "Find John"},
         {
@@ -642,25 +668,35 @@ async def test_compress_compacts_tool_call_messages(llm_config):
             "content": '{"name": "John", "email": "j@test.com"}',
         },
     ]
+    edited = json.dumps({"role": "tool", "name": "search", "content": "j@test.com"})
+    model = scripted_model(
+        compactor=[
+            reply(calls=[("update", {"index": 2, "transformation": f"x = {edited!r}"})]),
+            reply("done"),
+        ],
+    )
     result = await compress_messages(messages, llm_config["model"])
     assert len(result.messages) == 3
     tool_call_msg = result.messages[1]
     assert "search" in tool_call_msg.content.lower()
+    assert result.messages[2].content == edited
+    assert "update" in model.of("compactor")[0].tool_names
+    assert model.kinds() == ["compactor", "compactor"]
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
-async def test_compress_preserves_image_placeholders(llm_config):
+async def test_compress_preserves_image_placeholders(llm_config, scripted_model):
     """An image the conversation still depends on keeps its ``[img:N]`` tag.
 
     ``compress_messages`` requires images to already be tagged and reports the
     tags that survived rather than describing them in prose, so the tagging step
     is part of the exercise and the image has to be a real one -- it is delivered
-    inline for the compressor to look at. The trailing question is what makes
-    preservation the correct outcome: the compressor is told to drop images the
-    conversation has moved past, and only an open question about the picture
-    keeps this one live.
+    inline for the compressor to look at. The compactor is scripted to make no
+    edit, which is the right one here (only an open question about the picture
+    keeps it live): the compactor is shown the image after its tag's label, and
+    the tag left in its entry is reported as surviving. Whether a real compactor
+    makes that choice is the compactor model's (model_evals/eval_context_compression.py).
     """
     messages = [
         {
@@ -683,6 +719,7 @@ async def test_compress_preserves_image_placeholders(llm_config):
         },
     ]
     tagged, image_blocks, _ = tag_images_in_messages(messages)
+    model = scripted_model(compactor=[reply("done")])
     result = await compress_messages(
         tagged,
         llm_config["model"],
@@ -690,6 +727,20 @@ async def test_compress_preserves_image_placeholders(llm_config):
     )
     assert len(result.messages) == len(messages)
     assert result.surviving_image_ids == {0}
+    # The compactor is shown the image itself, right after its tag's label.
+    parts = [
+        part
+        for m in model.of("compactor")[0].messages
+        if m["role"] == "user" and isinstance(m["content"], list)
+        for part in m["content"]
+    ]
+    label = next(
+        i for i, p in enumerate(parts) if p.get("text") == "--- [img:0] ---"
+    )
+    image = parts[label + 1]
+    assert image["type"] == "image_url"
+    assert image["image_url"]["url"] == f"data:image/jpeg;base64,{_CAT_IMG}"
+    assert model.kinds() == ["compactor"]
 
 
 _VERBOSE_TRACEBACK = (
@@ -710,9 +761,8 @@ _VERBOSE_TRACEBACK = (
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
-async def test_compress_compacts_verbose_errors(llm_config):
+async def test_compress_compacts_verbose_errors(llm_config, scripted_model):
     error_content = json.dumps({"error": _VERBOSE_TRACEBACK})
     messages = [
         {"role": "user", "content": "Search for John"},
@@ -761,21 +811,41 @@ async def test_compress_compacts_verbose_errors(llm_config):
             "content": "Found John, email: john@test.com",
         },
     ]
+    model = scripted_model(
+        compactor=[
+            reply(
+                calls=[
+                    (
+                        "update",
+                        {
+                            "index": 2,
+                            "transformation": (
+                                'x = re.sub(r"Traceback[\\s\\S]*", "omitted", x)'
+                            ),
+                        },
+                    ),
+                ],
+            ),
+            reply("done"),
+        ],
+    )
     result = await compress_messages(messages, llm_config["model"])
     assert len(result.messages) == 6
     original_json = json.dumps(messages[2], default=str)
     error_msg = result.messages[2]
     assert len(error_msg.content) < len(original_json) * 0.5
+    assert error_msg.content.endswith("omitted")
+    # The other entries are untouched.
+    assert result.messages[4].content == json.dumps(messages[4], default=str)
+    assert model.kinds() == ["compactor", "compactor"]
 
 
 class TestMultiPassCompression:
     """Symbolic tests for the multi-pass compression interface."""
 
-    @pytest.mark.llm_call
-    def test_result_count_includes_prior_and_new(self):
+    @pytest.mark.asyncio
+    async def test_result_count_includes_prior_and_new(self, scripted_model):
         """compress_messages with prior_entries returns prior + new entries."""
-        import asyncio
-
         prior = [
             (0, "compressed msg 0"),
             (1, "compressed msg 1"),
@@ -790,23 +860,18 @@ class TestMultiPassCompression:
             ],
         ]
 
-        loop = asyncio.new_event_loop()
-        try:
-            result = loop.run_until_complete(
-                compress_messages(
-                    new_messages,
-                    "openai/gpt-4o@openrouter",
-                    prior_entries=prior,
-                    raw_archives=archives,
-                    new_indices=[2],
-                ),
-            )
-        except Exception:
-            pytest.skip("LLM call required for full integration")
-        finally:
-            loop.close()
+        model = scripted_model(compactor=[reply("done")])
+        result = await compress_messages(
+            new_messages,
+            "openai/gpt-4o@openrouter",
+            prior_entries=prior,
+            raw_archives=archives,
+            new_indices=[2],
+        )
 
         assert len(result.messages) == 3
+        assert [m.content for m in result.messages[:2]] == [c for _, c in prior]
+        assert model.kinds() == ["compactor"]
 
     @pytest.mark.asyncio
     async def test_new_indices_validation(self):
@@ -868,9 +933,8 @@ _VERBOSE_PRIOR_TOOL_RESULT = json.dumps(
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @_handle_project
-async def test_compress_multi_pass_recompresses_prior(llm_config):
+async def test_compress_multi_pass_recompresses_prior(llm_config, scripted_model):
     """Multi-pass compression can further compress verbose prior entries."""
     prior_entries = [
         (0, _VERBOSE_PRIOR_TOOL_RESULT),
@@ -891,6 +955,19 @@ async def test_compress_multi_pass_recompresses_prior(llm_config):
             {"role": "assistant", "content": "Found Alice and Bob."},
         ],
     ]
+    edited = json.dumps(
+        {
+            "role": "tool",
+            "name": "get_contacts",
+            "content": "Alice alice@example.com; Bob bob@example.com",
+        },
+    )
+    model = scripted_model(
+        compactor=[
+            reply(calls=[("update", {"index": 0, "transformation": f"x = {edited!r}"})]),
+            reply("done"),
+        ],
+    )
     result = await compress_messages(
         new_messages,
         llm_config["model"],
@@ -901,6 +978,16 @@ async def test_compress_multi_pass_recompresses_prior(llm_config):
     assert len(result.messages) == 4
     recompressed_tool_result = result.messages[0]
     assert len(recompressed_tool_result.content) < len(_VERBOSE_PRIOR_TOOL_RESULT) * 0.7
+    # Entries come back in global-index order: the prior ones, then the new.
+    assert [m.content for m in result.messages] == [
+        edited,
+        prior_entries[1][1],
+        *(json.dumps(m, default=str) for m in new_messages),
+    ]
+    first = model.of("compactor")[0]
+    assert COMPRESSION_PROMPT + COMPRESSION_MULTI_PASS_ADDENDUM in _system_text(first)
+    assert {"update", "get_raw"} <= set(first.tool_names)
+    assert model.kinds() == ["compactor", "compactor"]
 
 
 # ── End-to-end multi-pass compression tests ──────────────────────────────────
@@ -1171,157 +1258,6 @@ def _accumulate_entries(
     return entries
 
 
-@pytest.mark.eval
-@pytest.mark.asyncio
-@pytest.mark.llm_call
-@_handle_project
-async def test_multi_pass_double_further_compresses_prior(llm_config):
-    """Pass 2 further compresses verbose entries that survived pass 1.
-
-    Scenario: pass 1 compresses a verbose transcript (big tool results, traceback).
-    Pass 2 receives pass 1's output as prior_entries alongside new messages and
-    must not expand prior entries — and ideally compresses them further given the
-    new context.
-    """
-    pass1_msgs = _mp_pass1()
-    pass2_msgs = _mp_pass2()
-
-    # --- Pass 1 ---
-    result1 = await compress_messages(pass1_msgs, llm_config["model"])
-    assert len(result1.messages) == len(pass1_msgs)
-
-    original_tool_len = len(json.dumps(pass1_msgs[2], default=str))
-    assert len(result1.messages[2].content) < original_tool_len * 0.7
-
-    # --- Pass 2 ---
-    prior_entries = [(i, msg.content) for i, msg in enumerate(result1.messages)]
-    pass2_base = len(pass1_msgs)
-    pass2_indices = list(range(pass2_base, pass2_base + len(pass2_msgs)))
-
-    result2 = await compress_messages(
-        pass2_msgs,
-        llm_config["model"],
-        prior_entries=prior_entries,
-        raw_archives=[pass1_msgs],
-        new_indices=pass2_indices,
-    )
-
-    assert len(result2.messages) == len(prior_entries) + len(pass2_msgs)
-
-    for i, (_, pass1_content) in enumerate(prior_entries):
-        pass2_content = result2.messages[i].content
-        assert len(pass2_content) <= len(pass1_content) * 1.5, (
-            f"Prior entry {i} expanded significantly: "
-            f"{len(pass1_content)} → {len(pass2_content)}"
-        )
-
-
-@pytest.mark.eval
-@pytest.mark.asyncio
-@pytest.mark.llm_call
-@_handle_project
-async def test_multi_pass_double_with_raw_archives(llm_config):
-    """Pass 2 with raw_archives can inspect originals via get_raw.
-
-    The LLM receives both prior compressed entries and the raw_archives that
-    enable the get_raw tool. The overall compressed output should be
-    significantly smaller than the raw original content.
-    """
-    pass1_msgs = _mp_pass1()
-    pass2_msgs = _mp_pass2()
-
-    # --- Pass 1 ---
-    result1 = await compress_messages(pass1_msgs, llm_config["model"])
-    prior_entries = [(i, msg.content) for i, msg in enumerate(result1.messages)]
-    pass2_base = len(pass1_msgs)
-    pass2_indices = list(range(pass2_base, pass2_base + len(pass2_msgs)))
-
-    # --- Pass 2 with raw_archives ---
-    result2 = await compress_messages(
-        pass2_msgs,
-        llm_config["model"],
-        prior_entries=prior_entries,
-        raw_archives=[pass1_msgs],
-        new_indices=pass2_indices,
-    )
-
-    total_expected = len(prior_entries) + len(pass2_msgs)
-    assert len(result2.messages) == total_expected
-
-    original_total = sum(
-        len(json.dumps(m, default=str)) for m in pass1_msgs + pass2_msgs
-    )
-    compressed_total = sum(len(m.content) for m in result2.messages)
-    assert (
-        compressed_total < original_total * 0.7
-    ), f"Expected significant compression: {original_total} → {compressed_total}"
-
-
-@pytest.mark.eval
-@pytest.mark.asyncio
-@pytest.mark.llm_call
-@_handle_project
-async def test_multi_pass_triple_accumulates_correctly(llm_config):
-    """Three sequential passes accumulate and compress all entries.
-
-    Pass 1 compresses the initial verbose transcript. Pass 2 adds new messages
-    and re-compresses with pass 1's output as prior. Pass 3 adds more messages
-    and re-compresses with the accumulated prior from passes 1+2. The final
-    result must contain exactly as many entries as there are original messages
-    across all three passes, with significant overall compression.
-    """
-    pass1_msgs = _mp_pass1()
-    pass2_msgs = _mp_pass2()
-    pass3_msgs = _mp_pass3()
-
-    # --- Pass 1 ---
-    result1 = await compress_messages(pass1_msgs, llm_config["model"])
-    assert len(result1.messages) == len(pass1_msgs)
-
-    prior_1 = [(i, msg.content) for i, msg in enumerate(result1.messages)]
-    raw_archives = [pass1_msgs]
-
-    # --- Pass 2 ---
-    pass2_base = len(pass1_msgs)
-    pass2_indices = list(range(pass2_base, pass2_base + len(pass2_msgs)))
-
-    result2 = await compress_messages(
-        pass2_msgs,
-        llm_config["model"],
-        prior_entries=prior_1,
-        raw_archives=raw_archives,
-        new_indices=pass2_indices,
-    )
-    assert len(result2.messages) == len(prior_1) + len(pass2_msgs)
-
-    prior_2 = _accumulate_entries(result2, pass2_indices, prior_1)
-    raw_archives = [pass1_msgs, pass2_msgs]
-
-    # --- Pass 3 ---
-    pass3_base = pass2_base + len(pass2_msgs)
-    pass3_indices = list(range(pass3_base, pass3_base + len(pass3_msgs)))
-
-    result3 = await compress_messages(
-        pass3_msgs,
-        llm_config["model"],
-        prior_entries=prior_2,
-        raw_archives=raw_archives,
-        new_indices=pass3_indices,
-    )
-
-    total_all_msgs = len(pass1_msgs) + len(pass2_msgs) + len(pass3_msgs)
-    assert len(result3.messages) == total_all_msgs
-
-    original_total = sum(
-        len(json.dumps(m, default=str)) for m in pass1_msgs + pass2_msgs + pass3_msgs
-    )
-    compressed_total = sum(len(m.content) for m in result3.messages)
-    assert compressed_total < original_total * 0.7, (
-        f"Expected significant compression across 3 passes: "
-        f"{original_total} → {compressed_total}"
-    )
-
-
 # ── Image-aware compression tests ────────────────────────────────────────────
 
 
@@ -1566,76 +1502,3 @@ def _build_image_conversation() -> tuple[list[dict], dict[int, dict]]:
     return msgs, registry
 
 
-@pytest.mark.eval
-@pytest.mark.asyncio
-@pytest.mark.llm_call
-@_handle_project
-async def test_image_aware_compression_keeps_relevant(llm_config):
-    """The compression LLM should keep [img:0] (still relevant) and may remove [img:1] (bug fixed)."""
-    msgs, registry = _build_image_conversation()
-    result = await compress_messages(
-        msgs,
-        llm_config["model"],
-        image_blocks=registry,
-    )
-    assert len(result.messages) == len(msgs)
-    assert (
-        0 in result.surviving_image_ids
-    ), "img:0 (dashboard) should survive — it's still actively referenced"
-
-
-@pytest.mark.eval
-@pytest.mark.asyncio
-@pytest.mark.llm_call
-@_handle_project
-async def test_image_aware_multi_pass_accumulates(llm_config):
-    """Multi-pass image compression: pass 2 sees surviving images from pass 1 plus new ones."""
-    pass1_msgs, pass1_registry = _build_image_conversation()
-
-    result1 = await compress_messages(
-        pass1_msgs,
-        llm_config["model"],
-        image_blocks=pass1_registry,
-    )
-    assert len(result1.messages) == len(pass1_msgs)
-
-    prior_entries = [(i, msg.content) for i, msg in enumerate(result1.messages)]
-
-    pass2_msgs = [
-        {
-            "role": "user",
-            "content": "Here is an updated dashboard screenshot. Compare it to the old one.",
-        },
-        {
-            "role": "assistant",
-            "content": (
-                "Comparing the updated dashboard [img:2] with the original [img:0]: "
-                "revenue in [img:2] is significantly higher. I need both [img:0] and "
-                "[img:2] to complete the comparison you requested."
-            ),
-        },
-    ]
-    pass2_registry = {2: _IMG_PNG_BLOCK}
-
-    all_live = {
-        iid: block
-        for iid, block in {**pass1_registry, **pass2_registry}.items()
-        if iid in result1.surviving_image_ids or iid in pass2_registry
-    }
-
-    pass2_base = len(pass1_msgs)
-    pass2_indices = list(range(pass2_base, pass2_base + len(pass2_msgs)))
-
-    result2 = await compress_messages(
-        pass2_msgs,
-        llm_config["model"],
-        image_blocks=all_live,
-        prior_entries=prior_entries,
-        raw_archives=[pass1_msgs],
-        new_indices=pass2_indices,
-    )
-
-    assert len(result2.messages) == len(prior_entries) + len(pass2_msgs)
-    assert (
-        2 in result2.surviving_image_ids
-    ), "img:2 (new dashboard) should survive — it's actively referenced"

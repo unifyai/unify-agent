@@ -52,6 +52,27 @@ from tests.settings import SETTINGS
 # targeted rerun with it forced off) still wins.
 os.environ.setdefault("UNIFY_TRANSCRIPT_INVARIANT_CHECKS", "1")
 
+# tests/legacy/ holds the tests of unify/legacy/ (legacy, unused, unsupported
+# code). They leave the default discovery and the gate: a directory sweep
+# (``pytest``, ``pytest tests/``) skips them, and they are collected only
+# when a path inside tests/legacy/ is named on the command line.
+_LEGACY_TESTS = Path(__file__).resolve().parent / "legacy"
+
+
+def _within_legacy_tests(path: Path) -> bool:
+    return path == _LEGACY_TESTS or _LEGACY_TESTS in path.parents
+
+
+def pytest_ignore_collect(collection_path, config):
+    if not _within_legacy_tests(Path(collection_path).resolve()):
+        return None
+    invocation_dir = Path(config.invocation_params.dir)
+    for arg in config.args:
+        target = (invocation_dir / arg.split("::", 1)[0]).resolve()
+        if _within_legacy_tests(target):
+            return None
+    return True
+
 
 def _reset_singleton_registries() -> None:
     """Singletons must not leak across tests."""
@@ -131,26 +152,68 @@ def stub_external_deps(monkeypatch):
             return _FIXED_DATETIME.strftime("%I:%M %p ") + label
         return _FIXED_DATETIME.strftime("%A, %B %d, %Y at %I:%M %p ") + label
 
-    # Patch prompt_helpers.now everywhere it's imported
-    monkeypatch.setattr("unify.common.prompt_helpers.now", _static_now)
-    monkeypatch.setattr("unify.conversation_manager.prompt_builders.now", _static_now)
-    monkeypatch.setattr("unify.conversation_manager.events.prompt_now", _static_now)
-    monkeypatch.setattr(
-        "unify.conversation_manager.domains.chat_history.prompt_now",
-        _static_now,
-    )
-    monkeypatch.setattr(
-        "unify.conversation_manager.conversation_manager.prompt_now",
-        _static_now,
-    )
+    # Patch prompt_helpers.now everywhere it's imported. A module that binds
+    # it by name (``from unify.common.prompt_helpers import now as
+    # prompt_now``) keeps its own reference, which patching prompt_helpers
+    # alone misses, so every loaded ``unify`` module is searched for one.
+    # A module first imported during a test binds that test's patched clock,
+    # which the marker lets the next test find too.
+    from unify.common import prompt_helpers
+
+    _static_now._frozen_prompt_clock = True
+    _patch_every_copy(monkeypatch, prompt_helpers.now, _static_now)
 
     def _static_perf_counter() -> float:
         return 1000.0
 
+    # The monotonic clock behind tool-call timings and execute_code's
+    # ``duration_ms``.
     monkeypatch.setattr(
         "unify.common._async_tool.time_context.perf_counter",
         _static_perf_counter,
     )
+
+    # The store's clock: created_at, usage traces and the history, trust and
+    # case records of stored functions and guidance.
+    monkeypatch.setattr(db, "utc_now", lambda: _FIXED_DATETIME)
+
+    # A transcript session's id is the wall-clock second and random hex
+    # (unify/transcripts.py), and a compression summary names the session's
+    # file in the request after it. Ids numbered in the order the test opens
+    # its sessions keep that request the same on every run; the test's home
+    # starts empty, so they never meet a file of an earlier run.
+    from unify import transcripts
+
+    _session_numbers = itertools.count(1)
+    _session_stamp = _FIXED_DATETIME.strftime("%Y%m%dT%H%M%S")
+    monkeypatch.setattr(
+        transcripts,
+        "_new_session_id",
+        lambda: f"{_session_stamp}-{next(_session_numbers):08x}",
+    )
+
+
+def _patch_every_copy(monkeypatch, original, replacement) -> None:
+    """Point ``original``'s defining attribute and every by-name copy of it
+    in a loaded ``unify`` module at ``replacement``.
+
+    An earlier test's replacement (one marked ``_frozen_prompt_clock``) is
+    replaced as well."""
+    import sys
+    import types
+
+    def _is_copy(value) -> bool:
+        return value is original or (
+            type(value) is types.FunctionType
+            and getattr(value, "_frozen_prompt_clock", False)
+        )
+
+    for name, module in list(sys.modules.items()):
+        if module is None or not (name == "unify" or name.startswith("unify.")):
+            continue
+        for attr, value in list(getattr(module, "__dict__", {}).items()):
+            if _is_copy(value):
+                monkeypatch.setattr(module, attr, replacement)
 
 
 # --------------------------------------------------------------------------- #
@@ -158,6 +221,19 @@ def stub_external_deps(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 from unify.manager_registry import ManagerRegistry
+
+
+@pytest.fixture
+def python_in_process(monkeypatch):
+    """Python in this process, for tests of the function manager's in-process
+    loaders (non-actor callers of ``list_functions(_return_callable=True)``,
+    ``execute_function``, the dynamic store check, the case replay, a store
+    verifier). Python always runs in the sandboxed worker otherwise
+    (``unify.actor.execution.worker.enabled``); under this fixture the #202
+    choke points let the loaders run, and the actor refuses to start."""
+    from unify.actor.execution import worker
+
+    monkeypatch.setattr(worker, "enabled", lambda: False)
 
 
 @pytest.fixture(autouse=True)
@@ -194,6 +270,32 @@ def _exact_cache_keying_for_evals(request):
         yield
     finally:
         UNILLM_SETTINGS.UNILLM_CACHE_KEYING = previous
+
+
+@pytest.fixture(autouse=True)
+def _fresh_llm_calls(request, monkeypatch):
+    """A ``fresh_llm_calls`` or ``live_provider`` test reaches the model on
+    every call, never the cache.
+
+    For a test whose subject is the timing between live calls: a recording
+    replays in a fraction of a second and so finishes before a decision the
+    test drives with another call (a pause) can land. For a test whose
+    subject is the live model or provider: a replayed answer says nothing
+    about how the provider behaves now. Clients read the setting when they
+    are built, so this runs before any fixture builds one.
+    """
+    if (
+        request.node.get_closest_marker("fresh_llm_calls") is None
+        and request.node.get_closest_marker("live_provider") is None
+    ):
+        yield
+        return
+
+    from unillm.settings import SETTINGS as UNILLM_SETTINGS
+
+    monkeypatch.setenv("UNILLM_CACHE", "false")
+    monkeypatch.setattr(UNILLM_SETTINGS, "UNILLM_CACHE", False)
+    yield
 
 
 # --------------------------------------------------------------------------- #
@@ -296,17 +398,20 @@ def pytest_sessionstart(session):
 
 
 def _parallel_run_result_file(kind: str) -> str | None:
-    """The temp file parallel_run.sh reads this session's ``kind`` result from.
+    """The file parallel_run.sh reads this session's ``kind`` result from.
 
-    None outside a parallel_run.sh session. The name carries the tmux socket
-    as well as the session id: every tmux server numbers its sessions from
-    $0, and each terminal running parallel_run.sh has a server of its own.
+    None outside a parallel_run.sh session. It lives in the run's results
+    directory (``UNIFY_TEST_RESULTS_DIR``), not /tmp: the session runs in the
+    test sandbox, whose /tmp is private. The name carries the tmux socket as
+    well as the session id: every tmux server numbers its sessions from $0,
+    and each terminal running parallel_run.sh has a server of its own.
     """
     socket = os.environ.get("UNIFY_TEST_SOCKET")
     session_id = os.environ.get("UNIFY_TMUX_SESSION_ID")
     if not (socket and session_id):
         return None
-    return f"/tmp/parallel_run_{kind}_{socket}_{session_id}.txt"
+    directory = os.environ.get("UNIFY_TEST_RESULTS_DIR") or "/tmp"
+    return f"{directory}/parallel_run_{kind}_{socket}_{session_id}.txt"
 
 
 def pytest_sessionfinish(session, exitstatus):
@@ -502,8 +607,85 @@ def unify_home(request, monkeypatch):
     lock.close()
 
 
+# No test reaches a real model provider or the network (the lead's rule, 13 Oct 2026: "WE DO NOT ADD TESTS THAT
+# NEED A REAL PROVIDER KEY AND ALWAYS MOCK THOSE TESTS WITH STUBBED LLM CALLS"). A test's model is scripted:
+# tests/scripted_model.py (``ScriptedModel``, per agent kind) or tests/cache_discipline_helpers.py (``scripted(...)``,
+# which replaces unillm's transport above the provider call). The guard below holds in every session, with or
+# without a key loaded: unillm's provider calls raise :data:`PROVIDER_REFUSAL`, and a socket may connect only to
+# this machine. The markers that once let a test reach a provider fail the test that carries them.
+STUB_HINT = (
+    "script the model with tests/scripted_model.py (ScriptedModel) or tests/cache_discipline_helpers.py "
+    "(scripted(...)), which replace unillm's transport"
+)
+PROVIDER_REFUSAL = f"this test reached a real model provider; tests never call one: {STUB_HINT}"
+NETWORK_REFUSAL = "this test opened a connection to {address!r}, off this machine; tests never use the network: {hint}"
+REMOVED_MARKERS = ("live_provider", "requires_provider_key")
+
+
+def _loopback(address) -> bool:
+    """Whether a socket address is on this machine (a Unix path, localhost, 127.0.0.0/8 or ::1)."""
+    import ipaddress
+
+    if not isinstance(address, tuple):
+        return True  # AF_UNIX paths and abstract names
+    host = str(address[0])
+    if host in ("localhost", ""):
+        return True
+    try:
+        return ipaddress.ip_address(host.split("%", 1)[0]).is_loopback
+    except ValueError:
+        return host.endswith(".localhost")
+
+
+@pytest.fixture(autouse=True)
+def _no_provider_or_network(monkeypatch):
+    """Refuse unillm's provider calls and any socket connection off this machine, in every test (the comment
+    above)."""
+    import socket
+
+    import unillm.clients.uni_llm as uni_llm
+
+    async def refuse_async(*args, **kwargs):
+        raise AssertionError(PROVIDER_REFUSAL)
+
+    def refuse(*args, **kwargs):
+        raise AssertionError(PROVIDER_REFUSAL)
+
+    for name in ("acompletion", "completion", "aembedding", "embedding"):
+        if hasattr(uni_llm.litellm, name):
+            monkeypatch.setattr(
+                uni_llm.litellm,
+                name,
+                refuse_async if name.startswith("a") else refuse,
+            )
+
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+
+    def connect(sock, address):
+        if not _loopback(address):
+            raise AssertionError(NETWORK_REFUSAL.format(address=address, hint=STUB_HINT))
+        return real_connect(sock, address)
+
+    def connect_ex(sock, address):
+        if not _loopback(address):
+            raise AssertionError(NETWORK_REFUSAL.format(address=address, hint=STUB_HINT))
+        return real_connect_ex(sock, address)
+
+    monkeypatch.setattr(socket.socket, "connect", connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
+    yield
+
+
 def pytest_runtest_setup(item):
     test_name_log_filter.set_test_name(item.nodeid)
+    for marker in REMOVED_MARKERS:
+        if item.get_closest_marker(marker) is not None:
+            pytest.fail(
+                f"{item.nodeid} is marked {marker}, but no test may need a provider key: {STUB_HINT}, and remove "
+                "the marker",
+                pytrace=False,
+            )
     if not os.environ.get("SKIP_UNIFY_TEST_INIT") and _uses_unify_context(item):
         _reset_store_for_test()
 
@@ -565,7 +747,8 @@ def pytest_runtest_makereport(item, call):
     report = outcome.get_result()
     if call.when == "call":
         events = getattr(item, "_unillm_cost_events", [])
-        total = sum(e.provider_cost for e in events)
+        # a call that returned nothing has an unknown cost (None), which the total leaves out
+        total = sum(e.provider_cost for e in events if e.provider_cost is not None)
         report._unillm_cost = total
         _session_costs.append((report.nodeid, total))
 

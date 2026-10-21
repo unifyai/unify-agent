@@ -18,14 +18,11 @@ from unify.common.async_tool_loop import (
     start_async_tool_loop,
 )
 from unify.common._async_tool.loop import async_tool_loop_inner
-from tests.async_helpers import _wait_for_next_assistant_response_event
 from tests.helpers import _handle_project, capture_events
+from tests.scripted_model import ScriptedModel, reply, scripted
 from unify.common.llm_client import new_llm_client
-from unify.events.event_bus import EVENT_BUS
 
 _SUFFIX_RE = re.compile(r"\(([0-9a-f]{4})\)$")
-
-pytestmark = pytest.mark.llm_call
 
 
 async def echo(text: str) -> str:  # noqa: D401 – simple echo tool
@@ -52,69 +49,40 @@ def _filter_runtime_context(events: list) -> list:
 
 
 @pytest.mark.asyncio
-@_handle_project
-async def test_basic_event_flow(llm_config) -> None:
+async def test_basic_event_flow() -> None:
     """
     End-to-end check:
 
         user/msg → assistant/tool-call → tool/result → assistant/final-text
+
+    The loop announces nothing around a call (no lifecycle messages, no
+    visibility guidance), so a loop making one call publishes exactly these
+    four messages. The model is scripted: nothing leaves the process.
     """
+    from tests import cache_discipline_helpers as h
 
-    client = new_llm_client(**llm_config).set_system_message(
-        "You are an automated test agent.\n"
-        "You MUST call the tool named `echo` exactly once, passing the user's message as the `text` argument.\n"
-        "Do NOT reply directly without first calling the `echo` tool (even if you think you know the answer).\n"
-        "After the tool returns, reply with exactly the tool result text.",
-    )
+    replies = [
+        lambda: h.completion(calls=[("echo", {"text": "world"})]),
+        lambda: h.completion(content="WORLD"),
+    ]
+    with h.scripted(replies):
+        async with capture_events("ToolLoop") as captured_events:
+            await async_tool_loop_inner(
+                client=h.new_client("You are an automated test agent."),
+                message="world",
+                tools={"echo": echo},
+                interject_queue=asyncio.Queue(),
+                cancel_event=asyncio.Event(),
+                prune_tool_duplicates=True,
+                time_awareness=False,
+            )
 
-    pause_event = asyncio.Event()
-    pause_event.set()  # start un-paused
-
-    async with capture_events("ToolLoop") as captured_events:
-        await async_tool_loop_inner(
-            client=client,
-            message="world",
-            tools={"echo": echo},
-            interject_queue=asyncio.Queue(),
-            cancel_event=asyncio.Event(),
-            pause_event=pause_event,
-            prune_tool_duplicates=True,
-            time_awareness=False,
-        )
-
-    # Filter out internal runtime context events and check conversation flow.
-    # Captured events are already in chronological order (oldest first).
-    #
-    # Scheduling the `echo` call now also publishes two lifecycle events, in
-    # this order, that were not part of the pre-steer() event anatomy:
-    #   - a "## User Visibility Context" system message, injected once per
-    #     loop the first time any lifecycle tail message is about to appear
-    #     (ToolsData._ensure_visibility_guidance_injected) — without it the
-    #     model has no way to know a later `[steerable ...]`/`[progress ...]`
-    #     message isn't a real user request;
-    #   - a "[steerable <call_id>] echo started." user message
-    #     (ToolsData.record_tool_started), announcing the call_id so the
-    #     model can reference it via steer() instead of hallucinating one —
-    #     an evidence-driven fix from live testing (models reliably guessed
-    #     a plausible-looking id instead of reading the real one back from
-    #     their own tool_calls entry).
-    # Both fire exactly once per loop (not per pending<->idle transition),
-    # so a loop making a single tool call sees exactly these two extra
-    # messages, landing between the assistant's tool-call message and the
-    # tool result: user, assistant, system, user, tool, assistant.
     events = _filter_runtime_context(captured_events)
-    assert len(events) == 6
-
     roles = [evt.payload["message"]["role"] for evt in events]
-    assert roles == ["user", "assistant", "system", "user", "tool", "assistant"]
-
-    assert events[0].payload["message"]["content"] == "world"  # original user question
-    assert (
-        events[4].payload["message"]["content"].strip("'").strip('"') == "WORLD"
-    )  # tool result
-    assert (
-        events[5].payload["message"]["content"].strip("'").strip('"').upper() == "WORLD"
-    )  # final assistant reply (may either echo the user of the capitalized tool)
+    assert roles == ["user", "assistant", "tool", "assistant"]
+    assert events[0].payload["message"]["content"] == "world"
+    assert events[2].payload["message"]["content"].strip("'").strip('"') == "WORLD"
+    assert events[3].payload["message"]["content"] == "WORLD"
 
 
 # --------------------------------------------------------------------------- #
@@ -128,30 +96,46 @@ async def test_interjection_publishes_user_event(llm_config) -> None:
     """
     Verify that interjections are published to the event bus as user messages.
 
-    This test is purely about event bus mechanics, not model behavior.
-    Model response quality and instruction-following are tested separately
-    in test_interjections.py.
+    This test is purely about event bus mechanics, not model behavior, so
+    the model is scripted. Its first reply is held until the interjection is
+    submitted, so the interjection arrives while that model call runs; the
+    loop appends it at the next turn boundary and gives the model a turn
+    for it.
     """
-    client = new_llm_client(**llm_config)
     opening_turn = "Event bus check: this is the opening user turn."
     interjected_turn = "Event bus check: this is the interjected user turn."
-    client.set_system_message(
-        "You are in an automated event-bus test. "
-        "Briefly acknowledge each user message. Do not call tools.",
-    )
+    first_call_started = asyncio.Event()
+    release_first_reply = asyncio.Event()
 
-    async with capture_events("ToolLoop") as captured_events:
-        handle = start_async_tool_loop(
-            client=client,
-            message=opening_turn,
-            tools={},
-            max_consecutive_failures=1,
+    async def held_first_reply(_call):
+        first_call_started.set()
+        await release_first_reply.wait()
+        return reply("Acknowledged the opening turn.")
+
+    model = ScriptedModel(
+        actor=[held_first_reply, reply("Acknowledged the interjected turn.")],
+    )
+    with scripted(model):
+        client = new_llm_client(**llm_config)
+        client.set_system_message(
+            "You are in an automated event-bus test. "
+            "Briefly acknowledge each user message. Do not call tools.",
         )
 
-        await handle.interject(interjected_turn)
+        async with capture_events("ToolLoop") as captured_events:
+            handle = start_async_tool_loop(
+                client=client,
+                message=opening_turn,
+                tools={},
+                max_consecutive_failures=1,
+            )
 
-        # We don't need to verify model output - just let it complete
-        await handle.result()
+            await asyncio.wait_for(first_call_started.wait(), 30)
+            await handle.submit(interjected_turn)
+            release_first_reply.set()
+
+            result = await asyncio.wait_for(handle.result(), 30)
+    assert result == "Acknowledged the interjected turn."
 
     # Filter out internal runtime context events
     events = _filter_runtime_context(captured_events)
@@ -173,6 +157,12 @@ async def test_interjection_publishes_user_event(llm_config) -> None:
     assert any(
         "interjected user turn" in c for c in user_contents
     ), "Interjection should be recorded"
+    # The model's second turn is the one that sees the interjection.
+    second_users = [
+        str(m.get("content")) for m in model.calls[1].messages if m["role"] == "user"
+    ]
+    assert any("interjected user turn" in c for c in second_users)
+    assert model.kinds() == ["actor", "actor"]
 
 
 # --------------------------------------------------------------------------- #
@@ -198,26 +188,32 @@ async def test_tool_result_content_is_not_placeholder(llm_config) -> None:
         """A tool that returns a predictable result for testing."""
         return expected_result
 
-    client = new_llm_client(**llm_config).set_system_message(
-        "You are an automated test agent.\n"
-        "You MUST call the tool named `deterministic_tool` exactly once, "
-        "passing any text as the `input_text` argument.\n"
-        "After the tool returns, reply with the tool result.",
+    model = ScriptedModel(
+        actor=[
+            reply(calls=[("deterministic_tool", {"input_text": "x"})]),
+            reply(expected_result),
+        ],
     )
-
-    pause_event = asyncio.Event()
-    pause_event.set()
-
-    async with capture_events("ToolLoop") as captured_events:
-        await async_tool_loop_inner(
-            client=client,
-            message="please call the tool",
-            tools={"deterministic_tool": deterministic_tool},
-            interject_queue=asyncio.Queue(),
-            cancel_event=asyncio.Event(),
-            pause_event=pause_event,
-            prune_tool_duplicates=True,
+    with scripted(model):
+        client = new_llm_client(**llm_config).set_system_message(
+            "You are an automated test agent.\n"
+            "You MUST call the tool named `deterministic_tool` exactly once, "
+            "passing any text as the `input_text` argument.\n"
+            "After the tool returns, reply with the tool result.",
         )
+
+        async with capture_events("ToolLoop") as captured_events:
+            await asyncio.wait_for(
+                async_tool_loop_inner(
+                    client=client,
+                    message="please call the tool",
+                    tools={"deterministic_tool": deterministic_tool},
+                    interject_queue=asyncio.Queue(),
+                    cancel_event=asyncio.Event(),
+                    prune_tool_duplicates=True,
+                ),
+                60,
+            )
 
     # Filter out internal runtime context events
     events = _filter_runtime_context(captured_events)
@@ -247,6 +243,7 @@ async def test_tool_result_content_is_not_placeholder(llm_config) -> None:
     assert (
         expected_result in tool_content
     ), f"Tool content should contain '{expected_result}', got: {tool_content!r}"
+    assert model.kinds() == ["actor", "actor"]
 
 
 # --------------------------------------------------------------------------- #
@@ -258,215 +255,3 @@ def _extract_suffix(hierarchy_label: str) -> str | None:
     """Extract the trailing 4-hex-char suffix from a hierarchy_label."""
     m = _SUFFIX_RE.search(hierarchy_label)
     return m.group(1) if m else None
-
-
-@pytest.mark.asyncio
-@_handle_project
-async def test_ask_publishes_boundary_events(llm_config) -> None:
-    """ask() on a running handle should publish incoming + outgoing
-    ManagerMethod events with method='ask' and a unique calling_id."""
-    client = new_llm_client(**llm_config).set_system_message(
-        "You are a test agent. Acknowledge messages briefly.",
-    )
-
-    handle = start_async_tool_loop(
-        client=client,
-        message="do something",
-        tools={},
-        persist=True,
-        max_consecutive_failures=1,
-    )
-
-    # Wait for the loop to produce its first response
-    await _wait_for_next_assistant_response_event(client)
-
-    async with capture_events("ManagerMethod") as mm_events:
-        ask_handle = await handle.ask("What are you doing?")
-        await ask_handle.result()
-
-    EVENT_BUS.join_published()
-
-    # Stop the parent loop
-    await handle.stop()
-
-    ask_events = [
-        e
-        for e in mm_events
-        if e.payload.get("method") == "ask"
-        and "Question(" in e.payload.get("hierarchy_label", "")
-    ]
-
-    incoming = [e for e in ask_events if e.payload.get("phase") == "incoming"]
-    outgoing = [e for e in ask_events if e.payload.get("phase") == "outgoing"]
-
-    assert (
-        len(incoming) >= 1
-    ), f"Expected incoming ask boundary event, got {len(incoming)}"
-    assert (
-        len(outgoing) >= 1
-    ), f"Expected outgoing ask boundary event, got {len(outgoing)}"
-
-    # Both should share the same calling_id
-    ask_call_id = incoming[0].calling_id
-    assert ask_call_id, "ask boundary event should have a calling_id"
-    assert any(
-        e.calling_id == ask_call_id for e in outgoing
-    ), "Outgoing ask event should share the incoming calling_id"
-
-    # display_label should be present
-    assert incoming[0].payload.get("display_label") == "Answering question"
-
-
-@pytest.mark.asyncio
-@_handle_project
-async def test_ask_sibling_hierarchy(llm_config) -> None:
-    """The ask boundary hierarchy should be a sibling of the parent loop,
-    not nested under it. It shares the parent's parent lineage."""
-    client = new_llm_client(**llm_config).set_system_message(
-        "You are a test agent. Acknowledge messages briefly.",
-    )
-
-    handle = start_async_tool_loop(
-        client=client,
-        message="do something",
-        tools={},
-        loop_id="TestManager.act",
-        parent_lineage=[],
-        persist=True,
-        max_consecutive_failures=1,
-    )
-
-    await _wait_for_next_assistant_response_event(client)
-
-    async with capture_events("ManagerMethod") as mm_events:
-        ask_handle = await handle.ask("What status?")
-        await ask_handle.result()
-
-    EVENT_BUS.join_published()
-    await handle.stop()
-
-    incoming = [
-        e
-        for e in mm_events
-        if e.payload.get("method") == "ask"
-        and e.payload.get("phase") == "incoming"
-        and "Question(" in e.payload.get("hierarchy_label", "")
-    ]
-    assert incoming, "No incoming ask boundary event found"
-
-    hierarchy = incoming[0].payload.get("hierarchy", [])
-    # Parent loop_id = "TestManager.act" with parent_lineage = []
-    # So parent's hierarchy = ["TestManager.act"]
-    # Sibling lineage = parent's parent = [] (nothing above)
-    # Ask hierarchy = [*sibling_lineage, "Question(...)"] = ["Question(...)"]
-    assert (
-        len(hierarchy) == 1
-    ), f"Expected sibling hierarchy of length 1, got {hierarchy}"
-    assert hierarchy[0].startswith(
-        "Question(",
-    ), f"Expected Question(...), got {hierarchy[0]}"
-
-
-@pytest.mark.asyncio
-@_handle_project
-async def test_ask_multiple_distinguishable(llm_config) -> None:
-    """Two ask() calls on the same handle should produce distinct
-    calling_ids and hierarchy_labels."""
-    client = new_llm_client(**llm_config).set_system_message(
-        "You are a test agent. Acknowledge messages briefly.",
-    )
-
-    handle = start_async_tool_loop(
-        client=client,
-        message="do something",
-        tools={},
-        persist=True,
-        max_consecutive_failures=1,
-    )
-
-    await _wait_for_next_assistant_response_event(client)
-
-    async with capture_events("ManagerMethod") as mm_events:
-        ask1 = await handle.ask("Question one?")
-        await ask1.result()
-        ask2 = await handle.ask("Question two?")
-        await ask2.result()
-
-    EVENT_BUS.join_published()
-    await handle.stop()
-
-    incoming = [
-        e
-        for e in mm_events
-        if e.payload.get("method") == "ask"
-        and e.payload.get("phase") == "incoming"
-        and "Question(" in e.payload.get("hierarchy_label", "")
-    ]
-    assert len(incoming) >= 2, f"Expected 2 incoming ask events, got {len(incoming)}"
-
-    call_ids = [e.calling_id for e in incoming]
-    assert len(set(call_ids)) == len(
-        call_ids,
-    ), f"ask() calling_ids should be unique, got: {call_ids}"
-
-    suffixes = [_extract_suffix(e.payload.get("hierarchy_label", "")) for e in incoming]
-    assert len(set(suffixes)) == len(
-        suffixes,
-    ), f"ask() hierarchy_label suffixes should be unique, got: {suffixes}"
-
-
-@pytest.mark.asyncio
-@_handle_project
-async def test_ask_boundary_suffix_matches_sub_loop(llm_config) -> None:
-    """The ask boundary's hierarchy_label suffix should match the
-    sub-loop's ToolLoop hierarchy_label suffix."""
-    client = new_llm_client(**llm_config).set_system_message(
-        "You are a test agent. Acknowledge messages briefly.",
-    )
-
-    handle = start_async_tool_loop(
-        client=client,
-        message="do something",
-        tools={},
-        persist=True,
-        max_consecutive_failures=1,
-    )
-
-    await _wait_for_next_assistant_response_event(client)
-
-    async with (
-        capture_events("ManagerMethod") as mm_events,
-        capture_events("ToolLoop") as tl_events,
-    ):
-        ask_handle = await handle.ask("What are you doing?")
-        await ask_handle.result()
-
-    EVENT_BUS.join_published()
-    await handle.stop()
-
-    # Find the ask boundary incoming event
-    ask_incoming = [
-        e
-        for e in mm_events
-        if e.payload.get("method") == "ask"
-        and e.payload.get("phase") == "incoming"
-        and "Question(" in e.payload.get("hierarchy_label", "")
-    ]
-    assert ask_incoming, "No incoming ask boundary event found"
-
-    boundary_suffix = _extract_suffix(
-        ask_incoming[0].payload.get("hierarchy_label", ""),
-    )
-    assert boundary_suffix, "Could not extract suffix from ask boundary event"
-
-    # Find ToolLoop events from the ask sub-loop (contain "Question(" in hierarchy_label)
-    ask_tl_events = [
-        e for e in tl_events if "Question(" in e.payload.get("hierarchy_label", "")
-    ]
-
-    if ask_tl_events:
-        tl_suffix = _extract_suffix(ask_tl_events[0].payload.get("hierarchy_label", ""))
-        assert tl_suffix == boundary_suffix, (
-            f"Suffix mismatch: boundary=({boundary_suffix}), "
-            f"sub-loop ToolLoop=({tl_suffix})"
-        )

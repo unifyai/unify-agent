@@ -20,6 +20,7 @@ from unify.function_manager.primitives import (
 from unify.function_manager.primitives.registry import get_primitive_sources
 from unify.function_manager.function_manager import FunctionManager
 from unify.actor.environments import ActorEnvironment
+from tests.actor.code_act.library_world import install_fake_embed
 from tests.helpers import _handle_project
 
 _ACTOR_ACT = "primitives.actor.act"
@@ -96,8 +97,9 @@ def test_catalog_reads_only_scoped_managers(scoped_function_manager_factory):
 
 
 @_handle_project
-def test_search_functions_respects_scope(scoped_function_manager_factory):
+def test_search_functions_respects_scope(scoped_function_manager_factory, monkeypatch):
     """search_functions() only returns primitives for scoped classes."""
+    install_fake_embed(monkeypatch.setattr)
     fm = scoped_function_manager_factory(PrimitiveScope.single("actor"))
 
     results = fm.search_functions(query="delegate work to a sub-actor", n=20)

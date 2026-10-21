@@ -11,6 +11,10 @@ _FM_METHOD_NAMES = (
     "add_functions",
     "delete_function",
     "reconcile_dependencies",
+    # added to the actor's tools only under UNIFY_FUNCTION_PATCH /
+    # UNIFY_FUNCTION_CASES, so a run with those switches on can build them
+    "patch_function",
+    "retire_case",
 )
 
 

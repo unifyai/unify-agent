@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Type
 
 if TYPE_CHECKING:
     from .actor.base import BaseActor
-    from .conversation_manager.base import BaseConversationManagerHandle
+    from .legacy.conversation_manager.base import BaseConversationManagerHandle
     from .function_manager.base import BaseFunctionManager
     from .guidance_manager.base import BaseGuidanceManager
     from .function_manager.primitives.scope import PrimitiveScope
@@ -196,8 +196,14 @@ class ManagerRegistry:
             if simulation_guidance is not None:
                 ctor_kwargs["simulation_guidance"] = simulation_guidance
 
-        # 5. Create instance
-        instance = klass(**ctor_kwargs)
+        # 5. Create instance. A singleton class's metaclass hands back its
+        # registered instance from a plain call, so a forced new instance
+        # is built past it: otherwise a caller scoping its "fresh" manager
+        # (a sub-actor's guidance scope) would scope everyone's.
+        if _force_new and isinstance(klass, SingletonABCMeta):
+            instance = ABCMeta.__call__(klass, **ctor_kwargs)
+        else:
+            instance = klass(**ctor_kwargs)
 
         # 6. Cache (unless forced)
         if not _force_new:
@@ -350,7 +356,15 @@ class ManagerRegistry:
         _force_new: bool = False,
         **kwargs: Any,
     ) -> "BaseConversationManagerHandle":
-        """Get the ConversationManagerHandle singleton (respects IMPL settings)."""
+        """Get the ConversationManagerHandle singleton (respects IMPL settings).
+
+        The legacy conversation manager is the only caller. Its classes are
+        registered here, on first use, and not in ``_populate_registry``, so
+        that resolving the actor's managers never imports ``unify.legacy``.
+        """
+        cls._ensure_populated()
+        if ("conversation", "real") not in cls._classes:
+            _register_legacy_conversation_manager()
         return cls.get(
             "conversation",
             description=description,
@@ -468,19 +482,6 @@ def _populate_registry() -> None:
     ManagerRegistry.register_class("actor", "simulated", SimulatedActor)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # ConversationManager implementations
-    # ─────────────────────────────────────────────────────────────────────────
-    from .conversation_manager.handle import ConversationManagerHandle
-    from .conversation_manager.simulated import SimulatedConversationManagerHandle
-
-    ManagerRegistry.register_class("conversation", "real", ConversationManagerHandle)
-    ManagerRegistry.register_class(
-        "conversation",
-        "simulated",
-        SimulatedConversationManagerHandle,
-    )
-
-    # ─────────────────────────────────────────────────────────────────────────
     # GuidanceManager implementations
     # ─────────────────────────────────────────────────────────────────────────
     from .guidance_manager.guidance_manager import GuidanceManager
@@ -497,3 +498,18 @@ def _populate_registry() -> None:
 
     ManagerRegistry.register_class("functions", "real", FunctionManager)
     ManagerRegistry.register_class("functions", "simulated", SimulatedFunctionManager)
+
+
+def _register_legacy_conversation_manager() -> None:
+    """Register the legacy ConversationManagerHandle implementations."""
+    from .legacy.conversation_manager.handle import ConversationManagerHandle
+    from .legacy.conversation_manager.simulated import (
+        SimulatedConversationManagerHandle,
+    )
+
+    ManagerRegistry.register_class("conversation", "real", ConversationManagerHandle)
+    ManagerRegistry.register_class(
+        "conversation",
+        "simulated",
+        SimulatedConversationManagerHandle,
+    )

@@ -1,14 +1,17 @@
 """Symbolic: vectors are computed once per text and embedder, then served from
 the local cache, and either embedder ranks rows by meaning.
 
-The ``embedders`` fixture runs a test once through OpenRouter and once through
-the local model, which downloads its weights on the first run.
+The ``embedders`` fixture runs a test once through the OpenRouter path, its
+endpoint stubbed (the request is built and the reply read as the real call
+does; the vectors are the local model's, so ranking keeps its meaning), and
+once through the local model, whose weights the test host has cached.
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
 
+import httpx
 import numpy as np
 import pytest
 
@@ -18,9 +21,28 @@ from unify.common.semantic_search import rank_by_similarity
 from unify.settings import SETTINGS
 
 
-@pytest.fixture(params=[False, True], ids=["openrouter", "local"])
+@pytest.fixture(
+    params=[
+        pytest.param(False, id="openrouter"),
+        pytest.param(True, id="local"),
+    ],
+)
 def embedders(request, monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_EMBEDDINGS", request.param)
+    if not request.param:
+        # OpenRouter's embeddings endpoint, stubbed: it answers each batch with
+        # the local model's vectors, listed out of order as the real endpoint
+        # may list them
+        def post(url, *, headers, json, timeout):
+            vectors = embeddings._local(list(json["input"]))
+            data = [{"index": i, "embedding": v.tolist()} for i, v in enumerate(vectors)]
+            return httpx.Response(
+                200,
+                json={"data": data[::-1]},
+                request=httpx.Request("POST", url),
+            )
+
+        monkeypatch.setattr(embeddings.httpx, "post", post)
 
 
 def _functions() -> list[dict]:
@@ -68,7 +90,30 @@ def test_repeated_texts_come_from_the_cache(embedders, monkeypatch):
     assert (embed(texts) == first).all()
 
 
-def test_embedders_never_share_vectors(monkeypatch):
+def _unit_vectors(dim: int):
+    """A stand-in ``compute`` returning unit vectors of *dim* (the shape of
+    the embedder it replaces), so the cache test needs no key or weights."""
+
+    def compute(texts: list[str]) -> np.ndarray:
+        vectors = np.zeros((len(texts), dim), dtype=np.float32)
+        vectors[:, 0] = 1.0
+        return vectors
+
+    return compute
+
+
+def test_embedders_never_share_vectors(monkeypatch, tmp_path):
+    """The cache keys a vector by its embedder: after switching embedders the
+    same text is embedded afresh, never served the other one's vector. Each
+    embedder's model label is kept and only its computation is faked, in a
+    cache file of the test's own."""
+    monkeypatch.setenv("UNIFY_EMBED_CACHE", str(tmp_path / "embeddings.sqlite"))
+    monkeypatch.setattr(
+        embeddings,
+        "OPENROUTER",
+        replace(OPENROUTER, compute=_unit_vectors(1536)),
+    )
+    monkeypatch.setattr(embeddings, "LOCAL", replace(LOCAL, compute=_unit_vectors(384)))
     text = ["Archive the quarterly board minutes."]
     monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_EMBEDDINGS", False)
     remote = embed(text)

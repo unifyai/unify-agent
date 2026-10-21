@@ -45,27 +45,17 @@ uv sync --all-groups
 cp .env.example .env      # add your provider key
 ```
 
-Then start chatting:
-
-```bash
-.venv/bin/python -m unify
-```
-
-```text
-> Here's the benchmark spreadsheet, which configs regressed?
-> Turn that regression check into something you can rerun next week.
-> Run it against ~/exports/run-42.csv and plot the deltas.
-```
-
-To measure the actor on its own, without the conversation loop above it, hand it one request directly:
+Then hand the actor a request:
 
 ```bash
 .venv/bin/python -m unify act "Count the rows in ~/exports/run-42.csv"
 ```
 
-Progress streams to stderr and the result to stdout, so it slots into a benchmark runner. The request can come from stdin, `--json` adds the token accounting, `--no-store` skips the storage review, `--persist` keeps the sandbox alive for follow-up lines, and a question the actor asks is answered by typing at the terminal. This is the like-for-like unit against single-loop harnesses such as Prime Agent; the conversation loop is what unify adds on top.
+`unify` with no subcommand runs `act` on a request read from stdin. `unify chat`, the old conversation loop (`unify/legacy/`), is legacy and unsupported: it only says so and exits.
 
-Everything the assistant keeps lives under `~/.unify/` (`UNIFY_HOME`): the SQLite store, the embeddings cache, the workspace environment, the `workspace/` directory the actor reads and writes files in, and the runtime logs. Delete the directory and you have a fresh assistant. `/help` inside the chat lists the few slash commands (attach a file, quit); `unify --debug` streams the runtime logs to the terminal.
+Progress streams to stderr and the result to stdout, so it slots into a benchmark runner. The request can come from stdin, `--json` adds the token accounting, `--no-store` skips the storage review, `--persist` keeps the sandbox alive for follow-up lines, and a question the actor asks is answered by typing at the terminal. This is the like-for-like unit against single-loop harnesses such as Prime Agent.
+
+Everything the assistant keeps lives under `~/.unify/` (`UNIFY_HOME`): the SQLite store, the embeddings cache, the workspace environment, the `workspace/` directory the actor reads and writes files in, and the runtime logs. Delete the directory and you have a fresh assistant. `unify act --debug` streams the runtime logs to the terminal.
 
 <details>
 <summary>Configuration</summary>
@@ -216,8 +206,8 @@ See [tests/README.md](tests/README.md) for the philosophy and the runner.
 | `unify/common/_async_tool/loop.py` | The async tool loop engine: nesting, steering, context propagation |
 | `unify/actor/code_act_actor.py` | CodeAct: plan generation, sandbox, the storage review |
 | `unify/function_manager/steering.py` | Steering code that is already running |
-| `unify/conversation_manager/conversation_manager.py` | The slow brain: debouncing, in-flight actions, event loop |
-| `unify/conversation_manager/domains/brain_action_tools.py` | How the brain starts, steers and tracks concurrent work |
+| `unify/legacy/conversation_manager/conversation_manager.py` | The slow brain: debouncing, in-flight actions, event loop |
+| `unify/legacy/conversation_manager/domains/brain_action_tools.py` | How the brain starts, steers and tracks concurrent work |
 | `unify/db.py` | The local store: the five tables, the two views, the read-only path for model-written SQL |
 | `unify/environment.py` | The workspace environment: one venv, packages installed once |
 
@@ -225,7 +215,7 @@ See [tests/README.md](tests/README.md) for the philosophy and the runner.
 
 ```text
 unify/
-├── unify/             # The harness: cli, actor, conversation_manager, function_manager, guidance_manager, db, common
+├── unify/             # The harness: cli, actor, function_manager, guidance_manager, db, common, legacy
 ├── tests/             # Pytest suite (cached LLM responses, per-session SQLite store)
 ├── scripts/           # Skill import, git hooks
 └── docs/              # Design writeups

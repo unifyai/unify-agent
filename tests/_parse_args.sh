@@ -8,7 +8,7 @@
 #
 # After calling parse_test_args, these variables are populated:
 #   SERIAL, TIMEOUT, SESSION_TIMEOUT, NAME_PATTERN, EVAL_ONLY, SYMBOLIC_ONLY,
-#   DETERMINISTIC_ONLY, REPEAT_COUNT, MAX_JOBS,
+#   DETERMINISTIC_ONLY, KEYLESS, LIVE_ONLY, REPEAT_COUNT, MAX_JOBS,
 #   ENV_OVERRIDES[], PYTEST_EXTRA_ARGS[], PYTEST_COLLECTION_ARGS[],
 #   POSITIONAL_ARGS[]
 #
@@ -37,6 +37,8 @@ parse_test_args() {
   EVAL_ONLY=0
   SYMBOLIC_ONLY=0
   DETERMINISTIC_ONLY=0
+  KEYLESS=0
+  LIVE_ONLY=0
   REPEAT_COUNT=1
   MAX_JOBS=$_PARSE_ARGS_NUM_CORES
   ENV_OVERRIDES=()
@@ -104,6 +106,15 @@ parse_test_args() {
       --symbolic-only)
         SYMBOLIC_ONLY=1
         shift
+        ;;
+      --keyless)
+        # Every run is keyless: no test reaches a model provider or the
+        # network (tests/conftest.py). Kept so that older commands parse.
+        shift
+        ;;
+      --live-only)
+        echo "Error: --live-only is gone: no test reaches a model provider; tests script the model (tests/scripted_model.py)." >&2
+        exit 2
         ;;
       --repeat)
         if [[ -n "${2-}" && "$2" =~ ^[0-9]+$ && "$2" -ge 1 ]]; then
@@ -190,6 +201,10 @@ parse_test_args() {
     echo "Error: --eval-only, --symbolic-only and --deterministic-only are mutually exclusive." >&2
     return 2
   fi
+  if (( KEYLESS + LIVE_ONLY > 1 )); then
+    echo "Error: --keyless and --live-only are mutually exclusive." >&2
+    return 2
+  fi
 
   return 0
 }
@@ -221,6 +236,8 @@ Options:
   --eval-only          Run only @pytest.mark.eval tests
   --symbolic-only      Run only non-eval tests
   --deterministic-only Run only tests with no model in the loop
+  --keyless            Accepted and ignored: every run refuses model-provider and
+                       network calls (tests/conftest.py)
   --repeat N           Run each test N times
   -h, --help           Show this help
   --                   Pass remaining args directly to pytest
@@ -234,6 +251,8 @@ Examples:
   $script_name -j 8 tests/              # Limit to 8 concurrent
   $script_name --eval-only tests/       # Only eval tests
   $script_name --no-cache tests/foo.py  # Fresh LLM inference
+  $script_name --keyless tests/async_tool_loop    # Without a provider key
+  $script_name --live-only tests/async_tool_loop  # The key-needing tests only
   $script_name -e UNIFY_STORE_PATH=/tmp/shared.sqlite tests/  # One shared store
   $script_name tests/ -- -v --tb=short  # Pass args to pytest
   $script_name tests/ -- -k 'gpt-5'     # Filter by test name pattern

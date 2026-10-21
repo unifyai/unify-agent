@@ -1,0 +1,239 @@
+"""Item records of a library-mode memory library: harness-written git notes, one map per library commit.
+
+The map of library commit C is C's note on ``refs/notes/items``: a header line, then one JSON line per item
+(sorted by id), each a whole record. The harness writes it once, when a consolidation first records C, and never
+changes it, so every copy of C (the actor's export, the writer's box) renders the same bytes (cache rule).
+``main`` is never rebased, so the notes stay attached. Each record names the commit that last changed its
+item (``changed_at``).
+
+A commit no consolidation recorded (a crash between a merge and its record, or history from before library mode) reads
+the map of its nearest recorded first-parent ancestor (:func:`records_at`): statuses carry forward, and an item
+the map does not hold is ``experimental``.
+
+Models never write these records. The writer and the actor read them through ``memory.show``
+(``.memory/items.json``, one of the generated files).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from collections.abc import Callable, Mapping
+
+from .gitio import GitError, Repo
+from .library_index import EFFECTS, STATUSES
+
+NOTES_REF = "items"
+RECORD_VERSION = 1
+SCAN = 200
+_HEADER = "items_map"
+_USE_TOTAL_KEYS = (
+    "episodes",
+    "uses",
+    "seen",
+    "errors",
+    "refused",
+    "negative_signals",
+    "positive_signals",
+)
+
+
+def empty_record(item: str, kind: str) -> dict:
+    """A record with the harness's own fields: why a status was given (``status_rule``, ``status_reason``,
+    ``status_evidence``), the commit that last changed the item, its example call (``{"test", "line", "call"}``:
+    a call quoted from its tests that the gate picked, None: none) and source channels, its
+    effect as the gate derived it from its covers (``read``, ``write``, ``unknown``; None: not derived), and
+    the bisect result with the rollback proposal. ``uid`` is the item's persistent identity, assigned once at its
+    first record and carried across renames and aliases (:func:`new_uid`); ``renamed_from`` lists the ids it had
+    before, oldest first."""
+    return {
+        "item": item,
+        "uid": None,
+        "renamed_from": [],
+        "kind": kind,
+        "status": "experimental",
+        "status_rule": None,
+        "status_reason": None,
+        "status_evidence": [],
+        "changed_at": None,
+        "provenance": {"episodes": [], "pass": None, "failure_only": False},
+        "verification": None,
+        "use": {},
+        "alias_of": None,
+        "example": None,
+        "effect": None,
+        "source_channels": [],
+        "bisect": None,
+        "rollback": None,
+    }
+
+
+def new_uid(item: str, changed_at: str | None) -> str:
+    """A fresh persistent identity for *item* first recorded at library commit *changed_at*. Derived, not random,
+    so that recomputing a map gives the same bytes; after that it is copied, never recomputed.
+    """
+    return hashlib.sha256(f"{item}\0{changed_at or ''}".encode()).hexdigest()[:16]
+
+
+def _line(obj: dict) -> str:
+    # ASCII only: a line separator inside a value (U+2028) stays escaped, so git notes' lines are the records
+    return json.dumps(
+        obj,
+        sort_keys=True,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def write_records(repo: Repo, sha: str, records: Mapping[str, dict]) -> bool:
+    """Record *records* as the map of library commit *sha*. Returns False, writing nothing, when *sha* already
+    has a map: a commit's map is never rewritten. ``ValueError`` (nothing written) for a record whose ``item``
+    is not its key or whose status is unknown."""
+    for item, rec in records.items():
+        if rec.get("item") != item:
+            raise ValueError(f"the record under {item!r} names {rec.get('item')!r}")
+        if rec.get("status") not in STATUSES:
+            raise ValueError(f"unknown status {rec.get('status')!r} for {item}")
+    if repo.notes(sha, ref=NOTES_REF):
+        return False
+    lines = [_line({_HEADER: RECORD_VERSION, "commit": sha, "count": len(records)})]
+    lines += [_line(records[i]) for i in sorted(records)]
+    repo.append_note_lines(sha, lines, NOTES_REF)
+    return True
+
+
+def read_records(repo: Repo, sha: str) -> dict[str, dict] | None:
+    """The map recorded on *sha*, by item id, or None when *sha* has none (or its header is not one)."""
+    lines = repo.notes(sha, ref=NOTES_REF)
+    if not lines:
+        return None
+    try:
+        head = json.loads(lines[0])
+    except ValueError:
+        return None
+    if not isinstance(head, dict) or head.get(_HEADER) != RECORD_VERSION:
+        return None
+    out: dict[str, dict] = {}
+    for ln in lines[1:]:
+        try:
+            rec = json.loads(ln)
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and isinstance(rec.get("item"), str):
+            out[rec["item"]] = rec
+    return dict(sorted(out.items()))
+
+
+def records_at(
+    repo: Repo,
+    sha: str,
+    *,
+    scan: int = SCAN,
+) -> tuple[dict[str, dict], str | None]:
+    """The map that holds at library commit *sha*: its own, else its nearest recorded first-parent ancestor's
+    within *scan* commits, with the commit it came from; ``({}, None)`` when none is recorded.
+    """
+    try:
+        shas = repo.run(
+            "rev-list",
+            "--first-parent",
+            f"--max-count={scan}",
+            sha,
+        ).split()
+    except GitError:
+        return {}, None
+    for c in shas:
+        recs = read_records(repo, c)
+        if recs is not None:
+            return recs, c
+    return {}, None
+
+
+def status_of(records: Mapping[str, dict]) -> Callable[[str], str]:
+    """A ``status_of`` function: an item's recorded status, ``experimental`` without a (valid) one."""
+
+    def get(item: str) -> str:
+        rec = records.get(item)
+        s = rec.get("status") if isinstance(rec, dict) else None
+        return s if s in STATUSES else "experimental"
+
+    return get
+
+
+def effect_of(records: Mapping[str, dict]) -> Callable[[str], str | None]:
+    """An item's recorded effect (``read``, ``write`` or ``unknown``), None when none was derived."""
+
+    def get(item: str) -> str | None:
+        rec = records.get(item)
+        e = rec.get("effect") if isinstance(rec, dict) else None
+        return e if e in EFFECTS else None
+
+    return get
+
+
+def episodes_of(records: Mapping[str, dict]) -> Callable[[str], int | None]:
+    """How many recorded episodes a function's returning example calls ran on (its verification record's
+    ``examples.episodes``), None when none was recorded: evidence shown beside the function, never a gate.
+    """
+
+    def get(item: str) -> int | None:
+        rec = records.get(item)
+        v = rec.get("verification") if isinstance(rec, dict) else None
+        ex = v.get("examples") if isinstance(v, dict) else None
+        eps = ex.get("episodes") if isinstance(ex, dict) else None
+        return len(eps) if isinstance(eps, list) else None
+
+    return get
+
+
+def verification_summary(record: Mapping | None) -> dict | None:
+    """What ``memory.show`` prints of the verification record: flat, one value per key."""
+    v = record.get("verification") if isinstance(record, Mapping) else None
+    if not isinstance(v, dict):
+        return None
+    out: dict = {}
+    if "tests" in v:
+        out["tests"] = len(v["tests"]) if isinstance(v["tests"], list) else v["tests"]
+    for key in ("drawn_inputs_read", "exact_assertions"):
+        if key in v:
+            out[key] = v[key]
+    ce = v.get("cross_episode")  # records written before examples replaced it
+    if isinstance(ce, dict):
+        out["cross_episode"] = f"{ce.get('ok', 0)}/{ce.get('ran', 0)} ok"
+    ex = v.get("examples")
+    if isinstance(ex, dict):
+        episodes = ex.get("episodes") if isinstance(ex.get("episodes"), list) else []
+        out["examples"] = (
+            f"{ex.get('calls', 0)} calls, {ex.get('grounded_calls', 0)} on recorded values from "
+            f"{len(episodes)} episodes"
+        )
+        pert = ex.get("perturbation")
+        if isinstance(pert, dict):
+            out["unseen_values"] = (
+                f"{pert.get('judged', 0)} calls judged on {pert.get('fields', 0)} fields"
+            )
+    m = v.get("mutation")
+    out["mutation"] = (
+        f"{m.get('killed', 0)}/{m.get('total', 0)} killed"
+        if isinstance(m, dict)
+        else "not run"
+    )
+    return out
+
+
+def use_totals(record: Mapping | None) -> dict:
+    """What ``memory.show`` prints of the use record: the totals over every library commit."""
+    use = record.get("use") if isinstance(record, Mapping) else None
+    use = use if isinstance(use, dict) else {}
+    out = {"commits": len(use), **dict.fromkeys(_USE_TOTAL_KEYS, 0)}
+    for row in use.values():
+        if isinstance(row, dict):
+            for key in _USE_TOTAL_KEYS:
+                value = row.get(key, 0)
+                out[key] += (
+                    value
+                    if isinstance(value, int) and not isinstance(value, bool)
+                    else 0
+                )
+    return out

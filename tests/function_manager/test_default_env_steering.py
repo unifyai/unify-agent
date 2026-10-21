@@ -5,8 +5,8 @@ without going through the sandbox, so it needs its own probes. Without them the
 same stored function is correctable or not depending purely on which route
 reached it — via the actor's synthesised preamble, or called here directly.
 
-The mechanism is asserted with the patch supplied directly; whether a real
-model writes a usable one on this path is the eval test at the end.
+The mechanism is asserted with the patch supplied directly. (The eval test
+of a real model writing the patch went with ``steering_patcher.py`` in PR C.)
 """
 
 from __future__ import annotations
@@ -24,6 +24,14 @@ from unify.function_manager.steering import (
     current_session,
     use_session,
 )
+
+
+@pytest.fixture(autouse=True)
+def _python_in_process(monkeypatch):
+    """Python in process (the function manager's in-process mode, for non-actor callers), the mode these tests exercise: stored functions run in this process. With the sandboxed worker nothing runs here (tests/actor/code_act/test_bind_load_confinement.py)."""
+
+    monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: False)
+
 
 IMPLEMENTATION = (
     "async def notify_vendors(vendors):\n"
@@ -243,6 +251,41 @@ async def test_steering_composes_with_context_forwarding():
     assert "us-gamma" not in comms.sent
 
 
+@pytest.mark.asyncio
+async def test_the_author_sees_how_a_direct_call_was_made():
+    """A bare definition does not show its arguments; the author must be told.
+
+    The sandbox route steers a synthesised block that ends in the call, so its
+    arguments are in the source. This route steers the definition alone, and
+    without the call a correction about *which* vendors has to guess what a
+    vendor is.
+    """
+    comms = _Comms()
+    queue: asyncio.Queue = asyncio.Queue()
+    seen: dict = {}
+
+    async def _recording_author(*, interjections, session):
+        seen["invocation"] = session.invocation
+        seen["completed"] = session.cache.completed_calls()
+        return await _author(interjections=interjections, session=session)
+
+    session = SteeringSession(interject_q=queue, patch_author=_recording_author)
+    steerer = _patch_after(comms, 2, queue, "only the EU vendors")
+
+    with use_session(session):
+        out = await _execute(_manager(), comms)
+    await steerer
+
+    assert out["error"] is None, out["error"]
+    assert seen["invocation"] == f"notify_vendors(vendors={VENDORS!r})"
+    assert seen["completed"] == [
+        "comms.send('eu-alpha')",
+        "comms.send('us-beta')",
+    ]
+    # Scoped to the call: nothing describes a call that has returned.
+    assert session.invocation == ""
+
+
 # ── the globals must be left as they were found ────────────────────────────
 @pytest.mark.asyncio
 async def test_stateful_globals_are_restored_after_a_steered_call():
@@ -290,30 +333,3 @@ async def test_primitives_are_restored_when_the_session_had_none():
     from unify.function_manager.steering import MemoisedDispatch
 
     assert not isinstance(stored, MemoisedDispatch)
-
-
-# ── a real model, on this path ─────────────────────────────────────────────
-@pytest.mark.eval
-@pytest.mark.asyncio
-async def test_real_model_corrects_a_directly_executed_function():
-    """Same judgement question as the sandbox path, different entry point."""
-    from unify.function_manager.steering_patcher import build_patch_author
-
-    comms = _Comms()
-    queue: asyncio.Queue = asyncio.Queue()
-    session = SteeringSession(interject_q=queue, patch_author=build_patch_author())
-    steerer = _patch_after(
-        comms,
-        2,
-        queue,
-        "Hold on — only the EU vendors should be contacted, not the US ones.",
-    )
-
-    with use_session(session):
-        out = await _execute(_manager(), comms)
-    await steerer
-
-    assert out["error"] is None, out["error"]
-    assert session.retries >= 1, "the correction never reached the function"
-    assert "us-gamma" not in comms.sent
-    assert len(comms.sent) == len(set(comms.sent)), comms.sent

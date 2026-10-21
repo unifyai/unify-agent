@@ -3,11 +3,27 @@ import pytest
 import unillm
 from typing import Dict, Callable
 
+from tests.scripted_model import ScriptedModel, reply, scripted
 from unify.common.async_tool_loop import start_async_tool_loop
 from unify.common.tool_spec import ToolSpec
 from unify.common.llm_client import new_llm_client
 
-pytestmark = pytest.mark.llm_call
+
+def _offered(call) -> set[str]:
+    """The tools a request offered, apart from the loop's own
+    ``compress_context``. The loop advertises one fixed list for the whole
+    session; a ``tool_policy`` decides which of those a turn allows, and a
+    call to any other is refused."""
+    return set(call.tool_names) - {"compress_context"}
+
+
+def _tool_reply(client, call_id: str) -> str:
+    (msg,) = [
+        m
+        for m in client.messages
+        if m.get("role") == "tool" and m.get("tool_call_id") == call_id
+    ]
+    return str(msg["content"])
 
 
 # small helper: pre-seed an assistant tool_call so preflight backfill schedules it immediately
@@ -161,32 +177,36 @@ async def test_prunes_over_quota_tool_calls(llm_config, monkeypatch):
         counter["n"] += 1
         return "ok"
 
-    client = new_llm_client(**llm_config)
-    # Instruct the real LLM to attempt three calls; the loop will prune to 2
-    client.set_system_message(
-        "You are running inside an automated test. Your FIRST assistant message "
-        "MUST contain exactly three parallel tool_calls to `short_tool` "
-        "(three separate entries in the tool_calls array of one message). "
-        "Do not call the tool once per turn. After emitting those three "
-        "tool_calls, finish shortly.",
+    # The scripted model makes three calls in one turn; the loop prunes to 2.
+    model = ScriptedModel(
+        actor=[reply(calls=[("short_tool", {})] * 3), reply("done")],
     )
+    with scripted(model):
+        client = new_llm_client(**llm_config)
+        client.set_system_message(
+            "You are running inside an automated test. Your FIRST assistant message "
+            "MUST contain exactly three parallel tool_calls to `short_tool` "
+            "(three separate entries in the tool_calls array of one message). "
+            "Do not call the tool once per turn. After emitting those three "
+            "tool_calls, finish shortly.",
+        )
 
-    handle = start_async_tool_loop(
-        client,
-        message="start",
-        tools={
-            # hidden per-loop quota of 2 total calls
-            "short_tool": ToolSpec(fn=short_tool, max_total_calls=2),
-        },
-        prune_tool_duplicates=False,  # allow multiple identical tool_calls for this test
-        max_parallel_tool_calls=3,
-        timeout=60,
-        max_steps=100,
-        raise_on_limit=False,
-        enable_compression=False,
-    )
+        handle = start_async_tool_loop(
+            client,
+            message="start",
+            tools={
+                # hidden per-loop quota of 2 total calls
+                "short_tool": ToolSpec(fn=short_tool, max_total_calls=2),
+            },
+            prune_tool_duplicates=False,  # allow multiple identical tool_calls for this test
+            max_parallel_tool_calls=3,
+            timeout=60,
+            max_steps=100,
+            raise_on_limit=False,
+            enable_compression=False,
+        )
 
-    await handle.result()
+        assert await asyncio.wait_for(handle.result(), 60) == "done"
 
     # Tool ran exactly twice
     assert counter["n"] == 2
@@ -215,6 +235,7 @@ async def test_prunes_over_quota_tool_calls(llm_config, monkeypatch):
         tc.get("function", {}).get("name") == "short_tool"
         for tc in first_asst_with_short_tool["tool_calls"]
     )
+    assert model.kinds() == ["actor", "actor"]
 
 
 # ── 8. pruning over-quota tool calls across serial turns ────────────────────
@@ -237,29 +258,39 @@ async def test_prunes_over_quota_serial_calls(llm_config, monkeypatch):
         counter["n"] += 1
         return "ok"
 
-    client = new_llm_client(**llm_config)
-    # Instruct the model how to conclude after the allowed calls
-    client.set_system_message(
-        "You are part of an automated test. If tools are available, request the tool `short_tool` exactly once per turn. "
-        "After at most two such tool calls have been made, do not request any more tools and reply exactly with the word 'done'.",
+    # Three turns each call short_tool once; the third call is over the quota.
+    model = ScriptedModel(
+        actor=[
+            reply(calls=[("short_tool", {})]),
+            reply(calls=[("short_tool", {})]),
+            reply(calls=[("short_tool", {})]),
+            reply("done"),
+        ],
     )
-    # Let real LLM drive; instruction above ensures at most two calls then 'done'
+    with scripted(model):
+        client = new_llm_client(**llm_config)
+        client.set_system_message(
+            "You are part of an automated test. If tools are available, request the tool `short_tool` exactly once per turn. "
+            "After at most two such tool calls have been made, do not request any more tools and reply exactly with the word 'done'.",
+        )
 
-    handle = start_async_tool_loop(
-        client,
-        message="start",
-        tools={
-            "short_tool": ToolSpec(fn=short_tool, max_total_calls=2),
-        },
-        # Force exactly one tool call per turn for the first two turns
-        tool_policy=lambda step, tls: ("required", tls) if step < 2 else ("auto", tls),
-        timeout=60,
-        max_steps=100,
-        raise_on_limit=False,
-        enable_compression=False,
-    )
+        handle = start_async_tool_loop(
+            client,
+            message="start",
+            tools={
+                "short_tool": ToolSpec(fn=short_tool, max_total_calls=2),
+            },
+            # Force exactly one tool call per turn for the first two turns
+            tool_policy=lambda step, tls: (
+                ("required", tls) if step < 2 else ("auto", tls)
+            ),
+            timeout=60,
+            max_steps=100,
+            raise_on_limit=False,
+            enable_compression=False,
+        )
 
-    await handle.result()
+        assert await asyncio.wait_for(handle.result(), 60) == "done"
 
     # Tool ran exactly twice
     assert counter["n"] == 2
@@ -282,6 +313,16 @@ async def test_prunes_over_quota_serial_calls(llm_config, monkeypatch):
     assert (
         short_tool_calls == 2
     ), f"Expected short_tool to be pruned to 2 calls, got {short_tool_calls}"
+    # The over-quota turn is followed by the loop's notice, and the model
+    # gets a turn after it.
+    assert "blocked due to quota limits" in str(model.calls[3].messages[-1])
+    assert [c.request["tool_choice"] for c in model.calls] == [
+        "required",
+        "required",
+        "auto",
+        "auto",
+    ]
+    assert model.kinds() == ["actor"] * 4
 
 
 # helper factory: returns an async tool that notes cancellation -------------
@@ -328,69 +369,50 @@ async def test_timeout_graceful_termination(llm_config):
 
 
 @pytest.mark.asyncio
-async def test_max_steps_graceful_termination(llm_config):
-    """No exception; pending tool is cancelled when max_steps is exceeded."""
+async def test_max_steps_graceful_termination():
+    """No exception; a call the limit comes before is answered, not run.
+
+    The step limit counts messages and applies at a turn boundary, so a
+    call that is already running runs to completion (the timeout and stop()
+    bound it, see test_timeout_graceful_termination). Here the limit is
+    reached before the preseeded call starts: it is never run, and the
+    transcript the loop ends with answers it. No model call is made.
+    """
+    from tests import cache_discipline_helpers as h
+
     cancel_flag = {}
-    client = new_llm_client(**llm_config)
-    # Instruct real LLM to call the tool once and keep running; max_steps will stop it
-    client.set_system_message(
-        'You are running inside an automated test. In your FIRST assistant turn, call `long_tool` with {"seconds": 5}. '
-        "Keep waiting afterwards.",
-    )
-    _preseed_tool_call(
-        client,
-        call_id="call_preseed_steps",
-        tool_name="long_tool",
-        args_json='{"seconds": 5}',
-    )
+    started: list = []
+    long_tool = _make_long_tool(cancel_flag)
 
-    handle = start_async_tool_loop(
-        client,
-        message="go",
-        tools={"long_tool": _make_long_tool(cancel_flag)},
-        max_steps=3,  # real small cap – after backfill + user message, limit will be hit
-        timeout=5,
-        raise_on_limit=False,
-    )
-    result = await handle.result()
-    assert "Terminating early" in result
+    async def tracked_long_tool(seconds: int):
+        started.append(seconds)
+        return await long_tool(seconds)
 
-    # Robust assertions not relying on coroutine body execution timing.
-    # 1) The preseeded tool call must be present in assistant tool_calls.
-    assert any(
-        m.get("role") == "assistant"
-        and m.get("tool_calls")
-        and any(tc.get("id") == "call_preseed_steps" for tc in m["tool_calls"])
+    with h.scripted(()):
+        client = h.new_client()
+        _preseed_tool_call(
+            client,
+            call_id="call_preseed_steps",
+            tool_name="long_tool",
+            args_json='{"seconds": 5}',
+        )
+        handle = start_async_tool_loop(
+            client,
+            message="go",
+            tools={"long_tool": tracked_long_tool},
+            max_steps=2,  # the preseeded call and the request reach it
+            timeout=5,
+            raise_on_limit=False,
+        )
+        result = await handle.result()
+    assert result.startswith("🔚 Terminating early: max_steps (2) exceeded")
+    assert started == []
+    (reply,) = [
+        m
         for m in client.messages
-    )
-
-    # 2) The tool must not have produced a successful final result.
-    assert not any(
-        m.get("role") == "tool"
-        and m.get("tool_call_id") == "call_preseed_steps"
-        and "finished" in str(m.get("content") or "")
-        for m in client.messages
-    )
-
-    # 3) White-box: the scheduled asyncio.Task for the call-id is cancelled.
-    loop_task = getattr(handle, "_task", None)
-    task_info = getattr(loop_task, "task_info", {}) if loop_task is not None else {}
-    found_cancelled = False
-    if isinstance(task_info, dict):
-        for t, meta in task_info.items():
-            if getattr(meta, "call_id", None) == "call_preseed_steps":
-                if t.cancelled():
-                    found_cancelled = True
-                    break
-                if t.done():
-                    try:
-                        exc = t.exception()
-                    except Exception:
-                        exc = None
-                    if isinstance(exc, asyncio.CancelledError):
-                        found_cancelled = True
-                        break
-    assert found_cancelled
+        if m.get("role") == "tool" and m.get("tool_call_id") == "call_preseed_steps"
+    ]
+    assert reply["content"].startswith("Not run: max_steps (2) exceeded")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -406,40 +428,20 @@ async def test_default_policy_returns_immediately(llm_config):
     async def noop_tool():  # pragma: no cover – should never be called
         raise RuntimeError("tool should not have been invoked")
 
-    client = new_llm_client(**llm_config)
-    handle = start_async_tool_loop(
-        client,
-        message="You are part of a test. Do *not* call any tools, just return to the user immediately",
-        tools={"noop_tool": noop_tool},
-        # default → no tool_policy passed
-    )
-    await handle.result()
-
-
-@pytest.mark.asyncio
-async def test_policy_forces_single_tool_invocation(llm_config):
-    """A custom ``tool_policy`` can replicate the old
-    ``minimum_tool_turns=1`` semantics by forcing a *required* tool call on the
-    first turn only."""
-
-    flag = {"called": False}
-
-    async def dummy_tool():
-        flag["called"] = True
-        return "ok"
-
-    client = new_llm_client(**llm_config)
-    handle = start_async_tool_loop(
-        client,
-        message="You are part of a test. Do *not* call any tools, just return to the user immediately",
-        tools={"dummy_tool": dummy_tool},
-        tool_policy=lambda i, tls: ("required", tls) if i < 1 else ("auto", tls),
-    )
-    await handle.result()
-
-    # The loop had to wait for the tool to finish and therefore should return
-    # the *final* assistant content.
-    assert flag["called"] is True
+    model = ScriptedModel(actor=[reply("ok")])
+    with scripted(model):
+        client = new_llm_client(**llm_config)
+        handle = start_async_tool_loop(
+            client,
+            message="You are part of a test. Do *not* call any tools, just return to the user immediately",
+            tools={"noop_tool": noop_tool},
+            # default → no tool_policy passed
+        )
+        assert await asyncio.wait_for(handle.result(), 60) == "ok"
+    (request,) = model.calls
+    assert request.request["tool_choice"] == "auto"
+    assert "noop_tool" in _offered(request)
+    assert model.kinds() == ["actor"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -450,11 +452,13 @@ async def test_policy_forces_single_tool_invocation(llm_config):
 @pytest.mark.asyncio
 async def test_policy_shows_then_hides_tool(llm_config):
     """
-    Step 0: tool is required → LLM calls it exactly once.
-    Step 1+: tools hidden → LLM produces text → loop ends.
+    Step 0: tool is required → the model calls it exactly once.
+    Step 1+: tools hidden → a call to it is refused, not run → the model
+    produces text → loop ends.
 
-    Symbolic test: verifies tool_policy correctly gates tool visibility
-    across turns. The "required" choice on step 0 removes eval variance.
+    Symbolic test: verifies tool_policy correctly gates tool availability
+    across turns. The tool list the model sees stays the same (it is fixed
+    for the session); the hidden tool is refused when called.
     """
 
     call_log: list[str] = []
@@ -468,17 +472,31 @@ async def test_policy_shows_then_hides_tool(llm_config):
             return "required", tools
         return "auto", {}
 
-    client = new_llm_client(**llm_config)
-    handle = start_async_tool_loop(
-        client,
-        "Call the observed_tool when it is available.",
-        {"observed_tool": observed_tool},
-        tool_policy=require_first_then_hide,
-        max_parallel_tool_calls=1,
+    hidden_call = reply(calls=[("observed_tool", {})])
+    model = ScriptedModel(
+        actor=[reply(calls=[("observed_tool", {})]), hidden_call, reply("done")],
     )
-    await handle.result()
+    with scripted(model):
+        client = new_llm_client(**llm_config)
+        handle = start_async_tool_loop(
+            client,
+            "Call the observed_tool when it is available.",
+            {"observed_tool": observed_tool},
+            tool_policy=require_first_then_hide,
+            max_parallel_tool_calls=1,
+        )
+        assert await asyncio.wait_for(handle.result(), 60) == "done"
 
     assert call_log == ["invoked"]  # exactly one call, on step 0
+    refusal = _tool_reply(client, hidden_call.choices[0].message.tool_calls[0].id)
+    assert "`observed_tool` is not available on this turn" in refusal
+    assert [c.request["tool_choice"] for c in model.calls] == [
+        "required",
+        "auto",
+        "auto",
+    ]
+    assert [_offered(c) for c in model.calls] == [{"observed_tool"}] * 3
+    assert model.kinds() == ["actor", "actor", "actor"]
 
 
 @pytest.mark.asyncio
@@ -504,24 +522,33 @@ async def test_policy_two_required_then_auto(llm_config):
         tool_choice_history.append((step, choice))
         return (choice, tools)
 
-    client = new_llm_client(**llm_config)
-    handle = start_async_tool_loop(
-        client,
-        "Call the 'counting_tool' when required. Stop immediately when the tool indicates the task is complete.",
-        {"counting_tool": counting_tool},
-        tool_policy=first_two_required,
+    model = ScriptedModel(
+        actor=[
+            reply(calls=[("counting_tool", {})]),
+            reply(calls=[("counting_tool", {})]),
+            reply("done"),
+        ],
     )
-    await handle.result()
+    with scripted(model):
+        client = new_llm_client(**llm_config)
+        handle = start_async_tool_loop(
+            client,
+            "Call the 'counting_tool' when required. Stop immediately when the tool indicates the task is complete.",
+            {"counting_tool": counting_tool},
+            tool_policy=first_two_required,
+        )
+        assert await asyncio.wait_for(handle.result(), 60) == "done"
 
-    # Symbolic assertion: policy was invoked correctly for at least the first few steps
-    assert len(tool_choice_history) >= 2
-    assert tool_choice_history[0] == (0, "required")
-    assert tool_choice_history[1] == (1, "required")
-    if len(tool_choice_history) > 2:
-        assert tool_choice_history[2] == (2, "auto")
+    # The policy was asked once per turn, and its choice reached each request
+    assert tool_choice_history == [(0, "required"), (1, "required"), (2, "auto")]
+    assert [c.request["tool_choice"] for c in model.calls] == [
+        "required",
+        "required",
+        "auto",
+    ]
 
-    # The tool was called at least twice (guaranteed by "required")
-    assert counter["n"] >= 2
+    assert counter["n"] == 2
+    assert model.kinds() == ["actor", "actor", "actor"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -536,8 +563,9 @@ async def test_policy_called_tools_history_gates_on_both(llm_config):
     before opening up the full tool set.
 
     The policy requires both ``tool_a`` and ``tool_b`` to have been invoked
-    before any other tool becomes visible.  This is a symbolic test: the LLM
-    is instructed which tools to call and in which order.
+    before any other tool becomes available.  This is a symbolic test: the
+    scripted model calls ``tool_a``, then ``tool_final`` too early (refused:
+    the gate is not satisfied), then ``tool_b`` and ``tool_final``.
     """
 
     call_log: list[str] = []
@@ -570,26 +598,36 @@ async def test_policy_called_tools_history_gates_on_both(llm_config):
             return "required", gate
         return "auto", tools
 
-    client = new_llm_client(**llm_config)
-    handle = start_async_tool_loop(
-        client,
-        (
-            "You are part of a test. Follow these steps exactly:\n"
-            "1. Call `tool_a` first.\n"
-            "2. Call `tool_b` next.\n"
-            "3. Call `tool_final` once it becomes available.\n"
-            "4. Then stop and respond to the user.\n"
-            "Do NOT skip any steps."
-        ),
-        {"tool_a": tool_a, "tool_b": tool_b, "tool_final": tool_final},
-        tool_policy=gate_policy,
-        timeout=60,
+    early_final = reply(calls=[("tool_final", {})])
+    model = ScriptedModel(
+        actor=[
+            reply(calls=[("tool_a", {})]),
+            early_final,
+            reply(calls=[("tool_b", {})]),
+            reply(calls=[("tool_final", {})]),
+            reply("done"),
+        ],
     )
-    await handle.result()
+    with scripted(model):
+        client = new_llm_client(**llm_config)
+        handle = start_async_tool_loop(
+            client,
+            (
+                "You are part of a test. Follow these steps exactly:\n"
+                "1. Call `tool_a` first.\n"
+                "2. Call `tool_b` next.\n"
+                "3. Call `tool_final` once it becomes available.\n"
+                "4. Then stop and respond to the user.\n"
+                "Do NOT skip any steps."
+            ),
+            {"tool_a": tool_a, "tool_b": tool_b, "tool_final": tool_final},
+            tool_policy=gate_policy,
+            timeout=60,
+        )
+        assert await asyncio.wait_for(handle.result(), 60) == "done"
 
     # Both gate tools were called before the final tool
-    assert "a" in call_log
-    assert "b" in call_log
+    assert call_log == ["a", "b", "final"]
 
     # The policy received called_tools history and transitioned correctly:
     # step 0 should have empty history and not be satisfied
@@ -602,6 +640,35 @@ async def test_policy_called_tools_history_gates_on_both(llm_config):
     # At some point the policy must have seen both tools and become satisfied
     satisfied_entries = [e for e in policy_log if e[2] is True]
     assert len(satisfied_entries) >= 1
+    # A refused call is not recorded as called, so it cannot satisfy the gate.
+    assert policy_log == [
+        (0, [], False),
+        (1, ["tool_a"], False),
+        (2, ["tool_a"], False),
+        (3, ["tool_a", "tool_b"], True),
+        (4, ["tool_a", "tool_b", "tool_final"], True),
+    ]
+
+    # Only the gate tools are allowed until both have run: the early call
+    # is refused, naming what is available instead.
+    refusal = _tool_reply(client, early_final.choices[0].message.tool_calls[0].id)
+    assert "`tool_final` is not available on this turn" in refusal
+    available_now = refusal.split("Available now:", 1)[1]
+    assert "`tool_a`" in available_now and "`tool_b`" in available_now
+    assert "tool_final" not in available_now
+
+    # The advertised list is the session's fixed list on every request.
+    assert [_offered(c) for c in model.calls] == [
+        {"tool_a", "tool_b", "tool_final"},
+    ] * 5
+    assert [c.request["tool_choice"] for c in model.calls] == [
+        "required",
+        "required",
+        "required",
+        "auto",
+        "auto",
+    ]
+    assert model.kinds() == ["actor"] * 5
 
 
 @pytest.mark.asyncio
@@ -620,116 +687,22 @@ async def test_policy_legacy_two_arg_still_works(llm_config):
             return "required", tools
         return "auto", tools
 
-    client = new_llm_client(**llm_config)
-    handle = start_async_tool_loop(
-        client,
-        message="You are part of a test. Do *not* call any tools, just return to the user immediately",
-        tools={"dummy_tool": dummy_tool},
-        tool_policy=legacy_policy,
+    model = ScriptedModel(
+        actor=[reply(calls=[("dummy_tool", {})]), reply("done")],
     )
-    await handle.result()
+    with scripted(model):
+        client = new_llm_client(**llm_config)
+        handle = start_async_tool_loop(
+            client,
+            message="You are part of a test. Do *not* call any tools, just return to the user immediately",
+            tools={"dummy_tool": dummy_tool},
+            tool_policy=legacy_policy,
+        )
+        assert await asyncio.wait_for(handle.result(), 60) == "done"
 
     assert flag["called"] is True
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 8. eager tool_policy: immediate LLM turn while gated tools are in flight
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_policy_eager_grants_immediate_turn_while_gate_pending(llm_config):
-    """Eager policies must grant another LLM turn before gated tools finish.
-
-    Without ``{"eager": True}``, the loop waits for ``gate_a`` to complete
-    before the next assistant message.  With eager, after ``gate_a`` is
-    scheduled the policy still reports unsatisfied gates → the loop takes
-    another LLM turn while ``gate_a`` is still in flight.
-
-    This asserts on transcript shape (a second assistant tool-call message
-    appears before ``gate_a`` finishes), not on which tool the model picks
-    on that eager turn — pending-tool helpers like ``wait`` may also be
-    visible, and models vary in which required tool they choose.
-    """
-
-    gate_a_started = asyncio.Event()
-    allow_a_finish = asyncio.Event()
-    call_log: list[str] = []
-
-    async def gate_a():
-        call_log.append("a_start")
-        gate_a_started.set()
-        await allow_a_finish.wait()
-        call_log.append("a_done")
-        return "gate_a done"
-
-    async def gate_b():
-        call_log.append("b")
-        return "gate_b done"
-
-    async def tool_final():
-        call_log.append("final")
-        return "COMPLETE — do not call any more tools."
-
-    # Ordered gates: expose only the next unsatisfied tool so turn 0 is
-    # forced onto gate_a (with tool_choice="required").
-    GATE_ORDER = ("gate_a", "gate_b")
-
-    def eager_gate_policy(
-        step: int,
-        tools: Dict[str, Callable],
-        called_tools: list[str],
-    ):
-        called_set = set(called_tools)
-        for name in GATE_ORDER:
-            if name not in called_set and name in tools:
-                return "required", {name: tools[name]}, {"eager": True}
-        return "auto", tools
-
-    client = new_llm_client(**llm_config)
-    handle = start_async_tool_loop(
-        client,
-        (
-            "You are part of a test. Call whichever tool is currently available "
-            "when a tool call is required. Once `tool_final` appears, call it "
-            "once and then stop."
-        ),
-        {"gate_a": gate_a, "gate_b": gate_b, "tool_final": tool_final},
-        tool_policy=eager_gate_policy,
-        enable_compression=False,
-        timeout=90,
-    )
-
-    await asyncio.wait_for(gate_a_started.wait(), timeout=60)
-
-    # Prove a second assistant turn happened while gate_a is blocked.
-    # Count assistant messages (not tool_calls): pending-tool helpers like
-    # ``wait`` may be pruned from the visible tool_calls list after ack.
-    async def _second_turn_while_a_pending() -> bool:
-        if "a_done" in call_log:
-            return False
-        assistant_turns = [
-            m for m in handle.get_history() if m.get("role") == "assistant"
-        ]
-        return len(assistant_turns) >= 2
-
-    deadline = asyncio.get_event_loop().time() + 60
-    while not await _second_turn_while_a_pending():
-        if asyncio.get_event_loop().time() > deadline:
-            raise TimeoutError(
-                "Expected a second LLM tool-call turn while gate_a was still "
-                f"in flight; call_log={call_log!r}",
-            )
-        await asyncio.sleep(0.05)
-
-    assert "a_done" not in call_log
-
-    allow_a_finish.set()
-    await handle.result()
-
-    assert "a_done" in call_log
-    assert "b" in call_log
-    assert "final" in call_log
+    assert [c.request["tool_choice"] for c in model.calls] == ["required", "auto"]
+    assert model.kinds() == ["actor", "actor"]
 
 
 # ── 9. timeout resets after LLM response (activity-based) ─────────────────────
@@ -739,35 +712,29 @@ async def test_timeout_resets_after_llm_response(llm_config, monkeypatch):
     as long as the LLM eventually responds. The timeout only guards against
     hung tools, not slow LLM inference."""
 
-    client = new_llm_client(**llm_config)
-
-    # Inject delay into the LLM call that exceeds the timeout value.
+    # The scripted model call takes longer than the timeout value.
     # If timeout were measured from loop start, this would fail.
     # With activity-based timeout (reset after LLM response), it should pass.
-    orig_generate = client.generate
-    call_count = {"n": 0}
+    async def _slow_reply(_call):
+        await asyncio.sleep(0.3)
+        return reply("done")
 
-    async def _slow_generate(**kwargs):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            # First LLM call: delay longer than the timeout
-            await asyncio.sleep(0.3)
-        return await orig_generate(**kwargs)
+    model = ScriptedModel(actor=[_slow_reply])
+    with scripted(model):
+        client = new_llm_client(**llm_config)
+        handle = start_async_tool_loop(
+            client,
+            message="Reply with 'done'.",
+            tools={},
+            timeout=0.2,  # Timeout shorter than the LLM delay
+            max_steps=100,
+            raise_on_limit=True,  # Would raise if timeout triggered incorrectly
+        )
 
-    monkeypatch.setattr(client, "generate", _slow_generate, raising=True)
-
-    handle = start_async_tool_loop(
-        client,
-        message="Reply with 'done'.",
-        tools={},
-        timeout=0.2,  # Timeout shorter than the LLM delay
-        max_steps=100,
-        raise_on_limit=True,  # Would raise if timeout triggered incorrectly
-    )
-
-    # Should NOT raise TimeoutError - the LLM response resets the timer
-    result = await handle.result()
-    assert "done" in result.lower() or len(result) > 0
+        # Should NOT raise TimeoutError - the LLM response resets the timer
+        result = await asyncio.wait_for(handle.result(), 30)
+    assert result == "done"
+    assert model.kinds() == ["actor"]
 
 
 @pytest.mark.skip(reason="Will only pass once we support the responses API")

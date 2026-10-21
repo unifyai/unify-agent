@@ -29,13 +29,13 @@ async def test_sandbox_stateful_variable_execution():
 
     result1 = await sandbox.execute("x = 100")
     assert result1["error"] is None
-    assert "x" in sandbox.global_state
-    assert sandbox.global_state["x"] == 100
+    # Read back through the session: with Python in the sandboxed worker
+    # (the default) the cell's names live there, not in ``global_state``.
+    assert (await sandbox.execute("x"))["result"] == 100
 
     result2 = await sandbox.execute("y = x * 2\nprint(y)")
     assert result2["error"] is None
-    assert "y" in sandbox.global_state
-    assert sandbox.global_state["y"] == 200
+    assert (await sandbox.execute("y"))["result"] == 200
     assert parts_to_text(result2["stdout"]) == "200\n"
 
 
@@ -65,13 +65,12 @@ async def test_sandbox_stateful_function_definition():
     func_def_code = "def my_adder(a, b):\n    return a + b"
     result1 = await sandbox.execute(func_def_code)
     assert result1["error"] is None
-    assert "my_adder" in sandbox.global_state
 
     func_call_code = "result = my_adder(10, 5)\nprint(result)"
     result2 = await sandbox.execute(func_call_code)
     assert result2["error"] is None
     assert parts_to_text(result2["stdout"]).strip() == "15"
-    assert sandbox.global_state["result"] == 15
+    assert (await sandbox.execute("result"))["result"] == 15
 
 
 @pytest.mark.asyncio
@@ -89,7 +88,6 @@ async def test_sandbox_stateful_class_definition():
     )
     result1 = await sandbox.execute(class_def_code)
     assert result1["error"] is None
-    assert "Greeter" in sandbox.global_state
 
     class_use_code = "g = Greeter('World')\nprint(g.greet())"
     result2 = await sandbox.execute(class_use_code)
@@ -463,24 +461,36 @@ print("text after image")
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(30)
-async def test_sandbox_builtin_open_available(tmp_path):
+async def test_sandbox_builtin_open_available():
     """Python builtins like open() and FileNotFoundError must be available.
 
     The sandbox restricts the global namespace, but standard builtins that
-    are essential for basic file I/O should not be stripped.
+    are essential for basic file I/O should not be stripped. The cell writes
+    its own file: with Python in the sandboxed worker (the default) the
+    worker's /tmp is private, so a file the test wrote on the host's /tmp is
+    not visible to it (confinement, not a missing builtin).
     """
     sandbox = PythonExecutionSession()
 
-    # Write a small file for the test to read.
-    test_file = tmp_path / "hello.txt"
-    test_file.write_text("hello world")
-
-    code = f'with open("{test_file}", "r") as f:\n    print(f.read())'
+    code = (
+        "import tempfile, os\n"
+        "path = os.path.join(tempfile.mkdtemp(), 'hello.txt')\n"
+        "with open(path, 'w') as f:\n"
+        "    f.write('hello world')\n"
+        "with open(path, 'r') as f:\n"
+        "    print(f.read())\n"
+        "try:\n"
+        "    open(path + '.missing')\n"
+        "except FileNotFoundError:\n"
+        "    print('missing raises FileNotFoundError')"
+    )
     result = await sandbox.execute(code)
     assert (
         result["error"] is None
     ), f"open() should be available in the sandbox but got: {result['error']}"
-    assert "hello world" in parts_to_text(result["stdout"])
+    out = parts_to_text(result["stdout"])
+    assert "hello world" in out
+    assert "missing raises FileNotFoundError" in out
 
 
 @pytest.mark.asyncio
@@ -568,7 +578,6 @@ async def test_execute_code_python_cell_defaults_to_persistent_session_zero():
         assert first.error is None
         assert first.state_mode == "stateful"
         assert first.session_id == 0
-        assert sandbox.global_state.get("answer") == 41
 
         second = await execute_code(
             thought="read the variable back in a later default cell",
@@ -590,7 +599,23 @@ async def test_execute_code_python_cell_defaults_to_persistent_session_zero():
         )
         assert isolated.error is None
         assert "NOT_FOUND" in parts_to_text(isolated.stdout)
-        assert "leak" not in sandbox.global_state
+
+        # Read back through session 0 (with Python in the sandboxed worker its
+        # names live there, not in ``global_state``).
+        after = await execute_code(
+            thought="check session 0 after the isolated cell",
+            code=(
+                "try:\n"
+                "    leak\n"
+                "    print('LEAKED')\n"
+                "except NameError:\n"
+                "    print('NOT_FOUND')\n"
+                "answer"
+            ),
+        )
+        assert after.error is None
+        assert "NOT_FOUND" in parts_to_text(after.stdout)
+        assert after.result == 41
     finally:
         _CURRENT_SANDBOX.reset(token)
         try:

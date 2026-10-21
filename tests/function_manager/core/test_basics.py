@@ -15,6 +15,7 @@ fully hermetic.  Nothing outside this file is required.
 from __future__ import annotations
 
 import pytest
+from tests.actor.code_act.library_world import install_fake_embed
 from tests.helpers import _handle_project
 from unify.function_manager.function_manager import FunctionManager
 
@@ -490,8 +491,9 @@ def test_filter_functions_include_implementations():
 
 
 @_handle_project
-def test_search_functions_include_implementations():
+def test_search_functions_include_implementations(monkeypatch):
     """search_functions respects include_implementations parameter."""
+    install_fake_embed(monkeypatch.setattr)
     fm = _FM()
     fm.add_functions(implementations="def double_value(x):\n    return x * 2\n")
 
@@ -517,8 +519,12 @@ def test_search_functions_include_implementations():
 
 
 @_handle_project
-def test_search_functions_matches_meaning_not_words():
-    """A query that shares no words with a function's name or docstring finds it."""
+def test_search_functions_matches_meaning_not_words(monkeypatch):
+    """A query that shares no words with a function's name or docstring finds it (through the local embedder,
+    whose weights the test host has cached: no provider is reached)."""
+    from unify.settings import SETTINGS
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_EMBEDDINGS", True)
     fm = _FM()
     fm.add_functions(
         implementations=[
@@ -582,8 +588,15 @@ def test_clear():
 # --------------------------------------------------------------------------- #
 
 
+@pytest.fixture
+def python_in_process(monkeypatch):
+    """Python in process (the function manager's in-process mode, for non-actor callers): ``_inject_dependencies`` loads stored callees into this process. With the
+    sandboxed worker it refuses (tests/actor/code_act/test_bind_load_confinement.py)."""
+    monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: False)
+
+
 @_handle_project
-def test_inject_dependencies_resolves_actor_act():
+def test_inject_dependencies_resolves_actor_act(python_in_process):
     """_inject_dependencies injects a Primitives instance for 'primitives.actor.act' deps.
 
     When a stored function declares depends_on=["primitives.actor.act"],
@@ -611,7 +624,7 @@ def test_inject_dependencies_resolves_actor_act():
 
 
 @_handle_project
-def test_inject_dependencies_actor_idempotent():
+def test_inject_dependencies_actor_idempotent(python_in_process):
     """Injecting "primitives.actor.act" twice doesn't replace or duplicate the namespace entry."""
     fm = _FM()
 

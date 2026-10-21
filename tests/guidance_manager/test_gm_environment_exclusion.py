@@ -40,6 +40,10 @@ def test_not_in_multiple_ids_sorted():
 # ────────────────────────────────────────────────────────────────────────────
 
 
+# Built-in guidance is never read (UNIFY_BUILTIN_GUIDANCE baked off).
+BUILTINS_OFF = "is_builtin = 0"
+
+
 def _make_gm(
     *,
     filter_scope: Optional[str] = None,
@@ -51,10 +55,12 @@ def _make_gm(
 def test_scope_includes_exclusion():
     gm = _make_gm(filter_scope="is_builtin = 0", exclude_ids={5})
     result = gm._scope("title = 'Deploy'")
+    # Built-in guidance is never read, so every scope ends with its exclusion.
     assert result == and_clauses(
         "title = 'Deploy'",
         "is_builtin = 0",
         "guidance_id NOT IN (5)",
+        "is_builtin = 0",
     )
     assert "title = 'Deploy'" in result
     assert "is_builtin = 0" in result
@@ -63,17 +69,17 @@ def test_scope_includes_exclusion():
 
 def test_scope_exclusion_only():
     gm = _make_gm(exclude_ids={99})
-    assert gm._scope(None) == "guidance_id NOT IN (99)"
+    assert gm._scope(None) == and_clauses("guidance_id NOT IN (99)", BUILTINS_OFF)
 
 
 def test_scope_filter_scope_only():
-    gm = _make_gm(filter_scope="is_builtin = 0")
-    assert gm._scope(None) == "is_builtin = 0"
+    gm = _make_gm(filter_scope="title = 'Deploy'")
+    assert gm._scope(None) == and_clauses("title = 'Deploy'", BUILTINS_OFF)
 
 
-def test_scope_all_none_returns_none():
+def test_scope_all_none_reads_only_stored_entries():
     gm = _make_gm()
-    assert gm._scope(None) is None
+    assert gm._scope(None) == BUILTINS_OFF
 
 
 # ────────────────────────────────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 from typing import Union, Dict, List
 from .loop_config import LoopConfig
+from unify import transcripts
 
 
 async def to_event_bus(
@@ -29,6 +30,9 @@ async def to_event_bus(
 
     if isinstance(messages, dict):
         messages = [messages]
+    # Everything a loop publishes passes through here, in order, so this is
+    # where its transcript session (if any) records it.
+    transcripts.observe(messages, loop_cfg)
     _lookup = loop_cfg.tool_alias_lookup
     for message in messages:
         _aliases = None

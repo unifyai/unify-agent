@@ -1,0 +1,175 @@
+"""Parsers for ARC dialogue observations."""
+
+class MemoryInputError(ValueError):
+    """Observation is outside the recorded dialogue shape."""
+
+
+def parse_submit_feedback(observation):
+    """Validate and return a submit feedback observation.
+
+    Effect: read
+    """
+    if not isinstance(observation, dict) or set(observation) != {"type", "attempts_used", "correct", "failed", "valid"}:
+        raise MemoryInputError("expected SubmitFeedback with five fields")
+    if observation["type"] != "SubmitFeedback" or type(observation["attempts_used"]) is not int or not 0 <= observation["attempts_used"] <= 8 or any(type(observation[k]) is not bool for k in ("correct", "failed", "valid")):
+        raise MemoryInputError("invalid SubmitFeedback types or attempt count")
+    return observation
+
+
+def parse_demos_feedback(observation):
+    """Validate a single ARC demonstration feedback observation.
+
+    Effect: read
+    """
+    if not isinstance(observation, dict) or set(observation) != {"type", "refused", "demo_requests_used", "pairs"}:
+        raise MemoryInputError("expected DemosFeedback with four fields")
+    if (observation["type"] != "DemosFeedback" or observation["refused"] is not False
+            or type(observation["demo_requests_used"]) is not int
+            or not 1 <= observation["demo_requests_used"] <= 8
+            or not isinstance(observation["pairs"], list) or len(observation["pairs"]) != 1):
+        raise MemoryInputError("unexpected demonstration count or refusal")
+    pair = observation["pairs"][0]
+    if not isinstance(pair, dict) or set(pair) != {"input", "output", "note"} or pair["note"] is not None:
+        raise MemoryInputError("unexpected pair fields")
+    for key in ("input", "output"):
+        grid = pair[key]
+        if (not isinstance(grid, list) or not 1 <= len(grid) <= 30
+                or not isinstance(grid[0], list) or not 1 <= len(grid[0]) <= 30
+                or any(not isinstance(row, list) or len(row) != len(grid[0])
+                       or any(type(v) is not int or not 0 <= v <= 9 for v in row)
+                       for row in grid)):
+            raise MemoryInputError("expected rectangular ARC color grid")
+    return observation
+
+
+def validate_submit_action(args):
+    """Validate a recorded ARC submit action's grid argument.
+
+    Effect: read
+    """
+    if not isinstance(args, list) or len(args) != 1:
+        raise MemoryInputError("submit expects one grid argument")
+    grid = args[0]
+    if (not isinstance(grid, list) or not 1 <= len(grid) <= 30
+            or not isinstance(grid[0], list) or not 1 <= len(grid[0]) <= 30
+            or any(not isinstance(row, list) or len(row) != len(grid[0])
+                   or any(type(v) is not int or not 0 <= v <= 9 for v in row)
+                   for row in grid)):
+        raise MemoryInputError("submit expects a rectangular ARC color grid")
+    return grid
+
+
+def demo_request_count(observation, previous=None):
+    """Validate the monotonically incrementing count in ARC demo feedback.
+
+    Effect: read
+    """
+    parse_demos_feedback(observation)
+    if previous is not None and (type(previous) is not int or not 1 <= previous <= 7):
+        raise MemoryInputError("previous demo count must be between 1 and 7")
+    expected = 1 if previous is None else previous + 1
+    if observation["demo_requests_used"] != expected:
+        raise MemoryInputError("demo request count does not follow previous count")
+    return expected
+
+
+def demo_dimensions(observation):
+    """Return the input and output grid dimensions of one ARC demonstration.
+
+    Effect: read
+    """
+    parse_demos_feedback(observation)
+    pair = observation["pairs"][0]
+    return tuple((len(pair[key]), len(pair[key][0])) for key in ("input", "output"))
+
+
+def submit_state(observation):
+    """Classify consistent ARC submit feedback as solved, retry or exhausted.
+
+    Effect: read
+    """
+    parse_submit_feedback(observation)
+    if (not observation["valid"] or
+            (observation["correct"] and observation["failed"]) or
+            (observation["correct"] and observation["attempts_used"] > 4) or
+            (observation["failed"] and (observation["correct"] or observation["attempts_used"] != 8)) or
+            (not observation["correct"] and not observation["failed"] and observation["attempts_used"] >= 8)):
+        raise MemoryInputError("inconsistent or unobserved submit feedback state")
+    if observation["correct"]:
+        return "solved"
+    return "exhausted" if observation["failed"] else "retry"
+
+
+def demo_availability(observation):
+    """Report whether a demo request returned a usable pair rather than a quota refusal.
+
+    Effect: read
+    """
+    if not isinstance(observation, dict):
+        raise MemoryInputError("expected DemosFeedback mapping")
+    if observation.get("refused") is True:
+        if (set(observation) != {"type", "refused", "demo_requests_used", "pairs"}
+                or observation["type"] != "DemosFeedback"
+                or type(observation["demo_requests_used"]) is not int
+                or observation["demo_requests_used"] != 8
+                or observation["pairs"] != []):
+            raise MemoryInputError("unexpected demo refusal shape")
+        return False
+    parse_demos_feedback(observation)
+    return True
+
+
+def dimension_relation(observation):
+    """Classify a demonstration's output dimensions relative to its input.
+
+    Effect: read
+    """
+    ih, iw = demo_dimensions(observation)[0]
+    oh, ow = demo_dimensions(observation)[1]
+    if (ih, iw) == (oh, ow):
+        return "same"
+    if oh <= ih and ow <= iw:
+        return "smaller"
+    if oh >= ih and ow >= iw:
+        return "larger"
+    return "mixed"
+
+def demo_palette(observation):
+    """Return sorted input and output color palettes of a demonstration.
+
+    Effect: read
+    """
+    parse_demos_feedback(observation)
+    pair = observation["pairs"][0]
+    return tuple(tuple(sorted({color for row in pair[key] for color in row}))
+                 for key in ("input", "output"))
+
+
+def demo_color_counts(observation):
+    """Count each ARC color separately in a demonstration's input and output.
+
+    Effect: read
+    """
+    parse_demos_feedback(observation)
+    result = []
+    for key in ("input", "output"):
+        counts = {}
+        for row in observation["pairs"][0][key]:
+            for color in row:
+                counts[color] = counts.get(color, 0) + 1
+        result.append(counts)
+    return tuple(result)
+
+
+def demo_change_mask(observation):
+    """Mark cells whose colors differ between same-size demonstration grids.
+
+    Effect: read
+    """
+    parse_demos_feedback(observation)
+    pair = observation["pairs"][0]
+    source, target = pair["input"], pair["output"]
+    if len(source) != len(target) or len(source[0]) != len(target[0]):
+        raise MemoryInputError("change mask requires equal input and output dimensions")
+    return [[a != b for a, b in zip(left, right)]
+            for left, right in zip(source, target)]
