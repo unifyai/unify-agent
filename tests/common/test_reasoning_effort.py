@@ -1,3 +1,6 @@
+"""Symbolic: the run's reasoning effort (``UNIFY_REASONING_EFFORT``) applies to a client unless its call site names
+its own, and the memory writer's effort maps take an optional ``provider`` key."""
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -6,7 +9,7 @@ import pytest
 
 from unify.common import llm_client
 from unify.memory.integration.switch import writer_effort_scale_map, writer_max_calls_map
-from unify.settings import SETTINGS, ProductionSettings
+from unify.settings import SETTINGS
 
 
 class _Captured:
@@ -15,8 +18,11 @@ class _Captured:
         self.config = config
         self.reasoning_effort = config.get("reasoning_effort")
 
-    def set_stream_transport(self, on):  # the streamed-calls switch touches the client
+    def set_stream_transport(self, on):  # every client's calls are streamed
         self.stream = on
+
+    def _generate(self, *args, **kwargs):  # the request headers wrap it
+        raise AssertionError("no call is made")
 
 
 @pytest.fixture
@@ -26,25 +32,7 @@ def captured(monkeypatch):
     return _Captured
 
 
-def test_setting_accepts_provider():
-    assert ProductionSettings.parse_reasoning_effort("provider") == "provider"
-    assert ProductionSettings.parse_reasoning_effort(" Provider ") == "provider"
-
-
-def test_provider_run_sends_no_effort_even_when_asked(captured, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_REASONING_EFFORT", "provider")
-    for kwargs in ({}, {"reasoning_effort": "high"}, {"reasoning_effort": "low"}):
-        client = llm_client.new_llm_client("google/gemini-3-flash-preview@openrouter", **kwargs)
-        assert client.config["reasoning_effort"] is None
-
-
-def test_explicit_provider_effort_sends_none(captured, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_REASONING_EFFORT", "high")
-    client = llm_client.new_llm_client("google/gemini-3-flash-preview@openrouter", reasoning_effort="provider")
-    assert client.config["reasoning_effort"] is None
-
-
-def test_other_runs_keep_their_effort(captured, monkeypatch):
+def test_the_run_effort_applies_unless_the_call_site_names_its_own(captured, monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_REASONING_EFFORT", "high")
     assert llm_client.new_llm_client("openai/gpt-6-luna@openrouter").config["reasoning_effort"] == "high"
     assert llm_client.new_llm_client("openai/gpt-6-luna@openrouter", reasoning_effort="low").config["reasoning_effort"] == "low"

@@ -33,7 +33,6 @@ FAST = Options(
 @pytest.fixture
 def run_record_on(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS_RUN_RECORD", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     return SETTINGS
 
 
@@ -45,8 +44,8 @@ def test_every_role_has_the_four_comms_tools_on_the_run_record(run_record_on):
     from unify.memory.helpers import helper_flags
 
     flags = {
-        "actor": actor_flags("actor", can_store=False, librarian=True),
-        "teammate": actor_flags("teammate", can_store=False, librarian=False),
+        "actor": actor_flags("actor", librarian=True),
+        "teammate": actor_flags("teammate", librarian=False),
         "writer": frozenset({"pool", "similar", "helper", "edit"}),
         "curator": frozenset({"edit"}),
         "helper": helper_flags(True),
@@ -92,7 +91,6 @@ def test_with_the_switch_off_no_role_gains_or_loses_a_tool(monkeypatch):
     assert not RECORD_TOOLS & set(R.allow_list("librarian", frozenset()))
     from unify.memory.integration import fork
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     assert fork.fork_instruction() == fork.INSTRUCTION_IN_CODE
 
 

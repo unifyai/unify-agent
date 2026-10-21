@@ -1,7 +1,7 @@
 """Unit tests for the sent-watermark append-only transcript invariant.
 
 Covers the mechanism itself (is_mutable, generate_with_preprocess's watermark
-advancement and dev-mode integrity assertion) plus the below-watermark gate
+advancement and append-only integrity assertion) plus the below-watermark gate
 of insert_tool_message_after_assistant: a call's first reply always
 splices, a second one is dropped. No LLM calls — these are symbolic tests of the
 transcript-manipulation infrastructure, not of model behaviour.
@@ -104,7 +104,7 @@ def test_is_mutable_respects_watermark_by_identity():
 
 
 # ---------------------------------------------------------------------------
-# 2. generate_with_preprocess — watermark set point + dev-mode hash assertion
+# 2. generate_with_preprocess — watermark set point + append-only hash assertion
 # ---------------------------------------------------------------------------
 
 
@@ -129,7 +129,7 @@ async def test_watermark_advances_monotonically_on_pre_copy_length():
     # tried to regress it) never sticks — max() with the pre-copy length wins.
     client._sent_watermark = 1
     client._sent_watermark_hash = (
-        None  # bypass the dev-mode check for this contrived probe
+        None  # bypass the append-only check for this contrived probe
     )
     await generate_with_preprocess(client, None)
     assert client._sent_watermark == 3

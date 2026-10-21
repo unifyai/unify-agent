@@ -49,7 +49,6 @@ def test_act_flags_parse():
             "act",
             "count the rows",
             "--persist",
-            "--no-store",
             "--timeout",
             "12",
             "--json",
@@ -57,7 +56,7 @@ def test_act_flags_parse():
     )
     assert args.command == "act"
     assert args.request == "count the rows"
-    assert args.persist and args.no_store and args.json
+    assert args.persist and args.json
     assert args.timeout == 12.0
     assert args.no_clarify is False
     assert not hasattr(args, "no_compose")
@@ -95,13 +94,9 @@ def test_no_clarify_parses_and_turns_clarification_off(monkeypatch):
 
 class _FakeHandle:
     def __init__(self) -> None:
-        self.answers: list[tuple[str, str]] = []
         self.interjections: list[str] = []
         self.interjected = asyncio.Event()
         self.stopped: str | None = None
-
-    async def answer_clarification(self, call_id: str, answer: str) -> None:
-        self.answers.append((call_id, answer))
 
     async def submit(self, message: str) -> None:
         self.interjections.append(message)
@@ -112,15 +107,14 @@ class _FakeHandle:
 
 
 @pytest.mark.asyncio
-async def test_typed_lines_answer_pending_questions_else_steer(monkeypatch):
-    """A line answers the pending question when there is one, otherwise it
-    is an interjection into the running actor, and /quit stops it."""
+async def test_typed_lines_are_the_next_messages_and_quit_stops_the_session(monkeypatch):
+    """Each typed line is the next message to the running actor, and /quit
+    stops it."""
     read_fd, write_fd = os.pipe()
     monkeypatch.setattr(sys, "stdin", os.fdopen(read_fd, "r"))
     session = Act(SimpleNamespace(persist=True, quiet=True, jsonl=False))
     handle = _FakeHandle()
     session._handle = handle
-    await session._pending_clarifications.put({"call_id": "c1", "question": "which?"})
 
     reader = asyncio.create_task(session._read_lines())
     os.write(write_fd, b"the second one\n")
@@ -129,8 +123,7 @@ async def test_typed_lines_answer_pending_questions_else_steer(monkeypatch):
     os.close(write_fd)
     await asyncio.wait_for(reader, timeout=5)
 
-    assert handle.answers == [("c1", "the second one")]
-    assert handle.interjections == ["also skip the header row"]
+    assert handle.interjections == ["the second one", "also skip the header row"]
     assert handle.stopped == SESSION_ENDED
 
 
@@ -164,7 +157,7 @@ async def test_act_runs_one_request_and_prints_the_result(capsys, monkeypatch):
     # inherit the runner's.
     monkeypatch.setattr(sys, "stdin", io.StringIO())
     args = _parse_args(
-        ["act", "--no-store", "--quiet", "Reply with exactly the single word: pong"],
+        ["act", "--quiet", "Reply with exactly the single word: pong"],
     )
     model = ScriptedModel(actor=[reply("pong")])
     with scripted(model):
@@ -175,7 +168,6 @@ async def test_act_runs_one_request_and_prints_the_result(capsys, monkeypatch):
             await session.close()
     assert code == 0
     assert capsys.readouterr().out.strip() == "pong"
-    # --no-store: no storage review follows the one turn.
     assert model.kinds() == ["actor"]
     (turn,) = model.of("actor")
     assert any(

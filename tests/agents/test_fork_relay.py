@@ -342,13 +342,11 @@ def test_with_the_run_record_on_the_fork_starts_through_its_relay_with_the_commo
     monkeypatch,
 ):
     monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS_RUN_RECORD", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     settings = SimpleNamespace(
         UNIFY_MEMORY="on",
         UNIFY_MEMORY_LIBRARY="on",
         UNIFY_MEMORY_LIBRARY_FORK="on",
         UNIFY_AGENTS_RUN_RECORD="on",
-        UNIFY_TOOLS_IN_CODE="on",
     )
     paths = Paths.under(tmp_path / "home")
     eid = "20261020T210311-3f9a0c1d"
@@ -439,7 +437,6 @@ def test_a_segment_fork_is_named_for_its_segment_and_its_calls_carry_episode_and
     """A segment's fork (in-episode memory) is ``fork-<hex>-s<n>`` on the roster with its episode, and under metering its
     calls carry ``X-Unify-Episode`` and ``X-Unify-Segment`` (ids only)."""
     monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS_RUN_RECORD", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     assert fork.split_segment("20261020T210311-3f9a0c1d.s2") == (
         "20261020T210311-3f9a0c1d",
         2,
@@ -453,9 +450,7 @@ def test_a_segment_fork_is_named_for_its_segment_and_its_calls_carry_episode_and
         UNIFY_MEMORY_LIBRARY="on",
         UNIFY_MEMORY_LIBRARY_FORK="on",
         UNIFY_AGENTS_RUN_RECORD="on",
-        UNIFY_TOOLS_IN_CODE="on",
         UNIFY_MEMORY_METERING="on",
-        UNIFY_REQUEST_METADATA_HEADERS="on",
     )
     paths = Paths.under(tmp_path / "home")
     sid = "20261020T210311-3f9a0c1d.s2"

@@ -44,7 +44,7 @@ def _cell(code: str):
 
 
 async def _act(replies) -> tuple[list[dict], object]:
-    actor = new_actor(can_store=False)
+    actor = new_actor()
     try:
         with h.scripted(tuple(replies)) as provider:
             handle = await actor.act("Do the task.", persist=False)
@@ -56,7 +56,6 @@ async def _act(replies) -> tuple[list[dict], object]:
 
 @pytest.fixture
 def on_record(core_world, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS_RUN_RECORD", "on")
     home = store_home()
     rec = rr.join_run_record(home)

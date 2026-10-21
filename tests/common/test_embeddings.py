@@ -1,14 +1,14 @@
-"""Symbolic: vectors are computed once per text and embedder, then served from
-the local cache, and either embedder ranks rows by meaning.
+"""Symbolic: vectors are computed once per text, then served from the local cache.
 
-The ``embedders`` fixture runs a test once through the OpenRouter path, its
-endpoint stubbed (the request is built and the reply read as the real call
-does; the vectors are the local model's, so ranking keeps its meaning), and
-once through the local model, whose weights the test host has cached.
+The embedder posts to OpenRouter's embeddings endpoint, stubbed here: the
+request is built and the reply read as the real call does, and the stub's
+vectors are a fixed function of each text, listed out of order as the real
+endpoint may list them. Nothing leaves the process.
 """
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 
 import httpx
@@ -16,142 +16,64 @@ import numpy as np
 import pytest
 
 from unify.common import embeddings
-from unify.common.embeddings import LOCAL, OPENROUTER, embed, embedder
-from unify.common.semantic_search import rank_by_similarity
-from unify.settings import SETTINGS
+from unify.common.embeddings import OPENROUTER, embed, embedder
 
 
-@pytest.fixture(
-    params=[
-        pytest.param(False, id="openrouter"),
-        pytest.param(True, id="local"),
-    ],
-)
-def embedders(request, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_EMBEDDINGS", request.param)
-    if not request.param:
-        # the run's route for embeddings (there is no default endpoint)
-        monkeypatch.setattr(SETTINGS, "UNIFY_EMBED_URL", "http://127.0.0.1:9/v1/embeddings")
-        # OpenRouter's embeddings endpoint, stubbed: it answers each batch with
-        # the local model's vectors, listed out of order as the real endpoint
-        # may list them
-        def post(url, *, headers, json, timeout):
-            vectors = embeddings._local(list(json["input"]))
-            data = [{"index": i, "embedding": v.tolist()} for i, v in enumerate(vectors)]
-            return httpx.Response(
-                200,
-                json={"data": data[::-1]},
-                request=httpx.Request("POST", url),
-            )
-
-        monkeypatch.setattr(embeddings.httpx, "post", post)
+def _vector(text: str) -> list[float]:
+    digest = hashlib.sha256(text.encode()).digest()
+    return [float(b) + 1.0 for b in digest[:16]]
 
 
-def _functions() -> list[dict]:
-    return [
-        {
-            "id": 1,
-            "name": "celsius_to_fahrenheit",
-            "docstring": "Convert a temperature from Celsius to Fahrenheit.",
-        },
-        {
-            "id": 2,
-            "name": "send_invoice_email",
-            "docstring": "Email an invoice PDF to a customer.",
-        },
-        {
-            "id": 3,
-            "name": "resize_image",
-            "docstring": "Scale an image file to the given dimensions and save it.",
-        },
+@pytest.fixture
+def endpoint(monkeypatch):
+    """OpenRouter's embeddings endpoint, stubbed; the requests it got."""
+    sent: list[dict] = []
+
+    def post(url, *, headers, json, timeout):
+        sent.append({"url": url, "headers": headers, "json": json})
+        data = [{"index": i, "embedding": _vector(t)} for i, t in enumerate(json["input"])]
+        return httpx.Response(
+            200,
+            json={"data": data[::-1], "usage": {"prompt_tokens": 7, "cost": 0.0001}},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(embeddings.httpx, "post", post)
+    return sent
+
+
+def test_the_embedder_is_openrouters():
+    assert embedder() is OPENROUTER
+    assert OPENROUTER.model == "openai/text-embedding-3-small@openrouter/2048"
+
+
+def test_a_request_goes_to_openrouter_with_the_provider_key(endpoint):
+    rows: list[dict] = []
+    vectors = embed(["Rotate the signing key."], on_call=rows.append)
+    (request,) = endpoint
+    assert request["url"] == "https://openrouter.ai/api/v1/embeddings"
+    assert request["headers"]["Authorization"].startswith("Bearer ")
+    assert request["json"]["model"] == "openai/text-embedding-3-small"
+    assert np.allclose(np.linalg.norm(vectors, axis=1), 1.0, atol=1e-5)
+    assert rows == [
+        {"model": "openai/text-embedding-3-small", "texts": 1, "prompt_tokens": 7, "cost": 0.0001},
     ]
 
 
-def test_flag_selects_the_embedder(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_EMBEDDINGS", False)
-    assert embedder() is OPENROUTER
-    monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_EMBEDDINGS", True)
-    assert embedder() is LOCAL
-
-
-def test_repeated_texts_come_from_the_cache(embedders, monkeypatch):
+def test_repeated_texts_come_from_the_cache(endpoint, monkeypatch):
     texts = [
         "Rotate the signing key before the audit.",
         "Water the office plants on Fridays.",
         "Rotate the signing key before the audit.",
     ]
     first = embed(texts)
-    assert np.allclose(np.linalg.norm(first, axis=1), 1.0, atol=1e-5)
     assert (first[0] == first[2]).all()
+    # the reply listed out of order is put back in order
+    expected = np.asarray(_vector(texts[1]), dtype=np.float32)
+    assert np.allclose(first[1], expected / np.linalg.norm(expected))
 
-    def refuse(texts: list[str]) -> np.ndarray:
-        raise AssertionError(f"re-embedded {texts}")
+    def refuse(batch: list[str]) -> np.ndarray:
+        raise AssertionError(f"re-embedded {batch}")
 
-    chosen = embedder()
-    monkeypatch.setattr(embeddings, "embedder", lambda: replace(chosen, compute=refuse))
+    monkeypatch.setattr(embeddings, "embedder", lambda: replace(OPENROUTER, compute=refuse))
     assert (embed(texts) == first).all()
-
-
-def _unit_vectors(dim: int):
-    """A stand-in ``compute`` returning unit vectors of *dim* (the shape of
-    the embedder it replaces), so the cache test needs no key or weights."""
-
-    def compute(texts: list[str]) -> np.ndarray:
-        vectors = np.zeros((len(texts), dim), dtype=np.float32)
-        vectors[:, 0] = 1.0
-        return vectors
-
-    return compute
-
-
-def test_embedders_never_share_vectors(monkeypatch, tmp_path):
-    """The cache keys a vector by its embedder: after switching embedders the
-    same text is embedded afresh, never served the other one's vector. Each
-    embedder's model label is kept and only its computation is faked, in a
-    cache file of the test's own."""
-    monkeypatch.setenv("UNIFY_EMBED_CACHE", str(tmp_path / "embeddings.sqlite"))
-    monkeypatch.setattr(
-        embeddings,
-        "OPENROUTER",
-        replace(OPENROUTER, compute=_unit_vectors(1536)),
-    )
-    monkeypatch.setattr(embeddings, "LOCAL", replace(LOCAL, compute=_unit_vectors(384)))
-    text = ["Archive the quarterly board minutes."]
-    monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_EMBEDDINGS", False)
-    remote = embed(text)
-    monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_EMBEDDINGS", True)
-    local = embed(text)
-    assert remote.shape == (1, 1536)
-    assert local.shape == (1, 384)
-
-
-@pytest.mark.parametrize(
-    ("query", "expected"),
-    [
-        ("change a thermometer reading to the US scale", "celsius_to_fahrenheit"),
-        ("mail a bill to a client", "send_invoice_email"),
-        ("make a picture smaller", "resize_image"),
-    ],
-)
-def test_rows_rank_by_meaning(embedders, query, expected):
-    ranked = rank_by_similarity(
-        _functions(),
-        {"name": query, "docstring": query},
-        limit=3,
-        id_field="id",
-    )
-    assert ranked[0]["name"] == expected
-    similarities = [row["_similarity"] for row in ranked]
-    assert similarities == sorted(similarities, reverse=True)
-    assert all(0.0 <= value <= 1.0 for value in similarities)
-
-
-def test_blank_references_return_the_newest_rows():
-    ranked = rank_by_similarity(
-        _functions(),
-        {"name": "   "},
-        limit=2,
-        id_field="id",
-    )
-    assert [row["id"] for row in ranked] == [3, 2]
-    assert [row["_similarity"] for row in ranked] == [0.0, 0.0]

@@ -14,10 +14,6 @@ from typing import Any
 import pytest
 
 from unify.common import cell_models, reasoning
-from unify.common.act_llm_profiles import (
-    ACT_LLM_PROFILES,
-    CURRENT_ACT_LLM_PROFILE,
-)
 from unify.settings import SETTINGS, ProductionSettings
 
 LUNA = "openai/gpt-6-luna@openrouter"
@@ -137,18 +133,6 @@ def test_an_explicit_list_adds_to_the_session_model(luna_session, monkeypatch):
     cell_models.check_model(f"openrouter/{MINI}")
     with pytest.raises(cell_models.CellModelRefused, match=f"or {MINI}"):
         cell_models.check_model(OPUS)
-
-
-def test_the_act_profile_model_is_the_sessions(luna_session) -> None:
-    profile = ACT_LLM_PROFILES["gpt_5_5_high"]
-    token = CURRENT_ACT_LLM_PROFILE.set(profile)
-    try:
-        assert cell_models.configured_models() == [profile.model, LUNA]
-        cell_models.check_model(profile.model)
-        with pytest.raises(cell_models.CellModelRefused):
-            cell_models.check_model(OPUS)
-    finally:
-        CURRENT_ACT_LLM_PROFILE.reset(token)
 
 
 # ── the cell's query_llm ─────────────────────────────────────────────────────

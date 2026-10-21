@@ -1,6 +1,6 @@
-"""Both records behind the record tools satisfy the one ``Record`` interface, without changing what they do: a memory
-pass's in-memory record and the run's agent record. A refusal comes back as ``RecordRefused`` with the record tool's
-form code. Then the actor's record handlers, over the agent record, answer as the memory agents' do."""
+"""The run's agent record behind the actor's record tools satisfies the ``Record`` interface without changing what it
+does. A refusal comes back as ``RecordRefused`` with the record tool's form code. Then the actor's record handlers,
+over the agent record, answer as the memory agents' do."""
 
 from __future__ import annotations
 
@@ -14,17 +14,8 @@ from unify.actor import tool_handlers as th
 from unify.agents.options import Options
 from unify.agents.pool import Pool
 from unify.agents.record import Record as AgentRecord
-from unify.common.record_adapters import AgentRecordAdapter, PassRecordAdapter
-from unify.common.tool_registry import Record, RecordRefused, form_of
-from unify.memory import messaging
-
-
-def _pass_record():
-    pr = messaging.PassRecord(root="writer", deadline=time.monotonic() + 600)
-    for name in ("call-0", "call-1"):
-        pr.add_helper(name, "a task")
-        pr.record.add_agent(name, spawner="writer")
-    return pr
+from unify.common.record_adapters import AgentRecordAdapter
+from unify.common.tool_registry import Record, RecordRefused
 
 
 def _agent_pool(replies: dict | None = None, **options):
@@ -37,36 +28,8 @@ def _agent_pool(replies: dict | None = None, **options):
     return Pool(record, start_helper=start, spawn_allowed=True)
 
 
-def test_both_records_are_the_one_interface():
-    assert isinstance(PassRecordAdapter(_pass_record()), Record)
+def test_the_agent_record_is_the_record_interface():
     assert isinstance(AgentRecordAdapter(_agent_pool()), Record)
-
-
-def test_the_pass_record_posts_reads_and_refuses_as_before():
-    pr = _pass_record()
-    rec = PassRecordAdapter(pr)
-    out = rec.post("call-0", "@writer done reading e1")
-    assert out["to"] == ["writer"] and out["text"].startswith("sent to writer")
-    got = rec.unseen("writer")
-    assert [e["text"] for e in got] == ["@writer done reading e1"] and rec.unseen("writer") == []
-    with pytest.raises(RecordRefused) as refused:
-        rec.post("writer", "to whom?")
-    assert refused.value.form == "no_recipient" and form_of(refused.value.text) == "no_recipient"
-    assert rec.post("writer", "go on", to=["call-1"])["to"] == ["call-1"]
-    assert {r["name"] for r in rec.roster()} == {"writer", "call-0", "call-1"}
-
-
-def test_the_pass_records_wait_returns_at_once_when_nothing_can_arrive():
-    pr = messaging.PassRecord(root="writer", deadline=time.monotonic() + 600)
-    started = time.monotonic()
-    assert asyncio.run(PassRecordAdapter(pr).wait("writer", 30)) == []
-    assert time.monotonic() - started < 5
-
-
-def test_the_pass_record_refuses_a_start_without_a_helper_lane():
-    with pytest.raises(RecordRefused) as refused:
-        asyncio.run(PassRecordAdapter(_pass_record()).start("writer", "read e1 and e2 for totals"))
-    assert refused.value.form == "no_lane"
 
 
 def test_the_agent_record_starts_a_teammate_and_its_reply_arrives():
@@ -179,33 +142,3 @@ def test_a_teammates_question_that_names_no_one_goes_to_whoever_started_it():
     assert entry.mentions == ("root",) and answer.status == "ok"
 
 
-def test_store_skills_starts_the_review_as_host_work_that_outlives_the_call():
-    done = asyncio.Event()
-
-    class Handle:
-        async def result(self):
-            await done.wait()
-            return "stored one function"
-
-    async def start(request):
-        return Handle()
-
-    async def go():
-        ctx = _ctx(_agent_pool(), store_skills=start)
-        out = await th.store_skills(ctx, {"request": "store the parser with its retry loop"})
-        running = [t for t in ctx.state.host_tasks if not t.done()]
-        done.set()
-        await asyncio.gather(*running)
-        unavailable = await th.store_skills(_ctx(_agent_pool()), {"request": "store it"})
-        no_context = await th.store_skills(
-            _ctx(_agent_pool(), store_skills=lambda r: _text("No active execution context to snapshot.")),
-            {"request": "store it"},
-        )
-        return out, len(running), unavailable, no_context
-
-    async def _text(t):
-        return t
-
-    out, running, unavailable, no_context = asyncio.run(go())
-    assert out.status == "ok" and running == 1
-    assert unavailable.form == "unavailable" and no_context.form == "no_context"

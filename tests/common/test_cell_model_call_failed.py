@@ -268,10 +268,7 @@ async def _actor():
     from unify.actor.code_act_actor import CodeActActor
 
     actor = CodeActActor()
-    try:
-        yield actor
-    finally:
-        await actor.close()
+    yield actor
 
 
 def _tool_results(call) -> str:
@@ -314,7 +311,7 @@ async def test_in_a_cell_it_is_caught_by_name_and_nothing_planted_reaches_the_tr
     )
     async with _actor() as actor:
         with scripted(model):
-            handle = await actor.act("Ask the model.", can_store=False)
+            handle = await actor.act("Ask the model.")
             assert await asyncio.wait_for(handle.result(), 180) == "Done."
     after_caught = _tool_results(model.calls[5])
     for status, type_name in [(400, "BadRequestError"), (400, "BadRequestError"), (429, "RateLimitError"),
