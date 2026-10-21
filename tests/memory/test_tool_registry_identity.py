@@ -377,7 +377,8 @@ ADDED_FORMS = {
     "grep": ["search_failed", "outside_library"],
     "finish": ["answered", "bad_answer"],
     "delegate": ["bad_name", "not_main_agent", "record_full", "short_request", "spawn_off", "too_large"],
-    "send": ["record_full", "too_fast", "too_large"],
+    # the run record's addresses nobody would read (a role the run does not have, an agent that has ended)
+    "send": ["record_full", "too_fast", "too_large", "no_role", "ended"],
     "reply": ["record_full", "too_fast", "too_large"],
     "ask": ["record_full", "too_fast", "too_large"],
     "stop": ["not_allowed"],
@@ -401,6 +402,8 @@ ADDED_TOOLS = (
     "test",
     # the actor's pause (UNIFY_MEMORY_IN_EPISODE)
     "checkpoint",
+    # the librarian's notes for its later instances
+    "keep_note",
 )
 #: Tools added to the writer's JSON tools (tools not in code) since the base commit: left out of the base hashes.
 ADDED_JSON_TOOLS = ("land_capture",)

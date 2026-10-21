@@ -2396,11 +2396,15 @@ def refusal_codes() -> dict[str, list[str]]:
 
 
 def refusal(tool: str, form: str, **fields: object) -> Refusal:
-    """The refusal text *form* of *tool* (its spec's ``refusals``, then the general forms), filled. It starts with
-    "refused: " so every refusal reads the same, except a template starting with one of :data:`KEPT_STARTS`.
+    """The refusal text *form* of *tool* (its spec's ``refusals``, the run record's spec of a comms tool, then the
+    general forms), filled. It starts with "refused: " so every refusal reads the same, except a template starting with
+    one of :data:`KEPT_STARTS`.
     """
     spec = registry().get(tool)
     template = spec.refusals.get(form) if spec is not None else None
+    if template is None and tool in _RUN_SPECS:
+        # the run record's own forms (an address it cannot read) are its comms tools' wherever they are asked for
+        template = _RUN_SPECS[tool].refusals.get(form)
     if template is None:
         template = GENERAL_REFUSALS.get(form)
     if template is None:

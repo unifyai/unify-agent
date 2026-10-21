@@ -1162,8 +1162,11 @@ def _role_state(session: LibrarianSession, home: Any) -> None:
     if home is None or not _rr.role_seeded(home, AGENT):
         return
     session.role_home = home
-    # the notes tool appends to the role's notes in this home, as this instance (keep_note)
-    session.state.role_home, session.state.instance = Path(home), str(getattr(session, "name", "") or AGENT)
+    # the notes tool appends to the role's notes in this home, as this instance (keep_note); a session with no tool
+    # state (one that takes no tool calls) keeps no notes
+    state = getattr(session, "state", None)
+    if state is not None:
+        state.role_home, state.instance = Path(home), str(getattr(session, "name", "") or AGENT)
     keys = set()
     for row in _rr.role_answers(home, AGENT):
         session.answers.setdefault(row["key"], row["answer"])

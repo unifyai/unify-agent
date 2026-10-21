@@ -147,6 +147,8 @@ COVERAGE: dict[tuple[str, str], str] = {
     ("send", "unknown_name"): R,
     ("send", "no_recipient"): R,
     ("send", "not_posted"): R,
+    ("send", "no_role"): "the run record's send only (unify.agents.run_record_tools): a pass's own record has no roles",
+    ("send", "ended"): "the run record's send only: a pass's own record ends with the pass, so no agent on it has ended",
     ("reply", "no_text"): R,
     ("reply", "unknown_name"): R,
     ("reply", "no_recipient"): "reply always addresses the named agent: an agent that is not running is unknown_name",
