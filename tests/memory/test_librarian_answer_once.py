@@ -1,7 +1,7 @@
 """One librarian answer per question (``UNIFY_MEMORY_LIBRARIAN=on``): the request's session keeps the first answer the
-librarian gives for a question about the current request with the given facts against the library copy's commit, and
-returns it for every later ``memory.ask()`` of the same, marked as already given, with no model call. Other facts, or
-another question, are asked anew; nothing is refused for asking again. The use record counts the asks, the answers
+librarian gives for a question about the current request against the library copy's commit and catalogue, and
+returns it for every later ``memory.ask()`` of the same, marked as already given, with no model call. Another
+question is asked anew (rev 2: no reader runs, so facts a cell may still send change nothing); nothing is refused for asking again. The use record counts the asks, the answers
 given from the cache and the model calls apart.
 
 The host-side tests drive ``ask_library`` with a model turn of their own and the librarian's ``finish`` run on the host
@@ -117,41 +117,40 @@ async def test_two_asks_in_a_request_get_one_answer_the_second_from_the_cache(tm
 
 
 @pytest.mark.asyncio
-async def test_other_facts_or_another_question_are_asked_again_one_answer_per_key(tmp_path):
-    turn = Turn([FITS, NEAREST, NEAREST])
+async def test_another_question_is_asked_again_one_answer_per_key(tmp_path):
+    """Rev 2: no reader runs, so the facts a cell may still send change nothing; the question does."""
+    turn = Turn([FITS, NEAREST])
     session = _session(tmp_path, turn)
     ctx = _ctx(session)
+    other = "And is there one that counts rows?"
     try:
         _, one = await _ask(ctx, PARSED)
-        _, two = await _ask(ctx, NOT_PARSED)  # the readers' outcomes differ: asked again
-        _, three = await _ask(ctx, PARSED)  # the first facts again: the first answer
-        _, four = await _ask(ctx, NOT_PARSED)  # the second facts again: the second answer
-        _, five = await _ask(ctx, PARSED, question="And is there one that counts rows?")  # another question
+        _, two = await _ask(ctx, NOT_PARSED)  # other facts, the same question: the first answer
+        _, three = await _ask(ctx, PARSED, question=other)  # another question: asked
+        _, four = await _ask(ctx, [], question=other)  # that question again: its answer
     finally:
         await session.close()
-    assert one == FITS and two == NEAREST and five == NEAREST
-    assert three == {**FITS, L.ALREADY_GIVEN: True} and four == {**NEAREST, L.ALREADY_GIVEN: True}
-    assert len(turn.calls) == 3 and session.usage.calls == 3
-    # the second question carried its own facts
+    assert one == FITS and three == NEAREST
+    assert two == {**FITS, L.ALREADY_GIVEN: True} and four == {**NEAREST, L.ALREADY_GIVEN: True}
+    assert len(turn.calls) == 2 and session.usage.calls == 2
     asked = [m["content"] for m in session.messages if m.get("role") == "user"]
-    assert len(asked) == 3 and "did not parse the text" in asked[1] and "counts rows" in asked[2]
+    assert len(asked) == 2 and "counts rows" in asked[1] and all("parse" not in a for a in asked)
     fields = L.usage_fields([session])
-    assert (fields["questions"], fields["answers_from_cache"], fields["calls"]) == (5, 2, 3)
+    assert (fields["questions"], fields["answers_from_cache"], fields["calls"]) == (4, 2, 2)
 
 
 def test_the_key_is_the_digest_of_exactly_what_the_librarian_is_sent():
     library = {"commit": "c0ffee", "dispatch": "d1"}
-    sent = L.sent_to_librarian(REQUEST, PARSED, 0, library)
+    sent = L.sent_to_librarian(REQUEST, library, rows=1)
     # the message in the structure is the one the session sends
-    assert sent["message"] == L.question_message(REQUEST, PARSED, 0)
+    assert sent["message"] == L.question_message(REQUEST, 1)
     key = L.answer_key(sent)
-    assert key == L.answer_key(L.sent_to_librarian(REQUEST, [dict(PARSED[0])], 0, dict(library)))
+    assert key == L.answer_key(L.sent_to_librarian(REQUEST, dict(library), rows=1))
     for other in (
-        L.sent_to_librarian("another question", PARSED, 0, library),
-        L.sent_to_librarian(REQUEST, NOT_PARSED, 0, library),
-        L.sent_to_librarian(REQUEST, PARSED, 1, library),
-        L.sent_to_librarian(REQUEST, PARSED, 0, {"commit": "beef", "dispatch": "d1"}),
-        L.sent_to_librarian(REQUEST, PARSED, 0, {"commit": "c0ffee", "dispatch": "d2"}),
+        L.sent_to_librarian("another question", library, rows=1),
+        L.sent_to_librarian(REQUEST, library, rows=2),
+        L.sent_to_librarian(REQUEST, {"commit": "beef", "dispatch": "d1"}, rows=1),
+        L.sent_to_librarian(REQUEST, {"commit": "c0ffee", "dispatch": "d2"}, rows=1),
     ):
         assert L.answer_key(other) != key
 
@@ -166,8 +165,7 @@ async def test_the_session_sends_the_message_its_key_was_made_from(tmp_path):
         await session.close()
     (sent_message,) = [m["content"] for m in session.messages if m.get("role") == "user"]
     library = {"commit": "c0ffee", "dispatch": L._digest_of(L.read_dispatch(session.copy))}
-    kept, dropped = L.checked_facts(PARSED, session.dispatch)
-    sent = L.sent_to_librarian(REQUEST, kept, dropped, library)
+    sent = L.sent_to_librarian(REQUEST, library, rows=len(session.dispatch))
     assert sent_message == sent["message"] and list(session.answers) == [L.answer_key(sent)]
 
 

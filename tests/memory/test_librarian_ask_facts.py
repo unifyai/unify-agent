@@ -1,11 +1,9 @@
-"""``memory.ask(question)`` on the cell's side (design J(b).4 steps 1, 2 and 5): the recogniser facts are computed
-where the cell runs, on the current request the host gives, and only their outcomes go to the host.
+"""``memory.ask(question)`` on the cell's side (design J(b).4 steps 1, 2 and 5; rev 2, item 3): no stored reader and
+no ``applies`` runs, here or anywhere; the question alone goes to the host.
 
-1. Each distinct reader the dispatch file lists runs once on the current request's text, then each ``applies`` whose
-   reader parsed it, in one confined, time-bounded child process. A reader that raises means "did not parse";
-   nothing is retried, and its ``applies`` is never called.
-2. The question and the outcomes go to the host through the in-code tool ``ask_library``. A value a reader parsed
-   never leaves the cell's side.
+1. No reader the catalogue lists runs on the current request's text, and no ``applies``: nothing is recognised by
+   running it.
+2. The question goes to the host through the in-code tool ``ask_library``, with nothing else.
 3. What the cell gets back is the librarian's answer as a list of items, each with the librarian's reason: no
    ranking, score or top-k of the harness's own, and nothing word-matched added.
 
@@ -36,9 +34,6 @@ ASK_TOOL = "ask_library"
 HELPER_EVENT, CALL_EVENT, ASK_ID = "memory.helper_call", "memory.call", "memory:ask"
 #: The answer's keys (design J(b).4 step 4).
 FITS, NEAREST = "fits", "nearest"
-#: How a fact's outcomes may be written in what is sent (any one of each group).
-PARSED_WORDS = ("parsed",)
-HELD_WORDS = ("held",)
 
 
 def as_plain(reply_expr: str) -> str:
@@ -157,24 +152,16 @@ def _sent(sent: Path) -> list[dict]:
 
 
 @needs_box
-def test_facts_are_computed_on_the_cells_side_and_only_outcomes_are_sent(tmp_path):
+def test_no_reader_or_applies_runs_and_only_the_question_is_sent(tmp_path):
     root, mark, sent, ids = _world(tmp_path)
     got = _py(root, tmp_path / "host", f"r = memory.ask({TEXT!r})\nprint(json.dumps({{'r': {as_plain('r')}, 'events': events}}))")
     calls = _sent(sent)
     assert len(calls) == 1, calls  # one question, one call to the host
+    assert calls[0]["args"] == [TEXT] and calls[0]["kwargs"] == {}  # the question, nothing else
     blob = json.dumps(calls)
-    # the value a reader parsed never leaves the cell's side; the text the actor passed does
     assert w.PLANTED_VALUE not in blob
-    assert w.PLANTED_B64 in blob or "MARKED" in blob
-    # the outcomes name the procedures whose readers parsed it, and that an applies held
-    assert ids["ep-grid"].split(":")[1] in blob and ids["ep-marked"].split(":")[1] in blob
-    assert any(word in blob for word in PARSED_WORDS)
-    assert any(word in blob for word in HELD_WORDS)
-    # each reader ran once; the applies of the reader that raised was never called; nothing was retried
-    marks = mark.read_text().splitlines()
-    assert marks.count("grid-read") == 1 and marks.count("bad-read") == 1 and marks.count("marked-read") == 1
-    assert marks.count("grid-applies") == 1 and marks.count("marked-applies") == 1
-    assert "bad-applies" not in marks
+    assert not any(ids[e].split(":")[1] in blob for e in ids)  # no procedure is named on the cell's side
+    assert not mark.exists()  # no reader and no applies ran
     assert got["r"] == {FITS: []}
 
 
@@ -185,7 +172,7 @@ def test_ask_is_audited_as_a_helper_and_is_never_a_use(tmp_path):
     helpers = [e for e in got if e[0] == HELPER_EVENT]
     assert [e[1] for e in helpers] == [ASK_ID], got
     assert helpers[0][-1] == "ok"
-    assert [e for e in got if e[0] == CALL_EVENT] == []  # running the readers is not a use of any item
+    assert [e for e in got if e[0] == CALL_EVENT] == []  # asking is not a use of any item
 
 
 @needs_box
@@ -222,8 +209,7 @@ def test_text_sharing_only_words_with_a_procedure_adds_nothing_to_the_answer(tmp
     root, mark, sent, _ = _world(tmp_path, request=words)
     got = _py(root, tmp_path / "host", f"r = memory.ask({words!r})\nprint(json.dumps({as_plain('r')}))")
     assert got == {FITS: []}
-    marks = mark.read_text().splitlines() if mark.exists() else []
-    assert "grid-applies" not in marks and "marked-applies" not in marks  # no reader parsed it
+    assert not mark.exists()  # nothing ran
     assert len(_sent(sent)) == 1
 
 

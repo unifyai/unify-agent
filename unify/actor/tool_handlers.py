@@ -491,11 +491,11 @@ async def store_skills(ctx: Any, args: dict) -> Any:
 
 
 async def ask_library(ctx: Any, args: dict) -> Any:
-    """One question to the request's librarian (``memory.ask`` sends it with the recognisers' outcomes): the session
-    is opened at the request's first question and kept for its follow-ups; the reply is the librarian's checked
-    answer as JSON text. The facts are checked against the copy's dispatch file before the librarian reads them. A
-    question it already answered about the current request, with the same facts, gets that answer again, marked as
-    already given, with no model call (``LibrarianSession.ask``)."""
+    """One question to the request's librarian (``memory.ask`` sends it): the session is opened at the request's
+    first question and kept for its follow-ups; the reply is the librarian's checked answer as JSON text. The
+    librarian judges from the copy's structural catalogue and the items' text; nothing is run (rev 2). A question it
+    already answered about the current request gets that answer again, marked as already given, with no model call
+    (``LibrarianSession.ask``)."""
     question = args.get("question")
     if not isinstance(question, str) or not question.strip():
         return _refused(refusal("ask_library", "no_question"))
@@ -523,12 +523,11 @@ async def ask_library(ctx: Any, args: dict) -> Any:
             # the harness's evidence serving on: the situation's latest message goes with the question
             text = await session.ask(
                 question,
-                args.get("facts") or [],
                 request=request,
                 last_message=_memory_run_last_message() if getattr(ctx, "agent", None) == "actor" else None,
             )
         else:
-            text = await session.ask(question, args.get("facts") or [], request=request)
+            text = await session.ask(question, request=request)
     except _librarian.NoAnswer as exc:
         return _refused(refusal("ask_library", "no_answer", why=str(exc)[:300]))
     return _reply(text)

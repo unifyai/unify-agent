@@ -257,21 +257,7 @@ def _rendered(monkeypatch) -> dict[str, str]:
         librarian.system_prompt(evidence=True)
         + "\n"
         + (
-            librarian.evidence_question_message(
-                "q",
-                [{"id": "i", "reader": "r", "read": "parsed", "applies": "held"}],
-                1,
-                {
-                    "i": {
-                        "failure_record": [
-                            {"why": "error", "episode": "e", "pin": "p"}
-                        ],
-                        "conditions": "c",
-                        "contradictions": ["x"],
-                    }
-                },
-                "m",
-            )
+            librarian.evidence_question_message("q", "m", 1)
         )
     )
     out["rendered:curate_system"] = curate.curate_system()

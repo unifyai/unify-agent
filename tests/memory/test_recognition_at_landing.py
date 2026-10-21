@@ -213,7 +213,7 @@ def _records(box: Path, store: Path) -> dict:
 
 
 def _listed_by_match(box: Path, records: dict, store: Path) -> tuple[list[str], list[str]]:
-    """The procedure ids ``memory.match`` and the librarian's facts run (``dispatch.json``), and those the structure
+    """The procedure ids the librarian's catalogue lists (``dispatch.json``), and those the structure
     matcher reads (``find.json``'s ``procedures``)."""
     lib = discover(box)
     dispatch = lx.dispatch_data(lib, records=records, captures=captures.export_files(store))
@@ -468,7 +468,7 @@ def test_the_actor_side_runners_hand_readers_the_same_request():
     from unify.memory.request_value import REQUEST_CLASS
 
     assert lh._REQUEST_CLASS == REQUEST_CLASS
-    assert REQUEST_CLASS in lh._RECOGNISER_RUNNER and REQUEST_CLASS in lh._CAPTURE_RUNNER
+    assert REQUEST_CLASS in lh._CAPTURE_RUNNER  # rev 2: the recogniser's runner is gone; memory.run's child remains
 
     def body(fn) -> str:
         src = inspect.getsource(fn)

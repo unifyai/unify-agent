@@ -724,15 +724,15 @@ class CellAudit:
         return out
 
     def _ask_result(self, args: tuple) -> None:
-        """Keep one ``memory.ask_result`` event: the ids listed as fitting, whether nothing fits, the facts'
-        outcome labels, and how many of the cell's call records and runs came before it."""
+        """Keep one ``memory.ask_result`` event: the ids listed as fitting, whether nothing fits, how many rows the
+        copy's structural catalogue holds (rev 2: no reader runs, so there are no reader facts), and how many of the
+        cell's call records and runs came before it."""
         if type(args) is not tuple or len(args) != 3:
             self.calls_malformed += 1
             return
-        listed, nothing, facts = args
+        listed, nothing, catalogue = args
         listed = self._ids(listed)
-        rows = self._facts(facts)
-        if listed is None or type(nothing) is not bool or rows is None:
+        if listed is None or type(nothing) is not bool or type(catalogue) is not int or not 0 <= catalogue < 10**7:
             self.calls_malformed += 1
             return
         if len(self.ask_records) >= MAX_MATCH_RECORDS:
@@ -742,7 +742,7 @@ class CellAudit:
             {
                 "listed": listed,
                 "nothing_fits": nothing,
-                "facts": rows,
+                "catalogue_rows": catalogue,
                 "calls_before": len(self.call_records),
                 "runs_before": len(self.run_records),
             },

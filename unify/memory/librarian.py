@@ -63,9 +63,6 @@ LIBRARY_ROOT = "/memory"
 #: A librarian cell's time and the head of its output it is shown (the helper's own limits).
 CELL_TIMEOUT_S = 60.0
 OUTPUT_BYTES = 8000
-#: The fact labels ``memory.ask`` sends (:mod:`.library_helper`'s ``READ_OUTCOMES`` and ``APPLIES_OUTCOMES``).
-READ_OUTCOMES = ("parsed", "did-not-parse", "not-started", "failed")
-APPLIES_OUTCOMES = ("held", "did-not-hold", "raised", "not-run", "none")
 CAPTURE_PREFIX = "capture:"
 #: The field a reply carries when it is an answer the librarian already gave in this request (``true``); a first
 #: answer never has it.
@@ -114,13 +111,13 @@ BRIEF = (
     "- `tools.finish` gives your answer.\n"
     "\n"
     "## What each question brings\n"
-    "Each question comes with facts: for each stored procedure that has a reader, whether that reader parsed the "
-    "text of the agent's current request, and, where the procedure states conditions, whether its `applies` held on "
-    "what the reader gave. A reader that parsed the text, or an `applies` that held, is evidence that the item's "
-    "input fits, and evidence only: it does not show that the item does what the question needs. A reader that did "
-    "not parse the text is evidence that the input differs; one that could not be started or failed to run is "
-    "evidence of nothing. Many requests carry no structured data, and then there are no such facts: the When to use "
-    "text decides.\n"
+    "Each question names the catalogue: /memory/.memory/dispatch.json, one row per stored procedure, made by the "
+    "harness from each procedure's code and records, never by running it: its form, its input line, its `applies` "
+    "as text, the tool calls its code names (`effects`), whether it reads its input, whether it gives a fixed "
+    "answer (`constant`: an earlier answer kept as code, to read, never to call), and for a captured procedure how "
+    "often it occurred and with what outcomes. Judge relevance from these rows and the items' text: open any item "
+    "with your read tools. Nothing has run on the agent's request: a row is evidence only of what an item's code "
+    "does, never that the item fits the request.\n"
     "\n"
     "## How you answer\n"
     "- Name every item that applies, not only one, each with why it applies: the When to use line, the fact or the "
@@ -139,34 +136,33 @@ BRIEF = (
 )
 
 
-#: The brief's paragraph on what each question brings, as built.
+#: The brief's paragraph on what each question brings (rev 2: the structural catalogue; no reader runs).
 _BRINGS = (
     "## What each question brings\n"
-    "Each question comes with facts: for each stored procedure that has a reader, whether that reader parsed the "
-    "text of the agent's current request, and, where the procedure states conditions, whether its `applies` held on "
-    "what the reader gave. A reader that parsed the text, or an `applies` that held, is evidence that the item's "
-    "input fits, and evidence only: it does not show that the item does what the question needs. A reader that did "
-    "not parse the text is evidence that the input differs; one that could not be started or failed to run is "
-    "evidence of nothing. Many requests carry no structured data, and then there are no such facts: the When to use "
-    "text decides.\n"
+    "Each question names the catalogue: /memory/.memory/dispatch.json, one row per stored procedure, made by the "
+    "harness from each procedure's code and records, never by running it: its form, its input line, its `applies` "
+    "as text, the tool calls its code names (`effects`), whether it reads its input, whether it gives a fixed "
+    "answer (`constant`: an earlier answer kept as code, to read, never to call), and for a captured procedure how "
+    "often it occurred and with what outcomes. Judge relevance from these rows and the items' text: open any item "
+    "with your read tools. Nothing has run on the agent's request: a row is evidence only of what an item's code "
+    "does, never that the item fits the request.\n"
 )
-#: The same paragraph with the harness's evidence serving on (``UNIFY_MEMORY_SERVING_FAILURE_RECORD``): the situation,
-#: the evidence lines and each item's failure record.
+#: The same paragraph with the harness's evidence serving on (``UNIFY_MEMORY_SERVING_FAILURE_RECORD``): the situation
+#: and each item's failure record.
 _BRINGS_EVIDENCE = (
     "## What each question brings\n"
     "Each question comes with the situation: the agent's question (its own words, or its request's text) and, when "
-    "a message has come after its request, the latest message it received. Then the evidence: for each stored "
-    "procedure that has a reader, whether that reader parsed the text of the agent's current request, and, where the "
-    "procedure states conditions, whether its `applies` held on what the reader gave, with the conditions it "
-    "states; and for each, its recorded failures (a use that raised, whose stated result condition was false, that a "
-    "contrary signal followed, or that an agent reported) and what contradicted it. A reader that parsed the text, "
-    "or an `applies` that held, is evidence about the shape of the input only: it never shows that the item does "
-    "what the question needs. A reader that did not parse the text is evidence that the input differs; one that "
-    "could not be started or failed to run is evidence of nothing. Recorded failures are evidence against an item "
-    "in situations like the ones it failed in: weigh them before you name it, and say how in why. Every card in a "
-    "search result and in the catalogue states what its status rests on and its recorded failures too. Many "
-    "requests carry no structured data, and then there are no reader facts: the When to use text and the records "
-    "decide.\n"
+    "a message has come after its request, the latest message it received. It names the catalogue: "
+    "/memory/.memory/dispatch.json, one row per stored procedure, made by the harness from each procedure's code and "
+    "records, never by running it: its form, its input line, its `applies` as text, the tool calls its code names "
+    "(`effects`), whether it reads its input, whether it gives a fixed answer (`constant`: an earlier answer kept as "
+    "code, to read, never to call), and for a captured procedure how often it occurred and with what outcomes. Judge "
+    "relevance from these rows and the items' text: open any item with your read tools. Nothing has run on the "
+    "agent's request: a row is evidence only of what an item's code does, never that the item fits the request. "
+    "Every card in a search result and in the "
+    "catalogue states what its status rests on and its recorded failures (a use that raised, whose stated result "
+    "condition was false, that a contrary signal followed, or that an agent reported): weigh them before you name an "
+    "item, and say how in why.\n"
 )
 if BRIEF.count(_BRINGS) != 1:
     raise RuntimeError("the librarian brief no longer holds the paragraph its evidence form replaces")
@@ -297,92 +293,26 @@ def read_dispatch(copy: Path) -> dict[str, dict]:
     }
 
 
-def checked_facts(facts: Any, dispatch: dict[str, dict]) -> tuple[list[dict], int]:
-    """The facts a cell sent that name a procedure of *dispatch* with its own reader and known outcome labels, in
-    the dispatch file's order, and how many were left out. Only ids from the dispatch file and fixed labels pass,
-    so nothing else a cell sends reaches the librarian."""
-    kept: dict[str, dict] = {}
-    dropped = 0
-    for f in facts if isinstance(facts, list) else []:
-        row = dispatch.get(f.get("id")) if isinstance(f, dict) and isinstance(f.get("id"), str) else None
-        if (
-            row is None
-            or f.get("reader") != row.get("reader")
-            or f.get("read") not in READ_OUTCOMES
-            or f.get("applies") not in APPLIES_OUTCOMES
-            or f["id"] in kept
-        ):
-            dropped += 1
-            continue
-        kept[f["id"]] = {"id": f["id"], "reader": row.get("reader"), "read": f["read"], "applies": f["applies"]}
-    return [kept[i] for i in dispatch if i in kept], dropped
+def _stripped(text: str | None) -> str:
+    """*text* through the identifier rule (:func:`.signatures.strip_identifiers`, with the values it labels as
+    identifiers itself): the librarian never reads an identifier of the request, so no item is named for one."""
+    from .signatures import strip_identifiers
+
+    value = text if isinstance(text, str) else ""
+    return strip_identifiers(value, request=value)
 
 
-_APPLIES_TEXT = {
-    "held": "its `applies` held on what the reader gave",
-    "did-not-hold": "its `applies` did not hold on what the reader gave",
-    "raised": "its `applies` raised",
-    "not-run": "its `applies` was not run",
-    "none": "it states no `applies`",
-}
+def catalogue_line(rows: int) -> str:
+    """The line that names the structural catalogue (:data:`.library_export.DISPATCH_FILE`) for one question."""
+    return (
+        f"The catalogue: {LIBRARY_ROOT}/.memory/dispatch.json, {rows} row(s), one per stored procedure, from its code "
+        "and records (nothing was run on the request)."
+    )
 
 
-_READ_TEXT = {
-    "parsed": "parsed the text",
-    "did-not-parse": "did not parse the text",
-    "not-started": "could not be started on the text",
-    "failed": "failed to run on the text (no outcome)",
-}
-
-
-def facts_text(facts: list[dict], dropped: int = 0) -> str:
-    """The facts as the librarian reads them, one line per procedure."""
-    if not facts:
-        lines = ["- none: no stored reader ran (no stored procedure has one, or the request was not available)"]
-    else:
-        lines = []
-        for f in facts:
-            reader = f"reader `{f['reader']}`" if f.get("reader") else "no reader"
-            read = _READ_TEXT[f["read"]]
-            lines.append(f"- `{f['id']}`: {reader} {read}; {_APPLIES_TEXT[f['applies']]}.")
-    if dropped:
-        lines.append(f"- ({dropped} fact(s) could not be read and are left out.)")
-    return "\n".join(lines)
-
-
-def evidence_facts_text(facts: list[dict], dropped: int, evidence: Mapping[str, Any]) -> str:
-    """The facts as evidence lines (the harness's evidence serving on): per procedure its reader's outcome, its
-    `applies` outcome, the conditions it states, its recorded failures and what contradicted it."""
-    from .library_export import failure_line
-
-    if not facts:
-        lines = ["- no stored reader ran (no stored procedure has one, or the request was not available)"]
-    else:
-        lines = []
-        for f in facts:
-            row = evidence.get(f["id"]) if isinstance(evidence.get(f["id"]), dict) else {}
-            reader = f"its stored reader `{f['reader']}`" if f.get("reader") else "it has no reader, which"
-            parts = [f"{reader} {_READ_TEXT[f['read']]}", _APPLIES_TEXT[f["applies"]]]
-            if row.get("conditions"):
-                parts.append(f"it states that it applies when: {row['conditions']}")
-            parts.append(f"recorded failures: {failure_line(row)}")
-            parts += [f"contradicted: {c}" for c in row.get("contradictions") or [] if isinstance(c, str)]
-            lines.append(f"- `{f['id']}`: " + "; ".join(parts) + ".")
-    if dropped:
-        lines.append(f"- ({dropped} fact(s) could not be read and are left out.)")
-    return "\n".join(lines)
-
-
-def evidence_question_message(
-    question: str,
-    facts: list[dict],
-    dropped: int,
-    evidence: Mapping[str, Any],
-    last_message: str | None,
-) -> str:
+def evidence_question_message(question: str, last_message: str | None, rows: int = 0) -> str:
     """The user message that carries one question with the harness's evidence serving on: the question, the
-    situation (the latest message the agent received after its request, when there is one) and the evidence about
-    the stored procedures the facts name (:func:`evidence_facts_text`)."""
+    situation (the latest message the agent received after its request, when there is one) and the catalogue."""
     last = last_message.strip() if isinstance(last_message, str) else ""
     situation = (
         f"- The latest message the agent received after its request:\n{last}"
@@ -394,34 +324,32 @@ def evidence_question_message(
         f"{question}\n\n"
         "The situation:\n"
         f"{situation}\n\n"
-        "Evidence about the stored procedures with a reader, run on the text of the agent's current request in its "
-        "own sandbox (outcomes only), with their recorded failures. A reader that parsed the text or an `applies` "
-        "that held says the input has the shape the item was built for, never that it does what the question "
-        "needs:\n"
-        f"{evidence_facts_text(facts, dropped, evidence)}\n\n"
+        f"{catalogue_line(rows)}\n\n"
         "Answer with tools.finish(answer)."
     )
 
 
 def sent_to_librarian(
     question: str,
-    facts: list[dict],
-    dropped: int,
     library: Mapping[str, Any],
+    *,
     evidence: Mapping[str, Any] | None = None,
     last_message: str | None = None,
+    rows: int = 0,
 ) -> dict:
     """Exactly what one ask sends the librarian beyond its fixed opening (the shared opening and the brief, the same
-    for every ask and every library): the user message (:func:`question_message`: the question and its checked
-    facts) and the library it reads in its box with its tools (*library*: the copy's commit and its dispatch file as
-    the ask read it). :func:`answer_key` is this structure's digest, and the message the session sends is its
+    for every ask and every library): the user message (:func:`question_message`: the question and the catalogue
+    line) and the library it reads in its box with its tools (*library*: the copy's commit and its catalogue's
+    digest as the ask read it). The question and the situation's message go through the identifier rule
+    (:func:`_stripped`). :func:`answer_key` is this structure's digest, and the message the session sends is its
     ``message``, so nothing the librarian reads can be missing from the key. With *evidence* (the copy's item
     evidence: the harness's evidence serving on) the message is :func:`evidence_question_message`, with
     *last_message* as the situation's latest message."""
+    q = _stripped(question)
     if evidence is not None:
-        message = evidence_question_message(question, facts, dropped, evidence, last_message)
+        message = evidence_question_message(q, _stripped(last_message) if last_message else None, rows)
     else:
-        message = question_message(question, facts, dropped)
+        message = question_message(q, rows)
     return {"message": message, "library": dict(library)}
 
 
@@ -440,14 +368,12 @@ def _digest_of(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode("utf-8", "replace")).hexdigest()[:16]
 
 
-def question_message(question: str, facts: list[dict], dropped: int = 0) -> str:
-    """The user message that carries one question and its facts."""
+def question_message(question: str, rows: int = 0) -> str:
+    """The user message that carries one question and names the catalogue."""
     return (
         "Question from the agent:\n"
         f"{question}\n\n"
-        "Facts: the stored readers, run on the text of the agent's current request in its own sandbox (outcomes "
-        "only):\n"
-        f"{facts_text(facts, dropped)}\n\n"
+        f"{catalogue_line(rows)}\n\n"
         "Answer with tools.finish(answer)."
     )
 
@@ -797,12 +723,13 @@ class LibrarianSession:
     async def ask(
         self,
         question: str,
-        facts: Any,
+        facts: Any = None,
         request: str | None = None,
         last_message: str | None = None,
     ) -> str:
-        """One question about the current request (*request* is not sent to the librarian, so it is not in the key):
-        its facts checked against the dispatch file. When the librarian was already sent the same
+        """One question about the current request (*request* is not sent to the librarian, so it is not in the key;
+        *facts*, which an older cell may still send, are not read: rev 2 runs no reader). When the librarian was
+        already sent the same
         (:func:`answer_key` of :func:`sent_to_librarian`), that answer as it gave
         it, with :data:`ALREADY_GIVEN`, and no model call; otherwise the question goes as the next user message and
         the librarian's accepted answer is kept and returned. JSON text either way. Raises :class:`NoAnswer` when it
@@ -814,15 +741,15 @@ class LibrarianSession:
             self.dispatch = read_dispatch(self.copy)
             ids, failed, recipes = library_items(self.copy) or ([], set(), {})
             self.state.ids, self.state.failed, self.state.recipes = ids, failed, recipes
-            kept, dropped = checked_facts(facts, self.dispatch)
             self.questions += 1
             library = {"commit": self.library, "dispatch": _digest_of(self.dispatch)}
             if self.evidence is not None:
                 # the evidence as the ask finds it, and the situation's latest message: what the answer answered
                 self.evidence = read_evidence(self.copy) or {}
-                sent = sent_to_librarian(question, kept, dropped, library, self.evidence, last_message)
+                sent = sent_to_librarian(question, library, evidence=self.evidence, last_message=last_message,
+                                         rows=len(self.dispatch))  # fmt: skip
             else:
-                sent = sent_to_librarian(question, kept, dropped, library)
+                sent = sent_to_librarian(question, library, rows=len(self.dispatch))
             key = answer_key(sent)
             given = self.answers.get(key)
             if given is not None:
@@ -1098,8 +1025,8 @@ __all__ = [
     "Usage",
     "answer_key",
     "sent_to_librarian",
+    "catalogue_line",
     "check_answer",
-    "checked_facts",
     "enabled",
     "finish",
     "grep",

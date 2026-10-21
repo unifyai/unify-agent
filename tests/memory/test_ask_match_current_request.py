@@ -3,12 +3,10 @@
 * The host gives the current request through ``current_request``: on the actor's and a teammate's channel, never in
   their ``tools`` module, ``tools.list()``, ``tools.help`` or ``dir(tools)``. The memory package calls it through the
   channel client (``tools._call``). With no request known it is refused, and nothing crashes.
-* ``memory.ask()`` runs the stored readers on the current request's text and asks about the request; a question of
-  the agent's own goes to the librarian while the readers still read the request.
-* ``memory.match()`` lists a procedure only when its reader parsed the current request and its stated ``applies``
-  held; a procedure saved against input with the request's structure whose reader did not parse is never listed.
-* A reader child that cannot start is ``not-started``; one that never prints its marker, or runs past its time, is
-  ``failed``. Each carries a fixed short reason that reaches the host's evidence and log; no value does.
+* ``memory.ask()`` asks about the current request; a question of the agent's own goes to the librarian alone. No
+  stored reader runs (rev 2).
+* ``memory.match()`` compares structure only, on the current request's data when it is given nothing; nothing runs.
+* An ask's audit event carries the catalogue's row count, never reader facts.
 
 The generated package runs in a fresh isolated interpreter, as a cell imports it, with a stand-in ``tools`` module for
 the host. No model is called.
@@ -26,9 +24,7 @@ import pytest
 
 from tests.memory.test_librarian import (
     CAPTURE,
-    FAILED,
     PLANTED_VALUE,
-    READ_ROWS,
     REQUEST,
     TOTAL,
     _captures,
@@ -191,20 +187,20 @@ def test_ask_reads_the_current_request_and_sends_the_question_given(tmp_path):
     code = host(REQUEST) + (
         "a = memory.ask()\n"
         "b = memory.ask('Which item totals a table?')\n"
-        "print(json.dumps({'sent': sent, 'requests': requests, 'notes': [a.note, b.note]}))\n"
+        "print(json.dumps({'sent': sent, 'requests': requests, 'notes': [a.note, b.note], 'events': events}, "
+        "default=list))\n"
     )
     out = json.loads(_py(root, code))
     (first, first_facts), (second, second_facts) = out["sent"]
     # with no question the request itself is asked about; a question of the agent's own is sent as given
     assert first == REQUEST and second == "Which item totals a table?"
-    # either way the readers read the current request: the table reader parsed it and its applies held
-    for facts in (first_facts, second_facts):
-        assert facts == [
-            {"id": TOTAL, "reader": READ_ROWS, "read": "parsed", "applies": "held"},
-            {"id": "capture:" + CAPTURE, "reader": "capture:" + CAPTURE, "read": "parsed", "applies": "did-not-hold"},
-        ]
-    assert out["requests"] == [["current_request", {}]] * 2 and out["notes"] == ["", ""]
+    # rev 2: no reader runs, so nothing but the question is sent, and a question of its own needs no request
+    assert first_facts is None and second_facts is None
+    assert out["requests"] == [["current_request", {}]] and out["notes"] == ["", ""]
     assert PLANTED_VALUE not in json.dumps(out)
+    # the ask's event carries the catalogue's row count, never facts
+    (ev, (listed, nothing, rows)), _ = out["events"]
+    assert ev == "memory.ask_result" and listed == [] and nothing is True and isinstance(rows, int) and rows > 0
 
 
 def test_with_no_current_request_nothing_crashes_and_the_note_says_so(tmp_path):
@@ -220,141 +216,53 @@ def test_with_no_current_request_nothing_crashes_and_the_note_says_so(tmp_path):
     # nothing to ask about: nothing is sent, and the answer says why
     assert out["a"][0] == [] and "not available here, so nothing was asked" in out["a"][1]
     assert out["a"][2] == out["a"][1] + "\n"
-    # a question still goes, with no facts, and the note says no reader ran
-    assert out["sent"] == [["Which item totals a table?", []]]
-    assert "no stored reader ran" in out["b"][1]
-    assert out["m"][0] == [] and "not available here, so no stored reader ran" in out["m"][1]
+    # a question of the agent's own still goes, alone
+    assert out["sent"] == [["Which item totals a table?", None]] and out["b"][1] == ""
+    assert out["m"][0] == [] and "no structure the matcher reads" in out["m"][1]
 
 
 # --- match ------------------------------------------------------------------------------------------------------
 
 
-def test_match_lists_only_what_its_reader_parsed_with_its_applies_holding(tmp_path):
+def test_match_compares_structure_only_on_the_current_request_and_runs_nothing(tmp_path):
+    """Rev 2: no reader or applies runs to recognise the request; match lists what has the structure of the current
+    request's data, in the catalogue's order, whatever a stored reader would have said."""
     extra = _capture(SAME_SHAPE, NEVER_PARSES, DATA)
     root = _copy(tmp_path, extra)
     code = host(REQUEST, DATA) + (
         "m = memory.match()\n"
-        "f = memory.match(inputs=['x', 'y'])\n"
-        "print(json.dumps({'ids': [r.id for r in m], 'matched': [r.matched for r in m], 'text': str(m), "
-        "'failed': [r.id for r in f.failed], 'f_ids': [r.id for r in f], 'events': events}, default=list))\n"
+        "print(json.dumps({'ids': [r.id for r in m], 'text': str(m), 'events': events}, default=list))\n"
     )
     out = json.loads(_py(root, code))
-    # the table reader parsed the request and its applies held; the word capture parsed it but its applies did not
-    # hold; the capture saved against input with the request data's structure never parsed it: none of those two
-    assert out["ids"] == [TOTAL] and out["matched"] == ["applies-held"]
-    assert "1 stored procedure(s) recognise the request" in out["text"] and "compares structure only" not in out["text"]
-    # an explicit input changes only the order and the failed attempts shown apart, never what is listed
-    assert out["f_ids"] == [TOTAL] and out["failed"] == ["capture:" + FAILED]
-    (ev, (listed, failed)), _ = out["events"]
-    assert ev == "memory.match_result" and [row[0] for row in listed] == [TOTAL] and failed == []
-    # without the librarian's dispatch file match is as it was: structure alone lists the same-shape capture
+    # the capture whose reader never parses is listed by its structure: nothing ran to tell otherwise
+    assert TOTAL in out["ids"] and "capture:" + SAME_SHAPE in out["ids"]
+    assert "compares structure only" in out["text"] and "recognise the request" not in out["text"]
+    (ev, (listed, _failed)), = out["events"]
+    assert ev == "memory.match_result" and [row[0] for row in listed] == out["ids"]
+    # without the librarian's catalogue match is the same
     off = _copy(tmp_path, extra, librarian=False, name="off")
     got = json.loads(_py(off, f"import json, memory\nm = memory.match({REQUEST!r}, {DATA!r})\n"
                                "print(json.dumps([[r.id for r in m], str(m)]))\n"))
     assert "capture:" + SAME_SHAPE in got[0] and "compares structure only" in got[1]
 
 
-# --- a reader that gives no outcome -----------------------------------------------------------------------------
-
-
-def test_a_child_that_cannot_start_or_never_prints_its_marker_is_labelled_with_its_reason(tmp_path):
-    root = _copy(tmp_path)
-    code = host(REQUEST) + (
-        "real = sys.executable\n"
-        "sys.executable = '/nonexistent/python3'\n"
-        "a = memory.ask()\n"
-        "sys.executable = real\n"
-        "memory._RECOGNISER_RUNNER = 'import sys'\n"
-        "b = memory.ask()\n"
-        "print(json.dumps({'sent': sent, 'notes': [a.note, b.note], 'events': events}, default=list))\n"
-    )
-    out = json.loads(_py(root, code))
-    (_, started), (_, marked) = out["sent"]
-    # the host is told the labels only; the reason travels in the audit event
-    assert [(f["id"], f["read"], f["applies"]) for f in started] == [
-        (TOTAL, "not-started", "not-run"), ("capture:" + CAPTURE, "not-started", "not-run"),
-    ]
-    assert [f["read"] for f in marked] == ["failed", "failed"] and all("reason" not in f for f in started + marked)
-    assert "start: FileNotFoundError" in out["notes"][0] and "no marker" in out["notes"][1]
-    (_, one), (_, two) = out["events"]
-    assert one[2][0] == [TOTAL, "not-started", "not-run", "start: FileNotFoundError"]
-    assert two[2][0] == [TOTAL, "failed", "not-run", "no marker"]
-
-    with _Logged() as log:
-        acc = _host_record(out["events"])
-    first, second = acc["asks"]
-    assert first["facts"][0] == {"id": TOTAL, "read": "not-started", "applies": "not-run",
-                                 "reason": "start: FileNotFoundError"}
-    assert second["facts"][1] == {"id": "capture:" + CAPTURE, "read": "failed", "applies": "not-run",
-                                  "reason": "no marker"}
-    logged = log.text
-    assert f"memory.ask: the stored reader of {TOTAL} not-started (start: FileNotFoundError)" in logged
-    assert f"memory.ask: the stored reader of capture:{CAPTURE} failed (no marker)" in logged
-
-
-def test_a_reader_that_cannot_be_loaded_has_failed_with_its_reason_and_never_reads_as_not_parsing(tmp_path):
-    root = _copy(tmp_path)
-    module = root / "memory" / "tables" / "readers.py"  # TOTAL's reader, READ_ROWS, lives here
-    module.write_text(module.read_text() + "\nraise RuntimeError('this module breaks on import')\n")
-    code = host(REQUEST) + (
-        "a = memory.ask()\nprint(json.dumps({'sent': sent, 'note': a.note, 'events': events}, default=list))\n"
-    )
-    out = json.loads(_py(root, code))
-    ((_, facts),) = out["sent"]
-    total = next(f for f in facts if f["id"] == TOTAL)
-    assert (total["read"], total["applies"]) == ("failed", "not-run"), total
-    assert "load: RuntimeError" in out["note"]
-    ((_, event),) = out["events"]
-    assert [TOTAL, "failed", "not-run", "load: RuntimeError"] in event[2]
-
-
-def test_a_reader_past_its_time_is_failed_and_the_others_keep_their_outcomes(tmp_path):
-    root = _copy(tmp_path, _capture(SLOW, NEVER_RETURNS, DATA))
-    code = host(REQUEST, DATA) + (
-        "memory.READ_TIMEOUT_S, memory.READERS_TIMEOUT_S = 1.0, 20.0\n"
-        "a = memory.ask()\n"
-        "m = memory.match()\n"
-        "print(json.dumps({'sent': sent, 'ids': [r.id for r in m], 'notes': [a.note, m.note], 'events': events}, "
-        "default=list))\n"
-    )
-    out = json.loads(_py(root, code))
-    ((_, facts),) = out["sent"]
-    by_id = {f["id"]: (f["read"], f["applies"]) for f in facts}
-    assert by_id["capture:" + SLOW] == ("failed", "not-run")
-    assert by_id[TOTAL] == ("parsed", "held")
-    assert out["ids"] == [TOTAL]
-    for note in out["notes"]:
-        assert f"capture:{SLOW} failed (timeout after 1 s)" in note, note
-    (_, ask), (_, match) = out["events"]
-    assert [row for row in ask[2] if len(row) == 4] == [["capture:" + SLOW, "failed", "not-run", "timeout after 1 s"]]
-    assert match[2] == [["capture:" + SLOW, "failed", "not-run", "timeout after 1 s"]]
-
-    with _Logged() as log:
-        acc = _host_record(out["events"])
-    assert acc["matches"][0]["listed"][0]["id"] == TOTAL
-    assert f"memory.match: the stored reader of capture:{SLOW} failed (timeout after 1 s)" in log.text
-    assert f"memory.ask: the stored reader of capture:{SLOW} failed (timeout after 1 s)" in log.text
-
-
-def test_the_audit_hook_keeps_only_fixed_reasons_for_readers_without_an_outcome():
-    good = ((TOTAL, "failed", "not-run", "timeout after 30 s"),)
-    planted = ((TOTAL, "failed", "not-run", "the value was 42"),)
-    labelled = ((TOTAL, "parsed", "held", "no marker"),)  # a reason only where no outcome was given
-    bare = ((TOTAL, "not-started", "not-run"),)  # and never without one there
+def test_the_audit_hook_keeps_the_catalogue_count_of_an_ask_and_refuses_facts():
     audit = CellAudit([])
     audit.begin()
-    for rows in (good, planted, labelled, bare):
-        audit("memory.ask_result", ((), True, rows))
-    audit("memory.match_result", ((), (), planted))
-    audit("memory.match_result", ((), (), good))
+    audit("memory.ask_result", ((TOTAL,), False, 7))
+    audit("memory.ask_result", ((), True, ((TOTAL, "parsed", "held"),)))  # rev 1's facts: malformed now
+    audit("memory.ask_result", ((), True, -1))
+    audit("memory.ask_result", ((), True, True))
     calls = audit.drain()["calls"]
-    assert [a["facts"] for a in calls["asks"]] == [
-        [{"id": TOTAL, "read": "failed", "applies": "not-run", "reason": "timeout after 30 s"}],
-    ]
-    assert [m.get("no_outcome") for m in calls["matches"]] == [
-        [{"id": TOTAL, "read": "failed", "applies": "not-run", "reason": "timeout after 30 s"}],
-    ]
-    assert calls["malformed"] == 4
+    assert [(a["listed"], a["catalogue_rows"]) for a in calls["asks"]] == [([TOTAL], 7)]
+    assert calls["malformed"] == 3
+    acc = runtime_calls_empty()
+    audit2 = CellAudit([])
+    audit2.begin()
+    audit2("memory.ask_result", ((TOTAL,), False, 7))
+    add_runtime_calls(acc, audit2.drain())
+    [row] = acc["asks"]
+    assert row["catalogue_rows"] == 7 and "facts" not in row
 
 
 # --- the host tool ----------------------------------------------------------------------------------------------

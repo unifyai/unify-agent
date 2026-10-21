@@ -144,32 +144,18 @@ def test_an_item_with_two_failures_shows_them_on_its_card_and_in_the_librarians_
     )
     rows = {r["id"]: r for r in json.loads(files[".memory/search.json"])["items"]}
     assert "recorded failures: 2: error in episode a1b2c3d4" in rows[PARSE_DATE]["card"]
-    fact = {
-        "id": PARSE_DATE,
-        "reader": "memory.text.parse:tokens",
-        "read": "parsed",
-        "applies": "held",
-    }
+    # rev 2: no reader runs, so the message carries the situation and names the catalogue; the failures are on the
+    # cards (above), never reader facts
     sent = librarian.sent_to_librarian(
         "Turn this into an ISO date.",
-        [fact],
-        0,
         {"commit": "c", "dispatch": "d"},
-        librarian.read_evidence(root),
-        "The date is 9 October.",
+        evidence=librarian.read_evidence(root),
+        last_message="The date is 9 October.",
+        rows=3,
     )
     message = sent["message"]
-    assert (
-        "recorded failures: 2: error in episode a1b2c3d4 (version 1a2b3c4); contrary_signal in episode 0f1e2d3c"
-        in message
-    )
-    assert "it states that it applies when: the text is a date" in message
-    assert "contradicted: 1 of its stated tests did not go as stated" in message
-    assert (
-        "The latest message the agent received after its request:\nThe date is 9 October."
-        in message
-    )
-    assert "never that it does what the question needs" in message
+    assert "The latest message the agent received after its request:\nThe date is 9 October." in message
+    assert "dispatch.json, 3 row(s)" in message and "reader" not in message
 
 
 def test_reader_and_applies_outcomes_are_evidence_lines_never_a_claim_of_fit(tmp_path):
@@ -177,7 +163,7 @@ def test_reader_and_applies_outcomes_are_evidence_lines_never_a_claim_of_fit(tmp
     assert librarian.BRIEF_EVIDENCE in brief and librarian.BRIEF not in brief
     assert "is evidence that the item's input fits" not in brief
     assert (
-        "evidence about the shape of the input only" in brief
+        "evidence only of what an item's code does" in brief
         and "recorded failures" in brief
     )
     assert librarian.system_prompt().endswith(librarian.BRIEF)  # off: as built
@@ -560,38 +546,14 @@ def test_the_e4_replay_the_librarian_input_now_carries_the_failure_record(
         == "Return whether the request asks to investigate a checkout alert."
     )
     # what the librarian was told on the repeats was "the stored reader parsed this request and its applies check
-    # held"; now the same facts arrive as evidence about the input's shape, with the failures beside them
-    fact = {
-        "id": f"capture:{cid}",
-        "reader": f"capture:{cid}",
-        "read": "parsed",
-        "applies": "held",
-    }
+    # held"; rev 2 runs no reader, so the message tells it nothing of the kind, and the failures travel on the card
     message = librarian.sent_to_librarian(
         "Investigate the checkout alert of 19 October and file the report.",
-        [fact],
-        0,
         {"commit": "c", "dispatch": "d"},
-        doc["items"],
-        None,
+        evidence=doc["items"],
     )["message"]
-    line = next(
-        ln for ln in message.splitlines() if ln.startswith(f"- `capture:{cid}`")
-    )
-    assert (
-        "parsed the text" in line
-        and "its `applies` held on what the reader gave" in line
-    )
-    assert (
-        "recorded failures: 2: error in episode e15oct (version c0ffeec); actor_reported in episode e19oct "
-        "(version c0ffeec)"
-    ) in line
-    assert (
-        "it states that it applies when: Return whether the request asks to investigate a checkout alert."
-        in line
-    )
+    assert f"capture:{cid}" not in message and "reader" not in message and "applies" not in message
     assert "No message has come after the agent's request." in message
-    assert "never that it does what the question needs" in message
 
 
 # --- the switch and the request's wiring ----------------------------------------------------------------------------

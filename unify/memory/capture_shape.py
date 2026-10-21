@@ -161,23 +161,41 @@ class _Nested(ast.NodeTransformer):
         return self._function(node)
 
 
-def _env_chains(tree: ast.Module) -> list[str]:
-    """The ``<env>.<channel>.<method>`` chains rooted at ``run``'s second positional parameter, as written."""
-    run = next((n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "run"),
-               None)  # fmt: skip
-    if run is None:
-        return []
-    params = [a.arg for a in (*run.args.posonlyargs, *run.args.args)]
+def _chains(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    """The ``<env>.<channel>.<method>`` chains rooted at *fn*'s second positional parameter (its tool namespace), as
+    ``env.<channel>.<method>``."""
+    params = [a.arg for a in (*fn.args.posonlyargs, *fn.args.args)]
     if len(params) < 2:
         return []
     env = params[1]
     out = set()
-    for node in ast.walk(run):
+    for node in ast.walk(fn):
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute):
             inner = node.value
             if isinstance(inner.value, ast.Name) and inner.value.id == env:
                 out.add(f"env.{inner.attr}.{node.attr}")
     return sorted(out)
+
+
+def _env_chains(tree: ast.Module) -> list[str]:
+    """The tool calls ``run`` names (:func:`_chains`)."""
+    run = next((n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "run"),
+               None)  # fmt: skip
+    return _chains(run) if run is not None else []
+
+
+def entry_env_chains(source: Any) -> list[str]:
+    """The tool calls a procedure's entry function names (``run``; else ``main``; else its only function; else its
+    first public one, as :mod:`.fixed_answer` reads the entry), from its syntax; [] when it does not parse."""
+    from .fixed_answer import _entry
+
+    if not isinstance(source, str):
+        return []
+    try:
+        fn = _entry(ast.parse(source))
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return []
+    return _chains(fn) if fn is not None else []
 
 
 def shape_of(source: Any) -> dict | None:

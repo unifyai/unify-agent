@@ -662,8 +662,8 @@ def _log_no_outcome(call: str, facts: Any) -> None:
 
 def _add_asks(acc: dict, calls: dict, cell: int) -> None:
     """Add one cell's ``memory.ask`` results (UNIFY_MEMORY_LIBRARIAN=on) to *acc*: each with the ids it listed as
-    fitting, whether it said nothing fits and the facts' outcome labels (with the reason of a reader that gave no
-    outcome, which is also logged); and mark which listed ids were called afterwards (a library call or a run in a
+    fitting, whether it said nothing fits and how many rows the copy's structural catalogue held (rev 2: no reader
+    runs, so there are no reader facts); and mark which listed ids were called afterwards (a library call or a run in a
     later cell, or later in the same cell). Ids and labels only. Added under ``asks`` and ``listed_by_ask`` only
     once an ask was seen, so a request without one is unchanged."""
     asks = [a for a in calls.get("asks") or [] if isinstance(a, dict)]
@@ -684,7 +684,6 @@ def _add_asks(acc: dict, calls: dict, cell: int) -> None:
         return value if type(value) is int and value >= 0 else 0
 
     for a in asks:
-        _log_no_outcome("memory.ask", a.get("facts"))
         listed = [i for i in a.get("listed") or [] if isinstance(i, str)]
         after = set(called[position(a.get("calls_before")) :]) | {
             r["target"] for r in runs[position(a.get("runs_before")) :]
@@ -697,11 +696,7 @@ def _add_asks(acc: dict, calls: dict, cell: int) -> None:
                 "cell": cell,
                 "listed": listed,
                 "nothing_fits": bool(a.get("nothing_fits")),
-                "facts": [
-                    {k: f.get(k) for k in ("id", "read", "applies", "reason") if k != "reason" or f.get(k)}
-                    for f in a.get("facts") or []
-                    if isinstance(f, dict)
-                ],
+                "catalogue_rows": a.get("catalogue_rows") if type(a.get("catalogue_rows")) is int else None,
                 "called_after": sorted(set(listed) & after),
             },
         )

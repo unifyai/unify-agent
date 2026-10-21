@@ -62,7 +62,7 @@ CALL_KIND = "librarian"
 #: The use record's fields (J(b).4): the count, the rows (each: the ids listed as fitting, whether it said nothing
 #: fits, and the facts' outcomes) and, on a later run of an item, whether an ask listed it.
 ASK_CALLS, ASK_ROWS = "ask_calls", "ask_rows"
-ROW_LISTED, ROW_NOTHING_FITS, ROW_FACTS = "listed", "nothing_fits", "facts"
+ROW_LISTED, ROW_NOTHING_FITS, ROW_FACTS = "listed", "nothing_fits", "catalogue_rows"  # rev 2: no reader facts
 
 
 def listed_by_ask(record: dict, item: str) -> bool | None:

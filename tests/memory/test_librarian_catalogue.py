@@ -43,7 +43,9 @@ SWITCH = "UNIFY_MEMORY_LIBRARIAN"
 SAVED_AGAINST_LABEL = "saved against"
 EVIDENCE_LABEL = "evidence"
 #: The keys of one dispatch row (J(b).3) and where the rows sit in the file (a list, or a list under this key).
-DISPATCH_KEYS = {"id", "reader", "applies", "input"}
+#: Rev 2: the structural catalogue's row (``library_export.dispatch_data``).
+DISPATCH_KEYS = {"id", "kind", "form", "signature", "applies_text", "effects", "reads_input", "constant", "occurrences",
+                 "outcomes", "provenance"}  # fmt: skip
 DISPATCH_ROWS_KEY = "procedures"
 
 
@@ -231,22 +233,17 @@ def test_an_empty_library_has_an_empty_catalogue_and_dispatch_file(tmp_path):
 
 
 @needs_box
-def test_the_dispatch_file_lists_each_procedure_with_a_reader_or_applies(tmp_path):
+def test_the_dispatch_file_is_one_structural_row_per_listed_procedure(tmp_path):
     _, files, caps = _world(tmp_path)
     rows = dispatch_rows(json.loads(files[DISPATCH]))
     for row in rows:
         assert set(row) == DISPATCH_KEYS, row
-        assert isinstance(row["applies"], bool)
-        assert row["reader"] is None or (isinstance(row["reader"], str) and row["reader"])
-        assert isinstance(row["input"], str)
+        assert row["kind"] in ("function", "capture-shape") and isinstance(row["applies_text"], str)
+        assert isinstance(row["effects"], list) and isinstance(row["constant"], bool)
     by_id = {r["id"]: r for r in rows}
     total = by_id[w.TOTAL]
-    assert total["reader"] == w.READ_TOTAL and total["applies"] is True
-    # a landed reader is never a procedure read by itself (its own test opens the fixture it produced)
-    # (a capture is its own reader; a landed function never is)
-    assert w.READ_TOTAL not in by_id
-    assert all(r["reader"] != r["id"] for r in rows if not r["id"].startswith("capture:"))
-    assert total["input"] == signature_text(w.records()[w.TOTAL]["signature"])
+    assert total["signature"] == signature_text(w.records()[w.TOTAL]["signature"])
+    assert total["applies_text"].startswith("def ")  # its applies, named by its record, as text
     # a function with one reader by the gate is a row, with no applies and no input line
     assert by_id[w.COUNT] == {"id": w.COUNT, "reader": w.READ_ORDERS, "applies": False, "input": ""}
     # a function with neither one reader nor applies is not a row
@@ -267,7 +264,7 @@ def test_the_dispatch_file_lists_each_procedure_with_a_reader_or_applies(tmp_pat
 
 def _dispatched(files: dict) -> dict:
     data = json.loads(files[DISPATCH])
-    return {"rows": {r["id"]: r for r in dispatch_rows(data)}, "applies_of": data["applies_of"]}
+    return {"rows": {r["id"]: r for r in dispatch_rows(data)}}
 
 
 def _evidence(card: str) -> str:
@@ -287,14 +284,8 @@ def test_a_landed_procedure_is_read_by_the_reader_it_was_landed_with(tmp_path):
     assert total["signature"] == landed["signature"] and isinstance(total["signature"], dict)
     assert total["applies"] == landed["applies"] == w.TOTAL_APPLIES
     _, files, _ = _world(tmp_path)
-    got = _dispatched(files)
-    assert got["rows"][w.TOTAL] == {
-        "id": w.TOTAL,
-        "reader": w.READ_TOTAL,
-        "applies": True,
-        "input": signature_text(total["signature"]),
-    }
-    assert got["applies_of"] == {w.TOTAL: w.TOTAL_APPLIES}
+    got = _dispatched(files)["rows"][w.TOTAL]
+    assert got["signature"] == signature_text(total["signature"]) and got["applies_text"].startswith("def ")
     card = _card(files[CATALOGUE].decode("utf-8"), w.TOTAL)
     assert _evidence(card).endswith(f"; reader {w.READ_TOTAL}; applies: yes")
 
@@ -309,7 +300,8 @@ def test_an_unlanded_function_the_gate_finds_one_reader_of_is_dispatched_with_it
     reader = recs[w.READ_ORDERS]
     assert reader["role"] == "reader" and reader["reads_for"] == ["memory/orders/tests/data/orders.json"]
     _, files, _ = _world(tmp_path)
-    assert _dispatched(files)["rows"][w.COUNT] == {"id": w.COUNT, "reader": w.READ_ORDERS, "applies": False, "input": ""}
+    row = _dispatched(files)["rows"][w.COUNT]
+    assert (row["kind"], row["applies_text"], row["signature"]) == ("function", "", "")
     card = _card(files[CATALOGUE].decode("utf-8"), w.COUNT)
     assert _evidence(card).endswith(f"; reader {w.READ_ORDERS}; applies: no")
 
@@ -322,7 +314,8 @@ def test_an_unlanded_function_the_gate_finds_two_readers_of_is_not_dispatched_an
     for reader in (w.READ_LEDGER, w.READ_PAYMENTS):
         assert w.records()[reader]["role"] == "reader"
     _, files, _ = _world(tmp_path)
-    assert w.RECONCILE not in _dispatched(files)["rows"]
+    # rev 2: the catalogue has a row for every listed procedure, readers or not
+    assert _dispatched(files)["rows"][w.RECONCILE]["applies_text"] == ""
     card = _card(files[CATALOGUE].decode("utf-8"), w.RECONCILE)
     assert _evidence(card).endswith(
         f"; reader none of its 2 ({w.READ_LEDGER}, {w.READ_PAYMENTS}): more than one reads its tests' fixtures; "

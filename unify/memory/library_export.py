@@ -487,7 +487,7 @@ def _json_bytes(data: dict) -> bytes:
 #
 # Both are harness-generated at each export, with no model call: ``.memory/catalogue.md``, one card per stored
 # function in module-path order (never a score), then the notes, then the captured procedures; and
-# ``.memory/dispatch.json``, each procedure that has a reader or an ``applies``. Neither carries an answer, a raw
+# ``.memory/dispatch.json``, the structural catalogue: one row per stored procedure from its syntax and records (rev 2). Neither carries an answer, a raw
 # request text or a printed identifier: every free text (docstrings, summary sections, what broke) goes through the
 # one identifier rule (``signatures.strip_identifiers``).
 
@@ -881,27 +881,94 @@ def catalogue_text(
     return "".join(out)
 
 
+def _code_facts(source: str | None, applies_source: str | None, strip: Strip) -> dict:
+    """What a procedure's code says of itself, from its syntax alone (nothing run): the ``env.<channel>.<method>``
+    chains its entry function's tool namespace names (``effects``), whether its entry reads its input
+    (``reads_input``) and whether it gives a fixed answer (``constant``, :func:`.fixed_answer.fixed_answer`), and its
+    ``applies`` source as text through the identifier rule (``applies_text``)."""
+    from .capture_shape import entry_env_chains
+    from .fixed_answer import NEVER_READS, fixed_answer
+
+    fixed = fixed_answer(source) if isinstance(source, str) else None
+    return {
+        "effects": entry_env_chains(source) if isinstance(source, str) else [],
+        "reads_input": not (fixed is not None and fixed.get("why") == NEVER_READS),
+        "constant": fixed is not None,
+        "applies_text": strip(applies_source) if isinstance(applies_source, str) and applies_source else "",
+    }
+
+
+def _function_source(source: str | None, name: str) -> str | None:
+    """The source of the module-level function *name* of *source* (None when absent or unparseable)."""
+    if not isinstance(source, str):
+        return None
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return None
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return ast.get_source_segment(source, node) or ast.unparse(node)
+    return None
+
+
+def procedure_bodies(tree: Path, records: Mapping[str, dict] | None = None) -> dict[str, str]:
+    """Item id -> source of every public function of the copy at *tree* (:func:`.layout.function_bodies`), and of each
+    function an item record names as its ``applies`` (a private one included), read from its module's file."""
+    out = dict(function_bodies(tree))
+    for rec in (records or {}).values():
+        named = rec.get("applies") if isinstance(rec, Mapping) else None
+        if not isinstance(named, str) or ":" not in named or named in out:
+            continue
+        module, _, name = named.partition(":")
+        try:
+            text = (Path(tree) / (module.replace(".", "/") + ".py")).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        found = _function_source(text, name)
+        if found is not None:
+            out[named] = found
+    return out
+
+
+def _outcome_counts(rec: Mapping | None) -> dict:
+    """A capture's occurrences by outcome (``positive``, ``contrary``, ``none``), from its record's cases."""
+    out = {"positive": 0, "contrary": 0, "none": 0}
+    for c in (rec.get("cases") if isinstance(rec, Mapping) else None) or []:
+        if isinstance(c, Mapping):
+            o = c.get("outcome")
+            out["contrary" if o in ("contrary", "failed") else "positive" if o == "positive" else "none"] += 1
+    return out
+
+
 def dispatch_data(
     lib: Library,
     *,
     status_of: Callable[[str], str] | None = None,
     records: Mapping[str, dict] | None = None,
     captures: Mapping[str, bytes] | None = None,
+    bodies: Mapping[str, str] | None = None,
+    strip: Strip | None = None,
 ) -> dict:
-    """``.memory/dispatch.json``: each listed procedure with a reader or an ``applies`` (design J(b).3), as
-    ``{id, reader, applies, input}``: ``reader`` is the reader's id (an item id from the item record's ``reader``;
-    ``capture:<id>`` for a captured procedure, whose ``read_input`` is its reader), ``applies`` whether it has one
-    (its applicability signature states one, or its item record names the function), and ``input`` its input line.
-    Module-path order, then the captures in id order; a captured attempt that failed is left out (never offered to
-    run), and so is a procedure its item record does not list (:func:`.recognition.listed`), a captured procedure
-    whose landing is not listed (its record's ``listing``: the same code) and a procedure's recipe (it takes the
-    request itself, so no reader reads for it; its procedure's card names it). Beside the rows, ``applies_of`` names, for
-    a landed procedure, the library function that is its ``applies`` (the item record's ``applies``); a captured
-    procedure's ``applies`` is the one in its own ``procedure.py``."""
+    """``.memory/dispatch.json`` (rev 2): the structural catalogue, one row per stored procedure, from the code's
+    syntax and the harness's records only (nothing is run to make it, and nothing reads it to run anything):
+
+    ``{id, kind, form, signature, applies_text, effects, reads_input, constant, occurrences, outcomes, provenance}``:
+    ``kind`` is ``function`` or ``capture-shape``; ``form`` a capture's entry form (``value``, ``state``,
+    ``state_env``) or ``function``; ``signature`` the input line (:func:`.library_index.signature_text`) and
+    ``applies_text`` the ``applies`` source, both through the identifier rule; ``effects``, ``reads_input`` and
+    ``constant`` from the syntax (:func:`_code_facts`); for a capture, ``occurrences`` (its folded occurrences),
+    ``outcomes`` (their counts by signal outcome) and ``provenance`` (how many episodes and segments it came from;
+    never an id).
+
+    Module-path order, then the captures in id order. A function its record does not list, a hidden one and a
+    procedure's recipe are left out, as are a captured attempt that failed or met a contrary signal and a captured
+    procedure whose landing is not listed. *bodies* are the functions' sources by item id
+    (:func:`.layout.function_bodies`); without them a function's code facts are empty."""
     from .library_index import signature_text
 
+    strip = strip or default_strip()
     rows: list[dict] = []
-    applies_of: dict[str, str] = {}
     recipes = recipe_ids(records)
     for f in sorted(lib.functions, key=lambda f: (f.module, f.name)):
         if _status(status_of, f.item_id) in HIDDEN or f.item_id in recipes:
@@ -909,39 +976,46 @@ def dispatch_data(
         rec = records.get(f.item_id) if records else None
         if not isinstance(rec, dict) or not listed(rec):
             continue
-        reader = _reader_of(rec)
         named = rec.get("applies") if isinstance(rec.get("applies"), str) and rec.get("applies") else None
         sig = rec.get("signature")
-        applies = named is not None or _applies_stated(sig)
-        if reader is None and not applies:
-            continue
-        if named is not None:
-            applies_of[f.item_id] = named
+        source = (bodies or {}).get(f.item_id)
+        applies_source = (bodies or {}).get(named) if named else None
         rows.append(
             {
                 "id": f.item_id,
-                "reader": reader,
-                "applies": applies,
-                "input": signature_text(sig) if isinstance(sig, dict) else "",
+                "kind": "function",
+                "form": "function",
+                "signature": strip(signature_text(sig)) if isinstance(sig, dict) else "",
+                **_code_facts(source, applies_source, strip),
+                "occurrences": None,
+                "outcomes": None,
+                "provenance": None,
             },
         )
     for cid, doc in _capture_docs(captures).items():
         rec = doc["record"] if isinstance(doc["record"], dict) else {}
         if rec.get("outcome") in ("failed", "contrary") or not isinstance(doc["procedure"], str) or _capture_unlisted(rec):
             continue
-        if worked_example(rec):
-            continue  # a worked example is read, never recognised as applying
         sig = doc["signature"] if isinstance(doc["signature"], dict) else {}
-        target = CAPTURE_PREFIX + cid
+        entry = rec.get("entry_point") if isinstance(rec.get("entry_point"), dict) else {}
+        cases = [c for c in rec.get("cases") or [] if isinstance(c, dict)]
+        episodes = rec.get("episodes") if isinstance(rec.get("episodes"), list) else []
         rows.append(
             {
-                "id": target,
-                "reader": target,
-                "applies": _applies_stated(sig),
-                "input": signature_text(sig),
+                "id": CAPTURE_PREFIX + cid,
+                "kind": "capture-shape",
+                "form": entry.get("form") if isinstance(entry.get("form"), str) else "value",
+                "signature": strip(signature_text(sig)),
+                **_code_facts(doc["procedure"], _function_source(doc["procedure"], "applies"), strip),
+                "occurrences": rec.get("occurrences") if isinstance(rec.get("occurrences"), int) else len(episodes),
+                "outcomes": _outcome_counts(rec),
+                "provenance": {
+                    "episodes": len({c.get("episode") for c in cases if c.get("episode")}) or len(episodes),
+                    "segments": sum(1 for c in cases if c.get("segment") is not None),
+                },
             },
         )
-    return {"version": 1, "procedures": rows, "applies_of": applies_of}
+    return {"version": 2, "procedures": rows}
 
 
 def librarian_files(
@@ -986,7 +1060,8 @@ def librarian_files(
             serving=serving,
         ).encode("utf-8"),
         DISPATCH_FILE: _json_bytes(
-            dispatch_data(lib, status_of=status_of, records=records, captures=captures),
+            dispatch_data(lib, status_of=status_of, records=records, captures=captures,
+                          bodies=procedure_bodies(tree, records), strip=strip),  # fmt: skip
         ),
     }
 

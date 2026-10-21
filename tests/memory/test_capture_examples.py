@@ -188,12 +188,14 @@ def _snapshot(tmp_path, **export):
     return _tree(tmp_path / "lib"), captures.export_files(store, **export), ids
 
 
-def test_the_dispatch_file_gives_a_worked_example_no_reader(tmp_path):
+def test_the_catalogue_marks_a_worked_example_constant(tmp_path):
+    """Rev 2: the structural catalogue has a row for a worked example too, marked ``constant`` (to read, never to
+    call); no reader is named anywhere."""
     tree, snap, ids = _snapshot(tmp_path, examples=True)
-    rows = lx.dispatch_data(discover(tree), captures=snap)["procedures"]
-    assert sorted(r["id"] for r in rows if r["id"].startswith("capture:")) == sorted(
-        f"capture:{ids[k]}" for k in ("table", "grid")
-    )
+    rows = {r["id"]: r for r in lx.dispatch_data(discover(tree), captures=snap)["procedures"]}
+    assert {k for k in ("table", "grid", "fixed") if f"capture:{ids[k]}" in rows} == {"table", "grid", "fixed"}
+    assert rows[f"capture:{ids['fixed']}"]["constant"] is True
+    assert all("reader" not in r for r in rows.values())
 
 
 def test_the_catalogue_and_the_search_index_say_a_worked_example_is_one(tmp_path):

@@ -262,17 +262,21 @@ def test_the_catalogue_holds_no_identifier_answer_or_request_and_is_byte_stable(
 
 
 @needs_box
-def test_the_dispatch_file_lists_each_procedure_with_a_reader_or_an_applies(tmp_path):
+def test_the_dispatch_file_is_the_structural_catalogue(tmp_path):
+    """Rev 2: one row per listed procedure, from its code and records; the failed capture is never offered."""
     root = _copy(tmp_path)
     data = json.loads((root / lx.DISPATCH_FILE).read_text())
-    rows = data["procedures"]
-    assert [r["id"] for r in rows] == [TOTAL, "capture:" + CAPTURE]  # the failed capture is never offered
+    rows = {r["id"]: r for r in data["procedures"]}
+    assert data["version"] == 2 and TOTAL in rows and "capture:" + CAPTURE in rows
+    assert "capture:" + FAILED not in rows
+    keys = {"id", "kind", "form", "signature", "applies_text", "effects", "reads_input", "constant", "occurrences",
+            "outcomes", "provenance"}  # fmt: skip
+    assert all(set(r) == keys for r in rows.values())
     sig = _records()[TOTAL]["signature"]
-    assert rows[0] == {"id": TOTAL, "reader": READ_ROWS, "applies": True, "input": signature_text(sig)}
-    assert rows[0]["input"].startswith("{")
-    assert rows[1]["reader"] == "capture:" + CAPTURE and rows[1]["applies"] is True
-    assert data["applies_of"] == {TOTAL: WIDE}  # where a landed procedure's applies lives
-    assert all(set(r) == {"id", "reader", "applies", "input"} for r in rows)
+    assert rows[TOTAL]["kind"] == "function" and rows[TOTAL]["signature"].startswith("{")
+    assert rows[TOTAL]["signature"] == signature_text(sig)
+    assert rows[TOTAL]["applies_text"].startswith("def ")  # its named applies, as text
+    assert rows["capture:" + CAPTURE]["kind"] == "capture-shape"
 
 
 @needs_box
@@ -315,7 +319,7 @@ FAKE_TOOLS = (
 
 
 @needs_box
-def test_ask_computes_the_facts_in_its_own_process_and_sends_outcomes_only(tmp_path):
+def test_ask_sends_the_question_alone_and_runs_nothing(tmp_path):
     root = _copy(tmp_path)
     code = (
         FAKE_TOOLS
@@ -333,19 +337,15 @@ def test_ask_computes_the_facts_in_its_own_process_and_sends_outcomes_only(tmp_p
     # a list of items, each with the librarian's reason (the stand-in host's answer)
     assert out["list"] is True and out["answer"] == [[TOTAL, "function", "its reader parsed it", "Item"]]
     (question, facts), = out["sent"]
-    assert question == REQUEST
-    assert facts == [
-        {"id": TOTAL, "reader": READ_ROWS, "read": "parsed", "applies": "held"},
-        {"id": "capture:" + CAPTURE, "reader": "capture:" + CAPTURE, "read": "parsed", "applies": "did-not-hold"},
-    ]
-    # the readers' values never left their process: only the outcome labels did
+    assert question == REQUEST and facts is None  # rev 2: no reader runs, so nothing but the question goes
     assert PLANTED_VALUE not in json.dumps(out)
     helper = [(a[0], a[2]) for ev, a in out["seen"] if ev == "memory.helper_call"]
     assert helper == [("memory:ask", "ok")]
     assert not [a for ev, a in out["seen"] if ev == "memory.call"]  # asking is never a use
     (result,) = [a for ev, a in out["seen"] if ev == "memory.ask_result"]
     assert result[0] == [TOTAL] and result[1] is False
-    assert [r[0] for r in result[2]] == [TOTAL, "capture:" + CAPTURE]
+    rows = json.loads((root / lx.DISPATCH_FILE).read_text())["procedures"]
+    assert result[2] == len(rows)  # the catalogue's row count, never facts
 
 
 @needs_box
@@ -451,22 +451,10 @@ def test_an_answer_passes_as_the_librarian_gave_it_with_nothing_added_or_reorder
     assert got == {"fits": [], "nearest": [{"id": "capture:" + FAILED, "differs": "it failed"}]}
 
 
-@needs_box
-def test_only_dispatch_ids_with_their_own_reader_and_known_labels_reach_the_librarian(tmp_path):
-    dispatch = L.read_dispatch(_copy(tmp_path))
-    facts = [
-        {"id": TOTAL, "reader": READ_ROWS, "read": "parsed", "applies": "held"},
-        {"id": TOTAL, "reader": READ_ROWS, "read": "parsed", "applies": "held"},  # twice
-        {"id": "memory.planted:path", "reader": READ_ROWS, "read": "parsed", "applies": "held"},
-        {"id": "capture:" + CAPTURE, "reader": "/home/planted", "read": "parsed", "applies": "held"},
-        {"id": "capture:" + CAPTURE, "reader": "capture:" + CAPTURE, "read": "planted-label", "applies": "held"},
-        "not a fact",
-    ]
-    kept, dropped = L.checked_facts(facts, dispatch)
-    assert kept == [{"id": TOTAL, "reader": READ_ROWS, "read": "parsed", "applies": "held"}] and dropped == 5
-    text = L.question_message("q", kept, dropped)
-    assert f"`{TOTAL}`: reader `{READ_ROWS}` parsed the text; its `applies` held on what the reader gave." in text
-    assert "planted" not in text and "(5 fact(s) could not be read" in text
+def test_the_question_names_the_catalogue_and_no_reader():
+    text = L.question_message("q", 3)
+    assert text.startswith("Question from the agent:\nq\n") and "dispatch.json, 3 row(s)" in text
+    assert "reader" not in text and "parsed" not in text
 
 
 def test_the_brief_is_complete_general_and_says_nothing_of_ids_answers_or_examples():
@@ -600,7 +588,7 @@ def test_ask_is_a_helper_call_and_its_rows_and_listed_by_ask_reach_the_use_recor
     first = _cell(
         audit,
         ("memory.helper_call", ("memory:ask", "ab12", "ok")),
-        ("memory.ask_result", ((TOTAL, cap), False, ((TOTAL, "parsed", "held"), (cap, "parsed", "did-not-hold")))),
+        ("memory.ask_result", ((TOTAL, cap), False, 5)),
         ("memory.call", (TOTAL, "ab12", "ok")),
         ("memory.ask_result", (("not an id",), False, ())),
     )
@@ -608,7 +596,7 @@ def test_ask_is_a_helper_call_and_its_rows_and_listed_by_ask_reach_the_use_recor
     second = _cell(
         audit,
         ("memory.helper_call", ("memory:ask", "ab12", "ok")),
-        ("memory.ask_result", ((), True, ())),
+        ("memory.ask_result", ((), True, 5)),
         ("memory.call", (cap, "ab12", "ok")),
     )
     acc = runtime_calls_empty()
@@ -622,8 +610,7 @@ def test_ask_is_a_helper_call_and_its_rows_and_listed_by_ask_reach_the_use_recor
     assert fields["ask_calls"] == 2
     one, two = fields["ask_rows"]
     assert one["listed"] == [TOTAL, cap] and one["nothing_fits"] is False
-    assert one["facts"] == [{"id": TOTAL, "read": "parsed", "applies": "held"},
-                            {"id": cap, "read": "parsed", "applies": "did-not-hold"}]
+    assert one["catalogue_rows"] == 5 and "facts" not in one
     assert one["called_after"] == sorted([TOTAL, cap]) and two == {**two, "nothing_fits": True, "listed": []}
     assert fields["listed_by_ask"] == sorted([TOTAL, cap])
     # a request that never asked keeps today's runtime evidence
@@ -775,9 +762,8 @@ async def test_ask_end_to_end_facts_in_the_box_one_session_per_request_and_the_c
     assert len(model.calls) == 3
     requests = [json.dumps(c.request) for c in model.calls]
     first_question = model.calls[0].messages[-1]["content"]
-    assert f"`{TOTAL}`: reader `{READ_ROWS}` parsed the text; its `applies` held" in first_question
-    assert f"`capture:{CAPTURE}`: reader `capture:{CAPTURE}` parsed the text; its `applies` did not hold" in first_question
-    # the readers' values stayed in the actor's box; no host path reaches the librarian
+    assert "/memory/.memory/dispatch.json" in first_question and "reader" not in first_question
+    # nothing ran on the request; no host path reaches the librarian
     for sent in requests:
         assert PLANTED_VALUE not in sent and str(tmp_path) not in sent
     system = model.calls[0].messages[0]["content"]
@@ -814,7 +800,7 @@ async def test_a_librarian_that_never_answers_is_a_refusal_not_a_crash(tmp_path,
     class Silent:
         questions = 0
 
-        async def ask(self, question, facts, request=None):
+        async def ask(self, question, facts=None, request=None):
             raise L.NoAnswer("no progress")
 
     state = H.ActorRequestState(librarian=Silent())

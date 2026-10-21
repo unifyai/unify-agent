@@ -1164,33 +1164,18 @@ ASK_LIBRARY = RegisteredTool(
     summary="ask the librarian which stored items fit a question (memory.ask calls it).",
     description=(
         "Ask the librarian, an agent that searches and reads the library, which stored items fit a "
-        "question, with the outcomes of the stored readers and conditions on the text of your current request. "
-        "`memory.ask()` computes those outcomes in your cell and calls this for you (`memory.ask(question)` asks a "
+        "question. It judges from the harness's structural catalogue of the stored procedures and the items' text; "
+        "nothing is run. `memory.ask()` calls this for you with your current request (`memory.ask(question)` asks a "
         "question of your own). The answer is JSON: "
         '{"fits": [{"id", "call", "why"}, ...]} with every item that fits, or {"fits": [], "nearest": '
         '[{"id", "differs"}, ...]} when nothing fits. Follow-up questions in the same request go to the same '
-        "librarian; a question it already answered in this request, with the same facts, gets that answer again, "
+        "librarian; a question it already answered in this request gets that answer again, "
         'with "already_given": true.'
     ),
     parameters={
         "type": "object",
         "properties": {
             "question": {"type": "string", "description": "A question of your own, or the request's text."},
-            "facts": {
-                "type": "array",
-                "description": "Per stored procedure: whether its reader parsed the current request and whether "
-                "its condition held (ids and outcome labels only).",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "id": {"type": "string"},
-                        "reader": {"type": ["string", "null"]},
-                        "read": {"type": "string"},
-                        "applies": {"type": "string"},
-                    },
-                    "required": ["id", "read", "applies"],
-                },
-            },
         },
         "required": ["question"],
         "additionalProperties": False,
@@ -1204,7 +1189,7 @@ ASK_LIBRARY = RegisteredTool(
     roles=(_A,),
     returns="the librarian's answer as JSON text (memory.ask returns it as a plain object).",
     examples=("print(memory.ask())",),
-    when="Call memory.ask() rather than this tool: it adds the stored readers' outcomes on your current request.",
+    when="Call memory.ask() rather than this tool: it asks about your current request for you.",
     kind="action",
     handler="unify.actor.tool_handlers:ask_library",
 )
@@ -1251,7 +1236,7 @@ CURRENT_REQUEST = RegisteredTool(
     description=(
         "The request this agent is working on: its text, and the JSON objects and arrays the text contains, in "
         "order of appearance, as data (the bound `request.data`). The `memory` package calls it so that "
-        "`memory.ask()` and `memory.match()` run the stored readers on the current request."
+        "`memory.ask()` and `memory.match()` ask about the current request."
     ),
     parameters={"type": "object", "properties": {}, "additionalProperties": False},
     refusals={"unavailable": "the current request is not available here ({why})"},

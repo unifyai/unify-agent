@@ -477,7 +477,7 @@ async def test_the_answer_cache_keys_on_the_commit_and_the_ask_and_a_new_commit_
     assert one == fits and again == {**fits, L.ALREADY_GIVEN: True}
     assert moved == fits and L.ALREADY_GIVEN not in moved and doc == other
     assert len(turn.calls) == 3 and session.from_cache == 1
-    sent = [L.sent_to_librarian(API_REQUEST, [], 0, {"commit": c, "dispatch": L._digest_of({})}) for c in ("a", "b")]
+    sent = [L.sent_to_librarian(API_REQUEST, {"commit": c, "dispatch": L._digest_of({})}) for c in ("a", "b")]
     assert L.answer_key(sent[0]) != L.answer_key(sent[1])
     # what the librarian is sent for a question carries no catalogue: only the question and its facts
     asked = [m["content"] for m in session.messages if m.get("role") == "user"]

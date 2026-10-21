@@ -115,7 +115,8 @@ def rows(
     also carries what each was asked in its text, so it is found where they were; a captured procedure the snapshot
     offers as a worked example is a row of kind ``worked example``. With *serving*
     (``UNIFY_MEMORY_SERVING_FAILURE_RECORD``), each card also ends with what its status rests on and its recorded
-    failures, and an item offered in the place of withdrawn library items carries their docstrings in its text."""
+    failures, and an item offered in the place of withdrawn library items carries their docstrings in its text. Every
+    card and text goes through the identifier rule (:func:`.signatures.strip_identifiers`)."""
     from . import when_to_use as wtu
     from .item_records import recipe_call, recipe_of
     from .layout import discover
@@ -192,6 +193,13 @@ def rows(
                 extra = _first_paragraph(docs.get(old, ""))
                 if extra:
                     row["text"] = f"{row['text']} {extra}".strip()
+    # every card and searched text through the one identifier rule (rev 2): no item is found or shown by an
+    # identifier its code or text carries
+    from .library_export import default_strip
+
+    strip = default_strip()
+    for row in out:
+        row["card"], row["text"] = strip(row["card"]), strip(row["text"])
     return out
 
 
