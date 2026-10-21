@@ -1,5 +1,4 @@
 import asyncio
-import inspect
 import json
 import traceback
 import time
@@ -8,7 +7,6 @@ import time
 from typing import (
     Dict,
     Set,
-    Tuple,
     Any,
     Optional,
     TYPE_CHECKING,
@@ -24,21 +22,11 @@ from ..tool_spec import normalise_tools
 from ..llm_helpers import method_to_schema
 from .formatting import serialize_tool_content, sanitize_tool_msg_for_logging
 from contextlib import suppress
-from .propagation_mode import ChatContextPropagation
 from ..tool_errors import ToolInputError
 
-
-from .context_tracker import LoopContextState
-
-if TYPE_CHECKING:  # TODO: remove once dependencies are fixed
+if TYPE_CHECKING:
     from .loop import LoopLogger, _LoopToolFailureTracker
     from .message_dispatcher import LoopMessageDispatcher
-    from .time_context import TimeContext
-
-
-# How long the stop of a handle a finished call returned may take before
-# the loop goes on without it.
-_RETURNED_STOP_GRACE_S = 2.0
 
 
 def _failure_text(exc: BaseException) -> str:
@@ -119,95 +107,6 @@ def _record_failure(
     tracker.increment_failures()
 
 
-def _returned_handles_for_cleanup(value):
-    """Find handles in supported stored values without evaluating accessors.
-
-    Cycles and aliases are traversed once. Arbitrary iterables and computed
-    attributes are not part of the returned-resource ownership contract.
-    """
-    from pydantic import BaseModel
-    from unify.common.async_tool_loop import SteerableToolHandle, ToolLoopHandle
-
-    pending = [value]
-    visited = set()
-    handles = []
-    while pending:
-        node = pending.pop()
-        if id(node) in visited:
-            continue
-        visited.add(id(node))
-        node_type = type(node)
-        if issubclass(node_type, (SteerableToolHandle, ToolLoopHandle)):
-            handles.append(node)
-        elif issubclass(node_type, dict):
-            pending.extend(dict.values(node))
-        elif issubclass(node_type, list):
-            pending.extend(list.__iter__(node))
-        elif issubclass(node_type, tuple):
-            pending.extend(tuple.__iter__(node))
-        elif issubclass(node_type, BaseModel):
-            fields = inspect.getattr_static(node_type, "__pydantic_fields__", {})
-            stored = BaseModel.__dict__["__dict__"].__get__(node)
-            if type(fields) is dict and type(stored) is dict:
-                pending.extend(stored[name] for name in fields if name in stored)
-    return handles
-
-
-def compute_context_injection(
-    *,
-    args: dict,
-    propagate_chat_context: ChatContextPropagation,
-    context_state: LoopContextState,
-    client_messages: list,
-    call_id: str,
-    accepts_parent_ctx: bool,
-    accepts_parent_ctx_cont: bool,
-) -> Tuple[dict, bool]:
-    """Compute the parent-chat-context kwargs for one tool call.
-
-    ``args`` is the tool call's arguments and is mutated: the two control
-    params are popped. ``propagate_chat_context`` is the loop's mode (ALWAYS,
-    NEVER or LLM_DECIDES), ``context_state`` its context tracker,
-    ``client_messages`` the current conversation (``_ctx_header`` messages are
-    filtered out) and ``call_id`` identifies the call for context tracking.
-    ``accepts_parent_ctx`` / ``accepts_parent_ctx_cont`` say whether the target
-    function accepts ``_parent_chat_context`` / ``_parent_chat_context_cont``.
-
-    Returns ``(extra_kwargs, context_opted_in)``: the context params to
-    inject, and the opt-in decision.
-    """
-    extra_kwargs: dict = {}
-
-    # Initial context injection is opt-in: an omitted
-    # include_parent_chat_context means no parent context.
-    llm_include_ctx = args.pop("include_parent_chat_context", False)
-    # The continuation's control param, offered to steering calls that no
-    # longer exist: popped so it never reaches the tool.
-    args.pop("include_parent_chat_context_cont", None)
-
-    should_inject_ctx = False
-    if accepts_parent_ctx or accepts_parent_ctx_cont:
-        if propagate_chat_context == ChatContextPropagation.ALWAYS:
-            should_inject_ctx = True
-        elif propagate_chat_context == ChatContextPropagation.NEVER:
-            should_inject_ctx = False
-        elif propagate_chat_context == ChatContextPropagation.LLM_DECIDES:
-            should_inject_ctx = llm_include_ctx
-
-    if should_inject_ctx:
-        cur_msgs = [m for m in client_messages if not m.get("_ctx_header")]
-        parent_ctx, parent_ctx_cont = context_state.compute_context_for_inner_tool(
-            call_id,
-            cur_msgs,
-        )
-        if parent_ctx is not None and accepts_parent_ctx:
-            extra_kwargs["_parent_chat_context"] = parent_ctx
-        if parent_ctx_cont is not None and accepts_parent_ctx_cont:
-            extra_kwargs["_parent_chat_context_cont"] = parent_ctx_cont
-
-    return extra_kwargs, should_inject_ctx
-
-
 class ToolsData:
     def __init__(
         self,
@@ -215,7 +114,6 @@ class ToolsData:
         *,
         client,
         logger: "LoopLogger",
-        time_ctx: "Optional[TimeContext]" = None,
         call_counts: Optional[Dict[str, int]] = None,
     ):
         self._client = client
@@ -228,15 +126,7 @@ class ToolsData:
         self.call_counts: Dict[str, int] = (
             call_counts if call_counts is not None else {}
         )
-        self.clarification_channels: Dict[
-            str,
-            Tuple[asyncio.Queue[str], asyncio.Queue[str]],
-        ] = {}
         self.completed_results: Dict[str, str] = {}
-        # Tool name for every completed tool (steerable or not), keyed by call_id.
-        self._completed_tool_names: Dict[str, str] = {}
-        # Time context for inline timing annotations on tool results
-        self._time_ctx: Optional["TimeContext"] = time_ctx
 
     def _quota_count(self, task_name: str) -> int:
         return self.call_counts.get(task_name, 0)
@@ -258,10 +148,7 @@ class ToolsData:
 
     def pop_task(self, coro: asyncio.Task) -> ToolCallMetadata:
         self.pending.discard(coro)
-        info = self.info.pop(coro, None)
-        if info is not None:
-            self.clarification_channels.pop(info.call_id, None)
-        return info
+        return self.info.pop(coro, None)
 
     async def cancel_pending_tasks(self, *, grace: Optional[float] = None) -> set:
         """Cancel every pending call and wait for each to stop.
@@ -272,61 +159,14 @@ class ToolsData:
         Returns the abandoned tasks.
         """
         pending = list(self.pending)
-        stopped = set()
         abandoned: set = set()
-
-        async def stop_handle(handle):
-            result = handle.stop("loop cancelled")
-            if inspect.isawaitable(result):
-                await result
-
-        def stop_tasks():
-            handles = []
-            for task in pending:
-                if task.done() and not task.cancelled() and task.exception() is None:
-                    try:
-                        handles.extend(_returned_handles_for_cleanup(task.result()))
-                    except Exception as exc:
-                        # Malformed returned data cannot abandon sibling cleanup.
-                        self._logger.error(
-                            f"Returned handle inspection failed: {type(exc).__name__}",
-                            prefix="⚠️",
-                        )
-            stops = []
-            for handle in handles:
-                if id(handle) in stopped:
-                    continue
-                stopped.add(id(handle))
-                stops.append(asyncio.create_task(stop_handle(handle)))
-            return stops
-
-        async def join_stops(stops):
-            for result in await asyncio.gather(*stops, return_exceptions=True):
-                if isinstance(result, BaseException):
-                    self._logger.error(
-                        f"Owned handle stop failed: {type(result).__name__}",
-                        prefix="⚠️",
-                    )
-
-        async def bounded(waiting) -> bool:
-            """Await *waiting*, at most *grace* seconds; whether it ended."""
-            if grace is None:
-                await waiting
-                return True
-            future = asyncio.ensure_future(waiting)
-            done, _ = await asyncio.wait({future}, timeout=grace)
-            return bool(done)
-
-        stops = stop_tasks()
         for task in pending:
             task.cancel()
-        # Stop and cancel concurrently: an async stop can await its owned task.
-        # A child's stop failure must not cancel sibling cleanup operations.
-        if await bounded(
-            asyncio.gather(*pending, join_stops(stops), return_exceptions=True),
-        ):
-            # A factory may catch cancellation and return a newly owned handle.
-            await bounded(join_stops(stop_tasks()))
+        waiting = asyncio.gather(*pending, return_exceptions=True)
+        if grace is None:
+            await waiting
+        else:
+            await asyncio.wait({asyncio.ensure_future(waiting)}, timeout=grace)
         for task in pending:
             if not task.done():
                 abandoned.add(task)
@@ -335,9 +175,7 @@ class ToolsData:
                 self._abandoned.add(task)
                 task.add_done_callback(self._abandoned.discard)
             self.pending.discard(task)
-            info = self.info.pop(task, None)
-            if info is not None:
-                self.clarification_channels.pop(info.call_id, None)
+            self.info.pop(task, None)
         if abandoned:
             self._logger.error(
                 f"{len(abandoned)} call(s) still running {grace:g}s after their "
@@ -346,56 +184,6 @@ class ToolsData:
                 prefix="⚠️",
             )
         return abandoned
-
-    async def _stop_returned_handles(self, value: Any, tool_name: str) -> None:
-        """Stop every handle *value* holds that is still running.
-
-        Each stop runs as its own task, so a stop that fails or raises
-        ``CancelledError`` neither stops the others nor reaches the loop.
-        """
-        live = []
-        for handle in _returned_handles_for_cleanup(value):
-            try:
-                done = handle.done()
-                if inspect.isawaitable(done):
-                    done = await done
-            except Exception:
-                done = False
-            if not done:
-                live.append(handle)
-        if not live:
-            return
-
-        async def stop(handle):
-            outcome = handle.stop(f"the {tool_name} call that returned it ended")
-            if inspect.isawaitable(outcome):
-                await outcome
-
-        self._logger.info(
-            f"{tool_name} returned {len(live)} running handle(s); stopping them",
-            prefix="⚠️",
-        )
-        stops = [asyncio.create_task(stop(handle)) for handle in live]
-        # A stop that hangs is left to finish on its own after a grace, held
-        # (like an abandoned call) so it is not garbage-collected meanwhile.
-        done, hanging = await asyncio.wait(stops, timeout=_RETURNED_STOP_GRACE_S)
-        for task in hanging:
-            self._abandoned.add(task)
-            task.add_done_callback(self._abandoned.discard)
-        for task in done:
-            outcome = task.exception() if not task.cancelled() else None
-            if task.cancelled() or outcome is not None:
-                self._logger.error(
-                    "Returned handle stop failed: "
-                    + (type(outcome).__name__ if outcome else "CancelledError"),
-                    prefix="⚠️",
-                )
-        if hanging:
-            self._logger.error(
-                f"{len(hanging)} returned handle stop(s) still running after "
-                f"{_RETURNED_STOP_GRACE_S:g}s were left to finish",
-                prefix="⚠️",
-            )
 
     async def cancel_pending_tasks_with_reply(
         self,
@@ -407,8 +195,8 @@ class ToolsData:
     ) -> list[str]:
         """Cancel every pending call and give each *content* as its final reply.
 
-        For a loop that goes on after the cancellation (UNIFY_STEP_CAP_REPLY,
-        a cancelled request): an unanswered call would be run again before
+        For a loop that goes on after the cancellation (a persistent request
+        ended at its step limit, a cancelled request): an unanswered call would be run again before
         the next request. The reply is delivered as a completed result would be, and is
         remembered as one, so the call is not run again. Returns the call ids.
         *grace* is as for :meth:`cancel_pending_tasks`; the reply to an
@@ -427,7 +215,6 @@ class ToolsData:
                     "abandoned; whatever it still does is not reported."
                 )
             self.completed_results[info.call_id] = reply
-            self._completed_tool_names[info.call_id] = info.name
             await insert_tool_message_after_assistant(
                 assistant_meta,
                 info.assistant_msg,
@@ -510,8 +297,6 @@ class ToolsData:
         args_json: Any,
         call_id: str,
         call_idx: int,
-        context_state: LoopContextState,
-        propagate_chat_context,
         assistant_meta,
         msg_dispatcher: Optional["LoopMessageDispatcher"] = None,
     ) -> Optional[asyncio.Task]:
@@ -529,13 +314,6 @@ class ToolsData:
             if lim is not None and self.call_counts.get(name, 0) >= lim:
                 return None
 
-        sig = inspect.signature(fn)
-        params = sig.parameters
-        has_varkw = any(
-            p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
-        )
-
-        # Parsed before context injection, which pops include_parent_chat_context.
         with suppress(Exception):
             call_args = (
                 json.loads(args_json)
@@ -545,47 +323,11 @@ class ToolsData:
         if "call_args" not in locals():
             call_args = {}
 
-        sig_accepts_parent_ctx = "_parent_chat_context" in params or has_varkw
-        sig_accepts_parent_ctx_cont = "_parent_chat_context_cont" in params or has_varkw
-
-        ctx_extra_kwargs, context_opted_in = compute_context_injection(
-            args=call_args,
-            propagate_chat_context=propagate_chat_context,
-            context_state=context_state,
-            client_messages=self._client.messages,
-            call_id=call_id,
-            accepts_parent_ctx=sig_accepts_parent_ctx,
-            accepts_parent_ctx_cont=sig_accepts_parent_ctx_cont,
-        )
-
-        extra_kwargs: dict = dict(ctx_extra_kwargs)
-
-        sig_accepts_clar_qs = (
-            "_clarification_up_q" in params and "_clarification_down_q" in params
-        ) or has_varkw
-        sig_accepts_progress = "_notification_up_q" in params or has_varkw
-
-        clar_up_q: Optional[asyncio.Queue[str]] = None
-        clar_down_q: Optional[asyncio.Queue[str]] = None
-        if sig_accepts_clar_qs:
-            clar_up_q = asyncio.Queue()
-            clar_down_q = asyncio.Queue()
-            extra_kwargs["_clarification_up_q"] = clar_up_q
-            extra_kwargs["_clarification_down_q"] = clar_down_q
-
-        progress_q: Optional[asyncio.Queue[dict]] = None
-        if sig_accepts_progress:
-            progress_q = asyncio.Queue()
-            extra_kwargs["_notification_up_q"] = progress_q
-
-        filtered_extras = {
-            k: v for k, v in extra_kwargs.items() if k in params or has_varkw
-        }
         allowed_call_args, unknown_call_args = _normalise_kwargs_for_bound_method(
             fn,
             call_args,
         )
-        merged_kwargs = {**allowed_call_args, **filtered_extras}
+        merged_kwargs = dict(allowed_call_args)
 
         # Backfill advisory args advertised as required but safe to default
         # (e.g. execute_code's `thought`): the schema keeps its strong
@@ -633,17 +375,12 @@ class ToolsData:
             assistant_msg=asst_msg,
             call_dict=call_dict,
             call_idx=call_idx,
-            chat_context=extra_kwargs.get("_parent_chat_context"),
-            clar_up_queue=clar_up_q,
-            clar_down_queue=clar_down_q,
-            notification_queue=progress_q,
             # Debug helpers for failure logging. The arguments keep any the
             # tool has no parameter for: refusal tallies fingerprint them, and
             # two calls that differ only there are different calls.
             tool_schema=tool_schema,
             llm_arguments={**allowed_call_args, **unknown_call_args},
             raw_arguments_json=args_json,
-            context_opted_in=context_opted_in,
         )
         self.save_task(t, metadata)
 
@@ -657,12 +394,6 @@ class ToolsData:
         with suppress(Exception):
             self.call_counts[name] = self.call_counts.get(name, 0) + 1
 
-        if clar_up_q is not None:
-            self.clarification_channels[call_id] = (
-                clar_up_q,
-                clar_down_q,
-            )
-
         # Ensure assistant meta exists for deterministic insertion ordering
         assistant_meta.setdefault(id(asst_msg), {"results_count": 0})
         return t
@@ -671,7 +402,6 @@ class ToolsData:
         self,
         task: asyncio.Task,
         consecutive_failures: "_LoopToolFailureTracker",
-        outer_handle_container,
         assistant_meta,
         msg_dispatcher,
     ) -> bool:
@@ -680,13 +410,12 @@ class ToolsData:
             return await self._process_completed_task(
                 task,
                 consecutive_failures,
-                outer_handle_container,
                 assistant_meta,
                 msg_dispatcher,
             )
         except asyncio.CancelledError:
-            # Completion temporarily removes the factory from the pending set.
-            # Preserve ownership of its returned handles for loop cleanup.
+            # Completion temporarily removes the task from the pending set;
+            # it goes back, so the loop's cleanup still sees it.
             self.save_task(task, info)
             raise
 
@@ -694,7 +423,6 @@ class ToolsData:
         self,
         task: asyncio.Task,
         consecutive_failures: "_LoopToolFailureTracker",
-        outer_handle_container,
         assistant_meta,
         msg_dispatcher,
     ) -> bool:
@@ -722,34 +450,6 @@ class ToolsData:
             f"total_elapsed={_pickup_delay:.2f}s",
         )
 
-        # Notifications that arrived just before completion still reach the
-        # handle (they never enter the transcript), so none is lost.
-        q = info.notification_queue
-        if q is not None:
-            while True:
-                try:
-                    payload = q.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-                with suppress(Exception):
-                    outer = (
-                        outer_handle_container[0] if outer_handle_container else None
-                    )
-                    if outer is not None and hasattr(outer, "_notification_q"):
-                        event_payload = (
-                            payload
-                            if isinstance(payload, dict)
-                            else {"message": str(payload)}
-                        )
-                        await outer._notification_q.put(
-                            {
-                                "type": "notification",
-                                "call_id": call_id,
-                                "tool_name": name,
-                                **event_payload,
-                            },
-                        )
-
         # UNIFY_MEMORY=on with a request run: the hook noting a code cell's
         # structured result, by call id, for the request's use record. None
         # otherwise, and then it is never entered; it never fails the call.
@@ -762,14 +462,7 @@ class ToolsData:
             if _mv2_note is not None:
                 with suppress(Exception):
                     _mv2_note(name, call_id, raw)
-            # The loop adopts no handle a call returns, so one still running
-            # would have no owner once the call has ended: it is stopped.
-            await self._stop_returned_handles(raw, name)
             result = serialize_tool_content(tool_name=name, payload=raw, is_final=True)
-
-            if self._time_ctx is not None:
-                result = self._time_ctx.wrap_result(result, info.scheduled_time)
-
             consecutive_failures.reset_failures()
         except Exception as exc:
             result = _failure_text(exc)
@@ -805,7 +498,6 @@ class ToolsData:
 
         # Remembered so later lookups can answer instantly.
         self.completed_results[call_id] = result
-        self._completed_tool_names[call_id] = name
 
         tool_msg = create_tool_call_message(name, call_id, result)
         # First-ever reply to this call_id — legality requires strict

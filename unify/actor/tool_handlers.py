@@ -452,7 +452,7 @@ async def answer(ctx: Any, args: dict) -> Any:
         text = given if isinstance(given, str) else json.dumps(given, default=str)
     if slot is None:
         return _refused(refusal("answer", "bad_answer", reason="this request takes no answer from a cell"))
-    slot.text, slot.from_value = text, True
+    slot.text = text
     return _reply("answered: the answer is recorded; the request ends when this cell returns")
 
 
@@ -519,22 +519,15 @@ REQUEST_REPLY_BYTES = 1_000_000
 
 def request_of(request: Any) -> tuple[Optional[str], Any]:
     """An ``act()`` request as ``current_request`` gives it: ``(text, data)``, exactly what the actor's first user
-    message shows and nothing more. The text is the requester's text as the loop gives it (``bound_request.text_of``:
-    a string, a user message's content, the latest user message of a list); a field of the request the message does
-    not show (an id, a label) never reaches the box. *data* is the list of the JSON objects and arrays that text
-    contains, in order of appearance, exactly as the bound request's ``data`` (:func:`request_data`). ``(None, None)``
-    when the request shows no text."""
-    from unify.common._async_tool.bound_request import text_of
-
-    text = text_of(request)
-    if not isinstance(text, str) or not text.strip():
+    message shows and nothing more. *data* is the list of the JSON objects and arrays that text contains, in order
+    of appearance (:func:`request_data`). ``(None, None)`` when the request shows no text."""
+    if not isinstance(request, str) or not request.strip():
         return None, None
-    return text, request_data(text)
+    return request, request_data(request)
 
 
 def request_data(text: str) -> list:
-    """The JSON objects and arrays *text* contains, in order of appearance: ``worker_child.json_values``, the one
-    definition the bound ``request.data`` uses."""
+    """The JSON objects and arrays *text* contains, in order of appearance (``worker_child.json_values``)."""
     from unify.actor.execution.worker_child import json_values
 
     return json_values(text)

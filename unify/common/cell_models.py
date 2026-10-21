@@ -32,8 +32,8 @@ own faults) comes back as :class:`ModelCallFailed`, a fixed text naming its
 status and error type, never the provider's reply
 (:func:`model_call_failed`). The harness's own calls raise as before. Each
 request error is counted for the request's evidence
-(:func:`counting_model_request_errors`), and every cell call carries ``X-Unify-Call-Kind: cell`` while
-``UNIFY_REQUEST_METADATA_HEADERS=on`` (``llm_client.CELL_CALL_KIND``).
+(:func:`counting_model_request_errors`), and every cell call carries ``X-Unify-Call-Kind: cell``
+(``llm_client.CELL_CALL_KIND``).
 
 Endpoints are compared as unillm resolves them: ``<id>@openrouter`` by its
 OpenRouter id (``openai/gpt-6-luna@openrouter`` and
@@ -674,10 +674,9 @@ def _hold(value: Any) -> Any:
 
 
 def _with_request_metadata(client: Any) -> Any:
-    """*client* with the request-metadata headers on its calls (a no-op while
-    ``UNIFY_REQUEST_METADATA_HEADERS`` is off, or when it has them already: a
-    client built by ``new_llm_client``). A copy a cell's client returns is a
-    new client without them."""
+    """*client* with the request-metadata headers on its calls (a no-op when it
+    has them already: a client built by ``new_llm_client``). A copy a cell's
+    client returns is a new client without them."""
     from unify.common.llm_client import _install_request_metadata
 
     if getattr(client, "_unify_request_metadata", None) is None:

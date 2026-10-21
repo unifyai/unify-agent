@@ -7,9 +7,7 @@ from typing import (
     Awaitable,
     Dict,
     Callable,
-    Tuple,
     Any,
-    Union,
     TYPE_CHECKING,
 )
 from ..logger import LOGGER
@@ -17,27 +15,19 @@ from unify.common.hierarchical_logger import ICONS
 from .llm_helpers import short_id
 from .llm_client import count_requester_message, fork_llm_client
 from ._async_tool import cache_discipline as _cache_discipline
-from ._async_tool import bound_request as _bound_request
 from unify import transcripts
 from ._async_tool.loop_config import TOOL_LOOP_LINEAGE
 from ._async_tool.loop import (
     ToolLoopRuntimeState,
     async_tool_loop_inner,
-    continue_mode_active,
 )
-from ._async_tool.messages import loop_user_notice
-from ._async_tool.propagation_mode import ChatContextPropagation
 from ._async_tool.context_compression import (
     _COMPRESSED_HEADER,
     _COMPRESSION_SIGNAL,
     FORK_SUMMARY,
     CompressionState,
     compress_and_rebuild,
-    keep_prefix_enabled,
-    kept_prefix,
-    restart_text,
 )
-from ._async_tool.messages import loop_user_notice
 
 if TYPE_CHECKING:
     from unillm.types import PromptCacheParam
@@ -46,152 +36,16 @@ if TYPE_CHECKING:
 # ── Handles ──────────────────────────────────────────────────────────────────
 
 
-class SteerableToolHandle(ABC):
-    """Abstract base class for steerable tool handles.
-
-    Defines the full steering surface: query (``ask``, ``interject``),
-    lifecycle (``stop``, ``pause``, ``resume``), completion (``done``,
-    ``result``), and event APIs (``next_clarification``,
-    ``next_notification``, ``answer_clarification``).
-
-    Context parameters
-    ------------------
-    Steering methods accept plumbing parameters that are hidden from LLM tool
-    schemas by their underscore prefix and injected by orchestrating code:
-
-    - ``_parent_chat_context_cont`` (for ``interject``): continuation of the
-      parent conversation since this loop started, injected into the ongoing
-      conversation as an incremental update.
-
-    - ``_parent_chat_context`` (for ``ask``): full context snapshot for the
-      fresh inspection loop ``ask`` spawns, injected according to the LLM's
-      ``include_parent_chat_context`` choice.
-
-    Signature extension contract
-    ----------------------------
-    Derived classes may extend any steering method signature with additional
-    keyword arguments specific to their domain. The signatures defined here
-    are the minimum universal contract every handle accepts, so callers that
-    hold a reference typed as ``SteerableToolHandle`` may safely pass only
-    these base parameters.
-
-    When dispatching a steering call to a handle whose concrete type is
-    unknown, use ``forward_handle_call`` (from
-    ``unify.common._async_tool.messages``): it introspects the target
-    method's signature, filters out kwargs the target does not accept, and
-    applies positional fallbacks.
-    """
-
-    @abstractmethod
-    def __init__(
-        self,
-    ) -> None:
-        pass
-
-    @abstractmethod
-    async def ask(
-        self,
-        question: str,
-        *,
-        _parent_chat_context: list[dict] | None = None,
-    ) -> "SteerableToolHandle":
-        """Ask about status/progress if the task is still running, or the retrospective process/method if it has completed.
-
-        Read-only — does not modify the task. This operation is asynchronous:
-        it returns immediately and the answer appears in the task's history on
-        the next turn.
-        """
-
-    @abstractmethod
-    async def interject(
-        self,
-        message: str,
-        *,
-        _parent_chat_context_cont: list[dict] | None = None,
-    ) -> None:
-        """Provide additional information or instructions to the running task.
-
-        Use this to give the task new context, correct its approach, or add
-        requirements mid-flight without stopping or restarting it.
-        """
-
-    @abstractmethod
-    async def stop(
-        self,
-        reason: Optional[str] = None,
-    ) -> None:
-        """Stop this tool, cancelling any pending work.
-
-        While any tools are still running you cannot end the conversation;
-        stop or wait for all in-flight tools to complete, then respond.
-        """
-
-    async def cancel_request(self, reason: Optional[str] = None) -> bool:
-        """End the running request of a persistent task, keeping the task.
-
-        For a host (``unify act --jsonl``'s ``{"cancel": true}``); not a
-        steering action. Returns whether the cancel was delivered; a handle
-        that serves no persistent requests has none to cancel.
-        """
-        return False
-
-    @abstractmethod
-    async def pause(self) -> Optional[str]:
-        """Pause this task temporarily without cancelling it.
-
-        In-flight operations continue executing, but no new actions are taken
-        until resumed.
-        """
-
-    @abstractmethod
-    async def resume(self) -> Optional[str]:
-        """Resume a task that was previously paused.
-
-        Any work that completed while paused will be processed before the
-        task continues.
-        """
-
-    @abstractmethod
-    def done(self) -> Awaitable[bool] | bool:
-        """Check if this task has completed."""
-
-    @abstractmethod
-    def result(self) -> Awaitable[str] | str:
-        """Wait for the assistant's *final* reply."""
-
-    @abstractmethod
-    async def next_clarification(self) -> dict:
-        """Await the next clarification event pushed by a running tool."""
-
-    @abstractmethod
-    async def next_notification(self) -> dict:
-        """Await the next notification pushed by a running tool."""
-
-    @abstractmethod
-    async def answer_clarification(self, call_id: str, answer: str) -> None:
-        """Answer a clarification question that the task is waiting on.
-
-        Provide the call_id from the clarification request and the answer text.
-        No-op if the tool already finished.
-        """
-
-    def get_history(self) -> list[dict]:
-        """The loop's conversational history, in the LLM client's message
-        format. Empty for handles without an LLM client."""
-        return []
-
-
 class ToolLoopHandle(ABC):
-    """What a caller holds for a running tool loop: no steering.
+    """What a caller holds for a running tool loop.
 
     ``result()`` waits for the final answer, ``done()`` says whether the loop
     has ended, ``stop(reason)`` ends it (cancelling the model call or tool
     call in flight), and ``submit(text)`` queues the requester's next message,
     which the loop appends at its next turn boundary (a persistent session's
     next request). Only ``stop`` (and, for a persistent session, its request's
-    ``cancel_request``) interrupts a model call or a tool call. The event methods carry what a running call sends
-    the requester: progress notifications, the turn responses of a persistent
-    session, and the questions a cell asks with ``request_clarification``.
+    ``cancel_request``) interrupts a model call or a tool call.
+    ``next_notification()`` carries the turn responses of a persistent session.
     """
 
     @abstractmethod
@@ -210,28 +64,15 @@ class ToolLoopHandle(ABC):
     async def submit(self, text: str) -> None:
         """Queue *text* for the next turn boundary (never mid-turn)."""
 
+    @abstractmethod
     async def cancel_request(self, reason: Optional[str] = None) -> bool:
         """End the running request of a persistent session, keeping the
         session (``unify act --jsonl``'s ``{"cancel": true}``). Returns whether
         the cancel was delivered."""
-        return False
 
+    @abstractmethod
     async def next_notification(self) -> dict:
-        """Await the next notification or persistent-session response."""
-        raise NotImplementedError
-
-    async def next_clarification(self) -> dict:
-        """Await the next question a running call asks the requester."""
-        raise NotImplementedError
-
-    async def answer_clarification(self, call_id: str, answer: str) -> None:
-        """Answer the question call *call_id* asked; a no-op once it ended."""
-        return None
-
-    def get_history(self) -> list[dict]:
-        """The loop's conversational history, in the LLM client's message
-        format. Empty for handles without an LLM client."""
-        return []
+        """Await the next turn response of a persistent session."""
 
 
 class AsyncToolLoopHandle(ToolLoopHandle):
@@ -264,11 +105,7 @@ class AsyncToolLoopHandle(ToolLoopHandle):
         # Pydantic model.
         self._response_format: Optional[Any] = response_format
 
-        self._clar_q: asyncio.Queue[dict] = asyncio.Queue()
         self._notification_q: asyncio.Queue[dict] = asyncio.Queue()
-        # call_id -> (question queue, answer queue) of the calls that can ask
-        # the requester; the running loop keeps it current.
-        self._clarification_channels: dict = {}
 
         self._compression = CompressionState()
         self._loop_config: Optional[dict] = None
@@ -287,7 +124,7 @@ class AsyncToolLoopHandle(ToolLoopHandle):
         # exit before seeing the queued item.
         self._queue.put_nowait({"message": text})
 
-    async def stop(self, reason: Optional[str] = None, **kwargs) -> None:
+    async def stop(self, reason: Optional[str] = None) -> None:
         # Idempotent: a second stop neither logs nor re-signals.
         if self._cancel_event.is_set():
             return
@@ -369,8 +206,8 @@ class AsyncToolLoopHandle(ToolLoopHandle):
     async def _restart_with_compressed_context(self) -> None:
         """Compress context and start a new loop iteration.
 
-        ``compress_and_rebuild`` does the data transformation; this method
-        handles the loop lifecycle: replacing client messages, creating a new
+        ``_compact_context`` makes the restart; this method handles the loop
+        lifecycle: replacing client messages, creating a new
         ``asyncio.Task``, and swapping the task reference so the handle's
         methods target the new loop.
         """
@@ -380,34 +217,11 @@ class AsyncToolLoopHandle(ToolLoopHandle):
                 "Cannot compress: loop config was not stored on the handle.",
             )
 
-        # UNIFY_STEP_CAP_COMPACT: the loop compacted the context itself at
-        # its step limit, before it ended; otherwise it is compacted here.
-        at_step_limit = self._runtime_state.step_cap_compacted
-        self._runtime_state.step_cap_compacted = None
-        compacted = at_step_limit or await self._compact_context(cfg)
-        n_archived, restart_messages, restart_tools, restart_message, forked = compacted
-        # UNIFY_COMPACTION_KEEP_PREFIX=on: the restart starts with a list of
-        # messages (the kept user messages, then the summary), which already
-        # hold the session's first message as it was sent. A shipped
-        # compaction always restarts from one string.
-        keep_prefix = isinstance(restart_message, list)
-        # Its first measured call says whether what it kept fits.
-        self._runtime_state.keep_prefix_unmeasured = keep_prefix
-        # And, for one the context threshold asked for, whether it brought
-        # the context under it (UNIFY_STEP_CAP_COMPACT=continue counts it).
-        self._runtime_state.compaction_unmeasured = at_step_limit is None
-        # UNIFY_STEP_CAP_COMPACT=continue: the summary the loop restarts from
-        # is loop-authored, so it starts no request (the loop stop's count
-        # goes on across it). The marker is an underscore key, which unillm
-        # strips before the request: the bytes sent are the same. A
-        # keep-prefix summary is built loop-authored already.
-        if continue_mode_active(self._runtime_state) and isinstance(
-            restart_message,
-            str,
-        ):
-            restart_message = loop_user_notice(restart_message)
+        n_archived, restart_messages, restart_tools, restart_message, forked = (
+            await self._compact_context(cfg)
+        )
         self._client._messages = restart_messages
-        if not forked and not keep_prefix:
+        if not forked:
             self._client._system_message = None
 
         # A compression rebuild is a deliberate full-cache sacrifice: the
@@ -416,30 +230,17 @@ class AsyncToolLoopHandle(ToolLoopHandle):
         # rebuilt list happening to be shorter than the old watermark.
         self._client._sent_watermark = 0
         self._client._sent_watermark_hash = None
-        if at_step_limit is not None:
-            # The step limit counts from the compacted conversation.
-            self._runtime_state.message_count_offset = 0
-        else:
-            self._runtime_state.message_count_offset += n_archived - len(
-                self._client._messages,
-            )
+        self._runtime_state.message_count_offset += n_archived - len(
+            self._client._messages,
+        )
 
         outer_handle_container: list = [None]
-        _parent = cfg["parent_lineage"] or TOOL_LOOP_LINEAGE.get([])
+        _parent = cfg["parent_lineage"]
         _lineage = [*_parent, cfg.get("loop_id", "compressed")]
 
         inner_kwargs = {
             k: v for k, v in cfg.items() if k not in ("parent_lineage", "tools")
         }
-        # Parent context was captured in the first loop pass (often embedded
-        # in the compressed system messages); re-injecting the full blob on
-        # every restart could immediately re-trigger compression.
-        inner_kwargs["parent_chat_context"] = None
-        cfg["parent_chat_context"] = None
-        if keep_prefix:
-            # The kept first user message already opens with the session
-            # context; prefixing it again would change its bytes.
-            inner_kwargs["first_message_context"] = None
 
         async def _loop_wrapper():
             return await async_tool_loop_inner(
@@ -466,7 +267,7 @@ class AsyncToolLoopHandle(ToolLoopHandle):
 
     async def _compact_context(
         self,
-        cfg: Optional[dict] = None,
+        cfg: dict,
     ) -> tuple[int, list[dict], dict, str, bool]:
         """Compress the context for a restart, leaving the transcript as it is.
 
@@ -474,32 +275,12 @@ class AsyncToolLoopHandle(ToolLoopHandle):
         restart message, forked)``; ``forked`` is ``True`` when the summary
         came from a fork (``FORK_SUMMARY``), which keeps the client's system
         message. Raises when compression fails.
-
-        ``UNIFY_COMPACTION_KEEP_PREFIX=on``: the restart message is a list,
-        the kept user messages and the summary (``kept_prefix``), for the
-        fork and the compactor alike; the restart messages are the leading
-        system message and the tools are the session's, unchanged.
         """
-        cfg = cfg if cfg is not None else self._loop_config
-        if cfg is None:
-            raise RuntimeError(
-                "Cannot compress: loop config was not stored on the handle.",
-            )
         n_archived = len(self._client.messages)
-        keep = self._keep_prefix_this_pass()
-        forked = await self._summarise_as_fork(cfg, keep) if FORK_SUMMARY else None
+        forked = await self._summarise_as_fork(cfg) if FORK_SUMMARY else None
         if forked is not None:
             restart_messages, restart_tools, restart_message = forked
             return n_archived, restart_messages, restart_tools, restart_message, True
-        if keep:
-            result = await compress_and_rebuild(
-                self._compression,
-                self._client.messages,
-                self._client.endpoint,
-                dict(cfg["tools"]),
-                keep_prefix=True,
-            )
-            return n_archived, result.system_msgs, result.tools, result.messages, False
         result = await compress_and_rebuild(
             self._compression,
             self._client.messages,
@@ -514,63 +295,26 @@ class AsyncToolLoopHandle(ToolLoopHandle):
             False,
         )
 
-    @property
-    def run_stats(self) -> dict:
-        """The loop's counters for the CLI's run stats where no storage wrapper reports them (a session that may not
-        store: ``--no-store``, the library off): the replies the provider withheld, only when there were any."""
-        from unify.common._async_tool.loop import withheld_stats
-
-        return withheld_stats(getattr(self, "_runtime_state", None))
-
-    def _keep_prefix_this_pass(self) -> bool:
-        """Whether this compaction keeps the sent prefix
-        (``UNIFY_COMPACTION_KEEP_PREFIX=on``): not when the first call after
-        the session's last keep-prefix compaction was still over the
-        threshold. That pass rebuilds as shipped, and the next one may keep
-        the prefix again."""
-        if not keep_prefix_enabled():
-            return False
-        state = self._runtime_state
-        if state.keep_prefix_shipped_next:
-            state.keep_prefix_shipped_next = False
-            state.keep_prefix_fallbacks += 1
-            LOGGER.info(
-                f"[{getattr(self, '_log_label', None) or self._loop_id}] "
-                "the kept prefix did not fit under the threshold; this "
-                "compaction rebuilds as shipped",
-            )
-            return False
-        return True
-
     async def _summarise_as_fork(
         self,
         cfg: dict,
-        keep_prefix: bool = False,
     ) -> Optional[tuple[list[dict], dict, str]]:
         """Compress by forking the conversation (``FORK_SUMMARY``).
 
         The summary request is the last request this loop sent, unchanged,
         plus one appended instruction, so the provider serves everything but
-        that instruction from its cache. A forced tool choice is sent as
-        ``auto``, since the reply has to be text. The session then restarts
+        that instruction from its cache. The session then restarts
         from its own system prompt and the summary, with the same tools, so
         the fixed tool list and the system prompt stay a cached prefix.
 
         Returns ``(messages, tools, first_message)`` for the restart, or
         ``None`` -- and logs why -- when there is no recorded request or the
         fork yields no summary; the caller then compresses as shipped.
-
-        *keep_prefix* (``UNIFY_COMPACTION_KEEP_PREFIX=on``, unless
-        :meth:`_keep_prefix_this_pass` declined it): *first_message* is a list
-        instead: the session's first user message and the requester
-        messages of the current request (``kept_prefix``), unchanged, then
-        the summary as one loop-authored message, so the restarted session
-        starts with what it already sent.
         """
         label = getattr(self, "_log_label", None) or self._loop_id
         last = _cache_discipline.last_sent_request(self._client)
-        # UNIFY_TOOLS_IN_CODE=on: the loop compacted before its next model
-        # call, so what followed the last request (its reply and the cells'
+        # The actor's loop compacted before its next model call, so what
+        # followed the last request (its reply and the cells'
         # results) is sent after it, unchanged.
         state = getattr(self, "_runtime_state", None)
         tail = list(getattr(state, "in_code_tail", None) or [])
@@ -595,11 +339,8 @@ class AsyncToolLoopHandle(ToolLoopHandle):
             "return_full_completion": True,
         }
         if last.get("tools"):
-            tool_choice = last.get("tool_choice")
-            if _cache_discipline.is_forced_tool_choice(tool_choice):
-                tool_choice = "auto"
             request["tools"] = last["tools"]
-            request["tool_choice"] = tool_choice
+            request["tool_choice"] = last.get("tool_choice")
         if cfg.get("prompt_caching") is not None:
             request["prompt_caching"] = cfg["prompt_caching"]
         try:
@@ -622,8 +363,6 @@ class AsyncToolLoopHandle(ToolLoopHandle):
             return None
         self._compression.count += 1
         history = self._client.messages or []
-        if keep_prefix:
-            return self._keep_prefix_restart(cfg, history, summary)
         system = [
             m for m in history[:1] if isinstance(m, dict) and m.get("role") == "system"
         ]
@@ -631,8 +370,7 @@ class AsyncToolLoopHandle(ToolLoopHandle):
             f"{_COMPRESSED_HEADER}{summary}\n\n"
             "Context was compressed. Continue from where you left off."
         )
-        # UNIFY_TRANSCRIPTS: the history the summary replaces goes to disk
-        # first, and the summary names the file, so the model can read back
+        # The history the summary replaces goes to disk first, and the summary names the file, so the model can read back
         # what it left out.
         session = transcripts.session_for_messages(self._client.messages)
         if session is not None:
@@ -646,160 +384,35 @@ class AsyncToolLoopHandle(ToolLoopHandle):
             )
         return system, dict(cfg["tools"]), restart_message
 
-    def _keep_prefix_restart(
-        self,
-        cfg: dict,
-        history: list[dict],
-        summary: str,
-    ) -> tuple[list[dict], dict, list[dict]]:
-        """``_summarise_as_fork``'s restart under UNIFY_COMPACTION_KEEP_PREFIX:
-        the leading system message, then the kept user messages unchanged,
-        then the summary. The history goes to the transcript first, as
-        shipped, and the summary names the file."""
-        system, kept = kept_prefix(history)
-        session = transcripts.session_for_messages(self._client.messages)
-        if session is not None:
-            session.sync()
-        summary_message = loop_user_notice(
-            restart_text(
-                summary,
-                session.pointer_line() if session is not None else None,
-            ),
-        )
-        transcripts.record_compaction(
-            session,
-            archived=len(history),
-            pass_number=self._compression.count,
-            context=[*system, *kept, summary_message],
-        )
-        return system, dict(cfg["tools"]), [*kept, summary_message]
-
-    def get_history(self) -> list[dict]:
-        """The full LLM conversation history including assistant reasoning,
-        tool calls and tool outputs; empty when no client is available."""
-        if self._client is not None:
-            return self._client.messages
-        return []
-
-    # ── bottom-up event APIs ---------------------------------------------------
-    async def next_clarification(self) -> dict:
-        """Await the next question a running call asks the requester."""
-        return await self._clar_q.get()
-
     async def next_notification(self) -> dict:
-        """Await the next notification pushed by a running call, or a
-        persistent session's turn response."""
+        """Await the next turn response of a persistent session."""
         return await self._notification_q.get()
-
-    async def answer_clarification(self, call_id: str, answer: str) -> None:
-        """Put *answer* on the answer queue of the call that asked; a no-op
-        when that call is no longer running."""
-        channel = self._clarification_channels.get(call_id)
-        if channel is None:
-            LOGGER.info(
-                f"[{self._log_label}] Clarification answer for {call_id!r} "
-                "dropped: no running call asked it",
-            )
-            return
-        await channel[1].put(answer)
 
 
 def start_async_tool_loop(
     client: unillm.AsyncUnify,
-    message: str | dict | list[str | dict],
+    message: str | dict | list[dict],
     tools: Dict[str, Callable],
     *,
     loop_id: Optional[str] = None,
-    parent_lineage: Optional[list[str]] = None,
-    max_consecutive_failures: int = 3,
-    prune_tool_duplicates=True,
-    propagate_chat_context: ChatContextPropagation = ChatContextPropagation.LLM_DECIDES,
-    parent_chat_context: Optional[list[dict]] = None,
-    caller_description: Optional[str] = None,
-    log_steps: Union[bool, str] = True,
+    log_steps: bool | str = True,
     max_steps: Optional[int] = None,
     timeout: Optional[int] = None,
-    raise_on_limit: bool = False,
-    tool_policy: Optional[
-        Union[
-            Callable[
-                [int, Dict[str, Callable]],
-                Union[
-                    Tuple[str, Dict[str, Callable]],
-                    Tuple[str, Dict[str, Callable], Dict[str, Any]],
-                ],
-            ],
-            Callable[
-                [int, Dict[str, Callable], list[str]],
-                Union[
-                    Tuple[str, Dict[str, Callable]],
-                    Tuple[str, Dict[str, Callable], Dict[str, Any]],
-                ],
-            ],
-        ]
-    ] = None,
     preprocess_msgs: Optional[Callable[[list[dict]], list[dict]]] = None,
     response_format: Optional[Any] = None,
-    max_parallel_tool_calls: Optional[int] = None,
     persist: bool = False,
     prompt_caching: Optional["PromptCacheParam"] = None,
-    time_awareness: bool = False,
-    enable_compression: bool = True,
-    extra_compression_tools: Optional[list[str]] = None,
-    clarification_queues: Optional[Tuple["asyncio.Queue", "asyncio.Queue"]] = None,
-    on_clarification_request: Optional[Callable[[str], Any]] = None,
-    on_clarification_answer: Optional[Callable[[str], Any]] = None,
-    on_notify: Optional[Callable[[str], Any]] = None,
-    fixed_tools_schema: Optional[list[dict]] = None,
     first_message_context: Optional[str] = None,
-    compression_tools_on_demand: bool = False,
-    reply_channel: bool = False,
     on_turn_boundary: Optional[Callable[[], Awaitable[Optional[str]]]] = None,
-    bind_request: bool = False,
     tools_in_code: bool = False,
 ) -> AsyncToolLoopHandle:
     """
     Run ``async_tool_loop_inner`` in its own task and return a handle for it.
 
     The loop runs one model turn at a time and each tool call to completion,
-    in call order; see ``async_tool_loop_inner`` for every parameter.
-
-    Parameters
-    ----------
-    log_steps : bool | str, default True
-        Controls verbosity of step logging to `LOGGER`:
-          - False: no logging
-          - True: log everything except system messages
-          - "full": log everything including system messages
-
-    first_message_context : str | None, default None
-        Text that opens the loop's first user message, and the message that
-        restarts it after compression (see ``async_tool_loop_inner``).
-
-    compression_tools_on_demand, reply_channel, bind_request, tools_in_code : bool
-        See ``async_tool_loop_inner``; the defaults are as shipped.
-
-    on_turn_boundary : optional coroutine function
-        See ``async_tool_loop_inner``; ``None`` (as shipped) adds nothing.
-
-    timeout : int | None, default None
-        Activity-based timeout in seconds. When ``None`` (default), no
-        timeout is enforced.
-
-    raise_on_limit : bool, default False
-        If ``True``, raises ``asyncio.TimeoutError`` or ``RuntimeError``
-        when the timeout or max_steps limit is exceeded. If ``False``,
-        the loop terminates gracefully with a summary message.
-
-    persist : bool, default False
-        If ``True``, the loop does not terminate when the LLM produces content
-        without tool calls. It parks until the next message arrives through
-        ``handle.submit()`` and takes it as its next request. The loop only
-        terminates when stopped via ``handle.stop()``.
-
-    time_awareness : bool, default False
-        If ``True``, a time-context system message is injected into the
-        conversation and tool results carry their timing.
+    in call order; see ``async_tool_loop_inner`` for every parameter. A loop
+    that compacts its context (``tools_in_code``) is restarted by the handle
+    from the summary, with the same parameters.
     """
     # One stable loop_id shared by the handle and the inner loop.
     if loop_id is not None:
@@ -809,65 +422,44 @@ def start_async_tool_loop(
     cancel_event = asyncio.Event()
     stop_event = asyncio.Event()
     runtime_state = ToolLoopRuntimeState()
-    # UNIFY_BIND_REQUEST=on: the loop's current request, kept by the handle
-    # so a loop restarted after compression keeps it.
-    request_slot = _bound_request.new_slot(bind_request)
-    # UNIFY_REQUEST_METADATA_HEADERS=on: the request the loop starts with is
-    # the requester's first message (a restart after compression is not
-    # started here, so it counts nothing).
-    if bind_request:
+    # The request the actor's loop starts with is the requester's first
+    # message, counted for the request metadata headers (a restart after
+    # compression is not started here, so it counts nothing).
+    if tools_in_code:
         count_requester_message(client)
 
     # Mutable container through which the inner loop reaches the outer handle
     # once it exists.
     outer_handle_container: list = [None]
 
-    _parent = (
-        parent_lineage if parent_lineage is not None else TOOL_LOOP_LINEAGE.get([])
-    )
+    _parent = TOOL_LOOP_LINEAGE.get([])
     _lineage = [*_parent, loop_id]
+    settings = {
+        "loop_id": loop_id,
+        "log_steps": log_steps,
+        "max_steps": max_steps,
+        "timeout": timeout,
+        "preprocess_msgs": preprocess_msgs,
+        "response_format": response_format,
+        "persist": persist,
+        "prompt_caching": prompt_caching,
+        "runtime_state": runtime_state,
+        "first_message_context": first_message_context,
+        "on_turn_boundary": on_turn_boundary,
+        "tools_in_code": tools_in_code,
+    }
 
     async def _loop_wrapper():
         return await async_tool_loop_inner(
             client,
             message,
             tools,
-            loop_id=loop_id,
             lineage=_lineage,
             interject_queue=interject_queue,
             cancel_event=cancel_event,
             stop_event=stop_event,
-            max_consecutive_failures=max_consecutive_failures,
-            prune_tool_duplicates=prune_tool_duplicates,
-            propagate_chat_context=propagate_chat_context,
-            parent_chat_context=parent_chat_context,
-            caller_description=caller_description,
-            log_steps=log_steps,
-            max_steps=max_steps,
-            timeout=timeout,
-            raise_on_limit=raise_on_limit,
-            tool_policy=tool_policy,
-            preprocess_msgs=preprocess_msgs,
             outer_handle_container=outer_handle_container,
-            response_format=response_format,
-            max_parallel_tool_calls=max_parallel_tool_calls,
-            persist=persist,
-            prompt_caching=prompt_caching,
-            time_awareness=time_awareness,
-            enable_compression=enable_compression,
-            extra_compression_tools=extra_compression_tools,
-            clarification_queues=clarification_queues,
-            on_clarification_request=on_clarification_request,
-            on_clarification_answer=on_clarification_answer,
-            on_notify=on_notify,
-            fixed_tools_schema=fixed_tools_schema,
-            first_message_context=first_message_context,
-            runtime_state=runtime_state,
-            compression_tools_on_demand=compression_tools_on_demand,
-            reply_channel=reply_channel,
-            on_turn_boundary=on_turn_boundary,
-            bind_request=request_slot,
-            tools_in_code=tools_in_code,
+            **settings,
         )
 
     task = asyncio.create_task(_loop_wrapper(), name="ToolUseLoop")
@@ -886,39 +478,9 @@ def start_async_tool_loop(
     # _restart_with_compressed_context re-creates the loop from this config
     # with identical settings after compression.
     handle._loop_config = {
-        "loop_id": loop_id,
         "parent_lineage": list(_parent),
         "tools": dict(tools),
-        "max_consecutive_failures": max_consecutive_failures,
-        "prune_tool_duplicates": prune_tool_duplicates,
-        "propagate_chat_context": propagate_chat_context,
-        "parent_chat_context": parent_chat_context,
-        "caller_description": caller_description,
-        "log_steps": log_steps,
-        "max_steps": max_steps,
-        "timeout": timeout,
-        "raise_on_limit": raise_on_limit,
-        "tool_policy": tool_policy,
-        "preprocess_msgs": preprocess_msgs,
-        "response_format": response_format,
-        "max_parallel_tool_calls": max_parallel_tool_calls,
-        "persist": persist,
-        "prompt_caching": prompt_caching,
-        "time_awareness": time_awareness,
-        "enable_compression": enable_compression,
-        "extra_compression_tools": extra_compression_tools,
-        "clarification_queues": clarification_queues,
-        "on_clarification_request": on_clarification_request,
-        "on_clarification_answer": on_clarification_answer,
-        "on_notify": on_notify,
-        "runtime_state": runtime_state,
-        "fixed_tools_schema": fixed_tools_schema,
-        "first_message_context": first_message_context,
-        "compression_tools_on_demand": compression_tools_on_demand,
-        "reply_channel": reply_channel,
-        "on_turn_boundary": on_turn_boundary,
-        "bind_request": request_slot,
-        "tools_in_code": tools_in_code,
+        **settings,
     }
 
     with suppress(Exception):

@@ -7,7 +7,7 @@ Package initialization for the unify assistant runtime.
 The runtime must be explicitly initialized via init() before an actor runs:
 
     import unify
-    unify.init()  # Validates providers, loads environment namespaces, installs hooks
+    unify.init()  # Validates providers, loads environment namespaces
 
 For code that may run before or after init(), use ensure_initialised() which
 is a no-op if already initialized.
@@ -15,24 +15,15 @@ is a no-op if already initialized.
 Logging is configured centrally in unify.logger (imported below).
 """
 
-try:
-    import onnxruntime as _ort
-
-    _ort.set_default_logger_severity(4)  # FATAL — suppress thread affinity noise
-except Exception:
-    pass
-
 # Logging is configured entirely in unify.logger — import it so that
 # the module-level setup (handler, formatter, library muting) runs once.
 import unify.logger  # noqa: F401
-from unify.common.startup_timing import startup_timing
-from unify.logger import LOGGER
 
 _INITIALISED = False
 
 
 def init() -> None:  # noqa: D401 – imperative name
-    """Initialise the runtime: validate providers, load environment namespaces, install hooks."""
+    """Initialise the runtime: validate providers, load environment namespaces."""
 
     global _INITIALISED
     if _INITIALISED:
@@ -40,8 +31,7 @@ def init() -> None:  # noqa: D401 – imperative name
 
     from unify.settings import SETTINGS as _SETTINGS
 
-    with startup_timing(LOGGER, "unify.init.validate_llm_providers"):
-        _SETTINGS.validate_llm_providers()
+    _SETTINGS.validate_llm_providers()
 
     if _SETTINGS.UNIFY_ENV_NAMESPACES.strip():
         # An environment that cannot register its namespaces stops start-up.
@@ -49,13 +39,7 @@ def init() -> None:  # noqa: D401 – imperative name
             load_environment_namespaces,
         )
 
-        with startup_timing(LOGGER, "unify.init.environment_namespaces"):
-            load_environment_namespaces()
-
-    from .events.llm_event_hook import install_llm_event_hook
-
-    with startup_timing(LOGGER, "unify.init.install_llm_event_hook"):
-        install_llm_event_hook()
+        load_environment_namespaces()
 
     _INITIALISED = True
 

@@ -118,18 +118,6 @@ def _hash_msgs_slice(msgs: list) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-# Diagnostic switch: loop behaviour is identical either way. Off by default
-# because the below-watermark hashing costs real per-dispatch CPU on long
-# transcripts; the test suite turns it on so CI catches unsanctioned mutation.
-_INVARIANT_CHECKS_ENV = "UNIFY_TRANSCRIPT_INVARIANT_CHECKS"
-
-
-def _invariant_checks_enabled() -> bool:
-    import os
-
-    return os.environ.get(_INVARIANT_CHECKS_ENV) == "1"
-
-
 def _call_id_has_reply(client, call_id: Optional[str]) -> bool:
     """True if some tool-role message in the transcript already answers *call_id*."""
     if not call_id:
@@ -148,8 +136,6 @@ def _rebaseline_watermark_hash(client) -> None:
     next dispatch's integrity check would read that shift as an unsanctioned
     mutation and raise.
     """
-    if not _invariant_checks_enabled():
-        return
     watermark = getattr(client, "_sent_watermark", 0)
     with suppress(Exception):
         client._sent_watermark_hash = _hash_msgs_slice(client.messages[:watermark])
@@ -301,8 +287,7 @@ async def generate_with_preprocess(
     # edit what an in-flight request carries.
     prev_watermark = getattr(client, "_sent_watermark", 0)
     prev_hash = getattr(client, "_sent_watermark_hash", None)
-    _checks_on = _invariant_checks_enabled()
-    if _checks_on and prev_hash is not None:
+    if prev_hash is not None:
         # The below-watermark slice must be byte-identical to what was hashed
         # at the last dispatch, unless a sanctioned escape-hatch splice
         # re-baselined it in between (_rebaseline_watermark_hash).
@@ -312,10 +297,9 @@ async def generate_with_preprocess(
         )
     pre_copy_len = len(client.messages)
     client._sent_watermark = max(prev_watermark, pre_copy_len)
-    if _checks_on:
-        client._sent_watermark_hash = _hash_msgs_slice(
-            client.messages[: client._sent_watermark],
-        )
+    client._sent_watermark_hash = _hash_msgs_slice(
+        client.messages[: client._sent_watermark],
+    )
 
     # Stamp the in-flight window so ``handle.ask()``, which snapshots
     # ``client.messages``, can report "waiting on an LLM response since T"
@@ -585,15 +569,11 @@ async def insert_tool_message_after_assistant(
     client,
     msg_dispatcher,
     *,
-    skip_event_bus: bool = False,
     bypass_watermark: bool = False,
 ) -> None:
     """
     Append *tool_msg* and move it directly after *parent_msg*, while
     updating the per-assistant `results_count` bookkeeping.
-
-    If *skip_event_bus* is True, the message is appended to the client
-    transcript but not published to the EventBus.
 
     A call has one reply. The first one always splices directly after its
     assistant message, even below the sent watermark (legality beats
@@ -632,7 +612,7 @@ async def insert_tool_message_after_assistant(
         return
 
     meta = assistant_meta.setdefault(id(parent_msg), {"results_count": 0})
-    await msg_dispatcher.append_msgs([tool_msg], skip_event_bus=skip_event_bus)
+    await msg_dispatcher.append_msgs([tool_msg])
     final_insert_pos = _message_index(client, parent_msg) + 1 + meta["results_count"]
     client.messages.insert(final_insert_pos, client.messages.pop())
     meta["results_count"] += 1

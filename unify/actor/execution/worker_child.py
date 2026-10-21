@@ -19,8 +19,7 @@ Harness -> worker::
      "help": bool, "audit": {"roots": [...], "path": str}, "no_bytecode": true,
      "sweep": [root, ...]}                    (audit, no_bytecode: only under UNIFY_MEMORY; sweep: only
                                               the memory agents' interpreters, :meth:`Worker.sweep_modules`)
-    {"op": "exec", "id": n, "source": str, "sync": {...}, "scratch": bool,
-     "inventory": true,                       (only when asked)
+    {"op": "exec", "id": n, "source": str, "sync": {...},
      "repin": {"roots": [...], "drop_paths": [...], "paths": [...]}}
                                               (only under UNIFY_MEMORY_IN_EPISODE, after a re-pin:
                                               :meth:`Worker.repin_modules`)
@@ -33,21 +32,9 @@ Worker -> harness::
     {"op": "ready", "missing": {name: error}, "audit": "on" | error}
                                               (audit: only when init asked)
     {"op": "call" | "describe" | "dir", "id": k, "target": {...}, ...}
-    {"op": "fn_begin", "id": k, "name": str, "mode": "run" | "call",
-     "args": [...], "kwargs": {...}}
-    {"op": "fn_end", "id": k, "token": int, "result": ..., "error": str | None,
-     "abandoned": bool}
     {"op": "doc", "id": k, "target": {...} | None, "label": str}
-    {"op": "note", "event": str, ...}           (no reply)
-
-``fn_begin``/``fn_end``/``doc`` and the ``help`` flag exist only under
-the core tool surface (unify/actor/core_surface.py): a stored function
-run by ``functions.run``, or called by name, runs here and the harness records
-the call between its begin and its end. While one runs, every request carries
-``"cases": [token, ...]``, the recordings it belongs to, so the harness adds
-the environment calls it serves to those cases.
+                                              (``help(obj)`` for a harness object: unify/actor/core_surface.py)
     {"op": "done", "id": n, "result": ..., "error": str | None, ...,
-     "inventory": str | None,                 (when the exec asked for it)
      "audit": {"records", "dropped", "failed", "bytes"}}   (when installed)
 
 Values cross as JSON with a few tagged forms (``{"__unify__": tag, ...}``):
@@ -65,15 +52,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import builtins
-import contextvars
 import datetime as _dt
 import decimal
 import importlib
-import inspect
 import io
 import itertools
 import json
-import linecache
 import os
 import re
 import sys
@@ -96,26 +80,12 @@ MAX_DEPTH = 64
 MAX_REPR = 500
 MAX_FD_OUTPUT = 256 * 1024
 
-#: The states ``functions.run`` takes (as ``execute_function`` did).
-RUN_STATES = ("stateless", "stateful", "read_only")
-
-# The core tool surface: the recordings (harness tokens) of the stored-
-# function calls running in this context, outermost first.
-_CASES: contextvars.ContextVar[tuple] = contextvars.ContextVar(
-    "unify_worker_cases",
-    default=(),
-)
 
 __all__ = [
     "BoundaryRefusal",
-    "CellReply",
-    "Inventory",
-    "Reply",
-    "Request",
     "MAX_DEPTH",
     "TAG",
     "decode",
-    "describe_value",
     "json_values",
     "encode",
     "short_repr",
@@ -124,18 +94,6 @@ __all__ = [
 
 class BoundaryRefusal(TypeError):
     """A value or attribute that cannot cross the worker boundary, named."""
-
-
-# ---------------------------------------------------------------------------
-# UNIFY_REPLY_CHANNEL=code+text: reply(text) from a cell
-# ---------------------------------------------------------------------------
-# Defined here, with the standard library only, so the worker and the
-# in-process sandbox share one implementation (the harness side is
-# unify/common/_async_tool/cell_reply.py).
-
-#: Every stored function is compiled under ``<function:NAME>``
-#: (unify/function_manager/source_labels.py).
-STORED_FUNCTION_PREFIX = "<function:"
 
 
 #: The signal the channel's reader sends this process's main thread to interrupt the running cell.
@@ -148,87 +106,9 @@ class CellInterrupted(BaseException):
     swallow it."""
 
 
-class CellReply(BaseException):
-    """Raised by ``reply(text)``: the cell ends and *text* is the turn's reply.
-
-    A ``BaseException``, so a cell's ``except Exception`` does not swallow it.
-    """
-
-    def __init__(self, text: str, from_value: bool) -> None:
-        super().__init__("reply() ended the cell")
-        self.text = text
-        self.from_value = from_value
-
-
-def stored_function_on_stack(frame: Any) -> Optional[str]:
-    """The name of a stored function running below *frame*, if any."""
-    while frame is not None:
-        filename = frame.f_code.co_filename
-        if filename.startswith(STORED_FUNCTION_PREFIX) and filename.endswith(">"):
-            return filename[len(STORED_FUNCTION_PREFIX) : -1]
-        frame = frame.f_back
-    return None
-
-
-class Reply:
-    """reply(text): send ``text`` as your reply and end your turn.
-
-    ``text`` must be a str; it is sent exactly as given, as if you had
-    replied with it. The cell stops at the call (what it printed so far is
-    kept) and no later step of the turn runs. One reply per turn; not
-    available inside a stored function, which returns its result to the cell
-    instead.
-    """
-
-    def __init__(self, precheck: Optional[Callable[[], None]] = None) -> None:
-        self._precheck = precheck
-        self._used = False
-
-    def __call__(self, text: str) -> None:
-        self._send(text, True, sys._getframe(1))
-
-    def _literal_reply(self, text: str) -> None:
-        """``reply("...")`` with the text written out in the call."""
-        self._send(text, False, sys._getframe(1))
-
-    def new_cell(self) -> None:
-        self._used = False
-
-    def _send(self, text: Any, from_value: bool, caller: Any) -> None:
-        if not isinstance(text, str):
-            raise TypeError(
-                f"reply() takes a str, not {type(text).__name__}: pass the exact "
-                "text of your reply, e.g. reply(str(value)) or "
-                "reply(json.dumps(obj))",
-            )
-        name = stored_function_on_stack(caller)
-        if name is not None:
-            raise RuntimeError(
-                f"reply() cannot be called inside a stored function ({name}): "
-                "return the text from the function and call reply() in the cell",
-            )
-        if self._used:
-            raise RuntimeError(
-                "reply() was already called in this turn; a turn has one reply",
-            )
-        if self._precheck is not None:
-            self._precheck()
-        if self._precheck is None:
-            # In the worker the harness checks the turn; this cell's own
-            # second call is refused here.
-            self._used = True
-        raise CellReply(text, from_value)
-
-    def __repr__(self) -> str:
-        return "<reply(text): send text as your reply and end your turn>"
-
-
 # ---------------------------------------------------------------------------
-# UNIFY_BIND_REQUEST=on: the current request as ``request`` in a cell
+# The JSON values a text carries (the memory package reads a request's with it)
 # ---------------------------------------------------------------------------
-# Defined here, with the standard library only, so the worker and the
-# in-process sandbox read a request the same way (the harness side is
-# unify/common/_async_tool/bound_request.py).
 
 _JSON_DECODER = json.JSONDecoder()
 _JSON_OPEN = re.compile(r"[\[{]")
@@ -266,52 +146,6 @@ def json_values(text: str) -> list:
         index = end
 
 
-class Request:
-    """request: the current request, read-only.
-
-    ``request.text`` is the request's text, as you received it;
-    ``request.data`` is the list of JSON objects and arrays it contains, in
-    order of appearance. Each cell gets a fresh copy, so what a cell does to
-    it does not reach a later cell. A variable of your own named ``request``
-    is never replaced; after ``del request`` the next cell has the current
-    request again.
-    """
-
-    __slots__ = ("_text", "_data")
-
-    def __init__(self, text: str) -> None:
-        object.__setattr__(self, "_text", str(text))
-        object.__setattr__(self, "_data", json_values(self._text))
-
-    @property
-    def text(self) -> str:
-        return self._text
-
-    @property
-    def data(self) -> list:
-        return self._data
-
-    def renewed(self) -> "Request":
-        """A fresh copy, for the next cell."""
-        return Request(self._text)
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        raise AttributeError(
-            f"request is read-only: request.{name} cannot be set; copy what you "
-            "need into a variable of your own",
-        )
-
-    def __delattr__(self, name: str) -> None:
-        raise AttributeError(f"request is read-only: request.{name} cannot be deleted")
-
-    def __repr__(self) -> str:
-        count = len(self._data)
-        return (
-            f"<request: {len(self._text)} characters of text (request.text), "
-            f"{count} JSON value{'' if count == 1 else 's'} in request.data>"
-        )
-
-
 def short_repr(value: Any, limit: int = MAX_REPR) -> str:
     try:
         text = repr(value)
@@ -329,237 +163,10 @@ def type_name(value: Any) -> str:
     return f"{module}.{name}"
 
 
-# ---------------------------------------------------------------------------
-# UNIFY_VARIABLE_INVENTORY=on: the variables a session's cells bound, in a line
-# ---------------------------------------------------------------------------
-# Defined here, with the standard library only, so a cell's namespace is
-# described the same way in the worker and in the in-process sandbox (the
-# harness side is unify/actor/execution/session.py).
-
-INVENTORY_LABEL = "[variables]"
-INVENTORY_NAMES = 12
-INVENTORY_CHARS = 400
-#: A scalar's or string's value is shown when its repr is at most this long.
-_VALUE_CHARS = 24
-#: An int this wide is described by its width, not its digits.
-_BIG_INT_BITS = 128
-#: A list or tuple this long is not scanned for equal rows.
-_ROW_SCAN = 10_000
-_SIGNATURE_CHARS = 40
-#: The harness's names in a cell; never listed, even after a cell rebinds one.
-HARNESS_NAMES = frozenset(
-    {
-        "primitives",
-        "request",
-        "reply",
-        "record",
-        "agents",
-        "display",
-        "functions",
-        "guidance",
-        "steering",
-        "help",
-        "install",
-    },
-)
-
-
-def _clip(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
-def _cell_written(value: Any) -> bool:
-    """A function or class defined by cell code in a session's namespace,
-    not a stored function the harness compiled there (``<function:NAME>``)."""
+def _cell_class(value: Any) -> bool:
+    """A class defined by cell code in the cells' namespace."""
     module = getattr(value, "__module__", None)
-    if not (isinstance(module, str) and module.startswith("__sandbox_")):
-        return False
-    if isinstance(value, type):
-        return True
-    try:
-        code = getattr(inspect.unwrap(value), "__code__", None)
-    except ValueError:
-        return False
-    filename = getattr(code, "co_filename", "")
-    return isinstance(filename, str) and not filename.startswith(
-        STORED_FUNCTION_PREFIX,
-    )
-
-
-def _signature(fn: Any) -> str:
-    kind = "async function" if inspect.iscoroutinefunction(fn) else "function"
-    try:
-        params = inspect.signature(fn).parameters.values()
-    except (TypeError, ValueError):
-        return kind
-    names = []
-    for param in params:
-        if param.kind is param.VAR_POSITIONAL:
-            names.append(f"*{param.name}")
-        elif param.kind is param.VAR_KEYWORD:
-            names.append(f"**{param.name}")
-        else:
-            names.append(param.name)
-    return f"{kind}({_clip(', '.join(names), _SIGNATURE_CHARS)})"
-
-
-def _rows(value: Any) -> str:
-    """``N``, or ``NxM`` for N rows (lists or tuples) of equal length M."""
-    count = len(value)
-    if 0 < count <= _ROW_SCAN and isinstance(value[0], (list, tuple)):
-        width = len(value[0])
-        if all(isinstance(row, (list, tuple)) and len(row) == width for row in value):
-            return f"{count}x{width}"
-    return str(count)
-
-
-def _array(value: Any, cls: type) -> Optional[str]:
-    """A numpy or pandas value: its shape, and its dtype where it has one."""
-    shape = getattr(value, "shape", None)
-    if not isinstance(shape, tuple) or not all(isinstance(n, int) for n in shape):
-        return None
-    if not shape:
-        return f"{cls.__name__} = {_clip(str(value), _VALUE_CHARS)}"
-    text = f"{cls.__name__}[{'x'.join(str(n) for n in shape)}]"
-    if hasattr(cls, "dtype"):
-        text += f" {getattr(value, 'dtype', '')}"
-    return text
-
-
-def describe_value(value: Any) -> Optional[str]:
-    """*value*'s type and a short shape, without printing it whole.
-
-    A scalar, or a string whose repr is short, shows its value (``int =
-    3``, ``str = 'abc'``); a longer string, bytes, a list, tuple or set its
-    length (``str[120]``, ``list[3]``), a list or tuple of equal rows its
-    rows and columns (``list[10x10]``), a dict its key count (``dict[4
-    keys]``), a numpy or pandas value its shape and dtype; a function or
-    class a cell defined its kind (``function(grid, k)``, ``class``); any
-    other object its type's name. None: not a variable to list (a module, or
-    a callable the cell did not define).
-    """
-    cls = type(value)
-    if inspect.ismodule(value):
-        return None
-    if isinstance(value, type) or inspect.isfunction(value):
-        if not _cell_written(value):
-            return None
-        return "class" if isinstance(value, type) else _signature(value)
-    module = getattr(cls, "__module__", "") or ""
-    if callable(value) and not module.startswith("__sandbox_"):
-        return None
-    name = cls.__name__
-    if module.split(".")[0] in ("numpy", "pandas"):
-        # Before the scalars: numpy's float64 is a float.
-        return _array(value, cls) or name
-    if value is None:
-        return "None"
-    if isinstance(value, int):
-        if not isinstance(value, bool) and value.bit_length() > _BIG_INT_BITS:
-            return f"{name} ({value.bit_length()} bits)"
-        return f"{name} = {_clip(repr(value), _VALUE_CHARS)}"
-    if isinstance(value, (float, complex)):
-        return f"{name} = {_clip(repr(value), _VALUE_CHARS)}"
-    if isinstance(value, str):
-        if len(value) <= _VALUE_CHARS:
-            text = repr(value)
-            if len(text) <= _VALUE_CHARS + 2:
-                return f"{name} = {text}"
-        return f"{name}[{len(value)}]"
-    if isinstance(value, (bytes, bytearray, set, frozenset)):
-        return f"{name}[{len(value)}]"
-    if isinstance(value, dict):
-        return f"{name}[{len(value)} keys]"
-    if isinstance(value, (list, tuple)):
-        return f"{name}[{_rows(value)}]"
-    return name
-
-
-def render_inventory(entries: list) -> str:
-    """The line for *entries* (``(name, description)``, in order)."""
-    head = INVENTORY_LABEL + " "
-    parts: list = []
-    used = len(head)
-    for index, (name, text) in enumerate(entries):
-        if len(parts) == INVENTORY_NAMES:
-            break
-        piece = f"{name}: {text}"
-        rest = len(entries) - index - 1
-        tail = len(f"; …and {rest} more") if rest else 0
-        cost = (2 if parts else 0) + len(piece)
-        if used + cost + tail > INVENTORY_CHARS:
-            break
-        parts.append(piece)
-        used += cost
-    line = head + "; ".join(parts)
-    more = len(entries) - len(parts)
-    if more:
-        line += ("; " if parts else "") + f"…and {more} more"
-    return line
-
-
-class Inventory:
-    """The variables one session's cells bound, as a line for the cell's result.
-
-    Around each cell the caller takes :meth:`snapshot` of the namespace and
-    then calls :meth:`after_cell`: a name whose value the cell bound or
-    rebound is the cell's, and its most recent binding (or change of shape)
-    orders the line. A name the cell did not bind (the harness's) is never
-    listed. The line is returned only when the listed names or their
-    descriptions differ from the last line returned.
-    """
-
-    def __init__(self) -> None:
-        self._cell = 0
-        self._bound: dict = {}  # name -> the cell that last bound or reshaped it
-        self._shapes: dict = {}  # name -> its description after that cell
-        self._shown: frozenset = frozenset()
-
-    @staticmethod
-    def snapshot(ns: dict) -> dict:
-        return {name: id(value) for name, value in list(ns.items())}
-
-    def after_cell(
-        self,
-        ns: dict,
-        before: dict,
-        installed: Optional[dict] = None,
-    ) -> Optional[str]:
-        self._cell += 1
-        for name, value in list(ns.items()):
-            if not isinstance(name, str) or name.startswith("_"):
-                continue
-            if name in HARNESS_NAMES:
-                continue
-            if before.get(name) != id(value):
-                self._bound[name] = self._cell
-        entries: dict = {}
-        for name in list(self._bound):
-            if name not in ns:
-                del self._bound[name]
-                self._shapes.pop(name, None)
-                continue
-            value = ns[name]
-            if installed and installed.get(name) is value:
-                continue
-            try:
-                text = describe_value(value)
-            except Exception:  # noqa: BLE001 - a value's own code failed
-                text = type(value).__name__
-            if text is None:
-                continue
-            if self._shapes.get(name, text) != text:
-                self._bound[name] = self._cell
-            self._shapes[name] = text
-            entries[name] = text
-        shown = frozenset(entries.items())
-        if shown == self._shown:
-            return None
-        self._shown = shown
-        if not entries:
-            return None
-        order = sorted(entries, key=lambda n: (-self._bound[n], n))
-        return render_inventory([(n, entries[n]) for n in order])
+    return isinstance(value, type) and isinstance(module, str) and module.startswith("__sandbox_")
 
 
 # ---------------------------------------------------------------------------
@@ -740,15 +347,6 @@ class ModelCallFailed(RemoteError, RuntimeError):
 ModelCallFailed.__module__ = MODEL_REQUEST_ERROR_MODULE
 
 
-class SteerableToolHandle:
-    """Stand-in for the harness's handle base class.
-
-    Handles live in the harness. One a harness call returns arrives as a
-    proxy that is an instance of this class, so ``isinstance`` checks hold;
-    a handle defined in the worker cannot be handed to the harness.
-    """
-
-
 class _Remote:
     """A harness object reached through the worker's channel."""
 
@@ -799,10 +397,6 @@ class RemoteCallable(RemoteNamespace):
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self._w.invoke(self, args, kwargs)
-
-
-class RemoteHandle(RemoteNamespace, SteerableToolHandle):
-    """A harness steerable handle."""
 
 
 class RemoteRecord(dict):
@@ -909,77 +503,6 @@ class _LazyModule:
         return f"<module {self._name!r}, imported on first use>"
 
 
-class _StoredFunction:
-    """A stored function defined in the worker; tells the harness it ran.
-
-    With ``record`` (the core tool surface) each call is recorded by the
-    harness as the in-process boundary wrapper records it -- usage, trust
-    evidence, a case with the environment calls it makes -- instead of only
-    being noted as used.
-    """
-
-    def __init__(
-        self,
-        raw: Callable[..., Any],
-        name: str,
-        worker: "Worker",
-        record: bool = False,
-    ) -> None:
-        self.__wrapped__ = raw
-        self.__name__ = name
-        self.__qualname__ = name
-        self.__doc__ = getattr(raw, "__doc__", None)
-        self._worker = worker
-        self._record = record
-
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        if self._record:
-            return self._worker.call_recorded(self, args, kwargs)
-        self._worker.note("function_used", name=self.__name__)
-        return self.__wrapped__(*args, **kwargs)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.__wrapped__, name)
-
-    def __repr__(self) -> str:
-        return f"<stored function {self.__name__}>"
-
-
-#: Steering position probes. They return nothing and only feed progress
-#: reports, so the worker posts them without waiting for an answer.
-RUNTIME_NOTES = frozenset(
-    {
-        "increment_loop_iteration",
-        "start_loop_context",
-        "end_loop_context",
-        "push_path_context",
-        "pop_path_context",
-    },
-)
-
-
-class _RuntimeProxy(RemoteNamespace):
-    def __getattr__(self, name: str) -> Any:
-        if name in RUNTIME_NOTES:
-            worker = self._w
-
-            def _post(*args: Any) -> None:
-                worker.note("runtime", method=name, args=list(args))
-
-            return _post
-        return super().__getattr__(name)
-
-
-class _FunctionsProxy(RemoteNamespace):
-    """``functions`` (the core tool surface): the harness's function
-    library, except ``run``, which runs the stored code here, in the worker."""
-
-    def __getattr__(self, name: str) -> Any:
-        if name == "run":
-            return self._w.run_function
-        return super().__getattr__(name)
-
-
 _NO_ARGUMENT = object()
 
 
@@ -1001,7 +524,7 @@ def _cell_response_model(label: str, kwargs: dict) -> Any:
     if label != _QUERY_LLM:
         return None
     value = kwargs.get("response_format")
-    if not (isinstance(value, type) and _cell_written(value)):
+    if not _cell_class(value):
         return None
     from pydantic import BaseModel
 
@@ -1064,17 +587,9 @@ class Worker:
         sys.modules[SESSION_MODULE] = module
         self.ns: dict[str, Any] = module.__dict__
         self.installed: dict[str, Any] = {}
-        # The globals every namespace starts from (init's), for the fresh
-        # globals of ``functions.run(..., state="stateless")``.
-        self.base_ns: dict[str, Any] = {}
         self._stdout: list[dict] = []
         self._stderr: list[dict] = []
         self._real_print = builtins.print
-        # UNIFY_REPLY_CHANNEL=code+text: the cells' reply(); the harness
-        # checks the turn when the cell reports its reply.
-        self.reply = Reply()
-        # UNIFY_VARIABLE_INVENTORY=on: what this namespace's cells bound.
-        self.inventory = Inventory()
         # UNIFY_MEMORY (spec §3a): the work-tree audit hook, only when the
         # harness asks for it in init; ``audit_state`` is "on" or why not.
         self.audit: Any = None
@@ -1099,8 +614,6 @@ class Worker:
             self._wfile.write(data)
             self._wfile.flush()
 
-    def note(self, event: str, **fields: Any) -> None:
-        self.send({"op": "note", "event": event, **fields})
 
     def reader(self) -> None:
         for line in self._rfile:
@@ -1157,17 +670,13 @@ class Worker:
                 )
             frame = frame.f_back
 
-    @staticmethod
-    def _with_cases(fields: dict) -> dict:
-        cases = _CASES.get()
-        return {**fields, "cases": list(cases)} if cases else fields
 
     def request_sync(self, op: str, **fields: Any) -> tuple[Any, dict]:
         rid = next(self._ids)
         event = threading.Event()
         box: list = []
         self._pending[rid] = ("sync", event, box)
-        self.send({"op": op, "id": rid, **self._with_cases(fields)})
+        self.send({"op": op, "id": rid, **fields})
         event.wait()
         return self._unwrap(box[0]), box[0]
 
@@ -1177,7 +686,7 @@ class Worker:
         rid = next(self._ids)
         self._pending[rid] = ("async", loop, fut)
         try:
-            self.send({"op": op, "id": rid, **self._with_cases(fields)})
+            self.send({"op": op, "id": rid, **fields})
             msg = await fut
         finally:
             self._pending.pop(rid, None)
@@ -1221,8 +730,6 @@ class Worker:
             target = {"ref": int(payload["id"]), "path": []}
             label = f"<harness {payload.get('type', 'object')}>"
             repr_text = str(payload.get("repr") or label)
-            if payload.get("handle"):
-                return RemoteHandle(self, target, label, repr_text)
             if payload.get("callable"):
                 return RemoteCallable(
                     self,
@@ -1444,7 +951,6 @@ class Worker:
             self.sweep_roots = tuple(
                 r.rstrip("/") for r in sweep if isinstance(r, str) and r.startswith("/") and r.rstrip("/")
             )
-        self.base_ns = dict(self.ns)
         return missing
 
     def _under_sweep(self, path: Any) -> bool:
@@ -1617,72 +1123,27 @@ class Worker:
     def _local(self, which: str) -> Any:
         if which == "display":
             return self.display
-        if which == "around_cp":
-            return self._around_cp
         if which == "run_coro_sync":
             return _run_coro_sync
-        if which == "handle_class":
-            return SteerableToolHandle
         if which == "model_request_error":
             return ModelRequestError
         if which == "model_call_failed":
             return ModelCallFailed
-        if which == "reply":
-            return self.reply
         raise BoundaryRefusal(f"unknown worker-local name {which!r}")
 
-    async def _around_cp(self, label: str, awaitable: Any) -> Any:
-        cp = self.ns.get("_cp")
-        await cp(f"Before: {label}")
-        try:
-            if inspect.isawaitable(awaitable):
-                return await awaitable
-            return awaitable
-        finally:
-            await cp(f"After: {label}")
-
-    def _define_function(
-        self,
-        name: str,
-        source: str,
-        filename: str,
-        record: bool = False,
-    ) -> Any:
-        lines = source.splitlines(keepends=True)
-        linecache.cache[filename] = (len(source), None, lines, filename)
-        try:
-            exec(compile(source, filename, "exec"), self.ns)
-        except Exception as exc:  # noqa: BLE001 - surfaced when it is used
-            return _Refused(
-                name,
-                f"defining it in the worker failed ({type(exc).__name__}: {exc})",
-            )
-        raw = self.ns.get(name)
-        if not callable(raw):
-            return _Refused(name, "its source does not define it")
-        return _StoredFunction(raw, name, self, record=record)
 
     def apply_sync(self, sync: dict) -> None:
         for name in sync.get("remove") or []:
             obj = self.installed.pop(name, None)
-            current = self.ns.get(name)
-            if obj is not None and (
-                current is obj
-                # UNIFY_BIND_REQUEST=on: any harness Request, as in process.
-                or (isinstance(obj, Request) and isinstance(current, Request))
-            ):
+            if obj is not None and self.ns.get(name) is obj:
                 del self.ns[name]
         for name, desc in (sync.get("set") or {}).items():
             kind = desc.get("kind")
             target = {"root": name, "path": []}
             repr_text = str(desc.get("repr") or name)
             if kind == "remote":
-                if desc.get("runtime"):
-                    obj: Any = _RuntimeProxy(self, target, name, repr_text)
-                elif desc.get("library") == "functions":
-                    obj = _FunctionsProxy(self, target, name, repr_text)
-                elif desc.get("callable"):
-                    obj = RemoteCallable(
+                if desc.get("callable"):
+                    obj: Any = RemoteCallable(
                         self,
                         target,
                         name,
@@ -1693,223 +1154,15 @@ class Worker:
                     obj = RemoteNamespace(self, target, name, repr_text)
             elif kind == "value":
                 obj = self.decode(desc.get("value"))
-            elif kind == "function":
-                obj = self._define_function(
-                    name,
-                    desc["source"],
-                    desc["filename"],
-                    record=bool(desc.get("record")),
-                )
             elif kind == "local":
                 obj = self._local(desc["local"])
-            elif kind == "request":
-                # UNIFY_BIND_REQUEST=on: renewed before each cell, and bound
-                # only where the model has no ``request`` of its own.
-                obj = Request(str(desc.get("text") or ""))
-                self.installed[name] = obj
-                if self._request_unclaimed(name):
-                    self.ns[name] = obj
-                continue
             elif kind == "import":
                 obj = self._import(desc["spec"])
-            elif kind == "model":
-                current = self.ns.get(name)
-                if name in self.ns and self.installed.get(name) is not current:
-                    continue  # the worker's own definition stands
-                obj = _Refused(name, str(desc.get("reason") or "model-written"))
             else:
                 obj = _Refused(name, str(desc.get("reason") or "it cannot cross"))
             self.ns[name] = obj
             self.installed[name] = obj
 
-    def _request_unclaimed(self, name: str) -> bool:
-        """The name is unbound or holds a harness ``Request``, not a variable
-        of the model's own."""
-        return name not in self.ns or isinstance(self.ns[name], Request)
-
-    def renew_requests(self) -> None:
-        """UNIFY_BIND_REQUEST=on: each cell gets a fresh ``request``, so what
-        a cell did to it does not last; a variable of the model's own named
-        ``request`` is left as it is."""
-        for name, obj in list(self.installed.items()):
-            if isinstance(obj, Request):
-                fresh = obj.renewed()
-                self.installed[name] = fresh
-                if self._request_unclaimed(name):
-                    self.ns[name] = fresh
-
-    def variables(self) -> dict[str, str]:
-        out: dict[str, str] = {}
-        for name, value in self.ns.items():
-            if not isinstance(name, str) or name.startswith("_"):
-                continue
-            if (
-                name in self.installed
-                or callable(value)
-                or inspect.ismodule(value)
-                or isinstance(value, _LazyModule)
-            ):
-                continue
-            out[name] = short_repr(value)
-        return out
-
-    # -- stored functions (the core tool surface) ----------------------------
-    def _record_value(self, value: Any) -> Any:
-        """*value* for the harness's recording: data as data, anything else
-        as its repr, so recording never refuses a call."""
-        return self.encode_result(value)
-
-    def _begin_fields(self, name: str, mode: str, args: tuple, kwargs: dict) -> dict:
-        return {
-            "name": name,
-            "mode": mode,
-            "args": [self._record_value(a) for a in args],
-            "kwargs": {str(k): self._record_value(v) for k, v in kwargs.items()},
-        }
-
-    def _end_fields(
-        self,
-        token: int,
-        result: Any = None,
-        error: Optional[BaseException] = None,
-    ) -> dict:
-        if error is None:
-            return {"token": token, "result": self._record_value(result)}
-        if not isinstance(error, Exception):
-            # Cancelled or stopped: the call says nothing about the function.
-            return {"token": token, "abandoned": True}
-        return {"token": token, "error": _format_cell_error(error)}
-
-    def call_recorded(self, fn: "_StoredFunction", args: tuple, kwargs: dict) -> Any:
-        """A direct call of a stored function, recorded by the harness as the
-        in-process boundary wrapper records one."""
-        raw = fn.__wrapped__
-        reply, _ = self.request_sync(
-            "fn_begin",
-            **self._begin_fields(fn.__name__, "call", args, kwargs),
-        )
-        token = reply.get("token") if isinstance(reply, dict) else None
-        if token is None:
-            return raw(*args, **kwargs)
-        mark = _CASES.set(_CASES.get() + (token,))
-        try:
-            result = raw(*args, **kwargs)
-        except BaseException as exc:
-            _CASES.reset(mark)
-            self.request_sync("fn_end", **self._end_fields(token, error=exc))
-            raise
-        _CASES.reset(mark)
-        if inspect.isawaitable(result):
-            return self._finish_recorded(token, result)
-        self.request_sync("fn_end", **self._end_fields(token, result=result))
-        return result
-
-    async def _finish_recorded(self, token: int, awaitable: Any) -> Any:
-        mark = _CASES.set(_CASES.get() + (token,))
-        try:
-            value = await awaitable
-        except BaseException as exc:
-            _CASES.reset(mark)
-            await self.request_async("fn_end", **self._end_fields(token, error=exc))
-            raise
-        _CASES.reset(mark)
-        await self.request_async("fn_end", **self._end_fields(token, result=value))
-        return value
-
-    def _resolve_name(self, name: str) -> Any:
-        """``name`` (dotted for ``primitives.*``) in this worker's namespace."""
-        head, *rest = str(name).split(".")
-        if head not in self.ns:
-            raise NameError(
-                f"name {name!r} is not a stored function and not defined in "
-                "this session",
-            )
-        value = self.ns[head]
-        for part in rest:
-            value = getattr(value, part)
-        return value
-
-    def _define_helpers(self, helpers: list, ns: dict) -> None:
-        """Define the stored functions a ``functions.run`` entry point calls in
-        the namespace it runs in, each recorded when called, as a read that
-        loads the entry point binds them. All are defined before any is
-        wrapped, so they find one another by name."""
-        raws = []
-        for helper in helpers:
-            name = str(helper.get("name"))
-            source = str(helper.get("source") or "")
-            filename = str(helper.get("filename") or f"<function:{name}>")
-            linecache.cache[filename] = (
-                len(source),
-                None,
-                source.splitlines(keepends=True),
-                filename,
-            )
-            exec(compile(source, filename, "exec"), ns)
-            if callable(ns.get(name)):
-                raws.append((name, ns[name]))
-        for name, raw in raws:
-            ns[name] = _StoredFunction(raw, name, self, record=True)
-
-    async def run_function(
-        self,
-        name: str,
-        /,
-        *,
-        state: str = "stateless",
-        **kwargs: Any,
-    ) -> Any:
-        """``functions.run``: call a stored function by name, here, recorded."""
-        if state not in RUN_STATES:
-            raise ValueError(
-                f"state must be one of {list(RUN_STATES)}, not {state!r}",
-            )
-        reply, _ = await self.request_async(
-            "fn_begin",
-            **self._begin_fields(str(name), "run", (), kwargs),
-        )
-        token = reply.get("token") if isinstance(reply, dict) else None
-        # The harness may just have installed its dependencies.
-        importlib.invalidate_caches()
-        if token is None:
-            # A primitive, or a function this session defined: called as it is.
-            out = self._resolve_name(name)(**kwargs)
-            return (await out) if inspect.isawaitable(out) else out
-        fn_name = str(reply.get("fn_name") or name)
-        source = str(reply.get("source") or "")
-        filename = str(reply.get("filename") or f"<function:{fn_name}>")
-        if state == "stateful":
-            ns = self.ns
-        elif state == "read_only":
-            ns = dict(self.ns)
-        else:
-            ns = {**self.base_ns, **self.installed}
-        mark = _CASES.set(_CASES.get() + (token,))
-        try:
-            self._define_helpers(reply.get("helpers") or [], ns)
-            linecache.cache[filename] = (
-                len(source),
-                None,
-                source.splitlines(keepends=True),
-                filename,
-            )
-            exec(compile(source, filename, "exec"), ns)
-            fn = ns.get(fn_name)
-            if not callable(fn):
-                raise NameError(f"the stored source does not define {fn_name!r}")
-            out = fn(**kwargs)
-            if inspect.isawaitable(out):
-                out = await out
-        except BaseException as exc:
-            _CASES.reset(mark)
-            await self.request_async("fn_end", **self._end_fields(token, error=exc))
-            raise
-        _CASES.reset(mark)
-        await self.request_async("fn_end", **self._end_fields(token, result=out))
-        if state == "stateful" and ns.get(fn_name) is fn:
-            # Defined in the session now; later calls by name are recorded too.
-            ns[fn_name] = _StoredFunction(fn, fn_name, self, record=True)
-        return out
 
     def help(self, obj: Any = _NO_ARGUMENT) -> None:
         """Print the documentation of *obj*: a harness object's from the
@@ -1922,19 +1175,12 @@ class Worker:
                 target=object.__getattribute__(obj, "_target"),
                 label=object.__getattribute__(obj, "_label"),
             )
-        elif getattr(obj, "__func__", None) is Worker.run_function:
-            text, _ = self.request_sync(
-                "doc",
-                target={"root": "functions", "path": ["run"]},
-                label="functions.run",
-            )
         else:
             import pydoc
 
             if isinstance(obj, _LazyModule):
                 obj = obj._load()
-            target = obj.__wrapped__ if isinstance(obj, _StoredFunction) else obj
-            text = pydoc.render_doc(target, title="%s", renderer=pydoc.plaintext)
+            text = pydoc.render_doc(obj, title="%s", renderer=pydoc.plaintext)
         self._write(self._stdout, str(text).rstrip("\n") + "\n")
 
     # -- cells -----------------------------------------------------------------
@@ -1943,10 +1189,6 @@ class Worker:
         if op == "exec":
             assert self.loop is not None
             self._running = (msg.get("id"), self.loop.create_task(self.run_cell(msg)))
-        elif op == "variables":
-            self.send(
-                {"op": "done", "id": msg.get("id"), "variables": self.variables()},
-            )
 
     async def run_cell(self, msg: dict) -> None:
         cid = msg.get("id")
@@ -1957,15 +1199,6 @@ class Worker:
         result: Any = None
         error: Optional[str] = None
         shown_error: Optional[str] = None
-        error_type: Optional[str] = None
-        remote = False
-        message = ""
-        reply: Optional[dict] = None
-        self.reply.new_cell()
-        # UNIFY_VARIABLE_INVENTORY=on: asked only for a cell that keeps
-        # what it binds.
-        listing = bool(msg.get("inventory")) and not msg.get("scratch")
-        inventory: Optional[str] = None
         try:
             if self.sweep_roots:
                 try:
@@ -1976,9 +1209,7 @@ class Worker:
                 # UNIFY_MEMORY_IN_EPISODE=on: the library copy was re-pinned since this worker loaded it
                 self.repin_modules(msg.get("repin"))
             self.apply_sync(msg.get("sync") or {})
-            self.renew_requests()
-            ns = dict(self.ns) if msg.get("scratch") else self.ns
-            before = Inventory.snapshot(ns) if listing else None
+            ns = self.ns
             try:
                 if self.audit is not None:
                     self._audit("begin")
@@ -1988,25 +1219,11 @@ class Worker:
                 if self.audit is not None:
                     self._audit("end")
                 ns.pop("__exec_wrapper", None)
-                if before is not None:
-                    try:
-                        inventory = self.inventory.after_cell(
-                            ns,
-                            before,
-                            self.installed,
-                        )
-                    except Exception:  # noqa: BLE001 - never the cell's error
-                        inventory = None
-        except CellReply as replied:
-            reply = {"text": replied.text, "from_value": replied.from_value}
         except BaseException as exc:  # noqa: BLE001 - every failure is the cell's
             error = _format_cell_error(exc)
             # what the model reads: the same traceback without the harness's own
             # frames; the full one still goes to the harness for its logs
             shown_error = _format_cell_error(exc, _harness_files())
-            error_type = type(exc).__name__
-            remote = isinstance(exc, RemoteError)
-            message = str(exc)
             result = None
         # the cell has ended: an interrupt that comes now finds nothing to stop
         self._running, self._interrupt_id = None, None
@@ -2023,13 +1240,8 @@ class Worker:
                 "result": encoded,
                 "error": error,
                 "shown_error": shown_error if shown_error != error else None,
-                "error_type": error_type,
-                "remote": remote,
-                "message": message,
                 "stdout": self._stdout,
                 "stderr": self._stderr,
-                **({"reply": reply} if reply is not None else {}),
-                **({"inventory": inventory} if listing else {}),
                 **({"audit": self._audit_drain()} if self.audit is not None else {}),
             },
         )

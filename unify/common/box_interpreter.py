@@ -1,5 +1,5 @@
 """One persistent confined Python interpreter per agent: per pass for the writer, the curator and each helper, per
-request for the actor and each teammate (``UNIFY_CELL_STATE=persistent``; :func:`cell_state`).
+request for the actor and each teammate.
 
 The interpreter is the actor's worker child (``unify/actor/execution/worker_child.py``: ``python -I -S``, it imports
 nothing from the harness). Cells go to it as ``exec`` messages on its own protocol pipes and come back as ``done``
@@ -45,7 +45,6 @@ import re
 import shutil
 import signal
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -61,41 +60,16 @@ __all__ = [
     "BoxInterpreter",
     "CellResult",
     "MemoryProfile",
-    "cell_state",
     "open_log",
     "persistent",
     "stage_read_only",
     "wrap_cell",
 ]
 
-# --- the switch ------------------------------------------------------------------------------------------------
-
-#: The setting that selects the persistent interpreter (``persistent``) or a fresh box per cell (``fresh``).
-CELL_STATE_SETTING = "UNIFY_CELL_STATE"
-CELL_STATES = ("persistent", "fresh")
-
-
-def cell_state() -> str:
-    """``persistent`` (the default) or ``fresh``: the settings field when the settings define it, else the process
-    environment. Any other value is refused."""
-    value: Any = None
-    try:
-        # the settings when this process loaded them (every process that imports the unify package does); a process
-        # that never did (the fork's relay) reads the environment, the same source, and never imports them here
-        loaded = sys.modules.get("unify.settings")
-        value = getattr(loaded.SETTINGS, CELL_STATE_SETTING, None) if loaded is not None else None
-    except Exception:  # noqa: BLE001 - the environment below is the same source the settings read
-        value = None
-    if value is None:
-        value = os.environ.get(CELL_STATE_SETTING)
-    text = str(value if value is not None else "persistent").strip().lower() or "persistent"
-    if text not in CELL_STATES:
-        raise ValueError(f"{CELL_STATE_SETTING} must be one of {', '.join(CELL_STATES)}, not {text!r}")
-    return text
-
-
 def persistent() -> bool:
-    return cell_state() == "persistent"
+    """True: every interpreter keeps its variables between cells until it restarts. For the memory package's callers
+    until they drop the check (removed in the merge with the memory side)."""
+    return True
 
 
 # --- what the model is told -----------------------------------------------------------------------------------
@@ -137,7 +111,7 @@ SETTLE_S = 1.0
 _SETTLE_STEP_S = 0.05
 _CLOCK_TICK_S = 0.1
 #: Requests a memory agent's worker may send that would reach a harness object; each is refused.
-_PROXY_OPS = frozenset({"call", "describe", "dir", "fn_begin", "fn_end", "doc"})
+_PROXY_OPS = frozenset({"call", "describe", "dir", "doc"})
 _NO_PROXY = (
     "no harness object is reachable from this interpreter; the agent's tools are the functions of the "
     "`tools` module"
@@ -603,7 +577,7 @@ class _MemoryBackend:
         return item
 
     async def begin(self, cid: int, source: str) -> None:
-        await self.send({"op": "exec", "id": cid, "source": source, "sync": {}, "scratch": False})
+        await self.send({"op": "exec", "id": cid, "source": source, "sync": {}})
 
     async def poll(self, cid: int, timeout: float) -> Optional[dict]:
         """The cell's ``done`` message, or None when nothing ends it within *timeout*; refuses every proxy request

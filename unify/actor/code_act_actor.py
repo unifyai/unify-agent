@@ -17,16 +17,10 @@ from typing import TYPE_CHECKING, Any, Callable, Optional, Type
 from pydantic import BaseModel
 
 from unify.actor import in_code_tools as _in_code_tools
-from unify.actor.execution import (
-    PythonExecutionSession,
-    _CURRENT_ENVIRONMENTS,
-    _CURRENT_SANDBOX,
-)
 from unify.actor.prompt_builders import build_code_act_prompt
 from unify.common.async_tool_loop import ToolLoopHandle, start_async_tool_loop
 from unify.common.llm_client import new_llm_client
 from unify.common.llm_meter import current_run_meter, new_run_meter
-from unify.events.manager_event_logging import log_manager_call
 
 if TYPE_CHECKING:
     from unify.actor.environments.base import BaseEnvironment
@@ -37,6 +31,11 @@ logger = logging.getLogger(__name__)
 #: The stop reason of a persistent session its requester ended (``/quit``, end of input).
 SESSION_ENDED = "session ended"
 
+#: What a persistent session that starts with no request opens with.
+_INTERACTIVE_OPENING = (
+    "This is an interactive session. Acknowledge that you are ready and "
+    "wait for the user to provide instructions via interjection."
+)
 #: How long one cell may run, in seconds, unless the actor is built with another limit.
 CELL_LIMIT_S = 3600.0
 #: How many requests one actor runs at once.
@@ -171,13 +170,6 @@ class CodeActActor:
         self._preprocess_msgs = preprocess_msgs
         self._slots = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
-    @log_manager_call(
-        "CodeActActor",
-        "act",
-        payload_key="request",
-        display_label=lambda kw: "Session" if kw.get("persist") else "Taking action",
-        forward_kwargs=("persist",),
-    )
     async def act(
         self,
         request: str,
@@ -186,7 +178,6 @@ class CodeActActor:
         clarification_enabled: bool = True,
         response_format: Optional[Type[BaseModel]] = None,
         persist: Optional[bool] = None,
-        _call_id: Optional[str] = None,
     ) -> ToolLoopHandle:
         """Start work on *request* and return the handle of its loop.
 
@@ -201,7 +192,6 @@ class CodeActActor:
             persist: Keep the session open after the answer: each further
                 message is a new request in the same interpreter.
         """
-        del _call_id  # set by the event decorator; this loop publishes no sub-events
         from unify.actor import core_surface
         from unify.agents.binding import bind_for_act
         from unify.memory.integration import hooks as _memory
@@ -220,29 +210,19 @@ class CodeActActor:
                 "CodeActActor is at capacity (too many concurrent sessions). "
                 "Try again later or reduce concurrency.",
             ) from None
-        environments = dict(self.environments)
-        # The namespace the sandboxed worker's proxy serves to cells.
-        sandbox = PythonExecutionSession(environments=environments)
-        sandbox_token = _CURRENT_SANDBOX.set(sandbox)
-        environments_token = _CURRENT_ENVIRONMENTS.set(environments)
+        from unify.function_manager.execution_env import create_execution_globals
+
+        # The namespace the sandboxed worker's proxy serves to cells: the base
+        # globals and each environment's object under its namespace.
+        shadow = create_execution_globals()
+        for namespace, env in self.environments.items():
+            shadow[namespace] = env.get_instance()
 
         async def _cleanup() -> None:
-            try:
-                await sandbox.close()
-            except Exception:
-                pass
-            for var, token in (
-                (_CURRENT_SANDBOX, sandbox_token),
-                (_CURRENT_ENVIRONMENTS, environments_token),
-            ):
-                try:
-                    var.reset(token)
-                except Exception:
-                    pass
             self._slots.release()
 
         system_prompt = build_code_act_prompt(
-            environments=environments,
+            environments=self.environments,
             structured=response_format is not None,
             guidelines=guidelines,
         )
@@ -267,7 +247,7 @@ class CodeActActor:
             first_message_parts.append(agents.prompt_section())
             in_code = _in_code_tools.open_for_act(
                 agents=agents,
-                sandbox=sandbox,
+                shadow=shadow,
                 response_format=response_format,
                 cell_limit_s=self._timeout,
                 request=request,
@@ -279,7 +259,7 @@ class CodeActActor:
             first_message = "\n\n".join(part for part in first_message_parts if part)
             handle = start_async_tool_loop(
                 client,
-                request,
+                request or _INTERACTIVE_OPENING,
                 {"execute_code": in_code.tool()},
                 loop_id="CodeActActor.act",
                 log_steps=True,
@@ -288,7 +268,8 @@ class CodeActActor:
                 preprocess_msgs=self._preprocess_msgs,
                 prompt_caching=("system", "tools", "messages"),
                 on_turn_boundary=agents.on_turn_boundary,
-                **({"first_message_context": first_message} if first_message else {}),
+                first_message_context=first_message or None,
+                tools_in_code=True,
             )
         except BaseException:
             if in_code is not None:

@@ -1,15 +1,6 @@
-"""
-Utilities for creating function execution environments.
-
-Provides controlled global namespaces for executing user-defined and
-compositional functions with:
-- Safe built-in functions (excluding dangerous ones like eval, exec, open)
-- Common standard library modules (asyncio, re, json, datetime, collections)
-- Typing module and common type hints
-- Pydantic support (if available)
-- The ``primitives`` root, filled only by the sandbox's environments
-- Steerable handle infrastructure (for functions that return steerable handles)
-"""
+"""The globals of the actor's cells: safe builtins, common standard library modules and typing names, pydantic,
+the model helpers (``query_llm``, ``list_llms``, ``unillm``), ``run_coro_sync``, and the globals a registered
+environment binds."""
 
 import asyncio
 import collections
@@ -30,41 +21,6 @@ except ImportError:
     BaseModel = None
     Field = None
     HAS_PYDANTIC = False
-
-
-ENVIRONMENT_MODULES: frozenset[str] = frozenset(
-    {
-        "primitives",
-        "pydantic",
-        "unillm",
-        "unify",
-    },
-)
-"""Non-stdlib module names that the function execution environment provides.
-
-Used by ``detect_third_party_imports`` to distinguish between packages that
-must be recorded as dependencies and packages that the runtime already supplies.
-"""
-
-SANDBOX_RUNTIME_NAMES: frozenset[str] = frozenset(
-    {
-        "display",
-        "request_clarification",
-    },
-)
-"""Globals the actor's sandbox binds per execution, beyond
-``create_execution_globals()`` (``unify/actor/execution/session.py`` and
-``unify/actor/environments/base.py``). A stored function may use them."""
-
-
-def environment_modules() -> frozenset[str]:
-    """``ENVIRONMENT_MODULES`` plus the modules a registered environment supplies."""
-    from unify.function_manager.primitives.environment import (
-        environment_modules as registered_modules,
-    )
-
-    registered = registered_modules()
-    return ENVIRONMENT_MODULES | registered if registered else ENVIRONMENT_MODULES
 
 
 def create_base_globals() -> Dict[str, Any]:
@@ -226,32 +182,21 @@ def create_base_globals() -> Dict[str, Any]:
 
 def create_execution_globals() -> Dict[str, Any]:
     """
-    Creates the globals of an actor's execution sandbox.
+    Creates the globals of the actor's cells.
 
     Extends create_base_globals() with:
-    - Steerable handle infrastructure for functions that return handles
-      (SteerableToolHandle)
     - `unillm` for advanced direct LLM usage (client constructors for the
       endpoints UNIFY_CELL_LLM_MODELS allows)
     - The `query_llm` helper for focused one-shot LLM queries (and
       `list_llms`), held to the same endpoints
     - The `run_coro_sync` helper for sync façades that must drive async work
-      under an already-running event loop (offline Jobs / actor sandboxes)
-
-    Steerable Functions
-    -------------------
-    Functions can return a ``SteerableToolHandle`` subclass to indicate they
-    are steerable. The execution layer will detect this at runtime via
-    ``isinstance(result, SteerableToolHandle)`` and wire up steering operations.
+      under an already-running event loop
 
     Returns:
-        A dictionary of globals for function execution.
+        A dictionary of globals for the cells.
     """
     globals_dict = create_base_globals()
 
-    # Steerable handle type - allows compositional functions to return handles
-    # that the execution layer can detect and wire up for steering operations.
-    from unify.common.async_tool_loop import SteerableToolHandle
     from unify.common.asyncio_compat import run_coro_sync
     from unify.common.cell_models import (
         ModelCallFailed,
@@ -261,7 +206,6 @@ def create_execution_globals() -> Dict[str, Any]:
         cell_unillm,
     )
 
-    globals_dict["SteerableToolHandle"] = SteerableToolHandle
     # Cell-scoped: each refuses an endpoint UNIFY_CELL_LLM_MODELS does not
     # allow (unify/common/cell_models.py); the harness's own query_llm,
     # list_llms and unillm are unchanged.
@@ -277,20 +221,10 @@ def create_execution_globals() -> Dict[str, Any]:
     globals_dict["ModelCallFailed"] = ModelCallFailed
 
     # Globals a registered environment binds beside its namespaces; never in
-    # place of one of the above. While a feature that observes environment
-    # calls is on, each is a proxy whose calls reach the observers
-    # (primitives/observers.py); otherwise the registered object itself.
+    # place of one of the above.
     from unify.function_manager.primitives.environment import environment_globals
-    from unify.function_manager.primitives.observers import observed_globals
 
-    for name, value in observed_globals(environment_globals()).items():
+    for name, value in environment_globals().items():
         globals_dict.setdefault(name, value)
 
     return globals_dict
-
-
-def sandbox_env() -> dict[str, str]:
-    """Environment for subprocesses that run user code: the runtime's own."""
-    import os
-
-    return dict(os.environ)

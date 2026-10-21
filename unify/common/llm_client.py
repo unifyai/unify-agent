@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import copy
-import os
 import re
 import secrets
 from pathlib import Path
@@ -90,10 +89,13 @@ def purpose_from_origin(origin: str | None) -> LLMPurpose | None:
     return None
 
 
-# ── UNIFY_REQUEST_METADATA_HEADERS ──────────────────────────────────────────
-# Four HTTP headers on every model call, so a proxy can attribute it. The
-# values are random or counted by the harness and never request content; the
-# request body is untouched (headers are not part of it).
+# ── Request metadata headers ─────────────────────────────────────────────────
+# Four HTTP headers on every model call, so a proxy can attribute it (for
+# example, measure the cache hits of each session's first call and of the
+# calls after a compaction). The values are random or counted by the harness
+# and never request content; the request body is untouched (headers are not
+# part of it), so the provider's prompt cache is not affected. With no proxy
+# in front that strips them, the headers reach the model provider.
 
 SESSION_HEADER = "X-Unify-Session"
 PARENT_HEADER = "X-Unify-Parent"
@@ -128,11 +130,6 @@ def call_kind(kind: str):
         _CALL_KIND.reset(token)
 
 
-def request_metadata_headers_enabled() -> bool:
-    """Whether ``UNIFY_REQUEST_METADATA_HEADERS=on``."""
-    return getattr(SETTINGS, "UNIFY_REQUEST_METADATA_HEADERS", "") == "on"
-
-
 def _header_value(text: Any) -> str:
     """*text* in the header charset, at most 64 characters, never empty."""
     value = _OUTSIDE_HEADER_CHARSET.sub("_", str(text or ""))[:64]
@@ -155,17 +152,14 @@ def _install_request_metadata(
     client: "unillm.AsyncUnify | unillm.Unify",
     parent: "unillm.AsyncUnify | unillm.Unify | None" = None,
 ) -> None:
-    """With ``UNIFY_REQUEST_METADATA_HEADERS=on``, add the headers to every
-    call *client* makes; off, *client* is left untouched.
+    """Add the headers to every call *client* makes.
 
     The headers are merged into the call's ``extra_headers`` where unillm
     has assembled the request (``_generate``), so ``X-Unify-Msg-Count``
-    counts the messages sent, and every retry (the tool-choice fallback's
-    included) carries them. A fork is a new client (unillm's ``copy()``
-    copies no instance attribute), so it gets its own session id.
+    counts the messages sent, and every retry carries them. A fork is a new
+    client (unillm's ``copy()`` copies no instance attribute), so it gets its
+    own session id.
     """
-    if not request_metadata_headers_enabled():
-        return
     state = _RequestMetadata(getattr(parent, "_unify_request_metadata", None))
     client._unify_request_metadata = state
     send = client._generate
@@ -221,7 +215,7 @@ class Attribution:
 @contextlib.contextmanager
 def attribution(pass_id: str, entries: list[str] | None = None):
     """Model calls made inside the block (this context, and the tasks it starts) carry *pass_id* and *entries* as
-    ``X-Unify-Pass-Id`` and ``X-Unify-Entries`` (with ``UNIFY_REQUEST_METADATA_HEADERS=on``)."""
+    ``X-Unify-Pass-Id`` and ``X-Unify-Entries``."""
     token = _ATTRIBUTION.set(Attribution(pass_id, entries))
     try:
         yield _ATTRIBUTION.get()
@@ -263,22 +257,11 @@ def count_requester_message(client: Any) -> None:
     ``X-Unify-Request`` on *client*'s later calls is the count: 1 from the
     request the loop starts with, then one more for each later requester
     message (the next request of a persistent session, or a message sent
-    while a request runs). A client without the headers is left alone.
+    while a request runs).
     """
     state = getattr(client, "_unify_request_metadata", None)
     if state is not None:
         state.requests += 1
-
-
-#: ``UNIFY_REASONING_EFFORT=provider``: no client of the run sends a reasoning effort, whatever its call site or
-#: its caller asks (the actor, its forks, compaction, model-written ``query_llm`` and the memory writer alike), so
-#: every call runs at the provider's own default. An explicit ``reasoning_effort="provider"`` means the same.
-PROVIDER_EFFORT = "provider"
-
-
-def provider_effort_run() -> bool:
-    """Whether this run sends no reasoning effort at all (``UNIFY_REASONING_EFFORT=provider``)."""
-    return str(getattr(SETTINGS, "UNIFY_REASONING_EFFORT", "") or "").strip().lower() == PROVIDER_EFFORT
 
 
 def _build_llm_client(
@@ -304,49 +287,26 @@ def _build_llm_client(
     config.update(kwargs)
     if default_effort is not None:
         config["reasoning_effort"] = default_effort
-    if config.get("reasoning_effort") == PROVIDER_EFFORT or provider_effort_run():
-        config["reasoning_effort"] = None  # the provider's default: unillm sends no effort
 
     if async_client:
         client = unillm.AsyncUnify(model, **config)
     else:
         client = unillm.Unify(model, **config)
 
-    # UNIFY_STREAM_MODEL_CALLS=on: the client's calls are streamed so a long
-    # one shows traffic while the model generates; unillm reassembles each
-    # reply, and ``copy()`` (a fork) keeps the setting.
-    if SETTINGS.UNIFY_STREAM_MODEL_CALLS == "on":
-        client.set_stream_transport(True)
-    pass_stream_idle_limit()
+    # Every call is sent as a stream and read to its end, so bytes arrive while
+    # the model is still generating and a proxy that cancels a silent call
+    # does not cancel a long one; unillm reassembles each reply into the
+    # completion an unstreamed call returns, and ``copy()`` (a fork) keeps the
+    # setting.
+    client.set_stream_transport(True)
 
     if origin:
         pending_log = PendingThinkingLog(origin)
         client.set_on_log_file_pending(pending_log.on_pending_path)
         client._pending_thinking_log = pending_log
 
-    if SETTINGS.UNIFY_TOOL_CHOICE_FALLBACK:
-        from unify.common.tool_choice_fallback import install_tool_choice_fallback
-
-        install_tool_choice_fallback(client)
-
     _install_request_metadata(client)
     return client
-
-
-# unillm's limit on a streamed call's silence, read on each call.
-UNILLM_STREAM_IDLE_ENV = "UNILLM_STREAM_IDLE_S"
-
-
-def pass_stream_idle_limit() -> None:
-    """UNIFY_STREAM_IDLE_S, when set, becomes unillm's ``UNILLM_STREAM_IDLE_S``.
-
-    unillm reads it from the environment on every streamed call, so setting it
-    here applies to every client this process has made, forks included. Empty
-    leaves unillm's own value as it is.
-    """
-    value = SETTINGS.UNIFY_STREAM_IDLE_S
-    if value:
-        os.environ[UNILLM_STREAM_IDLE_ENV] = value
 
 
 def new_llm_client(
@@ -361,9 +321,8 @@ def new_llm_client(
     """
     Create a configured Unify client.
 
-    If model is not specified, uses the assistant's default model when one is
-    set (which also pins its reasoning effort, overriding the call site), and
-    otherwise UNIFY_MODEL from settings.
+    If model is not specified, uses UNIFY_MODEL, and UNIFY_REASONING_EFFORT
+    (when set) overrides the call site's effort.
     Defaults to high reasoning_effort where applicable. Callers that want a
     different setting (e.g. fast-path helpers at "low", or max-effort actor
     profiles) pass ``reasoning_effort`` explicitly.
@@ -421,10 +380,6 @@ def fork_llm_client(
         pending_log = PendingThinkingLog(origin)
         fork.set_on_log_file_pending(pending_log.on_pending_path)
         fork._pending_thinking_log = pending_log
-    if SETTINGS.UNIFY_TOOL_CHOICE_FALLBACK:
-        from unify.common.tool_choice_fallback import install_tool_choice_fallback
-
-        install_tool_choice_fallback(fork)
     _install_request_metadata(fork, parent)
     return fork
 
