@@ -196,13 +196,14 @@ def test_a_bounded_suspend_cuts_the_pass_before_its_deadline_and_the_next_start_
     entries = attention.Ledger(svc.home).entries()
     assert all(entries[i].active for i in ids)
     assert ws.stopping_marker(svc.home) is None
-    # the next start hands them again and closes every one: none is dropped (the misses rule for a stopped pass's
-    # entries is the unbounded suspend's test above)
+    held = {r["entry"] for r in _ops(svc.home, "hand")}
+    # the next start hands them again and closes every one: none is dropped, and the cut pass's go back without a miss
     monkeypatch.setenv("DRIVER_TURN_SLEEP", "0")
     assert _ensure(svc.home).status == "started"
     _until(lambda: {r["entry"] for r in _ops(svc.home, "close")} >= set(ids), timeout=90)
     entries = attention.Ledger(svc.home).entries()
     assert all(entries[i].state == "closed" for i in ids)
+    assert held and all(entries[i].misses == 0 for i in held)
     assert _ops(svc.home, "not_reached") == []
 
 
