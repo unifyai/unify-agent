@@ -244,15 +244,15 @@ def test_the_dispatch_file_is_one_structural_row_per_listed_procedure(tmp_path):
     total = by_id[w.TOTAL]
     assert total["signature"] == signature_text(w.records()[w.TOTAL]["signature"])
     assert total["applies_text"].startswith("def ")  # its applies, named by its record, as text
-    # a function with one reader by the gate is a row, with no applies and no input line
-    assert by_id[w.COUNT] == {"id": w.COUNT, "reader": w.READ_ORDERS, "applies": False, "input": ""}
-    # a function with neither one reader nor applies is not a row
+    # rev 2: every stored function is a row, listed by its structure (nothing runs to decide which are); one with no
+    # applies has an empty applies text and no input line
+    assert by_id[w.COUNT]["kind"] == "function" and by_id[w.COUNT]["applies_text"] == ""
     for item in (w.TOKENS, w.WORDS, w.RECONCILE, w.READ_ORDERS, w.READ_LEDGER, w.READ_PAYMENTS):
-        assert item not in by_id
+        assert by_id[item]["kind"] == "function"
+    # a capture is a row of its shape, its applies as text when it states one
     grid, marked = (f"capture:{w.capture_id(s)}" for s in (w.CAPTURE_GRID, w.CAPTURE_MARKED))
-    assert by_id[grid]["applies"] is True and by_id[grid]["reader"]
-    assert by_id[marked]["applies"] is False and by_id[marked]["reader"]
-    assert by_id[grid]["reader"] != by_id[marked]["reader"]
+    assert by_id[grid]["kind"] == by_id[marked]["kind"] == "capture-shape"
+    assert by_id[grid]["applies_text"].startswith("def applies(") and by_id[marked]["applies_text"] == ""
     # rows carry no request text, answer, identifier or host path
     blob = files[DISPATCH].decode("utf-8")
     for planted in (w.ANSWER, w.RAW_REQUEST, *w.IDENTIFIERS, str(tmp_path)):
@@ -275,11 +275,12 @@ def _evidence(card: str) -> str:
 @needs_box
 def test_a_landed_procedure_is_read_by_the_reader_it_was_landed_with(tmp_path):
     """The landed procedure's record names its capture and the reader it was landed with, and carries the capture's
-    signature and its applies; the gate found two readers of it (its landed test's and the writer's test's parsed
-    fixtures), and the dispatch file and its card use the landing's, never one of the gate's two."""
+    signature and its applies; the gate found the reader of the writer's test's parsed fixture (rev 2: the landing
+    writes no parsed fixture of its own), and the dispatch file and its card use the landing's reader, never the
+    gate's."""
     total = w.records()[w.TOTAL]
     assert total["landed_from"] == {"capture": w.landed_capture(), "reader": w.READ_TOTAL}
-    assert total["reader"] == sorted([w.READ_TOTAL, w.READ_ORDERS])
+    assert total["reader"] == [w.READ_ORDERS]
     landed = captures.landed_items(w.built().store)[w.TOTAL]
     assert total["signature"] == landed["signature"] and isinstance(total["signature"], dict)
     assert total["applies"] == landed["applies"] == w.TOTAL_APPLIES

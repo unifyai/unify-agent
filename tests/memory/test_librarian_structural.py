@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 
 import pytest
@@ -161,7 +162,9 @@ def test_the_recogniser_is_gone_and_no_reader_loads():
         assert not hasattr(lh, gone), gone
     src = (le._HERE / "library_helper.py").read_text() + le.ASK_SOURCE.read_text()
     # no loader of a stored reader remains (rev 1's LookupError path): read_input is read only by memory.run's child
-    assert "_spec(" not in src and "_RECOGNISER_RUNNER" not in src and src.count('ns.get("read_input")') == 1
+    # rev 1's _spec(target, name) loaded a stored reader; importlib's module_from_spec and find_spec are not it
+    assert not re.search(r"(?<![\w.])_spec\(", src) and "_RECOGNISER_RUNNER" not in src
+    assert src.count('ns.get("read_input")') == 1
 
 
 def test_match_compares_structure_only_and_starts_no_process(monkeypatch, no_process):

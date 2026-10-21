@@ -309,10 +309,11 @@ async def test_ask_returns_the_librarians_answers_reuses_the_session_and_is_acco
     brief = librarian_brief()
     assert system.endswith(brief) and w.TOTAL not in system
     assert all(_system(c) == system for c in lib)
-    # the question and the facts reach it; the value a reader parsed never does
+    # the question reaches it, and no reader facts (rev 2: nothing runs to recognise the request, so the message
+    # carries no reader's outcome on any stored procedure); the value a reader parsed never does
     assert "Which stored items fit this text?" in _not_assistant(lib[0])
     marked = f"capture:{w.capture_id(w.CAPTURE_MARKED)}"
-    assert marked in _not_assistant(lib[0]) or marked.split(":")[1] in _not_assistant(lib[0])
+    assert marked.split(":")[1] not in _not_assistant(lib[0])
     for call in model.calls:
         assert w.PLANTED_VALUE not in json.dumps(call.request)
 

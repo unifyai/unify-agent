@@ -239,7 +239,10 @@ def test_the_catalogue_has_one_card_per_function_in_module_order_then_notes_then
     assert "Sum every number of a table's rows." in card and "It takes the rows" not in card  # first paragraph
     assert "- Asked: Add up a table of numbers from <id> and report the total (<id>)." in card
     assert "Approach: - Read the rows" in card and "run <id>" in card
-    assert f"Evidence: level reproduces-its-case; status on-trial; reader {READ_ROWS}; applies: yes" in card
+    # landed with no parsed fixture (rev 2: a landing runs nothing), its own test computes its argument through the
+    # reader, so the gate keeps it at the first level until a test calls it on a fixture
+    assert f"Evidence: level unchecked; status on-trial; reader {READ_ROWS}; applies: yes" in card
+    assert "Recognition: listed by its structure" in card
     sig = _records()[TOTAL]["signature"]
     assert f"Input: {signature_text(sig)}" in card and "Input: {" in card
     assert "Record: " in card and f"Notes: {NOTE}" in card

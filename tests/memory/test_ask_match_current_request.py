@@ -229,13 +229,16 @@ def test_match_compares_structure_only_on_the_current_request_and_runs_nothing(t
     request's data, in the catalogue's order, whatever a stored reader would have said."""
     extra = _capture(SAME_SHAPE, NEVER_PARSES, DATA)
     root = _copy(tmp_path, extra)
-    code = host(REQUEST, DATA) + (
+    # the host gives the request's data as the list of the JSON values its text carries (tool_handlers.current_request)
+    code = host(REQUEST, [DATA]) + (
         "m = memory.match()\n"
         "print(json.dumps({'ids': [r.id for r in m], 'text': str(m), 'events': events}, default=list))\n"
     )
     out = json.loads(_py(root, code))
-    # the capture whose reader never parses is listed by its structure: nothing ran to tell otherwise
-    assert TOTAL in out["ids"] and "capture:" + SAME_SHAPE in out["ids"]
+    # the capture whose reader never parses is listed by its structure (it was saved against the request's data):
+    # nothing ran to tell otherwise. A library procedure saved against its reader's value is not listed by the
+    # request's structure: nothing runs its reader to get that value
+    assert "capture:" + SAME_SHAPE in out["ids"] and TOTAL not in out["ids"]
     assert "compares structure only" in out["text"] and "recognise the request" not in out["text"]
     (ev, (listed, _failed)), = out["events"]
     assert ev == "memory.match_result" and [row[0] for row in listed] == out["ids"]
