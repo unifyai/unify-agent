@@ -39,6 +39,21 @@ EPS = {
 }
 
 
+def _page(cid, args):
+    """A call of read_episode from a cell that prints the page it returns, its head and tail only when it is longer than
+    a cell shows (a page is up to views.VIEW_BYTES plus its headers, past the cell's output limit), so the page's own
+    markers stay in the output."""
+    code = (
+        "try:\n"
+        f"    _p = tools.read_episode(**{args!r})\n"
+        "except Exception as _exc:\n"
+        "    print(_exc)\n"
+        "else:\n"
+        "    print(_p if len(_p) <= 7000 else _p[:3000] + '\\n[...]\\n' + _p[-3000:])\n"
+    )
+    return _call(cid, "execute_code", {"code": code})
+
+
 def _pass(tmp_path, turns, eids=("e1", "e2"), **cfg):
     model = Turns(turns)
     _, _, writer = _writer(tmp_path, model, **cfg)
@@ -72,8 +87,8 @@ def test_read_episode_pages_and_logs_what_was_shown(tmp_path):
     assert b < len(cell)  # the cell needs two pages
     turns = [
         _call("r1", "read_episode", {"episode": "e1", "part": "request"}),
-        _call("r3", "read_episode", {"episode": "e1", "part": "cell:0"}),
-        _call("r4", "read_episode", {"episode": "e1", "part": "cell:0", "offset": b}),
+        _page("r3", {"episode": "e1", "part": "cell:0"}),
+        _page("r4", {"episode": "e1", "part": "cell:0", "offset": b}),
         _call("f1", "finish", {"summary": "done"}),
     ]
     out, model = _pass(tmp_path, turns, max_calls=20)
@@ -127,17 +142,6 @@ def test_long_cell_output_is_head_first_with_the_full_output_readable(tmp_path):
     assert model.outputs["r1"].rstrip().endswith("TAIL")
 
 
-def test_library_tools_are_unknown_when_off(tmp_path):
-    model = Turns([_call("r", "read", {"path": "/inputs"})])
-    _, _, writer = _writer(tmp_path, model)
-    out = asyncio.run(writer.run(PassRequest("incremental", "venmo", [], False), "p0"))
-    assert (
-        model.outputs["r"]
-        == "refused: unknown tool 'read'; your tools: execute_code, check, finish"
-    )
-    assert out.coverage is None
-
-
 def _calls(*calls):
     """One assistant turn carrying several tool calls."""
     return {"role": "assistant", "tool_calls": [c["tool_calls"][0] for c in calls]}
@@ -157,12 +161,13 @@ def test_reader_calls_use_their_own_budget_not_max_calls(tmp_path):
     assert out.reads == 2
 
 
-def test_at_most_16_reader_calls_per_turn(tmp_path):
-    many = [_call(f"r{i}", "read", {"path": "/inputs"}) for i in range(17)]
+def test_at_most_8_cells_per_turn(tmp_path):
+    """Rev 2: every call is made from a cell, and the per-turn bound is on cells (tool_registry.CELLS_PER_TURN)."""
+    many = [_call(f"r{i}", "read", {"path": "/inputs"}) for i in range(9)]
     _, model = _pass(tmp_path, [_calls(*many)], max_calls=3)
-    assert model.outputs["r15"].startswith("batch_map.json")
-    assert model.outputs["r16"] == (
-        "not run: at most 16 reader calls run per model turn; send it again"
+    assert model.outputs["r7"].startswith("README.md")
+    assert model.outputs["r8"] == (
+        "not run: at most 8 cells run per model turn; send it again"
     )
 
 
@@ -170,12 +175,8 @@ def test_read_episode_parts_share_one_page(tmp_path):
     ep = EPS["e1"]
     cell = bm.part_text(ep, "cell:0").encode()
     turns = [
-        _call(
-            "p",
-            "read_episode",
-            {"episode": "e1", "parts": ["request", "cell:0", "observation:0"]},
-        ),
-        _call("many", "read_episode", {"episode": "e1", "parts": ["request"] * 9}),
+        _page("p", {"episode": "e1", "parts": ["request", "cell:0", "observation:0"]}),
+        _page("many", {"episode": "e1", "parts": ["request"] * 9}),
     ]
     out, model = _pass(tmp_path, turns, max_calls=5)
     got = model.outputs["p"]
@@ -217,7 +218,9 @@ def test_read_episode_bad_offsets_refuse_the_whole_call(tmp_path):
     )
     assert '== request ==\n"req"' in model.outputs["bogus"]
     assert model.outputs["neg"].startswith("refused: offset must be an integer >= 0")
-    assert model.outputs["txt"].startswith("refused: offset must be an integer >= 0")
+    # rev 2: a cell's call is checked against the tool's schema first, so a text offset is refused there, by form
+    assert model.outputs["txt"].startswith(
+        "refused: tools.read_episode(episode='e1', parts=[{'part': 'request', 'offset': 'x'}]): parts[0] is",
+    )
+    assert "\nExpected parts[0]" in model.outputs["txt"]
     assert out.coverage["parts_read"] == {"e1": ["request"]}
-
-
