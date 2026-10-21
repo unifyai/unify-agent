@@ -24,7 +24,9 @@ the three. The rest of memory's configuration is in [CONFIG.md](../CONFIG.md); t
    writer passes, and each pass is a model with tools in a confined box:
    - it reads the entries' material;
    - it may start helpers;
-   - it lands, changes, merges or retires library items (tested functions and linked notes) and decides each entry.
+   - it lands new library items (tested functions and linked notes), changes or renames existing ones, and decides
+     each entry. A pass never removes an item, merges two, or retires one: the gate refuses aliases, retirements and
+     a smaller library.
 
    A gate checks every candidate before it lands. Safety, paths and syntax refuse a candidate. Every other finding
    is recorded on the item's label. The gate runs code only for an item that is a pure function of its input.
