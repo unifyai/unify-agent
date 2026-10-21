@@ -62,7 +62,6 @@ FINISH_CELL = (
 ROLE_ANSWER = (
     "Your answer is your final reply: a message without a tool call. `tools.answer(answer)` gives it from a cell."
 )
-RECORD_POINTER = 'Other agents may share a record with you; `tools.help("record")` says how it works.'
 
 
 def _last_tool_result(call) -> str:
@@ -110,18 +109,19 @@ async def test_each_request_is_answered_by_tools_answer_and_finish_is_unknown(se
     system = "\n".join(_system_texts(model.calls[0]))
     assert "tools.answer(answer)" in system, system[:2000]
     assert not _names_finish(system), system
-    # one answer rule, in the role; the opening's one line about the record points to its help topic
+    # one answer rule, in the role; the opening names no record (the run record's section comes with the first message)
     assert ROLE_ANSWER in " ".join(system.split()), system[:2000]
     assert "You end your work with" not in system and "Messages: other agents" not in system, system[:3000]
-    assert system.count(RECORD_POINTER) == 1, system[:3000]
+    assert R.COMMON_SECTION not in system, system[:3000]
+    first_user = next(m for m in model.calls[0].messages if m.get("role") == "user")
+    assert R.COMMON_SECTION in str(first_user.get("content")), first_user
     listing = _tool_results(model.calls[1])
     for line in R.list_text(session.allow, "actor").splitlines():
         assert line in listing, (line, listing)
     assert "answer(answer) - " in listing and "read(" in listing, listing
     assert "finish" not in listing, listing
-    # print(tools.help("record")) showed how the record works, as the opening's paragraph said it before
-    for part in (R.RECORD_MESSAGES, R.AGENT_RECORD_RULES):
-        assert part in listing, (part, listing)
+    # print(tools.help("record")) showed how the record works: the run record's common section
+    assert R.COMMON_SECTION in listing, listing
     assert "answer" in session.allow and "finish" not in session.allow
     assert "answer" in session.specs and "finish" not in session.specs
 
