@@ -17,9 +17,19 @@ Files, under ``<home>/memory-state/agents/`` (the harness-only state directory: 
   ``roster.lock`` at each join, leave and change of state; ``roster-ended.jsonl`` keeps every name a run has used.
 
 Addressing: ``@<name>`` names one agent; ``@writer`` is the writer (the service's pass agent, or the service itself
-while it is idle); ``@actor`` every running actor; ``@librarian`` and ``@fork`` those of the sender's own episode;
-``@helpers`` every running helper; ``@all`` every running agent but the sender. Names that match nobody are returned
-as unresolved, and a message to an agent that has ended is reported as not read by anyone now.
+while it is idle); ``@actor`` every running actor; ``@fork`` the fork of the sender's own episode; ``@helpers`` every
+running helper; ``@all`` every running agent but the sender. Names that match nobody are returned as unresolved.
+
+Roles that outlive their instances (:data:`INSTANCE_ROLES`: the librarian). ``@librarian`` names the role, which lives as
+long as the run once it is seeded (its state under ``roles/librarian/``, :func:`seed_role`): a message to it is a
+question for the role's next instance. The request's role dispatcher (``integration.request``) starts one instance,
+``librarian-<hex>``, per such message, in order and one at a time across processes (:func:`role_lock`, the claims
+file); the instance answers with one ``reply`` entry to that message, mentioning its author, and ends. ``@librarian``
+in a run with no librarian is refused, with the addresses that do reach someone.
+
+An instance's address, and every agent's, is valid only while it lives: a post that names an agent that has ended is
+refused, with a pointer (for an instance of a role: address the role; for a fork: when it ended). The writer is the one
+exception: the service holds ``writer`` across passes and restarts, so a message to it is kept for when it next runs.
 
 Waiting across processes: ``wait`` returns the entries for the agent as soon as one is appended (in this process at
 once; from another process within a poll interval, or at once where inotify is available), and returns with
@@ -90,6 +100,21 @@ VIAS = ("block", "wait", "messages")
 ROLE_ADDRESSES = ("writer", "actor", "librarian", "fork", "helpers")
 #: The writer's one name on the record.
 WRITER = "writer"
+#: Rev 2: the roles that live as long as the run (module docstring); each instance is ``<role>-<hex>``, short-lived.
+INSTANCE_ROLES = ("librarian",)
+#: A role's durable state, ``<agents>/roles/<role>/``: ``role.json`` (written once, when the run seeds the role),
+#: ``answers.jsonl`` (the role's exact-match answer cache), ``notes.md`` (what instances keep for later ones),
+#: ``claims.jsonl`` (which instance took which message, and how it ended), ``events.jsonl`` and the instance lock.
+ROLES_DIRNAME = "roles"
+ROLE_FILE = "role.json"
+ROLE_ANSWERS = "answers.jsonl"
+ROLE_NOTES = "notes.md"
+ROLE_CLAIMS = "claims.jsonl"
+ROLE_EVENTS = "events.jsonl"
+ROLE_LOCK = "instance.lock"
+#: How a claim on a role message ends: answered (one reply posted), failed (one reply saying why), withdrawn (its author
+#: cancelled it: no reply), abandoned (the instance was stopped before its reply: the next dispatcher takes it again).
+CLAIM_STATES = ("claimed", "answered", "failed", "withdrawn", "abandoned")
 
 
 #: Set by a process that must not read the settings (the fork's relay, from its spec): whether memory is frozen.
@@ -224,6 +249,133 @@ def deliveries_path(home: Path | str) -> Path:
 
 def roster_path(home: Path | str) -> Path:
     return agents_dir(home) / ROSTER_FILE
+
+
+# --- a role's state (rev 2: INSTANCE_ROLES) --------------------------------------------------------------------------
+
+
+def role_dir(home: Path | str, role: str) -> Path:
+    """``<home>/memory-state/agents/roles/<role>``: the role's durable state."""
+    if role not in INSTANCE_ROLES:
+        raise ValueError(f"{role!r} is not a role that outlives its instances")
+    return agents_dir(home) / ROLES_DIRNAME / role
+
+
+def role_seeded(home: Path | str, role: str) -> bool:
+    """Whether the run has seeded *role* (its ``role.json`` names it)."""
+    if role not in INSTANCE_ROLES:
+        return False
+    try:
+        doc = json.loads((role_dir(home, role) / ROLE_FILE).read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(doc, dict) and doc.get("role") == role
+
+
+def seed_role(home: Path | str, role: str, *, by: str) -> bool:
+    """Seed *role* once per run: its folder (private), ``role.json`` (created exclusively, so two processes starting
+    together seed it once) and its empty answers, notes and claims files. True when this call seeded it."""
+    folder = role_dir(home, role)
+    folder.mkdir(parents=True, exist_ok=True)
+    for d in (folder, folder.parent, agents_dir(home)):
+        os.chmod(d, 0o700)
+    for name in (ROLE_ANSWERS, ROLE_CLAIMS, ROLE_EVENTS):
+        os.close(os.open(folder / name, os.O_WRONLY | os.O_CREAT | os.O_CLOEXEC, 0o600))
+    notes = folder / ROLE_NOTES
+    if not notes.exists():
+        try:
+            fd = os.open(notes, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            os.close(fd)
+    doc = {"v": VERSION, "role": role, "seeded_at": _now(), "by": str(by)[:200]}
+    try:
+        fd = os.open(folder / ROLE_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+    except FileExistsError:
+        return False
+    try:
+        _write_all(fd, (json.dumps(doc) + "\n").encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return True
+
+
+class RoleBusy(RuntimeError):
+    """Another process's instance of the role holds the instance lock now."""
+
+
+@contextmanager
+def role_lock(home: Path | str, role: str, *, wait: bool = True) -> Iterator[None]:
+    """One instance of *role* at a time, across the run's processes (an exclusive lock on its instance lock). With
+    ``wait=False`` a held lock raises :class:`RoleBusy` at once (an event loop never blocks on it)."""
+    path = role_dir(home, role) / ROLE_LOCK
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+        except BlockingIOError:
+            raise RoleBusy(f"an instance of {role} is running in another process") from None
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def role_claims(home: Path | str, role: str) -> dict[int, dict]:
+    """The latest claim row per message seq of *role*."""
+    rows, _ = _whole_lines(role_dir(home, role) / ROLE_CLAIMS)
+    out: dict[int, dict] = {}
+    for row in rows:
+        seq = row.get("seq")
+        if isinstance(seq, int) and not isinstance(seq, bool) and row.get("state") in CLAIM_STATES:
+            out[seq] = row
+    return out
+
+
+def claim(home: Path | str, role: str, seq: int, state: str, **fields: Any) -> dict:
+    """Append one claim row for message *seq* of *role* (``state`` one of :data:`CLAIM_STATES`)."""
+    if state not in CLAIM_STATES:
+        raise ValueError(f"unknown claim state {state!r}")
+    row = {"v": VERSION, "seq": int(seq), "state": state, "at": _now(), **fields}
+    folder = role_dir(home, role)
+    with _flock(folder / (ROLE_CLAIMS + ".lock")):
+        _append_line(folder / ROLE_CLAIMS, json.dumps(row, default=str))
+    return row
+
+
+def role_answers(home: Path | str, role: str) -> list[dict]:
+    """The role's kept answers (``{"key", "answer", ...}`` rows), in the order they were kept."""
+    rows, _ = _whole_lines(role_dir(home, role) / ROLE_ANSWERS)
+    return [r for r in rows if isinstance(r.get("key"), str) and isinstance(r.get("answer"), dict)]
+
+
+def keep_role_answer(home: Path | str, role: str, key: str, answer: dict, **fields: Any) -> None:
+    """Keep one answer of *role* under its exact-match *key* (never a similarity key; module docstring)."""
+    folder = role_dir(home, role)
+    row = {"v": VERSION, "key": key, "answer": answer, "at": _now(), **fields}
+    with _flock(folder / (ROLE_ANSWERS + ".lock")):
+        _append_line(folder / ROLE_ANSWERS, json.dumps(row, default=str))
+
+
+def role_notes(home: Path | str, role: str) -> str:
+    """What earlier instances of *role* kept (empty when nothing was kept)."""
+    try:
+        return (role_dir(home, role) / ROLE_NOTES).read_text()
+    except OSError:
+        return ""
+
+
+def role_event(home: Path | str, role: str, row: dict) -> None:
+    """One event row of *role*'s instances (sizes, outcomes; never question or answer text)."""
+    try:
+        _append_line(role_dir(home, role) / ROLE_EVENTS, json.dumps({"v": VERSION, "at": _now(), **row}, default=str))
+    except OSError:  # an event never stops an instance
+        pass
 
 
 def _whole_lines(path: Path, offset: int = 0) -> tuple[list[dict], int]:
@@ -933,7 +1085,10 @@ class RunRecord(Record):
             elif token == "actor":
                 found = [r["name"] for r in live if r.get("role") == "actor"]
                 add(found) if found else unresolved.append(token)
-            elif token in ("librarian", "fork"):
+            elif token in INSTANCE_ROLES:
+                # rev 2: the role itself, while the run has it: a question for its next instance (module docstring)
+                add([token]) if role_seeded(self.home, token) else unresolved.append(token)
+            elif token == "fork":
                 found = [
                     r["name"]
                     for r in live
@@ -954,6 +1109,49 @@ class RunRecord(Record):
             else:
                 unresolved.append(token)
         return resolved, unresolved, ended
+
+    # -- the roles' messages (rev 2) -----------------------------------------------------------------------------
+
+    def role_messages(self, role: str) -> list[Entry]:
+        """The entries addressed to *role* (the role in their mentions), never one an instance of the role wrote."""
+        self.sync()
+        mine = {r["name"] for r in self.roster_doc()["agents"] if r.get("role") == role}
+        with self._lock:
+            return [e for e in self.entries if role in e.mentions and e.author not in mine and e.role != role]
+
+    def withdrawn(self, seq: int) -> bool:
+        """Whether the author of entry *seq* withdrew it (a ``cancel`` entry of theirs that answers it)."""
+        self.sync()
+        with self._lock:
+            asked = next((e for e in self.entries if e.seq == seq), None)
+            return asked is not None and any(
+                e.kind == "cancel" and e.reply_to == seq and e.author == asked.author for e in self.entries
+            )
+
+    def role_pending_for(self, name: str) -> bool:
+        """Whether *name* has a question to a seeded role that is still to be answered (no reply to it, not withdrawn,
+        no claim that ended it): something can still arrive for *name*."""
+        roles = [r for r in INSTANCE_ROLES if role_seeded(self.home, r)]
+        if not roles:
+            return False
+        self.sync()
+        with self._lock:
+            asked = [e for e in self.entries if e.author == name and any(r in e.mentions for r in roles)]
+            if not asked:
+                return False
+            ended = {e.reply_to for e in self.entries if e.kind in ("reply", "cancel") and e.reply_to is not None}
+        for role in roles:
+            claims = role_claims(self.home, role)
+            for e in asked:
+                if role in e.mentions and e.seq not in ended and claims.get(e.seq, {}).get("state") not in (
+                    "answered", "failed", "withdrawn"
+                ):
+                    return True
+        return False
+
+    def log_role_delivery(self, instance: str, seqs: list[int]) -> None:
+        """Log that the role message(s) *seqs* were given to *instance* (the delivery log, as ``messages``)."""
+        self._log_delivery(instance, list(seqs), "messages")
 
     def _resolve(self, text: str, author: str) -> tuple[list[str], list[str]]:
         resolved, unresolved, _ended = self.resolve_for(author, text)
@@ -1275,8 +1473,11 @@ class RunRecord(Record):
     # -- waiting --------------------------------------------------------------------------------------------------
 
     def nobody_can_answer(self, name: str) -> bool:
-        """Whether every other agent that could answer *name* is waiting with nothing unread, idle or ended."""
+        """Whether every other agent that could answer *name* is waiting with nothing unread, idle or ended (rev 2: and no
+        question of *name*'s to a role is still to be answered: its instance can still reply)."""
         self.sync()
+        if self.role_pending_for(name):
+            return False
         for row in self.roster_rows():
             other = row["name"]
             if other == name:
@@ -1468,7 +1669,9 @@ class RunRecordView:
         default_to: Optional[str] = None,
     ) -> dict:
         """Post *text* from *sender* (``@`` names in *to* go first). A message that addresses no agent goes to
-        *default_to* when given, and is otherwise refused (``no_recipient``): nobody would read it.
+        *default_to* when given, and is otherwise refused (``no_recipient``): nobody would read it. Rev 2: a post that
+        names an agent that has ended (the writer apart), or a role this run does not have, is refused with a pointer
+        (module docstring); nothing is posted.
         """
         from unify.common.tool_registry import RecordRefused
 
@@ -1477,6 +1680,16 @@ class RunRecordView:
             text = " ".join(f"@{n}" for n in to) + " " + str(text)
         text = str(text)
         resolved, unresolved, ended = rec.resolve_for(sender, text)
+        missing = [r for r in INSTANCE_ROLES if r in unresolved]
+        if missing:
+            raise RecordRefused(
+                "no_role",
+                f"there is no {missing[0]} in this run, so nobody would read @{missing[0]}; "
+                f"address one of {self.addresses(sender)}",
+            )
+        stale = [n for n in ended if n != WRITER]
+        if stale:
+            raise RecordRefused("ended", "ended: " + "; ".join(self._ended_pointer(n) for n in stale))
         frozen = (WRITER in resolved or WRITER in unresolved) and _memory_frozen()
         if frozen:
             # UNIFY_MEMORY_FROZEN=on (held-out evaluation): the writer reads nothing (on the roster or not), so nothing
@@ -1561,11 +1774,23 @@ class RunRecordView:
 
     # beyond the protocol ------------------------------------------------------------------------------------------
 
+    def _ended_pointer(self, name: str) -> str:
+        """Why a post to *name* (ended) is refused, and where to go instead: an instance of a role -> the role; a fork ->
+        when it ended; any other agent -> when it ended."""
+        row = self.record._row(name) or {}
+        role, at = row.get("role"), row.get("left_at") or "an earlier time"
+        if role in INSTANCE_ROLES:
+            return f"@{name} ended at {at}; address the role: @{role}"
+        if role == "fork":
+            return f"the fork @{name} ended at {at}"
+        return f"@{name} ended at {at}"
+
     def addresses(self, sender: Optional[str] = None) -> str:
         """The addresses that reach someone now, for a refusal's text."""
         sender = sender or self.name
         names = [f"@{n}" for n in self.record.live_agents() if n != sender]
-        roles = [f"@{r}" for r in ROLE_ADDRESSES]
+        # rev 2: a role that outlives its instances is offered only once the run has seeded it
+        roles = [f"@{r}" for r in ROLE_ADDRESSES if r not in INSTANCE_ROLES or role_seeded(self.record.home, r)]
         return ", ".join(dict.fromkeys(names + roles))
 
     def messages_all(self, limit: int = 50) -> tuple[list[dict], int]:
@@ -1601,6 +1826,19 @@ class RunRecordView:
 
 __all__ = [
     "ALL_WAITING",
+    "CLAIM_STATES",
+    "INSTANCE_ROLES",
+    "RoleBusy",
+    "claim",
+    "keep_role_answer",
+    "role_answers",
+    "role_claims",
+    "role_dir",
+    "role_event",
+    "role_lock",
+    "role_notes",
+    "role_seeded",
+    "seed_role",
     "COMMON_SECTION",
     "MAX_RECORD_BYTES",
     "ROLES",

@@ -229,8 +229,13 @@ def test_role_addresses_resolve_to_the_running_agents_of_that_role(tmp_path):
     to, unresolved, ended = rec.resolve_for(
         "actor-aaaa", "@writer @librarian @fork @helpers @actor @nobody"
     )
-    assert to == ["writer", "librarian-aaaa", "fork-aaaa", "h1", "actor-bbbb"]
-    assert unresolved == ["nobody"] and ended == []
+    # rev 2: @librarian names the role, which this run has not seeded: no librarian instance is addressed by it
+    assert to == ["writer", "fork-aaaa", "h1", "actor-bbbb"]
+    assert unresolved == ["librarian", "nobody"] and ended == []
+    # once the run seeds the role, @librarian is the role itself (a question for its next instance)
+    rr.seed_role(home, "librarian", by="test")
+    to, unresolved, ended = rec.resolve_for("actor-aaaa", "@writer @librarian @fork")
+    assert to == ["writer", "librarian", "fork-aaaa"] and unresolved == [] and ended == []
     # a named agent that ended is resolved and reported: nobody reads for it now
     to, unresolved, ended = rec.resolve_for("h1", "@h2 done?")
     assert to == ["h2"] and ended == ["h2"]

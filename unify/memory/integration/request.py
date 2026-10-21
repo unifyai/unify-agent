@@ -222,6 +222,103 @@ def librarian_on() -> bool:
     return getattr(SETTINGS, "UNIFY_MEMORY_LIBRARIAN", "off") == "on"
 
 
+# --- rev 2 (PLAN-REV2 item 1): the role dispatcher ------------------------------------------------------------------
+
+#: How often the dispatcher reads the run record for messages to a role (other processes' posts reach it within this).
+ROLE_POLL_S = 0.5
+#: The claim states after which a message to a role is done (unify.agents.run_record.CLAIM_STATES).
+ROLE_DONE = ("answered", "failed", "withdrawn")
+
+
+def start_role_dispatcher(run: Any) -> Any:
+    """With the run record, library mode and the librarian on: seed the librarian role once per run
+    (``run_record.seed_role``: from then on ``@librarian`` resolves to the role) and start this request's dispatcher
+    (:func:`role_dispatcher`) on the running loop. None when any of them is off or no loop runs. Never raises.
+    """
+    try:
+        from unify.settings import SETTINGS
+
+        from .. import librarian as _lib
+        from .switch import run_record_on
+
+        if not (getattr(run, "library_mode", False) and run_record_on(SETTINGS) and _lib.enabled()):
+            return None
+        loop = asyncio.get_running_loop()  # first: with no loop to answer on, the role is not seeded either
+        from unify.agents import run_record as rr
+
+        rr.seed_role(run.paths.home, _lib.AGENT, by=f"request {run.episode_id}")
+    except RuntimeError:  # no running loop: nothing to dispatch on
+        return None
+    except Exception as exc:  # noqa: BLE001 - the roles never stop a request
+        logger.warning("memory: the role dispatcher was not started (%s)", type(exc).__name__)
+        return None
+    return loop.create_task(role_dispatcher(run), name="memory-role-dispatcher")
+
+
+async def role_dispatcher(run: Any, *, poll_s: float = ROLE_POLL_S) -> None:
+    """Rev 2 (PLAN-REV2 item 1): the request's dispatcher for the run's roles (``run_record.INSTANCE_ROLES``: the
+    librarian). Every :data:`ROLE_POLL_S` it reads the run record (every process's posts); each message to the role
+    that is not done (``run_record.role_claims``), in order, gets one message instance (``librarian.answer_message``):
+    one at a time across the run's processes (``run_record.role_lock``; a lock another process holds waits for the next
+    round), claimed before it starts and marked with how it ended. A failure of the instance still gives the message's
+    author one reply, from the harness, naming the failure's class. Cancelled with the request (``_cleanup``): the
+    message in flight is marked abandoned and the next request's dispatcher takes it again. Never raises otherwise."""
+    from unify.agents import run_record as rr
+
+    from .. import librarian as _lib
+
+    home = run.paths.home
+    record = rr.join_run_record(home)
+    open_session = _lib.opener(on_event=lambda row: rr.role_event(home, _lib.AGENT, row),
+                               request_id=f"{run.episode_id}.roles")  # fmt: skip
+    while True:
+        try:
+            await _role_round(record, home, open_session)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a round never stops the request
+            logger.warning("memory: a role dispatcher round failed (%s)", type(exc).__name__)
+        await asyncio.sleep(poll_s)
+
+
+async def _role_round(record: Any, home: Any, open_session: Callable[..., Any]) -> int:
+    """One round of :func:`role_dispatcher`: the librarian's messages that are not done, oldest first, while this
+    process holds the role's instance lock; returns how many it finished."""
+    from unify.agents import run_record as rr
+    from unify.agents.record import HARNESS
+
+    from .. import librarian as _lib
+
+    role, done = _lib.AGENT, 0
+    while True:
+        claims = rr.role_claims(home, role)
+        pending = [e for e in record.role_messages(role) if claims.get(e.seq, {}).get("state") not in ROLE_DONE]
+        if not pending:
+            return done
+        entry = pending[0]
+        try:
+            with rr.role_lock(home, role, wait=False):
+                if rr.role_claims(home, role).get(entry.seq, {}).get("state") in ROLE_DONE:
+                    continue  # another process's instance finished it meanwhile
+                rr.claim(home, role, entry.seq, "claimed", pid=os.getpid())
+                try:
+                    out = await _lib.answer_message(entry, record=record, open_session=open_session)
+                except asyncio.CancelledError:
+                    rr.claim(home, role, entry.seq, "abandoned", pid=os.getpid())
+                    raise
+                except Exception as exc:  # noqa: BLE001 - the author still gets one reply
+                    reply, _ = record.append(HARNESS, f"no answer to #{entry.seq}: the librarian failed ({type(exc).__name__})",
+                                             kind="reply", mentions=[entry.author], reply_to=entry.seq)  # fmt: skip
+                    out = {"state": "failed", "reply": reply.seq, "by": HARNESS, "error_class": type(exc).__name__}
+                rr.claim(home, role, entry.seq, out["state"], reply=out.get("reply"), by=out.get("by"),
+                         **({"error_class": out["error_class"]} if "error_class" in out else {}))  # fmt: skip
+                rr.role_event(home, role, {"event": "message", "seq": entry.seq, "state": out["state"],
+                                           "reply": out.get("reply"), "by": out.get("by")})  # fmt: skip
+                done += 1
+        except rr.RoleBusy:
+            return done  # another process's instance runs: the next round
+
+
 def regime_inferred_on() -> bool:
     """Whether ``UNIFY_MEMORY_REGIME=inferred`` (or empty under the redesign profile): each episode's regime is
     inferred from its signals, and late verdicts on earlier episodes are taken (:mod:`.outcomes`)."""
@@ -1079,6 +1176,9 @@ class RequestRun:
         self.regime_inferred = False
         self.late_checkers: list[dict] = []
         self.signal_listeners: list[Callable[[dict], None]] = []
+        #: rev 2 (PLAN-REV2 item 1): this request's role dispatcher (:func:`start_role_dispatcher`), running on the loop;
+        #: None when off
+        self.role_task: Any = None
         self._lock: int | None = None
         self._scope = contextlib.ExitStack()
         self._closed = False
@@ -1224,6 +1324,8 @@ class RequestRun:
         # the embedding requests the library export sent before the cost record opened
         for call in self.export_embedding_calls:
             self.costs.add_embedding(call)
+        # rev 2 (PLAN-REV2 item 1): the run's roles (the librarian), seeded once per run; this request answers their messages
+        self.role_task = start_role_dispatcher(self)
 
     def _recover_journals(self) -> None:
         """Record each episode journal a process that died mid-request left, as an incomplete episode
@@ -2424,6 +2526,10 @@ class RequestRun:
         from .checkout import remove_checkout
         from .state import release_lock
 
+        if self.role_task is not None:
+            # rev 2: the dispatcher ends with the request; a message instance still answering posts nothing, and its
+            # message is taken again by the next request's dispatcher (the claim is marked abandoned)
+            self.role_task.cancel()
         self._close_scope()
         # a journal still open (the episode was not recorded) stays for the next start
         self._close_journal()

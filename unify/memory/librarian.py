@@ -33,6 +33,14 @@ under ``UNIFY_REQUEST_METADATA_HEADERS=on`` each carries ``X-Unify-Call-Kind: li
 session also keeps its own totals (calls, tokens, cache reads, USD) for the use record; an unpriced call keeps the
 USD unknown.
 
+Rev 2 (PLAN-REV2 item 1): the librarian is a role of the run record (``run_record.INSTANCE_ROLES``). Its state lives as
+long as the run, under ``memory-state/agents/roles/librarian/``: the answers its instances gave (an exact-match cache:
+:func:`answer_key` names the library's commit, its dispatch digest and the schema's digest, so a changed library never
+serves an old answer) and the notes they kept; every instance reads it at its start. An instance starts in one of two
+ways (:data:`MODES`): ``memory.ask``'s (:class:`AskInstance`: one per request, kept for its follow-ups as before, whose
+asks also go on the record) or one per message to ``@librarian`` (:func:`answer_message`, started by the request's role
+dispatcher, ``integration.request.role_dispatcher``), which posts one reply and ends.
+
 It answers with ``tools.finish(answer)`` (:func:`finish`): ``{"fits": [{"id", "call", "why"}, ...]}`` or
 ``{"fits": [], "nearest": [{"id", "differs"}, ...]}``. The handler checks the form and every id against the items of
 the library copy (:func:`library_items`: what ``memory.items`` lists, and the captured procedures); a malformed
@@ -1016,22 +1024,117 @@ def actor_turn() -> Turn:
     return unillm_turn(actor_model(), actor_effort(), origin=ORIGIN)
 
 
+#: Rev 2 (PLAN-REV2 item 1): the two ways an instance of the librarian role starts. ``ask``: ``memory.ask``'s instance, the
+#: synchronous client of the role (one per request, kept for the request's follow-ups, as before); ``message``: one
+#: instance per message to ``@librarian`` on the run record (:func:`answer_message`), which answers it and ends.
+MODES = ("ask", "message")
+#: What an instance is shown first of the notes earlier instances of the role kept (only when there are some).
+NOTES_HEAD = "Notes earlier librarians of this run kept (read them; they may be out of date):"
+
+
+class AskInstance(LibrarianSession):
+    """Rev 2: ``memory.ask``'s instance of the librarian role. Answers as :class:`LibrarianSession` does (its answer is
+    the tool's result, as before); each ask is also put on the run record, so the record's readers see asks and
+    answers the same way as messages: one harness entry naming the asker and the question, and this instance's
+    ``reply`` to it. Neither mentions anyone (the asker already has the answer as its tool result). The answer goes on
+    the record without the schema (only the value); the role's answer cache keeps it (:func:`keep_answers`)."""
+
+    async def ask(self, question: str, facts: Any = None, request: str | None = None, last_message: str | None = None,
+                  schema: dict | None = None) -> str:  # fmt: skip
+        text = await super().ask(question, facts, request, last_message, schema)
+        keep_answers(self)
+        try:
+            self._post_ask(question, text)
+        except Exception:  # noqa: BLE001 - the record never costs the ask its answer
+            pass
+        return text
+
+    def _post_ask(self, question: str, text: str) -> None:
+        if self.run_record is None:
+            return
+        from unify.agents.record import HARNESS
+
+        rec = self.run_record
+        asker = next((r["name"] for r in rec.roster_rows(include_ended=True)
+                      if r.get("role") == "actor" and getattr(self, "episode", None) and r.get("episode") == self.episode), None)  # fmt: skip
+        ask, _ = rec.append(HARNESS, f"{asker or 'the actor'} asked the librarian (memory.ask): {question}", mentions=[])
+        try:
+            got = json.loads(text)
+        except ValueError:
+            got = {"text": text}
+        rec.append(self.name, reply_text(ask.seq, got), kind="reply", mentions=[], reply_to=ask.seq)
+
+
+def reply_text(seq: int, got: dict) -> str:
+    """The text of an instance's reply to entry *seq*: the answer as JSON, cut to the record's entry limit."""
+    from unify.agents.entry import MAX_TEXT_BYTES
+
+    body = json.dumps(got, ensure_ascii=False, sort_keys=True, default=str)
+    text = f"answer to #{seq}: {body}"
+    room = MAX_TEXT_BYTES - 256
+    data = text.encode("utf-8")
+    if len(data) > room:
+        text = data[:room].decode("utf-8", "ignore") + f" [... cut at {room} of {len(data)} bytes]"
+    return text
+
+
+def keep_answers(session: LibrarianSession) -> int:
+    """Rev 2: keep in the role's state the answers *session* gave that the role did not have yet (its exact-match cache:
+    the key is :func:`answer_key` of exactly what was asked, which names the library's commit and dispatch digest and
+    the schema's digest, so a changed library or schema never matches). Returns how many were kept."""
+    home = getattr(session, "role_home", None)
+    if home is None:
+        return 0
+    from unify.agents import run_record as _rr
+
+    known = session.__dict__.setdefault("role_keys", set())
+    kept = 0
+    for key, answer in list(session.answers.items()):
+        if key in known:
+            continue
+        _rr.keep_role_answer(home, AGENT, key, answer, by=session.name, library=session.library)
+        known.add(key)
+        kept += 1
+    return kept
+
+
+def _role_state(session: LibrarianSession, home: Any) -> None:
+    """Rev 2: every instance reads the role's state at its start: the answers earlier instances kept (exact-match cache:
+    :meth:`LibrarianSession.answer` returns one for exactly the same ask) and the notes they kept."""
+    from unify.agents import run_record as _rr
+
+    if home is None or not _rr.role_seeded(home, AGENT):
+        return
+    session.role_home = home
+    keys = set()
+    for row in _rr.role_answers(home, AGENT):
+        session.answers.setdefault(row["key"], row["answer"])
+        keys.add(row["key"])
+    session.role_keys = keys
+    notes = _rr.role_notes(home, AGENT).strip()
+    if notes:
+        session.messages.append({"role": "user", "content": f"{NOTES_HEAD}\n{notes}"})
+
+
 def opener(
     *,
     on_event: Callable[[dict], None] | None = None,
     request_id: str | None = None,
     turn_factory: Callable[[], Turn] | None = None,
     start: Callable[..., Awaitable[Any]] | None = None,
-) -> Callable[[], Awaitable[LibrarianSession]]:
-    """What opens this request's session at its first question: the run's library copy
-    (``RequestRun.copy_root``; refused while no library copy is mounted or its items cannot be read), a turn on
-    the actor's model
-    (:func:`actor_turn`, or *turn_factory*'s), and the commit the copy was exported at (``RequestRun.pin``). The
-    session is registered with the run, whose use record reads its totals."""
+) -> Callable[..., Awaitable[LibrarianSession]]:
+    """What opens an instance of the librarian: the run's library copy (``RequestRun.copy_root``; refused while no
+    library copy is mounted or its items cannot be read), a turn on the actor's model (:func:`actor_turn`, or
+    *turn_factory*'s), and the commit the copy was exported at (``RequestRun.pin``). The session is registered with the
+    run, whose use record reads its totals. Rev 2: ``mode`` (:data:`MODES`): ``ask`` (the default: ``memory.ask``'s
+    instance, :class:`AskInstance`) or ``message`` (one per message to ``@librarian``); either reads the role's state at
+    its start (:func:`_role_state`)."""
 
-    async def open_session() -> LibrarianSession:
+    async def open_session(*, mode: str = "ask") -> LibrarianSession:
         from .integration import request as _request
 
+        if mode not in MODES:
+            raise ValueError(f"mode is one of {', '.join(MODES)}")
         run = _request.current()
         # the copy as cells read it (UNIFY_MEMORY_IN_EPISODE: its link to the current pin), else the export itself
         copy = getattr(run, "copy_root", None) or getattr(getattr(run, "paths", None), "checkout", None)
@@ -1039,8 +1142,8 @@ def opener(
             raise Unavailable("no library is mounted in this request")
         if library_items(Path(copy)) is None:
             raise Unavailable("the library's items cannot be read")
-        record, name = _join_run_record(run)
-        session = LibrarianSession(
+        record, name = _join_run_record(run, mode=mode)
+        session = (AskInstance if mode == "ask" else LibrarianSession)(
             copy=Path(copy),
             turn=(turn_factory or actor_turn)(),
             start=start,
@@ -1050,6 +1153,10 @@ def opener(
             run_record=record,
             name=name,
         )
+        session.mode = mode
+        session.episode = (getattr(run, "episode_id", None) or None) if mode == "ask" else None
+        if record is not None:
+            _role_state(session, getattr(getattr(run, "paths", None), "home", None))
         sessions = getattr(run, "librarian_sessions", None)
         if isinstance(sessions, list):
             sessions.append(session)
@@ -1058,9 +1165,10 @@ def opener(
     return open_session
 
 
-def _join_run_record(run: Any) -> tuple[Any, str]:
-    """``UNIFY_AGENTS_RUN_RECORD=on``: the run record this request's librarian joins at its first question, as
-    ``librarian-<hex of the episode>`` with the request's episode, and its name; ``(None, "librarian")`` while off."""
+def _join_run_record(run: Any, *, mode: str = "ask") -> tuple[Any, str]:
+    """``UNIFY_AGENTS_RUN_RECORD=on``: the run record an instance of the librarian joins, and its name;
+    ``(None, "librarian")`` while off. ``ask``: ``librarian-<hex of the episode>`` with the request's episode (it lives
+    as long as the request); ``message``: ``librarian-<random hex>`` with no episode (it lives until its reply)."""
     from unify.common.tool_registry import run_record_on
 
     if not run_record_on():
@@ -1070,7 +1178,7 @@ def _join_run_record(run: Any) -> tuple[Any, str]:
     home = getattr(getattr(run, "paths", None), "home", None)
     if home is None:
         raise Unavailable("no memory home for the run record")
-    episode = getattr(run, "episode_id", None) or None
+    episode = (getattr(run, "episode_id", None) or None) if mode == "ask" else None
     record = join_run_record(home)
     import uuid
 
@@ -1083,6 +1191,48 @@ def _join_run_record(run: Any) -> tuple[Any, str]:
         except Exception:  # noqa: BLE001 - a name another process took: the next one
             continue
     raise Unavailable("no free name for the librarian on the run record")
+
+
+def question_of(text: str) -> str:
+    """A message to the role as the question its instance is asked: the text without the role's own address."""
+    q = re.sub(r"(?<![\w@.])@librarian\b", "", str(text or ""), flags=re.IGNORECASE).strip()
+    return q or str(text or "").strip()
+
+
+async def answer_message(entry: Any, *, record: Any, open_session: Callable[..., Awaitable[LibrarianSession]]) -> dict:
+    """Rev 2 (PLAN-REV2 item 1): one message to ``@librarian`` (*entry*, from *record*): a message instance is started
+    (``open_session(mode="message")``), given the message as its question (the delivery log names it), and posts ONE
+    reply entry (``reply_to`` = the message, mentioning its author): the answer, or why there is none. A message its
+    author withdrew (a ``cancel`` of theirs that answers it) gets no reply. The instance keeps its new answers in the
+    role's state and ends (its name is refused from then on). Returns the claim's outcome: ``{"state", "reply", "by"}``.
+    The instance is stopped with the request: a cancelled answer posts nothing (the caller marks the claim abandoned)."""
+    from unify.agents.record import HARNESS
+
+    if record.withdrawn(entry.seq):
+        return {"state": "withdrawn", "reply": None, "by": None}
+    try:
+        session = await open_session(mode="message")
+    except Unavailable as exc:
+        # no instance can start: the author still gets one reply, from the harness, saying why
+        reply, _ = record.append(HARNESS, f"no librarian could answer #{entry.seq}: {str(exc)[:300]}", kind="reply",
+                                 mentions=[entry.author], reply_to=entry.seq)  # fmt: skip
+        return {"state": "failed", "reply": reply.seq, "by": HARNESS}
+    rec = session.run_record if session.run_record is not None else record
+    try:
+        rec.log_role_delivery(session.name, [entry.seq])
+        state = "answered"
+        try:
+            got = await session.answer(question_of(entry.text))
+            text = reply_text(entry.seq, got)
+        except NoAnswer as exc:
+            state, text = "failed", f"no answer to #{entry.seq}: {str(exc)[:300]}"
+        if rec.withdrawn(entry.seq):
+            return {"state": "withdrawn", "reply": None, "by": session.name}
+        reply, _ = rec.append(session.name, text, kind="reply", mentions=[entry.author], reply_to=entry.seq)
+        keep_answers(session)
+        return {"state": state, "reply": reply.seq, "by": session.name}
+    finally:
+        await session.close()
 
 
 def usage_fields(sessions: Any) -> dict:
@@ -1113,6 +1263,12 @@ __all__ = [
     "SCHEMA_ERROR",
     "SCHEMA_VALUE",
     "CALL_KIND",
+    "AskInstance",
+    "MODES",
+    "answer_message",
+    "keep_answers",
+    "question_of",
+    "reply_text",
     "LibrarianCalls",
     "LibrarianSession",
     "NoAnswer",
