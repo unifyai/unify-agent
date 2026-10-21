@@ -42,6 +42,9 @@ WRITER_MODEL = "openai/gpt-6-luna"
 SERVICE_CAP_USD = "100"  # no writer journal here: every pass settles at its reservation (worst case)
 #: How long a surface waits for the service to have nothing owed before it drains.
 SETTLE_S = 180.0
+#: The in-episode arm's setting (rev 2's main profile runs without in-episode memory): the surfaces that check segment
+#: forks and serving while an episode runs set it on top of :func:`redesign_env`.
+IN_EPISODE_ON = {"UNIFY_MEMORY_IN_EPISODE": "on"}
 
 GUARD = re.compile(
     r"\b(grid|grids|puzzle|demo|demos|task|tasks|airline|booking|crafter|arc|poker|hand|game|colleague|office|stencil"

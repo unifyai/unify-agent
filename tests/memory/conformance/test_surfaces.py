@@ -19,8 +19,9 @@ vocabulary in what the memory agents were sent, the coverage guarantee, metering
 * traced captures (surface 2): the capture record's form, trace, value, own check and outcome from signals;
 * the attention ledger (all): every entry closed, unreadable or not reached; a late signal makes ``late_evidence`` (surface 4);
 * labelled items (surface 2): a landed item is served;
-* in-episode memory (surfaces 1, 3): every pause (a new message, an actor call, a compaction) starts a segment fork and makes an
-  entry; a commit landed while the episode runs is served from the next cell with one notice;
+* in-episode memory (surfaces 1, 3, which set the in-episode arm's switch on): every pause (a new message, an actor call,
+  a compaction) starts a segment fork and makes an entry; a commit landed while the episode runs is served from the
+  next cell with one notice;
 * serving on evidence (surfaces 2, 4): served items carry their evidence; an item the writer retires leaves every listing;
 * inferred regimes (surfaces 1, 2, 4): each episode's regime is inferred from its own signals (``none`` with none, ``sparse`` with
   a verdict on the whole episode, changed and logged by a late one), never defaulted; a hidden grader decides nothing.
@@ -40,6 +41,9 @@ from tests.helpers import _handle_project
 from tests.memory.conformance import fake_lanes as FL
 from tests.memory.conformance import harness as H
 from tests.memory.conformance import scripts as SX
+# the writer's lane refuses while unillm records OTel spans, which the test runner turns on for every session; the
+# fixture takes UNILLM_OTEL out of the environment, so the service and the fork worker start with it off too
+from tests.memory.test_writer_route import _otel_off_unless_a_test_turns_it_on  # noqa: F401 - an autouse fixture
 from tests.scripted_model import Always, ScriptedModel, cell, reply
 
 ID16 = re.compile(r"[0-9a-f]{16}")
@@ -135,6 +139,7 @@ def check_mesh(home: Path) -> dict:
 @pytest.mark.timeout(900)
 @_handle_project
 async def test_surface_1_a_conversation_with_follow_ups_and_no_reward(core_world, monkeypatch, lanes):  # noqa: F811
+    H.apply_settings(monkeypatch, H.IN_EPISODE_ON)
     home = Path(core_world["state"])
     _forever(lanes, "fork", SX.FORK_REPLY)
     _forever(lanes, "writer", SX.writer_policy(land=False))
@@ -265,6 +270,7 @@ async def test_surface_3_a_long_episode_with_checkpoints(core_world, monkeypatch
     from unify.memory.gitio import Repo
     from unify.memory.integration.paths import Paths
 
+    H.apply_settings(monkeypatch, H.IN_EPISODE_ON)
     home = Path(core_world["state"])
     paths = Paths.under(home)
     (Path(core_world["workspace"]) / "inbox.csv").write_text(SX.INBOX)
