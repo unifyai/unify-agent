@@ -18,22 +18,24 @@ async def _done(name, spawner, request, request_seq):
 
 @pytest.mark.asyncio
 async def test_helper_names_and_numbering_survive_a_reload(tmp_path):
-    path = tmp_path / "run.jsonl"
-    first = Pool(
-        Record(RecordLog(path, create=True), options=Options(min_post_interval_s=0)),
-        start_helper=_done,
-    )
+    # rev 2: a pool runs on the run record (helpers are named from its roster), so the reload reopens that record
+    from tests.agents.records import run_record
+    from unify.agents import run_record as rr
+
+    home = tmp_path / "home"
+    first = Pool(run_record(home=home), start_helper=_done)
     await first.spawn("root", REQUEST)
     await first.spawn("root", REQUEST, name="csv-stats")
     await asyncio.sleep(0.05)
     last = first.record.last_seq
 
-    record = Record(
-        RecordLog(path, create=False),
-        options=Options(min_post_interval_s=0),
-    )
-    assert record.participants["h1"].state == "replied"
-    assert record.participants["csv-stats"].spawner == "root"
+    record = rr.open_run_record(home, create=False, options=Options(min_post_interval_s=0))
+    record.root = "root"
+    # the reopened record knows the earlier agents from the run's roster: a helper that replied has left (its name
+    # stays taken), and who started it is kept
+    rows = {r["name"]: r for r in record.roster_rows(include_ended=True)}
+    assert rows["h1"]["state"] == "ended"
+    assert rows["csv-stats"]["spawner"] == "root"
     again = Pool(record, start_helper=_done)
     assert await again.spawn("root", REQUEST) == "h2"
     with pytest.raises(ValueError):

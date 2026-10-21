@@ -416,9 +416,7 @@ async def test_a_real_message_instance_answers_from_the_library_on_the_record(tm
     from tests.memory.test_librarian import LIBRARIAN_SECOND, TOTAL, _copy, code
     from tests.scripted_model import ScriptedModel, reply, scripted
     from unify.memory.writer_pass import unillm_turn
-    import unify.memory.integration.switch as switch
-
-    monkeypatch.setattr(switch, "run_record_on", lambda s: True)
+    # rev 2: the run record is always on (no run_record_on switch to patch)
     home, rec = _seeded(tmp_path)
     copy = _copy(tmp_path)
     run = SimpleNamespace(copy_root=copy, library_mode=True, paths=SimpleNamespace(home=home), episode_id="ep-a",

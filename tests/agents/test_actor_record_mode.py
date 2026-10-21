@@ -60,10 +60,13 @@ async def test_the_actor_has_one_tool_and_the_record_starts_with_the_request(
 
 async def test_the_record_rules_are_one_help_topic_away(core_world, monkeypatch, tmp_path):  # noqa: F811
     requests, _, _ = await _run([_cell('print(tools.help("record"))'), *_DONE], monkeypatch, tmp_path)
-    first = [str(m.get("content")) for m in requests[0]["messages"]]
-    assert R.RECORD_POINTER in first[0]  # the system message
-    assert not any("only you can answer them" in text for text in first)
-    assert "only you can answer them" in _tool_texts(requests[1])
+    # rev 2: the record's rules (COMMON_SECTION) come after the cache-preserving system prompt, in the first user
+    # message, and tools.help("record") gives them again
+    messages = requests[0]["messages"]
+    assert R.COMMON_SECTION not in str(messages[0].get("content"))  # the system message
+    first_user = next(m for m in messages if m.get("role") == "user")
+    assert R.COMMON_SECTION in str(first_user.get("content"))
+    assert json.dumps(R.COMMON_SECTION)[1:-1] in _tool_texts(requests[1])  # the tool texts are JSON-encoded
 
 
 async def test_a_stopped_main_agent_stops_its_helpers_and_records_no_reply(

@@ -4,18 +4,14 @@ import asyncio
 
 import pytest
 
-from unify.agents.options import Options
 from unify.agents.pool import Pool
-from unify.agents.record import Record
+from tests.agents.records import run_record
 
 REQUEST = "Summarise a.csv: rows, columns and missing values."
 
 
 def _pool(start, **opts):
-    return Pool(
-        Record(None, options=Options(min_post_interval_s=0, **opts)),
-        start_helper=start,
-    )
+    return Pool(run_record(**opts), start_helper=start)
 
 
 def _replies(text):

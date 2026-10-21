@@ -13,9 +13,8 @@ import pytest
 # import is not the 5 s the reader has, so it happens here.
 import unify.actor.code_act_actor  # noqa: F401
 from unify.agents.cli_bridge import CliBridge, attach_bridge
-from unify.agents.options import Options
 from unify.agents.pool import Pool
-from unify.agents.record import Record
+from tests.agents.records import run_record
 
 pytestmark = pytest.mark.no_unify_context
 
@@ -43,7 +42,7 @@ def _pool():
     async def start(*a):
         return "ok"
 
-    rec = Record(None, options=Options(min_post_interval_s=0), user_reads=True)
+    rec = run_record(user_reads=True)
     return Pool(rec, start_helper=start)
 
 
@@ -124,7 +123,8 @@ async def test_a_long_line_is_posted_and_mentions_in_user_lines_resolve():
     await bridge.user_message("x" * 40_000)
     assert len(rec.entries[-1].text.encode()) <= 16 * 1024
     await bridge.user_message("@h1 stop that")
-    assert rec.entries[-1].mentions == ("h1",)
+    # rev 2: on the shared run record a driver line is addressed to this session's main agent as well
+    assert rec.entries[-1].mentions == ("root", "h1")
 
 
 @pytest.mark.asyncio

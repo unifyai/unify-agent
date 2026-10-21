@@ -1,19 +1,18 @@
-"""Symbolic: in record mode a sandboxed cell can read, not write, its own run's
-record, and never another run's (no channel between runs)."""
+"""Symbolic: no sandboxed cell can read the run's record, this run's or another's: the run record lives in the
+harness-only state directory and no box binds it (agents reach it only through their tools)."""
 
 from unify import sandbox
 
 
-def test_record_mode_mounts_only_the_current_runs_record(tmp_path, monkeypatch):
-    from unify.agents import binding
+def test_no_run_record_is_mounted_in_a_cell(tmp_path, monkeypatch):
+    from unify.agents import binding, run_record as rr
 
     monkeypatch.setenv("UNIFY_HOME", str(tmp_path))
     earlier = binding.bind_for_act(request="an earlier run", user_reads=False)
     current = binding.bind_for_act(request="this run", user_reads=False)
     policy = sandbox.build_policy(fresh=True)
-    # (Matched by folder, not by name: a test's own store file may carry "records".)
-    records = str((tmp_path / "records").resolve())
-    mounted = [p for p in policy.readonly_state if str(p).startswith(records)]
-    assert mounted == [current.pool.record.path.parent.resolve()]
-    assert earlier.pool.record.path.parent.resolve() not in policy.readonly_state
-    assert current.pool.record.path.name == "record.jsonl"
+    for b in (earlier, current):
+        folder = rr.agents_dir(b.pool.record.home).resolve()
+        folder.mkdir(parents=True, exist_ok=True)
+        assert not any(str(p).startswith(str(folder)) for p in policy.readonly_state), (folder, policy.readonly_state)
+        assert policy.readable_violation(folder / rr.RECORD_FILE) is not None

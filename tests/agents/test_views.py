@@ -4,14 +4,13 @@ import inspect
 
 import pytest
 
-from unify.agents.options import Options
 from unify.agents.pool import Pool
-from unify.agents.record import Record
+from tests.agents.records import run_record
 from unify.agents.views import AgentsView, RecordView
 
 
 def _views(user_reads=False):
-    rec = Record(None, options=Options(min_post_interval_s=0), user_reads=user_reads)
+    rec = run_record(user_reads=user_reads)
     rec.add_agent("h1", spawner="root")
     return rec, RecordView(rec, "root"), RecordView(rec, "h1")
 
@@ -64,7 +63,7 @@ async def test_agents_view_spawns_as_its_owner():
     async def start(name, spawner, request, request_seq):
         return "ok"
 
-    rec = Record(None, options=Options(min_post_interval_s=0))
+    rec = run_record()
     pool = Pool(rec, start_helper=start)
     agents = AgentsView(pool, "root")
     name = await agents.spawn("Summarise b.csv: rows and columns please.")
