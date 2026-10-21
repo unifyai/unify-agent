@@ -61,7 +61,7 @@ def _library_ep(**kw):
 def _write(tmp_path, ep, library_mode=True):
     repo = Repo.init_bare(tmp_path / "episodes.git")
     blobs = BlobStore(tmp_path / "blobs")
-    sha = EpisodeWriter(repo, blobs, RED, library_mode=library_mode).write(ep)
+    sha = EpisodeWriter(repo, blobs, RED).write(ep)
     return repo, blobs, sha
 
 

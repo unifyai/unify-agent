@@ -135,7 +135,7 @@ def test_an_actor_episode_matches_and_runs_a_captured_procedure_with_no_import_l
     )
     ep = dataclasses.replace(ep, memory_use=use)
     repo = Repo.init_bare(tmp_path / "episodes.git")
-    EpisodeWriter(repo, BlobStore(tmp_path / "blobs"), Redactor(), library_mode=True).write(ep)
+    EpisodeWriter(repo, BlobStore(tmp_path / "blobs"), Redactor()).write(ep)
     rec = json.loads(repo.show("main", f"{episode_dir(ep)}/memory_use.json"))
     assert "error" not in rec, rec
     assert rec["memory_bound"] is True

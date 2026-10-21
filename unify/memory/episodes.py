@@ -160,9 +160,7 @@ class EpisodeWriter:
         repo: Repo,
         blobs: BlobStore,
         redactor: Redactor,
-        response_cap: int = 16384,
-        *,
-        library_mode: bool = False,
+        response_cap: int = 16384
     ) -> None:
         self.repo, self.blobs, self.redactor, self.cap = (
             repo,
@@ -170,13 +168,7 @@ class EpisodeWriter:
             redactor,
             response_cap,
         )
-        # UNIFY_MEMORY_LIBRARY: record format 2 (every large value as a blob; values like a reference escaped)
-        self.library_mode = library_mode
-
-    def _capped(self, value: Any) -> Any:
-        text = json.dumps(value, sort_keys=True, default=str)
-        out = self.blobs.cap_text(text, self.cap)
-        return value if "text" in out else {"__capped__": out}
+        # record format 2: every large value as a blob, values like a reference escaped
 
     def _stored(self, value: Any) -> Any:
         """Format 2: *value* (already redacted) inline, escaped when it looks like a reference, or a reference
@@ -221,19 +213,13 @@ class EpisodeWriter:
         actions = []
         for a in ep.actions:
             row = r.obj(asdict(a))
-            if (
-                self.library_mode
-            ):  # format 2: args, kwargs and the response, each stored whole
-                row["args"] = [self._stored(x) for x in row["args"]]
-                row["kwargs"] = {k: self._stored(v) for k, v in row["kwargs"].items()}
-                row["response"] = self._stored(row["response"])
-            else:
-                row["response"] = self._capped(row["response"])
+            row["args"] = [self._stored(x) for x in row["args"]]
+            row["kwargs"] = {k: self._stored(v) for k, v in row["kwargs"].items()}
+            row["response"] = self._stored(row["response"])
             actions.append(row)
         request = r.obj(ep.request)
-        if self.library_mode:
-            meta["record_format"] = RECORD_FORMAT
-            request = [self._stored(x) for x in request]
+        meta["record_format"] = RECORD_FORMAT
+        request = [self._stored(x) for x in request]
         files = {
             "meta.json": json.dumps(r.obj(meta), sort_keys=True, indent=1) + "\n",
             "request.json": json.dumps(request, indent=1) + "\n",
