@@ -1567,6 +1567,30 @@ def _procedure_level(target: str) -> str:
     return "unknown"
 
 
+class AsyncItemError(TypeError):
+    """``memory.run`` of an ``async def`` item from a cell whose event loop is already running: it cannot be awaited
+    from inside a synchronous call there. Await the item itself instead: ``await memory.get(ref)...``."""
+
+
+def _settled(result: Any) -> Any:
+    """*result*, or, when it is a coroutine (an ``async def`` item), what it gives once awaited: run to completion
+    here when no event loop runs in this thread; else closed, and :class:`AsyncItemError` raised (never the
+    coroutine's text as a result)."""
+    import asyncio
+    import inspect
+
+    if not inspect.iscoroutine(result):
+        return result
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(result)
+    result.close()
+    raise AsyncItemError(
+        "this item is an async def and this cell's event loop is running: call it with await instead of memory.run"
+    )
+
+
 def _item_function(target: str) -> Any:
     import importlib
 
@@ -1618,14 +1642,14 @@ def _run_item(target: str, args: tuple, kwargs: dict) -> RunReport:
         except Exception:  # noqa: BLE001 - arguments that cannot be copied are passed once
             note = "its arguments could not be copied for a second call"
     try:
-        result = fn(*args, **kwargs)
+        result = _settled(fn(*args, **kwargs))
     except Exception as exc:  # noqa: BLE001 - reported, never raised past the cell
         return RunReport(target, outcome=call_outcome(exc), error=type(exc).__name__,
                          detail=str(exc)[:_DETAIL_CHARS], repeat_note="it did not return", raised=exc, **base)
     repeatable: bool | None = None
     if copied is not None:
         try:
-            repeatable = _same(result, fn(*copied[0], **copied[1]))
+            repeatable = _same(result, _settled(fn(*copied[0], **copied[1])))
         except Exception as exc:  # noqa: BLE001
             repeatable, note = False, f"the second call raised {type(exc).__name__}"
     return RunReport(target, outcome="returned", result=result, repeatable=repeatable, repeat_note=note, **base)
@@ -1636,10 +1660,14 @@ def _run_item(target: str, args: tuple, kwargs: dict) -> RunReport:
 #: reader is: :data:`_REQUEST_CLASS`), checks ``applies``, runs ``run``
 #: twice (once with ``"once": true``), checks ``holds``, and prints one JSON report after a marker line.
 _CAPTURE_RUNNER = r'''
-import json, sys
+import asyncio, inspect, json, sys
 MARK = sys.argv[2]
 out = {}
 ''' + _REQUEST_CLASS + r'''
+def settle(x):
+    # an async def (run, read_input, applies or holds) gives a coroutine: it is awaited here, in the child, and its
+    # value is what the call gave (never the coroutine's text)
+    return asyncio.run(x) if inspect.iscoroutine(x) else x
 def same(a, b):
     try:
         return json.dumps(a, sort_keys=True, default=repr) == json.dumps(b, sort_keys=True, default=repr)
@@ -1659,8 +1687,8 @@ try:
         raise LookupError("the captured procedure defines no run(value)")
     read = ns.get("read_input")
     if callable(read) and len(args) == 1 and not kwargs and isinstance(args[0], str):
-        value = read(Request(args[0], payload.get("data")))
-        call = lambda: run(value)
+        value = settle(read(Request(args[0], payload.get("data"))))
+        call = lambda: settle(run(value))
         try:
             text = json.dumps(value)
             if len(text) <= 262144:
@@ -1669,11 +1697,11 @@ try:
             pass
     else:
         value = args[0] if len(args) == 1 and not kwargs else None
-        call = lambda: run(*args, **kwargs)
+        call = lambda: settle(run(*args, **kwargs))
     applies = ns.get("applies")
     if callable(applies) and value is not None and not once:
         try:
-            out["applies"] = bool(applies(value))
+            out["applies"] = bool(settle(applies(value)))
         except Exception as exc:
             out["applies_error"] = type(exc).__name__
     first = call()
@@ -1687,7 +1715,7 @@ try:
         holds = ns.get("holds")
         if callable(holds) and value is not None:
             try:
-                out["holds"] = bool(holds(value, first))
+                out["holds"] = bool(settle(holds(value, first)))
             except Exception as exc:
                 out["holds_error"] = type(exc).__name__
     try:
