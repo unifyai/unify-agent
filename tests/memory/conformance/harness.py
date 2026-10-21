@@ -56,35 +56,24 @@ def lease_end(hours: float = 6.0) -> str:
 
 
 def redesign_env(port: int) -> dict[str, str]:
-    """The settings a kit gives a redesign cell, with this run's loopback routes."""
+    """The settings a launcher gives a run with memory, with this run's loopback routes (the lanes' tokens arrive on
+    descriptors: :func:`settle_lanes`)."""
     return {
         "UNIFY_MEMORY": "on",
-        "UNIFY_MEMORY_PROFILE": "redesign",
-        "UNIFY_MEMORY_LIBRARY": "on",
-        "UNIFY_MEMORY_LIBRARY_FORK": "on",
-        "UNIFY_MEMORY_LIBRARY_POOL": "on",
-        "UNIFY_MEMORY_LIBRARY_WAIT_SLOT": "on",
-        "UNIFY_MEMORY_LIBRARIAN": "on",
-        "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE": "on",
-        "UNIFY_TOOLS_IN_CODE": "on",
-        "UNIFY_REQUEST_METADATA_HEADERS": "on",
-        "UNIFY_MEMORY_WRITER_SERVICE_CAP_USD": SERVICE_CAP_USD,
-        "UNIFY_HOST_LEASE_END": lease_end(),
+        "UNIFY_MEMORY_CAP_USD": SERVICE_CAP_USD,
         "UNIFY_MEMORY_WRITER_MODEL": WRITER_MODEL,
         "UNIFY_MEMORY_WRITER_BASE_URL": FL.route(port, "writer"),
-        "UNIFY_MEMORY_WRITER_TOKEN": TOKENS["writer"],
+        # the actor's side of the run (its settings are the core package's)
+        "UNIFY_TOOLS_IN_CODE": "on",
+        "UNIFY_REQUEST_METADATA_HEADERS": "on",
         "UNIFY_LOCAL_EMBEDDINGS": "false",
         "UNIFY_EMBED_URL": f"http://127.0.0.1:{port}/embed/v1/embeddings",
     }
 
 
 def in_episode_env() -> dict[str, str]:
-    """The in-episode arm's settings on top of :func:`redesign_env` (rev 2's main profile runs without in-episode
-    memory, and the profile takes no other in-episode value): no profile, and the arm's switches each set, as a kit
-    sets an arm."""
-    from unify.memory.integration import switch
-
-    return {"UNIFY_MEMORY_PROFILE": "", **switch.REDESIGN_ARMS["in_episode_on"]}
+    """Memory during an episode as well (``UNIFY_MEMORY=in_episode``), on top of :func:`redesign_env`."""
+    return {"UNIFY_MEMORY": "in_episode"}
 
 
 def apply_settings(monkeypatch: Any, env: dict[str, str]) -> None:
@@ -109,19 +98,26 @@ def _pipe(text: str) -> int:
 
 
 def settle_lanes(monkeypatch: Any, port: int) -> None:
-    """The fork's and the helpers' routes as a controller gets them: a base URL and an inherited pipe with the token,
-    each settled once in this process (so both names leave the environment), as the key proxy's handover does."""
+    """The writer's, the fork's and the helpers' lanes as a controller gets them: a base URL and an inherited pipe with
+    the token, each settled once in this process (so both names leave the environment), as a launcher's handover
+    does."""
     from types import SimpleNamespace
 
     from unify.memory.integration import switch as sw
 
-    for name, value in (("_FORK_TOKEN", None), ("_FORK_BASE", ""), ("_FORK_TRIED", False), ("_FORK_REFUSAL", None)):
-        if hasattr(sw, name):
-            monkeypatch.setattr(sw, name, value)
-    for name, value in (("_HELPER_TOKEN", None), ("_HELPER_BASE", ""), ("_HELPER_TRIED", False),
-                        ("_HELPER_REFUSAL", None)):
-        if hasattr(sw, name):
-            monkeypatch.setattr(sw, name, value)
+    # each lane read afresh in this test (a lane's token is read once per process)
+    monkeypatch.setattr(sw, "_FORK", sw._Lane(sw.LIBRARY_FORK_BASE_URL, sw.LIBRARY_FORK_TOKEN_FD, sw.LIBRARY_FORK_TOKEN,
+                                              "fork", "no fork lane"))
+    monkeypatch.setattr(sw, "_HELPER", sw._Lane(sw.LIBRARY_HELPER_BASE_URL, sw.LIBRARY_HELPER_TOKEN_FD,
+                                                sw.LIBRARY_HELPER_TOKEN, "helper", "no helper lane"))
+    from unify.settings import SETTINGS
+
+    # the writer's lane: its token read once from the descriptor, as the controller reads it at start-up
+    for name, value in (("_FD_TOKEN", None), ("_FD_TRIED", False), ("_FD_HELD", ""), ("_ENV_REFUSAL", None)):
+        monkeypatch.setattr(sw, name, value)
+    writer = {sw.WRITER_BASE_URL: FL.route(port, "writer"), sw.WRITER_TOKEN_FD: str(_pipe(TOKENS["writer"]))}
+    monkeypatch.setattr(SETTINGS, sw.WRITER_TOKEN_FD, writer[sw.WRITER_TOKEN_FD])
+    assert sw.settle_writer_route_env({}, SimpleNamespace(**writer)) is None
     fork = {sw.LIBRARY_FORK_BASE_URL: FL.route(port, "fork"), sw.LIBRARY_FORK_TOKEN_FD: str(_pipe(TOKENS["fork"]))}
     assert sw.settle_fork_route_env(fork, SimpleNamespace(**fork)) is None
     helper = {sw.LIBRARY_HELPER_BASE_URL: FL.route(port, "helper"),
