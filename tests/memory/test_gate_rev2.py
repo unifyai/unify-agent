@@ -174,19 +174,8 @@ def test_a_landing_runs_nothing(tmp_path, monkeypatch):
     assert landing["verified"]["ran"] is False and landing["recognition"]["ran"] is False
     assert not (box / "memory" / "readings" / "tests" / "data" / "row_sums.case1.json").exists()
     test = (box / "memory" / "readings" / "tests" / "test_row_sums.py").read_text()
-    assert "xfail(strict=False" in test  # the refusal test's form, read from the reader's code
-
-
-def test_a_reader_that_states_its_refusal_gets_the_plain_refusal_test(tmp_path):
-    pkg = tmp_path / "memory" / "readings"
-    pkg.mkdir(parents=True)
-    (pkg / "readers.py").write_text(
-        "from memory.errors import MemoryInputError\n\n\n"
-        "def read_rows(text):\n    if not text:\n        raise MemoryInputError('no rows')\n    return []\n",
-    )
-    assert lc._raises_memory_input_error(tmp_path, "memory.readings.readers:read_rows", None) is True
-    (pkg / "readers.py").write_text("def read_rows(text):\n    return []\n")
-    assert lc._raises_memory_input_error(tmp_path, "memory.readings.readers:read_rows", None) is False
+    # no refusal test: whether the reader refuses text it was not built for is known only by running it
+    assert "refuses_text_it_was_not_built_for" not in test
 
 
 # --- the profile ------------------------------------------------------------------------------------------------------------

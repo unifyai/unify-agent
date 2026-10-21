@@ -118,8 +118,8 @@ def test_landing_writes_the_reader_procedure_fixtures_test_and_manifest_entries(
     made = listing["memory/readings/tests/data/row_sums.case1.result.json"]
     assert (made["kind"], made["episode"], made["source"], made["trust"]) == ("copy", "e7", "args:0", 2), made
     assert made["sha256"] == hashlib.sha256(result.read_bytes()).hexdigest()
-    # the test: the procedure on the reader's value of the recorded text against that fixture, the reader on the
-    # recorded text, and one refusal; the expected value is loaded from the fixture, never written in the test
+    # the test: the procedure on the reader's value of the recorded text against that fixture, and the reader on the
+    # recorded text; the expected value is loaded from the fixture, never written in the test
     test = (mem / "tests" / "test_row_sums.py").read_text()
     assert "def test_row_sums_case1_gives_the_recorded_result():" in test
     assert 'expected = json.loads((DATA / "row_sums.case1.result.json").read_text(encoding="utf-8"))' in test
@@ -128,12 +128,10 @@ def test_landing_writes_the_reader_procedure_fixtures_test_and_manifest_entries(
     assert "\ndef request(text):" in test and "return Request(text, json_values(text))" in test
     assert '"sums"' not in test
     assert "def test_row_sums_case1_reader_reads_the_recorded_request():" in test
-    assert "def test_row_sums_reader_refuses_text_it_was_not_built_for():" in test
-    # its code states no MemoryInputError (read from the code, never run), so its refusal test is a non-strict
-    # expected failure
-    assert '@pytest.mark.xfail(strict=False, reason="the reader states no refusal of text it was not built for yet")' in (
-        test
-    )
+    # no refusal test: whether the reader refuses text it was not built for is known only by running it, which a
+    # landing never does; the reply asks the writer to add one once it does
+    assert "refuses_text_it_was_not_built_for" not in test and "xfail" not in test
+    assert "no refusal test was written" in reply.text
     # the manifest entries, with their roles
     items = {i["item"]: i for i in _manifest(tmp_path)["items"]}
     proc = items["memory.readings.procedures:row_sums"]
@@ -166,7 +164,7 @@ def test_landing_writes_the_reader_procedure_fixtures_test_and_manifest_entries(
         "readings/tests/test_row_sums.py",
     ):
         assert f"- wrote /memory/memory/{rel}" in reply.text, reply.text
-    assert "expected failure" in reply.text
+    assert "no refusal test was written" in reply.text
     _no_leak(reply, tmp_path)
 
 
@@ -223,13 +221,14 @@ def test_same_as_naming_a_landed_capture_adds_a_new_case_of_that_procedure(tmp_p
     assert not (tmp_path / "box" / "memory" / "elsewhere").exists()
     assert (mem / "procedures.py").read_text().count("# Landed from capture ") == 1
     data = mem / "tests" / "data"
-    assert json.loads((data / "row_sums.case2.json").read_text()) == [[9, 1], [2, 2], [0, 5]]
+    # the second request's text as its case's fixture (no parsed fixture: that would run the reader)
+    assert (data / "row_sums.case2.txt").read_text() == second.request[0]
+    assert not (data / "row_sums.case2.json").exists()
     test = (mem / "tests" / "test_row_sums.py").read_text()
     assert "def test_row_sums_case1_gives_the_recorded_result():" in test
     assert "def test_row_sums_case2_gives_the_recorded_result():" in test
     assert json.loads((data / "row_sums.case2.result.json").read_text()) == {"sums": [10, 4, 5]}
     assert 'json.loads((DATA / "row_sums.case2.result.json").read_text(encoding="utf-8"))' in test
-    assert test.count("def test_row_sums_reader_refuses_text_it_was_not_built_for():") == 1
     proc = {i["item"]: i for i in _manifest(tmp_path)["items"]}["memory.readings.procedures:row_sums"]
     assert proc["source_episodes"] == ["e7", "e8"]
 
