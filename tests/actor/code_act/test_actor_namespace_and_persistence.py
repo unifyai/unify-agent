@@ -182,36 +182,6 @@ async def test_a_teammate_has_its_names_bound_and_keeps_variables(in_code):
     _assert_ended(in_code["opened"])
 
 
-@needs_bwrap
-@pytest.mark.asyncio
-@pytest.mark.timeout(400)
-async def test_under_fresh_cell_state_the_actor_and_a_teammate_lose_variables_and_are_told(in_code, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "fresh")
-    model = ScriptedModel(
-        actor=[
-            reply(calls=[code("x = 41\nprint('SET')")]),
-            reply(calls=[code("print('NEXT', x + 1)")]),
-            reply(calls=[code(TEAMMATE_START)]),
-            reply(calls=[code(ACTOR_WAIT)]),
-            reply("not finished"),
-        ],
-        helper=[
-            reply(calls=[code("x = 41\nprint('SET')")]),
-            reply(calls=[code("print('NEXT', x + 1)")]),
-            reply(calls=[code("tools.answer('probe finished')")]),
-            reply("not finished"),
-        ],
-    )
-    assert await _act(model, "Twice, then a teammate twice.") == "teammate done", _why(model)
-    actor, mates = model.of("actor"), model.of("helper")
-    for who, call in (("actor", actor[2]), ("teammate", mates[2])):
-        shown = _tool_results(call)
-        assert "NameError" in shown and "NEXT 42" not in shown, (who, shown)
-    _assert_first_request(actor[0], "actor", persistent=False)
-    _assert_first_request(mates[0], "teammate", persistent=False)
-    _assert_ended(in_code["opened"])
-
-
 # --- library mode: `memory` bound with no import, even for an empty library -----------------------------------
 
 
@@ -257,8 +227,6 @@ def _out(res) -> str:
 @pytest.mark.timeout(300)
 @pytest.mark.parametrize("agent", ["actor", "teammate"])
 async def test_in_library_mode_memory_is_bound_with_no_import_even_when_empty(world, monkeypatch, agent):  # noqa: F811
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "persistent")
     paths = _library_run(monkeypatch, world["state"])
     assert (paths.checkout / "memory" / "__init__.py").is_file()
     session = _session(world["state"], agent)
@@ -276,7 +244,7 @@ async def test_in_library_mode_memory_is_bound_with_no_import_even_when_empty(wo
         names = _names(session.opening())
         assert {"tools", "memory"} <= names, names
     finally:
-        await session.close(completed=True)
+        await session.close()
     assert not session.box_alive()
 
 
@@ -287,8 +255,6 @@ async def test_in_library_mode_memory_is_bound_with_no_import_even_when_empty(wo
 @pytest.mark.asyncio
 @pytest.mark.timeout(300)
 async def test_the_actor_is_told_each_restart_and_then_has_lost_its_variables(world, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "persistent")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")
     session = _session(world["state"], "actor", limit=3.0)
     try:
@@ -310,7 +276,7 @@ async def test_the_actor_is_told_each_restart_and_then_has_lost_its_variables(wo
         for cause in ("ran out of time", "left something running", "sat idle too long"):
             assert cause in opening, cause
     finally:
-        await session.close(completed=True)
+        await session.close()
 
 
 @needs_bwrap
@@ -321,8 +287,6 @@ async def test_an_idle_actor_interpreter_is_restarted_and_says_so(world, monkeyp
 
     from unify.common.box_interpreter import BoxInterpreter
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "persistent")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")
 
     async def start(**kw):
@@ -337,5 +301,5 @@ async def test_an_idle_actor_interpreter_is_restarted_and_says_so(world, monkeyp
         assert "(the interpreter was idle for more than 0.5 s and was restarted: " in out, out
         assert "AFTER IDLE False" in out, out
     finally:
-        await session.close(completed=True)
+        await session.close()
 

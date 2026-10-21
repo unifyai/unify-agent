@@ -27,9 +27,7 @@ from typing import Callable
 import pytest
 
 from tests.actor.code_act.helpers import WorkerStarts, worker_starts  # noqa: F401
-from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
-from unify.actor.execution.session import SessionExecutor
-from unify.actor.execution.types import parts_to_text
+from tests.actor.code_act.sandbox_world import actor_interpreter, needs_bwrap, world  # noqa: F401
 
 HOST_LINE = '{"message": "the host\'s next message"}\n'
 # The watchdog writes the host's line only this late: a cell still reading
@@ -69,25 +67,25 @@ async def _run(
     starts: WorkerStarts | None = None,
     *,
     warmed: Callable[[], None] | None = None,
-) -> tuple[str, dict, float]:
-    """Run *code* in a fresh session. The elapsed time leaves out the
+) -> tuple:
+    """Run *code* in a fresh interpreter. The elapsed time leaves out the
     sandboxed worker's start when *starts* times it. With *warmed*, a
     throwaway first cell runs before the clock starts (the worker's start,
-    the session's first policy build and first execution), and *warmed* is
-    called once it has."""
-    ex = SessionExecutor(environments={}, timeout=None)
+    the first policy build and first execution), and *warmed* is called once
+    it has."""
+    interp = await actor_interpreter(limit=600)
     try:
         if warmed is not None:
-            await ex.execute(code="1", state_mode="stateful", session_id=0)
+            await interp.run_cell("1")
             warmed()
         started = time.monotonic()
-        res = await ex.execute(code=code, state_mode="stateful", session_id=0)
+        res = await interp.run_cell(code)
         elapsed = time.monotonic() - started
         if starts is not None:
             elapsed -= starts.seconds(since=started)
-        return parts_to_text(res["stdout"]), res, elapsed
+        return res.output, res, elapsed
     finally:
-        await ex.close()
+        await interp.stop()
 
 
 CELLS = {
@@ -125,12 +123,12 @@ async def test_a_cell_in_the_worker_reads_an_empty_stdin(
     out, res, elapsed = await _run(code, worker_starts)
     assert elapsed < 30
     if cell == "help":
-        assert res["error"] is None, res["error"]
+        assert res.error is None, res.text()
     elif cell == "input":
-        assert "EOFError" in res["error"]
+        assert "EOFError" in (res.error or "")
     else:
-        assert res["error"] is None, res["error"]
-        assert res["result"] == ([] if cell == "iterate" else "")
+        assert res.error is None, res.text()
+        assert res.result == ([] if cell == "iterate" else "")
 
 
 # ── what a cell starts ─────────────────────────────────────────────────────
@@ -207,11 +205,11 @@ async def test_what_a_cell_starts_reads_end_of_input(
             worker_starts,
             warmed=driver_channel,
         )
-        assert res["error"] is None, res["error"]
+        assert res.error is None, res.text()
         assert (
             elapsed < WATCHDOG_S
         ), f"the {started} waited on the driver's channel ({elapsed:.1f}s)"
-        assert res["result"] in ("", [""]), res["result"]
+        assert res.result in ("", [""]), res.result
         # The driver's line is still the CLI's to read.
         line = await asyncio.wait_for(reader.readline(), WATCHDOG_S * 2)
         assert line.decode() == HOST_LINE

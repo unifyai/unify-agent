@@ -45,7 +45,6 @@ from tests.actor.code_act.test_answer_reaches_the_session_under_tools_in_code im
 from tests.actor.code_act.test_in_code_tools_wiring import _channel_rows, _rows, _system_texts
 from tests.scripted_model import ScriptedModel, reply
 from unify.common import tool_registry as R
-from unify.settings import SETTINGS
 
 #: A benchmark whose own protocol ends an instance with a "finish" action (the ARC adapter's end="finish") gets it
 #: as the request's answer, given by tools.answer like any other answer.
@@ -79,7 +78,6 @@ def _names_finish(text: str) -> bool:
 @pytest.mark.asyncio
 @pytest.mark.timeout(TEST_BOUND_S)
 async def test_each_request_is_answered_by_tools_answer_and_finish_is_unknown(session_world, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "on")
     model = ScriptedModel(
         actor=[
             # the first request: the tool list and the record's help, the end call the actor does not have, then its

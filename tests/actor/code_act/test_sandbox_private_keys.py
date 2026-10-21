@@ -18,12 +18,12 @@ from pathlib import Path
 import pytest
 
 from tests.actor.code_act.sandbox_world import (  # noqa: F401 (fixture)
-    bash,
+    actor_interpreter,
     needs_bwrap,
+    sh,
     world,
 )
 from unify import sandbox
-from unify.actor.execution.session import SessionExecutor
 
 FAKE_BODY = "FAKE-KEY-BODY-4b1d"  # pragma: allowlist secret
 
@@ -228,18 +228,18 @@ async def test_workspace_private_keys_are_masked_in_a_cell(world):
     assert masked.get(named) == "mask-credentials"
     assert masked.get(armoured) == "mask-credentials"
     assert public not in masked and public_pem not in masked
-    ex = SessionExecutor()
+    ex = await actor_interpreter()
     # The cell sees the workspace at its fixed path.
     ws = "/workspace"
     try:
-        out, _ = await bash(ex, f"cat {ws}/id_rsa {ws}/keys/notes.txt 2>&1")
+        out, _ = await sh(ex, f"cat {ws}/id_rsa {ws}/keys/notes.txt 2>&1")
         assert FAKE_BODY not in out, out
         assert out.count("rule mask-credentials") == 2, out
-        out, _ = await bash(ex, f"cat {ws}/id_rsa.pub {ws}/keys/x.txt")
+        out, _ = await sh(ex, f"cat {ws}/id_rsa.pub {ws}/keys/x.txt")
         assert "FAKE-PUBLIC-HALF" in out and "BEGIN PUBLIC KEY" in out, out
-        out, _ = await bash(ex, f"grep -r {FAKE_BODY} {ws} 2>/dev/null | wc -l")
+        out, _ = await sh(ex, f"grep -r {FAKE_BODY} {ws} 2>/dev/null | wc -l")
         assert out.strip() == "0"
     finally:
-        await ex.close()
+        await ex.stop()
     # The host's files are untouched.
     assert FAKE_BODY in named.read_text() and FAKE_BODY in armoured.read_text()

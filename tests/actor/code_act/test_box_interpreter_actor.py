@@ -47,7 +47,8 @@ async def test_actor_state_tools_and_descriptors(world):  # noqa: F811
         req, rep = ch.box_fds()
         assert fds[req].startswith("pipe:") and fds[rep].startswith("pipe:")
         assert fds[0] == "/dev/null"
-        assert Counter(_kind(t) for t in fds.values()) == EXPECTED_FDS, fds
+        # the worker child no longer opens the random-number device
+        assert Counter(_kind(t) for t in fds.values()) == EXPECTED_FDS - Counter({"urandom": 1}), fds
     finally:
         await interp.stop()
     assert not interp.box_alive()

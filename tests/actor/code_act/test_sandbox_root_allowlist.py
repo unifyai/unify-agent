@@ -23,13 +23,13 @@ from pathlib import Path
 import pytest
 
 from tests.actor.code_act.sandbox_world import (  # noqa: F401 (fixture)
+    actor_interpreter,
     ENV_SECRET,
-    bash,
     needs_bwrap,
+    sh,
     world,
 )
 from unify import sandbox
-from unify.actor.execution.session import SessionExecutor
 from unify.settings import SETTINGS
 
 BIND_OPTIONS = ("--bind", "--ro-bind", "--dev-bind", "--bind-try", "--ro-bind-try")
@@ -141,9 +141,9 @@ async def test_a_credential_like_tree_outside_the_allowlist_is_absent(world):
     assert policy.readable_violation(envs / "service-account.json")[0] == (
         "root-allowlist"
     )
-    ex = SessionExecutor()
+    ex = await actor_interpreter()
     try:
-        out, _ = await bash(
+        out, _ = await sh(
             ex,
             f"for p in {envs} {envs}/.env.prod {envs}/service-account.json; do "
             'test -e "$p" && echo "seen $p" || echo absent; done; '
@@ -152,34 +152,47 @@ async def test_a_credential_like_tree_outside_the_allowlist_is_absent(world):
         assert ENV_SECRET not in out and "seen" not in out
         assert out.split().count("absent") == 3
     finally:
-        await ex.close()
+        await ex.stop()
 
 
 @needs_bwrap
 @pytest.mark.asyncio
 async def test_host_directories_outside_the_allowlist_do_not_exist(world):
-    """Existence only, inside the sandbox: nothing on the host is read."""
+    """Existence only, inside the sandbox: nothing on the host is read.
+
+    A directory that holds a root derived from the interpreter (a venv under
+    ``/srv``, say) exists as the path to it, and shows nothing else."""
     dirs = ("/root", "/var", "/var/log", "/opt", "/mnt", "/mnt/c", "/workspaces")
     dirs += ("/srv", "/media", "/run", "/snap", "/boot", "/init")
-    ex = SessionExecutor()
+    derived = [d.path for d in sandbox._derived_candidates() if d.refusal is None]
+    toward: dict[str, set[str]] = {}
+    for d in dirs:
+        for root in derived:
+            if root != Path(d) and root.is_relative_to(d):
+                toward.setdefault(d, set()).add(root.relative_to(d).parts[0])
+    absent = [d for d in dirs if d not in toward]
+    ex = await actor_interpreter()
     try:
-        out, _ = await bash(
+        out, _ = await sh(
             ex,
-            "for p in " + " ".join(dirs) + "; do "
+            "for p in " + " ".join(absent) + "; do "
             'test -e "$p" && echo "seen $p"; done; echo done',
         )
         assert out.strip() == "done", out
+        for d, names in toward.items():
+            out, _ = await sh(ex, f"ls -A {d}")
+            assert set(out.split()) == names, (d, out)
         # The system directories are there, read-only.
-        out, _ = await bash(
+        out, _ = await sh(
             ex,
             "test -x /usr/bin/env && test -e /bin/sh && test -f /etc/ld.so.cache "
             "&& echo system",
         )
         assert out.strip() == "system"
-        out, _ = await bash(ex, "test -e /etc/shadow || echo no-shadow")
+        out, _ = await sh(ex, "test -e /etc/shadow || echo no-shadow")
         assert out.strip() == "no-shadow"
     finally:
-        await ex.close()
+        await ex.stop()
 
 
 @needs_bwrap
@@ -187,15 +200,15 @@ async def test_host_directories_outside_the_allowlist_do_not_exist(world):
 async def test_etc_passwd_lists_only_root_this_account_and_nobody(world):
     import pwd
 
-    ex = SessionExecutor()
+    ex = await actor_interpreter()
     try:
-        out, _ = await bash(ex, "cut -d: -f1 /etc/passwd; whoami")
+        out, _ = await sh(ex, "cut -d: -f1 /etc/passwd; whoami")
         names = out.split()
         me = pwd.getpwuid(os.getuid()).pw_name
         assert names[-1] == me
         assert set(names[:-1]) <= {"root", me, "nobody"}
     finally:
-        await ex.close()
+        await ex.stop()
 
 
 @needs_bwrap
@@ -313,17 +326,13 @@ EXPECTED = {
 @pytest.mark.asyncio
 async def test_a_python_cell_creates_only_unix_and_inet_sockets(world):
     """In the sandboxed worker (the default): creation only, nothing connects."""
-    ex = SessionExecutor()
+    ex = await actor_interpreter()
     try:
-        res = await ex.execute(
-            code=SOCKETS + "out",
-            state_mode="stateless",
-            session_id=None,
-        )
-        assert res["error"] is None, res["error"]
-        assert res["result"] == EXPECTED
+        res = await ex.run_cell(SOCKETS + "out")
+        assert res.error is None, res.text()
+        assert res.result == EXPECTED
     finally:
-        await ex.close()
+        await ex.stop()
 
 
 @needs_bwrap
@@ -335,10 +344,10 @@ async def test_a_shell_cell_and_its_children_are_filtered_too(world):
     code = SOCKETS + "import json; print(json.dumps(out))"
     path = world["workspace"] / "sockets.py"
     path.write_text(code)
-    ex = SessionExecutor()
+    ex = await actor_interpreter()
     try:
         # The harness's interpreter (os.unshare needs 3.12), run from a shell.
-        out, _ = await bash(
+        out, _ = await sh(
             ex,
             f"{sys.executable} /workspace/{path.name} 2>&1 && (unshare -U true; echo $?)",
         )
@@ -346,7 +355,7 @@ async def test_a_shell_cell_and_its_children_are_filtered_too(world):
         assert json.loads(lines[0]) == EXPECTED
         assert lines[-1].strip() != "0"
     finally:
-        await ex.close()
+        await ex.stop()
 
 
 def test_the_program_checks_the_architecture_and_refuses_others():

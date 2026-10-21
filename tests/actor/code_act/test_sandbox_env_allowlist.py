@@ -18,12 +18,12 @@ from pathlib import Path
 import pytest
 
 from tests.actor.code_act.sandbox_world import (  # noqa: F401 (fixture)
-    bash,
+    actor_interpreter,
     needs_bwrap,
+    sh,
     world,
 )
 from unify import sandbox
-from unify.actor.execution.session import SessionExecutor
 from unify.settings import SETTINGS, ProductionSettings
 
 FAKE_KEY = "fake-provider-key-0c4d9e7b1a"  # pragma: allowlist secret
@@ -221,11 +221,11 @@ async def test_no_environment_a_cell_can_read_holds_the_harnesss_key(
 ):
     for name in ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OR_PROVIDER"):
         monkeypatch.setenv(name, FAKE_KEY)
-    ex = SessionExecutor()
+    ex = await actor_interpreter()
     try:
-        res = await ex.execute(code=PROBE, state_mode="stateless", session_id=None)
-        assert res["error"] is None, res["error"]
-        pids, dump, names, pid1, ppid, pwd, cwd = res["result"]
+        res = await ex.run_cell(PROBE)
+        assert res.error is None, res.text()
+        pids, dump, names, pid1, ppid, pwd, cwd = res.result
         # PWD is the cell's own directory, never the harness's.
         assert pwd == cwd, (pwd, cwd)
         assert FAKE_KEY not in repr(res)
@@ -244,7 +244,7 @@ async def test_no_environment_a_cell_can_read_holds_the_harnesss_key(
         assert all(p < 100 for p in pids), pids
         assert os.path.basename(pid1) == "bwrap", pid1
         # The bash cell: env, both environ files and the process list.
-        out, _ = await bash(
+        out, _ = await sh(
             ex,
             "env; echo ---; tr '\\0' '\\n' < /proc/self/environ; echo ---; "
             "tr '\\0' '\\n' < /proc/1/environ 2>&1; echo ---; "
@@ -256,4 +256,4 @@ async def test_no_environment_a_cell_can_read_holds_the_harnesss_key(
         bash_pids = [int(p) for p in out.rsplit("---", 1)[1].split()]
         assert 1 in bash_pids and all(p < 100 for p in bash_pids), bash_pids
     finally:
-        await ex.close()
+        await ex.stop()

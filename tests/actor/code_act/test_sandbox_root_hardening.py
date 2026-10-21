@@ -22,13 +22,13 @@ from pathlib import Path
 import pytest
 
 from tests.actor.code_act.sandbox_world import (  # noqa: F401 (fixture)
+    actor_interpreter,
     ENV_SECRET,
-    bash,
     needs_bwrap,
+    sh,
     world,
 )
 from unify import sandbox
-from unify.actor.execution.session import SessionExecutor
 
 BIND_OPTIONS = ("--bind", "--ro-bind", "--dev-bind", "--bind-try", "--ro-bind-try")
 
@@ -178,9 +178,9 @@ async def test_no_pth_or_pythonpath_shows_a_fake_dot_local(world, monkeypatch):
         assert not (dst == fake["local"] or dst.is_relative_to(fake["local"])), dst
     for name in ("secret", "keyring"):
         assert policy.readable_violation(fake[name]) is not None
-    ex = SessionExecutor()
+    ex = await actor_interpreter()
     try:
-        out, _ = await bash(
+        out, _ = await sh(
             ex,
             f"for p in {fake['secret']} {fake['keyring']} {fake['share']}; do "
             'test -e "$p" && echo "seen $p" || echo absent; done; '
@@ -189,7 +189,7 @@ async def test_no_pth_or_pythonpath_shows_a_fake_dot_local(world, monkeypatch):
         assert ENV_SECRET not in out and "seen" not in out, out
         assert out.split().count("absent") == 3
     finally:
-        await ex.close()
+        await ex.stop()
 
 
 # ── an editable checkout shows its packages, not itself ─────────────────────
@@ -215,16 +215,12 @@ async def test_an_editable_worktree_shows_only_its_packages(world, monkeypatch):
     policy = sandbox.build_policy(fresh=True)
     argv = sandbox.wrap_argv(["true"], policy)
     assert ("--ro-bind", str(root), str(root)) not in _binds(argv)
-    ex = SessionExecutor()
+    ex = await actor_interpreter()
     try:
-        res = await ex.execute(
-            code="import pkg, single_module\n(pkg.VALUE, single_module.NAME)",
-            state_mode="stateless",
-            session_id=None,
-        )
-        assert res["error"] is None, res["error"]
-        assert tuple(res["result"]) == (42, "module")
-        out, _ = await bash(
+        res = await ex.run_cell("import pkg, single_module\n(pkg.VALUE, single_module.NAME)")
+        assert res.error is None, res.text()
+        assert tuple(res.result) == (42, "module")
+        out, _ = await sh(
             ex,
             f"cd {root} && for p in .env .git tests logs pkg; do "
             'test -e "$p" && echo "seen $p" || echo "absent $p"; done',
@@ -242,7 +238,7 @@ async def test_an_editable_worktree_shows_only_its_packages(world, monkeypatch):
             "pkg",
         ], out
     finally:
-        await ex.close()
+        await ex.stop()
 
 
 # ── a link's name reaches the one mount of its target, masks included ──────
@@ -267,9 +263,9 @@ async def test_a_symlinked_root_keeps_its_masks_through_the_link(world, monkeypa
         (argv[i + 1], argv[i + 2]) for i in range(end - 2) if argv[i] == "--symlink"
     ]
     assert (str(real), str(link)) in links
-    ex = SessionExecutor()
+    ex = await actor_interpreter()
     try:
-        out, _ = await bash(
+        out, _ = await sh(
             ex,
             f"cat {link}/.env {real}/.env 2>&1; test -f {link}/relay_client.py "
             "&& echo client",
@@ -277,7 +273,7 @@ async def test_a_symlinked_root_keeps_its_masks_through_the_link(world, monkeypa
         assert ENV_SECRET not in out, out
         assert "client" in out
     finally:
-        await ex.close()
+        await ex.stop()
 
 
 @needs_bwrap
@@ -302,16 +298,16 @@ async def test_secret_files_deep_in_a_derived_root_are_masked(world, monkeypatch
         root / "a" / "id.pem",
     ]
     assert set(secrets) <= masked
-    ex = SessionExecutor()
+    ex = await actor_interpreter()
     try:
-        out, _ = await bash(
+        out, _ = await sh(
             ex,
             "cat " + " ".join(map(str, secrets)) + f" 2>&1; cat {root}/a/plain.txt",
         )
         assert ENV_SECRET not in out, out
         assert "plain" in out
     finally:
-        await ex.close()
+        await ex.stop()
 
 
 # ── LD_PRELOAD: shared libraries only ───────────────────────────────────────

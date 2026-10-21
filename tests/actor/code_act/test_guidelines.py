@@ -5,7 +5,6 @@ The ``guidelines`` parameter provides meta-guidance on *how* to approach a task,
 as opposed to the ``request`` which specifies *what* to do.
 """
 
-from unify.actor.core_surface import PromptSurface
 import asyncio
 
 import pytest
@@ -24,7 +23,6 @@ def test_build_code_act_prompt_without_guidelines():
     prompt = build_code_act_prompt(
         environments={},
         guidelines=None,
-        core=PromptSurface(),
     )
     assert "### Guidelines" not in prompt
 
@@ -34,7 +32,6 @@ def test_build_code_act_prompt_with_guidelines():
     prompt = build_code_act_prompt(
         environments={},
         guidelines="Always use sub-agents for parallel tasks.",
-        core=PromptSurface(),
     )
     assert "### Guidelines" in prompt
     assert "Always use sub-agents for parallel tasks." in prompt
@@ -46,7 +43,6 @@ def test_build_code_act_prompt_guidelines_placed_before_rules():
     prompt = build_code_act_prompt(
         environments={},
         guidelines="Prefer simple solutions.",
-        core=PromptSurface(),
     )
     guidelines_pos = prompt.index("### Guidelines")
     # The role line always appears; guidelines should come after the role but
@@ -72,21 +68,15 @@ async def test_code_act_actor_accepts_guidelines_parameter():
     )
     # The handle is stopped at once; a request that starts before the stop
     # is answered in process.
-    with scripted(ScriptedModel(allow={"actor", "review", "gate"})):
-        try:
-            handle = await actor.act(
-                "What is 2 + 2?",
-                guidelines="Keep your response concise.",
-                persist=False,
-                clarification_enabled=False,
-            )
-            assert handle is not None
-            await handle.stop()
-        finally:
-            try:
-                await actor.close()
-            except Exception:
-                pass
+    with scripted(ScriptedModel(allow={"actor"})):
+        handle = await actor.act(
+            "What is 2 + 2?",
+            guidelines="Keep your response concise.",
+            persist=False,
+            clarification_enabled=False,
+        )
+        assert handle is not None
+        await handle.stop()
 
 
 @pytest.mark.asyncio
@@ -101,20 +91,14 @@ async def test_code_act_actor_guidelines_none_by_default():
     )
     # The handle is stopped at once; a request that starts before the stop
     # is answered in process.
-    with scripted(ScriptedModel(allow={"actor", "review", "gate"})):
-        try:
-            handle = await actor.act(
-                "What is 2 + 2?",
-                persist=False,
-                clarification_enabled=False,
-            )
-            assert handle is not None
-            await handle.stop()
-        finally:
-            try:
-                await actor.close()
-            except Exception:
-                pass
+    with scripted(ScriptedModel(allow={"actor"})):
+        handle = await actor.act(
+            "What is 2 + 2?",
+            persist=False,
+            clarification_enabled=False,
+        )
+        assert handle is not None
+        await handle.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -144,21 +128,14 @@ async def _act_with_guidelines(request: str, guidelines: str, answer: str):
     actor = CodeActActor(
         timeout=60,
     )
-    try:
-        with scripted(model):
-            handle = await actor.act(
-                request,
-                guidelines=guidelines,
-                persist=False,
-                clarification_enabled=False,
-                can_store=False,
-            )
-            result = await asyncio.wait_for(handle.result(), timeout=60)
-    finally:
-        try:
-            await actor.close()
-        except Exception:
-            pass
+    with scripted(model):
+        handle = await actor.act(
+            request,
+            guidelines=guidelines,
+            persist=False,
+            clarification_enabled=False,
+        )
+        result = await asyncio.wait_for(handle.result(), timeout=60)
 
     (call,) = model.of("actor")
     system = "\n".join(

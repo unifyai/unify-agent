@@ -1,9 +1,9 @@
 """Symbolic: the sandboxed Python worker starts every time, promptly.
 
-Each benchmark episode, and each fresh ``SessionExecutor``, starts a worker in
+Each benchmark episode, and each fresh actor interpreter, starts a worker in
 bubblewrap. A start that hangs (the worker's ready line never comes) stalls
 the whole episode until ``START_TIMEOUT_S``. This runs 30 starts in a row, a
-fresh executor each, and fails on any start that errs, hangs or is slow. No
+fresh interpreter each, and fails on any start that errs, hangs or is slow. No
 model is reached; the cell is ``1``.
 """
 
@@ -16,10 +16,10 @@ import time
 import pytest
 
 from tests.actor.code_act.sandbox_world import (  # noqa: F401 (fixture)
+    actor_interpreter,
     needs_bwrap,
     world,
 )
-from unify.actor.execution.session import SessionExecutor
 from unify.actor.execution.worker import START_TIMEOUT_S
 
 STARTS = 30
@@ -39,16 +39,14 @@ async def test_thirty_consecutive_worker_starts_all_succeed_promptly():
     times: list[float] = []
     failures: list[str] = []
     for i in range(STARTS):
-        ex = SessionExecutor()
+        interp = None
         t0 = time.perf_counter()
         try:
-            res = await asyncio.wait_for(
-                ex.execute(code="1", state_mode="stateful", session_id=0),
-                timeout=START_TIMEOUT_S,
-            )
+            interp = await asyncio.wait_for(actor_interpreter(), timeout=START_TIMEOUT_S)
+            res = await asyncio.wait_for(interp.run_cell("1"), timeout=START_TIMEOUT_S)
             elapsed = time.perf_counter() - t0
-            if res.get("error") is not None or res.get("result") != 1:
-                failures.append(f"start {i}: {res.get('error')!r}")
+            if res.error is not None or res.result != 1:
+                failures.append(f"start {i}: {res.error!r}")
             else:
                 times.append(elapsed)
         except Exception as exc:  # a hang (TimeoutError) or a failed start
@@ -57,7 +55,8 @@ async def test_thirty_consecutive_worker_starts_all_succeed_promptly():
                 f"{time.perf_counter() - t0:.1f}s: {exc}",
             )
         finally:
-            await asyncio.wait_for(ex.close(), timeout=15)
+            if interp is not None:
+                await asyncio.wait_for(interp.stop(), timeout=15)
         if len(failures) >= MAX_FAILURES:
             break
     summary = (

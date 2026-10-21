@@ -1,4 +1,4 @@
-"""Symbolic: with ``UNIFY_TOOLS_IN_CODE=on`` a cell that raises out of the in-code cell path
+"""Symbolic: a cell that raises out of the in-code cell path
 (``InCodeTools.run_cell``: the cell's task cancelled, or a control exception that is not the cell's reply) still
 writes its ``execute_code`` row in ``tool-events.jsonl``, with an error status, at the call number reserved when
 it started; no placeholder row for that reservation is left in the file, and the next cell takes the next number.
@@ -68,7 +68,6 @@ class StandIn:
 
 
 def _tools(tmp_path, monkeypatch, interp: StandIn):
-    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_STATE", "persistent")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")
 
     async def start(**_kw):
@@ -101,7 +100,7 @@ async def test_a_cancelled_cell_still_writes_its_row_at_its_number(tmp_path, mon
         with pytest.raises(asyncio.CancelledError):
             await tools.run_cell("x = 'never'")
     finally:
-        await tools.close(completed=False)
+        await tools.close()
     assert interp.calls == [0]
     _assert_error_row(_rows(tmp_path), 0)
 
@@ -117,7 +116,7 @@ async def test_a_cell_whose_task_is_cancelled_mid_cell_still_writes_its_row(tmp_
         with pytest.raises(asyncio.CancelledError):
             await task
     finally:
-        await tools.close(completed=False)
+        await tools.close()
     _assert_error_row(_rows(tmp_path), 0)
 
 
@@ -129,7 +128,7 @@ async def test_a_control_exception_out_of_the_cell_writes_an_error_row(tmp_path,
         with pytest.raises(Halt):
             await tools.run_cell("x = 1")
     finally:
-        await tools.close(completed=False)
+        await tools.close()
     _assert_error_row(_rows(tmp_path), 0)
 
 
@@ -143,7 +142,7 @@ async def test_the_next_cell_takes_the_next_number_and_ends_normally(tmp_path, m
         out = await tools.run_cell("x = 'second'")
         assert out.error is None
     finally:
-        await tools.close(completed=True)
+        await tools.close()
     rows = _rows(tmp_path)
     assert interp.calls == [0, 1]
     _assert_error_row(rows, 0)
@@ -163,7 +162,7 @@ async def test_an_interpreter_failure_is_still_written_as_before(tmp_path, monke
     try:
         out = await tools.run_cell("x = 1")
     finally:
-        await tools.close(completed=False)
+        await tools.close()
     assert out.error and "could not run" in out.error
     rows = _rows(tmp_path)
     assert not [r for r in rows if r.get("event") == PLACEHOLDER_EVENT]

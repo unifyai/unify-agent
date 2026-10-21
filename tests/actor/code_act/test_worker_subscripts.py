@@ -371,38 +371,3 @@ async def test_a_container_without_a_credential_crosses_by_value():
 
     assert _credential_inside(cyclic) is None
     assert _credential_inside({"a": [cyclic, {"b": KEY_SHAPED}]}) is not None
-
-
-# ── an environment global wrapped for its observers ─────────────────────────
-
-
-def _observed(value):
-    from unify.function_manager.primitives.observers import observed_globals
-
-    return observed_globals({"apis": value}, enabled=True)["apis"]
-
-
-def test_a_wrapped_object_is_subscripted_as_the_object_it_wraps():
-    worker, shadow = _harness()
-    shadow["apis"] = _observed(_Apps())
-    show = worker._resolve(
-        shadow,
-        {"root": "apis", "path": [{"item": "music"}, "show"]},
-    )
-    assert show("song") == "shown song"
-    recorder = _Recorder()
-    shadow["apis"] = _observed(recorder)
-    with pytest.raises(BoundaryRefusal, match="boundary_subscript = True"):
-        worker._resolve(shadow, {"root": "apis", "path": [{"item": "music"}]})
-    assert recorder.calls == []
-
-
-def test_a_module_or_the_environment_behind_a_wrapped_object_is_refused():
-    worker, shadow = _harness()
-    shadow["apis"] = _observed(_Apps())
-    for element in ("env", {"item": "env"}):
-        with pytest.raises(BoundaryRefusal, match="harness's environment"):
-            worker._resolve(shadow, {"root": "apis", "path": [element]})
-    for element in ("os", {"item": "os"}):
-        with pytest.raises(BoundaryRefusal, match="harness module"):
-            worker._resolve(shadow, {"root": "apis", "path": [element]})

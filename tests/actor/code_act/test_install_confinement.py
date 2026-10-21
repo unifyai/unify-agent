@@ -1,10 +1,9 @@
 """A package install never runs with the harness's credentials or outside the sandbox.
 
-A stored function's ``dependencies``, ``install(...)`` from a cell and
-``%pip install`` all name packages the model chose, and the harness installs
-them with ``uv`` into the workspace environment. Installs are binary-only,
-so a package's build steps (an sdist's ``setup.py`` or build backend) never
-run. The installer runs inside bubblewrap like a shell cell: credentials
+``tools.install(...)`` from a cell names packages the model chose, and the
+harness installs them with ``uv`` into the workspace environment. Installs are
+binary-only, so a package's build steps (an sdist's ``setup.py`` or build
+backend) never run. The installer runs inside bubblewrap like a cell: credentials
 hidden, ``/`` read-only, and only the environment and the installer's own
 cache writable. Its only network is the harness's allow-listing proxy
 (test_install_egress.py). It gets an explicit, minimal environment, never
@@ -386,4 +385,4 @@ def test_a_source_package_is_refused_before_any_build_step_runs(
         assert "disabled" in outcome["stderr"], outcome
     assert not report.exists(), report.read_text()
     assert not outside.exists()
-    assert environment.missing(["probe-pkg"]) == ["probe-pkg"]
+    assert not list(environment.site_packages().glob("probe_pkg*"))
