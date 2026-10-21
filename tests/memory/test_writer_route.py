@@ -1,4 +1,7 @@
-"""The writer's own route: ``UNIFY_MEMORY_WRITER_BASE_URL`` and ``UNIFY_MEMORY_WRITER_TOKEN``.
+"""The writer's own route: ``UNIFY_MEMORY_WRITER_BASE_URL`` and the token on ``UNIFY_MEMORY_WRITER_TOKEN_FD``.
+
+Clean main reads the lane's token from its inherited descriptor only (LANE-CONTRACT: the plain-env
+``UNIFY_MEMORY_WRITER_TOKEN`` is dropped; that name is now only the token's redaction name).
 
 Unset, the writer's call is built as shipped. Both set, it goes to that base URL with that token and carries
 ``X-Unify-Call-Kind: memory.writer``. One set, or a value in a wrong form, starts no pass. Neither name reaches a
@@ -161,7 +164,7 @@ def test_unset_settings_give_no_route():
     cfg = consolidate.writer_settings(
         SimpleNamespace(
             UNIFY_MEMORY_WRITER_BASE_URL="  ",
-            UNIFY_MEMORY_WRITER_TOKEN=SecretStr(""),
+            UNIFY_MEMORY_WRITER_TOKEN_FD="  ",
         ),
     )
     assert cfg.route is None
@@ -171,10 +174,12 @@ def test_settings_default_to_no_route(monkeypatch):
     from unify.settings import ProductionSettings
 
     monkeypatch.delenv("UNIFY_MEMORY_WRITER_BASE_URL", raising=False)
-    monkeypatch.delenv("UNIFY_MEMORY_WRITER_TOKEN", raising=False)
+    monkeypatch.delenv("UNIFY_MEMORY_WRITER_TOKEN_FD", raising=False)
     s = ProductionSettings()
     assert s.UNIFY_MEMORY_WRITER_BASE_URL == ""
-    assert s.UNIFY_MEMORY_WRITER_TOKEN.get_secret_value() == ""
+    assert s.UNIFY_MEMORY_WRITER_TOKEN_FD == ""
+    # the token is never a setting: it is read from its descriptor only
+    assert not hasattr(s, "UNIFY_MEMORY_WRITER_TOKEN")
     assert consolidate.writer_settings(s).route is None
 
 
@@ -269,27 +274,21 @@ def test_a_forged_header_does_not_select_the_route(actor_gateway, restore_unillm
     assert t["api_key"] == _digest(ACTOR_KEY)
 
 
-def test_both_set_gives_the_route():
-    cfg = consolidate.writer_settings(
-        SimpleNamespace(
-            UNIFY_MEMORY_WRITER_BASE_URL=WRITER_BASE + "/",
-            UNIFY_MEMORY_WRITER_TOKEN=SecretStr(WRITER_TOKEN),
-        ),
-    )
+def test_both_set_gives_the_route(fd_route):
+    settings = _fd_settings(_token_fd(fd_route, WRITER_TOKEN.encode() + b"\n"), base=WRITER_BASE + "/")
+    assert switch.settle_writer_route_env({}, settings) is None
+    cfg = consolidate.writer_settings(settings)
     assert cfg.route is not None
     assert cfg.route.base_url == WRITER_BASE
     assert _digest(cfg.route.token.get_secret_value()) == _digest(WRITER_TOKEN)
 
 
-def test_the_route_needs_an_openrouter_endpoint():
+def test_the_route_needs_an_openrouter_endpoint(fd_route):
+    settings = _fd_settings(_token_fd(fd_route, WRITER_TOKEN.encode() + b"\n"))
+    settings.UNIFY_MEMORY_WRITER_MODEL = "anthropic/claude@anthropic"
+    assert switch.settle_writer_route_env({}, settings) is None
     with pytest.raises(ValueError, match="@openrouter"):
-        consolidate.writer_settings(
-            SimpleNamespace(
-                UNIFY_MEMORY_WRITER_MODEL="anthropic/claude@anthropic",
-                UNIFY_MEMORY_WRITER_BASE_URL=WRITER_BASE,
-                UNIFY_MEMORY_WRITER_TOKEN=SecretStr(WRITER_TOKEN),
-            ),
-        )
+        consolidate.writer_settings(settings)
 
 
 # --- one set: fail closed ---------------------------------------------------------------------------------
@@ -359,14 +358,15 @@ def test_the_base_url_validator_accepts_http_urls(raw, want):
     assert switch.parse_writer_base_url(raw) == want
 
 
-def test_settings_never_refuse_or_echo_the_two_values(monkeypatch):
+def test_settings_never_refuse_or_echo_the_two_values(monkeypatch, fd_route):
     """A settings error would print its input, so settings only normalise; the pass start checks."""
     from unify.settings import ProductionSettings
 
     with_password = "http://user:pass@proxy.internal/v1"  # pragma: allowlist secret
     unsendable = "bad token-placeholder"  # pragma: allowlist secret
     monkeypatch.setenv("UNIFY_MEMORY_WRITER_BASE_URL", with_password)
-    monkeypatch.setenv("UNIFY_MEMORY_WRITER_TOKEN", unsendable)
+    # a token set on the descriptor's name by mistake
+    monkeypatch.setenv("UNIFY_MEMORY_WRITER_TOKEN_FD", unsendable)
     s = ProductionSettings()  # loads
     with pytest.raises(ValueError) as info:
         consolidate.writer_settings(s)
@@ -378,29 +378,29 @@ def test_settings_never_refuse_or_echo_the_two_values(monkeypatch):
 # --- the token never shows -----------------------------------------------------------------------------
 
 
-def test_the_token_never_shows_in_repr_str_dump_or_log(monkeypatch, caplog):
+def test_the_token_never_shows_in_repr_str_dump_or_log(monkeypatch, caplog, fd_route):
     from unify.settings import ProductionSettings
 
     monkeypatch.setenv("UNIFY_MEMORY_WRITER_BASE_URL", WRITER_BASE)
-    monkeypatch.setenv("UNIFY_MEMORY_WRITER_TOKEN", WRITER_TOKEN)
+    monkeypatch.setenv(_FD, str(_token_fd(fd_route, WRITER_TOKEN.encode() + b"\n")))
     s = ProductionSettings()
+    assert switch.settle_writer_route_env(os.environ, s) is None
     route = consolidate.writer_settings(s).route
     assert route is not None
-    held = _digest(s.UNIFY_MEMORY_WRITER_TOKEN.get_secret_value()) == _digest(
-        WRITER_TOKEN,
-    )
+    token = switch.writer_token(s)  # the token as the process holds it, read from its descriptor
+    held = _digest(token.get_secret_value()) == _digest(WRITER_TOKEN)
     assert held
     log = logging.getLogger("tests.memory.writer_route")
     with caplog.at_level(logging.DEBUG):
         log.info("settings %r %s", s, s)
-        log.info("route %r %s token %s", route, route, s.UNIFY_MEMORY_WRITER_TOKEN)
+        log.info("route %r %s token %s", route, route, token)
     shown = [
         repr(s),
         str(s),
         repr(route),
         str(route),
-        repr(s.UNIFY_MEMORY_WRITER_TOKEN),
-        str(s.UNIFY_MEMORY_WRITER_TOKEN),
+        repr(token),
+        str(token),
         s.model_dump_json(),
         str(s.model_dump()),
         caplog.text,
@@ -609,7 +609,10 @@ def real_transport(monkeypatch, actor_gateway, restore_unillm):
             state.started.set()
         if state.hold is not None:
             await state.hold.wait()
-        return _completion()
+        # unillm streams every call of the harness's client: the reply as LiteLLM's mock stream of it
+        from tests.scripted_model import as_requested
+
+        return await as_requested(kw, _completion())
 
     monkeypatch.setattr(uni_llm.litellm, "acompletion", fake_acompletion)
     return state
@@ -988,6 +991,7 @@ def test_the_writers_per_call_log_file_is_rewritten_redacted(
 def test_the_writers_route_refuses_to_start_while_unillm_records_spans(
     monkeypatch,
     restore_unillm,
+    fd_route,
 ):
     """unillm's OTel spans keep a failed call's text as is (``error.message``), so with ``UNILLM_OTEL`` on the
     route fails closed: the settings refuse (no pass starts) and a routed turn cannot be built.
@@ -996,10 +1000,8 @@ def test_the_writers_route_refuses_to_start_while_unillm_records_spans(
     monkeypatch.setattr(unillm_logger, "_OTEL_ENABLED", True)
     made: list = []
     _fake_client(monkeypatch, lambda kw: made.append(1))
-    routed = SimpleNamespace(
-        UNIFY_MEMORY_WRITER_BASE_URL=WRITER_BASE,
-        UNIFY_MEMORY_WRITER_TOKEN=SecretStr(WRITER_TOKEN),
-    )
+    routed = _fd_settings(_token_fd(fd_route, WRITER_TOKEN.encode() + b"\n"))
+    assert switch.settle_writer_route_env({}, routed) is None
     with pytest.raises(switch.WriterRouteRefused) as info:
         consolidate.writer_settings(routed)
     with pytest.raises(writer_pass.WriterRouteError) as built:
@@ -1051,39 +1053,20 @@ def test_error_rows_transcripts_and_redactors_drop_the_registered_token(tmp_path
 
 # --- the environment: any letter case, and .env --------------------------------------------------------------
 
-_ROUTE_NAMES = ("UNIFY_MEMORY_WRITER_TOKEN", "UNIFY_MEMORY_WRITER_BASE_URL")
+#: the lane's two settings, the token's descriptor first (the token itself is never in the environment)
+_ROUTE_NAMES = ("UNIFY_MEMORY_WRITER_TOKEN_FD", "UNIFY_MEMORY_WRITER_BASE_URL")
 
 
-def test_a_token_in_any_letter_case_leaves_the_environment(monkeypatch):
-    from unify.settings import ProductionSettings
-
-    monkeypatch.setattr(switch, "_ENV_REFUSAL", None)
-    monkeypatch.setenv("unify_memory_writer_token", WRITER_TOKEN)
-    monkeypatch.setenv("UNIFY_MEMORY_WRITER_BASE_URL", WRITER_BASE)
-    s = ProductionSettings()
-    held = _digest(s.UNIFY_MEMORY_WRITER_TOKEN.get_secret_value()) == _digest(
-        WRITER_TOKEN,
-    )
-    refusal = switch.settle_writer_route_env(os.environ, s)
-    left = [k for k in os.environ if k.upper() == "UNIFY_MEMORY_WRITER_TOKEN"]
-    assert held and refusal is None and left == []
-    assert consolidate.writer_settings(s).route is not None
-
-
-def test_case_variants_that_disagree_refuse_every_pass(monkeypatch):
-    monkeypatch.setattr(switch, "_ENV_REFUSAL", None)
-    other = "a-different-placeholder-token"  # pragma: allowlist secret
-    env = {
-        "UNIFY_MEMORY_WRITER_TOKEN": WRITER_TOKEN,
-        "unify_memory_writer_token": other,
-    }
-    settings = SimpleNamespace(
-        UNIFY_MEMORY_WRITER_BASE_URL=WRITER_BASE,
-        UNIFY_MEMORY_WRITER_TOKEN=SecretStr(WRITER_TOKEN),
-    )
+def test_case_variants_that_disagree_refuse_every_pass(fd_route):
+    """Two letter cases of the descriptor's name naming different descriptors: both leave the environment and
+    every pass is refused, quoting no token."""
+    fd = _token_fd(fd_route, WRITER_TOKEN.encode() + b"\n")
+    other = _token_fd(fd_route, b"a-different-placeholder-token\n")  # pragma: allowlist secret
+    env = {_FD: str(fd), _FD.lower(): str(other)}
+    settings = _fd_settings(fd)
     refusal = switch.settle_writer_route_env(env, settings)
     assert refusal is not None and env == {}
-    leaked = WRITER_TOKEN in refusal or other in refusal
+    leaked = WRITER_TOKEN in refusal or "a-different-placeholder-token" in refusal
     assert not leaked
     with pytest.raises(ValueError):
         consolidate.writer_settings(settings)
@@ -1100,14 +1083,14 @@ def test_writer_settings_settles_again_so_a_late_value_is_refused_off_the_cli(
         monkeypatch.delenv(name)
     settings = SimpleNamespace()  # as read before the late values arrived: neither set
     monkeypatch.setenv("UNIFY_MEMORY_WRITER_BASE_URL", WRITER_BASE)
-    monkeypatch.setenv("UNIFY_MEMORY_WRITER_TOKEN", WRITER_TOKEN)
+    monkeypatch.setenv(_FD, "9")
     with pytest.raises(switch.WriterRouteRefused) as info:
         consolidate.writer_settings(settings)
     text = str(info.value)
     token_left = any(k.upper() == _ROUTE_NAMES[0] for k in os.environ)
     leaked = WRITER_TOKEN in text or WRITER_BASE in text
     assert not token_left and not leaked
-    assert ".env" in text and "no consolidation pass starts" in text
+    assert ".env" in text and "no pass starts" in text
 
 
 def test_the_cli_settles_after_loading_dotenv(monkeypatch, tmp_path, capsys):
@@ -1127,7 +1110,7 @@ def test_the_cli_settles_after_loading_dotenv(monkeypatch, tmp_path, capsys):
     def fake_load_dotenv(*a, **k):
         order.append("load_dotenv")
         os.environ["UNIFY_MEMORY_WRITER_BASE_URL"] = WRITER_BASE
-        os.environ["UNIFY_MEMORY_WRITER_TOKEN"] = WRITER_TOKEN
+        os.environ[_FD] = "9"
         return True
 
     real_settle = switch.settle_writer_route_env
@@ -1154,47 +1137,6 @@ def test_the_cli_settles_after_loading_dotenv(monkeypatch, tmp_path, capsys):
     assert "memory v2:" in err and ".env" in err
 
 
-def test_importing_settings_takes_the_token_out_of_the_environment(tmp_path):
-    """``import unify.settings`` (a fresh process) leaves no case variant of the token in ``os.environ`` and
-    holds it in SETTINGS; the child prints booleans only.
-    """
-    import unify
-
-    root = Path(unify.__file__).resolve().parents[1]
-    env = {k: v for k, v in os.environ.items() if k.upper() not in _ROUTE_NAMES}
-    env.update(
-        {
-            "UNIFY_MEMORY_WRITER_BASE_URL": WRITER_BASE,
-            "unify_memory_writer_token": WRITER_TOKEN,
-            "PYTHONPATH": os.pathsep.join(
-                [str(root), *filter(None, [env.get("PYTHONPATH", "")])],
-            ),
-        },
-    )
-    code = (
-        "import hashlib, json, os\n"
-        "import unify.settings as s\n"
-        "t = s.SETTINGS.UNIFY_MEMORY_WRITER_TOKEN.get_secret_value()\n"
-        "print(json.dumps({'left': [k.upper() for k in os.environ"
-        " if k.upper() == 'UNIFY_MEMORY_WRITER_TOKEN'],"
-        " 'held': hashlib.sha256(t.encode()).hexdigest()}))\n"
-    )
-    proc = subprocess.run(
-        [sys.executable, "-c", code],
-        env=env,
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
-    shown = WRITER_TOKEN in proc.stdout or WRITER_TOKEN in proc.stderr
-    assert not shown
-    assert proc.returncode == 0, proc.stderr[-2000:]
-    out = json.loads(proc.stdout.strip().splitlines()[-1])
-    held = out["held"] == hashlib.sha256(WRITER_TOKEN.encode()).hexdigest()
-    assert out["left"] == [] and held
-
-
 def test_a_route_only_in_dotenv_refuses_every_pass_and_its_token_leaves(
     monkeypatch,
     tmp_path,
@@ -1210,7 +1152,7 @@ def test_a_route_only_in_dotenv_refuses_every_pass_and_its_token_leaves(
     settings = SimpleNamespace()  # as read before .env: neither set
     dotenv = tmp_path / ".env"
     dotenv.write_text(
-        f"UNIFY_MEMORY_WRITER_BASE_URL={WRITER_BASE}\nUNIFY_MEMORY_WRITER_TOKEN={WRITER_TOKEN}\n",
+        f"UNIFY_MEMORY_WRITER_BASE_URL={WRITER_BASE}\n{_FD}=9\n",
     )
     try:
         load_dotenv(dotenv)
@@ -1226,13 +1168,14 @@ def test_a_route_only_in_dotenv_refuses_every_pass_and_its_token_leaves(
     with pytest.raises(ValueError) as info:
         consolidate.writer_settings(settings)
     shown = WRITER_TOKEN in str(info.value) or WRITER_BASE in str(info.value)
-    assert not shown and "no consolidation pass starts" in str(info.value)
+    assert not shown and "no pass starts" in str(info.value)
 
 
 # --- the token by descriptor (UNIFY_MEMORY_WRITER_TOKEN_FD) --------------------------------------------------
 
 _FD = "UNIFY_MEMORY_WRITER_TOKEN_FD"
-_FD_NAMES = (*_ROUTE_NAMES, _FD)
+#: every name a test may leave behind, the dropped plain-env token's included
+_FD_NAMES = (*_ROUTE_NAMES, "UNIFY_MEMORY_WRITER_TOKEN")
 
 
 @pytest.fixture
@@ -1289,14 +1232,9 @@ def _registered(value: str) -> bool:
     return any(v == value for _, v in registered_secrets())
 
 
-def _fd_settings(
-    fd: object,
-    base: str = WRITER_BASE,
-    token: str = "",
-) -> SimpleNamespace:
+def _fd_settings(fd: object, base: str = WRITER_BASE) -> SimpleNamespace:
     return SimpleNamespace(
         UNIFY_MEMORY_WRITER_BASE_URL=base,
-        UNIFY_MEMORY_WRITER_TOKEN=SecretStr(token),
         UNIFY_MEMORY_WRITER_TOKEN_FD=str(fd),
     )
 
@@ -1338,7 +1276,7 @@ def test_the_token_is_read_from_its_descriptor_which_is_then_closed(
     assert refusal is None and closed and used
     assert not in_env and not [k for k in os.environ if k.upper() == _FD]
     assert _registered(token)
-    assert s.UNIFY_MEMORY_WRITER_TOKEN.get_secret_value() == ""
+    assert not hasattr(s, "UNIFY_MEMORY_WRITER_TOKEN")  # never a setting
 
 
 def test_a_child_spawned_after_the_read_does_not_inherit_the_descriptor(fd_route):
@@ -1479,21 +1417,6 @@ def test_a_child_spawned_after_settings_sees_neither_the_name_nor_the_descriptor
     }
 
 
-def test_both_token_settings_refuse_every_pass(fd_route):
-    token = secrets.token_urlsafe(32)
-    fd = _token_fd(fd_route, token.encode() + b"\n")
-    settings = _fd_settings(fd, token=WRITER_TOKEN)
-    refusal = switch.settle_writer_route_env({}, settings)
-    closed = not _is_open(fd)
-    assert refusal is not None and closed
-    assert "UNIFY_MEMORY_WRITER_TOKEN and UNIFY_MEMORY_WRITER_TOKEN_FD" in refusal
-    with pytest.raises(switch.WriterRouteRefused) as info:
-        consolidate.writer_settings(settings)
-    text = refusal + str(info.value)
-    leaked = token in text or WRITER_TOKEN in text
-    assert not leaked and "no consolidation pass starts" in str(info.value)
-
-
 def test_a_descriptor_without_the_base_url_refuses_every_pass(fd_route):
     token = secrets.token_urlsafe(32)
     fd = _token_fd(fd_route, token.encode() + b"\n")
@@ -1533,7 +1456,7 @@ def test_a_descriptor_without_a_bearer_token_refuses_every_pass(fd_route, data, 
     refusal = switch.settle_writer_route_env({}, settings)
     closed = not _is_open(fd)
     assert refusal is not None and closed
-    assert rule in refusal and "no consolidation pass starts" in refusal
+    assert rule in refusal and "no pass starts" in refusal
     with pytest.raises(switch.WriterRouteRefused) as info:
         consolidate.writer_settings(settings)
     body = data.rstrip(b"\n").decode("latin-1")

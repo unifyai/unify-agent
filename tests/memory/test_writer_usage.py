@@ -101,7 +101,10 @@ def transport(monkeypatch, actor_gateway, restore_unillm):
             reply = state.replies.pop(0)
         else:
             reply = _call("fin", "finish", {"summary": "done"})
-        return _completion(reply)
+        # unillm streams every call of the harness's client: the reply as LiteLLM's mock stream of it
+        from tests.scripted_model import as_requested
+
+        return await as_requested(kw, _completion(reply))
 
     monkeypatch.setattr(uni_llm.litellm, "acompletion", fake_acompletion)
     return state
@@ -195,11 +198,11 @@ def test_a_helper_on_the_real_turn_counts_tokens_compacts_and_never_sends_usage(
         step_guard=6,
     )
     reply = _run_helper({"task": "t", "episodes": ["e1"]}, ctx)
-    assert reply.startswith("helper call-0: ok"), reply
+    assert reply.startswith("helper call-1: ok"), reply
     assert _no_usage(handed) and _no_usage(transport.sent)
     summaries = [r for r in handed if r and _text(r[-1]) == INSTRUCTION]
     assert summaries and handed.index(summaries[0]) == 1
-    status = json.loads((ctx.out_root / "call-0" / "helper.json").read_text())
+    status = json.loads((ctx.out_root / "call-1" / "helper.json").read_text())
     assert status["max_prompt_tokens"] == PROMPT
     rows = [json.loads(x) for x in ctx.events.read_text().splitlines()]
     tools = [r for r in rows if r.get("event") != "compaction" and r.get("usage")]

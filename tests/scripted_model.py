@@ -310,25 +310,32 @@ def below_retry_transport(model: Callable[..., Any]) -> Callable[..., Any]:
     ``litellm.main.acompletion`` with ``mock_response``, which sends nothing (the suite's guard replaces only
     ``litellm.acompletion``, and its socket guard still holds).
     """
+
+    async def transport(**kw: Any) -> Any:
+        return await as_requested(kw, await model(**kw))
+
+    return transport
+
+
+async def as_requested(kw: dict, entry: Any) -> Any:
+    """*entry* (a whole completion) as the request *kw* asked for it: itself, or for a streamed request
+    (``stream=True``: every call of the harness's client) LiteLLM's own mock stream of it, which unillm reads and
+    reassembles as it does a provider's stream. Nothing is sent."""
     import litellm
     import litellm.main
 
-    async def transport(**kw: Any) -> Any:
-        entry = await model(**kw)
-        if not kw.get("stream"):
-            return entry
-        whole = entry.model_dump()
-        for choice in whole["choices"]:
-            for i, call in enumerate(choice["message"].get("tool_calls") or []):
-                call["index"] = i
-        return await litellm.main.acompletion(
-            model=kw["model"],
-            messages=kw["messages"],
-            stream=True,
-            mock_response=litellm.ModelResponse(**whole),
-        )
-
-    return transport
+    if not kw.get("stream"):
+        return entry
+    whole = entry.model_dump()
+    for choice in whole["choices"]:
+        for i, call in enumerate(choice["message"].get("tool_calls") or []):
+            call["index"] = i
+    return await litellm.main.acompletion(
+        model=kw["model"],
+        messages=kw["messages"],
+        stream=True,
+        mock_response=litellm.ModelResponse(**whole),
+    )
 
 
 @contextlib.contextmanager
