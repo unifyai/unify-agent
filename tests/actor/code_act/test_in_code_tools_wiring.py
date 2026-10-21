@@ -345,7 +345,7 @@ ACTOR_START = "print(tools.delegate('Read /workspace/data.txt and tell me its th
 ACTOR_WAIT = (
     "got = tools.wait(timeout=120)\n"
     "print('GOT', got)\n"
-    "done = [line for line in got.splitlines() if '(done)' in line]\n"
+    "done = [line for line in got.splitlines() if '(reply)' in line]\n"
     "tools.answer(done[0].split(': ', 1)[1])\n"
 )
 
@@ -370,12 +370,16 @@ async def test_a_teammate_gets_the_same_wiring_with_its_own_allow_list(in_code):
     by_agent = {s.agent: s for s in in_code["opened"]}
     assert set(by_agent) == {"actor", "teammate"}
     mate = by_agent["teammate"]
-    # the teammate's first request opens with its own opening, the actor's with the actor's; each points to the
-    # record's help topic, and their role section, not the opening, says how they answer
+    # the teammate's first request opens with its own opening, the actor's with the actor's; the opening names no
+    # record of its own (the run record's common section comes with the first message), and their role section,
+    # not the opening, says how they answer
     mate_system = _assert_opening_first(model.of("helper")[0], mate, in_code["world"])
     actor_system = _assert_opening_first(model.of("actor")[0], by_agent["actor"], in_code["world"])
+    for first in (model.of("helper")[0], model.of("actor")[0]):
+        users = [m for m in first.messages if m.get("role") == "user"]
+        assert any(R.COMMON_SECTION in str(m.get("content")) for m in users[:1]), users[:1]
     for system in (mate_system, actor_system):
-        assert R.RECORD_POINTER in system and "Messages: other agents" not in system
+        assert R.COMMON_SECTION not in system and "Messages: other agents" not in system
         assert "You end your work with" not in system
         assert "`tools.answer(answer)` gives it from a cell." in " ".join(system.split())
     assert mate.allow == R.allow_list("teammate", frozenset({"helper"}))

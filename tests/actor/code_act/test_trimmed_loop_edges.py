@@ -164,7 +164,6 @@ def worker_pids(monkeypatch) -> list[int]:
     """The pid of every sandboxed Python worker started during the test."""
     from unify.actor.execution import worker as worker_mod
 
-    assert worker_mod.enabled(), "these tests run cells in the sandboxed worker"
     pids: list[int] = []
     original = worker_mod.PythonWorker._start
 

@@ -53,11 +53,7 @@ from tests.scripted_model import Always, ScriptedModel, reply, scripted
 from unify.settings import SETTINGS
 
 #: Spans that name something the sandbox does not bind, on purpose, with the reason.
-NOT_BOUND = {
-    "sum_invoice_lines(invoice_id=7)": (
-        "the index's example of a stored function, bound by name once a read found it; the test's library is empty"
-    ),
-}
+NOT_BOUND: dict[str, str] = {}  # none: the actor's prompt no longer carries the library index's example call
 #: A bullet that opens with an object's name: its bare calls are that object's methods.
 _OWNER = re.compile(r"^(?:- )?`(\w+)`:")
 #: Sentences that say names are bound, besides the contract's (:func:`said_bound`).

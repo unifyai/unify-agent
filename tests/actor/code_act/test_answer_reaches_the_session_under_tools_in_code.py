@@ -102,10 +102,16 @@ class _Collect:
 
 @pytest.fixture
 def session_world(core_world, monkeypatch):  # noqa: F811
-    """The sandbox world as the in-code tests set it up: a memory run (no stored-function library, no storage
-    review) whose consolidation is never due, the default cell state, and every in-code session the test opens."""
+    """The sandbox world as the in-code tests set it up: a memory run whose writer service is never started (a
+    request's end only records that it would be), the default cell state, and every in-code session the test opens."""
+    from types import SimpleNamespace
+
+    from unify.memory import writer_service
+
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_E", 10**9)
+    monkeypatch.setattr(
+        writer_service, "ensure_service", lambda home, **kw: SimpleNamespace(status="not started", pid=None, detail="")
+    )
     monkeypatch.setattr(request_mod, "_CURRENT", None)
     collect = _Collect()
     monkeypatch.setattr(in_code_tools, "SESSIONS", collect)
@@ -175,12 +181,14 @@ def _responses(lines: list[dict]) -> list[dict]:
 
 
 def _check_session(run: dict, world: dict, requests: int, model: ScriptedModel) -> list[str]:
-    """The session ended cleanly with one ``response`` per request, each in time; no line's content holds a host
+    """The session ended cleanly with its episode line and one ``response`` per request, each in time; no line's content holds a host
     path of the test's home. Returns the responses' contents as a driver reads them."""
     lines = run["lines"]
     assert run["code"] == 0, (lines, _why(model))
     types = [line["type"] for line in lines if line["type"] not in ("storage", "record")]
-    assert types == ["response"] * requests + ["result", "ended"], (lines, _why(model))
+    # a memory run first names its episode (so a verdict that arrives after it ends can name it) and, once the
+    # request has its result, says whether the writer service is up
+    assert types == ["episode"] + ["response"] * requests + ["result", "consolidation", "ended"], (lines, _why(model))
     for line, seconds in zip(lines, run["waited"]):
         if line["type"] == "response":
             first = line is _responses(lines)[0]

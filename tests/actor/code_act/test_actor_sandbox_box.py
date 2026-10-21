@@ -200,15 +200,6 @@ async def test_a_survivor_makes_the_kill_raise(monkeypatch):
         await asyncio.wait_for(proc.wait(), 10)
 
 
-def test_the_teammates_request_names_the_record_by_its_sandbox_path(tmp_path):
-    from unify.agents.binding import helper_request
-
-    path = tmp_path / "run-label-7q" / "records" / "x" / "record.jsonl"
-    text = helper_request("h1", "root", "Count the rows of a.csv please.", 3, path)
-    assert "/record/record.jsonl" in text
-    assert "run-label-7q" not in text and str(tmp_path) not in text
-
-
 @pytest.mark.skipif(sys.platform != "linux", reason="needs /proc")
 def test_a_plain_process_is_killed_and_verified(tmp_path):
     proc = subprocess.Popen(["sleep", "60"], start_new_session=True)

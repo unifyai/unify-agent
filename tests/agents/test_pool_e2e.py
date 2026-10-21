@@ -59,7 +59,7 @@ FAN_OUT = (
     "         tools.delegate('Count the rows of the second table, please.')]\n"
     "done = []\n"
     "while len(done) < 2:\n"
-    "    done += [line for line in tools.wait(timeout=120).splitlines() if '(done)' in line]\n"
+    "    done += [line for line in tools.wait(timeout=120).splitlines() if '(reply)' in line]\n"
     "tools.answer(' / '.join(sorted(line.split(': ', 1)[1] for line in done)))\n"
 )
 
