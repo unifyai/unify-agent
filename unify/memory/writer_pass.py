@@ -117,7 +117,7 @@ def _thought_only_reply() -> str:
 
 def _manifest_rules() -> str:
     """The consolidator rules of :mod:`.manifest`'s docstring, verbatim, so prompt and gate cannot drift."""
-    doc = _manifest.__doc__
+    doc = _manifest.__doc__ or ""
     start = doc.find(_RULES_HEADING)
     if start < 0:
         raise ImportError(
@@ -440,17 +440,13 @@ async def compact_by_summary(
     )
     if not summary or (isinstance(reply, dict) and reply.get("tool_calls")):
         return Compaction(request, reply, usd, None)
-    if _cc.keep_prefix_enabled():
-        system, kept = _cc.kept_prefix(messages)
-        restart = [*system, *kept, loop_user_notice(_cc.restart_text(summary, pointer))]
-    else:
-        system = [
-            m for m in messages[:1] if isinstance(m, dict) and m.get("role") == "system"
-        ]
-        restart = [
-            *system,
-            {"role": "user", "content": _cc.restart_text(summary, pointer)},
-        ]
+    system = [
+        m for m in messages[:1] if isinstance(m, dict) and m.get("role") == "system"
+    ]
+    restart = [
+        *system,
+        {"role": "user", "content": _cc.restart_text(summary, pointer)},
+    ]
     return Compaction(request, reply, usd, restart)
 
 
@@ -483,7 +479,7 @@ def _prompt_chars(m: object) -> int:
     for tc in m.get("tool_calls") or []:
         f = tc.get("function") if isinstance(tc, dict) else None
         if isinstance(f, dict):
-            n += len(str(f.get("name"))) + len(str(f.get("arguments")))
+            n += len(str(f.get("name") or "")) + len(str(f.get("arguments") or ""))
     return n
 
 
@@ -810,14 +806,14 @@ def usd_room(cfg: Any, spend: Any) -> bool:
     worst = getattr(cfg, "usd_call_worst", None)
     if worst is None:
         return False
-    calls = int(spend.unknown) + int(getattr(spend, "in_flight", 0)) + 1
+    calls = int(spend.unknown) + int(getattr(spend, "in_flight", 0) or 0) + 1
     return Decimal(spend.usd) + Decimal(calls) * Decimal(worst) <= Decimal(limit)
 
 
 @contextlib.contextmanager
 def call_in_flight(spend: Any) -> Iterator[None]:
     """Count a model call as in flight on the pass's *spend* (shared by the writer and its helpers) while it runs."""
-    spend.in_flight = int(getattr(spend, "in_flight", 0)) + 1
+    spend.in_flight = int(getattr(spend, "in_flight", 0) or 0) + 1
     try:
         yield
     finally:
@@ -1010,7 +1006,7 @@ def export_for_writer(
 
             row["regime"] = ep.regime
             row["memory_main"] = ep.memory_main
-            row["worktree_diff"] = ep.worktree_diff
+            row["worktree_diff"] = ep.worktree_diff or ""
             row["structural_events"] = structural_events(ep)
             if usage_dest is not None:
                 from .usage import writer_usage_record
@@ -2371,7 +2367,7 @@ class WriterPass:
         if not self._first_prompt[0]:
             self._first_prompt = (True, inp)
         if inp is not None:
-            self._max_prompt = max(self._max_prompt, inp)
+            self._max_prompt = max(self._max_prompt or 0, inp)
             self._cache_tokens[0] += inp
             self._cache_tokens[2] += 1
         if cached is not None:
@@ -3569,7 +3565,7 @@ class WriterPass:
                 else None
             ),
             "paths": [dict(p) for p in reply.paths],
-            "args_bytes": len(str(args_text).encode("utf-8", errors="replace")),
+            "args_bytes": len(str(args_text or "").encode("utf-8", errors="replace")),
             "result_bytes": text_bytes,
             "result_truncated": "; next: offset=" in reply.text,
             "usage": usage,
@@ -5793,7 +5789,7 @@ def _call_failure(exc: BaseException) -> tuple[str, str, str]:
         if status == 403:
             # the route's own refusal, told apart by its body only (never by the status code): busy for now, or the cap
             kind = _route_refusal(exc)
-            category = {"busy": REFUSED_BUSY, "cap": REFUSED_CAP}.get(kind, category)
+            category = {"busy": REFUSED_BUSY, "cap": REFUSED_CAP}.get(kind or "", category)
     elif "timeout" in lowered:
         category = "timeout"
     elif "connect" in lowered:
@@ -5831,7 +5827,7 @@ def _check_route_in_effect(route: WriterRoute) -> None:
     kw: dict = {"model": "openrouter/memory-writer-route-check", "messages": []}
     uni_llm._prepare_provider_request_kw(kw=kw, provider="openrouter", stream=False)
     ok = (
-        str(kw.get("api_base")).rstrip("/") == route.base_url
+        str(kw.get("api_base") or "").rstrip("/") == route.base_url
         and kw.get("api_key") == route.token.get_secret_value()
     )
     kw.clear()
@@ -6066,7 +6062,7 @@ def unillm_turn(
         def hook(event) -> None:
             if route is not None and isinstance(event.request, dict):
                 event.request.pop("api_key", None)
-                base = str(event.request.get("api_base")).rstrip("/")
+                base = str(event.request.get("api_base") or "").rstrip("/")
                 misrouted.append(base != route.base_url)
             if event.origin == origin:
                 costs.append(event.provider_cost)

@@ -691,7 +691,7 @@ class _Probe:
                         what.format(n=len(chosen), of=of)
                         + f": {[list(c) for c in sorted(chosen)[:5]]}",
                     )
-        return "; ".join(parts)
+        return "; ".join(parts) or None
 
 
 class _Budget:
@@ -1892,8 +1892,8 @@ class Gate:
             node = self._function_node(run, item)
             if node is None:
                 continue
-            doc = ast.get_docstring(node)
-            form = declared.get(item) or doc_inputs.get(item)
+            doc = ast.get_docstring(node) or ""
+            form = declared.get(item) or doc_inputs.get(item) or None
             name, channel = (
                 item.split(":", 1)[1],
                 item.split("/", 1)[1].split(":", 1)[0],
@@ -2628,7 +2628,7 @@ class Gate:
         for item in self._edited(run):
             node = self._function_node(run, item)
             if node is not None and docstrings.has_example(
-                docstrings.parse(ast.get_docstring(node)),
+                docstrings.parse(ast.get_docstring(node) or ""),
             ):
                 targets.append(item)
         for item in [t for t in targets if not run.policy.item(t)[0]]:
@@ -2683,7 +2683,7 @@ class Gate:
         paths = [
             p
             for p in docstrings.fixture_paths(
-                docstrings.parse(ast.get_docstring(node)),
+                docstrings.parse(ast.get_docstring(node) or ""),
                 channel,
             )
             if p in run.c_files
@@ -3093,7 +3093,7 @@ class Gate:
             ):
                 m = re.search(
                     r"^\s*Input:\s*([a-z]+)\s*$",
-                    ast.get_docstring(node),
+                    ast.get_docstring(node) or "",
                     re.M,
                 )
                 return m.group(1) if m and m.group(1) in INPUT_KINDS else None

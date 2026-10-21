@@ -1232,8 +1232,6 @@ def _join_run_record(run: Any, *, mode: str = "ask") -> tuple[Any, str]:
     as long as the request); ``message``: ``librarian-<random hex>`` with no episode (it lives until its reply)."""
     from unify.common.tool_registry import run_record_on
 
-    if not run_record_on():
-        return None, AGENT
     from unify.agents.run_record import join_run_record
 
     home = getattr(getattr(run, "paths", None), "home", None)

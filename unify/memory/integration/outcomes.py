@@ -179,7 +179,7 @@ def post_late(
     eid = entry["episode"]
     ep = lookup.episode(eid)
     sha, _ = stores.evidence.episode_ref(eid)
-    about = entry.get("about")
+    about = entry.get("about") or ""
     refers_to = eid
     if about.startswith("action:"):
         refers_to = f"{eid}/actions/{int(about.split(':', 1)[1])}"
@@ -192,7 +192,7 @@ def post_late(
         refers_to=refers_to,
         visible_to_actor=True,
     )
-    timed(sig, entry["at"], str(getattr(ep, "ended_at", "")), about)
+    timed(sig, entry["at"], str(getattr(ep, "ended_at", "") or ""), about)
     if sig.timing != AFTER_EPISODE:
         raise ValueError("a late verdict arrived before its episode ended")
     known = list(stores.evidence.signals_for(eid))

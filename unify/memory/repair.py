@@ -197,7 +197,7 @@ def repair_message(
 
     # with tools called from code, the two calls are named as the writer makes them
     read, finish = (
-        ("tools.read(path)", "tools.finish(summary)") if in_code_switch.tools_in_code() else ("read", "finish")
+        ("tools.read(path)", "tools.finish(summary)")
     )
     return (
         f"The gate refused round {n - 1}'s candidate (checks: {', '.join(res.refused) or 'none'}; items: "

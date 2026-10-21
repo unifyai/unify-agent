@@ -271,13 +271,13 @@ def facts_from_evidence(
         "runtime_ok, runtime_refused, runtime_errored FROM item_use ORDER BY episode_id, item",
     ):
         u = _item_use(
-            int(imported),
-            int(called),
-            int(refused),
-            int(errored),
+            int(imported or 0),
+            int(called or 0),
+            int(refused or 0),
+            int(errored or 0),
             bool(unknown),
             (
-                (int(r_ok), int(r_refused), int(r_errored))
+                (int(r_ok or 0), int(r_refused or 0), int(r_errored or 0))
                 if basis
                 else None
             ),
@@ -292,14 +292,14 @@ def facts_from_evidence(
             continue
         positive, negative = counted_signals(
             ev.signals_for(eid),
-            regime,
+            regime or "",
         )
         items = by_episode.get(eid, {})
         out.append(
             EpisodeUse(
                 eid,
-                main,
-                regime,
+                main or "",
+                regime or "",
                 positive,
                 negative,
                 dict(sorted(items.items())),

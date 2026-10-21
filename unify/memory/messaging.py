@@ -110,9 +110,7 @@ def record_text() -> str:
     from unify.common import in_code_switch
     from unify.common.tool_registry import run_record_on
 
-    if run_record_on():
-        return RECORD_TEXT_RUN
-    return RECORD_TEXT_IN_CODE if in_code_switch.tools_in_code() else RECORD_TEXT
+    return RECORD_TEXT_RUN
 
 
 @dataclass

@@ -885,13 +885,7 @@ class InterpreterSession:
             if self.channel is not None and self.channel.stuck:
                 self.stuck = True
         finally:
-            if not persistent():
-                # UNIFY_CELL_STATE=fresh: every cell starts a new interpreter, as the setting already says
-                self._note = ""
-                interp, self.interp = self.interp, None
-                if interp is not None:
-                    self._keep_stopped(interp)
-                    await interp.stop()
+            pass
         return res
 
     def gone_during(self) -> tuple[str, bool] | None:

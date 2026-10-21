@@ -146,7 +146,7 @@ async def _openings(tmp_path: Path) -> dict[str, str]:
     out = {
         "writer": lp.write_brief_now(cell_s=60.0, helper=True),
         "curator": lp.curate_brief_now(cell_s=60.0),
-        "helper": helpers.helper_brief(False, in_code=True),
+        "helper": helpers.helper_brief(False),
     }
     for agent in ("actor", "teammate"):
         session = _actor_session(tmp_path, agent)

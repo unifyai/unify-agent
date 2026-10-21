@@ -139,7 +139,7 @@ def test_the_last_of_three_agents_to_wait_releases_them_all():
 @pytest.mark.parametrize("similar", [False, True])
 @pytest.mark.parametrize("in_code", [False, True])
 def test_the_helper_brief_shows_sending_before_reading_replies(similar, in_code):
-    brief = helpers.helper_brief(similar, in_code=in_code)
+    brief = helpers.helper_brief(similar)
     role = brief[brief.index("You are a helper") :]
     if in_code:
         calls = ("tools.send(", "tools.ask(", "tools.messages()", "tools.wait()")

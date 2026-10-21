@@ -213,8 +213,8 @@ def item_evidence(
                 if kind != trust.FAILED or (f.episode_id, why) in seen:
                     continue
                 seen.add((f.episode_id, why))
-                served = served_pin(use_pins.get((f.episode_id, item)), why, f.memory_main)
-                rows.append(_failure_row(ev, f.episode_id, served, f.regime, why))
+                served = served_pin(use_pins.get((f.episode_id, item)), why or "", f.memory_main)
+                rows.append(_failure_row(ev, f.episode_id, served, f.regime, why or ""))
         basis, counts = lifecycle.evidence_basis(item, facts)
         out[item] = {"failure_record": rows, "status_basis": basis, "counts": counts}
     for cid, doc in sorted((captures or {}).items()):
@@ -229,7 +229,7 @@ def item_evidence(
                 continue
             seen.add((x.episode, why))
             rows.append(
-                _failure_row(ev, x.episode, pins.get(x.episode, ""), regimes.get(x.episode, x.regime), why),
+                _failure_row(ev, x.episode, pins.get(x.episode, ""), regimes.get(x.episode, x.regime), why or ""),
             )
         out["capture:" + cid] = {
             "failure_record": rows,

@@ -245,33 +245,22 @@ SIMILAR_LINE_IN_CODE = (
 )
 
 
-def helper_brief(similar: bool, in_code: bool | None = None) -> str:
+def helper_brief(similar: bool) -> str:
     """The helper's system message; it names exactly the tools :func:`helper_tools` gives for *similar*. *in_code*
     (None: ``UNIFY_TOOLS_IN_CODE``) gives the brief for tools called from code, after the shared opening for the
     flags the helper's allow-list is built with (:func:`helper_flags`)."""
-    if in_code if in_code is not None else _in_code():
-        from .agent_profiles import in_code_opening
+    from .agent_profiles import in_code_opening
 
-        opening = in_code_opening("helper", helper_flags(similar), cell_s=CELL_TIMEOUT_S)
-        record = HELPER_RECORD_RUN if _registry.run_record_on() else HELPER_RECORD_IN_CODE
-        return (
-            opening
-            + "\n\n"
-            + HELPER_BRIEF_IN_CODE.replace("{similar}", SIMILAR_LINE_IN_CODE if similar else "").replace(
-                "<<record>>",
-                record,
-            )
+    opening = in_code_opening("helper", helper_flags(similar), cell_s=CELL_TIMEOUT_S)
+    record = HELPER_RECORD_RUN
+    return (
+        opening
+        + "\n\n"
+        + HELPER_BRIEF_IN_CODE.replace("{similar}", SIMILAR_LINE_IN_CODE if similar else "").replace(
+            "<<record>>",
+            record,
         )
-    from unify.common.box_interpreter import persistent
-
-    keeps = persistent()
-    brief = HELPER_BRIEF.replace("{similar}", SIMILAR_LINE if similar else "").replace(
-        "<<execute_code>>",
-        EXECUTE_CODE_LINE if keeps else EXECUTE_CODE_LINE_FRESH,
     )
-    # no shared opening with tools in code off: the shared sandbox paragraph comes first (the fresh opt-out's
-    # brief is the earlier one, byte for byte)
-    return _registry.sandbox_paragraph("helper", ("memory",), True) + "\n\n" + brief if keeps else brief
 
 
 def helper_flags(similar: bool) -> frozenset[str]:
@@ -1311,14 +1300,7 @@ async def _run_helper(
     """One helper's turns inside its interpreter session, which ends with it (verified kill): with tools in code, a
     session with the tool channel; off, one with no channel (``UNIFY_CELL_STATE=fresh``: a fresh box per cell,
     :func:`box_cell`, and no session)."""
-    if ctx.tools_in_code:
-        session = _in_code_session(ctx, call, st, doc)
-    else:
-        from unify.common.box_interpreter import persistent
-
-        if not persistent():
-            return await _run_helper_turns(ctx, call, task, episodes, staging, st, doc)
-        session = _cell_session(ctx, call, st)
+    session = _in_code_session(ctx, call, st, doc)
     try:
         return await _run_helper_turns(ctx, call, task, episodes, staging, st, doc)
     finally:

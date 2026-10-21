@@ -1239,7 +1239,7 @@ def capture_trace_step(
     broke = _staged(staging, BROKE_FILE)
     if broke is not None and (KEY_SHAPED.search(broke) or not _broke_lines(broke)):
         broke = None  # nothing broke ("none"), or a key-shaped string, which never enters the store
-    summary = _staged(staging, SUMMARY_FILE)
+    summary = _staged(staging, SUMMARY_FILE) or ""
     request_text = ep.request[0] if getattr(ep, "request", None) else ""
     entry = ct.entry_point(source) or {"name": "run", "params": [], "form": "state"}
     form = entry["form"]
@@ -1319,7 +1319,7 @@ def capture_trace_step(
         if not (d / SAVED_FILE).exists():
             _write(d / SAVED_FILE, _json(saved_against(source, summary, request_text)))
         if broke is not None and broke.strip():
-            old = _read_text(d / BROKE_FILE)
+            old = _read_text(d / BROKE_FILE) or ""
             if broke.strip() not in old:
                 _write(d / BROKE_FILE, (old + broke.rstrip() + "\n").encode("utf-8"))
         _write(d / RECORD_FILE, _json(rec))
@@ -1457,7 +1457,7 @@ def capture_settled(
     done = episode_rows(store)
     out = []
     for eid in eids:
-        if not _EPISODE_ID.fullmatch(eid) or eid in done:
+        if not _EPISODE_ID.fullmatch(eid or "") or eid in done:
             continue
         d = root / eid
         try:
@@ -1519,14 +1519,14 @@ def segment_outcome(signals: Iterable[Any], seg_ep: Any, ep: Any, *, regime: str
 
     from . import capture_trace as ct
 
-    base = str(getattr(ep, "episode_id", ""))
+    base = str(getattr(ep, "episode_id", "") or "")
     seg_end, ep_end = _instant(getattr(seg_ep, "ended_at", None)), _instant(getattr(ep, "ended_at", None))
     view = dataclasses.replace(seg_ep, episode_id=base)
     i = answered_action(view)
     mine = []
     for s in signals:
         at = _instant(getattr(s, "ts", None))
-        named = str(getattr(s, "refers_to", ""))
+        named = str(getattr(s, "refers_to", "") or "")
         if getattr(s, "source", None) == "checker" and named.startswith(f"{base}/actions/"):
             if i is not None and named == f"{base}/actions/{i}":
                 mine.append(s)
@@ -1555,7 +1555,7 @@ def judge_segments(
            and r.get("v") == TRACE_VERSION and name == r.get("staging")]  # fmt: skip
     out: list[dict] = []
     for row in due:
-        base, name = str(row.get("episode")), str(row["staging"])
+        base, name = str(row.get("episode") or ""), str(row["staging"])
         try:
             ep = episode(base)  # raises while the episode is not recorded
             sigs = list(signals(base) or [])

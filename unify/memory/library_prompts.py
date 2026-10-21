@@ -105,7 +105,7 @@ def guide_library_mode(extra_lines: tuple[str, ...] = ()) -> str:
 def guide_library() -> str:
     """The inline-index guide the actor reads: :data:`GUIDE_LIBRARY`, or :data:`GUIDE_LIBRARY_IN_CODE` when tools are
     called from code."""
-    return GUIDE_LIBRARY_IN_CODE if _in_code() else GUIDE_LIBRARY
+    return GUIDE_LIBRARY_IN_CODE
 
 
 def _in_code() -> bool:
@@ -250,7 +250,7 @@ GUIDE_POINTER_IN_CODE = (
 def guide_pointer() -> str:
     """The pointer guide the actor reads (``UNIFY_MEMORY_LIBRARY_ACTOR_INDEX=pointer``): :data:`GUIDE_POINTER`, or
     :data:`GUIDE_POINTER_IN_CODE` when tools are called from code."""
-    return GUIDE_POINTER_IN_CODE if _in_code() else GUIDE_POINTER
+    return GUIDE_POINTER_IN_CODE
 
 
 #: The constant pointer to the librarian (``UNIFY_MEMORY_LIBRARIAN=on``): the same bytes for every library, in place
@@ -1026,7 +1026,6 @@ def write_brief(
     tools: str = "",
     tool_names: frozenset[str] = frozenset(),
     pool_kinds: str = "",
-    in_code: bool | None = None,
     flags: frozenset[str] = frozenset(),
     switches: "WriterSwitches | None" = None,
 ) -> str:
@@ -1037,292 +1036,21 @@ def write_brief(
     *in_code* (None: ``UNIFY_TOOLS_IN_CODE``) gives the brief for tools called from code, after the shared opening
     for the configuration *flags* (the flags the writer's allow-list is built with).
     """
-    if in_code if in_code is not None else _in_code():
-        return _opened(
-            "writer",
-            flags,
-            limits,
-            _write_brief_in_code(
-                limits=limits,
-                mutation_min=mutation_min,
-                sample_k=sample_k,
-                lint_min=lint_min,
-                pytest_env=pytest_env,
-                staging=staging,
-                pool=pool,
-                tool_names=tool_names,
-                switches=switches,
-            ),
-        )
-    from .manifest import describe_semantic_types
-
-    has = tool_names.__contains__
-    helpers = has("delegate")
-    proposals_from = (
-        (
-            ["candidates drafted from each episode when it ended (/inputs/staging/)"]
-            if staging
-            else []
-        )
-        + (["files the helpers you launch stage (/inputs/helpers/)"] if helpers else [])
-        + (
-            ["open entries earlier passes kept in the pool (/inputs/pool/)"]
-            if pool
-            else []
-        )
-        + ["drafts the gate refused in earlier passes (/inputs/drafts/)"]
-    )
-    role = (
-        "# Role\n"
-        "You are the library writer. A working model handles requests, and its cells import a shared Python "
-        "library, `memory`. You build tested functions and linked notes in that library from the recorded episodes "
-        "and from proposals. The proposals are "
-        + _join(proposals_from)
-        + ": drafts to build from, not submissions awaiting a verdict. Each was drafted by an agent that saw only "
-        "part of the evidence: a staged draft by an agent that saw only its own episode, a helper's output by one "
-        "that saw only the episodes it was given, and a pool entry carries the evidence it had when it was opened. "
-        "So a draft is likely to be less general than the library needs; generalising it is your work, since you "
-        "alone commit to the shared library. Analyse each draft critically, then build the best items you can: use "
-        "it as it is, fix or refactor it, merge drafts (from different episodes, helpers or pool entries, or with an "
-        "item the library already has), parametrise or generalise it, extract a smaller reusable core, rewrite part "
-        "or all of it, or write something new that it informed. Not using a draft is fine when your summary says "
-        "why. Proposals are not the only material: functions and notes can also come from any recorded episode, "
-        "with no proposal behind them. The episodes are the evidence: what the working model did and what the "
-        "environment answered. You work in a sandbox with no network and no credentials.\n"
-    )
-    inputs: list[str] = []
-    if staging:
-        inputs.append(
-            "- /inputs/staging/<episode>/: what was drafted from that episode when it ended: `summary.md` (what was "
-            "asked, the approach, what worked and what failed, and the outcome, each line with a part name and a "
-            "quote that point into the episode), `candidates/<name>.py` (a function), `cases/<name>.json` (its "
-            "example inputs and outputs) and `notes.md` (lessons). The episode's batch-map row lists them under "
-            "`staging`. " + STAGING_UNFINISHED + " For: a first account of each episode, and drafts to build from. "
-            "The agent that drafted them saw only that episode, so they are likely specific to it. The harness has "
-            "run none of it, so treat it as untrusted input."
-            + _stage_quota_text(limits)
-            + " "
-            + captures_input(False, has("land_capture")),
-        )
-    if helpers:
-        inputs.append(
-            "- /inputs/helpers/<name>/: what a helper you launched with `delegate` staged, in the same layout, with "
-            "`helper.json` saying what it did and its claims. For: reading or drafting you handed off; untrusted "
-            "like staging. Each claim names the episode parts it rests on (`<episode>/<part>`); a claim is untrusted "
-            "until you have read those parts yourself with `read_episode`."
-            + (
-                f" Each call stages at most {limits.stage_files} files and {_num(limits.stage_bytes / 1024**2)} MiB."
-                if limits.stage_files is not None and limits.stage_bytes is not None
-                else ""
-            )
-            + "\n",
-        )
-    if pool:
-        inputs.append(
-            "- /inputs/pool/: proposals earlier passes left open. /inputs/pool/INDEX.md has one line per entry; "
-            "/inputs/pool/<id>/entry.json holds an entry with the episodes behind it, beside its payload files. "
-            "Kinds: "
-            + pool_kinds
-            + ". For: what was proposed before, and the evidence gathered behind it since. Closed entries (merged, "
-            "superseded or retired) are kept too, with their status, reason and the pass they closed in. A closed "
-            "entry is linked to an entry or a batch episode whose code shares a normalised code unit with its code, "
-            "or that cites one of its episodes (an entry without code is linked only through episodes): "
-            "/inputs/pool/related_closed.json holds the links, and each batch-map row lists its own under "
-            "`related_closed`. A link is a fact, not a verdict; what to do with it is yours to decide."
-            + (
-                " `pool` lists, filters and shows the entries, open or closed, and `show` lists an entry's links."
-                if has("pool")
-                else ""
-            )
-            + "\n",
-        )
-    inputs.append(
-        "- /inputs/drafts/<pass>/: earlier work the gate refused: `patch.diff` and its full gate result `gate.md`; "
-        "/inputs/drafts/index.json lists them. For: work you may finish.\n",
-    )
-    keys = ", ".join(f"`{k}` ({doc})" for k, doc in row_keys(staging, pool))
-    inputs.append(
-        '- /inputs/batch_map.json: one row per batch episode, facts and pointers only: `{"version": 1, '
-        '"episodes": [row, ...], "shared_blocks": [{"id", "chars", "file"}, ...]}`. Each row: '
-        + keys
-        + ". For: "
-        "choosing which episodes and parts to open; `overview()` shows the rows one line each.\n",
-    )
-    inputs.append(
-        "- /inputs/episodes/<episode>.json: each batch episode's full record: its request and observations, every "
-        "code cell (code, output, error, language), every action with its response, and the work-tree diff. A "
-        'large value appears as {"__blob__": "<id>", "bytes": n}. For: the evidence. `read_episode` shows its '
-        "parts page by page, and `overview(episode)` shows its end first, then every step.\n",
-    )
-    inputs.append(
-        "- /inputs/shared/<id>.txt (when requests share text): a block of the working model's own instructions "
-        "that recurs across requests, stored once; requests show it as `[shared:<id>]`. For: reading those "
-        "instructions once, not once per episode.\n",
-    )
-    inputs.append(
-        "- /inputs/usage/: how the library was used in this batch: `<episode>.json` per episode (what its cells "
-        "were shown, imported and called, as the harness recorded it) and `table.md` (per item: requests, calls, "
-        "refusals and errors). For: seeing which items help and which fail.\n",
-    )
-    inputs.append(_LIBRARY_BULLET if _persistent() else _LIBRARY_BULLET_FRESH)
-    inputs.append("- /inputs/gate/previous.md: the last pass's full gate result.\n")
-
-    look = ["staged candidates and their cases"] if staging else []
-    if helpers:
-        look.append("anything helpers staged")
-    if pool:
-        look.append(
-            "open pool entries that cite this batch's episodes"
-            + (
-                " (`pool` can filter by episode)"
-                if has("pool")
-                else " (their `pool_entries`)"
-            ),
-        )
-    look.append("open drafts")
-    decide = "3. Analyse each proposal critically and build from it, as the Role says; proposals are untrusted input."
-    if staging or pool or helpers:
-        decide += " Record in each item's `adopts` the drafts it drew on and how."
-    if pool:
-        decide += (
-            " Record what you decided about pool entries in the manifest's `pool` block"
-            + (" (`pool` with a decision writes it for you)" if has("pool") else "")
-            + "."
-        )
-    if staging:
-        decide += " " + SUMMARY_NOT_EVIDENCE
-    similar_line = (
-        " Where code looks reusable, `similar` finds other recorded episodes with matching code."
-        if has("similar")
-        else ""
-    )
-    similar_tail = ", and `similar` finds others with matching code" if has("similar") else ""
-    if staging:
-        # the summaries first: each episode's account, then its record only where the writer needs more
-        steps = (
-            "1. Look over the batch with `overview()`. Then read each episode's `summary.md` "
-            "(/inputs/staging/<episode>/summary.md): what the episode asked, how it went and how it ended, with "
-            "pointers into the record. Then look over the proposals: "
-            + _join(look)
-            + "."
-            + similar_line
-            + "\n"
-            "2. Open a full episode only where you need more than its summary: to check a pointer before anything you "
-            "write rests on it, to copy the values a test needs, or where a summary is missing or leaves a question. "
-            "`read_episode(episode, parts)` reads the parts a pointer names; a row's `end_parts` show where the "
-            "episode ended. At any point in the pass, you can open any recorded episode, in this batch or not and "
-            "from earlier passes too: `overview` and `read_episode` take any recorded id"
-            + similar_tail
-            + ".\n"
-        )
-    else:
-        steps = (
-            "1. Look over the batch with `overview()`, then over the proposals: "
-            + _join(look)
-            + "."
-            + similar_line
-            + "\n"
-            "2. Read the episodes behind what may be worth keeping, starting from each one's `end_parts`, which show "
-            "where it ended and so where an outcome, if any, was shown. At any point in the pass, you can open any "
-            "recorded episode, in this batch or not and from earlier passes too, whenever you need to investigate or "
-            "dig deeper: `overview` and `read_episode` take any recorded id"
-            + similar_tail
-            + ".\n"
-        )
-    procedure = (
-        "# How to work\n"
-        "This is a procedure, not a quota: read as much or as little as the material needs.\n"
-        + steps
-        + decide
-        + "\n"
-        "4. Write tests first, against trusted values (rule 5), with fixtures made by `fixture`; see each new test "
-        "fail before the code exists, then pass.\n"
-        + (
-            "5. When it helps, hand a reading or drafting task to a helper with `delegate`. It returns at once and "
-            "the helper works while you go on; it messages you on the record as it goes (`messages` reads them, "
-            "`wait` waits for the next, `reply` answers) and ends with a summary and claims, each with the episode "
-            "parts it rests on, and its files under /inputs/helpers/<name>/. Read those parts yourself before you "
-            "rely on a claim. You decide when you have enough: `stop` ends a helper, and finishing ends every "
-            "helper still running, keeping what it staged. Using helpers is your choice.\n"
-            if helpers
-            else ""
-        )
-        + f"{6 if helpers else 5}. `check` the manifest as often as you like, then `finish`. If the gate refuses "
-        "something, repair it (below).\n"
-    )
-    manifest_extra = ""
-    manifest_docs = ""
-    item_extra = ""
-    if staging or pool or helpers:
-        item_extra = ', "adopts": [...]'
-        forms = (
-            (["`staging:<episode>/candidates/<name>.py`"] if staging else [])
-            + (["`helper:<helper name>/candidates/<name>.py`"] if helpers else [])
-            + (["`pool:<id>`"] if pool else [])
-        )
-        manifest_docs += (
-            '  - An item\'s `adopts` lists the drafts it drew on, each as `{"ref": <ref>, "how": <how>}`. The ref is '
-            + _join(forms)
-            + ". How is `as_is` (used unchanged), `edited`, `merged` (with other drafts or a library item), "
-            "`generalised` (parametrised or generalised), `rewritten`, or `informed` (it only informed new work). "
-            "Leave it out when the item drew on none. The manifest itself has no `adopts`.\n"
-        )
-    if pool:
-        manifest_extra += '"pool": {...}, '
-        manifest_docs += (
-            '  - `pool` records decisions on pool entries: `{"merged": {"<id>": "<item>"}, "superseded": '
-            '{"<id>": "<id or item>"}, "retired": {"<id>": "<reason>"}}`. An entry is merged into an item this '
-            "manifest lists, superseded by another entry or an item, or retired with a reason. `retired` closes an "
-            "entry for good: it is wrong or not reusable. To keep an entry open for a later pass, defer it "
-            "(`pool` with decision `defer`, which writes the block's `defer` rows). "
-            '`"reopened": {"<id>": "<reason>"}` opens a closed entry again.\n'
-        )
-    replay_rule = (
-        " A function lifted from the working model's cells can be verified by listing in its manifest entry the "
-        "code it `replaces` and calling `replay`: the instances that replay become its test."
-        if has("replay")
-        else ""
-    )
-    body = (
-        role
-        + "\n# Inputs\n"
-        + "".join(inputs)
-        + "\n# Tools\n"
-        + (tools + "\n" if tools else "")
-        + "\n"
-        + _record_text()
-        + "\n"
-        + procedure
-        + "\n"
-        + _WHAT_TO_WRITE
-        + "\n"
-        + _WRITE_RULES
-        + "\n"
-        + _GATE
-        + "\n"
-        + _REPAIR
-        + "\n"
-        + _limits_text(limits, helper_time=helpers)
-        + "\n"
-        "# Done\n"
-        "You are done when you have built the best library items you can from this batch, with the proposals as "
-        "material and the episodes as evidence, and every item "
-        "you wrote has passed the gate or is kept as a draft with its failure. Then call `finish(summary)`. "
-        "Writing nothing is a valid decision when your summary says why.\n"
-    )
-    return _sandbox_first("writer") + _fill(
-        body,
-        {
-            "manifest_extra": manifest_extra,
-            "item_extra": item_extra,
-            "manifest_extra_docs": manifest_docs,
-            "replay_rule": replay_rule,
-            "mutation_min_pct": _pct(mutation_min),
-            "sample_k": sample_k,
-            "lint_min": lint_min,
-            "pytest_env": _env(pytest_env),
-            "semantic_types": describe_semantic_types(),
-        },
+    return _opened(
+        "writer",
+        flags,
+        limits,
+        _write_brief_in_code(
+            limits=limits,
+            mutation_min=mutation_min,
+            sample_k=sample_k,
+            lint_min=lint_min,
+            pytest_env=pytest_env,
+            staging=staging,
+            pool=pool,
+            tool_names=tool_names,
+            switches=switches,
+        ),
     )
 
 
@@ -1341,36 +1069,22 @@ def curate_brief(
     suspects_path: str,
     trigger_path: str,
     tools: str = "",
-    in_code: bool | None = None,
     flags: frozenset[str] = frozenset(),
 ) -> str:
     """The CURATE brief with its numbers, input paths and Tools section filled in; *in_code* (None:
     ``UNIFY_TOOLS_IN_CODE``) gives the brief for tools called from code, after the shared opening for the
     configuration *flags*."""
-    if in_code if in_code is not None else _in_code():
-        return _opened(
-            "curator",
-            flags,
-            limits,
-            _curate_brief_in_code(
-                limits=limits,
-                pytest_env=pytest_env,
-                overlaps_path=overlaps_path,
-                suspects_path=suspects_path,
-                trigger_path=trigger_path,
-            ),
-        )
-    return _sandbox_first("curator") + _fill(
-        _CURATE,
-        {
-            "tools": (tools + "\n" if tools else "") + "\n" + _record_text(),
-            "library_bullet": _CURATE_LIBRARY_BULLET if _persistent() else _CURATE_LIBRARY_BULLET_FRESH,
-            "limits": _limits_text(limits, helper_time=False),
-            "pytest_env": _env(pytest_env),
-            "overlaps_path": overlaps_path,
-            "suspects_path": suspects_path,
-            "trigger_path": trigger_path,
-        },
+    return _opened(
+        "curator",
+        flags,
+        limits,
+        _curate_brief_in_code(
+            limits=limits,
+            pytest_env=pytest_env,
+            overlaps_path=overlaps_path,
+            suspects_path=suspects_path,
+            trigger_path=trigger_path,
+        ),
     )
 
 
@@ -1388,8 +1102,6 @@ def _sandbox_first(agent: str) -> str:
     earlier one byte for byte."""
     from unify.common import tool_registry
 
-    if not _persistent():
-        return ""
     return tool_registry.sandbox_paragraph(agent, ("memory",), True) + "\n\n"
 
 
@@ -1434,7 +1146,7 @@ def limits_now(
             _num(_cc.COMPACTION_THRESHOLD * 100) if compact else None
         ),
         compact_at_tokens=_cc.compaction_at_tokens() if compact else None,
-        compact_keep_prefix=bool(compact and _cc.keep_prefix_enabled()),
+        compact_keep_prefix=bool(compact and False),
         stage_files=fork_worker.QUOTA_FILES,
         stage_bytes=fork_worker.QUOTA_BYTES,
     )
@@ -1544,7 +1256,7 @@ CANDIDATE_CONTRACT_IN_CODE = (
 
 def candidate_contract() -> str:
     """The drafting contract a fork or helper reads: :data:`CANDIDATE_CONTRACT`, or its in-code form."""
-    return CANDIDATE_CONTRACT_IN_CODE if _in_code() else CANDIDATE_CONTRACT
+    return CANDIDATE_CONTRACT_IN_CODE
 
 
 #: The example-evidence rule when tools are called from code: the same rule, with the wider evidence said once.

@@ -255,7 +255,7 @@ def test_the_off_briefs_say_memory_is_bound_and_drop_fresh_process_wording(monke
     texts = {
         "writer": lp.write_brief_now(cell_s=60.0),
         "curator": lp.curate_brief_now(cell_s=60.0),
-        "helper": helpers.helper_brief(False, in_code=False),
+        "helper": helpers.helper_brief(False),
     }
     for role, text in texts.items():
         body = flat(text)

@@ -87,8 +87,6 @@ def in_code_section_call(view: str) -> str:
     from code (the writer's first message shows INDEX.md's own head, and this paragraph is the harness's)."""
     from unify.common import in_code_switch
 
-    if not in_code_switch.tools_in_code():
-        return view
     return _SECTION_CALL_SHOWN.sub(SECTION_CALL_IN_CODE, view, count=1)
 
 
@@ -98,7 +96,7 @@ def prompt_view_head(view: str) -> str:
     from code."""
     from unify.common import in_code_switch
 
-    if not in_code_switch.tools_in_code() or not view.startswith(INDEX_HEAD):
+    if not view.startswith(INDEX_HEAD):
         return view
     rest = _SECTION_CALL_SHOWN.sub(SECTION_CALL_IN_CODE, view[len(INDEX_HEAD) :], count=1)
     return INDEX_HEAD_IN_CODE + rest

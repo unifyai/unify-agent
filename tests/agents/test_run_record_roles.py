@@ -228,7 +228,7 @@ def test_prompt_size_report_per_role_before_and_after(
             + lines("actor-3f9a", "actor"),
             "writer": messaging.record_text() + lines("writer", "writer"),
             "curator": messaging.record_text() + lines("curator", "writer"),
-            "helper": helpers.helper_brief(True, in_code=True)
+            "helper": helpers.helper_brief(True)
             + lines("call-1", "helper", "writer"),
             "librarian": R.preamble("librarian", {})
             + lines("librarian-3f9a", "librarian"),
