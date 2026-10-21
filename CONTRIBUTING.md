@@ -43,8 +43,9 @@ machine.
   fixture in `tests/async_tool_loop`). A test states what the model says and
   asserts what the harness does with it.
 - No test needs a key. When no provider key is set, the root `conftest.py`
-  sets a placeholder that is plainly not a secret, so settings load and nothing
-  can authenticate anywhere.
+  sets `OPENROUTER_API_KEY=ci-placeholder-not-a-key`, a placeholder that is
+  plainly not a secret, so settings load and nothing can authenticate anywhere.
+  CI sets the same placeholder and holds no secret.
 - The guard in `tests/conftest.py` holds in every session, key or not: the
   model client's provider calls fail with an error that says how to script the
   model, and a socket may connect only to this machine. A test marked

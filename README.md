@@ -67,8 +67,15 @@ Progress goes to stderr and the answer to stdout. The actor's programs see the
 system's read-only directories, their workspace `~/.unify/workspace` and a
 private `/tmp`, and can write only the last two. Everything the agent keeps
 lives under `~/.unify` (`UNIFY_HOME`); delete that directory to start from
-nothing. For in-process embeddings instead of the provider's, add
-the extra: `uv sync --no-dev --extra local-embeddings`.
+nothing.
+
+Memory's search needs embeddings, and the harness never sends the provider key
+to a provider for them directly. Either compute them in process (install the
+extra with `uv sync --no-dev --extra local-embeddings` and set
+`UNIFY_LOCAL_EMBEDDINGS=true`), or set `UNIFY_EMBED_URL` to a proxy lane on
+`http://127.0.0.1:<port>/...` that holds the key and forwards OpenRouter-style
+embedding requests. With neither, a search that needs a new embedding is
+refused.
 
 ## What the agent and its memory do
 
@@ -112,7 +119,8 @@ Memory has one switch, `UNIFY_MEMORY`:
   twice as much per task as `on`, with no measured gain so far.
 
 Everything else is essential configuration only: the provider key, the model
-and reasoning effort, the paths, and the writer's spend cap.
+and reasoning effort, the paths, where embeddings come from, and the writer's
+spend cap.
 [`CONFIG.md`](CONFIG.md) lists every environment variable, one line each.
 
 ## Using it in your own workflow
@@ -305,6 +313,8 @@ Please report security issues privately, not in a public issue; see
 
 Each arm in the ledger is kept as a git tag named by its ledger id, and a
 branch `arms/<id>`. Main carries one design; an arm's code stays on its tag.
+Research launchers and benchmark adapters must pin an `arms/<id>` branch or
+tag, because main carries no experiment flags.
 TODO(lead): the arm tags and branches are not published yet; the names below
 are the planned ones.
 

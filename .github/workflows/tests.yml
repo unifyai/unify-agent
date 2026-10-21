@@ -127,6 +127,9 @@ jobs:
       env:
         # Refuse to run if bubblewrap cannot confine the pytest process.
         UNIFY_TEST_SANDBOX: required
+        # Not a key: start-up needs one set, and nothing can authenticate with
+        # this (the root conftest.py sets the same placeholder).
+        OPENROUTER_API_KEY: ci-placeholder-not-a-key
         # The weights are on disk; nothing should ask the Hub.
         HF_HUB_OFFLINE: "1"
       run: uv run --no-sync pytest -n auto ${{ matrix.shard.paths }}
