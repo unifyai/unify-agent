@@ -332,7 +332,6 @@ def test_the_pointer_files_hold_the_tables_the_brief_points_to():
 def _opening_sizes() -> dict[str, int]:
     """With the setting on, the characters the shared opening and its blank line add to each memory brief."""
     from unify.memory import helpers
-    from unify.memory import library_prompts as lp
 
     texts = {
         "writer base brief": _writer_briefs()["writer base"][0],

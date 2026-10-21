@@ -24,7 +24,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-import pytest
 
 from unify.common import tool_registry as R
 

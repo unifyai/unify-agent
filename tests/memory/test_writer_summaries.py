@@ -11,7 +11,6 @@ import copy
 import json
 from pathlib import Path
 
-import pytest
 
 from unify.memory import library_prompts as lp
 from unify.memory.blobs import BlobStore
