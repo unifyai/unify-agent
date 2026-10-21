@@ -149,7 +149,7 @@ def test_a_pass_on_the_real_turn_counts_tokens_compacts_and_never_sends_usage(
 ):
     transport.replies = _reads(3)
     turn, handed = _turn()
-    out, writer = _run(tmp_path, turn, compact=True)
+    out, writer = _run(tmp_path, turn)
     # every request the loop built, and every request the transport received, is free of the usage report
     assert len(transport.sent) == len(handed) > 2
     assert _no_usage(handed) and _no_usage(transport.sent)
@@ -192,7 +192,6 @@ def test_a_helper_on_the_real_turn_counts_tokens_compacts_and_never_sends_usage(
     ctx = _helper_ctx(
         tmp_path,
         new_turn=lambda: turn,
-        compact=True,
         step_guard=6,
     )
     reply = _run_helper({"task": "t", "episodes": ["e1"]}, ctx)
@@ -227,7 +226,7 @@ def test_a_scripted_message_holding_usage_still_counts_and_is_not_changed(tmp_pa
         return msg, "0.001"
 
     turn.max_input_tokens = WINDOW
-    out, _ = _run(tmp_path, turn, compact=True)
+    out, _ = _run(tmp_path, turn)
     assert _no_usage(requests)
     assert all("usage" in m for m in returned)  # the loop copies; the turn's dicts keep their report
     assert out.input_tokens == 400 * len(requests)

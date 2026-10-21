@@ -1360,7 +1360,6 @@ class RequestRun:
             lookup=episodes(self.stores).action if episodes is not None else None,
             blobs=self.stores.blobs,
             freeze=True,
-            library_mode=True,
         )
 
     def redactor(self) -> Any:

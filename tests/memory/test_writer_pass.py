@@ -118,7 +118,7 @@ def test_pass_stops_at_call_cap_without_manifest(tmp_path):
         ev,
         load=_never,
         model_turn=Script(["print(1)"] * 50),
-        config=PassConfig(max_calls=3),
+        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=3),
     )
     parent = mem.head()
     out = asyncio.run(writer.run(PassRequest("incremental", "venmo", [], False), "p2"))
@@ -170,7 +170,7 @@ def test_spend_cap_reserves_budget_for_unknown_costs(
         ev,
         load=_never,
         model_turn=Costs(costs),
-        config=PassConfig(max_calls=10, max_usd=Decimal("1.00")),
+        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=10, max_usd=Decimal("1.00")),
     )
     out = asyncio.run(writer.run(PassRequest("incremental", "venmo", [], False), "p3"))
     assert out.calls == calls and not out.passed
@@ -194,7 +194,7 @@ def test_recorded_pass_id_is_refused_before_any_model_call(tmp_path):
         ev,
         load=_never,
         model_turn=model,
-        config=PassConfig(),
+        config=PassConfig(run_home=str(tmp_path / "run-home"), ),
     )
     out = asyncio.run(writer.run(PassRequest("incremental", "venmo", [], False), "p4"))
     assert not out.passed and out.calls == 0 and model.i == 0
@@ -334,7 +334,7 @@ def test_pass_never_follows_links_or_git_files_written_in_the_box(tmp_path):
         ev,
         load=_never,
         model_turn=Script(cells),
-        config=PassConfig(max_calls=10),
+        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=10),
     )
     out = asyncio.run(writer.run(PassRequest("incremental", "venmo", [], False), "p5"))
     assert not out.passed
@@ -360,7 +360,7 @@ def test_model_error_ends_the_pass_and_is_recorded(tmp_path):
         ev,
         load=_never,
         model_turn=boom,
-        config=PassConfig(),
+        config=PassConfig(run_home=str(tmp_path / "run-home"), ),
     )
     out = asyncio.run(writer.run(PassRequest("incremental", "venmo", [], False), "p6"))
     assert out.calls == 1 and out.usd == "0" and out.unknown_cost_calls == 1
@@ -462,7 +462,7 @@ def _writer(tmp_path, model, **cfg):
         ev,
         load=_never,
         model_turn=model,
-        config=PassConfig(**cfg),
+        config=PassConfig(run_home=str(tmp_path / "run-home"), **cfg),
     )
     return mem, ev, writer
 
@@ -868,7 +868,7 @@ def test_channel_folders_exist_for_exactly_the_pass_channels_and_hold_no_file(tm
         ev,
         load=lambda eid: ep,
         model_turn=model,
-        config=PassConfig(max_calls=5),
+        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=5),
     )
     parent = mem.head()
     out = asyncio.run(
@@ -979,7 +979,7 @@ def test_writer_fixes_a_misplaced_item_with_check_and_the_pass_merges(tmp_path):
         ev,
         load=lambda eid: ep,
         model_turn=model,
-        config=PassConfig(max_calls=20),
+        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=20),
     )
     parent = mem.head()
     out = asyncio.run(
@@ -1028,7 +1028,7 @@ def _store_backed(tmp_path, model, **cfg):
         ev,
         load=lambda eid: ep,
         model_turn=model,
-        config=PassConfig(**cfg),
+        config=PassConfig(run_home=str(tmp_path / "run-home"), **cfg),
     )
     return mem, ev, writer
 
@@ -1123,7 +1123,7 @@ def test_check_refuses_a_declared_input_in_library_mode(tmp_path):
         ev,
         load=w.EPISODES.__getitem__,
         model_turn=model,
-        config=PassConfig(max_calls=10),
+        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=10),
     )
     out = asyncio.run(
         writer.run(PassRequest("incremental", "acct", ["e1", "e2"], False), "pl"),

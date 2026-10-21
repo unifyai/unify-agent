@@ -82,7 +82,6 @@ def _run(tmp_path, model, **cfg):
     _, _, writer = _writer(
         tmp_path,
         model,
-        library_mode=True,
         max_calls=12,
         pass_record_root=str(tmp_path / "rec"),
         **cfg,
@@ -107,7 +106,7 @@ def _summaries(model):
 
 def test_the_summary_call_goes_through_the_agents_own_turn_and_is_booked(tmp_path):
     model = Compacting(_reads(3))
-    out, writer = _run(tmp_path, model, compact=True)
+    out, writer = _run(tmp_path, model)
     summaries = _summaries(model)
     assert summaries
     first = model.requests.index(summaries[0])
@@ -161,10 +160,10 @@ def test_no_compaction_with_the_switch_off_or_an_unknown_window(tmp_path):
 def test_with_no_known_window_the_fixed_point_compacts(tmp_path):
     fixed = context_compression.COMPACTION_AT_TOKENS
     model = Compacting(_reads(3), window=None, prompt=fixed)
-    out, _ = _run(tmp_path / "at", model, compact=True)
+    out, _ = _run(tmp_path / "at", model)
     assert out.compactions >= 1 and _summaries(model) and out.context_window is None
     model = Compacting(_reads(3), window=None, prompt=fixed - 1)
-    out, _ = _run(tmp_path / "below", model, compact=True)
+    out, _ = _run(tmp_path / "below", model)
     assert out.compactions == 0 and not _summaries(model)
 
 
@@ -182,14 +181,14 @@ def test_the_brief_states_both_compaction_points():
 def test_under_the_threshold_nothing_is_compacted(tmp_path):
     below = int(1_000 * context_compression.COMPACTION_THRESHOLD) - 1
     model = Compacting(_reads(3), window=1_000, prompt=below)
-    out, _ = _run(tmp_path, model, compact=True)
+    out, _ = _run(tmp_path, model)
     assert out.compactions == 0 and not _summaries(model)
 
 
 def test_no_credential_reaches_the_summary_input_or_the_records(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIFY_MEMORY_WRITER_TOKEN", ENV_TOKEN)
     model = Compacting(_reads(2))
-    out, writer = _run(tmp_path, model, compact=True)
+    out, writer = _run(tmp_path, model)
     assert out.compactions >= 1
     sent = json.dumps(_summaries(model))
     assert (

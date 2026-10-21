@@ -110,7 +110,7 @@ class _Blocking:
 
 
 async def _cancelled_pass(tmp_path):
-    _, ev, writer = _writer(tmp_path, _Blocking(), library_mode=True)
+    _, ev, writer = _writer(tmp_path, _Blocking())
     writer.load = EPS.__getitem__
     # the brief is not under test here (it reads the library constants; test_writer_library_brief.py pins it)
     writer._brief_library_mode = lambda: "brief"

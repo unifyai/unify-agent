@@ -65,7 +65,7 @@ def test_batch_map_lists_the_block_file_and_reads_show_the_marker(tmp_path):
         _call("m", "read", {"path": "/inputs/batch_map.json"}),
     ]
     model = Turns(turns)
-    _, _, writer = _writer(tmp_path, model, library_mode=True, max_calls=10)
+    _, _, writer = _writer(tmp_path, model, max_calls=10)
     writer.load = eps.__getitem__
     out = asyncio.run(
         writer.run(PassRequest("incremental", "svc", list(eps), False), "p1"),

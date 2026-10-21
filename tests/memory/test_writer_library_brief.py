@@ -41,7 +41,7 @@ def _briefs_integrated():
 
 def test_library_system_message_is_the_write_brief(tmp_path):
     _briefs_integrated()
-    writer = _finishing_pass(tmp_path, library_mode=True)
+    writer = _finishing_pass(tmp_path)
     # the default configuration caps the pass's spend, so finish's refusal cap is stated
     assert writer.messages[0] == {
         "role": "system",

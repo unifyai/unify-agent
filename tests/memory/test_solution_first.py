@@ -96,7 +96,7 @@ def test_overview_without_cells():
 def test_the_overview_logs_the_end_parts_it_shows_in_full(tmp_path):
     ep = _ep(CELLS, ACTIONS)
     model = Turns([_call("o", "read_episode", {"episode": "e1", "part": "overview"})])
-    _, _, writer = _writer(tmp_path, model, library_mode=True, max_calls=5)
+    _, _, writer = _writer(tmp_path, model, max_calls=5)
     writer.load = {"e1": ep}.__getitem__
     out = asyncio.run(
         writer.run(PassRequest("incremental", "svc", ["e1"], False), "p1"),

@@ -235,7 +235,7 @@ def test_an_unfinished_fork_stages_nothing_and_the_writer_is_told(tmp_path, stat
             _call("s", "read", {"path": "/inputs/staging/e2/summary.md"}),
         ],
     )
-    _, _, writer = _writer(tmp_path, model, library_mode=True, max_calls=6, staging_root=str(root))
+    _, _, writer = _writer(tmp_path, model, max_calls=6, staging_root=str(root))
     writer.load = {"e2": _episode("e2")}.__getitem__
     out = asyncio.run(writer.run(PassRequest("incremental", "svc", ["e2"], False), "p1"))
     # the writer's batch-map row says no reader output and why, and lists the withheld files as refused
@@ -279,7 +279,7 @@ def test_the_evidence_fields_are_written(tmp_path, monkeypatch):
             _with_usage(_call("m", "read", {"path": "/inputs/batch_map.json"}), 150),
         ],
     )
-    _, _, writer = _writer(tmp_path, model, library_mode=True, max_calls=6, staging_root=str(root))
+    _, _, writer = _writer(tmp_path, model, max_calls=6, staging_root=str(root))
     writer.load = {"e2": ep}.__getitem__
     out = asyncio.run(writer.run(PassRequest("incremental", "svc", ["e2"], False), "p1"))
     assert "## Asked" in model.outputs["s"]

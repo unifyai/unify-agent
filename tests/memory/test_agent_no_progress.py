@@ -158,7 +158,7 @@ def test_a_writer_repeating_a_no_op_cell_is_told_then_its_round_ends_and_the_mer
         [_call("w0", "execute_code", {"code": FILES_CODE})]
         + [_call(f"n{i}", "execute_code", {"code": NOOP}) for i in range(loops)],
     )
-    mem, ev, writer = _writer(tmp_path, model, library_mode=True, max_usd=None, deadline_s=300.0)
+    mem, ev, writer = _writer(tmp_path, model, max_usd=None, deadline_s=300.0)
     checked, merged = [], []
     writer.gate.check = lambda *a, **k: checked.append(a) or GateResult(True, {}, [], [])
     writer.gate.merge = _admit(writer, merged)
@@ -209,7 +209,7 @@ def test_a_round_ended_by_no_progress_has_its_own_reason_code_beside_the_gate_ch
         [_call("w0", "execute_code", {"code": FILES_CODE})]
         + [_call(f"n{i}", "execute_code", {"code": NOOP}) for i in range(4 * MEMORY_K)],
     )
-    mem, ev, writer = _writer(tmp_path, model, library_mode=True, max_usd=None, deadline_s=300.0)
+    mem, ev, writer = _writer(tmp_path, model, max_usd=None, deadline_s=300.0)
     merged: list = []
     writer.gate.check = lambda *a, **k: GateResult(True, {}, [], [])
     writer.gate.merge = _refuse(writer, merged)
@@ -230,7 +230,7 @@ def test_a_round_not_ended_by_no_progress_has_no_such_code(tmp_path):
     from unify.memory import writer_pass
 
     model = Turns([_call("w0", "execute_code", {"code": FILES_CODE})])
-    mem, ev, writer = _writer(tmp_path, model, library_mode=True, max_usd=None, deadline_s=300.0)
+    mem, ev, writer = _writer(tmp_path, model, max_usd=None, deadline_s=300.0)
     merged: list = []
     writer.gate.check = lambda *a, **k: GateResult(True, {}, [], [])
     writer.gate.merge = _refuse(writer, merged)
@@ -249,7 +249,7 @@ def test_a_writer_whose_repeated_cell_changes_its_result_is_never_stopped(tmp_pa
         [_call("w0", "execute_code", {"code": FILES_CODE})]
         + [_call(f"n{i}", "execute_code", {"code": COUNTER}) for i in range(loops)],
     )
-    mem, ev, writer = _writer(tmp_path, model, library_mode=True, max_usd=None, deadline_s=300.0)
+    mem, ev, writer = _writer(tmp_path, model, max_usd=None, deadline_s=300.0)
     merged: list = []
     writer.gate.check = lambda *a, **k: GateResult(True, {}, [], [])
     writer.gate.merge = _admit(writer, merged)

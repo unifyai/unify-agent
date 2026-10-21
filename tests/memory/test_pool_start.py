@@ -281,17 +281,15 @@ def test_adopt_refs_parse_to_one_form_and_bad_ones_name_the_forms():
                 },
             ],
         },
-        library_mode=True,
     )
     assert man.items[0].adopts == ["staging:e2/candidates/fill.py", "pool:" + CID]
-    assert parse_manifest({"items": [item]}, library_mode=True).items[0].adopts == []
+    assert parse_manifest({"items": [item]}).items[0].adopts == []
     with pytest.raises(ManifestError):
-        parse_manifest({"items": [{**item, "adopts": STAGED}]}, library_mode=True)
+        parse_manifest({"items": [{**item, "adopts": STAGED}]})
     # a manifest-wide list would credit no item: it is refused, naming where adopts goes
     with pytest.raises(ManifestError, match="belongs on each item"):
         parse_manifest(
             {"items": [item], "adopts": [{"ref": STAGED, "how": "as_is"}]},
-            library_mode=True,
         )
 
 
@@ -620,7 +618,6 @@ def test_adopts_entries_record_how_each_draft_was_used_and_bad_ones_are_refused(
                 },
             ],
         },
-        library_mode=True,
     )
     assert man.items[0].adopts == ["staging:e2/candidates/fill.py", "pool:" + CID]
     assert man.items[0].adopt_how == {
@@ -634,7 +631,7 @@ def test_adopts_entries_record_how_each_draft_was_used_and_bad_ones_are_refused(
         [{"ref": STAGED, "how": "as_is", "x": 1}],
     ):
         with pytest.raises(ManifestError):
-            parse_manifest({"items": [{**item, "adopts": bad}]}, library_mode=True)
+            parse_manifest({"items": [{**item, "adopts": bad}]})
     with pytest.raises(ManifestError, match="different how"):
         parse_manifest(
             {
@@ -648,7 +645,6 @@ def test_adopts_entries_record_how_each_draft_was_used_and_bad_ones_are_refused(
                     },
                 ],
             },
-            library_mode=True,
         )
 
 

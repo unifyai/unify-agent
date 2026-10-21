@@ -313,7 +313,7 @@ def _pass(tmp_path: Path, cells: list[str], eids: list[str]):
         ev,
         load=EPISODES.__getitem__,
         model_turn=model,
-        config=PassConfig(
+        config=PassConfig(run_home=str(tmp_path / "run-home"), 
             pass_record_root=str(tmp_path / "out"),
             # each fixture and check call made from code counts against the cap as a model call does: the
             # reader script alone makes 15 or more of them

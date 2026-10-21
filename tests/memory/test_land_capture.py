@@ -154,7 +154,7 @@ def test_landing_writes_the_reader_procedure_fixtures_test_and_manifest_entries(
     case = json.loads((data / "row_sums.case1.source.case.json").read_text())
     assert (case["input"], case["expected"], case["kind"]) == (ep.request[0], {"sums": [5, 12]}, "source")
     assert "recipe memory.readings.procedures:apply_row_sums" in reply.text
-    parse_manifest(_manifest(tmp_path), library_mode=True)
+    parse_manifest(_manifest(tmp_path))
     # the reply lists the files written, as the box sees them
     for rel in (
         "readings/procedures.py",
@@ -385,7 +385,7 @@ def test_the_manifest_takes_a_procedures_recipe_in_its_module_and_its_case_files
         "recipe": "memory.readings.procedures:apply_row_sums",
         "cases": ["memory/readings/tests/data/row_sums.case1.source.case.json"],
     }
-    got = parse_manifest({"items": [item]}, library_mode=True).items[0]
+    got = parse_manifest({"items": [item]}).items[0]
     assert (got.role, got.recipe, got.cases) == ("procedure", item["recipe"], item["cases"])
     for bad in (
         {"recipe": "memory.readings.other:apply_row_sums"},  # another module
@@ -396,7 +396,7 @@ def test_the_manifest_takes_a_procedures_recipe_in_its_module_and_its_case_files
         {"role": "reader"},  # recipe and cases are a procedure's
     ):
         with pytest.raises(ManifestError):
-            parse_manifest({"items": [{**item, **bad}]}, library_mode=True)
+            parse_manifest({"items": [{**item, **bad}]})
 
 
 def test_the_manifest_takes_a_procedure_role_and_its_reader():
@@ -408,10 +408,10 @@ def test_the_manifest_takes_a_procedure_role_and_its_reader():
         "role": "procedure",
         "reader": "memory.readings.readers:read_row_sums",
     }
-    parse_manifest({"items": [item]}, library_mode=True)
+    parse_manifest({"items": [item]})
     for bad in ({"role": "oracle"}, {"role": "reader", "reader": item["reader"]}, {"reader": "../x"}):
         with pytest.raises(ManifestError):
-            parse_manifest({"items": [{**item, **bad}]}, library_mode=True)
+            parse_manifest({"items": [{**item, **bad}]})
 
 
 def test_an_actor_curator_or_helper_call_is_refused_by_the_allow_list():

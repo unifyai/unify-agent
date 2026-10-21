@@ -41,7 +41,7 @@ EPS = {
 
 def _pass(tmp_path, turns, eids=("e1", "e2"), **cfg):
     model = Turns(turns)
-    _, _, writer = _writer(tmp_path, model, library_mode=True, **cfg)
+    _, _, writer = _writer(tmp_path, model, **cfg)
     writer.load = EPS.__getitem__
     out = asyncio.run(
         writer.run(PassRequest("incremental", "svc", list(eids), False), "p1"),

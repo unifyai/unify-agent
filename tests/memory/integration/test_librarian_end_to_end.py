@@ -135,9 +135,8 @@ def _open_request(paths: Paths, sha: str, monkeypatch) -> request_mod.RequestRun
     run = request_mod.RequestRun("r", paths)
     run.state = State.load(paths.state)
     run.pin = sha
-    run.library_mode = True
-    run._shape_rows = lambda consolidate, library_mode=False: {}  # no evidence store here
-    run._open_library_mode(None)
+    run._shape_rows = lambda consolidate, sha=None: {}  # no evidence store here
+    run._open_library(None)
     monkeypatch.setattr(request_mod, "_CURRENT", run)
     return run
 

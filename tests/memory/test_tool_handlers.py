@@ -203,8 +203,6 @@ def _in_code_pass(tmp_path, turns, *, helper=None, **cfg):
     _, _, writer = _writer(
         tmp_path,
         model,
-        library_mode=True,
-        tools_in_code=True,
         max_calls=cfg.pop("max_calls", 4),
         pass_record_root=str(tmp_path / "out"),
         **cfg,
@@ -600,8 +598,6 @@ def test_a_pass_that_ends_with_a_handler_thread_alive_keeps_its_folder_and_says_
     _, _, writer = _writer(
         tmp_path,
         model,
-        library_mode=True,
-        tools_in_code=True,
         max_calls=3,
         pass_record_root=str(tmp_path / "out"),
     )
@@ -651,8 +647,6 @@ def test_a_cell_that_raises_still_writes_its_row_at_its_reserved_number(tmp_path
     _, _, writer = _writer(
         tmp_path,
         model,
-        library_mode=True,
-        tools_in_code=True,
         max_calls=4,
         pass_record_root=str(tmp_path / "out"),
     )

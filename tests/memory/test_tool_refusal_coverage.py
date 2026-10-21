@@ -372,8 +372,6 @@ def _run(tmp_path, name, turns, *, helper=None, patch=None, **cfg):
     _, _, writer = _writer(
         folder,
         model,
-        library_mode=True,
-        tools_in_code=True,
         pass_record_root=str(folder / "out"),
         **cfg,
     )
@@ -430,7 +428,6 @@ def test_every_reachable_form_is_answered_and_nothing_leaks(tmp_path, monkeypatc
             [_cell("c1", WRITER_CELL)],
             helper=_helper(HELPER_CELL),
             edit_tools=True,
-            pool=True,
             similar_index=str(tmp_path / "similar"),
             deadline_s=300.0,
         ),

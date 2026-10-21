@@ -551,13 +551,9 @@ def test_staging_again_replaces_and_the_quota_is_stated(tmp_path, monkeypatch):
 def test_the_helper_lane_reads_its_token_from_a_descriptor_and_scrubs_the_environment(
     monkeypatch,
 ):
-    for name, value in (
-        ("_HELPER_TOKEN", None),
-        ("_HELPER_BASE", ""),
-        ("_HELPER_TRIED", False),
-        ("_HELPER_REFUSAL", None),
-    ):
-        monkeypatch.setattr(switch, name, value)
+    lane = switch._Lane(switch.LIBRARY_HELPER_BASE_URL, switch.LIBRARY_HELPER_TOKEN_FD, switch.LIBRARY_HELPER_TOKEN,
+                        "helper", "no helper lane")
+    monkeypatch.setattr(switch, "_HELPER", lane)
     assert switch.helper_lane_route() == (None, "no helper lane")
     r, w = os.pipe()
     os.write(w, b"helper-token-0123456789abcdef\n")  # pragma: allowlist secret
@@ -582,13 +578,10 @@ def test_the_helper_lane_reads_its_token_from_a_descriptor_and_scrubs_the_enviro
 
 
 def test_no_helper_lane_means_no_delegate_and_no_fallback(monkeypatch):
-    for name, value in (
-        ("_HELPER_TOKEN", None),
-        ("_HELPER_BASE", ""),
-        ("_HELPER_TRIED", True),
-        ("_HELPER_REFUSAL", None),
-    ):
-        monkeypatch.setattr(switch, name, value)
+    lane = switch._Lane(switch.LIBRARY_HELPER_BASE_URL, switch.LIBRARY_HELPER_TOKEN_FD, switch.LIBRARY_HELPER_TOKEN,
+                        "helper", "no helper lane")
+    monkeypatch.setattr(switch, "_HELPER", lane)
+    lane.tried = True
     s = SimpleNamespace(
         UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL="",
         UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD="",

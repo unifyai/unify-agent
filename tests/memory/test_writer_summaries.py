@@ -137,7 +137,7 @@ def _pass(tmp_path, model, *, helper=False, eids=("e1", "e2")):
         ev,
         load=EPS.__getitem__,
         model_turn=model,
-        config=PassConfig(max_calls=6, staging_root=str(root)),
+        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=6, staging_root=str(root)),
         **({"helper_turn": lambda session=None: model} if helper else {}),
     )
     out = asyncio.run(writer.run(PassRequest("incremental", "svc", list(eids), False), "p1"))

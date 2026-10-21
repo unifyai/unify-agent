@@ -116,7 +116,7 @@ def test_behaviour_scope_follows_imports_transitively(tmp_path):
         "return s.split(' ')",
     )
     run = _run(tmp_path, LIB, cand, ["memory/text/parse.py"])
-    assert Gate._behaviour_targets(run, {}, library_mode=True) == [
+    assert Gate._behaviour_targets(run, {}) == [
         "memory.text.dates:parse_date",  # imports parse by name
         "memory.text.dates:week",
         "memory.text.parse:tokens",
@@ -131,7 +131,7 @@ def test_behaviour_scope_follows_imports_transitively(tmp_path):
         LIB,
         ["memory/text/report.py", "memory/text/tests/test_dates.py"],
     )
-    assert Gate._behaviour_targets(only, {}, library_mode=True) == [
+    assert Gate._behaviour_targets(only, {}) == [
         "memory.text.report:summary",
     ]
 
@@ -204,7 +204,6 @@ def test_reduction_drops_importers_under_library_mode(tmp_path):
         man,
         {TOKENS: ["G2"]},
         cand,
-        library_mode=True,
     )
     assert refused == {
         TOKENS: ["G2"],
@@ -235,7 +234,6 @@ def test_reduction_drops_importers_under_library_mode(tmp_path):
         man,
         {TOKENS: ["G2"]},
         lib,
-        library_mode=True,
     )
     assert set(everything) == {it.item for it in man.items} - {
         "memory.text.parse:words",
@@ -259,7 +257,6 @@ def test_a_package_reexport_does_not_chain_its_other_modules(tmp_path):
         man,
         {"memory.kit.a:fa": ["G3"]},
         cand,
-        library_mode=True,
     )
     assert refused == {"memory.kit.a:fa": ["G3"], "memory.use.y:gy": ["dependency"]}
 
@@ -275,6 +272,5 @@ def test_an_init_change_puts_its_packages_modules_in_scope(tmp_path):
     assert "memory.text.parse:tokens" in Gate._behaviour_targets(
         run,
         {},
-        library_mode=True,
     )
     assert "memory.text" in layout.import_graph(tmp_path / "c")["memory.text.parse"]

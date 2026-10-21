@@ -84,7 +84,7 @@ class Helpers:
 
 def _pass(tmp_path, turns, *, helper=None, **cfg):
     model = Turns(turns)
-    _, _, writer = _writer(tmp_path, model, library_mode=True, **cfg)
+    _, _, writer = _writer(tmp_path, model, **cfg)
     writer.load = EPS.__getitem__
     if helper is not None:
         writer.helper_turn = helper.factory
@@ -294,7 +294,7 @@ def test_a_writer_error_ends_its_helpers(tmp_path):
             return await super().__call__(messages, tools)
 
     model = Failing([_call("d", "delegate", {"task": "area", "episodes": []})])
-    _, _, writer = _writer(tmp_path, model, library_mode=True)
+    _, _, writer = _writer(tmp_path, model)
     writer.load = EPS.__getitem__
     writer.helper_turn = lane.factory
     out = asyncio.run(
@@ -316,7 +316,7 @@ def test_a_cancelled_pass_ends_its_helpers_before_it_goes(tmp_path):
             return await super().__call__(messages, tools)
 
     model = Hangs([_call("d", "delegate", {"task": "area", "episodes": []})])
-    _, _, writer = _writer(tmp_path, model, library_mode=True)
+    _, _, writer = _writer(tmp_path, model)
     writer.load = EPS.__getitem__
     writer.helper_turn = lane.factory
 

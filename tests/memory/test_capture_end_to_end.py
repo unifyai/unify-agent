@@ -384,7 +384,7 @@ def test_a_writer_pass_lands_the_capture_as_a_library_item(tmp_path, monkeypatch
         ev,
         load=episodes.__getitem__,
         model_turn=model,
-        config=PassConfig(
+        config=PassConfig(run_home=str(tmp_path / "run-home"), 
             staging_root=str(state / "memory-staging"),
             pass_record_root=str(tmp_path / "out"),
             max_calls=6,

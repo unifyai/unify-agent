@@ -68,7 +68,6 @@ def test_the_pass_lists_each_episodes_staging_in_the_batch_map(tmp_path):
     _, _, writer = _writer(
         tmp_path,
         model,
-        library_mode=True,
         max_calls=6,
         staging_root=str(root),
     )

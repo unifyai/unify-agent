@@ -221,9 +221,7 @@ def _functions(
 def snapshot_rows(
     tree: Path,
     prev: Rows,
-    new: dict[str, tuple[str, list[dict]]],
-    *,
-    library_mode: bool = False,
+    new: dict[str, tuple[str, list[dict]]]
 ) -> Rows:
     """A candidate's snapshot: per function, the parent's shapes for the same body plus this merge's.
 
@@ -231,7 +229,7 @@ def snapshot_rows(
     :func:`arg_descriptors`' (with ``"param"``), and a parent's rows without ``"param"`` are carried as they are.
     """
     out: Rows = {}
-    for item, (digest, _) in sorted(_functions(tree, library_mode).items()):
+    for item, (digest, _) in sorted(_functions(tree, True).items()):
         old = prev.get(item)
         carried = old["shapes"] if old and old["body"] == digest else []
         added = new[item][1] if item in new and new[item][0] == digest else []
@@ -299,10 +297,9 @@ def shapes_at(
     lookup: Callable[[str, int], Any] | None = None,
     blobs: Any = None,
     freeze: bool = False,
-    library_mode: bool = False,
 ) -> Rows:
     """The shape rows of commit *sha* (whose files are at *tree*); see the module docstring."""
-    functions = _functions(tree, library_mode)
+    functions = _functions(tree, True)
     found = _nearest(repo, evidence, sha)
     if found is not None and found[0] == sha:
         return found[1]  # frozen
@@ -320,7 +317,7 @@ def shapes_at(
                 lookup,
                 blobs,
                 only=missing,
-                library_mode=library_mode,
+                library_mode=True,
             ),
         )
     if freeze:

@@ -187,7 +187,7 @@ def _pass(tmp_path: Path, cells: list[str], *, role: str = "write", helper=None,
         ev,
         load=lambda eid: ep,
         model_turn=model,
-        config=PassConfig(
+        config=PassConfig(run_home=str(tmp_path / "run-home"), 
             pass_record_root=str(tmp_path / "out"),
             **cfg,
         ),

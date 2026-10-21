@@ -137,13 +137,11 @@ def _package() -> dict[str, str]:
 
     return {
         "package:memory/__init__.py": library_export.package_source(
-            librarian=True
         ).decode("utf-8"),
         "package:memory/__init__.py (no librarian)": library_export.package_source().decode(
             "utf-8"
         ),
         "package:memory/__init__.pyi": library_export.stub_source(
-            librarian=True
         ).decode("utf-8"),
         "package:memory/_contract.py": library_export.CONTRACT_SOURCE.read_text(
             encoding="utf-8"
@@ -187,109 +185,43 @@ def _modules() -> dict[str, str]:
 
 
 def _rendered(monkeypatch) -> dict[str, str]:
+    """Every text a memory agent is shown, as composed at run time: each agent's tool JSON, stub, opening and tool
+    help, the refusal codes, the writer's brief under every input it can have, the helper's, the fork's and the
+    librarian's texts, the guides, an attention pass's first message, the run record's lines, a segment's
+    instruction and the re-pin notice."""
     import json
-
-    from unify.common import in_code_switch
-    from unify.common import tool_registry as R
-    from unify.memory import curate, helpers, librarian
-    from unify.memory import library_prompts as lp
-    from unify.memory import writer_pass
-    from unify.memory.integration import fork
-
-    out: dict[str, str] = {}
-    flags = sorted(
-        {s.requires for s in R.registry().values() if s.requires}
-        | {"pool", "similar", "helper"}
-    )
-    for role in sorted(R.OLD_ROLES):
-        for n in range(len(flags) + 1):
-            for chosen in itertools.combinations(flags, n):
-                f = frozenset(chosen)
-                key = f"rendered:tools:{role}:{','.join(chosen)}"
-                out[key] = (
-                    json.dumps(R.tool_json(role, f)) + "\n" + R.tools_section(role, f)
-                )
-    every = frozenset(flags)
-    for agent in R.AGENTS:
-        out[f"rendered:preamble:{agent}"] = R.preamble(
-            agent, {"environment": "Your box.", "flags": every}
-        )
-        for name in R.allow_list(agent, every):
-            out[f"rendered:help:{agent}:{name}"] = R.help_text(name, agent)
-    out["rendered:refusals"] = json.dumps(R.refusal_codes()) + json.dumps(
-        R.GENERAL_REFUSALS
-    )
-    if hasattr(R, "COMMON_SECTION"):
-        out["rendered:common_section"] = R.COMMON_SECTION
-    for in_code in (False, True):
-        monkeypatch.setattr(in_code_switch, "tools_in_code", lambda v=in_code: v)
-        tag = "code" if in_code else "json"
-        names = (
-            "staging",
-            "pool",
-            "helper",
-            "similar",
-            "compact",
-            "finish_capped",
-            "edit_tools",
-        )
-        for values in itertools.product((False, True), repeat=len(names)):
-            kw = dict(zip(names, values))
-            out[f"rendered:write:{tag}:{values}"] = lp.write_brief_now(**kw)
-        for values in itertools.product((False, True), repeat=3):
-            kw = dict(zip(("compact", "finish_capped", "edit_tools"), values))
-            out[f"rendered:curate:{tag}:{values}"] = lp.curate_brief_now(**kw)
-        for similar in (False, True):
-            out[f"rendered:helper:{tag}:{similar}"] = helpers.helper_brief(similar)
-        out[f"rendered:fork:{tag}"] = fork.fork_message("`request`: (a request)")
-        out[f"rendered:guide:{tag}"] = (
-            lp.guide_library_mode()
-            + "\n"
-            + lp.guide_pointer()
-            + "\n"
-            + lp.guide_library()
-        )
-    for values in itertools.product((False, True), repeat=3):
-        kw = dict(zip(("docstrings", "catalogue", "soft_budget"), values))
-        out[f"rendered:writer_system:{values}"] = writer_pass.writer_system(**kw)
-    out["rendered:librarian"] = librarian.system_prompt() + "\n" + lp.GUIDE_LIBRARIAN
-    out["rendered:librarian_evidence"] = (
-        librarian.system_prompt(evidence=True)
-        + "\n"
-        + (
-            librarian.evidence_question_message("q", "m", 1)
-        )
-    )
-    out["rendered:curate_system"] = curate.curate_system()
-    out["rendered:guide"] = lp.GUIDE_LIBRARY
-    out.update(_rendered_redesign(monkeypatch))
-    return out
-
-
-def _rendered_redesign(monkeypatch) -> dict[str, str]:
-    """The redesign's texts as composed at run time: the WRITE brief under every combination of the attention pass,
-    items of any effect and stated tests (with the other brief switches), an attention pass's first message, every
-    role's lines on the run record, the fork's instruction with and without the run record and the capture trace, a
-    segment's instruction, the re-pin notice and the frozen writer's answer."""
     from types import SimpleNamespace
 
     from unify.agents import run_record as rr
-    from unify.common import in_code_switch
+    from unify.common import tool_registry as R
     from unify.memory import attention_tools as at
+    from unify.memory import helpers, librarian
     from unify.memory import library_prompts as lp
-    from unify.memory.integration import fork, in_episode, switch
-    from unify.settings import SETTINGS
+    from unify.memory.integration import fork, in_episode
 
     out: dict[str, str] = {}
-    for in_code in (False, True):
-        monkeypatch.setattr(in_code_switch, "tools_in_code", lambda v=in_code: v)
-        tag = "code" if in_code else "json"
-        for sw in itertools.product((False, True), repeat=4):
-            switches = lp.WriterSwitches(attention=sw[0], impure=sw[1], tests=sw[2], labels_only=sw[3])
-            for staging, pool, helper in itertools.product((False, True), repeat=3):
-                out[f"rendered:write_redesign:{tag}:{sw}:{(staging, pool, helper)}"] = lp.write_brief_now(
-                    staging=staging, pool=pool, helper=helper, switches=switches,
-                )
+    every = frozenset({"pool", "similar", "helper"})
+    for agent in R.AGENTS:
+        out[f"rendered:tools:{agent}"] = json.dumps(R.json_tools(agent)) + "\n" + R.render_stub(
+            R.allow_list(agent, every), agent
+        )
+        out[f"rendered:preamble:{agent}"] = R.preamble(agent, {"environment": "Your box.", "flags": every})
+        for name in R.allow_list(agent, every):
+            out[f"rendered:help:{agent}:{name}"] = R.help_text(name, agent)
+    out["rendered:refusals"] = json.dumps(R.refusal_codes()) + json.dumps(R.GENERAL_REFUSALS)
+    out["rendered:common_section"] = R.COMMON_SECTION
+    names = ("helper", "similar", "finish_capped")
+    for values in itertools.product((False, True), repeat=len(names)):
+        out[f"rendered:write:{values}"] = lp.write_brief_now(**dict(zip(names, values)))
+    for similar in (False, True):
+        out[f"rendered:helper:{similar}"] = helpers.helper_brief(similar)
+    out["rendered:fork"] = fork.fork_message("`request`: (a request)") + "\n" + fork.fork_instruction()
+    out["rendered:segment_instruction"] = fork.segment_instruction(2, 5) + "\n" + fork.segment_instruction(None, None)
+    out["rendered:guide"] = lp.guide_library_mode() + "\n" + lp.guide_library() + "\n" + lp.GUIDE_LIBRARY_IN_CODE
+    out["rendered:librarian"] = librarian.system_prompt() + "\n" + lp.GUIDE_LIBRARIAN
+    out["rendered:librarian_evidence"] = (
+        librarian.system_prompt(evidence=True) + "\n" + librarian.evidence_question_message("q", "m", 1)
+    )
     handed = [SimpleNamespace(entry=f"e{i}", kind=k) for i, k in enumerate(
         ("new_experience", "own_check_failed", "use_went_badly", "late_evidence", "repeated_use", "deferred", "message"))]
     for n in (1, len(handed)):
@@ -297,16 +229,7 @@ def _rendered_redesign(monkeypatch) -> dict[str, str]:
             SimpleNamespace(pass_id="p1"), SimpleNamespace(attention=handed[:n]), "2700")
     for role in rr.AGENT_ROLES:
         out[f"rendered:record_lines:{role}"] = rr.prompt_lines(f"{role}-1", role, spawner="actor-1")
-    for record in ("", "on"):
-        for trace in ("", "on"):
-            for in_code in ("off", "on"):
-                monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS_RUN_RECORD", record)
-                monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_CAPTURE_TRACE", trace)
-                monkeypatch.setattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", in_code)
-                out[f"rendered:fork_instruction:{record}:{trace}:{in_code}"] = fork.fork_instruction()
-    out["rendered:segment_instruction"] = fork.segment_instruction(2, 5) + "\n" + fork.segment_instruction(None, None)
     out["rendered:repin_notice"] = in_episode.notice("a" * 40, ["notes/a.md"], ["notes/b.md"], [("notes/c.md", "retired")], True)
-    out["rendered:frozen"] = switch.FROZEN_WRITER_REPLY
     return out
 
 

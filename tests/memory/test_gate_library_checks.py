@@ -239,7 +239,7 @@ def test_library_manifest_parses_function_ids_and_routes_typed_covers():
         "support": ["memory/calc/tests/helpers.py"],
         "deleted": ["memory.calc.old:gone"],
     }
-    man = parse_manifest(raw, library_mode=True)
+    man = parse_manifest(raw)
     it = man.items[0]
     assert (it.path, it.covers, it.typed_covers, it.input) == (
         "memory/calc/sums.py",
@@ -263,7 +263,7 @@ def test_library_manifest_refuses_an_action_cover():
         ],
     }
     with pytest.raises(ManifestError) as exc:
-        parse_manifest(raw, library_mode=True)
+        parse_manifest(raw)
     texts = {
         f"memory.calc.sums:total: the action cover {c!r} is no longer read: list the tests that call it on "
         "fixtures made with fixture (covers takes only cell, diff and episode covers)"
@@ -296,7 +296,7 @@ def test_library_manifest_refuses_bad_ids_tests_and_covers():
         {"items": [], "skeleton": ["env/x"]},
     ):
         with pytest.raises(ManifestError):
-            parse_manifest(bad, library_mode=True)
+            parse_manifest(bad)
     with pytest.raises(ManifestError):
         parse_manifest({"items": [_function()]})  # v2 is unchanged: no function kind
 

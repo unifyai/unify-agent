@@ -101,7 +101,7 @@ def test_a_writer_pass_the_stop_ended_reports_the_code(tmp_path):
         [_call("w0", "execute_code", {"code": FILES_CODE})]
         + [_call(f"n{i}", "execute_code", {"code": NOOP}) for i in range(loops)],
     )
-    mem, ev, writer = _writer(tmp_path, model, library_mode=True, max_usd=None, deadline_s=300.0)
+    mem, ev, writer = _writer(tmp_path, model, max_usd=None, deadline_s=300.0)
     merged: list = []
     writer.gate.check = lambda *a, **k: GateResult(True, {}, [], [])
     writer.gate.merge = _admit(writer, merged)
@@ -123,7 +123,7 @@ def test_a_writer_never_stopped_carries_no_code(tmp_path):
         [_call("w0", "execute_code", {"code": FILES_CODE})]
         + [_call(f"n{i}", "execute_code", {"code": COUNTER}) for i in range(loops)],
     )
-    mem, ev, writer = _writer(tmp_path, model, library_mode=True, max_usd=None, deadline_s=300.0)
+    mem, ev, writer = _writer(tmp_path, model, max_usd=None, deadline_s=300.0)
     writer.gate.check = lambda *a, **k: GateResult(True, {}, [], [])
     writer.gate.merge = _admit(writer, [])
     out = _run(writer)

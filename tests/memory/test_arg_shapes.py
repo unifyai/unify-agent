@@ -79,7 +79,6 @@ def _rows(root: Path, new: dict, prev: dict | None = None) -> dict:
         root,
         prev or {},
         {item: (body_digest(bodies[item]), descs) for item, descs in new.items()},
-        library_mode=True,
     )
 
 

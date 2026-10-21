@@ -256,7 +256,6 @@ def test_the_writer_reads_the_capture_store_and_no_other_agent_edits_the_library
         ],
         "p1",
         staging_root=str(state / "memory-staging"),
-        fork=True,
     )
     assert pool.entry_id("capture", cid) in model.outputs["i"]
     assert f'"id": "{cid}"' in model.outputs["b"]

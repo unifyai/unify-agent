@@ -39,7 +39,6 @@ PARSE_DATE = "memory.text.dates:parse_date"
 def _library_run(monkeypatch, paths: Paths) -> RequestRun:
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
     run = RequestRun("r", paths)
-    run.library_mode = True
     monkeypatch.setattr(request_mod, "_CURRENT", run)
     return run
 

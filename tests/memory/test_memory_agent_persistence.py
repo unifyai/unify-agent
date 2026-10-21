@@ -68,7 +68,7 @@ def _writer(tmp_path: Path, turns: list, **cfg) -> tuple[WriterPass, Watched]:
         ev,
         load=lambda eid: ep,
         model_turn=model,
-        config=PassConfig(
+        config=PassConfig(run_home=str(tmp_path / "run-home"), 
             pass_record_root=str(tmp_path / "out"),
             **cfg,
         ),

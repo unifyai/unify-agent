@@ -73,7 +73,7 @@ def test_any_recorded_episode_is_readable_and_others_are_refused(tmp_path, monke
         from tests.memory import test_writer_library_tools as t
 
         model = t.Turns(turns)
-        _, ev, writer = t._writer(tmp_path, model, library_mode=True, max_calls=8)
+        _, ev, writer = t._writer(tmp_path, model, max_calls=8)
         writer.load = EPS.__getitem__
         monkeypatch.setattr(
             ev,

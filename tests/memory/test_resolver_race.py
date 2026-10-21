@@ -119,7 +119,7 @@ class _Swapper(threading.Thread):
 
 
 def _writer_for(tmp_path: Path, box: Path):
-    _, _, writer = _writer(tmp_path / "w", None, library_mode=True)
+    _, _, writer = _writer(tmp_path / "w", None)
     writer.load = EPS.__getitem__
     writer._shown_full, writer._read_logs = {}, {}
     writer._batch, writer._shared, writer._bmap_rows = ["e1"], {}, []

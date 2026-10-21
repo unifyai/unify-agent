@@ -137,7 +137,7 @@ def test_a_prompt_crossing_the_threshold_compacts_once_and_the_summary_is_booked
     window = _window(WRITER_MODEL)
     crossing = _threshold(window)
     model = Stepped(_reads(3), prompts=[LOW, crossing], after=LOW)
-    out, _ = _run(tmp_path, model, compact=True)
+    out, _ = _run(tmp_path, model)
     assert out.context_window == window
     assert out.compactions == 1 and len(_summaries(model)) == 1
     # the summary is the third request: right after the call that reached the trigger
@@ -152,6 +152,6 @@ def test_a_prompt_crossing_the_threshold_compacts_once_and_the_summary_is_booked
 def test_prompts_below_the_threshold_never_compact(tmp_path):
     window = _window(WRITER_MODEL)
     model = Stepped(_reads(3), prompts=[], after=_threshold(window) - 1)
-    out, _ = _run(tmp_path, model, compact=True)
+    out, _ = _run(tmp_path, model)
     assert out.context_window == window
     assert out.compactions == 0 and not _summaries(model)

@@ -126,7 +126,7 @@ def _first_message(tmp_path, mem, ev, eids, pass_id, show_usage=True) -> str:
         ev,
         load=lambda eid: _ep(episode_id=eid),
         model_turn=model,
-        config=PassConfig(max_calls=1, show_usage=show_usage),
+        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=1, show_usage=show_usage),
     )
     asyncio.run(writer.run(PassRequest("batched", None, list(eids), False), pass_id))
     return model.first[1]["content"]
@@ -148,8 +148,8 @@ def test_with_the_switch_off_the_writers_first_message_is_the_screen_builds(tmp_
     mem = _library(tmp_path)
     ev = EvidenceStore(tmp_path / "e.sqlite")
     _index(ev, "e1", _record({"env/x:parse": {"called": 2}}), "2026-10-08T01:00:00Z")
-    assert PassConfig().show_usage is False
-    got = _first_message(tmp_path, mem, ev, ["e1"], "p1", show_usage=False)
+    assert PassConfig(run_home=str(tmp_path / "run-home"), ).show_usage is False
+    got = _first_message(tmp_path, mem, ev, ["e1"], "p1")
     req = PassRequest("batched", None, ["e1"], False)
     with mem.temp_checkout() as wt:
         index = build_index(wt)
@@ -168,7 +168,7 @@ def test_with_the_switch_on_the_table_is_added_after_the_index(tmp_path):
     mem = _library(tmp_path)
     ev = EvidenceStore(tmp_path / "e.sqlite")
     _index(ev, "e1", _record({"env/x:parse": {"called": 2}}), "2026-10-08T01:00:00Z")
-    off = _first_message(tmp_path, mem, ev, ["e1"], "p1", show_usage=False)
+    off = _first_message(tmp_path, mem, ev, ["e1"], "p1")
     on = _first_message(tmp_path, mem, ev, ["e1"], "p1b", show_usage=True)
     table = usage.usage_table(
         ev,

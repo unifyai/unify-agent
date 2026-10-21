@@ -84,7 +84,6 @@ def test_a_landable_capture_reaches_the_writer_once_and_a_failed_one_keeps_its_s
         "p1",
         eids=("e1", "e2"),
         staging_root=str(root),
-        fork=True,
     )
     # e2's procedure reaches the writer as its capture only; its drafts stay staged
     assert "does not exist" in model.outputs["p2"] and "def read_input" not in model.outputs["p2"]
@@ -136,7 +135,7 @@ def test_adopting_a_candidate_from_the_episode_supersedes_its_capture_once(tmp_p
     st = _Stores(tmp_path)
     _adopting(st, monkeypatch, "e2/candidates/fill.py")
     turns = [_open("e2"), _call("f", "finish", {"summary": "adopted fill"})]
-    out, _ = st.run(turns, "p1", staging_root=str(root), fork=True)
+    out, _ = st.run(turns, "p1", staging_root=str(root))
     assert out.finished and out.passed and out.items_merged == [ITEM["item"]], out.reasons
     e = st.pool().entries[cap]
     assert (e.status, e.status_detail) == ("superseded", {"item": ITEM["item"], "via": "candidate", "pass": "p1"})
@@ -145,7 +144,7 @@ def test_adopting_a_candidate_from_the_episode_supersedes_its_capture_once(tmp_p
     # the adopted candidate merged as before; the notes were not adopted
     assert st.pool().entries[CID].status == "merged" and st.pool().entries[LID].status == "open"
     # a later pass adopting the same candidate closes nothing again
-    out2, _ = st.run(turns, "p2", staging_root=str(root), fork=True)
+    out2, _ = st.run(turns, "p2", staging_root=str(root))
     assert out2.passed, out2.reasons
     assert cap not in out2.pool["changed"] and st.pool().entries[cap].status_detail["pass"] == "p1"
 
@@ -154,7 +153,7 @@ def test_adopting_only_the_episodes_notes_leaves_its_capture_open(tmp_path, monk
     root, _, landable, _ = _world(tmp_path)
     st = _Stores(tmp_path)
     _adopting(st, monkeypatch, "e2/notes.md")
-    out, _ = st.run([_open("e2"), _call("f", "finish", {"summary": "s"})], "p1", staging_root=str(root), fork=True)
+    out, _ = st.run([_open("e2"), _call("f", "finish", {"summary": "s"})], "p1", staging_root=str(root))
     assert out.finished and out.passed, out.reasons
     assert st.pool().entries[LID].status == "merged"
     assert st.pool().entries[pool.entry_id("capture", landable)].status == "open"

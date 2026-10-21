@@ -1309,7 +1309,7 @@ class Gate:
     def _parse_manifest(self, manifest: object) -> Manifest:
         """The manifest under the library layout (:func:`.manifest.parse_manifest`); an item may state its label
         fields."""
-        return parse_manifest(manifest, library_mode=True, labels=True)
+        return parse_manifest(manifest, labels=True)
 
     def _library_mode(self, run: _Run):
         """The library checks of *run* (:mod:`.library_checks`)."""
@@ -1538,7 +1538,6 @@ class Gate:
                 run.man,
                 run.item_fail,
                 run.c_tree,
-                library_mode=True,
             )
             manifest = reduction.build(
                 run.man,
@@ -2127,13 +2126,11 @@ class Gate:
                 run.p_tree,
                 lookup=self.lookup,
                 blobs=self.blobs,
-                library_mode=True,
             )
             return snapshot_rows(
                 run.c_tree,
                 prev,
                 run.shapes,
-                library_mode=True,
             )
         except (
             Exception
@@ -2142,7 +2139,6 @@ class Gate:
                 run.c_tree,
                 {},
                 run.shapes,
-                library_mode=True,
             )
 
     @staticmethod

@@ -46,7 +46,7 @@ def replay_world(tmp_path, monkeypatch):
         lambda item, cases: (TEST_REL, "def test_f():\n    pass\n"),
     )
     monkeypatch.setattr(rv, "case_file", lambda item, cases: (CASE_REL, b"[]\n"))
-    _, _, writer = _writer(tmp_path / "w", None, library_mode=True)
+    _, _, writer = _writer(tmp_path / "w", None)
     return writer, box, outside, tmp_path / "scratch"
 
 

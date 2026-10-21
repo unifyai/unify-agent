@@ -183,7 +183,6 @@ def test_every_call_is_one_tool_event_with_status_paths_and_usage(tmp_path):
     _, _, writer = _writer(
         tmp_path,
         model,
-        library_mode=True,
         max_calls=6,
         pass_record_root=str(tmp_path / "out"),
     )
@@ -235,7 +234,7 @@ def test_every_call_is_one_tool_event_with_status_paths_and_usage(tmp_path):
 
 def test_the_empty_turn_nudge_names_the_real_tools(tmp_path):
     model = Turns([{"role": "assistant", "content": "thinking"}])
-    _, _, writer = _writer(tmp_path, model, library_mode=True, max_calls=3)
+    _, _, writer = _writer(tmp_path, model, max_calls=3)
     writer.load = EPS.__getitem__
     asyncio.run(writer.run(PassRequest("incremental", "svc", ["e1"], False), "p1"))
     nudges = [
@@ -256,7 +255,6 @@ def test_an_existing_events_file_is_never_written_over(tmp_path):
     _, _, writer = _writer(
         tmp_path,
         model,
-        library_mode=True,
         max_calls=3,
         pass_record_root=str(tmp_path / "out"),
     )

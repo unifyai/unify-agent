@@ -132,7 +132,6 @@ def test_a_failure_whose_cell_never_reported_is_listed_without_a_cell():
 
 def test_the_run_settles_its_cells_and_the_use_record_lists_them_in_library_mode_only():
     run = RequestRun("r", None)
-    run.library_mode = True
     run.note_calls(_failing_cell())
     run.note_result("call-b", {"error": None, "session_id": 0})
     run.note_failure("call-c", RuntimeError("the tool raised"))

@@ -447,7 +447,7 @@ def test_a_scripted_pass_lands_an_env_item_covering_the_dialogue_actions(tmp_pat
         ev,
         load=lambda eid: by_id[eid],
         model_turn=script,
-        config=PassConfig(max_calls=10),
+        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=10),
     )
     out = asyncio.run(
         writer.run(PassRequest("batched", None, sorted(by_id), False), "p1"),
@@ -489,7 +489,7 @@ def test_a_pass_with_an_empty_manifest_passes_and_changes_nothing(tmp_path):
         ev,
         load=lambda eid: by_id[eid],
         model_turn=script,
-        config=PassConfig(max_calls=10),
+        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=10),
     )
     out = asyncio.run(writer.run(PassRequest("batched", None, [EID], False), "p0"))
     assert out.passed, out.reasons

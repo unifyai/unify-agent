@@ -276,7 +276,7 @@ def _memory_pass(tmp_path: Path, role: str, model: Steps, helper: Steps | None =
         ev,
         load=lambda eid: ep,
         model_turn=model,
-        config=PassConfig(
+        config=PassConfig(run_home=str(tmp_path / "run-home"), 
             pass_record_root=str(tmp_path / "out"),
             max_calls=8,
             cell_timeout_s=300.0,
@@ -340,9 +340,8 @@ def actor_world(core_world, monkeypatch):  # noqa: F811
     run = request_mod.RequestRun("r", paths)
     run.state = State.load(paths.state)
     run.pin = mem.head()
-    run.library_mode = True
-    run._shape_rows = lambda consolidate, library_mode=False: {}  # no evidence store here
-    run._open_library_mode(None)
+    run._shape_rows = lambda consolidate, sha=None: {}  # no evidence store here
+    run._open_library(None)
     monkeypatch.setattr(request_mod, "_CURRENT", run)
     yield {"world": core_world, "opened": collect.opened, "run": run, "paths": paths}
 

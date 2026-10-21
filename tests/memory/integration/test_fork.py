@@ -32,13 +32,9 @@ TOKEN = "fork-token-0123456789abcdef"
 def _fresh_lane_state(monkeypatch):
     from unify.memory.integration import switch as sw
 
-    for name, value in (
-        ("_FORK_TOKEN", None),
-        ("_FORK_BASE", ""),
-        ("_FORK_TRIED", False),
-        ("_FORK_REFUSAL", None),
-    ):
-        monkeypatch.setattr(sw, name, value)
+    # the fork's lane read afresh in this test (a lane's token is read once per process)
+    monkeypatch.setattr(sw, "_FORK", sw._Lane(sw.LIBRARY_FORK_BASE_URL, sw.LIBRARY_FORK_TOKEN_FD, sw.LIBRARY_FORK_TOKEN,
+                                              "fork", "no fork lane"))
     return sw
 
 

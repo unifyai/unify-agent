@@ -62,7 +62,6 @@ def test_a_service_pass_stops_before_a_call_that_could_take_it_past_its_room(tmp
     _mem, _ev, writer = _writer(
         tmp_path,
         model,
-        library_mode=True,
         max_usd=None,
         deadline_s=300.0,
         usd_limit="14.00",
@@ -79,7 +78,7 @@ def test_without_a_room_an_uncapped_pass_is_as_built(tmp_path):
         [_call(f"c{i}", "execute_code", {"code": f"print({i})"}) for i in range(5)],
         usd="0.30",
     )
-    _mem, _ev, writer = _writer(tmp_path, model, library_mode=True, max_usd=None, deadline_s=300.0)
+    _mem, _ev, writer = _writer(tmp_path, model, max_usd=None, deadline_s=300.0)
     out = _run(writer)
     assert Decimal(out.usd) > Decimal("1.00")  # every scripted cell ran: no USD stop
     assert not any("room of" in r for r in out.reasons)
@@ -520,7 +519,7 @@ def test_a_writer_call_refused_while_another_is_in_flight_is_tried_again_and_the
     scripted = Turns([_call(f"c{i}", "execute_code", {"code": f"print({i})"}) for i in range(3)], usd="0.30")
     model = RefusedFirst(scripted)
     _mem, _ev, writer = _writer(
-        tmp_path, model, library_mode=True, max_usd=None, deadline_s=300.0, usd_limit="100.00", usd_call_worst=str(W)
+        tmp_path, model, max_usd=None, deadline_s=300.0, usd_limit="100.00", usd_call_worst=str(W)
     )
     out = _run(writer)
     assert model.refused == 1 and model.answered >= 4  # the three scripted calls and the finish, after the refusal

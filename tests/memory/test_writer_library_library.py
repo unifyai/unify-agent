@@ -62,7 +62,7 @@ def test_library_first_message_points_to_the_index_and_no_library_json(
         raise AssertionError("library.json is v2's; library mode reads the tree")
 
     monkeypatch.setattr(WriterPass, "_stage_context", refuse)
-    _, _, writer = _writer(tmp_path, Turns([]), library_mode=True, max_calls=1)
+    _, _, writer = _writer(tmp_path, Turns([]), max_calls=1)
     _run(writer)
     first = writer.messages[1]["content"]
     # the index is a file the brief names (/memory/INDEX.md, memory.index()); the first message inlines none of it

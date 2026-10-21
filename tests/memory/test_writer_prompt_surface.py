@@ -60,15 +60,7 @@ def registry(request, monkeypatch):
 
 
 def _briefs():
-    out = {}
-    for fork in (False, True):
-        for pool in (False, True):
-            out[f"write fork={fork} pool={pool}"] = lp.write_brief_now(
-                staging=fork,
-                pool=pool,
-            )
-    out["curate"] = lp.curate_brief_now()
-    return out
+    return {f"write helper={h}": lp.write_brief_now(helper=h) for h in (False, True)}
 
 
 def _lists(text):

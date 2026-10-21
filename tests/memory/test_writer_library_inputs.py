@@ -44,7 +44,6 @@ def test_library_export_carries_structural_events_and_actor_code(tmp_path: Path)
         lambda e: _ep(),
         ["e1"],
         tmp_path / "episodes",
-        library_mode=True,
         usage_dest=tmp_path / "usage",
     )
     row = json.loads((tmp_path / "episodes" / "e1.json").read_text())
@@ -118,7 +117,7 @@ def _staged(tmp_path: Path, **cfg) -> Path:
 
 def test_stage_inputs_writes_the_batch_map_only_under_library_mode(tmp_path: Path):
     m = json.loads(
-        (_staged(tmp_path / "on", library_mode=True) / "batch_map.json").read_text(),
+        (_staged(tmp_path / "on") / "batch_map.json").read_text(),
     )
     assert m["version"] == 1 and m["episodes"][0]["episode_id"] == "e1"
     assert "required_parts" not in m["episodes"][0]
@@ -132,7 +131,7 @@ def test_a_curate_pass_stages_no_batch_map_and_no_usage(tmp_path: Path):
     from tests.memory.test_writer_pass import _writer
     from unify.memory.trigger import PassRequest
 
-    _, _, writer = _writer(tmp_path, None, library_mode=True)
+    _, _, writer = _writer(tmp_path, None)
     writer.load = lambda e: _ep()
     inputs = tmp_path / "inputs"
     try:

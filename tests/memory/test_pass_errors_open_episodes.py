@@ -229,7 +229,8 @@ def test_a_writer_that_raises_puts_its_class_on_the_report(tmp_path, monkeypatch
 @pytest.mark.parametrize("where", [None, "", "x.py:1:f"])
 def test_every_error_row_names_a_cause_and_no_other_row_has_one(tmp_path, ended, cls, where):
     report = SimpleNamespace(
-        pass_id="p", ended=ended, outcome=None, seconds=0.0, reconciled=None, error_class=cls, error_where=where
+        pass_id="p", ended=ended, outcome=None, seconds=0.0, reconciled=None, error_class=cls, error_where=where,
+        usd_known="0", unknown_calls=0, worst_case_booked="0", killed_turns=[],
     )
     row = metering.pass_row(tmp_path, report)
     if ended == "error":

@@ -148,12 +148,12 @@ from unify.memory.manifest import ManifestError, parse_manifest  # noqa: E402
 
 def _brief_of(tmp_path, **cfg):
     tmp_path.mkdir(parents=True, exist_ok=True)
-    _, _, writer = _writer(tmp_path, None, library_mode=True, **cfg)
+    _, _, writer = _writer(tmp_path, None, **cfg)
     return writer._brief_library_mode()
 
 
 def test_the_write_brief_names_each_input_the_pass_prepares(tmp_path):
-    full = _brief_of(tmp_path / "a", staging_root=str(tmp_path), fork=True, pool=True)
+    full = _brief_of(tmp_path / "a", staging_root=str(tmp_path), )
     inputs = full.split("# Inputs\n")[1].split("\n# Tools")[0]
     # proposals first, then the evidence behind them
     assert (
@@ -168,14 +168,12 @@ def test_the_write_brief_names_each_input_the_pass_prepares(tmp_path):
     assert plain == pv.write_brief_now(finish_capped=True)
     assert "/inputs/staging" not in plain and "/inputs/pool" not in plain
     # a staging root without the fork stages nothing, so the brief names no staging
-    fork_off = _brief_of(tmp_path / "c", staging_root=str(tmp_path), pool=True)
+    fork_off = _brief_of(tmp_path / "c", staging_root=str(tmp_path))
     assert "/inputs/staging" not in fork_off and "/inputs/pool/" in fork_off
     # byte-stable within a run: the same configuration gives the same bytes
     assert full == _brief_of(
         tmp_path / "d",
         staging_root=str(tmp_path),
-        fork=True,
-        pool=True,
     )
 
 
@@ -205,7 +203,6 @@ def test_a_note_takes_a_minimal_manifest_entry_and_the_brief_shows_it():
                 },
             ],
         },
-        library_mode=True,
     )
     assert [(i.item, i.kind) for i in man.items] == [("notes/arc/fill.md", "note")]
     try:
@@ -219,7 +216,6 @@ def test_a_note_takes_a_minimal_manifest_entry_and_the_brief_shows_it():
                     },
                 ],
             },
-            library_mode=True,
         )
     except ManifestError as exc:
         assert "only functions cover recorded work" in str(exc)
@@ -233,12 +229,11 @@ def test_support_may_declare_a_shared_module_of_the_package():
             "items": [],
             "support": ["memory/arc/common.py", "memory/arc/tests/helpers.py"],
         },
-        library_mode=True,
     )
     assert man.support == ["memory/arc/common.py", "memory/arc/tests/helpers.py"]
     for bad in ("notes/arc/x.md", "memory/common.py", "memory/arc/tests/data/x.json"):
         try:
-            parse_manifest({"items": [], "support": [bad]}, library_mode=True)
+            parse_manifest({"items": [], "support": [bad]})
         except ManifestError as exc:
             assert "is not a test helper" in str(exc)
         else:

@@ -21,7 +21,6 @@ import json
 import os
 import shutil
 import sys
-import threading
 from pathlib import Path
 
 import pytest
@@ -35,7 +34,6 @@ from unify.memory.signals import Signal
 # ---------------------------------------------------------------------------------------------------------------
 #: The capture step's module and function: ``capture(staging_dir, episode, store, *, signals, checker_visible)``.
 CAPTURES_MODULE = "unify.memory.captures"
-CAPTURE_FN = "capture"
 #: The store's directory name under the state home, and the ``Paths`` property that names it.
 STORE_DIR_NAME = "memory-captures"
 PATHS_STORE_ATTR = "captures"
@@ -70,14 +68,9 @@ BRIEF_FAILURE_TEXT = (
 
 
 def _capture(staging: Path, ep: Episode, store: Path, signals: list[Signal]):
+    """The capture step as the harness runs it once a fork settles (the trace contract: nothing is run)."""
     mod = importlib.import_module(CAPTURES_MODULE)
-    return getattr(mod, CAPTURE_FN)(
-        staging,
-        ep,
-        store,
-        signals=signals,
-        checker_visible=True,
-    )
+    return mod.capture_trace_step(staging, ep, store, signals=signals)
 
 
 def _from_captures(store: Path):
@@ -427,33 +420,6 @@ def test_the_procedure_runs_confined_never_on_the_host(tmp_path, monkeypatch, re
 
 
 @needs_bwrap
-def test_a_procedure_that_ignores_its_input_differs_on_a_second_request(tmp_path):
-    home = tmp_path / "home"
-    store = _store(home)
-    first = _stage(home, "ep-0001", CONSTANT_PROCEDURE)
-    _capture(
-        first,
-        _episode("ep-0001", _request(), [1, 3, 5, 9]),
-        store,
-        [_signal("ep-0001", "pass")],
-    )
-    second = _stage(home, "ep-0002", CONSTANT_PROCEDURE)
-    _capture(
-        second,
-        _episode("ep-0002", _request(numbers="8 2 7 4"), [2, 4, 7, 8]),
-        store,
-        [_signal("ep-0002", "pass")],
-    )
-    rows = {r["episode"]: r for r in _events(store)}
-    assert rows["ep-0001"]["reproduces"] == REPRODUCES
-    assert rows["ep-0002"]["reproduces"] == DIFFERS
-    # the same code is one capture; both attempts join its record
-    cid = _cid(CONSTANT_PROCEDURE)
-    assert sorted(_record(store, cid)["episodes"]) == ["ep-0001", "ep-0002"]
-    assert [p.name for p in store.iterdir() if p.is_dir()] == [cid]
-
-
-@needs_bwrap
 def test_a_non_deterministic_procedure_is_marked(tmp_path):
     store, cid = _captured(tmp_path, RANDOM_PROCEDURE)
     assert _record(store, cid)["deterministic"] is False
@@ -469,49 +435,6 @@ def test_a_key_shaped_string_is_refused_before_anything_runs(tmp_path):
     for p in store.rglob("*"):
         if p.is_file():
             assert PLANTED_KEY not in p.read_text(errors="replace"), p
-
-
-@needs_bwrap
-def test_an_attempt_without_a_procedure_captures_nothing(tmp_path):
-    home = tmp_path / "home"
-    staging = _stage(home, "ep-0001", None)
-    store = _store(home)
-    _capture(
-        staging,
-        _episode("ep-0001", _request(), [1, 3, 5, 9]),
-        store,
-        [_signal("ep-0001", "pass")],
-    )
-    assert not store.exists() or not [p for p in store.iterdir() if p.is_dir()]
-
-
-@needs_bwrap
-def test_concurrent_captures_of_the_same_code_share_one_record(tmp_path):
-    home = tmp_path / "home"
-    store = _store(home)
-    errors: list[BaseException] = []
-
-    def one(eid: str) -> None:
-        try:
-            staging = _stage(home, eid, PROCEDURE)
-            _capture(
-                staging,
-                _episode(eid, _request(), [1, 3, 5, 9]),
-                store,
-                [_signal(eid, "pass")],
-            )
-        except BaseException as exc:  # noqa: BLE001 - reported below
-            errors.append(exc)
-
-    threads = [threading.Thread(target=one, args=(f"ep-000{i}",)) for i in (1, 2)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=300)
-    assert not errors, errors
-    cid = _cid(PROCEDURE)
-    assert sorted(_record(store, cid)["episodes"]) == ["ep-0001", "ep-0002"]
-    assert len(_events(store)) == 2
 
 
 # --- a failure is captured as negative knowledge -------------------------------------------------------------

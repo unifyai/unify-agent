@@ -97,7 +97,6 @@ def _round_trip(name: str) -> None:
     item = {k: ITEM_VALUES[k] for k in sorted(keys)}
     man = parse_manifest(
         {"items": [item], "support": [], "why": "w", "summary": "s"},
-        library_mode=True,
     )
     got = man.items[0]
     assert (got.item, got.kind, got.source_episodes, got.tests) == (
@@ -116,7 +115,7 @@ def _round_trip(name: str) -> None:
         assert got.adopt_how == {"staging:e2/candidates/fill.py": "generalised"}
     for extra in ("examples", "path", "signature", "inputs"):
         with pytest.raises(ManifestError) as exc:
-            parse_manifest({"items": [{**item, extra: []}]}, library_mode=True)
+            parse_manifest({"items": [{**item, extra: []}]})
         assert str(exc.value) == (
             f"memory.acct.users:user_id: unknown field {extra!r}; an item takes item, kind, source_episodes, "
             "tests, covers, field_types, adopts, replaces, role, reader, recipe, cases"

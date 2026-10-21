@@ -304,7 +304,6 @@ def test_an_in_episode_verdict_marks_a_signal_pause(tmp_path, monkeypatch):
 def _library_run(monkeypatch, paths: Paths, mem: Repo, first: str) -> RequestRun:
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
     run = RequestRun("r", paths)
-    run.library_mode = True
     run.pin = first
     run.stores = SimpleNamespace(memory=mem)
     run.in_episode = InEpisode(run, lambda sha, dest: export_actor_library_mode(mem.git_dir, sha, dest))

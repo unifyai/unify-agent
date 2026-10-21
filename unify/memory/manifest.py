@@ -845,7 +845,7 @@ def _parse_library_mode(manifest: dict, labels: bool = False) -> Manifest:
     return out
 
 
-def parse_manifest(manifest: object, *, library_mode: bool = False, labels: bool = False) -> Manifest:
+def parse_manifest(manifest: object, *, labels: bool = False) -> Manifest:
     """Validate the manifest's shape, its ids and its paths against the layout; raise ManifestError.
 
     *library_mode*: the library layout (:func:`_parse_library_mode`); off, v2's, unchanged. *labels*
@@ -853,70 +853,4 @@ def parse_manifest(manifest: object, *, library_mode: bool = False, labels: bool
     """
     if not isinstance(manifest, dict):
         raise ManifestError("the manifest must be an object")
-    if library_mode:
-        return _parse_library_mode(manifest, labels=labels)
-    raw_items = manifest.get("items", [])
-    if not isinstance(raw_items, list):
-        raise ManifestError("items must be a list")
-    out = Manifest()
-    seen: set[str] = set()
-    for raw in raw_items:
-        if not isinstance(raw, dict) or not isinstance(raw.get("item"), str):
-            raise ManifestError(f"bad item {raw!r}"[:200])
-        item = raw["item"]
-        if item in seen:
-            raise ManifestError(f"{item} is listed twice")
-        seen.add(item)
-        kind = raw.get("kind")
-        if kind not in KINDS:
-            raise ManifestError(f"{item}: unknown or unsupported kind {kind!r}"[:200])
-        if not ITEM_ID[kind].match(item):
-            raise ManifestError(f"{item!r}: not a {kind} id"[:200])
-        tests = [safe_rel(t) for t in _str_list(raw.get("tests"), f"{item}: tests")]
-        for t in tests:
-            if not TEST_PATH.match(t) or not layout_allowed(t):
-                raise ManifestError(f"{item}: test {t} is not under env/<name>/tests/")
-        covers = _covers(raw.get("covers"), item)
-        if covers and kind != "env_function":
-            raise ManifestError(
-                f"{item}: only environment functions cover recorded calls",
-            )
-        sources = _str_list(raw.get("source_episodes"), f"{item}: source_episodes")
-        out.items.append(
-            ManifestItem(
-                item,
-                kind,
-                item_path(item),
-                sources,
-                tests,
-                covers,
-                _field_types(raw.get("field_types"), item, kind),
-                _input(raw.get("input"), item, kind),
-            ),
-        )
-    out.support = [safe_rel(p) for p in _str_list(manifest.get("support"), "support")]
-    for p in out.support:
-        if not support_allowed(p):
-            raise ManifestError(
-                f"support file {p} is not {TESTKIT} or an admissible helper under env/<name>/tests/",
-            )
-    out.deleted = _str_list(manifest.get("deleted"), "deleted")
-    out.unlisted = _str_list(manifest.get("unlisted"), "unlisted")
-    for entry in out.deleted + out.unlisted:
-        if item_kind(entry) is None:
-            raise ManifestError(f"{entry!r} is not an item id"[:200])
-        if entry in seen:
-            raise ManifestError(f"{entry} is both in items and deleted or unlisted")
-    if set(out.deleted) & set(out.unlisted):
-        raise ManifestError("an item cannot be both deleted and unlisted")
-    out.deleted_tests = [
-        safe_rel(t) for t in _str_list(manifest.get("deleted_tests"), "deleted_tests")
-    ]
-    for t in out.deleted_tests:
-        if not TEST_PATH.match(t):
-            raise ManifestError(f"deleted test {t} is not under env/<name>/tests/")
-    out.skeleton = _str_list(manifest.get("skeleton"), "skeleton")
-    for s in out.skeleton:
-        if not SKELETON_ID.match(s):
-            raise ManifestError(f"{s!r} is not a channel (env/<name>)"[:200])
-    return out
+    return _parse_library_mode(manifest, labels=labels)

@@ -26,6 +26,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from unify.memory.library_checks import LibraryConfig
 from unify.memory import qa as qa_mod
 from unify.memory import testkit
 from unify.memory.blobs import BlobStore
@@ -415,7 +416,7 @@ def _world(tmp_path, episodes, **gate_kw):
         acts = episodes.get(eid, [])
         return acts[i] if 0 <= i < len(acts) else None
 
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup, **gate_kw)
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup, **{"library_mode": LibraryConfig(), **gate_kw})
     return mem, gate
 
 

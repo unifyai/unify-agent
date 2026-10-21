@@ -103,9 +103,8 @@ def test_an_actor_episode_matches_and_runs_a_captured_procedure_with_no_import_l
     run = request_mod.RequestRun("r", paths)
     run.state = State.load(paths.state)
     run.pin = mem.head()
-    run.library_mode = True
-    run._shape_rows = lambda consolidate, library_mode=False: {}  # no evidence store here
-    run._open_library_mode(None)
+    run._shape_rows = lambda consolidate, sha=None: {}  # no evidence store here
+    run._open_library(None)
     monkeypatch.setattr(request_mod, "_CURRENT", run)
     assert (paths.checkout / COPY_CAPTURES / cid / "procedure.py").is_file()
     assert run.memory_bound is True

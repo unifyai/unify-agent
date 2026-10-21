@@ -32,7 +32,7 @@ def _item(**extra) -> dict:
 
 def _refusal(manifest: dict) -> str:
     with pytest.raises(ManifestError) as exc:
-        parse_manifest(manifest, library_mode=True)
+        parse_manifest(manifest)
     return str(exc.value)
 
 
@@ -50,7 +50,6 @@ def test_an_action_cover_is_refused_and_typed_covers_are_kept():
     )
     got = parse_manifest(
         {"items": [_item(covers=[{"episode": "e1", "type": "cell", "cell": 2}])]},
-        library_mode=True,
     ).items[0]
     assert got.covers == [] and [(c.episode, c.type, c.index) for c in got.typed_covers] == [("e1", "cell", 2)]
 
@@ -75,7 +74,7 @@ def test_an_unknown_manifest_field_is_refused():
 
 def test_field_types_keys_types_and_kinds_are_checked():
     declared = {f"{DATA}#rows[].month": "month", f"{DATA}##3": "percentage", f"{DATA}#a.b": "hour"}
-    got = parse_manifest({"items": [_item(field_types=declared)]}, library_mode=True).items[0]
+    got = parse_manifest({"items": [_item(field_types=declared)]}).items[0]
     assert got.field_types == declared and got.input is None
     for key in (
         "rows[].month",
@@ -107,7 +106,7 @@ def test_a_function_lists_the_tests_that_hold_its_examples():
             "memory.acct.users:user_id: a function lists the tests that hold its examples (tests is empty)"
         )
     note = {"item": "notes/acct/users.md", "kind": "note", "source_episodes": ["e1"]}
-    assert parse_manifest({"items": [note]}, library_mode=True).items[0].tests == []
+    assert parse_manifest({"items": [note]}).items[0].tests == []
 
 
 def _item_keys_read() -> set[str]:

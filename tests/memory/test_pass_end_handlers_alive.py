@@ -67,8 +67,6 @@ def test_a_pass_with_a_handler_alive_counts_it_beside_temp_kept(tmp_path, monkey
     _, _, writer = _writer(
         tmp_path,
         model,
-        library_mode=True,
-        tools_in_code=True,
         max_calls=3,
         pass_record_root=str(tmp_path / "out"),
     )

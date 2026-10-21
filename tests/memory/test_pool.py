@@ -10,6 +10,7 @@ import subprocess
 
 import pytest
 
+from unify.memory.library_checks import LibraryConfig
 from unify.memory import pool, writer_pass
 from unify.memory.blobs import BlobStore
 from unify.memory.evidence import EvidenceStore
@@ -34,19 +35,19 @@ class _Stores:
     def __init__(self, tmp_path, **gate_kw):
         self.mem = Repo.init_bare(tmp_path / "mem.git")
         self.ev = EvidenceStore(tmp_path / "e.sqlite")
-        self.gate = Gate(self.mem, self.ev, BlobStore(tmp_path / "b"), **gate_kw)
+        self.gate = Gate(self.mem, self.ev, BlobStore(tmp_path / "b"), library_mode=LibraryConfig(), **gate_kw)
+        self.run_home = str(tmp_path / "run-home")
 
     def run(self, turns, pass_id, eids=("e2",), load=EPS.__getitem__, **cfg):
         model = Turns(turns)
         cfg.setdefault("max_calls", 12)
-        cfg.setdefault("pool", True)
         writer = WriterPass(
             self.mem,
             self.gate,
             self.ev,
             load=load,
             model_turn=model,
-            config=PassConfig(**cfg),
+            config=PassConfig(run_home=self.run_home, **cfg),
         )
         out = asyncio.run(
             writer.run(PassRequest("incremental", "svc", list(eids), False), pass_id),

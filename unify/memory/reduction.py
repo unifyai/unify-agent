@@ -233,9 +233,7 @@ def uses(tree: Path, it: ManifestItem) -> set[str]:
 def with_dependents(
     man: Manifest,
     failed: dict[str, list[str]],
-    tree: Path,
-    *,
-    library_mode: bool = False,
+    tree: Path
 ) -> tuple[dict[str, list[str]], list[str]]:
     """Every refused item with its codes (the failed ones' checks, ``dependency`` for the rest) and why.
 
@@ -244,9 +242,9 @@ def with_dependents(
     refused = {i: list(c) for i, c in failed.items()}
     reasons: list[str] = []
     by_id = {it.item: it for it in man.items}
-    ctx = _library_context(tree) if library_mode else None
+    ctx = _library_context(tree)
     needs = {
-        it.item: (uses_library_mode(tree, it, ctx) if library_mode else uses(tree, it))
+        it.item: (uses_library_mode(tree, it, ctx))
         for it in man.items
     }
     grew = True

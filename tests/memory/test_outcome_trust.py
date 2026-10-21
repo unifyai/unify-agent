@@ -55,11 +55,10 @@ POOL_FAILURE_KIND = "failure"
 
 
 def _track(item: str, facts: list) -> dict:
-    """``lifecycle.aggregate_track(facts)[item]``, unwrapped from a per-commit mapping when it is keyed so."""
-    out = lc.aggregate_track(facts)[item]
-    if set(out) <= {f.memory_main for f in facts}:
-        (out,) = out.values()
-    return out
+    """*item*'s track record per kind of signal (:func:`unify.memory.trust.track`) over the uses *facts* hold."""
+    from unify.memory import trust
+
+    return trust.track([x for f in facts if item in f.items for x in lc.trust_uses(f, f.items[item])])
 
 
 def _basis(item: str, facts: list) -> str | None:

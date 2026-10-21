@@ -161,7 +161,7 @@ def test_the_end_event_carries_the_stuck_refusals(tmp_path):
 @needs_bwrap
 def test_a_repeated_refusal_stops_repair_and_the_rest_of_the_manifest_lands(tmp_path):
     model = Turns(_edits(12))
-    mem, ev, writer = _writer(tmp_path, model, library_mode=True, max_usd=None, deadline_s=300.0)
+    mem, ev, writer = _writer(tmp_path, model, max_usd=None, deadline_s=300.0)
     checked: list[str] = []
 
     def check(parent, candidate, manifest, **kwargs):
@@ -217,7 +217,7 @@ def test_a_repeated_refusal_stops_repair_and_the_rest_of_the_manifest_lands(tmp_
 @needs_bwrap
 def test_refusals_that_differ_each_round_keep_getting_rounds_until_time(tmp_path):
     model = Turns(_edits(80))
-    mem, ev, writer = _writer(tmp_path, model, library_mode=True, max_usd=None, deadline_s=20.0)
+    mem, ev, writer = _writer(tmp_path, model, max_usd=None, deadline_s=20.0)
     n = [0]
 
     def check(parent, candidate, manifest, **kwargs):
@@ -238,7 +238,7 @@ def test_refusals_that_differ_each_round_keep_getting_rounds_until_time(tmp_path
 def test_an_unchanged_candidate_counts_as_a_repeat_in_the_pass(tmp_path):
     # after round 0 the writer only calls finish: every later candidate is the same tree and manifest
     model = Turns([_call("w0", "execute_code", {"code": FILES_CODE}), _call("f0", "finish", {"summary": "s"})])
-    mem, ev, writer = _writer(tmp_path, model, library_mode=True, max_usd=None, deadline_s=300.0)
+    mem, ev, writer = _writer(tmp_path, model, max_usd=None, deadline_s=300.0)
     words = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"]
     seen: list[str] = []
 
@@ -263,7 +263,7 @@ def test_an_unchanged_candidate_counts_as_a_repeat_in_the_pass(tmp_path):
 @needs_bwrap
 def test_a_capped_pass_keeps_its_round_limit_and_marks_nothing_stuck(tmp_path):
     model = Turns(_edits(6))
-    mem, ev, writer = _writer(tmp_path, model, library_mode=True, max_usd=Decimal("10"), max_calls=40)
+    mem, ev, writer = _writer(tmp_path, model, max_usd=Decimal("10"), max_calls=40)
     n = [0]
 
     def check(parent, candidate, manifest, **kwargs):

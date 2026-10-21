@@ -90,7 +90,7 @@ def _pass(tmp_path: Path, monkeypatch, turns: list, *, in_code: bool, survives: 
         ev,
         load=lambda eid: ep,
         model_turn=Turns(turns),
-        config=PassConfig(
+        config=PassConfig(run_home=str(tmp_path / "run-home"), 
             tools_in_code=in_code,
             pass_record_root=str(tmp_path / "out"),
             max_calls=len(turns),

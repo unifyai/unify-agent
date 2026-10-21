@@ -92,7 +92,7 @@ def test_repair_round_lands_one_commit_on_the_parent(tmp_path):
         ev,
         load=lambda eid: ep,
         model_turn=model,
-        config=PassConfig(max_calls=20),
+        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=20),
     )
     parent = mem.head()
     out = asyncio.run(
@@ -156,7 +156,6 @@ def test_budget_cut_skips_the_check_and_merges_once(tmp_path):
     mem, ev, writer = _writer(
         tmp_path,
         model,
-        library_mode=True,
         max_usd=Decimal("0.70"),
     )
     calls = _count(writer.gate)
@@ -189,7 +188,7 @@ def test_gate_time_counts_against_the_deadline(tmp_path):
             _call("f", "finish", {"summary": "s"}),
         ],
     )
-    mem, ev, writer = _writer(tmp_path, model, library_mode=True, deadline_s=6.0)
+    mem, ev, writer = _writer(tmp_path, model, deadline_s=6.0)
     seen = []
 
     def slow_check(parent, candidate, manifest, **kwargs):
@@ -262,7 +261,7 @@ def test_check_runs_the_items_own_tests_under_library_mode(tmp_path):
         ev,
         load=lambda eid: ep,
         model_turn=model,
-        config=PassConfig(max_calls=20),
+        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=20),
     )
     out = asyncio.run(
         writer.run(PassRequest("incremental", "venmo", ["e1"], False), "p1"),
@@ -315,7 +314,7 @@ def test_a_long_check_result_is_a_file_read_can_page(tmp_path):
         ev,
         load=lambda eid: ep,
         model_turn=model,
-        config=PassConfig(max_calls=20),
+        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=20),
     )
     asyncio.run(writer.run(PassRequest("incremental", "venmo", ["e1"], False), "p1"))
     reply = model.outputs["c0"]
@@ -339,7 +338,6 @@ def test_next_pass_sees_open_drafts_and_the_last_full_result(tmp_path):
     mem, ev, writer = _writer(
         tmp_path,
         first,
-        library_mode=True,
         max_usd=Decimal("0.70"),
     )
     assert not _run(writer, "p1").passed  # refused at the one merge: a draft
@@ -361,7 +359,7 @@ def test_next_pass_sees_open_drafts_and_the_last_full_result(tmp_path):
         ev,
         load=_never,
         model_turn=second,
-        config=PassConfig(max_calls=10),
+        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=10),
     )
     _run(sol2, "p2")
     top, draft, is_patch = json.loads(second.outputs["ls"])

@@ -131,8 +131,8 @@ def test_an_item_states_its_label_fields_only_under_the_switch():
     raw = {"items": [_item(**STATED)], "support": []}
     # off, a label field is an unknown field (the first one the item states)
     with pytest.raises(mf.ManifestError, match="unknown field 'effects'"):
-        mf.parse_manifest(raw, library_mode=True)
-    [it] = mf.parse_manifest(raw, library_mode=True, labels=True).items
+        mf.parse_manifest(raw)
+    [it] = mf.parse_manifest(raw, labels=True).items
     assert it.stated == {**STATED, "constants": ["out/report.txt (source: e1/action:0)"]}
     for bad, words in (
         ({"effects": "sometimes"}, "effects is one of none, reads, writes, unknown"),
@@ -140,9 +140,9 @@ def test_an_item_states_its_label_fields_only_under_the_switch():
         ({"form": "checklist"}, "form is one of note, checklist, on a note"),
     ):
         with pytest.raises(mf.ManifestError, match=words):
-            mf.parse_manifest({"items": [_item(**bad)]}, library_mode=True, labels=True)
+            mf.parse_manifest({"items": [_item(**bad)]}, labels=True)
     note = {"item": "notes/files/checks.md", "kind": "note", "source_episodes": ["e1"], "form": "checklist"}
-    [n] = mf.parse_manifest({"items": [note]}, library_mode=True, labels=True).items
+    [n] = mf.parse_manifest({"items": [note]}, labels=True).items
     assert n.stated == {"form": "checklist"}
 
 

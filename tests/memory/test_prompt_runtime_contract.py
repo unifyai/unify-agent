@@ -466,7 +466,7 @@ def _library_pass(tmp_path: Path, model: Any, *, in_code: bool, **cfg: Any):
         ev,
         load=lambda eid: ep,
         model_turn=model,
-        config=PassConfig(
+        config=PassConfig(run_home=str(tmp_path / "run-home"), 
             tools_in_code=in_code,
             pass_record_root=str(tmp_path / "out"),
             **cfg,
@@ -601,7 +601,6 @@ def _actor_library(world: dict, monkeypatch) -> Any:
     mem, sha = _library_repo(paths.memory)
     export_actor_library_mode(mem.git_dir, sha, paths.checkout)
     run = RequestRun("r", paths)
-    run.library_mode = True
     run.index, run.shown = render_memory_section(paths.checkout)
     run.memory_bound = True
     monkeypatch.setattr(request_mod, "_CURRENT", run)

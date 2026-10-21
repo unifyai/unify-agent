@@ -415,7 +415,7 @@ def test_scripted_pass_builds_a_reader_from_recorded_blobs(office):
         ev,
         load=lambda eid: ep,
         model_turn=script,
-        config=PassConfig(max_calls=10),
+        config=PassConfig(run_home=str(mem.git_dir.parent / "run-home"), max_calls=10),
     )
     out = asyncio.run(
         writer.run(

@@ -102,7 +102,6 @@ def test_the_pass_writes_its_refusal_codes_at_its_start(tmp_path):
     _, _, writer = _writer(
         tmp_path,
         model,
-        library_mode=True,
         max_calls=3,
         pass_record_root=str(tmp_path / "out"),
     )
@@ -128,7 +127,6 @@ def test_an_existing_refusal_codes_file_is_never_written_over(tmp_path):
     _, _, writer = _writer(
         tmp_path,
         model,
-        library_mode=True,
         max_calls=3,
         pass_record_root=str(tmp_path / "out"),
     )
@@ -165,13 +163,11 @@ def test_the_pass_states_compaction_and_the_finish_cap_as_it_is_configured(tmp_p
     _, _, writer = _writer(
         tmp_path,
         Turns([]),
-        library_mode=True,
-        compact=True,
         max_usd=Decimal("1"),
     )
     assert writer._write_inputs()["compact"] is True
     assert writer._write_inputs()["finish_capped"] is True
-    _, _, uncapped = _writer(tmp_path / "u", Turns([]), library_mode=True, max_usd=None)
+    _, _, uncapped = _writer(tmp_path / "u", Turns([]), max_usd=None)
     assert uncapped._write_inputs()["finish_capped"] is False
 
 
@@ -200,7 +196,7 @@ def test_final_manifest_is_set_by_an_accepted_finish_only(tmp_path):
             _call("f1", "finish", {"summary": "nothing to keep"}),
         ],
     )
-    _, _, writer = _writer(tmp_path, model, library_mode=True, max_calls=6)
+    _, _, writer = _writer(tmp_path, model, max_calls=6)
     writer.load = EPS.__getitem__
     assert writer.final_manifest is None
     asyncio.run(writer.run(PassRequest("incremental", "svc", ["e1"], False), "p1"))
