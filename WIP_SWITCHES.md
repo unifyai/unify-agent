@@ -318,3 +318,10 @@ The three long-horizon switches share the step-limit reply path.
 - **Default:** empty.
 - **What it does:** Every writer, helper and fork model call carries its pass id (or episode and segment for a fork) and the ledger entries it serves as request metadata headers (ids only), and each pass's result row records its entries, items, known USD, unpriced calls booked at the worst case, killed turns, tokens, turns and messages; `memory-state/metering/` holds the per-entry and per-item views derived from them. Requires `UNIFY_REQUEST_METADATA_HEADERS=on` (refused at start-up otherwise).
 - **Evidence:** the lead's attribution ruling (R4, R13: whole-run all-lane USD with the writer included and labelled); keyless tests only so far (`tests/memory/test_metering.py`).
+
+## UNIFY_MEMORY_GATE_LABELS_ONLY and UNIFY_MEMORY_GATE_RECORDED_REPLAYS
+
+- **Values:** `on` or `off` each (empty is `off`; under `UNIFY_MEMORY_PROFILE=redesign` the profile gives `on` and `off`).
+- **Default:** empty (`off`).
+- **What it does:** With `UNIFY_MEMORY_GATE_LABELS_ONLY=on` the consolidation gate makes every finding a label on its item, except the hard checks (safety, confinement, credentials, the declared change set, recorded provenance and what breaks the library), which still refuse, and it runs code only for statically pure items: their own tests, recipes and recorded calls (`unify/memory/gate_policy.py`). `UNIFY_MEMORY_GATE_RECORDED_REPLAYS=on` adds back the replays of recorded task data (episode covers, held-out values, perturbed and drawn inputs, the history probe), for comparisons only. A landing runs nothing either way. Off, the gate is as before.
+- **Evidence:** rev 2 of the general harness redesign (continual-harness-research: REDESIGN-REV2-20261021, PLAN-REV2 item 6 and the gate ruling): no mechanism may execute or re-run a capture to classify, dedupe or rank it; keyless tests only so far (`tests/memory/test_gate_rev2.py`).

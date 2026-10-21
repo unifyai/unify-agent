@@ -993,11 +993,11 @@ REDESIGN_SWITCHES: dict[str, str] = {
     # value only: the replay mode is refused until its stand-in's confinement review (G2) is recorded
     # (``writer_tests.REPLAY_REVIEWED``; :func:`redesign_b_refusal`)
     "UNIFY_MEMORY_WRITER_TESTS": "value",
-    # rev 2 (MAIN, 21 Oct): main runs without in-episode memory (:data:`PROFILE_IN_EPISODE`); each setting is also an
+    # rev 2: main runs without in-episode memory (:data:`PROFILE_IN_EPISODE`); each setting is also an
     # arm of its own (``in_episode_off``, ``in_episode_on``, ``in_episode_repin``)
     "UNIFY_MEMORY_IN_EPISODE": PROFILE_IN_EPISODE,
     "UNIFY_MEMORY_SERVING_FAILURE_RECORD": "on",
-    # rev 2 (MAIN, 21 Oct): the gate labels and runs only pure items; the recorded replays stay off
+    # rev 2: the gate labels and runs only pure items; the recorded replays stay off
     "UNIFY_MEMORY_GATE_LABELS_ONLY": "on",
     "UNIFY_MEMORY_GATE_RECORDED_REPLAYS": "off",
     LIBRARY_WITHDRAW_CLOSED_CAPTURES: "on",

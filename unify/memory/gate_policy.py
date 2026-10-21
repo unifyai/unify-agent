@@ -1,7 +1,7 @@
 """The rev 2 gate: every check labels, and only a statically pure item's own tests run.
 
-The lead's rules, reconciled (MAIN, 21 Oct): no capture or function is re-run to classify or test it (it fails for
-impure and non-ARC items); a write-time quality check labels, never rejects; confinement, security and credential
+The rules: no capture or function is re-run to classify or test it (that fails for impure items and for worlds that
+cannot be replayed); a write-time quality check labels, never rejects; confinement, security and credential
 checks stay hard; the replay of a pure function's own recorded real calls stays. So, with
 ``UNIFY_MEMORY_GATE_LABELS_ONLY`` (the redesign profile):
 

@@ -3,7 +3,7 @@ starts no fork.
 
 The shape address comes from a procedure's syntax alone: docstrings, comments and local names do not count; literals,
 helpers, tool calls and the form do. Same shape: one capture, every occurrence kept (raw bytes included), one ledger
-entry. D1: the capture step runs nothing, so its own check is recorded as not run and no ``own_check_failed`` entry is
+entry. Rev 2: the capture step runs nothing, so its own check is recorded as not run and no ``own_check_failed`` entry is
 made. Three synthetic worlds (a dialogue, a tool namespace, a shell-like value job); no ARC; no model, network or key.
 """
 
@@ -99,7 +99,7 @@ def test_prose_comments_and_local_names_do_not_change_the_shape(world):
 
 @pytest.mark.parametrize("world", sorted(WORLDS))
 def test_a_literal_that_differs_never_folds(world):
-    """MAIN's ruling: two captures that differ only in a literal are two captures."""
+    """Two captures that differ only in a literal are two captures."""
     a, _b = WORLDS[world]
     for old, new in (('"total "', '"sum "'), ("[0]", "[1]"), ("[-1]", "[-2]"), ("r.strip()", "r.strip('x')")):
         if old in a:

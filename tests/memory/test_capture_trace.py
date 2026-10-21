@@ -1,7 +1,7 @@
 """The capture contract under ``UNIFY_MEMORY_CAPTURE_TRACE=on``: a capture records what its episode did.
 
 A procedure takes one of three forms (the request's value, the episode's state, or the state and the episode's tools).
-Rev 2 (D1): the capture step runs nothing, so its own check is recorded as not run (``capture_trace.NOT_RUN``); the
+Rev 2: the capture step runs nothing, so its own check is recorded as not run (``capture_trace.NOT_RUN``); the
 confined own check (``run_box``, ``own_check``) is tested on its own below. The value is recorded only when one was
 handed back; the outcome comes from signals only; no recurrence row is written. With the switch off everything is as
 built.
@@ -214,7 +214,7 @@ def test_each_form_is_captured_exported_and_shown_to_the_writer(tmp_path, form):
     assert row["entry_point"]["form"] == form
     assert row["trace"]["episode"] == "e1" and row["trace"]["parts"][0] == "request"
     assert "same_as" not in row and "reproduces" not in row
-    # rev 2 (D1): nothing ran, and the record says so
+    # rev 2: nothing ran, and the record says so
     assert seen == [] and row["own_check"] == ct.NOT_RUN and row["run"] == "not run"
     rec = json.loads((store / cid / "record.json").read_text())
     assert rec["v"] == 2 and rec["entry_point"]["form"] == form and rec["own_check"] == row["own_check"]

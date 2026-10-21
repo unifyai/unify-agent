@@ -38,7 +38,7 @@ the aliases under their own names (``memory:index``, ``memory:show``, ``memory:f
 ``memory:match``.
 
 ``Item.fits`` and ``match`` read what each stored procedure was saved against (the landed procedures in
-``.memory/find.json``'s ``procedures``, the harness's captured attempts under ``.memory/captures/``) and hand it,
+``.memory/find.json``'s ``procedures``, the harness's captured attempts under ``.memory/captures/``) and pass it,
 identifiers masked, to :data:`MATCHER`, a replaceable module-level hook; the default compares structure only and runs
 nothing. No reader and no ``applies`` runs to recognise or rank a procedure (rev 2); running stays the caller's own
 ``memory.run``. Each raises

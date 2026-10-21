@@ -1,6 +1,6 @@
 """Rev 2, item 4: the end of one stage of a run that goes on (``suspend``) is not the run's end.
 
-A ``final`` drain marks every attention entry still owed ``not_reached: run_ended`` (the B2 guarantee at the run's end);
+A ``final`` drain marks every attention entry still owed ``not_reached: run_ended`` (every entry ends closed or listed as not reached, at the run's end);
 a ``suspend`` drain stops the service the same verified way and marks nothing: the entries stay owed, the suspend's stop
 marker is set aside, and the next start hands them again (those a stopped pass held going back with ``service_restart``,
 no miss). The default stays ``final``. The process tests run :mod:`tests.memory.service_driver` (the real service loop,

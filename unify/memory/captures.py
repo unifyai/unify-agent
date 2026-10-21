@@ -1250,7 +1250,7 @@ def capture_trace_step(
     printed = frozenset(_signatures.printed_ids(request_text))
     value_doc, value = ct.value_of(ep, printed)
     case_doc = ct.case_doc(form, ep)
-    # rev 2 (D1): the procedure is never run to classify it; its own check is recorded as not run
+    # rev 2: the procedure is never run to classify it; its own check is recorded as not run
     check = dict(ct.NOT_RUN)
     run: dict = {"outcome": "not run", "why": check["why"]}
     # the one derivation of an outcome from the episode's signals (judged_outcome), as the value-form capture's
