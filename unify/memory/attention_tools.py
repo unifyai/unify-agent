@@ -366,7 +366,7 @@ def export_context(att: AttentionPass, entries: list) -> list[str]:
 def export_group(att: AttentionPass, handed: list) -> dict | None:
     """Write ``/inputs/attention/group.json`` (:func:`.capture_groups.group_doc`): for a pass handed a capture group
     (:meth:`.attention.Ledger.group_of`) its members, its related closed entries, why each pair is related and the
-    library items it touches, with the material of its most recent related closed entries (at most
+    library items it touches, with the material of its most related closed entries (at most
     :data:`.attention.K`; the rest are listed, and ``tools.take`` exports any of them) exported read-only; for any
     other pass its entries and the library items they touch (``group`` null). Returns the document (None only when
     the pass has no entries); :attr:`AttentionPass.group` keeps it when it is a group."""
@@ -397,7 +397,8 @@ def export_group(att: AttentionPass, handed: list) -> dict | None:
     doc = cg.group_doc(group, profiles, landed=landed)
     if row.get("group") is None:
         doc["group"] = None
-    shown = context[-_att.K :]
+    # the most related closed entries first (how many relations each shares with the members), then the most recent
+    shown = cg.by_strength(group)[: _att.K]
     doc["exported_closed"] = [e.entry for e in shown]
     export_context(att, shown)
     path = att.inputs / "attention" / cg.GROUP_FILE

@@ -1,7 +1,7 @@
 """Rev 2.1, fix 2: each writer pass reads a capture group together with the library state it touches.
 
-Membership comes from the harness's records only (shared ``env`` chains, shared library items, the same input shape
-of the same form), never from an id, a word, a request's text or a stream position, and nothing runs. A new capture
+Membership comes from the harness's records only (the same ordered sequence of tool calls, shared library items, the
+same input shape of the same form), never from an id, a word, a request's text or a stream position, and nothing runs. A new capture
 waits until its group is due (formed, joined, waited out by counters); every other kind of entry is handed at once.
 """
 
@@ -21,8 +21,12 @@ from unify.memory.attention import Ledger, LateSignal, SettledFork
 from tests.memory.test_attention_ledger import Clock, Fake
 
 
-def _p(entry, *, form="state_env", effects=(), shape=(), items=(), outcome="none"):
-    return cg.Profile(entry, (entry[:16],), form, frozenset(effects), frozenset(shape), frozenset(items), outcome)
+def _p(entry, *, form="state_env", effects=(), shape=(), items=(), outcome="none", sequence=()):
+    return cg.Profile(entry, (entry[:16],), form, frozenset(effects or sequence), frozenset(shape), frozenset(items),
+                      outcome, tuple(sequence))  # fmt: skip
+
+
+STEP = ("env.board.read", "env.board.step")
 
 
 def _e(eid, state="open", at_="2026-10-20T00:00:00.000Z"):
@@ -35,17 +39,23 @@ NOW = at.parse_time("2026-10-20T00:01:00.000Z")
 # --- relations: records only ---------------------------------------------------------------------------------------------
 
 
-def test_captures_are_related_by_shared_effects_items_or_input_shape_and_nothing_else():
-    a = _p("a", effects={"env.mail.send", "env.mail.read"}, items={"memory.mail.reply:draft"})
-    b = _p("b", effects={"env.mail.send"})
+def test_captures_are_related_by_a_shared_call_sequence_items_or_input_shape_and_nothing_else():
+    a = _p("a", sequence=("env.mail.read", "env.mail.send"), items={"memory.mail.reply:draft"})
+    b = _p("b", sequence=("env.mail.read", "env.mail.send"))
+    b2 = _p("b2", sequence=("env.mail.send", "env.mail.read"))  # the same calls in another order: other steps
     c = _p("c", items={"memory.mail.reply:draft"})
     d = _p("d", form="value", shape={"[].amount:int"})
     e = _p("e", form="value", shape={"[].amount:int"})
     f = _p("f", form="state", shape={"[].amount:int"})  # the same shape in another form: not the same input
-    assert cg.related(a, b) == ["effects: env.mail.send"]
+    s1, s2 = _p("s1", form="state", shape={"[].amount:int"}), _p("s2", form="state", shape={"[].amount:int"})
+    assert cg.related(a, b) == ["sequence: env.mail.read > env.mail.send"]
+    assert cg.related(a, b2) == [] and cg.related(b, b2) == []
     assert cg.related(a, c) == ["items: memory.mail.reply:draft"]
-    assert cg.related(d, e) == ["input"]
+    assert cg.related(d, e) == ["input"] and cg.related(s1, s2) == ["input"]  # a state's structured data too
     assert cg.related(d, f) == [] and cg.related(b, c) == []
+    # one shared call is no relation: in a world with one action channel every acting capture makes it
+    one = _p("o1", sequence=("env.game.step",)), _p("o2", sequence=("env.game.step",))
+    assert cg.related(*one) == []
     # the same outcome alone, or nothing at all in common, never relates two captures
     assert cg.related(_p("x", outcome="positive"), _p("y", outcome="positive")) == []
 
@@ -59,8 +69,8 @@ def _groups(entries, profiles, now=NOW):
 
 def test_two_related_open_captures_form_a_due_group_and_an_unrelated_one_waits():
     es = [_e("a" * 16), _e("b" * 16), _e("c" * 16)]
-    profiles = {"a" * 16: _p("a" * 16, effects={"env.board.step"}), "b" * 16: _p("b" * 16, effects={"env.board.step"}),
-                "c" * 16: _p("c" * 16, effects={"env.files.write"})}  # fmt: skip
+    profiles = {"a" * 16: _p("a" * 16, sequence=STEP), "b" * 16: _p("b" * 16, sequence=STEP),
+                "c" * 16: _p("c" * 16, sequence=("env.files.read", "env.files.write"))}  # fmt: skip
     got = _groups(es, profiles)
     formed = [g for g in got if g.due == "formed"]
     assert len(formed) == 1 and [e.entry for e in formed[0].open] == ["a" * 16, "b" * 16]
@@ -78,8 +88,8 @@ def test_a_new_capture_related_to_a_decided_one_joins_its_group():
 def test_a_capture_alone_is_due_after_w_later_captures_or_idle_time():
     first = _e("0" * 16)
     later = [_e(f"{i:x}" * 16, at_=f"2026-10-20T00:00:{10 + i:02d}.000Z") for i in range(1, cg.W + 1)]
-    profiles = {first.entry: _p(first.entry, effects={"env.a.b"})}
-    profiles.update({e.entry: _p(e.entry, effects={f"env.other{i}.x"}) for i, e in enumerate(later)})
+    profiles = {first.entry: _p(first.entry, sequence=("env.a.b", "env.a.c"))}
+    profiles.update({e.entry: _p(e.entry, sequence=(f"env.other{i}.x", "env.a.c")) for i, e in enumerate(later)})
     got = {tuple(e.entry for e in g.open): g.due for g in _groups([first, *later], profiles)}
     assert got[(first.entry,)] == "waited"
     quiet = {first.entry: _p(first.entry)}
@@ -90,7 +100,7 @@ def test_a_capture_alone_is_due_after_w_later_captures_or_idle_time():
 
 def test_a_group_with_a_member_in_a_running_pass_is_not_due():
     es = [_e("a" * 16, state="handed"), _e("b" * 16), _e("c" * 16)]
-    profiles = {e.entry: _p(e.entry, effects={"env.x.y"}) for e in es}
+    profiles = {e.entry: _p(e.entry, sequence=("env.x.y", "env.x.z")) for e in es}
     (g,) = _groups(es, profiles)
     assert g.pending and g.due is None
 
@@ -114,10 +124,10 @@ def test_the_ledger_hands_other_kinds_first_then_one_due_group_with_its_row(tmp_
     led.sync(Fake(forks=[_fork(n) for n in names], captures={n: _cap(n, cids[n]) for n in names}))
     clock.tick()
     led.sync(Fake(late=[LateSignal("s1", "e9", None)]))
-    effects = {"1" * 16: {"env.board.step"}, "2" * 16: {"env.board.step"}, "3" * 16: {"env.files.write"}}
+    seqs = {"1" * 16: STEP, "2" * 16: STEP, "3" * 16: ("env.files.read", "env.files.write")}
 
     def grouping(entries):
-        return cg.groups(entries, lambda e: _p(e.entry, effects=effects[e.refs.captures[0]]), now=clock())
+        return cg.groups(entries, lambda e: _p(e.entry, sequence=seqs[e.refs.captures[0]]), now=clock())
 
     first = led.hand("p1", 4, grouping=grouping)
     assert [e.kind for e in first] == ["late_evidence"] and led.group_of("p1") is None
@@ -142,16 +152,45 @@ def test_the_group_document_names_members_related_decisions_and_library_items():
     closed = at.AttentionEntry("c" * 16, "new_experience", "closed", "2026-10-19T00:00:00.000Z",
                                at.Refs(episodes=("c" * 16,), captures=("c" * 16,)), decision="new_item",
                                decided_items=("memory.board.moves:step_left",))  # fmt: skip
-    profiles = {e.entry: _p(e.entry, effects={"env.board.step"}, items={"memory.board.read:grid"})
+    profiles = {e.entry: _p(e.entry, sequence=STEP, items={"memory.board.read:grid"})
                 for e in [*members, closed]}  # fmt: skip
     g = cg.Group(id="a" * 16, open=members, context=[closed], due="formed",
-                 relations=[{"a": "a" * 16, "b": "b" * 16, "why": ["effects: env.board.step"]}])  # fmt: skip
+                 relations=[{"a": "a" * 16, "b": "b" * 16, "why": ["sequence: env.board.read > env.board.step"]}])  # fmt: skip
     doc = cg.group_doc(g, lambda e: profiles[e.entry], landed={"a" * 16: "memory.board.moves:step_up"})
     assert [m["entry"] for m in doc["members"]] == ["a" * 16, "b" * 16] and doc["due"] == "formed"
     (rel,) = doc["related_closed"]
     assert rel["decision"] == "new_item" and rel["decided_items"] == ["memory.board.moves:step_left"]
     assert doc["library_items"] == ["memory.board.moves:step_left", "memory.board.moves:step_up", "memory.board.read:grid"]
-    assert doc["relations"][0]["why"] == ["effects: env.board.step"]
+    assert doc["relations"][0]["why"] == ["sequence: env.board.read > env.board.step"]
+    assert doc["members"][0]["sequence"] == list(STEP)
+
+
+def test_the_related_closed_entries_come_most_related_first_then_most_recent():
+    members = [_e("a" * 16)]
+    old_strong = _e("b" * 16, state="closed", at_="2026-10-19T00:00:00.000Z")
+    new_weak = _e("c" * 16, state="closed", at_="2026-10-19T12:00:00.000Z")
+    newer_weak = _e("d" * 16, state="closed", at_="2026-10-19T18:00:00.000Z")
+    rel = [{"a": "a" * 16, "b": "b" * 16, "why": ["sequence: x > y", "items: memory.p.m:f"]},
+           {"a": "c" * 16, "b": "a" * 16, "why": ["items: memory.p.m:f"]},
+           {"a": "a" * 16, "b": "d" * 16, "why": ["input"]}]  # fmt: skip
+    g = cg.Group(id="a" * 16, open=members, context=[old_strong, new_weak, newer_weak], relations=rel)
+    # two relations beat one, whatever the age; between equals the more recent first
+    assert [e.entry for e in cg.by_strength(g)] == ["b" * 16, "d" * 16, "c" * 16]
+
+
+def test_the_call_sequence_is_read_in_written_order_with_repeats_kept_once():
+    from unify.memory.capture_shape import call_sequence
+
+    src = (
+        "def run(state, env):\n"
+        "    grid = env.board.read()\n"
+        "    for _ in range(3):\n"
+        "        env.board.step('left')\n"
+        "    env.board.step('up')\n"
+        "    return env.mail.send(grid)\n"
+    )
+    assert call_sequence(src) == ["env.board.read", "env.board.step", "env.mail.send"]
+    assert call_sequence("def run(state):\n    return state\n") == [] and call_sequence("def run(:") == []
 
 
 def _home(tmp_path):

@@ -7,12 +7,18 @@ and what stays, so each ``new_experience`` entry waits until its group is due, a
 **Membership** comes from the harness's own records, never from an id, a word, a request's text or a stream
 position, and nothing is run. Two captures are related when their records show at least one of:
 
-* ``effects``: their procedures name a shared ``env.<channel>.<method>`` chain (the procedure's syntax, every
-  function of it: :func:`.capture_shape.shape_of`), so they act through the same part of the world;
+* ``sequence``: their procedures make the same ordered sequence of at least :data:`SEQUENCE_MIN` tool calls
+  (``env.<channel>.<method>`` in the order written, a call repeated at once kept once:
+  :func:`.capture_shape.call_sequence`), so they do the same steps through the world. One shared call is not enough:
+  in a world with one action channel every acting capture makes it, so a single call would chain all work into one
+  group;
 * ``items``: their episodes used, were served or failed with a shared library item (the evidence store's use rows:
   imported, called, refused or errored);
-* ``input``: they have the same entry form and the same non-empty input shape (the key paths and value types of the
-  recorded data the capture's signature describes).
+* ``input``: they have the same entry form and the same non-empty input shape: the key paths, named or not, and leaf
+  types of the recorded data the capture's signature describes. For a ``value`` capture that is the value it reads;
+  for a ``state`` or ``state_env`` capture, the structured data its state holds (the JSON its messages carry). A state
+  with no structured data (text only) has no input shape, by the same rule ``memory.find`` uses: text has no
+  structure to compare.
 
 A group is a connected set of related captures. The outcome each member's signals gave is carried to the writer as
 a fact of the member, not used to join: an edge on the outcome alone would join unrelated work in any world with one
@@ -48,6 +54,8 @@ from typing import Any, Callable, Iterable, Mapping
 
 #: Later new captures after which a capture still alone is due.
 W = 8
+#: The fewest tool calls an ordered call sequence must hold to relate two captures.
+SEQUENCE_MIN = 2
 #: Seconds with no new capture after which every waiting capture is due.
 IDLE_S = 600
 #: The entry kinds that wait for their group; every other kind is handed at once.
@@ -65,6 +73,7 @@ class Profile:
     input: frozenset = frozenset()
     items: frozenset = frozenset()
     outcome: str | None = None
+    sequence: tuple[str, ...] = ()
 
 
 @dataclass
@@ -82,12 +91,11 @@ class Group:
 
 
 def related(a: Profile, b: Profile) -> list[str]:
-    """Why two captures are related (module docstring), as ``"effects: env.x.y"``, ``"items: <id>"`` or ``"input"``;
-    [] when they are not."""
+    """Why two captures are related (module docstring), as ``"sequence: env.x.y > env.z.w"``, ``"items: <id>"`` or
+    ``"input"``; [] when they are not. Sharing only a tool call, or only an outcome, relates nothing."""
     out: list[str] = []
-    shared = sorted(a.effects & b.effects)
-    if shared:
-        out.append("effects: " + ", ".join(shared[:5]))
+    if len(a.sequence) >= SEQUENCE_MIN and a.sequence == b.sequence:
+        out.append("sequence: " + " > ".join(a.sequence[:8]) + (" > ..." if len(a.sequence) > 8 else ""))
     items = sorted(a.items & b.items)
     if items:
         out.append("items: " + ", ".join(items[:5]))
@@ -209,12 +217,12 @@ class HomeProfiles:
 
     def __call__(self, entry: Any) -> Profile:
         cids = tuple(entry.refs.captures)
-        form, effects, shape, outcome = None, frozenset(), frozenset(), None
+        form, effects, shape, outcome, sequence = None, frozenset(), frozenset(), None, ()
         for cid in cids[:1]:
-            form, effects, shape, outcome = self._capture_facts(cid)
+            form, effects, shape, outcome, sequence = self._capture_facts(cid)
         own = {"capture:" + c for c in cids}
         items = frozenset(i for i in self.items_of(entry.refs.episodes) if i not in own)
-        return Profile(entry.entry, cids, form, effects, shape, items, outcome)
+        return Profile(entry.entry, cids, form, effects, shape, items, outcome, sequence)
 
 
 def _read_json(path: Path) -> Any:
@@ -225,8 +233,8 @@ def _read_json(path: Path) -> Any:
 
 
 def _capture_facts(d: Path) -> tuple:
-    """``(form, effects, input, outcome)`` of the capture in *d*, from its files (nothing run)."""
-    from .capture_shape import shape_of
+    """``(form, effects, input, outcome, sequence)`` of the capture in *d*, from its files (nothing run)."""
+    from .capture_shape import call_sequence, shape_of
     from .memory_helper import signature as key_paths
 
     try:
@@ -246,7 +254,26 @@ def _capture_facts(d: Path) -> tuple:
         shape = frozenset(f"{p}:{t}" for p, t in (paths or {}).items())
     rec = _read_json(d / "record.json")
     outcome = rec.get("outcome") if isinstance(rec, dict) and isinstance(rec.get("outcome"), str) else None
-    return form, effects, shape, outcome
+    return form, effects, shape, outcome, tuple(call_sequence(source))
+
+
+def by_strength(group: Group) -> list:
+    """The group's related closed entries, the most related first: by how many relations (kinds of relation, over every
+    open member) each shares with the group's open members, then the most recent first. The strength of a relation
+    decides which earlier work the writer reads, never its age alone."""
+    members = {e.entry for e in group.open}
+    strength: dict[str, int] = {}
+    for r in group.relations:
+        a, b = r.get("a"), r.get("b")
+        for mine, other in ((a, b), (b, a)):
+            if other in members and mine not in members:
+                strength[mine] = strength.get(mine, 0) + len(r.get("why") or [])
+    return sorted(group.context, key=lambda e: (-strength.get(e.entry, 0), _neg_time(e.created_at), e.entry))
+
+
+def _neg_time(at: str | None) -> float:
+    t = _parse(at)
+    return -t.timestamp() if t is not None else 0.0
 
 
 def group_doc(group: Group, profile_of: Callable[[Any], Profile], *, landed: Mapping[str, Any] | None = None) -> dict:
@@ -266,6 +293,7 @@ def group_doc(group: Group, profile_of: Callable[[Any], Profile], *, landed: Map
             "form": p.form,
             "outcome": p.outcome,
             "effects": sorted(p.effects),
+            "sequence": list(p.sequence),
             "items_touched": sorted(p.items),
         }
         if e.state == "closed":
@@ -284,7 +312,7 @@ def group_doc(group: Group, profile_of: Callable[[Any], Profile], *, landed: Map
         "group": group.id,
         "due": group.due,
         "members": [member(e) for e in group.open],
-        "related_closed": [member(e) for e in group.context],
+        "related_closed": [member(e) for e in by_strength(group)],
         "relations": list(group.relations),
         "library_items": sorted(touched),
     }

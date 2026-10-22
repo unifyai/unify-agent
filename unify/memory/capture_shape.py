@@ -180,6 +180,39 @@ def _chains(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
     return sorted(out)
 
 
+def call_sequence(source: Any) -> list[str]:
+    """The ordered ``env.<channel>.<method>`` calls ``run`` makes, in the order they are written, a call repeated at
+    once (a loop's body, a retry) kept once: the procedure's tool-chain shape. [] when it does not parse or has no
+    ``run`` taking a tool namespace. Nothing is run."""
+    if not isinstance(source, str):
+        return []
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return []
+    run = next((n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "run"),
+               None)  # fmt: skip
+    params = [a.arg for a in (*run.args.posonlyargs, *run.args.args)] if run is not None else []
+    if len(params) < 2:
+        return []
+    env = params[1]
+    calls = []
+    for node in ast.walk(run):
+        f = node.func if isinstance(node, ast.Call) else None
+        if (
+            isinstance(f, ast.Attribute)
+            and isinstance(f.value, ast.Attribute)
+            and isinstance(f.value.value, ast.Name)
+            and f.value.value.id == env
+        ):
+            calls.append((node.lineno, node.col_offset, f"env.{f.value.attr}.{f.attr}"))
+    out: list[str] = []
+    for _, _, name in sorted(calls):
+        if not out or out[-1] != name:
+            out.append(name)
+    return out
+
+
 def _env_chains(tree: ast.Module) -> list[str]:
     """The tool calls ``run`` names (:func:`_chains`)."""
     run = next((n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "run"),
