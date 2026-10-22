@@ -66,6 +66,37 @@ def _positional(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
     return [x.arg for x in (*a.posonlyargs, *a.args)]
 
 
+def empty_procedure(source: str) -> bool:
+    """Whether *source*'s ``run`` does nothing a later request could reuse (rev 2.1): its body (without its docstring)
+    reads none of its parameters, calls nothing and hands back no value. Such a stub records no work; it is never a
+    capture (:func:`.captures.capture_trace_step`), so it neither opens nor reopens an attention entry. Parsed, never
+    run; a ``run`` that does not parse or is absent is not judged here (:func:`safety` refuses it)."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return False
+    run = _function(tree, "run")
+    if run is None:
+        return False
+    body = list(run.body)
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+        if isinstance(body[0].value.value, str):
+            body = body[1:]
+    a = run.args
+    params = {x.arg for x in a.posonlyargs + a.args + a.kwonlyargs}
+    params |= {x.arg for x in (a.vararg, a.kwarg) if x is not None}
+    nodes = [n for stmt in body for n in ast.walk(stmt)]
+    if any(isinstance(n, ast.Call) for n in nodes):
+        return False
+    if any(isinstance(n, ast.Name) and n.id in params for n in nodes):
+        return False
+    for n in nodes:
+        if isinstance(n, ast.Return) and n.value is not None:
+            if not (isinstance(n.value, ast.Constant) and n.value.value is None):
+                return False
+    return True
+
+
 def entry_point(source: str) -> dict | None:
     """``{"name": "run", "params": [...], "form": ...}`` from the procedure's code (parsed, never run), or None when it
     has no ``run``: two or more positional parameters are ``state_env``; one, with a ``read_input``, ``value``; else

@@ -784,6 +784,10 @@ def capture_trace_step(
     why = ct.safety(source)
     if why is not None:
         return finish(safety=why)
+    if ct.empty_procedure(source):
+        # rev 2.1: a stub that reads nothing, calls nothing and hands back nothing records no work; the episode's
+        # summary is read as a fork without a procedure, and no capture entry is opened or reopened by it
+        return finish(safety="empty procedure", stub=True)
     broke = _staged(staging, BROKE_FILE)
     if broke is not None and (KEY_SHAPED.search(broke) or not _broke_lines(broke)):
         broke = None  # nothing broke ("none"), or a key-shaped string, which never enters the store

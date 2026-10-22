@@ -127,8 +127,8 @@ PART_GIST_CHARS = 80
 #: work needed (``value``, ``state`` or ``state_env``: :mod:`..capture_trace`), returning a result only when one was
 #: handed back; and what broke.
 CAPTURE_BULLETS = (
-    "- `procedure.py`: the procedure that did this work, from code that ran here, as functions with docstrings, in "
-    "the form that fits what the work needed:\n"
+    "- `procedure.py`, when code that ran here did the work: the procedure that did it, from that code, as "
+    "functions with docstrings, in the form that fits what the work needed:\n"
     "  - `run(state, env)` when the work acted through tools. `env` is this episode's tool namespace: "
     "`env.<channel>.<method>(...)` makes the call the record lists as an action of that channel and method (the part "
     "list below shows each action as `<kind> <channel>.<method>`); make every tool call through `env`. `state` is "
@@ -142,9 +142,10 @@ CAPTURE_BULLETS = (
     "  `run` returns the result you handed back when you handed one back, and None when the outcome of the work is "
     "what it did (its tool calls, the files it changed). Where your code used a value you typed into a cell, read it "
     "from `state` or the request instead. If the work has conditions on its input or its result, write them as "
-    "`applies(x)` and `holds(x, result)`, where `x` is what `run` takes first, each returning True or False. Write it "
-    "whether or not the work was accepted; say which in its docstring, quoting the line of the record that shows it, "
-    'or write "not shown".\n'
+    "`applies(x)` and `holds(x, result)`, where `x` is what `run` takes first, each returning True or False. Its "
+    "docstring says whether the record shows the work accepted, quoting the line that shows it, or says \"not "
+    "shown\". When no code that ran here did the work (it was all in the conversation, or edits made directly), write no "
+    "`procedure.py`: `summary.md` and `broke.md` say what happened.\n"
     "- `broke.md`: each thing that broke in this attempt and why, one line each, with the part name and a short quote "
     'from the record. Write "none" if nothing broke.\n'
 )
