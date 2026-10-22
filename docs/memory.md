@@ -73,3 +73,4 @@ the baseline that the other two settings are measured against.
 | The gate | `unify/memory/gate.py`, `unify/memory/gate_policy.py` |
 | Captures | `unify/memory/captures.py`, `unify/memory/capture_trace.py` |
 | The librarian | `unify/memory/librarian.py` |
+| The lane relay (memory's model calls, under `UNIFY_MEMORY_CAP_USD`) | `unify/lanes/` |

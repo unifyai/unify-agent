@@ -9,8 +9,8 @@ When fixing infrastructure issues (especially concurrency, race conditions, or f
 ## Why This Matters
 
 Tests in this repo have significant overhead:
-- LLM calls (cached: milliseconds, uncached: seconds to minutes)
-- Fixture initialisation and catalogue seeding
+- Sandbox start-up (every pytest process runs inside bubblewrap, and each cell's interpreter is a confined worker)
+- Fixture set-up (homes, run records, memory homes, scripted models)
 
 A targeted verification script can validate a fix in **seconds** rather than waiting minutes for tests that may not even reliably reproduce the issue.
 
@@ -18,13 +18,13 @@ A targeted verification script can validate a fix in **seconds** rather than wai
 
 ✅ **Good candidates:**
 - Race conditions and concurrency fixes (can simulate parallel execution directly)
-- Fixture/conftest changes (test the seeding logic in isolation)
+- Fixture/conftest changes (test the set-up logic in isolation)
 - Infrastructure plumbing (context management, caching, file locking)
 - Non-deterministic failures that are hard to reproduce reliably in tests
 
 ❌ **Skip this for:**
 - Simple bug fixes where one test runs quickly enough
-- LLM behavior changes (need real eval tests with actual prompts)
+- Prompt changes (a scripted-model test of the prompt's text is the check)
 - Cases where the verification script would be more complex than the test itself
 
 ## How to Write a Verification Script

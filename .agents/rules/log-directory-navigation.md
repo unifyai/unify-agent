@@ -1,5 +1,5 @@
 ---
-description: How to navigate and read log files (logs/pytest/, logs/unify/, logs/unillm/)
+description: How to navigate and read log files (logs/pytest/, logs/unillm/)
 ---
 
 # Log Directory Navigation
@@ -19,11 +19,10 @@ The `logs/` directory is gitignored, which affects tool availability:
 
 | Directory | Purpose |
 |-----------|---------|
-| `logs/pytest/` | Test output logs (datetime-prefixed subdirs per run, one file per tmux session, one SQLite store per session under `stores/`) |
-| `logs/unify/` | Runtime LOGGER output (async tool loop, managers) when `UNIFY_LOG_DIR` points here |
+| `logs/pytest/` | Test output logs (datetime-prefixed subdirs per run, one file per tmux session) |
 | `logs/unillm/` | Raw LLM request/response traces |
 
-The chat CLI writes its runtime logs under `<UNIFY_HOME>/logs` (default `~/.unify/logs`), not under the repo.
+`unify act` writes its runtime logs to `UNIFY_LOG_DIR`, by default `<UNIFY_HOME>/logs` (`~/.unify/logs`), not under the repo.
 
 ## Practical Steps
 
@@ -38,7 +37,7 @@ ls logs/pytest/2025-12-05T14-30-45_unify_dev_ttys042/
 
 **Step 2: Read with Read tool**
 ```
-Read: logs/pytest/2025-12-05T14-30-45_unify_dev_ttys042/function_manager-storage-test_primitives.txt
+Read: logs/pytest/2025-12-05T14-30-45_unify_dev_ttys042/function_manager-primitives-test_environment_namespaces.txt
 ```
 
 ## Worktree Symlinks
@@ -62,7 +61,5 @@ ls logs/pytest/2025-12-21T16-00-00_unify_dev_ttys042/
 
 Then use the Read tool:
 ```
-Read: logs/pytest/2025-12-21T16-00-00_unify_dev_ttys042/function_manager-storage-test_primitives.txt
+Read: logs/pytest/2025-12-21T16-00-00_unify_dev_ttys042/function_manager-primitives-test_environment_namespaces.txt
 ```
-
-Each session's store file sits next to its log, so a failing test's rows can be inspected with `sqlite3` after the run.
