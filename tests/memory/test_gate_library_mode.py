@@ -59,9 +59,10 @@ def test_library_gate_passes_and_records_verification(library_example_world):
         ev.db.execute("SELECT reasons FROM passes WHERE pass_id='p1'").fetchone()[0],
     )
     assert any(r.startswith("library_mode-verification ") for r in reasons)
-    # the argument shapes the actor's find reads came from the gate's runs of the tests; rev 2.1's gate runs none, so a
-    # library function landed now has no recorded shape (the frozen snapshot holds none for it)
-    assert w.ITEM_ID not in (ev.commit_shapes(res.merged) or {})
+    # the argument shapes the actor's find reads are read statically from the function's recorded-inputs fixture,
+    # each naming its one parameter (rev 2.1: nothing is run), and frozen for the landed commit
+    row = (ev.commit_shapes(res.merged) or {}).get(w.ITEM_ID)
+    assert row and row["shapes"] and all(d.get("param") == "response" for d in row["shapes"]), row
 
 
 def test_a_fixture_not_made_by_fixture_tool_is_refused(library_example_world):

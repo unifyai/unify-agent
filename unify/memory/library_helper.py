@@ -241,7 +241,7 @@ class Found(NamedTuple):
 
     name: str  # memory.<package>.<module>:<name>
     signature: str
-    param: str  # the parameter whose recorded arguments matched ("" for a shape recorded without one)
+    param: str  # the parameter the matching recorded input is passed as ("" when that is not known)
     match: str  # exact | structure | weak (a single named key, or a whole shape without named keys)
     summary: str
     reason: str  # the keys or columns that matched
@@ -362,13 +362,14 @@ def _match(m: Any, mine: dict, recorded: dict) -> Any:
 
 
 def _find(value: Any) -> list[Found]:
-    """The functions whose tests call them on an argument with the shape of *value*, best match first, each
-    with the parameter that argument was passed as. v2's input-shape matcher and ranking, unchanged (level,
+    """The functions with a recorded input of the shape of *value*, best match first, each with the parameter that
+    input is passed as when that is known. v2's input-shape matcher and ranking, unchanged (level,
     then share of named keys matched, then how many recorded shapes match, then name; at most five). A shape
     without named keys (a list of lists) matches only an identical one, ranked weak and below every named match. A
     function's best-matching shape names the parameter, the first in recorded order on a tie. An empty list
-    means that no listed function's tests call it on data of this shape, or that the value has too little
-    structure (plain text has none)."""
+    means that no listed function has a known input of this shape (shapes appear only where they are known: a
+    function whose recorded inputs give none is never listed), or that the value has too little structure (plain
+    text has none)."""
     m = _matcher()
     entries = _json(FIND_FILE).get("functions", [])
     exts = sorted(
@@ -2725,8 +2726,9 @@ def _show_text(item: Any, call: str) -> str:
 
 @checked(name="memory.find")
 def find(value: Any) -> list[Found]:
-    """The functions whose tests call them on an argument with the shape of *value*, best match first, each with the
-    parameter that argument was passed as. Kept for one build: an item's own check, ``memory.get(ref).fits(inputs)``,
+    """The functions with a recorded input of the shape of *value*, best match first, each with the parameter that
+    input is passed as when that is known. Shapes appear only where they are known: a function whose recorded
+    inputs give none is never listed. Kept for one build: an item's own check, ``memory.get(ref).fits(inputs)``,
     replaces it; each call prints one line saying so.
 
     Args:

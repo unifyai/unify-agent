@@ -79,7 +79,7 @@ from .manifest import (
     unsafe_path,
 )
 from .gate_policy import NOT_RUN_GATE
-from .shape_rows import shapes_at, snapshot_rows
+from .shape_rows import shapes_at, snapshot_rows, static_shapes
 from .item_states import UNCHECKED as _LOWEST_LEVEL
 from .qa import QAChecks
 from .redact import KEY_SHAPED
@@ -238,8 +238,6 @@ class _Run:
     p_bodies: dict[str, tuple[str, str, bool]] = field(default_factory=dict)
     c_bodies: dict[str, tuple[str, str, bool]] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)  # informational; never fail the gate
-    # item -> (body digest, input-shape descriptors of its validated covers), recorded on a landed merge
-    shapes: dict[str, tuple[str, list[dict]]] = field(default_factory=dict)
     # per-item admission: item -> the checks that refused it, and whether any failure is pass-wide
     item_fail: dict[str, list[str]] = field(default_factory=dict)
     pass_wide: bool = False
@@ -1038,8 +1036,13 @@ class Gate:
 
     def _snapshot(self, run: _Run) -> dict[str, dict]:
         """The candidate's shape snapshot: the parent's rows (backfilled where it has none, not frozen) for
-        unchanged bodies plus this merge's shapes (:func:`.shape_rows.snapshot_rows`); never fails.
+        unchanged bodies plus the shapes read statically from each function's recorded-inputs fixture
+        (:func:`.shape_rows.static_shapes`; nothing is run), by :func:`.shape_rows.snapshot_rows`; never fails.
         """
+        try:
+            new = static_shapes(run.c_tree)
+        except Exception:  # noqa: BLE001 - shapes are a catalogue aid, never a gate reason
+            new = {}
         try:
             prev = shapes_at(
                 self.mem,
@@ -1052,7 +1055,7 @@ class Gate:
             return snapshot_rows(
                 run.c_tree,
                 prev,
-                run.shapes,
+                new,
             )
         except (
             Exception
@@ -1060,7 +1063,7 @@ class Gate:
             return snapshot_rows(
                 run.c_tree,
                 {},
-                run.shapes,
+                new,
             )
 
     def _g3(self, run: _Run) -> None:

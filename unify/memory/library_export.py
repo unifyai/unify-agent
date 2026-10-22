@@ -8,8 +8,8 @@
   function's evidence level with the findings that set it, the verification and use records (None without item
   records), a function's example call (its record's, shown only while its test file still quotes it:
   :mod:`.example_view`) and the subjects of the commits that changed it;
-* ``.memory/find.json``: the listed functions with the recorded shapes of their example calls' arguments, each
-  naming its parameter, keyed by body digest (:mod:`.shape_rows`); and, once any listed function has an applicability
+* ``.memory/find.json``: the listed functions with the known shapes of their recorded inputs, each naming its
+  parameter when that is known, keyed by body digest (:mod:`.shape_rows`); and, once any listed function has an applicability
   signature, ``procedures``: what each such function was saved against, for ``memory.match``
   (:func:`find_data`);
 * ``.memory/matcher.py``: v2's matcher (:mod:`.memory_helper` up to its catalogue section, so none of v2's
@@ -358,8 +358,8 @@ def find_data(
 ) -> dict:
     """``.memory/find.json``: each listed function with the recorded input shapes of its current body.
 
-    ``input_shapes`` are the shapes of the arguments its example calls returned on, each naming its parameter
-    (``"param"``; a row recorded before arguments were shaped has none). *records* are accepted for the export's
+    ``input_shapes`` are the known shapes of its recorded inputs (:mod:`.shape_rows`), each naming its parameter
+    (``"param"``) when that is known. *records* are accepted for the export's
     signature and not read: a function's shapes come only from *shapes*.
 
     With *saved_against*, each listed function it gives a signature for is also a row of ``procedures`` (in id

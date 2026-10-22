@@ -1,16 +1,20 @@
 """The recorded input shapes each memory commit's catalogue shows, frozen per commit (library-mode surfacing).
 
-A function's input shapes are the shapes of the recorded inputs the gate admitted it on (with
-:mod:`.memory_helper`'s ``file_shape`` and ``value_shape``; :func:`descriptor`). Rows a gate before rev 2.1 recorded
-from a library function's example calls also name the parameter a value was passed as (``"param"``), so
-``memory.find`` can say which parameter a value fits; they are kept and still found. Shapes are kept as a
+A function's input shapes are the shapes of its recorded inputs (with :mod:`.memory_helper`'s ``file_shape`` and
+``value_shape``): for a library function, the values of its recorded-inputs fixture (:func:`static_shapes`), and for
+one merged before snapshots, its covers' recorded observations (:func:`descriptor`). A row may name the parameter a
+value is passed as (``"param"``), so ``memory.find`` can say which parameter a value fits; a row without one is still
+found. A function with no known shape has no row. Shapes are kept as a
 **snapshot per memory commit** in the evidence store (``commit_shapes``): item -> ``{"body": digest,
 "shapes": [...], "backfilled": bool}``, written once and never changed. So exporting any commit again, a
 pinned replay of an old one included, renders byte-identical catalogue files.
 
 * **A landed merge** (:meth:`.gate.Gate.merge`) writes the candidate's snapshot (:func:`snapshot_rows`):
-  for every function in the candidate, the parent's shapes for the same body, plus the shapes this merge
-  recorded for that body (in library mode, of its example calls' arguments).
+  for every function in the candidate, the parent's shapes for the same body, plus the shapes read statically from
+  the function's own files (:func:`static_shapes`, rev 2.1: nothing is run). Those are the shapes of the values in its
+  recorded-inputs fixture (:func:`.fixtures.inputs_file`, one ``{"input": <value>, ...}`` per line), each naming the
+  parameter when the function's signature has exactly one (its definition's AST); a function with no such fixture,
+  or whose values have no structure, has none, and none is made up.
 * **An export** (:func:`shapes_at`) reads the snapshot of its commit, else of its nearest first-parent
   ancestor that has one (a hide commit only removes functions), keeping only rows whose body digest still
   matches. A function with no row there, such as one merged before snapshots existed, is **backfilled**:
@@ -68,6 +72,64 @@ def descriptor(a: Any, input_kind: str | None, blobs: Any) -> dict | None:
     if desc is not None and KEY_SHAPED.search(json.dumps(desc, sort_keys=True)):
         return None
     return desc
+
+
+#: Lines of a recorded-inputs fixture read for its shapes.
+MAX_INPUT_LINES = 256
+
+
+def sole_param(body: str) -> str | None:
+    """The name of the one parameter *body*'s function definition takes (from its AST; ``self`` and ``cls`` aside),
+    or None when it takes none or several, or does not parse."""
+    import ast
+
+    try:
+        node = ast.parse(body).body[0]
+    except (SyntaxError, ValueError, IndexError):
+        return None
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return None
+    a = node.args
+    names = [x.arg for x in (*a.posonlyargs, *a.args, *a.kwonlyargs)]
+    names = names[1:] if names and names[0] in ("self", "cls") else names
+    if a.vararg is not None or a.kwarg is not None or len(names) != 1:
+        return None
+    return names[0]
+
+
+def static_shapes(tree: Path) -> dict[str, tuple[str, list[dict]]]:
+    """item -> (body digest, input-shape descriptors) of each library function of *tree* whose recorded-inputs fixture
+    holds values with structure: read from the files only, never by running anything (module docstring). A
+    descriptor names its parameter (``"param"``) when :func:`sole_param` gives one; a key-shaped one is dropped."""
+    from .fixtures import inputs_file
+    from .layout import function_bodies
+
+    out: dict[str, tuple[str, list[dict]]] = {}
+    for item, body in sorted(function_bodies(Path(tree)).items()):
+        path = Path(tree) / inputs_file(item)
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[:MAX_INPUT_LINES]
+        except OSError:
+            continue
+        param = sole_param(body)
+        found: list[dict] = []
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict) or "input" not in row:
+                continue
+            desc = value_shape(row["input"])
+            if desc is None or KEY_SHAPED.search(json.dumps(desc, sort_keys=True)):
+                continue
+            found.append({**desc, "param": param} if param else desc)
+        shapes = merge_shapes(found)
+        if shapes:
+            out[item] = (body_digest(body), shapes)
+    return out
 
 
 def merge_shapes(*groups: list[dict]) -> list[dict]:
