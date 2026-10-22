@@ -285,18 +285,17 @@ def test_the_evidence_index_and_the_record_agree_on_runtime_facts(tmp_path):
 
 def test_library_mode_installs_the_call_hook_without_a_work_tree_capture(monkeypatch):
     """The runtime calls "used" rests on are recorded even when no work tree is captured (the library copy is the
-    only file root then)."""
-    from unify.memory.integration import hooks, request, worktree_capture
+    only file root then). Rev 2: the library layout is always on, so a run always has the hook; no run, none."""
+    from unify.memory.integration import hooks, worktree_capture
 
     monkeypatch.setattr(hooks, "_run", lambda: object())
     monkeypatch.setattr(worktree_capture, "active", lambda: None)
-    monkeypatch.setattr(request, "memory_library_on", lambda: True)
     got = hooks.worker_audit()
     from unify.sandbox import LIBRARY_MOUNT
 
     # no file roots but the library copy's: its reads count as lookups, and no work-tree event is recorded
     assert got is not None and got["roots"] == [LIBRARY_MOUNT] and got["path"].endswith("audit.py")
-    monkeypatch.setattr(request, "memory_library_on", lambda: False)
+    monkeypatch.setattr(hooks, "_run", lambda: None)
     assert hooks.worker_audit() is None
 
 
@@ -309,7 +308,7 @@ def test_the_package_helpers_calls_are_counted_by_helper_and_outcome():
     acc = runtime_calls_empty()
     assert library_helper_calls(acc) == {
         name: {"ok": 0, "refused": 0, "error": 0}
-        for name in ("get", "items", "index", "show", "find", "match", "run")
+        for name in ("ask", "get", "items", "index", "show", "find", "match", "run")  # rev 2 counts memory.ask too
     }
     first = _drained({})
     first["calls"]["helpers"] = {"memory:index": {"ok": 2}, "memory:show": {"ok": 1, "error": 1}}
@@ -318,6 +317,7 @@ def test_the_package_helpers_calls_are_counted_by_helper_and_outcome():
     add_runtime_calls(acc, first)
     add_runtime_calls(acc, second)
     assert library_helper_calls(acc) == {
+        "ask": {"ok": 0, "refused": 0, "error": 0},
         "get": {"ok": 0, "refused": 0, "error": 0},
         "items": {"ok": 0, "refused": 0, "error": 0},
         "index": {"ok": 3, "refused": 0, "error": 0},

@@ -19,6 +19,10 @@ import os
 import sys
 
 PLACEHOLDER = "test-placeholder-not-a-key"  # pragma: allowlist secret
+#: The repository's root conftest.py sets this stand-in (``os.environ.setdefault``) when no key is set, before this
+#: file runs; it is a known constant that is not a key, so it is never counted as a real one.
+ROOT_PLACEHOLDER = "ci-placeholder-not-a-key"  # pragma: allowlist secret
+NOT_KEYS = (None, "", PLACEHOLDER, ROOT_PLACEHOLDER)
 
 try:
     from unillm import settings as _unillm_settings
@@ -44,14 +48,11 @@ def _secret_value(value: object) -> str:
 def _real_key_seen() -> list[str]:
     """Names of provider keys that held a real value (never the values)."""
     seen = [
-        n for n in PROVIDER_KEYS if os.environ.get(n) not in (None, "", PLACEHOLDER)
+        n for n in PROVIDER_KEYS if os.environ.get(n) not in NOT_KEYS
     ]
     loaded = getattr(_unillm_settings, "SETTINGS", None) if _unillm_settings else None
     for n in PROVIDER_KEYS:
-        if loaded is not None and _secret_value(getattr(loaded, n, "")) not in (
-            "",
-            PLACEHOLDER,
-        ):
+        if loaded is not None and _secret_value(getattr(loaded, n, "")) not in NOT_KEYS:
             seen.append(f"{n} (loaded)")
     if _KEY_FILE is not None and _KEY_FILE.is_file():
         seen.append(

@@ -186,7 +186,7 @@ def test_a_quality_finding_labels_its_item_and_a_hard_one_refuses(tmp_path):
 
 
 @needs_bwrap
-def test_a_side_effect_only_item_lands_with_effects_writes_and_a_replay_label(
+def test_a_side_effect_only_item_lands_with_effects_writes_on_its_label(
     library_example_world, tmp_path, monkeypatch  # noqa: F811 - the fixture
 ):
     res = _merge(library_example_world, _files(), w.manifest({}, _item(**STATED)))
@@ -194,28 +194,12 @@ def test_a_side_effect_only_item_lands_with_effects_writes_and_a_replay_label(
     assert res.items_merged == [ITEM] and res.merged
     v = res.verification[ITEM]
     assert v["stated"]["effects"] == "writes" and v["stated"]["covers_episodes"] == ["e1"]
-    # the writer's replay test of the landed item, on the episode's own recorded write
-    monkeypatch.setattr(wt, "REPLAY_REVIEWED", True)
-    copy = tmp_path / "copy"
-    copy.mkdir()
-    mem = library_example_world[0]
-    with mem.temp_checkout(mem.head()) as tree:
-        shutil.copytree(tree / "memory", copy / "memory")
-    state = tmp_path / "state"
-    ctx = wt.TestContext("p1", state / "passes" / "p1" / wt.TESTS_FILE, copy, lambda e: _write_episode(),
-                         frozenset({"value", "replay"}), work=tmp_path / "work")  # fmt: skip
-    expect = {"kind": "issues_calls", "calls": [{"channel": "files", "method": "write",
-                                                  "args": ["out/report.txt", "total 6"], "effect": "write"}]}  # fmt: skip
-    got = wt.run_test(ctx, ITEM, "e1", expect, "replay")
-    assert got.outcome == "as_stated", got.detail
-    tests = item_label.tests_by_item(state)[ITEM]
+    # rev 2 runs no replay test (the writer's tests never replay a recorded call): the label states the effects the
+    # writer declared, with none seen in a test
     label = item_label.build(kind="function", record={"status": "on-trial", "provenance": {"episodes": ["e1"]}},
-                             verification=v, tests=tests)  # fmt: skip
-    assert label["effects"] == {"declares": "writes", "declared": True, "seen_in_tests": {"read": 0, "write": 1},
-                                "contradictions": []}  # fmt: skip
-    assert label["tests"]["as_stated"] == 1 and label["tests"]["by_mode"] == {"value": 0, "replay": 1}
+                             verification=v, tests=[])  # fmt: skip
+    assert label["effects"]["declares"] == "writes" and label["effects"]["declared"] is True
     assert label["covers"] == {"episodes": ["e1"], "stated_by": "writer"}
-    assert label["inputs_vs_constants"]["constants"] == ["out/report.txt (source: e1/action:0)"]
     assert label["status_basis"] == "no_outcome_signals"
 
 
@@ -228,15 +212,11 @@ def test_a_failing_test_is_a_label_and_a_key_shaped_string_still_refuses(library
     res = _merge(library_example_world, _files(test=failing), w.manifest({}, _item(**STATED)))
     assert res.passed, res.reasons
     findings = res.verification[ITEM]["label_findings"]
-    # the failing test and the example check (no call on recorded fixture values) are both labels
-    assert any("is not green on the candidate" in f for f in findings), findings
-    assert any("[examples:grounded]" in f for f in findings), findings
-    # the same candidate without the switch is refused, as built (at its first finding, the example check)
+    # rev 2: the item is a state form (impure), so the gate runs neither its tests nor its example calls; each is a
+    # "not run" label with why, never a refusal
+    assert any(f.startswith("not run: G3 ") and "(a state form)" in f for f in findings), findings
+    assert any(f.startswith("not run: G2 examples: ") and "(a state form)" in f for f in findings), findings
     mem = library_example_world[0]
-    off = _gate(library_example_world, labels=False).check(
-        mem.head(), w.candidate(mem, _files(test=failing)), w.manifest({}, _item())
-    )
-    assert not off.passed and any("[examples:grounded]" in r for r in off.reasons), off.reasons
     keyed = REPORT_SOURCE + '\n_KEY = "' + "sk-" + "a" * 40 + '"\n'
     bad = _gate(library_example_world).check(mem.head(), w.candidate(mem, _files(module=keyed)),
                                              w.manifest({}, _item(**STATED)))  # fmt: skip

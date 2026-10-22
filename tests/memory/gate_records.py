@@ -127,8 +127,8 @@ def build(
     *files* (path -> text), makes *fixtures* (fixture tool arguments) and lists *items* beside the landings' manifest
     entries. *signals* are indexed for the gate to read; with *require_pass* off a refused check is returned too;
     *edit_manifest* (manifest -> manifest) changes the draft manifest as a writer would before the check; *gate_kwargs*
-    and *config_kwargs* are more fields of the gate and its library configuration (rev 2's ``labels_only``, a
-    ``pytest_runner`` or ``runner`` that records or refuses runs)."""
+    and *config_kwargs* are more fields of the gate and its library configuration (a ``pytest_runner`` or ``runner``
+    that records or refuses runs)."""
     root = Path(root)
     episodes = dict(episodes)
     batch = sorted(episodes)

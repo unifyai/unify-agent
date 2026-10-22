@@ -6,10 +6,12 @@ cells are JSON scripts of tool calls made through the real box-side client over 
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import importlib.util
 import json
 import os
+import re
 import shutil
 import threading
 import time
@@ -52,6 +54,19 @@ def _client():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+#: One tool call as a scripted model's cell makes it (:func:`tests.memory.in_code_calls.as_cell`).
+_AS_CELL = re.compile(r"try:\n    print\(tools\.(\w+)\(\*\*(\{.*\})\)\)\nexcept Exception as _exc:\n    print\(_exc\)\n\Z", re.S)
+
+
+def _calls_of(code: str) -> list:
+    """The calls a FakeBox cell makes: a JSON list of ``[tool, args]``, or one call in the form
+    :func:`tests.memory.in_code_calls.as_cell` writes (a scripted model's own calls, such as its closing finish)."""
+    m = _AS_CELL.match(code)
+    if m is not None:
+        return [(m.group(1), ast.literal_eval(m.group(2)))]
+    return json.loads(code)
 
 
 class FakeBox:
@@ -121,7 +136,7 @@ class FakeBox:
         done = loop.create_future()
 
         def go():
-            for tool, args in json.loads(code):
+            for tool, args in _calls_of(code):
                 if tool in ("__sleep__", "__setup__", "__until_left__"):
                     self._pseudo(tool, args)
                     continue
@@ -232,7 +247,13 @@ def test_every_request_carries_only_execute_code_and_the_tools_answer_from_cells
             ("read", {"path": "/memory/nothing-here.py"}),
             ("finish", {"summary": "done"}),
         ),
-        _call("j1", "read", {"path": "/inputs"}),
+        # a model-API call of an in-code tool, as a model would send it (not through a cell)
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "j1", "type": "function", "function": {"name": "read", "arguments": json.dumps({"path": "/inputs"})}},
+            ],
+        },
     ]
     out, model, writer, rows = _in_code_pass(tmp_path, turns)
     assert model.tool_lists and all(t == ["execute_code"] for t in model.tool_lists)
@@ -243,7 +264,9 @@ def test_every_request_carries_only_execute_code_and_the_tools_answer_from_cells
     assert text.splitlines()[-1].startswith("not finished: ")
     # a JSON call of an in-code tool is an unknown tool
     assert model.outputs["j1"].startswith("refused: unknown tool 'read'")
-    assert out.finished is False
+    # c1's finish was refused (no manifest); the scripted model's closing finish is the second refused finish, and
+    # rev 2 ends the pass there (FINISH_G1_REFUSALS), unfinished in substance: nothing landed
+    assert out.finished is True and not out.passed and "no manifest" in out.reasons
 
 
 def test_the_event_file_has_the_base_fields_plus_the_additive_ones(tmp_path):
@@ -259,7 +282,8 @@ def test_the_event_file_has_the_base_fields_plus_the_additive_ones(tmp_path):
     calls = [r for r in rows if r["event"] == "tool_call"]
     assert calls and all(BASE_FIELDS | ADDED_FIELDS <= set(r) for r in calls)
     cell_row = next(r for r in calls if r["tool"] == "execute_code")
-    in_code = [r for r in calls if r["via"] == "channel"]
+    # the calls of cell c1 (the scripted model's own closing finish is a cell of its own after it)
+    in_code = [r for r in calls if r["via"] == "channel" and r["cell"] == cell_row["call"]]
     assert cell_row["via"] == "model" and cell_row["cell"] is None
     assert [r["tool"] for r in in_code] == ["read", "grep", "who"]
     assert all(r["cell"] == cell_row["call"] and r["call"] > cell_row["call"] for r in in_code)
@@ -368,11 +392,6 @@ WRITER_REFUSALS = [
     ("fixture", {"episode": "e999", "dest": "memory/x/tests/fixtures/a.json"}),
     ("replay", {"item": "nothing"}),
     ("check", {"manifest": "{not json"}),
-    ("write", {"path": "../escape.py", "content": "x"}),
-    ("write", {"path": ".git/config", "content": "x"}),
-    ("write", {"path": "memory/ok.py", "content": "x = 1\n"}),
-    ("edit", {"path": "memory/missing.py", "old": "a", "new": "b"}),
-    ("edit", {"path": "memory/ok.py", "old": "zzz", "new": "y"}),
     ("send", {"text": ""}),
     ("reply", {"agent": "nobody", "text": "hi"}),
     ("stop", {"helper": "nobody"}),
@@ -391,8 +410,7 @@ def test_no_writer_reply_or_row_carries_an_environment_value_a_host_path_or_a_ro
         tmp_path,
         [_cell("c1", *WRITER_REFUSALS)],
         helper=_helper_factory([("done", {"summary": "s", "claims": []})], []),
-        edit_tools=True,
-        max_calls=12,  # check, replay, fixture, write and edit each count against it as today
+        max_calls=12,  # check, replay and fixture each count against it as today (rev 2 has no write or edit tool)
         deadline_s=90.0,
     )
     assert "c1" in model.outputs, _summary(out, rows)
@@ -407,7 +425,9 @@ def test_no_writer_reply_or_row_carries_an_environment_value_a_host_path_or_a_ro
         "read_episode !! Refused: refused: tools.read_episode(episode='e1', nope=1): there is no argument 'nope'"
     ) in cell
     assert lines[-1].startswith("not finished: "), cell
-    in_code = [r for r in rows if r.get("via") == "channel"]
+    # the calls of cell c1 (the scripted model's own closing cells come after it)
+    c1_row = next(r for r in rows if r.get("via") == "model" and r.get("tool") == "execute_code")
+    in_code = [r for r in rows if r.get("via") == "channel" and r.get("cell") == c1_row["call"]]
     assert [r["tool"] for r in in_code] == [t for t, _ in WRITER_REFUSALS], _summary(out, rows)
 
 
@@ -536,7 +556,12 @@ def test_every_memory_tool_has_a_handler_named_as_the_tool():
         for name, spec in tool_registry.registry().items()
         if spec.handler.startswith("unify.memory.tool_handlers:")
     }
-    assert set(mine) == set(tool_handlers.HANDLED)
+    # rev 2: every agent is on the run record, whose own tools (send, messages, wait, who) the run record's handlers
+    # answer (unify.agents.run_record_tools); every other tool tool_handlers handles is its own
+    record_tools = {"send", "messages", "wait", "who"}
+    assert set(mine) == set(tool_handlers.HANDLED) - record_tools
+    for name in record_tools:
+        assert tool_registry.registry()[name].handler == f"unify.agents.run_record_tools:{name}"
     for name, spec in mine.items():
         assert spec.handler == f"unify.memory.tool_handlers:{name}"
         fn = tc.resolve_handler(spec.handler)

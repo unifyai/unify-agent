@@ -114,26 +114,6 @@ COVERAGE: dict[tuple[str, str], str] = {
     ("finish", "answered"): (
         "given only by the librarian's finish, for a second answer to one question; no pass agent gets it"
     ),
-    ("write", "bad_path"): R,
-    ("write", "reserved"): R,
-    ("write", "link"): R,
-    ("write", "not_regular"): R,
-    ("write", "not_directory"): R,
-    ("write", "not_written"): (
-        "an OS failure creating the file or a directory under /memory (a full disk, a read-only mount); the box's "
-        "user owns /memory, so no call's arguments make one"
-    ),
-    ("write", "bad_content"): "the schema refuses content that is not a string as bad_arguments first",
-    ("edit", "bad_path"): R,
-    ("edit", "reserved"): R,
-    ("edit", "link"): R,
-    ("edit", "not_regular"): R,
-    ("edit", "not_directory"): R,
-    ("edit", "not_written"): "as write's not_written: an OS failure replacing the file",
-    ("edit", "not_found"): R,
-    ("edit", "not_text"): R,
-    ("edit", "bad_old"): R,
-    ("edit", "match_count"): R,
     ("delegate", "no_task"): R,
     ("delegate", "no_episodes"): "the schema requires episodes as a list of strings (bad_arguments first)",
     ("delegate", "unknown_episode"): R,
@@ -144,20 +124,28 @@ COVERAGE: dict[tuple[str, str], str] = {
     ("delegate", "helper_limit"): R,
     ("delegate", "bad_request"): "helper names are made by the host (call-<n>); the pool takes every such request",
     ("send", "no_text"): R,
-    ("send", "unknown_name"): R,
     ("send", "no_recipient"): R,
-    ("send", "not_posted"): R,
+    ("send", "not_posted"): (
+        "rev 2's run record names why a post is refused (too_large, too_fast, record_full: unify.common.record_adapters); not_posted is only the fallback for a refusal no form names, which no call's arguments make"
+    ),
     ("send", "no_role"): "the run record's send only (unify.agents.run_record_tools): a pass's own record has no roles",
     ("send", "ended"): "the run record's send only: a pass's own record ends with the pass, so no agent on it has ended",
     ("reply", "no_text"): R,
     ("reply", "unknown_name"): R,
     ("reply", "no_recipient"): "reply always addresses the named agent: an agent that is not running is unknown_name",
-    ("reply", "not_posted"): R,
+    ("reply", "not_posted"): (
+        "rev 2's run record names why a post is refused (too_large, too_fast, record_full: unify.common.record_adapters); not_posted is only the fallback for a refusal no form names, which no call's arguments make"
+    ),
     ("stop", "unknown_helper"): R,
     ("stop", "not_running"): R,
     ("ask", "no_text"): R,
-    ("ask", "unknown_name"): R,
-    ("ask", "not_posted"): R,
+    ("ask", "unknown_name"): (
+        "rev 2's run record posts a message whose names match no agent and says so (\"these names match no agent\"); "
+        "it never refuses one, so an ask to an unknown name is posted and waits"
+    ),
+    ("ask", "not_posted"): (
+        "rev 2's run record names why a post is refused (too_large, too_fast, record_full: unify.common.record_adapters); not_posted is only the fallback for a refusal no form names, which no call's arguments make"
+    ),
     ("stage", "path"): R,
     ("stage", "quota"): R,
     ("done", "claims"): R,
@@ -242,7 +230,6 @@ HELPER_CELL = [
     POST_GAP,
     ("send", {"text": "@writer " + LONG_POST}),
     ("ask", {"question": ""}),
-    ("ask", {"question": "@nobody which one?"}),
     POST_GAP,
     ("ask", {"question": "@writer " + LONG_POST}),
     POST_GAP,
@@ -271,7 +258,8 @@ WRITER_CELL = [
     ("fixture", {"episode": "e1", "dest": "memory/pkg/tests/data/a.json", "source": "zzz"}),
     ("__setup__", {"link": ["memory/lnk", "nowhere"]}),
     ("fixture", {"episode": "e1", "dest": "memory/lnk/tests/data/a.json", "source": "request:0"}),
-    ("write", {"path": "memory/pkg/tests/data/in.jsonl", "content": "not an input line\n"}),
+    # rev 2 has no write tool: the cell writes the file itself
+    ("__setup__", {"bytes": ["memory/pkg/tests/data/in.jsonl", "6e6f7420616e20696e707574206c696e650a"]}),
     (
         "fixture",
         {"episode": "e1", "dest": "memory/pkg/tests/data/in.jsonl", "source": "request:0", "append": True},
@@ -285,31 +273,13 @@ WRITER_CELL = [
     ("pool", {"op": "decide", "id": "openone", "decision": "reopened", "reason": "again"}),
     ("pool", {"op": "decide", "id": "closedone", "decision": "retired", "reason": "wrong"}),
     ("pool", {"op": "decide", "id": "new", "decision": "defer"}),
-    ("write", {"path": MANIFEST_LINK, "content": "not json"}),
+    ("__setup__", {"bytes": [MANIFEST_LINK, "6e6f74206a736f6e"]}),
     ("pool", {"op": "decide", "id": "new", "decision": "defer", "reason": "later", "episodes": ["e1"]}),
     ("similar", {}),
     ("similar", {"code": "def ("}),
     ("similar", {"episode": "e999", "cell": 0}),
     ("similar", {"episode": "e1", "cell": 99}),
     *[("check", {"manifest": "{not json"}) for _ in range(6)],
-    ("write", {"path": "../escape.py", "content": "x"}),
-    ("write", {"path": ".git/config", "content": "x"}),
-    ("__setup__", {"link": ["lnkdir", "nowhere"]}),
-    ("write", {"path": "lnkdir/x.py", "content": "x"}),
-    ("write", {"path": "memory/ok.py", "content": "x = 1\n"}),
-    ("write", {"path": "memory/ok.py/x.py", "content": "x"}),
-    ("write", {"path": "memory", "content": "x"}),
-    ("write", {"path": "n" * 300 + ".py", "content": "x"}),  # an OS error the handler does not name: an error
-    ("edit", {"path": "memory/missing.py", "old": "a", "new": "b"}),
-    ("__setup__", {"bytes": ["memory/bin.py", "fffe00"]}),
-    ("edit", {"path": "memory/bin.py", "old": "a", "new": "b"}),
-    ("edit", {"path": "memory/ok.py", "old": "", "new": "b"}),
-    ("edit", {"path": "memory/ok.py", "old": "zzz", "new": "y"}),
-    ("edit", {"path": "../escape.py", "old": "a", "new": "b"}),
-    ("edit", {"path": ".git/config", "old": "a", "new": "b"}),
-    ("edit", {"path": "lnkdir/x.py", "old": "a", "new": "b"}),
-    ("edit", {"path": "memory", "old": "a", "new": "b"}),
-    ("edit", {"path": "memory/ok.py/x.py", "old": "a", "new": "b"}),
     ("send", {"text": ""}),
     ("send", {"text": "@nobody hello"}),
     ("send", {"text": "hello"}),
@@ -320,15 +290,17 @@ WRITER_CELL = [
     ("delegate", {"task": "t", "episodes": ["e999"]}),
     ("delegate", {"task": "look at e1", "episodes": []}),
     ("wait", {}),  # the helper's question
-    ("reply", {"agent": "call-0", "text": LONG_POST}),
+    ("reply", {"agent": "call-1", "text": LONG_POST}),  # rev 2 names helpers call-1, call-2, ...
     POST_GAP,
-    ("reply", {"agent": "call-0", "text": "the first one"}),
+    ("reply", {"agent": "call-1", "text": "the first one"}),
     ("wait", {}),  # the helper's end (or its question, when the reply came first)
     ("__sleep__", 5.0),
-    ("stop", {"helper": "call-0"}),
-    ("write", {"path": "memory/big.bin", "content": "z" * (1024**2 + 1)}),  # over the per-file quota
+    ("stop", {"helper": "call-1"}),
+    # over the per-file quota: the cell writes a large file itself (rev 2 has no write tool), and the next call that
+    # writes /memory (a fixture) measures the quota, which stops the pass; the check after it is stopped
+    ("__setup__", {"bytes": ["memory/big.bin", "7a" * (1024**2 + 1)]}),
+    ("fixture", {"episode": "e1", "dest": "memory/pkg/tests/data/after.json", "source": "request:0"}),
     ("check", {}),
-    ("edit", {"path": "memory/ok.py", "old": "x", "new": "y"}),
     ("finish", {"summary": "done"}),
 ]
 
@@ -427,7 +399,6 @@ def test_every_reachable_form_is_answered_and_nothing_leaks(tmp_path, monkeypatc
             "main",
             [_cell("c1", WRITER_CELL)],
             helper=_helper(HELPER_CELL),
-            edit_tools=True,
             similar_index=str(tmp_path / "similar"),
             deadline_s=300.0,
         ),
@@ -518,10 +489,6 @@ def test_every_reachable_form_is_answered_and_nothing_leaks(tmp_path, monkeypatc
         _no_leak(texts, rows, folder, boxes)
     missing = sorted(k for k, how in COVERAGE.items() if how == R and k not in seen)
     assert not missing, missing
-    # the long name is an OS error the handler does not catch: an error reply with only its type
-    main_rows = runs[0][1]
-    long_name = [r for r in main_rows if r.get("tool") == "write" and r["status"] == "error"]
-    assert long_name, "no error reply for the over-long name"
 
 
 # --- a forced exception in every handler ---------------------------------------------------------------------------------

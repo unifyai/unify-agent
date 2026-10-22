@@ -555,6 +555,26 @@ def _flow_run(tmp_path, *, deleted=()):
     return run
 
 
+def _rev2(run):
+    """*run* under rev 2's gate policy (:mod:`unify.memory.gate_policy`), as ``Gate.check`` sets it: both functions are
+    pure, so the behaviour check runs them, and its findings are labels."""
+    from unify.memory.gate_policy import Policy
+
+    run.policy = Policy(
+        replays=False,
+        bodies={
+            ITEM: "def flood_fill(grid, start, colour):\n    return grid\n",
+            OTHER: "def other(x):\n    return [x]\n",
+        },
+    )
+    return run
+
+
+def _g3_labels(run):
+    """The G3 findings recorded as labels, every owner's (rev 2: none refuses)."""
+    return [f[len("G3: "):] for found in run.label_findings.values() for f in found if f.startswith("G3: ")]
+
+
 def test_library_functions_need_no_action_cover_in_g2(tmp_path):
     from unify.memory.gate import Gate
 
@@ -563,32 +583,31 @@ def test_library_functions_need_no_action_cover_in_g2(tmp_path):
     assert run.res.passed and not run.res.reasons
 
 
-def test_the_behaviour_check_compares_parent_calls_and_refuses_an_uncalled_function(
+def test_the_behaviour_check_compares_parent_calls_and_labels_an_uncalled_function(
     tmp_path,
 ):
     from unify.memory.gate import Gate
 
-    run = _flow_run(tmp_path)
+    run = _rev2(_flow_run(tmp_path))
     calls = [_call(_arg("grid", [[0]]), result_sha="a")]
     run.calls_base = {"memory/grid/tests": _record(calls)}
     run.calls_reg = {"memory/grid/tests": _record(calls)}
     Gate._behaviour(_LibraryGate(), run, set(), set(), set(), set())
     assert run.same == {ITEM}
-    assert _reasons(run, "G3") == [
+    assert _reasons(run, "G3") == [] and run.res.passed
+    assert _g3_labels(run) == [
         f"{OTHER} is in a changed module but no test of the parent calls it and it has no stored cover; its "
         "behaviour cannot be compared, so change it only with a test listed under it that fails on the parent's "
         "library",
     ]
-    run = _flow_run(tmp_path / "2")
+    run = _rev2(_flow_run(tmp_path / "2"))
     run.calls_base = {"memory/grid/tests": _record(calls)}
     run.calls_reg = {
         "memory/grid/tests": _record([_call(_arg("grid", [[0]]), result_sha="b")]),
     }
     Gate._behaviour(_LibraryGate(), run, set(), {OTHER}, set(), set())
-    assert (
-        len(_reasons(run, "G3")) == 1
-        and "changes behaviour without a test" in _reasons(run, "G3")[0]
-    )
+    assert _reasons(run, "G3") == [] and run.res.passed
+    assert len(_g3_labels(run)) == 1 and "changes behaviour without a test" in _g3_labels(run)[0]
 
 
 def test_a_stored_function_with_covers_and_an_input_line_takes_the_transition_path(
@@ -596,7 +615,7 @@ def test_a_stored_function_with_covers_and_an_input_line_takes_the_transition_pa
 ):
     from unify.memory.gate import Gate
 
-    run = _flow_run(tmp_path)
+    run = _rev2(_flow_run(tmp_path))
     (run.p_tree / "memory/grid/fill.py").write_text(
         'def flood_fill(grid, start, colour):\n    return grid\n\n\ndef other(x):\n    """Other.\n\n    Input: text\n'
         '    """\n    return x\n',

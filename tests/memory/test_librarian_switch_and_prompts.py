@@ -60,7 +60,7 @@ def actor_allow() -> tuple[str, ...]:
     from unify.actor import tool_handlers as H
     from unify.common import tool_registry as R
 
-    return tuple(R.allow_list("actor", H.actor_flags("actor", False)))
+    return tuple(R.allow_list("actor", H.actor_flags("actor")))
 
 
 # ==============================================================================================================
@@ -98,11 +98,13 @@ def librarian_on(monkeypatch):
 # --- the in-code tool -------------------------------------------------------------------------------------------
 
 
-def test_the_ask_tool_is_on_the_actors_allow_list_only_when_on(monkeypatch):
-    _set(monkeypatch, SWITCH, "off")
+def test_the_ask_tool_is_on_the_actors_allow_list_whenever_the_run_has_memory(monkeypatch):
+    """Rev 2: the librarian has no switch of its own; the actor is offered ``ask`` whenever the run has memory."""
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")
     assert ASK_TOOL not in actor_allow()
-    _set(monkeypatch, SWITCH, "on")
-    assert ASK_TOOL in actor_allow()
+    for mode in ("on", "in_episode"):
+        monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", mode)
+        assert ASK_TOOL in actor_allow(), mode
 
 
 # --- the brief -------------------------------------------------------------------------------------------------
@@ -155,5 +157,3 @@ def test_the_library_mode_use_record_carries_the_ask_fields():
     rec = memory_use(_ep(transcript=[], actions=[]), [], runtime_calls=acc)
     assert "error" not in rec, rec
     assert rec[ASK_CALLS] == 0 and rec[ASK_ROWS] == []
-    off = memory_use(_ep(transcript=[], actions=[]), [], runtime_calls=acc)
-    assert ASK_CALLS not in off and ASK_ROWS not in off

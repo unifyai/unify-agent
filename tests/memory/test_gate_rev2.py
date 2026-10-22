@@ -112,7 +112,7 @@ def test_the_gate_runs_nothing_for_an_impure_item_and_labels_it(tmp_path, monkey
         base={},
         files={"memory/ops/mail.py": IMPURE, "memory/ops/tests/test_mail.py": IMPURE_TEST},
         items=_items("memory.ops.mail:send", "memory/ops/tests/test_mail.py"),
-        gate_kwargs={"labels_only": True, "pytest_runner": _refuse},
+        gate_kwargs={"pytest_runner": _refuse},
         config_kwargs={"runner": _refuse},
     )
     assert built.result.passed, built.result.reasons
@@ -144,9 +144,8 @@ def test_a_failing_test_of_a_pure_item_is_a_label_not_a_refusal(tmp_path):
         files={"memory/calc/ops.py": PURE, "memory/calc/tests/test_ops.py": FAILING_TEST},
         items=_items("memory.calc.ops:double", "memory/calc/tests/test_ops.py"),
     )
-    as_built = build(tmp_path / "built", require_pass=False, **world)
-    assert not as_built.result.passed  # before rev 2: refused
-    rev2 = build(tmp_path / "rev2", gate_kwargs={"labels_only": True}, **world)
+    # rev 2's gate is labels only (there is no as-built gate to compare with: the switch is gone)
+    rev2 = build(tmp_path / "rev2", **world)
     assert rev2.result.passed, rev2.result.reasons
     labels = rev2.result.verification["memory.calc.ops:double"]["label_findings"]
     assert any("not green on the candidate" in line for line in labels), labels
