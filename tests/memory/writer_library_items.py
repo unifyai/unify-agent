@@ -88,3 +88,9 @@ def paged(name: str, args: dict) -> str:
 #: What a cell's output opens with after a call that stopped the writer's interpreter (a refused finish ends the round,
 #: and with it the cell session): the next cell's output says so first.
 STOPPED = "(the interpreter was stopped by the end of the last call; variables are gone, files remain)\n"
+#: What a refused ``tools.finish`` cell prints before the refusal: finish ends the cell's interpreter whether or not it
+#: is accepted, so the cell has no output of its own and the interpreter is restarted.
+FINISH_CELL = (
+    "(no output)\n(the interpreter exited during the cell; the interpreter was restarted: variables are gone, files "
+    "remain)\n"
+)

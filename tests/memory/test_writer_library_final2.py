@@ -14,9 +14,9 @@ from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
 from unify.memory.writer_pass import FINISH_G1_REFUSALS, PassConfig, WriterPass
 from unify.memory.trigger import PassRequest
-from tests.memory.test_gate import ITEM, KIT, MAN, TEST
-from tests.memory.test_writer_pass import Turns, _call, _e1, _ME, _write, needs_bwrap
-from tests.memory.test_writer_library_repair import MOD_BAD
+from tests.memory import writer_library_items as wl
+from tests.memory.test_writer_pass import Turns, _call, _e1, needs_bwrap
+from tests.memory.test_writer_library_repair import KEYED_BAD
 from tests.memory.test_writer_library_tools import EPS, _episode, _pass
 
 # --- identical parts ---------------------------------------------------------------------------------------
@@ -100,11 +100,13 @@ def test_a_part_shown_only_in_part_earns_no_identical_credit(tmp_path):
 
 def test_finish_refuses_a_missing_manifest_a_bounded_number_of_times(tmp_path):
     out, model = _pass(tmp_path, [], eids=("e2",), max_calls=10)
+    refusal = wl.FINISH_CELL + "not finished: G1: no manifest: write /memory/.pass/manifest.json, then finish"
     refused = [
         m
         for m in model.seen
         if m.get("role") == "tool"
-        and m["content"].startswith("not finished: G1: no manifest")
+        # each refused finish cell ends its interpreter, so the next one opens with that notice
+        and m["content"] in (refusal, wl.STOPPED + refusal)
     ]
     assert len(refused) == FINISH_G1_REFUSALS
     # past the bound finish is accepted, and the final check refuses by name
@@ -115,7 +117,7 @@ def test_finish_names_the_gates_parse_error(tmp_path, monkeypatch):
     monkeypatch.setattr(
         writer_pass,
         "_read_manifest",
-        lambda box: (True, {**MAN, "items": "x"}, None),
+        lambda box: (True, {**wl.MANIFEST, "items": "x"}, None),
     )
     turns = [
         _call("f", "finish", {"summary": "s"}),
@@ -123,30 +125,18 @@ def test_finish_names_the_gates_parse_error(tmp_path, monkeypatch):
     _, model = _pass(tmp_path, turns, eids=("e2",), max_calls=10)
     assert (
         model.outputs["f"]
-        == "not finished: G1: malformed manifest: items must be a list"
+        == wl.FINISH_CELL + "not finished: G1: malformed manifest: items must be a list"
     )
 
 
 def test_an_empty_manifest_at_finish_records_nothing_to_store(tmp_path, monkeypatch):
-    empty = {**MAN, "items": [], "support": []}
+    empty = {**wl.MANIFEST, "items": [], "support": []}
     monkeypatch.setattr(writer_pass, "_read_manifest", lambda box: (True, empty, None))
     turns = [
         _call("f", "finish", {"summary": "nothing to store"}),
     ]
     out, _ = _pass(tmp_path, turns, eids=("e2",), max_calls=10)
     assert out.finished and out.nothing_to_store
-
-
-def test_off_finish_is_unchanged(tmp_path):
-    from tests.memory.test_writer_pass import _run, _writer
-
-    model = Turns([_call("f", "finish", {"summary": "s"})])
-    _, _, writer = _writer(tmp_path, model)  # library_mode off
-    out = _run(writer)
-    assert (
-        "f" not in model.outputs
-    )  # finish ended the pass at once: no tool reply, no G1 refusal
-    assert not out.finished and not out.nothing_to_store
 
 
 # --- the first repair round is priced on the write phase ----------------------------------------------------
@@ -165,31 +155,16 @@ def test_a_long_read_still_leaves_a_repair_round(tmp_path, monkeypatch):
     ev = EvidenceStore(tmp_path / "e.sqlite")
     ep = _e1()
     ev.index_episode(ep, "1" * 40)
-    lookup = lambda eid, i: _ME if (eid, i) == ("e1", 0) else None  # noqa: E731
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup, library_mode=LibraryConfig())
-    manifest = {**MAN, "items": [ITEM], "summary": "s"}
-    first_try = "\n".join(
-        [
-            _write("/memory/unify_memory_testkit.py", KIT),
-            _write("/memory/env/venmo/tests/test_me.py", TEST),
-            _write("/memory/env/venmo/__init__.py", MOD_BAD),
-            _write("/memory/.pass/manifest.json", json.dumps(manifest)),
-        ],
-    )
-    from tests.memory.test_gate import MOD
-
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), library_mode=LibraryConfig())
+    # round 0 is refused for a key-shaped string (rev 2's gate is labels only: what still refuses drives a round)
     reads = [_call(f"r{i}", "read", {"path": "/inputs"}) for i in range(12)]
     model = Turns(
         [
             _call("dm", "read_episode", {"episode": "e1", "parts": ["request"]}),
             *reads,
-            _call("w0", "execute_code", {"code": first_try}),
+            _call("w0", "execute_code", {"code": wl.files_code(KEYED_BAD)}),
             _call("f0", "finish", {"summary": "first try"}),
-            _call(
-                "w1",
-                "execute_code",
-                {"code": _write("/memory/env/venmo/__init__.py", MOD)},
-            ),
+            _call("w1", "execute_code", {"code": wl.write(f"/memory/{wl.MODULE}", wl.MODULE_SOURCE)}),
             _call("f1", "finish", {"summary": "read the right key"}),
         ],
         usd="0.05",
@@ -203,7 +178,7 @@ def test_a_long_read_still_leaves_a_repair_round(tmp_path, monkeypatch):
         config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=40, max_usd=Decimal("1.00")),
     )
     out = asyncio.run(
-        writer.run(PassRequest("incremental", "venmo", ["e1"], False), "p1"),
+        writer.run(PassRequest("incremental", "acct", ["e1"], False), "p1"),
     )
     assert out.rounds == 2, out.reasons
     assert out.passed and out.finished
