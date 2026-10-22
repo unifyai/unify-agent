@@ -17,7 +17,6 @@ import asyncio
 import json
 import os
 import sys
-from decimal import Decimal
 from pathlib import Path
 
 TURNS = int(os.environ.get("DRIVER_TURNS", "5"))
@@ -208,9 +207,7 @@ def main(argv=None) -> int:
         from unify.memory.integration import consolidate, switch
 
         switch.PASS_WALL_S = consolidate.PASS_WALL_S = float(os.environ["DRIVER_PASS_WALL_S"])
-    ws.pass_reservation = lambda settings, effort: Decimal(
-        os.environ.get("DRIVER_RESERVE", "0.01")
-    )
+    ws.check_writer_settings = lambda settings: None
     request.actor_effort = lambda: "low"
     asyncio.run(
         ws.service_main(

@@ -743,9 +743,7 @@ def _in_process(home, runner, monkeypatch, **over):
     from unify.memory.integration import request
 
     monkeypatch.setattr(request, "actor_effort", lambda: "low")
-    monkeypatch.setattr(
-        ws, "pass_reservation", lambda settings, effort: Decimal("0.01")
-    )
+    monkeypatch.setattr(ws, "check_writer_settings", lambda settings: None)
     fd = _lock(home)
     try:
         return asyncio.run(
@@ -888,9 +886,7 @@ def _step(home, runner, monkeypatch, **kw):
     from unify.memory.integration import request
 
     monkeypatch.setattr(request, "actor_effort", lambda: "low")
-    monkeypatch.setattr(
-        ws, "pass_reservation", lambda settings, effort: Decimal("0.01")
-    )
+    monkeypatch.setattr(ws, "check_writer_settings", lambda settings: None)
     return ws.step(home, settings=_settings(**kw.pop("over", {})), runner=runner, **kw)
 
 

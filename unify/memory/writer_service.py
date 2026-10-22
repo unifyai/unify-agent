@@ -1309,18 +1309,12 @@ def _raised_settle(home: Path, pass_id: str, folder: Path, settings: Any, pass_d
         return booked[-1] if booked and booked[-1] is not None else Decimal(0)
 
 
-def pass_reservation(settings: Any, effort: str) -> Decimal:
-    """A pass's own allowance (the writer's price per token times its token allowance, E, at the writer's effort
-    scale, as the run guard books a pass); raises when the writer's settings or route refuse. The service books a
-    pass's whole room instead (its USD stop, :func:`pass_room`), and calls this as the check that a pass can run.
-    """
+def check_writer_settings(settings: Any) -> None:
+    """Raise when the writer's settings or route refuse (no pass can run); the check the service makes before a pass.
+    A pass has no allowance of its own: it books the whole room memory's spend cap leaves (:func:`pass_room`)."""
     from .integration.consolidate import writer_settings
-    from .integration.switch import WRITER_EFFORT_SCALE
 
-    cfg = writer_settings(settings)
-    level = (effort or "").strip().lower()
-    scale = WRITER_EFFORT_SCALE.get(level, Decimal(1))
-    return cfg.cap_usd * scale
+    writer_settings(settings)
 
 
 def _proxy_refused(report: Any) -> bool:
@@ -1609,7 +1603,6 @@ async def _iteration(
     (:func:`_turn_result`): ``stop`` names why the service must stop (None: go on); ``why_idle`` why no pass ran
     (:data:`IDLE_WHY`)."""
     from .attention import K
-    from .integration.request import actor_effort
     from .integration.switch import PASS_WALL_S
 
     home, settings = service.home, service.settings
@@ -1639,7 +1632,7 @@ async def _iteration(
     try:
         # the writer's settings and route as a pass needs them, and one call's worst case for its models (a refused
         # setting or a model the pinned catalogue does not bound: no pass can run)
-        pass_reservation(settings, actor_effort())
+        check_writer_settings(settings)
         worst = pass_call_worst_case(settings)
     except Exception as exc:  # noqa: BLE001 - a refused writer route or setting: no pass can run
         event(home, "refused", reason=type(exc).__name__)

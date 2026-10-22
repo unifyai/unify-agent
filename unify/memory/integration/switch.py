@@ -129,8 +129,8 @@ def in_episode(settings: Any) -> bool:
 
 WRITER_MODEL = "UNIFY_MEMORY_WRITER_MODEL"
 MEMORY_CAP = "UNIFY_MEMORY_CAP_USD"
-#: Memory's spend cap for one memory home, in USD: room for about forty high-effort writer passes (a pass at high
-#: effort may book up to ``PASS_EXPERIENCE x WRITER_USD_PER_TOKEN x 4`` = 0.438 USD).
+#: Memory's spend cap for one run, in USD, when ``UNIFY_MEMORY_CAP_USD`` is empty: the only USD bound on the writer
+#: and its helpers (a pass has no cap of its own).
 MEMORY_CAP_DEFAULT = "20.00"
 
 #: A plain decimal: digits, optionally a point and more digits. No sign, exponent, separator or name.
@@ -175,13 +175,6 @@ def memory_cap_usd(settings: Any) -> Decimal:
 
 # --- fixed values -----------------------------------------------------------------------------------------------
 
-#: The recorded tokens of experience one pass's USD cap is sized on (with :data:`WRITER_USD_PER_TOKEN`).
-PASS_EXPERIENCE = 100000
-#: USD per recorded token of a pass's cap.
-WRITER_USD_PER_TOKEN = Decimal("0.00000073")
-#: A pass's USD cap is multiplied, and its calls bounded, by the pass's writer effort (the actor's for the run).
-WRITER_EFFORT_SCALE: dict[str, Decimal] = {"low": Decimal(1), "medium": Decimal(2), "high": Decimal(4)}
-WRITER_MAX_CALLS: dict[str, int] = {"low": 40, "medium": 80, "high": 80}
 #: The writer's reader calls per pass.
 PASS_MAX_READS = 1000
 #: One pass's wall-clock bound, in seconds.

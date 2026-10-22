@@ -176,6 +176,11 @@ def test_a_service_pass_is_bounded_by_the_room_and_settles_the_helpers_lane(tmp_
     )
     (cfg,) = seen
     assert Decimal(cfg.usd_limit) == Decimal(23) and not hasattr(cfg, "usd_call_reserve")
+    # rev 2.1: no per-pass USD or call cap, with no writer lane as with one: the run's spend cap (its room, above), the
+    # wall clock and the operational step guard bound the pass
+    from unify.memory.writer_pass import STEP_GUARD
+
+    assert cfg.max_usd is None and cfg.max_calls == STEP_GUARD
     assert Decimal(report.settle_usd) == Decimal("0.02") + Decimal("0.35") + W
     assert report.usd_known == "0.37" and report.unknown_calls == 1
     assert report.helper_usd_known == "0.35" and report.helper_unknown_calls == 1

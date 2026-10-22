@@ -5,17 +5,16 @@ The writer service (:mod:`..writer_service`) hands each pass up to :data:`..atte
 the gate (:class:`..gate.Gate`), merges what the gate accepts into memory ``main`` with one compare-and-swap, writes
 the item records (:func:`after_passes`) and publishes ``served``.
 
-Bounds per pass: ``PassConfig(model, effort, max_calls=M[effort], max_usd=E x a_tok x S[effort])``, with E, a_tok, S
-and M fixed (:data:`.switch.PASS_EXPERIENCE`, :data:`.switch.WRITER_USD_PER_TOKEN`, :data:`.switch.WRITER_EFFORT_SCALE`
-and :data:`.switch.WRITER_MAX_CALLS`), by the pass's writer effort (the actor's for the run). On a writer lane the
-lane's caps bound the pass instead. Every pass also stays within the room memory's spend cap leaves
-(:func:`..writer_service.pass_room`).
+Bounds per pass: no per-pass USD or call cap, with or without a writer lane. A pass stays within the room memory's
+spend cap for the run leaves (``UNIFY_MEMORY_CAP_USD``, :func:`..writer_service.pass_room`: no writer or helper call
+starts past it), within its wall clock (:data:`.switch.PASS_WALL_S`), and the operational step guard
+(:data:`..writer_pass.STEP_GUARD`) ends a runaway.
 
 Each pass sends its events through ``emit`` and appends them to the harness-only state dir's ``events.jsonl``
 (:func:`events_path`):
 
 * ``{"type": "consolidation", "phase": "start", "pass_id", "trigger_tokens", "episodes", "writer_model",
-  "writer_effort", "cap_usd", "max_calls", "effort_scale"}``;
+  "writer_effort", "room_usd"}`` (the room memory's spend cap left this pass, None without a cap);
 * the progress rows ``turn`` (each writer model call) and ``gate`` (each gate verdict), with ``seconds``;
 * ``{"type": "consolidation", "phase": "end", "pass_id", "usd", "unknown_cost_calls", "calls", "checks",
   "seconds", "gate_passed", "items", "index_tokens", "reason_codes", "items_merged", "items_refused"}``.
@@ -81,13 +80,9 @@ from ..trigger import PassRequest
 from .cost import UNKNOWN, money, recording_turn
 from .paths import Paths
 from .switch import (
-    PASS_EXPERIENCE,
     PASS_MAX_READS,
     PASS_WALL_S,
     WRITER_BASE_URL,
-    WRITER_EFFORT_SCALE,
-    WRITER_MAX_CALLS,
-    WRITER_USD_PER_TOKEN,
     WriterRouteRefused,
     in_episode,
     settle_writer_route_env,
@@ -291,11 +286,6 @@ class WriterSettings:
     model: str
     # The writer's own lane (UNIFY_MEMORY_WRITER_BASE_URL and _WRITER_TOKEN_FD); None: the controller's own route
     route: WriterRoute | None = None
-
-    @property
-    def cap_usd(self) -> Decimal:
-        """One pass's USD cap at effort scale 1: E recorded tokens at the writer's rate per token."""
-        return Decimal(PASS_EXPERIENCE) * WRITER_USD_PER_TOKEN
 
 
 def writer_settings(settings: Any) -> WriterSettings:
@@ -608,9 +598,7 @@ def _start_event(
     pass_id: str,
     model: str,
     effort: str,
-    cap: Decimal,
-    max_calls: int,
-    scale: Decimal,
+    room: Decimal | None,
 ) -> dict:
     return {
         "type": "consolidation",
@@ -621,9 +609,7 @@ def _start_event(
         "held": list(getattr(req, "held", []) or []),
         "writer_model": model,
         "writer_effort": effort,
-        "cap_usd": _usd(cap),
-        "max_calls": int(max_calls),
-        "effort_scale": _usd(scale),
+        "room_usd": None if room is None else _usd(room),
     }
 
 
@@ -967,20 +953,6 @@ async def run_attention_pass(
     paths = Paths.under(home)
     stores = open_stores(paths, busy_timeout_s=60.0)
     cfg = writer_settings(settings)
-    level = effort.strip().lower()
-    if level not in WRITER_EFFORT_SCALE or level not in WRITER_MAX_CALLS:
-        return AttentionPassReport(
-            pass_id,
-            [e.entry for e in handed],
-            "error",
-            notes=["no pass limits for the effort"],
-            reads=attention.PassReads(),
-            error_class="NoPassLimits",
-            error_where="run_attention_pass:limits",
-        )
-    scale = WRITER_EFFORT_SCALE[level]
-    cap = cfg.cap_usd * scale
-    max_calls = WRITER_MAX_CALLS[level]
     report = AttentionPassReport(pass_id, [e.entry for e in handed], "nothing")
     capture_settled_forks(stores)
     from ..call_bounds import NoBound
@@ -1025,9 +997,11 @@ async def run_attention_pass(
     config = PassConfig(
         model=cfg.model,
         effort=effort,
-        max_calls=STEP_GUARD if cfg.route is not None else max_calls,
+        # no per-pass USD or call cap (with or without a writer lane): the run's spend cap (usd_limit, below), the
+        # wall clock and the operational step guard bound the pass
+        max_calls=STEP_GUARD,
         deadline_s=supervise.pass_deadline_s,
-        max_usd=None if cfg.route is not None else cap,
+        max_usd=None,
         # the service's room for this pass (its cap less what its other passes committed, less a resumed pass's lost
         # calls): no writer or helper call starts past it, whatever the pass's own limits
         usd_limit=None if room is None else _usd(room),
@@ -1091,7 +1065,7 @@ async def run_attention_pass(
     req = PassRequest(
         "attention", None, attention.pass_episodes(handed, resolve=resolve), False, None, attention=list(handed)
     )
-    start = _start_event(req, pass_id, cfg.model, effort, cap, max_calls, scale)
+    start = _start_event(req, pass_id, cfg.model, effort, room)
     start.update(pass_kind="attention", attention_entries=list(report.entries), resumed=bool(resume))
     _deliver(stores, emit, start)
     started = time.monotonic()
