@@ -260,32 +260,34 @@ def test_run_calls_an_item_and_reports_its_outcome(tmp_path):
         f"r = memory.run({LANDED!r}, {ROWS!r})\n"
         "bad = memory.run('memory.text.dates:nope', 1)\n"
         f"err = memory.run({TOKENS!r}, 5)\n"
-        "print(json.dumps([r.outcome, r.result, r.repeatable, r.level, r.status, r.agrees_with]))\n"
+        "print(json.dumps([r.outcome, r.result, r.level, r.status, hasattr(r, 'repeatable'), hasattr(r, 'agrees_with')]))\n"
         "print(json.dumps([bad.outcome, bad.error, err.outcome, err.error]))\n"
         "print(json.dumps(repr(r)))\n"
     )
     first, failures, text = (json.loads(line) for line in _py(root, code).splitlines())
     # the capture of the same work gives the same result on these rows
-    assert first == ["returned", {"total": 8}, True, "reproduces-its-case", "on-trial", ["capture:" + "a" * 16]]
+    # rev 2.1: the report is the one call: no repeat and no other procedure run beside it
+    assert first == ["returned", {"total": 8}, "reproduces-its-case", "on-trial", False, False]
     assert failures == ["error", "LookupError", "error", "AttributeError"]  # reported, never raised
-    assert f"run of {LANDED}: returned" in text and "repeatable: yes" in text
+    assert f"run of {LANDED}: returned" in text and "repeatable" not in text and "agrees" not in text
     for word in ("correct", "verified", "right answer"):
         assert word not in text.lower()
 
 
 @needs_box
-def test_run_never_repeats_a_procedure_whose_effect_is_write(tmp_path):
-    root = _library(tmp_path, effect="write")
+@pytest.mark.parametrize("effect", [None, "write"])
+def test_run_calls_a_library_procedure_once_whatever_its_effect(tmp_path, effect):
+    """Rev 2.1, fix 4: rev 2 called an item a second time unless its recorded effect was ``write``; an item whose
+    effect was never derived then acted twice. Now every item is called once."""
+    root = _library(tmp_path, effect=effect)
     code = (
-        "import json, memory\n"
+        "import json, sys, memory\n"
+        "seen = []\n"
+        "sys.addaudithook(lambda ev, a: seen.append([ev, list(a)]) if ev == 'memory.call' else None)\n"
         f"r = memory.run({LANDED!r}, {ROWS!r})\n"
-        "print(json.dumps([r.outcome, r.repeatable, r.repeat_note]))\n"
+        "print(json.dumps([r.outcome, [a[0] for _, a in seen]]))\n"
     )
-    assert json.loads(_py(root, code)) == [
-        "returned",
-        None,
-        "a procedure whose recorded effect is write is called once",
-    ]
+    assert json.loads(_py(root, code)) == ["returned", [LANDED]]
 
 
 @needs_box
@@ -296,11 +298,11 @@ def test_run_runs_a_capture_confined_and_reports_failures(tmp_path):
         f"ok = memory.run('capture:' + 'a' * 16, json.dumps({ROWS!r}))\n"
         f"failed = memory.run('capture:' + 'b' * 16, json.dumps({ROWS!r}))\n"
         "missing = memory.run('capture:' + 'd' * 16, 'x')\n"
-        "print(json.dumps([ok.outcome, ok.result, ok.repeatable, ok.conditions, ok.level, ok.status]))\n"
+        "print(json.dumps([ok.outcome, ok.result, ok.conditions, ok.level, ok.status]))\n"
         "print(json.dumps([failed.outcome, failed.error, missing.outcome, missing.error]))\n"
     )
     ok, failures = (json.loads(line) for line in _py(root, code).splitlines())
-    assert ok == ["returned", {"total": 8}, True, "none stated", "unchecked", "on-trial"]
+    assert ok == ["returned", {"total": 8}, "none stated", "unchecked", "on-trial"]
     assert failures == ["error", "LookupError", "error", "LookupError"]
 
 
@@ -315,19 +317,6 @@ def test_a_capture_that_raises_is_reported_and_its_process_ends(tmp_path):
     )
     assert json.loads(_py(root, code)) == ["error", "ValueError", "no rows"]
     assert d.is_dir()
-
-
-@needs_box
-def test_agrees_with_names_other_matching_procedures_with_the_same_result(tmp_path):
-    root = _library(tmp_path)
-    _capture(root, "f" * 16, procedure=PROCEDURE, signature=_signature(ROWS))
-    code = (
-        "import json, memory\n"
-        f"r = memory.run('capture:' + 'a' * 16, json.dumps({ROWS!r}))\n"
-        "print(json.dumps([r.agrees_with, r.agreement_note]))\n"
-    )
-    agrees, note = json.loads(_py(root, code))
-    assert agrees == ["capture:" + "f" * 16] and note.startswith("checked against")
 
 
 @needs_box
@@ -348,7 +337,8 @@ def test_match_and_run_raise_their_audit_events(tmp_path):
     # the landed procedure records no input structure in rev 2 (test_match_lists_procedures_...): only the capture
     assert [r[0] for r in rows] == ["capture:" + "a" * 16] and [r[0] for r in failed] == ["capture:" + "b" * 16]
     (run_args,) = [a for ev, a in seen if ev == "memory.run_result"]
-    assert run_args[:3] == ["capture:" + "a" * 16, "returned", "yes"]
+    # rev 2.1: the run's event is its target, outcome, level and conditions (no repeat, no agreement)
+    assert run_args == ["capture:" + "a" * 16, "returned", "unchecked", "none"]
     calls = [a for ev, a in seen if ev == "memory.call"]
     assert [c[0] for c in calls] == ["capture:" + "a" * 16] and calls[0][2] == "ok"
     assert all(PLANTED not in json.dumps(a) for _, a in seen)
@@ -377,9 +367,9 @@ def test_match_and_run_are_counted_with_the_helpers_and_their_rows_kept():
     second = _cell(
         audit,
         ("memory.call", (cap, "ab12", "ok")),
-        ("memory.run_result", (cap, "returned", "yes", "unchecked", "none", ())),
+        ("memory.run_result", (cap, "returned", "unchecked", "none")),
         ("memory.helper_call", ("memory:run", "ab12", "ok")),
-        ("memory.run_result", ("not an id", "returned", "yes", "x", "none", ())),
+        ("memory.run_result", ("not an id", "returned", "x", "none")),
     )
     assert second["calls"]["malformed"] == 1
     acc = runtime_calls_empty()
@@ -413,8 +403,6 @@ def test_match_and_run_are_counted_with_the_helpers_and_their_rows_kept():
         "level": "unchecked",
         "outcome": "returned",
         "conditions": "none",
-        "repeatable": "yes",
-        "agrees_with": 0,
         "listed_by_match": True,
         "listed_by_ask": False,
     }

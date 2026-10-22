@@ -91,8 +91,8 @@ class Use:
     handed back. *verdict*: the visible verdict after the answered action (``accepted``/``rejected``), else None.
     *end_outcome*: the episode-end outcome (``positive``/``contrary``), else None. *holds*: the procedure's stated
     result condition on this call (None: none stated). *corrected*: a correction or re-ask followed the use.
-    *agreed*: agreement with another procedure, a second run or the actor's own final result (None: nothing to
-    compare).
+    *agreed*: agreement with the actor's own final result (None: nothing to compare). No second run and no other
+    procedure is ever run to compare (rev 2.1).
 
     *answered* None means the record does not say whether the result was handed back (a use record without result
     digests). Such a use is attributed as the lifecycle always has: a contrary signal in its episode

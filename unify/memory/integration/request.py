@@ -605,7 +605,6 @@ def _add_matches_and_runs(acc: dict, calls: dict, cell: int) -> None:
         if len(acc["runs"]) >= MAX_RUN_ROWS:
             acc["match_run_dropped"] += 1
             continue
-        agrees = r.get("agrees_with")
         acc["runs"].append(
             {
                 "cell": cell,
@@ -613,8 +612,6 @@ def _add_matches_and_runs(acc: dict, calls: dict, cell: int) -> None:
                 "level": r.get("level") if isinstance(r.get("level"), str) else None,
                 "outcome": r.get("outcome") if isinstance(r.get("outcome"), str) else None,
                 "conditions": r.get("conditions") if isinstance(r.get("conditions"), str) else None,
-                "repeatable": r.get("repeatable") if isinstance(r.get("repeatable"), str) else None,
-                "agrees_with": len(agrees) if isinstance(agrees, list) else 0,
                 "listed_by_match": r["target"] in earlier or listed_here,
                 "listed_by_ask": by_ask,
             },

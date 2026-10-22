@@ -448,7 +448,7 @@ WITHDRAWN_ITEMS_FILE = ".memory/withdrawn_items.json"
 #: answer): ``{"why", "returns"}``. The harness's ``captures.EXAMPLE_KEY``.
 EXAMPLE_KEY = "worked_example"
 #: The audit events of a ``match`` result (each listed row's id, level, status and how it matched; the failed
-#: attempts apart) and of a ``run`` (its target, outcome, repeatability, level, conditions and the ids that agreed).
+#: attempts apart) and of a ``run`` (its target, outcome, level and conditions).
 #: Ids and short labels only: never a value, a result or a request's text.
 MATCH_EVENT = "memory.match_result"
 RUN_EVENT = "memory.run_result"
@@ -1132,10 +1132,9 @@ def _match_all(request: Any = None, inputs: Any = None) -> Matches:
 
 
 class RunReport:
-    """How one ``run`` went. ``outcome``: returned, refused (``MemoryInputError``) or error; ``result``: what it
-    returned (None otherwise); ``repeatable``: whether a second run gave an equal result (None: not checked, with
-    the reason in ``repeat_note``); ``conditions``: whether its stated conditions held; ``agrees_with``: the other
-    procedures ``match`` lists for the same argument that gave an equal result."""
+    """How one ``run`` went: the one call it made (rev 2.1: a stored procedure is called once, never a second time and
+    never beside another procedure). ``outcome``: returned, refused (``MemoryInputError``) or error; ``result``: what
+    it returned (None otherwise); ``conditions``: whether its stated conditions held."""
 
     def __init__(self, target: str, **kw: Any) -> None:
         self.target = target
@@ -1143,17 +1142,11 @@ class RunReport:
         self.result: Any = kw.get("result")
         self.error: str = kw.get("error", "")
         self.detail: str = kw.get("detail", "")
-        self.repeatable: bool | None = kw.get("repeatable")
-        self.repeat_note: str = kw.get("repeat_note", "")
         self.conditions: str = kw.get("conditions", "none stated")
         self.conditions_code: str = kw.get("conditions_code", "none")
         self.level: str = kw.get("level", "unknown")
         self.status: str = kw.get("status", "unknown")
         self.record: str = kw.get("record", "")
-        self.agrees_with: list[str] = list(kw.get("agrees_with") or [])
-        self.agreement_note: str = kw.get("agreement_note", "")
-        # the value a captured procedure read from the text it was given (JSON, not too large), for agreement
-        self._read_value: Any = kw.get("read_value", _NO_VALUE)
         # the exception a library function raised in this process (None otherwise): an item call re-raises it, the
         # same object with its traceback, as a direct call would
         self._raised: BaseException | None = kw.get("raised")
@@ -1164,17 +1157,7 @@ class RunReport:
             out.append("result: " + _bounded_repr(self.result))
         else:
             out.append(f"error: {self.error}" + (f": {self.detail}" if self.detail else ""))
-        if self.repeatable is None:
-            out.append("repeatable: not checked" + (f" ({self.repeat_note})" if self.repeat_note else ""))
-        else:
-            out.append(
-                "repeatable: " + ("yes, two runs gave equal results" if self.repeatable else "no, two runs differed"),
-            )
         out.append("conditions: " + self.conditions)
-        if self.agrees_with:
-            out.append("agrees with: " + ", ".join(self.agrees_with))
-        if self.agreement_note:
-            out.append(self.agreement_note)
         out.append(f"level {self.level}, status {self.status}")
         out.append(self.record or "it has not been used since it was stored")
         out.append("Its result is unchecked: nothing here compares it with what your request needs.")
@@ -1189,16 +1172,6 @@ def _bounded_repr(value: Any) -> str:
     except Exception as exc:  # noqa: BLE001 - a result that cannot be shown is named by its type
         return f"<{type(value).__name__}: repr failed ({type(exc).__name__})>"
     return text if len(text) <= _RESULT_CHARS else text[:_RESULT_CHARS] + " …"
-
-
-def _same(a: Any, b: Any) -> bool:
-    try:
-        return json.dumps(a, sort_keys=True, default=repr) == json.dumps(b, sort_keys=True, default=repr)
-    except Exception:  # noqa: BLE001 - values JSON cannot order are compared by their text
-        try:
-            return repr(a) == repr(b)
-        except Exception:  # noqa: BLE001
-            return False
 
 
 def _record_line(use: Any) -> str:
@@ -1255,11 +1228,8 @@ def _item_function(target: str) -> Any:
 
 
 def _run_item(target: str, args: tuple, kwargs: dict) -> RunReport:
-    """Call a library function by id in this process (an ordinary use: the wrapper raises ``memory.call``). A
-    second call checks that it repeats, unless the harness derived its effect as ``write`` (a call known to change state
-    is never repeated), on a copy of the arguments taken first."""
-    import copy
-
+    """Call a library function by id in this process, once (an ordinary use: the wrapper raises ``memory.call``).
+    Rev 2.1: it is never called a second time, so an item that acts on the world acts once."""
     gone = _withdrawn().get(target) if _evidence() is not None else None
     if gone is not None:
         by = gone.get("by")
@@ -1288,33 +1258,18 @@ def _run_item(target: str, args: tuple, kwargs: dict) -> RunReport:
         fn = _item_function(target)
     except Exception as exc:  # noqa: BLE001 - reported, never raised past the cell
         return RunReport(target, outcome="error", error=type(exc).__name__, detail=str(exc)[:_DETAIL_CHARS], **base)
-    copied: Any = None
-    note = ""
-    if row.get("effect") == "write":
-        note = "a procedure whose recorded effect is write is called once"
-    else:
-        try:
-            copied = copy.deepcopy((args, kwargs))
-        except Exception:  # noqa: BLE001 - arguments that cannot be copied are passed once
-            note = "its arguments could not be copied for a second call"
     try:
         result = _settled(fn(*args, **kwargs))
     except Exception as exc:  # noqa: BLE001 - reported, never raised past the cell
         return RunReport(target, outcome=call_outcome(exc), error=type(exc).__name__,
-                         detail=str(exc)[:_DETAIL_CHARS], repeat_note="it did not return", raised=exc, **base)
-    repeatable: bool | None = None
-    if copied is not None:
-        try:
-            repeatable = _same(result, _settled(fn(*copied[0], **copied[1])))
-        except Exception as exc:  # noqa: BLE001
-            repeatable, note = False, f"the second call raised {type(exc).__name__}"
-    return RunReport(target, outcome="returned", result=result, repeatable=repeatable, repeat_note=note, **base)
+                         detail=str(exc)[:_DETAIL_CHARS], raised=exc, **base)
+    return RunReport(target, outcome="returned", result=result, **base)
 
 
 #: The child process that runs a captured procedure (stdlib only): it loads ``procedure.py``, reads the request text
 #: through ``read_input`` when the procedure has one and it was given one text (handed over with its data, as every
-#: reader is: :data:`_REQUEST_CLASS`), checks ``applies``, runs ``run``
-#: twice (once with ``"once": true``), checks ``holds``, and prints one JSON report after a marker line.
+#: reader is: :data:`_REQUEST_CLASS`), checks ``applies``, runs ``run`` once, checks ``holds``, and prints one JSON
+#: report after a marker line.
 _CAPTURE_RUNNER = r'''
 import asyncio, inspect, json, sys
 MARK = sys.argv[2]
@@ -1324,16 +1279,11 @@ def settle(x):
     # an async def (run, read_input, applies or holds) gives a coroutine: it is awaited here, in the child, and its
     # value is what the call gave (never the coroutine's text)
     return asyncio.run(x) if inspect.iscoroutine(x) else x
-def same(a, b):
-    try:
-        return json.dumps(a, sort_keys=True, default=repr) == json.dumps(b, sort_keys=True, default=repr)
-    except Exception:
-        return repr(a) == repr(b)
 def refused(exc):
     return any(c.__name__ == "MemoryInputError" for c in type(exc).__mro__)
 try:
     payload = json.loads(sys.stdin.read())
-    args, kwargs, once = payload["args"], payload["kwargs"], payload.get("once", False)
+    args, kwargs = payload["args"], payload["kwargs"]
     path = sys.argv[1]
     ns = {"__name__": "captured_procedure", "__file__": path}
     with open(path, encoding="utf-8") as fh:
@@ -1345,35 +1295,23 @@ try:
     if callable(read) and len(args) == 1 and not kwargs and isinstance(args[0], str):
         value = settle(read(Request(args[0], payload.get("data"))))
         call = lambda: settle(run(value))
-        try:
-            text = json.dumps(value)
-            if len(text) <= 262144:
-                out["value"] = value
-        except Exception:
-            pass
     else:
         value = args[0] if len(args) == 1 and not kwargs else None
         call = lambda: settle(run(*args, **kwargs))
     applies = ns.get("applies")
-    if callable(applies) and value is not None and not once:
+    if callable(applies) and value is not None:
         try:
             out["applies"] = bool(settle(applies(value)))
         except Exception as exc:
             out["applies_error"] = type(exc).__name__
     first = call()
     out["outcome"] = "returned"
-    if not once:
+    holds = ns.get("holds")
+    if callable(holds) and value is not None:
         try:
-            out["repeatable"] = same(first, call())
+            out["holds"] = bool(settle(holds(value, first)))
         except Exception as exc:
-            out["repeatable"] = False
-            out["repeat_note"] = "the second run raised " + type(exc).__name__
-        holds = ns.get("holds")
-        if callable(holds) and value is not None:
-            try:
-                out["holds"] = bool(settle(holds(value, first)))
-            except Exception as exc:
-                out["holds_error"] = type(exc).__name__
+            out["holds_error"] = type(exc).__name__
     try:
         json.dumps(first)
         out["result"] = first
@@ -1404,7 +1342,7 @@ def _capture_conditions(rep: dict) -> tuple[str, str]:
     return ("; ".join(parts) if parts else "none stated"), code
 
 
-def _confined(capture_id: str, args: tuple, kwargs: dict, once: bool = False) -> dict:
+def _confined(capture_id: str, args: tuple, kwargs: dict) -> dict:
     """Run a captured procedure in a child process confined as the capture step runs it: an isolated interpreter
     (``-I``), an empty environment, its own process group, the capture's directory as its working directory and a
     bounded time (:data:`RUN_TIMEOUT_S`); the child's process group is stopped when the time runs out or the run
@@ -1418,7 +1356,7 @@ def _confined(capture_id: str, args: tuple, kwargs: dict, once: bool = False) ->
                 "detail": "no captured procedure has this id; memory.items('captures') lists them"}
     try:
         data = _json_values(args[0]) if len(args) == 1 and not kwargs and isinstance(args[0], str) else None
-        payload = json.dumps({"args": list(args), "kwargs": kwargs, "once": once, "data": data})
+        payload = json.dumps({"args": list(args), "kwargs": kwargs, "data": data})
     except (TypeError, ValueError) as exc:
         return {"outcome": "error", "error": type(exc).__name__,
                 "detail": "a captured procedure takes text or JSON values"}
@@ -1555,79 +1493,18 @@ def _run_capture(capture_id: str, args: tuple, kwargs: dict) -> RunReport:
         result=rep.get("result"),
         error=_str(rep.get("error")),
         detail=_str(rep.get("detail")),
-        repeatable=rep.get("repeatable") if isinstance(rep.get("repeatable"), bool) else None,
-        repeat_note=_str(rep.get("repeat_note"), "" if rep["outcome"] == "returned" else "it did not return"),
         conditions=conditions,
         conditions_code=code,
         record=_record_line(rec.get("track") if isinstance(rec.get("track"), dict) else None),
-        read_value=rep["value"] if "value" in rep else _NO_VALUE,
         **base,
     )
 
 
-_NO_VALUE = object()
-
-
-def _agreement(
-    target: str,
-    args: tuple,
-    kwargs: dict,
-    result: Any,
-    read_value: Any = _NO_VALUE,
-) -> tuple[list[str], str]:
-    """The other runnable procedures :data:`MATCHER` lists for the same single argument whose result equals
-    *result*, and a line saying how many were tried. A library function is tried unless its effect is ``write``
-    (called unwrapped, and the library calls it makes raise no event, so the check is not a use); a captured one
-    runs confined. The other procedures are the ones that match the value the target read from its text, when it
-    read one (*read_value*), else the argument itself. Agreement between stored procedures only: nothing is compared
-    with anything the request states."""
-    if len(args) != 1 or kwargs:
-        return [], "agreement with other procedures is checked for a single argument only"
-    arg = args[0]
-    try:
-        if read_value is not _NO_VALUE:
-            rows = _matched(None, read_value)[0]
-        else:
-            rows = _matched(arg, None)[0] if isinstance(arg, str) else _matched(None, arg)[0]
-    except Exception as exc:  # noqa: BLE001 - the report still stands without agreement
-        return [], f"agreement was not checked ({type(exc).__name__})"
-    others = [r for r in rows if r.id != target]
-    agree: list[str] = []
-    tried = 0
-    for r in others:
-        try:
-            if r.id.startswith(CAPTURE_PREFIX):
-                rep = _confined(r.id[len(CAPTURE_PREFIX) :], args, kwargs, once=True)
-                if rep.get("outcome") != "returned":
-                    tried += 1
-                    continue
-                other = rep.get("result")
-            else:
-                row = _item_row(r.id)
-                if row is None or row.get("effect") == "write":
-                    continue
-                fn = inspect.unwrap(_item_function(r.id))
-                _QUIET.depth = getattr(_QUIET, "depth", 0) + 1
-                try:
-                    other = fn(*args)  # nor any library call it makes in turn
-                finally:
-                    _QUIET.depth -= 1
-        except Exception:  # noqa: BLE001 - a procedure that fails here does not agree
-            tried += 1
-            continue
-        tried += 1
-        if _same(result, other):
-            agree.append(r.id)
-    if not others:
-        return agree, "no other stored procedure matches this argument"
-    return agree, f"checked against {tried} of {len(others)} other matching procedure(s)"
-
-
 def _tracked_run(target: str, args: tuple, kwargs: dict) -> RunReport:
     """The tracked call of one stored procedure (``memory.run``, and calling a function :class:`Item`): try it on the
-    arguments, in this cell, and report how it went: whether it returned, its result, whether a second run agreed,
-    whether its stated conditions held, which other matching procedures gave the same result, and its evidence
-    level and status. *target* is an item id (``memory.<package>.<module>:<name>``) or a ``capture:<id>``. A
+    arguments, in this cell, once, and report how it went: whether it returned, its result, whether its stated
+    conditions held, and its evidence level and status. Rev 2.1: nothing calls it a second time or calls another
+    procedure beside it. *target* is an item id (``memory.<package>.<module>:<name>``) or a ``capture:<id>``. A
     library function is called here, as an import would call it; a captured procedure runs in a separate confined
     process and takes text or JSON values (given one text, it reads its input from that text). A failure is
     reported, never raised. Nothing runs unless the caller calls this."""
@@ -1635,23 +1512,12 @@ def _tracked_run(target: str, args: tuple, kwargs: dict) -> RunReport:
         report = _run_capture(target[len(CAPTURE_PREFIX) :], args, kwargs)
     else:
         report = _run_item(target, args, kwargs)
-    if report.outcome == "returned":
-        report.agrees_with, report.agreement_note = _agreement(
-            report.target,
-            args,
-            kwargs,
-            report.result,
-            report._read_value,
-        )
-    repeat = "unchecked" if report.repeatable is None else ("yes" if report.repeatable else "no")
     _emit_event(
         RUN_EVENT,
         report.target,
         report.outcome,
-        repeat,
         _label(report.level, "unknown"),
         report.conditions_code if report.conditions_code in CONDITIONS else "none",
-        tuple(report.agrees_with),
     )
     return report
 
@@ -2890,9 +2756,8 @@ def match(request: Any = None, inputs: Any = None) -> Matches:
 
 @checked(name="memory.run")
 def run(item: Any, /, *args: Any, **kwargs: Any) -> RunReport:
-    """Try one stored procedure on the arguments you pass and report how it went: whether it returned, its result,
-    whether a second run agreed, whether its stated conditions held, which other matching procedures gave the same
-    result, and its evidence level and status. Kept for one build: calling the item, ``memory.get(ref)(...)``,
+    """Try one stored procedure on the arguments you pass, once, and report how it went: whether it returned, its
+    result, whether its stated conditions held, and its evidence level and status. Kept for one build: calling the item, ``memory.get(ref)(...)``,
     replaces it; each call prints one line saying so. A failure is reported, never raised.
 
     Args:
@@ -2901,8 +2766,7 @@ def run(item: Any, /, *args: Any, **kwargs: Any) -> RunReport:
         kwargs: the procedure's own keyword arguments.
 
     Returns:
-        RunReport: outcome (returned, refused or error), result, repeatable, conditions, agrees_with, level and
-        status.
+        RunReport: outcome (returned, refused or error), result, conditions, level and status.
 
     Raises:
         ArgumentError: no procedure is given.
@@ -3037,14 +2901,7 @@ def call_outcome(exc: BaseException) -> str:
     )
 
 
-#: While an agreement check runs another procedure (:func:`_agreement`), its library calls raise no event: the
-#: check is not a use.
-_QUIET = threading.local()
-
-
 def _emit(item: str, digest: str, outcome: str, event: str = CALL_EVENT) -> None:
-    if getattr(_QUIET, "depth", 0):
-        return
     try:
         sys.audit(event, item, digest, outcome)
     except Exception:  # noqa: BLE001 - an audit hook never changes the call

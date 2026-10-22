@@ -99,9 +99,9 @@ two tuples of ``(id, level, status, matched)`` rows (the procedures listed,
 the failed attempts listed apart), and ``memory.run`` and a function item's
 call raise ``memory.run_result``
 with its target id, its outcome (``returned``, ``refused`` or ``error``),
-whether two runs agreed (``yes``, ``no`` or ``unchecked``), its level, its
-conditions (``none``, ``held``, ``not-held`` or ``error``) and a tuple of
-the ids of the matching procedures that gave the same result. Ids are
+its level and its conditions (``none``, ``held``, ``not-held`` or
+``error``): the one call it made (rev 2.1: never a second run, never
+another procedure beside it). Ids are
 library item ids or ``capture:<16 hex digits>`` (a captured procedure's run
 also raises ``memory.call`` under its capture id). ``calls`` then also
 holds, in order::
@@ -109,8 +109,7 @@ holds, in order::
     "matches": [{"listed": [{"id", "level", "status", "matched"}, ...],
                  "failed": [...], "calls_before": n, "runs_before": n,
                  "no_outcome": [{"id", "read", "applies", "reason"}, ...]}, ...]
-    "runs": [{"target", "outcome", "repeatable", "level", "conditions",
-              "agrees_with": [id, ...], "calls_before": n}, ...]
+    "runs": [{"target", "outcome", "level", "conditions", "calls_before": n}, ...]
 
 where ``calls_before`` and ``runs_before`` count the cell's ``records`` and
 ``runs`` kept before it, so a consumer can tell which calls came after.
@@ -237,7 +236,6 @@ ASK_READ = ("parsed", "did-not-parse", "not-started", "failed")
 ASK_NO_OUTCOME = ("not-started", "failed")
 ASK_APPLIES = ("held", "did-not-hold", "raised", "not-run", "none")
 RUN_OUTCOMES = ("returned", "refused", "error")
-RUN_REPEATABLE = ("yes", "no", "unchecked")
 RUN_CONDITIONS = ("none", "held", "not-held", "error")
 #: Audit events kept; everything else returns after one set lookup.
 AUDITED = PATH_EVENTS | SPAWN_EVENTS | {
@@ -660,20 +658,15 @@ class CellAudit:
         self.match_records.append(record)
 
     def _run_result(self, args: tuple) -> None:
-        """Keep one ``memory.run_result`` event: its target, outcome, repeatability, level, conditions and the ids
-        of the matching procedures that agreed."""
-        if type(args) is not tuple or len(args) != 6:
+        """Keep one ``memory.run_result`` event: its target, outcome, level and conditions."""
+        if type(args) is not tuple or len(args) != 4:
             self.calls_malformed += 1
             return
-        target, outcome, repeatable, level, conditions, agrees = args
-        agrees = self._ids(agrees)
+        target, outcome, level, conditions = args
         if (
             self._id(target) is None
-            or agrees is None
             or type(outcome) is not str
             or outcome not in RUN_OUTCOMES
-            or type(repeatable) is not str
-            or repeatable not in RUN_REPEATABLE
             or type(level) is not str
             or _LABEL.fullmatch(level) is None
             or type(conditions) is not str
@@ -688,10 +681,8 @@ class CellAudit:
             {
                 "target": target,
                 "outcome": outcome,
-                "repeatable": repeatable,
                 "level": level,
                 "conditions": conditions,
-                "agrees_with": agrees,
                 "calls_before": len(self.call_records),
             },
         )

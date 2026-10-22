@@ -7,8 +7,8 @@ words and never runs stored code; what it shows of a stored procedure is as it w
 
 ``memory.run(item, *args, **kwargs)`` runs one stored procedure (a library function, or a captured procedure) on
 the agent's inputs in the caller's process and reports how the run went: its outcome, its result, whether its
-stated conditions held, whether two runs agreed and which other matching procedures gave the same result. A
-failing procedure is reported, never raised past the cell.
+stated conditions held. It calls the procedure once: never a second time and never another procedure beside it
+(rev 2.1). A failing procedure is reported, never raised past the cell.
 
 Each test runs the generated package in a fresh isolated interpreter with the copy first on its path, as the
 actor's cells import it. No model is called.
@@ -482,21 +482,13 @@ def test_a_hook_that_judges_nothing_fits_lists_nothing_and_a_failing_hook_never_
 # --- run -----------------------------------------------------------------------------------------------------
 
 
-def _yes(value) -> bool:
-    return value is True or str(value).strip().lower().startswith(("yes", "true"))
-
-
-def _no(value) -> bool:
-    return value is False or str(value).strip().lower().startswith(("no", "false"))
-
-
 def _target(cid: str) -> str:
     return CAPTURE_TARGET.format(id=cid)
 
 
 RUN_FIELDS = (
     "[str(field(r, 'outcome')), plain(field(r, 'result')), plain(field(r, 'conditions')), "
-    "plain(field(r, 'repeatable')), text(field(r, 'agrees_with')), str(field(r, 'level')), str(field(r, 'status')), "
+    "str(field(r, 'level')), str(field(r, 'status')), "
     "str(r)]"
 )
 
@@ -518,7 +510,7 @@ def _run(root: Path, target: str, *args_src: str, setup: str = "") -> dict:
     )
     fields, raised, evs = got
     assert raised is None, f"memory.run raised past the cell: {raised}"
-    keys = ("outcome", "result", "conditions", "repeatable", "agrees_with", "level", "status", "printed")
+    keys = ("outcome", "result", "conditions", "level", "status", "printed")
     return {**dict(zip(keys, fields)), "events": evs}
 
 
@@ -528,7 +520,7 @@ def test_run_a_capture_on_the_request_reports_each_field(tmp_path):
     rep = _run(root, _target(table), repr(REQUEST))
     assert rep["outcome"] == RETURNED
     assert rep["result"] == 7
-    assert _yes(rep["repeatable"]), rep["repeatable"]
+    assert "repeatable" not in rep["printed"] and "agrees with" not in rep["printed"]
     cond = json.dumps(rep["conditions"]).lower()
     assert "applies" in cond and "holds" in cond
     assert "false" not in cond and "not" not in cond.replace("none stated", "")
@@ -552,9 +544,9 @@ def test_run_a_library_function_on_the_agents_inputs(tmp_path):
     root = _library(tmp_path)
     rep = _run(root, "memory.text.guard:double", "2")
     assert rep["outcome"] == RETURNED and rep["result"] == 4
-    assert _yes(rep["repeatable"]), rep["repeatable"]
     calls = [e for e in rep["events"] if e[0] == CALL_EVENT]
-    assert calls and {e[1] for e in calls} == {"memory.text.guard:double"} and all(e[3] == "ok" for e in calls)
+    # rev 2.1: one call, never a second one to check that it repeats
+    assert len(calls) == 1 and calls[0][1] == "memory.text.guard:double" and calls[0][3] == "ok"
     assert RUN_ID in [e[1] for e in rep["events"] if e[0] == HELPER_EVENT]
 
 
@@ -590,23 +582,32 @@ def test_run_reports_a_capture_that_raises_or_whose_reader_raises(tmp_path):
     assert str(rep["outcome"]).startswith(ERROR) and "RecursionError" in rep["printed"]
 
 
-def test_run_reports_a_procedure_that_is_not_repeatable(tmp_path):
+#: A captured procedure that leaves one mark in its own directory each time its run is called (the work tree the
+#: run acts on), so a test counts its calls from the outside.
+MARKING_RUN = (
+    'def run(value):\n    """Sum the amount column, and mark that it ran."""\n'
+    '    with open("runs.log", "a") as fh:\n        fh.write("x")\n'
+    '    return sum(r["amount"] for r in value)'
+)
+
+
+def test_run_calls_a_captured_procedure_once(tmp_path):
+    """Rev 2.1, fix 4: an item that acts (writes, sends, steps) acts once; nothing runs it a second time."""
     root = _library(tmp_path)
-    counter = _add_capture(
+    marking = _add_capture(
         root,
         _procedure(
             SUM_TABLE.replace(
                 'def run(value):\n    """Sum the amount column of an order table of items."""\n'
                 '    return sum(r["amount"] for r in value)',
-                '_RUNS = []\n\n\ndef run(value):\n    """Sum, plus how often it ran."""\n'
-                '    _RUNS.append(1)\n    return sum(r["amount"] for r in value) + len(_RUNS)',
+                MARKING_RUN,
             ),
         ),
         _signature(ROWS, 7),
     )
-    rep = _run(root, _target(counter), repr(REQUEST))
-    assert rep["outcome"] == RETURNED
-    assert _no(rep["repeatable"]), rep["repeatable"]
+    rep = _run(root, _target(marking), repr(REQUEST))
+    assert rep["outcome"] == RETURNED and rep["result"] == 7
+    assert (root / CAPTURES_DIR / marking / "runs.log").read_text() == "x"
 
 
 def test_run_reports_conditions_that_do_not_hold(tmp_path):
@@ -633,22 +634,27 @@ def test_run_reports_conditions_that_do_not_hold(tmp_path):
     assert "applies" in low and ("false" in low or "not" in low), rep["conditions"]
 
 
-def test_run_names_the_other_matching_procedures_that_gave_the_same_result(tmp_path):
+def test_run_never_runs_another_matching_procedure(tmp_path):
+    """Rev 2.1, fix 4: no other stored procedure runs on the caller's argument to compare results (rev 2 ran every
+    matching one to report which agreed); the report says only what the one call did."""
     root = _library(tmp_path)
     first = _add_capture(root, _procedure(SUM_TABLE), _signature(ROWS, 7))
-    second = _add_capture(
-        root,
-        _procedure(SUM_TABLE.replace('return sum(r["amount"] for r in value)', "t = 0\n    for r in value:\n        t += r['amount']\n    return t")),
-        _signature(ROWS, 7),
-    )
     other = _add_capture(
         root,
-        _procedure(SUM_TABLE.replace('return sum(r["amount"] for r in value)', "return len(value)")),
-        _signature(ROWS, 2),
+        _procedure(
+            SUM_TABLE.replace(
+                'def run(value):\n    """Sum the amount column of an order table of items."""\n'
+                '    return sum(r["amount"] for r in value)',
+                MARKING_RUN,
+            ),
+        ),
+        _signature(ROWS, 7),
     )
     rep = _run(root, _target(first), repr(REQUEST))
-    agrees = rep["agrees_with"]
-    assert second in agrees and other not in agrees and first not in agrees, agrees
+    assert rep["outcome"] == RETURNED and rep["result"] == 7
+    assert not (root / CAPTURES_DIR / other / "runs.log").exists()
+    assert "agrees" not in rep["printed"] and "checked against" not in rep["printed"]
+    assert [e[1] for e in rep["events"] if e[0] == CALL_EVENT] == [_target(first)]
 
 
 def test_the_report_never_claims_a_result_is_correct_without_verdicts(tmp_path):

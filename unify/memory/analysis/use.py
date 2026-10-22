@@ -652,8 +652,7 @@ def match_run_fields(runtime: Any, lines: Iterable[Any] = ()) -> dict:
       rows it listed (``listed``) and listed apart as failed (``failed``), each ``{id, level, status, matched}``, and
       ``called_after``, the listed ids that a later library call or ``run`` in the request called;
     * ``run_calls``: the runs seen; ``run_rows``: per run, its ``cell``, ``target``, ``level``, ``outcome``,
-      ``conditions``, ``repeatable``, ``agrees_with`` (how many other matching procedures gave the same result) and
-      ``listed_by_match`` (an earlier ``match`` of the request listed its target);
+      ``conditions`` and ``listed_by_match`` (an earlier ``match`` of the request listed its target);
     * ``ran_before_more_input``: whether a run came in a cell before the first message from the counterpart after
       the request (:func:`cells_before_more_input`; None without a run), and ``run_first_share``, the share of the
       runs that did (None without a run);
@@ -688,8 +687,6 @@ def match_run_fields(runtime: Any, lines: Iterable[Any] = ()) -> dict:
                     "level",
                     "outcome",
                     "conditions",
-                    "repeatable",
-                    "agrees_with",
                     "listed_by_match",
                     "listed_by_ask",
                 )

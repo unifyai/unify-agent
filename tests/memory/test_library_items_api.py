@@ -407,8 +407,7 @@ def test_calling_a_function_item_is_tracked_as_run_is(tmp_path):
     assert out == result == [[7, 7]]
     names = ("memory.call", "memory.run_result", "memory.helper_call")
     assert _events(by_call, *names) == _events(by_run, *names) == [
-        ("memory.call", FILL, "ok"),
-        ("memory.call", FILL, "ok"),  # the second call that checks it repeats, as run makes it
+        ("memory.call", FILL, "ok"),  # rev 2.1: called once; nothing calls it a second time
         ("memory.run_result", FILL, "returned"),
         ("memory.helper_call", "memory:run", "ok"),
     ]

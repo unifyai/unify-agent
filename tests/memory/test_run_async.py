@@ -46,8 +46,8 @@ def _child(tmp_path, payload):
 def test_an_async_captured_procedure_is_awaited_in_its_child(tmp_path):
     got = _child(tmp_path, {"args": ["21"], "kwargs": {}})
     assert got["outcome"] == "returned" and got["result"] == 42 and "result_is_text" not in got
-    assert got["applies"] is True and got["holds"] is True and got["repeatable"] is True
-    once = _child(tmp_path, {"args": [5], "kwargs": {}, "once": True})
+    assert got["applies"] is True and got["holds"] is True and "repeatable" not in got
+    once = _child(tmp_path, {"args": [5], "kwargs": {}})
     assert once["result"] == 10 and "coroutine" not in json.dumps(once)
 
 
