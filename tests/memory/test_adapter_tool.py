@@ -1,11 +1,10 @@
-"""The tool adapter: a record-only observer on the environment observer seam."""
+"""The tool adapter: a record-only observer of environment calls (the trajectory's TimedObserver builds on it)."""
 
 from __future__ import annotations
 
 import threading
 import time
 
-import pytest
 
 from unify.memory.integration.adapters.tool import (
     CYCLE,
@@ -17,23 +16,19 @@ from unify.memory.integration.adapters.tool import (
 )
 from unify.memory.redact import Redactor
 
-try:  # the seam's own dataclass and dispatch when this checkout has them
-    from unify.function_manager.primitives import observers as seam
+from dataclasses import dataclass, field
 
-    EnvCall = seam.EnvCall
-except ImportError:  # pragma: no cover - a stand-in with the same fields
-    from dataclasses import dataclass, field
 
-    seam = None
-
-    @dataclass(frozen=True)
-    class EnvCall:  # type: ignore[no-redef]
-        namespace: str
-        method: str
-        effect: str
-        args: tuple
-        kwargs: dict = field(default_factory=dict)
-        via: str = "primitives"
+# The environment-call observer seam (unify/function_manager/primitives/observers.py) went in 15482a949 ("nothing
+# reached it"); a call record with the seam's fields stands in for its EnvCall.
+@dataclass(frozen=True)
+class EnvCall:
+    namespace: str
+    method: str
+    effect: str
+    args: tuple
+    kwargs: dict = field(default_factory=dict)
+    via: str = "primitives"
 
 
 def _after(obs, call, *, result=None, error=None, intercepted=False):
@@ -199,42 +194,6 @@ def test_jsonable_handles_objects_tuples_bytes_and_pydantic_models():
         and out["m"] == {"a": [1, 2]}
     )
     assert "__repr__" in out["o"] and out["1"] == "k" and out["f"] == "nan"
-
-
-@pytest.mark.skipif(seam is None, reason="the observer seam is not in this checkout")
-def test_through_the_seam_dispatch_and_a_raw_global_proxy():
-    obs = RecordingObserver()
-    call = EnvCall("ns", "m", "read", (1,), {}, "primitives")
-    assert seam.dispatch([obs], call, lambda: {"v": 1}) == {"v": 1}
-    with pytest.raises(KeyError):
-        seam.dispatch([obs], call, lambda: {}["missing"])
-
-    class Spotify:
-        def login(self, username):
-            return {"user": username}
-
-    class Apis:
-        spotify = Spotify()
-
-    g = seam.observed_globals({"apis": Apis()}, enabled=True)
-    with seam.observing(obs):
-        assert not seam.complete_required()
-        obs.set_cell(1)
-        assert g["apis"].spotify.login(username="ada") == {"user": "ada"}
-    ok, err, glob = obs.drain().actions
-    assert (ok.status, ok.response, err.status, err.error) == (
-        "ok",
-        {"v": 1},
-        "error",
-        "KeyError: 'missing'",
-    )
-    assert (glob.cell, glob.channel, glob.method, glob.kwargs, glob.response) == (
-        1,
-        "spotify",
-        "login",
-        {"username": "ada"},
-        {"user": "ada"},
-    )
 
 
 def test_a_self_referencing_result_is_cut_at_the_cycle_quickly():
@@ -407,32 +366,3 @@ def test_concurrent_calls_from_threads_are_all_counted():
         th.join()
     drained = obs.drain()
     assert len(drained.actions) == 500 and drained.dropped == 300
-
-
-@pytest.mark.skipif(seam is None, reason="the observer seam is not in this checkout")
-def test_a_failing_recording_is_swallowed_and_the_call_outcome_stands():
-    class Broken(Redactor):
-        def obj(self, o):
-            raise RuntimeError("redactor down")
-
-        def text(self, s):
-            raise RuntimeError("redactor down")
-
-    obs = RecordingObserver(Broken())
-    call = EnvCall("ns", "m", "read", ("a",), {}, "primitives")
-    result = {"v": [1]}
-    assert seam.dispatch([obs], call, lambda: result) is result
-    with pytest.raises(KeyError):
-        seam.dispatch([obs], call, lambda: {}["missing"])
-
-    class BadStr(Exception):
-        def __str__(self):
-            raise RuntimeError("no str")
-
-    plain = RecordingObserver()
-    with pytest.raises(BadStr):
-        seam.dispatch([plain], call, lambda: (_ for _ in ()).throw(BadStr()))
-    drained = obs.drain()
-    assert drained.actions == [] and drained.failed == 2
-    [a] = plain.drain().actions
-    assert a.error == "BadStr: <unprintable>"

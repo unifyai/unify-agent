@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
 
 from unify.memory import library_prompts as pv
 from unify.memory.writer_pass import _library_trailers
@@ -28,19 +27,7 @@ def _finishing_pass(tmp_path, **cfg):
     return writer
 
 
-def _briefs_integrated():
-    """write_brief_now and curate_brief_now read the repair, lint and index modules' constants: run once integrated."""
-    for name in (
-        "unify.memory.repair",
-        "unify.memory.code_lint",
-        "unify.memory.library_index",
-        "unify.memory.curate",
-    ):
-        pytest.importorskip(name)
-
-
 def test_library_system_message_is_the_write_brief(tmp_path):
-    _briefs_integrated()
     writer = _finishing_pass(tmp_path)
     # the default configuration caps the pass's spend, so finish's refusal cap is stated
     assert writer.messages[0] == {
