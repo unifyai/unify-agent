@@ -23,9 +23,9 @@ environment recorded:
     observation on its channel, else the request);
   - it must return the recorded action's value: its keyword arguments, else its one argument, else its arguments;
   - the episode must carry a positive signal (checker ``pass`` or provenance ``support``) and no contrary one. The
-    harness never reads environment text for this. A ``checker`` signal counts only when the bed
-    declares its verdict visible to the actor (*checker_visible*, from ``switch.checker_visible``); a grader the
-    actor never sees is never read.
+    harness never reads environment text for this. A ``checker`` signal counts only when the signal itself is
+    visible to the actor (``visible_to_actor``, which also sets the inferred regime); a grader the actor never sees
+    is never read.
 
 A procedure's parameters must be values its episode recorded (:func:`param_problems`). A procedure of any other
 kind has no runner; :func:`parse_cover` refuses it, so it goes to drafts.

@@ -1,6 +1,6 @@
 """The writer's pass over the attention ledger's entries, run by the writer service, and the stores it works on.
 
-The writer service (:mod:`..writer_service`) hands each pass up to :data:`.switch.LEDGER_K` attention entries
+The writer service (:mod:`..writer_service`) hands each pass up to :data:`..attention.K` attention entries
 (:mod:`..attention`); :func:`run_attention_pass` runs the writer (:class:`..writer_pass.WriterPass`) over them behind
 the gate (:class:`..gate.Gate`), merges what the gate accepts into memory ``main`` with one compare-and-swap, writes
 the item records (:func:`after_passes`) and publishes ``served``.

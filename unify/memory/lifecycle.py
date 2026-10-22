@@ -160,9 +160,8 @@ def counted_signals(
 ) -> tuple[bool, bool]:
     """``(positive, negative)`` for one episode, from the signals the lifecycle may use (module docstring).
 
-    A ``checker`` verdict counts only when the signal itself carries ``visible_to_actor`` and the run allows
-    such signals at all (*checker_visible*, the bed's ``checker_visible_to_actor``): a grader the actor never sees
-    is never used. A source the regime cannot observe never counts, and in the no-signal regime
+    A ``checker`` verdict counts only when the signal itself carries ``visible_to_actor``: a grader the actor never
+    sees is never used. A source the regime cannot observe never counts, and in the no-signal regime
     nothing does."""
     if regime == NO_SIGNAL_REGIME:
         return False, False
