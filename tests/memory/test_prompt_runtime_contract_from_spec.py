@@ -303,18 +303,20 @@ def _delegating_writer() -> Steps:
 def _helper_waits_answer_at_once(monkeypatch) -> None:
     """A helper's ``wait`` and ``ask`` answer at once (as ``no_waiting`` in the other contract test): the scripted
     writer only waits, so a helper's real ``wait`` or ``ask`` would wait for it until the pass's wall clock. The
-    writer's own ``wait`` stays real, so its wait cell sees the helper end."""
+    writer's own ``wait`` stays real, so its wait cell sees the helper end. ``wait`` is the run record's (the registry
+    routes it to :mod:`unify.agents.run_record_tools` for every agent); ``ask`` is memory's."""
+    from unify.agents import run_record_tools as RT
     from unify.memory import tool_handlers as TH
 
-    for name, text in (("wait", "no new messages"), ("ask", "no answer yet")):
-        real = getattr(TH, name)
+    for module, name, text in ((RT, "wait", "no new messages"), (TH, "ask", "no answer yet")):
+        real = getattr(module, name)
 
         async def handler(ctx, args, _real=real, _text=text):
             if isinstance(getattr(ctx, "state", None), TH.HelperCalls):
                 return _text
             return await _real(ctx, args)
 
-        monkeypatch.setattr(TH, name, handler)
+        monkeypatch.setattr(module, name, handler)
 
 
 def _run_memory_role(tmp_path: Path, role: str, plan_of) -> tuple[dict, Steps, Any]:

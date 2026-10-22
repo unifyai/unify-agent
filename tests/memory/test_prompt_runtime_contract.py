@@ -478,7 +478,9 @@ def _library_pass(tmp_path: Path, model: Any, *, in_code: bool, **cfg: Any):
 
 @pytest.fixture
 def no_waiting(monkeypatch):
-    """``wait`` and ``ask`` answer at once (each stands for a call the host answers later)."""
+    """``wait`` and ``ask`` answer at once (each stands for a call the host answers later). ``wait`` is the run
+    record's (the registry routes it to :mod:`unify.agents.run_record_tools` for every agent); ``ask`` is memory's."""
+    from unify.agents import run_record_tools
     from unify.memory import tool_handlers
 
     async def wait(ctx, args):
@@ -487,8 +489,8 @@ def no_waiting(monkeypatch):
     async def ask(ctx, args):
         return "no answer yet"
 
-    monkeypatch.setattr(tool_handlers, "wait", wait)
-    monkeypatch.setattr(tool_handlers, "ask", ask, raising=False)
+    monkeypatch.setattr(run_record_tools, "wait", wait)
+    monkeypatch.setattr(tool_handlers, "ask", ask)
 
 
 def _switch(monkeypatch, in_code: bool) -> None:
