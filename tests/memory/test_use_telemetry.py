@@ -32,6 +32,7 @@ from unify.memory.gitio import Repo
 from unify.memory.integration import hooks
 from unify.memory.integration.request import RequestRun, memory_use
 from unify.memory.redact import Redactor
+from tests.memory import store_reads
 
 MODULE = '''
 class MemoryInputError(ValueError):
@@ -399,7 +400,7 @@ def test_the_evidence_table_aggregates_per_item(tmp_path):
     assert (p["refused_accepted"], p["unknown_calls"], p["imported"]) == (1, 2, 1)
     assert totals["env/x:strict"]["requests"] == 2  # not at e3's pin
     assert ev.item_use(["e2"])["env/x:parse"]["called"] == 1
-    assert ev.last_call_seq("env/x:parse") == ev.seq_of("e2")
+    assert ev.last_call_seq("env/x:parse") == store_reads.seq_of(ev, "e2")
     assert ev.last_call_seq("env/x:lookup") is None
     assert (
         totals["env/x:parse"]["shown"] == 0
@@ -464,7 +465,7 @@ def test_a_store_from_before_the_table_or_its_columns_opens_and_is_migrated(tmp_
         _record({"env/x:parse": {"called": 1}}, shown=ITEMS),
         "2026-10-08T01:00:00Z",
     )
-    assert ev.seq_of("e0") == 1 and ev.item_use()["env/x:parse"]["shown"] == 1
+    assert store_reads.seq_of(ev, "e0") == 1 and ev.item_use()["env/x:parse"]["shown"] == 1
     # a store from this lane's first commit: item_use with its first ten columns and a row
     early = tmp_path / "early.sqlite"
     con = sqlite3.connect(early)

@@ -33,6 +33,7 @@ from unify.memory.integration import hooks
 from unify.memory.integration import request as request_mod
 from unify.memory.integration.paths import Paths
 from unify.settings import SETTINGS
+from tests.memory import store_reads
 
 SENTINEL = "SENTINEL-7f3a"
 
@@ -282,4 +283,4 @@ def test_checker_text_never_lands_anywhere(monkeypatch, tmp_path):
     assert SENTINEL not in signals and "fail" not in signals
     from unify.memory.evidence import EvidenceStore
 
-    assert EvidenceStore(Paths.under(home).evidence).regime_record(run.episode_id) == ("none", "nothing")
+    assert store_reads.regime_record(EvidenceStore(Paths.under(home).evidence), run.episode_id) == ("none", "nothing")

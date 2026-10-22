@@ -9,7 +9,7 @@ import pytest
 from tests.memory.test_layout import FUNCTIONS, LIB, _tree
 from unify.memory import layout
 from unify.memory.library_helper import find_section
-from unify.memory.library_index import INDEX_HEAD, build_links, index_view, listed, render_index, render_links
+from unify.memory.library_index import INDEX_HEAD, build_links, listed, render_index, render_links
 
 PARSE_DATE = "memory.text.dates:parse_date"
 NOTE_ID = "notes/text/dates.md"
@@ -93,20 +93,6 @@ def test_an_empty_library_has_an_index_with_no_items(tmp_path):
     lib = layout.discover(tmp_path)
     index = render_index(lib, build_links(lib))
     assert index == INDEX_HEAD + "\nThe library is empty.\n" and listed(index) == 0
-
-
-def test_the_view_is_the_index_within_budget_else_headings_with_counts(tmp_path):
-    lib = _lib(tmp_path)
-    index = render_index(lib, build_links(lib))
-    assert index_view(index) == index
-    view = index_view(index, budget_tokens=10)
-    assert view.startswith(INDEX_HEAD)
-    assert "## memory.text — Text helpers. (5 functions)\n" in view
-    assert "## memory.web (1 function)\n" in view and "## notes/text (1 note)\n" in view
-    assert (
-        '`memory.index("memory.text")`' in view and "INDEX.md holds all of it" in view
-    )
-    assert "- `" not in view
 
 
 def test_sections_are_found_by_package_or_notes_topic(tmp_path):

@@ -1,22 +1,12 @@
 from unify.memory.evidence import EvidenceStore
+from tests.memory import store_reads
 from tests.memory.test_episodes import _ep
 
 
-def test_seq_and_channels_and_cursor(tmp_path):
+def test_episodes_are_indexed_in_order(tmp_path):
     ev = EvidenceStore(tmp_path / "e.sqlite")
     assert ev.index_episode(_ep(episode_id="a"), "1" * 40) == 1
     assert ev.index_episode(_ep(episode_id="b"), "2" * 40) == 2
-    assert ev.episode_ids_since("venmo", 0) == ["a", "b"]
-    ev.set_cursor("venmo", 1)
-    assert ev.episode_ids_since("venmo", ev.cursor("venmo")) == ["b"]
-
-
-def test_covers(tmp_path):
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    ev.index_episode(_ep(episode_id="a"), "1" * 40)
-    ev.add_cover("env/venmo:login", "a", 0)
-    assert ev.covered() == {("a", 0)}
-    assert ev.covers() == {("env/venmo:login", "a", 0)}
 
 
 def test_add_pass_notes_appends_to_the_recorded_reasons(tmp_path):
@@ -62,7 +52,7 @@ def test_shape_snapshots_are_frozen_per_commit(tmp_path):
 
 def test_covers_of_an_item_are_sorted(tmp_path):
     ev = EvidenceStore(tmp_path / "e.sqlite")
-    ev.add_cover("env/w:read", "e2", 0)
-    ev.add_cover("env/w:read", "e1", 3)
-    ev.add_cover("env/w:other", "e1", 0)
+    store_reads.add_cover(ev, "env/w:read", "e2", 0)
+    store_reads.add_cover(ev, "env/w:read", "e1", 3)
+    store_reads.add_cover(ev, "env/w:other", "e1", 0)
     assert ev.covers_of("env/w:read") == [("e1", 3), ("e2", 0)]

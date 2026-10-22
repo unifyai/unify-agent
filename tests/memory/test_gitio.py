@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from unify.memory.gitio import GitError, Repo
+from tests.memory import store_reads
 
 
 def test_bare_repo_commit_via_temp_checkout(tmp_path):
@@ -16,7 +17,7 @@ def test_bare_repo_commit_via_temp_checkout(tmp_path):
     assert r.head() == sha
     msg = r.run("log", "-1", "--format=%B", sha)
     assert "Pass: p1" in msg and "Episode: e1" in msg and "Episode: e2" in msg
-    assert r.changed_paths(base, sha) == ["env/a.py"]
+    assert store_reads.changed_paths(r, base, sha) == ["env/a.py"]
 
 
 def test_fast_forward_refuses_non_ancestor(tmp_path):
@@ -56,12 +57,12 @@ def test_snapshot_mode_keeps_git_out_of_work_tree(tmp_path):
     wt = tmp_path / "work"
     wt.mkdir()
     (wt / "f.txt").write_text("a\nb\n")
-    s = Repo.init_snapshot(tmp_path / "work.git", wt)
+    s = store_reads.init_snapshot(tmp_path / "work.git", wt)
     first = s.snapshot("before")
     (wt / "f.txt").write_text("a\nB\n")
     second = s.snapshot("after")
     assert not (wt / ".git").exists()
-    assert s.blame_lines(second, "f.txt") == [first, second]
+    assert store_reads.blame_lines(s, second, "f.txt") == [first, second]
 
 
 def test_init_bare_accepts_a_relative_path(tmp_path, monkeypatch):

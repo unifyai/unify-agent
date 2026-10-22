@@ -5,6 +5,7 @@ from __future__ import annotations
 from tests.memory.test_use_telemetry import ITEMS, _index, _record
 from unify.memory import usage
 from unify.memory.evidence import EvidenceStore
+from tests.memory import store_reads
 
 
 def test_item_signals_flag_used_never_used_and_refusing_accepted_inputs(tmp_path):
@@ -42,7 +43,7 @@ def test_item_signals_flag_used_never_used_and_refusing_accepted_inputs(tmp_path
     parse = usage.item_signals("env/x:parse", ev)
     assert parse["used"] and parse["refusing_accepted_inputs"]
     assert not parse["never_used"] and parse["uncertain"]
-    assert parse["last_call_seq"] == ev.seq_of("e1")
+    assert parse["last_call_seq"] == store_reads.seq_of(ev, "e1")
     lookup = usage.item_signals("env/x:lookup", ev)
     assert lookup["never_used"] and lookup["never_used_basis"] == "item"
     assert (lookup["refusals"], lookup["errors"]) == (0, 0)

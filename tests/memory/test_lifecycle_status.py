@@ -7,6 +7,7 @@ from unify.memory import lifecycle as lc
 from unify.memory.evidence import EvidenceStore
 from unify.memory.item_records import empty_record
 from unify.memory.item_states import ADOPTED, CURATE_RULE, ON_TRIAL, RETIRED
+from tests.memory import store_reads
 
 PD, WEEK, TOK = (
     "memory.text.dates:parse_date",
@@ -142,7 +143,7 @@ def test_failure_only_provenance_is_found_through_the_citing_items(tmp_path):
         WEEK: ["e1", "e2"],
         PD: ["e1"],
     }
-    ev.add_cover(
+    store_reads.add_cover(ev,
         WEEK,
         "e3",
         0,

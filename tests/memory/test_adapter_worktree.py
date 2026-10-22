@@ -14,6 +14,7 @@ from unify.memory.integration.adapters.worktree import (
     tree_files,
 )
 from unify.memory.redact import Redactor
+from tests.memory import store_reads
 
 KEY = "sk-or-v1-" + "ab" * 32
 
@@ -30,7 +31,7 @@ def _setup(tmp_path, **kw):
     (wt / "notes.txt").write_text("one\ntwo\nthree\n")
     (wt / "sub").mkdir()
     (wt / "sub" / "a.txt").write_text("a\n")
-    repo = Repo.init_snapshot(tmp_path / "worktree.git", wt)
+    repo = store_reads.init_snapshot(tmp_path / "worktree.git", wt)
     rec = WorkTreeRecorder(wt, repo, BlobStore(tmp_path / "blobs"), **kw)
     return wt, repo, rec
 
@@ -127,12 +128,12 @@ def test_writes_carry_before_and_after_blobs(tmp_path):
     assert gone.cell == REQUEST_END_CELL and gone.response["deleted"] is True
     assert gone.response["blob_after"] is None and gone.response["blob_before"]
 
-    assert repo.changed_paths(before, rec.after) == [
+    assert store_reads.changed_paths(repo, before, rec.after) == [
         "notes.txt",
         "out.json",
         "sub/a.txt",
     ]
-    assert rec.repo.blame_lines(rec.after, "notes.txt") == [rec.after]
+    assert store_reads.blame_lines(rec.repo, rec.after, "notes.txt") == [rec.after]
 
 
 def test_size_cap_keeps_the_shape_only(tmp_path):
@@ -221,7 +222,7 @@ def test_paths_hidden_from_cells_are_never_snapshotted_read_or_listed(tmp_path):
 def test_snapshot_dir_inside_work_tree_is_refused(tmp_path):
     wt = tmp_path / "w"
     wt.mkdir()
-    repo = Repo.init_snapshot(wt / "inner.git", wt)
+    repo = store_reads.init_snapshot(wt / "inner.git", wt)
     with pytest.raises(ValueError):
         WorkTreeRecorder(wt, repo, BlobStore(tmp_path / "b"))
 

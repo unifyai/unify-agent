@@ -59,6 +59,7 @@ from unify.memory.integration.trajectory import assemble
 from unify.memory.redact import Redactor
 from unify.memory.writer_pass import PassConfig, WriterPass
 from unify.memory.trigger import PassRequest
+from tests.memory import store_reads
 
 needs_bwrap = pytest.mark.skipif(
     shutil.which("bwrap") is None,
@@ -454,4 +455,4 @@ def test_a_pass_with_an_empty_manifest_passes_and_changes_nothing(tmp_path):
     out = asyncio.run(writer.run(PassRequest("batched", None, [EID], False), "p0"))
     assert out.passed, out.reasons
     assert consolidate.reason_codes(out, None) == ["ok"]
-    assert mem.head() == parent and ev.covered() == set()
+    assert mem.head() == parent and store_reads.covered(ev) == set()

@@ -47,6 +47,7 @@ from tests.memory.conformance import scripts as SX
 from tests.memory.test_writer_route import _otel_off_unless_a_test_turns_it_on  # noqa: F401 - an autouse fixture
 from tests.scripted_model import Always, ScriptedModel, cell, reply
 from tests.memory.arrivals import read_arrivals
+from tests.memory import store_reads
 
 ID16 = re.compile(r"[0-9a-f]{16}")
 
@@ -177,7 +178,7 @@ async def test_surface_1_a_conversation_with_follow_ups_and_no_reward(core_world
     facts = H.check_run(home, lanes, actor_model=model, own_texts=[first, *follow])
     print("CONFORMANCE", json.dumps(H.run_facts(home, lanes, facts), default=str, sort_keys=True)[:3000])
     # nothing arrived for the episode, so its regime is none, by that rule (never a default)
-    assert _stores(home).evidence.regime_record(s.episode_id) == ("none", "nothing")
+    assert store_reads.regime_record(_stores(home).evidence, s.episode_id) == ("none", "nothing")
     # the follow-up message after a cell is a pause: a segment fork and its entry; the episode's end, another
     entries = _entries(home)
     segs = sorted(e.refs.segment for e in entries if e.kind == "new_experience" and e.refs.segment)
@@ -233,7 +234,7 @@ async def test_surface_2_a_tool_api_with_reads_and_writes_and_an_outcome_at_the_
     # channel (the redesign arms' UNIFY_MEMORY_DIALOGUE=env, now fixed), so the pairing is certain and the verdict
     # names the action it judged, which makes the regime dense, from its signals; the hidden one is posted unseen
     # and decides nothing
-    assert stores.evidence.regime_record(s.episode_id) == ("dense", "signals")
+    assert store_reads.regime_record(stores.evidence, s.episode_id) == ("dense", "signals")
     sigs = stores.evidence.signals_for(s.episode_id)
     assert {(x.visible_to_actor, x.label, x.timing) for x in sigs} == {(True, "pass", "in_episode"),
                                                                      (False, "pass", "in_episode")}
@@ -386,7 +387,7 @@ async def test_surface_4_an_outcome_that_arrives_two_requests_later(core_world, 
                             texts[0], H.replies())
     assert a.code == 0 and a.episode_id
     H.wait_until_settled(home)
-    assert _stores(home).evidence.regime_record(a.episode_id) == ("none", "nothing")
+    assert store_reads.regime_record(_stores(home).evidence, a.episode_id) == ("none", "nothing")
     # request 2: other work
     b = await H.cli_session(core_world, monkeypatch, ScriptedModel(actor=[reply("Three.")]), texts[1], H.replies())
     assert b.code == 0

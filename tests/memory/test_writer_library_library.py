@@ -34,10 +34,6 @@ def test_the_box_gets_the_generated_files_and_the_writer_can_use_them(tmp_path):
         _py(box, "import memory\nprint(memory.index('text').splitlines()[0])")
         == "## memory.text — Text helpers.\n"
     )
-    msg = WriterPass._library_message_library_mode(box)
-    assert msg.startswith("Current library index (/memory/INDEX.md")
-    assert "memory.text.dates:parse_date" in msg
-    assert "never write" not in msg  # Amendment C: blocked, not instructed
 
 
 def test_unchanged_generated_files_are_dropped_and_edited_ones_kept(tmp_path):

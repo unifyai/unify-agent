@@ -31,6 +31,7 @@ from unify.memory.signals import (
     valid_about,
 )
 from unify.settings import SETTINGS
+from tests.memory import store_reads
 
 ITEM = "memory.reports.totals:sum_rows"
 ENDED = "2026-10-08T01:01:00Z"
@@ -214,7 +215,7 @@ def test_the_store_keeps_its_schema_until_a_regime_is_inferred(tmp_path):
         )
         == "sparse"
     )
-    assert ev.regime_of("e0") == "dense" and ev.regime_record("e0") == (
+    assert ev.regime_of("e0") == "dense" and store_reads.regime_record(ev, "e0") == (
         "dense",
         "signals",
     )
@@ -499,7 +500,7 @@ def test_the_requests_regime_is_inferred_from_its_own_verdicts_and_posted_with_t
         "sparse",
         True,
     )
-    assert run.stores.evidence.regime_record(run.episode_id) == ("sparse", "signals")
+    assert store_reads.regime_record(run.stores.evidence, run.episode_id) == ("sparse", "signals")
     assert [r["signal_id"] for r in read_arrivals(run.paths.state_dir)] == [
         sig.signal_id
     ]

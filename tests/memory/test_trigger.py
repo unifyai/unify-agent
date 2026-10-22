@@ -9,6 +9,7 @@ import pytest
 
 from unify.memory.episodes import Action, Cell
 from unify.memory.experience import count_text, experience_pieces, experience_tokens
+from tests.memory import store_reads
 
 
 def _big(eid, n_chars):
@@ -112,9 +113,9 @@ def test_evidence_records_experience_per_episode(tmp_path):
     ev = EvidenceStore(tmp_path / "e.sqlite")
     ep = _ep(episode_id="a")
     ev.index_episode(ep, "1" * 40)
-    assert ev.experience_of("a") == experience_tokens(ep)
+    assert store_reads.experience_of(ev, "a") == experience_tokens(ep)
     with pytest.raises(KeyError):
-        ev.experience_of("nope")
+        store_reads.experience_of(ev, "nope")
 
 
 def test_experience_falls_back_to_bytes_over_four(monkeypatch):

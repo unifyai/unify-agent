@@ -27,6 +27,7 @@ from unify.memory.attention import (
     SettledFork,
     UseFailure,
 )
+from tests.memory import store_reads
 
 
 class Clock:
@@ -419,11 +420,11 @@ def test_every_entry_ends_closed_unreadable_or_not_reached(tmp_path, why):
     led.return_unread("p1")
     led.hand("p2", 4)
     report = led.report()
-    assert not report.guaranteed
+    assert not store_reads.guaranteed(report)
     led.return_unread("p2")
     left = led.mark_not_reached(why)
     report = led.report()
-    assert report.guaranteed and left
+    assert store_reads.guaranteed(report) and left
     ne = report.kinds["new_experience"]
     assert ne.created == 6 and ne.closed + ne.unreadable + ne.not_reached == 6 and ne.open == 0
     assert report.not_reached_why == {why: ne.not_reached}

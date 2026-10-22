@@ -18,6 +18,7 @@ import pytest
 from unify.memory import attention, metering, segments
 from unify.memory import writer_service as ws
 from unify.memory.integration import async_pass as ap
+from tests.memory import store_reads
 
 HERE = Path(__file__).name
 
@@ -109,7 +110,7 @@ def test_what_still_waits_at_the_run_end_is_not_reached(tmp_path):
     eid = led.create("message", attention.Refs(episodes=("ep-run",), record_seq=1), 1)
     led.hand("p1", 4, ready=_ready(_resolver(led.state_dir, set())))
     assert led.mark_not_reached("run_ended") == [eid]
-    assert led.get(eid).state == "not_reached" and led.report().guaranteed
+    assert led.get(eid).state == "not_reached" and store_reads.guaranteed(led.report())
 
 
 def test_a_failed_index_read_says_not_recorded_yet():

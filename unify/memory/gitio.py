@@ -59,13 +59,6 @@ class Repo:
             shutil.rmtree(tmp, ignore_errors=True)
         return repo
 
-    @classmethod
-    def init_snapshot(cls, git_dir: Path, work_tree: Path) -> "Repo":
-        """A separate git dir tracking `work_tree`; no `.git` ever appears inside the work tree."""
-        _git(["--git-dir", str(git_dir), "init", "-q", "-b", "main"])
-        _git(["--git-dir", str(git_dir), "config", "core.bare", "false"])
-        return cls(git_dir, work_tree)
-
     # -- plumbing -------------------------------------------------------------------------------------
     def run(self, *args: str, input: str | None = None, cwd: Path | None = None) -> str:
         base = ["--git-dir", str(self.git_dir)]
@@ -165,9 +158,6 @@ class Repo:
             return []
         return [ln for ln in out.splitlines() if ln.strip()]
 
-    def changed_paths(self, a: str, b: str) -> list[str]:
-        return [p for p in self.run("diff", "--name-only", a, b).splitlines() if p]
-
     def diff(self, a: str, b: str) -> str:
         return self.run("diff", a, b)
 
@@ -176,19 +166,6 @@ class Repo:
 
     def log_shas(self, ref: str = "main") -> list[str]:
         return self.run("rev-list", "--reverse", f"refs/heads/{ref}").split()
-
-    def blame_lines(self, rev: str, path: str) -> list[str]:
-        out = self.run("blame", "--porcelain", rev, "--", path)
-        shas = []
-        for ln in out.splitlines():
-            parts = ln.split(" ")
-            if (
-                len(parts) >= 3
-                and len(parts[0]) == 40
-                and all(c in "0123456789abcdef" for c in parts[0])
-            ):
-                shas.append((int(parts[2]), parts[0]))
-        return [s for _, s in sorted(shas)]
 
 
 #: Every call: no hooks, no fsmonitor and no user-level excludes file, whatever a repo's own config says.

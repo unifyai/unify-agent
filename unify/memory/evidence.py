@@ -534,15 +534,6 @@ class EvidenceStore:
         row = self.db.execute("SELECT MAX(seq) FROM episodes").fetchone()
         return int(row[0]) if row and row[0] is not None else 0
 
-    def seq_of(self, eid: str) -> int:
-        row = self.db.execute(
-            "SELECT seq FROM episodes WHERE episode_id=?",
-            (eid,),
-        ).fetchone()
-        if row is None:
-            raise KeyError(eid)
-        return int(row[0])
-
     def episode_ref(self, eid: str) -> tuple[str, str]:
         """``(commit_sha, started_at)`` of an indexed episode; ``KeyError`` when absent."""
         row = self.db.execute(
@@ -570,24 +561,6 @@ class EvidenceStore:
             ).fetchone()
             is not None
         )
-
-    def episode_ids_since(self, channel: str, after_seq: int) -> list[str]:
-        rows = self.db.execute(
-            "SELECT e.episode_id FROM episodes e JOIN env_touch t ON t.episode_id=e.episode_id "
-            "WHERE t.channel=? AND e.seq>? ORDER BY e.seq",
-            (channel, after_seq),
-        ).fetchall()
-        return [r[0] for r in rows]
-
-    def experience_of(self, eid: str) -> tuple[int, str]:
-        """(experience tokens, counter) recorded for *eid* (:mod:`.experience`); KeyError if none."""
-        row = self.db.execute(
-            "SELECT tokens, counter FROM experience WHERE episode_id=?",
-            (eid,),
-        ).fetchone()
-        if row is None:
-            raise KeyError(eid)
-        return int(row[0]), str(row[1])
 
     def experience_since(self, after_seq: int) -> list[tuple[str, int]]:
         """(episode id, experience tokens) of every episode after *after_seq*, in order (0 if unknown)."""
@@ -727,13 +700,6 @@ class EvidenceStore:
         ).fetchall()
         return [(r[1], r[2]) for r in rows if r[0] != exclude]
 
-    def regime_record(self, eid: str) -> tuple[str, str] | None:
-        """``(regime, basis)`` inferred for *eid*, or None when its regime was never inferred."""
-        if not self._has_table("episode_regimes"):
-            return None
-        row = self.db.execute("SELECT regime, basis FROM episode_regimes WHERE episode_id=?", (eid,)).fetchone()
-        return (row[0], row[1]) if row is not None else None
-
     def regime_changes(self, eid: str | None = None) -> list[dict]:
         """Every logged regime change (only *eid*'s when given), oldest first."""
         if not self._has_table("regime_changes"):
@@ -770,19 +736,6 @@ class EvidenceStore:
                 (eid,),
             )
         ]
-
-    def add_cover(self, item: str, eid: str, action_index: int) -> None:
-        with self.db:
-            self.db.execute(
-                "INSERT OR IGNORE INTO covers VALUES(?,?,?)",
-                (item, eid, action_index),
-            )
-
-    def covered(self) -> set[tuple[str, int]]:
-        return {
-            (r[0], int(r[1]))
-            for r in self.db.execute("SELECT episode_id, action_index FROM covers")
-        }
 
     def write_commit_shapes(self, commit: str, rows: dict[str, dict]) -> bool:
         """Freeze the input-shape snapshot of memory commit *commit* (:mod:`.shape_rows`): item ->
@@ -853,15 +806,6 @@ class EvidenceStore:
                 (item,),
             )
         ]
-
-    def covers(self) -> set[tuple[str, str, int]]:
-        """Every recorded cover as ``(item, episode_id, action_index)``."""
-        return {
-            (r[0], r[1], int(r[2]))
-            for r in self.db.execute(
-                "SELECT item, episode_id, action_index FROM covers",
-            )
-        }
 
     def record_pass(self, row: dict) -> None:
         with self.db:
@@ -1087,17 +1031,3 @@ class EvidenceStore:
             ).fetchone()
             is not None
         )
-
-    def cursor(self, channel: str) -> int:
-        row = self.db.execute(
-            "SELECT seq FROM cursors WHERE channel=?",
-            (channel,),
-        ).fetchone()
-        return int(row[0]) if row else 0
-
-    def set_cursor(self, channel: str, seq: int) -> None:
-        with self.db:
-            self.db.execute(
-                "INSERT OR REPLACE INTO cursors VALUES(?,?)",
-                (channel, seq),
-            )

@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from tests.memory.conformance import fake_lanes as FL
+from tests.memory import store_reads
 
 #: Route tokens: test strings only (the build checks their form, never their value).
 TOKENS = {"writer": "writer-token-0123456789abcdef", "fork": "fork-token-0123456789abcdef",
@@ -332,7 +333,7 @@ def model_inputs(lanes: FL.Lanes, actor_model: Any = None) -> list[str]:
 
 def check_coverage(home: Path) -> Any:
     report = ledger(home).report()
-    assert report.guaranteed, report.lines()
+    assert store_reads.guaranteed(report), report.lines()
     for kind, k in report.kinds.items():
         assert k.created == k.closed + k.unreadable + k.not_reached, (kind, k)
     return report

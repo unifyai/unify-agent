@@ -669,11 +669,6 @@ class CoverageReport:
     not_reached_why: Mapping[str, int]
     reopens_by_item: Mapping[str, int]
 
-    @property
-    def guaranteed(self) -> bool:
-        """Every entry is closed, unreadable or not reached."""
-        return all(k.open == 0 for k in self.kinds.values())
-
     def lines(self) -> list[str]:
         out = ["kind: created / closed / open / unreadable / not reached; creation-to-read delay median, p90 (s)"]
         for kind in KINDS:

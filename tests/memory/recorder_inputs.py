@@ -12,6 +12,7 @@ import dataclasses
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from tests.memory import store_reads
 
 #: A key-shaped string the redactor knows (planted past every cap in the library_mode tests).
 KEY = "sk-or-v1-" + "ab" * 32
@@ -73,7 +74,7 @@ def _setup_worktree(tmp: Path, **kw):
     wt = tmp / "work"
     wt.mkdir()
     (wt / "big.txt").write_text(worktree_file())
-    repo = Repo.init_snapshot(tmp / "worktree.git", wt)
+    repo = store_reads.init_snapshot(tmp / "worktree.git", wt)
     rec = WorkTreeRecorder(wt, repo, BlobStore(tmp / "blobs"), **kw)
     return wt, rec
 
