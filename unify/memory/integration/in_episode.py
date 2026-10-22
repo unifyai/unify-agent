@@ -320,7 +320,7 @@ class InEpisode:
         from ..capture_shape import computes
 
         if not computes(ep.cells[first : last + 1]):
-            # rev 2: cells that computed nothing (calls with literal arguments only, read from their syntax alone)
+            # cells that did no work (no computation and no call into the environment, read from their syntax alone)
             # start no fork; they stay for the next segment or the episode-end fork
             event["skipped"] = "no computation"
             self._log(event)

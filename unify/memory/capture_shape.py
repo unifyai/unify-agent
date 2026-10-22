@@ -16,10 +16,14 @@ an occurrence of the first, its raw bytes kept beside it as evidence, nothing de
 Nothing is run, imported or evaluated, and no world name, word, task id or value is read: the address is a function of
 the procedure's syntax only. A procedure that does not parse has no address (it is not captured anyway).
 
-**Computation** (:func:`computes`): a pause's cells computed something when one of them binds a name, defines a function
-or class, loops, comprehends, branches, or calls with an argument that is not a literal; a cell in another language, or
-one that does not parse, counts as computing. Cells that only make calls with literal arguments (``env.x.y()``,
-``tools.z(3)``) start no segment fork (:meth:`.integration.in_episode.InEpisode.segment`).
+**Work** (:func:`computes`): a pause's cells did work when one of them binds a name, defines a function or class,
+loops, comprehends, branches, calls with an argument that is not a literal, or calls into the environment at all: any
+call whose name is not the harness's own (:data:`HARNESS_NAMES`: ``tools``, ``memory``, ``display``, ``query_llm``)
+or a Python builtin, such as ``env.board.step("left")`` or ``primitives.mail.send("a@b.c", "hi")`` with literal
+arguments (rev 2.1: in action and tool worlds a run of literal action calls is the work). A cell in another language,
+or one that does not parse, counts as work. Only cells with no call into the environment and no computation (literal
+calls of builtins or of the harness's own tools, such as ``print("x")`` or ``tools.wait()``) start no segment fork
+(:meth:`.integration.in_episode.InEpisode.segment`).
 """
 
 from __future__ import annotations
@@ -262,8 +266,21 @@ if hasattr(ast, "TryStar"):
     _COMPUTES = (*_COMPUTES, ast.TryStar)
 
 
+#: The names a cell calls that are the harness's own, not the environment: a literal call of one of them (or of a
+#: Python builtin) is no work.
+HARNESS_NAMES = frozenset({"tools", "memory", "display", "query_llm"})
+
+
+def _call_root(node: ast.AST) -> str | None:
+    while isinstance(node, (ast.Attribute, ast.Subscript, ast.Call)):
+        node = node.func if isinstance(node, ast.Call) else node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
 def cell_computes(code: Any, language: str = "python") -> bool:
-    """Whether one cell computed something (module docstring); a cell that is not Python, or does not parse, does."""
+    """Whether one cell did work (module docstring): computed something or called into the environment; a cell that
+    is not Python, or does not parse, does."""
+    import builtins
     if (language or "python") != "python" or not isinstance(code, str):
         return True
     try:
@@ -274,6 +291,9 @@ def cell_computes(code: Any, language: str = "python") -> bool:
         if isinstance(node, _COMPUTES):
             return True
         if isinstance(node, ast.Call):
+            root = _call_root(node.func)
+            if root is not None and root not in HARNESS_NAMES and not hasattr(builtins, root):
+                return True  # a call into the environment is work, whatever its arguments
             if any(not is_literal(a) for a in node.args):
                 return True
             if any(not is_literal(k.value) for k in node.keywords):
@@ -282,5 +302,5 @@ def cell_computes(code: Any, language: str = "python") -> bool:
 
 
 def computes(cells: Iterable[Any]) -> bool:
-    """Whether any of *cells* (each with ``code`` and ``language``) computed something."""
+    """Whether any of *cells* (each with ``code`` and ``language``) did work."""
     return any(cell_computes(getattr(c, "code", None), getattr(c, "language", "python")) for c in cells)

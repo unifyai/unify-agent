@@ -255,22 +255,28 @@ def test_one_entry_per_fold_a_repeat_is_counted_and_a_contrary_occurrence_reopen
     assert [x.entry for x in led.hand("p3", 4)] == [entry.entry]
 
 
-# --- a pause that computed nothing starts no fork ------------------------------------------------------------------------
+# --- a pause that did no work starts no fork -----------------------------------------------------------------------------
 
 
-def test_cells_that_only_call_with_literals_compute_nothing():
+def test_only_cells_with_no_computation_and_no_environment_call_do_no_work():
     def cells(*codes, language="python"):
         return [Cell(i, c, "", language=language) for i, c in enumerate(codes)]
 
-    assert not cs.computes(cells("env.files.list()", "tools.note(3)", 'env.chat.say("hi", n=-1)', "state.last"))
+    # no work: literal calls of the harness's own names or of builtins, and expressions that call nothing
+    assert not cs.computes(cells("tools.note(3)", 'print("hi")', "state.last", "tools.wait()"))
+    # rev 2.1: a call into the environment is work, even with literal arguments (in action and tool worlds a run of
+    # literal action calls is the work)
+    for code in ("env.files.list()", 'env.chat.say("hi", n=-1)', 'env.board.step("left")',
+                 'primitives.mail.send("a@b.c", "hi")'):  # fmt: skip
+        assert cs.computes(cells(code)), code
     for code in ("x = 1", "print(state.last)", "for r in rows: pass", "[r for r in rows]", "def f(): pass",
                  "env.files.write(path, text)", "if ok: env.a.b()", "import json", "env.a.b(*args)"):  # fmt: skip
-        assert cs.computes(cells("env.files.list()", code)), code
+        assert cs.computes(cells("tools.note(3)", code)), code
     assert cs.computes(cells("ls -la", language="bash"))  # another language: counted as computing
     assert cs.computes(cells("def broken(:"))  # does not parse: counted as computing
 
 
-def test_a_pause_with_no_computation_starts_no_fork_and_its_cells_wait_for_the_next(tmp_path, monkeypatch):
+def test_a_pause_with_no_work_starts_no_fork_and_its_cells_wait_for_the_next(tmp_path, monkeypatch):
     from tests.memory.integration import test_in_episode as TIE
     from unify.memory.integration import fork as fork_mod
     from unify.memory.integration import in_episode as ie_mod
@@ -279,7 +285,7 @@ def test_a_pause_with_no_computation_starts_no_fork_and_its_cells_wait_for_the_n
     forks = TIE._Forks()
     monkeypatch.setattr(fork_mod, "start", forks.start)
     run, ie = TIE._ie(tmp_path, {TIE.C1: TIE._tree(TIE.LIB)})
-    for code in ("env.files.list()", "tools.note(3)"):
+    for code in ('print("checking")', "tools.note(3)"):
         run.code.append(code)
         ie.cell_done()
     ie.mark("actor_call")
@@ -293,3 +299,9 @@ def test_a_pause_with_no_computation_starts_no_fork_and_its_cells_wait_for_the_n
     ie.mark("actor_call")
     event = ie.at_boundary(object())
     assert event["segment"] == 1 and event["cells"] == [0, 2] and len(forks.calls) == 1
+    # rev 2.1: a pause whose only cell is a literal call into the environment did work, and forks
+    run.code.append('env.board.step("left")')
+    ie.cell_done()
+    ie.mark("actor_call")
+    event = ie.at_boundary(object())
+    assert event["segment"] == 2 and event["cells"] == [3, 3] and len(forks.calls) == 2
