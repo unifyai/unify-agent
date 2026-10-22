@@ -59,6 +59,14 @@ ASK_LINE_IN_CODE = (
     "- At the start of a request, and before you work a step out yourself, ask the library what applies with "
     "`memory.ask`. What it names can still be wrong for your case.\n"
 )
+#: The in-code paragraph on structured answers (rev 2.1, PLAN-REV2 item 7): ``memory.ask(..., schema=...)``, with one
+#: general instance of a schema (a plain dataclass) and no world vocabulary.
+ASK_SCHEMA_LINE_IN_CODE = (
+    "- When your code will use the answer, pass `schema=` (a dataclass, a TypedDict, a pydantic model or a JSON "
+    "Schema dict) and the answer comes back in that shape instead of as text; a mismatch is sent back to the "
+    "librarian once, then raises `AskSchemaError`. A dataclass `Plan` with `steps: list[str]` and `risky: bool`, "
+    "passed as the schema, gives back a `Plan` whose `steps` your code can loop over.\n"
+)
 #: The in-code try-first bullet, first under "Using items": open what you will use, then call it.
 USE_LINE_IN_CODE = (
     "- When an item applies, open it with `memory.get` and call it before you work the step out yourself. Trying "
@@ -117,6 +125,7 @@ GUIDE_LIBRARIAN = (
     + LIBRARIAN_POINTER
     + "\n"
     + ASK_LINE_IN_CODE
+    + ASK_SCHEMA_LINE_IN_CODE
     + "- `memory.items` browses every function and note in the library.\n"
     + FILES_LINE_IN_CODE
     + "\n"

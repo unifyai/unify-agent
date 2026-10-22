@@ -215,3 +215,32 @@ async def test_a_schema_that_is_not_one_is_refused_before_anything_is_asked(tmp_
     finally:
         await session.close()
     assert turn.calls == [] and session.questions == 0
+
+
+# --- the actor's prompt (rev 2.1, fix 5) -----------------------------------------------------------------------------
+
+
+def test_the_actors_memory_section_states_the_schema_paragraph_with_a_general_example(tmp_path):
+    """PLAN-REV2 promised one short paragraph and one general example in the actor's tool prompt; rev 2 shipped
+    without it, so no live ask used a schema. The paragraph is in the librarian guide the actor's memory section
+    carries, and its example is a schema ``memory.ask`` takes."""
+    import dataclasses
+
+    from unify.memory import library_ask, library_prompts
+    from unify.memory.integration.prompt import render_memory_section
+
+    line = library_prompts.ASK_SCHEMA_LINE_IN_CODE
+    assert line in library_prompts.GUIDE_LIBRARIAN
+    assert "schema=" in line and "AskSchemaError" in line and "dataclass" in line and "TypedDict" in line
+    section, _shown = render_memory_section(tmp_path)
+    assert line in section
+    # the schema the paragraph names is one ask takes: a dataclass with a list of strings and a bool
+
+    @dataclasses.dataclass
+    class Plan:
+        steps: list[str]
+        risky: bool
+
+    shape, give = library_ask._schema_of(Plan, "memory.ask")
+    assert shape["type"] == "object" and set(shape["properties"]) == {"steps", "risky"}
+    assert give({"steps": ["a"], "risky": False}) == Plan(["a"], False)
