@@ -55,24 +55,50 @@ def _literal(node: ast.AST | None) -> str | None:
     return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
 
 
+def _constants(tree: ast.Module) -> dict[str, str]:
+    """The module's top-level ``NAME = "..."`` string constants."""
+    out: dict[str, str] = {}
+    for b in tree.body:
+        if isinstance(b, ast.Assign) and len(b.targets) == 1 and isinstance(b.targets[0], ast.Name):
+            value = _literal(b.value)
+            if value is not None:
+                out[b.targets[0].id] = value
+        elif isinstance(b, ast.AnnAssign) and isinstance(b.target, ast.Name):
+            value = _literal(b.value)
+            if value is not None:
+                out[b.target.id] = value
+    return out
+
+
 def _env_reads(tree: ast.Module) -> set[str]:
-    """``UNIFY_*`` names read from the environment by a literal name: ``os.environ.get/pop/setdefault(name)``,
-    ``os.environ[name]``, ``os.getenv(name)`` and ``name in os.environ``."""
+    """``UNIFY_*`` names read from the environment by a literal name, or by a module constant that holds one:
+    ``os.environ.get/pop/setdefault(name)``, ``os.environ[name]``, ``os.getenv(name)``, ``name in os.environ``, and a
+    scan of the environment for every case variant of a name (``[k for k in environ if k.upper() == name]``)."""
+    consts = _constants(tree)
+
+    def named(node: ast.AST | None) -> str | None:
+        if isinstance(node, ast.Name):
+            return consts.get(node.id)
+        return _literal(node)
+
     out: set[str] = set()
     for n in ast.walk(tree):
-        name = None
+        names: list[str | None] = []
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.args:
             if n.func.attr in ("get", "pop", "setdefault") and _is_environ(n.func.value):
-                name = _literal(n.args[0])
+                names.append(named(n.args[0]))
             elif n.func.attr == "getenv":
-                name = _literal(n.args[0])
+                names.append(named(n.args[0]))
         elif isinstance(n, ast.Subscript) and _is_environ(n.value) and isinstance(n.ctx, ast.Load):
-            name = _literal(n.slice)
+            names.append(named(n.slice))
         elif isinstance(n, ast.Compare) and len(n.ops) == 1 and isinstance(n.ops[0], (ast.In, ast.NotIn)):
             if _is_environ(n.comparators[0]):
-                name = _literal(n.left)
-        if name and NAME.fullmatch(name):
-            out.add(name)
+                names.append(named(n.left))
+        elif isinstance(n, ast.comprehension) and _is_environ(n.iter):
+            for cond in n.ifs:
+                if isinstance(cond, ast.Compare) and len(cond.ops) == 1 and isinstance(cond.ops[0], ast.Eq):
+                    names.append(named(cond.comparators[0]))
+        out.update(name for name in names if name and NAME.fullmatch(name))
     return out
 
 
@@ -102,6 +128,13 @@ def test_config_lists_every_variable_the_package_reads():
 def test_config_lists_no_variable_the_package_does_not_read():
     stale = documented() - set(package_reads())
     assert not stale, f"in CONFIG.md but read nowhere in the package: {sorted(stale)}"
+
+
+def test_the_embedding_lanes_token_is_read_and_documented():
+    """``UNIFY_EMBED_TOKEN_FD`` is read by a case-insensitive scan of the environment (every variant of the name is
+    then taken out of it), not by one literal lookup: the scan above counts it, and CONFIG.md lists it."""
+    assert package_reads().get("UNIFY_EMBED_TOKEN_FD") == ["unify/lanes/embed_token.py"]
+    assert "UNIFY_EMBED_TOKEN_FD" in documented()
 
 
 def test_memory_has_exactly_one_switch():

@@ -63,6 +63,7 @@ environment. A lane's base URL and its descriptor are set together or not at all
 | `UNIFY_MEMORY_WRITER_PRICES_USD_PER_MILLION` | The writer model's pinned prices, as JSON in USD per million tokens. |
 | `UNIFY_MEMORY_LIBRARY_FORK_BASE_URL`, `UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD` | The episode-end fork's lane. Without it no fork runs, so no capture is made. |
 | `UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL`, `UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD` | The writer helpers' lane. Without it the writer is not offered `delegate`. |
+| `UNIFY_EMBED_TOKEN_FD` | The embedding lane's token, for the lane relay's embedding route that `UNIFY_EMBED_URL` names. With it, embeddings carry that token and never the provider key. That route without it is refused. A route the user set without it gets the provider key, as before. |
 
 The relay's own contract is in `unify/memory/integration/switch.py`.
 

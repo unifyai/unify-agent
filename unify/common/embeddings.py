@@ -37,6 +37,7 @@ import tiktoken
 import unillm
 
 from .. import db
+from ..lanes import embed_token
 from ..settings import SETTINGS
 
 
@@ -126,8 +127,18 @@ def _openrouter(texts: list[str]) -> np.ndarray:
     url = embed_route(SETTINGS.UNIFY_EMBED_URL)
     encoding = tiktoken.get_encoding("cl100k_base")
     inputs = [_fit_openrouter_input(encoding, text) for text in texts]
+    # the embedding lane's own token when the run has one (never the key then); else the key, to a route the user set
+    try:
+        lane = embed_token.token()
+    except embed_token.EmbedTokenRefused as exc:  # set but unusable: no embedding, and never the key instead
+        raise EmbeddingRouteRefused(str(exc)) from None
+    if lane is None and urlsplit(url).path.rstrip("/") == "/embed/v1/embeddings":
+        # the local lane relay's embedding route, without its token: the key never goes there
+        raise EmbeddingRouteRefused(
+            "UNIFY_EMBED_URL names the lane relay's embedding route but no UNIFY_EMBED_TOKEN_FD was given",
+        )
     headers = {
-        "Authorization": f"Bearer {unillm.SETTINGS.OPENROUTER_API_KEY.get_secret_value()}",
+        "Authorization": f"Bearer {lane if lane is not None else unillm.SETTINGS.OPENROUTER_API_KEY.get_secret_value()}",
     }
     vectors: list[list[float]] = []
     for start in range(0, len(inputs), _OPENROUTER_BATCH):

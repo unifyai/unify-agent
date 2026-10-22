@@ -148,6 +148,49 @@ def test_after_a_suspend_the_next_start_hands_the_same_entries_again_without_a_m
     assert _ops(svc.home, "not_reached") == []
 
 
+def test_a_bounded_suspend_cuts_the_pass_before_its_deadline_and_the_next_start_hands_its_entries_again(
+    svc, monkeypatch
+):
+    """``service_wait_s``: the run's end gives the pass in flight at most that long, not its whole deadline; then the
+    same suspend: the pass is cut through its abort path, nothing is marked, and every entry is handed again."""
+    from datetime import datetime, timezone
+
+    from unify.memory.integration import async_pass
+    from unify.memory.integration.paths import Paths
+    from unify.settings import SETTINGS
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_WRITER_SERVICE", "on")
+    monkeypatch.setenv("DRIVER_TURNS", "1")
+    monkeypatch.setenv("DRIVER_TURN_SLEEP", "3600")
+    monkeypatch.setenv("UNIFY_MEMORY_LIBRARY_PASS_WALL_S", "600")  # its own deadline, far off
+    ids = _open_entries(svc.home, 3)
+    assert _ensure(svc.home).status == "started"
+    doc = _until(
+        lambda: (d := ws.read_state(svc.home)) and d.get("state") == "running" and d.get("pass_deadline") and d
+    )
+    _until(lambda: _ops(svc.home, "hand"))
+    started = time.monotonic()
+    report = async_pass.drain(Paths.under(svc.home), end="suspend", service_wait_s=2)
+    took = time.monotonic() - started
+    assert report["service"]["verified"] is True and report["terminated"] is True
+    assert took < ws.TERM_S + ws.SETTLE_S + 15  # the bound, then SIGTERM: never the pass's 600 s
+    assert datetime.now(timezone.utc) < ws.parse_stamp(doc["pass_deadline"])
+    assert not ws.owns(doc) and not ws.group_pids(doc["pgid"], since=doc["proc_start"])
+    assert _ops(svc.home, "not_reached") == []
+    entries = attention.Ledger(svc.home).entries()
+    assert all(entries[i].active for i in ids)
+    assert ws.stopping_marker(svc.home) is None
+    held = {r["entry"] for r in _ops(svc.home, "hand")}
+    # the next start hands them again and closes every one: none is dropped, and the cut pass's go back without a miss
+    monkeypatch.setenv("DRIVER_TURN_SLEEP", "0")
+    assert _ensure(svc.home).status == "started"
+    _until(lambda: {r["entry"] for r in _ops(svc.home, "close")} >= set(ids), timeout=90)
+    entries = attention.Ledger(svc.home).entries()
+    assert all(entries[i].state == "closed" for i in ids)
+    assert held and all(entries[i].misses == 0 for i in held)
+    assert _ops(svc.home, "not_reached") == []
+
+
 def test_a_final_drain_still_marks_what_is_owed_not_reached_and_refuses_a_later_start(svc, monkeypatch):
     from unify.memory.integration import async_pass
     from unify.memory.integration.paths import Paths

@@ -309,19 +309,21 @@ def drain(
     *,
     archive_to: Path | None = None,
     end: str = "final",
+    service_wait_s: float | None = None,
 ) -> dict:
     """Shutdown: never starts a pass. *end* says what ends: ``final`` (the run itself: every attention entry still owed
     is then ``not_reached: run_ended``) or ``suspend`` (one stage of a run that goes on: the service stops the same
     way, and every entry still owed stays owed for the next start to hand again). The writer service is stopped and
-    its end verified (:func:`_drain_service`). Every result no request applied is reported under
-    ``after_last_request`` and marked ``counted: false``. With *archive_to*, once the service is verified gone, the
+    its end verified (:func:`_drain_service`); *service_wait_s* bounds the service's pass in flight: its deadline plus
+    the stop's grace, or *service_wait_s* from now if that is sooner. Every result no request applied is reported
+    under ``after_last_request`` and marked ``counted: false``. With *archive_to*, once the service is verified gone, the
     memory repo is archived with every ref, ``refs/notes/items`` and ``served`` included
     (:func:`..memory_writer.archive`; a plain clone would drop the item records). The report is also appended to
     ``events.jsonl``.
     """
     if end not in DRAIN_ENDS:
         raise ValueError(f"end is one of {', '.join(DRAIN_ENDS)}, not {end!r}")
-    service = _drain_service(paths, end)
+    service = _drain_service(paths, end, service_wait_s)
     report: dict = {
         "end": end,
         "type": "consolidation",
@@ -349,7 +351,7 @@ def drain(
     return report
 
 
-def _drain_service(paths: Any, end: str = "final") -> dict:
+def _drain_service(paths: Any, end: str = "final", wait_s: float | None = None) -> dict:
     """Stop the writer service (the stop marker, its pass's deadline and the grace, SIGTERM, SIGKILL) and verify that
     no process of it is left. At the ``final`` end every attention entry still owed is then ``not_reached:
     run_ended``; at a ``suspend`` nothing is marked (the entries stay owed; the next start hands them again, those a
@@ -357,7 +359,12 @@ def _drain_service(paths: Any, end: str = "final") -> dict:
     from ..writer_service import stop_service
 
     final = end == "final"
-    done = stop_service(paths.home, "drain" if final else "suspend", "the run ended" if final else "a stage of the run ended")
+    done = stop_service(
+        paths.home,
+        "drain" if final else "suspend",
+        "the run ended" if final else "a stage of the run ended",
+        wait_s=wait_s,
+    )
     out = {"verified": done.verified, "how": done.how, "leftover_pids": list(done.leftover_pids), "end": end}
     if done.verified and not final:
         try:

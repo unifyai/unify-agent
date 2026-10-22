@@ -777,10 +777,63 @@ def pending_passes(home: Path | str) -> list[str]:
 # --- ensure ---------------------------------------------------------------------------------------------------------
 
 
+from unify.lanes.provider_names import LITELLM_PROVIDER_KEY_NAMES  # noqa: E402
+
+#: The provider credential names the model client reads: unillm's (its settings and ``uni_llm``), then the litellm
+#: ones it falls back to (:mod:`unify.lanes.provider_names`). With one missing it reads a ``.env`` file or, on a team machine, a
+#: Secret Manager (unillm's settings), so a writer process that needs no key gets :data:`NO_PROVIDER_KEY` for each.
+PROVIDER_KEY_NAMES = (
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_MANAGEMENT_API_KEY",
+    "TOGETHER_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "XIAOMI_MIMO_API_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "UNILLM_LLM_GATEWAY_KEY",
+    *LITELLM_PROVIDER_KEY_NAMES,
+)
+#: What each provider key holds in a writer process whose model calls all go through its lanes: not a key, so a call
+#: off the lanes fails at the provider instead of being billed.
+NO_PROVIDER_KEY = "none:the-writer-calls-through-its-lanes"
+
+
+def without_provider_keys(env: dict, settings: Any) -> dict:
+    """*env* for a writer process (the service, or a pass worker) whose writer calls go through the writer's lane:
+    every provider key replaced by :data:`NO_PROVIDER_KEY`. The writer's calls and its helpers' go through their lanes
+    (with no helper lane, helpers are not offered), and the librarian runs in the request, not here. One case keeps the
+    keys: an embedding route the user set (``UNIFY_EMBED_URL`` with no lane token), which sends the provider key in its
+    own header. With the relay's embedding lane the client sends that lane's token, so the keys are masked."""
+    from unify.lanes import embed_token
+
+    try:
+        lane_token = embed_token.token()
+    except embed_token.EmbedTokenRefused:
+        lane_token = ""  # a lane was given, unusable: embeddings are refused, the keys masked all the same
+    if lane_token is None and str(getattr(settings, "UNIFY_EMBED_URL", "") or "").strip():
+        return env
+    out = {k: v for k, v in env.items() if k.upper() not in PROVIDER_KEY_NAMES}
+    out.update(dict.fromkeys(PROVIDER_KEY_NAMES, NO_PROVIDER_KEY))
+    return out
+
+
+def _embed_lane_token() -> str | None:
+    """The embedding lane's token as this process holds it (None without one, or when it was unusable)."""
+    from unify.lanes import embed_token
+
+    try:
+        return embed_token.token()
+    except embed_token.EmbedTokenRefused:
+        return None
+
+
+from unify.lanes.embed_token import EMBED_TOKEN_FD  # noqa: E402
+
+
 def _token_pipes() -> tuple[dict, list[int]]:
     """The writer's and the helpers' route tokens as this process holds them, each on a fresh pipe named in the
     child's environment, exactly as the pass worker gets the writer's (never argv, the environment or a file); and
-    the read ends to pass. Without a route, nothing."""
+    the read ends to pass. With the writer's route, the child's environment holds no provider key
+    (:func:`without_provider_keys`). Without a route, nothing changes."""
     from .integration import switch
     from .integration.async_pass import _route_token
 
@@ -793,6 +846,7 @@ def _token_pipes() -> tuple[dict, list[int]]:
             switch.WRITER_TOKEN_FD,
             switch.LIBRARY_HELPER_TOKEN_FD,
             switch.LIBRARY_HELPER_BASE_URL,
+            EMBED_TOKEN_FD,
         )
     }
     fds: list[int] = []
@@ -811,6 +865,10 @@ def _token_pipes() -> tuple[dict, list[int]]:
     token = _route_token(settings)
     if token:
         env[switch.WRITER_TOKEN_FD] = str(pipe(token))
+        env = without_provider_keys(env, settings)
+    embed = _embed_lane_token()
+    if embed:
+        env[EMBED_TOKEN_FD] = str(pipe(embed))
     switch.settle_helper_route_env(os.environ, settings)
     pair, _why = switch.helper_lane_route()
     if pair is not None:
@@ -1006,15 +1064,23 @@ def stop_service(
     kill: Callable[[int, int], None] = os.killpg,
     kill_pid: Callable[[int, int], None] = os.kill,
     sleep: Callable[[float], Any] = time.sleep,
+    wait_s: Optional[float] = None,
 ) -> Terminated:
     """Write the stop marker; give a pass in flight its deadline plus *grace_s* (the service stops at the marker once
-    the pass ends); then SIGTERM, *term_s*, SIGKILL; then check in ``/proc`` that nothing of the service is left
-    (module docstring). A signal goes to the service's process group (*kill*) only while the service itself is alive
-    (:func:`owns`); otherwise only to each process the service recorded, checked by its start time (*kill_pid*,
-    :func:`recorded_members`): a group number alone is never signalled."""
+    the pass ends), or *wait_s* from now if that is sooner; then SIGTERM, *term_s*, SIGKILL; then check in ``/proc``
+    that nothing of the service is left (module docstring). A pass cut by the SIGTERM ends through its abort path;
+    at a ``suspend`` every entry it held stays owed for the next start. A signal goes to the service's process group
+    (*kill*) only while the service itself is alive (:func:`owns`); otherwise only to each process the service
+    recorded, checked by its start time (*kill_pid*, :func:`recorded_members`): a group number alone is never
+    signalled."""
     if by not in STOP_BY:
         raise ValueError(f"by is one of {', '.join(STOP_BY)}, not {by!r}")
     home = Path(home)
+    cap = None if wait_s is None else time.monotonic() + max(0.0, float(wait_s))
+
+    def bounded(limit: float) -> float:
+        return limit if cap is None else min(limit, cap)
+
     _atomic_json(
         service_dir(home) / STOP_FILE,
         {"v": 1, "by": by, "at": stamp(_now()), "reason": str(reason)[:500]},
@@ -1038,7 +1104,7 @@ def stop_service(
     if not alive():
         return Terminated(True, "clean")
     pass_end = parse_stamp(doc.get("pass_deadline"))
-    limit = (
+    limit = bounded(
         time.monotonic()
         + max(0.0, ((pass_end - _now()).total_seconds() if pass_end else 0.0))
         + grace_s
@@ -1050,7 +1116,7 @@ def stop_service(
             new_end = parse_stamp(fresh.get("pass_deadline"))
             if new_end is not None and new_end != pass_end:
                 pass_end = new_end
-                limit = (
+                limit = bounded(
                     time.monotonic()
                     + max(0.0, (new_end - _now()).total_seconds())
                     + grace_s
